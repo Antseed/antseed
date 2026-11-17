@@ -9,7 +9,7 @@ import type {
   CloseChannelResultPayload,
   CloseChannelRejectCode,
 } from '../types/protocol.js';
-import { DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS } from '../types/protocol.js';
+import { DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS, VIDEO_JOB_HOLD_CODES, type VideoJobHoldCode } from '../types/protocol.js';
 import { ChannelsClient } from './evm/channels-client.js';
 import {
   SPENDING_AUTH_TYPES,
@@ -115,7 +115,8 @@ export const ONE_OFF_UNCLAIMED_TTL_MS = 10 * 60_000;
  * unpaid since it last paid for a video, or still without an accepted create.
  * Each costs the seller a reserve and a close, so at this many the buyer waits
  * for another. Plans it has not answered count too, so parallel creates cannot
- * overshoot. Above the video plugins' default concurrency of 10.
+ * overshoot. Above the video plugins' default concurrency of 10. It also caps
+ * the accepted jobs a buyer has not collected yet (see _uncollectedOneOffJobs).
  */
 const ONE_OFF_UNPAID_LIMIT = 16;
 /** Earnings below this (USDC base units, $0.01: a fixed floor above the usual gas of a reserve and a close on Base) leave a channel unpaid. */
@@ -127,12 +128,32 @@ const ONE_OFF_BACKOFF_MAX_MS = 60 * 60_000;
 const ONE_OFF_UNPAID_WINDOW_MS = 24 * 60 * 60_000;
 /** Retry-after while a buyer is held back only by creates still being decided, which end in seconds. */
 const ONE_OFF_UNDECIDED_RETRY_SECONDS = 5;
+/**
+ * A video job still not delivered this long after its channel opened holds
+ * the buyer back from new videos until it is delivered and paid, or its
+ * channel ends. Well above how long a generation takes, so it means the buyer
+ * stopped collecting jobs the seller already paid its upstream for.
+ */
+const ONE_OFF_UNCOLLECTED_AFTER_MS = 60 * 60_000;
+/** Retry-after while a buyer is held back by a job it has not collected. */
+const ONE_OFF_UNCOLLECTED_RETRY_SECONDS = 60;
 /** How often channels whose close was given up on are retried. */
 export const TIMED_OUT_CLOSE_RETRY_INTERVAL_MS = 10 * 60_000;
 /** Most timed-out channels retried in one pass. */
 const TIMED_OUT_CLOSE_RETRY_BATCH = 20;
 /** Slow-cadence attempts with the buyer's latest auth before closing at the settled amount (~1 hour). */
 const TIMED_OUT_AUTH_CLOSE_ATTEMPTS = 6;
+
+/** Why a buyer may not start another video yet (see SellerPaymentManager.videoJobHold). */
+export type VideoJobHold = {
+  retryAfterSeconds: number;
+  /** The one-off channels of the jobs that hold the buyer back, so the buyer can be told which jobs they are. */
+  channelIds: string[];
+} & (
+  | { code: Exclude<VideoJobHoldCode, typeof VIDEO_JOB_HOLD_CODES.openLimit> }
+  /** At the limit: `limit` is the most uncollected jobs a buyer may have. */
+  | { code: typeof VIDEO_JOB_HOLD_CODES.openLimit; limit: number }
+);
 
 interface PendingOneOffPlan {
   openingReserveAmount: bigint;
@@ -1130,16 +1151,7 @@ export class SellerPaymentManager {
    */
   oneOffRetryAfterSeconds(buyerPeerId: string, requestId: string): number | null {
     const now = Date.now();
-    const buyerPlans = oneOffPlanKey(buyerPeerId, '');
-    const thisPlan = oneOffPlanKey(buyerPeerId, requestId);
-    let undecided = 0;
-    for (const [key, pending] of this._pendingOneOffPlans) {
-      if (pending.expiresAt <= now) this._pendingOneOffPlans.delete(key);
-      else if (key.startsWith(buyerPlans) && key !== thisPlan) undecided += 1;
-    }
-    for (const buyer of this._unacceptedOneOffs.values()) {
-      if (buyer === buyerPeerId) undecided += 1;
-    }
+    const undecided = this._undecidedOneOffs(buyerPeerId, requestId, now);
     const { count, lastEndedAt } = this._channelStore.getUnpaidOneOffChannels(
       buyerPeerId, CHANNEL_ROLE.SELLER, now - ONE_OFF_UNPAID_WINDOW_MS, ONE_OFF_MIN_EARNED_USDC,
     );
@@ -1150,6 +1162,70 @@ export class SellerPaymentManager {
       : lastEndedAt + Math.min(ONE_OFF_BACKOFF_BASE_MS * 2 ** (count + undecided - ONE_OFF_UNPAID_LIMIT), ONE_OFF_BACKOFF_MAX_MS) - now;
     if (waitMs > 0) return Math.ceil(waitMs / 1_000);
     return undecided > 0 ? ONE_OFF_UNDECIDED_RETRY_SECONDS : null;
+  }
+
+  /** Creates offered a plan or a channel whose answer is not in yet, other than this request's own. */
+  private _undecidedOneOffs(buyerPeerId: string, requestId: string, now: number): number {
+    const buyerPlans = oneOffPlanKey(buyerPeerId, '');
+    const thisPlan = oneOffPlanKey(buyerPeerId, requestId);
+    let undecided = 0;
+    for (const [key, pending] of this._pendingOneOffPlans) {
+      if (pending.expiresAt <= now) this._pendingOneOffPlans.delete(key);
+      else if (key.startsWith(buyerPlans) && key !== thisPlan) undecided += 1;
+    }
+    for (const buyer of this._unacceptedOneOffs.values()) {
+      if (buyer === buyerPeerId) undecided += 1;
+    }
+    return undecided;
+  }
+
+  /**
+   * Why this buyer may not start another video yet because of its own earlier
+   * jobs here, or null. Jobs the provider accepted are paid only once the buyer
+   * collects them, while the seller pays its upstream as soon as they run. A
+   * delivered video the buyer has not signed for, or a job it has left
+   * uncollected, holds it back; so does having as many uncollected jobs as the
+   * limit, counting creates still being decided so parallel ones cannot pass it.
+   * Only this buyer's own channels are counted.
+   */
+  videoJobHold(buyerPeerId: string, requestId: string): VideoJobHold | null {
+    const now = Date.now();
+    const jobs = this._uncollectedOneOffJobs(buyerPeerId, now);
+    if (jobs.unpaidDeliveries.length > 0) {
+      return { code: VIDEO_JOB_HOLD_CODES.paymentPending, retryAfterSeconds: ONE_OFF_UNDECIDED_RETRY_SECONDS, channelIds: jobs.unpaidDeliveries };
+    }
+    if (jobs.overdue.length > 0) {
+      return { code: VIDEO_JOB_HOLD_CODES.uncollected, retryAfterSeconds: ONE_OFF_UNCOLLECTED_RETRY_SECONDS, channelIds: jobs.overdue };
+    }
+    // Creates still being decided alone are a burst that ends in seconds; oneOffRetryAfterSeconds answers those.
+    if (jobs.open.length > 0 && jobs.open.length + this._undecidedOneOffs(buyerPeerId, requestId, now) >= ONE_OFF_UNPAID_LIMIT) {
+      return { code: VIDEO_JOB_HOLD_CODES.openLimit, retryAfterSeconds: ONE_OFF_UNDECIDED_RETRY_SECONDS, limit: ONE_OFF_UNPAID_LIMIT, channelIds: jobs.open };
+    }
+    return null;
+  }
+
+  /**
+   * The buyer's accepted video jobs still on an active channel: `open` not yet
+   * delivered, `overdue` the open ones older than ONE_OFF_UNCOLLECTED_AFTER_MS,
+   * and `unpaidDeliveries` delivered but not yet signed for. A job is delivered
+   * once its price is spent on the channel (nothing is spent before), and paid
+   * once the buyer's signed amount covers that.
+   */
+  private _uncollectedOneOffJobs(buyerPeerId: string, now: number): { open: string[]; overdue: string[]; unpaidDeliveries: string[] } {
+    const jobs = { open: [] as string[], overdue: [] as string[], unpaidDeliveries: [] as string[] };
+    for (const channel of this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER, CHANNEL_KIND.ONE_OFF)) {
+      if (channel.peerId !== buyerPeerId || channel.requestCount === 0) continue;
+      if (!this._oneOffChannelIds.has(channel.sessionId) || this._unacceptedOneOffs.has(channel.sessionId)) continue;
+      const spent = this._spent.get(channel.sessionId) ?? 0n;
+      const accepted = this._acceptedCumulative.get(channel.sessionId) ?? 0n;
+      if (spent > accepted) {
+        jobs.unpaidDeliveries.push(channel.sessionId);
+      } else if (spent === 0n) {
+        jobs.open.push(channel.sessionId);
+        if (now - channel.reservedAt > ONE_OFF_UNCOLLECTED_AFTER_MS) jobs.overdue.push(channel.sessionId);
+      }
+    }
+    return jobs;
   }
 
   /** This channel's create was accepted: the channel is in use, so it stops counting against the buyer. */

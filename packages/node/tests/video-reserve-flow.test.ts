@@ -1002,6 +1002,8 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
   }
 
   const statusesOf = (answers: Array<{ statusCode: number }>) => answers.map((answer) => answer.statusCode);
+  const errorOf = (answer: { body: Uint8Array }) => JSON.parse(Buffer.from(answer.body).toString()).error as { code: string; message: string; jobs: Array<{ id: string; protocol: string }> };
+  const jobIdsOf = (answer: { body: Uint8Array }) => errorOf(answer).jobs.map((job) => job.id);
   const repeat = <T,>(value: T, count: number): T[] => Array.from({ length: count }, () => value);
   const advanceClock = (ms: number) => vi.setSystemTime(Date.now() + ms);
 
@@ -1072,7 +1074,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.close.mock.calls.map((call) => call[2])).toEqual(repeat(800_000n, UNPAID_LIMIT));
   }, 30_000);
 
-  it('asks the rest of a batch above the limit to retry shortly, and serves it then', async () => {
+  it('asks the rest of a batch above the limit to retry shortly, and serves it once the buyer collects as many', async () => {
     const h = setup({ videoPricing: 'cheap' });
 
     const answers = await Promise.all(Array.from({ length: UNPAID_LIMIT + 4 }, (_, index) => h.send(h.videoRequest(`batch-${index}`))));
@@ -1081,6 +1083,14 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     const heldBack = answers.flatMap((answer, index) => (answer.statusCode === 429 ? [{ answer, index }] : []));
     expect(heldBack).toHaveLength(4);
     for (const { answer } of heldBack) expect(answer.headers['retry-after']).toBe('5');
+
+    // The accepted batch is still uncollected: the retries wait for it.
+    const tooEarly = await Promise.all(heldBack.map(({ index }) => h.send(h.videoRequest(`batch-${index}`))));
+    expect(statusesOf(tooEarly)).toEqual(repeat(409, 4));
+    for (const answer of tooEarly) expect(errorOf(answer).code).toBe('video_jobs_open_limit');
+
+    for (let job = 1; job <= 4; job += 1) expect((await h.send(h.retrieveRequest(`retrieve-${job}`, `job-${job}`))).statusCode).toBe(200);
+    await h.settle();
 
     const retried = await Promise.all(heldBack.map(({ index }) => h.send(h.videoRequest(`batch-${index}`))));
     expect(statusesOf(retried)).toEqual(repeat(200, 4));
@@ -1105,13 +1115,66 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(statusesOf(await sendVideos(h, UNPAID_LIMIT - 1, 'after'))).toEqual(repeat(400, UNPAID_LIMIT - 1));
   }, 30_000);
 
-  it('never holds back a buyer for jobs still running, however many', async () => {
+  it('holds back a buyer with as many uncollected jobs as the limit, until it collects one', async () => {
     const h = setup({ videoPricing: 'cheap' });
 
-    expect(statusesOf(await sendVideos(h, UNPAID_LIMIT + 4, 'running'))).toEqual(repeat(200, UNPAID_LIMIT + 4));
-
-    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT + 4);
+    const answers = await sendVideos(h, UNPAID_LIMIT + 2, 'running');
+    expect(statusesOf(answers)).toEqual([...repeat(200, UNPAID_LIMIT), 409, 409]);
+    expect(answers.at(-1)!.headers['retry-after']).toBe('5');
+    expect(errorOf(answers.at(-1)!)).toMatchObject({
+      code: 'video_jobs_open_limit',
+      message: `You have ${UNPAID_LIMIT} videos on this seller that are not downloaded yet. Download one before starting another here. Their job IDs are in error.jobs.`,
+    });
+    expect(jobIdsOf(answers.at(-1)!)).toEqual(Array.from({ length: UNPAID_LIMIT }, (_, index) => `job-${index + 1}`));
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
     expect(h.close).not.toHaveBeenCalled();
+
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
+    await h.settle();
+    expect(h.close.mock.calls.map((call) => call[2])).toEqual([800_000n]);
+
+    expect((await h.send(h.videoRequest('after-collecting'))).statusCode).toBe(200);
+    expect((await h.send(h.videoRequest('limit-again'))).statusCode).toBe(409);
+  }, 30_000);
+
+  it('holds back a buyer that left a job uncollected for an hour, until it collects it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const h = setup({ videoPricing: 'cheap' });
+    expect((await h.send(h.videoRequest('first'))).statusCode).toBe(200);
+    await h.settle();
+
+    advanceClock(30 * 60_000);
+    expect((await h.send(h.videoRequest('still-generating'))).statusCode).toBe(200);
+    await h.settle();
+
+    advanceClock(31 * 60_000);
+    const heldBack = await h.send(h.videoRequest('overdue'));
+    expect(heldBack.statusCode).toBe(409);
+    expect(errorOf(heldBack).code).toBe('video_jobs_uncollected');
+    // Only the overdue job, not the one still generating.
+    expect(jobIdsOf(heldBack)).toEqual(['job-1']);
+    expect(heldBack.headers['retry-after']).toBe('60');
+    expect(h.reserve).toHaveBeenCalledTimes(2);
+
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
+    await h.settle();
+    expect((await h.send(h.videoRequest('after-collecting'))).statusCode).toBe(200);
+  }, 30_000);
+
+  it('holds back a buyer that took a video without signing for it', async () => {
+    const h = setup({ videoPricing: 'cheap' });
+    vi.spyOn(h.buyer, 'handleNeedAuth').mockResolvedValue(undefined);
+    expect((await h.send(h.videoRequest('first'))).statusCode).toBe(200);
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
+    await h.settle();
+    expect(h.close).not.toHaveBeenCalled();
+
+    const heldBack = await h.send(h.videoRequest('unpaid'));
+    expect(heldBack.statusCode).toBe(409);
+    expect(errorOf(heldBack).code).toBe('video_payment_pending');
+    expect(jobIdsOf(heldBack)).toEqual(['job-1']);
+    expect(heldBack.headers['retry-after']).toBe('5');
+    expect(h.reserve).toHaveBeenCalledTimes(1);
   }, 30_000);
 
   it('counts a video that was accepted and then failed: the buyer paid nothing for it', async () => {
