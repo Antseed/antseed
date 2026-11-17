@@ -7,8 +7,12 @@ const decoder = new TextDecoder();
 
 /** The fields of a chat message or delta that hold what the model wrote. */
 const GENERATED_FIELDS = new Set(['content', 'text', 'reasoning_content', 'reasoning', 'refusal', 'tool_calls', 'function_call', 'function', 'name', 'arguments']);
-/** Content parts that hold an attachment, in the field their `type` names. Their encoded size says nothing about their tokens. */
-const ATTACHMENT_PARTS = new Set(['image_url', 'input_audio', 'file']);
+/**
+ * Content part types that hold an attachment: OpenAI Chat (`image_url`, `input_audio`, `file`),
+ * OpenAI Responses (`input_image`, `input_file`) and Anthropic Messages (`image`, `document`).
+ * Their encoded size says nothing about their tokens: a base64 screenshot is hundreds of KB.
+ */
+const ATTACHMENT_PARTS = new Set(['image_url', 'input_audio', 'file', 'input_image', 'input_file', 'image', 'document']);
 /** What one attachment counts as: roughly what chat upstreams bill for an image. */
 const ATTACHMENT_TOKENS = 1_290;
 
@@ -56,14 +60,14 @@ function chatAnswerText(body: Uint8Array): string | null {
 }
 
 /** The tokens of a chat request: its text, with a flat allowance in place of each attachment. */
-function estimatePromptTokens(requestBody: Uint8Array): number {
+export function estimatePromptTokens(requestBody: Uint8Array): number {
   const request = parseJsonObject(requestBody);
   if (!request) return estimateTokensFromBytes(requestBody);
   let attachments = 0;
-  const text = JSON.stringify(request, function (this: Record<string, unknown>, key: string, value: unknown) {
-    if (!ATTACHMENT_PARTS.has(key) || this.type !== key) return value;
+  const text = JSON.stringify(request, function (key: string, value: unknown) {
+    if (key === '' || !isRecord(value) || typeof value.type !== 'string' || !ATTACHMENT_PARTS.has(value.type)) return value;
     attachments += 1;
-    return undefined;
+    return { type: value.type };
   });
   return estimateTokensFromBytes(encoder.encode(text)) + attachments * ATTACHMENT_TOKENS;
 }

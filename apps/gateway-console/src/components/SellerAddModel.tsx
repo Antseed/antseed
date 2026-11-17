@@ -4,7 +4,7 @@ import { Button, SelectField, TextField } from '@antseed/ui'
 import { api } from '../api'
 import type { SellerSettingsResponse } from '../api/client'
 import type { SellerSettings } from '../api/types'
-import { numberFieldError } from '../lib/settings'
+import { cachedPriceError, numberFieldError } from '../lib/settings'
 import { ErrorAlert } from './ui'
 
 interface NewModelDraft { provider: string; service: string; upstreamModel: string; input: string; output: string; cached: string; categories: string }
@@ -19,7 +19,7 @@ export function newModelErrors(draft: NewModelDraft, settings: SellerSettings): 
         : settings.services.some((entry) => entry.provider === draft.provider && entry.service === draft.service.trim()) ? 'Already offered under this provider.' : undefined,
     input: numberFieldError(draft.input, { required: true }),
     output: numberFieldError(draft.output, { required: true }),
-    cached: numberFieldError(draft.cached),
+    cached: cachedPriceError(draft.cached, draft.input),
   }
   return Object.fromEntries(Object.entries(errors).filter((entry): entry is [string, string] => entry[1] !== undefined))
 }
