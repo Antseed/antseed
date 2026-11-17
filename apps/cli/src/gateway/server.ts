@@ -642,25 +642,20 @@ export class GatewayServer {
   /**
    * A seller's video job hold as `key` may see it: only the jobs it created.
    * When none of the listed jobs are the key's, it is told the gateway is held
-   * back, with no job. Any other 409 passes on unchanged; one that cannot be
-   * read is replaced, so a list is never forwarded unfiltered.
+   * back, with no job. Any other 409, and one that is not a JSON object (it
+   * cannot carry a list), passes on unchanged; null for an empty body.
    */
   private _ownVideoJobHold(key: ApiKeyRecord, body: Buffer): Buffer | null {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(body.toString('utf8'))
-    } catch {
-      return body.length === 0 ? null : body
-    }
-    const error = typeof parsed === 'object' && parsed !== null ? (parsed as { error?: unknown }).error : undefined
-    if (typeof error !== 'object' || error === null) return body
-    const code = (error as { code?: unknown }).code
-    if (typeof code !== 'string' || !VIDEO_JOB_HOLD_CODE_SET.has(code)) return body
-    const listed = (error as { jobs?: unknown }).jobs
+    if (body.length === 0) return null
+    const error = jsonObject(parseJsonBody(body, undefined)?.['error'])
+    const code = error?.['code']
+    if (!error || typeof code !== 'string' || !VIDEO_JOB_HOLD_CODE_SET.has(code)) return body
+    const listed = error['jobs']
     const jobs = Array.isArray(listed)
-      ? listed.flatMap((job): Array<{ id: string; protocol: string }> => {
-        if (typeof job !== 'object' || job === null) return []
-        const { id, protocol } = job as { id?: unknown; protocol?: unknown }
+      ? listed.flatMap((entry): Array<{ id: string; protocol: string }> => {
+        const job = jsonObject(entry)
+        const id = job?.['id']
+        const protocol = job?.['protocol']
         if (typeof id !== 'string' || typeof protocol !== 'string' || id.length === 0 || id.length > 256) return []
         try {
           return this._ownsVideoJob(key, videoJobKey(protocol, id), id) ? [{ id, protocol }] : []
@@ -669,7 +664,7 @@ export class GatewayServer {
         }
       })
       : []
-    const message = (error as { message?: unknown }).message
+    const message = error['message']
     const answer = jobs.length > 0 && typeof message === 'string'
       ? { error: { code, message, jobs } }
       : { error: { code: 'video_jobs_held', message: VIDEO_JOBS_HELD_MESSAGE, jobs: [] } }

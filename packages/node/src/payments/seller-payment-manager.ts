@@ -145,14 +145,15 @@ const TIMED_OUT_CLOSE_RETRY_BATCH = 20;
 const TIMED_OUT_AUTH_CLOSE_ATTEMPTS = 6;
 
 /** Why a buyer may not start another video yet (see SellerPaymentManager.videoJobHold). */
-export interface VideoJobHold {
-  code: VideoJobHoldCode;
+export type VideoJobHold = {
   retryAfterSeconds: number;
-  /** The most uncollected jobs a buyer may have, for `video_jobs_open_limit`. */
-  limit?: number;
   /** The one-off channels of the jobs that hold the buyer back, so the buyer can be told which jobs they are. */
   channelIds: string[];
-}
+} & (
+  | { code: Exclude<VideoJobHoldCode, typeof VIDEO_JOB_HOLD_CODES.openLimit> }
+  /** At the limit: `limit` is the most uncollected jobs a buyer may have. */
+  | { code: typeof VIDEO_JOB_HOLD_CODES.openLimit; limit: number }
+);
 
 interface PendingOneOffPlan {
   openingReserveAmount: bigint;
