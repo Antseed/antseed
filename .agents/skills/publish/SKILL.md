@@ -1,6 +1,6 @@
 ---
 name: publish
-description: Prepare an npm release — decide which @antseed/* packages need version bumps, apply them, validate the set, and open the bump PR. Publishing itself happens in CI. After a CLI release, also pin and publish the TEE seller image.
+description: Prepare an npm release — decide which @antseed/* packages need version bumps, apply them, validate the set, cut the CHANGELOG release section, and open the bump PR. Publishing itself happens in CI. After a CLI release, also pin and publish the TEE seller image.
 disable-model-invocation: true
 ---
 
