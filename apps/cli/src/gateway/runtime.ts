@@ -11,7 +11,9 @@ import { BuyerPolicyProbe } from './buyer-policy-probe.js'
 import { parseBaseUnits, parseUsdToUsdc } from './money.js'
 import { GatewayServer, type GatewayServerOptions, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
-import { GatewayStore } from './store.js'
+import { GatewayStore, gatewayDir } from './store.js'
+import { StreamResumeStore } from './stream-resume.js'
+import { join } from 'node:path'
 import { X402Facilitator, type X402Asset } from './x402.js'
 import { GatewayTelemetry } from '../telemetry/gateway.js'
 import { cdpAuthorization, type CdpCredentials } from './cdp-auth.js'
@@ -194,7 +196,11 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     x402Enabled: Boolean(topup),
     listenHost,
   }) ?? null
+  // Streams whose client dropped, kept for the client's retry; copies too large for memory go here.
+  const streamResume = new StreamResumeStore({ dir: join(gatewayDir(options.dataDir), 'stream-resume'), onLog: options.onLog })
+  streamResume.prepare()
   const server = new GatewayServer({
+    streamResume,
     console: consoleHandler,
     controlSecret,
     buyerPolicyUnsupported: () => policyProbe.policyUnsupported(),
