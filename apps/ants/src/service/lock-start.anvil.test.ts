@@ -167,7 +167,6 @@ describe.skipIf(!ENABLED)('normal lock start vs the real pool (Anvil differentia
       const tracks = new Map<number, Track>();
       const allIds: number[] = [];
       const cache = new Map<string, LockHistory>();
-      const toggledThisEpoch = new Set<number>();
       const enabledThisEpoch = new Set<number>();
 
       const created = (receipt: unknown): number[] => {
@@ -295,9 +294,7 @@ describe.skipIf(!ENABLED)('normal lock start vs the real pool (Anvil differentia
         }
       };
 
-      let currentOp = '';
       const attempt = async (name: string, action: () => Promise<void>) => {
-        currentOp = name;
         try { await action(); stats.ops[name] = (stats.ops[name] ?? 0) + 1; } catch (error) {
           stats.ops[`${name}:reverted`] = (stats.ops[`${name}:reverted`] ?? 0) + 1;
           if (process.env.ANTS_ANVIL_DEBUG) console.log(name, error instanceof Error ? error.message.slice(0, 300) : error);
@@ -385,7 +382,7 @@ describe.skipIf(!ENABLED)('normal lock start vs the real pool (Anvil differentia
             await send(asStaker.getFunction('disableMaxLock')(id));
             const before = tracks.get(id) ?? {};
             tracks.set(id, { ...before, disabledEpoch: chain.epoch, tags: before.tags?.includes('merged') ? [...before.tags, 'disable after merge'] : before.tags });
-            if (enabledThisEpoch.has(id)) { toggledThisEpoch.add(id); tracks.set(id, { ...tracks.get(id), sameEpochToggle: true }); }
+            if (enabledThisEpoch.has(id)) tracks.set(id, { ...tracks.get(id), sameEpochToggle: true });
             // Disable-then-restructure in one epoch, as the pool's own docs suggest.
             if (random() < 0.5) {
               const receipt = await send(asStaker.getFunction('splitStake')(id, chain.positions.get(id)!.amount / 2n));
@@ -402,7 +399,6 @@ describe.skipIf(!ENABLED)('normal lock start vs the real pool (Anvil differentia
           await check();
           await send(gate.getFunction('setCurrentEpoch')(chain.epoch + 1));
           enabledThisEpoch.clear();
-          toggledThisEpoch.clear();
           stats.ops.epoch = (stats.ops.epoch ?? 0) + 1;
         }
       }

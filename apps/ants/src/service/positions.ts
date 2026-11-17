@@ -10,7 +10,7 @@ import { assertAgentId, assertEpochs, assertPositiveIds, silentReporter, type St
 import { liveWalletPositions, validateWalletRewards } from './indexed-wallet.js';
 import type { LivePositions } from './position-feed.js';
 import { positionActionEpoch, positionActionProblem, type PositionAction } from '../position-actions.js';
-import { normalLockStarts, type LineageRow, type LockStartConfig } from './lock-start.js';
+import { normalLockStarts, restructureSources, type LineageRow, type LockStartConfig } from './lock-start.js';
 import { poolRevertMessage } from '../pool-errors.js';
 
 
@@ -129,7 +129,7 @@ export function mergeCandidateIds(positions: SellerPoolPosition[], currentEpoch:
  * can also do this).
  */
 export function movedStartIds(positions: SellerPoolPosition[], lineage: LineageRow[], maxStakeEpochs: number): number[] {
-  const replacements = new Set(lineage.flatMap(row => row.closedBy === 'split' || row.closedBy === 'merge' || row.closedBy === 'move' ? row.replacementIds ?? [] : []));
+  const replacements = new Set(restructureSources(lineage).keys());
   return positions
     .filter(position => position.closedAtEpoch === 0 && !position.withdrawn && (replacements.has(position.id) || position.stakeEndEpoch - position.stakeStartEpoch > maxStakeEpochs))
     .map(position => position.id);
