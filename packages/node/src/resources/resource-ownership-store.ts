@@ -75,6 +75,16 @@ export class ResourceOwnershipStore {
     };
   }
 
+  /** This buyer's jobs paid from these channels, oldest first. Another buyer's job is never listed. */
+  jobsForChannels(buyerPeerId: string, channelIds: readonly string[]): Array<{ protocol: string; resourceId: string }> {
+    if (channelIds.length === 0) return [];
+    const statement = this._db.prepare(`
+      SELECT protocol, resource_id, created_at FROM resource_charges WHERE channel_id = ? AND buyer_peer_id = ?
+    `);
+    const rows = channelIds.flatMap((channelId) => statement.all(channelId, buyerPeerId) as Array<{ protocol: string; resource_id: string; created_at: number }>);
+    return rows.sort((a, b) => a.created_at - b.created_at).map((row) => ({ protocol: row.protocol, resourceId: row.resource_id }));
+  }
+
   /** Mark the job charged. Returns false when another delivery already charged it. */
   markCharged(protocol: string, resourceId: string): boolean {
     const result = this._db.prepare(`

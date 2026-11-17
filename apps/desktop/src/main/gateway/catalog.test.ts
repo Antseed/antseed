@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels, minVideoPrice } from './catalog.js';
+import { entryListsSeller, findGatewayEntry, recommendAppModels, toChatModel, toTrustedChatModels, minVideoPrice } from './catalog.js';
 import type { GatewayModelEntry } from './models.js';
 
 const seller = (n: string, fields: Record<string, unknown>) => ({ peerId: n.repeat(40), ...fields });
@@ -113,4 +113,56 @@ test('a video model takes the cheapest video price its sellers list, with any fi
   assert.deepEqual(minVideoPrice([peers[0]!]), { perSecondUsd: 0.3, perVideoUsd: 0.05 });
   assert.equal(minVideoPrice([{ peerId: 'dddd' }]), null);
   assert.deepEqual(toChatModel({ id: 'example-video', type: 'video', peers }).videoPrice, { perSecondUsd: 0.17, perVideoUsd: 0 });
+});
+
+test('the chat speaks a protocol every seller of the model speaks natively', () => {
+  const peers = [
+    seller('a', { protocol: 'anthropic-messages', protocols: ['anthropic-messages'] }),
+    seller('b', { protocol: 'openai-chat-completions', protocols: ['openai-chat-completions'] }),
+    seller('c', { protocol: 'openai-chat-completions', protocols: ['openai-chat-completions', 'anthropic-messages'] }),
+  ];
+  const entry = { id: 'glm-5.3', type: 'text', supported_protocols: ['anthropic-messages', 'openai-chat-completions'], peers } as unknown as GatewayModelEntry;
+  // Sellers a and c speak Anthropic, b and c chat completions: a tie, broken by preference.
+  assert.equal(toChatModel(entry).protocol, 'anthropic-messages');
+
+  const openAiMostly = { ...entry, peers: [peers[1], peers[2], seller('d', { protocol: 'openai-chat-completions' })] } as unknown as GatewayModelEntry;
+  assert.equal(toChatModel(openAiMostly).protocol, 'openai-chat-completions');
+});
+
+test('a chat pinned to a seller speaks that seller\'s own protocol', () => {
+  const entry = {
+    id: 'glm-5.3',
+    type: 'text',
+    supported_protocols: ['anthropic-messages', 'openai-chat-completions'],
+    peers: [
+      seller('a', { protocol: 'anthropic-messages' }),
+      seller('b', { protocol: 'openai-chat-completions' }),
+    ],
+  } as unknown as GatewayModelEntry;
+  assert.equal(toChatModel(entry, { sellerPeerId: 'b'.repeat(40) }).protocol, 'openai-chat-completions');
+  assert.equal(toChatModel(entry, { sellerPeerId: `0x${'A'.repeat(40)}` }).protocol, 'anthropic-messages');
+  // A pin the list doesn't describe falls back to the unpinned choice.
+  assert.equal(toChatModel(entry, { sellerPeerId: 'f'.repeat(40) }).protocol, 'anthropic-messages');
+});
+
+test('an entry whose sellers report no protocols falls back to its own list', () => {
+  const entry = { id: 'm', type: 'text', supported_protocols: ['openai-responses'], peers: [seller('a', {})] } as unknown as GatewayModelEntry;
+  assert.equal(toChatModel(entry).protocol, 'openai-responses');
+  assert.equal(toChatModel({ id: 'm', type: 'text' } as unknown as GatewayModelEntry).protocol, 'openai-chat-completions');
+});
+
+test('an Auto chat speaks its preferred seller\'s protocol, not the majority\'s', () => {
+  const entry = {
+    id: 'glm-5.3',
+    type: 'text',
+    peers: [
+      seller('a', { protocol: 'anthropic-messages' }),
+      seller('b', { protocol: 'anthropic-messages' }),
+      seller('c', { protocol: 'openai-chat-completions' }),
+    ],
+  } as unknown as GatewayModelEntry;
+  assert.equal(toChatModel(entry).protocol, 'anthropic-messages');
+  assert.equal(toChatModel(entry, { sellerPeerId: 'c'.repeat(40) }).protocol, 'openai-chat-completions');
+  assert.equal(entryListsSeller(entry, `0x${'C'.repeat(40)}`), true);
+  assert.equal(entryListsSeller(entry, 'd'.repeat(40)), false);
 });

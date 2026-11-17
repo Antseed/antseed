@@ -49,7 +49,7 @@ body:
         - Buyer proxy and routing
         - Gateway
         - Payments and channels (no funds at risk)
-        - ANTS and DIEM staking apps
+        - ANTS staking app
         - Agent services (ant-agent)
         - Plugins and providers
         - Website or docs

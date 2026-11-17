@@ -28,6 +28,18 @@ export function keccak256Hex(data: Uint8Array): string {
   return `0x${bytesToHex(keccak_256(data))}`;
 }
 
+/** Keccak-256 of `parts` joined in order, as 0x-prefixed hex, without joining them. */
+export function keccak256HexOfParts(parts: readonly Uint8Array[]): string {
+  if (wasm) {
+    wasm.init();
+    for (const part of parts) wasm.update(part);
+    return `0x${wasm.digest('hex')}`;
+  }
+  const hash = keccak_256.create();
+  for (const part of parts) hash.update(part);
+  return `0x${bytesToHex(hash.digest())}`;
+}
+
 export interface IncrementalKeccak {
   update(data: Uint8Array): void;
   digest(): Uint8Array;

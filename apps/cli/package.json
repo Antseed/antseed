@@ -1,6 +1,6 @@
 {
   "name": "@antseed/cli",
-  "version": "0.1.249",
+  "version": "0.1.252",
   "description": "Antseed Network CLI and Web Dashboard",
   "type": "module",
   "antseedVerifier": {
@@ -66,6 +66,6 @@
     "@types/geoip-country": "^5",
     "@types/node": "^20.11.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.0"
+    "typescript": "catalog:"
   }
 }

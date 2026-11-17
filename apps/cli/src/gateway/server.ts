@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
+import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_HOLD_CODES, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
@@ -38,10 +38,16 @@ import {
 } from './x402.js'
 import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRouter } from './store.js'
 import { GATEWAY_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
+import { streamFingerprint, type ResumableStream, type StreamResumeStore } from './stream-resume.js'
 import type { RetailPriceMap } from '@antseed/node/retail-prices'
 
 /** Largest 402 body the gateway holds back to check for the buyer's out-of-credits answer (which is well under 1 KiB). */
 const OUT_OF_CREDITS_REWRITE_MAX_BYTES = 16 * 1024
+/** A seller's video job hold lists at most a few dozen short job IDs. */
+const VIDEO_JOB_HOLD_MAX_BYTES = 64 * 1024
+const VIDEO_JOB_HOLD_CODE_SET: ReadonlySet<string> = new Set(Object.values(VIDEO_JOB_HOLD_CODES))
+/** Told to a key held back by video jobs that other keys of its buyer started. */
+const VIDEO_JOBS_HELD_MESSAGE = 'This seller is not starting new videos for this gateway until earlier videos are downloaded and paid for. Try again later, or use another seller.'
 
 /**
  * The gateway's own components (the console chat agent) call `/v1` as a key
@@ -162,6 +168,8 @@ interface ForwardedRequest {
   video: NativeVideoRoute | null
   /** Room left under the key's caps at admission (a video create's reserved allowance); null when nothing is capped. */
   remainingUsdc: number | null
+  /** Identifies a retry of this request (`streamFingerprint`); null when its stream is not kept for one. */
+  resumeKey: string | null
 }
 
 /** A buyer wallet's deposits, as decimal USDC strings. */
@@ -237,6 +245,12 @@ export interface GatewayServerOptions {
   buyerRestartHoldMs?: number
   /** How long `stop()` lets requests in flight finish before closing them; default SHUTDOWN_DRAIN_MS. */
   shutdownDrainMs?: number
+  /**
+   * Keeps streamed answers whose client dropped, so the client's retry gets
+   * the answer still being generated. Without it a dropped client cancels
+   * its generation.
+   */
+  streamResume?: StreamResumeStore | null
 }
 
 export interface GatewayTopupOptions {
@@ -313,7 +327,12 @@ export class GatewayServer {
     this._port = 0
     if (this._retentionTimer) clearInterval(this._retentionTimer)
     this._retentionTimer = null
+    // No retry can reach a stopping gateway: cancel the streams waiting for one. Streams a client is
+    // reading finish through the drain below, like any other request in flight.
+    const streamResume = this._options.streamResume ?? null
+    streamResume?.close()
     if (!server) {
+      streamResume?.disposeAll()
       await this._exporter.stop()
       return
     }
@@ -324,6 +343,7 @@ export class GatewayServer {
     drain.unref?.()
     await closed
     clearTimeout(drain)
+    streamResume?.disposeAll()
     await this._exporter.stop()
   }
 
@@ -417,6 +437,18 @@ export class GatewayServer {
       sendError(res, 503, 'api_error', 'buyer_upgrade_required', 'Videos cannot be started on a key with spend limits until the Antseed buyer is updated: this buyer cannot check a video\'s price against the limit before it starts.')
       return
     }
+    // A client that lost its connection mid-stream sends the same request again: it gets the answer
+    // already being generated, from the start, instead of a new (and newly paid) generation.
+    const streamResume = this._options.streamResume ?? null
+    const resumeKey = streamResume && route.paid && !video && method === 'POST'
+      ? streamFingerprint(key.id, method, route.path, generationRequirements(req.headers, policy.headers), body)
+      : null
+    const resumed = resumeKey ? streamResume!.claim(resumeKey) : null
+    if (resumed) {
+      this._log(`gateway resumed a dropped stream for its retry: key=${key.id} tag=${resumed.tag}`)
+      resumed.resume(res)
+      return
+    }
     const admission = this._admit(res, route, key, context, { videoCreate: video?.action === 'create', ...(videoJob ? { videoJob } : {}) })
     if (!admission) return
     const { tag } = admission
@@ -436,6 +468,7 @@ export class GatewayServer {
       modelListPolicy: route.prefix === '/v1/models' && policy.policy.allowedModels ? policy.policy : null,
       video,
       remainingUsdc: admission.remainingUsdc,
+      resumeKey,
     }
     try {
       this._options.store.startRequest({
@@ -634,6 +667,38 @@ export class GatewayServer {
     else if (outcome.delivered) accounting.videoDelivered(job)
   }
 
+  /**
+   * A seller's video job hold as `key` may see it: only the jobs it created.
+   * When none of the listed jobs are the key's, it is told the gateway is held
+   * back, with no job. Any other 409, and one that is not a JSON object (it
+   * cannot carry a list), passes on unchanged; null for an empty body.
+   */
+  private _ownVideoJobHold(key: ApiKeyRecord, body: Buffer): Buffer | null {
+    if (body.length === 0) return null
+    const error = jsonObject(parseJsonBody(body, undefined)?.['error'])
+    const code = error?.['code']
+    if (!error || typeof code !== 'string' || !VIDEO_JOB_HOLD_CODE_SET.has(code)) return body
+    const listed = error['jobs']
+    const jobs = Array.isArray(listed)
+      ? listed.flatMap((entry): Array<{ id: string; protocol: string }> => {
+        const job = jsonObject(entry)
+        const id = job?.['id']
+        const protocol = job?.['protocol']
+        if (typeof id !== 'string' || typeof protocol !== 'string' || id.length === 0 || id.length > 256) return []
+        try {
+          return this._ownsVideoJob(key, videoJobKey(protocol, id), id) ? [{ id, protocol }] : []
+        } catch {
+          return []
+        }
+      })
+      : []
+    const message = error['message']
+    const answer = jobs.length > 0 && typeof message === 'string'
+      ? { error: { code, message, jobs } }
+      : { error: { code: 'video_jobs_held', message: VIDEO_JOBS_HELD_MESSAGE, jobs: [] } }
+    return Buffer.from(JSON.stringify(answer))
+  }
+
   /** The buyer's out-of-credits 402 rewritten for the key's workspace, or null to pass it on unchanged. */
   private async _workspaceOutOfCredits(key: ApiKeyRecord, body: Buffer): Promise<Buffer | null> {
     // Any other 402 (a seller's own, say) passes through without a store read or an address lookup.
@@ -709,6 +774,8 @@ export class GatewayServer {
 
       let clientClosed = false
       let finished = false
+      // The answer, when it is kept for a retry of this request (see stream-resume.ts).
+      let resumable: ResumableStream | null = null
       finish =(status: number, buyerRequestId: string | null): void => {
         if (finished) return
         finished = true
@@ -825,12 +892,23 @@ export class GatewayServer {
           responseHeaders.connection = 'close'
           // The request log is keyed by this tag. The buyer's x-antseed-request-id is a different id.
           responseHeaders['x-antseed-gateway-tag'] = tag
+          // A streamed answer is kept while it streams, so a client that drops can take it up again with a retry.
+          if (request.resumeKey !== null && status === 200 && contentType.startsWith('text/event-stream') && !request.modelListPolicy) {
+            resumable = this._options.streamResume?.start(request.resumeKey, tag, status, responseHeaders, upstreamRes, () => {
+              // Nobody came back for it: cancel the generation and log it as a client that left.
+              clientClosed = true
+              closedByClient()
+              upstream.destroy()
+            }) ?? null
+          }
           upstreamRes.once('error', () => {
             finish!(status, buyerRequestId)
             // The buyer's answer broke off: end the client's too, rather than leave it waiting.
-            res.destroy()
+            if (resumable) resumable.fail()
+            else res.destroy()
           })
-          res.once('close', () => finish!(status, buyerRequestId))
+          // A client that dropped while its answer is kept is not finished yet: the answer is still being generated.
+          res.once('close', () => { if (!resumable?.waitingForRetry) finish!(status, buyerRequestId) })
           const modelListPolicy = request.modelListPolicy
           if (modelListPolicy && status === 200) {
             const chunks: Buffer[] = []
@@ -874,7 +952,48 @@ export class GatewayServer {
             })
             return
           }
+          // A seller holding back a video create lists the buyer's jobs that hold it back. The buyer is shared by
+          // every key of its identity, so the key is shown only the jobs it created.
+          if (status === 409 && request.video?.action === 'create' && contentType.startsWith('application/json')) {
+            const chunks: Buffer[] = []
+            let buffered = 0
+            let passThrough = false
+            const collect = (chunk: Buffer): void => {
+              chunks.push(chunk)
+              buffered += chunk.length
+              if (buffered <= VIDEO_JOB_HOLD_MAX_BYTES) return
+              // Too large to be a hold: nothing is forwarded rather than an unfiltered list.
+              passThrough = true
+              upstreamRes.off('data', collect)
+              upstreamRes.resume()
+            }
+            upstreamRes.on('data', collect)
+            upstreamRes.once('end', () => {
+              const answer = passThrough ? null : this._ownVideoJobHold(key, Buffer.concat(chunks))
+              const body = answer ?? Buffer.from(JSON.stringify({ error: { code: 'video_jobs_held', message: VIDEO_JOBS_HELD_MESSAGE, jobs: [] } }))
+              delete responseHeaders['transfer-encoding']
+              res.writeHead(status, { ...responseHeaders, 'content-length': String(body.length) })
+              res.end(body)
+              finish!(status, buyerRequestId)
+            })
+            return
+          }
           res.writeHead(status, responseHeaders)
+          if (resumable) {
+            const kept = resumable
+            kept.attach(res)
+            upstreamRes.on('data', (chunk: Buffer) => kept.append(chunk))
+            upstreamRes.once('end', () => {
+              finish!(status, buyerRequestId)
+              kept.end()
+            })
+            upstreamRes.once('close', () => {
+              if (upstreamRes.complete) return
+              finish!(status, buyerRequestId)
+              kept.fail()
+            })
+            return
+          }
           upstreamRes.pipe(res)
           upstreamRes.once('end', () => {
             // An interrupted download is not charged: the job stays committed until it is downloaded in full.
@@ -928,9 +1047,13 @@ export class GatewayServer {
         gatewayError = { code: 'client_closed_request', message: 'Client closed the request before the buyer answered' }
         finish!(499, null)
       }
-      // A client that disconnects mid-stream should stop the paid request too.
+      // A client that disconnects mid-stream should stop the paid request too, unless its answer is kept for its retry.
       res.once('close', () => {
         if (res.writableFinished) return
+        if (resumable?.detach(res)) {
+          this._log(`gateway client dropped a stream, kept for its retry: key=${key.id} tag=${tag}`)
+          return
+        }
         clientClosed = true
         if (retryTimer) {
           // Waiting for the buyer, which never saw this request.
@@ -1425,6 +1548,26 @@ function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttp
     headers[name] = value
   }
   return headers
+}
+
+/**
+ * What decides which seller generates a request and how, besides its body: the
+ * effective routing policy sent to the buyer, and the forwarded headers that
+ * pick a seller or shape the answer (`x-antseed-*`, such as a pinned peer or a
+ * TEE requirement, and `anthropic-*`). A retry only takes over a dropped stream
+ * generated under the same ones. Headers a client changes between attempts
+ * (ids, retry counts) are not among them.
+ */
+function generationRequirements(incoming: http.IncomingHttpHeaders, policyHeaders: Record<string, string>): string[] {
+  const requirements: string[] = []
+  const policy = policyHeaders[ROUTING_POLICY_HEADER]
+  if (policy) requirements.push(`policy:${policy}`)
+  for (const [name, value] of Object.entries(forwardedHeaders(incoming))) {
+    const normalized = name.toLowerCase()
+    if (value === undefined || (!normalized.startsWith('x-antseed-') && !normalized.startsWith('anthropic-'))) continue
+    requirements.push(`${normalized}:${Array.isArray(value) ? value.join(',') : String(value)}`)
+  }
+  return requirements
 }
 
 function truncateContent(body: Buffer): string {

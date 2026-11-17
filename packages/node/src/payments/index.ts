@@ -180,8 +180,8 @@ export { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 export type { BuyerFreeUsageConfig } from './buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './seller-free-usage-manager.js';
-export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './seller-free-tier-limiter.js';
-export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './seller-free-tier-limiter.js';
+export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, FREE_TIER_MOVED_CONVERSATIONS_MODES, normalizeRemoteIp } from './seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision, FreeTierMovedConversationsMode } from './seller-free-tier-limiter.js';
 export { SellerBuyerLimiter } from './seller-buyer-limiter.js';
 export type { SellerBuyerLimitsConfig, SellerNewBuyerLimitsConfig } from './seller-buyer-limiter.js';
 export {

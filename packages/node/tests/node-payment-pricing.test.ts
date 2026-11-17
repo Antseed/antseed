@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SellerBuyerLimiter } from '../src/payments/seller-buyer-limiter.js';
+import { SellerFreeTierLimiter } from '../src/payments/seller-free-tier-limiter.js';
 import { SellerRequestHandler, assertSingleRoutingService } from '../src/seller-request-handler.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
@@ -8,11 +9,14 @@ import { decodeFrame } from '../src/p2p/message-protocol.js';
 import { MessageType, PAYMENT_CODE_CHANNEL_EXHAUSTED } from '../src/types/protocol.js';
 import { ANTSEED_ATTEST_PATH, type Prover, type SellerRequest } from '../src/interfaces/plugin.js';
 import { ResourceOwnershipStore } from '../src/resources/resource-ownership-store.js';
+import { captureUnitBillingContext, estimateUnitRequestCost } from '../src/billing/unit.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const ATTEST_ID = 'antseed-verifier';
+/** A free-tier screen that serves every request. */
+const serveAll = () => ({ refusal: null, wouldRefuse: null, served: () => {} });
 const ATTEST_ROUTE = `${ANTSEED_ATTEST_PATH}/${ATTEST_ID}`;
 
 describe('completed-request seller payments', () => {
@@ -271,6 +275,7 @@ function oneOffSpmMock(options: { opened?: boolean; reserve?: bigint } = {}) {
     openOneOff: open,
     registerOneOffPlan: vi.fn((buyer: string, requestId: string, plan: unknown): number | null => { plans.set(key(buyer, requestId), plan); return null; }),
     oneOffRetryAfterSeconds: vi.fn((): number | null => null),
+    videoJobHold: vi.fn((): { code: string; retryAfterSeconds: number; limit?: number } | null => null),
     markOneOffCreateAccepted: vi.fn(),
     getOneOffChannelForRequest: (buyer: string, requestId: string) => channels.get(key(buyer, requestId))
       ?? (opened ? open(buyer, requestId) : null),
@@ -427,6 +432,8 @@ describe('charges for requests whose fields every reader reads alike', () => {
         { unit: 'output_images', priceUsd: 0.01, match: { quality: 'low' } },
         { unit: 'output_images', priceUsd: 0.04, match: { quality: 'high' } },
         { unit: 'output_images', priceUsd: 0.02, match: { quality: 'auto' } },
+        { unit: 'output_images', priceUsd: 0.012, match: { input_images: '1' } },
+        { unit: 'output_images', priceUsd: 0.024, match: { input_images: '2' } },
       ] } } },
     });
     const received: Array<{ headers: Record<string, string>; body: Uint8Array }> = [];
@@ -472,6 +479,49 @@ describe('charges for requests whose fields every reader reads alike', () => {
       { model: ['image-model'], quality: ['high'], n: ['2'] },
       { model: ['image-model'], quality: ['low'], n: ['2'] },
     ]);
+  });
+
+  it('charges an edit for the image files it sends, and calls no provider for a count it does not price', async () => {
+    const { serve, received, charges } = imageSeller();
+    const image = (name: string): Part => [`Content-Disposition: form-data; name="${name}"; filename="a.png"\r\nContent-Type: image/png`, 'PNG'];
+
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'high'), text('n', '2'), image('image')]))).toEqual({ status: 200 });
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'high'), text('n', '2'), image('image[]'), image('mask')]))).toEqual({ status: 200 });
+    expect(charges()).toEqual([104_000n, 128_000n]);
+
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'high'), image('image[]'), image('image[]'), image('image[]')])))
+      .toEqual({ status: 400, code: 'invalid_billing_request' });
+    expect(charges()).toHaveLength(2);
+    expect(received).toHaveLength(2);
+
+    // The provider reads the path in any letter case, so billing does too.
+    expect(await serve('/v1/IMAGES/EDITS', form([text('model', 'image-model'), text('quality', 'high'), text('n', '2'), image('image')]))).toEqual({ status: 200 });
+    expect(await serve('/v1/IMAGES/EDITS', form([text('model', 'image-model'), text('quality', 'high'), image('image[]'), image('image[]'), image('image[]')])))
+      .toEqual({ status: 400, code: 'invalid_billing_request' });
+    expect(charges()).toEqual([104_000n, 128_000n, 104_000n]);
+    expect(received).toHaveLength(3);
+  });
+
+  it.each<[string, string]>([
+    ['an unquoted name', 'Content-Disposition: form-data; name=image; filename="a.png"'],
+    ['upper-case parameter names', 'Content-Disposition: form-data; NAME="image"; FILENAME="a.png"'],
+    ['an extended filename', "Content-Disposition: form-data; name=\"image\"; filename*=UTF-8''a.png"],
+  ])('counts an edit image with %s alike on buyer and seller', async (_name, disposition) => {
+    const { serve, charges } = imageSeller();
+    const request = form([text('model', 'image-model'), text('quality', 'high'), [`${disposition}\r\nContent-Type: image/png`, 'PNG']]);
+    // What the buyer prices from the body it sends, before the seller writes it again.
+    const buyer = captureUnitBillingContext({
+      sellerPeerId: 'a'.repeat(40), provider: 'images', service: 'image-model', serviceApiProtocol: 'openai-images',
+      request: { requestId: 'buyer', method: 'POST', path: '/v1/images/edits', ...request },
+    });
+    expect(buyer.context.attributes?.input_images).toBe('1');
+    const model = { version: 1 as const, components: [
+      { unit: 'output_images' as const, priceUsd: 0.04, match: { quality: 'high' } },
+      { unit: 'output_images' as const, priceUsd: 0.012, match: { input_images: '1' } },
+    ] };
+    expect(estimateUnitRequestCost(model, buyer.context, buyer.requestUsage)).toBe(52_000n);
+    expect(await serve('/v1/images/edits', request)).toEqual({ status: 200 });
+    expect(charges()).toEqual([52_000n]);
   });
 
   it.each<[string, Part[], string]>([
@@ -900,6 +950,29 @@ describe('native video job ownership', () => {
         expect(firstSignCap).not.toHaveBeenCalled();
         expect(provider.handleRequest).not.toHaveBeenCalled();
       } finally { firstSignCap.mockRestore(); store.close(); }
+    });
+
+    it('answers a 409 that says what to do when the buyer\'s own jobs hold it back, with no plan and no chain reads', async () => {
+      const firstSignCap = vi.spyOn(channelsClient, 'getFirstSignCap');
+      const holds = {
+        video_payment_pending: 'A video you downloaded from this seller is not paid for yet. New videos start here once it is paid. Its job ID is in error.jobs.',
+        video_jobs_uncollected: 'A video you started on this seller over an hour ago has not been downloaded. Download it, or check its status until it ends, before starting another here. Its job ID is in error.jobs.',
+        video_jobs_open_limit: 'You have 16 videos on this seller that are not downloaded yet. Download one before starting another here. Their job IDs are in error.jobs.',
+      };
+      try {
+        for (const [code, message] of Object.entries(holds)) {
+          const { provider, create, spm, store } = setupOneOff({ videoJobHold: vi.fn(() => ({ code, retryAfterSeconds: 60, limit: 16, channelIds: [] })) });
+          try {
+            const response = await create('video-1', bigVideo);
+            expect(response.statusCode).toBe(409);
+            expect(response.headers['retry-after']).toBe('60');
+            expect(bodyOf(response).error).toEqual({ code, message, jobs: [] });
+            expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
+            expect(provider.handleRequest).not.toHaveBeenCalled();
+          } finally { store.close(); }
+        }
+        expect(firstSignCap).not.toHaveBeenCalled();
+      } finally { firstSignCap.mockRestore(); }
     });
 
     it('holds back a create that loses the last offer to a parallel one during the chain reads', async () => {
@@ -1636,7 +1709,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
     const handler = makeSellerRequestHandler({
       providers: [provider],
       sellerPaymentManager: null,
-      sellerFreeTierLimiter: { appliesTo, consume, resolveStanding } as any,
+      sellerFreeTierLimiter: { appliesTo, screen: serveAll, consume, resolveStanding } as any,
       sessionTracker: null,
       channelsClient: null,
       announcer: null,
@@ -1684,6 +1757,61 @@ describe('SellerRequestHandler payment pricing selection', () => {
     });
   });
 
+  it('refuses free requests screened out before counting them', async () => {
+    const provider = makeProvider(0, 0, { name: 'free-tier', services: ['local-test'] });
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+    const limiter = new SellerFreeTierLimiter({
+      maxRequestsPerAddress: 100,
+      stakeTiers: [],
+      newBuyerMaxInputTokens: 40_000,
+      newBuyerRequests: 1,
+      movedConversations: 'refuse',
+    });
+    const consume = vi.spyOn(limiter, 'consume');
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: null,
+      sellerFreeTierLimiter: limiter,
+      sessionTracker: null,
+      channelsClient: null,
+      announcer: null,
+      emit: () => false,
+    });
+    // Six long turns after the opening ones: about 42,000 tokens.
+    const history = {
+      model: 'local-test',
+      messages: Array.from({ length: 9 }, (_, index) => ({ role: index % 2 === 0 ? 'user' : 'assistant', content: `t${index}:${'x'.repeat(28_000)}` })),
+    };
+    const send = async (buyer: string, requestId: string, body: unknown) => {
+      const sentFrames: Uint8Array[] = [];
+      const { mux } = handler.handleConnection(makeConn(sentFrames), buyer, { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+      await mux.handleFrame({
+        type: MessageType.HttpRequest,
+        messageId: 1,
+        payload: encodeHttpRequest({
+          requestId,
+          method: 'POST',
+          path: '/v1/chat/completions',
+          headers: { 'content-type': 'application/json' },
+          body: new TextEncoder().encode(JSON.stringify(body)),
+        }),
+      });
+      const response = decodeHttpResponse(decodeFrame(sentFrames[0]!)!.message.payload);
+      return { status: response.statusCode, body: JSON.parse(new TextDecoder().decode(response.body)) };
+    };
+
+    // A new buyer's first request is over the new-buyer limit; after one small request it is not.
+    expect(await send('b'.repeat(40), 'large-first', history)).toMatchObject({ status: 403, body: { error: { code: 'free_tier_new_buyer_context' } } });
+    expect((await send('b'.repeat(40), 'small', { model: 'local-test', messages: [{ role: 'user', content: 'hi' }] })).status).toBe(200);
+    expect((await send('b'.repeat(40), 'large', history)).status).toBe(200);
+    // The same history from another buyer that has made its first request is a moved conversation.
+    expect((await send('c'.repeat(40), 'small-other', { model: 'local-test', messages: [{ role: 'user', content: 'hi' }] })).status).toBe(200);
+    expect(await send('c'.repeat(40), 'moved', history)).toMatchObject({ status: 403, body: { error: { code: 'free_tier_moved_conversation' } } });
+
+    expect(provider.handleRequest).toHaveBeenCalledTimes(3);
+    expect(consume).toHaveBeenCalledTimes(3);
+  });
+
   it('refuses a buyer without stake on a stakers-only model with the program to stake for', async () => {
     const provider = makeProvider(0, 0, { name: 'free-tier', services: ['local-test'] });
     provider.handleRequest = vi.fn();
@@ -1693,7 +1821,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
     const handler = makeSellerRequestHandler({
       providers: [provider],
       sellerPaymentManager: null,
-      sellerFreeTierLimiter: { appliesTo: () => true, consume, resolveStanding: async () => null } as any,
+      sellerFreeTierLimiter: { appliesTo: () => true, screen: serveAll, consume, resolveStanding: async () => null } as any,
       sessionTracker: null,
       channelsClient: null,
       announcer: null,
@@ -1741,7 +1869,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
     const handler = makeSellerRequestHandler({
       providers: [provider],
       sellerPaymentManager: null,
-      sellerFreeTierLimiter: { appliesTo: () => false, consume, resolveStanding } as any,
+      sellerFreeTierLimiter: { appliesTo: () => false, screen: serveAll, consume, resolveStanding } as any,
       sessionTracker: null,
       channelsClient: null,
       announcer: null,
@@ -1780,7 +1908,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
       providers: [provider],
       sellerPaymentManager: makeSpmMock(),
       // The seller-wide program never applies to a priced service.
-      sellerFreeTierLimiter: { appliesTo: (_service: string, options?: { paid?: boolean }) => !options?.paid, consume } as any,
+      sellerFreeTierLimiter: { appliesTo: (_service: string, options?: { paid?: boolean }) => !options?.paid, screen: serveAll, consume } as any,
       sessionTracker: null,
       channelsClient: {} as any,
       announcer: null,
@@ -1813,7 +1941,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
   });
 
   describe('free allowance on a priced service', () => {
-    const send = async (covered: boolean) => {
+    const send = async (covered: boolean, screen: () => unknown = serveAll) => {
       const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['k3'] });
       provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true, usage: { prompt_tokens: 600, completion_tokens: 300 } })) }));
       const appliesTo = vi.fn((_service: string, options?: { paid?: boolean }) => options?.paid === true);
@@ -1823,7 +1951,7 @@ describe('SellerRequestHandler payment pricing selection', () => {
       const handler = makeSellerRequestHandler({
         providers: [provider],
         sellerPaymentManager: makeSpmMock({ hasSession: () => false, getChannelByPeer: () => undefined, getPaymentRequirements: () => ({ minBudgetPerRequest: '1', suggestedAmount: '1' }) }),
-        sellerFreeTierLimiter: { appliesTo, consume, resolveStanding: async () => null } as any,
+        sellerFreeTierLimiter: { appliesTo, screen, consume, resolveStanding: async () => null } as any,
         sessionTracker: null,
         channelsClient: {} as any,
         announcer: null,
@@ -1863,6 +1991,26 @@ describe('SellerRequestHandler payment pricing selection', () => {
       expect(provider.handleRequest).not.toHaveBeenCalled();
       expect(response.statusCode).toBe(402);
       expect(response.headers['x-antseed-free-tier']).toBeUndefined();
+    });
+
+    it('charges a request screening refuses, without using the allowance', async () => {
+      const screen = vi.fn(() => ({
+        refusal: { reason: 'new_buyer_context', inputTokens: 40_000, maxInputTokens: 32_000, requests: 3 },
+        wouldRefuse: null,
+        served: () => {},
+      }));
+      const { provider, consume, response } = await send(true, screen);
+      expect(screen).toHaveBeenCalledWith(expect.objectContaining({ service: 'k3', paid: true }));
+      expect(consume).not.toHaveBeenCalled();
+      expect(provider.handleRequest).not.toHaveBeenCalled();
+      expect(response.statusCode).toBe(402);
+    });
+
+    it('records a covered request for conversation matching', async () => {
+      const served = vi.fn();
+      const { response } = await send(true, () => ({ refusal: null, wouldRefuse: null, served }));
+      expect(response.statusCode).toBe(200);
+      expect(served).toHaveBeenCalledOnce();
     });
   });
 

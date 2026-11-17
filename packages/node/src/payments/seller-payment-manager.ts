@@ -9,7 +9,7 @@ import type {
   CloseChannelResultPayload,
   CloseChannelRejectCode,
 } from '../types/protocol.js';
-import { DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS } from '../types/protocol.js';
+import { DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS, VIDEO_JOB_HOLD_CODES, type VideoJobHoldCode } from '../types/protocol.js';
 import { ChannelsClient } from './evm/channels-client.js';
 import {
   SPENDING_AUTH_TYPES,
@@ -33,7 +33,7 @@ export interface SellerPaymentConfig {
   dataDir: string;
   /** Minimum USDC per request (base units). Default: "10000" ($0.01). */
   minBudgetPerRequest?: string;
-  /** Whether to immediately settle when buyer disconnects. Default: true. */
+  /** Whether to settle as soon as the buyer disconnects and no request is still being served. Default: true. */
   settleOnDisconnect?: boolean;
   /**
    * Minimum unsettled delta (base units) required before idle settle will
@@ -115,7 +115,8 @@ export const ONE_OFF_UNCLAIMED_TTL_MS = 10 * 60_000;
  * unpaid since it last paid for a video, or still without an accepted create.
  * Each costs the seller a reserve and a close, so at this many the buyer waits
  * for another. Plans it has not answered count too, so parallel creates cannot
- * overshoot. Above the video plugins' default concurrency of 10.
+ * overshoot. Above the video plugins' default concurrency of 10. It also caps
+ * the accepted jobs a buyer has not collected yet (see _uncollectedOneOffJobs).
  */
 const ONE_OFF_UNPAID_LIMIT = 16;
 /** Earnings below this (USDC base units, $0.01: a fixed floor above the usual gas of a reserve and a close on Base) leave a channel unpaid. */
@@ -127,12 +128,32 @@ const ONE_OFF_BACKOFF_MAX_MS = 60 * 60_000;
 const ONE_OFF_UNPAID_WINDOW_MS = 24 * 60 * 60_000;
 /** Retry-after while a buyer is held back only by creates still being decided, which end in seconds. */
 const ONE_OFF_UNDECIDED_RETRY_SECONDS = 5;
+/**
+ * A video job still not delivered this long after its channel opened holds
+ * the buyer back from new videos until it is delivered and paid, or its
+ * channel ends. Well above how long a generation takes, so it means the buyer
+ * stopped collecting jobs the seller already paid its upstream for.
+ */
+const ONE_OFF_UNCOLLECTED_AFTER_MS = 60 * 60_000;
+/** Retry-after while a buyer is held back by a job it has not collected. */
+const ONE_OFF_UNCOLLECTED_RETRY_SECONDS = 60;
 /** How often channels whose close was given up on are retried. */
 export const TIMED_OUT_CLOSE_RETRY_INTERVAL_MS = 10 * 60_000;
 /** Most timed-out channels retried in one pass. */
 const TIMED_OUT_CLOSE_RETRY_BATCH = 20;
 /** Slow-cadence attempts with the buyer's latest auth before closing at the settled amount (~1 hour). */
 const TIMED_OUT_AUTH_CLOSE_ATTEMPTS = 6;
+
+/** Why a buyer may not start another video yet (see SellerPaymentManager.videoJobHold). */
+export type VideoJobHold = {
+  retryAfterSeconds: number;
+  /** The one-off channels of the jobs that hold the buyer back, so the buyer can be told which jobs they are. */
+  channelIds: string[];
+} & (
+  | { code: Exclude<VideoJobHoldCode, typeof VIDEO_JOB_HOLD_CODES.openLimit> }
+  /** At the limit: `limit` is the most uncollected jobs a buyer may have. */
+  | { code: typeof VIDEO_JOB_HOLD_CODES.openLimit; limit: number }
+);
 
 interface PendingOneOffPlan {
   openingReserveAmount: bigint;
@@ -248,6 +269,8 @@ export class SellerPaymentManager {
   private readonly _topUpRestoreDeferred = new Set<string>();
   /** Channels with a background topUp() running, and those asked for another meanwhile. */
   private readonly _topUpsRunning = new Map<string, Promise<void>>();
+  /** SpendingAuths parked above the ceiling until a mining top-up lands, per channel. */
+  private readonly _overCeilingAuths = new Map<string, Set<Promise<unknown>>>();
   /** Set once a stopping node closed its connections: nothing finished after it reaches a buyer. */
   private _connectionsClosed = false;
   private readonly _topUpsWanted = new Set<string>();
@@ -503,13 +526,22 @@ export class SellerPaymentManager {
    * submitted, not the one they asked for — persist that, not `amount`.
    */
   private _submitClose(channelId: string, amount: bigint, submit: () => Promise<string>): Promise<CloseResult> {
+    return this._registerClose(channelId, () => submit().then(
+      (txHash: string) => ({ closed: true as const, amount, txHash }),
+      (error: unknown) => ({ closed: false as const, error }),
+    ));
+  }
+
+  /**
+   * Run `start` as the channel's one close operation, or join the one in
+   * flight. While it is registered, the channel counts as closing: requests
+   * wait for it and a retained channel is not reactivated.
+   */
+  private _registerClose(channelId: string, start: () => Promise<CloseResult>): Promise<CloseResult> {
     const existing = this._closingChannels.get(channelId);
     if (existing) return existing;
 
-    const operation: Promise<CloseResult> = submit().then(
-      (txHash: string) => ({ closed: true as const, amount, txHash }),
-      (error: unknown) => ({ closed: false as const, error }),
-    );
+    const operation = start();
     this._closingChannels.set(channelId, operation);
     void operation.finally(() => {
       if (this._closingChannels.get(channelId) === operation) {
@@ -651,18 +683,74 @@ export class SellerPaymentManager {
       }
       return outcome;
     };
-    let result = await runLocked(true);
+    const first = await runLocked(true);
+    if (first !== 'awaiting-top-up') return first;
     // Only a top-up that is mining covers this auth: wait for it with the
     // lock released, so this buyer's other auths and requests keep moving,
     // then judge the auth again against the new ceiling. The one that lands
     // can be a lower one, with the top-up this auth needs queued behind it:
     // keep waiting, within the same budget.
     const deadline = Date.now() + OVER_CEILING_AUTH_WAIT_MS;
-    while (result === 'awaiting-top-up') {
-      await this.waitForTopUp(payload.channelId, Math.max(0, deadline - Date.now()), BigInt(payload.cumulativeAmount));
-      result = await runLocked(Date.now() < deadline);
+    const parked = (async () => {
+      let result: SpendingAuthOutcome = first;
+      while (result === 'awaiting-top-up') {
+        await this.waitForTopUp(payload.channelId, Math.max(0, deadline - Date.now()), BigInt(payload.cumulativeAmount));
+        result = await runLocked(Date.now() < deadline);
+      }
+      return result;
+    })();
+    // A close must not settle below an auth the buyer already signed: it
+    // waits for the parked ones (see _waitForOverCeilingAuths).
+    const channelKey = payload.channelId;
+    let set = this._overCeilingAuths.get(channelKey);
+    if (!set) this._overCeilingAuths.set(channelKey, set = new Set());
+    set.add(parked);
+    try {
+      return await parked;
+    } finally {
+      set.delete(parked);
+      if (set.size === 0 && this._overCeilingAuths.get(channelKey) === set) this._overCeilingAuths.delete(channelKey);
     }
-    return result;
+  }
+
+  /**
+   * Close a channel whose buyer has SpendingAuths parked behind a mining
+   * top-up: wait for them to be judged, then close at the latest accepted
+   * auth. Runs as the registered close operation, so no new request is
+   * admitted on the channel while it waits.
+   */
+  private async _closeAfterParkedAuths(channelId: string, retries: number): Promise<CloseResult> {
+    await this._waitForOverCeilingAuths(channelId, OVER_CEILING_AUTH_WAIT_MS);
+    const { amount, metadata, sig } = this._getSettleParams(channelId);
+    debugLog(`[SellerPayment] Closing channel ${channelId.slice(0, 18)}... cumulative=${amount} after parked auths (attempt ${retries + 1}/${SellerPaymentManager.MAX_CLOSE_RETRIES})`);
+    try {
+      const txHash = await this._channelsClient.close(this._signer, channelId, amount, metadata, sig);
+      return { closed: true, amount, txHash };
+    } catch (error) {
+      return { closed: false, error };
+    }
+  }
+
+  /**
+   * Wait (up to `timeoutMs`) for the SpendingAuths parked above the ceiling
+   * of a channel until a mining top-up lands. A close on buyer disconnect
+   * runs while a top-up is mining; settling before those auths are accepted
+   * would close at the old ceiling and leave delivered work unpaid.
+   */
+  private async _waitForOverCeilingAuths(channelId: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const parked = this._overCeilingAuths.get(channelId);
+      const remaining = deadline - Date.now();
+      if (!parked || parked.size === 0 || remaining <= 0) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<void>((resolve) => { timer = setTimeout(resolve, remaining); });
+      try {
+        await Promise.race([Promise.allSettled([...parked]), timedOut]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
   }
 
   /**
@@ -715,10 +803,17 @@ export class SellerPaymentManager {
       const channelsDomain = makeChannelsDomain(this._config.chainId, channelsAddr);
 
       if (existingCumulative === undefined) {
+        // Hex in another case names the same on-chain channel: it must not read
+        // as an unknown channel, which would start over with nothing spent.
+        const sameChannel = this._channelStore.getChannelIgnoringCase(channelId);
+        if (sameChannel && sameChannel.sessionId !== channelId) {
+          debugWarn(`[SellerPayment] Rejecting SpendingAuth naming channel ${sameChannel.sessionId.slice(0, 18)}... in another case`);
+          return 'rejected';
+        }
         // A channel this seller already closed stays closed: a lagging RPC
         // node can still report it active, and recovering it would block the
         // buyer's replacement channel. No chain read is needed to say so.
-        if (this._channelStore.getChannel(channelId)?.status === CHANNEL_STATUS.SETTLED) {
+        if (sameChannel?.status === CHANNEL_STATUS.SETTLED) {
           debugLog(`[SellerPayment] SpendingAuth for closed channel ${channelId.slice(0, 18)}... — rejected`);
           return 'rejected';
         }
@@ -1056,16 +1151,7 @@ export class SellerPaymentManager {
    */
   oneOffRetryAfterSeconds(buyerPeerId: string, requestId: string): number | null {
     const now = Date.now();
-    const buyerPlans = oneOffPlanKey(buyerPeerId, '');
-    const thisPlan = oneOffPlanKey(buyerPeerId, requestId);
-    let undecided = 0;
-    for (const [key, pending] of this._pendingOneOffPlans) {
-      if (pending.expiresAt <= now) this._pendingOneOffPlans.delete(key);
-      else if (key.startsWith(buyerPlans) && key !== thisPlan) undecided += 1;
-    }
-    for (const buyer of this._unacceptedOneOffs.values()) {
-      if (buyer === buyerPeerId) undecided += 1;
-    }
+    const undecided = this._undecidedOneOffs(buyerPeerId, requestId, now);
     const { count, lastEndedAt } = this._channelStore.getUnpaidOneOffChannels(
       buyerPeerId, CHANNEL_ROLE.SELLER, now - ONE_OFF_UNPAID_WINDOW_MS, ONE_OFF_MIN_EARNED_USDC,
     );
@@ -1076,6 +1162,70 @@ export class SellerPaymentManager {
       : lastEndedAt + Math.min(ONE_OFF_BACKOFF_BASE_MS * 2 ** (count + undecided - ONE_OFF_UNPAID_LIMIT), ONE_OFF_BACKOFF_MAX_MS) - now;
     if (waitMs > 0) return Math.ceil(waitMs / 1_000);
     return undecided > 0 ? ONE_OFF_UNDECIDED_RETRY_SECONDS : null;
+  }
+
+  /** Creates offered a plan or a channel whose answer is not in yet, other than this request's own. */
+  private _undecidedOneOffs(buyerPeerId: string, requestId: string, now: number): number {
+    const buyerPlans = oneOffPlanKey(buyerPeerId, '');
+    const thisPlan = oneOffPlanKey(buyerPeerId, requestId);
+    let undecided = 0;
+    for (const [key, pending] of this._pendingOneOffPlans) {
+      if (pending.expiresAt <= now) this._pendingOneOffPlans.delete(key);
+      else if (key.startsWith(buyerPlans) && key !== thisPlan) undecided += 1;
+    }
+    for (const buyer of this._unacceptedOneOffs.values()) {
+      if (buyer === buyerPeerId) undecided += 1;
+    }
+    return undecided;
+  }
+
+  /**
+   * Why this buyer may not start another video yet because of its own earlier
+   * jobs here, or null. Jobs the provider accepted are paid only once the buyer
+   * collects them, while the seller pays its upstream as soon as they run. A
+   * delivered video the buyer has not signed for, or a job it has left
+   * uncollected, holds it back; so does having as many uncollected jobs as the
+   * limit, counting creates still being decided so parallel ones cannot pass it.
+   * Only this buyer's own channels are counted.
+   */
+  videoJobHold(buyerPeerId: string, requestId: string): VideoJobHold | null {
+    const now = Date.now();
+    const jobs = this._uncollectedOneOffJobs(buyerPeerId, now);
+    if (jobs.unpaidDeliveries.length > 0) {
+      return { code: VIDEO_JOB_HOLD_CODES.paymentPending, retryAfterSeconds: ONE_OFF_UNDECIDED_RETRY_SECONDS, channelIds: jobs.unpaidDeliveries };
+    }
+    if (jobs.overdue.length > 0) {
+      return { code: VIDEO_JOB_HOLD_CODES.uncollected, retryAfterSeconds: ONE_OFF_UNCOLLECTED_RETRY_SECONDS, channelIds: jobs.overdue };
+    }
+    // Creates still being decided alone are a burst that ends in seconds; oneOffRetryAfterSeconds answers those.
+    if (jobs.open.length > 0 && jobs.open.length + this._undecidedOneOffs(buyerPeerId, requestId, now) >= ONE_OFF_UNPAID_LIMIT) {
+      return { code: VIDEO_JOB_HOLD_CODES.openLimit, retryAfterSeconds: ONE_OFF_UNDECIDED_RETRY_SECONDS, limit: ONE_OFF_UNPAID_LIMIT, channelIds: jobs.open };
+    }
+    return null;
+  }
+
+  /**
+   * The buyer's accepted video jobs still on an active channel: `open` not yet
+   * delivered, `overdue` the open ones older than ONE_OFF_UNCOLLECTED_AFTER_MS,
+   * and `unpaidDeliveries` delivered but not yet signed for. A job is delivered
+   * once its price is spent on the channel (nothing is spent before), and paid
+   * once the buyer's signed amount covers that.
+   */
+  private _uncollectedOneOffJobs(buyerPeerId: string, now: number): { open: string[]; overdue: string[]; unpaidDeliveries: string[] } {
+    const jobs = { open: [] as string[], overdue: [] as string[], unpaidDeliveries: [] as string[] };
+    for (const channel of this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER, CHANNEL_KIND.ONE_OFF)) {
+      if (channel.peerId !== buyerPeerId || channel.requestCount === 0) continue;
+      if (!this._oneOffChannelIds.has(channel.sessionId) || this._unacceptedOneOffs.has(channel.sessionId)) continue;
+      const spent = this._spent.get(channel.sessionId) ?? 0n;
+      const accepted = this._acceptedCumulative.get(channel.sessionId) ?? 0n;
+      if (spent > accepted) {
+        jobs.unpaidDeliveries.push(channel.sessionId);
+      } else if (spent === 0n) {
+        jobs.open.push(channel.sessionId);
+        if (now - channel.reservedAt > ONE_OFF_UNCOLLECTED_AFTER_MS) jobs.overdue.push(channel.sessionId);
+      }
+    }
+    return jobs;
   }
 
   /** This channel's create was accepted: the channel is in use, so it stops counting against the buyer. */
@@ -2149,8 +2299,11 @@ export class SellerPaymentManager {
    * - settleOnly=false (default): calls close() — charges buyer, credits seller, ends channel.
    * - settleOnly=true: calls settle() — charges buyer, credits seller, keeps channel open
    *   for future requests. No cleanup is performed so the session can resume.
+   * - onlyIfIdle: does nothing while a request is being served, which means the
+   *   channel is not idle. Finishing that request re-arms the idle timers.
    */
-  async settleSession(buyerPeerId: string, { cleanupOnFailure = false, settleOnly = false } = {}): Promise<void> {
+  async settleSession(buyerPeerId: string, { cleanupOnFailure = false, settleOnly = false, onlyIfIdle = false } = {}): Promise<void> {
+    if (onlyIfIdle && this.hasInFlightRequests(buyerPeerId)) return;
     const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
     if (!session) {
       debugWarn(`[SellerPayment] settleSession: no active session for buyer ${buyerPeerId.slice(0, 12)}...`);
@@ -2163,55 +2316,68 @@ export class SellerPaymentManager {
 
     if (accepted === 0n) {
       if (settleOnly) return;
+      // A channel with nothing signed stays open for the timeout checker: it keeps
+      // its spend, so a buyer that comes back still owes what it was served.
       debugLog(`[SellerPayment] Zero-cumulative channel ${channelId.slice(0, 18)}... — deferring to timeout checker`);
-    } else if (settleOnly) {
+      this._deactivateBuyerForChannel(buyerPeerId, channelId);
+      return;
+    }
+
+    if (settleOnly) {
       await this._settleLatestAuth(channelId, 'idle settle', { respectMinSettleDelta: true });
       return;
+    }
+
+    const retries = this._closeRetryCount.get(channelId) ?? 0;
+    if (retries >= SellerPaymentManager.MAX_CLOSE_RETRIES) {
+      debugWarn(`[SellerPayment] close() failed ${retries} times for ${channelId.slice(0, 18)}... — falling back to timeout path`);
+      this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
     } else {
-      const retries = this._closeRetryCount.get(channelId) ?? 0;
-      if (retries >= SellerPaymentManager.MAX_CLOSE_RETRIES) {
-        debugWarn(`[SellerPayment] close() failed ${retries} times for ${channelId.slice(0, 18)}... — falling back to timeout path`);
-        this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
-      } else {
+      // Auths parked behind a mining top-up are part of what the buyer
+      // signed: close only once they are judged (_closeAfterParkedAuths).
+      const hasParkedAuths = this._overCeilingAuths.has(channelId);
+      if (!hasParkedAuths) {
         debugLog(`[SellerPayment] Closing channel ${channelId.slice(0, 18)}... cumulative=${amount} (attempt ${retries + 1}/${SellerPaymentManager.MAX_CLOSE_RETRIES})`);
-        const closeResult = await this._submitClose(
+      }
+      const closeResult = await (hasParkedAuths
+        ? this._registerClose(channelId, () => this._closeAfterParkedAuths(channelId, retries))
+        : this._submitClose(
           channelId,
           amount,
           () => this._channelsClient.close(this._signer, channelId, amount, metadata, sig),
-        );
-        if (closeResult.closed) {
-          this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.SETTLED, closeResult.amount.toString());
-          this._closeRetryCount.delete(channelId);
-        } else {
-          if (this._isRetryableTxSubmissionFailure(closeResult.error)) {
-            debugWarn(
-              `[SellerPayment] Close hit transaction backpressure for ${channelId.slice(0, 18)}... ` +
-              `— keeping channel state for retry: ${this._formatError(closeResult.error)}`,
-            );
-            if (cleanupOnFailure) {
-              this._deactivateBuyerForChannel(buyerPeerId, channelId);
-            }
-            return;
+        ));
+      if (closeResult.closed) {
+        this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.SETTLED, closeResult.amount.toString());
+        this._closeRetryCount.delete(channelId);
+      } else {
+        if (this._isRetryableTxSubmissionFailure(closeResult.error)) {
+          debugWarn(
+            `[SellerPayment] Close hit transaction backpressure for ${channelId.slice(0, 18)}... ` +
+            `— keeping channel state for retry: ${this._formatError(closeResult.error)}`,
+          );
+          if (cleanupOnFailure) {
+            this._deactivateBuyerForChannel(buyerPeerId, channelId);
           }
-
-          const failedAttempts = retries + 1;
-          debugWarn(`[SellerPayment] Failed to close channel (attempt ${failedAttempts}): ${this._formatError(closeResult.error)}`);
-          this._closeRetryCount.set(channelId, failedAttempts);
-
-          if (failedAttempts < SellerPaymentManager.MAX_CLOSE_RETRIES) {
-            if (cleanupOnFailure) {
-              this._deactivateBuyerForChannel(buyerPeerId, channelId);
-            }
-            return;
-          }
-
-          debugWarn(`[SellerPayment] close() failed ${failedAttempts} times for ${channelId.slice(0, 18)}... — falling back to timeout path`);
-          this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
+          return;
         }
+
+        const failedAttempts = retries + 1;
+        debugWarn(`[SellerPayment] Failed to close channel (attempt ${failedAttempts}): ${this._formatError(closeResult.error)}`);
+        this._closeRetryCount.set(channelId, failedAttempts);
+
+        if (failedAttempts < SellerPaymentManager.MAX_CLOSE_RETRIES) {
+          if (cleanupOnFailure) {
+            this._deactivateBuyerForChannel(buyerPeerId, channelId);
+          }
+          return;
+        }
+
+        debugWarn(`[SellerPayment] close() failed ${failedAttempts} times for ${channelId.slice(0, 18)}... — falling back to timeout path`);
+        this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT);
       }
     }
 
-    // Clean up maps after successful close, zero-cumulative deferral, or exhausted retries
+    // Clean up maps after successful close or exhausted retries
     this._forgetChannel(channelId, buyerPeerId);
   }
 
@@ -2299,7 +2465,9 @@ export class SellerPaymentManager {
 
     const settleOnDisconnect = this._config.settleOnDisconnect ?? true;
 
-    if (settleOnDisconnect) {
+    // A request still being served has yet to record its spend on this channel:
+    // keep it, and let the timeout checker close it once that is done.
+    if (settleOnDisconnect && !this.hasInFlightRequests(buyerPeerId)) {
       const accepted = this._acceptedCumulative.get(session.sessionId) ?? 0n;
       if (accepted > 0n) {
         debugLog(`[SellerPayment] Buyer ${buyerPeerId.slice(0, 12)}... disconnected — closing channel immediately`);
@@ -2358,6 +2526,9 @@ export class SellerPaymentManager {
         const hydratedZeroAuthExpired = accepted === 0n
           && this._hydratedChannelIds.has(channel.sessionId)
           && nowSecs > channel.deadline;
+
+        // Requests still being served bill this channel: a later pass closes it.
+        if (this.hasInFlightRequests(channel.peerId)) continue;
 
         // If we have auths and the buyer is disconnected, try to close
         if (accepted > 0n && buyerDisconnected) {
@@ -2488,6 +2659,10 @@ export class SellerPaymentManager {
     // Requests still being served bill this channel; the buyer retries the
     // replacement once they are done.
     if (this.hasInFlightRequests(channel.peerId)) return false;
+    // Auths parked behind a mining top-up need the buyer lock this reserve
+    // holds, and the close must wait for them: closing here would deadlock
+    // or settle below what the buyer signed. The buyer retries once they land.
+    if (this._overCeilingAuths.has(channelId)) return false;
     const accepted = this._acceptedCumulative.get(channelId)
       ?? this._restorePersistedSpendingAuth(channel)
       ?? 0n;

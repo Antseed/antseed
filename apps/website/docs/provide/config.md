@@ -52,8 +52,8 @@ Everything a seller announces lives under `seller.providers`. Each key is a labe
 | Field | Description |
 |---|---|
 | `plugin` | Plugin name (`openai`, `anthropic`, `local-llm`, …) or an npm package name. Required. |
-| `baseUrl` | Upstream API base URL, without the `/v1` suffix. Passed to the `openai`, `local-llm`, `typesafe`, `venice-video`, `fal-video` and `alibaba-video` plugins as their `*_BASE_URL` setting, so you don't need to export it separately. |
-| `apiKeyEnv` | Name of the environment variable that holds this provider's API key, so two providers on one seller can use different keys. Applies to the same plugins as `baseUrl`. |
+| `baseUrl` | Upstream API base URL, without the `/v1` suffix. Passed to the `openai`, `openai-responses`, `local-llm`, `typesafe`, `venice-video`, `fal-video`, `fal-image`, `alibaba-video` and `irp-router` plugins as their `*_BASE_URL` setting, so you don't need to export it separately. |
+| `apiKeyEnv` | Name of the environment variable that holds this provider's API key, so two providers on one seller can use different keys. Applies to the `anthropic` plugin and to the same plugins as `baseUrl`, except `openai-responses`, which signs in with the Codex auth file. |
 | `pathRewrite` | Exact request paths to rewrite before forwarding upstream, for example `{ "/v1/chat/completions": "/v4/chat/completions" }`. `openai` plugin only. |
 | `fallbackUpstreams` | Backup upstreams for the same models, tried in order when the main upstream fails. `openai` plugin only. See [Backup upstreams](#backup-upstreams). |
 | `defaults` | Fallback token pricing for services that don't set their own `pricing`. |
@@ -122,6 +122,8 @@ After an upstream fails for a service, the seller tries it last for that service
 
 Set `cachedInputUsdPerMillion` when your upstream charges less for cache hits. When any seller of a model advertises a cached-input price, buyers count offers of that model that omit it at half their trust score, which can drop them below the buyer's minimum. Free offers are exempt.
 
+The cached-input price must be at most the input price. Buyers skip an offer whose cached input costs more than its input, so the model would get no requests. `antseed seller setup`, the `antseed config seller` commands, `antseed seller settings` and the Gateway Console refuse such a price, and `antseed seller start` warns about one already in the config. Leave `cachedInputUsdPerMillion` out to bill cached input at the input price. A service with its own `pricing` doesn't take the provider's default cached-input price: set it on the service too.
+
 ### Capabilities
 
 Capabilities tell buyers what a service can do. They are hints, not enforced limits, and an omitted field means "unknown".
@@ -165,7 +167,7 @@ antseed config seller add-service inference kimi-k2.6 \
 | Option | Description |
 |---|---|
 | `--upstream <model>` | Upstream model ID (defaults to the service ID) |
-| `--input`, `--output`, `--cached <usd>` | Token prices in USD per million tokens |
+| `--input`, `--output`, `--cached <usd>` | Token prices in USD per million tokens. `--cached` is at most `--input`; leave it out to bill cached input at the input price |
 | `--categories <list>` | Comma-separated tags |
 | `--capabilities <json>` | Capabilities object |
 | `--unit-billing-models <json>` | Unit pricing, see [Unit-billed services](/docs/provide/media) |
@@ -211,9 +213,11 @@ Any other npm package that exports a provider plugin works too. See [Provider pl
 | `seller.publicAddress` | empty | `host:port` buyers should dial. Needed when the address the DHT sees isn't the one buyers can reach, such as behind a load balancer. Check it with `antseed seller doctor`. |
 | `seller.maxConcurrentBuyers` | `50` | Maximum concurrent requests each provider plugin handles. |
 | `seller.maxUploadBodyBytes` | 64 MiB | Largest request body accepted from a buyer; at least 1 MiB. `ANTSEED_MAX_UPLOAD_BODY_BYTES` overrides it. |
+| `seller.maxInFlightRequestBytes` | 256 MiB | Most request body bytes held at once across all buyers, uploads still arriving included. A request is kept in memory until its response is sent; past the limit a request gets a `503` the buyer retries. Never below `seller.maxUploadBodyBytes`. `ANTSEED_MAX_IN_FLIGHT_REQUEST_BYTES` overrides it. |
+| `seller.blockedBuyers` | none | Buyer peer IDs (40 hex characters, with or without `0x`) this seller refuses. Their requests get `403` with `code: "buyer_blocked"` before any provider, billing or free-tier check runs; the free `/v1/models` listing stays open to them. `ANTSEED_BLOCKED_BUYERS` (comma-separated) replaces it. |
 | `seller.maxInboundConnectionsPerIp` | `64` | Buyer connections accepted from one IP at once. Raise it when every buyer reaches the seller through one address, such as a TLS gateway or `antseed seller forward`. |
 | `seller.maxInboundConnections` | `2048` | Buyer connections held open at once. A buyer keeps its connection between requests, so a busy seller holds one per active buyer; past the limit new buyers are refused. Metadata requests from discovery never count. `ANTSEED_MAX_INBOUND_CONNECTIONS` overrides it. |
-| `seller.inboundIdleTimeoutMs` | 30 min | Closes a buyer's connection after this long with no traffic, unless the buyer has a paid channel or a free usage session open. The buyer reconnects on its next request. `0` keeps idle connections. `ANTSEED_INBOUND_IDLE_TIMEOUT_MS` overrides it. |
+| `seller.inboundIdleTimeoutMs` | 30 min | Closes a buyer's connection after this long with no traffic, unless the buyer has a paid channel open. A buyer with only a free usage session open is kept for 2 hours when that is longer. The buyer reconnects on its next request. `0` keeps idle connections. `ANTSEED_INBOUND_IDLE_TIMEOUT_MS` overrides it. |
 | `seller.restrictedCountries` | `["CU","IR","KP","SY","RU"]` | Countries whose IP addresses are refused. See below. |
 | `seller.freeTier` | none | Request allowance for zero-priced services. See below. |
 | `seller.providers.<name>.services.<id>.freeTier` | none | That model's own free-tier program, in place of `seller.freeTier`. On a priced model, a free allowance before the price applies. See [Per-model programs](#per-model-programs). |
@@ -263,6 +267,30 @@ antseed config seller set freeTier.maxRequestsPerIp 300
 ```
 
 Remove `seller.freeTier` to make free services unlimited again.
+
+#### Large free requests
+
+A new identity costs nothing, so a client that runs out of free requests can resend a long conversation from a fresh address. Two optional settings in a free-tier program limit that:
+
+| Key | Default | Description |
+|---|---|---|
+| `newBuyerMaxInputTokens` | none | Largest estimated input, in tokens, served free during an address's first `newBuyerRequests` free requests in the window. Requires `maxRequestsPerAddress`. |
+| `newBuyerRequests` | `3` | How many free requests an address counts as new for `newBuyerMaxInputTokens`. |
+| `movedConversations` | none | `refuse` or `log` a free request of at least 32,000 estimated input tokens when at least 5 of its long messages, adding up to 32,000 tokens, were first sent by another address in the last 48 hours. |
+
+```json
+{
+  "seller": {
+    "freeTier": {
+      "maxRequestsPerAddress": 100,
+      "newBuyerMaxInputTokens": 32000,
+      "movedConversations": "refuse"
+    }
+  }
+}
+```
+
+On a free model, a refused request gets HTTP 403 with `code: "free_tier_new_buyer_context"` or `"free_tier_moved_conversation"`. On a priced model's free allowance, it is paid at the listed price instead. Either way it doesn't count toward the buyer's limits. Start with `"log"` to see what `movedConversations` would refuse: the seller logs each match with `--verbose` and serves the request. Buyers staked into a tier are never checked. To match conversations, the seller keeps a short hash of each long message in memory, never the text; the first three messages and system prompts are skipped, since apps share them across users.
 
 #### Staked tiers
 

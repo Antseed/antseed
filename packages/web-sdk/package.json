@@ -1,6 +1,6 @@
 {
   "name": "@antseed/web-sdk",
-  "version": "0.1.42",
+  "version": "0.1.45",
   "description": "Browser buyer SDK for Antseed: connect to sellers over WebRTC via a signaling relay, pay with in-browser EIP-712 signatures",
   "type": "module",
   "files": [
@@ -30,7 +30,7 @@
     "esbuild": "^0.25.0",
     "fake-indexeddb": "^6.2.2",
     "node-datachannel": "^0.7.0",
-    "typescript": "^5.5.0",
+    "typescript": "catalog:",
     "vite": "^5.4.0",
     "vitest": "^2.0.0",
     "ws": "^8.18.0"

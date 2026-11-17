@@ -9,6 +9,7 @@
  */
 import { isReplyCutOff, REPLY_CUT_OFF_MESSAGE } from './stream-stop.js';
 import { trackChatRun } from './served-peer.js';
+import { lastServingSeller } from './auto-seller.js';
 import { PendingRuns, registerActiveRun } from './pending-runs.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -68,7 +69,8 @@ import {
   makeGatewayModel,
   type ChatModel,
 } from './gateway-model.js';
-import { modelAcceptsImages, routeModeOf, splitPinnedModel } from '../../shared/pinned-model.js';
+import { modelAcceptsImages, modelReasons, routeModeOf, splitPinnedModel } from '../../shared/pinned-model.js';
+import { registerGatewayAnthropic } from './anthropic-thinking.js';
 import { createGatewayBashTool } from './gateway-bash-tool.js';
 import { grantShellGateway } from './gateway-shell-relay.js';
 import { resolveSystemPrompt } from './system-prompt.js';
@@ -120,6 +122,8 @@ export type ResolvedChatModel = {
   model: ChatModel | null;
   /** Seller offers the gateway reported for the model (telemetry pricing only). */
   offers: Parameters<typeof modelPricingSnapshot>[0];
+  /** In Auto, the seller the chat asks the gateway to prefer (its protocol is the model's `protocol`). */
+  preferredPeerId: string | null;
 };
 
 /**
@@ -143,7 +147,8 @@ export type StreamingRunContext = {
   sendToRenderer: (channel: string, payload: unknown) => void;
   appendSystemLog: (line: string) => void;
   getEndpoint: () => Promise<GatewayEndpoint>;
-  resolveModel: (endpoint: GatewayEndpoint, modelId: string) => Promise<ResolvedChatModel>;
+  /** `lastSeller`: the seller that answered the chat last, preferred again in Auto. */
+  resolveModel: (endpoint: GatewayEndpoint, modelId: string, lastSeller?: string | null) => Promise<ResolvedChatModel>;
   requestToolApproval: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision>;
   emitChatStreamError: (payload: ChatStreamErrorPayload) => void;
   clearActiveRun: (run: ActiveRun | null) => void;
@@ -240,7 +245,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
 
     // Nothing goes out under a policy that is still changing, and a chat sent
     // in Private doesn't go out once Private is off.
-    const mustBePrivate = requiresPrivate(options, (await store.get(conversationId))?.messages ?? []);
+    const priorMessages = (await store.get(conversationId))?.messages ?? [];
+    const mustBePrivate = requiresPrivate(options, priorMessages);
     const refused = await passPrivacyGate(ctx.privacy, mustBePrivate);
     if (signal.aborted) return stoppedBeforeSend(conversationId, options);
     if (refused) return { ok: false, error: refused };
@@ -276,7 +282,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       return { ok: false, error: 'Choose a model for this chat.' };
     }
 
-    const { model: chatModel, offers } = await resolveModel(endpoint, serviceId);
+    const { model: chatModel, offers, preferredPeerId } = await resolveModel(endpoint, serviceId, lastServingSeller(priorMessages));
     if (chatModel && chatModel.type !== 'text') {
       return {
         ok: false,
@@ -290,6 +296,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     // the list failed) is spoken to over chat completions, text only.
     const protocol = chatModel?.protocol ?? 'openai-chat-completions';
     const supportsImages = chatModel ? modelAcceptsImages(chatModel, serviceId) : false;
+    const reasoning = chatModel ? modelReasons(chatModel, serviceId) : false;
     const modelLabel = chatModel?.label ?? serviceId;
 
     // Permissions belong to the model, whichever seller serves it.
@@ -310,13 +317,16 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       endpoint,
       protocol,
       supportsImages,
+      reasoning,
       conversationId,
+      preferredPeerId,
       ...(chatModel?.contextWindow ? { contextWindow: chatModel.contextWindow } : {}),
     });
 
     const authStorage = AuthStorage.inMemory();
     authStorage.setRuntimeApiKey(GATEWAY_PROVIDER_ID, endpoint.apiKey);
     const modelRegistry = ModelRegistry.inMemory(authStorage);
+    if (protocol === 'anthropic-messages') registerGatewayAnthropic(modelRegistry, GATEWAY_PROVIDER_ID);
 
     // Pass the system prompt via resourceLoader so it is applied on every turn.
     // (agent-session rebuilds _baseSystemPrompt from the loader each turn, so a

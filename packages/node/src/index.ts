@@ -105,6 +105,7 @@ export {
   type FaultAttribution,
   type AntseedErrorCode,
 } from './errors.js';
+export { VIDEO_JOB_HOLD_CODES, type VideoJobHoldCode } from '@antseed/protocol/messages';
 export { adaptPeerFaultErrorResponse, describeFreeTierLimit, FREE_TIER_EXHAUSTED_ERROR_ID, isFreeTierExhaustedResponse, nextFreeTierStakeTier, readFreeTierLimit, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED } from '@antseed/buyer-core';
 export type { FreeTierLimit, FreeTierLimitStakeTier } from '@antseed/buyer-core';
 export { reconcileStoredChannels, type ChannelReconcileResult, type LivePaymentSessions } from '@antseed/buyer-core';
@@ -181,6 +182,7 @@ export {
   SPEECH_METADATA_VERSION,
   VIDEO_OPTION_PRICING_METADATA_VERSION,
   REFERENCE_VIDEO_PRICING_METADATA_VERSION,
+  INPUT_IMAGE_PRICING_METADATA_VERSION,
   speechVoiceProblem,
   type PeerMetadata,
   type PeerVerifications,
@@ -358,8 +360,8 @@ export { BuyerFreeUsageManager } from './payments/buyer-free-usage-manager.js';
 export type { BuyerFreeUsageConfig } from './payments/buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
-export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
-export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
+export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, FREE_TIER_MOVED_CONVERSATIONS_MODES, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision, FreeTierMovedConversationsMode } from './payments/seller-free-tier-limiter.js';
 export { SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
 export type { SellerBuyerLimitsConfig, SellerNewBuyerLimitsConfig } from './payments/seller-buyer-limiter.js';
 export {

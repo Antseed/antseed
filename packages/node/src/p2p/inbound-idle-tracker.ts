@@ -2,6 +2,12 @@ import type { PeerId } from "../types/peer.js";
 
 /** How long a seller keeps an inbound buyer connection with no traffic and nothing open on it. */
 export const DEFAULT_INBOUND_IDLE_TIMEOUT_MS = 30 * 60_000;
+/**
+ * How long a seller keeps an idle connection whose buyer has only a free usage
+ * session open. Free buyers are the many that connect once and stay away, so
+ * without an end a seller's connection count grows for as long as it runs.
+ */
+export const FREE_SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60_000;
 
 interface Tracked {
   conn: { close(): void };
@@ -12,11 +18,13 @@ interface Tracked {
 export interface InboundIdleTrackerOptions {
   idleTimeoutMs: number;
   /**
-   * Whether the buyer holds something a disconnect would end (a paid channel,
-   * a free usage session). Such connections are left open: closing them has
-   * on-chain effects, and the channel's own idle timers end them.
+   * How long an idle connection is kept for what the buyer has open on it, when
+   * that is longer than `idleTimeoutMs`. Infinity for a paid channel: closing
+   * the connection would end it, and its own idle timers do that. A fixed time
+   * for a free usage session, which the buyer opens again when it returns. 0
+   * for a buyer with nothing open.
    */
-  holdsSession: (peerId: PeerId) => boolean;
+  sessionHoldMs: (peerId: PeerId) => number;
   now?: () => number;
 }
 
@@ -63,13 +71,14 @@ export class InboundIdleTracker {
     };
   }
 
-  /** Closes every idle connection that holds no session; returns the buyers closed. */
+  /** Closes every connection idle for longer than its buyer's session holds it; returns the buyers closed. */
   sweep(): PeerId[] {
-    const cutoff = this._now() - this._options.idleTimeoutMs;
+    const now = this._now();
     const closed: PeerId[] = [];
     for (const [peerId, entry] of this._tracked) {
-      if (entry.inFlight > 0 || entry.lastActivityAt > cutoff) continue;
-      if (this._options.holdsSession(peerId)) continue;
+      const idleMs = now - entry.lastActivityAt;
+      if (entry.inFlight > 0 || idleMs < this._options.idleTimeoutMs) continue;
+      if (idleMs < this._options.sessionHoldMs(peerId)) continue;
       this._tracked.delete(peerId);
       closed.push(peerId);
       entry.conn.close();
