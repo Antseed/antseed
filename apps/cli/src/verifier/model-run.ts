@@ -1,10 +1,9 @@
 import { randomInt, randomUUID } from 'node:crypto'
 import { readFile, readdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
   KBF_LOW_COVERAGE_RETRIES,
-  KBF_PROBES_PER_REQUEST,
   KBF_PROMPT_VARIANT_IDS,
   KBF_OPTIONAL_SAMPLING_FIELDS,
   buildKbfChatRequestBody,
@@ -38,7 +37,7 @@ import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-se
 import { auditedModels, findAuditedModelKey } from './audited-models.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
-import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
+import { kbfAuditBatches } from './kbf-batching.js'
 import {
   addAuditCostSummaries,
   deriveProxyAuditId,
@@ -575,11 +574,7 @@ export async function verifyModelTarget(input: {
   }
   extension?: boolean
 }): Promise<ModelVerificationTargetResult | ModelVerificationSkip> {
-  const batches = createDomainHomogeneousKbfBatches(
-    input.reference.probes,
-    KBF_PROBES_PER_REQUEST,
-    (values) => [...values],
-  )
+  const batches = kbfAuditBatches(input.reference.probes)
   const deadline = new LazyAuditDeadline(
     input.context.auditTimeoutMs,
     Math.max(input.context.auditTimeoutMs, input.context.auditMaxTimeoutMs ?? DEFAULT_AUDIT_MAX_TIMEOUT_MS),
@@ -721,7 +716,7 @@ export async function verifyModelTarget(input: {
       createdAt: new Date(completedAt).toISOString(),
       buyerProxy: {
         baseUrl: input.context.proxy.baseUrl,
-        statePath: input.context.proxy.statePath,
+        statePath: basename(input.context.proxy.statePath),
         pid: input.context.proxy.pid,
       },
       target: {
@@ -806,7 +801,7 @@ export async function verifyModelTarget(input: {
     createdAt: new Date(completedAt).toISOString(),
     buyerProxy: {
       baseUrl: input.context.proxy.baseUrl,
-      statePath: input.context.proxy.statePath,
+      statePath: basename(input.context.proxy.statePath),
       pid: input.context.proxy.pid,
     },
     target: {
@@ -823,6 +818,7 @@ export async function verifyModelTarget(input: {
       statisticalPower: input.reference.statisticalPower,
       statisticalPowerEvidence: input.reference.statisticalPowerEvidence as unknown as Record<string, unknown>,
       selfTest: input.reference.selfTest,
+      ...(input.reference.calibration ? { calibration: input.reference.calibration } : {}),
       probes: input.reference.probes,
     },
     ...sellerThinkingEvidence,
