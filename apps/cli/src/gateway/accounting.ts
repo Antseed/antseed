@@ -82,24 +82,21 @@ export function heldTotal(held: HeldBreakdown): number {
   return held.requestsUsdc + held.videoUsdc
 }
 
-/** A key's holds as `antseed gateway key show` reads them from the store, with how many requests and video jobs make them up. */
-export interface StoredKeyHolds extends HeldBreakdown {
-  requests: number
+/** What a key's video jobs hold against its caps, as `antseed gateway key show` reads them from the store. */
+export interface StoredVideoHolds {
+  videoUsdc: number
   videoJobs: number
 }
 
 /**
- * What a key holds against its caps, read from the store alone (for
- * `antseed gateway key show`, which runs apart from the gateway). Request
- * holds live in the gateway's memory, so they are estimated from the requests
- * the log shows in flight, at `holdUsdc` each: an upper bound, since spend
- * already signed lowers a hold. Video is what the stored commitments and
- * create reservations hold: nothing once expired, an hour after a delivery
- * that was never charged, or for a revoked key's job it can no longer
- * retrieve.
+ * What a key's video jobs hold against its caps, read from the store alone (for
+ * `antseed gateway key show`, which runs apart from the gateway): the stored
+ * commitments and create reservations. Nothing once expired, an hour after a
+ * delivery that was never charged, or for a revoked key's job it can no longer
+ * retrieve. Request holds live only in the running gateway's memory, so only
+ * `GET /v1/key` and a 402 can report them.
  */
-export function storedKeyHolds(store: GatewayStore, key: Pick<ApiKeyRecord, 'id' | 'status'>, holdUsdc: number, now: number): StoredKeyHolds {
-  const requests = store.unfinishedRequestCount(key.id)
+export function storedVideoHolds(store: GatewayStore, key: Pick<ApiKeyRecord, 'id' | 'status'>, now: number): StoredVideoHolds {
   let videoUsdc = 0
   let videoJobs = 0
   for (const record of store.keyVideoCommitments(key.id)) {
@@ -109,7 +106,7 @@ export function storedKeyHolds(store: GatewayStore, key: Pick<ApiKeyRecord, 'id'
     videoUsdc += record.amountUsdc
     videoJobs += 1
   }
-  return { requestsUsdc: requests * holdUsdc, videoUsdc, requests, videoJobs }
+  return { videoUsdc, videoJobs }
 }
 
 /** One level whose caps a key's request is admitted against. */

@@ -1472,11 +1472,12 @@ test('requests a stopped gateway left unfinished never hold spend, and a restart
     // Their holds lived in the stopped process: the next one starts with none, before or after the cleanup.
     const after = new GatewayAccounting(store, { holdUsdc: 300_000 })
     assert.equal(after.heldUsdc(key.id), 0)
-    assert.equal(store.unfinishedRequestCount(key.id), 9)
+    const unfinished = () => (store.database.prepare('SELECT COUNT(*) AS n FROM gateway_requests WHERE key_id = ? AND finished_at IS NULL').get(key.id) as { n: number }).n
+    assert.equal(unfinished(), 9)
     const restartedAt = Date.now()
     store.startRequest({ tag: 'new', keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: 'm', startedAt: restartedAt })
     assert.equal(store.finishAbandonedRequests(restartedAt), 9, 'only the previous run\'s requests')
-    assert.equal(store.unfinishedRequestCount(key.id), 1, 'this run\'s request is still in flight')
+    assert.equal(unfinished(), 1, 'this run\'s request is still in flight')
     const ended = store.database.prepare("SELECT DISTINCT status, error_code FROM gateway_requests WHERE tag != 'new'").all()
     assert.deepEqual(ended, [{ status: 499, error_code: 'gateway_restarted' }])
     assert.equal(after.heldUsdc(key.id), 0)

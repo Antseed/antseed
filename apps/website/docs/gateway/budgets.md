@@ -56,7 +56,7 @@ The gateway answers `402 Payment Required` with the code `spend_limit_reached`. 
 
 `limit.remaining_usd` is what is left of the limit and `limit.held_usd` what requests still running (or not yet charged) may use. `limit.held_requests_usd` is the part held by requests in flight, and `limit.held_video_usd` the part held by videos (being priced, or accepted and not yet charged). Each running request holds up to the most one request may cost, so a small limit can refuse a request before it is fully spent. The message then says how much is left and what holds the rest.
 
-`antseed gateway key show <id>` prints the same as a `Held:` line, for example `Held: $5.00 (no requests in flight, video jobs $5.00 (1 not yet charged))`. It reads the gateway database, so requests in flight are counted at the most one request may cost each.
+`antseed gateway key show <id>` prints what video jobs hold as a `Held for video:` line, for example `Held for video: $5.00 (1 not yet charged)`. It reads the gateway database, which stores video holds but not request holds: those live in the running gateway, so only a 402 and `GET /v1/key` show them.
 
 Refused requests are not added to the request log.
 

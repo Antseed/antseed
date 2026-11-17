@@ -43,7 +43,6 @@ test('a gateway restarted after a crash recovers an accepted video at its logged
         { tag: 'old-chat', status: 499, error_code: 'gateway_restarted', finished: 1 },
         { tag: 'old-create', status: 499, error_code: 'gateway_restarted', finished: 1 },
       ])
-      assert.equal(runtime.store.unfinishedRequestCount(key.id), 0)
     } finally {
       await runtime.stop()
     }

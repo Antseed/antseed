@@ -1214,17 +1214,6 @@ export class GatewayStore {
     `).run(this._now(), startedBefore).changes
   }
 
-  /**
-   * Requests of one key the request log shows in flight: paid or not, apart
-   * from video creates (whose reservation is stored, see `listVideoCommitments`)
-   * and video polls and downloads (which hold nothing of their own).
-   */
-  unfinishedRequestCount(keyId: string): number {
-    const row = this._stmt(`SELECT COUNT(*) AS n FROM gateway_requests
-      WHERE key_id = ? AND finished_at IS NULL AND video_action IS NULL`).get(keyId) as { n: number }
-    return row.n
-  }
-
   /** `error` is kept for failed requests (code ≤ 100, message ≤ 500 characters). */
   finishRequest(tag: string, result: { status: number; buyerRequestId: string | null; error?: RequestError | null }): void {
     this._stmt(`
