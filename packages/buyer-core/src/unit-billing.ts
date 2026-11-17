@@ -5,6 +5,7 @@ import type {
   TokenUsage,
 } from '@antseed/api-adapter';
 import {
+  countImageEditFiles,
   extractImageRequestFacts,
   extractSpeechRequestFacts,
   speechAudioDelivered,
@@ -214,6 +215,9 @@ function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedU
     method: args.request.method,
     body: parsed ?? undefined,
   });
+  if (args.request.path.split('?')[0] === '/v1/images/edits') {
+    image.inputImages = countImageEditFiles(args.request.headers, args.request.body);
+  }
   const requestUsage = imageUnitUsage(image);
   const attributes = imageAttributes(image);
   return {
@@ -328,7 +332,22 @@ export function estimateUnitRequestCost(
     && (usage.units.video_seconds === undefined || usage.units.video_seconds <= 0)) {
     throw new Error('Explicit video duration is required for per-second pricing');
   }
+  assertInputImagesPriced(model, context);
   return evaluateUnitBilling(model, context, usage);
+}
+
+/**
+ * Refuses an image edit whose number of input images the model prices for
+ * other counts but not this one. Its output would still match a component, so
+ * without this the edit would be billed with no charge for its input images.
+ */
+function assertInputImagesPriced(model: UnitBillingModelV1, context: UnitBillingContext): void {
+  const count = context.attributes?.input_images;
+  if (count === undefined) return;
+  const counts = model.components.flatMap((component) => component.match?.input_images ?? []);
+  if (counts.length > 0 && !counts.includes(count)) {
+    throw new Error(`This service has no price for an edit with ${count} input images`);
+  }
 }
 
 function usageForModel(model: UnitBillingModelV1, usage: UnitBillingUsage): UnitBillingUsage {
@@ -371,6 +390,8 @@ function imageAttributes(
     const value = facts[key];
     if (value !== undefined) attributes[key] = value;
   }
+  // An edit's image files, which upstreams bill as input on top of the output.
+  if (facts.inputImages) attributes.input_images = String(facts.inputImages);
   return Object.keys(attributes).length > 0 ? attributes : undefined;
 }
 

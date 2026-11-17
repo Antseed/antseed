@@ -78,6 +78,8 @@ export interface ImageRequestFacts {
   quality?: string;
   resolution?: string;
   requestedImages?: number;
+  /** Image files an edit sends (see countImageEditFiles); unset for a generation. */
+  inputImages?: number;
   /** Estimated token count of the text prompt only — input images never contribute. */
   promptTokens?: number;
 }
@@ -260,16 +262,59 @@ export function parseMultipartFormFields(
   body: Uint8Array,
   contentType: string | undefined,
 ): Record<string, string> | null {
-  if (!contentType) return null;
+  const fields: Record<string, string> = {};
+  const read = forEachMultipartPart(body, contentType, (part) => {
+    if (part.isFile) return;
+    // Latin-1 offsets are byte offsets: decode the field's own bytes as UTF-8.
+    if (part.name && !(part.name in fields) && part.end - part.start <= MAX_MULTIPART_TEXT_FIELD_BYTES) {
+      fields[part.name] = decoder.decode(body.subarray(part.start, part.end));
+    }
+  });
+  return read ? fields : null;
+}
+
+/** The multipart file fields an OpenAI image edit sends images in: the images to edit and the mask. */
+export const IMAGE_EDIT_FILE_FIELDS: readonly string[] = ['image', 'image[]', 'mask'];
+
+/**
+ * How many image files a multipart OpenAI `/v1/images/edits` body sends: file
+ * parts named `image`, `image[]` or `mask`. Upstreams bill each as input, so it
+ * prices the edit (the `input_images` match key). 0 for any other body.
+ */
+export function countImageEditFiles(headers: Record<string, string>, body: Uint8Array): number {
+  const contentType = headerValue(headers, 'content-type');
+  if (!/^multipart\/form-data/i.test(contentType.trim())) return 0;
+  let count = 0;
+  forEachMultipartPart(body, contentType, (part) => {
+    if (part.isFile && IMAGE_EDIT_FILE_FIELDS.includes(part.name)) count += 1;
+  });
+  return count;
+}
+
+interface MultipartPart {
+  name: string;
+  /** Whether the part names a filename (a file part). */
+  isFile: boolean;
+  /** Byte offsets of the part's content in the body. */
+  start: number;
+  end: number;
+}
+
+/** Calls `visit` for each part of a multipart/form-data body; false when the content type names no boundary. */
+function forEachMultipartPart(
+  body: Uint8Array,
+  contentType: string | undefined,
+  visit: (part: MultipartPart) => void,
+): boolean {
+  if (!contentType) return false;
   const boundaryMatch = /^multipart\/form-data\s*;.*?boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType.trim());
   const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2] ?? '').trim();
-  if (!boundary) return null;
+  if (!boundary) return false;
 
   // latin1 keeps a 1:1 byte-to-char mapping so offsets stay byte-accurate
-  // even through binary file parts; text field values are re-decoded as UTF-8.
+  // even through binary file parts.
   const text = new TextDecoder('latin1').decode(body);
   const delimiter = `--${boundary}`;
-  const fields: Record<string, string> = {};
   let index = text.indexOf(delimiter);
   while (index !== -1) {
     index += delimiter.length;
@@ -280,16 +325,18 @@ export function parseMultipartFormFields(
     if (next === -1) break;
     const headerBlock = text.slice(index, headerEnd);
     const dispositionParams = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headerBlock)?.[1];
-    if (dispositionParams !== undefined && !/filename\s*=/i.test(dispositionParams)) {
-      const name = /name="([^"]*)"/.exec(dispositionParams)?.[1];
-      // Latin-1 offsets are byte offsets: decode the field's own bytes as UTF-8.
-      if (name && !(name in fields) && next - (headerEnd + 4) <= MAX_MULTIPART_TEXT_FIELD_BYTES) {
-        fields[name] = decoder.decode(body.subarray(headerEnd + 4, next));
-      }
+    if (dispositionParams !== undefined) {
+      visit({
+        // `name=` as its own parameter, never the tail of `filename=`.
+        name: /(?:^|;)\s*name="([^"]*)"/.exec(dispositionParams)?.[1] ?? '',
+        isFile: /filename\s*=/i.test(dispositionParams),
+        start: headerEnd + 4,
+        end: next,
+      });
     }
     index = next + 2;
   }
-  return fields;
+  return true;
 }
 
 /**
@@ -315,7 +362,7 @@ function toOptionalPositiveInt(value: unknown): number | undefined {
   return parsed;
 }
 
-function setStringAttr(target: ImageRequestFacts, key: keyof Omit<ImageRequestFacts, 'requestedImages' | 'promptTokens'>, value: unknown): void {
+function setStringAttr(target: ImageRequestFacts, key: keyof Omit<ImageRequestFacts, 'requestedImages' | 'inputImages' | 'promptTokens'>, value: unknown): void {
   if (typeof value === 'string' && value.trim().length > 0) {
     target[key] = value.trim();
   }

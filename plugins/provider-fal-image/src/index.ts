@@ -1,6 +1,6 @@
 import type { AntseedProviderPlugin, Provider, SerializedHttpRequest, SerializedHttpResponse, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus } from '@antseed/node';
 import { requestBodyFields, validateServiceCapabilityFields } from '@antseed/node';
-import { parseJsonObject } from '@antseed/api-adapter';
+import { countImageEditFiles, parseJsonObject } from '@antseed/api-adapter';
 import {
   FAL_PLATFORM_URL,
   FAL_SCHEMA_URL,
@@ -227,6 +227,10 @@ async function readEditForm(request: SerializedHttpRequest): Promise<{ fields: R
     }
   }
   if (images.length === 0) throw new RequestError(400, 'Image edits require one or more image files.', 'image');
+  // fal bills each image sent as input, and the seller priced the edit by its own count of them.
+  if (images.length + (mask ? 1 : 0) !== countImageEditFiles(request.headers, request.body)) {
+    throw new RequestError(400, 'The image files could not be read the way the edit was priced.', 'image');
+  }
   return { fields, images, ...(mask ? { mask } : {}) };
 }
 

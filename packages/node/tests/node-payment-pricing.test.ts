@@ -431,6 +431,8 @@ describe('charges for requests whose fields every reader reads alike', () => {
         { unit: 'output_images', priceUsd: 0.01, match: { quality: 'low' } },
         { unit: 'output_images', priceUsd: 0.04, match: { quality: 'high' } },
         { unit: 'output_images', priceUsd: 0.02, match: { quality: 'auto' } },
+        { unit: 'output_images', priceUsd: 0.012, match: { input_images: '1' } },
+        { unit: 'output_images', priceUsd: 0.024, match: { input_images: '2' } },
       ] } } },
     });
     const received: Array<{ headers: Record<string, string>; body: Uint8Array }> = [];
@@ -476,6 +478,20 @@ describe('charges for requests whose fields every reader reads alike', () => {
       { model: ['image-model'], quality: ['high'], n: ['2'] },
       { model: ['image-model'], quality: ['low'], n: ['2'] },
     ]);
+  });
+
+  it('charges an edit for the image files it sends, and calls no provider for a count it does not price', async () => {
+    const { serve, received, charges } = imageSeller();
+    const image = (name: string): Part => [`Content-Disposition: form-data; name="${name}"; filename="a.png"\r\nContent-Type: image/png`, 'PNG'];
+
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'high'), text('n', '2'), image('image')]))).toEqual({ status: 200 });
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'high'), text('n', '2'), image('image[]'), image('mask')]))).toEqual({ status: 200 });
+    expect(charges()).toEqual([104_000n, 128_000n]);
+
+    expect(await serve('/v1/images/edits', form([text('model', 'image-model'), text('quality', 'high'), image('image[]'), image('image[]'), image('image[]')])))
+      .toEqual({ status: 400, code: 'invalid_billing_request' });
+    expect(charges()).toHaveLength(2);
+    expect(received).toHaveLength(2);
   });
 
   it.each<[string, Part[], string]>([
