@@ -72,3 +72,31 @@ test('a gateway that cannot take its port leaves the running gateway\'s requests
     rmSync(dataDir, { recursive: true, force: true })
   }
 })
+
+test('the startup sweep reads only unfinished requests, not the whole request log', () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'antseed-gateway-restart-'))
+  const store = new GatewayStore(dataDir)
+  try {
+    const { key } = store.createKey({ label: 'Chat', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: null, monthly: null, total: null }, expiresAt: null })
+    const startedAt = Date.now() - 60_000
+    for (let i = 0; i < 1_000; i += 1) {
+      store.startRequest({ tag: `done-${i}`, keyId: key.id, buyerIdentity: key.buyerIdentity, method: 'POST', path: '/v1/chat/completions', model: 'm', startedAt: startedAt + i })
+      store.finishRequest(`done-${i}`, { status: 200, buyerRequestId: null })
+    }
+    store.startRequest({ tag: 'open', keyId: key.id, buyerIdentity: key.buyerIdentity, method: 'POST', path: '/v1/chat/completions', model: 'm', startedAt })
+    // The statement the sweep runs, and how SQLite reads it: the time index would read all 1,001 rows.
+    const db = store.database
+    const prepare = db.prepare.bind(db)
+    const prepared: string[] = []
+    db.prepare = ((sql: string) => { prepared.push(sql); return prepare(sql) }) as typeof db.prepare
+    assert.equal(store.finishAbandonedRequests(Date.now()), 1)
+    db.prepare = prepare
+    const sweep = prepared.find((sql) => sql.includes("'gateway_restarted'"))
+    assert.ok(sweep)
+    const plan = (prepare(`EXPLAIN QUERY PLAN ${sweep}`).all(Date.now(), Date.now()) as Array<{ detail: string }>).map((step) => step.detail).join(' | ')
+    assert.match(plan, /USING INDEX gateway_requests_unfinished/)
+  } finally {
+    store.close()
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+})

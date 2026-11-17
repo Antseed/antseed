@@ -1205,8 +1205,10 @@ export class GatewayStore {
    * memory and end with its process. Returns how many were finished.
    */
   finishAbandonedRequests(startedBefore: number): number {
+    // Through the index of unfinished requests: SQLite would otherwise pick the time index and read every row started before.
     return this._stmt(`
-      UPDATE gateway_requests SET status = 499, finished_at = ?, error_code = 'gateway_restarted',
+      UPDATE gateway_requests INDEXED BY gateway_requests_unfinished
+      SET status = 499, finished_at = ?, error_code = 'gateway_restarted',
         error_message = 'The gateway stopped before this request finished.'
       WHERE finished_at IS NULL AND started_at < ?
     `).run(this._now(), startedBefore).changes
