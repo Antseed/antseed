@@ -117,7 +117,8 @@ the dependencies of that code. The list below is a minimum, not the full set:
 - Update `CHANGELOG.md` for user-facing changes: add a bullet under `## Unreleased`, in
   `### Added`, `### Changed` or `### Fixed`, that names the affected packages and says what
   changed for users, like the entries already there. If there is no user-facing change, say
-  so in the PR description.
+  so in the PR description. Never add to a dated release section: when a release goes out,
+  maintainers move everything under `## Unreleased` into that release's section.
 
 <a id="evidence"></a>
 ## Evidence

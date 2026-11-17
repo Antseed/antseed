@@ -122,6 +122,8 @@ After an upstream fails for a service, the seller tries it last for that service
 
 Set `cachedInputUsdPerMillion` when your upstream charges less for cache hits. When any seller of a model advertises a cached-input price, buyers count offers of that model that omit it at half their trust score, which can drop them below the buyer's minimum. Free offers are exempt.
 
+The cached-input price must be at most the input price. Buyers skip an offer whose cached input costs more than its input, so the model would get no requests. `antseed seller setup`, the `antseed config seller` commands, `antseed seller settings` and the Gateway Console refuse such a price, and `antseed seller start` warns about one already in the config. Leave `cachedInputUsdPerMillion` out to bill cached input at the input price. A service with its own `pricing` doesn't take the provider's default cached-input price: set it on the service too.
+
 ### Capabilities
 
 Capabilities tell buyers what a service can do. They are hints, not enforced limits, and an omitted field means "unknown".
@@ -165,7 +167,7 @@ antseed config seller add-service inference kimi-k2.6 \
 | Option | Description |
 |---|---|
 | `--upstream <model>` | Upstream model ID (defaults to the service ID) |
-| `--input`, `--output`, `--cached <usd>` | Token prices in USD per million tokens |
+| `--input`, `--output`, `--cached <usd>` | Token prices in USD per million tokens. `--cached` is at most `--input`; leave it out to bill cached input at the input price |
 | `--categories <list>` | Comma-separated tags |
 | `--capabilities <json>` | Capabilities object |
 | `--unit-billing-models <json>` | Unit pricing, see [Unit-billed services](/docs/provide/media) |

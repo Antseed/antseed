@@ -561,7 +561,10 @@ export class ModelHealthChecker {
       }
       const outOfCredit = isLiveResponseOutOfCredit(statusCode, body);
       // A 429 says the provider (often the seller's own concurrency limit) is busy, not broken.
-      if (billable && (statusCode !== 429 || outOfCredit)) {
+      // A 401 or 403 can be the buyer's request (an input the upstream refuses to fetch or allow);
+      // when the provider checks its own key and models, that check tells a broken key instead.
+      const refusedRequest = (statusCode === 401 || statusCode === 403) && hasFreeCheck(target.provider, target.probeProvider);
+      if (billable && (outOfCredit || (statusCode !== 429 && !refusedRequest))) {
         this._recordLiveFailure(target.provider, service, outOfCredit ? 'out_of_credit' : reasonForStatus(statusCode), statusCode, `HTTP ${statusCode} on a buyer request`);
       }
     }
@@ -823,9 +826,9 @@ function resolveProbeProtocol(provider: Provider, service: string): ServiceApiPr
   return provider.serviceApiProtocols?.[service]?.[0] ?? 'openai-chat-completions';
 }
 
-/** Whether the provider has checks that cost nothing (its account, its model list). */
-function hasFreeCheck(provider?: Provider): boolean {
-  return Boolean(provider?.checkServiceHealth || provider?.checkUpstreamAccount);
+/** Whether any of the providers has checks that cost nothing (its account, its model list). */
+function hasFreeCheck(...providers: Array<Provider | undefined>): boolean {
+  return providers.some((provider) => Boolean(provider?.checkServiceHealth || provider?.checkUpstreamAccount));
 }
 
 export function supportsHealthProbe(protocol: ServiceApiProtocol): boolean {

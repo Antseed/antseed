@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeGatewayModel } from './gateway-model.js';
+import type { AnthropicGatewayModel } from './anthropic-thinking.js';
 import { recommendAppModels, resolveEntryProtocol, toChatModel, toChatModels } from '../gateway/catalog.js';
 
 const ENDPOINT = { mode: 'local' as const, origin: 'http://127.0.0.1:8379', apiKey: 'antseed_key' };
@@ -101,6 +102,30 @@ test('the picker lists each model id once: tool-capable first, then most sellers
     { id: 'd', name: 'Delta', capabilities: { tool_use: true } },
   ]);
   assert.deepEqual(models.map((model) => model.label), ['Delta', 'Crowded', 'alpha', 'Beta']);
+});
+
+test('thinking needs every seller to declare reasoning, or the pinned one', () => {
+  const peers = [
+    { peerId: 'AA', capabilities: { reasoning: true } },
+    { peerId: 'bb', capabilities: { reasoning: false } },
+  ];
+  const mixed = toChatModel({ id: 'claude-haiku-5-5', peers });
+  assert.deepEqual([mixed.reasoning, mixed.reasoningEverySeller, mixed.reasoningSellerIds], [true, undefined, ['aa']]);
+  // The gateway's guarantee: every seller reported reasoning.
+  const guaranteed = toChatModel({ id: 'm', capabilities: { reasoning: true }, peers: [{ peerId: 'cc' }] });
+  assert.equal(guaranteed.reasoningEverySeller, true);
+  const all = toChatModel({ id: 'm', peers: [{ peerId: 'dd', capabilities: { reasoning: true } }] });
+  assert.equal(all.reasoningEverySeller, true);
+  assert.equal(toChatModel({ id: 'm' }).reasoningEverySeller, undefined);
+});
+
+test('an Anthropic model carries its sellers\' reasoning flag, and stays reasoning for pi so a saved thinking level is never lowered', () => {
+  const anthropic = (reasoning?: boolean) => makeGatewayModel({ modelId: 'claude-haiku-5-5', endpoint: ENDPOINT, protocol: 'anthropic-messages', supportsImages: false, ...(reasoning === undefined ? {} : { reasoning }) }) as AnthropicGatewayModel;
+  assert.deepEqual([anthropic(true).sellersReason, anthropic(false).sellersReason, anthropic().sellersReason], [true, false, false]);
+  // pi lowers a session's level to `off`, and saves that, for a model whose `reasoning` is false.
+  assert.deepEqual([anthropic(true).reasoning, anthropic(false).reasoning], [true, true]);
+  // The OpenAI protocols keep their own reasoning handling.
+  assert.equal(makeGatewayModel({ modelId: 'm', endpoint: ENDPOINT, protocol: 'openai-responses', supportsImages: false }).reasoning, true);
 });
 
 test('gateway models use the origin for Anthropic and /v1 for OpenAI, with a bearer key', () => {
