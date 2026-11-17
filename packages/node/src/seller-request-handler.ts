@@ -1990,7 +1990,7 @@ export class SellerRequestHandler {
       return null;
     }
 
-    const inputTokens = estimateTokensFromBytesSampled(request.body);
+    const inputTokens = this._estimatedPromptTokens(request);
     return {
       cost: computeCostUsdc(inputTokens, maxOutputTokens, pricing),
       inputTokens,
@@ -2011,7 +2011,18 @@ export class SellerRequestHandler {
     if (costEstimate && costEstimate.inputTokens > 0) {
       return costEstimate.inputTokens + (costEstimate.maxOutputTokens || DEFAULT_OUTPUT_RESERVATION_TOKENS);
     }
-    return estimateTokensFromBytesSampled(request.body) + (this._requestedMaxOutputTokens(request) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+    return this._estimatedPromptTokens(request) + (this._requestedMaxOutputTokens(request) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+  }
+
+  /**
+   * The prompt tokens of a request, for checks before it goes upstream. A JSON body the seller wrote
+   * was estimated as it was read, with each attachment (an inline image, audio or file) counted as a
+   * flat allowance: its base64 is megabytes of body but not of tokens. Any other body counts its bytes.
+   */
+  private _estimatedPromptTokens(request: SerializedHttpRequest): number {
+    const billed = this._requestedServices.get(request);
+    if (billed && billed.service !== null && billed.body === request.body && billed.promptTokens !== undefined) return billed.promptTokens;
+    return estimateTokensFromBytesSampled(request.body);
   }
 
   /**

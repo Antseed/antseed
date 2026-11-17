@@ -1,5 +1,5 @@
 import { parseJsonObject } from '@antseed/api-adapter';
-import { estimateTokensFromBytes } from './pricing.js';
+import { estimateTokensFromBytes, estimateTokensFromBytesSampled } from './pricing.js';
 import { parseResponseUsage, readStreamEvents, type ResponseUsage } from './response-usage.js';
 
 const encoder = new TextEncoder();
@@ -59,17 +59,34 @@ function chatAnswerText(body: Uint8Array): string | null {
   return answer;
 }
 
-/** The tokens of a chat request: its text, with a flat allowance in place of each attachment. */
-export function estimatePromptTokens(requestBody: Uint8Array): number {
-  const request = parseJsonObject(requestBody);
-  if (!request) return estimateTokensFromBytes(requestBody);
+/** A parsed chat request written without its attachments' contents, and how many attachments it had. */
+function withoutAttachments(request: Record<string, unknown>): { text: Uint8Array; attachments: number } {
   let attachments = 0;
   const text = JSON.stringify(request, function (key: string, value: unknown) {
     if (key === '' || !isRecord(value) || typeof value.type !== 'string' || !ATTACHMENT_PARTS.has(value.type)) return value;
     attachments += 1;
     return { type: value.type };
   });
-  return estimateTokensFromBytes(encoder.encode(text)) + attachments * ATTACHMENT_TOKENS;
+  return { text: encoder.encode(text), attachments };
+}
+
+/** The tokens of a chat request: its text, with a flat allowance in place of each attachment. */
+export function estimatePromptTokens(requestBody: Uint8Array): number {
+  const request = parseJsonObject(requestBody);
+  if (!request) return estimateTokensFromBytes(requestBody);
+  const { text, attachments } = withoutAttachments(request);
+  return estimateTokensFromBytes(text) + attachments * ATTACHMENT_TOKENS;
+}
+
+/**
+ * `estimatePromptTokens` for pre-request checks on a request body already parsed: the text is
+ * estimated from samples (`estimateTokensFromBytesSampled`), so a large conversation costs bounded CPU.
+ * Attachments count their flat allowance, never their encoded bytes: a chat with a few base64
+ * screenshots is megabytes of body but only thousands of tokens upstream.
+ */
+export function estimateParsedPromptTokensSampled(request: Record<string, unknown>): number {
+  const { text, attachments } = withoutAttachments(request);
+  return estimateTokensFromBytesSampled(text) + attachments * ATTACHMENT_TOKENS;
 }
 
 /**

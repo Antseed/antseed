@@ -4,6 +4,7 @@ import {
   IMAGE_PRICE_ATTRIBUTES, IMAGE_REQUEST_FIELDS, MAX_MULTIPART_TEXT_FIELD_BYTES, headerValue, SPEECH_REQUEST_FIELDS, VIDEO_CREATE_FIELDS, VIDEO_SOURCE_FIELDS,
   extractRequestBodyFields, parseFormDataDisposition, parseJsonObject,
 } from '@antseed/api-adapter';
+import { estimateParsedPromptTokensSampled } from '@antseed/buyer-core';
 import type { SerializedHttpRequest } from './types/http.js';
 
 /*
@@ -51,6 +52,11 @@ export type BilledRequestBody =
     body: Uint8Array;
     /** For a JSON body: the most output tokens it asks for (`requestedMaxOutputTokens`), read here so no one parses the body for it again. */
     maxOutputTokens?: number;
+    /**
+     * For a JSON body: its estimated prompt tokens, each attachment counted as a flat allowance
+     * (`estimateParsedPromptTokensSampled`), read here for the same reason.
+     */
+    promptTokens?: number;
   }
   | { service: null; refusal: ServiceRefusal };
 
@@ -148,7 +154,9 @@ function billedJson(bytes: Uint8Array): BilledRequestBody {
   // A string is never longer than its UTF-8 bytes, so a text over the limit is refused before it is encoded.
   if (text.length > bytes.length + MAX_WRITTEN_GROWTH_BYTES) return TOO_LARGE;
   const billed = written(service, 'application/json', new TextEncoder().encode(text), bytes.length);
-  return billed.service === null ? billed : { ...billed, maxOutputTokens: requestedMaxOutputTokens(body) };
+  return billed.service === null
+    ? billed
+    : { ...billed, maxOutputTokens: requestedMaxOutputTokens(body), promptTokens: estimateParsedPromptTokensSampled(body) };
 }
 
 /** The most output tokens a JSON request body asks for, by any of the names the APIs sellers serve give it; 0 when it names no limit. */
