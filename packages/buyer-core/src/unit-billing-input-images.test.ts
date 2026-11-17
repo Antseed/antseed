@@ -68,6 +68,27 @@ describe('image edit prices by input images', () => {
     expect(() => estimateUnitRequestCost(gptImage, three.context, three.requestUsage)).toThrow('no price for an edit with 3 input images');
   });
 
+  it('refuses an edit whose count is priced only for other options', () => {
+    const bySize: UnitBillingModelV1 = {
+      version: 1,
+      components: [
+        { unit: 'output_images', priceUsd: 0.05 },
+        { unit: 'output_images', priceUsd: 0.012, match: { input_images: '1', size: '1024x1024' } },
+      ],
+    };
+    const image = { name: 'image', value: 'png', filename: 'a.png' };
+    const priced = capture('/v1/images/edits', form([...text, { name: 'size', value: '1024x1024' }, image]));
+    expect(estimateUnitRequestCost(bySize, priced.context, priced.requestUsage)).toBe(62_000n);
+    const unpriced = capture('/v1/images/edits', form([...text, { name: 'size', value: '2048x2048' }, image]));
+    expect(() => estimateUnitRequestCost(bySize, unpriced.context, unpriced.requestUsage)).toThrow('no price for an edit with 1 input images');
+  });
+
+  it('prices an edit on a path in any letter case, as providers read it', () => {
+    const captured = capture('/v1/IMAGES/Edits?x=1', form([...text, { name: 'image', value: 'png', filename: 'a.png' }]));
+    expect(captured.context.attributes?.input_images).toBe('1');
+    expect(estimateUnitRequestCost(gptImage, captured.context, captured.requestUsage)).toBe(62_000n);
+  });
+
   it('bills edits like generations on a service with no input_images price', () => {
     const edit = capture('/v1/images/edits', form([...text, { name: 'image', value: 'png', filename: 'a.png' }]));
     expect(estimateUnitRequestCost(perImage, edit.context, edit.requestUsage)).toBe(50_000n);

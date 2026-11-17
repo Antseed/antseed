@@ -5,8 +5,11 @@ import type {
   TokenUsage,
 } from '@antseed/api-adapter';
 import {
-  countImageEditFiles,
   extractImageRequestFacts,
+  headerValue,
+  isImageEditPath,
+  isMultipartFormData,
+  parseMultipartForm,
   extractSpeechRequestFacts,
   speechAudioDelivered,
   extractProviderResponseFacts,
@@ -28,6 +31,7 @@ import type {
   UnitBillingUsageReportV1,
 } from '@antseed/protocol/billing';
 import {
+  componentMatchesAttributes,
   evaluateUnitBilling,
   unitUsageToBillingReport,
   validateUnitBillingModelV1,
@@ -209,15 +213,16 @@ export function captureUnitBillingContext(args: CaptureUnitBillingArgs): Capture
 }
 
 function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
-  const parsed = extractRequestBodyFields(args.request.headers, args.request.body);
+  const contentType = headerValue(args.request.headers, 'content-type');
+  // One pass over a form reads both its text fields and its image files.
+  const form = isMultipartFormData(contentType) ? parseMultipartForm(args.request.body, contentType) : null;
+  const parsed = form ? form.fields : extractRequestBodyFields(args.request.headers, args.request.body);
   const image = extractImageRequestFacts({
     path: args.request.path,
     method: args.request.method,
     body: parsed ?? undefined,
   });
-  if (args.request.path.split('?')[0] === '/v1/images/edits') {
-    image.inputImages = countImageEditFiles(args.request.headers, args.request.body);
-  }
+  if (isImageEditPath(args.request.path)) image.inputImages = form?.imageEditFiles ?? 0;
   const requestUsage = imageUnitUsage(image);
   const attributes = imageAttributes(image);
   return {
@@ -337,16 +342,17 @@ export function estimateUnitRequestCost(
 }
 
 /**
- * Refuses an image edit whose number of input images the model prices for
- * other counts but not this one. Its output would still match a component, so
- * without this the edit would be billed with no charge for its input images.
+ * Refuses an image edit that a model pricing input images has no input price
+ * for: no `input_images` component matches all of its attributes (its count,
+ * size, quality, ...). Its output would still match a component, so without
+ * this the edit would be billed with no charge for its input images.
  */
 function assertInputImagesPriced(model: UnitBillingModelV1, context: UnitBillingContext): void {
   const count = context.attributes?.input_images;
   if (count === undefined) return;
-  const counts = model.components.flatMap((component) => component.match?.input_images ?? []);
-  if (counts.length > 0 && !counts.includes(count)) {
-    throw new Error(`This service has no price for an edit with ${count} input images`);
+  const inputPrices = model.components.filter((component) => component.match?.input_images !== undefined);
+  if (inputPrices.length > 0 && !inputPrices.some((component) => componentMatchesAttributes(component, context.attributes))) {
+    throw new Error(`This service has no price for an edit with ${count} input images and these options`);
   }
 }
 

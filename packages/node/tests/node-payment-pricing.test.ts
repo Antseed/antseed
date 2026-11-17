@@ -492,6 +492,13 @@ describe('charges for requests whose fields every reader reads alike', () => {
       .toEqual({ status: 400, code: 'invalid_billing_request' });
     expect(charges()).toHaveLength(2);
     expect(received).toHaveLength(2);
+
+    // The provider reads the path in any letter case, so billing does too.
+    expect(await serve('/v1/IMAGES/EDITS', form([text('model', 'image-model'), text('quality', 'high'), text('n', '2'), image('image')]))).toEqual({ status: 200 });
+    expect(await serve('/v1/IMAGES/EDITS', form([text('model', 'image-model'), text('quality', 'high'), image('image[]'), image('image[]'), image('image[]')])))
+      .toEqual({ status: 400, code: 'invalid_billing_request' });
+    expect(charges()).toEqual([104_000n, 128_000n, 104_000n]);
+    expect(received).toHaveLength(3);
   });
 
   it.each<[string, Part[], string]>([

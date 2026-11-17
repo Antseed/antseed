@@ -177,7 +177,8 @@ export function extractImageRequestFacts(input: {
 }): ImageRequestFacts {
   const body = input.body ?? {};
   const facts: ImageRequestFacts = {};
-  const normalizedPath = input.path?.split('?')[0];
+  // Any letter case, as protocol detection and providers read the path.
+  const normalizedPath = input.path?.split('?')[0]?.toLowerCase();
   const isOpenAiImageEndpoint = normalizedPath === '/v1/images/generations'
     || normalizedPath === '/v1/images/edits';
 
@@ -262,15 +263,31 @@ export function parseMultipartFormFields(
   body: Uint8Array,
   contentType: string | undefined,
 ): Record<string, string> | null {
+  return parseMultipartForm(body, contentType)?.fields ?? null;
+}
+
+/**
+ * A multipart/form-data body's text fields (as parseMultipartFormFields reads
+ * them) and how many image files it sends for an image edit (see
+ * countImageEditFiles), in one pass; null when the content type names no boundary.
+ */
+export function parseMultipartForm(
+  body: Uint8Array,
+  contentType: string | undefined,
+): { fields: Record<string, string>; imageEditFiles: number } | null {
   const fields: Record<string, string> = {};
+  let imageEditFiles = 0;
   const read = forEachMultipartPart(body, contentType, (part) => {
-    if (part.isFile) return;
+    if (part.isFile) {
+      if (IMAGE_EDIT_FILE_FIELDS.includes(part.name)) imageEditFiles += 1;
+      return;
+    }
     // Latin-1 offsets are byte offsets: decode the field's own bytes as UTF-8.
     if (part.name && !(part.name in fields) && part.end - part.start <= MAX_MULTIPART_TEXT_FIELD_BYTES) {
       fields[part.name] = decoder.decode(body.subarray(part.start, part.end));
     }
   });
-  return read ? fields : null;
+  return read ? { fields, imageEditFiles } : null;
 }
 
 /** The multipart file fields an OpenAI image edit sends images in: the images to edit and the mask. */
@@ -283,12 +300,18 @@ export const IMAGE_EDIT_FILE_FIELDS: readonly string[] = ['image', 'image[]', 'm
  */
 export function countImageEditFiles(headers: Record<string, string>, body: Uint8Array): number {
   const contentType = headerValue(headers, 'content-type');
-  if (!/^multipart\/form-data/i.test(contentType.trim())) return 0;
-  let count = 0;
-  forEachMultipartPart(body, contentType, (part) => {
-    if (part.isFile && IMAGE_EDIT_FILE_FIELDS.includes(part.name)) count += 1;
-  });
-  return count;
+  if (!isMultipartFormData(contentType)) return 0;
+  return parseMultipartForm(body, contentType)?.imageEditFiles ?? 0;
+}
+
+/** Whether a content type is multipart/form-data. */
+export function isMultipartFormData(contentType: string): boolean {
+  return /^multipart\/form-data/i.test(contentType.trim());
+}
+
+/** Whether a request path is the OpenAI image edit endpoint, in any letter case (as protocol detection and providers read it). */
+export function isImageEditPath(path: string): boolean {
+  return path.split('?')[0]?.toLowerCase() === '/v1/images/edits';
 }
 
 interface MultipartPart {
@@ -349,7 +372,7 @@ export function extractRequestBodyFields(
   body: Uint8Array,
 ): Record<string, unknown> | null {
   const contentType = headerValue(headers, 'content-type');
-  if (contentType && /^multipart\/form-data/i.test(contentType.trim())) {
+  if (contentType && isMultipartFormData(contentType)) {
     return parseMultipartFormFields(body, contentType);
   }
   return parseJsonObject(body);
