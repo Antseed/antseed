@@ -3,7 +3,7 @@ import { SellerBuyerLimiter } from '../src/payments/seller-buyer-limiter.js';
 import { SellerFreeTierLimiter } from '../src/payments/seller-free-tier-limiter.js';
 import { SellerRequestHandler, assertSingleRoutingService } from '../src/seller-request-handler.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
-import type { Provider } from '../src/interfaces/seller-provider.js';
+import type { Provider, ProviderStreamCallbacks } from '../src/interfaces/seller-provider.js';
 import { decodeHttpResponse, encodeHttpRequest } from '../src/proxy/request-codec.js';
 import { decodeFrame } from '../src/p2p/message-protocol.js';
 import { MessageType, PAYMENT_CODE_CHANNEL_EXHAUSTED } from '../src/types/protocol.js';
@@ -46,7 +46,9 @@ describe('completed-request seller payments', () => {
         headers: { 'content-type': 'application/json', ...routingHeaders },
         body: new TextEncoder().encode(JSON.stringify(body)), ...patch,
       }) });
-      return frames.map(frame => decodeHttpResponse(decodeFrame(frame).message!.payload)).reverse().find(response => response.requestId === requestId)!;
+      // A streamed answer's chunks are their own frames; its start is the response.
+      return frames.map(frame => decodeFrame(frame).message!).filter(message => message.type === MessageType.HttpResponse)
+        .map(message => decodeHttpResponse(message.payload)).reverse().find(response => response.requestId === requestId)!;
     };
     return { provider, spm, paymentMux, send };
   }
@@ -184,6 +186,95 @@ describe('completed-request seller payments', () => {
     expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({
       lastRequestCost: '80000', billingUsage: { version: 1, units: { output_images: '2' } },
     }));
+  });
+  describe('streamed image and speech answers', () => {
+    const encoder = new TextEncoder();
+    function unitHarness() {
+      const harness = setup();
+      harness.provider.services = ['alpha-route', 'image', 'speech'];
+      harness.provider.pricing = { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } };
+      harness.provider.serviceApiProtocols = { ...harness.provider.serviceApiProtocols, image: ['openai-images'], speech: ['openai-audio-speech'] };
+      harness.provider.serviceUnitBillingModels = {
+        ...harness.provider.serviceUnitBillingModels,
+        image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } },
+        speech: { 'openai-audio-speech': { version: 1, components: [{ unit: 'input_characters', priceUsd: 0.000015 }] } },
+      };
+      harness.provider.handleRequestStream = undefined;
+      return harness;
+    }
+    /** An answer the upstream streams as server-sent events, as OpenAI streams images and speech. */
+    const streamed = (events: Array<Record<string, unknown>>) => async (request: SerializedHttpRequest) => ({
+      requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' },
+      body: encoder.encode(events.map((event) => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`).join('')),
+    });
+    const imageStream = (prefix: string, images: number) => streamed([
+      { type: `${prefix}.partial_image`, b64_json: 'cGFydA==', partial_image_index: 0 },
+      ...Array.from({ length: images }, () => ({ type: `${prefix}.completed`, b64_json: 'aW1hZ2U=' })),
+    ]);
+    const json = (body: unknown) => encoder.encode(JSON.stringify(body));
+    const headers = { 'content-type': 'application/json', 'x-antseed-provider': 'alpha' };
+    function multipart(fields: Array<[string, string]>) {
+      const parts = fields.map(([name, value]) => `--b0undary\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`);
+      const file = '--b0undary\r\nContent-Disposition: form-data; name="image"; filename="in.png"\r\nContent-Type: image/png\r\n\r\nPNG\r\n';
+      return { body: encoder.encode(`${parts.join('')}${file}--b0undary--\r\n`), headers: { 'content-type': 'multipart/form-data; boundary=b0undary', 'x-antseed-provider': 'alpha' } };
+    }
+    async function expectBilled(harness: ReturnType<typeof unitHarness>, request: Partial<SerializedHttpRequest>, images: number) {
+      const response = await harness.send('streamed', request);
+      expect(response.statusCode).toBe(200);
+      expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', BigInt(images * 40_000));
+      expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ billingUsage: { version: 1, units: { output_images: String(images) } } }));
+    }
+    async function expectRefused(harness: ReturnType<typeof unitHarness>, request: Partial<SerializedHttpRequest>) {
+      const response = await harness.send('refused', request);
+      expect({ status: response.statusCode, served: vi.mocked(harness.provider.handleRequest).mock.calls.length }).toEqual({ status: 400, served: 0 });
+      expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+    }
+
+    it('bills a streamed image request for the final images it delivered, from the chunks it streamed', async () => {
+      const harness = unitHarness();
+      // As a relay streams it: chunks cut mid-event, then the whole body once the stream is done.
+      harness.provider.handleRequestStream = vi.fn(async (request: SerializedHttpRequest, callbacks: ProviderStreamCallbacks) => {
+        const answer = await imageStream('image_generation', 2)(request);
+        callbacks.onResponseStart({ ...answer, body: new Uint8Array(0) });
+        const half = Math.floor(answer.body.length / 2);
+        for (const data of [answer.body.subarray(0, half), answer.body.subarray(half)]) callbacks.onResponseChunk({ requestId: request.requestId, data, done: false });
+        callbacks.onResponseChunk({ requestId: request.requestId, data: new Uint8Array(0), done: true });
+        return answer;
+      });
+      await expectBilled(harness, { path: '/v1/images/generations', headers, body: json({ model: 'image', prompt: 'A tree', n: 2, stream: true, partial_images: 1 }) }, 2);
+      expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    });
+
+    it('bills a streamed image edit for the final images it delivered', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(imageStream('image_edit', 2));
+      await expectBilled(harness, { path: '/v1/images/edits', ...multipart([['model', 'image'], ['prompt', 'A tree'], ['n', '2'], ['stream', 'true']]) }, 2);
+    });
+
+    it('bills no more streamed images than the request asked for', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(imageStream('image_generation', 3));
+      await expectBilled(harness, { path: '/v1/images/generations', headers, body: json({ model: 'image', prompt: 'A tree', stream: true }) }, 1);
+    });
+
+    it('refuses a speech request streamed as events before serving it', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(streamed([{ type: 'speech.audio.delta', audio: 'aGVsbG8=' }, { type: 'speech.audio.done' }]));
+      await expectRefused(harness, { path: '/v1/audio/speech', headers, body: json({ model: 'speech', input: 'Hello there', voice: 'alloy', stream_format: 'sse' }) });
+    });
+
+    it('serves and bills a speech request that asks for the audio itself', async () => {
+      const harness = unitHarness();
+      // An MP3: three 417-byte MPEG-1 layer III frames (128 kbps, 44.1 kHz).
+      const mp3 = new Uint8Array(417 * 3);
+      for (let frame = 0; frame < 3; frame++) mp3.set([0xff, 0xfb, 0x90, 0x00], frame * 417);
+      vi.mocked(harness.provider.handleRequest).mockImplementation(async (request) => ({
+        requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: mp3,
+      }));
+      const response = await harness.send('speech', { path: '/v1/audio/speech', headers, body: json({ model: 'speech', input: 'Hello there', voice: 'alloy', stream_format: 'audio' }) });
+      expect(response.statusCode).toBe(200);
+      expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ billingUsage: { version: 1, units: { input_characters: '11' } } }));
+    });
   });
 });
 
