@@ -9,7 +9,7 @@ import { tempDataDir } from './console-api/test-support.js'
 import { GatewayServer } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import type { GatewayStore } from './store.js'
-import { StreamResumeStore, type StreamResumeOptions } from './stream-resume.js'
+import { StreamResumeStore, type StreamResumeOptions, type StreamSource } from './stream-resume.js'
 
 const NO_LIMITS = { daily: null, monthly: null, total: null }
 const CHUNKS = 40
@@ -80,23 +80,35 @@ async function startGateway(store: GatewayStore, buyerPort: number, streamResume
     spendFeedState: () => feed.state,
     refreshSpendFeed: () => feed.pollOnce(),
     onLog: (message) => logs.push(message),
+    // Lets a request carry a routing requirement (a TEE seller) to the buyer.
+    controlSecret: 'test-secret',
     streamResume,
   })
   const port = await server.start()
-  return { port, logs, stop: async () => { await server.stop(); accounting.dispose() } }
+  let stopped = false
+  return {
+    port,
+    logs,
+    stop: async () => {
+      if (stopped) return
+      stopped = true
+      await server.stop()
+      accounting.dispose()
+    },
+  }
 }
 
 const BODY = JSON.stringify({ model: 'test-model', stream: true, messages: [{ role: 'user', content: 'write a long answer' }] })
 
 /** Sends a streamed chat request; `dropAfterBytes` cuts the connection once that much has arrived. */
-function chat(port: number, secret: string, options: { body?: string; dropAfterBytes?: number } = {}) {
+function chat(port: number, secret: string, options: { body?: string; dropAfterBytes?: number; headers?: http.OutgoingHttpHeaders } = {}) {
   return new Promise<{ status: number; body: string; dropped: boolean }>((resolve, reject) => {
     const req = http.request({
       hostname: '127.0.0.1',
       port,
       path: '/v1/chat/completions',
       method: 'POST',
-      headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json', ...options.headers },
     }, (res) => {
       const chunks: Buffer[] = []
       let received = 0
@@ -118,17 +130,18 @@ function chat(port: number, secret: string, options: { body?: string; dropAfterB
 
 async function withGateway(
   options: Partial<StreamResumeOptions> | null,
-  run: (ctx: { port: number; secret: string; buyer: Awaited<ReturnType<typeof streamingBuyer>>; resume: StreamResumeStore | null; dir: string; logs: string[]; store: GatewayStore }) => Promise<void>,
+  run: (ctx: { port: number; secret: string; buyer: Awaited<ReturnType<typeof streamingBuyer>>; resume: StreamResumeStore | null; dir: string; logs: string[]; store: GatewayStore; stopGateway: () => Promise<void> }) => Promise<void>,
 ): Promise<void> {
   const { store, dir, cleanup } = tempDataDir()
   const buyer = await streamingBuyer()
   const resumeDir = join(dir, 'stream-resume')
-  const resume = options === null ? null : new StreamResumeStore({ dir: resumeDir, graceMs: 500, ...options })
+  // Long enough that a retry under load never races the grace period; the expiry test sets its own.
+  const resume = options === null ? null : new StreamResumeStore({ dir: resumeDir, graceMs: 10_000, ...options })
   resume?.prepare()
   const gateway = await startGateway(store, buyer.port, resume)
   const { secret } = store.createKey({ label: 'Test', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
   try {
-    await run({ port: gateway.port, secret, buyer, resume, dir: resumeDir, logs: gateway.logs, store })
+    await run({ port: gateway.port, secret, buyer, resume, dir: resumeDir, logs: gateway.logs, store, stopGateway: gateway.stop })
   } finally {
     await gateway.stop()
     await buyer.close()
@@ -215,4 +228,75 @@ test('without stream resume a dropped client cancels its generation', async () =
     assert.equal(retry.body, FULL_ANSWER)
     assert.equal(buyer.requests, 2)
   })
+})
+
+test('a retry with a different routing requirement is not handed a dropped stream', async () => {
+  await withGateway({}, async ({ port, secret, buyer, logs }) => {
+    await chat(port, secret, { dropAfterBytes: 1_000 })
+    await waitFor(() => logs.some((line) => line.includes('kept for its retry')))
+    // The same body, now requiring a TEE seller: the dropped answer was not generated under that requirement.
+    const tee = await chat(port, secret, { headers: { 'x-antseed-require-tee': 'true' } })
+    assert.equal(tee.body, FULL_ANSWER)
+    assert.equal(buyer.requests, 2)
+    assert.equal(logs.some((line) => line.includes('resumed a dropped stream')), false)
+  })
+})
+
+test('stopping the gateway lets a client reading a stream finish it, and cancels one waiting for a retry', async () => {
+  await withGateway({}, async ({ port, secret, buyer, logs, resume, stopGateway }) => {
+    // One stream waits for a retry that a stopping gateway can no longer take.
+    await chat(port, secret, { dropAfterBytes: 1_000 })
+    await waitFor(() => logs.some((line) => line.includes('kept for its retry')))
+    // Another is being read.
+    const reading = chat(port, secret, { body: BODY.replace('long answer', 'other answer') })
+    await waitFor(() => buyer.requests === 2)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    // Bounded: a stop that cut the stream off would leave the client waiting through the whole drain.
+    const stopping = stopGateway()
+    const delivered = await Promise.race([reading, new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000))])
+    assert.equal(delivered?.body, FULL_ANSWER, 'the client reading a stream gets it all while the gateway stops')
+    await stopping
+    assert.equal(buyer.cancelled, 1)
+    assert.equal(buyer.completed, 1)
+    assert.equal(resume!.size, 0)
+  })
+})
+
+test('a slow retry holds the buyer back while the recorded part replays', async () => {
+  const { dir, cleanup } = tempDataDir()
+  const store = new StreamResumeStore({ dir: join(dir, 'stream-resume'), blockBytes: 1024 })
+  store.prepare()
+  const source = { paused: false, pause() { this.paused = true }, resume() { this.paused = false } } satisfies StreamSource & { paused: boolean }
+  const stream = store.start('fingerprint', 'tag', 200, { 'content-type': 'text/event-stream' }, source, () => {})!
+  // A first client that read nothing and dropped: a few MiB are recorded.
+  const first = new http.ServerResponse(new http.IncomingMessage(null as never))
+  stream.attach(first)
+  first.destroy()
+  const big = Buffer.alloc(256 * 1024, 'a')
+  stream.detach(first)
+  for (let i = 0; i < 16; i++) stream.append(big)
+  const server = http.createServer((_req, res) => stream.resume(res))
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = (server.address() as { port: number }).port
+  try {
+    let received = 0
+    let response: http.IncomingMessage | null = null
+    const req = http.get({ hostname: '127.0.0.1', port, path: '/' }, (res) => {
+      response = res
+      // Read nothing yet: the client is slow.
+      res.pause()
+      res.on('data', (chunk: Buffer) => { received += chunk.length })
+    })
+    await waitFor(() => response !== null)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.equal(source.paused, true, 'the buyer is held back while the replay waits for the client')
+    response!.resume()
+    await waitFor(() => received === 16 * big.length)
+    await waitFor(() => source.paused === false)
+    req.destroy()
+  } finally {
+    stream.dispose()
+    await new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()) })
+    cleanup()
+  }
 })

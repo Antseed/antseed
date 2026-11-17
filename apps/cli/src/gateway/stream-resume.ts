@@ -4,6 +4,7 @@ import { open, readFile, rm, type FileHandle } from 'node:fs/promises'
 import type * as http from 'node:http'
 import { join } from 'node:path'
 import { deflateRawSync, inflateRawSync } from 'node:zlib'
+import { errorMessage } from './errors.js'
 
 /** How long a dropped stream keeps generating, waiting for its client's retry. */
 export const STREAM_RESUME_GRACE_MS = 30_000
@@ -35,13 +36,15 @@ export interface StreamSource {
 }
 
 /**
- * Identifies a retry: the same API key sending the same request again. A
+ * Identifies a retry: the same API key sending the same request again, under
+ * the same requirements for what generates it (`requirements`: the effective
+ * routing policy and the headers that pick a seller or shape the answer). A
  * client that loses its connection mid-stream drops what it received and
  * resends the request as it was, so its body is the same.
  */
-export function streamFingerprint(keyId: string, method: string, path: string, body: Buffer): string {
+export function streamFingerprint(keyId: string, method: string, path: string, requirements: readonly string[], body: Buffer): string {
   const hash = createHash('sha256')
-  for (const part of [keyId, method, path]) hash.update(part).update('\0')
+  for (const part of [keyId, method, path, ...[...requirements].sort()]) hash.update(part).update('\0')
   return hash.update(body).digest('hex')
 }
 
@@ -65,6 +68,7 @@ export class StreamResumeStore {
   private readonly _streams = new Map<string, ResumableStream>()
   private _storedBytes = 0
   private _files = 0
+  private _closing = false
 
   constructor(private readonly _options: StreamResumeOptions) {
     this.graceMs = _options.graceMs ?? STREAM_RESUME_GRACE_MS
@@ -97,7 +101,7 @@ export class StreamResumeStore {
    * delivered as before, each to its own client).
    */
   start(fingerprint: string, tag: string, status: number, headers: http.OutgoingHttpHeaders, source: StreamSource, abandon: () => void): ResumableStream | null {
-    if (this._streams.has(fingerprint)) return null
+    if (this._closing || this._streams.has(fingerprint)) return null
     const stream = new ResumableStream(this, fingerprint, tag, status, headers, source, abandon)
     this._streams.set(fingerprint, stream)
     return stream
@@ -105,12 +109,31 @@ export class StreamResumeStore {
 
   /** The dropped stream a retry with this fingerprint can take over, if any. */
   claim(fingerprint: string): ResumableStream | null {
+    if (this._closing) return null
     const stream = this._streams.get(fingerprint)
     return stream?.claimable ? stream : null
   }
 
-  /** Drops every copy and cancels generations no client is waiting for (gateway shutdown). */
+  /** True once the gateway is stopping: no retry can reach it any more. */
+  get closing(): boolean {
+    return this._closing
+  }
+
+  /**
+   * The gateway is stopping. Streams waiting for a retry are cancelled, since
+   * none can arrive; streams a client is reading carry on through the
+   * shutdown drain, and a client that drops from now on cancels its stream.
+   */
+  close(): void {
+    this._closing = true
+    for (const stream of [...this._streams.values()]) {
+      if (stream.waitingForRetry) stream.dispose({ abandon: true })
+    }
+  }
+
+  /** Drops every copy left, cancelling what still runs (after the shutdown drain). */
   disposeAll(): void {
+    this._closing = true
     for (const stream of [...this._streams.values()]) stream.dispose({ abandon: true })
   }
 
@@ -209,7 +232,7 @@ export class ResumableStream {
     this._target = null
     this._replaying = false
     this._liveQueue = []
-    if (!this._recording) {
+    if (!this._recording || this._store.closing) {
       this.dispose()
       return false
     }
@@ -231,6 +254,8 @@ export class ResumableStream {
     this._graceTimer = null
     this._target = res
     this._replaying = true
+    // Hold the buyer back while the recorded part replays, so a slow client cannot pile the live tail up in memory.
+    this._pauseSource()
     res.once('close', () => { if (!res.writableFinished) this.detach(res) })
     res.once('finish', () => this._onDelivered(res))
     res.writeHead(this._status, this._headers)
@@ -269,9 +294,10 @@ export class ResumableStream {
         }
         if (this._target !== res) return
         this._replaying = false
+        this._resumeSource()
         if (this._ended) res.end()
       } catch (error) {
-        this._store.log(`gateway could not replay stream ${this.tag}: ${error instanceof Error ? error.message : String(error)}`)
+        this._store.log(`gateway could not replay stream ${this.tag}: ${errorMessage(error)}`)
         res.destroy()
       }
     })()
@@ -315,9 +341,14 @@ export class ResumableStream {
     }
     if (target.write(chunk) || this._sourcePaused) return
     // The client reads slower than the buyer answers: hold the buyer back, as a pipe would.
+    this._pauseSource()
+    target.once('drain', () => { if (this._target === target && !this._replaying) this._resumeSource() })
+  }
+
+  private _pauseSource(): void {
+    if (this._sourcePaused) return
     this._sourcePaused = true
     this._source.pause()
-    target.once('drain', () => { if (this._target === target) this._resumeSource() })
   }
 
   private _resumeSource(): void {
@@ -375,7 +406,7 @@ export class ResumableStream {
       })
       .catch((error: unknown) => {
         if (this._disposed || this._file !== file) return
-        this._store.log(`gateway could not store stream ${this.tag}: ${error instanceof Error ? error.message : String(error)}`)
+        this._store.log(`gateway could not store stream ${this.tag}: ${errorMessage(error)}`)
         this._stopRecording()
       })
   }

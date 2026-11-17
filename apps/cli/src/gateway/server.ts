@@ -322,9 +322,12 @@ export class GatewayServer {
     this._port = 0
     if (this._retentionTimer) clearInterval(this._retentionTimer)
     this._retentionTimer = null
-    // No retry can reach a stopped gateway: drop the kept streams and cancel what no client waits for.
-    this._options.streamResume?.disposeAll()
+    // No retry can reach a stopping gateway: cancel the streams waiting for one. Streams a client is
+    // reading finish through the drain below, like any other request in flight.
+    const streamResume = this._options.streamResume ?? null
+    streamResume?.close()
     if (!server) {
+      streamResume?.disposeAll()
       await this._exporter.stop()
       return
     }
@@ -335,6 +338,7 @@ export class GatewayServer {
     drain.unref?.()
     await closed
     clearTimeout(drain)
+    streamResume?.disposeAll()
     await this._exporter.stop()
   }
 
@@ -431,7 +435,9 @@ export class GatewayServer {
     // A client that lost its connection mid-stream sends the same request again: it gets the answer
     // already being generated, from the start, instead of a new (and newly paid) generation.
     const streamResume = this._options.streamResume ?? null
-    const resumeKey = streamResume && route.paid && !video && method === 'POST' ? streamFingerprint(key.id, method, route.path, body) : null
+    const resumeKey = streamResume && route.paid && !video && method === 'POST'
+      ? streamFingerprint(key.id, method, route.path, generationRequirements(req.headers, policy.headers), body)
+      : null
     const resumed = resumeKey ? streamResume!.claim(resumeKey) : null
     if (resumed) {
       this._log(`gateway resumed a dropped stream for its retry: key=${key.id} tag=${resumed.tag}`)
@@ -1479,6 +1485,26 @@ function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttp
     headers[name] = value
   }
   return headers
+}
+
+/**
+ * What decides which seller generates a request and how, besides its body: the
+ * effective routing policy sent to the buyer, and the forwarded headers that
+ * pick a seller or shape the answer (`x-antseed-*`, such as a pinned peer or a
+ * TEE requirement, and `anthropic-*`). A retry only takes over a dropped stream
+ * generated under the same ones. Headers a client changes between attempts
+ * (ids, retry counts) are not among them.
+ */
+function generationRequirements(incoming: http.IncomingHttpHeaders, policyHeaders: Record<string, string>): string[] {
+  const requirements: string[] = []
+  const policy = policyHeaders[ROUTING_POLICY_HEADER]
+  if (policy) requirements.push(`policy:${policy}`)
+  for (const [name, value] of Object.entries(forwardedHeaders(incoming))) {
+    const normalized = name.toLowerCase()
+    if (value === undefined || (!normalized.startsWith('x-antseed-') && !normalized.startsWith('anthropic-'))) continue
+    requirements.push(`${normalized}:${Array.isArray(value) ? value.join(',') : String(value)}`)
+  }
+  return requirements
 }
 
 function truncateContent(body: Buffer): string {
