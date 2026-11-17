@@ -341,7 +341,7 @@ The gateway tells the buyer which identity pays with the `x-antseed-buyer-identi
 ## Where state lives
 
 - `<data-dir>/gateway/gateway.db`: hashed keys, the request log and spend (SQLite).
-- `<data-dir>/gateway/stream-resume/`: compressed copies of large streamed answers in flight (see [Dropped connections](#dropped-connections)). Emptied when the gateway starts; nothing to back up.
+- `<data-dir>/gateway/stream-resume/`: compressed copies of large streamed answers in flight (see [Dropped connections](#dropped-connections)), one folder per running gateway process. A gateway removes the folders of processes that are no longer running when it starts; nothing to back up.
 - `<data-dir>/buyer-identities/<name>/`: each extra identity's wallet key, or a reference to it.
 
 Back up the identity directories, or the secrets they point to: each wallet can hold credits.

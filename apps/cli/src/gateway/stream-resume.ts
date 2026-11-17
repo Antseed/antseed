@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto'
-import { mkdirSync, rmSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { open, readFile, rm, type FileHandle } from 'node:fs/promises'
 import type * as http from 'node:http'
 import { join } from 'node:path'
@@ -19,7 +19,11 @@ const MAX_TOTAL_BYTES = 512 * 1024 * 1024
 const FRAME_HEADER_BYTES = 4
 
 export interface StreamResumeOptions {
-  /** Where streams too large for memory are written. Emptied by `prepare()`. */
+  /**
+   * Where streams too large for memory are written. Each gateway process
+   * writes in a folder of its own below it; `prepare()` removes the folders
+   * of processes that are gone.
+   */
   dir: string
   graceMs?: number
   blockBytes?: number
@@ -27,6 +31,8 @@ export interface StreamResumeOptions {
   maxStreamBytes?: number
   maxTotalBytes?: number
   onLog?: (message: string) => void
+  /** This gateway's process id, which names its folder; tests set one to stand for another process. */
+  pid?: number
 }
 
 /** What the gateway can pause and resume: the buyer's response. */
@@ -69,6 +75,9 @@ export class StreamResumeStore {
   private _storedBytes = 0
   private _files = 0
   private _closing = false
+  /** This process's own folder: `<pid>-<random>`, so another gateway on the same data dir never touches it. */
+  private readonly _dir: string
+  private readonly _pid: number
 
   constructor(private readonly _options: StreamResumeOptions) {
     this.graceMs = _options.graceMs ?? STREAM_RESUME_GRACE_MS
@@ -76,12 +85,24 @@ export class StreamResumeStore {
     this.memoryBytes = _options.memoryBytes ?? MEMORY_BYTES
     this.maxStreamBytes = _options.maxStreamBytes ?? MAX_STREAM_BYTES
     this._maxTotalBytes = _options.maxTotalBytes ?? MAX_TOTAL_BYTES
+    this._pid = _options.pid ?? process.pid
+    this._dir = join(_options.dir, `${this._pid}-${randomBytes(6).toString('hex')}`)
   }
 
-  /** Creates the directory, emptied of copies a previous process left behind. */
+  /**
+   * Creates this process's folder, and removes what gateways that are no
+   * longer running left behind. A folder of a running gateway (one started
+   * on the same data dir) is left alone: it holds that gateway's streams.
+   */
   prepare(): void {
-    rmSync(this._options.dir, { recursive: true, force: true })
     mkdirSync(this._options.dir, { recursive: true, mode: 0o700 })
+    for (const entry of readdirSync(this._options.dir)) {
+      const pid = Number(/^(\d+)-[0-9a-f]+$/.exec(entry)?.[1] ?? NaN)
+      // Our own pid on another folder is an earlier process that had it (a restarted container).
+      if (Number.isInteger(pid) && pid !== this._pid && processRunning(pid)) continue
+      rmSync(join(this._options.dir, entry), { recursive: true, force: true })
+    }
+    mkdirSync(this._dir, { mode: 0o700 })
   }
 
   /** Streams being kept, for tests and the log. */
@@ -131,10 +152,11 @@ export class StreamResumeStore {
     }
   }
 
-  /** Drops every copy left, cancelling what still runs (after the shutdown drain). */
+  /** Drops every copy left, cancelling what still runs, and removes this process's folder (after the shutdown drain). */
   disposeAll(): void {
     this._closing = true
     for (const stream of [...this._streams.values()]) stream.dispose({ abandon: true })
+    rmSync(this._dir, { recursive: true, force: true })
   }
 
   /** @internal */
@@ -156,7 +178,7 @@ export class StreamResumeStore {
 
   /** @internal */
   nextFilePath(): string {
-    return join(this._options.dir, `${process.pid}-${++this._files}.bin`)
+    return join(this._dir, `${++this._files}.bin`)
   }
 
   /** @internal */
@@ -221,9 +243,11 @@ export class ResumableStream {
   }
 
   /**
-   * The client `res` went away. True when the generation keeps going for a
-   * retry, false when it should be cancelled as before (the answer is too
-   * large to keep, or it is already complete).
+   * The client `res` went away. True when the answer is kept for a retry: its
+   * generation keeps going, or it is complete and waits to be fetched. False
+   * when it cannot be kept (it outgrew the limits, storing it failed, or the
+   * gateway is stopping): the copy is dropped and a generation still running
+   * is cancelled, whichever client (the first or a retry) went away.
    */
   detach(res: http.ServerResponse): boolean {
     if (this._disposed) return false
@@ -233,7 +257,7 @@ export class ResumableStream {
     this._replaying = false
     this._liveQueue = []
     if (!this._recording || this._store.closing) {
-      this.dispose()
+      this.dispose({ abandon: true })
       return false
     }
     // Keep generating (and recording) while nobody reads.
@@ -455,4 +479,14 @@ function writeTo(res: http.ServerResponse, chunk: Buffer): Promise<boolean> {
     res.once('drain', onDrain)
     res.once('close', onClose)
   })
+}
+
+/** Whether a process with this pid is running (a signal-0 probe; EPERM means it runs as another user). */
+function processRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
 }

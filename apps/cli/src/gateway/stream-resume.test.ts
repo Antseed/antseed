@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import * as http from 'node:http'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -20,6 +21,12 @@ async function waitFor(check: () => boolean, timeoutMs = 3_000): Promise<void> {
     if (Date.now() > deadline) throw new Error('condition not met in time')
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
+}
+
+/** The stream files under a resume folder, whatever process folder holds them. */
+function storedFiles(dir: string): string[] {
+  if (!existsSync(dir)) return []
+  return (readdirSync(dir, { recursive: true }) as string[]).filter((name) => name.endsWith('.bin')).map((name) => join(dir, name))
 }
 
 function sseChunk(i: number): string {
@@ -171,11 +178,11 @@ test('a stream kept on disk replays from its file and leaves no file behind', as
   await withGateway({ blockBytes: 256, memoryBytes: 512 }, async ({ port, secret, buyer, resume, dir, logs }) => {
     await chat(port, secret, { dropAfterBytes: 4_000 })
     await waitFor(() => logs.some((line) => line.includes('kept for its retry')))
-    await waitFor(() => readdirSync(dir).length === 1)
+    await waitFor(() => storedFiles(dir).length === 1)
     const retry = await chat(port, secret)
     assert.equal(retry.body, FULL_ANSWER)
     assert.equal(buyer.requests, 1)
-    await waitFor(() => resume!.size === 0 && readdirSync(dir).length === 0)
+    await waitFor(() => resume!.size === 0 && storedFiles(dir).length === 0)
   })
 })
 
@@ -297,6 +304,90 @@ test('a slow retry holds the buyer back while the recorded part replays', async 
   } finally {
     stream.dispose()
     await new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()) })
+    cleanup()
+  }
+})
+
+/** Serves `stream.resume()` to one HTTP client; returns its port and a closer. */
+async function resumeServer(stream: { resume(res: http.ServerResponse): void }) {
+  const server = http.createServer((_req, res) => stream.resume(res))
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  return {
+    port: (server.address() as { port: number }).port,
+    close: () => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()) }),
+  }
+}
+
+/** A stream whose first client dropped before reading anything. */
+function droppedStream(store: StreamResumeStore, abandon: () => void) {
+  const source = { pause() {}, resume() {} } satisfies StreamSource
+  const stream = store.start(randomBytes(8).toString('hex'), 'tag', 200, { 'content-type': 'text/event-stream' }, source, abandon)!
+  const first = new http.ServerResponse(new http.IncomingMessage(null as never))
+  stream.attach(first)
+  first.destroy()
+  stream.detach(first)
+  return stream
+}
+
+test('a retry that drops after its answer outgrew the limits cancels the generation', async () => {
+  const { dir, cleanup } = tempDataDir()
+  const store = new StreamResumeStore({ dir: join(dir, 'stream-resume'), blockBytes: 1024, maxStreamBytes: 64 * 1024 })
+  store.prepare()
+  let abandoned = 0
+  const stream = droppedStream(store, () => { abandoned++ })
+  stream.append(Buffer.from('data: first\n\n'))
+  const server = await resumeServer(stream)
+  try {
+    let received = 0
+    const req = http.get({ hostname: '127.0.0.1', port: server.port, path: '/' }, (res) => res.on('data', (chunk: Buffer) => { received += chunk.length }))
+    req.on('error', () => {})
+    await waitFor(() => received > 0)
+    // Incompressible output past the per-stream limit: the answer stops being kept, the retry still reads it.
+    stream.append(randomBytes(128 * 1024))
+    await waitFor(() => !stream.claimable && received > 128 * 1024)
+    assert.equal(abandoned, 0, 'a retry still reading keeps its generation')
+    req.destroy()
+    await waitFor(() => abandoned === 1)
+    assert.equal(store.size, 0)
+  } finally {
+    await server.close()
+    store.disposeAll()
+    cleanup()
+  }
+})
+
+test('a second gateway on the same data dir keeps the first one\'s stored streams, and clears folders of gateways that are gone', async () => {
+  const { dir, cleanup } = tempDataDir()
+  const base = join(dir, 'stream-resume')
+  // A folder left by a gateway that is no longer running.
+  const stale = join(base, '2147483646-0123456789ab')
+  mkdirSync(stale, { recursive: true })
+  const first = new StreamResumeStore({ dir: base, blockBytes: 256, memoryBytes: 512 })
+  first.prepare()
+  assert.equal(existsSync(stale), false)
+  const stream = droppedStream(first, () => {})
+  for (let i = 0; i < 64; i++) stream.append(Buffer.from(sseChunk(i)))
+  await waitFor(() => storedFiles(base).length === 1)
+  const [file] = storedFiles(base)
+  // Another gateway starts on the same data dir (and may fail to bind): it must not delete the first one's files.
+  const second = new StreamResumeStore({ dir: base, pid: 2147483645 })
+  second.prepare()
+  assert.equal(existsSync(file!), true)
+  const server = await resumeServer(stream)
+  try {
+    stream.end()
+    const body = await new Promise<string>((resolve, reject) => {
+      http.get({ hostname: '127.0.0.1', port: server.port, path: '/' }, (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
+        res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+      }).on('error', reject)
+    })
+    assert.equal(body, Array.from({ length: 64 }, (_, i) => sseChunk(i)).join(''))
+  } finally {
+    await server.close()
+    first.disposeAll()
+    second.disposeAll()
     cleanup()
   }
 })
