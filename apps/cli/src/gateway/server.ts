@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
+import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_HOLD_CODES, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
@@ -42,6 +42,11 @@ import type { RetailPriceMap } from '@antseed/node/retail-prices'
 
 /** Largest 402 body the gateway holds back to check for the buyer's out-of-credits answer (which is well under 1 KiB). */
 const OUT_OF_CREDITS_REWRITE_MAX_BYTES = 16 * 1024
+/** A seller's video job hold lists at most a few dozen short job IDs. */
+const VIDEO_JOB_HOLD_MAX_BYTES = 64 * 1024
+const VIDEO_JOB_HOLD_CODE_SET: ReadonlySet<string> = new Set(Object.values(VIDEO_JOB_HOLD_CODES))
+/** Told to a key held back by video jobs that other keys of its buyer started. */
+const VIDEO_JOBS_HELD_MESSAGE = 'This seller is not starting new videos for this gateway until earlier videos are downloaded and paid for. Try again later, or use another seller.'
 
 /**
  * The gateway's own components (the console chat agent) call `/v1` as a key
@@ -634,6 +639,43 @@ export class GatewayServer {
     else if (outcome.delivered) accounting.videoDelivered(job)
   }
 
+  /**
+   * A seller's video job hold as `key` may see it: only the jobs it created.
+   * When none of the listed jobs are the key's, it is told the gateway is held
+   * back, with no job. Any other 409 passes on unchanged; one that cannot be
+   * read is replaced, so a list is never forwarded unfiltered.
+   */
+  private _ownVideoJobHold(key: ApiKeyRecord, body: Buffer): Buffer | null {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(body.toString('utf8'))
+    } catch {
+      return body.length === 0 ? null : body
+    }
+    const error = typeof parsed === 'object' && parsed !== null ? (parsed as { error?: unknown }).error : undefined
+    if (typeof error !== 'object' || error === null) return body
+    const code = (error as { code?: unknown }).code
+    if (typeof code !== 'string' || !VIDEO_JOB_HOLD_CODE_SET.has(code)) return body
+    const listed = (error as { jobs?: unknown }).jobs
+    const jobs = Array.isArray(listed)
+      ? listed.flatMap((job): Array<{ id: string; protocol: string }> => {
+        if (typeof job !== 'object' || job === null) return []
+        const { id, protocol } = job as { id?: unknown; protocol?: unknown }
+        if (typeof id !== 'string' || typeof protocol !== 'string' || id.length === 0 || id.length > 256) return []
+        try {
+          return this._ownsVideoJob(key, videoJobKey(protocol, id), id) ? [{ id, protocol }] : []
+        } catch {
+          return []
+        }
+      })
+      : []
+    const message = (error as { message?: unknown }).message
+    const answer = jobs.length > 0 && typeof message === 'string'
+      ? { error: { code, message, jobs } }
+      : { error: { code: 'video_jobs_held', message: VIDEO_JOBS_HELD_MESSAGE, jobs: [] } }
+    return Buffer.from(JSON.stringify(answer))
+  }
+
   /** The buyer's out-of-credits 402 rewritten for the key's workspace, or null to pass it on unchanged. */
   private async _workspaceOutOfCredits(key: ApiKeyRecord, body: Buffer): Promise<Buffer | null> {
     // Any other 402 (a seller's own, say) passes through without a store read or an address lookup.
@@ -870,6 +912,32 @@ export class GatewayServer {
               delete responseHeaders['transfer-encoding']
               res.writeHead(status, { ...responseHeaders, 'content-length': String(answer.length) })
               res.end(answer)
+              finish!(status, buyerRequestId)
+            })
+            return
+          }
+          // A seller holding back a video create lists the buyer's jobs that hold it back. The buyer is shared by
+          // every key of its identity, so the key is shown only the jobs it created.
+          if (status === 409 && request.video?.action === 'create' && contentType.startsWith('application/json')) {
+            const chunks: Buffer[] = []
+            let buffered = 0
+            let passThrough = false
+            const collect = (chunk: Buffer): void => {
+              chunks.push(chunk)
+              buffered += chunk.length
+              if (buffered <= VIDEO_JOB_HOLD_MAX_BYTES) return
+              // Too large to be a hold: nothing is forwarded rather than an unfiltered list.
+              passThrough = true
+              upstreamRes.off('data', collect)
+              upstreamRes.resume()
+            }
+            upstreamRes.on('data', collect)
+            upstreamRes.once('end', () => {
+              const answer = passThrough ? null : this._ownVideoJobHold(key, Buffer.concat(chunks))
+              const body = answer ?? Buffer.from(JSON.stringify({ error: { code: 'video_jobs_held', message: VIDEO_JOBS_HELD_MESSAGE, jobs: [] } }))
+              delete responseHeaders['transfer-encoding']
+              res.writeHead(status, { ...responseHeaders, 'content-length': String(body.length) })
+              res.end(body)
               finish!(status, buyerRequestId)
             })
             return
