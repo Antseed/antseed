@@ -207,6 +207,20 @@ describe('streamed image answers', () => {
     expect(computeFinalUnitBilling(imageModel, captured.context, named, captured.requestFacts).costUsdc).toBe(0n);
   });
 
+  it('bills no image for an event a client could not read', () => {
+    const completed = JSON.stringify({ type: 'image_generation.completed', b64_json: 'aW1hZ2U=' });
+    for (const [why, text] of [
+      // A client joins the event's data lines into one payload, which is not JSON.
+      ['a final image followed by a line that is not JSON', `event: image_generation.completed\ndata: ${completed}\ndata: not json\n\n`],
+      // A client drops an event the stream ended inside, before its closing blank line.
+      ['a final image the stream ended inside', `event: image_generation.completed\ndata: ${completed}\n`],
+    ]) {
+      const captured = capture('/v1/images/generations');
+      const response = { requestId: 'r', statusCode: 200, headers: {}, body: new TextEncoder().encode(text) };
+      expect(computeFinalUnitBilling(imageModel, captured.context, response, captured.requestFacts).costUsdc, why).toBe(0n);
+    }
+  });
+
   it('bills the images that arrived before a stream was cut', () => {
     const billed = bill('/v1/images/generations', [
       { type: 'image_generation.completed', b64_json: 'aW1hZ2U=' },

@@ -5,7 +5,7 @@ import type {
   TokenUsage,
 } from '@antseed/api-adapter';
 import { buyerFault } from './errors.js';
-import { parseResponseUsage, readStreamEvents } from './response-usage.js';
+import { readStreamEvents, streamUsage } from './response-usage.js';
 import {
   extractImageRequestFacts,
   extractSpeechRequestFacts,
@@ -314,15 +314,24 @@ const COMPLETED_IMAGE_EVENTS = new Set(['image_generation.completed', 'image_edi
  * of any event, so a stream of several final images may report fewer tokens than it used.
  */
 function streamedImageFacts(body: Uint8Array): ProviderResponseFacts {
-  let outputImages = 0;
-  for (const event of readStreamEvents(new TextDecoder().decode(body))) {
-    // An event is one image at most, and only when its data is one JSON object: data lines that
-    // parse only one by one are not an event a client can read.
-    const [value] = event.values;
-    if (event.values.length === 1 && isDeliveredImageOutput(value) && COMPLETED_IMAGE_EVENTS.has((value as { type?: unknown }).type as string)) outputImages += 1;
-  }
+  const events = [...readStreamEvents(new TextDecoder().decode(body))];
+  // An image counts only from an event a standard client reads: closed by a blank line, with all
+  // its data lines joined into one JSON object. The reader's line-by-line fallback is for tokens.
+  const outputImages = events.filter((event) => event.closed && isCompletedImage(parseJson(event.data))).length;
   // No completed image reads as no image count at all, as a non-JSON answer always has.
-  return { tokenUsage: parseResponseUsage(body), ...(outputImages > 0 ? { outputImages } : {}) };
+  return { tokenUsage: streamUsage(events), ...(outputImages > 0 ? { outputImages } : {}) };
+}
+
+function isCompletedImage(value: unknown): boolean {
+  return isDeliveredImageOutput(value) && COMPLETED_IMAGE_EVENTS.has((value as { type?: unknown }).type as string);
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 export function computeFinalUnitBilling(
