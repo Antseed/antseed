@@ -240,7 +240,7 @@ Offer AI services on the network. Guides: [Become a provider](/docs/provide), [P
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `antseed seller setup` | Interactive setup: configure a provider and add services | |
+| `antseed seller setup` | Interactive setup: configure a provider and add services, with input, output and cached-input prices (cached at most input) | |
 | `antseed seller start` | Start providing services | `--provider <names>`, `--input-usd-per-million`, `--output-usd-per-million`, `--reserve`, `--dht-port` (6881), `--signaling-port` (6882), `--min-settle-delta <usdc>`, `--base-rpc-url`, `--verifiers <ids>`, `--no-dashboard`, `--dashboard-port` (3120), `--skip-prereq-check` |
 | `antseed seller status` | Show node status and readiness | `--json` |
 | `antseed seller register` | Register your peer identity on-chain (ERC-8004) | `--agent-id <id>`, `--metadata <uri>` |

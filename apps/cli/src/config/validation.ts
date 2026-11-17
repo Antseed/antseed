@@ -50,6 +50,45 @@ function validatePricingLeaf(
   }
 }
 
+/**
+ * Why buyers would skip this seller price, or null. A cached-input price above
+ * the input price makes the whole offer invalid to a buyer (router-local), so
+ * the model gets no requests.
+ */
+export function cachedPriceProblem(label: string, pricing: Partial<TokenPricingUsdPerMillion> | undefined): string | null {
+  const cached = pricing?.cachedInputUsdPerMillion;
+  const input = pricing?.inputUsdPerMillion;
+  if (typeof cached !== 'number' || typeof input !== 'number' || !(cached > input)) return null;
+  return `${label}: cached-input price $${cached} per 1M tokens is above the input price $${input}. `
+    + 'Buyers skip an offer priced like this, so it gets no requests. '
+    + 'Set the cached-input price at or below the input price, or leave it out to bill cached input at the input price.';
+}
+
+/** Every seller price buyers would skip, one line each (see `cachedPriceProblem`). */
+export function sellerCachedPriceProblems(providers: Record<string, SellerProviderConfig>): string[] {
+  const problems: string[] = [];
+  for (const [providerName, providerCfg] of Object.entries(providers)) {
+    const providerProblem = cachedPriceProblem(`${providerName} default prices`, providerCfg.defaults);
+    if (providerProblem) problems.push(providerProblem);
+    for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services ?? {})) {
+      const serviceProblem = cachedPriceProblem(`${providerName}/${serviceId}`, serviceCfg.pricing);
+      if (serviceProblem) problems.push(serviceProblem);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Refuses a seller config edit that leaves a price buyers would skip. Only
+ * problems the edit adds count, so a bad price saved earlier never blocks
+ * changing something else.
+ */
+export function assertNoNewCachedPriceProblems(before: Record<string, SellerProviderConfig>, after: Record<string, SellerProviderConfig>): void {
+  const existing = new Set(sellerCachedPriceProblems(before));
+  const added = sellerCachedPriceProblems(after).filter((problem) => !existing.has(problem));
+  if (added.length > 0) throw new Error(added.join('\n'));
+}
+
 function validateHierarchicalPricing(
   path: string,
   pricing: HierarchicalPricingConfig,
