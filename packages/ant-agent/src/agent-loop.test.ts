@@ -244,6 +244,45 @@ describe('runAgentLoopStream — chunk-boundary handling', () => {
     expect(text).toBe(payload);
   });
 
+  it('forwards a buffered unterminated tail on an empty terminal chunk exactly once', async () => {
+    // A nonempty chunk ends mid-event (no trailing blank line); the next chunk
+    // is the empty done:true marker. The buffered tail must be flushed through
+    // the event filter and reach the buyer exactly once before completion.
+    const cut = ITER2_SSE.indexOf('message_start') + 5;
+    expect(cut).toBeGreaterThan(0);
+    const tail = ITER2_SSE.slice(0, cut);
+    const inner: Provider = {
+      name: 'fake-empty-terminal',
+      services: ['claude-sonnet-4-5-20250929'],
+      pricing: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } },
+      maxConcurrency: 1,
+      getCapacity: () => ({ current: 0, max: 1 }),
+      handleRequest: async (): Promise<SerializedHttpResponse> => {
+        throw new Error('unexpected non-streaming call');
+      },
+      handleRequestStream: async (
+        req: SerializedHttpRequest,
+        callbacks: ProviderStreamCallbacks,
+      ): Promise<SerializedHttpResponse> => {
+        // Nonempty unterminated tail with done:false, then an empty done:true.
+        callbacks.onResponseChunk({ requestId: req.requestId, data: encoder.encode(tail), done: false });
+        callbacks.onResponseChunk({ requestId: req.requestId, data: new Uint8Array(0), done: true });
+        return {
+          requestId: req.requestId,
+          statusCode: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body: encoder.encode(tail),
+        };
+      },
+    };
+    const { text, doneCount } = await runLoop(inner);
+    expect(doneCount).toBe(1);
+    // The unterminated prefix was buffered, then flushed as an event on the
+    // empty terminal chunk. It reaches the buyer once, not zero times and not
+    // replayed raw a second time alongside the empty marker.
+    expect(text).toBe(tail);
+  });
+
   it('suppresses a message_start split across chunks on a later iteration', async () => {
     // Cut inside iteration 2's message_start event line.
     const cut = ITER2_SSE.indexOf('message_start') + 5;

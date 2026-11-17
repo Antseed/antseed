@@ -122,12 +122,14 @@ function forwardChunkAsEvents(
     ...(chunk.data.length > 0 ? eventBuffer.push(chunk.data) : []),
     ...(chunk.done ? eventBuffer.flush() : []),
   ];
+  for (const event of events) forwardEvent(event);
   if (chunk.data.length === 0) {
-    // Empty keep-alive or terminal marker — no payload to frame.
+    // Empty keep-alive or terminal marker — no new payload to frame, but a
+    // terminal chunk may still flush a nonempty unterminated tail buffered
+    // from an earlier chunk. Forward those events before the marker.
     forwardRaw(chunk);
     return;
   }
-  for (const event of events) forwardEvent(event);
   if (chunk.done) {
     // Payload was drained through the event filter; forward only the
     // terminal marker so its bytes are not delivered a second time.
