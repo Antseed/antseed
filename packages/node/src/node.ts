@@ -2312,10 +2312,9 @@ export class AntseedNode extends EventEmitter {
           maxConcurrency: p.maxConcurrency,
           isAvailable: () => this._advertisingPausedReason === null,
           pricing: {
-            defaults: {
-              inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
-              outputUsdPerMillion: p.pricing.defaults.outputUsdPerMillion,
-            },
+            // Announce every default price, the cached-input one included: a default the seller bills by but does not
+            // announce is a cost buyers cannot see. (A cached-input price of 0 reads back as none on the wire.)
+            defaults: { ...p.pricing.defaults },
             ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
           },
           };
@@ -2329,10 +2328,7 @@ export class AntseedNode extends EventEmitter {
           this._providers.map((p) => [
             announcedProviderName(identity.privateKey, p.name, this._config.announceProviderIds === true),
             {
-              defaults: {
-                inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
-                outputUsdPerMillion: p.pricing.defaults.outputUsdPerMillion,
-              },
+              defaults: { ...p.pricing.defaults },
               ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
             },
           ]),
