@@ -107,6 +107,13 @@ describe('early-exit preview from the normal lock start', () => {
   });
 });
 
+/** The pool's epoch the mocked chain reports; `startsAt` keeps it equal to the epoch passed in. */
+let chainEpoch = 0;
+const startsAt = (ids: number[], rows: LineageRow[], epoch: number, cache?: Map<string, LockHistory>, config?: Parameters<typeof normalLockStarts>[6]) => {
+  chainEpoch = epoch;
+  return normalLockStarts(provider, POOLS, ids, rows, epoch, cache, config);
+};
+
 describe('lock history reads', () => {
   const UINT_MAX = 2n ** 256n - 1n;
   beforeEach(() => { vi.mocked(multicallRead).mockReset(); });
@@ -119,6 +126,7 @@ describe('lock history reads', () => {
       3: [[2, [9n, 0n, 7n]]],
     };
     vi.mocked(multicallRead).mockImplementation(async (_provider, requests) => requests.map(request => {
+      if (request.method === 'currentEpoch') return [BigInt(chainEpoch)];
       const [id, epoch] = request.args as [number, number];
       if (request.method === 'positionWithdrawableEpoch') return [id === 2 ? 5n : 0n];
       const hit = [...segments[id]!].reverse().find(([at]) => at <= epoch)!;
@@ -150,6 +158,7 @@ describe('lock history reads', () => {
       3: [[7, [111n, 0n, UINT_MAX]]],
     };
     vi.mocked(multicallRead).mockImplementation(async (_provider, requests) => requests.map(request => {
+      if (request.method === 'currentEpoch') return [BigInt(chainEpoch)];
       const [id, epoch] = request.args as [number, number];
       if (request.method === 'positionWithdrawableEpoch') return [id === 1 ? 0n : 7n];
       return [...segments[id]!].reverse().find(([at]) => at <= epoch)![1];
@@ -159,7 +168,7 @@ describe('lock history reads', () => {
       { id: 2, stakeStartEpoch: 7, closedAtEpoch: 0 },
       { id: 3, stakeStartEpoch: 7, closedAtEpoch: 0 },
     ];
-    expect(await normalLockStarts(provider, POOLS, [2, 3], rows, 6)).toEqual(new Map([[2, 7], [3, 7]]));
+    expect(await startsAt([2, 3], rows, 6)).toEqual(new Map([[2, 7], [3, 7]]));
   });
 
   /**
@@ -189,6 +198,7 @@ describe('lock history reads', () => {
   /** Mock pool at `epoch`: checkpoints from `segments`, `earlyExitSlashBps` from `slash` (missing = revert). */
   const mockPool = (segments: typeof toggleSegments, slash: Record<number, number | undefined>) => {
     vi.mocked(multicallRead).mockImplementation(async (_provider, requests) => requests.map(request => {
+      if (request.method === 'currentEpoch') return [BigInt(chainEpoch)];
       const [id, epoch] = request.args as [number, number];
       if (request.method === 'positionWithdrawableEpoch') return [id === 2 || id === 4 ? 6n : 0n];
       if (request.method === 'earlyExitSlashBps') return slash[id] === undefined ? null : [BigInt(slash[id]!)];
@@ -200,7 +210,7 @@ describe('lock history reads', () => {
   it('resolves max lock enabled and disabled within one epoch to the reset epoch with the pool\'s slash', async () => {
     // Pool truth: 2 starts at 9 (end 113), 4 at 6 (end 110). Withdrawing at 10 burns 103/104 and 100/104 of max.
     mockPool(toggleSegments, { 2: Math.floor(5_000 * 103 / 104), 4: Math.floor(5_000 * 100 / 104) });
-    expect(await normalLockStarts(provider, POOLS, [2, 4, 5], toggleRows, 10, undefined, poolConfig)).toEqual(new Map([[2, 9], [4, 6], [5, 5]]));
+    expect(await startsAt([2, 4, 5], toggleRows, 10, undefined, poolConfig)).toEqual(new Map([[2, 9], [4, 6], [5, 5]]));
     // Only the two ambiguous positions need the pool's slash, in one batched read.
     expect(slashReads().map(request => request.args![0])).toEqual([2, 4]);
     expect(vi.mocked(multicallRead).mock.calls.filter(([, requests]) => requests.some(request => request.method === 'earlyExitSlashBps'))).toHaveLength(1);
@@ -209,44 +219,58 @@ describe('lock history reads', () => {
   it('resolves an extend to the cap to the start it kept', async () => {
     // Pool truth: 2 keeps start 4 (end 113), 4 keeps start 4 (end 110).
     mockPool(toggleSegments, { 2: Math.floor(5_000 * 103 / 109), 4: Math.floor(5_000 * 100 / 106) });
-    expect(await normalLockStarts(provider, POOLS, [2, 4], toggleRows, 10, undefined, poolConfig)).toEqual(new Map([[2, 4], [4, 4]]));
+    expect(await startsAt([2, 4], toggleRows, 10, undefined, poolConfig)).toEqual(new Map([[2, 4], [4, 4]]));
   });
 
   it('leaves an ambiguous start unknown when the pool\'s slash cannot decide', async () => {
     // The slash read reverts (a change still pending), or matches neither candidate.
     mockPool(toggleSegments, { 2: undefined, 4: 1234 });
-    expect(await normalLockStarts(provider, POOLS, [2, 4], toggleRows, 10, undefined, poolConfig)).toEqual(new Map([[2, null], [4, null]]));
+    expect(await startsAt([2, 4], toggleRows, 10, undefined, poolConfig)).toEqual(new Map([[2, null], [4, null]]));
     // Near the end both candidates clamp to the minimum slash; after it both are 0.
     mockPool(toggleSegments, { 2: 500, 4: 0 });
-    expect(await normalLockStarts(provider, POOLS, [2, 4], toggleRows, 112, undefined, poolConfig)).toEqual(new Map([[2, null], [4, null]]));
+    expect(await startsAt([2, 4], toggleRows, 112, undefined, poolConfig)).toEqual(new Map([[2, null], [4, null]]));
     // Without the pool's config there is nothing to compare: unknown, and no slash read.
     vi.mocked(multicallRead).mockClear();
-    expect(await normalLockStarts(provider, POOLS, [2, 4, 5], toggleRows, 10)).toEqual(new Map([[2, null], [4, null], [5, 5]]));
+    expect(await startsAt([2, 4, 5], toggleRows, 10)).toEqual(new Map([[2, null], [4, null], [5, 5]]));
     expect(slashReads()).toHaveLength(0);
   });
 
   it('does not read the slash while the ambiguous change is still pending', async () => {
     // Epoch 8: the checkpoint at 9 takes effect next epoch, so the pool's slash still describes the old lock.
     mockPool(toggleSegments, { 2: Math.floor(5_000 * 12 / 16) });
-    expect(await normalLockStarts(provider, POOLS, [2], toggleRows, 8, undefined, poolConfig)).toEqual(new Map([[2, null]]));
+    expect(await startsAt([2], toggleRows, 8, undefined, poolConfig)).toEqual(new Map([[2, null]]));
     expect(slashReads()).toHaveLength(0);
   });
 
   it('stops at once on a position the chain closed but the feed still shows open', async () => {
     // Closed at 7 on chain; the feed row still says open, so the view keeps answering "closed at 7".
     vi.mocked(multicallRead).mockImplementation(async (_provider, requests) => requests.map(request => {
+      if (request.method === 'currentEpoch') return [BigInt(chainEpoch)];
       const [, epoch] = request.args as [number, number];
       if (request.method === 'positionWithdrawableEpoch') return [0n];
       return epoch >= 7 ? [0n, 0n, 7n] : [20n, 0n, 7n];
     }));
     const rows: LineageRow[] = [{ id: 1, stakeStartEpoch: 4, closedAtEpoch: 0 }];
-    expect(await normalLockStarts(provider, POOLS, [1], rows, 10)).toEqual(new Map([[1, null]]));
+    expect(await startsAt([1], rows, 10)).toEqual(new Map([[1, null]]));
     expect(vi.mocked(multicallRead).mock.calls.length).toBeLessThanOrEqual(2);
+  });
+
+  it('leaves every start unknown when the epoch passed in is no longer the pool\'s', async () => {
+    // A cached epoch right after a boundary: the walk and the pool's slash would read another epoch's lock.
+    vi.mocked(multicallRead).mockImplementation(async (_provider, requests) => requests.map(request => {
+      if (request.method === 'currentEpoch') return [BigInt(chainEpoch)];
+      if (request.method === 'positionWithdrawableEpoch') return [0n];
+      return [20n, 0n, 2n ** 256n - 1n];
+    }));
+    const rows: LineageRow[] = [{ id: 1, stakeStartEpoch: 4, closedAtEpoch: 0 }];
+    expect(await startsAt([1], rows, 10)).toEqual(new Map([[1, 4]]));
+    chainEpoch = 11;
+    expect(await normalLockStarts(provider, POOLS, [1], rows, 10)).toEqual(new Map([[1, null]]));
   });
 
   it('leaves starts unknown when the chain read fails', async () => {
     vi.mocked(multicallRead).mockRejectedValue(new Error('RPC unavailable'));
     const { rows } = issueLineage();
-    expect(await normalLockStarts(provider, POOLS, [5, 6], rows, 10)).toEqual(new Map([[5, null], [6, null]]));
+    expect(await startsAt([5, 6], rows, 10)).toEqual(new Map([[5, null], [6, null]]));
   });
 });

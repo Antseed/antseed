@@ -8,6 +8,7 @@ const UINT_MAX = 2n ** 256n - 1n;
 const iface = new Interface([
   'function positionWithdrawableEpoch(uint256 positionId) view returns (uint64)',
   'function positionPowerSegmentAt(uint256 positionId, uint256 epoch) view returns (uint256 normalEndEpoch, uint256 maxLockPower, uint256 nextChangeEpoch)',
+  'function currentEpoch() view returns (uint256)',
 ]);
 
 /** A chain with the pool but no Multicall3, as a bare local Anvil chain. */
@@ -18,6 +19,7 @@ function chainWithoutMulticall(segments: Record<number, Array<[number, [bigint, 
       if (tx.to.toLowerCase() !== POOLS) return '0x';
       const parsed = iface.parseTransaction({ data: tx.data })!;
       const [id, epoch] = parsed.args.map(Number) as [number, number];
+      if (parsed.name === 'currentEpoch') return iface.encodeFunctionResult(parsed.name, [10n]);
       if (parsed.name === 'positionWithdrawableEpoch') return iface.encodeFunctionResult(parsed.name, [0n]);
       return iface.encodeFunctionResult(parsed.name, [...segments[id]!].reverse().find(([at]) => at <= epoch)![1]);
     },

@@ -118,6 +118,7 @@ describe('indexed display / live financial read boundary', () => {
       lockReads.push(...calls);
       return calls.map(call => {
         const id = call.args![0] as number;
+        if (call.method === 'currentEpoch') return [22n];
         if (call.method === 'positionWithdrawableEpoch') return [id >= 5 ? 5n : 0n];
         if (call.method === 'positionPowerSegmentAt') return [30n, 0n, 2n ** 256n - 1n];
         throw new Error(`unexpected ${call.method}`);
@@ -130,7 +131,7 @@ describe('indexed display / live financial read boundary', () => {
     // The burn preview divides by the normal window (29 and 27 epochs), not the public one (25).
     expect(byId.get(5)!.projectedSlashBps).toBe(Math.floor(9000 * 8 / 29));
     expect(byId.get(6)!.projectedSlashBps).toBe(Math.floor(9000 * 8 / 27));
-    expect(new Set(lockReads.map(call => call.method))).toEqual(new Set(['positionWithdrawableEpoch', 'positionPowerSegmentAt']));
+    expect(new Set(lockReads.map(call => call.method))).toEqual(new Set(['positionWithdrawableEpoch', 'positionPowerSegmentAt', 'currentEpoch']));
   });
 
   it('rebuilds the lock start of restructured and un-max-locked positions with no merge partner', async () => {
@@ -149,6 +150,7 @@ describe('indexed display / live financial read boundary', () => {
       lockReads.push(...calls);
       return calls.map(call => {
         const [id, epoch] = call.args as [number, number];
+        if (call.method === 'currentEpoch') return [22n];
         if (call.method === 'positionWithdrawableEpoch') return [id === 5 ? 5n : 0n];
         if (call.method !== 'positionPowerSegmentAt') throw new Error(`unexpected ${call.method}`);
         if (id === 7) return epoch < 20 ? [0n, 200n, 20n] : [124n, 0n, 2n ** 256n - 1n];
