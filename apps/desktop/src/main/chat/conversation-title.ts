@@ -197,6 +197,9 @@ export async function generateConversationTitleWithModel({
       input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
       stream: true,
     };
+  } else {
+    // The Messages API requires its version header.
+    headers['anthropic-version'] = '2023-06-01';
   }
 
   const controller = new AbortController();
