@@ -272,7 +272,9 @@ describe.skipIf(!ENABLED)('normal lock start vs the real pool (Anvil differentia
           const position = chain.positions.get(id)!;
           if (position.stakeEndEpoch <= chain.epoch + 1) continue;
           const key = `${position.agentId}:${position.stakeEndEpoch}`;
-          groups.set(key, [...(groups.get(key) ?? []), id]);
+          const group = groups.get(key);
+          if (group) group.push(id);
+          else groups.set(key, [id]);
         }
         for (const group of groups.values()) {
           for (let i = 0; i < group.length; i++) {
@@ -335,7 +337,9 @@ describe.skipIf(!ENABLED)('normal lock start vs the real pool (Anvil differentia
             for (const id of ids) {
               const position = chain.positions.get(id)!;
               const key = `${position.agentId}:${position.stakeEndEpoch}`;
-              groups.set(key, [...(groups.get(key) ?? []), id]);
+              const group = groups.get(key);
+              if (group) group.push(id);
+              else groups.set(key, [id]);
             }
             const candidates = [...groups.values()].filter(group => group.length > 1);
             const group = candidates.length > 0 && random() < 0.85 ? pick(candidates) : ids;

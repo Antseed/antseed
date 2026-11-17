@@ -68,7 +68,11 @@ export function restructureSources(rows: LineageRow[]): Map<number, number[]> {
   const sources = new Map<number, number[]>();
   for (const row of rows) {
     if (row.closedBy !== 'split' && row.closedBy !== 'merge' && row.closedBy !== 'move') continue;
-    for (const replacement of row.replacementIds ?? []) sources.set(replacement, [...(sources.get(replacement) ?? []), row.id]);
+    for (const replacement of row.replacementIds ?? []) {
+      const ids = sources.get(replacement);
+      if (ids) ids.push(row.id);
+      else sources.set(replacement, [row.id]);
+    }
   }
   return sources;
 }

@@ -116,7 +116,9 @@ export function mergeCandidateIds(positions: SellerPoolPosition[], currentEpoch:
   positions.forEach((position, index) => {
     if (position.closedAtEpoch !== 0 || position.withdrawn || scheduledMaxLock(index) || position.stakeEndEpoch <= currentEpoch + 1) return;
     const key = `${position.agentId}:${position.stakeEndEpoch}`;
-    groups.set(key, [...(groups.get(key) ?? []), position.id]);
+    const ids = groups.get(key);
+    if (ids) ids.push(position.id);
+    else groups.set(key, [position.id]);
   });
   return [...groups.values()].filter(ids => ids.length > 1).flat();
 }
