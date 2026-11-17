@@ -6,7 +6,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
-## 2026-11-17 — CLI 0.1.252, Node 0.2.185
+## 2026-11-17 — CLI 0.1.252, Node 0.2.185, Desktop 0.2.89
 
 ### Packages
 
@@ -16,6 +16,10 @@ This project uses selective package publishing. Each release entry lists the pub
 - `@antseed/web-sdk@0.1.45`
 - `@antseed/payments@0.1.112`
 - `@antseed/ants@0.1.70`
+
+### Desktop
+
+- `@antseed/desktop@0.2.89`
 
 ### Fixed
 - Sellers (`@antseed/node`, `@antseed/buyer-core`): images sent inline in a chat request no longer count as text in the checks a seller runs before a request goes upstream. Their base64 counted as millions of tokens, so a short conversation with a few pasted screenshots was refused with `429 buyer_usage_limited` under buyer limits, or `402` when the channel's locked reserve couldn't cover the estimate, though upstream it is a few thousand tokens. Each image now counts as a flat allowance, as it already did when an answer without a usage report is billed. Text, audio, files and documents are counted by their size as before.
