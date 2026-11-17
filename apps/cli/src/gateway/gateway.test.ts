@@ -810,6 +810,13 @@ async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0, priceHeade
       if (req.url?.endsWith('/queue')) {
         const cap = (req.headers['x-antseed-max-video-usdc'] as string | undefined) ?? null
         caps.push(cap)
+        // A seller holding the buyer back lists the buyer's jobs that hold it, whichever key started them.
+        if (body.job?.startsWith('hold:')) {
+          const jobs = body.job.slice('hold:'.length).split(',').map((id) => ({ id, protocol: 'venice-video' }))
+          res.writeHead(409, { ...headers, 'content-type': 'application/json', 'retry-after': '60' })
+          res.end(JSON.stringify({ error: { code: 'video_jobs_uncollected', message: 'A video you started on this seller over an hour ago has not been downloaded. Its job ID is in error.jobs.', jobs } }))
+          return
+        }
         if (cap !== null && priceUsdc > Number(cap)) {
           res.writeHead(422, { ...headers, 'content-type': 'application/json' })
           res.end(JSON.stringify({ error: { code: 'buyer-budget-too-low', message: 'Video costs more than the spend limit has left' } }))
@@ -858,7 +865,7 @@ async function videoGateway(priceUsdc: number, dailyCap: number, createDelayMs =
   const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
   return {
     store, key, buyer, gateway,
-    create: (job: string) => request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: JSON.stringify({ model: 'seedance', prompt: 'An ant', duration: '8s', job }) }),
+    create: (job: string, as: string = secret) => request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: as, body: JSON.stringify({ model: 'seedance', prompt: 'An ant', duration: '8s', job }) }),
     poll: (job: string, as: string = secret) => request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: as, body: JSON.stringify({ model: 'seedance', queue_id: job }) }),
     secret,
     otherSecret: other.secret,
@@ -976,6 +983,33 @@ test('only the key that created a video job may retrieve it', async () => {
     assert.equal(JSON.parse(stolen.body).error.code, 'video_route_not_found')
     assert.equal((await video.poll('job-unknown')).status, 404, 'a job this gateway never created is refused too')
     assert.equal((await video.poll('job-done')).status, 200)
+  } finally {
+    await video.close()
+  }
+})
+
+test("a seller's video job hold shows each key only the jobs it created", async () => {
+  const video = await videoGateway(400_000, 1_000_000)
+  try {
+    assert.equal((await video.create('job-mine')).status, 200)
+    assert.equal((await video.create('job-theirs', video.otherSecret)).status, 200)
+
+    const mine = await video.create('hold:job-mine,job-theirs')
+    assert.equal(mine.status, 409)
+    assert.equal(mine.headers['retry-after'], '60')
+    assert.deepEqual(JSON.parse(mine.body).error, {
+      code: 'video_jobs_uncollected',
+      message: 'A video you started on this seller over an hour ago has not been downloaded. Its job ID is in error.jobs.',
+      jobs: [{ id: 'job-mine', protocol: 'venice-video' }],
+    })
+
+    // Held back only by another key's job: told so, with no job of anyone's.
+    const theirs = await video.create('hold:job-mine,job-unknown', video.otherSecret)
+    assert.equal(theirs.status, 409)
+    const error = JSON.parse(theirs.body).error
+    assert.equal(error.code, 'video_jobs_held')
+    assert.deepEqual(error.jobs, [])
+    assert.ok(!theirs.body.includes('job-mine') && !theirs.body.includes('job-unknown'))
   } finally {
     await video.close()
   }

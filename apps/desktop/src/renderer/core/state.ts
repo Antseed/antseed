@@ -165,6 +165,8 @@ export type RendererUiState = {
   // --- Streaming indicator ---
   chatWaitingForStream: boolean;
   chatThinkingPhase: string | null;
+  /** When the open chat's request started (ms); the walking ant's timer counts from it. */
+  chatThinkingStartedAt: number | null;
 
   // --- First-run setup ---
   appSetupStatusKnown: boolean;
@@ -266,6 +268,7 @@ export function createInitialUiState(): RendererUiState {
     // Streaming indicator
     chatWaitingForStream: false,
     chatThinkingPhase: null,
+    chatThinkingStartedAt: null,
 
     // First-run setup
     appSetupStatusKnown: false,
