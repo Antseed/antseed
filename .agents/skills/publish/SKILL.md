@@ -75,26 +75,52 @@ This prints local vs registry versions with a PUBLISH/skip verdict per package a
 
 The PUBLISH rows must exactly match the intended set, exit code 0. The CI workflow runs this same script as a gate before publishing.
 
-### 5. Open the bump PR
+### 5. Cut the changelog section
 
-Never commit to main. Branch, commit the changed `package.json` files, push, open a PR:
+Every release moves what it ships out of `## Unreleased` in `CHANGELOG.md`, in the bump PR itself, so `## Unreleased` only ever holds what is not released yet. Never open a bump PR without this step.
+
+1. Under `## Unreleased`, add a section for the release, newest first, in the format the file already uses:
+
+   ```markdown
+   ## Unreleased
+
+   ## <YYYY-MM-DD> — CLI <cli version>, Node <node version>
+
+   ### Packages
+
+   - `@antseed/cli@<version>`
+   - `@antseed/node@<version>`
+
+   ### Added
+   ...
+   ```
+
+   Name only the versions this release publishes (leave Node out when it isn't bumped). A second npm release the same day goes into a new section of its own above the first.
+2. Move every entry from `## Unreleased` into it, keeping its subsection (`### Added`, `### Changed`, `### Fixed`, ...) and its text unchanged. Everything merged to main is in this release, so `## Unreleased` ends up empty; keep the heading.
+3. Check that nothing was lost: the sorted bullet lines of the file are the same before and after, apart from the `### Packages` lines you added (`bullets() { grep '^ *- ' | grep -v '^- `@antseed/[a-z-]*@[0-9.]*`$' | sort; }; diff <(git show origin/main:CHANGELOG.md | bullets) <(bullets < CHANGELOG.md)` prints nothing).
+
+A desktop release does the same in its bump PR (`apps/desktop/package.json`): add `### Desktop` with `` - `@antseed/desktop@<version>` `` to that day's section (adding `, Desktop <version>` to its heading), or open a `## <YYYY-MM-DD> — Desktop <version>` section when no npm release went out that day, and move any desktop entries still under `## Unreleased` into it.
+
+### 6. Open the bump PR
+
+Never commit to main. Branch, commit the changed `package.json` files and `CHANGELOG.md`, push, open a PR:
 
 ```bash
 git checkout -b release/npm-bump-<YYYY-MM-DD> origin/main
-git add <changed package.json files>
+git add <changed package.json files> CHANGELOG.md
 git commit -m "chore: bump versions for npm release"
 git push -u origin release/npm-bump-<YYYY-MM-DD>
 ```
 
-PR body: list the bumped packages grouped as "changed directly" (with a one-line reason each) vs "cascade (exact pins)", name the skipped packages, and note that the plan script validated the set. See PR #869 as a template.
+PR body: say the changelog section was cut, list the bumped packages grouped as "changed directly" (with a one-line reason each) vs "cascade (exact pins)", name the skipped packages, and note that the plan script validated the set. See PR #869 as a template.
 
-### 6. Hand off to CI — do not publish
+### 7. Hand off to CI — do not publish
 
 After the PR merges, the **user** triggers the release from GitHub: Actions → `Publish npm packages` → Run workflow on `main` (optionally with `dry_run` first to see the plan in the logs). The workflow installs, re-validates the plan, bakes `ANTSEED_COMPARABLE_PRICES_URL` into the release artifacts, builds, runs the full test suite, and publishes with `pnpm publish`.
 
-Do not run `pnpm publish`, `npm publish`, or the npm publish workflow yourself. (The TEE seller image workflow in step 8 is different: run it once the lock PR merges.)
+Do not run `pnpm publish`, `npm publish`, or the npm publish workflow yourself. (The TEE seller image workflow in step 9 is different: run it once the lock PR merges.)
 
-### 7. Verify after the workflow succeeds (read-only)
+### 8. Verify after the workflow succeeds (read-only)
 
 ```bash
 node scripts/npm-publish-plan.mjs        # should report 0 packages to publish
@@ -104,7 +130,7 @@ tmpdir=$(mktemp -d) && cd "$tmpdir" && npm install @antseed/cli@latest --ignore-
 
 Confirm exactly ONE `@antseed/node` version appears (the 0.1.139 incident check), no `workspace:` specs in published manifests, and — if the cli was released — that `node_modules/@antseed/cli/dist/generated/baked-defaults.js` contains the comparable-prices URL.
 
-### 8. Release the TEE seller image (when `@antseed/cli` was released)
+### 9. Release the TEE seller image (when `@antseed/cli` was released)
 
 The TEE seller image (`deploy/tee-seller`) installs an exact CLI from a committed lockfile and never updates itself, so TEE sellers get a release only through a new image. After every release that includes a new `@antseed/cli`:
 
