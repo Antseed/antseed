@@ -73,3 +73,46 @@ describe('seller DHT signaling port', () => {
     }
   });
 });
+
+describe('seller announced prices', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('announces every default price it bills by, the cached-input price included', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'antseed-announce-pricing-'));
+    const manager = new ConnectionManager();
+    vi.spyOn(ConnectionManager, 'init').mockResolvedValue(manager);
+    vi.spyOn(DHTNode.prototype, 'announce').mockResolvedValue(undefined);
+    vi.spyOn(NatTraversal.prototype, 'mapPorts').mockResolvedValue({ success: false, externalIp: null, mappings: [] });
+    const node = new AntseedNode({
+      role: 'seller',
+      dataDir,
+      identity: identityFromPrivateKeyHex('12'.repeat(32)),
+      noOfficialBootstrap: true,
+      dhtPort: 0,
+      signalingPort: 0,
+    });
+    const provider = (name: string, defaults: { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion?: number }) => ({
+      name,
+      services: ['test-model', 'priced-model'],
+      pricing: { defaults, services: { 'priced-model': { inputUsdPerMillion: 3, outputUsdPerMillion: 15, cachedInputUsdPerMillion: 0.5 } } },
+      maxConcurrency: 1,
+      getCapacity: () => ({ current: 0, max: 1 }),
+      handleRequest: async () => { throw new Error('No inference expected'); },
+    });
+    node.registerProvider(provider('cached-priced', { inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.75 }));
+    node.registerProvider(provider('no-cached-price', { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }));
+
+    try {
+      await node.start();
+      const metadata = await new HttpMetadataResolver().resolve({ host: '127.0.0.1', port: node.signalingPort });
+      const announced = Object.fromEntries((metadata?.providers ?? []).map((entry) => [entry.provider, entry]));
+      expect(announced['cached-priced']?.defaultPricing).toEqual({ inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.75 });
+      expect(announced['no-cached-price']?.defaultPricing).toEqual({ inputUsdPerMillion: 1, outputUsdPerMillion: 2 });
+      expect(announced['cached-priced']?.servicePricing?.['priced-model']).toEqual({ inputUsdPerMillion: 3, outputUsdPerMillion: 15, cachedInputUsdPerMillion: 0.5 });
+    } finally {
+      await manager.stopListening();
+      await node.stop();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});
