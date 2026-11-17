@@ -247,6 +247,17 @@ describe('image/provider fact extraction', () => {
     });
   });
 
+  it('reads an image path written in other letter case as the same endpoint', () => {
+    for (const path of ['/V1/Images/Generations', '/v1/IMAGES/edits']) {
+      expect(extractImageRequestFacts({ path, method: 'POST', body: { model: 'gpt-image-1' } })).toEqual({
+        model: 'gpt-image-1',
+        size: 'auto',
+        quality: 'auto',
+        requestedImages: 1,
+      });
+    }
+  });
+
   it('normalizes invalid image counts to the endpoint default', () => {
     for (const n of [0, -1, 1.5, '0', Number.MAX_SAFE_INTEGER + 1]) {
       const facts = extractImageRequestFacts({

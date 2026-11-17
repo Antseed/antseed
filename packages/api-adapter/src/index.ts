@@ -40,6 +40,7 @@ export {
   extractRequestBodyFields,
   parseJsonObject,
   parseMultipartFormFields,
+  isDeliveredImageOutput,
   isImageEditPath,
   isMultipartFormData,
   parseMultipartForm,

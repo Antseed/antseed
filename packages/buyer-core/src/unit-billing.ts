@@ -4,6 +4,8 @@ import type {
   SpeechRequestFacts,
   TokenUsage,
 } from '@antseed/api-adapter';
+import { buyerFault } from './errors.js';
+import { readStreamEvents, streamUsage } from './response-usage.js';
 import {
   extractImageRequestFacts,
   headerValue,
@@ -15,6 +17,7 @@ import {
   extractProviderResponseFacts,
   extractRequestBodyFields,
   parseJsonObject,
+  isDeliveredImageOutput,
   nativeVideoFacts,
   nativeVideoAcceptance,
   type NativeVideoFacts,
@@ -147,6 +150,10 @@ const speechBillingAdapter: UnitBillingAdapter = {
   capture: (args) => {
     const speech = extractSpeechRequestFacts(parseJsonObject(args.request.body));
     if (!speech) throw new Error('Speech billing requires a JSON body with a non-empty text "input"');
+    // Delivery is proved by audio bytes; a stream of events is not read as audio, so it could not be billed.
+    if (speech.eventStream) {
+      throw buyerFault('Speech billing requires the answer as audio: send the request without "stream_format", or with "audio"', 'invalid-request');
+    }
     return {
       context: {
         sellerPeerId: args.sellerPeerId,
@@ -291,7 +298,7 @@ function extractImageResponseUsage(
   const parsed = parseJsonObject(response.body);
   const responseFacts: ProviderResponseFacts = parsed
     ? extractProviderResponseFacts(parsed)
-    : { tokenUsage: ZERO_TOKEN_USAGE };
+    : streamedImageFacts(response.body);
   const billableOutputImages = capOutputImagesToRequest(
     responseFacts.outputImages,
     requestFacts.image.requestedImages,
@@ -304,6 +311,36 @@ function extractImageResponseUsage(
     },
     tokenUsage: responseFacts.tokenUsage,
   };
+}
+
+// The events of a streamed image answer that carry a final image; partial images are previews, not billed.
+const COMPLETED_IMAGE_EVENTS = new Set(['image_generation.completed', 'image_edit.completed']);
+
+/**
+ * The images and tokens of an answer streamed as server-sent events, in OpenAI's image events:
+ * each completed event's `data.type` (never the `event:` line alone) names one final image, which
+ * counts only when it carries one. Tokens are read as for any streamed answer, the largest figure
+ * of any event, so a stream of several final images may report fewer tokens than it used.
+ */
+function streamedImageFacts(body: Uint8Array): ProviderResponseFacts {
+  const events = [...readStreamEvents(new TextDecoder().decode(body))];
+  // An image counts only from an event a standard client reads: closed by a blank line, with all
+  // its data lines joined into one JSON object. The reader's line-by-line fallback is for tokens.
+  const outputImages = events.filter((event) => event.closed && isCompletedImage(parseJson(event.data))).length;
+  // No completed image reads as no image count at all, as a non-JSON answer always has.
+  return { tokenUsage: streamUsage(events), ...(outputImages > 0 ? { outputImages } : {}) };
+}
+
+function isCompletedImage(value: unknown): boolean {
+  return isDeliveredImageOutput(value) && COMPLETED_IMAGE_EVENTS.has((value as { type?: unknown }).type as string);
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 export function computeFinalUnitBilling(
