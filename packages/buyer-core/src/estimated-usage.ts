@@ -59,61 +59,78 @@ function chatAnswerText(body: Uint8Array): string | null {
   return answer;
 }
 
-/**
- * Image parts: OpenAI Chat (`image_url`), OpenAI Responses (`input_image`) and Anthropic Messages
- * (`image`). An upstream resizes an image before it reads it, so its tokens stay near the flat
- * allowance however large its encoding is. Audio, files and documents can be long, and their tokens
- * grow with them.
- */
-const IMAGE_PARTS = new Set(['image_url', 'input_image', 'image']);
-
-/** Whether a value is an attachment part of one of `parts`. The request object itself never is. */
-const isPart = (value: unknown, parts: ReadonlySet<string>): value is { type: string } =>
-  isRecord(value) && typeof value.type === 'string' && parts.has(value.type);
-
-/** A parsed chat request written without the contents of its `parts`, and how many it had. */
-function withoutParts(request: Record<string, unknown>, parts: ReadonlySet<string>): { text: Uint8Array; attachments: number } {
-  let attachments = 0;
-  const text = JSON.stringify(request, function (key: string, value: unknown) {
-    if (key === '' || !isPart(value, parts)) return value;
-    attachments += 1;
-    return { type: value.type };
-  });
-  return { text: encoder.encode(text), attachments };
-}
-
-/** Whether a parsed request holds any part of `parts`, below the request object itself. Walks without recursion. */
-function hasPart(request: Record<string, unknown>, parts: ReadonlySet<string>): boolean {
-  const pending: unknown[] = Object.values(request);
-  while (pending.length > 0) {
-    const value = pending.pop();
-    if (isPart(value, parts)) return true;
-    // One push per item: spreading a long array into push() can exceed the argument limit.
-    if (Array.isArray(value)) for (const item of value) pending.push(item);
-    else if (isRecord(value)) for (const item of Object.values(value)) pending.push(item);
-  }
-  return false;
-}
-
 /** The tokens of a chat request: its text, with a flat allowance in place of each attachment. */
 export function estimatePromptTokens(requestBody: Uint8Array): number {
   const request = parseJsonObject(requestBody);
   if (!request) return estimateTokensFromBytes(requestBody);
-  const { text, attachments } = withoutParts(request, ATTACHMENT_PARTS);
-  return estimateTokensFromBytes(text) + attachments * ATTACHMENT_TOKENS;
+  let attachments = 0;
+  const text = JSON.stringify(request, function (key: string, value: unknown) {
+    if (key === '' || !isRecord(value) || typeof value.type !== 'string' || !ATTACHMENT_PARTS.has(value.type)) return value;
+    attachments += 1;
+    return { type: value.type };
+  });
+  return estimateTokensFromBytes(encoder.encode(text)) + attachments * ATTACHMENT_TOKENS;
+}
+
+const isString = (value: unknown): value is string => typeof value === 'string';
+
+/**
+ * Whether a content part is an image in the form its API defines: OpenAI Chat `image_url` (a URL
+ * string or `{ url }`), OpenAI Responses `input_image` (`image_url` or `file_id`) or Anthropic
+ * Messages `image` (a `source` of a known type). An upstream resizes an image before it reads it, so
+ * its tokens stay near the flat allowance however large its encoding is.
+ */
+function isImagePart(part: Record<string, unknown>): boolean {
+  switch (part.type) {
+    case 'image_url': return isString(part.image_url) || (isRecord(part.image_url) && isString(part.image_url.url));
+    case 'input_image': return isString(part.image_url) || isString(part.file_id);
+    case 'image': return isRecord(part.source) && ['base64', 'url', 'file'].includes(part.source.type as string);
+    default: return false;
+  }
+}
+
+/**
+ * The image parts of a chat request, found only where the APIs put content: the parts of each message
+ * (`messages[].content[]`, Responses `input[].content[]`), of an Anthropic tool result inside them,
+ * and of a Responses tool output (`input[].output[]`). An object shaped like an image anywhere else
+ * (a tool's input or schema, a default, application data) is text the model reads, and counts as text.
+ */
+function imageParts(request: Record<string, unknown>): Set<object> {
+  const found = new Set<object>();
+  const addFrom = (parts: unknown, nested: boolean): void => {
+    if (!Array.isArray(parts)) return;
+    for (const part of parts) {
+      if (!isRecord(part)) continue;
+      if (isImagePart(part)) found.add(part);
+      else if (nested && part.type === 'tool_result') addFrom(part.content, false);
+    }
+  };
+  for (const list of [request.messages, request.input]) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (!isRecord(item)) continue;
+      addFrom(item.content, true);
+      if (item.type === 'function_call_output') addFrom(item.output, false);
+    }
+  }
+  return found;
 }
 
 /**
  * The prompt tokens of a chat request, for checks before it goes upstream (buyer limits, whether a
- * reserve covers it): `request` is `body` parsed. Each image counts the flat allowance, never its
- * base64, which is megabytes of body but not of tokens; everything else, audio, files and documents
- * included, counts by its bytes as before, so an estimate never drops below what those can cost. The
- * text is sampled (`estimateTokensFromBytesSampled`), and a body without images is not written again.
+ * reserve covers it): `request` is `body` parsed. Each image part counts the flat allowance, never its
+ * base64, which is megabytes of body but not of tokens. Everything else, audio, files, documents and
+ * anything image-shaped outside a content part, counts by its bytes as before, so the estimate never
+ * drops below what those can cost. The text is sampled (`estimateTokensFromBytesSampled`), and a body
+ * without image parts is not written again.
  */
 export function estimatePromptTokensForChecks(request: Record<string, unknown>, body: Uint8Array): number {
-  if (!hasPart(request, IMAGE_PARTS)) return estimateTokensFromBytesSampled(body);
-  const { text, attachments } = withoutParts(request, IMAGE_PARTS);
-  return estimateTokensFromBytesSampled(text) + attachments * ATTACHMENT_TOKENS;
+  const images = imageParts(request);
+  if (images.size === 0) return estimateTokensFromBytesSampled(body);
+  const text = JSON.stringify(request, (_key: string, value: unknown) => (
+    isRecord(value) && images.has(value) ? { type: value.type } : value
+  ));
+  return estimateTokensFromBytesSampled(encoder.encode(text)) + images.size * ATTACHMENT_TOKENS;
 }
 
 /**

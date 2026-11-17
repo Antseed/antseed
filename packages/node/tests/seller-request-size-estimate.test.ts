@@ -115,6 +115,33 @@ const SCREENSHOT_PARTS: Array<[string, Record<string, unknown>]> = [
   ['an Anthropic image', { type: 'image', source: { type: 'base64', media_type: 'image/png', data: SCREENSHOT } }],
 ];
 
+/** Images inside a tool's result: content the model sees as an image, so the flat allowance applies. */
+const TOOL_RESULT_IMAGES: Array<[string, Uint8Array]> = [
+  ['an Anthropic tool result', encoder.encode(JSON.stringify({ model: 'test-model', max_tokens: 1_000, messages: [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'screenshot', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: SCREENSHOT } }] }] },
+  ] }))],
+  ['a Responses tool output', encoder.encode(JSON.stringify({ model: 'test-model', max_output_tokens: 1_000, input: [
+    { type: 'function_call', call_id: 'c1', name: 'screenshot', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'c1', output: [{ type: 'input_image', image_url: `data:image/png;base64,${SCREENSHOT}` }] },
+  ] }))],
+];
+
+/** Text the model reads, in objects shaped like an image but outside a content part: it counts in full. */
+const LONG_TEXT_VALUE = 'seed '.repeat(400_000);
+const IMAGE_SHAPED_TEXT: Array<[string, Uint8Array]> = [
+  ['a tool call input', encoder.encode(JSON.stringify({ model: 'test-model', max_tokens: 1_000, messages: [
+    { role: 'user', content: 'Describe it.' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'describe', input: { type: 'image', source: { type: 'base64', data: LONG_TEXT_VALUE } } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'done' }] },
+  ] }))],
+  ['a tool schema', encoder.encode(JSON.stringify({ model: 'test-model', max_tokens: 1_000, messages: [{ role: 'user', content: 'Hi.' }],
+    tools: [{ type: 'function', function: { name: 'f', parameters: { type: 'object', properties: { img: { type: 'image_url', image_url: { url: 'x' }, description: LONG_TEXT_VALUE } } } } }] }))],
+  ['a message field outside its content', encoder.encode(JSON.stringify({ model: 'test-model', max_tokens: 1_000, messages: [
+    { role: 'user', content: 'Hi.', metadata: { type: 'input_image', image_url: LONG_TEXT_VALUE } },
+  ] }))],
+];
+
 /** Attachments whose tokens grow with their length: they keep counting by their bytes. */
 const LONG_ATTACHMENT_PARTS: Array<[string, Record<string, unknown>]> = [
   ['an OpenAI Chat file', { type: 'file', file: { file_data: `data:application/pdf;base64,${SCREENSHOT}`, filename: 'report.pdf' } }],
@@ -136,6 +163,14 @@ describe('seller pre-request size estimate', () => {
     it.each(LONG_ATTACHMENT_PARTS)('still counts %s by its size', async (_shape, part) => {
       expect(await serve(withScreenshot(part), { limiter: limiter() })).toBe(429);
     });
+
+    it.each(TOOL_RESULT_IMAGES)('admits an image in %s as an attachment', async (_shape, body) => {
+      expect(await serve(body, { limiter: limiter() })).toBe(200);
+    });
+
+    it.each(IMAGE_SHAPED_TEXT)('counts image-shaped text in %s in full', async (_shape, body) => {
+      expect(await serve(body, { limiter: limiter() })).toBe(429);
+    });
   });
 
   describe('locked reserve', () => {
@@ -151,6 +186,14 @@ describe('seller pre-request size estimate', () => {
 
     it.each(LONG_ATTACHMENT_PARTS)('still refuses %s the reserve cannot cover', async (_shape, part) => {
       expect(await serve(withScreenshot(part), reserve)).toBe(402);
+    });
+
+    it.each(TOOL_RESULT_IMAGES)('serves an image in %s within the reserve', async (_shape, body) => {
+      expect(await serve(body, reserve)).toBe(200);
+    });
+
+    it.each(IMAGE_SHAPED_TEXT)('refuses image-shaped text in %s the reserve cannot cover', async (_shape, body) => {
+      expect(await serve(body, reserve)).toBe(402);
     });
   });
 });

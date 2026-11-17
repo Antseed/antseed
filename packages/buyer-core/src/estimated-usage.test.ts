@@ -6,7 +6,10 @@ const encoder = new TextEncoder();
 const IMAGE_DATA = 'A'.repeat(500_000);
 
 /** A request parsed and the bytes it was parsed from, as a seller holds them. */
-const request = (value: Record<string, unknown>) => ({ value, body: encoder.encode(JSON.stringify(value)) });
+const request = (written: Record<string, unknown>) => {
+  const body = encoder.encode(JSON.stringify(written));
+  return { value: JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>, body };
+};
 const estimate = ({ value, body }: { value: Record<string, unknown>; body: Uint8Array }) => estimatePromptTokensForChecks(value, body);
 
 describe('estimatePromptTokensForChecks', () => {
@@ -26,6 +29,18 @@ describe('estimatePromptTokensForChecks', () => {
       { role: 'tool', tool_call_id: 't', content: [{ type: 'text', text: 'Screenshot:' }, { type: 'image_url' }] },
     ] });
     expect(estimate(withImages)).toBe(estimateTokensFromBytesSampled(withoutData.body) + 2 * 1_290);
+  });
+
+  it('counts an image-shaped object outside a content part as text', () => {
+    const toolInput = request({ model: 'm', messages: [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't', name: 'f', input: { type: 'image', source: { type: 'base64', data: IMAGE_DATA } } }] },
+    ] });
+    expect(estimate(toolInput)).toBe(estimateTokensFromBytesSampled(toolInput.body));
+  });
+
+  it('counts a part typed as an image without image fields as text', () => {
+    const malformed = request({ model: 'm', messages: [{ role: 'user', content: [{ type: 'image_url', text: IMAGE_DATA }] }] });
+    expect(estimate(malformed)).toBe(estimateTokensFromBytesSampled(malformed.body));
   });
 
   it('counts a document by its bytes', () => {
