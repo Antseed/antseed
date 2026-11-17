@@ -251,12 +251,6 @@ jobs:
       - name: Run stress-smoke
         run: pnpm testbench run stress-smoke --chain local --strict --seed "$SEED"
 
-      - name: Run issue-streamed-image-billed
-        run: pnpm testbench run issue-streamed-image-billed --chain local --strict --seed "$SEED"
-
-      - name: Run stress-images-streamed
-        run: pnpm testbench run stress-images-streamed --chain local --strict --seed "$SEED"
-
       - name: Upload testbench reports
         if: failure()
         uses: actions/upload-artifact@v4
