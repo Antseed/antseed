@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Agent streaming (`@ant-agent`): streamed provider chunks are re-framed into whole SSE events before internal-tool suppression, so a chunk ending mid-event no longer leaks a partial event to the buyer or glues the buyer's event tail to the next chunk. Nonempty partial chunks stay buffered until an event completes, and a nonempty terminal chunk is emitted once through the event filter instead of being replayed raw.
+
 ### Changed
 
 - Venice video (`@antseed/provider-venice-video`): the seller holds a create to the aspect ratios it announces and fills in the announced options Venice would otherwise default. A create with an `aspect_ratio` outside `video.aspectRatios` is answered `422 unsupported_video_option` before payment and without calling Venice, and one without an aspect ratio is sent with the first announced one. A silent service (`video.audio: false`) refuses `audio: true` and sends `audio: false` to models whose audio can be turned off; while Venice's model list is unread it refuses a create that omits `audio`. Services that announce neither option are relayed as before. Docs: plugin README.

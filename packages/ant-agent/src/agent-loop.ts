@@ -106,8 +106,11 @@ function createSseEventBuffer(): { push: (data: Uint8Array) => string[]; flush: 
 
 /**
  * Forward one raw network chunk as whole SSE events through an event-level
- * filter. Empty keep-alive chunks pass through untouched; on the final chunk
- * any buffered partial event is flushed through the filter first.
+ * filter. Empty keep-alive chunks pass through untouched; nonempty fragments
+ * stay buffered until an event completes so a partial event never reaches the
+ * buyer. On the final chunk any buffered partial event is flushed through the
+ * filter, then an empty terminal marker is forwarded instead of replaying the
+ * payload that was already emitted as events.
  */
 function forwardChunkAsEvents(
   chunk: { requestId: string; data: Uint8Array; done: boolean },
@@ -119,13 +122,17 @@ function forwardChunkAsEvents(
     ...(chunk.data.length > 0 ? eventBuffer.push(chunk.data) : []),
     ...(chunk.done ? eventBuffer.flush() : []),
   ];
-  if (events.length === 0 && !chunk.done) {
-    // Empty keep-alive chunk — forward as-is
+  if (chunk.data.length === 0) {
+    // Empty keep-alive or terminal marker — no payload to frame.
     forwardRaw(chunk);
     return;
   }
   for (const event of events) forwardEvent(event);
-  if (chunk.done) forwardRaw(chunk);
+  if (chunk.done) {
+    // Payload was drained through the event filter; forward only the
+    // terminal marker so its bytes are not delivered a second time.
+    forwardRaw({ ...chunk, data: new Uint8Array(0) });
+  }
 }
 
 /** Check if an SSE event is an Anthropic message_start event. */

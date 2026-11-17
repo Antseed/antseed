@@ -198,6 +198,52 @@ describe('runAgentLoopStream — chunk-boundary handling', () => {
     expect(text).not.toContain('toolu_1');
   });
 
+  it('keeps a nonempty partial chunk buffered until its event completes', async () => {
+    // First chunk ends inside the first event's data line, before the first
+    // event delimiter. The prefix alone is not a valid SSE event.
+    const cut = ITER1_SSE.indexOf('message_start') + 5;
+    expect(cut).toBeGreaterThan(0);
+
+    const { text } = await runLoop(streamFake([ITER1_SSE, ITER2_SSE], [[cut], []]));
+
+    const events = expectWellFormedSse(text);
+    expect(events.filter(e => e.includes('event: message_start'))).toHaveLength(1);
+    // No truncated prefix from the first chunk leaked through as its own event.
+    expect(events.some(e => e.startsWith('event: mess\n'))).toBe(false);
+  });
+
+  it('delivers a nonempty terminal chunk exactly once', async () => {
+    // Provider error paths can emit a complete event body in a done:true chunk.
+    // The framing drains it through the event filter, then forwards an empty
+    // terminal marker — the payload must not also be replayed raw.
+    const payload = ITER2_SSE;
+    const inner: Provider = {
+      name: 'fake-terminal',
+      services: ['claude-sonnet-4-5-20250929'],
+      pricing: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } },
+      maxConcurrency: 1,
+      getCapacity: () => ({ current: 0, max: 1 }),
+      handleRequest: async (): Promise<SerializedHttpResponse> => {
+        throw new Error('unexpected non-streaming call');
+      },
+      handleRequestStream: async (
+        req: SerializedHttpRequest,
+        callbacks: ProviderStreamCallbacks,
+      ): Promise<SerializedHttpResponse> => {
+        callbacks.onResponseChunk({ requestId: req.requestId, data: encoder.encode(payload), done: true });
+        return {
+          requestId: req.requestId,
+          statusCode: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body: encoder.encode(payload),
+        };
+      },
+    };
+    const { text, doneCount } = await runLoop(inner);
+    expect(doneCount).toBe(1);
+    expect(text).toBe(payload);
+  });
+
   it('suppresses a message_start split across chunks on a later iteration', async () => {
     // Cut inside iteration 2's message_start event line.
     const cut = ITER2_SSE.indexOf('message_start') + 5;
