@@ -647,6 +647,7 @@ describe('upstream credit classification in probes and requests', () => {
     expect(isUpstreamOutOfCredit(429, '{"error":{"message":"You exceeded your current quota","type":"insufficient_quota","code":"insufficient_quota"}}')).toBe(true);
     expect(isLiveResponseOutOfCredit(400, "Invalid input: 'insufficient balance'")).toBe(false);
     expect(isLiveResponseOutOfCredit(403, 'Insufficient credits. Add more using https://openrouter.ai/settings/credits')).toBe(true);
+    expect(isLiveResponseOutOfCredit(403, '{"error":{"code":"fal_request_rejected","message":"User is locked"}}')).toBe(true);
     expect(isUpstreamOutOfCredit(500, 'desktop upload failed')).toBe(false);
     const provider = makeProvider({ services: ['image-a'], checkUpstreamAccount: async () => ({ status: 'unavailable', reason: 'fal balance $3.00 is at or below the $5 minimum', outOfCredit: true }), serviceApiProtocols: { 'image-a': ['venice-video'] } } as Partial<Provider>);
     const statuses: string[] = [];
@@ -914,8 +915,8 @@ describe('ModelHealthChecker live failures on unprobed services', () => {
     checker.reportUpstreamResponse(provider, 403, '{"error":{"code":"fal_request_rejected","message":"Forbidden"}}', true, 'video-a');
     checker.reportUpstreamResponse(provider, 401, '', true, 'video-a');
     expect(provider.serviceHealth).toBeUndefined();
-    // An out-of-credit 403 is still the account's failure.
-    checker.reportUpstreamResponse(provider, 403, '{"error":"Insufficient credits"}', true, 'video-a');
+    // An out-of-credit 403 (fal locks an account out of credit) is still the account's failure.
+    checker.reportUpstreamResponse(provider, 403, '{"error":{"code":"fal_request_rejected","message":"User is locked"}}', true, 'video-a');
     expect(statusOf(provider, 'video-a')).toBe('failing');
   });
 
