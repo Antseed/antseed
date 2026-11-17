@@ -176,6 +176,7 @@ const POOLS_IFACE = new Interface([
   'function positionWithdrawableEpoch(uint256 positionId) view returns (uint64)',
   'function positionPowerSegmentAt(uint256 positionId, uint256 epoch) view returns (uint256 normalEndEpoch, uint256 maxLockPower, uint256 nextChangeEpoch)',
   'function earlyExitSlashBps(uint256 positionId) view returns (uint256)',
+  'function currentEpoch() view returns (uint256)',
 ]);
 const MAX_SEGMENT_ROUNDS = 32;
 /** `AntseedSellerPools.MAX_STAKE_EPOCHS`, a contract constant. */
@@ -276,7 +277,9 @@ export async function readLockHistory(
  * Normal lock start for each of `ids`, rebuilt from indexer lineage and the
  * pool's checkpoints. With the pool's `config`, a position with two candidate
  * starts is settled by the pool's `earlyExitSlashBps`, read in one batch for
- * just those positions. Any read failure leaves the affected ids `null`.
+ * just those positions. Any read failure leaves the affected ids `null`, and
+ * so does a `currentEpoch` that is no longer the pool's (a cached epoch right
+ * after a boundary): the walk and the slash would then read another epoch's lock.
  */
 export async function normalLockStarts(
   provider: AbstractProvider,
@@ -294,17 +297,23 @@ export async function normalLockStarts(
   try { history = await readLockHistory(provider, poolsAddress, needed, currentEpoch, cache, config?.maxStakeEpochs); }
   catch { /* Unknown history: every start stays null and callers fall back to the public window. */ }
   const candidates = startCandidates(ids, rows, sources, history);
-  let poolSlash: PoolSlash | undefined;
-  if (config) {
-    const slashIds = [...candidates]
-      .filter(([id, starts]) => starts !== null && starts.length > 1 && slashCanDecide(starts, rows.get(id), history.get(id), currentEpoch))
-      .map(([id]) => id);
-    poolSlash = { epoch: currentEpoch, config, bps: new Map() };
-    try {
-      const read = slashIds.length === 0 ? [] : await multicallRead(provider, slashIds.map(id => ({ target: poolsAddress, iface: POOLS_IFACE, method: 'earlyExitSlashBps', args: [id] })));
-      // A revert (a change pending until the position's withdrawable epoch) leaves that start unknown.
-      slashIds.forEach((id, index) => { const value = read[index]?.[0]; if (value != null) poolSlash!.bps.set(id, Number(value)); });
-    } catch { /* No slash: ambiguous starts stay null. */ }
-  }
+  if (history.size === 0) return chooseStarts(candidates, rows, history);
+  const slashIds = !config ? [] : [...candidates]
+    .filter(([id, starts]) => starts !== null && starts.length > 1 && slashCanDecide(starts, rows.get(id), history.get(id), currentEpoch))
+    .map(([id]) => id);
+  // The pool's epoch is read last, in the same batch (one block) as the slashes. Epochs only move forward,
+  // so when it still equals `currentEpoch`, every read above saw that epoch too.
+  let read: Array<unknown[] | null>;
+  try {
+    read = await multicallRead(provider, [
+      { target: poolsAddress, iface: POOLS_IFACE, method: 'currentEpoch', args: [] },
+      ...slashIds.map(id => ({ target: poolsAddress, iface: POOLS_IFACE, method: 'earlyExitSlashBps', args: [id] })),
+    ]);
+  } catch { read = []; }
+  const poolEpoch = read[0]?.[0];
+  if (poolEpoch == null || Number(poolEpoch) !== currentEpoch) return new Map(ids.map(id => [id, null]));
+  const poolSlash: PoolSlash | undefined = config ? { epoch: currentEpoch, config, bps: new Map() } : undefined;
+  // A revert (a change pending until the position's withdrawable epoch) leaves that start unknown.
+  slashIds.forEach((id, index) => { const value = read[index + 1]?.[0]; if (value != null) poolSlash!.bps.set(id, Number(value)); });
   return chooseStarts(candidates, rows, history, poolSlash);
 }
