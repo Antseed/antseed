@@ -1,6 +1,6 @@
 ---
 name: publish
-description: Release Antseed — decide which @antseed/* packages need version bumps, apply them, validate the set, cut the CHANGELOG release section, and open the bump PR (publishing happens in CI); after a CLI release, pin and publish the TEE seller image and release the desktop app.
+description: Release Antseed — decide which @antseed/* packages need version bumps, apply them, validate the set, cut the CHANGELOG release section, and open the bump PR (publishing happens in CI); after a CLI release, pin and publish the TEE seller image, and release the desktop app when the release changes what the desktop runs.
 disable-model-invocation: true
 ---
 
@@ -160,9 +160,14 @@ The TEE seller image (`deploy/tee-seller`) installs an exact CLI from a committe
    - its config still exposes `6882/tcp` and `6881/udp` (Google Confidential Space opens only exposed ports).
 6. Report the digest so TEE sellers can move to it (docs: "Upgrade to a new image"). No approval PR is needed: buyers accept images the workflow builds from main by their build record.
 
-### 10. Release the desktop app (when `@antseed/cli` was released)
+### 10. Release the desktop app (when the release changes what the desktop runs)
 
-The desktop bundles the CLI from the repository, so every CLI release ships in a desktop release too.
+The desktop bundles the CLI from the repository and runs it only as a buyer: its buyer proxy, the gateway, connected apps and the desktop's own code. It never starts a seller. So a CLI release ships in a desktop release only when it changes something the desktop runs. Decide from the commits in step 1:
+
+- **Release the desktop** for a change to the buyer (`packages/buyer-core` behavior, the buyer proxy and routing in `apps/cli/src/proxy`), the gateway (`apps/cli/src/gateway`), connected apps (`packages/connected-apps`), the API translation the buyer uses (`packages/api-adapter`), shared protocol code the buyer reads (`packages/protocol`), `apps/desktop` itself, or anything else the desktop bundles and calls (`@antseed/ui`, `@antseed/wallet-config`, payments).
+- **Skip it** when every change is seller-side only: the seller request handler, metering and payouts in `packages/node`, provider plugins, `antseed seller ...` and `antseed config seller ...` commands, seller reporting and metrics. A new buyer-core export that only the seller calls is seller-side too. Tests, docs and build-only changes never need one.
+
+Not sure? Read the diff of each runtime commit and ask whether the desktop calls the changed code; if it does, release. When you skip it, say so in the bump PR ("No desktop release: seller-side changes only"), and the next release that changes the desktop ships these commits with it.
 
 1. Bump `apps/desktop/package.json` (patch) on a `chore/desktop-<version>` branch from the merged main, and cut the changelog as in step 5: add `### Desktop` with `` - `@antseed/desktop@<version>` `` to the day's section and `, Desktop <version>` to its heading. Open `chore(desktop): Bump to <version>` (body: the CLI it bundles and the main PRs) and merge it once CI passes, like the npm bump PR.
 2. Confirm the merge landed: `git show origin/main:apps/desktop/package.json` must show the new version. The workflow builds whatever main says, so a run started before the merge rebuilds and overwrites the previous release's files.
