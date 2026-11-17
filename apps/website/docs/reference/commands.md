@@ -160,7 +160,7 @@ Serve the buyer API to many users with API keys, spend limits, routing policies 
 | `--allow-list <list>`, `--block-list <list>` | Allow only, or block, the sellers in a peer list (repeatable) |
 | `--allow-model <model>` | Allow only these models (repeatable) |
 | `--min-trust <score>`, `--min-reputation <score>` | Minimum seller trust score or reputation, 0–100 |
-| `--max-input-price`, `--max-output-price`, `--max-cached-input-price` | Price caps in USD per million tokens |
+| `--max-input-price`, `--max-output-price`, `--max-cached-input-price` | Price caps in USD per million tokens. Without `--max-cached-input-price`, the input cap also caps cached input |
 | `--require-tee`, `--require-verified` | Only sellers advertising TEE attestation, or whose responses pass a verifier |
 | `--prefer-free` | Rank free sellers first |
 | `--sort balanced\|price\|latency\|trust` | How eligible sellers are ranked |
