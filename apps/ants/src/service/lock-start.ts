@@ -301,19 +301,17 @@ export async function normalLockStarts(
   const slashIds = !config ? [] : [...candidates]
     .filter(([id, starts]) => starts !== null && starts.length > 1 && slashCanDecide(starts, rows.get(id), history.get(id), currentEpoch))
     .map(([id]) => id);
-  // The pool's epoch is read last, in the same batch (one block) as the slashes. Epochs only move forward,
-  // so when it still equals `currentEpoch`, every read above saw that epoch too.
-  let read: Array<unknown[] | null>;
+  let slashes: Array<unknown[] | null> = [];
+  let poolEpoch: unknown;
   try {
-    read = await multicallRead(provider, [
-      { target: poolsAddress, iface: POOLS_IFACE, method: 'currentEpoch', args: [] },
-      ...slashIds.map(id => ({ target: poolsAddress, iface: POOLS_IFACE, method: 'earlyExitSlashBps', args: [id] })),
-    ]);
-  } catch { read = []; }
-  const poolEpoch = read[0]?.[0];
+    if (slashIds.length > 0) slashes = await multicallRead(provider, slashIds.map(id => ({ target: poolsAddress, iface: POOLS_IFACE, method: 'earlyExitSlashBps', args: [id] })));
+    // The pool's epoch is read after every other read has finished (chunks and single-call fallbacks can
+    // land in different blocks). Epochs only move forward, so a match means every read saw `currentEpoch`.
+    poolEpoch = (await multicallRead(provider, [{ target: poolsAddress, iface: POOLS_IFACE, method: 'currentEpoch', args: [] }]))[0]?.[0];
+  } catch { /* Unverified epoch: every start stays unknown. */ }
   if (poolEpoch == null || Number(poolEpoch) !== currentEpoch) return new Map(ids.map(id => [id, null]));
   const poolSlash: PoolSlash | undefined = config ? { epoch: currentEpoch, config, bps: new Map() } : undefined;
   // A revert (a change pending until the position's withdrawable epoch) leaves that start unknown.
-  slashIds.forEach((id, index) => { const value = read[index + 1]?.[0]; if (value != null) poolSlash!.bps.set(id, Number(value)); });
+  slashIds.forEach((id, index) => { const value = slashes[index]?.[0]; if (value != null) poolSlash!.bps.set(id, Number(value)); });
   return chooseStarts(candidates, rows, history, poolSlash);
 }
