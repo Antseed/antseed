@@ -34,7 +34,7 @@ A unit billing model maps a protocol key to a list of priced components:
 }
 ```
 
-A component can carry a `match` object to price tiers. Match keys are `model`, `size`, `quality`, `resolution`, and for video `aspect_ratio`, `audio` and `reference_video` (`"true"` or `"false"`), compared with the request's values. Components that match add up. A model holds up to 64 components (8 for buyers on metadata before v16; services using `aspect_ratio`, `audio` or more than 8 components need v16, and `reference_video` needs v17). Every billed unit must match a component: a request that matches none is refused, not served for free.
+A component can carry a `match` object to price tiers. Match keys are `model`, `size`, `quality`, `resolution`, for video `aspect_ratio`, `audio` and `reference_video` (`"true"` or `"false"`), and for image edits `input_images` (the number of image files sent, such as `"1"`), compared with the request's values. Components that match add up. A model holds up to 64 components (8 for buyers on metadata before v16; services using `aspect_ratio`, `audio` or more than 8 components need v16, `reference_video` needs v17 and `input_images` needs v18). Every billed unit must match a component: a request that matches none is refused, not served for free.
 
 Image, video and speech services are not health-probed, because a probe would generate a paid result. The Venice and fal video plugins instead check for free on each health sweep: Venice reads the key's balance and its public model list, and fal reads its model list, plus the balance when `FAL_VIDEO_API_KEY` has fal's `billing:usage:read` permission. Without that permission the fal seller logs at startup that its balance check is off, and keeps selling. A model that fails these checks is announced as failing, so buyers skip it, and as healthy again once they pass.
 
@@ -135,6 +135,25 @@ The seller translates each edit:
 Venice answers with the image file; the seller returns it as an OpenAI images response, `{"created": …, "data": [{"b64_json": "…"}]}`, so the edit is billed as one `output_images` like a generation. Venice errors keep their status and are not billed. `mask`, `n` other than `1`, `response_format=url` and any other field are refused with `400` before calling Venice. How many images a model takes is up to Venice (`maxInputImages` in its model list, usually up to 6).
 
 Generation and edits share the service's `openai-images` price, and seller startup warns when a paired service has none. Venice can charge more for an edit than for a generation (for some models, also per extra input image or for `2K`/`4K` output), so set the price to cover the dearer case.
+
+### Edit input images
+
+Some upstreams bill each image an edit sends as input, on top of the output (some fal edit endpoints charge per input image, more for larger ones). An edit is priced with `input_images`, the number of image files it sends (`image`, `image[]` and `mask` parts, counted the same way by buyer and seller), and a generation has none. Components add up, so add one component per count you accept, worth that many input images at the upstream's dearest input price:
+
+```json
+{
+  "openai-images": {
+    "version": 1,
+    "components": [
+      { "unit": "output_images", "priceUsd": 0.05 },
+      { "unit": "output_images", "priceUsd": 0.012, "match": { "input_images": "1" } },
+      { "unit": "output_images", "priceUsd": 0.024, "match": { "input_images": "2" } }
+    ]
+  }
+}
+```
+
+An edit with a count no component names (three images here) is refused with `400 invalid_billing_request` before payment and without calling the upstream. A service with no `input_images` component bills edits like generations. The components are per output image, so with `n` above 1 the input is charged once per image. Services that price `input_images` need metadata v18; buyers on older releases don't see them.
 
 ## Speech services
 
