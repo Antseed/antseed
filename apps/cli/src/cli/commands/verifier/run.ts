@@ -1980,13 +1980,73 @@ export async function runVerifierRound(
             return await leaveRun(model, lane, 'failed', reason)
           }
         }
+        // The run's summary and manifest, written again each time a model finishes (`state: 'running'`), so
+        // a model's paid audits are on record for `verifier submit` at once: a run that is stopped, dies or
+        // is still waiting for a slow build no longer holds back the models it has finished. Writes go one
+        // at a time, in the order of the models' lanes.
+        const finishedModels: Array<EpochAuditSummaryV1['models'][number] | undefined> = []
+        let recording: Promise<unknown> = Promise.resolve()
+        const writeRunRecord = async (final: boolean) => {
+          const models = finishedModels.flatMap((entry) => entry ? [entry] : [])
+          const completedAt = new Date().toISOString()
+          const epochSummary = {
+            version: 1,
+            kind: 'antseed-verifier-epoch-summary',
+            runId,
+            epoch,
+            epochStartedAt: status!.epochStartedAt,
+            epochEndsAt: status!.epochEndsAt,
+            startedAt: status!.startedAt,
+            completedAt,
+            reportPaths: models.map((model) => ({
+              model: model.model,
+              path: modelAuditReportPath(evidenceDir, epoch, model.model),
+            })),
+            models,
+            failureCount: status!.failures,
+            cost: status!.cost,
+            reasonCounts: status!.reasonCounts ?? {},
+          } satisfies EpochAuditSummaryV1
+          const epochSummaryPath = await writeEpochAuditSummary(evidenceDir, epoch, epochSummary)
+          const manifestPath = await writeVerifierRunManifest(evidenceDir, {
+            version: 1,
+            kind: 'antseed-verifier-run-manifest',
+            runId,
+            state: !final ? 'running' : status!.failures > 0 ? 'completed-with-failures' : 'completed',
+            epoch,
+            epochSource: epochWindow.source,
+            epochStartedAt: status!.epochStartedAt,
+            epochEndsAt: status!.epochEndsAt,
+            startedAt: status!.startedAt,
+            completedAt,
+            summaryPath: epochSummaryPath,
+            selection: selectedPeerId ? { peerIds: [selectedPeerId] } : undefined,
+            modelOrder: models.map((entry) => entry.model),
+            models,
+            failureCount: status!.failures,
+          })
+          return { completedAt, epochSummary, epochSummaryPath, manifestPath }
+        }
+        const recordRun = (final: boolean): Promise<Awaited<ReturnType<typeof writeRunRecord>>> => {
+          const written = recording.then(() => writeRunRecord(final))
+          recording = written.catch(() => undefined)
+          return written
+        }
         // A model that fails here has no summary, so it stays out of the manifest and its window stays
         // open for the next round. The other models' finished audits are still recorded.
-        const runLane = async (prepared: ModelLane): Promise<EpochAuditSummaryV1['models'][number] | null> => {
+        const runLane = async (prepared: ModelLane, index: number): Promise<EpochAuditSummaryV1['models'][number] | null> => {
           const lane = await startLane(prepared)
           if (!lane) return null
           try {
-            return await auditModel(lane)
+            const summary = await auditModel(lane)
+            finishedModels[index] = summary
+            try {
+              await recordRun(false)
+            } catch (error) {
+              // The final record is written again at the end of the run.
+              runProgress!.above(() => console.warn(chalk.yellow(`${lane.model}: could not record its finished audits yet: ${asError(error).message}`)))
+            }
+            return summary
           } catch (error) {
             const reason = asError(error).message
             runProgress!.above(() => console.warn(chalk.yellow(`FAILED ${lane.model}: ${reason}`)))
@@ -2024,43 +2084,7 @@ export async function runVerifierRound(
           }
         }
 
-        const completedAt = new Date().toISOString()
-        const epochSummary = {
-          version: 1,
-          kind: 'antseed-verifier-epoch-summary',
-          runId,
-          epoch,
-          epochStartedAt: status.epochStartedAt,
-          epochEndsAt: status.epochEndsAt,
-          startedAt: status.startedAt,
-          completedAt,
-          reportPaths: epochModels.map((model) => ({
-            model: model.model,
-            path: modelAuditReportPath(evidenceDir, epoch, model.model),
-          })),
-          models: epochModels,
-          failureCount: status.failures,
-          cost: status.cost,
-          reasonCounts: status.reasonCounts ?? {},
-        } satisfies EpochAuditSummaryV1
-        const epochSummaryPath = await writeEpochAuditSummary(evidenceDir, epoch, epochSummary)
-        const manifestPath = await writeVerifierRunManifest(evidenceDir, {
-          version: 1,
-          kind: 'antseed-verifier-run-manifest',
-          runId,
-          state: status.failures > 0 ? 'completed-with-failures' : 'completed',
-          epoch,
-          epochSource: epochWindow.source,
-          epochStartedAt: status.epochStartedAt,
-          epochEndsAt: status.epochEndsAt,
-          startedAt: status.startedAt,
-          completedAt,
-          summaryPath: epochSummaryPath,
-          selection: selectedPeerId ? { peerIds: [selectedPeerId] } : undefined,
-          modelOrder: epochModels.map((entry) => entry.model),
-          models: epochModels,
-          failureCount: status.failures,
-        })
+        const { completedAt, epochSummary, epochSummaryPath, manifestPath } = await recordRun(true)
         const reportPaths = await writeModelAuditReports(evidenceDir, epoch, epochSummary)
         const overviewPath = await writeEpochOverview(evidenceDir, epoch, undefined, await epochDisputes(config, epochWindow))
         status.state = status.failures > 0 ? 'failed' : 'completed'

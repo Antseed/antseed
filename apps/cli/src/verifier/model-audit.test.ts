@@ -524,7 +524,7 @@ test('close calls are submitted on the pooled verdict, re-verified from both evi
   })
 })
 
-test('an open audit window submits nothing; a closed one submits its sellers, open close calls as UNDETERMINED', async () => {
+test('an open audit window submits nothing; a closed one submits its sellers, open close calls as UNDETERMINED, a confirmation\'s close call waits for its extra questions', async () => {
   const reference = referenceFixture('model-a', 20)
   const late = randomWallet()
   const audits: FixtureAudit[] = [
@@ -556,6 +556,14 @@ test('an open audit window submits nothing; a closed one submits its sellers, op
     ])
     assert.deepEqual(prepared.excluded.map((exclusion) => [exclusion.agentId, exclusion.reason.split(' (')[0]]), [
       ['3', 'not in this epoch\'s audit window'],
+    ])
+  }, { auditWindow: window('closed') })
+  // A confirmation's close call is not the window's: it still gets its extra questions after the window
+  // closed, so it waits for them instead of going out as UNDETERMINED.
+  await withRun([{ ...audit('1', sellers[0]!, 'model-a', 'DIFF'), reference, closeCall: { firstWrong: 7 }, confirmsDiff: true }], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits, [])
+    assert.deepEqual(prepared.excluded.map((exclusion) => [exclusion.agentId, exclusion.reason.split(' (')[0]]), [
+      ['1', 'close call waiting for its extra questions'],
     ])
   }, { auditWindow: window('closed') })
 })

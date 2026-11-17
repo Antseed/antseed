@@ -389,8 +389,10 @@ export async function prepareModelAudits(input: {
         exclude('not in this epoch\'s audit window (it came online after the window opened); audited next epoch')
         continue
       }
-      // A closed window asks no more extra questions: its open close calls are audited but undecided.
-      let finalVerdict = finalAuditVerdict(result) ?? (window?.state === 'closed' ? 'UNDETERMINED' : null)
+      // A closed window asks no more extra questions: its open close calls are audited but undecided. A
+      // confirmation is not part of the window and still gets its extra questions, so it waits for them.
+      let finalVerdict = finalAuditVerdict(result)
+        ?? (window?.state === 'closed' && !result.confirmsDiff ? 'UNDETERMINED' : null)
       // So is a close call whose first audit was made on a set a submit has published since: its extra
       // questions are public and are never asked (`decideRetryGiveUps`). A confirmation's is an undecided
       // attempt instead: the seller is audited again on new questions, and only the merged epoch's last

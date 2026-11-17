@@ -326,6 +326,29 @@ test('one slow build does not delay another model\'s audit', LANE_TIMEOUT, () =>
   for (const model of ['model-a', 'model-b']) assert.ok(await readAuditWindow(scenario.evidenceDir, EPOCH, model))
 }))
 
+test('a finished model is on record while another model\'s build still runs, so a stopped run keeps it', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const otherAudited = deferred()
+  let recordedDuringBuild: { state: string; models: string[] } | null = null
+  // model-a's build waits until model-b's audits are recorded, as a build that takes hours would.
+  scenario.build = async (model) => {
+    if (model !== 'model-a') return
+    await otherAudited.promise
+    for (let attempt = 0; attempt < 500 && !recordedDuringBuild; attempt += 1) {
+      const [manifest] = await runManifests(scenario)
+      if (manifest) recordedDuringBuild = { state: manifest.state, models: manifest.modelOrder }
+      else await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+  }
+  scenario.audit = async (model) => { if (model === 'model-b') otherAudited.resolve() }
+
+  await scenario.run()
+
+  assert.deepEqual(recordedDuringBuild, { state: 'running', models: ['model-b'] })
+  const [manifest] = await runManifests(scenario)
+  assert.equal(manifest!.state, 'completed')
+  assert.deepEqual(manifest!.modelOrder, ['model-a', 'model-b'])
+}))
+
 test('a waiting build holds no audit slot, and audits stay under the cap', LANE_TIMEOUT, () => withScenario(async (scenario) => {
   scenario.maxConcurrentModels = 1
   scenario.snapshots = [snapshot([seller('aa'.repeat(20), ['model-a']), seller('bb'.repeat(20), ['model-b'])])]
