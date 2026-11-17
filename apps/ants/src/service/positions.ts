@@ -10,7 +10,7 @@ import { assertAgentId, assertEpochs, assertPositiveIds, silentReporter, type St
 import { liveWalletPositions, validateWalletRewards } from './indexed-wallet.js';
 import type { LivePositions } from './position-feed.js';
 import { positionActionEpoch, positionActionProblem, type PositionAction } from '../position-actions.js';
-import { earlyExitSlashBpsFrom, normalLockStarts, type LineageRow, type LockStartConfig } from './lock-start.js';
+import { normalLockStarts, type LineageRow, type LockStartConfig } from './lock-start.js';
 import { poolRevertMessage } from '../pool-errors.js';
 
 
@@ -69,9 +69,7 @@ async function describePositions(ctx: AntsContext, positions: SellerPoolPosition
     const changePending = liveRow?.changePending ?? currentEpoch < withdrawableEpoch;
     const normalStartEpoch = normalStarts.get(position.id) ?? null;
     // The pool divides by the normal lock window, not the public one (they differ after a split, merge, move or max-lock disable).
-    const projectedSlashBps = !open ? 0 : normalStartEpoch !== null
-      ? earlyExitSlashBpsFrom(position, normalStartEpoch, currentEpoch, config, maxLocked)
-      : projectedEarlyExitSlashBps(position, currentEpoch, config, maxLocked);
+    const projectedSlashBps = open ? projectedEarlyExitSlashBps(position, currentEpoch, config, maxLocked, normalStartEpoch ?? undefined) : 0;
     const estimate = estimateEarlyExit(position, slashBps ?? projectedSlashBps);
     return {
       id: position.id,

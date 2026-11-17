@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AbiCoder, Contract, ContractFactory, JsonRpcProvider, keccak256, toBeHex, type JsonRpcSigner } from 'ethers';
 import { MULTICALL3_ADDRESS, projectedEarlyExitSlashBps } from '@antseed/node/payments';
-import { earlyExitSlashBpsFrom, normalLockStarts, type LineageRow, type LockHistory } from './lock-start.js';
+import { normalLockStarts, type LineageRow, type LockHistory } from './lock-start.js';
 import { mergeLockStartProblem } from '../position-actions.js';
 
 /**
@@ -258,8 +258,7 @@ describe.skipIf(!ENABLED)('normal lock start vs the real pool (Anvil differentia
           try { poolSlash = Number(await pools.getFunction('earlyExitSlashBps')(id)); } catch { continue; }
           stats.slashCompared++;
           const lockedNow = await maxLockedAt(id, Math.max(chain.epoch, position.stakeStartEpoch));
-          const view = { ...position, id, owner: stakerAddress, weightAmount: 0n };
-          const appSlash = app !== null ? earlyExitSlashBpsFrom(view, app, chain.epoch, config, lockedNow) : projectedEarlyExitSlashBps(view, chain.epoch, config, lockedNow);
+          const appSlash = projectedEarlyExitSlashBps(position, chain.epoch, config, lockedNow, app ?? undefined);
           if (appSlash === poolSlash) continue;
           let withdrawable = true;
           try { await provider.call({ from: stakerAddress, to: poolsAddress, data: pools.interface.encodeFunctionData('withdrawStake', [id]) }); } catch { withdrawable = false; }

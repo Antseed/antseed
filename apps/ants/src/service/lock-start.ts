@@ -1,5 +1,5 @@
 import { Interface } from 'ethers';
-import { multicallRead } from '@antseed/node/payments';
+import { multicallRead, projectedEarlyExitSlashBps } from '@antseed/node/payments';
 import type { SellerPoolConfig } from '@antseed/node/payments';
 import type { AbstractProvider } from 'ethers';
 
@@ -151,7 +151,7 @@ function chooseStarts(
     const bps = poolSlash?.bps.get(id);
     if (bps === undefined || !slashCanDecide(starts, rows.get(id), history.get(id), poolSlash!.epoch)) return null;
     const position = { stakeStartEpoch: rows.get(id)!.stakeStartEpoch, stakeEndEpoch: history.get(id)!.slashEndEpoch! };
-    const matches = starts.filter(start => earlyExitSlashBpsFrom(position, start, poolSlash!.epoch, poolSlash!.config) === bps);
+    const matches = starts.filter(start => projectedEarlyExitSlashBps(position, poolSlash!.epoch, poolSlash!.config, false, start) === bps);
     return matches.length === 1 ? matches[0]! : null;
   };
   return new Map([...candidates].map(([id, starts]) => [id, choose(id, starts)]));
@@ -166,28 +166,6 @@ function slashCanDecide(starts: number[], row: LineageRow | undefined, lock: Loc
   if (!row || row.closedAtEpoch !== 0 || lock?.slashEndEpoch === undefined) return false;
   const closeEpoch = Math.max(epoch, row.stakeStartEpoch);
   return starts.every(start => start <= closeEpoch);
-}
-
-/**
- * The pool's early-exit slash for a withdrawal at `epoch`, using the normal
- * lock start (mirror of `_earlyExitSlashBps`; the close epoch never precedes
- * the public `stakeStartEpoch`).
- */
-export function earlyExitSlashBpsFrom(
-  position: { stakeStartEpoch: number; stakeEndEpoch: number },
-  normalStartEpoch: number,
-  epoch: number,
-  config: Pick<SellerPoolConfig, 'maxSlashBps' | 'minEarlyExitSlashBps'>,
-  maxLocked = false,
-): number {
-  if (maxLocked) return config.maxSlashBps;
-  const closeEpoch = Math.max(epoch, position.stakeStartEpoch);
-  const end = position.stakeEndEpoch;
-  if (normalStartEpoch === 0 || closeEpoch >= end) return 0;
-  const total = end - normalStartEpoch;
-  if (total <= 0) return 0;
-  const linear = Math.floor(config.maxSlashBps * (end - closeEpoch) / total);
-  return Math.max(config.minEarlyExitSlashBps, Math.min(config.maxSlashBps, linear));
 }
 
 const POOLS_IFACE = new Interface([

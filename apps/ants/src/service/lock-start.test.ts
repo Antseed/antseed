@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { multicallRead, projectedEarlyExitSlashBps } from '@antseed/node/payments';
-import { earlyExitSlashBpsFrom, normalLockStarts, readLockHistory, resolveNormalStarts, restructureSources, startCandidates, type LineageRow, type LockHistory } from './lock-start.js';
+import { normalLockStarts, readLockHistory, resolveNormalStarts, restructureSources, startCandidates, type LineageRow, type LockHistory } from './lock-start.js';
 import { mergeLockStartProblem, MERGE_LOCK_START_MISMATCH } from '../position-actions.js';
 
 vi.mock('@antseed/node/payments', async original => ({ ...await original<object>(), multicallRead: vi.fn() }));
@@ -91,19 +91,19 @@ describe('early-exit preview from the normal lock start', () => {
   it('matches the pool after a merge (the public window overstated the burn)', () => {
     // Normal window 10 -> 114, merged at 30, withdraw at 40: 74/104 of max, not 74/84.
     expect(projectedEarlyExitSlashBps(merged, 40, config)).toBe(4404);
-    expect(earlyExitSlashBpsFrom(merged, 10, 40, config)).toBe(3557);
+    expect(projectedEarlyExitSlashBps(merged, 40, config, false, 10)).toBe(3557);
   });
 
   it('matches the pool after a max-lock disable (the public window understated the burn)', () => {
     // Staked at 10, max lock disabled effective 40 -> end 144, withdraw at 50: 94/104, not 94/134.
     expect(projectedEarlyExitSlashBps(unMaxLocked, 50, config)).toBe(3507);
-    expect(earlyExitSlashBpsFrom(unMaxLocked, 40, 50, config)).toBe(4519);
+    expect(projectedEarlyExitSlashBps(unMaxLocked, 50, config, false, 40)).toBe(4519);
   });
 
   it('keeps the pool\'s clamps and max-lock rule', () => {
-    expect(earlyExitSlashBpsFrom(merged, 10, 113, config)).toBe(500);
-    expect(earlyExitSlashBpsFrom(merged, 10, 114, config)).toBe(0);
-    expect(earlyExitSlashBpsFrom(merged, 10, 40, config, true)).toBe(5000);
+    expect(projectedEarlyExitSlashBps(merged, 113, config, false, 10)).toBe(500);
+    expect(projectedEarlyExitSlashBps(merged, 114, config, false, 10)).toBe(0);
+    expect(projectedEarlyExitSlashBps(merged, 40, config, true, 10)).toBe(5000);
   });
 });
 
