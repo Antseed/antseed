@@ -6,7 +6,19 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+## 2026-11-17 — CLI 0.1.252, Node 0.2.185
+
+### Packages
+
+- `@antseed/cli@0.1.252`
+- `@antseed/node@0.2.185`
+- `@antseed/buyer-core@0.1.51`
+- `@antseed/web-sdk@0.1.45`
+- `@antseed/payments@0.1.112`
+- `@antseed/ants@0.1.70`
+
 ### Fixed
+- Sellers (`@antseed/node`, `@antseed/buyer-core`): images sent inline in a chat request no longer count as text in the checks a seller runs before a request goes upstream. Their base64 counted as millions of tokens, so a short conversation with a few pasted screenshots was refused with `429 buyer_usage_limited` under buyer limits, or `402` when the channel's locked reserve couldn't cover the estimate, though upstream it is a few thousand tokens. Each image now counts as a flat allowance, as it already did when an answer without a usage report is billed. Text, audio, files and documents are counted by their size as before.
 - Sellers (`@antseed/node`, CLI): revenue in `antseed seller usage`, `seller logs`, `seller status` ("Earnings today"), the seller dashboard and the `antseed_seller_receipt_revenue_*` metrics is now each request's real value (its tokens at the unit price on its receipt) instead of the receipts' `cost_cents`, which are floored at one cent each. A seller whose requests are each worth a fraction of a cent saw its revenue overstated several times over. Requests that failed (HTTP status 400 or above) now count as $0, as no buyer pays for them. Receipts keep the one-cent floor; the metering spec now says it must not be summed as revenue. `MeteringStorage.getRevenueCents()` returns the corrected total.
 - Sellers (CLI): a cached-input price above the input price is refused by `antseed config seller add-provider`, `add-service` and `set`, by `antseed seller settings set --price` and `add-model`, and by the seller settings API behind the Gateway Console, with a message that says buyers skip an offer priced like this. A bad price saved earlier doesn't block other edits, and `antseed seller start` warns about it instead of refusing to start. `antseed seller setup` now asks for a cached-input price (for the provider defaults, and for each model with its own prices), explains it, and asks again for a price that isn't a number or is above the input price; a model's input or output price left blank now takes the provider default as the prompt says, instead of 0. Docs: **Provide → Configuration**, **Commands** reference.
 
@@ -33,7 +45,6 @@ This project uses selective package publishing. Each release entry lists the pub
 - Moving the Diem solution away from the Antseed Foundation: the DIEM staking app (`apps/diem-staking`, diemantseed.com), the `DiemStakingProxy` contract with its interface, deploy script and tests, and the Diem proxy protocol doc are no longer in this repository, and the root `build:diem-staking`, `dev:diem-staking` and `typecheck:diem-staking` scripts are gone. Nothing else changes: the M001 migration scripts and the generic seller-contract support keep working as before.
 
 ### Fixed
-- Sellers (`@antseed/node`, `@antseed/buyer-core`): images sent inline in a chat request no longer count as text in the checks a seller runs before a request goes upstream. Their base64 counted as millions of tokens, so a short conversation with a few pasted screenshots was refused with `429 buyer_usage_limited` under buyer limits, or `402` when the channel's locked reserve couldn't cover the estimate, though upstream it is a few thousand tokens. Each image now counts as a flat allowance, as it already did when an answer without a usage report is billed. Text, audio, files and documents are counted by their size as before.
 - Sellers: a buyer's request that an upstream refuses with HTTP 401 or 403 no longer marks an image or video service failing when its provider has its own account check (fal images and video, Venice video, Alibaba video). That check still finds a broken key, and an out-of-credit 403 still counts. A provider without such a check counts a 401 or 403 as before.
 - Gateway console: the seller pricing form and **Add model** refuse a cached-input price above the model's input price, since buyers skip an offer priced that way and the model would get no traffic.
 - Sellers: a request the upstream rejects (HTTP 400 or above) is never charged, even when the error body carries a usage figure, and the seller's request log and receipts price it at nothing instead of estimating its tokens from the body size. When an upstream reports no usage, images and files in the prompt count as a flat allowance each instead of by their base64 size, so a request with ten screenshots no longer counts as millions of input tokens. This covers Anthropic Messages (`image`, `document`) and OpenAI Responses (`input_image`, `input_file`) parts as well as OpenAI Chat attachments, for the seller's charge and the buyer's matching estimate.
