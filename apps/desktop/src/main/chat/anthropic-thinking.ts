@@ -116,9 +116,10 @@ export function anthropicThinkingMode(modelId: string): AnthropicThinkingMode | 
 /**
  * The effort an adaptive model runs at for the chat's thinking level. The
  * levels below `xhigh` have the same name in both; `minimal` has no effort of
- * its own and runs at `low`; `xhigh` drops to `high` on a model without it.
+ * its own and runs at `low`. `xhigh` runs at `max` on Opus 4.6, which has
+ * `max` but not `xhigh`, and drops to `high` on any other model without it.
  */
-export function anthropicEffort(level: ThinkingLevel, modelId: string): 'low' | 'medium' | 'high' | 'xhigh' {
+export function anthropicEffort(level: ThinkingLevel, modelId: string): 'low' | 'medium' | 'high' | 'xhigh' | 'max' {
   switch (level) {
     case 'minimal':
     case 'low':
@@ -127,7 +128,9 @@ export function anthropicEffort(level: ThinkingLevel, modelId: string): 'low' | 
       return 'medium';
     case 'xhigh': {
       const parsed = claudeVersion(modelId);
-      return parsed && atLeast(parsed.version, THINKING_THRESHOLDS[parsed.family].xhigh) ? 'xhigh' : 'high';
+      if (!parsed) return 'high';
+      if (atLeast(parsed.version, THINKING_THRESHOLDS[parsed.family].xhigh)) return 'xhigh';
+      return parsed.family === 'opus' && parsed.version[0] === 4 && parsed.version[1] === 6 ? 'max' : 'high';
     }
     default:
       return 'high';

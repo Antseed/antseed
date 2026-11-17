@@ -246,10 +246,17 @@ test('thinking levels map to effort, xhigh only where the model has it', () => {
     ['low', 'low', 'medium', 'high', 'xhigh'],
   );
   assert.equal(anthropicEffort('xhigh', 'claude-opus-4-7'), 'xhigh');
-  assert.equal(anthropicEffort('xhigh', 'claude-opus-4-6'), 'high');
+  assert.equal(anthropicEffort('xhigh', 'claude-opus-4-6'), 'max');
+  assert.equal(anthropicEffort('xhigh', 'anthropic.claude-opus-4-6-v1'), 'max');
+  assert.equal(anthropicEffort('high', 'claude-opus-4-6'), 'high');
   assert.equal(anthropicEffort('xhigh', 'claude-sonnet-4-6'), 'high');
   assert.equal(anthropicEffort('xhigh', 'claude-mythos-5-2'), 'xhigh');
   assert.equal(anthropicEffort('xhigh', 'claude-mythos-preview'), 'high');
+});
+
+test('an Opus 4.6 request at xhigh asks for max effort', () => {
+  const shaped = shapeAnthropicThinking({ model: 'claude-opus-4-6', max_tokens: 32_000 }, { modelId: 'claude-opus-4-6', reasoning: true, level: 'xhigh' });
+  assert.deepEqual((shaped as { output_config?: unknown }).output_config, { effort: 'max' });
 });
 
 test('shaping keeps other output_config fields and the rest of the body', () => {
