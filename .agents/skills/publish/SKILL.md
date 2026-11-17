@@ -1,10 +1,10 @@
 ---
 name: publish
-description: Prepare an npm release — decide which @antseed/* packages need version bumps, apply them, validate the set, cut the CHANGELOG release section, and open the bump PR. Publishing itself happens in CI. After a CLI release, also pin and publish the TEE seller image.
+description: Release Antseed — decide which @antseed/* packages need version bumps, apply them, validate the set, cut the CHANGELOG release section, and open the bump PR (publishing happens in CI); after a CLI release, pin and publish the TEE seller image and release the desktop app.
 disable-model-invocation: true
 ---
 
-# Prepare an npm Release (version bumps only)
+# Release Antseed (npm packages, TEE image, desktop)
 
 Decide which public `@antseed/*` packages need a release, bump their versions, and open a PR. **This skill never runs `pnpm publish`** — actual publishing happens in the `Publish npm packages` GitHub Actions workflow (`.github/workflows/npm-publish.yml`), which the user triggers manually from the Actions tab after the bump PR merges. The committed version bumps ARE the publish decision: the workflow publishes exactly the packages whose version is not on the registry yet and skips everything else.
 
@@ -114,11 +114,11 @@ git push -u origin release/npm-bump-<YYYY-MM-DD>
 
 PR body: say the changelog section was cut, list the bumped packages grouped as "changed directly" (with a one-line reason each) vs "cascade (exact pins)", name the skipped packages, and note that the plan script validated the set. See PR #869 as a template.
 
-### 7. Hand off to CI — do not publish
+### 7. Merge and publish through CI
 
-After the PR merges, the **user** triggers the release from GitHub: Actions → `Publish npm packages` → Run workflow on `main` (optionally with `dry_run` first to see the plan in the logs). The workflow installs, re-validates the plan, bakes `ANTSEED_COMPARABLE_PRICES_URL` into the release artifacts, builds, runs the full test suite, and publishes with `pnpm publish`.
+The bump PR needs no review (AGENTS.md, Maintainers only): merge it with a merge commit once CI passes. Then confirm main has the new versions (`git show origin/main:apps/cli/package.json`) and run the `Publish npm packages` workflow on main: `gh workflow run npm-publish.yml --ref main` (with `-f dry_run=true` first to see the plan, if in doubt). Run it only when the user gave the go for this release. The workflow installs, re-validates the plan, bakes `ANTSEED_COMPARABLE_PRICES_URL` into the release artifacts, builds, runs the full test suite, publishes with `pnpm publish`, and creates the `cli-v<version>` GitHub release with notes from `scripts/github-release-notes.mjs` (packages, pull requests, Thanks).
 
-Do not run `pnpm publish`, `npm publish`, or the npm publish workflow yourself. (The TEE seller image workflow in step 9 is different: run it once the lock PR merges.)
+Never run `pnpm publish` or `npm publish` yourself.
 
 ### 8. Verify after the workflow succeeds (read-only)
 
@@ -159,6 +159,17 @@ The TEE seller image (`deploy/tee-seller`) installs an exact CLI from a committe
    - it pulls without logging in (GHCR answers the manifest anonymously);
    - its config still exposes `6882/tcp` and `6881/udp` (Google Confidential Space opens only exposed ports).
 6. Report the digest so TEE sellers can move to it (docs: "Upgrade to a new image"). No approval PR is needed: buyers accept images the workflow builds from main by their build record.
+
+### 10. Release the desktop app (when `@antseed/cli` was released)
+
+The desktop bundles the CLI from the repository, so every CLI release ships in a desktop release too.
+
+1. Bump `apps/desktop/package.json` (patch) on a `chore/desktop-<version>` branch from the merged main, and cut the changelog as in step 5: add `### Desktop` with `` - `@antseed/desktop@<version>` `` to the day's section and `, Desktop <version>` to its heading. Open `chore(desktop): Bump to <version>` (body: the CLI it bundles and the main PRs) and merge it once CI passes, like the npm bump PR.
+2. Confirm the merge landed: `git show origin/main:apps/desktop/package.json` must show the new version. The workflow builds whatever main says, so a run started before the merge rebuilds and overwrites the previous release's files.
+3. Run `gh workflow run release-desktop.yml --ref main -f platforms=all`. It creates the draft `v<version>` with notes from `scripts/github-release-notes.mjs --desktop` (pull requests since the previous desktop bump, and Thanks for outside authors of desktop changes), builds and signs every platform, and publishes the release as latest once all of them uploaded.
+4. Check the published release: not a draft, marked latest, notes present, and the assets for macOS (dmg, zip, `desktop-mac.yml` and the bridge `latest-mac.yml`), Windows (exe, `latest.yml`) and Linux (AppImage, deb, `latest-linux*.yml`). A failed platform leaves the draft unpublished: rerun the failed job, and the release publishes when it passes.
+
+Reviewant posts each release's thank-yous on its own (step 7 for npm, here for desktop): when a release with a Thanks section is published, every credited PR gets a comment from the maintainer who merged it.
 
 ## Important notes
 

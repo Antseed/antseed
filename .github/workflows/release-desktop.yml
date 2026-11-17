@@ -2,7 +2,11 @@ name: Release Desktop
 
 # Builds and publishes the Antseed Desktop Electron app for macOS,
 # Windows, and Linux in parallel, attaching artifacts to the same GitHub
-# Release (tagged v<version>, read from apps/desktop/package.json).
+# Release (tagged v<version>, read from apps/desktop/package.json). The
+# release starts as a draft whose notes come from
+# `scripts/github-release-notes.mjs --desktop` (PRs since the previous desktop
+# bump, and a Thanks section), and is published as the latest release once
+# every platform has uploaded. A run for some platforms leaves it a draft.
 #
 # macOS: DMG + zip, arm64 + x64, code-signed with Developer ID and
 #        notarized via Apple App Store Connect API key, plus bridge zips
@@ -79,8 +83,15 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          # github-release-notes.mjs lists the PRs since the previous desktop bump.
+          fetch-depth: 0
 
-      - name: Create the draft release if missing
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Create the draft release if missing, with its notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -90,11 +101,12 @@ jobs:
             echo "Dry run — nothing will be published, skipping draft creation"
             exit 0
           fi
-          version=$(node -p "require('./apps/desktop/package.json').version")
+          version=$(node scripts/github-release-notes.mjs --desktop "$RUNNER_TEMP/release-notes.md")
           if gh release view "v${version}" >/dev/null 2>&1; then
-            echo "Release v${version} already exists"
+            echo "Release v${version} already exists; setting its notes"
+            gh release edit "v${version}" --notes-file "$RUNNER_TEMP/release-notes.md"
           else
-            gh release create "v${version}" --draft --title "${version}" --notes ""
+            gh release create "v${version}" --draft --title "Desktop ${version}" --notes-file "$RUNNER_TEMP/release-notes.md"
           fi
 
   mac:
@@ -389,3 +401,27 @@ jobs:
             apps/desktop/release/latest*.yml
           if-no-files-found: warn
           retention-days: 14
+
+  # Publish the draft once every platform has uploaded its assets, so users
+  # and the auto-updater see it. Each contributor in the notes' Thanks section
+  # hears the release is out from the maintainer who merged their PR:
+  # Reviewant posts it as them when the release is published.
+  publish-release:
+    name: Publish the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # A run for one platform skips the others, and so this job: publish only
+    # a release that has every platform's assets.
+    needs: [create-draft, mac, win, linux]
+    if: ${{ inputs.dry_run != true }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish the draft as the latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./apps/desktop/package.json').version")
+          gh release edit "v${version}" --draft=false --latest
