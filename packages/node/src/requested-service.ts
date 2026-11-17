@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { UNIT_BILLING_MATCH_KEYS_V1 } from '@antseed/protocol/billing';
 import {
   IMAGE_PRICE_ATTRIBUTES, IMAGE_REQUEST_FIELDS, MAX_MULTIPART_TEXT_FIELD_BYTES, headerValue, SPEECH_REQUEST_FIELDS, VIDEO_CREATE_FIELDS, VIDEO_SOURCE_FIELDS,
-  extractRequestBodyFields, parseJsonObject,
+  extractRequestBodyFields, parseFormDataDisposition, parseJsonObject,
 } from '@antseed/api-adapter';
 import type { SerializedHttpRequest } from './types/http.js';
 
@@ -335,7 +335,7 @@ function readPartHeaders(block: string): Omit<FormPart, 'content'> | string {
     }
   }
   if (disposition === undefined) return 'a part has no Content-Disposition';
-  const params = readDisposition(disposition);
+  const params = parseFormDataDisposition(disposition);
   if (!params) return 'a Content-Disposition is not a plain form-data disposition';
   const name = params.get('name');
   if (name === undefined || !FIELD_NAME.test(name)) return 'a field name is missing or has a character outside A-Z, a-z, 0-9 and _ . - [ ]';
@@ -349,46 +349,6 @@ function readPartHeaders(block: string): Omit<FormPart, 'content'> | string {
     filename: Buffer.from(filename, 'latin1').toString('utf8').replace(/[\u0000-\u001f\u007f-\u009f"\\]/g, '_'),
     ...(mediaType === undefined ? {} : { type: FILE_TYPE.test(mediaType) ? mediaType : 'application/octet-stream' }),
   };
-}
-
-/**
- * The parameters of a `form-data` disposition, keys in lower case; undefined unless every byte is
- * read and no key repeats. Written by hand so that no regex runs over buyer-controlled lengths.
- */
-function readDisposition(value: string): Map<string, string> | undefined {
-  if (!/^form-data(?:[ \t;]|$)/i.test(value)) return undefined;
-  const params = new Map<string, string>();
-  let i = 'form-data'.length;
-  const skipBlanks = () => { while (value[i] === ' ' || value[i] === '\t') i += 1; };
-  for (;;) {
-    skipBlanks();
-    if (i >= value.length) return params;
-    if (value[i] !== ';') return undefined;
-    i += 1;
-    skipBlanks();
-    if (i >= value.length) return params;
-    const start = i;
-    while (i < value.length && /[A-Za-z0-9*_-]/.test(value[i]!)) i += 1;
-    const key = value.slice(start, i).toLowerCase();
-    if (key === '' || value[i] !== '=' || params.has(key)) return undefined;
-    i += 1;
-    let text = '';
-    if (value[i] === '"') {
-      for (i += 1; ; i += 1) {
-        if (i >= value.length) return undefined;
-        if (value[i] === '\\' && (value[i + 1] === '"' || value[i + 1] === '\\')) i += 1;
-        else if (value[i] === '"') break;
-        text += value[i];
-      }
-      i += 1;
-    } else {
-      const from = i;
-      while (i < value.length && value[i] !== ';' && value[i] !== ' ' && value[i] !== '\t') i += 1;
-      text = value.slice(from, i);
-      if (text === '' || /["\\]/.test(text)) return undefined;
-    }
-    params.set(key, text);
-  }
 }
 
 /** The filename in an RFC 5987 `filename*=charset''value`, as latin1 like the rest of the header. */

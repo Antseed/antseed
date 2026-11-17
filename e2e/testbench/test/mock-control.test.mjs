@@ -60,6 +60,8 @@ describe('control API', () => {
       routes: {
         'GET /status': () => ({ hello: 'world' }),
         'POST /sellers/:id/stop': ({ params, body }) => ({ id: params.id, body }),
+        'POST /sellers/:id/start': ({ params, body }) => ({ id: params.id, body }),
+        'POST /sellers/:id/pricing': ({ params, body }) => ({ id: params.id, body }),
         'POST /fail': () => { throw Object.assign(new Error('bad input'), { statusCode: 400 }); },
       },
     });
@@ -70,6 +72,10 @@ describe('control API', () => {
       const client = controlClient({ url: server.url, token });
       assert.equal((await client.status()).hello, 'world');
       assert.deepEqual(await client.stopSeller('s-1'), { ok: true, id: 's-1', body: {} });
+      assert.deepEqual(await client.startSeller('s-1'), { ok: true, id: 's-1', body: {} });
+      assert.deepEqual(await client.startSeller('s-1', { refreshBuyer: false }), { ok: true, id: 's-1', body: { refreshBuyer: false } });
+      const change = { provider: 'p', defaults: { inputUsdPerMillion: 3 } };
+      assert.deepEqual(await client.setSellerPricing('s-1', change), { ok: true, id: 's-1', body: change });
       const missing = await fetch(`${server.url}/nope`, { headers: { authorization: `Bearer ${token}` } });
       assert.equal(missing.status, 404);
       const failed = await fetch(`${server.url}/fail`, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
@@ -100,6 +106,23 @@ describe('scenario api', () => {
       const summary = tb.summary();
       assert.deepEqual(summary.checks.map((entry) => [entry.name, entry.ok]), [['ok', true], ['bad', false]]);
       assert.deepEqual(summary.knownIssues, [{ name: 'tracked', ok: false, issue: 'bug-123', detail: { a: 1 } }]);
+    } finally {
+      await tb.dispose();
+    }
+  });
+
+  it('starts a seller with or without a buyer refresh, and reprices a stopped one', async () => {
+    const calls = [];
+    const control = {
+      startSeller: async (id, options) => { calls.push(['start', id, options]); return { started: true }; },
+      setSellerPricing: async (id, change) => { calls.push(['pricing', id, change]); return { pricing: {} }; },
+    };
+    const tb = createTestbenchApi({ manifest, control, eventsPath: '/dev/null', chain });
+    try {
+      await tb.startSeller('s');
+      await tb.startSeller('s', { refreshBuyer: false });
+      await tb.setSellerPricing('s', { provider: 'p', defaults: { inputUsdPerMillion: 3 } });
+      assert.deepEqual(calls, [['start', 's', {}], ['start', 's', { refreshBuyer: false }], ['pricing', 's', { provider: 'p', defaults: { inputUsdPerMillion: 3 } }]]);
     } finally {
       await tb.dispose();
     }

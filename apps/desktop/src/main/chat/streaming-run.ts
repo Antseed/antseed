@@ -69,7 +69,8 @@ import {
   makeGatewayModel,
   type ChatModel,
 } from './gateway-model.js';
-import { modelAcceptsImages, routeModeOf, splitPinnedModel } from '../../shared/pinned-model.js';
+import { modelAcceptsImages, modelReasons, routeModeOf, splitPinnedModel } from '../../shared/pinned-model.js';
+import { registerGatewayAnthropic } from './anthropic-thinking.js';
 import { createGatewayBashTool } from './gateway-bash-tool.js';
 import { grantShellGateway } from './gateway-shell-relay.js';
 import { resolveSystemPrompt } from './system-prompt.js';
@@ -295,6 +296,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     // the list failed) is spoken to over chat completions, text only.
     const protocol = chatModel?.protocol ?? 'openai-chat-completions';
     const supportsImages = chatModel ? modelAcceptsImages(chatModel, serviceId) : false;
+    const reasoning = chatModel ? modelReasons(chatModel, serviceId) : false;
     const modelLabel = chatModel?.label ?? serviceId;
 
     // Permissions belong to the model, whichever seller serves it.
@@ -315,6 +317,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       endpoint,
       protocol,
       supportsImages,
+      reasoning,
       conversationId,
       preferredPeerId,
       ...(chatModel?.contextWindow ? { contextWindow: chatModel.contextWindow } : {}),
@@ -323,6 +326,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     const authStorage = AuthStorage.inMemory();
     authStorage.setRuntimeApiKey(GATEWAY_PROVIDER_ID, endpoint.apiKey);
     const modelRegistry = ModelRegistry.inMemory(authStorage);
+    if (protocol === 'anthropic-messages') registerGatewayAnthropic(modelRegistry, GATEWAY_PROVIDER_ID);
 
     // Pass the system prompt via resourceLoader so it is applied on every turn.
     // (agent-session rebuilds _baseSystemPrompt from the loader each turn, so a

@@ -176,6 +176,10 @@ describe('seller billing of an answer without a usage report', () => {
       ['a linked image', { type: 'image_url', image_url: { url: 'https://example.com/seed.png' } }],
       ['inline audio', { type: 'input_audio', input_audio: { data: large, format: 'wav' } }],
       ['a file', { type: 'file', file: { file_data: `data:application/pdf;base64,${large}`, filename: 'seed.pdf' } }],
+      ['an Anthropic image', { type: 'image', source: { type: 'base64', media_type: 'image/png', data: large } }],
+      ['an Anthropic document', { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: large } }],
+      ['a Responses image', { type: 'input_image', image_url: `data:image/png;base64,${large}` }],
+      ['a Responses file', { type: 'input_file', file_data: `data:application/pdf;base64,${large}`, filename: 'seed.pdf' }],
     ])('counts %s as a flat allowance, not by its size', async (_shape, part) => {
       const { needAuth } = await serve(plainProvider(200, answer), { body: requestWith([part]) });
       const text = estimateTokensFromBytesSampled(requestWith([{ type: part.type }]));
@@ -319,6 +323,15 @@ describe('seller billing of an answer without a usage report', () => {
 
   it('charges nothing for an upstream error', async () => {
     const { spent, needAuth } = await serve(plainProvider(500, { choices: [{ index: 0, message: { role: 'assistant', content: 'never delivered' } }] }));
+    expect(needAuth?.lastRequestCost).toBe('0');
+    expect(spent).toBe(0n);
+  });
+
+  it('charges nothing for a client error whose body reports usage', async () => {
+    const { spent, needAuth } = await serve(plainProvider(400, {
+      error: { type: 'invalid_request_error', message: 'image too large' },
+      usage: { prompt_tokens: 250_000, completion_tokens: 0, total_tokens: 250_000 },
+    }));
     expect(needAuth?.lastRequestCost).toBe('0');
     expect(spent).toBe(0n);
   });

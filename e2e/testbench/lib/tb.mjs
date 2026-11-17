@@ -292,7 +292,20 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
     stopSeller: async (id) => { await event('seller-stop', { id }); return control.stopSeller(id); },
     /** SIGKILL, no graceful shutdown: the seller leaves its channels open, unsettled. stopSeller is the graceful stop. */
     crashSeller: async (id) => { await event('seller-crash', { id }); return control.crashSeller(id); },
-    startSeller: async (id) => { await event('seller-start', { id }); return control.startSeller(id); },
+    /**
+     * Starts a stopped seller and, unless `refreshBuyer: false`, makes the buyer rediscover it. Without the refresh the
+     * buyer keeps the announcement it had (its price, for one) until its own periodic refresh, as a real buyer does.
+     */
+    startSeller: async (id, { refreshBuyer = true } = {}) => {
+      await event('seller-start', { id, ...(refreshBuyer ? {} : { refreshBuyer }) });
+      return control.startSeller(id, refreshBuyer ? {} : { refreshBuyer });
+    },
+    /**
+     * New prices for a stopped seller, from its next start: `{ provider, defaults?, services?: { [serviceId]: pricing } }`,
+     * each replacing the provider's default pricing or that service's own. Its mock's delivery ledger prices later
+     * responses the same way. `mockCostPerChat` still reads the topology's price.
+     */
+    setSellerPricing: async (id, change) => { await event('seller-pricing', { id, ...change }); return control.setSellerPricing(id, change); },
     /** Stops the buyer node and proxy, like a user quitting: sellers see the disconnect and settle on their own. */
     stopBuyer: async () => { await event('buyer-stop'); return control.stopBuyer(); },
     /** Restarts the buyer node and proxy on the same proxy URL and rediscovers online sellers. */

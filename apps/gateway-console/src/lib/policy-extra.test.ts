@@ -62,6 +62,15 @@ describe('policy matching', () => {
     expect(combinePolicies({ allowedPeerIds: [A, B], maxInputUsdPerMillion: 3 }, { allowedPeerIds: [B], maxInputUsdPerMillion: 5 }))
       .toEqual({ allowedPeerIds: [B], maxInputUsdPerMillion: 3 })
   })
+  it('caps cached input by the input cap when no cached-input cap is set', () => {
+    const cached = [peer(A, { services: [{ provider: 'p', service: 'm1', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.75, categories: [] }] })]
+    const uncached = [peer(A, { services: [{ provider: 'p', service: 'm1', inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: null, categories: [] }] })]
+    expect(matchingPeers({ maxInputUsdPerMillion: 0, maxOutputUsdPerMillion: 0 }, cached)).toHaveLength(0)
+    expect(matchingPeers({ maxInputUsdPerMillion: 0, maxOutputUsdPerMillion: 0 }, uncached)).toHaveLength(1)
+    expect(matchingPeers({ maxInputUsdPerMillion: 0, maxCachedInputUsdPerMillion: 1 }, cached)).toHaveLength(1)
+    expect(combinePolicies({ maxInputUsdPerMillion: 0 }, { maxCachedInputUsdPerMillion: 5 }))
+      .toEqual({ maxInputUsdPerMillion: 0, maxCachedInputUsdPerMillion: 0 })
+  })
   it('knows when the network has reputation data', () => {
     expect(hasReputationData(peers)).toBe(true)
     expect(hasReputationData([peer(B)])).toBe(false)

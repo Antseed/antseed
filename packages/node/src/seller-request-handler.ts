@@ -503,7 +503,10 @@ export class SellerRequestHandler {
         requestBilling = this._captureSellerBillingContext(provider, request);
         unitBillingModel = requestBilling ? this.resolveProviderUnitBillingModel(provider, requestBilling.context) : undefined;
         const facts = requestBilling?.requestFacts;
-        if (requestBilling && facts?.kind === 'video' && facts.video.action === 'create' && unitBillingModel) this._estimateUnitRequestCostUsdc(requestBilling, unitBillingModel);
+        // Refused before payment when the request names options the model can't price (a video's
+        // duration, an edit's number of input images).
+        const priceUpFront = facts?.kind === 'video' ? facts.video.action === 'create' : facts?.kind === 'image' && facts.image.inputImages !== undefined;
+        if (requestBilling && priceUpFront && unitBillingModel) this._estimateUnitRequestCostUsdc(requestBilling, unitBillingModel);
       } catch (error) {
         this._sendJsonError(mux, request.requestId, 400, 'invalid_billing_request', error instanceof Error ? error.message : String(error));
         return;
@@ -1276,6 +1279,13 @@ export class SellerRequestHandler {
             billingUsageReport = finalBilling.billingUsage;
             unitCostUsdc = finalBilling.costUsdc;
           }
+
+        // A failed request is never charged: the buyer got an error, not an answer,
+        // even when the error body carries a usage figure or a unit adapter prices it.
+        if (statusCode >= 400) {
+          responseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+          unitCostUsdc = 0n;
+        }
 
         // Record metering
         const finishedAt = Date.now();

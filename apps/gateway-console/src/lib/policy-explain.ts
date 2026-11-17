@@ -88,6 +88,14 @@ function exclusion(policy: RoutingPolicy, candidate: Candidate, peer: Peer | und
   if (policy.maxOutputUsdPerMillion !== undefined && candidate.outputUsdPerMillion !== null && candidate.outputUsdPerMillion > policy.maxOutputUsdPerMillion) {
     return `caps output at ${formatPricePerMillion(policy.maxOutputUsdPerMillion)}/M (it asks ${formatPricePerMillion(candidate.outputUsdPerMillion)})`
   }
+  // Without its own cap, cached input is bounded by the input cap.
+  const cachedCap = policy.maxCachedInputUsdPerMillion ?? policy.maxInputUsdPerMillion
+  if (cachedCap !== undefined && candidate.cachedInputUsdPerMillion !== null && candidate.cachedInputUsdPerMillion > cachedCap) {
+    const asks = `it asks ${formatPricePerMillion(candidate.cachedInputUsdPerMillion)} for cached input`
+    return policy.maxCachedInputUsdPerMillion !== undefined
+      ? `caps cached input at ${formatPricePerMillion(cachedCap)}/M (${asks})`
+      : `${cachedCap === 0 ? 'allows only free input' : `caps input at ${formatPricePerMillion(cachedCap)}/M`}, cached input too (${asks})`
+  }
   const route = policy.modelRoutes?.[model]
   if (route?.strict && !route.peerIds.some((entry) => normalizePeerId(entry) === id)) return 'only allows its route for this model'
   return null
