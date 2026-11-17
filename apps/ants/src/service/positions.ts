@@ -10,6 +10,8 @@ import { assertAgentId, assertEpochs, assertPositiveIds, silentReporter, type St
 import { liveWalletPositions, validateWalletRewards } from './indexed-wallet.js';
 import type { LivePositions } from './position-feed.js';
 import { positionActionEpoch, positionActionProblem, type PositionAction } from '../position-actions.js';
+import { earlyExitSlashBpsFrom, normalLockStarts, type LineageRow } from './lock-start.js';
+import { poolRevertMessage } from '../pool-errors.js';
 
 
 export interface PositionDetail extends PositionView { raw: SellerPoolPosition; }
@@ -22,6 +24,8 @@ interface PositionSources {
    * `null` = the feed exists but its snapshot was rejected (rewards are unknown, never zero).
    */
   indexedRewards?: Map<number, string> | null;
+  /** Closed rows with their replacements, so restructured positions can inherit their lock start. */
+  lineage?: LineageRow[];
 }
 
 /** A position still earns until its close epoch passes (split, merge and move sources close next epoch). */
@@ -30,7 +34,7 @@ function isOpenAt(position: SellerPoolPosition, epoch: number): boolean {
 }
 
 async function describePositions(ctx: AntsContext, positions: SellerPoolPosition[], currentEpoch: number, config: SellerPoolConfig, sources: PositionSources = {}): Promise<PositionDetail[]> {
-  const { live, indexedRewards } = sources;
+  const { live, indexedRewards, lineage = [] } = sources;
   const poolRewards = ctx.poolRewards();
   // Closed positions keep the reward earned up to their close epoch, so every id is previewed when no reward feed exists.
   const rewards = new Map<number, bigint>();
@@ -41,6 +45,14 @@ async function describePositions(ctx: AntsContext, positions: SellerPoolPosition
   }
   const liveById = new Map(live?.positions.map(row => [row.id, row]));
   const statuses = live ? null : await ctx.requirePools().positionStatusesBatch(positions, currentEpoch);
+  const scheduledMaxLock = (index: number) => {
+    const liveRow = liveById.get(positions[index]!.id);
+    return liveRow ? liveRow.maxLockedNext! : statuses![index]!.maxLockedNext;
+  };
+  // Indexed mode makes no per-position RPC reads for display, so it reads lock history only for
+  // positions the merge dialog could offer; chain mode already reads every position.
+  const lockStartIds = live ? mergeCandidateIds(positions, currentEpoch, scheduledMaxLock) : positions.filter(position => isOpenAt(position, currentEpoch)).map(position => position.id);
+  const normalStarts = await openNormalStarts(ctx, lockStartIds, positions, currentEpoch, lineage);
   const pendingReward = (id: number): string | null => {
     if (indexedRewards === undefined) return (rewards.get(id) ?? 0n).toString();
     return indexedRewards?.get(id) ?? null;
@@ -52,7 +64,11 @@ async function describePositions(ctx: AntsContext, positions: SellerPoolPosition
       ? { withdrawableEpoch: liveRow.withdrawableEpoch!, maxLocked: liveRow.maxLocked, maxLockedNext: liveRow.maxLockedNext!, slashBps: null }
       : statuses![index]!;
     const changePending = liveRow?.changePending ?? currentEpoch < withdrawableEpoch;
-    const projectedSlashBps = open ? projectedEarlyExitSlashBps(position, currentEpoch, config, maxLocked) : 0;
+    const normalStartEpoch = normalStarts.get(position.id) ?? null;
+    // The pool divides by the normal lock window, not the public one (they differ after a split, merge, move or max-lock disable).
+    const projectedSlashBps = !open ? 0 : normalStartEpoch !== null
+      ? earlyExitSlashBpsFrom(position, normalStartEpoch, currentEpoch, config, maxLocked)
+      : projectedEarlyExitSlashBps(position, currentEpoch, config, maxLocked);
     const estimate = estimateEarlyExit(position, slashBps ?? projectedSlashBps);
     return {
       id: position.id,
@@ -62,6 +78,7 @@ async function describePositions(ctx: AntsContext, positions: SellerPoolPosition
       weightAmount: position.weightAmount.toString(),
       stakeStartEpoch: position.stakeStartEpoch,
       stakeEndEpoch: position.stakeEndEpoch,
+      ...(open ? { normalStartEpoch } : {}),
       closedAtEpoch: position.closedAtEpoch,
       withdrawn: position.withdrawn,
       state: liveRow?.state ?? positionState(position, currentEpoch),
@@ -80,6 +97,37 @@ async function describePositions(ctx: AntsContext, positions: SellerPoolPosition
     };
   });
   return details.sort((a, b) => b.id - a.id);
+}
+
+/** Normal lock starts of the open positions; a failed history read leaves them unknown, never blocks the page. */
+async function openNormalStarts(ctx: AntsContext, ids: number[], positions: SellerPoolPosition[], currentEpoch: number, lineage: LineageRow[]): Promise<Map<number, number | null>> {
+  if (ids.length === 0) return new Map();
+  try {
+    return await normalLockStarts(ctx.provider(), ctx.requirePools().contractAddress, ids, mergeLineage(positions, lineage), currentEpoch, ctx.closedLockHistory);
+  } catch {
+    return new Map();
+  }
+}
+
+/** Open positions that share a seller and unlock epoch with another one and are not (scheduled to be) max locked. */
+export function mergeCandidateIds(positions: SellerPoolPosition[], currentEpoch: number, scheduledMaxLock: (index: number) => boolean): number[] {
+  const groups = new Map<string, number[]>();
+  positions.forEach((position, index) => {
+    if (position.closedAtEpoch !== 0 || position.withdrawn || scheduledMaxLock(index) || position.stakeEndEpoch <= currentEpoch + 1) return;
+    const key = `${position.agentId}:${position.stakeEndEpoch}`;
+    groups.set(key, [...(groups.get(key) ?? []), position.id]);
+  });
+  return [...groups.values()].filter(ids => ids.length > 1).flat();
+}
+
+/** Position records plus the indexer's close reasons and replacements, one row per id. */
+function mergeLineage(positions: SellerPoolPosition[], rows: LineageRow[]): LineageRow[] {
+  const byId = new Map<number, LineageRow>(rows.map(row => [row.id, row]));
+  for (const position of positions) {
+    const row = byId.get(position.id);
+    byId.set(position.id, { ...row, id: position.id, stakeStartEpoch: position.stakeStartEpoch, closedAtEpoch: position.closedAtEpoch });
+  }
+  return [...byId.values()];
 }
 
 /**
@@ -129,7 +177,7 @@ export async function positions(ctx: AntsContext): Promise<PositionsView> {
     list = await pools.positionsBatch([...new Set([...openIds, ...history.ids])]);
     closed = history;
   }
-  const details = await describePositions(ctx, list, stack.currentEpoch, config, { live, indexedRewards });
+  const details = await describePositions(ctx, list, stack.currentEpoch, config, { live, indexedRewards, lineage: closed.rows });
   const rewardsKnown = indexedRewards !== null && details.every(position => position.pendingReward !== null);
   if (indexedRewards && !rewardsKnown) rewardSource = { ...rewardSource, error: 'Antscan rewards have not indexed every position yet' };
   const closedById = new Map(closed.rows.map((row) => [row.id, row]));
@@ -262,7 +310,7 @@ export async function merge(ctx: AntsContext, request: MergeRequest, report: Ste
     await ctx.provider().call({ from: ctx.address, to: pools.contractAddress, data: iface.encodeFunctionData('mergeStakes', [ids]) });
   } catch (error) {
     const message = isError(error, 'CALL_EXCEPTION')
-      ? 'The contract rejected the merge. Positions must share the same effective lock start and end; matching unlock dates alone are not sufficient.'
+      ? `The contract rejected the merge: ${poolRevertMessage(error, 'merge') ?? 'positions must share the same effective lock start and end; matching unlock dates alone are not sufficient.'}`
       : 'Merge simulation could not reach a reliable RPC result. No wallet request was submitted; try again when the RPC is available.';
     throw new Error(message, { cause: error });
   }
@@ -321,7 +369,7 @@ export async function previewWithdraw(ctx: AntsContext, ids: number[]): Promise<
   try {
     const iface = new Interface(['function withdrawStakes(uint256[] ids)']);
     await ctx.provider().call({ from: ctx.address, to: pools.contractAddress, data: iface.encodeFunctionData('withdrawStakes', [ids]) });
-  } catch (error) { simulationError = error instanceof Error ? error.message : String(error); }
+  } catch (error) { simulationError = poolRevertMessage(error, 'withdraw') ?? (error instanceof Error ? error.message : String(error)); }
   return {
     pendingRewards: pending.reduce((sum, amount) => sum + amount, 0n).toString(), transfersRestricted, simulationError,
     positions: estimates.map((estimate) => ({ id: estimate.id, amount: estimate.amount.toString(), slashBps: estimate.slashBps, slashedAmount: estimate.slashedAmount.toString(), returnedAmount: estimate.returnedAmount.toString() })),

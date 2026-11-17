@@ -28,3 +28,16 @@ export function positionActionProblem(position: ActionPosition, action: Position
   if (position.stakeEndEpoch === 0 || effectiveEpoch >= position.stakeEndEpoch) return 'The position has no remaining lock when this action takes effect. Withdraw it, then stake again to start a new lock.';
   return null;
 }
+
+export const MERGE_LOCK_START_MISMATCH = 'These positions started their locks at different epochs, so they can\'t be merged. Matching unlock dates are not enough: split, merged and moved positions keep the lock start of the originals.';
+
+/**
+ * The pool merges only positions with the same normal lock start, which split,
+ * merge and move inherit from the originals (so it can differ from the public
+ * start). Returns the reason when two known starts differ; unknown starts are
+ * left to the pre-signing simulation.
+ */
+export function mergeLockStartProblem(positions: Array<{ normalStartEpoch?: number | null }>): string | null {
+  const known = positions.map(position => position.normalStartEpoch).filter((start): start is number => typeof start === 'number');
+  return new Set(known).size > 1 ? MERGE_LOCK_START_MISMATCH : null;
+}

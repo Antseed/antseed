@@ -1,6 +1,6 @@
 import { useMemo, useState, type MouseEvent } from 'react';
 import type { ExtendRequest, MaxLockRequest, MergeRequest, MoveRequest, PoolConfigView, PoolView, PositionView, SplitRequest } from '../../../src/api-types';
-import { positionActionEpoch, positionActionProblem, scheduledMaxLock, type PositionAction } from '../../../src/position-actions';
+import { mergeLockStartProblem, positionActionEpoch, positionActionProblem, scheduledMaxLock, type PositionAction } from '../../../src/position-actions';
 import { api } from '../api';
 import { useEpochInfo } from '../app-context';
 import { usePageData } from '../data';
@@ -185,7 +185,7 @@ export function mergeEligibility(positions: PositionView[], currentEpoch?: numbe
     if (problem) return problem;
   }
   if (new Set(positions.map((p) => p.stakeEndEpoch)).size !== 1) return 'Merged positions must share the same unlock epoch. Extend the shorter ones first.';
-  return null;
+  return mergeLockStartProblem(positions);
 }
 
 /** Max-lock state the next action must reverse: the contract applies changes from the next epoch. */

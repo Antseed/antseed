@@ -1080,6 +1080,54 @@ contract AntseedSellerPoolsTest is Test {
         pools.mergeStakes(ids);
     }
 
+    /// Issue #1390: two positions can read the same public stakeStartEpoch and
+    /// stakeEndEpoch yet stay unmergeable, because a restructured position keeps
+    /// its sources' hidden normal start and extendLock keeps it too.
+    function test_mergeStakesRejectsSamePublicWindowWithDifferentNormalStart() public {
+        // B's sources: normal start 1, end 9.
+        uint256 olderOne = _stake(staker, agentId, 10 ether, 8);
+        uint256 olderTwo = _stake(staker, agentId, 10 ether, 8);
+        vm.warp(block.timestamp + 2 * EPOCH_DURATION); // epoch 2
+        // A's sources: normal start 3, end 13.
+        uint256 newerOne = _stake(staker, agentId, 20 ether, 10);
+        uint256 newerTwo = _stake(staker, agentId, 20 ether, 10);
+        vm.warp(block.timestamp + 2 * EPOCH_DURATION); // epoch 4
+
+        uint256[] memory pair = new uint256[](2);
+        vm.startPrank(staker);
+        pair[0] = olderOne;
+        pair[1] = olderTwo;
+        uint256 positionB = pools.mergeStakes(pair); // public 5 -> 9, normal 1 -> 9
+        pair[0] = newerOne;
+        pair[1] = newerTwo;
+        uint256 positionA = pools.mergeStakes(pair); // public 5 -> 13, normal 3 -> 13
+        pools.extendLock(positionB, 4); // public 5 -> 13, normal 1 -> 13
+        vm.stopPrank();
+
+        (,,,, uint64 startA, uint64 endA,,) = pools.positions(positionA);
+        (,,,, uint64 startB, uint64 endB,,) = pools.positions(positionB);
+        assertEq(uint256(startA), uint256(startB), "public start");
+        assertEq(uint256(endA), uint256(endB), "public end");
+
+        vm.warp(block.timestamp + 2 * EPOCH_DURATION); // epoch 6
+        pair[0] = positionA;
+        pair[1] = positionB;
+        vm.prank(staker);
+        vm.expectRevert(IAntseedSellerPools.InvalidValue.selector);
+        pools.mergeStakes(pair);
+        pair[0] = positionB;
+        pair[1] = positionA;
+        vm.prank(staker);
+        vm.expectRevert(IAntseedSellerPools.InvalidValue.selector);
+        pools.mergeStakes(pair);
+
+        // The early-exit slash also uses the hidden normal start, not the public
+        // window: at epoch 6 with end 13, A burns 7/10 and B 7/12 of maxSlashBps,
+        // while the public window (5 -> 13) would suggest 7/8 for both.
+        assertEq(pools.earlyExitSlashBps(positionA), 3_500); // 5_000 * 7 / 10
+        assertEq(pools.earlyExitSlashBps(positionB), 2_916); // 5_000 * 7 / 12, rounded down
+    }
+
     function test_mergeStakesRequiresDisablingMaxLockFirst() public {
         uint256 firstId = _stake(staker, agentId, 60 ether, 4);
         uint256 secondId = _stake(staker, agentId, 40 ether, 8);
