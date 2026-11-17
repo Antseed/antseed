@@ -21,9 +21,10 @@ export function buildSellerSetupProviderEntry(input: {
   baseUrl?: string;
   inputUsdPerMillion?: number;
   outputUsdPerMillion?: number;
+  cachedInputUsdPerMillion?: number;
   services?: Record<string, SellerServiceConfig>;
 }): SellerProviderConfig {
-  const hasDefaults = input.inputUsdPerMillion !== undefined || input.outputUsdPerMillion !== undefined;
+  const hasDefaults = input.inputUsdPerMillion !== undefined || input.outputUsdPerMillion !== undefined || input.cachedInputUsdPerMillion !== undefined;
   return {
     plugin: input.plugin,
     services: input.services ?? {},
@@ -33,10 +34,54 @@ export function buildSellerSetupProviderEntry(input: {
           defaults: {
             inputUsdPerMillion: input.inputUsdPerMillion ?? 0,
             outputUsdPerMillion: input.outputUsdPerMillion ?? 0,
+            ...(input.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: input.cachedInputUsdPerMillion } : {}),
           },
         }
       : {}),
   };
+}
+
+/** A typed price: blank is undefined, a non-negative number is itself, anything else is null (ask again). */
+export function parsePriceAnswer(text: string): number | undefined | null {
+  const trimmed = text.trim();
+  if (trimmed === '') return undefined;
+  const value = Number(trimmed);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Why a cached-input price can't go with this input price, or null. */
+export function setupCachedPriceProblem(cached: number, input: number): string | null {
+  return cached > input
+    ? `At most the input price ($${input}): buyers skip an offer whose cached input costs more than its input.`
+    : null;
+}
+
+const SETUP_PRICING_NOTE = [
+  'Prices are in USD per 1M tokens.',
+  'Cached input is the price of prompt tokens your upstream serves from its cache. Set it when your upstream',
+  'charges less for cache hits. It must be at most the input price: buyers skip an offer priced above it.',
+  'Leave it blank to bill cached input at the input price. When other sellers of a model set a cached-input',
+  'price, buyers count offers of that model without one at half their trust score.',
+];
+
+async function askPrice(
+  rl: { question(query: string): Promise<string> },
+  query: string,
+  check?: (value: number) => string | null,
+): Promise<number | undefined> {
+  for (;;) {
+    const answer = parsePriceAnswer(await rl.question(query));
+    if (answer === null) {
+      console.log(chalk.yellow('  Use a number of USD (for example 0.5), or leave it blank.'));
+      continue;
+    }
+    const problem = answer === undefined ? null : check?.(answer) ?? null;
+    if (problem) {
+      console.log(chalk.yellow(`  ${problem}`));
+      continue;
+    }
+    return answer;
+  }
 }
 
 export function applySellerSetupRpcUrl(config: AntseedConfig, input: string): void {
@@ -163,10 +208,15 @@ export function registerSellerSetupCommand(sellerCmd: Command): void {
         const baseUrlInput = await rl.question('Base URL (leave empty for default): ');
         const baseUrl = baseUrlInput.trim() || undefined;
 
-        const inputStr = await rl.question('Default input price (USD per 1M tokens): ');
-        const outputStr = await rl.question('Default output price (USD per 1M tokens): ');
-        const inputUsd = inputStr.trim() ? parseFloat(inputStr.trim()) : undefined;
-        const outputUsd = outputStr.trim() ? parseFloat(outputStr.trim()) : undefined;
+        console.log('');
+        for (const line of SETUP_PRICING_NOTE) console.log(chalk.dim(line));
+        const inputUsd = await askPrice(rl, 'Default input price (USD per 1M tokens): ');
+        const outputUsd = await askPrice(rl, 'Default output price (USD per 1M tokens): ');
+        const cachedUsd = await askPrice(
+          rl,
+          'Default cached-input price (USD per 1M tokens, enter to bill it at the input price): ',
+          (value) => setupCachedPriceProblem(value, inputUsd ?? 0),
+        );
 
         const spinner = ora(`Installing ${packageName}...`).start();
         try {
@@ -186,8 +236,17 @@ export function registerSellerSetupCommand(sellerCmd: Command): void {
           if (!serviceId) break;
 
           const upstreamInput = await rl.question(`Upstream model [${serviceId}]: `);
-          const svcInputStr = await rl.question('Input price (USD/1M, or enter for provider default): ');
-          const svcOutputStr = await rl.question('Output price (USD/1M, or enter for provider default): ');
+          const svcInput = await askPrice(rl, 'Input price (USD/1M, or enter for provider default): ');
+          const svcOutput = await askPrice(rl, 'Output price (USD/1M, or enter for provider default): ');
+          // A model with its own prices doesn't take the provider's cached-input price, so ask for its own.
+          const ownPrices = svcInput !== undefined || svcOutput !== undefined;
+          const svcCached = ownPrices
+            ? await askPrice(
+                rl,
+                'Cached-input price (USD/1M, enter to bill it at the input price): ',
+                (value) => setupCachedPriceProblem(value, svcInput ?? inputUsd ?? 0),
+              )
+            : undefined;
           const categoriesStr = await rl.question('Categories (comma-separated, e.g., chat,coding): ');
           const serviceKind = isImageModelId(upstreamInput.trim() || serviceId) ? 'image' : 'text';
           const capabilities = await promptServiceCapabilities(rl, serviceKind);
@@ -199,12 +258,12 @@ export function registerSellerSetupCommand(sellerCmd: Command): void {
             service.upstreamModel = upstreamModel;
           }
 
-          const svcInput = svcInputStr.trim() ? parseFloat(svcInputStr.trim()) : undefined;
-          const svcOutput = svcOutputStr.trim() ? parseFloat(svcOutputStr.trim()) : undefined;
-          if (svcInput !== undefined || svcOutput !== undefined) {
+          if (ownPrices) {
+            // A price left blank is the provider default, as the prompt says.
             service.pricing = {
-              inputUsdPerMillion: svcInput ?? 0,
-              outputUsdPerMillion: svcOutput ?? 0,
+              inputUsdPerMillion: svcInput ?? inputUsd ?? 0,
+              outputUsdPerMillion: svcOutput ?? outputUsd ?? 0,
+              ...(svcCached !== undefined ? { cachedInputUsdPerMillion: svcCached } : {}),
             };
           }
 
@@ -230,6 +289,7 @@ export function registerSellerSetupCommand(sellerCmd: Command): void {
           baseUrl,
           inputUsdPerMillion: inputUsd,
           outputUsdPerMillion: outputUsd,
+          cachedInputUsdPerMillion: cachedUsd,
           services,
         });
 
