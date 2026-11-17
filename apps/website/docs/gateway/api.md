@@ -203,6 +203,12 @@ wire_api = "responses"
 
 Step-by-step setups for more tools (OpenCode, Pi, the Vercel AI SDK, LangChain and others) are in the [Integrations directory](/integrations); for Hermes and OpenClaw, see [Connect agents](/docs/agents). Each uses the same base URL and key. To launch coding tools against Antseed with one click instead, use the [desktop app](/docs/desktop).
 
+## Dropped connections
+
+A streamed answer keeps generating for 30 seconds after the client's connection drops. When the client sends the same request again in that time, with the same key, the gateway replays the answer from the start and streams the rest as it arrives. It is generated and paid for once. Clients that retry a failed request on their own, as most SDKs and coding tools do, need no setup.
+
+If no retry arrives within 30 seconds, the generation is cancelled, as it is for a client that leaves on purpose. The gateway keeps a compressed copy of each streamed answer only while it is in flight, and deletes it once the answer is delivered or the 30 seconds pass. A very long answer that outgrows the copy limit is cancelled on a drop, as before.
+
 ## Check a key's usage and limits
 
 Anyone with a key can read its usage and remaining limits:
@@ -335,6 +341,7 @@ The gateway tells the buyer which identity pays with the `x-antseed-buyer-identi
 ## Where state lives
 
 - `<data-dir>/gateway/gateway.db`: hashed keys, the request log and spend (SQLite).
+- `<data-dir>/gateway/stream-resume/`: compressed copies of large streamed answers in flight (see [Dropped connections](#dropped-connections)). Emptied when the gateway starts; nothing to back up.
 - `<data-dir>/buyer-identities/<name>/`: each extra identity's wallet key, or a reference to it.
 
 Back up the identity directories, or the secrets they point to: each wallet can hold credits.
