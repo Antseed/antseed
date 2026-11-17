@@ -5,7 +5,7 @@ import { needsExtension, stageOneVerdict } from './close-call.js'
 import { combineExtension, runExtensionRounds } from './extension-round.js'
 import { finalAuditVerdict } from './model-audit.js'
 import type { ModelVerificationSkip, ModelVerificationTargetResult } from './model-run.js'
-import { BANK_EXHAUSTED } from './probe-bank.js'
+import { NO_EPOCH_QUESTION_SET } from './probe-bank.js'
 import { emptyAuditCostSummary } from './proxy-evidence.js'
 
 const SELF = { selfHamming: 30, selfTotal: 300 } // 10% self-error over 100 probes x 3 runs
@@ -49,7 +49,6 @@ async function run(input: {
   /** Wrong answers per extra set: a number for every set, or one entry per set in order. */
   extensionWrong?: Record<string, number | 'SKIPPED' | 'THROW' | Array<number | 'SKIPPED' | 'THROW'>>
   exhausted?: Set<string>
-  enroll?: (() => Promise<void>) | null
 }) {
   const logs: string[] = []
   const verified: string[] = []
@@ -57,10 +56,9 @@ async function run(input: {
   const outcome = await runExtensionRounds({
     results: input.results,
     reserve: async (first) => {
-      if (input.exhausted?.has(first.peerId)) throw new Error(`${BANK_EXHAUSTED}: 20 probes remain`)
+      if (input.exhausted?.has(first.peerId)) throw new Error(`${NO_EPOCH_QUESTION_SET}: no extra set`)
       return { reference, auditId: `extension-${first.peerId}-${(first.extension ? 2 : 1)}` }
     },
-    enroll: input.enroll ?? null,
     verify: async (first): Promise<ModelVerificationTargetResult | ModelVerificationSkip> => {
       verified.push(first.peerId)
       const call = calls.get(first.peerId) ?? 0
@@ -158,10 +156,10 @@ test('a close call stays pending when its extra questions cannot run, and is ext
     assert.equal(result.extension, undefined)
     assert.equal(finalAuditVerdict(result), null, 'not submitted')
   }
-  assert.match(outcome.results[0]!.extensionPending!.reason, /enrollment is off/)
+  assert.match(outcome.results[0]!.extensionPending!.reason, /NO_EPOCH_QUESTION_SET/)
   assert.match(outcome.results[1]!.extensionPending!.reason, /reference endpoint down/)
   assert.match(outcome.results[2]!.extensionPending!.reason, /skipped/)
-  assert.ok(logs.some((line) => line.includes('not submitted')))
+  assert.ok(logs.some((line) => line.includes('submitted UNDETERMINED when the window closes')))
 
   // The next run of the epoch extends it without repeating the first audit; `since` is kept.
   const since = outcome.results[1]!.extensionPending!.since
@@ -172,17 +170,11 @@ test('a close call stays pending when its extra questions cannot run, and is ext
   assert.ok(since)
 })
 
-test('a close call short of fresh probes enrolls, then extends', async () => {
+test('a close call whose epoch set has no extra set stays waiting; nothing builds new questions for it', async () => {
   const grey = audit('a', 22)
-  const exhausted = new Set([grey.peerId])
-  let enrollments = 0
-  const { outcome } = await run({
-    results: [grey],
-    exhausted,
-    enroll: async () => { enrollments += 1; exhausted.clear() },
-  })
-  assert.equal(enrollments, 1)
-  assert.ok(outcome.results[0]!.extension)
+  const { outcome } = await run({ results: [grey], exhausted: new Set([grey.peerId]) })
+  assert.equal(outcome.stats.pending, 1)
+  assert.match(outcome.results[0]!.extensionPending!.reason, /NO_EPOCH_QUESTION_SET/)
 })
 
 test('an extension whose answers lack verified ResponseAuth cannot decide: UNDETERMINED', () => {

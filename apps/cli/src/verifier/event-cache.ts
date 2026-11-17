@@ -1,0 +1,296 @@
+import { join } from 'node:path'
+import { getAddress } from 'ethers'
+import {
+  serviceHash as hashService,
+  type ModelAuditedEvent,
+  type ServiceAuditedEvent,
+  type VerifierVerdict,
+} from '@antseed/node/payments'
+import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
+import { SerialOperationQueue } from './audit-concurrency.js'
+
+/**
+ * The KBF audits contract's `ServiceAudited` and `ModelAudited` events, kept in
+ * `<dataDir>/verifier/chain-cache/` with the block range they cover, so a scan only reads blocks
+ * no earlier scan of the data dir has read.
+ *
+ * Base mines a block every 200 ms (since 2026-11-05), so a scan of one 7-day epoch is about 3,000
+ * `eth_getLogs` requests of 1,000 blocks and the contract's whole history grows by 432 a day.
+ * `verifier run` and `verifier submit` read these events several times per process (planner,
+ * stand-ins, confirmations, third opinions, the delta filter, duplicate checks), and every
+ * `verifier watch` tick is new processes: without a cache one tick made about 19,000 requests.
+ *
+ * Every read up to the head re-reads the last `REORG_BLOCKS` blocks and anything newer, so a short
+ * reorg, or a load-balanced RPC whose nodes lag each other, is corrected on the next read. One
+ * cache is shared by every client of the process for the same file.
+ */
+export const REORG_BLOCKS = 600
+
+export interface RawEventSource {
+  readonly contractAddress: string
+  readonly deploymentBlock: number | undefined
+  queryServiceAudits(agentId: bigint | number | null, service: string | null, fromBlock?: number, toBlock?: number | 'latest'): Promise<ServiceAuditedEvent[]>
+  queryModelAudits(filter: { model?: string | null; auditor?: string | null }, fromBlock?: number, toBlock?: number | 'latest'): Promise<ModelAuditedEvent[]>
+  firstBlockAtOrAfter(timestamp: number, floor?: number): Promise<number>
+  latestBlockNumber(): Promise<number>
+  readonly provider: { getBlock(block: number): Promise<{ timestamp: number; hash?: string | null } | null> }
+}
+
+interface Range<T> {
+  from: number
+  through: number
+  events: T[]
+  /**
+   * Hash of block `through` when the range was saved. A file whose block no longer has this hash was
+   * read from another chain (a fork of the same contract, a restarted fork, a reorg deeper than the
+   * margin) and is read again instead of trusted.
+   */
+  throughHash?: string | null
+}
+
+type Stored<T> = { [K in keyof T]: T[K] extends bigint ? string : T[K] }
+
+interface EventCacheFileV1 {
+  version: 1
+  contract: string
+  service: Range<Stored<ServiceAuditedEvent>> | null
+  model: Range<Stored<ModelAuditedEvent>> | null
+  /** Epoch start timestamp (seconds) to its first block. */
+  firstBlocks: Record<string, number>
+}
+
+export function eventCachePath(dataDir: string, contract: string): string {
+  return join(dataDir, 'verifier', 'chain-cache', `kbf-events-${getAddress(contract).toLowerCase()}.json`)
+}
+
+const caches = new Map<string, VerifierEventCache>()
+
+/** The process's cache for `path` (null: memory only), created on first use. */
+export function sharedEventCache(raw: RawEventSource, path: string | null, log?: (message: string) => void): VerifierEventCache {
+  const key = path ?? `memory:${getAddress(raw.contractAddress)}`
+  let cache = caches.get(key)
+  if (!cache) {
+    cache = new VerifierEventCache(raw, path, log)
+    caches.set(key, cache)
+  }
+  return cache
+}
+
+/** For tests: forget the process's caches. */
+export function resetSharedEventCaches(): void {
+  caches.clear()
+}
+
+export class VerifierEventCache {
+  private service: Range<ServiceAuditedEvent> | null = null
+  private model: Range<ModelAuditedEvent> | null = null
+  private firstBlocks: Record<string, number> = {}
+  private loaded: Promise<void> | null = null
+  private readonly queue = new SerialOperationQueue()
+  /** eth_getLogs ranges read, for the load measurement in tests and logs. */
+  readonly stats = { serviceRanges: 0, modelRanges: 0 }
+
+  constructor(
+    private readonly raw: RawEventSource,
+    private readonly path: string | null,
+    private readonly log: (message: string) => void = () => undefined,
+  ) {}
+
+  /** `queryServiceAudits` from the cache, after catching up with the chain. */
+  async serviceAudits(
+    agentId: bigint | number | null, service: string | null, fromBlock?: number, toBlock: number | 'latest' = 'latest',
+  ): Promise<ServiceAuditedEvent[]> {
+    const { events, from, to } = await this.queue.run(() => this.ensure('service', fromBlock, toBlock))
+    const agent = agentId === null ? null : BigInt(agentId)
+    const serviceKey = service === null ? null : hashService(service).toLowerCase()
+    return (events as ServiceAuditedEvent[]).filter((event) => (
+      event.blockNumber >= from && event.blockNumber <= to
+      && (agent === null || event.agentId === agent)
+      && (serviceKey === null || event.serviceHash.toLowerCase() === serviceKey)
+    ))
+  }
+
+  /** `queryModelAudits` from the cache, after catching up with the chain. */
+  async modelAudits(
+    filter: { model?: string | null; auditor?: string | null } = {}, fromBlock?: number, toBlock: number | 'latest' = 'latest',
+  ): Promise<ModelAuditedEvent[]> {
+    const { events, from, to } = await this.queue.run(() => this.ensure('model', fromBlock, toBlock))
+    const model = filter.model ? filter.model.toLowerCase() : null
+    const auditor = filter.auditor ? getAddress(filter.auditor) : null
+    return (events as ModelAuditedEvent[]).filter((event) => (
+      event.blockNumber >= from && event.blockNumber <= to
+      && (model === null || event.modelHash.toLowerCase() === model)
+      && (auditor === null || event.auditor === auditor)
+    ))
+  }
+
+  /** `firstBlockAtOrAfter`, remembered once the block is mined (an epoch's first block never changes). */
+  async firstBlockAtOrAfter(timestamp: number, floor = 0): Promise<number> {
+    await this.load()
+    const known = this.firstBlocks[String(timestamp)]
+    if (known !== undefined && known >= floor) return known
+    const block = await this.raw.firstBlockAtOrAfter(timestamp, floor)
+    // Remembered only once proven: the block is at or after the time and the one before it is earlier.
+    // A wrong answer kept here would hide every report before it for the rest of the epoch.
+    const [found, before] = await Promise.all([
+      this.raw.provider.getBlock(block).catch(() => null),
+      block > floor ? this.raw.provider.getBlock(block - 1).catch(() => null) : Promise.resolve({ timestamp: -Infinity }),
+    ])
+    if (found && found.timestamp >= timestamp && before && before.timestamp < timestamp) {
+      this.firstBlocks[String(timestamp)] = block
+      await this.queue.run(() => this.persist())
+    }
+    return block
+  }
+
+  private load(): Promise<void> {
+    this.loaded ??= (async () => {
+      if (!this.path) return
+      const file = await readJsonIfExists<EventCacheFileV1>(this.path).catch(() => null)
+      if (!file || file.version !== 1 || file.contract !== getAddress(this.raw.contractAddress)) return
+      // The contract address is the same on a fork: check the chain still has the blocks the file was read at.
+      if (!await this.sameChain([file.service, file.model])) {
+        this.log(`The chain event cache ${this.path} was read from another chain or an older fork; reading the events again`)
+        return
+      }
+      this.service = file.service ? { ...file.service, events: file.service.events.map(reviveService) } : null
+      this.model = file.model ? { ...file.model, events: file.model.events.map(reviveModel) } : null
+      this.firstBlocks = { ...file.firstBlocks }
+    })()
+    return this.loaded
+  }
+
+  /**
+   * Whether the saved ranges were read from this chain: block `through` still has the saved hash. A
+   * block the node does not have counts as another chain only when the head is well below it (a fork
+   * restarted at an older block); a node a few blocks behind is not a reason to read everything again.
+   */
+  private async sameChain(ranges: Array<Range<unknown> | null>): Promise<boolean> {
+    for (const range of ranges) {
+      if (!range?.throughHash) continue
+      const block = await this.raw.provider.getBlock(range.through).catch(() => undefined)
+      if (block === undefined) continue
+      if (block === null) {
+        const head = await this.raw.latestBlockNumber().catch(() => null)
+        if (head !== null && head < range.through - REORG_BLOCKS) return false
+        continue
+      }
+      if (block.hash && block.hash.toLowerCase() !== range.throughHash.toLowerCase()) return false
+    }
+    return true
+  }
+
+  private async blockHash(block: number): Promise<string | null> {
+    return (await this.raw.provider.getBlock(block).catch(() => null))?.hash ?? null
+  }
+
+  private async ensure(
+    kind: 'service' | 'model', fromBlock: number | undefined, toBlock: number | 'latest',
+  ): Promise<{ events: Array<ServiceAuditedEvent | ModelAuditedEvent>; from: number; to: number }> {
+    await this.load()
+    const from = fromBlock ?? this.raw.deploymentBlock
+    if (from === undefined) throw new Error('verification contract deployment block is unknown; pass an explicit fromBlock to query events')
+    const to = toBlock === 'latest' ? await this.raw.latestBlockNumber() : toBlock
+    let range = (kind === 'service' ? this.service : this.model) as Range<ServiceAuditedEvent | ModelAuditedEvent> | null
+    let changed = false
+    if (!range || range.through < range.from) {
+      if (to - from > 100_000) this.log(`Reading the KBF audits contract's ${kind === 'service' ? 'seller results' : 'model audits'} from block ${from} (first read of this data dir; cached afterwards)…`)
+      range = { from, through: to, events: await this.read(kind, from, to) }
+      changed = true
+    } else {
+      if (from < range.from) {
+        const older = await this.read(kind, from, range.from - 1)
+        range = { from, through: range.through, events: [...older, ...range.events] }
+        changed = true
+      }
+      // The tail is read again whenever a read reaches into it, also when the head has not moved or moved
+      // back: a reorg at the same height, or a load-balanced RPC whose earlier answer came from a node a
+      // few blocks behind, changes blocks the cache already holds.
+      const latest = toBlock === 'latest'
+      if (latest || to > range.through - REORG_BLOCKS) {
+        const refetchFrom = Math.max(range.from, Math.min(range.through, to) - REORG_BLOCKS + 1)
+        const newer = await this.read(kind, refetchFrom, to)
+        // A read up to the head replaces everything after it; a read up to an older block keeps what lies above that block.
+        const above = latest ? [] : range.events.filter((event) => event.blockNumber > to)
+        range = {
+          from: range.from,
+          through: latest ? to : Math.max(range.through, to),
+          events: [...range.events.filter((event) => event.blockNumber < refetchFrom), ...newer, ...above],
+        }
+        changed = true
+      }
+    }
+    if (changed) range.throughHash = await this.blockHash(range.through)
+    if (kind === 'service') this.service = range as Range<ServiceAuditedEvent>
+    else this.model = range as Range<ModelAuditedEvent>
+    if (changed) await this.persist()
+    return { events: range.events, from, to }
+  }
+
+  private async read(kind: 'service' | 'model', from: number, to: number): Promise<Array<ServiceAuditedEvent | ModelAuditedEvent>> {
+    if (from > to) return []
+    if (kind === 'service') {
+      this.stats.serviceRanges += 1
+      return this.raw.queryServiceAudits(null, null, from, to)
+    }
+    this.stats.modelRanges += 1
+    const events = await this.raw.queryModelAudits({}, from, to)
+    return [...events].sort((left, right) => left.blockNumber - right.blockNumber || left.logIndex - right.logIndex)
+  }
+
+  private async persist(): Promise<void> {
+    if (!this.path) return
+    try {
+      await writeJsonAtomic(this.path, {
+        version: 1,
+        contract: getAddress(this.raw.contractAddress),
+        service: this.service ? { ...this.service, events: this.service.events.map(storeService) } : null,
+        model: this.model ? { ...this.model, events: this.model.events.map(storeModel) } : null,
+        firstBlocks: this.firstBlocks,
+      } satisfies EventCacheFileV1)
+    } catch (error) {
+      // The cache only saves requests: a full disk must not fail an audit or a submit.
+      this.log(`Could not write the chain event cache ${this.path}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+}
+
+function storeService(event: ServiceAuditedEvent): Stored<ServiceAuditedEvent> {
+  return { ...event, agentId: event.agentId.toString() }
+}
+
+function reviveService(event: Stored<ServiceAuditedEvent>): ServiceAuditedEvent {
+  return { ...event, agentId: BigInt(event.agentId), verdict: event.verdict as VerifierVerdict }
+}
+
+function storeModel(event: ModelAuditedEvent): Stored<ModelAuditedEvent> {
+  return { ...event, epoch: event.epoch.toString() }
+}
+
+function reviveModel(event: Stored<ModelAuditedEvent>): ModelAuditedEvent {
+  return { ...event, epoch: BigInt(event.epoch) }
+}
+
+/**
+ * Serves `client`'s event queries from the process's shared cache (on disk under `dataDir` when
+ * given). The client is changed in place and returned.
+ */
+export function withEventCache<T extends RawEventSource>(client: T, dataDir: string | null, log?: (message: string) => void): T {
+  const raw: RawEventSource = {
+    contractAddress: client.contractAddress,
+    deploymentBlock: client.deploymentBlock,
+    provider: client.provider,
+    queryServiceAudits: client.queryServiceAudits.bind(client),
+    queryModelAudits: client.queryModelAudits.bind(client),
+    firstBlockAtOrAfter: client.firstBlockAtOrAfter.bind(client),
+    latestBlockNumber: client.latestBlockNumber.bind(client),
+  }
+  const cache = sharedEventCache(raw, dataDir ? eventCachePath(dataDir, client.contractAddress) : null, log)
+  Object.assign(client, {
+    queryServiceAudits: cache.serviceAudits.bind(cache),
+    queryModelAudits: cache.modelAudits.bind(cache),
+    firstBlockAtOrAfter: cache.firstBlockAtOrAfter.bind(cache),
+    eventCache: cache,
+  })
+  return client
+}

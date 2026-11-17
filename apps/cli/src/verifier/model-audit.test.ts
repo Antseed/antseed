@@ -7,6 +7,7 @@ import test from 'node:test'
 import { Wallet } from 'ethers'
 import { KBF_EXTENSION_RULE_V1, KBF_EXTENSION_RULE_V2, canonicalHashBytes32 } from '@antseed/fingerprints'
 import { VERIFIER_VERDICT, modelHash, serviceHash, sortServiceResults } from '@antseed/node/payments'
+import { DIFF_HOLD_EPOCHS, diffHolds } from './diff-hold.js'
 import {
   modelAuditLedgerPath,
   modelAuditUpstreams,
@@ -22,12 +23,17 @@ import {
 } from './model-audit.js'
 import {
   FIXTURE_CONFIG,
+  peerIdOf,
+  freshReferenceFixture,
   referenceFixture,
+  writeCalibratedEpochSet,
   writeSignedAuditRun,
   type FixtureAudit,
 } from './model-audit-fixtures.test-support.js'
 import { readVerifierRunManifest } from './audit-artifacts.js'
 import { pooledCloseCallVerdict } from './close-call.js'
+import { EPOCH_QUESTION_SET_METHOD, retireEpochQuestionSet } from './probe-bank.js'
+import { EXTRA_QUESTIONS_PUBLISHED } from './outcome-reason.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const auditor = randomWallet()
@@ -47,6 +53,8 @@ async function withRun(
     beforePrepare?: (banksDir: string) => Promise<void>
     maxResultsPerSubmission?: number
     alreadyOnChain?: Parameters<typeof prepareModelAudits>[0]['alreadyOnChain']
+    diffHold?: Parameters<typeof prepareModelAudits>[0]['diffHold']
+    auditWindow?: Parameters<typeof prepareModelAudits>[0]['auditWindow']
   } = {},
 ): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-model-audit-'))
@@ -65,6 +73,8 @@ async function withRun(
       config: FIXTURE_CONFIG,
       ...(options.maxResultsPerSubmission ? { maxResultsPerSubmission: options.maxResultsPerSubmission } : {}),
       ...(options.alreadyOnChain ? { alreadyOnChain: options.alreadyOnChain } : {}),
+      ...(options.diffHold ? { diffHold: options.diffHold } : {}),
+      ...(options.auditWindow ? { auditWindow: options.auditWindow } : {}),
     })
     await body({ evidenceDir, prepared })
   } finally {
@@ -232,6 +242,37 @@ test('results already on-chain are left out before the evidence is built', async
   })
 })
 
+test('a seller held after a recent DIFF is left out with its reason, and a model with only held sellers is not prepared', async () => {
+  // Agent 2's service had a DIFF last epoch: its SAME and UNDETERMINED would clear it, so neither is
+  // sent. Its repeat DIFF on model-c clears nothing, so it is sent.
+  const holds = diffHolds({
+    epoch: 7n,
+    holdEpochs: DIFF_HOLD_EPOCHS,
+    reader: {
+      serviceStatusByHash: async (agentId) => (agentId === 2n
+        ? { verdict: VERIFIER_VERDICT.DIFF, epoch: 6n }
+        : { verdict: VERIFIER_VERDICT.SAME, epoch: 6n }),
+    },
+  })
+  await withRun([
+    audit('1', sellers[0]!, 'model-a'),
+    audit('2', sellers[1]!, 'model-a'),
+    audit('2', sellers[1]!, 'model-b', 'UNDETERMINED'),
+    audit('2', sellers[1]!, 'model-c', 'DIFF'),
+  ], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits.map((entry) => entry.key), ['model-a', 'model-c'], 'model-b had only the held seller')
+    const [entry, repeat] = prepared.audits as [PreparedModelAudit, PreparedModelAudit]
+    assert.deepEqual(entry.results.map((result) => result.agentId), [1n])
+    assert.deepEqual(repeat.results.map((result) => [result.agentId, result.verdict]), [[2n, VERIFIER_VERDICT.DIFF]], 'a repeat DIFF is sent')
+    assert.deepEqual(entry.evidence.results.map((result) => result.agentId), ['1'], 'the evidence lists exactly the results sent')
+    const held = prepared.excluded.filter((excluded) => excluded.agentId === '2')
+    assert.deepEqual(held.map((excluded) => [excluded.model, excluded.reason]), [
+      ['model-a', 'its DIFF from epoch 6 stands until epoch 8, so the seller is not audited or cleared before then'],
+      ['model-b', 'its DIFF from epoch 6 stands until epoch 8, so the seller is not audited or cleared before then'],
+    ])
+  }, { diffHold: holds.filter })
+})
+
 test('parts are cut from the results left to send', async () => {
   await withRun([
     audit('1', sellers[0]!, 'model-a'),
@@ -310,10 +351,12 @@ test('evidence lists, copies, and round-trips the bank\'s raw reference exchange
     assert.deepEqual(rebuilt.referenceEvidence.map((item) => item.path), [copied])
   }, {
     beforePrepare: async (banksDir) => {
-      const bankFile = join(banksDir, 'model-a', 'bank.json')
+      // The epoch's own bank: a submission publishes its exchange files.
+      const bankDirectory = join(banksDir, 'model-a', 'epochs', '7')
+      const bankFile = join(bankDirectory, 'bank.json')
       const bank: Record<string, unknown> = { version: 1, kind: 'antseed-kbf-probe-bank', model: 'model-a' }
-      await mkdir(join(banksDir, 'model-a', 'reference-evidence'), { recursive: true })
-      await writeFile(join(banksDir, 'model-a', 'reference-evidence', 'cdcdcdcdcdcdcdcd.exchanges.json'), raw)
+      await mkdir(join(bankDirectory, 'reference-evidence'), { recursive: true })
+      await writeFile(join(bankDirectory, 'reference-evidence', 'cdcdcdcdcdcdcdcd.exchanges.json'), raw)
       bank.referenceExchanges = [{
         referenceId: `0x${'cd'.repeat(32)}`,
         path: 'reference-evidence/cdcdcdcdcdcdcdcd.exchanges.json',
@@ -481,6 +524,50 @@ test('close calls are submitted on the pooled verdict, re-verified from both evi
   })
 })
 
+test('an open audit window submits nothing; a closed one submits its sellers, open close calls as UNDETERMINED, a confirmation\'s close call waits for its extra questions', async () => {
+  const reference = referenceFixture('model-a', 20)
+  const late = randomWallet()
+  const audits: FixtureAudit[] = [
+    audit('1', sellers[0]!, 'model-a'),
+    { ...audit('2', sellers[1]!, 'model-a'), reference, closeCall: { firstWrong: 7 } },
+    audit('3', late, 'model-a', 'DIFF'),
+    audit('4', sellers[2]!, 'model-b'),
+  ]
+  const window = (state: 'open' | 'closed') => async (model: string) => (model === 'model-a'
+    ? { state, sellers: [peerIdOf(sellers[0]!), peerIdOf(sellers[1]!)].map((peer) => peer.replace(/^0x/i, '').toLowerCase()) }
+    : null)
+  await withRun(audits, async ({ prepared }) => {
+    // model-b has no window (a confirmation model): submitted as before.
+    assert.deepEqual(prepared.audits.map((entry) => entry.key), ['model-b'])
+    assert.equal(prepared.excluded.filter((entry) => /audit window is still open/.test(entry.reason)).length, 3)
+    // Held for later this epoch, so a submit that sends nothing does not count the run as submitted.
+    assert.equal(prepared.heldBack.filter((entry) => /^model-a .*: its audit window is still open$/.test(entry)).length, 3)
+  }, { auditWindow: window('open') })
+  // A confirmation on the model waits for the window too: its evidence would publish the window's questions.
+  await withRun([{ ...audit('1', sellers[0]!, 'model-a', 'DIFF'), confirmsDiff: true }], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits, [])
+    assert.match(prepared.excluded[0]!.reason, /a confirmation on a model whose audit window is still open: it is submitted when the window closes/)
+  }, { auditWindow: window('open') })
+  await withRun(audits, async ({ prepared }) => {
+    const entry = prepared.audits.find((value) => value.key === 'model-a')!
+    assert.deepEqual(entry.results.map((result) => [result.agentId, result.verdict]), [
+      [1n, VERIFIER_VERDICT.SAME],
+      [2n, VERIFIER_VERDICT.UNDETERMINED],
+    ])
+    assert.deepEqual(prepared.excluded.map((exclusion) => [exclusion.agentId, exclusion.reason.split(' (')[0]]), [
+      ['3', 'not in this epoch\'s audit window'],
+    ])
+  }, { auditWindow: window('closed') })
+  // A confirmation's close call is not the window's: it still gets its extra questions after the window
+  // closed, so it waits for them instead of going out as UNDETERMINED.
+  await withRun([{ ...audit('1', sellers[0]!, 'model-a', 'DIFF'), reference, closeCall: { firstWrong: 7 }, confirmsDiff: true }], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits, [])
+    assert.deepEqual(prepared.excluded.map((exclusion) => [exclusion.agentId, exclusion.reason.split(' (')[0]]), [
+      ['1', 'close call waiting for its extra questions'],
+    ])
+  }, { auditWindow: window('closed') })
+})
+
 test('tampered pooled statistics or a reused extension probe are rejected', async () => {
   const reference = referenceFixture('model-a', 20)
   await withRun([
@@ -524,4 +611,90 @@ test('a close call is checked against the close-call rule', () => {
   } as unknown as Parameters<typeof validateAuditMatchesSummary>[1]
   // p = 0.5 is a clear SAME: it must not have been extended.
   assert.throws(() => validateAuditMatchesSummary(first, result, extensionEvidence), /not a close call/)
+})
+
+test('evidence prepared again after its question set is retired is byte-identical, questionSelection included', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-model-audit-retired-set-'))
+  try {
+    const evidenceDir = join(directory, 'evidence')
+    const banksDir = join(directory, 'banks')
+    const set = await writeCalibratedEpochSet({ banksDir, model: 'model-a', epoch: '7', reference: referenceFixture('model-a', 300) })
+    const manifest = await writeSignedAuditRun({
+      evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor,
+      audits: [{ ...audit('1', sellers[0]!, 'model-a'), reference: set.reference }],
+    })
+    const prepare = async () => {
+      const prepared = await prepareModelAudits({
+        evidenceDir, banksDir, manifest, auditor: auditor.address, config: FIXTURE_CONFIG,
+        resolveAgentOwner: async () => sellers[2]!.address,
+      })
+      return prepared.audits[0]!
+    }
+    const before = await prepare()
+    assert.deepEqual(before.evidence.questionSelection, {
+      method: EPOCH_QUESTION_SET_METHOD,
+      referenceId: set.reference.referenceId,
+      extensionReferenceIds: [set.extensions[0]!.referenceId],
+      calibration: set.calibration,
+    })
+    const retired = await retireEpochQuestionSet({
+      banksDir, model: 'model-a', epoch: '7', runId: 'submit-run',
+      published: {
+        referenceIds: before.evidence.references.map((reference) => reference.referenceId),
+        exchanges: (before.evidence.referenceEvidence ?? []).map(({ referenceId, sha256 }) => ({ referenceId, sha256 })),
+      },
+    })
+    const after = await prepare()
+    assert.deepEqual(after.evidence, before.evidence)
+    assert.equal(after.evidenceHash, before.evidenceHash)
+    assert.deepEqual(retired, { retired: true })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a close call asked on a set a submit has since published is submitted UNDETERMINED; one on the current set still waits', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-model-audit-published-close-call-'))
+  try {
+    const evidenceDir = join(directory, 'evidence')
+    const banksDir = join(directory, 'banks')
+    const first = await writeCalibratedEpochSet({ banksDir, model: 'model-a', epoch: '7', reference: referenceFixture('model-a', 300) })
+    const manifestOf = (runId: string, audits: FixtureAudit[]) => writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: '7', auditor, audits })
+    const prepare = async (manifest: Awaited<ReturnType<typeof manifestOf>>) => prepareModelAudits({
+      evidenceDir, banksDir, manifest, auditor: auditor.address, config: FIXTURE_CONFIG, resolveAgentOwner: async () => sellers[2]!.address,
+    })
+    const waiting = /^close call waiting for its extra questions/
+    const onFirst = await manifestOf('run-1', [{ ...audit('1', sellers[0]!, 'model-a'), reference: first.reference, closeCall: { firstWrong: 9 } }])
+    const before = await prepare(onFirst)
+    assert.deepEqual(before.audits, [])
+    assert.match(before.excluded[0]!.reason, waiting, 'a grey-zone first look')
+    // A submit publishes the first set; the next build makes a second one.
+    await retireEpochQuestionSet({ banksDir, model: 'model-a', epoch: '7', runId: 'submit', published: { referenceIds: [], exchanges: [] } })
+    const second = await writeCalibratedEpochSet({ banksDir, model: 'model-a', epoch: '7', reference: freshReferenceFixture('model-a', 'second', 300) })
+    const after = await prepare(onFirst)
+    const [entry] = after.audits
+    assert.deepEqual(entry?.results.map((result) => [result.agentId, result.verdict]), [[1n, VERIFIER_VERDICT.UNDETERMINED]])
+    assert.match(entry!.evidence.results[0]!.outcomeReason!.summary, /its extra questions were published before they could be asked/)
+    const onSecond = await manifestOf('run-2', [{ ...audit('2', sellers[1]!, 'model-a'), reference: second.reference, closeCall: { firstWrong: 9 } }])
+    const current = await prepare(onSecond)
+    assert.deepEqual(current.audits, [])
+    assert.match(current.excluded[0]!.reason, waiting)
+    // A confirmation's close call on the published set is not submitted: the seller is audited again.
+    const confirmation = await manifestOf('run-3', [{
+      ...audit('3', sellers[1]!, 'model-a'), reference: first.reference, closeCall: { firstWrong: 9 }, confirmsDiff: true,
+    }])
+    const held = await prepare(confirmation)
+    assert.deepEqual(held.audits, [])
+    assert.match(held.excluded[0]!.reason, /^a confirmation whose extra questions were published before they could be asked: the seller is audited again/)
+    assert.deepEqual(held.heldBack, ['model-a 3: confirmation audited again on new questions'])
+    // Its last attempt, as the merged epoch hands it on once the attempts are used up, is submitted UNDETERMINED.
+    const summaryPath = confirmation.models[0]!.summaryPath
+    const summary = JSON.parse(await readFile(summaryPath, 'utf8')) as { results: Array<Record<string, unknown>> }
+    summary.results[0] = { ...summary.results[0], outcomeReason: EXTRA_QUESTIONS_PUBLISHED }
+    await writeFile(summaryPath, JSON.stringify(summary))
+    const lastAttempt = await prepare(confirmation)
+    assert.deepEqual(lastAttempt.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[3n, VERIFIER_VERDICT.UNDETERMINED]])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })

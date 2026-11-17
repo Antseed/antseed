@@ -10,6 +10,8 @@ export interface PendingExtension {
   model: string
   runId: string
   result: ModelVerificationTargetResult
+  /** The reference its first audit was asked, from that audit's evidence. */
+  firstReferenceId: string
 }
 
 export function pendingExtensionKey(model: string, peerId: string): string {
@@ -27,7 +29,7 @@ export async function loadPendingExtensions(
   models: readonly string[],
 ): Promise<Map<string, PendingExtension>> {
   const wanted = new Set(models.map((model) => model.toLowerCase()))
-  const latest = new Map<string, PendingExtension>()
+  const latest = new Map<string, Omit<PendingExtension, 'firstReferenceId'>>()
   for (const manifest of await epochRunManifests(evidenceDir, epoch)) {
     for (const entry of manifest.models) {
       if (!wanted.has(entry.model.toLowerCase())) continue
@@ -46,15 +48,16 @@ export async function loadPendingExtensions(
   const pending = new Map<string, PendingExtension>()
   for (const [key, entry] of latest) {
     if (stageOneVerdict(entry.result) !== null || !entry.result.extensionPending) continue
+    let firstReferenceId: string
     try {
-      await verifyProxyAuditEvidenceFile(entry.result.evidencePath, entry.result.evidenceHash)
+      firstReferenceId = (await verifyProxyAuditEvidenceFile(entry.result.evidencePath, entry.result.evidenceHash)).reference.referenceId
       for (const set of extensionSets(entry.result)) {
         await verifyProxyAuditEvidenceFile(set.evidencePath, set.evidenceHash)
       }
     } catch {
       continue
     }
-    pending.set(key, entry)
+    pending.set(key, { ...entry, firstReferenceId })
   }
   return pending
 }
