@@ -5,7 +5,7 @@ import { api } from '../api'
 import type { FreeTierProgramView, SellerFreeTierProgramPatch, SellerFreeTierProgramSettings, SellerRestartView, SellerSettings, SellerSettingsPatch, SellerSettingsService, SellerUnitComponent } from '../api/types'
 import type { SellerSettingsResponse } from '../api/client'
 import { freeTierHeadline, tierAnts, tierMultiplier } from '../lib/free-tier'
-import { numberFieldError, rebaseDraft } from '../lib/settings'
+import { cachedPriceError, numberFieldError, rebaseDraft } from '../lib/settings'
 import { qk } from '../lib/queries'
 import { formatUnitPrice, unitName } from '../lib/seller'
 import { ErrorAlert } from './ui'
@@ -203,7 +203,7 @@ export function draftErrors(draft: Draft, base?: Draft): Record<string, string> 
     if (base && same(price, base.prices[key])) continue
     errors[`${key}:input`] = numberFieldError(price.input, { required: true })
     errors[`${key}:output`] = numberFieldError(price.output, { required: true })
-    errors[`${key}:cached`] = numberFieldError(price.cached)
+    errors[`${key}:cached`] = cachedPriceError(price.cached, price.input)
   }
   const tiersTouched = touched('freeTiersMode', 'freeTiers')
   if (draft.freeTiersMode === 'custom' && tiersTouched) {
