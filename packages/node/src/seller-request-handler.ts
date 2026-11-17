@@ -1280,6 +1280,13 @@ export class SellerRequestHandler {
             unitCostUsdc = finalBilling.costUsdc;
           }
 
+        // A failed request is never charged: the buyer got an error, not an answer,
+        // even when the error body carries a usage figure or a unit adapter prices it.
+        if (statusCode >= 400) {
+          responseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+          unitCostUsdc = 0n;
+        }
+
         // Record metering
         const finishedAt = Date.now();
         const latencyMs = finishedAt - startTime;
