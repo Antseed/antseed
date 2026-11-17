@@ -152,6 +152,23 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     entry.status = 'ok';
   }
 
+  // Speech as OpenAI answers `/v1/audio/speech`: MP3 audio (silent 417-byte MPEG-1 layer III frames, 128 kbps,
+  // 44.1 kHz), or with `stream_format: "sse"` the same bytes in base64 `speech.audio.delta` events, cut mid-frame,
+  // then `speech.audio.done` with the usage (the `CreateSpeechResponseStreamEvent` schema of OpenAI's API reference).
+  function speech(response, body) {
+    const audio = Buffer.alloc(417 * 8);
+    for (let frame = 0; frame < 8; frame += 1) audio.set([0xff, 0xfb, 0x90, 0x00], frame * 417);
+    if (body.stream_format !== 'sse') {
+      response.writeHead(200, { 'content-type': 'audio/mpeg' });
+      return response.end(audio);
+    }
+    const event = (type, data) => `data: ${JSON.stringify({ type, ...data })}\n\n`;
+    response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' });
+    for (let offset = 0; offset < audio.length; offset += 1000) response.write(event('speech.audio.delta', { audio: audio.subarray(offset, offset + 1000).toString('base64') }));
+    const inputTokens = Math.max(1, Math.ceil(String(body.input ?? '').length / 4));
+    response.end(event('speech.audio.done', { usage: { input_tokens: inputTokens, output_tokens: 100, total_tokens: inputTokens + 100 } }));
+  }
+
   async function image(response, body) {
     const prompt = String(body.prompt ?? '');
     const tagged = prompt.match(TAG);
@@ -216,6 +233,7 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
         if (usage !== 'load' && state.latencyMs > 0) await sleep(state.latencyMs);
         return await image(response, body);
       }
+      if (path === '/v1/audio/speech') return speech(response, body);
       return json(404, { error: { message: `No mock route for ${path}`, type: 'invalid_request_error' } });
     } catch (error) {
       if (!response.headersSent) json(500, { error: { message: error.message, type: 'server_error' } });

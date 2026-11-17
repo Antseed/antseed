@@ -308,33 +308,4 @@ describe('BuyerPaymentNegotiator', () => {
       expect(bpm.trackRequestBilling.mock.calls[0]![1]).toMatchObject({ estimatedCostUsdc: 800_000n });
     });
   });
-
-  describe('a speech request for a stream of events, which unit billing could not count', () => {
-    const peer: BuyerPeerView = { peerId: toPeerId('8'.repeat(40)) };
-    const route = {
-      sellerPeerId: peer.peerId,
-      provider: 'openai',
-      service: 'speech',
-      serviceApiProtocol: 'openai-audio-speech' as const,
-      unitModel: { version: 1 as const, components: [{ unit: 'input_characters' as const, priceUsd: 0.000015 }] },
-    };
-    const request = (streamFormat: string) => ({
-      requestId: 'speech',
-      method: 'POST',
-      path: '/v1/audio/speech',
-      headers: { 'content-type': 'application/json' },
-      body: new TextEncoder().encode(JSON.stringify({ model: 'speech', input: 'Hello', voice: 'alloy', stream_format: streamFormat })),
-    });
-
-    it('is refused before anything is sent, as the buyer\'s own invalid request, so no seller is blamed', () => {
-      const bpm = { maxVideoRequestUsdc: 5_000_000n, trackRequestBilling: vi.fn(), trackRequestService: vi.fn() };
-      const negotiator = Object.create(BuyerPaymentNegotiator.prototype) as BuyerPaymentNegotiator;
-      Object.assign(negotiator as object, { _bpm: bpm });
-      expect(() => negotiator.trackRequestBillingContext(request('sse'), 'speech', route))
-        .toThrow(expect.objectContaining({ code: 'invalid-request', attribution: 'buyer' }));
-      expect(bpm.trackRequestBilling).not.toHaveBeenCalled();
-      negotiator.trackRequestBillingContext(request('audio'), 'speech', route);
-      expect(bpm.trackRequestBilling).toHaveBeenCalledTimes(1);
-    });
-  });
 });
