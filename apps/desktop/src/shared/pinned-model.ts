@@ -50,6 +50,16 @@ export function modelAcceptsImages(
   return Boolean(peerId && model.imageInputSellerIds?.includes(peerId));
 }
 
+/** Whether a chat on `modelId` may ask for thinking: every seller the gateway may pick declares reasoning, or the pinned one does. */
+export function modelReasons(
+  model: { reasoningEverySeller?: boolean; reasoningSellerIds?: string[] },
+  modelId: string,
+): boolean {
+  if (model.reasoningEverySeller) return true;
+  const { peerId } = splitPinnedModel(modelId);
+  return Boolean(peerId && model.reasoningSellerIds?.includes(peerId));
+}
+
 /**
  * Whether an image model can edit an image. Unpinned, one seller that takes
  * image input is enough: the gateway sends edits only to sellers that do.
