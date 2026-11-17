@@ -84,12 +84,15 @@ export function cliSellerConfig({ id, providers, chain, bootstrapNodes, payments
   };
 }
 
+/** How often a testbench buyer rediscovers sellers unless the topology sets `buyer.peerRefreshIntervalMs`. */
+export const TESTBENCH_PEER_REFRESH_INTERVAL_MS = 60_000;
+
 /** config.json of `antseed buyer start`: the settings the in-process buyer gets, spelled as CLI config. */
-export function cliBuyerConfig({ proxyPort, routingPreferences, maxPricing, chain, bootstrapNodes, payments }) {
+export function cliBuyerConfig({ proxyPort, routingPreferences, maxPricing, chain, bootstrapNodes, payments, peerRefreshIntervalMs = TESTBENCH_PEER_REFRESH_INTERVAL_MS }) {
   return {
     identity: { displayName: 'testbench-buyer' },
     buyer: {
-      proxyPort, minPeerReputation: 0, routingPreferences, peerRefreshIntervalMs: 60_000, autoSweep: false,
+      proxyPort, minPeerReputation: 0, routingPreferences, peerRefreshIntervalMs, autoSweep: false,
       ...(maxPricing ? { maxPricing } : {}),
     },
     payments: {

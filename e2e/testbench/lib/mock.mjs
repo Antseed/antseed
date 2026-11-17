@@ -233,6 +233,8 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     port: server.address().port,
     state,
     setLatency(ms) { state.latencyMs = ms; },
+    /** Prices the ledger's later responses at `next` (per model, as `pricing`), after the seller's price changed. */
+    setPricing(next) { pricing = next; },
     /** Changes the fault rates for requests that arrive from now on. */
     setFaults({ fault500Rate: nextFault500 = state.faults.fault500Rate, disconnectRate: nextDisconnect = state.faults.disconnectRate } = {}) {
       state.faults = { fault500Rate: nextFault500, disconnectRate: nextDisconnect };

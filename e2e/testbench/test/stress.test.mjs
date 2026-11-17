@@ -90,6 +90,19 @@ describe('mock delivery ledger', () => {
     }
   });
 
+  it('prices responses after setPricing at the new price, and earlier ones at the old', async () => {
+    const mock = await startMock({ models: ['m'], pricing: { m: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } });
+    try {
+      await post(`${mock.url}/v1/chat/completions`, { model: 'm', messages: [{ role: 'user', content: '[req:free] hi' }] });
+      mock.setPricing({ m: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } });
+      await post(`${mock.url}/v1/chat/completions`, { model: 'm', messages: [{ role: 'user', content: '[req:paid] hi' }] });
+      const ledger = mock.deliveries();
+      assert.deepEqual([ledger.byTag.free.cost, ledger.byTag.paid.cost], ['0', String(10 * 3 + 8 * 15)]);
+    } finally {
+      await mock.stop();
+    }
+  });
+
   it('load usage sizes prompt and completion like real traffic', async () => {
     const mock = await startMock({ models: ['m'], usage: 'load', latencyRangeMs: [0, 0], outTokens: [50, 50], pricing: { m: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } });
     try {

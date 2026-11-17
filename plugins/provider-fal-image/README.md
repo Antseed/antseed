@@ -61,3 +61,12 @@ OpenAI fields are mapped to fal's:
 ## Pricing
 
 Price each service at fal's price for its dearest output for each billed option. A request that leaves out `size` or `quality` is billed as `auto`: price `auto` at what fal makes by default, or at its dearest choice when the model chooses (`quality: "auto"` on GPT Image). Options passed through unchanged, such as `aspect_ratio`, are not billing attributes, so price a model whose fal price depends on them at its dearest.
+
+Some fal edit endpoints (GPT Image among them) also bill each image an edit sends. Price those with components that match `input_images`, the number of image files the edit sends (`image`, `image[]` and `mask` parts), on top of the output price. Components add up, so give one component per count you accept, each worth that many input images:
+
+```json
+{ "unit": "output_images", "match": { "input_images": "1" }, "priceUsd": 0.012 },
+{ "unit": "output_images", "match": { "input_images": "2" }, "priceUsd": 0.024 }
+```
+
+An edit with a count no component names is refused before payment. A service with no `input_images` component bills edits like generations. These components are per output image, so with `n` above 1 the input is charged once per image. Peer metadata v18 carries the key; buyers on older releases don't see services that use it.

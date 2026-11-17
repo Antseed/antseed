@@ -8,6 +8,10 @@ import { buyerFault } from './errors.js';
 import { readStreamEvents, streamUsage } from './response-usage.js';
 import {
   extractImageRequestFacts,
+  headerValue,
+  isImageEditPath,
+  isMultipartFormData,
+  parseMultipartForm,
   extractSpeechRequestFacts,
   speechAudioDelivered,
   extractProviderResponseFacts,
@@ -30,6 +34,7 @@ import type {
   UnitBillingUsageReportV1,
 } from '@antseed/protocol/billing';
 import {
+  componentMatchesAttributes,
   evaluateUnitBilling,
   unitUsageToBillingReport,
   validateUnitBillingModelV1,
@@ -215,12 +220,16 @@ export function captureUnitBillingContext(args: CaptureUnitBillingArgs): Capture
 }
 
 function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
-  const parsed = extractRequestBodyFields(args.request.headers, args.request.body);
+  const contentType = headerValue(args.request.headers, 'content-type');
+  // One pass over a form reads both its text fields and its image files.
+  const form = isMultipartFormData(contentType) ? parseMultipartForm(args.request.body, contentType) : null;
+  const parsed = form ? form.fields : extractRequestBodyFields(args.request.headers, args.request.body);
   const image = extractImageRequestFacts({
     path: args.request.path,
     method: args.request.method,
     body: parsed ?? undefined,
   });
+  if (isImageEditPath(args.request.path)) image.inputImages = form?.imageEditFiles ?? 0;
   const requestUsage = imageUnitUsage(image);
   const attributes = imageAttributes(image);
   return {
@@ -365,7 +374,23 @@ export function estimateUnitRequestCost(
     && (usage.units.video_seconds === undefined || usage.units.video_seconds <= 0)) {
     throw new Error('Explicit video duration is required for per-second pricing');
   }
+  assertInputImagesPriced(model, context);
   return evaluateUnitBilling(model, context, usage);
+}
+
+/**
+ * Refuses an image edit that a model pricing input images has no input price
+ * for: no `input_images` component matches all of its attributes (its count,
+ * size, quality, ...). Its output would still match a component, so without
+ * this the edit would be billed with no charge for its input images.
+ */
+function assertInputImagesPriced(model: UnitBillingModelV1, context: UnitBillingContext): void {
+  const count = context.attributes?.input_images;
+  if (count === undefined) return;
+  const inputPrices = model.components.filter((component) => component.match?.input_images !== undefined);
+  if (inputPrices.length > 0 && !inputPrices.some((component) => componentMatchesAttributes(component, context.attributes))) {
+    throw new Error(`This service has no price for an edit with ${count} input images and these options`);
+  }
 }
 
 function usageForModel(model: UnitBillingModelV1, usage: UnitBillingUsage): UnitBillingUsage {
@@ -408,6 +433,8 @@ function imageAttributes(
     const value = facts[key];
     if (value !== undefined) attributes[key] = value;
   }
+  // An edit's image files, which upstreams bill as input on top of the output.
+  if (facts.inputImages) attributes.input_images = String(facts.inputImages);
   return Object.keys(attributes).length > 0 ? attributes : undefined;
 }
 

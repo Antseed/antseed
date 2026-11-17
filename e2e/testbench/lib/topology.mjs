@@ -84,6 +84,9 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
   if (!CONTRACT_LAYOUTS.includes(contracts)) throw new Error(`chain.contracts must be one of ${CONTRACT_LAYOUTS.join(', ')}`);
   const topUpThresholdBps = chainIn.topUpThresholdBps;
   if (topUpThresholdBps !== undefined && !(Number.isInteger(topUpThresholdBps) && topUpThresholdBps >= 1 && topUpThresholdBps <= 10_000)) throw new Error('chain.topUpThresholdBps must be 1-10000');
+  // How often the buyer rediscovers sellers (the CLI default is 5 minutes; the testbench uses 1 minute unless set).
+  const peerRefreshIntervalMs = buyerIn.peerRefreshIntervalMs;
+  if (peerRefreshIntervalMs !== undefined && !(Number.isInteger(peerRefreshIntervalMs) && peerRefreshIntervalMs >= 1000 && peerRefreshIntervalMs <= 3_600_000)) throw new Error('buyer.peerRefreshIntervalMs must be 1000-3600000');
   const caps = {};
   for (const key of ['maxReserveUsdc', 'maxPerRequestUsdc']) {
     if (buyerIn[key] !== undefined) caps[key.replace('Usdc', 'Micros')] = String(microsFromUsdc(buyerIn[key], `buyer.${key}`));
@@ -97,6 +100,7 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
       routingPreferences: { ...(source.buyer.routingPreferences ?? {}), ...(buyerIn.routingPreferences ?? {}) },
       ...(buyerIn.maxPricing ?? source.buyer.maxPricing ? { maxPricing: structuredClone(buyerIn.maxPricing ?? source.buyer.maxPricing) } : {}),
       ...caps,
+      ...(peerRefreshIntervalMs !== undefined ? { peerRefreshIntervalMs } : {}),
       ...(buyerIn.env ? { env: normalizeEnv(buyerIn.env, 'buyer') } : {}),
     },
     chain: {
