@@ -243,7 +243,8 @@ test('results already on-chain are left out before the evidence is built', async
 })
 
 test('a seller held after a recent DIFF is left out with its reason, and a model with only held sellers is not prepared', async () => {
-  // Agent 2's service had a DIFF last epoch: its SAME and UNDETERMINED would clear it, so neither is sent.
+  // Agent 2's service had a DIFF last epoch: its SAME and UNDETERMINED would clear it, so neither is
+  // sent. Its repeat DIFF on model-c clears nothing, so it is sent.
   const holds = diffHolds({
     epoch: 7n,
     holdEpochs: DIFF_HOLD_EPOCHS,
@@ -257,10 +258,12 @@ test('a seller held after a recent DIFF is left out with its reason, and a model
     audit('1', sellers[0]!, 'model-a'),
     audit('2', sellers[1]!, 'model-a'),
     audit('2', sellers[1]!, 'model-b', 'UNDETERMINED'),
+    audit('2', sellers[1]!, 'model-c', 'DIFF'),
   ], async ({ prepared }) => {
-    assert.deepEqual(prepared.audits.map((entry) => entry.key), ['model-a'], 'model-b had only the held seller')
-    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(prepared.audits.map((entry) => entry.key), ['model-a', 'model-c'], 'model-b had only the held seller')
+    const [entry, repeat] = prepared.audits as [PreparedModelAudit, PreparedModelAudit]
     assert.deepEqual(entry.results.map((result) => result.agentId), [1n])
+    assert.deepEqual(repeat.results.map((result) => [result.agentId, result.verdict]), [[2n, VERIFIER_VERDICT.DIFF]], 'a repeat DIFF is sent')
     assert.deepEqual(entry.evidence.results.map((result) => result.agentId), ['1'], 'the evidence lists exactly the results sent')
     const held = prepared.excluded.filter((excluded) => excluded.agentId === '2')
     assert.deepEqual(held.map((excluded) => [excluded.model, excluded.reason]), [

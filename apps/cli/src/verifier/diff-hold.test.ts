@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { VERIFIER_VERDICT, serviceHash } from '@antseed/node/payments'
-import { DIFF_HOLD_EPOCHS, diffHoldEndsAt, diffHoldReason, diffHolds, type DiffHoldStatus } from './diff-hold.js'
+import { VERIFIER_VERDICT, serviceHash, type VerifierVerdict } from '@antseed/node/payments'
+import { DIFF_HOLD_EPOCHS, diffHoldEndsAt, diffHoldReason, diffHoldResultReason, diffHolds, type DiffHoldStatus } from './diff-hold.js'
 
 const DIFF_IN_30: DiffHoldStatus = { verdict: VERIFIER_VERDICT.DIFF, epoch: 30n }
 
@@ -31,6 +31,12 @@ test('only a stored DIFF holds: SAME, UNDETERMINED and no verdict do not', () =>
   assert.equal(diffHoldReason({ verdict: VERIFIER_VERDICT.NONE, epoch: 0n }, 1n, DIFF_HOLD_EPOCHS), null)
 })
 
+test('a repeat DIFF result is never held: only a SAME or UNDETERMINED would clear the stored DIFF', () => {
+  assert.equal(diffHoldResultReason(DIFF_IN_30, 31n, DIFF_HOLD_EPOCHS, VERIFIER_VERDICT.DIFF), null)
+  assert.match(diffHoldResultReason(DIFF_IN_30, 31n, DIFF_HOLD_EPOCHS, VERIFIER_VERDICT.SAME)!, /stands until epoch 32/)
+  assert.match(diffHoldResultReason(DIFF_IN_30, 31n, DIFF_HOLD_EPOCHS, VERIFIER_VERDICT.UNDETERMINED)!, /stands until epoch 32/)
+})
+
 test('diffHolds reads each (agent, service) once and filters candidates in order', async () => {
   const reads: string[] = []
   const statuses = new Map<string, DiffHoldStatus>([
@@ -47,9 +53,10 @@ test('diffHolds reads each (agent, service) once and filters candidates in order
       },
     },
   })
-  const candidate = (agentId: bigint) => ({ agentId, serviceHash: serviceHash('model-a'), verdict: VERIFIER_VERDICT.SAME, auditedAt: 0 })
+  const candidate = (agentId: bigint, verdict: VerifierVerdict = VERIFIER_VERDICT.SAME) => ({ agentId, serviceHash: serviceHash('model-a'), verdict, auditedAt: 0 })
   const reasons = await holds.filter('0xmodel', [candidate(1n), candidate(2n), candidate(3n)])
   assert.deepEqual(reasons.map((reason) => reason !== null), [false, true, false])
+  assert.deepEqual(await holds.filter('0xmodel', [candidate(2n, VERIFIER_VERDICT.DIFF)]), [null], 'agent 2\'s repeat DIFF is sent')
   assert.match(reasons[1]!, /DIFF from epoch 30 stands until epoch 32/)
   assert.match((await holds.reasonFor(2n, serviceHash('model-a').toUpperCase().replace('0X', '0x')))!, /epoch 30/)
   assert.equal(reads.length, 3, 'each pair is read once, whatever the hash\'s case')

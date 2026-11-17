@@ -1254,17 +1254,13 @@ export async function runVerifierRound(
           const held: HeldSeller[] = []
           for (const [index, target] of planned.targets.entries()) {
             const reason = reasons[index]
-            if (!reason) {
+            // A confirmation answers another auditor's repeat DIFF: it is audited, and `verifier submit`
+            // sends its result only if it is a DIFF too (a SAME or UNDETERMINED would clear the stored DIFF).
+            if (!reason || confirmationFor(planned.model, target.peer)) {
               targets.push(target)
               continue
             }
             held.push({ peerId: target.peer.peerId, agentId: String(target.peer.onChainAgentId), service: target.service, reason })
-            const confirmation = confirmationFor(planned.model, target.peer)
-            if (confirmation) {
-              const key = confirmationPlanKey(planned.model, String(target.peer.onChainAgentId))
-              auditedConfirmations.delete(key)
-              confirmationSkipReasons.set(key, [...confirmationSkipReasons.get(key) ?? [], `held: ${reason}`])
-            }
           }
           return { ...planned, targets, held }
         }

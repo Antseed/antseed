@@ -1114,6 +1114,21 @@ test('a seller whose DIFF was recorded last epoch is held: not audited, while th
   assert.ok(!scenario.log.some((line) => line.endsWith('model-a aa')), scenario.log.join('\n'))
 }))
 
+test('a held seller is still audited to confirm another auditor\'s repeat DIFF; a held seller with no confirmation is not', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  scenario.clientAvailable = true
+  scenario.confirmations = [{ model: 'model-a', agentId: '5' }]
+  scenario.confirmationsWaitOnDiff = true
+  scenario.snapshots = [snapshot([
+    { ...seller('aa'.repeat(20), ['model-a']), onChainAgentId: 5 } as PeerInfo,
+    { ...seller('bb'.repeat(20), ['model-a']), onChainAgentId: 6 } as PeerInfo,
+  ])]
+  scenario.recordedDiffs.set(5, BigInt(EPOCH) - 1n)
+  scenario.recordedDiffs.set(6, BigInt(EPOCH) - 1n)
+  await scenario.run({ confirm: true })
+  assert.ok(scenario.log.includes('audited model-a aa'), scenario.log.join('\n'))
+  assert.ok(!scenario.log.some((line) => line.endsWith('model-a bb')), scenario.log.join('\n'))
+}))
+
 test('a seller is audited again two epochs after its DIFF, once the hold is over', LANE_TIMEOUT, () => withScenario(async (scenario) => {
   scenario.clientAvailable = true
   scenario.snapshots = [snapshot([{ ...seller('aa'.repeat(20), ['model-a']), onChainAgentId: 5 } as PeerInfo])]

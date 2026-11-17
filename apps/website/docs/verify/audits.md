@@ -93,7 +93,7 @@ Every seller your buyer has found that offers the model. A seller is skipped whe
 
 ### After a DIFF
 
-A seller whose service got a recorded `DIFF` isn't audited in the next epoch (`verifier.diffHoldEpochs`, default 1). A `DIFF` recorded in epoch N stands through N+1, and the seller is audited again in N+2. The contract lets a single `SAME` replace a recorded `DIFF`, so without this hold a seller could switch back to the genuine model for one audit and lose its `DIFF` straight away.
+A seller whose service got a recorded `DIFF` isn't audited in the next epoch, except to confirm another auditor's repeat `DIFF` (`verifier.diffHoldEpochs`, default 1). A `DIFF` recorded in epoch N stands through N+1, and the seller is audited again in N+2. The contract lets a single `SAME` replace a recorded `DIFF`, so without this hold a seller could switch back to the genuine model for one audit and lose its `DIFF` straight away.
 
 `verifier run` lists each held seller and the epoch it's audited again:
 
@@ -101,7 +101,7 @@ A seller whose service got a recorded `DIFF` isn't audited in the next epoch (`v
 glm-5.3: agent 12 (glm-5.3, peer <peerId>…) held: its DIFF from epoch 30 stands until epoch 32, so the seller is not audited or cleared before then
 ```
 
-`verifier submit` leaves out any result it still has for a held service, with the same reason. The hold reads the service's recorded verdict, whatever model it was recorded under, so a seller can't lift it by offering another model under the same service name. It ends early only when the owner clears the result.
+`verifier submit` leaves out any `SAME` or `UNDETERMINED` it still has for a held service, with the same reason. A repeat `DIFF` clears nothing, so it's sent. The hold reads the service's recorded verdict, whatever model it was recorded under, so a seller can't lift it by offering another model under the same service name. It ends early only when the owner clears the result.
 
 ### Your buyer's price cap
 

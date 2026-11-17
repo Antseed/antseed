@@ -6,9 +6,10 @@ import type { SubmissionCandidate } from './submission-delta.js'
  * The DIFF hold: once a DIFF is recorded for a seller's service, the service is not audited in the
  * next `verifier.diffHoldEpochs` epochs (default 1), so no SAME or UNDETERMINED can clear the DIFF
  * before then. The contract lets a single later report replace a live DIFF (`diffReplacementReports`
- * is 1), so the CLI holds it: `verifier run` does not plan the seller, and `verifier submit` leaves
- * out any result for the service it still has. A DIFF recorded in epoch N therefore counts through
- * N+1, and the seller is audited again in N+2. A DIFF recorded in the current epoch is not held here;
+ * is 1), so the CLI holds it: `verifier run` does not plan the seller (except to confirm another
+ * auditor's repeat DIFF), and `verifier submit` leaves out any SAME or UNDETERMINED for the service
+ * it still has. A repeat DIFF clears nothing, so it is sent. A DIFF recorded in epoch N therefore
+ * counts through N+1, and the seller is audited again in N+2. A DIFF recorded in the current epoch is not held here;
  * the third-opinion rule (`third-opinion.ts`) already keeps other auditors off it this epoch.
  *
  * The hold reads the service's stored verdict, whatever model it was recorded under, so a seller
@@ -45,6 +46,14 @@ export function diffHoldReason(status: DiffHoldStatus, epoch: bigint, holdEpochs
     + 'so the seller is not audited or cleared before then'
 }
 
+/**
+ * Why a result for the service is not sent in `epoch`, or null when it is: a DIFF result never is
+ * held, since it cannot clear the stored DIFF; any other result is held by `diffHoldReason`.
+ */
+export function diffHoldResultReason(status: DiffHoldStatus, epoch: bigint, holdEpochs: number, result: VerifierVerdict): string | null {
+  return result === VERIFIER_VERDICT.DIFF ? null : diffHoldReason(status, epoch, holdEpochs)
+}
+
 const READ_CONCURRENCY = 8
 
 export interface DiffHolds {
@@ -52,7 +61,7 @@ export interface DiffHolds {
   reasonFor(agentId: bigint, serviceHash: string): Promise<string | null>
   /** One reason or null per entry, at most 8 reads at a time; an entry without an agent id is never held. */
   reasonsFor(entries: ReadonlyArray<{ agentId: bigint | null; serviceHash: string }>): Promise<Array<string | null>>
-  /** The filter `prepareModelAudits` takes: one reason or null per candidate. */
+  /** The filter `prepareModelAudits` takes: one reason or null per candidate. A DIFF result is never held (`diffHoldResultReason`). */
   filter(modelHash: string, candidates: readonly SubmissionCandidate[]): Promise<Array<string | null>>
 }
 
@@ -77,6 +86,9 @@ export function diffHolds(input: { epoch: bigint; holdEpochs: number; reader: Di
   return {
     reasonFor,
     reasonsFor,
-    filter: (_modelHash, candidates) => reasonsFor(candidates),
+    // A DIFF result is never held, so its hold is not read (an entry without an agent id is never held).
+    filter: (_modelHash, candidates) => reasonsFor(candidates.map((candidate) => (
+      candidate.verdict === VERIFIER_VERDICT.DIFF ? { agentId: null, serviceHash: candidate.serviceHash } : candidate
+    ))),
   }
 }

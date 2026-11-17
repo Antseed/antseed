@@ -37,7 +37,7 @@ import { CALIBRATION_MINIMUM_COVERAGE, EPOCH_QUESTION_SET_METHOD } from './probe
 import { AUDITED_MODELS, type AuditedModel } from './audited-models.js'
 import { CLOSE_CALL_RULE_ID, closeCallRuleForExtensions, needsExtension, pooledCloseCallVerdict } from './close-call.js'
 import { CANONICAL_KBF_DOMAINS } from './canonical-kbf-domains.js'
-import { DIFF_HOLD_EPOCHS, diffHoldReason } from './diff-hold.js'
+import { DIFF_HOLD_EPOCHS, diffHoldReason, diffHoldResultReason } from './diff-hold.js'
 import { DEFAULT_LAYOUT_FILTER_PASSES, REFERENCE_SIZING_ALGORITHM_VERSION } from './model-reference.js'
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
 import { CONFIRMATION_WINDOW_SECONDS, pendingConfirmations, type EpochReport } from './pending-confirmations.js'
@@ -219,6 +219,10 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
         diffHoldReason({ verdict: verifierVerdict('DIFF'), epoch: 10n }, epoch, DIFF_HOLD_EPOCHS) !== null,
         diffHoldReason({ verdict: verifierVerdict('SAME'), epoch: 10n }, epoch, DIFF_HOLD_EPOCHS) !== null,
       ]),
+      // Which results for a service whose DIFF is from epoch 10 are sent in epoch 11: a repeat DIFF is.
+      diffHoldResults: (['SAME', 'DIFF', 'UNDETERMINED'] as const).map((result) => (
+        diffHoldResultReason({ verdict: verifierVerdict('DIFF'), epoch: 10n }, 11n, DIFF_HOLD_EPOCHS, verifierVerdict(result)) !== null
+      )),
     },
     samples,
   }
