@@ -10,7 +10,7 @@ import { assertAgentId, assertEpochs, assertPositiveIds, silentReporter, type St
 import { liveWalletPositions, validateWalletRewards } from './indexed-wallet.js';
 import type { LivePositions } from './position-feed.js';
 import { positionActionEpoch, positionActionProblem, type PositionAction } from '../position-actions.js';
-import { earlyExitSlashBpsFrom, normalLockStarts, type LineageRow } from './lock-start.js';
+import { earlyExitSlashBpsFrom, normalLockStarts, type LineageRow, type LockStartConfig } from './lock-start.js';
 import { poolRevertMessage } from '../pool-errors.js';
 
 
@@ -49,10 +49,13 @@ async function describePositions(ctx: AntsContext, positions: SellerPoolPosition
     const liveRow = liveById.get(positions[index]!.id);
     return liveRow ? liveRow.maxLockedNext! : statuses![index]!.maxLockedNext;
   };
-  // Indexed mode makes no per-position RPC reads for display, so it reads lock history only for
-  // positions the merge dialog could offer; chain mode already reads every position.
-  const lockStartIds = live ? mergeCandidateIds(positions, currentEpoch, scheduledMaxLock) : positions.filter(position => isOpenAt(position, currentEpoch)).map(position => position.id);
-  const normalStarts = await openNormalStarts(ctx, lockStartIds, positions, currentEpoch, lineage);
+  // Indexed mode makes no per-position RPC reads for display, so it reads lock history only for positions
+  // the merge dialog could offer and those whose public window the feed shows is not the pool's; chain
+  // mode already reads every position.
+  const lockStartIds = live
+    ? [...new Set([...mergeCandidateIds(positions, currentEpoch, scheduledMaxLock), ...movedStartIds(positions, lineage, config.maxStakeEpochs)])]
+    : positions.filter(position => isOpenAt(position, currentEpoch)).map(position => position.id);
+  const normalStarts = await openNormalStarts(ctx, lockStartIds, positions, currentEpoch, lineage, config);
   const pendingReward = (id: number): string | null => {
     if (indexedRewards === undefined) return (rewards.get(id) ?? 0n).toString();
     return indexedRewards?.get(id) ?? null;
@@ -100,10 +103,10 @@ async function describePositions(ctx: AntsContext, positions: SellerPoolPosition
 }
 
 /** Normal lock starts of the open positions; a failed history read leaves them unknown, never blocks the page. */
-async function openNormalStarts(ctx: AntsContext, ids: number[], positions: SellerPoolPosition[], currentEpoch: number, lineage: LineageRow[]): Promise<Map<number, number | null>> {
+async function openNormalStarts(ctx: AntsContext, ids: number[], positions: SellerPoolPosition[], currentEpoch: number, lineage: LineageRow[], config: LockStartConfig): Promise<Map<number, number | null>> {
   if (ids.length === 0) return new Map();
   try {
-    return await normalLockStarts(ctx.provider(), ctx.requirePools().contractAddress, ids, mergeLineage(positions, lineage), currentEpoch, ctx.closedLockHistory);
+    return await normalLockStarts(ctx.provider(), ctx.requirePools().contractAddress, ids, mergeLineage(positions, lineage), currentEpoch, ctx.closedLockHistory, config);
   } catch {
     return new Map();
   }
@@ -118,6 +121,18 @@ export function mergeCandidateIds(positions: SellerPoolPosition[], currentEpoch:
     groups.set(key, [...(groups.get(key) ?? []), position.id]);
   });
   return [...groups.values()].filter(ids => ids.length > 1).flat();
+}
+
+/**
+ * Open positions whose normal lock start the feed already shows differs from the public start: a
+ * split, merge or move replacement, or a window longer than any stake (max lock disabled; an extend
+ * can also do this).
+ */
+export function movedStartIds(positions: SellerPoolPosition[], lineage: LineageRow[], maxStakeEpochs: number): number[] {
+  const replacements = new Set(lineage.flatMap(row => row.closedBy === 'split' || row.closedBy === 'merge' || row.closedBy === 'move' ? row.replacementIds ?? [] : []));
+  return positions
+    .filter(position => position.closedAtEpoch === 0 && !position.withdrawn && (replacements.has(position.id) || position.stakeEndEpoch - position.stakeStartEpoch > maxStakeEpochs))
+    .map(position => position.id);
 }
 
 /** Position records plus the indexer's close reasons and replacements, one row per id. */
