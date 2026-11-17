@@ -1,5 +1,5 @@
 import { parseJsonObject } from '@antseed/api-adapter';
-import { estimateTokensFromBytes } from './pricing.js';
+import { estimateTokensFromBytes, estimateTokensFromBytesSampled } from './pricing.js';
 import { parseResponseUsage, readStreamEvents, type ResponseUsage } from './response-usage.js';
 
 const encoder = new TextEncoder();
@@ -70,6 +70,67 @@ export function estimatePromptTokens(requestBody: Uint8Array): number {
     return { type: value.type };
   });
   return estimateTokensFromBytes(encoder.encode(text)) + attachments * ATTACHMENT_TOKENS;
+}
+
+const isString = (value: unknown): value is string => typeof value === 'string';
+
+/**
+ * Whether a content part is an image in the form its API defines: OpenAI Chat `image_url` (a URL
+ * string or `{ url }`), OpenAI Responses `input_image` (`image_url` or `file_id`) or Anthropic
+ * Messages `image` (a `source` of a known type). An upstream resizes an image before it reads it, so
+ * its tokens stay near the flat allowance however large its encoding is.
+ */
+function isImagePart(part: Record<string, unknown>): boolean {
+  switch (part.type) {
+    case 'image_url': return isString(part.image_url) || (isRecord(part.image_url) && isString(part.image_url.url));
+    case 'input_image': return isString(part.image_url) || isString(part.file_id);
+    case 'image': return isRecord(part.source) && ['base64', 'url', 'file'].includes(part.source.type as string);
+    default: return false;
+  }
+}
+
+/**
+ * The image parts of a chat request, found only where the APIs put content: the parts of each message
+ * (`messages[].content[]`, Responses `input[].content[]`), of an Anthropic tool result inside them,
+ * and of a Responses tool output (`input[].output[]`). An object shaped like an image anywhere else
+ * (a tool's input or schema, a default, application data) is text the model reads, and counts as text.
+ */
+function imageParts(request: Record<string, unknown>): Set<object> {
+  const found = new Set<object>();
+  const addFrom = (parts: unknown, nested: boolean): void => {
+    if (!Array.isArray(parts)) return;
+    for (const part of parts) {
+      if (!isRecord(part)) continue;
+      if (isImagePart(part)) found.add(part);
+      else if (nested && part.type === 'tool_result') addFrom(part.content, false);
+    }
+  };
+  for (const list of [request.messages, request.input]) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (!isRecord(item)) continue;
+      addFrom(item.content, true);
+      if (item.type === 'function_call_output') addFrom(item.output, false);
+    }
+  }
+  return found;
+}
+
+/**
+ * The prompt tokens of a chat request, for checks before it goes upstream (buyer limits, whether a
+ * reserve covers it): `request` is `body` parsed. Each image part counts the flat allowance, never its
+ * base64, which is megabytes of body but not of tokens. Everything else, audio, files, documents and
+ * anything image-shaped outside a content part, counts by its bytes as before, so the estimate never
+ * drops below what those can cost. The text is sampled (`estimateTokensFromBytesSampled`), and a body
+ * without image parts is not written again.
+ */
+export function estimatePromptTokensForChecks(request: Record<string, unknown>, body: Uint8Array): number {
+  const images = imageParts(request);
+  if (images.size === 0) return estimateTokensFromBytesSampled(body);
+  const text = JSON.stringify(request, (_key: string, value: unknown) => (
+    isRecord(value) && images.has(value) ? { type: value.type } : value
+  ));
+  return estimateTokensFromBytesSampled(encoder.encode(text)) + images.size * ATTACHMENT_TOKENS;
 }
 
 /**
