@@ -197,3 +197,35 @@ describe('Claude Code identity system prompt', () => {
     ]);
   });
 });
+
+
+describe('sampling fields', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function upstreamBody(model: string): Promise<Record<string, unknown>> {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = plugin.createProvider({ CLAUDE_ACCESS_TOKEN: 'test-access-token' });
+    await provider.handleRequest({
+      requestId: 'req-1',
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ model, max_tokens: 16, temperature: 0.7, messages: [{ role: 'user', content: 'hi' }] })),
+    });
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    return JSON.parse(new TextDecoder().decode(options.body as Uint8Array)) as Record<string, unknown>;
+  }
+
+  it('are dropped for a model that rejects them', async () => {
+    expect('temperature' in await upstreamBody('claude-sonnet-5-5')).toBe(false);
+  });
+
+  it('are kept for a model that accepts them', async () => {
+    expect((await upstreamBody('claude-sonnet-4-5')).temperature).toBe(0.7);
+  });
+});
