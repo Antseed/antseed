@@ -151,6 +151,31 @@ describe('gateway key', () => {
     assert.equal(plain.workspaceId, DEFAULT_WORKSPACE_ID)
   })
 
+  test('show says what holds a key\'s spend: requests in flight and video jobs not yet charged', async () => {
+    const key = await runJson<{ id: string }>('key', 'create', '--label', 'dave', '--daily-limit', '5')
+    const config = process.env['ANTSEED_CONFIG']
+    // No buyer config: requests hold the default $0.30 each.
+    process.env['ANTSEED_CONFIG'] = join(dataDir, 'missing-config.json')
+    try {
+      assert.match(await run('key', 'show', key.id), /^Held: \$0\.00$/m)
+      withStore((store) => {
+        const record = store.getKey(key.id)!
+        store.startRequest({ tag: 'running', keyId: key.id, buyerIdentity: record.buyerIdentity, method: 'POST', path: '/v1/chat/completions', model: 'm', startedAt: Date.now() })
+        store.saveVideoCommitment({ job: 'venice-video\njob-1', keyId: key.id, memberId: null, workspaceId: record.workspaceId, amountUsdc: 4_999_769, expiresAt: Date.now() + 60_000, deliveredAt: null })
+        // Expired: no longer counted.
+        store.saveVideoCommitment({ job: 'venice-video\njob-0', keyId: key.id, memberId: null, workspaceId: record.workspaceId, amountUsdc: 1_000_000, expiresAt: Date.now() - 1, deliveredAt: null })
+      })
+      assert.match(await run('key', 'show', key.id), /^Held: up to \$5\.30 \(in-flight requests up to \$0\.30 \(1\), video jobs \$5\.00 \(1 not yet charged\)\)$/m)
+      const json = await runJson<{ heldUsd: Record<string, string>; requestsInFlight: number; videoJobsHeld: number }>('key', 'show', key.id)
+      assert.deepEqual(json.heldUsd, { total: '5.299769', requests: '0.300000', video: '4.999769' })
+      assert.equal(json.requestsInFlight, 1)
+      assert.equal(json.videoJobsHeld, 1)
+    } finally {
+      if (config === undefined) delete process.env['ANTSEED_CONFIG']
+      else process.env['ANTSEED_CONFIG'] = config
+    }
+  })
+
   test('revoking a key ends its console sessions', async () => {
     const key = await runJson<{ id: string }>('key', 'create', '--label', 'carol')
     withStore((store) => new AuthDb(store.database, () => Date.now()).createSession({ kind: 'key', keyId: key.id }, { userAgent: null, ip: '127.0.0.1' }))

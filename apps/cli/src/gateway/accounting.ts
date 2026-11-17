@@ -43,6 +43,9 @@ const DEFAULT_VIDEO_COMMITMENT_MS = 30 * 24 * 60 * 60_000
  */
 const DELIVERY_CHARGE_WAIT_MS = 60 * 60_000
 
+/** What one request holds against its key's caps while in flight, when the buyer's config sets no `payments.maxPerRequestUsdc` ($0.30). */
+export const DEFAULT_MAX_PER_REQUEST_USDC = '300000'
+
 /** The buyer's default limit for one video ($5), when its config sets none. */
 export const DEFAULT_MAX_VIDEO_REQUEST_USDC = 5_000_000
 
@@ -63,13 +66,59 @@ export interface GatewayAccountingOptions {
   onLog?: (message: string) => void
 }
 
+/**
+ * What a key, member or workspace has held against its caps: requests in
+ * flight (the per-request maximum each, less what is already signed, until
+ * a short grace after they finish), and video (creates still being priced,
+ * which hold the room they were told about, plus accepted jobs whose price
+ * is not charged yet).
+ */
+export interface HeldBreakdown {
+  requestsUsdc: number
+  videoUsdc: number
+}
+
+export function heldTotal(held: HeldBreakdown): number {
+  return held.requestsUsdc + held.videoUsdc
+}
+
+/** A key's holds as `antseed gateway key show` reads them from the store, with how many requests and video jobs make them up. */
+export interface StoredKeyHolds extends HeldBreakdown {
+  requests: number
+  videoJobs: number
+}
+
+/**
+ * What a key holds against its caps, read from the store alone (for
+ * `antseed gateway key show`, which runs apart from the gateway). Request
+ * holds live in the gateway's memory, so they are estimated from the requests
+ * the log shows in flight, at `holdUsdc` each: an upper bound, since spend
+ * already signed lowers a hold. Video is what the stored commitments and
+ * create reservations hold: nothing once expired, an hour after a delivery
+ * that was never charged, or for a revoked key's job it can no longer
+ * retrieve.
+ */
+export function storedKeyHolds(store: GatewayStore, key: Pick<ApiKeyRecord, 'id' | 'status'>, holdUsdc: number, now: number): StoredKeyHolds {
+  const requests = store.unfinishedRequestCount(key.id)
+  let videoUsdc = 0
+  let videoJobs = 0
+  for (const record of store.keyVideoCommitments(key.id)) {
+    if (record.amountUsdc <= 0 || record.expiresAt <= now) continue
+    if (record.deliveredAt !== null && now - record.deliveredAt >= DELIVERY_CHARGE_WAIT_MS) continue
+    if (key.status === 'revoked' && record.deliveredAt === null && !isVideoReservationKey(record.job)) continue
+    videoUsdc += record.amountUsdc
+    videoJobs += 1
+  }
+  return { requestsUsdc: requests * holdUsdc, videoUsdc, requests, videoJobs }
+}
+
 /** One level whose caps a key's request is admitted against. */
 type BudgetCheck = {
   level: BudgetLevel
   limits: SpendLimits | BudgetLimits
   scope: BudgetScope
   /** With `withoutVideoCreates`, leaving out the room video creates hold while they are priced. */
-  held: (withoutVideoCreates?: boolean) => number
+  held: (withoutVideoCreates?: boolean) => HeldBreakdown
 }
 
 type Hold = {
@@ -151,21 +200,30 @@ export class GatewayAccounting {
 
   /** In-flight holds plus accepted videos not yet charged, optionally leaving one video job out. */
   heldUsdc(keyId: string, excludeVideoJob?: string, withoutVideoCreates = false): number {
+    return heldTotal(this.heldBreakdown(keyId, excludeVideoJob, withoutVideoCreates))
+  }
+
+  /** `heldUsdc`, split into requests in flight and video. */
+  heldBreakdown(keyId: string, excludeVideoJob?: string, withoutVideoCreates = false): HeldBreakdown {
     return this._held((hold) => hold.keyId === keyId, excludeVideoJob, withoutVideoCreates)
   }
 
   /** Holds in flight for every key a member owns. */
   heldForMember(memberId: string, excludeVideoJob?: string, withoutVideoCreates = false): number {
-    return this._held((hold) => hold.memberId === memberId, excludeVideoJob, withoutVideoCreates)
+    return heldTotal(this._held((hold) => hold.memberId === memberId, excludeVideoJob, withoutVideoCreates))
   }
 
   heldForWorkspace(workspaceId: string, excludeVideoJob?: string, withoutVideoCreates = false): number {
-    return this._held((hold) => hold.workspaceId === workspaceId, excludeVideoJob, withoutVideoCreates)
+    return heldTotal(this._held((hold) => hold.workspaceId === workspaceId, excludeVideoJob, withoutVideoCreates))
   }
 
-  private _held(match: (hold: Omit<Hold, 'finished' | 'timer'>) => boolean, excludeVideoJob?: string, withoutVideoCreates = false): number {
-    let held = 0
-    for (const hold of this._holds.values()) if (match(hold) && !(withoutVideoCreates && hold.videoCreate)) held += hold.amountUsdc
+  private _held(match: (hold: Omit<Hold, 'finished' | 'timer'>) => boolean, excludeVideoJob?: string, withoutVideoCreates = false): HeldBreakdown {
+    const held: HeldBreakdown = { requestsUsdc: 0, videoUsdc: 0 }
+    for (const hold of this._holds.values()) {
+      if (!match(hold) || (withoutVideoCreates && hold.videoCreate)) continue
+      if (hold.videoCreate || hold.videoJob) held.videoUsdc += hold.amountUsdc
+      else held.requestsUsdc += hold.amountUsdc
+    }
     const now = this._now()
     // A revoked key cannot retrieve its jobs any more (only the creating key may), so they are never charged:
     // unless a retrieve admitted before the revocation is still running, or a delivery's charge is still to come.
@@ -197,7 +255,7 @@ export class GatewayAccounting {
       if (commitment.amountUsdc > 0 && commitment.deliveredAt !== null && now - commitment.deliveredAt >= DELIVERY_CHARGE_WAIT_MS) {
         this._setVideoHeld(job, commitment, 0)
       }
-      if (commitment.amountUsdc > 0 && job !== excludeVideoJob && match(commitment) && (isActive(commitment.keyId) || chargeable(job, commitment))) held += commitment.amountUsdc
+      if (commitment.amountUsdc > 0 && job !== excludeVideoJob && match(commitment) && (isActive(commitment.keyId) || chargeable(job, commitment))) held.videoUsdc += commitment.amountUsdc
     }
     return held
   }
@@ -328,7 +386,8 @@ export class GatewayAccounting {
    * Reads the stored commitments. A create's reservation still stored was
    * left by a gateway that stopped before storing the create's job: when the
    * request log names the job, the reservation becomes that job's commitment
-   * (the whole room the create was told about, less what it already spent),
+   * (the buyer's price as logged with the job, or the whole room the create
+   * was told about when no price was logged, less what it already spent),
    * since its key can still retrieve it and be charged; otherwise the create
    * was not accepted, or its job cannot be retrieved through this gateway
    * (no record names its owner), so it is never charged and the reservation
@@ -353,9 +412,12 @@ export class GatewayAccounting {
         // delivered job gets the same hour for its charge as any other.
         const jobId = created.slice(created.indexOf('\n') + 1)
         const delivery = this._store.videoJobDeliveredAt(commitment.keyId, jobId)
+        // The buyer refuses a video priced above the room it was told about, so the logged price is never more.
+        const price = this._store.videoCreatePrice(tag)
+        const owed = price === null ? commitment.amountUsdc : Math.min(commitment.amountUsdc, price)
         const recovered = {
           ...commitment,
-          amountUsdc: Math.max(0, commitment.amountUsdc - this._store.videoJobSpend(commitment.keyId, jobId)),
+          amountUsdc: Math.max(0, owed - this._store.videoJobSpend(commitment.keyId, jobId)),
           deliveredAt: delivery,
         }
         this._store.saveVideoCommitment({ job: created, ...recovered }, job)
@@ -388,10 +450,10 @@ export class GatewayAccounting {
   /** The key (the lower of its admin and owner caps), the member who owns it and its workspace. */
   private _budgetChecks(key: ApiKeyRecord, { member, workspace }: KeyContext, excludeVideoJob?: string): BudgetCheck[] {
     const checks: BudgetCheck[] = [
-      { level: 'key', limits: effectiveKeyLimits(key), scope: { keyId: key.id }, held: (without) => this.heldUsdc(key.id, excludeVideoJob, without) },
+      { level: 'key', limits: effectiveKeyLimits(key), scope: { keyId: key.id }, held: (without) => this.heldBreakdown(key.id, excludeVideoJob, without) },
     ]
-    if (member) checks.push({ level: 'member', limits: member.limits, scope: { memberId: member.id }, held: (without) => this.heldForMember(member.id, excludeVideoJob, without) })
-    if (workspace) checks.push({ level: 'workspace', limits: workspace.limits, scope: { workspaceId: workspace.id }, held: (without) => this.heldForWorkspace(workspace.id, excludeVideoJob, without) })
+    if (member) checks.push({ level: 'member', limits: member.limits, scope: { memberId: member.id }, held: (without) => this._held((hold) => hold.memberId === member.id, excludeVideoJob, without) })
+    if (workspace) checks.push({ level: 'workspace', limits: workspace.limits, scope: { workspaceId: workspace.id }, held: (without) => this._held((hold) => hold.workspaceId === workspace.id, excludeVideoJob, without) })
     return checks
   }
 
@@ -428,12 +490,13 @@ export class GatewayAccounting {
       const periods = cappedPeriods(limits)
       if (periods.length === 0) continue
       const spent = this._store.spendByPeriod(scope, now, periods)
-      const heldUsdc = held()
+      const parts = held()
+      const heldUsdc = heldTotal(parts)
       const breach = findLimitBreach(limits, spent, heldUsdc, now)
       if (breach) {
         // Room a create holds while it is priced comes back in seconds: say so, rather than that the cap is reached.
-        if (findLimitBreach(limits, spent, held(true), now) === null) return { ok: false, breach: null, reason: 'video_pricing' }
-        return { ok: false, breach: { ...breach, level } }
+        if (findLimitBreach(limits, spent, heldTotal(held(true)), now) === null) return { ok: false, breach: null, reason: 'video_pricing' }
+        return { ok: false, breach: { ...breach, level, heldRequestsUsdc: parts.requestsUsdc, heldVideoUsdc: parts.videoUsdc } }
       }
       for (const period of periods) {
         const room = (limits[period] ?? 0) - (spent[period] ?? 0) - heldUsdc

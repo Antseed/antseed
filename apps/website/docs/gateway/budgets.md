@@ -46,13 +46,17 @@ The gateway answers `402 Payment Required` with the code `spend_limit_reached`. 
       "spent_usd": "50.112000",
       "remaining_usd": "0.000000",
       "held_usd": "0.000000",
+      "held_requests_usd": "0.000000",
+      "held_video_usd": "0.000000",
       "resets_at": "2026-10-19T00:00:00.000Z"
     }
   }
 }
 ```
 
-`limit.remaining_usd` is what is left of the limit and `limit.held_usd` what requests still running (or not yet charged) may use. Each running request holds up to the most one request may cost, so a small limit can refuse a request before it is fully spent. The message then says how much is left.
+`limit.remaining_usd` is what is left of the limit and `limit.held_usd` what requests still running (or not yet charged) may use. `limit.held_requests_usd` is the part held by requests in flight, and `limit.held_video_usd` the part held by videos (being priced, or accepted and not yet charged). Each running request holds up to the most one request may cost, so a small limit can refuse a request before it is fully spent. The message then says how much is left and what holds the rest.
+
+`antseed gateway key show <id>` prints the same as a `Held:` line, for example `Held: $5.00 (no requests in flight, video jobs $5.00 (1 not yet charged))`. It reads the gateway database, so requests in flight are counted at the most one request may cost each.
 
 Refused requests are not added to the request log.
 
@@ -71,7 +75,7 @@ The exact cost of a request is only known once the provider is paid, which can h
 A video is charged once, when its file is delivered, but its price is known when it starts, so it counts against the limits from start to charge:
 
 - When a video is created, the gateway tells the buyer how much is left under the key's limits (the lowest of the key's, its owner's and its workspace's), and holds that much while the buyer prices the video. The most one video may hold is the buyer's `payments.maxVideoRequestUsdc` ($5 by default). A video that costs more than what is left is refused with `422` before it starts.
-- Once the video is accepted, it holds its price until it is charged, the job fails, or 30 days pass. Its status polls and its download are always let through, since its price is already held.
+- Once the video is accepted, it holds its price until it is charged, the job fails, or 30 days pass. Its status polls and its download are always let through, since its price is already held. If the buyer's answer carries no readable price, the video holds everything it was allowed until then, so downloading it (or the job failing) is what frees the limit. A gateway restarted after a video was accepted keeps holding it, at the price the buyer reported.
 - Only the key that created a video can poll or download it. Other keys get `404 video_route_not_found`.
 - Other requests that only miss the limit because a video is still being priced get `429 video_pricing_in_progress`, which can be retried after a few seconds.
 

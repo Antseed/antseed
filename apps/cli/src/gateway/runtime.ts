@@ -3,7 +3,7 @@ import { Contract } from 'ethers'
 import { resolveBaseRpcUrlOverride } from '../cli/payment-utils.js'
 import { sharedChainProvider } from '../proxy/chain-rpc.js'
 import { loadConfig } from '../config/loader.js'
-import { GatewayAccounting } from './accounting.js'
+import { DEFAULT_MAX_PER_REQUEST_USDC, GatewayAccounting } from './accounting.js'
 import { loadOrCreateControlSecret, recordGatewayBuyerPort } from './buyer-control.js'
 import { createKeyWalletReader } from './key-wallet.js'
 import { fetchComparableRetailPrices } from '../retail-prices.js'
@@ -18,7 +18,6 @@ import { X402Facilitator, type X402Asset } from './x402.js'
 import { GatewayTelemetry } from '../telemetry/gateway.js'
 import { cdpAuthorization, type CdpCredentials } from './cdp-auth.js'
 
-const DEFAULT_MAX_PER_REQUEST_USDC = '300000'
 // AntseedDeposits takes at least 1 USDC on a first deposit, after the sweep fee.
 const DEFAULT_TOPUP_MIN_USD = '2'
 const DEFAULT_TOPUP_MAX_USD = '500'
@@ -131,6 +130,8 @@ export async function liveBuyerIdentityAddress(buyerPort: number, name: string):
 
 /** Gateway server + spend feed, shared by `antseed gateway start` and `antseed tunnel start`. */
 export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promise<GatewayRuntime> {
+  // Requests in the log that started before this are a previous process's (see `finishAbandonedRequests`).
+  const startedAt = Date.now()
   const config = await loadConfig(options.configPath)
   const buyerPort = options.buyerPort ?? config.buyer.proxyPort
   const store = new GatewayStore(options.dataDir)
@@ -230,6 +231,13 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     store.close()
     await telemetry.stop()
     throw error
+  }
+  // Only once this gateway holds its port: requests a stopped gateway left unfinished can no longer finish.
+  try {
+    const abandoned = store.finishAbandonedRequests(startedAt)
+    if (abandoned > 0) options.onLog?.(`gateway marked ${abandoned} request(s) a previous run left unfinished as ended (499)`)
+  } catch (error) {
+    options.onLog?.(`gateway could not finish requests a previous run left: ${error instanceof Error ? error.message : String(error)}`)
   }
   const clearBuyerPortRecord = recordGatewayBuyerPort(options.dataDir, buyerPort)
   spendFeed.start()
