@@ -173,6 +173,29 @@ export async function readCardProviders(): Promise<CardProvider[]> {
 
 
 
+// GoodDollar AI-credits checkout — a hosted page built by the GoodDollar team
+// where users buy credits with G$. The page is handed the buyer address plus
+// an EIP-712 SetOperator signature authorizing GoodDollar's operator wallet,
+// which lets their side submit setOperator() and manage the deposit on the
+// buyer's behalf (the buyer never pays gas). Overridable via
+// config.payments.gooddollar.{url,operator}.
+export const DEFAULT_GOODDOLLAR_URL = 'https://aicredits.gooddollar.org/';
+export const DEFAULT_GOODDOLLAR_OPERATOR = '0x192288D921045aa96903e5286E116960e5fb4607';
+
+export async function readGoodDollarConfig(): Promise<{ url: string; operator: string }> {
+  try {
+    const config = await readConfig(ACTIVE_CONFIG_PATH);
+    const record = asRecord(asRecord(config.payments).gooddollar);
+    return {
+      url: asString(record.url as string, '') || DEFAULT_GOODDOLLAR_URL,
+      operator: asString(record.operator as string, '') || DEFAULT_GOODDOLLAR_OPERATOR,
+    };
+  } catch {
+    return { url: DEFAULT_GOODDOLLAR_URL, operator: DEFAULT_GOODDOLLAR_OPERATOR };
+  }
+}
+
+
 /**
  * Bearer token the portal server expects on its pages. Empty until
  * `startPaymentsPortal()` has run.

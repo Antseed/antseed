@@ -418,6 +418,7 @@ const api = {
   freeTierStake: () => ipcRenderer.invoke('freeTier:stake'),
   paymentsOpenPayPage: (opts: { kind?: string; amountUsdc?: string }) => ipcRenderer.invoke('payments:open-pay-page', opts),
   paymentsOpenCardProvider: (opts?: { providerId?: string; amountUsdc?: string }) => ipcRenderer.invoke('payments:open-card-provider', opts),
+  paymentsOpenGoodDollar: () => ipcRenderer.invoke('payments:open-gooddollar'),
   onPaymentsCompleted(handler: () => void): () => void {
     const listener = () => handler();
     ipcRenderer.on('payments:completed', listener);

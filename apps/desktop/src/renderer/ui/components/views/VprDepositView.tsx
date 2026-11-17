@@ -283,6 +283,47 @@ function MeridianMark({ size = 20 }: { size?: number }) {
   );
 }
 
+/** Official GoodDollar mark — the brand disc-with-G path (their "Logo Icon
+    Negative" asset knocks the G out of the disc, so a white backing circle
+    makes the G read white on the brand-blue disc, matching their app icon). */
+const GOODDOLLAR_DISC_PATH =
+  'M407.836,203.914C407.836.719,243.112-164,39.907-164-163.268-164-328.008.71' +
+  '9-328.008,203.914s164.74,367.911,367.915,367.911c203.2,0,367.929-164.72,36' +
+  '7.929-367.911M223.494,29.631l-74.509,74.511c0-.011-.02-.011-.02-.027l-19.3' +
+  '78,19.374A120.335,120.335,0,1,0,44.493,328.917a120.542,120.542,0,0,0,117.3' +
+  '-93.454H17.606L71.362,181.7H216.494a174.549,174.549,0,0,1,2.084,26.873c0,9' +
+  '6.005-78.094,174.1-174.086,174.1A173.522,173.522,0,0,1-78.518,331.648l-25.' +
+  '343,25.341h-76.077l69.361-69.313a173.125,173.125,0,0,1-19.019-79.1c0-95.98' +
+  '9,78.1-174.086,174.09-174.086a173.246,173.246,0,0,1,79.162,18.954l23.813-2' +
+  '3.811Z';
+
+function GoodDollarMark({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="11.8" fill="#fff" />
+      <path
+        d={GOODDOLLAR_DISC_PATH}
+        fill="#00AFFF"
+        transform="translate(-4.307 -4.307) scale(0.032614) translate(460.122 296.088)"
+      />
+    </svg>
+  );
+}
+
+/** Official Celo mark (yellow disc + black C glyph). */
+function CeloMark({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 2500 2500" aria-hidden="true">
+      <circle cx="1250" cy="1250" r="1250" fill="#FCFF52" />
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M1949.3,546.2H550.7v1407.7h1398.7v-491.4h-232.1c-80,179.3-260.1,304.1-466.2,304.1c-284.1,0-514.2-233.6-514.2-517.5c0-284,230.1-515.6,514.2-515.6c210.1,0,390.2,128.9,470.2,312.1h228.1V546.2z"
+      />
+    </svg>
+  );
+}
+
 /** Official Arbitrum mark (arbitrum.foundation brand asset). */
 function ArbitrumMark({ size = 18 }: { size?: number }) {
   return (
@@ -549,6 +590,20 @@ function LocalDepositView({ onSelectView }: Props) {
     });
   }, [amount, chooseMethod, noteCheckoutOpened]);
 
+  // GoodDollar's hosted page needs a fresh SetOperator signature, so the main
+  // process signs and builds the URL — this can take a beat (an on-chain
+  // nonce read), hence the pending guard.
+  const [goodDollarPending, setGoodDollarPending] = useState(false);
+  const openGoodDollar = useCallback(() => {
+    setCardNotice(null);
+    setGoodDollarPending(true);
+    void window.antseedDesktop?.paymentsOpenGoodDollar?.().then((result) => {
+      if (!result.ok) setCardNotice(result.error ?? 'Could not open the payment page.');
+    }).catch((err: unknown) => {
+      setCardNotice(err instanceof Error ? err.message : String(err));
+    }).finally(() => setGoodDollarPending(false));
+  }, []);
+
   const feeBaseUnits = usdcToBaseUnits(snap.depositFee);
   const firstDepositNeeds = usdcToBaseUnits(snap.minFirstDeposit) + feeBaseUnits;
   const isFirstDeposit = usdcToBaseUnits(snap.total) === 0n;
@@ -790,6 +845,25 @@ function LocalDepositView({ onSelectView }: Props) {
                   <PolygonMark />
                 </span>
               </button>
+
+              <button
+                type="button"
+                className={styles.methodCta}
+                onClick={openGoodDollar}
+                disabled={goodDollarPending}
+              >
+                <span className={styles.methodCtaIcon}>
+                  <GoodDollarMark />
+                </span>
+                <span className={styles.methodCtaText}>
+                  <span className={styles.methodCtaTitle}>Deposit with GoodDollar</span>
+                  <span className={styles.methodCtaCaption}>Pay with $G</span>
+                </span>
+                <span className={styles.methodBadges} aria-hidden="true">
+                  <CeloMark />
+                </span>
+              </button>
+
               {/* The pay page's Stripe integration. US only — elsewhere the
                   page shows its region-unavailable screen. */}
               <button type="button" className={styles.methodCta} onClick={() => openCardProvider('antseed-pay-stripe')}>
