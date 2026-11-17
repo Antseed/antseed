@@ -356,8 +356,10 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown, started
           else next[key] = price(item[key], `${String(item.service)} ${key}`)
         }
         if (next.inputUsdPerMillion === undefined || next.outputUsdPerMillion === undefined) bad(`pricing: ${String(item.service)} needs both input and output prices`)
-        const problem = cachedPriceProblem(`pricing: ${String(item.service)}`, next as Partial<TokenPricingUsdPerMillion>)
-        if (problem) bad(problem)
+        // Only a problem this edit adds: an input/cached pair saved earlier doesn't block an output-only edit.
+        const label = `pricing: ${String(item.service)}`
+        const problem = cachedPriceProblem(label, next as Partial<TokenPricingUsdPerMillion>)
+        if (problem && problem !== cachedPriceProblem(label, current as Partial<TokenPricingUsdPerMillion>)) bad(problem)
         service.pricing = next
       }
       if (item.enabled !== undefined) {
