@@ -6,9 +6,14 @@ export function inlineMediaBytes(source: unknown, kind: 'video' | 'audio'): Uint
   if (typeof source !== 'string') return null;
   const match = /^data:([a-z]+)\/[a-z0-9.+-]+(?:;[a-z0-9.+-]+=[^;,]*)*;base64,/i.exec(source.slice(0, 256));
   if (!match || match[1]!.toLowerCase() !== kind) return null;
+  return base64Bytes(source.slice(match[0].length));
+}
+
+/** The bytes of a base64 string, or null when it is not base64. */
+export function base64Bytes(text: string): Uint8Array | null {
   let binary: string;
   try {
-    binary = atob(source.slice(match[0].length));
+    binary = atob(text);
   } catch {
     return null;
   }
