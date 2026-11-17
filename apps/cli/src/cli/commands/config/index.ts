@@ -11,7 +11,7 @@ import type {
   SellerServiceConfig,
   TokenPricingUsdPerMillion,
 } from '../../../config/types.js';
-import { assertValidConfig } from '../../../config/validation.js';
+import { assertNoNewCachedPriceProblems, assertValidConfig } from '../../../config/validation.js';
 import {
   parseServiceCapabilitiesInput,
   parseServiceUnitBillingModelsInput,
@@ -91,7 +91,7 @@ export function registerConfigCommand(program: Command): void {
     .option('--venice-edit-model <model>', 'Venice-only native edit model; enables image editing for this service')
     .option('--input <usd>', 'input price in USD per 1M tokens', parseFloat)
     .option('--output <usd>', 'output price in USD per 1M tokens', parseFloat)
-    .option('--cached <usd>', 'cached-input price in USD per 1M tokens', parseFloat)
+    .option('--cached <usd>', 'cached-input price in USD per 1M tokens: what a prompt served from the upstream cache costs. At most --input (buyers skip an offer above it); leave it out to bill cached input at the input price', parseFloat)
     .option('--categories <list>', 'comma-separated normie tags (e.g., chat,coding,fast)')
     .option('--capabilities <json>', 'capabilities JSON (contextWindow, inputs, outputs, toolUse, supportedParameters, etc.)')
     .option('--unit-billing-models <json>', 'protocol-to-unit-billing-model JSON')
@@ -101,6 +101,7 @@ export function registerConfigCommand(program: Command): void {
         const globalOpts = getGlobalOptions(program);
         const config = await loadConfig(globalOpts.config);
         const providers = config.seller.providers;
+        const before = structuredClone(providers);
         const providerCfg = providers[providerName];
         if (!providerCfg) {
           console.error(chalk.red(`Provider "${providerName}" not found. Add it first with antseed config seller add-provider ${providerName} --plugin <plugin>.`));
@@ -145,6 +146,7 @@ export function registerConfigCommand(program: Command): void {
         providerCfg.services[serviceId] = service;
         providers[providerName] = providerCfg;
         assertValidConfig(config);
+        assertNoNewCachedPriceProblems(before, providers);
         await saveConfig(globalOpts.config, config);
         console.log(chalk.green(`Added service ${providerName}/${serviceId}`));
       } catch (err) {
@@ -182,7 +184,7 @@ export function registerConfigCommand(program: Command): void {
     .option('--base-url <url>', 'upstream API base URL (e.g., https://api.together.ai)')
     .option('--input <usd>', 'default input price in USD per 1M tokens', parseFloat)
     .option('--output <usd>', 'default output price in USD per 1M tokens', parseFloat)
-    .option('--cached <usd>', 'default cached-input price in USD per 1M tokens', parseFloat)
+    .option('--cached <usd>', 'default cached-input price in USD per 1M tokens: what a prompt served from the upstream cache costs. At most --input (buyers skip an offer above it); leave it out to bill cached input at the input price', parseFloat)
     .action(async (name: string, options) => {
       try {
         const globalOpts = getGlobalOptions(program);
@@ -225,8 +227,10 @@ export function registerConfigCommand(program: Command): void {
           };
         }
 
+        const before = structuredClone(config.seller.providers);
         config.seller.providers[name] = providerEntry;
         assertValidConfig(config);
+        assertNoNewCachedPriceProblems(before, config.seller.providers);
         await saveConfig(globalOpts.config, config);
         console.log(chalk.green(`Added provider "${name}" (plugin: ${pluginName})`));
         console.log(chalk.dim(`Next: antseed config seller add-service ${name} <serviceId> --input <usd> --output <usd>`));
@@ -588,7 +592,9 @@ export function setValidatedConfigValue(raw: Record<string, unknown>, key: strin
   // Resolve once against the effective config so the file gets the same path.
   const parts = resolveConfigKeyPath(effective, key);
   assertSellerProviderKeyPath(effective, parts, key);
+  const before = structuredClone((effective as unknown as AntseedConfig).seller.providers);
   setConfigPath(effective, parts, key, value);
   assertValidConfig(effective as unknown as AntseedConfig);
+  assertNoNewCachedPriceProblems(before, (effective as unknown as AntseedConfig).seller.providers);
   setConfigPath(raw, parts, key, value);
 }

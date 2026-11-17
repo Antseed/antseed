@@ -6,6 +6,9 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+- Sellers (CLI): a cached-input price above the input price is refused by `antseed config seller add-provider`, `add-service` and `set`, by `antseed seller settings set --price` and `add-model`, and by the seller settings API behind the Gateway Console, with a message that says buyers skip an offer priced like this. A bad price saved earlier doesn't block other edits, and `antseed seller start` warns about it instead of refusing to start. `antseed seller setup` now asks for a cached-input price (for the provider defaults, and for each model with its own prices), explains it, and asks again for a price that isn't a number or is above the input price; a model's input or output price left blank now takes the provider default as the prompt says, instead of 0. Docs: **Provide → Configuration**, **Commands** reference.
+
 ## 2026-11-17 — CLI 0.1.251, Node 0.2.184, Desktop 0.2.88
 
 ### Packages
