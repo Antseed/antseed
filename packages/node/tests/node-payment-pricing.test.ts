@@ -224,11 +224,6 @@ describe('completed-request seller payments', () => {
       expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', BigInt(images * 40_000));
       expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ billingUsage: { version: 1, units: { output_images: String(images) } } }));
     }
-    async function expectRefused(harness: ReturnType<typeof unitHarness>, request: Partial<SerializedHttpRequest>) {
-      const response = await harness.send('refused', request);
-      expect({ status: response.statusCode, served: vi.mocked(harness.provider.handleRequest).mock.calls.length }).toEqual({ status: 400, served: 0 });
-      expect(harness.spm.recordSpend).not.toHaveBeenCalled();
-    }
 
     it('bills a streamed image request for the final images it delivered, from the chunks it streamed', async () => {
       const harness = unitHarness();
@@ -257,17 +252,45 @@ describe('completed-request seller payments', () => {
       await expectBilled(harness, { path: '/v1/images/generations', headers, body: json({ model: 'image', prompt: 'A tree', stream: true }) }, 1);
     });
 
-    it('refuses a speech request streamed as events before serving it', async () => {
+    /** An MP3: three 417-byte MPEG-1 layer III frames (128 kbps, 44.1 kHz). */
+    const mp3 = new Uint8Array(417 * 3);
+    for (let frame = 0; frame < 3; frame++) mp3.set([0xff, 0xfb, 0x90, 0x00], frame * 417);
+    /** OpenAI's speech events: the audio in base64 deltas, cut mid-frame, then the done event with the usage. */
+    const speechEvents = [mp3.subarray(0, 100), mp3.subarray(100, 700), mp3.subarray(700)]
+      .map((bytes): Record<string, unknown> => ({ type: 'speech.audio.delta', audio: Buffer.from(bytes).toString('base64') }))
+      .concat({ type: 'speech.audio.done', usage: { input_tokens: 3, output_tokens: 40, total_tokens: 43 } });
+    const speechSse = { path: '/v1/audio/speech', headers, body: json({ model: 'speech', input: 'Hello there', voice: 'alloy', stream_format: 'sse' }) };
+
+    it('bills a speech request streamed as events for its characters, from the chunks it streamed', async () => {
       const harness = unitHarness();
-      vi.mocked(harness.provider.handleRequest).mockImplementation(streamed([{ type: 'speech.audio.delta', audio: 'aGVsbG8=' }, { type: 'speech.audio.done' }]));
-      await expectRefused(harness, { path: '/v1/audio/speech', headers, body: json({ model: 'speech', input: 'Hello there', voice: 'alloy', stream_format: 'sse' }) });
+      harness.provider.handleRequestStream = vi.fn(async (request: SerializedHttpRequest, callbacks: ProviderStreamCallbacks) => {
+        const answer = await streamed(speechEvents)(request);
+        callbacks.onResponseStart({ ...answer, body: new Uint8Array(0) });
+        const third = Math.floor(answer.body.length / 3);
+        for (const data of [answer.body.subarray(0, third), answer.body.subarray(third, 2 * third), answer.body.subarray(2 * third)]) {
+          callbacks.onResponseChunk({ requestId: request.requestId, data, done: false });
+        }
+        callbacks.onResponseChunk({ requestId: request.requestId, data: new Uint8Array(0), done: true });
+        return answer;
+      });
+      const response = await harness.send('speech', speechSse);
+      expect(response.statusCode).toBe(200);
+      expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+      // 11 characters at $0.000015: 165 micro-USDC.
+      expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 165n);
+      expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ billingUsage: { version: 1, units: { input_characters: '11' } } }));
+    });
+
+    it('bills nothing for a speech stream that ends before its done event', async () => {
+      const harness = unitHarness();
+      vi.mocked(harness.provider.handleRequest).mockImplementation(streamed(speechEvents.slice(0, -1)));
+      const response = await harness.send('speech', speechSse);
+      expect(response.statusCode).toBe(200);
+      expect(vi.mocked(harness.spm.recordSpend).mock.calls.map(([, amount]) => amount)).toEqual([0n]);
     });
 
     it('serves and bills a speech request that asks for the audio itself', async () => {
       const harness = unitHarness();
-      // An MP3: three 417-byte MPEG-1 layer III frames (128 kbps, 44.1 kHz).
-      const mp3 = new Uint8Array(417 * 3);
-      for (let frame = 0; frame < 3; frame++) mp3.set([0xff, 0xfb, 0x90, 0x00], frame * 417);
       vi.mocked(harness.provider.handleRequest).mockImplementation(async (request) => ({
         requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'audio/mpeg' }, body: mp3,
       }));

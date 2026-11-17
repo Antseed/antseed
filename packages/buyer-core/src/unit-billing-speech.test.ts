@@ -49,12 +49,9 @@ describe('speech billing', () => {
       .toEqual(['output_images is not supported for openai-audio-speech']);
   });
 
-  it('refuses before the request one that asks for the audio as a stream of events, which it could not bill', () => {
+  it('reserves a request for its audio as a stream of events like one for the audio itself', () => {
     const body = { model: 'tts-elevenlabs-turbo-v2-5', input: 'Hello', voice: 'Rachel' };
-    for (const format of ['sse', true, '']) {
-      expect(() => capture({ ...body, stream_format: format }), String(format)).toThrow(expect.objectContaining({ code: 'invalid-request', attribution: 'buyer' }));
-    }
-    for (const format of ['audio', null, undefined]) {
+    for (const format of ['sse', 'audio', true, '', null, undefined]) {
       expect(capture({ ...body, stream_format: format }).requestUsage, String(format)).toEqual({ units: { input_characters: 5 } });
     }
   });
@@ -92,6 +89,65 @@ describe('speech billing', () => {
     expect(computeFinalUnitBilling(perCharacter, asked.context, pcm, asked.requestFacts).costUsdc).toBe(62_500n);
     const mp3Asked = capture();
     expect(computeFinalUnitBilling(perCharacter, mp3Asked.context, pcm, mp3Asked.requestFacts).costUsdc).toBe(0n);
+  });
+
+  describe('audio streamed as events (stream_format "sse")', () => {
+    // OpenAI's speech events: `speech.audio.delta` with a chunk of base64 audio, then `speech.audio.done` with the usage.
+    const event = (data: Record<string, unknown>) => `event: ${String(data.type)}\ndata: ${JSON.stringify(data)}\n\n`;
+    const base64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
+    const delta = (bytes: Uint8Array) => event({ type: 'speech.audio.delta', audio: base64(bytes) });
+    const DONE = event({ type: 'speech.audio.done', usage: { input_tokens: 14, output_tokens: 101, total_tokens: 115 } });
+    /** The MP3 in three deltas, cut mid-frame as an upstream cuts its chunks. */
+    const DELTAS = [MP3.subarray(0, 100), MP3.subarray(100, 700), MP3.subarray(700)].map(delta);
+    const stream = (text: string, statusCode = 200) => ({
+      requestId: 'r', statusCode, headers: { 'content-type': 'text/event-stream' }, body: new TextEncoder().encode(text),
+    });
+    const sse = () => capture({ model: 'tts-elevenlabs-turbo-v2-5', input: 'a'.repeat(1000), voice: 'Rachel', stream_format: 'sse' });
+    const cost = (response: ReturnType<typeof stream>, captured = sse()) => computeFinalUnitBilling(perCharacter, captured.context, response, captured.requestFacts).costUsdc;
+
+    it('charges the characters when the deltas, decoded and joined in order, are audio and the done event ends them', () => {
+      expect(cost(stream(DELTAS.join('') + DONE))).toBe(62_500n);
+      // A comment line between events (a keep-alive) is no event.
+      expect(cost(stream(`${DELTAS[0]}: keep-alive\n\n${DELTAS.slice(1).join('')}${DONE}`))).toBe(62_500n);
+      // A delta whose data spans several lines that join into one JSON object, as a standard client reads it.
+      const json = JSON.stringify({ type: 'speech.audio.delta', audio: base64(MP3) });
+      const half = json.indexOf(',');
+      expect(cost(stream(`data: ${json.slice(0, half + 1)}\ndata: ${json.slice(half + 1)}\n\n${DONE}`))).toBe(62_500n);
+    });
+
+    it('charges headerless pcm only when the request asked for pcm', () => {
+      const pcm = stream(delta(new Uint8Array(128).fill(7)) + delta(new Uint8Array(128).fill(9)) + DONE);
+      const asked = capture({ model: 'tts-elevenlabs-turbo-v2-5', input: 'a'.repeat(1000), response_format: 'pcm', stream_format: 'sse' });
+      expect(cost(pcm, asked)).toBe(62_500n);
+      expect(cost(pcm)).toBe(0n);
+      // Raw pcm is any even-length body, so a stream cut off before its done event must not pass for it.
+      expect(cost(stream(delta(new Uint8Array(256).fill(7))), asked)).toBe(0n);
+    });
+
+    it('charges nothing for a stream that does not prove the whole audio arrived', () => {
+      const cases: Record<string, string> = {
+        'no done event': DELTAS.join(''),
+        'a done event the stream ended inside': DELTAS.join('') + DONE.slice(0, -1),
+        'cut off inside a delta': DELTAS.join('') + DELTAS[0]!.slice(0, 40),
+        'no audio': DONE,
+        'too little audio': delta(MP3.subarray(0, 32)) + DONE,
+        'deltas out of order': [...DELTAS].reverse().join('') + DONE,
+        'an error event': DELTAS.join('') + event({ type: 'error', error: { message: 'The server had an error' } }) + DONE,
+        'a delta that is not base64': DELTAS.join('') + event({ type: 'speech.audio.delta', audio: '*not base64*' }) + DONE,
+        'a delta without audio': DELTAS.join('') + event({ type: 'speech.audio.delta' }) + DONE,
+        'deltas whose data lines do not join into one JSON object': `${DELTAS.map((text) => text.split('\n')[1]).join('\n')}\n\n${DONE}`,
+        'an event that is not JSON': DELTAS.join('') + 'data: not json\n\n' + DONE,
+      };
+      for (const [name, text] of Object.entries(cases)) expect(cost(stream(text)), name).toBe(0n);
+      expect(cost(stream(DELTAS.join('') + DONE, 500)), 'an error status').toBe(0n);
+    });
+
+    it('charges the audio itself from an upstream that ignores stream_format, but no events the request did not ask for', () => {
+      expect(cost(audio(200)), 'audio when events were asked for').toBe(62_500n);
+      const other = capture({ model: 'tts-elevenlabs-turbo-v2-5', input: 'a'.repeat(1000), voice: 'Rachel', stream_format: true });
+      expect(cost(audio(200), other), 'audio when stream_format is not a string').toBe(62_500n);
+      expect(cost(stream(DELTAS.join('') + DONE), capture()), 'events when audio was asked for').toBe(0n);
+    });
   });
 
   it('lets the buyer refuse a seller claim beyond the characters it sent', () => {
