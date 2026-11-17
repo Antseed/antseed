@@ -274,6 +274,7 @@ function oneOffSpmMock(options: { opened?: boolean; reserve?: bigint } = {}) {
     openOneOff: open,
     registerOneOffPlan: vi.fn((buyer: string, requestId: string, plan: unknown): number | null => { plans.set(key(buyer, requestId), plan); return null; }),
     oneOffRetryAfterSeconds: vi.fn((): number | null => null),
+    videoJobHold: vi.fn((): { code: string; retryAfterSeconds: number; limit?: number } | null => null),
     markOneOffCreateAccepted: vi.fn(),
     getOneOffChannelForRequest: (buyer: string, requestId: string) => channels.get(key(buyer, requestId))
       ?? (opened ? open(buyer, requestId) : null),
@@ -903,6 +904,29 @@ describe('native video job ownership', () => {
         expect(firstSignCap).not.toHaveBeenCalled();
         expect(provider.handleRequest).not.toHaveBeenCalled();
       } finally { firstSignCap.mockRestore(); store.close(); }
+    });
+
+    it('answers a 409 that says what to do when the buyer\'s own jobs hold it back, with no plan and no chain reads', async () => {
+      const firstSignCap = vi.spyOn(channelsClient, 'getFirstSignCap');
+      const holds = {
+        video_payment_pending: 'A video you downloaded from this seller is not paid for yet. New videos start here once it is paid. Its job ID is in error.jobs.',
+        video_jobs_uncollected: 'A video you started on this seller over an hour ago has not been downloaded. Download it, or check its status until it ends, before starting another here. Its job ID is in error.jobs.',
+        video_jobs_open_limit: 'You have 16 videos on this seller that are not downloaded yet. Download one before starting another here. Their job IDs are in error.jobs.',
+      };
+      try {
+        for (const [code, message] of Object.entries(holds)) {
+          const { provider, create, spm, store } = setupOneOff({ videoJobHold: vi.fn(() => ({ code, retryAfterSeconds: 60, limit: 16, channelIds: [] })) });
+          try {
+            const response = await create('video-1', bigVideo);
+            expect(response.statusCode).toBe(409);
+            expect(response.headers['retry-after']).toBe('60');
+            expect(bodyOf(response).error).toEqual({ code, message, jobs: [] });
+            expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
+            expect(provider.handleRequest).not.toHaveBeenCalled();
+          } finally { store.close(); }
+        }
+        expect(firstSignCap).not.toHaveBeenCalled();
+      } finally { firstSignCap.mockRestore(); }
     });
 
     it('holds back a create that loses the last offer to a parallel one during the chain reads', async () => {
