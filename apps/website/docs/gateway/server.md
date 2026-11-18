@@ -52,6 +52,37 @@ curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh \
   | sudo CLOUDFLARED_TUNNEL_TOKEN="…" bash -s -- --public-url https://gateway.example.com
 ```
 
+### Keep long-running requests alive through a proxy
+
+The gateway answers chat completions as streamed responses that can stay open for minutes (long generations, reasoning models). Any proxy in front of it must pass streams through without buffering or short idle timeouts, or the connection is cut mid-answer and clients retry — which looks like the gateway flapping while it is perfectly healthy.
+
+- **Your own reverse proxy** (`--public-url` mode): disable response buffering and raise the read timeout. A minimal nginx site that fronts the gateway:
+
+  ```nginx
+  server {
+      listen 443 ssl;
+      server_name gateway.example.com;
+      # ... your TLS certificate ...
+
+      location / {
+          proxy_pass http://127.0.0.1:8379;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+          proxy_buffering off;                 # stream as it comes
+          proxy_read_timeout 300s;             # long generations
+          proxy_send_timeout 300s;
+      }
+  }
+  ```
+
+- **Cloudflare**: a *proxied* (orange-cloud) DNS record ends streamed responses at the edge after about 100 seconds, so long generations get cut even when the origin is healthy. Prefer the supported **Cloudflare named tunnel** (`--cloudflare-token`, see [Public tunnels](/docs/tunnels)), or point the DNS record at the server **DNS-only** (grey cloud) so requests reach your own proxy (and TLS) directly.
+- **Health checks**: the gateway serves `/healthz` on its port; point uptime monitors and load-balancer probes at `https://gateway.example.com/healthz`.
+
 ### Console sign-in options
 
 These configure how people sign in to the console. They need an `https` console address (`--domain`, a tunnel, or `--public-url https://…`). [Sign-in and access](/docs/gateway/sign-in) explains each one.
