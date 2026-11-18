@@ -21,15 +21,14 @@ import { mergeLockStartProblem } from '../position-actions.js';
  * Opt-in: needs `anvil` and `forge build` artifacts in packages/contracts/out.
  *   cd packages/contracts && forge build
  *   ANTS_ANVIL_DIFFERENTIAL=1 pnpm --filter @antseed/ants exec vitest run src/service/lock-start.anvil.test.ts
- * ANTS_ANVIL_SEEDS (default 12) and ANTS_ANVIL_OPS (default 160) size the run;
- * ANTS_ANVIL_NO_MULTICALL=1 runs without Multicall3, as a bare local chain does.
+ * ANTS_ANVIL_SEEDS (default 12) and ANTS_ANVIL_OPS (default 160) size the run.
+ * Reads run without Multicall3, as on a bare local chain.
  */
 
 const CONTRACTS = fileURLToPath(new URL('../../../../packages/contracts/', import.meta.url));
 const ENABLED = process.env.ANTS_ANVIL_DIFFERENTIAL === '1';
 const SEEDS = Number(process.env.ANTS_ANVIL_SEEDS ?? 12);
 const OPS = Number(process.env.ANTS_ANVIL_OPS ?? 160);
-const WITH_MULTICALL = process.env.ANTS_ANVIL_NO_MULTICALL !== '1';
 const E18 = 10n ** 18n;
 const coder = AbiCoder.defaultAbiCoder();
 
@@ -123,12 +122,7 @@ describe.skipIf(!ENABLED)('normal lock start vs the real pool (Anvil differentia
     const [deployer, seller1, seller2, staker] = await Promise.all([0, 1, 2, 3].map(index => provider.getSigner(index)));
     const snapshot = await provider.send('evm_snapshot', []);
     try {
-      if (WITH_MULTICALL) {
-        const multicall = await deploy(deployer!, 'MockMulticall3.sol', 'MockMulticall3');
-        await provider.send('anvil_setCode', [MULTICALL3_ADDRESS, await provider.getCode(await multicall.getAddress())]);
-      } else {
-        await provider.send('anvil_setCode', [MULTICALL3_ADDRESS, '0x']);
-      }
+      await provider.send('anvil_setCode', [MULTICALL3_ADDRESS, '0x']);
       const registry = await deploy(deployer!, 'AntseedRegistry.sol', 'AntseedRegistry');
       const identity = await deploy(deployer!, 'MockERC8004Registry.sol', 'MockERC8004Registry');
       const token = await deploy(deployer!, 'ANTSToken.sol', 'ANTSToken');
@@ -417,7 +411,7 @@ describe.skipIf(!ENABLED)('normal lock start vs the real pool (Anvil differentia
       await runSeed(seed, seed % 3 === 0 ? 2 : 1, stats);
       console.log(`seed ${seed} done in ${Math.round((Date.now() - started) / 1000)}s: ${stats.checks} checks, ${stats.pairs} pairs, ${stats.wrongStart.length} wrong starts`);
     }
-    console.log(JSON.stringify({ multicall: WITH_MULTICALL, ...stats, wrongStart: stats.wrongStart.slice(0, 20), wrongStartToggle: stats.wrongStartToggle.slice(0, 5), wrongStartToggleCount: stats.wrongStartToggle.length, slashMismatchKnown: stats.slashMismatchKnown.slice(0, 20), falseBlock: stats.falseBlock.slice(0, 20), unknownOther: stats.unknownOther.slice(0, 20), allowedRevertedKnownEqual: stats.allowedRevertedKnownEqual.slice(0, 20) }, null, 2));
+    console.log(JSON.stringify({ ...stats, wrongStart: stats.wrongStart.slice(0, 20), wrongStartToggle: stats.wrongStartToggle.slice(0, 5), wrongStartToggleCount: stats.wrongStartToggle.length, slashMismatchKnown: stats.slashMismatchKnown.slice(0, 20), falseBlock: stats.falseBlock.slice(0, 20), unknownOther: stats.unknownOther.slice(0, 20), allowedRevertedKnownEqual: stats.allowedRevertedKnownEqual.slice(0, 20) }, null, 2));
     // A run that checked nothing proves nothing.
     expect(stats.known).toBeGreaterThan(SEEDS * 10);
     expect(stats.pairs).toBeGreaterThan(SEEDS * 5);
