@@ -8,7 +8,7 @@ nav { position: relative; z-index: 3; flex: none; width: 100%; height: 69px; dis
 .links { position: absolute; left: 50%; top: 26px; transform: translateX(-50%); display: flex; gap: 40px; font: 500 14px/20px Geist; white-space: nowrap; }
 .links a { color: var(--ink); text-decoration: none; }
 .links a.dim { color: var(--nav-grey); }
-/* green as the sections' buttons since Figma v4 (483:126): a dark lip, a soft drop */
+/* green as the sections' buttons since Figma v4: a dark lip, a soft drop */
 .cta { display: flex; align-items: center; height: 36px; padding: 0 13px; border-radius: 10px; background: #4f7a24; color: #fafafa;
   box-shadow: 0 3.5px .5px 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -2px 1px 0 #3b5e17;
   font: 500 14px/20px "Instrument Sans"; text-decoration: none; white-space: nowrap; }

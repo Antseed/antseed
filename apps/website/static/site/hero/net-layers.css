@@ -169,7 +169,7 @@
 @keyframes nl-pulse { 30% { scale: 1.8; color: var(--o); } }
 @keyframes nl-flash { 40% { scale: 1.5; filter: drop-shadow(0 0 6px var(--lime)) drop-shadow(0 0 2px var(--lime)); } }
 
-/* the homepage's cut: the same picture, lighter; its foot strip pairs the plain name with Amos's line */
+/* the homepage's cut: the same picture, lighter; its foot strip pairs the plain name with the client's line */
 .nl[data-cut="home"] .nl-tabs button { flex: 1 1 auto; padding: 0 14px; }
 
 /* the panel the board goes into on the homepage: once the layers are in it, it holds only them, at their size,

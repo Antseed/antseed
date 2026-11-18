@@ -1,11 +1,11 @@
-/* The launch: Amos's content in our packaging. What sections.css and v6.css did not have: the slots
+/* The launch: the client's content in our packaging. What sections.css and v6.css did not have: the slots
    the design's visuals fill (parts.js), the four privacy cards, the provider paths' two lines. Loaded after micro.css. */
 
 /* a slot over a painting panel: the whole panel, a size container its fragment measures itself against; empty, it takes no clicks */
 .lp-slot { display: contents; }
 .lp-slot.lp-on { position: absolute; inset: 0; z-index: 2; display: block; container-type: size; }
 .lp-slot--layers.lp-on { position: relative; inset: auto; width: 100%; aspect-ratio: 1248 / 560; container-type: size; }
-/* Amos's film over the gateway painting (gw-film.css); the router steps back under it */
+/* the client's film over the gateway painting (gw-film.css); the router steps back under it */
 .s-gw-panel.has-film > .gw { display: none; }
 /* the network board: the three layers fill the panel; the panel's own map, frame and rail step back */
 .s-page .s-net .s-net-panel.lp-has { flex: none; display: block; aspect-ratio: auto; height: auto; min-height: 0; padding: 0; }   /* over sections.css's board rules (.s-page .s-net .s-net-panel:not(…)) */
@@ -18,7 +18,7 @@
 @media (max-width: 760px) { .lp-slot--layers.lp-on { aspect-ratio: 4 / 5; } }   /* a phone: the part's tall layout (under 1.6) */
 .lp-video[hidden] { display: none; }
 
-/* the provider paths: Amos's two lines, the second in gray as every title's */
+/* the provider paths: the client's two lines, the second in gray as every title's */
 .s-path-h span { color: var(--g); }
 .s-path-copy { display: grid; gap: 8px; }
 .s-path .s-path-panel { position: relative; }

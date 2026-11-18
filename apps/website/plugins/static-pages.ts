@@ -3,7 +3,9 @@
  * /ecosystem/: plain HTML, CSS and JS, outside React; static/site/AGENTS.md is their guide):
  *   1. Registers a route for each page, so links to it pass the broken-link check, the sitemap lists it and a client-side
  *      navigation to it lands on a stub that reloads the URL from the host.
- *   2. After the build, writes each page's HTML over the stub's, carrying over what the site puts in every page's head (Google Tag
+ *   2. Under `docusaurus start`, serves each page's HTML at its route (a dev-server middleware), so the dev server shows the real
+ *      pages, read from disk on every request.
+ *   3. After the build, writes each page's HTML over the stub's, carrying over what the site puts in every page's head (Google Tag
  *      Manager, both Search Console verifications, the Open Graph and Twitter tags, canonical, alternates, JSON-LD), so the static
  *      pages keep them. A tag the page sets itself (its title, description, og:title…) is the page's.
  * Each page's HTML is static/site/<folder>/index.html (PAGES below); its scripts, styles and images are under static/site/ and use
@@ -11,6 +13,7 @@
  */
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import type {IncomingMessage, ServerResponse} from 'node:http';
 import type {LoadContext, Plugin} from '@docusaurus/types';
 
 /** Each route and the static/site/ folder that holds its page. The homepage's folder, hero/, also holds the files every page shares. */
@@ -25,6 +28,9 @@ const PAGES: Record<string, string> = {
 
 /** Docusaurus' own head tags a static page has no use for: the app's styles and scripts, its theme and search keys. */
 const SKIP_META = /^(viewport|generator|docusaurus_|docsearch:)/;
+
+/** webpack's configuration, as configureWebpack takes and returns it (its types don't list devServer, which Docusaurus reads). */
+type WebpackConfig = Parameters<NonNullable<Plugin['configureWebpack']>>[0];
 
 const keyOf = (tag: string) => tag.match(/\b(?:name|property)="([^"]+)"/)?.[1];
 
@@ -51,6 +57,32 @@ export default function staticPagesPlugin(context: LoadContext): Plugin {
     name: 'static-pages',
     async contentLoaded({actions}) {
       for (const route of Object.keys(PAGES)) actions.addRoute({path: route, component: '@site/src/components/StaticPage', exact: true});
+    },
+    configureWebpack(_config, isServer) {
+      if (isServer || process.env.NODE_ENV === 'production') return {};
+      const serve = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+        const url = (req.url ?? '').split('?')[0];
+        const folder = req.method === 'GET' || req.method === 'HEAD' ? PAGES[url.endsWith('/') ? url : `${url}/`] : undefined;
+        if (!folder) return next();
+        try {
+          const html = await fs.readFile(path.join(context.siteDir, 'static/site', folder, 'index.html'));
+          res.writeHead(200, {'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store'});
+          res.end(req.method === 'HEAD' ? undefined : html);
+        } catch {
+          next();
+        }
+      };
+      return ({
+        devServer: {
+          // Docusaurus merges this with its own devServer config through webpack-merge, which calls both setupMiddlewares
+          // functions on the same list and concatenates what they return. So this one adds its middleware to the front of that
+          // list and returns nothing new; returning the list too would put every middleware in it twice.
+          setupMiddlewares: (middlewares: unknown[]) => {
+            middlewares.unshift({name: 'static-pages', middleware: serve});
+            return [];
+          },
+        },
+      }) as WebpackConfig;
     },
     async postBuild({outDir}) {
       for (const [route, folder] of Object.entries(PAGES)) {

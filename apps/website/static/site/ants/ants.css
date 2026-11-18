@@ -44,7 +44,7 @@ nav > a { display: block; }
   .ap .s-ants.figs > div { padding: 24px 20px 28px; }
 }
 
-/* Supply and Provider pools: the homepage's duo (sections.css); under the rows, Amos's caption in the kit's mono */
+/* Supply and Provider pools: the homepage's duo (sections.css); under the rows, the client's caption in the kit's mono */
 .ap-duo .s-feats { margin: 0; padding: 0; list-style: none; }
 .ap-duo .s-sub { text-wrap: balance; }   /* no word left alone on the last line */
 

@@ -206,7 +206,7 @@ async function privacyDots(sec, opts = {}) {
       for (const [cx, cy] of g.dots) {
         if (cy < band) one(ox + cx, cy, path);
         if (832 - cy < band) one(ox + cx, H - (832 - cy), path);
-        // a box taller than the mosaic (the whole section, amos-07-r4): its sides go on down the middle, so it stays one frame. A block of
+        // a box taller than the mosaic (the whole section): its sides go on down the middle, so it stays one frame. A block of
         // the side rows (SIDE tall, a whole number of rows, on their grid) is repeated from the top band down to the middle and from the
         // bottom band up to it
         if (cy >= 160 && cy < 160 + SIDE) for (let y = cy; y < H / 2; y += SIDE) if (y >= band) one(ox + cx, y, path);

@@ -40,10 +40,10 @@ export function paperOf(img) {
 
 // The panel. page: names this page's saved values and presets ('meadow', 'sky', 'hybrid').
 // schema: folders of controls, each control one of
-//   [key, min, max, step, label?]   a slider
-//   [key, label?]                   a colour, a switch or a text, from the value's type
-//   [key, { …Tweakpane params }]    anything else (a list: { label, options })
-//   { button: 'Replace image…', file: true }   the local-file picker; the image goes to onFile(img)
+//   [key, min, max, step, label?] a slider
+//   [key, label?] a colour, a switch or a text, from the value's type
+//   [key, { …Tweakpane params }] anything else (a list: { label, options })
+//   { button: 'Replace image…', file: true } the local-file picker; the image goes to onFile(img)
 // apply(key): one setting changed. applyAll: many did (a preset, Reset). onFile(img): a local image was picked.
 export async function heroPanel(opts) {
   if (capture) return null;

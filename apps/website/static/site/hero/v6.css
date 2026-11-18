@@ -3,7 +3,7 @@
 
 /* ════ the cards (cards.css) ════ */
 /* Antseed homepage v6: the scenes in the "For the people" cards (Agents, Privacy, Teams) and the Providers cards (Open-source models,
-   API capacity, Paid per request). Figma 5tLvMmeKGyUsZgrhY4ogTG, v6 light 729:2 and dark 729:5168, each scene a layer "v6 · …".
+   API capacity, Paid per request). Figma 5tLvMmeKGyUsZgrhY4ogTG, v6 light and dark each scene a layer "v6 · …".
    Heavy users keeps its v4 scene: nothing here for it.
 
    Each scene is a stage the size of its Figma card (297.5 × 260 for the four, 404.66 × 300 for the three), its windows placed as in
@@ -165,7 +165,7 @@
 .v6-cap-acts { display: flex; flex-wrap: wrap; gap: 7px; }
 .v6-cap .v6c-cursor { left: 61px; top: 190px; }   /* in Accept's left padding, clear of its label */
 
-/* ── Colony · a Mac serving (placeholder for Pranit: Colony is not documented yet) ── */
+/* ── Colony · a Mac serving (placeholder for the client: Colony is not documented yet) ── */
 .v6-colony-win { left: 36px; top: 46px; width: 332px; gap: 2px; padding: 12px 16px 14px; }
 .v6-colony-head, .v6-colony-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .v6-colony-head { height: 32px; padding: 0 8px; font-size: 13px; }
@@ -237,8 +237,8 @@
 }
 
 /* ════ the network and Private by design (net.css) ════ */
-/* Homepage v6, group "net": the four Private by design cards (the BitTorrent panel is now net.js). Figma 5tLvMmeKGyUsZgrhY4ogTG, v6 light 729:2,
-   v6 dark 729:5168. By day each scene keeps Figma's colours (dark glass and white popovers in the privacy cards), set on each scene
+/* Homepage v6, group "net": the four Private by design cards (the BitTorrent panel is now net.js). Figma 5tLvMmeKGyUsZgrhY4ogTG, v6 light
+   v6 dark . By day each scene keeps Figma's colours (dark glass and white popovers in the privacy cards), set on each scene
    root and never swapped by the page's dark tokens; at night they take the Gateway terminal's smoked green glass (night glass, at the end).
    Loaded after hero/sections.css; fonts Geist and Geist Mono as the page loads them. */
 
@@ -354,7 +354,7 @@
   border: .5px solid rgba(10, 26, 18, .06); border-radius: var(--r-pop); background: rgba(255, 255, 255, .97); box-shadow: 0 10px 22px rgba(20, 51, 89, .2);
   font-size: 17px; line-height: 21px; font-weight: 500; color: var(--v6-ink); }
 
-/* Pseudonymous (amos-07): one window, what the network knows of you, a row each: the name in the glass's grey, the value in its ink */
+/* Pseudonymous: one window, what the network knows of you, a row each: the name in the glass's grey, the value in its ink */
 .v6-pseudo-stage { width: min(320px, 100cqw / var(--v6-k) - 16px); }   /* wider than Figma's card, so the window holds its own beside the TEE scene */
 .v6-pseudo-win { position: absolute; left: 50%; top: 50%; translate: -50% -50%; width: min(307px, 100% - 12px); display: flex; flex-direction: column; gap: 14px; margin: 0;
   padding: 18px 18px; border-radius: var(--r-win); font: 400 12px/15px "Geist Mono", monospace; }
@@ -362,7 +362,7 @@
 .v6-pseudo-win :is(dt, dd) { margin: 0; }
 .v6-pseudo-win dt { color: var(--v6-lm); }
 
-/* Direct, peer to peer (amos-07): your device and the provider, two chips of the same glass, one straight line in the network map's
+/* Direct, peer to peer: your device and the provider, two chips of the same glass, one straight line in the network map's
    lime between them, nothing on it, and under its middle the words, on a small glass label */
 .v6-direct-stage { display: flex; align-items: center; width: min(400px, 100cqw / var(--v6-k) - 16px); padding: 0 12px; }   /* wider than the others, so the line has room; never past its panel, once scaled */
 .v6-direct-you, .v6-direct-prov { position: relative; flex: none; display: flex; flex-direction: column; gap: 2px; padding: 9px 12px; border-radius: var(--r-win);

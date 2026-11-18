@@ -1,4 +1,4 @@
-// /ants/: the live figures, from AntSeedStats' API (Amos's pages.js): supply and burned ANTS, the epoch and the time to the next one,
+// /ants/: the live figures, from AntSeedStats' API (the client's pages.js): supply and burned ANTS, the epoch and the time to the next one,
 // ticking each minute. They count up as they come into view (count.js); when the API does not answer, they stay as the page writes them.
 const box = document.querySelector('.s-ants.figs');
 const count = await import('/site/hero/count.js');

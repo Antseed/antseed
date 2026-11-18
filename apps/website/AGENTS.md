@@ -43,8 +43,8 @@ antseed.com: marketing pages, the docs (`/docs`), the blog, the integration guid
 ## Marketing pages (`static/site/`)
 
 Their own guide is `static/site/AGENTS.md`. The PR that brought them in (the launch, 18 Nov 2026) touched three "Ask first" items, as agreed with Antseed:
-- **Positioning copy:** the six pages carry Amos's copy word for word.
-- **Navbar:** the static pages have their own nav, with Amos's links: Network, the Providers menu, Ecosystem, Live prices, Docs, Blog. The Docusaurus navbar in `docusaurus.config.ts`, which the docs and the other React pages use, is unchanged.
+- **Positioning copy:** the six pages carry the approved marketing copy.
+- **Navbar:** the static pages have their own nav, with the approved links: Network, the Providers menu, Ecosystem, Live prices, Docs, Blog. The Docusaurus navbar in `docusaurus.config.ts`, which the docs and the other React pages use, is unchanged.
 - **Analytics:** GTM and both site verification tags are not edited. `plugins/static-pages.ts` copies them from the site's head into each static page at build time, so a change to them in `docusaurus.config.ts` reaches these pages too.
 
 **Ask first:** changing or removing a published doc `slug`, a redirect or a page agents fetch (`/skill.md`, `/llms.txt`, `/llms-connect.txt`, `/install.sh`, `/install-gateway.sh`); TEE, privacy or positioning copy; the announcement bar, navbar or analytics (GTM, site verification tags).

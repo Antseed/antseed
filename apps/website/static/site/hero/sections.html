@@ -1,4 +1,4 @@
-<!-- Antseed homepage, everything below the hero. Figma: file 5tLvMmeKGyUsZgrhY4ogTG, page "Homepage · v4 + dark": 696:3 (light) and 696:5169 (dark).
+<!-- Antseed homepage, everything below the hero. Figma: file 5tLvMmeKGyUsZgrhY4ogTG, page "Homepage · v4 + dark": (light) and (dark).
      Loaded into hero/index.html (#sections) with sections.css and sections.js. Panels marked .wash get a watercolour wash: --wash in light,
      --wash-d in dark; .mz instead would give them the
      round-dot mosaic from sections.js. Black logos are marked .ink: they go light in dark. -->
@@ -12,7 +12,7 @@
 
 <!-- 700+ models: text, image, video and voice through the one API. The four media side by side, each a tab (sections.js), over
      their models going by in two lanes, each a card: its maker's mark, its price, how many providers serve it and, for text, its saving on the lab's price.
-     AntSeedStats' most used models and their prices, kept in models.json with the date they were read (node texture-lab/models-refresh.mjs) -->
+     AntSeedStats' most used models and their prices, kept in models.json with the date they were read (node apps/website/scripts/site-models-refresh.mjs) -->
 <section class="s-sec s-prices" id="prices" aria-labelledby="s-prices-h">
   <div class="s-rail s-pad">
     <header class="s-head">
@@ -96,10 +96,10 @@
   </div>
 </section>
 
-<!-- Antseed Desktop: the app, one window, from Pranit's prototype (claude.ai/artifact/4jXS6KFNt6wwx4RYxXpCv5), playing a short loop
+<!-- Antseed Desktop: the app, one window, from the client's prototype, playing a short loop
      (sections.js): the model picker opens and Kimi K3.1 is picked, Private is switched on (the ant puts on its sunglasses), a prompt is
      typed and sent, and a reply comes in. The app keeps the site's theme throughout, light by day and its night theme in dark. Each state of the app is its own capture; the cursor, the typing and the messages are drawn here. Still with
-     reduced motion. PLACEHOLDER for Pranit: the Colony version replaces this once it exists, in the frame marked data-slot="colony" -->
+     reduced motion. PLACEHOLDER for the client: the Colony version replaces this once it exists, in the frame marked data-slot="colony" -->
 <section class="s-sec s-duo s-duo-flip" id="desktop" aria-labelledby="s-vpn-h">
   <div class="s-rail">
     <div class="wash land s-duo-panel s-vpn-panel" style="--wash: url(/site/assets/home/vignettes/v02-day.webp); --wash-d: url(/site/assets/home/vignettes/v02-night.webp)">
@@ -139,7 +139,7 @@
 </div>
 
 <!-- Privacy and trust: production's component, the head over four tabs beside one panel, the incognito ant sitting on the
-     panel, played by the page's scroll while the frame holds (sections.js). The tabs and the four screens are Amos's, word for word, each screen redrawn as ours: one glass window over the panel's painting (privacy-v4.css). The frame and its
+     panel, played by the page's scroll while the frame holds (sections.js). The tabs and the four screens are the client's, word for word, each screen redrawn as ours: one glass window over the panel's painting (privacy-v4.css). The frame and its
      run in a box of their own, so the frame stops sticking where the run ends; the dot mosaic (.tw) frames the whole dark block. No
      payment here: the top-up and "No crypto needed" are in _amos-parts/privacy-payment.html -->
 <section class="s-sec s-priv" id="privacy" aria-labelledby="s-priv-h">
@@ -240,7 +240,7 @@
 
 <!-- Providers: the vision, then two paths, each a big painted panel and its text with its own button. The pictures
      are the final paintings, assets/home/providers (stall, colony; day and night as --wash and --wash-d), moving (providers-live.js), with
-     the design's glass over them (providers-v4.css): the stall on the left and Amos's listing on the right; the three Macs cabled as one provider -->
+     the design's glass over them (providers-v4.css): the stall on the left and the client's listing on the right; the three Macs cabled as one provider -->
 <section class="s-sec s-prov" id="providers" aria-labelledby="s-prov-h">
   <div class="s-rail">
     <header class="s-head s-padx">
@@ -299,13 +299,13 @@
       <p class="s-sub">A fully peer-to-peer network for AI — like BitTorrent for inference. Buyers connect directly to independent providers, with no middleman. Anyone can supply intelligence, on their own terms.</p>
     </header>
     <!-- the network as it works, on the repainted map (map-4, sections.css). Two styles of the same board, data-net-style:
-         "steps" (amos-09-r2, the default): five glass cards in a row, one per step, each drawing a lime line to the next as net-steps.js
+         "steps" (the default): five glass cards in a row, one per step, each drawing a lime line to the next as net-steps.js
          plays them in turn (all shown before it is in view and with reduced motion); the list below is their copy, each card led by
-         its icon (amos-09-r3: pixel glyphs drawn on the 24-pixel grid of the site's pixelarticons, 2 px a pixel), its number back in the
-         name's line (amos-09-r4: "1 Look up", in the pixel face; hidden from screen readers, which have the list's own order).
-         Each card opens on a small square painting of an ant doing that step (amos-09-r6, assets/home/net/steps, day and night by
+         its icon (pixel glyphs drawn on the 24-pixel grid of the site's pixelarticons, 2 px a pixel), its number back in the
+         name's line ("1 Look up", in the pixel face; hidden from screen readers, which have the list's own order).
+         Each card opens on a small square painting of an ant doing that step (assets/home/net/steps, day and night by
          data-dark), its icon now beside its name. Each icon makes its own small move as its card lights up, and on hover.
-         "map" (amos-09, ?net=map): the painted board, net.js: you, the providers and other people as ants on the map, one request in
+         "map" (?net=map): the painted board, net.js: you, the providers and other people as ants on the map, one request in
          five steps, data-step="all" all of them numbered (or "1" to "5", one step), the rail naming them; take data-net away and its
          loop plays again -->
     <!-- The network's board, animated (parts/net-stack: three steps, 1680 × 1040; its box is launch.css's .lp-stack). The board

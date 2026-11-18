@@ -95,7 +95,7 @@ const SPOTS = {
       found: [0, 1, 2], prices: [0.13, 0.094, 0.11],
       others: [[0, 0, 1500, 5000], [1, 0, 11000, 5500]], stillOthers: 3000,
     },
-    // the still story (data-net="still", amos-09): one request in five steps, fewer pieces, read left to right. You bottom left; the
+    // the still story (data-net="still"): one request in five steps, fewer pieces, read left to right. You bottom left; the
     // three providers one above the other in the fourth column, so their prices read as a list; the two others past them on the right,
     // quiet. Your lookup climbs on your left through its three seeds, the only ones; your link crosses the board up to the cheapest (the
     // middle one), and when it goes down, along the bottom to the next. No line crosses another, and none passes an ant. lift: how high
@@ -184,7 +184,7 @@ export function mount(panel, { still = false } = {}) {
   const board = SPOTS[name] || Object.values(SPOTS)[0];
   const svg = el('svg', { class: 'nd', role: 'img', 'aria-label': 'A network everyone shares, with no server in the middle. Small lights over the fields are the DHT, BitTorrent\'s shared address book. Your device asks it where providers are, compares the prices they publish and links straight to the cheapest: a request goes out, the answer comes back, and the request is paid for in USDC. When that provider goes offline, your next request goes to the next cheapest. Other people reach their own providers the same way.' });
   panel.prepend(svg);
-  // the still story (amos-09): data-net="still" on the panel draws one frame of one request in five steps on its own board (SPOTS
+  // the still story: data-net="still" on the panel draws one frame of one request in five steps on its own board (SPOTS
   // wideStory, tallStory), data-step "1" to "5" the frame after that step, or "all" (the default) steps 1 to 4 at rest, each numbered
   // where it happens; the rail along the board's bottom (.nd-rail, sections.html) names them. Nothing loops. Without the attribute the
   // loop above plays again

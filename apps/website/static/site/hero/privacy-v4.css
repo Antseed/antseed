@@ -1,4 +1,4 @@
-/* Privacy and trust: Amos's four screens, every word of them and in his order (an eyebrow, a title, his
+/* Privacy and trust: the client's four screens, every word of them and in his order (an eyebrow, a title, his
    picture, its result, a line, a link; no eyebrow, as the site's other windows), redrawn as ours: one window of the scenes' smoked green glass (v6.css: the same
    tint, frost, hairline and shadow, by day and at night) over the panel's painting, centred and only as wide as it reads well, so the
    painting shows round it; inside, the page's type and the network's greens. The panel and its place are sections.css's. */
@@ -37,7 +37,7 @@
 .s-pv-panel:not(.on) .pv4-thread b { animation-play-state: paused; }
 @media (prefers-reduced-motion: reduce) { .pv4-thread b { animation: none; left: calc(50% - 4px); } }
 
-/* 2 · the two answer patterns side by side, each in its own box, bar for bar the same (Amos's heights: every third tall and lit,
+/* 2 · the two answer patterns side by side, each in its own box, bar for bar the same (the client's heights: every third tall and lit,
    every fourth short, every fifth mid) */
 .pv4-fp { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .pv4-fp > div { display: grid; gap: 10px; padding: 14px 16px 16px; border: .5px solid rgba(205, 216, 209, .4); border-radius: 6px; }

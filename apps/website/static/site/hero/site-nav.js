@@ -21,7 +21,7 @@ if (nav) {
   let btn = nav.querySelector('.menu-btn');
   if (!btn) { btn = Object.assign(document.createElement('button'), { type: 'button', className: 'menu-btn', textContent: 'Menu' }); btn.setAttribute('aria-expanded', 'false'); btn.setAttribute('aria-controls', 'site-menu'); }
   const menu = Object.assign(document.createElement('div'), { id: 'site-menu', className: 'site-menu', hidden: true });
-  // The phone menu takes the dropdown's links with Amos's shorter lines
+  // The phone menu takes the dropdown's links with the client's shorter lines
   const short = { '/providers/': 'Your service, your price', '/colony/': 'Many computers. One provider.' };
   const prov = dd ? [...dd.querySelectorAll('.dd-m a')].map((a) => { const c = a.cloneNode(true), s = c.querySelector('span'), k = a.getAttribute('href'); if (s && short[k]) s.textContent = short[k]; return c.outerHTML; }).join('') : '';
   menu.innerHTML = `<a href="/network/">Network</a><p>Providers</p>${prov}<p>More</p><a href="/ecosystem/">Ecosystem</a><a href="https://antseedstats.com/network" target="_blank" rel="noopener noreferrer">Live prices ↗</a><a href="https://antseed.com/docs/">Docs ↗</a><a href="https://antseed.com/blog/">Blog ↗</a><a href="https://t.me/antseed" target="_blank" rel="noopener noreferrer">Telegram ↗</a><a href="https://github.com/Antseed/antseed" target="_blank" rel="noopener noreferrer">GitHub ↗</a>`;

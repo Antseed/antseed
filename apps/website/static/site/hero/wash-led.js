@@ -1,5 +1,5 @@
 // The landscapes under the cursor (every .wash panel but the network's, which net.js draws on): where the pointer passes, the painting
-// breaks up locally into the shader lab's LED mosaic (03_Web-shader-lab/shader-lab/core/effects/mosaic.js, colour "image", round tiles),
+// breaks up locally into the shader lab's LED mosaic (colour "image", round tiles),
 // in the family of the hero's opening (unveil.js), on its grid: round dots on a fixed 8px grid, each in its cell's own colour, the page's
 // paper coming up round them toward the trail's heart, where a dot drops out here and there; at its edge the painting comes back cell
 // by cell as flat squares. What the cursor lays is the lab's motion trail (its MOTION_MAIN, a trail that keeps a share of itself each frame), laid by

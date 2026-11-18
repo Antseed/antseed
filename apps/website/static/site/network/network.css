@@ -1,4 +1,4 @@
-/* The network page: Amos's /network/ copy, word for word, in the homepage's components (sections.css): the hero with its
+/* The network page: the client's /network/ copy, word for word, in the homepage's components (sections.css): the hero with its
    three layers, the token's two halves, the two paths, the introduction's split, a wide painting with its windows, a duo, the points,
    the FAQ's two columns. What they don't have is here: the glass windows over the paintings (DESIGN.md: white glass by day, smoked
    green at night) and the page's layouts. */
@@ -62,7 +62,7 @@ nav > a { display: block; }
 .nw-win-h { display: flex; align-items: center; gap: 10px; font: 500 16px/24px Geist, sans-serif; color: var(--t); }
 .nw-win .f-ic { width: 20px; height: 20px; -webkit-mask-size: 20px; mask-size: 20px; }
 
-/* ── USDC and ANTS: the two-option section (TWO-OPTION-SECTION.md, the homepage's Providers at 1440: rail 120 / 124, head to paths 64,
+/* ── USDC and ANTS: the two-option section (the homepage's Providers at 1440: rail 120 / 124, head to paths 64,
    two 16:9 panels 24 apart, panel to title 28, title 24/28, title to text 16, text to buttons 28) ── */
 @media (min-width: 761px) {
   .nw-pay .s-rail { padding-bottom: 124px; }
@@ -80,7 +80,7 @@ nav > a { display: block; }
 :root[data-theme="dark"] .nw-usdc { filter: drop-shadow(0 0 18px rgba(140, 180, 255, .24)); }   /* its own light at night: cool, not the ANTS coin's lime */
 @media (prefers-reduced-motion: reduce) { .nw-big-coin { animation: none; } }
 
-/* the two paths' text: Amos's points, then the buttons */
+/* the two paths' text: the client's points, then the buttons */
 .nw-list { align-self: start; width: 100%; }   /* the products' features (sections.css .s-feats): a kit icon, the point, a dotted line between */
 .nw-list li { padding: 12px 0; color: var(--b); }   /* 24 between two points, so each reads on its own */
 .nw-list li:first-child { padding-top: 0; }
@@ -140,7 +140,7 @@ nav > a { display: block; }
   .wc-never { right: 7%; bottom: 8%; }
 }
 
-/* trust you can check: the duo's features with Amos's name before each line; the window scores two providers */
+/* trust you can check: the duo's features with the client's name before each line; the window scores two providers */
 .nw-trust .s-feats b { font-weight: 500; }
 @media (min-width: 900px) {   /* the title on its two lines at any width: its size follows its column, 48 at 1440 */
   .nw-trust .s-duo-text { container-type: inline-size; }

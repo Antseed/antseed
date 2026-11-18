@@ -11,6 +11,7 @@ This guide covers this folder. For the rest of the website (docs, React pages, p
   - At load, it registers each route with the `src/components/StaticPage` stub. That gives the broken-link check and the sitemap their routes.
   - After the build, it writes `static/site/<folder>/index.html` over the stub's built HTML. It then deletes the build's copy under `/site/<folder>/`, so each page is served only once, at its route.
 - The stub renders an empty `<Layout>`. If a visitor reaches one of these routes by a client-side navigation from a React page, the stub reloads the URL, so the host serves the static page.
+- **Under `pnpm --filter @antseed/website dev`** (`docusaurus start`), the plugin serves the same `static/site/<folder>/index.html` at each route through a dev-server middleware, read fresh on every request. So the dev server shows the real pages, and a reload shows an edit. GTM and the other carried head tags are only added at build time.
 - **Head tags:** the plugin carries the site's own head tags from the stub into each page. These are GTM (script and noscript), both `google-site-verification` tags, the Open Graph and Twitter tags, canonical, alternates and JSON-LD. Tags the page sets itself, such as its title, description and `og:title`, take precedence. Don't add GTM or verification tags to a page by hand.
 - **Paths:**
   - Every path in these files is absolute: `/site/...` for files, and the route itself for pages (`/network/`, `/#gateway`).
@@ -155,8 +156,12 @@ After an edit, search for the old text across `static/site/`. No copy should kee
 
 - The unplugged network files listed above, and the `.lp-wip` rules in `hero/launch.css`.
 - In `hero/index.html`'s hero module: the variants other than Whimsical 2 (`mascot`, `whimsical`, `square`, `meadow`) and their branches. This is a careful edit, because the variants share code with Whimsical 2. Check the hero at 1440 in both themes afterwards.
-- In `hero/sections.js`: the `.mz` mosaic (point 1 of its header). No panel uses it now.
 - The settings panel, as described above.
+- In `hero/sections.js`, the providers' ant lanes: after `if (ln.carry) { this.carryOn(ln, dt); continue; }`, the loop that follows still has carrier branches (`ln.carry && …`) that can't run. They're safe to remove. Check the ants' walk on the homepage afterwards.
+
+### Worth doing later
+
+- **One footer instead of six.** The footer is copied in `hero/sections.html` and in the five other pages' `index.html` (see "Duplicated markup"). Moving it into one shared fragment would leave one place to edit. The plugin could expand it into each page at build time and in the dev middleware, so the delivered HTML stays the same. Parameterise the one link that differs between pages.
 
 ## Checks before a PR
 

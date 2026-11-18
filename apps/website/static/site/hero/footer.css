@@ -2,7 +2,7 @@
    On top of sections.css's footer rules: all the text on the page's colour, and under it the painted meadow, full bleed, coming out of the
    page through its own sky. --scene is the picture's height; the rail leaves room for all of it but the sky, so nothing written touches the picture. */
 
-.s-foot.meadow { container-type: inline-size; overflow: hidden; background: var(--page); --scene: 51cqw; }   /* 110cqw wide at 2752:1276 */
+.s-foot.meadow { container-type: inline-size; overflow: hidden; background: var(--page); --scene: 51cqw; }   /* 110cqw wide at  */
 .s-foot.meadow .s-rail { flex: none; background: none; padding-bottom: calc(var(--scene) * .76); }
 .s-foot.meadow .legal { margin-top: 40px; }
 .s-foot .made { color: var(--m); }

@@ -1,4 +1,4 @@
-// The network in five steps (amos-09-r2, amos-09-r3), the default style of the network's board (.s-net-panel, data-net-style="steps"):
+// The network in five steps the default style of the network's board (.s-net-panel, data-net-style="steps"):
 // five glass cards on the map (.ns > li, their copy in sections.html), each joined to the next by a line (a quiet track, the card's
 // ::after, and the lime drawn over it, its ::before, sections.css). While on screen it plays them in turn: card 1 lights up, its line
 // draws to card 2, card 2 lights up, and so on to 5; it holds on the whole picture, fades it all back to rest and starts again. At rest
@@ -9,7 +9,7 @@
 // then from rest. panel.netStepsAt(ms) stops it and shows that moment of the loop (for captures; LOOP is its length).
 // As a card lights up it takes .go, and its icon makes its own small move (sections.css; the same move plays on hover); .go comes off
 // as the picture fades back to rest, so the move plays again next time round, and it is only given on the way, never all at once when
-// the story starts. On a phone, one card at a time (amos-09-r7). The lime bar along the
+// the story starts. On a phone, one card at a time . The lime bar along the
 // board's edge is gone.
 
 const LEAD = 300;     // ms at rest before card 1

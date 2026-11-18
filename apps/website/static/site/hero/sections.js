@@ -1,12 +1,11 @@
 // Antseed homepage below the hero: what moves. Runs once sections.html is in the page (hero/index.html loads it).
-// 1. the round-dot mosaic on any .mz panel, from the Figma mosaic (assets/home/mosaic.png); the panels now use .wash instead (sections.css)
-// 2. every section snapped to 8px high; blocks rising into view, counters, the price list's four media (models.json), its rows and bars,
+// 1. every section snapped to 8px high; blocks rising into view, counters, the price list's four media (models.json), its rows and bars,
 //    the terminal typing,
 //    each played once when it scrolls into view (none of it with reduced motion: then everything is at its end from the start)
 //    (the network's diagram is net.js, mounted at the end)
-// 3. the live routing window: a request every few seconds, from one of your tools to the provider that served it,
+// 2. the live routing window: a request every few seconds, from one of your tools to the provider that served it,
 //    and the Provide AI tab
-// 4. the theme switch in the footer: System, Light or Dark, through window.antseedTheme (the head script in index.html)
+// 3. the theme switch in the footer: System, Light or Dark, through window.antseedTheme (the head script in index.html)
 const root = document.querySelector('.s-page');
 const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const wait = (ms) => new Promise((ok) => setTimeout(ok, ms));
@@ -16,45 +15,6 @@ function onView(els, fn, threshold = 0.2) {
   const io = new IntersectionObserver((entries) => entries.forEach((e) => { if (e.isIntersecting) { io.unobserve(e.target); fn(e.target); } }), { threshold });
   els.forEach((el) => io.observe(el));
 }
-
-// ── 1. mosaic ────────────────────────────────────────────────────────────
-// The Figma panels share one image (2944×1660): square tiles, 23px on a 31px grid starting 4px in, on transparent paper,
-// cover-fitted to each panel. Here each tile becomes a round dot of its colour, the hero's recipe (dot = 0.84 of the cell),
-// so the composition matches Figma and the texture matches the hero.
-const IMG = { w: 2944, h: 1660, pitch: 31, first: 15.5 }, DOT = 0.84;
-let tiles = null;   // [x, y, 'rgba(…)'] in image px, transparent tiles left out
-async function loadTiles() {
-  const img = new Image();
-  img.src = '/site/assets/home/mosaic.png';
-  await img.decode();
-  const c = document.createElement('canvas'); c.width = IMG.w; c.height = IMG.h;
-  const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
-  const d = g.getImageData(0, 0, IMG.w, IMG.h).data, out = [];
-  for (let y = IMG.first; y < IMG.h; y += IMG.pitch) for (let x = IMG.first; x < IMG.w; x += IMG.pitch) {
-    const p = (Math.floor(y) * IMG.w + Math.floor(x)) * 4;
-    if (d[p + 3] > 6) out.push([x, y, `rgba(${d[p]},${d[p + 1]},${d[p + 2]},${(d[p + 3] / 255).toFixed(3)})`]);
-  }
-  return out;
-}
-function paint(panel) {
-  const cv = panel.querySelector(':scope > canvas.mz-c'), W = panel.clientWidth, H = panel.clientHeight, dpr = devicePixelRatio || 1;
-  if (!W || !H) return;
-  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
-  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
-  const s = Math.max(W / IMG.w, H / IMG.h), ox = (W - IMG.w * s) / 2, oy = (H - IMG.h * s) / 2, r = IMG.pitch * s * DOT / 2;
-  for (const [x, y, fill] of tiles) {
-    const cx = ox + x * s, cy = oy + y * s;
-    if (cx < -r || cy < -r || cx > W + r || cy > H + r) continue;
-    g.fillStyle = fill; g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.fill();
-  }
-}
-const panels = [...root.querySelectorAll('.mz')];
-panels.forEach((p) => { const c = document.createElement('canvas'); c.className = 'mz-c'; c.setAttribute('aria-hidden', 'true'); p.prepend(c); });
-if (panels.length) loadTiles().then((t) => {
-  tiles = t;
-  const ro = new ResizeObserver((entries) => entries.forEach((e) => paint(e.target)));
-  panels.forEach((p) => ro.observe(p));
-}).catch((err) => console.warn('mosaic not painted', err));
 
 // ── every section a multiple of 8px high ─────────────────────────────────
 // so each section's top, and its dotted line, lands on a row of the margin's dots (sections.css), whatever the width and the open answer
@@ -70,7 +30,7 @@ const snapAll = () => root.querySelectorAll('.s-sec').forEach(snap);
 document.querySelectorAll('#sections link[rel="stylesheet"]').forEach((link) => { if (!link.sheet) link.addEventListener('load', snapAll, { once: true }); });
 document.fonts.ready.then(snapAll);
 
-// ── 2. coming into view ──────────────────────────────────────────────
+// ── 1. coming into view ──────────────────────────────────────────────
 // a CSS cubic-bezier as a function of time, solved for t by bisection as the browser does, and one rAF loop shared by every tween,
 // running only while one is
 function bezier(x1, y1, x2, y2) {
@@ -146,7 +106,7 @@ if (lede && !still) {
 
 // the price list: text, image, video and voice, each a tab over its models going by in lanes (sections.css). models.json holds
 // AntSeedStats' most used models, one per family and dealt maker by maker, with their prices and the day they were read
-// (node texture-lab/models-refresh.mjs reads them again). Each card: its maker's mark (in its colours from labs-color/, else in the
+// (node apps/website/scripts/site-models-refresh.mjs reads them again). Each card: its maker's mark (in its colours from labs-color/, else in the
 // text colour), a text model's saving on the lab's price, the
 // name, the price and how many providers serve it. Two lanes, one for a short list; each holds its cards twice, repeated
 // within a copy until it is wider than any screen, so it loops.
@@ -212,7 +172,7 @@ if (models) {
   };
 
   // Ant mode: the cards walk like a trail of ants. Each lane is a loop; every card has
-  // its own place and pace on it, wavering a little, and now and then stops for a moment (carriers never: they keep Amos's steady 58 and
+  // its own place and pace on it, wavering a little, and now and then stops for a moment (carriers never: they keep the client's steady 58 and
   // 47 px/s, close any gap that opens at up to twice that, and ride a flat line); the one behind keeps its distance, so a stop
   // closes the line up and the restart ripples back down it, each setting off softly. They ride a gently winding path, tilted with it.
   // The card under the pointer stops: those ahead walk on, those behind queue up behind it, KEEP apart, like cars in a jam. A click on
@@ -226,7 +186,7 @@ if (models) {
   // the card a touch, those behind queueing up (carryOn); standing still it stands on both feet, lost; a click and it hops
   // (LIFT px more, a little bounce as it lands), then sprints to catch up with the ones ahead, its queue after it.
   const ANT_GAP = 44, KEEP = 10, GO = 18, WAVE = 6, BEND = 600, POP = 0.42, RUSH = 3.4;
-  const CARRY_GAP = 36, CARRY_PACE = 58 / 32,   /* Amos's pace, 58 px/s */ HOP = 0.56, LIFT = 10, SETTLE = 0.75, STILL = 8;   // a carrier hurries: half again as fast as the lanes did, its short, even steps at ~26 a second
+  const CARRY_GAP = 36, CARRY_PACE = 58 / 32,   /* the client's pace, 58 px/s */ HOP = 0.56, LIFT = 10, SETTLE = 0.75, STILL = 8;   // a carrier hurries: half again as fast as the lanes did, its short, even steps at ~26 a second
   // a fixed coin per carrier, from its lane and place, so the ants in front and behind fall the same way on every load
   const coin = (k, i) => { let t = Math.imul((k + 1) * 7919 + i * 104729, 2654435761) >>> 0; t ^= t >>> 15; t = Math.imul(t, 2246822507) >>> 0; t ^= t >>> 13; return t / 4294967296; };
   // coin comes out signed, from -0.5 to 0.5 (so every carrier walks in front of its card, as on production); draw, 0 to 1
@@ -324,7 +284,7 @@ if (models) {
         for (let i = 0; i < n; i++) {
           const a = ln.c[i], ahead = ln.c[(i + (ln.dir < 0 ? n - 1 : 1)) % n];
           const gap = ((ln.dir < 0 ? a.x - ahead.x : ahead.x - a.x) % ln.L + ln.L) % ln.L - ln.size;
-          const pace = ln.carry ? ln.V : ln.V * (0.8 + 0.25 * Math.sin(now / 900 + a.ph));   // a carrier keeps Amos's steady pace
+          const pace = ln.carry ? ln.V : ln.V * (0.8 + 0.25 * Math.sin(now / 900 + a.ph));   // a carrier keeps the client's steady pace
           if (a.rest > 0) a.rest -= dt; else if (!ln.carry && !a.rush && Math.random() < dt * 0.09) a.rest = 0.3 + Math.random() * 0.8;
           if (a.queued && gap > KEEP + GO) a.queued = false;   // the one ahead has pulled away: off it goes
           if (a.pop > 0) a.pop -= dt;
@@ -333,7 +293,7 @@ if (models) {
           if (a === ln.held || a.pop > 0) { want = 0; rate = 12; }                         // stops short under the pointer
           else if (a.rush > 0) { want = ln.carry ? Math.min(2 * ln.V, pace + (gap - ANT_GAP) * 1.6) : pace + Math.min(ln.V * RUSH, (gap - ANT_GAP) * 1.6); rate = 5; }   // hurries, easing in as it nears: a carrier at twice the lane's pace
           else if (a.rest > 0 || a.queued) { want = 0; rate = 7; }
-          else if (ln.carry && gap > CARRY_GAP + 6) { want = Math.min(2 * ln.V, ln.V + (gap - CARRY_GAP) * 1.4); rate = 4; }   // a gap opened ahead: it closes it, as on Amos's
+          else if (ln.carry && gap > CARRY_GAP + 6) { want = Math.min(2 * ln.V, ln.V + (gap - CARRY_GAP) * 1.4); rate = 4; }   // a gap opened ahead: it closes it, as on the client's
           a.v += (want - a.v) * Math.min(1, dt * rate);
           const room = (gap - KEEP) / dt;
           if (a.v > room) { a.v = Math.max(0, room); if (a.v < 1 && want > 0 && !a.rush) a.queued = true; }   // never closer than KEEP: it waits in line
@@ -471,7 +431,7 @@ if (models) {
   new IntersectionObserver(([e]) => { flow.classList.toggle('on', e.isIntersecting && !still); ant.seen = e.isIntersecting; ant.wake(); }).observe(flow);
 }
 
-// $ANTS: its live figures came off the page (amos-10); their script is kept in texture-lab/_amos-parts/ants-token-details.html
+// $ANTS: its live figures came off the page their script is kept in 
 
 // the terminal types each command a key at a time behind a caret, and prints each answer whole. Every line holds its place from the
 // start (hidden, not missing), and the part of a command not yet typed stays in its line, hidden, so the box never changes size
@@ -499,7 +459,7 @@ if (term && !still) {
   }, 0.35);
 }
 
-// the Gateway's router picture (amos-05, square and told one route at a time in amos-05-r2, out of the gateway's bottom in amos-05-r3;
+// the Gateway's router picture (square and told one route at a time in out of the gateway's bottom in
 // sections.html .gw). Its links are drawn here from where the pieces sit, so each lands on an edge at every width: one down from each
 // caller into your gateway, and one out of the gateway's bottom edge, straight down the same column to its provider, a lime dot where
 // it leaves, the rule's word on a tag over the provider. Then the three routes play in turn, looping while on screen: the caller lights
@@ -533,7 +493,7 @@ if (gw) {
     return g;
   };
   let routes = [], bub;
-  // the lines pass under the glass (amos-05-r6): the svg sits in the plate, under its windows, laid over the whole picture from the
+  // the lines pass under the glass: the svg sits in the plate, under its windows, laid over the whole picture from the
   // plate's corner (.gw-lay) so it still draws in the picture's px; each line starts and ends UNDER inside its windows
   const lay = svg.parentNode, UNDER = 8;
   const draw = () => {
@@ -666,7 +626,7 @@ if (gw) {
   }
 }
 
-// Antseed Desktop's loop: the app's own states, captured from Pranit's prototype, in turn, with a cursor, typing and two messages over
+// Antseed Desktop's loop: the app's own states, captured from the client's prototype, in turn, with a cursor, typing and two messages over
 // them (sections.html, sections.css). Picks Kimi K3.1 in the model list, switches Private on, types a prompt, sends it, a signed reply
 // streams in; then it all goes back and starts again. Only while on screen; never with reduced motion (the first state stays)
 const app = root.querySelector('.app');
@@ -706,7 +666,7 @@ if (app) {
   if (!still) new IntersectionObserver(([e]) => { seen = e.isIntersecting; if (seen) loop(++run); else run++; }, { threshold: 0.3 }).observe(app);
 }
 
-// ── 3. the live routing window ───────────────────────────────────────────
+// ── 2. the live routing window ───────────────────────────────────────────
 const lr = root.querySelector('.lr');
 if (lr) {
   const panel = lr.closest('.s-lr-panel'), wide = matchMedia('(min-width: 900px)');
@@ -1015,7 +975,7 @@ if (pv) {
   document.fonts.ready.then(() => { redraw(); relayout(); });
 }
 
-// ── 4. the theme switch ──────────────────────────────────────────────────
+// ── 3. the theme switch ──────────────────────────────────────────────────
 // Each button sets its mode with window.antseedTheme.set (the head script in index.html: it keeps the choice, sets <html data-theme>
 // and dispatches 'themechange'); the pressed one follows antseedTheme.get, on load and on every 'themechange'. Without the head
 // script it still switches the page, for this visit only
@@ -1043,8 +1003,8 @@ const tint = () => { const dark = document.documentElement.dataset.theme === 'da
 tint(); document.addEventListener('themechange', tint);
 
 // the network's diagram, in one of two styles (data-net-style on the panel, or ?net=steps / ?net=map). "steps", the default
-// (amos-09-r2): net-steps.js plays the five cards in turn. "map": net.js draws the painted board, data-net="still" one still frame of
-// the five steps (amos-09); for captures, ?net-step=1 to 5 or all picks the frame
+// : net-steps.js plays the five cards in turn. "map": net.js draws the painted board, data-net="still" one still frame of
+// the five steps for captures, ?net-step=1 to 5 or all picks the frame
 const netPanel = root.querySelector('.s-net-panel');
 const netQuery = new URLSearchParams(location.search), netStep = netQuery.get('net-step');
 if (netPanel && ['steps', 'map'].includes(netQuery.get('net'))) netPanel.dataset.netStyle = netQuery.get('net');

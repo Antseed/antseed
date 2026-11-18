@@ -62,7 +62,7 @@
   .pvy-label-s { font-size: 9.5px; line-height: 12px; }
   .pvy-chip { font-size: 10px; padding: 3px 7px; }
 }
-@container (max-width: 420px) { .pvy-mac { font-size: 8.5px; line-height: 11px; padding: 2px 6px; } }   /* Amos names the three Macs, phones too */
+@container (max-width: 420px) { .pvy-mac { font-size: 8.5px; line-height: 11px; padding: 2px 6px; } }   /* the client names the three Macs, phones too */
 /* on a phone the stall goes further left, so the listing has room beside it: edge, stall, gap, listing, edge in even steps */
 @media (max-width: 520px) {
   .s-path-panel:has(> .pvy-own) { background-size: 145% auto; }
@@ -90,7 +90,7 @@
    paintings landscape (16:9) and reframed: the stall, held at 1.4 times the width, lifted so its roof and the Mac stay whole */
 @media (min-width: 761px) {
   .s-prov .s-h2 { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
-  .s-prov .s-rail { padding-bottom: 124px; }   /* Figma 820:1261: rail 120 / 124, head to paths 64 */
+  .s-prov .s-rail { padding-bottom: 124px; }   /* Figma: rail 120 / 124, head to paths 64 */
   .s-prov .s-paths { margin-top: 64px; }
   .s-prov .s-path-panel { aspect-ratio: 16 / 9; }
   .s-prov .s-path-h { font-size: 24px; line-height: 28px; letter-spacing: -.8px; }

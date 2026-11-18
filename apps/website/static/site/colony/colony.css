@@ -22,7 +22,7 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page: an anch
 }
 
 /* ── the glass labels on the paintings: the homepage scenes' glass (light frosted by day, smoked green at night), each pinned to the
-   thing it names. The painting is drawn cover in its panel (a size container), --a its aspect (1600:893), --px/--py where the cover
+   thing it names. The painting is drawn cover in its panel (a size container), --a its aspect --px/--py where the cover
    sits, --fx/--fy the label's spot as a share of the painting: so it stays on its Mac at every panel size */
 .cl-glass { --glass: rgba(255, 255, 255, .7); --edge: #fff; --sh: 0 0 0 .5px rgba(10, 26, 18, .14), 0 12px 32px 0 rgba(20, 51, 89, .16);
   border: .5px solid var(--edge); background: var(--glass); box-shadow: var(--sh); color: #0a1a12;

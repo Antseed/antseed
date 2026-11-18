@@ -1,7 +1,7 @@
-/* Antseed homepage below the hero. Figma 696:3 "Antseed | Homepage · v4", 1504 wide: white sections in a 1312 rail, 96px margins of
+/* Antseed homepage below the hero. Figma "Antseed | Homepage · v4", 1504 wide: white sections in a 1312 rail, 96px margins of
    #fcfcfc with a matrix of dots, dotted outlines, Geist throughout. Uses the fonts each page's head loads: Geist, Geist Mono 400 and 500,
    and Geist's → and ↗ on their own request (Google's latin subset leaves them out, and they then fell back to a thin system arrow).
-   Dark is Figma 696:5169, on <html data-theme="dark"> (the head script in index.html sets it): the colour tokens below, swapped. */
+   Dark is Figma on <html data-theme="dark"> (the head script in index.html sets it): the colour tokens below, swapped. */
 
 /* the colours. --t text, --g the grey half of titles, --b body copy, --m small print, --o green text, --dot the dotted lines and margin
    dots, --empty a bar's unlit dots; --fill the green of buttons and lit dots, the same in both themes. The routing window, the network
@@ -18,7 +18,7 @@
      a popover 6, a control 5, a small tile 3, and where a box shares a corner, the outer radius less the inset, 2 at least) */
   --r-card: 11px;
 }
-/* dark, Figma 696:5169: the page #0f1312, the rail #181d1b, text #eceee9 and #9ba49e, green text #98c463; buttons keep their green */
+/* dark, Figma: the page #0f1312, the rail #181d1b, text #eceee9 and #9ba49e, green text #98c463; buttons keep their green */
 :root[data-theme="dark"] .s-page {
   --t: #eceee9; --g: #9ba49e; --b: #9ba49e; --m: #9ba49e; --o: #98c463; --dot: #3d4340; --empty: #29302c;
   --page: #0f1312; --rail-bg: #181d1b; --title: #eceee9; --fill-hi: #5b8a2b;
@@ -98,15 +98,12 @@
 .s-btn.ghost:hover { background: var(--tile-hi); }
 .s-btn.big { height: 48px; padding: 0 24px; font-size: 16px; }
 
-/* the mosaic panel: sections.js paints round dots from assets/home/mosaic.png into a canvas behind the content */
-.mz { position: relative; overflow: hidden; isolation: isolate; }
-.mz > canvas.mz-c { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; pointer-events: none; }
 /* the product panels (Gateway, Desktop, the providers' cards, $ANTS) take a landscape vignette instead of a plain wash, the same way:
    assets/home/vignettes/vNN-day.webp and vNN-night.webp, 4:3 (placeholder crops of the site's paintings until the final ones land) */
-/* the wash panel: one of the direction's six plain watercolour washes (02_Brand/direction-meadow-2026-11-02/fonds-aquarelle, 1376×768),
+/* the wash panel: one of the direction's six plain watercolour washes (1376×768),
    cropped per panel in assets/home/lavis at twice its size at most, never enlarged; sky, blue, sage, ochre, terracotta and violet in turn */
 .wash { position: relative; overflow: hidden; isolation: isolate; background: #f6f3ea var(--wash) center / cover no-repeat; }
-/* in dark, each wash's own darker copy (--wash-d), baked from Figma's adjustments on that wash (696:5169): all near one luminance, same
+/* in dark, each wash's own darker copy (--wash-d), baked from Figma's adjustments on that wash: all near one luminance, same
    hue; the glass over it unchanged */
 :root[data-theme="dark"] .wash { background-color: #39403d; background-image: var(--wash-d, var(--wash)); }
 /* until a landscape panel arrives (card-unveil.js) its painting waits and the panel is plain in its own colour; the arrival is a canvas
@@ -136,7 +133,7 @@
 .s-prices .s-h2 { color: var(--title); }   /* as the products' titles */
 /* the four media as tabs: the names across the rail's whole width, out of its inner
    margin to the section's edges where the dotted outline runs, a hairline under them all, and under the chosen one a
-   green line that slides from name to name (::before, placed at --tx and --tw: sections.js); the names grey, the chosen one black. Each
+   green line that slides from name to name (before, placed at --tx and --tw: sections.js); the names grey, the chosen one black. Each
    tab is the row's full height, so a click anywhere on it lands; the hover shows only where there is one (on a touch screen it stuck to
    the last tab tapped) */
 .s-media { --seg-ring: #e4dfd2;
@@ -152,7 +149,7 @@
 @media (hover: hover) { .s-media button:hover { color: var(--t); } }
 .s-media button:focus-visible { outline: 2px solid var(--o); outline-offset: -6px; border-radius: 8px; }
 @media (prefers-reduced-motion: reduce) { .s-media.ready::before, .s-media button { transition: none; } }
-/* the tabs' contrast (amos-04b): the names 16px 500, the inactive ones darkened to 5.3:1 on the rail's white (dark keeps --g, 6.6:1 on the rail),
+/* the tabs' contrast: the names 16px 500, the inactive ones darkened to 5.3:1 on the rail's white (dark keeps --g, 6.6:1 on the rail),
    and a faint fill on hover, 150ms: about 4% ink by day, 6% white by night */
 .s-media { --seg-off: #6b6b6b; --seg-hover: rgba(48, 56, 44, .04); }
 :root[data-theme="dark"] .s-media { --seg-off: var(--g); --seg-hover: rgba(255, 255, 255, .06); }
@@ -276,13 +273,13 @@
 .term .rest { visibility: hidden; }   /* the part of a command not typed yet (sections.js) */
 .term .cur.busy { animation: none; }   /* steady while keys come in */
 
-/* ── Gateway: your own router (amos-05, square and told one route at a time in amos-05-r2), where the terminal was ──────────────────────
+/* ── Gateway: your own router (square and told one route at a time), where the terminal was ──────────────────────
    Two sides, not three (no hub between you and the network, the client's rule): your side is one soft glass plate that holds your
    callers, each with its own key, on top and your gateway under them, a v6 glass window (v6.css .v6c-win) with its address and its rules;
    the network is the providers standing on the painting under the plate, off it, in the network map's frosted tags (.nd-tag). Composed
    for the square panel and the same on a phone: callers, gateway, providers, top to bottom, each route a column. Your
    links in the map's lime: one down from each caller into the gateway, and one out of the gateway's bottom edge, straight down its
-   column to its own provider, the rule's word on a tag over that provider, the rule's row lit in the gateway while it plays (amos-05-r3);
+   column to its own provider, the rule's word on a tag over that provider, the rule's row lit in the gateway while it plays
    a request (the map's white bubble) rides the line. Drawn by sections.js from where the pieces sit, which also tells the three routes
    in turn: what is not in the route is dimmed, never hidden, its glass kept whole and only what is on it quieter (--o) */
 .s-gw-panel { container: gw / inline-size; }
@@ -534,7 +531,7 @@
 
 /* ── Providers ───────────────────────────────────────────────────────── */
 .s-prov .s-rail { padding: 120px 0; }
-/* the two paths (amos-08): side by side on the cards' width, each a painted panel, 3:2, then its text under it, no frame round the two.
+/* the two paths: side by side on the cards' width, each a painted panel, 3:2, then its text under it, no frame round the two.
    The paintings (assets/home/providers, 3:2) cover the panel, centred low so the characters are never cut */
 .s-paths { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; width: 100%; margin-top: 64px; padding: 0 24px; text-align: left; }
 /* each path a column of four rows shared with the other (subgrid), so the two names, lines and buttons start level */
@@ -594,7 +591,7 @@
 /* the panel is the map's shape (1584 by 672), so the whole board shows; on a phone it is taller and shows a slice of it (net.js places
    the painting where the board's spots expect it, and marks the panel .nd-tall) */
 .s-net-panel { aspect-ratio: 33 / 14; margin-top: 64px; --wash: url(/site/assets/home/net/map-2-day.webp); --wash-d: url(/site/assets/home/net/map-2-night.webp); }
-/* the loop keeps map-2, with all its clearings; the still board takes map-4, painted without five of them (amos-09-art), as the steps do */
+/* the loop keeps map-2, with all its clearings; the still board takes map-4, painted without five of them as the steps do */
 .s-net-panel[data-net="still"] { --wash: url(/site/assets/home/net/map-4-day.webp); --wash-d: url(/site/assets/home/net/map-4-night.webp); }
 /* the map a touch less saturated, as washed as the rest of the page's paintings, so it reads as the setting and the pieces stand out. The painting moves to a layer under the board with the filter, where net.js sizes and places
    it (inherited), and the unveil's canvas, which paints it while it arrives, takes the same filter */
@@ -679,7 +676,7 @@
 /* USDC's own mark before the word, its size, one unit with it */
 .s-tok { white-space: nowrap; }
 .s-tok img { display: inline-block; width: .8em; height: .8em; margin-right: .22em; vertical-align: -.08em; }
-/* the still story (amos-09, net.js data-net="still"): one request in five steps. Along the board's bottom a strip of the tags' glass
+/* the still story (net.js data-net="still"): one request in five steps. Along the board's bottom a strip of the tags' glass
    names them, the step shown in ink and the others grey (all in ink for the frame with all of them); on the map each step's number
    before the tag of what it numbers, a small glass disc in the site's pixel face, as quiet as the tags. On a phone the strip gives only
    the step shown its words. The strip is a band under the map: the panel grows by its height and net.js lays the board out above it */
@@ -707,14 +704,14 @@
 .nd-tall .nd-rail li:not(.on) span { display: none; }
 :root[data-theme="dark"] .nd-rail { color: rgba(245, 247, 245, .5); }
 @media (max-width: 760px) { .s-net-panel[data-net="still"] { padding-bottom: 0; height: clamp(470px, 133vw, 550px); } }
-/* the network in five steps (amos-09-r2, net-steps.js), the board's default style; data-net-style="map" brings back the painted board
-   above. The board follows the head (amos-09-r5: the three points are gone, the cards say it). On the map, whole, as a cover, as
-   before amos-09-r3 (map-5: map-4 with its last six clearings painted out and at twice its size, 4224 by 1792, so it holds sharp at
-   2x at every width, Magnific, amos-09-r5), under a light wash of the page's surface, deeper behind the cards; five cards in a row, each
+/* the network in five steps (net-steps.js), the board's default style; data-net-style="map" brings back the painted board
+   above. The board follows the head (the three points are gone, the cards say it). On the map, whole, as a cover, as
+   before (map-5: map-4 with its last six clearings painted out and at twice its size, 4224 by 1792, so it holds sharp at
+   2x at every width, Magnific), under a light wash of the page's surface, deeper behind the cards; five cards in a row, each
    the tags' neutral frosted glass: a light fill over the painting
    blurred and calmed, a fine light edge, a soft light along its top, a soft shadow; ink on it by day, near-white at night. Each card its
    icon in the accent (a pixel glyph, sections.html), its number and name ("1 Look up", the number in the pixel face), one line, and one small mono detail held at its foot. A thin line runs
-   from each card's icon row to the next card: its track always there, quiet (::after), the lime drawn over it (::before, net-steps.js
+   from each card's icon row to the next card: its track always there, quiet (after), the lime drawn over it (before, net-steps.js
    draws it, --p, and lights it, --pl). A card not reached yet keeps its glass, its content dimmed (--in from 0 to 1, net-steps.js).
    Below 1200 px the cards stack in a column, the line running down from icon to icon: on a tablet each card one row (icon, name and
    detail on top, the line under), on a phone the detail under the line */
@@ -739,7 +736,7 @@
   --ns-lift: 0 1px 3px rgba(0, 0, 0, .7);
   --ns-glass: rgba(14, 33, 23, .3); --ns-edge: rgba(150, 200, 145, .3); --ns-light: rgba(190, 228, 170, .12); --ns-sh: rgba(8, 26, 14, .3);
   --ns-blur: blur(10px) saturate(1.15) brightness(.82); }
-/* each card: its painting on top, square, then the icon beside "N Name", the line, the mono detail at its foot (amos-09-r6) */
+/* each card: its painting on top, square, then the icon beside "N Name", the line, the mono detail at its foot  */
 .ns > li { position: relative; display: grid; grid-template-columns: var(--ns-ic) minmax(0, 1fr); grid-template-areas: "a a" "n h" "p p" "d d";
   grid-template-rows: auto auto auto 1fr; column-gap: 10px; align-items: center; padding: var(--ns-pad); border-radius: 8px; background: var(--ns-glass);
   box-shadow: inset 0 0 0 .5px var(--ns-edge), inset 0 1px 0 0 var(--ns-light), 0 10px 30px var(--ns-sh);
@@ -871,12 +868,12 @@
 .s-ants b { font: 400 24px/28px "Geist Pixel Var", Geist, sans-serif; font-variation-settings: "ELSH" var(--fig-elsh, 20); color: var(--t); }
 .s-ants.figs b { font-size: 40px; line-height: 44px; font-variant-numeric: tabular-nums; }
 .s-ants .cap { margin-top: 8px; font: 400 12.5px/18px "Geist Mono", monospace; color: var(--o); }
-/* the section is the two halves only (amos-10): the second line under the title in grey; the .s-ants rules above stay for the /ants partial (_amos-parts/ants-token-details.html) */
+/* the section is the two halves only: the second line under the title in grey; the .s-ants rules above stay for the /ants partial (_amos-parts/ants-token-details.html) */
 .s-token .s-sub.dim { color: var(--g); }
 .s-token .s-duo-head .s-sub { text-wrap: balance; }
 
 /* ── Privacy ─────────────────────────────────────────────────────────── */
-/* dark from margin to margin, the whole of it (the head, the points and their panel) framed by Figma's dot mosaic (663:4166, assets/home/privacy-dots.svg): 1504 by 832, dots round the edges only, one round dot a cell as Meadow · Mascot's.
+/* dark from margin to margin, the whole of it (the head, the points and their panel) framed by Figma's dot mosaic (assets/home/privacy-dots.svg): 1504 by 832, dots round the edges only, one round dot a cell as Meadow · Mascot's.
    .tw lays it at its own size as two bands, its top half from the top and its bottom half from the bottom: at Figma's 832 that is the
    whole mosaic, and a taller box keeps a strip of its top and bottom rows (160px at least), its sides going on down the middle
    (dither.js repeats their rows), behind the panel. The ants walking it are dither.js's. The top line runs across the whole width, on the margin's dots; the rail draws
@@ -904,7 +901,7 @@
 .s-priv .s-h2 { margin-top: 20px; }
 .s-priv .s-sub { margin-top: 20px; max-width: 600px; }
 /* the incognito ant (assets/home/ant-incognito, three films): sitting on the panel's top edge by its right corner, legs over the
-   edge, over every point's panel and staying as they change, so she holds with the frame (amos-07-r4: back where she sat before the
+   edge, over every point's panel and staying as they change, so she holds with the frame (back where she sat before the
    pin); a sixth of the panel wide; mirrored, looking left, toward the text. Her seat, 89% down the picture, on the edge;
    at night the hero mascot's light */
 .s-pv-ant { position: absolute; z-index: 2; right: 5%; bottom: 100%; width: clamp(68px, 17%, 127px); height: auto; translate: 0 12%; transform: scaleX(-1); pointer-events: auto; cursor: pointer; padding: 0; border: 0; background: none; border-radius: 40% 40% 16% 16%; }

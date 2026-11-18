@@ -1,15 +1,15 @@
-// How the network works, as ONE map of the whole system (after a call with Amos and Pranit: the diagram has to cover what
+// How the network works, as ONE map of the whole system (after a call with the client: the diagram has to cover what
 // Antseed is and does, dense but legible). Drawn into [data-nl]: hero/parts/layers.html (the homepage, data-cut="home") and
 // layers-large.html (the network page, data-cut="network").
 // Two structures, and the first one leads:
-//   the three layers (Amos's): 1 DHT peer discovery, 2 Payments & settlement on Base, 3 Trust & liquid inference with ANTS. The foot
+//   the three layers (the client's): 1 DHT peer discovery, 2 Payments & settlement on Base, 3 Trust & liquid inference with ANTS. The foot
 //     strip is their key. Every caption on the board opens with its layer's numeral, so the five open layers nest under the three:
 //     1 Discovery, 1 Transport, 2 Metering & payments, 3 Reputation, 3 Model verification (and 2 / 3 on Base's two rails)
 //   the three places (what lives where): quiet names down the left edge, each with the page's line of what lives there:
 //     On your machine (with your device's window under it), Between the peers (at the routes' height), On Base (at the slab)
 // The picture: the DHT's mesh above (not a place: nothing of yours lives there), the peers in the middle, each on its own glass tile
 // (buyers at the left, you in front; providers at the right, facing them; an independent auditor behind Provider C), Base below as one
-// glass slab with a USDC rail and an ANTS rail. Amos's example connections: a developer to Provider A; a team workspace to A and B; an
+// glass slab with a USDC rail and an ANTS rail. The client's example connections: a developer to Provider A; a team workspace to A and B; an
 // AI agent to B and C.
 // The homepage's cut is the same picture, lighter: no captions, no device window, no auditor.
 // One clock moves everything, only while the board is on screen in a tab that shows. Its pictures (the wash, the ants, the seeds, the
@@ -32,7 +32,7 @@ const CUTS = {
 const POSE = { 'you-idle': [.6462, .5351], 'user-idle': [.6469, .5351], idle: [.6469, .5351], 'prov-idle': [.6794, .5089] };
 // what your device scores a provider from
 const SIG = [['analytics', 'History'], ['check', 'Model audits'], ['lock', 'Backing'], ['user', 'Identity']];
-// the foot strip: Amos's three layers [what it lights, his line, the homepage's plain name for it]
+// the foot strip: the client's three layers [what it lights, his line, the homepage's plain name for it]
 const TABS = [
   ['d t', 'DHT peer discovery', 'Find a provider'],
   ['m', 'Payments &amp; settlement on Base', 'Pay for what you use'],
