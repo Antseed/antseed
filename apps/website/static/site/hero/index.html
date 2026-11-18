@@ -619,6 +619,16 @@ if (document.documentElement.classList.contains('intro')) {
     others.textContent = `Also on ${Object.keys(NAMES).filter((f) => f !== family).map((f) => NAMES[f]).join(' and ')}.`;
     versions.querySelector(`.row[href$="/${os}"]`).append(Object.assign(document.createElement('i'), { textContent: 'Detected' }));
   }
+  // the user-agent string can't tell an Intel Mac from an Apple Silicon one (nor Linux on ARM, often): where the browser says
+  // (client hints, in Chromium browsers), its answer picks the download
+  if (!/iPhone|iPad|Android/i.test(ua)) navigator.userAgentData?.getHighEntropyValues?.(['architecture']).then(({ architecture }) => {
+    if (!architecture || family === 'win') return;
+    const pick = `${family}-${architecture === 'arm' ? 'arm64' : 'x64'}`;
+    if (pick === os) return;
+    get.href = document.getElementById('nav-get').href = `https://download.antseed.com/vpr/${pick}`;
+    versions.querySelector('.row > i')?.remove();
+    versions.querySelector(`.row[href$="/${pick}"]`)?.append(Object.assign(document.createElement('i'), { textContent: 'Detected' }));
+  }).catch(() => {});
   document.querySelector('.all').addEventListener('click', () => versions.showModal());
   versions.querySelector('header button').addEventListener('click', () => versions.close());
   versions.addEventListener('click', (e) => {   // a click on the backdrop closes it

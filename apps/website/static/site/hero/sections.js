@@ -1108,7 +1108,13 @@ if (caps.length) {
     new IntersectionObserver(([e]) => {
       if (e.isIntersecting && !clips.idle.src) for (const [n, v] of Object.entries(clips)) { v.preload = 'auto'; v.src = url(n); }
     }, { rootMargin: '600px 0px' }).observe(btn);
-    new IntersectionObserver(([e]) => { seen = e.isIntersecting; if (!seen && busy) busy.pause(); idle(); }).observe(btn);
+    // off screen a reaction pauses; back on screen it plays on (or, if it can't, the mascot goes back to idle), so a click works again
+    new IntersectionObserver(([e]) => {
+      seen = e.isIntersecting;
+      if (busy && !seen) busy.pause();
+      else if (busy) busy.play().catch(() => { busy = null; show(clips.idle, false); idle(); });
+      idle();
+    }).observe(btn);
   }
 }
 
