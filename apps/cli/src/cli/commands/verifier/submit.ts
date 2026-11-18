@@ -808,7 +808,15 @@ async function reuseLedgerEvidence(
     }
     try {
       const evidence = await readModelAuditEvidence(previous.evidencePath, previous.evidenceHash)
-      audits.push(preparedFromEvidence(audit.key, previous.evidencePath, evidence, audit.auditEvidencePaths))
+      // Never send from the ledger what fresh validation would not: the earlier evidence is reused only when each of
+      // its results is one this preparation gives too, with the same verdict, seller evidence and attribution.
+      const fresh = new Map(audit.evidence.results.map((result) => [`${result.agentId}:${normalized(result.serviceHash)}`, result]))
+      const same = evidence.results.every((result) => {
+        const now = fresh.get(`${result.agentId}:${normalized(result.serviceHash)}`)
+        return now !== undefined && now.verdict === result.verdict && normalized(now.audit.evidenceHash) === normalized(result.audit.evidenceHash)
+          && canonicalJsonStringify([now.flaggedBy ?? null, now.confirmation ?? null]) === canonicalJsonStringify([result.flaggedBy ?? null, result.confirmation ?? null])
+      })
+      audits.push(same ? preparedFromEvidence(audit.key, previous.evidencePath, evidence, audit.auditEvidencePaths) : audit)
     } catch (error) {
       if (previous.status !== 'failed') {
         throw new Error(`${audit.key}: earlier evidence ${previous.evidencePath} is unreadable: ${asError(error).message}`)

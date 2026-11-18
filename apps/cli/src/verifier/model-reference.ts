@@ -1018,6 +1018,8 @@ export async function askReferenceReplies(input: {
   signal?: AbortSignal
 }): Promise<{
   upstream: ReferenceUpstreamProvenanceV1
+  /** The route serves one provider: a pinned peer, a provider pin of one, or an endpoint that is not a router. */
+  oneProvider: boolean
   results: Array<{ requestBody: Uint8Array; response: { statusCode: number; body: Uint8Array } | null; provider: string | null; failure: string | null }>
 }> {
   const endpoint = input.config?.referenceEndpoint
@@ -1062,7 +1064,9 @@ export async function askReferenceReplies(input: {
     }
     return result
   }))
-  return { upstream: referenceUpstreamProvenance(endpoint, route), results }
+  const router = route.upstream?.type === 'openrouter' || /openrouter\.ai/i.test(route.baseUrl)
+  const oneProvider = route.type === 'antseed' || (route.providerRouting?.order.length ?? 0) === 1 || !router
+  return { upstream: referenceUpstreamProvenance(endpoint, route), oneProvider, results }
 }
 
 /** The provider an OpenRouter-style answer names; null when it names none. */

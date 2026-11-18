@@ -55,8 +55,10 @@ export function readOutput(requestBody: Uint8Array, response: { statusCode: numb
   if (!signsOutputCount(answer['usage'])) return { ...head, ...NO_READING }
   const billed = usageForBilling(requestBody, response)
   const reasoningTokens = itemisedReasoning(answer['usage'])
-  // A reasoning count that is negative or above the billed output is malformed usage: no reading.
-  if (reasoningTokens !== null && (reasoningTokens < 0 || reasoningTokens > billed.usage.outputTokens)) return { ...head, ...NO_READING }
+  // A reasoning count that is not a whole number, negative or above the billed output is malformed usage: no reading.
+  if (reasoningTokens !== null && (!Number.isInteger(reasoningTokens) || reasoningTokens < 0 || reasoningTokens > billed.usage.outputTokens)) {
+    return { ...head, ...NO_READING }
+  }
   return {
     ...head,
     billedOutputTokens: billed.usage.outputTokens,
@@ -163,7 +165,7 @@ function itemisedReasoning(usage: unknown): number | null {
   if (!isRecord(usage)) return null
   for (const key of ['completion_tokens_details', 'output_tokens_details']) {
     const details = usage[key]
-    if (isRecord(details) && typeof details['reasoning_tokens'] === 'number' && Number.isInteger(details['reasoning_tokens'])) {
+    if (isRecord(details) && typeof details['reasoning_tokens'] === 'number') {
       return details['reasoning_tokens']
     }
   }

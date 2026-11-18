@@ -8,6 +8,8 @@ import { prepareModelAudits } from './model-audit.js'
 import { FIXTURE_CONFIG, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
 import test from 'node:test'
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
+import { transformRequest } from '@antseed/api-adapter'
+import { outputEchoRequestBody } from './output-echo.js'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
 import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from './output-usage.js'
 import type { TokenizerReferenceAsk } from './tokenizer-precheck.js'
@@ -406,4 +408,21 @@ test('a dry pass measures answers that kept to the limit too, and the record sti
   assert.equal(record.asks[0]!.class, 'within')
   assert.notEqual(measuredTokens(record.asks[0]!.measurement), null)
   validateOutputCap(record)
+})
+
+test('the prompt is found in requests the buyer proxy translates for a seller on Messages or Responses', () => {
+  for (const body of [
+    outputCapRequestBody({ service: 's', prompt: outputCapPrompt(() => 1).prompt, cap: 24 }),
+    outputEchoRequestBody({ service: 's', text: 'The parcel weighs 4.20 kg.' }),
+  ]) {
+    const prompt = (body['messages'] as Array<{ content: string }>)[0]!.content
+    for (const to of ['anthropic-messages', 'openai-responses'] as const) {
+      const translated = transformRequest(
+        { requestId: 'r', method: 'POST', path: '/v1/chat/completions', headers: {}, body: bytes(body) },
+        { from: 'openai-chat-completions', to },
+      )
+      assert.ok(translated, to)
+      assert.equal(requestCarriesPrompt(translated.request.body, prompt), true, to)
+    }
+  }
 })

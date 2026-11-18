@@ -10,9 +10,12 @@ import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { isSafeProbe } from '@antseed/node/payments'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
 import type { OutputReadingV1 } from './output-usage.js'
+import { readOutput } from './output-usage.js'
 import {
   OUTPUT_ECHO_RULE,
   createOutputEchoScreen,
+  echoCrowdVote,
+  prepareOutputEchoReference,
   describeOutputEchoFlag,
   echoCrowdObjection,
   outputEchoPrompt,
@@ -25,6 +28,7 @@ import {
   referenceEchoCount,
   writeEchoText,
   type EchoCrowdVoteV1,
+  type EchoRoundV1,
   type EchoSellerAskV1,
   type OutputEchoV1,
 } from './output-echo.js'
@@ -332,7 +336,7 @@ test('a seller that adds the same 30 tokens to every reply is found, asked every
   const record = (await screenFor(alone).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true }))!
   assert.deepEqual([record.outcome, record.flag, record.offset], ['pass', null, { median: 30, fixed: true }])
   assert.match(record.fixedAmount.reason, /^flag, stored and not counted yet/)
-  assert.ok(record.rounds.every((entry) => entry.short.length === 2 && entry.long.length === 2), 'every text asked twice')
+  assert.ok(record.rounds.every((entry) => entry.repeats !== undefined && entry.short.length === 1), 'every text asked again, apart from the growth rounds')
   validateOutputEcho(record, PEERS[0])
   const relay = fakeNetwork({ ...Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])), [PEERS[0]!]: padded, [PEERS[1]!]: padded })
   const shared = (await screenFor(relay).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true }))!
@@ -393,4 +397,73 @@ test('an echo record of every outcome, written to its evidence file, passes the 
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('a growth far below the model\'s is no match, and a fixed extra on long replies only is not steady as a share of the gaps', () => {
+  // -60 in every round: not a pass, and nothing it could clear.
+  const under = judge([round([[60, 300]]), round([[60, 300]]), round([[60, 300]])], null)
+  assert.deepEqual([under.outcome, under.growth.outcome], ['inconclusive', 'inconclusive'])
+  assert.match(under.reason, /a round was under/)
+  // Gaps of 200, 300 and 500: a 25% factor keeps its share; +60 on every long reply does not.
+  const reference = [[60, 260], [60, 360], [60, 560]].map(([short, long]) => ({ short: { text: 's', count: short! }, long: { text: 'l', count: long! } }))
+  const judgeOn = (rows: Array<[number, number]>) => judgeOutputEcho({
+    mode: 'plain', reference, referenceReasoning: [0, 0, 0], precheckMatch: true,
+    crowd: { votes: [vote(0), vote(1), vote(-1)], incomplete: false },
+    rounds: rows.map(([short, long], index) => {
+      const asks = { short: [ask(short), ask(short)], long: [ask(long), ask(long)] }
+      return { ...asks, ...judgeEchoRound({ ...asks, reference: { short: reference[index]!.short.count, long: reference[index]!.long.count }, referenceReasoning: 0, mode: 'plain' }) }
+    }),
+  })
+  const factor = judgeOn([[75, 325], [75, 450], [75, 700]])
+  assert.deepEqual([factor.outcome, factor.flag], ['flag', 'growth'])
+  const fixedOnLong = judgeOn([[60, 320], [60, 420], [60, 620]])
+  assert.equal(fixedOnLong.growth.outcome, 'inconclusive')
+  assert.match(fixedOnLong.growth.reason, /not steady as a share of the texts' gaps/)
+})
+
+test('a fixed amount backs the reference only when both texts are in the band', () => {
+  const short = ask(62)
+  const long = ask(364)
+  const voted = echoCrowdVote('peer', short, long, REF)
+  assert.equal(voted.offset, 4, 'the larger excess: +2 and +4 is not a backer')
+})
+
+test('a fixed-amount candidate\'s repeats never change the growth verdict', () => {
+  const rounds = [round([[90, 390]]), round([[90, 390]]), round([[90, 390]])]
+  for (const entry of rounds) (entry as EchoRoundV1).repeats = { short: ask(null), long: ask(390) }
+  const judged = judge(rounds, [vote(0, 0), vote(0, 1), vote(0, 0)], { rule: COUNTING })
+  assert.equal(judged.growth.outcome, 'pass', 'a failed repeat leaves the growth as it was')
+})
+
+test('the recheck refuses findings a record cannot have, and repeated authenticated asks', async () => {
+  const network = fakeNetwork(Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])))
+  const record = (await screenFor(network).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true }))!
+  const credited = structuredClone(record)
+  credited.fixedAmount = { outcome: 'pass', reason: 'x' }
+  assert.throws(() => validateOutputEcho(credited, PEERS[0]), /offset is not counted under its rule/)
+  const empty = { ...structuredClone(record), rounds: [], outcome: 'inconclusive' as const, growth: { outcome: 'pass' as const, reason: 'x' } }
+  assert.throws(() => validateOutputEcho(empty, PEERS[0]), /without rounds must be inconclusive in every finding/)
+  const twice = structuredClone(record)
+  twice.rounds[1]!.short[0]!.request.responseAuth = structuredClone(twice.rounds[0]!.short[0]!.request.responseAuth)
+  assert.throws(() => validateOutputEcho(twice, PEERS[0]), /repeats an authenticated request ID|not one of its tries/)
+})
+
+test('a reference route that may serve several providers and names none leaves the model unjudged', async () => {
+  const unnamed: EchoReferenceAsk = async (texts, signal) => {
+    const answered = await echoReference(texts, signal)
+    return { ...answered, oneProvider: false, results: answered.results.map((result) => ({ ...result, provider: null })) }
+  }
+  const reference = await prepareOutputEchoReference({ ask: unnamed })
+  assert.equal(reference.applies, false)
+  assert.match(reference.reason, /may serve several providers and names none/)
+  const direct: EchoReferenceAsk = async (texts, signal) => ({ ...(await unnamed(texts, signal)), oneProvider: true })
+  assert.equal((await prepareOutputEchoReference({ ask: direct })).applies, true, 'a direct endpoint names no provider and is one')
+})
+
+test('a reasoning count that is not a whole number gives no reading', () => {
+  const reply = readOutput(new TextEncoder().encode(JSON.stringify({ messages: [{ role: 'user', content: 'x' }], max_tokens: 1024 })), {
+    statusCode: 200,
+    body: new TextEncoder().encode(JSON.stringify({ choices: [{ message: { content: TEXT }, finish_reason: 'stop' }], usage: { completion_tokens: 60, completion_tokens_details: { reasoning_tokens: 12.5 } } })),
+  })
+  assert.equal(reply.billedOutputTokens, null)
 })

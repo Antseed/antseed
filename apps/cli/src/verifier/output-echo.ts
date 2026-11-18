@@ -25,7 +25,11 @@ import { generateTokenizerProbe } from './tokenizer-precheck.js'
  *
  * Every constant is here, frozen. The margins (`growthFloor`, `growthShare`, `offsetFloor`, `spreadFactor`) are
  * chosen above every honest value seen in the evals and on live sellers (constants of 3 tokens without reasoning
- * and 9 with; one relay's dropped reasoning at 16 tokens of growth), not measured bounds.
+ * and 9 with; one relay's dropped reasoning at 16 tokens of growth), not measured bounds. The growth stands out
+ * against the crowd's spread only; the seller's own steadiness is judged as a share of each round's gap, and the
+ * rounds' long texts have different lengths (`longPassages`), so a factor (steady share) is told from a fixed extra
+ * on long replies (a share that falls as the gap grows). Replayed on the eval's replies by the design reviewer and
+ * the implementation: honest 0 flags; a 20% over-bill flagged in every decided check.
  */
 export interface OutputEchoRule {
   id: 'output-echo-v1'
@@ -39,6 +43,8 @@ export interface OutputEchoRule {
   textTries: number
   /** The long text must measure at least this many tokens more than the short one at the reference. */
   minGap: number
+  /** Passages of each round's long text (a short text is one): different lengths, so the gaps differ on purpose. */
+  longPassages: number[]
   /** Reply limit of every echo request. */
   maxTokens: number
   /** A growth flag needs the growth above this many tokens, in every round. Chosen margin. */
@@ -71,6 +77,7 @@ export const OUTPUT_ECHO_RULE: OutputEchoRule = Object.freeze({
   referenceAsks: 2,
   textTries: 3,
   minGap: 150,
+  longPassages: [3, 4, 6],
   maxTokens: 1024,
   growthFloor: 20,
   growthShare: 0.1,
@@ -151,9 +158,9 @@ export function outputEchoRequestBody(input: {
   }
 }
 
-/** A short text (one probe's sentences) or a long one (four), from the pre-check's sentence writers; one line, guard-safe. */
-export function writeEchoText(kind: 'short' | 'long', write: () => string = () => generateTokenizerProbe().b.trim()): string {
-  const count = kind === 'short' ? 1 : 4
+/** A short text (one probe's sentences) or a long one (`passages` of them), from the pre-check's sentence writers; one line, guard-safe. */
+export function writeEchoText(kind: 'short' | 'long', write: () => string = () => generateTokenizerProbe().b.trim(), passages = 4): string {
+  const count = kind === 'short' ? 1 : passages
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const text = Array.from({ length: count }, write).join(' ')
     if (isSafeProbe(` ${text}`) && !/["'`]/.test(text)) return text
@@ -187,6 +194,8 @@ export interface OutputEchoReferenceV1 {
 /** One reference reply to an echo request: the answer's raw bytes and the request sent, or the failure. */
 export type EchoReferenceAsk = (texts: readonly string[], signal?: AbortSignal) => Promise<{
   upstream: unknown
+  /** The route serves one provider (a direct endpoint, a pinned peer or a provider pin); false when it may serve several. */
+  oneProvider?: boolean
   results: ReadonlyArray<{ requestBody: Uint8Array; response: { statusCode: number; body: Uint8Array } | null; provider: string | null; failure: string | null }>
 }>
 
@@ -225,13 +234,14 @@ function roundReasoning(round: { short: EchoReferenceTextV1; long: EchoReference
 export async function prepareOutputEchoReference(input: {
   ask: EchoReferenceAsk
   rule?: OutputEchoRule
-  write?: (kind: 'short' | 'long') => string
+  write?: (kind: 'short' | 'long', round: number) => string
   timeLimitMs?: number
 }): Promise<OutputEchoReferenceV1> {
   const rule = input.rule ?? OUTPUT_ECHO_RULE
-  const write = input.write ?? ((kind: 'short' | 'long') => writeEchoText(kind))
+  const write = input.write ?? ((kind: 'short' | 'long', round: number) => writeEchoText(kind, undefined, rule.longPassages[round] ?? 4))
   const limit = AbortSignal.timeout(input.timeLimitMs ?? ECHO_REFERENCE_TIME_LIMIT_MS)
   let upstream: unknown = null
+  let oneProvider = true
   type Both = { plain: EchoReferenceTextV1; visible: EchoReferenceTextV1 }
   const measure = async (kind: 'short' | 'long', text: string): Promise<Both> => {
     const failed = (failure: string): Both => {
@@ -243,6 +253,7 @@ export async function prepareOutputEchoReference(input: {
     try {
       asked = await input.ask(Array.from({ length: rule.referenceAsks }, () => text), limit)
       upstream = asked.upstream
+      if (asked.oneProvider === false) oneProvider = false
     } catch (error) {
       return failed(`the reference could not be asked: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300))
     }
@@ -262,9 +273,9 @@ export async function prepareOutputEchoReference(input: {
   ))
   const measured: Array<Record<'short' | 'long', Both>> = []
   for (let round = 0; round < rule.rounds; round += 1) {
-    let pair = { short: await measure('short', write('short')), long: await measure('long', write('long')) }
+    let pair = { short: await measure('short', write('short', round)), long: await measure('long', write('long', round)) }
     for (let attempt = 1; attempt < rule.textTries && !usable(pair) && !limit.aborted; attempt += 1) {
-      pair = { short: await measure('short', write('short')), long: await measure('long', write('long')) }
+      pair = { short: await measure('short', write('short', round)), long: await measure('long', write('long', round)) }
     }
     measured.push(pair)
   }
@@ -282,6 +293,7 @@ export async function prepareOutputEchoReference(input: {
   }
   // One serving provider for every text: two hosts behind one route could each add their own constant.
   if (providers.length !== 1) return result(false, 'the reference answered from more than one provider across the texts, so the echo check does not apply this run')
+  if (providers[0] === null && !oneProvider) return result(false, 'the reference\'s route may serve several providers and names none, so the echo check does not apply this run')
   if (rounds.some((round) => round.long.count! - round.short.count! < rule.minGap)) {
     return result(false, `a long text measured less than ${rule.minGap} tokens more than its short one, so the echo check does not apply this run`)
   }
@@ -306,7 +318,9 @@ export interface EchoRoundV1 {
   growths: Array<number | null>
   /** The round's tolerance: the rule's, plus this round's largest itemised reasoning in `visible` mode. */
   tolerance: number
-  verdict: 'within' | 'over' | 'unusable' | 'unstable'
+  verdict: 'within' | 'over' | 'under' | 'unusable' | 'unstable'
+  /** Second asks made only for the fixed amount (a candidate's every text again): never part of the growth verdict. */
+  repeats?: { short: EchoSellerAskV1; long: EchoSellerAskV1 }
 }
 
 /** A vote of one of the model's other sellers: the first round's two texts, asked once. */
@@ -389,14 +403,16 @@ export function judgeEchoRound(input: {
   if (first === null) return { growths, tolerance, verdict: 'unusable' }
   if (asks >= 2) {
     if (second === null) return { growths, tolerance, verdict: 'unusable' }
-    // Every text asked twice: the seller's own two counts of each text must agree.
+    // Every text asked twice: the seller's own two counts of each text must agree, within the rule's tolerance.
     for (const side of [input.short, input.long]) {
-      if (Math.abs(side[0]!.reply.count! - side[1]!.reply.count!) > tolerance) return { growths, tolerance, verdict: 'unstable' }
+      if (Math.abs(side[0]!.reply.count! - side[1]!.reply.count!) > rule.tolerance) return { growths, tolerance, verdict: 'unstable' }
     }
   }
   // In `visible` mode each text is asked twice whatever it gives.
   if (input.mode === 'visible' && asks < 2) return { growths, tolerance, verdict: 'unusable' }
-  if (first <= tolerance) return asks < 2 || second! <= tolerance ? { growths, tolerance, verdict: 'within' } : { growths, tolerance, verdict: 'unstable' }
+  // A growth far below the model's is no match either: it decides nothing.
+  if (first < -tolerance) return { growths, tolerance, verdict: 'under' }
+  if (first <= tolerance) return asks < 2 || Math.abs(second!) <= tolerance ? { growths, tolerance, verdict: 'within' } : { growths, tolerance, verdict: 'unstable' }
   // Over: only a growth the seller repeats is held against it; over once and within on the repeat is undecided.
   if (asks < 2) return { growths, tolerance, verdict: 'unusable' }
   if (second! <= tolerance || Math.abs(second! - first) > tolerance) return { growths, tolerance, verdict: 'unstable' }
@@ -425,7 +441,9 @@ export function echoCrowdVote(
     short,
     long,
     growth: usable ? longExcess! - shortExcess! : null,
-    offset: usable && Math.abs(longExcess! - shortExcess!) <= rule.tolerance ? shortExcess : null,
+    // Its fixed amount is the larger of its two excesses, so a backer has both texts within the band.
+    offset: usable && Math.abs(longExcess! - shortExcess!) <= rule.tolerance
+      ? (Math.abs(longExcess!) > Math.abs(shortExcess!) ? longExcess : shortExcess) : null,
     reasoning: Math.max(short.reply.reasoning, long.reply.reasoning, shownExcess(short, reference.short), shownExcess(long, reference.long)),
     sentHere,
   }
@@ -466,15 +484,17 @@ export function judgeOutputEcho(input: {
   reference: OutputEchoV1['reference']
   /** Each round's largest reasoning at the reference. */
   referenceReasoning: readonly number[]
-  rounds: readonly Pick<EchoRoundV1, 'growths' | 'verdict' | 'short' | 'long' | 'tolerance'>[]
+  rounds: readonly Pick<EchoRoundV1, 'growths' | 'verdict' | 'short' | 'long' | 'tolerance' | 'repeats'>[]
   precheckMatch: boolean
   crowd: EchoCrowdV1 | null
   rule?: OutputEchoRule
 }): Judged {
   const rule = input.rule ?? OUTPUT_ECHO_RULE
+  const excessOf = (ask: EchoSellerAskV1, count: number): number | null => (ask.reply.count === null ? null : ask.reply.count - count)
   const excesses = input.rounds.flatMap((round, index) => [
-    ...round.short.map((ask) => (ask.reply.count === null ? null : ask.reply.count - input.reference[index]!.short.count)),
-    ...round.long.map((ask) => (ask.reply.count === null ? null : ask.reply.count - input.reference[index]!.long.count)),
+    ...round.short.map((ask) => excessOf(ask, input.reference[index]!.short.count)),
+    ...round.long.map((ask) => excessOf(ask, input.reference[index]!.long.count)),
+    ...(round.repeats ? [excessOf(round.repeats.short, input.reference[index]!.short.count), excessOf(round.repeats.long, input.reference[index]!.long.count)] : []),
   ]).filter((value): value is number => value !== null)
   const offset = {
     median: excesses.length > 0 ? median(excesses) : null,
@@ -497,7 +517,7 @@ export function judgeOutputEcho(input: {
     const reason = flag === 'growth' ? g.reason : flag === 'offset' ? f.reason : `growth: ${g.reason}; fixed amount: ${f.reason}`
     return { outcome, flag, reason, offset, growth: g, fixedAmount: f, needsCrowd: extra.needsCrowd ?? false, needsSecondAsks: extra.needsSecondAsks ?? false }
   }
-  const unclear = input.rounds.find((round) => round.verdict === 'unusable' || round.verdict === 'unstable')
+  const unclear = input.rounds.find((round) => round.verdict === 'unusable' || round.verdict === 'unstable' || round.verdict === 'under')
   if (input.rounds.length < rule.rounds || unclear) {
     const why = unclear ? `a round was ${unclear.verdict}` : 'not every round was asked'
     return done(notDecided(why), notDecided(why))
@@ -516,7 +536,7 @@ export function judgeOutputEcho(input: {
   const offsetJudged = input.mode === 'plain' && offset.median !== null
   const offsetPass = offsetJudged && offset.median! <= rule.offsetFloor
   const offsetCandidate = offsetJudged && offset.fixed && offset.median! > rule.offsetFloor
-  const allAskedTwice = input.rounds.every((round) => round.short.length >= 2 && round.long.length >= 2)
+  const allAskedTwice = input.rounds.every((round) => (round.short.length >= 2 && round.long.length >= 2) || round.repeats !== undefined)
 
   let growth: OutputEchoV1['growth'] = growthPass ? { outcome: 'pass', reason: 'the seller bills the model\'s growth' }
     : notDecided(growthCandidate ? 'a candidate' : 'the growth is neither within the margin in every round nor over in every round')
@@ -524,25 +544,29 @@ export function judgeOutputEcho(input: {
     : offsetPass ? { outcome: 'pass', reason: `the seller adds ${offset.median} tokens or fewer` }
       : notDecided(offsetCandidate ? 'a candidate' : 'the amount above the floor is not the same on every reply')
   if (!growthCandidate && !offsetCandidate) return done(growth, fixedAmount)
-  if (offsetCandidate && !allAskedTwice) return done(growth, notDecided('a candidate, to be asked every text again'), { needsSecondAsks: true })
   if (!input.precheckMatch) {
     const why = 'this audit\'s pre-check did not match, so the seller\'s tokenizer is not known to be the reference\'s'
     return done(growthCandidate ? notDecided(why) : growth, offsetCandidate ? notDecided(why) : fixedAmount)
   }
+  if (offsetCandidate && !allAskedTwice) return done(growth, notDecided('a candidate, to be asked every text again'), { needsSecondAsks: true })
   if (!input.crowd || input.crowd.incomplete) {
     const why = input.crowd ? 'not every other seller of the model answered in time' : 'the model\'s other sellers were not asked'
     return done(growthCandidate ? notDecided(why) : growth, offsetCandidate ? notDecided(why) : fixedAmount, { needsCrowd: !input.crowd })
   }
   if (growthCandidate) {
     const gaps = input.reference.map((round) => round.long.count - round.short.count)
-    const ownSpread = Math.max(...allGrowths) - minGrowth
     const margin = input.rounds.every((round, index) => round.growths.every((value) => value === null
       || (value > rule.growthFloor && value > rule.growthShare * gaps[index]!)))
+    // Steady as a share of the gap: a factor keeps its share, a fixed extra on long replies loses it as the gap grows.
+    const shares = input.rounds.flatMap((round, index) => round.growths.flatMap((value) => (value === null ? [] : [value / gaps[index]!])))
+    const steady = Math.min(...shares) > rule.spreadFactor * (Math.max(...shares) - Math.min(...shares))
     const objection = !margin
       ? `the growth is not above ${rule.growthFloor} tokens and ${rule.growthShare * 100}% of the reference's gap in every round`
-      : minGrowth <= rule.tolerance + reasoningSeen
-        ? `the growth is not above the ${reasoningSeen} tokens of reasoning seen on these texts`
-        : echoCrowdObjection(minGrowth, input.crowd.votes.map((vote) => vote.growth), ownSpread, rule)
+      : !steady
+        ? `the growth is not steady as a share of the texts' gaps (from ${(Math.min(...shares) * 100).toFixed(1)}% to ${(Math.max(...shares) * 100).toFixed(1)}%)`
+        : minGrowth <= rule.tolerance + reasoningSeen
+          ? `the growth is not above the ${reasoningSeen} tokens of reasoning seen on these texts`
+          : echoCrowdObjection(minGrowth, input.crowd.votes.map((vote) => vote.growth), 0, rule)
     growth = objection
       ? notDecided(objection)
       : { outcome: 'flag', reason: `the seller's output grows ${minGrowth} or more tokens faster than the model's from a short to a long reply, in every round, twice` }
@@ -622,11 +646,14 @@ export async function runOutputEcho(input: SignedSellerRequestInput & {
   const judge = () => judgeOutputEcho({ mode, reference: view, referenceReasoning, rounds, precheckMatch: input.precheckMatch, crowd, rule })
   let judged = judge()
   if (judged.needsSecondAsks) {
-    // A fixed amount rests on every text asked twice: a single reply decides nothing.
+    // A fixed amount rests on every text asked twice: a single reply decides nothing. These repeats are its own and
+    // never touch the growth's rounds.
     for (const [index, round] of rounds.entries()) {
-      if (round.short.length < 2) round.short.push(await askEcho(input, view[index]!.short.text, mode, input.thinking, rule))
-      if (round.long.length < 2) round.long.push(await askEcho(input, view[index]!.long.text, mode, input.thinking, rule))
-      Object.assign(round, judgeRound(index, round.short, round.long))
+      if (round.short.length >= 2 && round.long.length >= 2) continue
+      round.repeats = {
+        short: await askEcho(input, view[index]!.short.text, mode, input.thinking, rule),
+        long: await askEcho(input, view[index]!.long.text, mode, input.thinking, rule),
+      }
     }
     judged = judge()
   }
@@ -686,6 +713,16 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
   if (!Array.isArray(record.rounds) || record.rounds.length > rule.rounds) throw new Error('the echo check has more rounds than its rule')
   const requestIds = requestsOf(record).flatMap((request) => request.requestIds)
   if (new Set(requestIds).size !== requestIds.length) throw new Error('an echo check repeats a request ID: every ask must be its own request')
+  const signedIds = requestsOf(record).flatMap((request) => (request.responseAuth?.requestId ? [request.responseAuth.requestId] : []))
+  if (new Set(signedIds).size !== signedIds.length) throw new Error('an echo check repeats an authenticated request ID')
+  if (requestsOf(record).some((request) => request.responseAuth?.requestId && !request.requestIds.includes(request.responseAuth.requestId))) {
+    throw new Error('an echo check\'s authenticated request is not one of its tries')
+  }
+  // A finding the compiled rule does not count can never be stored as a flag or a pass.
+  const counted = (finding: 'growth' | 'offset'): boolean => (record.mode === 'visible' ? rule.visibleCounts : true) && (finding === 'offset' ? rule.offsetCounts : true)
+  for (const [finding, value] of [['growth', record.growth], ['offset', record.fixedAmount]] as const) {
+    if (value?.outcome !== 'inconclusive' && !counted(finding)) throw new Error(`the echo check's ${finding} is not counted under its rule, but is stored as ${String(value?.outcome)}`)
+  }
   const signedBy = (ask: EchoSellerAskV1, peerId: string | undefined, who: string): void => {
     if (!peerId || ask.request.responseAuth?.status !== 'verified') return
     const signer = ask.request.responseAuth.record?.sellerPeerId
@@ -702,7 +739,8 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
   }
   for (const [index, round] of record.rounds.entries()) {
     const texts = record.reference[index]!
-    for (const [asks, text] of [[round.short, texts.short.text], [round.long, texts.long.text]] as const) {
+    const repeats = round.repeats ? [[[round.repeats.short], texts.short.text], [[round.repeats.long], texts.long.text]] as const : []
+    for (const [asks, text] of [[round.short, texts.short.text], [round.long, texts.long.text], ...repeats] as const) {
       for (const ask of asks) {
         reread(ask, text)
         signedBy(ask, auditedPeerId, 'the audited seller')
@@ -729,11 +767,14 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
   }
   // A check that failed before asking anything is inconclusive with no rounds.
   if (record.rounds.length === 0) {
-    if (record.outcome !== 'inconclusive' || record.flag !== null) throw new Error('an echo check without rounds must be inconclusive')
+    if (record.outcome !== 'inconclusive' || record.flag !== null || record.growth.outcome !== 'inconclusive' || record.fixedAmount.outcome !== 'inconclusive') {
+      throw new Error('an echo check without rounds must be inconclusive in every finding')
+    }
     return
   }
   const judged = judgeOutputEcho({ mode: record.mode, reference: record.reference, referenceReasoning: reasoning, rounds: record.rounds, precheckMatch: record.precheckMatch, crowd: record.crowd, rule })
   const stopped = record.outcome === 'inconclusive' && record.flag === null && record.reason === ECHO_STOPPED_REASON
+    && record.growth.outcome === 'inconclusive' && record.fixedAmount.outcome === 'inconclusive'
   const same = judged.outcome === record.outcome && judged.flag === record.flag
     && canonicalJsonStringify([judged.growth, judged.fixedAmount, judged.offset, judged.reason]) === canonicalJsonStringify([record.growth, record.fixedAmount, record.offset, record.reason])
   if (!same && !(stopped && canonicalJsonStringify(judged.offset) === canonicalJsonStringify(record.offset))) {
@@ -743,7 +784,7 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
 
 function requestsOf(record: OutputEchoV1): SignedSellerRequestV1[] {
   return [
-    ...record.rounds.flatMap((round) => [...round.short, ...round.long].map((ask) => ask.request)),
+    ...record.rounds.flatMap((round) => [...round.short, ...round.long, ...(round.repeats ? [round.repeats.short, round.repeats.long] : [])].map((ask) => ask.request)),
     ...(record.crowd?.votes ?? []).flatMap((vote) => [vote.short.request, vote.long.request]),
   ]
 }
@@ -751,7 +792,7 @@ function requestsOf(record: OutputEchoV1): SignedSellerRequestV1[] {
 /** The requests this check sent: its own asks and the crowd votes it asked (a shared vote is counted where it was sent). */
 function sentRequests(record: OutputEchoV1): SignedSellerRequestV1[] {
   return [
-    ...record.rounds.flatMap((round) => [...round.short, ...round.long].map((ask) => ask.request)),
+    ...record.rounds.flatMap((round) => [...round.short, ...round.long, ...(round.repeats ? [round.repeats.short, round.repeats.long] : [])].map((ask) => ask.request)),
     ...(record.crowd?.votes ?? []).filter((vote) => vote.sentHere).flatMap((vote) => [vote.short.request, vote.long.request]),
   ]
 }
