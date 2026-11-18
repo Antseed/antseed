@@ -23,6 +23,7 @@ This project uses selective package publishing. Each release entry lists the pub
 - `@antseed/provider-venice-video@0.1.24`
 - `@antseed/payments@0.1.113`
 - `@antseed/ants@0.1.71`
+- `@antseed/gateway-console@0.1.36`
 
 ### Added
 
