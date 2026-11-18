@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Sellers (`@antseed/node`, `@antseed/provider-core`): a video download refused because all of the seller's download slots are taken now reaches the buyer as what it is, a 429 `video_download_busy` with `Retry-After: 5`. Before, the seller reported it as `upstream_rate_limited` ("rate limited on this seller right now") with no `Retry-After`, so buyers took a short wait for an upstream limit and gave up on a video that was ready.
+
 ## 2026-11-18 — CLI 0.1.253, Node 0.2.186, Desktop 0.2.89
 
 ### Packages

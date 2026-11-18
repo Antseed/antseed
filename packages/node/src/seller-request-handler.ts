@@ -79,7 +79,7 @@ import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/resp
 import { usageForBilling } from '@antseed/buyer-core';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
-import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, describeUpstreamError, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
+import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, describeUpstreamError, isUpstreamAccountError, isUpstreamFailureStatus, isVideoDownloadBusy } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
@@ -1160,7 +1160,7 @@ export class SellerRequestHandler {
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
             statusCode = response.statusCode;
             maskedAs = 'account';
-          } else if (!streamedResponseStarted && statusCode === 429) {
+          } else if (!streamedResponseStarted && statusCode === 429 && !isVideoDownloadBusy(statusCode, upstreamError)) {
             response = buildUpstreamRateLimitedResponse(request.requestId, requestedModel, takeHeader({ ...response.headers }, 'retry-after'));
           }
           const health = serviceHealthOf(provider.serviceHealth, requestedModel);

@@ -138,6 +138,23 @@ export function buildUpstreamUnavailableResponse(requestId: string, service: str
   };
 }
 
+/**
+ * Error code of a seller's own answer that all its video download slots are
+ * taken. It is the seller's busy signal, not the upstream's, so it reaches the
+ * buyer unchanged, with its `retry-after`.
+ */
+export const VIDEO_DOWNLOAD_BUSY_CODE = 'video_download_busy';
+
+/** Whether a provider's 429 body is the seller's own download-busy answer. */
+export function isVideoDownloadBusy(statusCode: number, text: string): boolean {
+  if (statusCode !== 429 || !text.includes(VIDEO_DOWNLOAD_BUSY_CODE)) return false;
+  try {
+    return (JSON.parse(text) as { error?: { code?: unknown } }).error?.code === VIDEO_DOWNLOAD_BUSY_CODE;
+  } catch {
+    return false;
+  }
+}
+
 /** Error code a seller answers with when its upstream rate or usage limits a request. */
 export const UPSTREAM_RATE_LIMITED_CODE = 'upstream_rate_limited';
 
