@@ -11,6 +11,7 @@ import { finalAuditVerdict } from './model-audit.js'
 import { extensionSets, latestExtension } from './close-call.js'
 import { explainInconclusive, explainSkipReason, type PlainReason } from './plain-reason.js'
 import { disputeKey } from './pending-confirmations.js'
+import { describeTokenizerCounts } from './tokenizer-precheck.js'
 import { normalized } from './utils.js'
 
 /**
@@ -29,6 +30,8 @@ export interface OverviewCell {
   correctRate: number | null
   answered: number | null
   asked: number | null
+  /** The DIFF is from the tokenizer pre-check: the seller was asked no question. In plain words, with the counts. */
+  tokenizerMismatch?: string
   /** Extra questions after a close-call first check; absent on cells from before close calls were extended. */
   extension?: { probeCount: number; extraSets: number; firstPValue: number | null; pooledPValue: number | null; verdict: string } | null
   /** Plain-language reason for grey and yellow cells. */
@@ -127,6 +130,7 @@ export async function buildEpochOverview(
           correctRate: result.correctRate,
           answered: result.parsedProbeCount,
           asked: result.probeCount,
+          ...(result.tokenizerPrecheck?.outcome === 'mismatch' ? { tokenizerMismatch: describeTokenizerCounts(result.tokenizerPrecheck) } : {}),
           extension: result.extension
             ? {
               probeCount: extensionSets(result).reduce((sum, set) => sum + set.probeCount, 0),
@@ -233,7 +237,9 @@ function percent(rate: number | null): string {
 
 function cellDetail(cell: OverviewCell): string[] {
   const lines: string[] = []
-  if (cell.state !== 'skipped' || cell.answered !== null) {
+  if (cell.tokenizerMismatch) {
+    lines.push(`Tokenizer pre-check: ${cell.tokenizerMismatch}`)
+  } else if (cell.state !== 'skipped' || cell.answered !== null) {
     lines.push(`1st check: ${percent(cell.correctRate)} match (${cell.answered ?? 0} of ${cell.asked ?? 0} answered)`)
   }
   if (cell.extension) {

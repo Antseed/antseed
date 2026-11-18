@@ -54,9 +54,11 @@ export function latestExtension(
  * has none yet, or its latest pooled look is still a close call and the rule allows one more.
  */
 export function needsExtension(result: Pick<ModelVerificationTargetResult,
-  'decisionRule' | 'stats' | 'responseAuthVerified' | 'extension' | 'extension2' | 'outcomeReason'>): boolean {
+  'decisionRule' | 'stats' | 'responseAuthVerified' | 'extension' | 'extension2' | 'outcomeReason' | 'tokenizerPrecheck'>): boolean {
   const rule = closeCallRule(result)
   if (!rule || !result.stats) return false
+  // A DIFF from the tokenizer pre-check asked no question: there is no close call to extend.
+  if (result.tokenizerPrecheck?.outcome === 'mismatch') return false
   // A set whose ResponseAuth failed, or a seller that refuses the request profile (temperature), is
   // UNDETERMINED whatever its p-value; extra questions do not fix that.
   if (result.responseAuthVerified === false || result.outcomeReason?.code === 'request_profile_incompatible') return false

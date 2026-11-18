@@ -15,7 +15,7 @@ The first method running on the network is the **KBF audit**. More methods will 
 
 Every model remembers obscure facts in its own way, including the ones it gets slightly wrong. Ask two different models for the melting point of tantalum carbide and you will often get two different numbers. Taken over many such questions, that pattern is a fingerprint of the model. KBF stands for Knowledge Boundary Fingerprinting.
 
-For each model, the auditor first asks the genuine model a large bank of these questions, through the model maker's API or OpenRouter. It keeps the questions that tell the real model apart from its look-alikes, and measures how often the real model itself gets them wrong. Then it asks each seller about 100 of them, picked at random and reworded each time, and compares how often the seller misses with how often the genuine model does.
+For each model, the auditor first asks the genuine model a large bank of these questions, through the model maker's API or OpenRouter. It keeps the questions that tell the real model apart from its look-alikes, and measures how often the real model itself gets them wrong. Then it asks every seller of the model the same set of them, one set per model and epoch, of between 100 and 500 questions: as many as it needs for a reliable result. The questions go ten to a request, and only the wording of the prompt around them changes, picked at random for each request. The auditor compares how often the seller misses with how often the genuine model does.
 
 Audit requests are ordinary paid requests with no special label, and the seller is paid for them like any other traffic.
 

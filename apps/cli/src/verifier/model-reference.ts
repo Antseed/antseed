@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { responseBodyInputUsage } from '@antseed/node/payments'
 import {
   KBF_DEFAULT_SELF_TEST_RUNS,
   KBF_CALIBRATION_METHOD,
@@ -872,6 +873,141 @@ export async function buildModelReference(input: {
 }
 
 /**
+ * The route a bank's reference model is asked on after its enrollment: the endpoint, upstream and request
+ * settings the bank recorded, pinned to the provider that answered its enrollment.
+ */
+function bankReferenceRoute(input: {
+  endpoint: VerifierReferenceEndpointConfig
+  modelConfig: ResolvedVerifierModelConfig
+  settings: KbfReferenceV1
+  config: VerifierCLIConfig | undefined
+  catalog: VerifierModelCatalog | null
+  buyerProxyPort?: number
+}): { route: ReferenceRequestRoute; recordedPin: { order?: string[] } | null | undefined } {
+  const { endpoint, modelConfig, settings } = input
+  const recordedPin = (settings.generator.params.referenceProvider as { pinned?: { order?: string[] } | null } | undefined)?.pinned
+  const route = withRecordedSettings(resolveReferenceRequestRoute({
+    endpoint,
+    model: modelConfig.upstreamModel,
+    apiKey: (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey,
+    catalog: input.catalog,
+    referenceRoute: modelConfig.referenceRoute,
+    // The pin the bank recorded, so the set is asked of the provider that answered its enrollment.
+    referenceProvider: recordedPin === undefined
+      ? modelConfig.referenceProvider
+      : recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined,
+    upstream: modelConfig.upstream ? {
+      name: modelConfig.upstream.name,
+      model: modelConfig.upstream.model,
+      config: input.config?.upstreams?.[modelConfig.upstream.name],
+    } : undefined,
+    buyerProxyPort: input.buyerProxyPort,
+  }), settings)
+  return { route, recordedPin }
+}
+
+/** One reference request of the tokenizer pre-check: the input tokens the reference model counted for `content`. */
+export interface ReferenceInputTokensV1 {
+  /**
+   * The whole input the reference reports, read from its answer exactly as a seller's signed response is read
+   * (`responseBodyInputUsage`). Null when the request failed or reported no usage (a count of zero is no count).
+   */
+  inputTokens: number | null
+  /** The answer reports cached input: its count says nothing reliable about the text. */
+  cachedInput: boolean
+  /** The provider that answered, when the endpoint names it. */
+  provider: string | null
+  failure: string | null
+}
+
+const REFERENCE_INPUT_TOKENS_TRIES = 3
+
+/**
+ * Asks a bank's reference model for the input tokens of each `contents` entry, sent as the only user message on
+ * the bank's own route (`bankReferenceRoute`), for the tokenizer pre-check (`tokenizer-precheck.ts`). The answer's
+ * text is not used. A failed or unreadable request is asked up to twice more; it never throws for one request.
+ */
+export async function askReferenceInputTokens(input: {
+  model: string
+  /** A reference of the bank whose route is asked (the epoch's audit set). */
+  settings: KbfReferenceV1
+  contents: readonly string[]
+  /** Reply limit of each request; a route that needs a larger budget to answer at all keeps its own. */
+  maxTokens: number
+  config: VerifierCLIConfig | undefined
+  catalog?: VerifierModelCatalog | null
+  buyerProxyPort?: number
+  fetchFn?: typeof fetch
+  requestLimiter?: ReferenceRequestLimiter
+  timeoutMs?: number
+  /** Once aborted, no request is tried again: the measurement's time is up. */
+  signal?: AbortSignal
+}): Promise<{ upstream: ReferenceUpstreamProvenanceV1; results: ReferenceInputTokensV1[] }> {
+  const endpoint = input.config?.referenceEndpoint
+  if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
+  const catalog = input.catalog ?? null
+  const modelConfig = resolveVerifierModelConfig(input.config, input.model, catalog)
+  const { route } = bankReferenceRoute({
+    endpoint, modelConfig, settings: input.settings, config: input.config, catalog, buyerProxyPort: input.buyerProxyPort,
+  })
+  // As for calibration: the counts are the bank's reference's only when asked where the bank was enrolled.
+  if (input.settings.provenance && input.settings.provenance.sourceId !== referenceSourceId(endpoint, route)) {
+    throw new Error(`the pre-check would ask ${referenceSourceId(endpoint, route)}, but this bank was enrolled on ${input.settings.provenance.sourceId}`)
+  }
+  const limiter = input.requestLimiter ?? createReferenceRequestLimiter(input.config)
+  const fetchFn = input.fetchFn ?? fetch
+  const timeoutMs = input.timeoutMs ?? input.settings.queryProfile.requestTimeoutMs
+  const retryBaseDelayMs = input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS
+  const ask = async (content: string): Promise<ReferenceInputTokensV1> => {
+    const body = {
+      messages: [{ role: 'user', content }],
+      max_tokens: Math.max(input.maxTokens, route.minMaxTokens ?? 0),
+      stream: false,
+    }
+    // The count is read from the answer's own bytes, not from the completion's parsed usage: the native
+    // Anthropic shape reports fresh input apart from its cache counts, and a seller's count is the whole input.
+    const read = (exchange: ReferenceRawExchange): ReferenceInputTokensV1 => {
+      const usage = responseBodyInputUsage(new TextEncoder().encode(exchange.responseBody))
+      return {
+        ...usage,
+        provider: answeringProvider(exchange.responseBody),
+        failure: usage.inputTokens === null ? 'the reference endpoint reported no input tokens' : null,
+      }
+    }
+    try {
+      return read((await limiter.run(route.model, async () => {
+        // A request that waited for its slot past the measurement's time is not sent.
+        if (input.signal?.aborted) throw new Error('the pre-check\'s time for the reference is up')
+        return postChatCompletion(route, body, timeoutMs, fetchFn, input.signal)
+      })).exchange)
+    } catch (error) {
+      // An answer without text still counted its input.
+      if (error instanceof EmptyReferenceResponseError && error.exchange) return read(error.exchange)
+      return { inputTokens: null, cachedInput: false, provider: null, failure: asError(error).message.slice(0, 300) }
+    }
+  }
+  const results = await Promise.all(input.contents.map(async (content) => {
+    let result = await ask(content)
+    for (let retry = 1; retry < REFERENCE_INPUT_TOKENS_TRIES && result.inputTokens === null && !input.signal?.aborted; retry += 1) {
+      await sleep(retryBaseDelayMs * 3 * retry)
+      if (input.signal?.aborted) break
+      result = await ask(content)
+    }
+    return result
+  }))
+  return { upstream: referenceUpstreamProvenance(endpoint, route), results }
+}
+
+/** The provider an OpenRouter-style answer names; null when it names none. */
+function answeringProvider(responseBody: string): string | null {
+  try {
+    return optionalString((JSON.parse(responseBody) as { provider?: unknown } | null)?.provider)
+  } catch {
+    return null
+  }
+}
+
+/**
  * Calibrates a question set: asks the pinned reference endpoint each batch of each reference exactly
  * as a seller is asked it (`kbfAuditBatches`), at temperature 0 with the bank's recorded thinking
  * suppression and token budget, and treats the replies as a seller audit does: `<think>` blocks
@@ -912,24 +1048,9 @@ export async function calibrateReferenceSets(input: {
   const catalog = input.catalog ?? null
   const modelConfig = resolveVerifierModelConfig(input.config, input.model, catalog)
   const pricing = referenceTargetPricing(modelConfig, catalog)
-  const recordedPin = (settings.generator.params.referenceProvider as { pinned?: { order?: string[] } | null } | undefined)?.pinned
-  const route = withRecordedSettings(resolveReferenceRequestRoute({
-    endpoint,
-    model: modelConfig.upstreamModel,
-    apiKey: (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey,
-    catalog,
-    referenceRoute: modelConfig.referenceRoute,
-    // The pin the bank recorded, so the set is asked of the provider that answered its enrollment.
-    referenceProvider: recordedPin === undefined
-      ? modelConfig.referenceProvider
-      : recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined,
-    upstream: modelConfig.upstream ? {
-      name: modelConfig.upstream.name,
-      model: modelConfig.upstream.model,
-      config: input.config?.upstreams?.[modelConfig.upstream.name],
-    } : undefined,
-    buyerProxyPort: input.buyerProxyPort,
-  }), settings)
+  const { route, recordedPin } = bankReferenceRoute({
+    endpoint, modelConfig, settings, config: input.config, catalog, buyerProxyPort: input.buyerProxyPort,
+  })
   if (settings.provenance && settings.provenance.sourceId !== referenceSourceId(endpoint, route)) {
     throw new Error(
       `calibration would ask ${referenceSourceId(endpoint, route)}, but this bank was enrolled on ${settings.provenance.sourceId}`,
@@ -2312,6 +2433,8 @@ async function postChatCompletion(
   body: Record<string, unknown>,
   timeoutMs: number,
   fetchFn: typeof fetch,
+  /** Stops the request early, besides its own timeout. */
+  signal?: AbortSignal,
 ): Promise<ReferenceCompletion> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -2335,7 +2458,7 @@ async function postChatCompletion(
           ...(route.peerId ? { 'x-antseed-pin-peer': route.peerId } : {}),
         },
         body: requestBody,
-        signal: controller.signal,
+        signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
       })
     } catch (error) {
       if (controller.signal.aborted) throw new ReferenceTimeoutError(timeoutMs)

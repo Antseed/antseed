@@ -36,6 +36,7 @@ import {
   classifyVerificationTargetServices,
   loadBuyerProxySnapshot,
   readModelAuditCheckpoints,
+  tokenizerPrecheckSellers,
   verifyModelTarget,
   type ModelVerificationResumeInput,
   type ModelVerificationSkip,
@@ -795,6 +796,38 @@ test('an exact alias wins over a canonical spelling, whatever the alias order', 
     eligible: true,
     service: 'openai/gpt-5-6-sol-latest',
   })
+})
+
+test('the tokenizer pre-check\'s crowd is every peer the buyer would audit for the model, one entry per peer', () => {
+  const id = (byte: string) => byte.repeat(20) as PeerId
+  const sells = (peerId: PeerId, service: string, overrides: Partial<PeerInfo> = {}) => peer({
+    peerId,
+    providerPricing: { test: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { [service]: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } },
+    reputationScore: 90,
+    ...overrides,
+  })
+  const peers: PeerInfo[] = [
+    // Sellers the run may not audit (finished, held, judged by another auditor, or outside `--peer`) are in it:
+    // the list does not depend on the run's targets.
+    sells(id('a1'), 'gpt-5.6-sol'),
+    sells(id('a2'), 'openai/gpt-5.6-sol'),
+    // The same peer listed twice is one entry.
+    sells(id('a1'), 'gpt-5.6-sol'),
+    // Left out: a peer the buyer would refuse, or one that does not sell the model.
+    sells(id('b1'), 'gpt-5.6-sol', { providerPricing: { test: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-5.6-sol': { inputUsdPerMillion: 90, outputUsdPerMillion: 90 } } } } }),
+    sells(id('b2'), 'gpt-5.6-sol', { reputationScore: 20 }),
+    sells(id('b3'), 'gpt-5.6-sol', { capabilities: [] }),
+    sells(id('b4'), 'other-model'),
+  ]
+  const policy = { ...targetPolicy, minReputation: 50 }
+  const crowd = tokenizerPrecheckSellers(peers, ['gpt-5.6-sol', 'openai/gpt-5.6-sol'], policy)
+  assert.deepEqual(crowd, [
+    { peerId: id('a1'), service: 'gpt-5.6-sol' },
+    { peerId: id('a2'), service: 'openai/gpt-5.6-sol' },
+  ])
+  for (const left of ['b1', 'b2', 'b3', 'b4']) {
+    assert.equal(classifyVerificationTargetServices(peers.find((entry) => entry.peerId === id(left))!, ['gpt-5.6-sol'], policy).eligible, false, left)
+  }
 })
 
 test('buyer proxy snapshot requires a connected live daemon and parses peers', async () => {

@@ -62,6 +62,16 @@ import {
   type ThinkingDiscoveryProbe,
 } from './thinking-suppression.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
+import {
+  describeTokenizerMismatch,
+  tokenizerPrecheckCost,
+  tokenizerPrecheckRequestCount,
+  summarizeTokenizerPrecheck,
+  type TokenizerPrecheckScreen,
+  type TokenizerPrecheckSummary,
+  type TokenizerPrecheckSeller,
+  type TokenizerPrecheckV1,
+} from './tokenizer-precheck.js'
 import { advertisedServices, findAdvertisedService } from './service-discovery.js'
 import { mapWithAdaptiveConcurrency, type AuditTaskLimiter } from './audit-concurrency.js'
 import { writeJsonAtomic } from './atomic-files.js'
@@ -211,6 +221,13 @@ export interface ProxyVerificationContext {
    * extra sets reuse its discovery. Without it, sellers get the reference's suppression.
    */
   sellerThinking?: Map<string, Promise<SellerThinkingDiscoveryV1>>
+  /**
+   * When set, each first audit starts with the tokenizer pre-check (`tokenizer-precheck.ts`): a seller whose
+   * signed input tokens are not the model's in every round is DIFF and is asked no question. The audited model's
+   * screen for this run (`createTokenizerPrecheckScreen`): its reference is awaited before the seller's clock
+   * starts, and the seller's clock runs only while a pre-check request to it is out.
+   */
+  tokenizerPrecheck?: Pick<TokenizerPrecheckScreen<KbfReferenceV1>, 'ready' | 'check'>
 }
 
 /** What a seller's batch requests carry: its thinking suppression, token budget and timeout. */
@@ -292,6 +309,11 @@ export interface ModelVerificationTargetResult {
   /** False when a successful batch lacked verified ResponseAuth (the set's verdict is then UNDETERMINED). */
   responseAuthVerified?: boolean
   /**
+   * The tokenizer pre-check this audit started with; absent when none ran. On a `mismatch` the status is DIFF
+   * and no question was asked, so the audit has no close call to extend.
+   */
+  tokenizerPrecheck?: TokenizerPrecheckSummary
+  /**
    * Extra set of never-seen probes asked after a close-call first audit; `status` above is then the
    * verdict on both sets pooled.
    */
@@ -354,6 +376,9 @@ export interface ModelVerificationSkip {
   auditId: string | null
   evidencePath: string | null
   evidenceHash: string | null
+  /** Set when a tokenizer pre-check ran before the seller was skipped: the requests it sent and what they cost. */
+  requestCount?: number
+  cost?: AuditCostSummaryV1
 }
 
 export interface VerificationTargetPolicy {
@@ -473,6 +498,29 @@ export function classifyVerificationTargetServices(
   return candidates.find((candidate) => candidate.eligible)
     ?? candidates.find((candidate) => !candidate.eligible && candidate.code !== 'model_not_advertised')
     ?? { eligible: false, code: 'model_not_advertised', service: null, reason: 'model not advertised' }
+}
+
+/**
+ * The crowd of a model's tokenizer pre-check (`createTokenizerPrecheckScreen`): every peer the buyer sees that it
+ * would audit for the model under the model's own service names, whether or not this run audits it. So a retry,
+ * a confirmation, a `--peer` run, and a run in which most sellers are finished, held or judged by another auditor
+ * still have the model's other sellers to hold a wrong reference against. A peer the buyer would refuse (priced
+ * above the reference, under the reputation floor, without ResponseAuth) is left out: a request to it could
+ * only fail. One entry per peer.
+ */
+export function tokenizerPrecheckSellers(
+  peers: readonly PeerInfo[],
+  services: readonly string[],
+  policy: VerificationTargetPolicy,
+): TokenizerPrecheckSeller[] {
+  const sellers = new Map<string, TokenizerPrecheckSeller>()
+  for (const peer of peers) {
+    const key = peer.peerId.replace(/^0x/i, '').toLowerCase()
+    if (sellers.has(key)) continue
+    const eligibility = classifyVerificationTargetServices(peer, services, policy)
+    if (eligibility.eligible) sellers.set(key, { peerId: peer.peerId, service: eligibility.service })
+  }
+  return [...sellers.values()]
 }
 
 /**
@@ -605,8 +653,127 @@ export async function verifyModelTarget(input: {
     omit: input.resume?.exchanges.some((exchange) => exchange.omittedSamplingFields?.length) ?? false,
     omitThinking: input.resume?.exchanges.some((exchange) => exchange.omittedThinkingSuppression === true) ?? false,
   }
+  const target = {
+    peerId: input.target.peerId,
+    displayName: input.target.displayName ?? null,
+    agentId: input.target.onChainAgentId ? String(input.target.onChainAgentId) : null,
+    service: input.service,
+  }
+  const evidenceHead = (createdAt: number) => ({
+    version: 1 as const,
+    kind: 'antseed-buyer-proxy-kbf-audit' as const,
+    evidenceLevel: 'proxy-observation-with-verified-response-auth-no-payment-evidence' as const,
+    createdAt: new Date(createdAt).toISOString(),
+    buyerProxy: {
+      baseUrl: input.context.proxy.baseUrl,
+      statePath: basename(input.context.proxy.statePath),
+      pid: input.context.proxy.pid,
+    },
+    target,
+    reference: {
+      referenceId: input.reference.referenceId,
+      referenceModel: input.reference.referenceModel,
+      queryProfileHash: queryProfileHash(input.reference.queryProfile),
+      queryProfile: input.reference.queryProfile,
+      statisticalPower: input.reference.statisticalPower,
+      statisticalPowerEvidence: input.reference.statisticalPowerEvidence as unknown as Record<string, unknown>,
+      selfTest: input.reference.selfTest,
+      ...(input.reference.calibration ? { calibration: input.reference.calibration } : {}),
+      probes: input.reference.probes,
+    },
+  })
+  const resumeEvidence = input.resume ? {
+    resume: {
+      parentAuditId: input.resume.parentAuditId,
+      reservationAuditId: input.resume.reservationAuditId,
+      parentEvidenceHash: input.resume.parentEvidenceHash,
+      reusedBatchIndexes,
+    },
+  } : {}
+  // The tokenizer pre-check comes before every question and before thinking discovery. An extra set, and an
+  // audit some of whose batches were already answered, are past it. The model's reference is measured before
+  // the seller's clock starts, and the clock runs only while a pre-check request to the seller is out, as for a
+  // question batch: the auditor's own waiting is never the seller's silence.
+  let precheck: TokenizerPrecheckV1 | null = null
+  const screen = input.context.tokenizerPrecheck
+  if (pending.length > 0 && exchangeByBatch.size === 0 && !input.extension && screen) {
+    try {
+      await screen.ready(input.reference)
+      precheck = await screen.check({
+        peerId: input.target.peerId,
+        service: input.service,
+        serviceAliases: [...input.reference.serviceAliases, ...currentServiceNames(input.reference.referenceModel)],
+      }, input.reference, {
+        signal: deadline.controller.signal,
+        start: () => deadline.start(),
+        finish: (answered) => deadline.finish(answered),
+      })
+    } catch (error) {
+      deadline.close()
+      throw error
+    }
+  }
+  const precheckEvidence = precheck ? { tokenizerPrecheck: precheck } : {}
+  const precheckResult = precheck ? { tokenizerPrecheck: summarizeTokenizerPrecheck(precheck) } : {}
+  const precheckCost = precheck ? tokenizerPrecheckCost(precheck) : null
+  if (precheck?.outcome === 'mismatch') {
+    // The seller does not count input with the model's tokenizer: DIFF, and none of its questions is asked.
+    // The audit ends here, so its clock, which the pre-check started, is stopped.
+    deadline.close()
+    const unanswered = new Array<null>(input.reference.probes.length).fill(null)
+    const fragment = verifyKbf(input.reference, { answers: unanswered, matchVector: unanswered }, KBF_AUDIT_VERIFY_OPTIONS)
+    const completedAt = Date.now()
+    const evidence: ProxyAuditEvidenceV1 = {
+      ...evidenceHead(completedAt),
+      ...precheckEvidence,
+      exchanges: [],
+      ...resumeEvidence,
+      result: {
+        selectedProbeCount: input.reference.probes.length,
+        parsedProbeCount: 0,
+        matchVector: unanswered,
+        matchVectorHash: fragment.matchVectorHash,
+        stats: fragment.stats,
+        verdict: 'DIFF',
+        verdictReason: describeTokenizerMismatch(precheck),
+        outcomeReason: null,
+        cost: precheckCost!,
+        cumulativeCost: precheckCost!,
+      },
+    }
+    const resolvedAuditId = input.auditId ?? deriveProxyAuditId({
+      targetPeerId: input.target.peerId,
+      referenceId: input.reference.referenceId,
+      completedAt,
+      evidenceHash: canonicalHashBytes32(evidence),
+    })
+    const written = await writeProxyAuditEvidence(input.context.evidenceDir, resolvedAuditId, evidence)
+    return {
+      ...target,
+      status: 'DIFF',
+      outcomeReason: null,
+      auditId: resolvedAuditId,
+      parsedProbeCount: 0,
+      probeCount: input.reference.probes.length,
+      correctProbeCount: 0,
+      incorrectProbeCount: 0,
+      correctRate: null,
+      requestCount: tokenizerPrecheckRequestCount(precheck),
+      cost: precheckCost!,
+      cumulativeCost: precheckCost!,
+      evidencePath: written.path,
+      evidenceHash: written.evidenceHash,
+      stats: fragment.stats,
+      responseAuthVerified: true,
+      ...precheckResult,
+    }
+  }
   const discovery = pending.length > 0 && input.context.sellerThinking
-    ? await sellerThinkingFor(input.context, input.target, input.service, input.reference, sampling)
+    // The pre-check may have started the audit's clock: an audit that ends here stops it.
+    ? await sellerThinkingFor(input.context, input.target, input.service, input.reference, sampling).catch((error: unknown) => {
+      deadline.close()
+      throw error
+    })
     : null
   const settings = sellerRequestSettings(input.context, input.reference, discovery?.record ?? null)
   const sellerThinkingEvidence = discovery
@@ -730,12 +897,15 @@ export async function verifyModelTarget(input: {
         referenceModel: input.reference.referenceModel,
       },
       ...sellerThinkingEvidence,
+      ...precheckEvidence,
       exchange: error.exchange,
       result: {
         status: 'SKIPPED',
         code: error.code,
         reason: error.reason,
         outcomeReason: withBatchCounts(error.outcomeReason, 1, batches.length),
+        // The pre-check's requests were paid for before the seller was skipped.
+        ...(precheckCost ? { cost: precheckCost } : {}),
       },
     }
     const evidenceHash = canonicalHashBytes32(evidence)
@@ -759,6 +929,7 @@ export async function verifyModelTarget(input: {
       auditId: resolvedAuditId,
       evidencePath: written.path,
       evidenceHash: written.evidenceHash,
+      ...(precheck ? { requestCount: tokenizerPrecheckRequestCount(precheck), cost: precheckCost! } : {}),
     }
     }
   } finally {
@@ -786,8 +957,9 @@ export async function verifyModelTarget(input: {
     ? fragment.verdictReason
     : 'one or more successful proxy batches lacked valid verified ResponseAuth'
   const outcomeReason = verdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
-  // Discovery requests are paid for like batches, so the audit that sent them counts them.
-  const withDiscovery = (summary: AuditCostSummaryV1) => discoveryCost ? addAuditCostSummaries(summary, discoveryCost) : summary
+  // Pre-check and discovery requests are paid for like batches, so the audit that sent them counts them.
+  const extraCosts = [precheckCost, discoveryCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
+  const withDiscovery = (summary: AuditCostSummaryV1) => addAuditCostSummaries(summary, ...extraCosts)
   const cumulativeCost = withDiscovery(summarizeAuditExchangeCosts(exchanges))
   const newBatchIndexes = new Set(pending.map((entry) => entry.batchIndex))
   const cost = withDiscovery(summarizeAuditExchangeCosts(exchanges.filter((exchange) => newBatchIndexes.has(exchange.batchIndex))))
@@ -795,42 +967,11 @@ export async function verifyModelTarget(input: {
   const incorrectProbeCount = matchVector.filter((entry) => entry === 0).length
   const parsedProbeCount = correctProbeCount + incorrectProbeCount
   const evidence: ProxyAuditEvidenceV1 = {
-    version: 1,
-    kind: 'antseed-buyer-proxy-kbf-audit',
-    evidenceLevel: 'proxy-observation-with-verified-response-auth-no-payment-evidence',
-    createdAt: new Date(completedAt).toISOString(),
-    buyerProxy: {
-      baseUrl: input.context.proxy.baseUrl,
-      statePath: basename(input.context.proxy.statePath),
-      pid: input.context.proxy.pid,
-    },
-    target: {
-      peerId: input.target.peerId,
-      displayName: input.target.displayName ?? null,
-      agentId: input.target.onChainAgentId ? String(input.target.onChainAgentId) : null,
-      service: input.service,
-    },
-    reference: {
-      referenceId: input.reference.referenceId,
-      referenceModel: input.reference.referenceModel,
-      queryProfileHash: queryProfileHash(input.reference.queryProfile),
-      queryProfile: input.reference.queryProfile,
-      statisticalPower: input.reference.statisticalPower,
-      statisticalPowerEvidence: input.reference.statisticalPowerEvidence as unknown as Record<string, unknown>,
-      selfTest: input.reference.selfTest,
-      ...(input.reference.calibration ? { calibration: input.reference.calibration } : {}),
-      probes: input.reference.probes,
-    },
+    ...evidenceHead(completedAt),
     ...sellerThinkingEvidence,
+    ...precheckEvidence,
     exchanges,
-    ...(input.resume ? {
-      resume: {
-        parentAuditId: input.resume.parentAuditId,
-        reservationAuditId: input.resume.reservationAuditId,
-        parentEvidenceHash: input.resume.parentEvidenceHash,
-        reusedBatchIndexes,
-      },
-    } : {}),
+    ...resumeEvidence,
     result: {
       selectedProbeCount: input.reference.probes.length,
       parsedProbeCount,
@@ -865,13 +1006,15 @@ export async function verifyModelTarget(input: {
     correctProbeCount,
     incorrectProbeCount,
     correctRate: parsedProbeCount === 0 ? null : correctProbeCount / parsedProbeCount,
-    requestCount: exchanges.length,
+    // The question batches, and the pre-check's requests when one ran before them.
+    requestCount: exchanges.length + (precheck ? tokenizerPrecheckRequestCount(precheck) : 0),
     cost,
     cumulativeCost,
     evidencePath: written.path,
     evidenceHash: written.evidenceHash,
     stats: fragment.stats,
     responseAuthVerified: authenticated,
+    ...precheckResult,
   }
 }
 

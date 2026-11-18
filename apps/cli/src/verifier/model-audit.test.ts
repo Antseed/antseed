@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { Wallet } from 'ethers'
-import { KBF_EXTENSION_RULE_V1, KBF_EXTENSION_RULE_V2, canonicalHashBytes32 } from '@antseed/fingerprints'
+import { KBF_EXTENSION_RULE_V1, KBF_EXTENSION_RULE_V2, canonicalHashBytes32, canonicalJsonStringify } from '@antseed/fingerprints'
 import { VERIFIER_VERDICT, modelHash, serviceHash, sortServiceResults } from '@antseed/node/payments'
 import { DIFF_HOLD_EPOCHS, diffHolds } from './diff-hold.js'
 import {
@@ -382,6 +382,123 @@ test('a DIFF is submitted as found, for another auditor to confirm', async () =>
     ])
     assert.deepEqual(prepared.excluded, [])
   })
+})
+
+test('a tokenizer pre-check DIFF is submitted with its reason and its evidence, next to sellers judged on their questions', async () => {
+  await withRun([
+    { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), tokenizerMismatch: true },
+    audit('2', sellers[1]!, 'model-a'),
+  ], async ({ prepared }) => {
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(entry.results.map((result) => [result.agentId, result.verdict]), [
+      [1n, VERIFIER_VERDICT.DIFF],
+      [2n, VERIFIER_VERDICT.SAME],
+    ])
+    assert.deepEqual(prepared.excluded, [])
+    const [diff, same] = entry.evidence.results as [ModelAuditSellerResultV1, ModelAuditSellerResultV1]
+    assert.match(diff.verdictReason!, /^tokenizer pre-check \(tokenizer-precheck-v1\): the seller signed \d+\/\d+\/\d+ input tokens/)
+    assert.equal(diff.stats.targetTotal, 0, 'no question was asked')
+    assert.equal(same.verdictReason, null)
+    // The seller's evidence file, with the signed responses the DIFF rests on, is published with the audit.
+    assert.equal(entry.auditEvidencePaths.length, 2)
+    const published = JSON.parse(await readFile(entry.auditEvidencePaths[0]!, 'utf8')) as {
+      exchanges: unknown[]
+      tokenizerPrecheck: { outcome: string; rounds: Array<{ seller: Array<{ base: { responseAuth: { status: string } } }> }> }
+    }
+    assert.deepEqual(published.exchanges, [])
+    assert.equal(published.tokenizerPrecheck.outcome, 'mismatch')
+    assert.deepEqual(
+      published.tokenizerPrecheck.rounds.map((round) => round.seller.map((ask) => ask.base.responseAuth.status)),
+      [['verified', 'verified'], ['verified', 'verified'], ['verified', 'verified']],
+    )
+  })
+})
+
+test('a pre-check DIFF whose counts are not the ones the seller signed is left out, and the model\'s other sellers still go', async () => {
+  await withRun([
+    { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), tokenizerMismatch: true },
+    audit('2', sellers[1]!, 'model-a'),
+  ], async ({ prepared }) => {
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(entry.results.map((result) => result.agentId), [2n])
+    assert.equal(prepared.excluded.length, 1)
+    assert.match(prepared.excluded[0]!.reason, /invalid audit evidence: tokenizer pre-check round 2: the seller's input tokens are not the ones in its signed responses/)
+  }, {
+    // The evidence is rewritten as a valid file with a matching hash: only the pre-check's own check can tell.
+    tamper: async (evidenceDir) => {
+      const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+      const summaryPath = manifest.models[0]!.summaryPath
+      const summary = JSON.parse(await readFile(summaryPath, 'utf8')) as {
+        results: Array<{ agentId: string; evidencePath: string; evidenceHash: string }>
+      }
+      const target = summary.results.find((result) => result.agentId === '1')!
+      const evidence = JSON.parse(await readFile(target.evidencePath, 'utf8')) as {
+        tokenizerPrecheck: { rounds: Array<{ seller: Array<{ probed: { signedInputTokens: number }; delta: number }> }> }
+      }
+      evidence.tokenizerPrecheck.rounds[1]!.seller[0]!.probed.signedInputTokens += 25
+      evidence.tokenizerPrecheck.rounds[1]!.seller[0]!.delta += 25
+      await writeFile(target.evidencePath, canonicalJsonStringify(evidence))
+      target.evidenceHash = canonicalHashBytes32(evidence)
+      await writeFile(summaryPath, JSON.stringify(summary))
+    },
+  })
+})
+
+test('a pre-check DIFF that no other seller of the model backs, or whose summary names other counts, is left out', async () => {
+  type Stored = {
+    tokenizerPrecheck: {
+      rounds: Array<{ seller: Array<{ delta: number }> }>
+      crowd: { deltas: Array<number | null>; measured: number; agree: number; largestGroup: number; groupDelta: number | null; corroborated: boolean; outvoted: boolean; backers: unknown[] }
+    }
+  }
+  const rewritten = (change: (evidence: Stored, result: { tokenizerPrecheck: { sellerTokens: number[] } }) => void) => async (evidenceDir: string) => {
+    const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+    const summaryPath = manifest.models[0]!.summaryPath
+    const summary = JSON.parse(await readFile(summaryPath, 'utf8')) as {
+      results: Array<{ agentId: string; evidencePath: string; evidenceHash: string; tokenizerPrecheck: { sellerTokens: number[] } }>
+    }
+    const target = summary.results.find((result) => result.agentId === '1')!
+    const evidence = JSON.parse(await readFile(target.evidencePath, 'utf8')) as Stored
+    change(evidence, target)
+    await writeFile(target.evidencePath, canonicalJsonStringify(evidence))
+    target.evidenceHash = canonicalHashBytes32(evidence)
+    await writeFile(summaryPath, JSON.stringify(summary))
+  }
+  const audits = [
+    { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), tokenizerMismatch: true },
+    audit('2', sellers[1]!, 'model-a'),
+  ]
+  // The crowd is this seller alone, with tallies that follow from it: nothing in the run backs the reference.
+  await withRun(audits, async ({ prepared }) => {
+    assert.deepEqual((prepared.audits as [PreparedModelAudit])[0].results.map((result) => result.agentId), [2n])
+    assert.match(prepared.excluded[0]!.reason, /invalid audit evidence: tokenizer pre-check outcome mismatch does not follow from its rounds \(inconclusive\)/)
+  }, {
+    tamper: rewritten((evidence) => {
+      const own = evidence.tokenizerPrecheck.rounds[0]!.seller[0]!.delta
+      evidence.tokenizerPrecheck.crowd = {
+        ...evidence.tokenizerPrecheck.crowd, deltas: [own], measured: 1, agree: 0, largestGroup: 1, groupDelta: own, corroborated: false, backers: [],
+      }
+    }),
+  })
+  // Tallies that say two sellers back the reference, without their signed pairs.
+  await withRun(audits, async ({ prepared }) => {
+    assert.match(prepared.excluded[0]!.reason, /invalid audit evidence: tokenizer pre-check crowd counts 2 seller\(s\) on the reference's count but holds the signed answers of 0/)
+  }, {
+    tamper: rewritten((evidence) => { evidence.tokenizerPrecheck.crowd.backers = [] }),
+  })
+  // A crowd that claims a backing seller its differences do not hold.
+  await withRun(audits, async ({ prepared }) => {
+    assert.match(prepared.excluded[0]!.reason, /invalid audit evidence: tokenizer pre-check crowd does not follow from its differences/)
+  }, {
+    tamper: rewritten((evidence) => {
+      const own = evidence.tokenizerPrecheck.rounds[0]!.seller[0]!.delta
+      evidence.tokenizerPrecheck.crowd.deltas = [own, own, own]
+    }),
+  })
+  // The summary's counts, which the report and the overview print, are the evidence's.
+  await withRun(audits, async ({ prepared }) => {
+    assert.match(prepared.excluded[0]!.reason, /invalid audit evidence: the summary's tokenizer pre-check is not the one in its evidence/)
+  }, { tamper: rewritten((_evidence, result) => { result.tokenizerPrecheck.sellerTokens[0]! += 40 }) })
 })
 
 test('submits one SAME per seller and model, but every DIFF', async () => {

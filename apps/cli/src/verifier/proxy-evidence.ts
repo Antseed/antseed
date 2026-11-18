@@ -15,6 +15,7 @@ import type { StoredResponseAuth } from '@antseed/node'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import { safeServiceSlug } from './slug.js'
 import type { ThinkingDiscoveryAttemptV1, ThinkingDiscoveryStrategy } from './thinking-suppression.js'
+import type { TokenizerPrecheckV1 } from './tokenizer-precheck.js'
 
 export type ExportedResponseAuthRecord = Omit<StoredResponseAuth, 'requestPreimage' | 'responsePreimage'>
 
@@ -153,12 +154,16 @@ export interface ProxyAuditSkipEvidenceV1 {
     referenceModel: string
   }
   sellerThinking?: SellerThinkingDiscoveryV1
+  /** The tokenizer pre-check that ran before the skipped request; absent when none ran. */
+  tokenizerPrecheck?: TokenizerPrecheckV1
   exchange: ProxyAuditEvidenceExchangeV1
   result: {
     status: 'SKIPPED'
     code: VerificationSkipCode
     reason: string
     outcomeReason?: VerificationOutcomeReasonV1
+    /** What the tokenizer pre-check's requests cost, when one ran before the seller was skipped. */
+    cost?: AuditCostSummaryV1
   }
 }
 
@@ -198,6 +203,12 @@ export interface ProxyAuditEvidenceV1 {
   }
   /** Absent on audits that sent the reference's thinking suppression without asking the seller. */
   sellerThinking?: SellerThinkingDiscoveryV1
+  /**
+   * The tokenizer pre-check that ran before the questions (`tokenizer-precheck.ts`); absent when none ran. On a
+   * `mismatch` the verdict is DIFF and no question was asked: `exchanges` is empty and `result.matchVector` holds
+   * no answer.
+   */
+  tokenizerPrecheck?: TokenizerPrecheckV1
   exchanges: ProxyAuditEvidenceExchangeV1[]
   resume?: {
     parentAuditId: string

@@ -28,13 +28,15 @@ The rest of this page explains what these commands do.
 
    Each model runs in its own lane. Its audits start as soon as its questions are ready, so a model that takes hours to build doesn't hold up the others. Up to `verifier.auditMaxConcurrentModels` models (6 by default) audit at once, and a model that is still building doesn't use up one of those places. When its questions are ready, the model re-reads which sellers your buyer can see. All of this is one `verifier run`, so `verifier submit` gets the results when every model has finished.
 
+   Before anything else, each seller gets the [tokenizer pre-check](#tokenizer-pre-check): two short requests that show whether it counts input tokens like the model. A seller that clearly doesn't is `DIFF` and is not asked the questions.
+
    Before the questions, the auditor works out how to turn off the seller's hidden reasoning ("thinking"), the way the KBF reference code does for every endpoint it checks. It sends a fixed batch of ten easy questions with each setting in turn: `reasoning: {effort: "none"}`, `reasoning: {effort: "minimal"}`, `thinking: {type: "disabled"}`, `enable_thinking: false`, a `<think></think>` prefill, then nothing. It uses the first setting that gets at least 5 answers with no reasoning tokens. If the seller keeps thinking whatever it is sent, its questions go out with 50 times the token budget (40,000 tokens per request), so it has room to think and still answer. This is worked out once per seller and model in each run; the requests and their cost are part of the audit's evidence (`sellerThinking`). Text inside `<think>…</think>` is not read as an answer.
 3. **Verdict.** The seller's answers are compared with the genuine ones:
 
 | Verdict | Meaning |
 |---|---|
 | `SAME` | The seller misses about as often as the genuine model |
-| `DIFF` | The seller misses clearly more often: probably a different model |
+| `DIFF` | The seller misses clearly more often: probably a different model. Or it failed the [tokenizer pre-check](#tokenizer-pre-check) |
 | `UNDETERMINED` | Too few usable answers to decide |
 
    A missing, empty or unreadable answer is left out of the score, not counted as wrong. A `SAME` needs at least half the questions answered and a `DIFF` at least 80%, so a seller can't make a `DIFF` more likely by dropping answers; below that the result is `UNDETERMINED`. A batch with any answer missing is asked again up to two more times, and the try with the most answers is kept. Answers sent as `<number>X</number>` lines without question numbers are read in order when there is exactly one per question. A seller that refuses `temperature` is asked again without it and judged on those answers; the evidence records the dropped field (`omittedSamplingFields`). A seller that only accepts another `temperature` value is skipped.
@@ -44,6 +46,33 @@ The rest of this page explains what these commands do.
 A close call (a first look that is neither clearly `SAME` nor clearly `DIFF`) gets the epoch set's extra questions, the same for every close call, and is decided on the sets together; that is how the auditor reaches any verdict at all, not a second opinion.
 
 Each model is audited once per epoch, in its [audit window](#audit-windows): running `verifier run` again in the same epoch retries the window's failed sellers and asks any close call its extra questions if they couldn't be asked, without repeating its first check, but audits no new seller.
+
+### Tokenizer pre-check
+
+Every model splits text into tokens its own way, and sellers sign the input tokens they bill. So the first thing a seller is asked is not a question but a count.
+
+- **A round is two requests.** The auditor sends a short message A, then A followed by a few sentences B. The difference between the two signed input-token counts is B's length in the tokenizer the seller ran. The chat template and any hidden system prompt are in both requests, so they cancel out.
+- **The reference is the genuine model.** The same two requests go to your reference endpoint, on the route and provider your question bank was built on. Its count is read exactly as a seller's is. Each pair is asked twice and must give the same difference both times, from one provider and without cached input. A text the reference refuses or can't count is replaced by a fresh one. A reference that reports cached input on every answer gets no fresh text, since the cache is the endpoint's: a model whose reference always reports cached input gets no pre-check, and its sellers are judged on the questions alone. The reference gets ten minutes. Your sellers' audits wait for it, and none of their clocks run meanwhile: a seller's audit starts timing with its first request.
+- **A match costs two requests.** A seller within 2 tokens of the genuine model's difference counts like the model. It is then asked the questions as usual: the pre-check never gives a `SAME`.
+- **A round that is off is asked again.** Only a count the seller repeats is held against it. If its second answer matches the genuine model, it matches. If its two answers differ from each other by more than 2 tokens, its hidden input varies from request to request and the pre-check decides nothing.
+- **A mismatch is a `DIFF`.** A seller more than 2 tokens off in each of three rounds, the same way both times (twelve requests), is not counting with the model's tokenizer. It serves another model, or it signs input tokens that are not the model's. Either way the audit is `DIFF` once another seller of the model backs the reference (see below), its questions are not asked, and its evidence holds the three rounds with the exact responses the seller signed, and the pair each backing seller signed.
+- **Input that changes with the message is a mismatch too.** A seller that adds retrieved text, a skill or an agent's notes to some messages signs counts that are not the model's, even when the model behind it is genuine. A service listed under an audited model's name passes the buyer's input to that model as it is; anything more is offered under its own name.
+- **A mismatch needs another seller of the model on the reference's count.** A reference can agree with itself and still not be the model the sellers serve (a silent update behind the same name, for example). So when a seller is off in every round, the first round's two requests go to the model's other sellers your buyer would audit, whether or not this run audits them. Sellers your buyer would refuse (priced above the reference, under its reputation floor, or without signed responses) are not asked. The mismatch stands only if at least one of them signs the reference's count, without cached input. A model with a single seller therefore never gets a pre-check `DIFF`.
+- **The model's sellers can outvote the reference.** If two or more sellers sign one same count that is not the reference's, the checked seller included, and they are more than the sellers that sign the reference's, then the reference is not the model they serve, and the pre-check decides nothing for the seller being checked. Each check reads the model's sellers for itself.
+- **A seller that can't be measured takes no side.** One that fails, is refused, signs no count or reports cached input neither backs the reference nor votes against it.
+- **The model's other sellers get five minutes in all.** If one of them has not answered when the five minutes are up, it could still outvote the reference, so the pre-check decides nothing. The requests to the other sellers are paid and counted with the audit that sent them, also when nothing is decided, and the checked seller's idle clock (the time it may take to answer) doesn't run while they are asked. The audit's total time limit does.
+- **Anything unclear decides nothing.** A failed request, a response without usage or with a count of zero, a count for A and B together that is not above the count for A, a count that is off while the response reports cached input (an upstream cache moves with every request), a reference that could not be asked, did not agree with itself, reported cached input or answered from two providers: the seller goes on to the questions and is judged on them alone.
+
+The probes are written fresh for every run, on your machine, so they cost nothing and no seller has seen them. A is a short everyday message with details of its own. B is plain prose with numbers, identifiers, names, a rare long word and a sentence in Korean or Japanese. It leaves out what honest inference engines for one model count differently, such as control-token text, accented capitals and newer emoji, so honest sellers of one model count it alike.
+
+What it does not do:
+
+- **Models of one family share a tokenizer.** A seller serving a cheaper sibling of the model matches. Only the questions can catch it.
+- **A seller can compute the model's count itself** and sign that. Then the input it bills is at least the model's.
+
+`verifier submit` checks the stored values against each other before it sends a pre-check `DIFF`: the counts against the bytes each seller signed, the differences, the order the requests were asked in, the backing sellers' pairs and the outcome. It does not verify the signatures again.
+
+A pre-check `DIFF` is submitted, confirmed and held like any other `DIFF`: it counts once another auditor's own pre-check or questions confirm it (see [Confirmations](#confirmations-from-other-auditors)). `verifier.tokenizerPrecheck: false` turns the pre-check off, but every auditor must use the same setting, so `verifier run` then stops unless you pass `--skip-version-check`.
 
 ### Following a run
 
@@ -357,4 +386,5 @@ All keys live in the `verifier` block of the config file. The most used:
 | `logQueryChunkBlocks` | 1000 | Most blocks one `eth_getLogs` request spans. The contract's events are kept in `<data dir>/verifier/chain-cache/`, so only the first read of a data dir scans the whole history (about 2,200 requests of 1,000 blocks in November 2026); later ones read only new blocks. A keyed RPC that accepts wider ranges makes that first read cheaper. A cache read from another chain (a fork of the same contract, or a restarted fork) is noticed by its block hash and read again; deleting `verifier/chain-cache/` and `verifier/auditor-set.json` is always safe and costs one first read |
 | `auditPriceRatio` | 1 | Audit sellers priced up to this multiple of the upstream price |
 | `diffHoldEpochs` | 1 | Epochs after a recorded `DIFF` in which the seller isn't audited. See [After a DIFF](#after-a-diff). Every auditor uses the same value |
+| `tokenizerPrecheck` | true | Check how a seller counts input tokens before its questions. See [Tokenizer pre-check](#tokenizer-pre-check). Every auditor uses the same value |
 | `models.<model>.pricing` | | The model's upstream price, if not taken from OpenRouter |

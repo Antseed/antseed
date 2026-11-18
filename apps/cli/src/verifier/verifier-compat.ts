@@ -20,7 +20,8 @@ import {
   type KbfProbe,
   type MatchVector,
 } from '@antseed/fingerprints'
-import { modelHash, verifierVerdict } from '@antseed/node/payments'
+import { encodeHttpResponse } from '@antseed/node'
+import { PROBE_GUARD_RANGES, isSafeProbe, modelHash, signedResponseInputUsage, verifierVerdict } from '@antseed/node/payments'
 import pkg from '../../package.json' with { type: 'json' }
 import type { VerifierCLIConfig } from '../config/types.js'
 import { assignAuditModelsRoundRobin, confirmationAssignments } from './audit-assignment.js'
@@ -40,6 +41,17 @@ import { CANONICAL_KBF_DOMAINS } from './canonical-kbf-domains.js'
 import { DIFF_HOLD_EPOCHS, diffHoldReason, diffHoldResultReason } from './diff-hold.js'
 import { DEFAULT_LAYOUT_FILTER_PASSES, REFERENCE_SIZING_ALGORITHM_VERSION } from './model-reference.js'
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
+import {
+  REFERENCE_PROBE_TRIES,
+  SELLER_REQUEST_TRIES,
+  TOKENIZER_PRECHECK_RULE,
+  generateTokenizerProbe,
+  judgeTokenizerPrecheck,
+  referenceDelta,
+  tokenizerCrowd,
+  tokenizerCrowdObjection,
+  type TokenizerReferenceAskV1,
+} from './tokenizer-precheck.js'
 import { CONFIRMATION_WINDOW_SECONDS, pendingConfirmations, type EpochReport } from './pending-confirmations.js'
 import {
   DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
@@ -88,6 +100,7 @@ export function verifierRuleOverrides(config: VerifierCLIConfig | undefined): st
   const pinned = [
     ['closeCallExtensions', config?.closeCallExtensions, CLOSE_CALL_EXTENSIONS],
     ['diffHoldEpochs', config?.diffHoldEpochs, DIFF_HOLD_EPOCHS],
+    ['tokenizerPrecheck', config?.tokenizerPrecheck, true],
     ['referenceSelfTestRuns', config?.referenceSelfTestRuns, KBF_DEFAULT_SELF_TEST_RUNS],
     ['referenceLayoutFilterPasses', config?.referenceLayoutFilterPasses, DEFAULT_LAYOUT_FILTER_PASSES],
     ['referenceMinimumProbeCount', config?.referenceMinimumProbeCount, DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT],
@@ -203,6 +216,28 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
     scored: SAMPLE_SCORES.map(([answer, domain, consensus]) => scoreKbfAnswer(answer, sampleProbe(domain, consensus))),
     verdicts: sampleVerdicts(),
     questions: { selection: EPOCH_QUESTION_SET_METHOD },
+    // The pre-check before a seller's questions: its rule and retry limits, the probe guard's table, a probe
+    // written from a fixed sequence (so the probe writer is part of the rules), and what the rule, the reference
+    // agreement, the crowd, the probe guard and the signed-usage reader give for fixed inputs.
+    tokenizerPrecheck: {
+      rule: TOKENIZER_PRECHECK_RULE,
+      referenceProbeTries: REFERENCE_PROBE_TRIES,
+      sellerRequestTries: SELLER_REQUEST_TRIES,
+      probeGuardRanges: PROBE_GUARD_RANGES,
+      probes: SAMPLE_PROBE_SEEDS.map((seed) => generateTokenizerProbe(fixedSequence(seed))),
+      judged: SAMPLE_TOKENIZER_ROUNDS.map((rounds) => judgeTokenizerPrecheck(rounds)),
+      referenceDeltas: SAMPLE_REFERENCE_ASKS.map((asks) => referenceDelta(asks).delta),
+      // Whether a seller off a reference of 119 in every round is a mismatch, next to the model's sellers'
+      // first-round differences: they must back the reference and must not outvote it.
+      crowds: SAMPLE_TOKENIZER_CROWDS.map((deltas) => {
+        const crowd = tokenizerCrowd(deltas, 119)
+        return [crowd.corroborated, crowd.outvoted, tokenizerCrowdObjection(crowd, 119) === null]
+      }),
+      guarded: SAMPLE_PROBE_TEXTS.map((text) => isSafeProbe(text)),
+      signedUsage: SAMPLE_USAGE_BODIES.map((body) => signedResponseInputUsage(encodeHttpResponse({
+        requestId: 'sample', statusCode: 200, headers: {}, body: new TextEncoder().encode(body),
+      }))),
+    },
     window: {
       minimumSecondsLeftToOpen: MIN_SECONDS_FOR_ANOTHER_ROUND,
       sellerFailureAttempts: SELLER_FAILURE_ATTEMPTS,
@@ -230,6 +265,103 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
 export function verifierRulesHash(input: Parameters<typeof verifierRulesFingerprint>[0] = {}): string {
   return canonicalHashBytes32(verifierRulesFingerprint(input))
 }
+
+/**
+ * Pre-check rounds (the reference's difference, then the seller's for each ask) around the tolerance: a match on
+ * the first or the second ask, three rounds off, a match after two rounds off, too few rounds, an ask without a
+ * count, a seller whose two asks disagree, a round without a reference, and counts with cached input (one that
+ * matches, one that is off).
+ */
+const SAMPLE_TOKENIZER_ROUNDS: ReadonlyArray<ReadonlyArray<{ referenceDelta: number | null; sellerDeltas: Array<number | null>; cachedAsks?: boolean[] }>> = [
+  [{ referenceDelta: 100, sellerDeltas: [100] }],
+  [{ referenceDelta: 100, sellerDeltas: [140, 102] }],
+  [{ referenceDelta: 100, sellerDeltas: [103, 104] }, { referenceDelta: 90, sellerDeltas: [87, 86] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
+  [{ referenceDelta: 100, sellerDeltas: [103, 104] }, { referenceDelta: 90, sellerDeltas: [87, 86] }, { referenceDelta: 80, sellerDeltas: [120, 82] }],
+  [{ referenceDelta: 100, sellerDeltas: [140, 140] }, { referenceDelta: 90, sellerDeltas: [130, 130] }],
+  [{ referenceDelta: 100, sellerDeltas: [140, 140] }, { referenceDelta: 90, sellerDeltas: [130, null] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
+  [{ referenceDelta: 100, sellerDeltas: [140, 143] }, { referenceDelta: 90, sellerDeltas: [130, 130] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
+  [{ referenceDelta: 100, sellerDeltas: [140, 140] }, { referenceDelta: 90, sellerDeltas: [130, 130] }, { referenceDelta: 80, sellerDeltas: [120] }],
+  [{ referenceDelta: null, sellerDeltas: [140, 140] }, { referenceDelta: 90, sellerDeltas: [130, 130] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
+  [{ referenceDelta: 100, sellerDeltas: [101], cachedAsks: [true] }],
+  [{ referenceDelta: 100, sellerDeltas: [140, 140], cachedAsks: [false, true] }, { referenceDelta: 90, sellerDeltas: [130, 130] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
+]
+
+/**
+ * Sellers' first-round differences: most on another count, a minority on another count, a tie, two sellers both
+ * off, scattered counts, one seller alone, one seller off with one on the reference's count, one off with the
+ * others unreadable, and two on another count against one on the reference's.
+ */
+const SAMPLE_TOKENIZER_CROWDS: ReadonlyArray<Array<number | null>> = [
+  [132, 132, 133, 132, 119, 120, null],
+  [132, 132, 132, 119, 119, 119, 118],
+  [132, 132, 132, 119, 119, 119],
+  [132, 132],
+  [130, 133, 136, 119],
+  [132],
+  [132, 121],
+  [132, null, null],
+  [132, 132, 119],
+]
+
+const referenceAsk = (baseTokens: number | null, probedTokens: number | null, extra: Partial<TokenizerReferenceAskV1> = {}): TokenizerReferenceAskV1 => ({
+  baseTokens, probedTokens, cachedInput: false, providers: ['Provider-A', 'Provider-A'], ...extra,
+})
+
+/**
+ * Reference asks (input tokens for A and for A + B): agreeing, disagreeing, unreadable, not growing, asked once,
+ * with cached input, from two providers, and from an endpoint that names no provider.
+ */
+const SAMPLE_REFERENCE_ASKS: ReadonlyArray<TokenizerReferenceAskV1[]> = [
+  [referenceAsk(26, 143), referenceAsk(26, 143)],
+  [referenceAsk(26, 143), referenceAsk(26, 144)],
+  [referenceAsk(26, 143), referenceAsk(null, 143)],
+  [referenceAsk(26, 26), referenceAsk(26, 26)],
+  [referenceAsk(26, 143)],
+  [referenceAsk(26, 143), referenceAsk(26, 143, { cachedInput: true })],
+  [referenceAsk(26, 143), referenceAsk(26, 143, { providers: ['Provider-A', 'Provider-B'] })],
+  [referenceAsk(26, 143, { providers: [null, null] }), referenceAsk(26, 143, { providers: [null, null] })],
+]
+
+/** Seeds of the probes the fingerprint holds, each written from `fixedSequence`. */
+const SAMPLE_PROBE_SEEDS: readonly number[] = [1, 2, 3, 4]
+
+/** A fixed sequence of picks in place of the probe writer's random ones. */
+function fixedSequence(seed: number): (max: number) => number {
+  let state = seed >>> 0
+  return (max) => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0
+    return Math.floor((state / 0x1_0000_0000) * max)
+  }
+}
+
+/** Probe text on both sides of the probe guard. */
+const SAMPLE_PROBE_TEXTS: readonly string[] = [
+  ' The reference is ZX-48217-QK and I paid 1,249.50 € on 14 March 2026 😀',
+  ' 예약 번호는 AB-12345-CD 이고 요금은 59,800원 입니다',
+  ' 予約番号は AB-12345-CD で、料金は 9,800円です。',
+  'No leading space',
+  ' it\'s a contraction',
+  ' a <|control|> token',
+  ' ESPAÑA in capitals',
+  ' thumbs up 👍\u{1f3fb}',
+]
+
+/** Signed response bodies the usage reader reads, and ones it refuses. */
+const SAMPLE_USAGE_BODIES: readonly string[] = [
+  '{"usage":{"prompt_tokens":143,"completion_tokens":40}}',
+  '{"usage":{"input_tokens":12,"cache_read_input_tokens":3,"cache_creation_input_tokens":1}}',
+  '{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4}}}',
+  '{"usage":{"prompt_tokens":15,"prompt_tokens":20}}',
+  '{"usage":{"prompt_tokens":1e3}}',
+  '{"usage":{"prompt_tokens":0,"completion_tokens":0}}',
+  '{"usage":{"prompt_tokens":120,"prompt_tokens_details":{"cached_tokens":108}}}',
+  '{"usage":{"prompt_tokens":802,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":770}}}',
+  '{"choices":[]}',
+  '{"usage":{"prompt_tokens":0,"prompt_tokens_details":{"cached_tokens":12}}}',
+  '{"usage":{"prompt_tokens":123}',
+  'data: {"usage":{"prompt_tokens":15}}',
+  '{"error":{"message":"upstream overloaded"},"usage":{"prompt_tokens":40}}',
+]
 
 /** Replies that take the parser's different paths, with the probes asked: a change to how it reads them shows up. */
 const SAMPLE_REPLIES: ReadonlyArray<readonly [string, number]> = [

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { KBF_CALIBRATION_PASSES, KBF_DEFAULT_SELF_TEST_RUNS } from '@antseed/fingerprints'
+import { PROBE_GUARD_RANGES, isSafeProbe } from '@antseed/node/payments'
 import { AUDITED_MODELS } from './audited-models.js'
 import { DEFAULT_LAYOUT_FILTER_PASSES } from './model-reference.js'
 import {
@@ -23,6 +24,7 @@ const RULES_BY_COMPAT: Readonly<Record<number, string>> = {
   2: '0x9e4b0af7ac00fed169980914711f6f73bb3f0e73547627b3ce0df0f191111ddf',
   3: '0x25344c731acc4781b8f3d207794922f1596a7bf842958ea91111fd575aa7a1e5',
   4: '0xc0ebca1ce20148076c6ed5db82d89e1b28c2fc87aa3fd02ba20899150e1b8a0b',
+  5: '0x997f124539dadf245bb8eee8c3b437df9a945e9842ed9f95daa0832e18acb7d9',
 }
 
 test('the audit rules match the hash pinned for this verifier compat', () => {
@@ -92,6 +94,59 @@ test('a DIFF hold set away from the pinned one is named; the default is not', ()
   assert.deepEqual(window.diffHold, [[false, false], [true, false], [false, false], [false, false]])
   // In epoch 11 a SAME and an UNDETERMINED are held; a repeat DIFF is sent.
   assert.deepEqual(window.diffHoldResults, [true, false, true])
+})
+
+test('the tokenizer pre-check is part of the rules: turned off it is named, and the fingerprint has its rule and judgements', () => {
+  assert.deepEqual(verifierRuleOverrides({ tokenizerPrecheck: true }), [])
+  assert.deepEqual(verifierRuleOverrides({ tokenizerPrecheck: false }), ['verifier.tokenizerPrecheck is false; these rules use true'])
+  const { tokenizerPrecheck } = verifierRulesFingerprint() as {
+    tokenizerPrecheck: {
+      rule: { id: string; rounds: number; toleranceTokens: number; referenceAsks: number; sellerAsks: number; outvoteSellers: number; corroboratingSellers: number }
+      referenceProbeTries: number
+      sellerRequestTries: number
+      probeGuardRanges: Array<[number, number]>
+      probes: Array<{ a: string; b: string }>
+      judged: string[]
+      referenceDeltas: Array<number | null>
+      crowds: Array<[boolean, boolean, boolean]>
+      guarded: boolean[]
+      signedUsage: Array<{ inputTokens: number | null; cachedInput: boolean }>
+    }
+  }
+  const { rule } = tokenizerPrecheck
+  assert.deepEqual(
+    [rule.id, rule.rounds, rule.toleranceTokens, rule.referenceAsks, rule.sellerAsks, rule.outvoteSellers, rule.corroboratingSellers],
+    ['tokenizer-precheck-v1', 3, 2, 2, 2, 2, 1],
+  )
+  // The retry limits, the probe guard's table and what the probe writer writes are rules too: a change to any of
+  // them changes which counts are compared.
+  assert.deepEqual([tokenizerPrecheck.referenceProbeTries, tokenizerPrecheck.sellerRequestTries], [3, 2])
+  assert.deepEqual(tokenizerPrecheck.probeGuardRanges, PROBE_GUARD_RANGES)
+  assert.equal(tokenizerPrecheck.probes.length, 4)
+  assert.equal(new Set(tokenizerPrecheck.probes.map((probe) => probe.a + probe.b)).size, 4)
+  for (const probe of tokenizerPrecheck.probes) assert.ok(isSafeProbe(probe.b), probe.b)
+  assert.deepEqual(tokenizerPrecheck.probes, (verifierRulesFingerprint() as { tokenizerPrecheck: { probes: unknown } }).tokenizerPrecheck.probes, 'the same probes every time')
+  // Within the tolerance once is a match, cached or not; a mismatch is three rounds off, each the same way twice;
+  // anything missing, a seller whose two asks disagree, and a count that is off with the cache in play decide nothing.
+  assert.deepEqual(tokenizerPrecheck.judged, [
+    'match', 'match', 'mismatch', 'match', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive',
+    'match', 'inconclusive',
+  ])
+  // A reference with cached input or from two providers has no difference; one that names no provider has.
+  assert.deepEqual(tokenizerPrecheck.referenceDeltas, [117, null, null, null, null, null, null, 117])
+  // For each crowd: whether a seller signs the reference's count, whether the sellers outvote the reference (a
+  // group of two or more on one other count, larger than the group on the reference's), and whether a seller
+  // off in every round is then a mismatch: only when the reference is backed and not outvoted.
+  assert.deepEqual(tokenizerPrecheck.crowds, [
+    [true, true, false], [true, false, true], [true, false, true], [false, true, false],
+    [true, false, true], [false, false, false], [true, false, true], [false, false, false],
+    [true, true, false],
+  ])
+  assert.deepEqual(tokenizerPrecheck.guarded, [true, true, true, false, false, false, false, false])
+  // The last four: cached input without a count, a body cut off before its end, an event-stream line, an error
+  // sent with status 200.
+  assert.deepEqual(tokenizerPrecheck.signedUsage.map((usage) => usage.inputTokens), [143, 16, 12, null, null, null, 120, 802, null, null, null, null, null])
+  assert.deepEqual(tokenizerPrecheck.signedUsage.map((usage) => usage.cachedInput), [false, true, true, false, false, false, true, true, false, true, false, false, false])
 })
 
 test('question set sizing set away from the pinned rules is named; the defaults are not', () => {

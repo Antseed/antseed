@@ -29,6 +29,7 @@ import { roundRobinAssignmentFor, auditorRotationForModel } from './audit-assign
 import { handoverModelsFor, loadEpochModelAudits } from './audit-handover.js'
 import { chainNow } from './chain-clock.js'
 import { openAuditWindow, readAuditWindow, windowIncludesSeller } from './audit-window.js'
+import { modelAuditEvidencePath } from './model-audit.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const RUN_ANVIL_E2E = process.env['ANTSEED_RUN_VERIFIER_ANVIL_E2E'] === '1'
@@ -346,6 +347,128 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
     assert.equal(await client.isVerified(2n), false, 'a confirmed DIFF still counts in the next epoch')
     castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH + 2)])
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 0 }, 'and expires after it')
+  } finally {
+    await stopProcess(anvil)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a tokenizer pre-check DIFF is one auditor\'s report until another auditor\'s own pre-check confirms it, and its evidence says why', {
+  skip: !RUN_ANVIL_E2E,
+  timeout: 300_000,
+}, async () => {
+  requireCommand('anvil')
+  requireCommand('cast')
+  requireCommand('forge')
+
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-tokenizer-e2e-'))
+  const port = await availablePort()
+  const rpcUrl = `http://127.0.0.1:${port}`
+  // The chain starts two minutes before the epoch, so both auditors are approved when it starts.
+  const anvil = startAnvil(port, { timestamp: GENESIS + AUDIT_EPOCH * EPOCH_DURATION - 120 })
+  try {
+    await waitForRpcReady(rpcUrl, anvil)
+    const registryAddress = deployContract(rpcUrl, 'core/AntseedRegistry.sol:AntseedRegistry')
+    const identityRegistryAddress = deployContract(rpcUrl, 'test/mocks/MockERC8004Registry.sol:MockERC8004Registry')
+    const gateAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationEmissionsGate.sol:MockVerificationEmissionsGate')
+    const poolsAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationSellerPools.sol:MockVerificationSellerPools')
+    castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
+    castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
+    const { resultsAddress, kbfAddress: verificationAddress } = deployVerification(rpcUrl, gateAddress, poolsAddress, identityRegistryAddress)
+    castSend(rpcUrl, resultsAddress, 'setRewardsStartEpoch(address,uint64)', [verificationAddress, '0'])
+    castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
+    castSend(rpcUrl, gateAddress, 'setSchedule(uint256,uint256)', [String(GENESIS), String(EPOCH_DURATION)])
+    const auditorA = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
+    const auditorB = new Wallet(`0x${SECOND_AUDITOR_PRIVATE_KEY}`)
+    for (const auditor of [auditorA, auditorB]) {
+      castSend(rpcUrl, verificationAddress, 'setAuditor(address,bool)', [auditor.address, 'true'])
+    }
+    for (const [index, owner] of SELLER_OWNERS.entries()) {
+      castSend(rpcUrl, identityRegistryAddress, 'setOwner(uint256,address)', [String(index + 1), owner])
+      castSend(rpcUrl, poolsAddress, 'setPower(uint256,uint256,uint256)', [String(index + 1), String(AUDIT_EPOCH), '100'])
+    }
+
+    // Seller 1 serves the model. Seller 2 signs input tokens counted by another tokenizer: each auditor's
+    // pre-check finds it and asks it no question. An audited model, since only those have confirmers.
+    const model = 'claude-opus-5.5'
+    const sellers = [randomWallet(), randomWallet()]
+    const reference = referenceFixture(model)
+    const honest: FixtureAudit = { agentId: '1', seller: sellers[0]!, model, service: model, verdict: 'SAME', reference }
+    const miscounting: FixtureAudit = { agentId: '2', seller: sellers[1]!, model, service: model, verdict: 'DIFF', tokenizerMismatch: true, reference }
+    const crypto = {
+      chainId: 'base-local',
+      rpcUrl,
+      verificationContractAddress: verificationAddress,
+      verificationDeployBlock: 0,
+      identityRegistryAddress,
+    }
+    const setUpDataDir = async (name: string, key: string) => {
+      const dataDir = join(directory, name)
+      const evidenceDir = join(dataDir, 'verifier', 'evidence')
+      const banksDir = join(dataDir, 'verifier', 'banks')
+      const configPath = join(dataDir, 'config.json')
+      await mkdir(dataDir, { recursive: true })
+      await writeFile(join(dataDir, 'identity.key'), `${key}\n`, { mode: 0o600 })
+      await writeFile(configPath, JSON.stringify({
+        payments: { preferredMethod: 'crypto', crypto },
+        verifier: { evidenceDir, banksDir, ...FIXTURE_CONFIG },
+      }))
+      const auditor = new Wallet(`0x${key}`)
+      const writeRun = (runId: string, audits: FixtureAudit[]) => (
+        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor, audits })
+      )
+      return { dataDir, configPath, evidenceDir, writeRun }
+    }
+    const a = await setUpDataDir('auditor-a', AUDITOR_PRIVATE_KEY)
+    const b = await setUpDataDir('auditor-b', SECOND_AUDITOR_PRIVATE_KEY)
+    const submit = (dirs: typeof a, runId: string) => runCli(dirs.dataDir, dirs.configPath, rpcUrl, [
+      'submit', '--run-id', runId, '--no-publish-ipfs', '--yes', '--skip-version-check',
+    ])
+    const client = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+    // Into the epoch, so every report below is in the epoch's blocks.
+    await rpc(rpcUrl, 'evm_increaseTime', [180])
+    await rpc(rpcUrl, 'evm_mine', [])
+
+    await a.writeRun('a-audit', [honest, miscounting])
+    const reported = submit(a, 'a-audit')
+    assert.equal(reported.status, 0, reported.output)
+    assert.match(reported.output, /claude-opus-5.5: 1 recorded, 1 waiting for another auditor/)
+    assert.match(reported.output, /agent 2: DIFF 1\/2/)
+    assert.equal(await client.isVerified(1n), true, 'the honest seller is verified on its questions')
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 0 }, 'a pre-check DIFF is one auditor\'s report, like any DIFF')
+
+    // What the auditor submitted: the DIFF with its reason, and the seller's evidence with the signed responses.
+    const evidence = JSON.parse(await readFile(modelAuditEvidencePath(a.evidenceDir, 'a-audit', model), 'utf8')) as {
+      results: Array<{ agentId: string; verdict: string; verdictReason: string | null; audit: { evidencePath: string } }>
+    }
+    const diff = evidence.results.find((result) => result.agentId === '2')!
+    assert.equal(diff.verdict, 'DIFF')
+    assert.match(diff.verdictReason!, /^tokenizer pre-check \(tokenizer-precheck-v1\): the seller signed .* off by more than 2 in every round, while 2 of the model's other sellers signed the model's count; its questions were not asked$/)
+    const sellerEvidence = JSON.parse(await readFile(
+      resolve(dirname(modelAuditEvidencePath(a.evidenceDir, 'a-audit', model)), diff.audit.evidencePath), 'utf8',
+    )) as { exchanges: unknown[]; tokenizerPrecheck: { outcome: string; rounds: Array<{ seller: Array<{ delta: number }>; reference: { delta: number } }> } }
+    assert.deepEqual(sellerEvidence.exchanges, [])
+    assert.equal(sellerEvidence.tokenizerPrecheck.outcome, 'mismatch')
+    assert.equal(sellerEvidence.tokenizerPrecheck.rounds.length, 3)
+    for (const round of sellerEvidence.tokenizerPrecheck.rounds) {
+      // Asked twice, the same count both times, and not the model's.
+      assert.equal(round.seller.length, 2)
+      assert.equal(round.seller[0]!.delta, round.seller[1]!.delta)
+      assert.ok(Math.abs(round.seller[0]!.delta - round.reference.delta) > 2)
+    }
+
+    // The other auditor confirms with its own pre-check, on its own probes, and the contract records the DIFF.
+    await b.writeRun('b-confirm', [miscounting])
+    const confirmed = submit(b, 'b-confirm')
+    assert.equal(confirmed.status, 0, confirmed.output)
+    assert.match(confirmed.output, /claude-opus-5.5: 1 recorded, 0 waiting for another auditor/)
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
+    assert.equal(await client.isVerified(2n), false)
+    assert.equal(await client.isVerified(1n), true)
+    const events = await client.queryServiceAudits(2n, null, 0)
+    assert.deepEqual(events.map(({ auditor, reports, required }) => [auditor, reports, required]), [
+      [auditorA.address, 1, 2], [auditorB.address, 2, 2],
+    ])
   } finally {
     await stopProcess(anvil)
     await rm(directory, { recursive: true, force: true })

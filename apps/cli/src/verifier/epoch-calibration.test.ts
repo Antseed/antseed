@@ -20,7 +20,7 @@ import type { VerifierCLIConfig } from '../config/types.js'
 import { setAuditedModelsForTesting } from './audited-models.js'
 import { calibrateEpochQuestionSet, ensureEpochQuestionSet } from './ensure-auditable-reference.js'
 import { kbfAuditBatches } from './kbf-batching.js'
-import { calibrateReferenceSets } from './model-reference.js'
+import { askReferenceInputTokens, calibrateReferenceSets } from './model-reference.js'
 import {
   appendModelReferenceToBank,
   epochBankPath,
@@ -166,6 +166,113 @@ function calibrate(
 function questions(probes: readonly KbfProbe[]): string[] {
   return probes.map(renderKbfProbeLine)
 }
+
+test('the tokenizer pre-check asks the reference on the bank\'s route, pin and request settings, and reads each request\'s input tokens', async () => {
+  const bodies: Array<Record<string, unknown> & { messages: Array<{ role: string; content: string }> }> = []
+  const tries = new Map<string, number>()
+  const fetchFn = (async (url: unknown, init?: RequestInit) => {
+    assert.equal(url, 'https://reference.test/v1/chat/completions')
+    const body = JSON.parse(String(init?.body)) as (typeof bodies)[number]
+    bodies.push(body)
+    const content = body.messages[0]!.content
+    const attempt = (tries.get(content) ?? 0) + 1
+    tries.set(content, attempt)
+    const reply = (usage: Record<string, unknown>, text: string | null = 'Sure.', provider = 'Provider-A') => Response.json({
+      provider, choices: [{ message: { content: text }, finish_reason: text === null ? 'length' : 'stop' }], usage,
+    })
+    if (content === 'cut off while thinking') return reply({ prompt_tokens: 31, completion_tokens: 64 }, null)
+    if (content === 'no usage at first') return reply(attempt === 1 ? { prompt_tokens: 0, completion_tokens: 0 } : { prompt_tokens: 44, completion_tokens: 5 })
+    if (content === 'down') return new Response('upstream unavailable', { status: 503 })
+    if (content === 'another provider') return reply({ prompt_tokens: 50, completion_tokens: 5 }, 'Sure.', 'Provider-B')
+    if (content === 'cached') return reply({ prompt_tokens: 60, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 48 } })
+    return reply({ prompt_tokens: 7 + content.length, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 0 } })
+  }) as typeof fetch
+  const contents = ['short', 'short, and a follow-up', 'cut off while thinking', 'no usage at first', 'down', 'another provider', 'cached']
+  const { upstream, results } = await askReferenceInputTokens({
+    model: 'model-a', settings: bankedReference(), contents, maxTokens: 64, fetchFn,
+    // Contrasts named in the config, so no model catalog is needed to resolve the model.
+    config: { ...config, models: { 'model-a': { ...config.models!['model-a'], contrastModels: ['contrast-a'] } } },
+  })
+  assert.deepEqual(results.map((result) => result.inputTokens), [12, 29, 31, 44, null, null, 60])
+  // The answering provider is kept for every answer, also one without text; a failed request names none.
+  assert.deepEqual(results.map((result) => result.provider), ['Provider-A', 'Provider-A', 'Provider-A', 'Provider-A', null, null, 'Provider-A'])
+  // An answer that reports cached input says so: its count is not one to compare with.
+  assert.deepEqual(results.map((result) => result.cachedInput), [false, false, false, false, false, false, true])
+  assert.match(results[4]!.failure!, /upstream unavailable/)
+  assert.match(results[5]!.failure!, /served upstream-a from provider Provider-B, outside the pinned providers provider-a/)
+  // A reply without usage is asked again; a request that keeps failing is given up after three tries.
+  assert.deepEqual(contents.map((content) => tries.get(content)), [1, 1, 1, 2, 3, 3, 1])
+  const [first] = bodies
+  assert.deepEqual(first!.messages, [{ role: 'user', content: 'short' }])
+  // This bank's requests need a larger reply budget than the default, so its route keeps it over the 64 asked for.
+  assert.deepEqual(
+    [first!.model, first!.max_tokens, first!.stream, first!.reasoning_effort, first!.provider],
+    ['upstream-a', MAX_TOKENS, false, 'none', { order: ['provider-a'], allow_fallbacks: false }],
+  )
+  assert.deepEqual([upstream.model, upstream.providerPin, upstream.baseUrl], ['upstream-a', ['provider-a'], 'https://reference.test/v1'])
+})
+
+test('a native Anthropic reference is read as a seller is: its whole input, cache counts included, and whether it was cached', async () => {
+  const usage: Record<string, Record<string, number>> = {
+    // Fresh input apart from the cache counts: the whole input is 1,200 and 1,400 tokens, not 176 and 248.
+    'cached, short': { input_tokens: 176, cache_read_input_tokens: 1_024, cache_creation_input_tokens: 0, output_tokens: 5 },
+    'cached, long': { input_tokens: 248, cache_read_input_tokens: 1_024, cache_creation_input_tokens: 128, output_tokens: 5 },
+    plain: { input_tokens: 40, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 5 },
+  }
+  const fetchFn = (async (url: unknown, init?: RequestInit) => {
+    assert.equal(url, 'https://api.anthropic.test/v1/messages')
+    const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+    return Response.json({ content: [{ type: 'text', text: 'Sure.' }], stop_reason: 'end_turn', usage: usage[body.messages[0]!.content] })
+  }) as typeof fetch
+  const nativeConfig = {
+    ...config,
+    upstreams: { 'anthropic-native': { type: 'anthropic' as const, baseUrl: 'https://api.anthropic.test/v1/', apiKey: 'anthropic-secret' } },
+    models: { 'model-a': { ...config.models!['model-a'], contrastModels: ['contrast-a'], upstream: { name: 'anthropic-native', model: 'claude-test-native' } } },
+  }
+  // A bank enrolled on this native route.
+  const enrolled = { ...bankedReference(), provenance: { sourceId: 'upstream:anthropic-native:anthropic:claude-test-native', trust: 'trusted' as const } }
+  const { results } = await askReferenceInputTokens({
+    model: 'model-a', settings: enrolled, contents: Object.keys(usage), maxTokens: 64, fetchFn, config: nativeConfig,
+  })
+  assert.deepEqual(results.map((result) => [result.inputTokens, result.cachedInput, result.provider]), [[1_200, true, null], [1_400, true, null], [40, false, null]])
+})
+
+test('no reference request is sent once the pre-check\'s time for the reference is up, and one out is stopped', async () => {
+  const sent: string[] = []
+  const fetchFn = (async (_url: unknown, init?: RequestInit) => {
+    sent.push((JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }).messages[0]!.content)
+    // Never answers: only the signal ends it.
+    return new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener('abort', () => reject(new Error('aborted')), { once: true }))
+  }) as typeof fetch
+  const stop = new AbortController()
+  setTimeout(() => stop.abort(), 30)
+  // One request in flight per model: the second content waits for a slot while the time runs out.
+  const limited = { ...config, referenceMaxConcurrentRequestsPerModel: 1, models: { 'model-a': { ...config.models!['model-a'], contrastModels: ['contrast-a'] } } }
+  const { results } = await askReferenceInputTokens({
+    model: 'model-a', settings: bankedReference(), contents: ['first', 'second'], maxTokens: 64, fetchFn, config: limited, signal: stop.signal, timeoutMs: 60_000,
+  })
+  assert.deepEqual(sent, ['first'])
+  assert.deepEqual(results.map((result) => result.inputTokens), [null, null])
+  assert.match(results[1]!.failure!, /the pre-check's time for the reference is up/)
+})
+
+test('the pre-check asks a bank\'s reference only where the bank was enrolled', async () => {
+  let asked = 0
+  const fetchFn = (async () => {
+    asked += 1
+    return Response.json({ choices: [{ message: { content: 'Sure.' } }], usage: { prompt_tokens: 40, completion_tokens: 2 } })
+  }) as typeof fetch
+  // The config now routes the model to an upstream of its own; the bank was enrolled on the reference endpoint.
+  await assert.rejects(askReferenceInputTokens({
+    model: 'model-a', settings: bankedReference(), contents: ['A'], maxTokens: 64, fetchFn,
+    config: {
+      ...config,
+      upstreams: { 'anthropic-native': { type: 'anthropic', baseUrl: 'https://api.anthropic.test/v1/', apiKey: 'anthropic-secret' } },
+      models: { 'model-a': { ...config.models!['model-a'], contrastModels: ['contrast-a'], upstream: { name: 'anthropic-native', model: 'claude-test-native' } } },
+    },
+  }), /the pre-check would ask upstream:anthropic-native:anthropic:claude-test-native, but this bank was enrolled on /)
+  assert.equal(asked, 0)
+})
 
 test('calibration asks each batch of every set exactly as a seller gets it, with the bank\'s request settings', async () => withSet(async ({ directory, set }) => {
   const { sent, fetchFn } = endpoint()

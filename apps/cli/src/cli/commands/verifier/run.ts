@@ -65,6 +65,7 @@ import {
   classifyVerificationTargetServices,
   loadBuyerProxySnapshot,
   readModelAuditCheckpoints,
+  tokenizerPrecheckSellers,
   verifyModelTarget,
   DEFAULT_AUDIT_MAX_TIMEOUT_MS,
   type ModelVerificationFailure,
@@ -80,7 +81,7 @@ import {
   preRunError,
 } from '../../../verifier/pre-run-checks.js'
 import { buyerCapShortfall, describeAuditPriceCap, requiredBuyerCap, resolveAuditPriceCaps } from '../../../verifier/audit-price.js'
-import { loadHighestEndpointPrice, loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
+import { loadConfiguredVerifierModelCatalog, loadHighestEndpointPrice, loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
 import {
   epochQuestionSetPath,
   epochSetCalibrationProblem,
@@ -128,7 +129,8 @@ import {
   windowIncludesSeller,
   type AuditWindowV1,
 } from '../../../verifier/audit-window.js'
-import { createReferenceRequestLimiter, referenceConcurrencyWarning } from '../../../verifier/model-reference.js'
+import { askReferenceInputTokens, createReferenceRequestLimiter, referenceConcurrencyWarning } from '../../../verifier/model-reference.js'
+import { TOKENIZER_PRECHECK_RULE, createTokenizerPrecheckScreen, describeTokenizerCounts, measureTokenizerReference } from '../../../verifier/tokenizer-precheck.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { closeCallRuleForExtensions, extensionSets, latestExtension } from '../../../verifier/close-call.js'
 import {
@@ -1430,6 +1432,9 @@ export async function runVerifierRound(
         const concurrencyWarning = enrollmentBudget === null ? null : referenceConcurrencyWarning(config.verifier)
         if (concurrencyWarning) console.warn(chalk.yellow(concurrencyWarning))
         const requestLimiter = enrollmentBudget === null ? null : createReferenceRequestLimiter(config.verifier)
+        // The tokenizer pre-check asks the reference in every run, also one that builds no question set: one
+        // limiter for the run, so its models' reference asks share the configured cap.
+        const precheckReferenceLimiter = requestLimiter ?? createReferenceRequestLimiter(config.verifier)
         runProgress = new VerifierRunProgress(preparedModels.map(({ model, targets, skipped }) => ({
           model,
           providerCount: targets.length + skipped.length,
@@ -1462,6 +1467,46 @@ export async function runVerifierRound(
 
           // Every seller is asked this epoch's question set; a resumed audit may still use an older reference.
           const referenceSources = new Map<string, KbfReferenceV1>()
+          // The tokenizer pre-check of this model's sellers (`createTokenizerPrecheckScreen`): its probes are
+          // written and measured on the reference once, when the first seller is audited, whose question set
+          // names the bank whose route is asked. Its crowd is every seller of the model the buyer would audit
+          // (`tokenizerPrecheckSellers`), not only the ones this run audits: a retry, a confirmation or a
+          // `--peer` run audits one or two, and they alone could not tell a wrong reference from a wrong seller.
+          const tokenizerPrecheck = config.verifier?.tokenizerPrecheck === false ? null : createTokenizerPrecheckScreen<KbfReferenceV1>({
+            sellers: tokenizerPrecheckSellers(laneProxy.peers, verifierModelServices(config.verifier, model), targetPolicyFor(model)),
+            proxyBaseUrl: laneProxy.baseUrl,
+            responseAuthReader: responseAuthReader!,
+            limiter: batchLimiter,
+            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
+            onUnbacked: (crowd, referenceDelta) => runProgress!.above(() => console.warn(chalk.yellow(crowd.outvoted
+              ? `${model}: ${crowd.largestGroup} sellers sign ${crowd.groupDelta} input tokens for a text the reference counts as ${referenceDelta}, `
+                + `and only ${crowd.agree} sign the reference's count. The reference may not be the model they serve; such a seller is judged on its questions.`
+              : `${model}: a seller signs input tokens that are off the reference's (${referenceDelta}) in every round, but none of the model's `
+                + `${crowd.deltas.length - 1} other seller(s) signs the reference's count (${crowd.measured - 1} could be read). Nothing backs the reference; such a seller is judged on its questions.`,
+            ))),
+            reference: async (settings) => {
+              const reference = await measureTokenizerReference({
+                ask: async (contents, signal) => askReferenceInputTokens({
+                  model,
+                  settings,
+                  contents,
+                  ...(signal ? { signal } : {}),
+                  maxTokens: TOKENIZER_PRECHECK_RULE.maxTokens,
+                  config: config.verifier,
+                  catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
+                  buyerProxyPort: config.buyer.proxyPort,
+                  requestLimiter: precheckReferenceLimiter,
+                }),
+              })
+              const unmeasured = reference.rounds.find((round) => round.delta === null)
+              if (unmeasured) {
+                runProgress!.above(() => console.warn(chalk.yellow(
+                  `${model}: the tokenizer pre-check has no reference this run (${unmeasured.failure}); its sellers are judged on the questions alone`,
+                )))
+              }
+              return reference
+            },
+          })
           // First audits and extra sets share timeouts and concurrency; only where evidence goes differs.
           const verificationContext = (peer: PeerInfo, auditEvidenceDir: string): ProxyVerificationContext => ({
             proxy: laneProxy,
@@ -1478,6 +1523,7 @@ export async function runVerifierRound(
             batchConcurrencyPromotionLatencyMs: config.verifier?.auditConcurrencyPromotionLatencyMs ?? 30_000,
             batchLimiter,
             sellerThinking,
+            ...(tokenizerPrecheck ? { tokenizerPrecheck } : {}),
           })
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
             if (await stopIfAuditorRemoved()) {
@@ -1565,8 +1611,9 @@ export async function runVerifierRound(
                   resume,
                   checkpointIdentity: { runId, epoch, model },
                 })
-                // New first audits are decided by the close-call rule unless it is turned off.
-                const result = verified.status !== 'SKIPPED' && closeCallRule
+                // New first audits are decided by the close-call rule unless it is turned off. A DIFF from
+                // the tokenizer pre-check asked no question, so no close-call rule decides it.
+                const result = verified.status !== 'SKIPPED' && closeCallRule && verified.tokenizerPrecheck?.outcome !== 'mismatch'
                   ? { ...verified, decisionRule: closeCallRule.id }
                   : verified
                 if (result.status === 'SKIPPED') {
@@ -1582,7 +1629,10 @@ export async function runVerifierRound(
                     auditId: result.auditId, code: result.code, reason: result.reason,
                     outcomeReason: result.outcomeReason, source: result.source,
                     evidencePath: result.evidencePath, at: new Date().toISOString(),
+                    ...(result.cost ? { cost: result.cost } : {}),
                   })
+                  // A pre-check that ran before the seller was skipped was paid for.
+                  if (result.cost) await updateStatus((value) => { value.cost = addAuditCostSummaries(value.cost, result.cost!) })
                   await updateStatus((value) => { value.skipped += 1 })
                   await updateStatus((value) => incrementReasonCount(value.reasonCounts, result.outcomeReason))
                   runProgress!.recordSkip(model, result.outcomeReason)
@@ -1606,7 +1656,9 @@ export async function runVerifierRound(
                 if (!runProgress!.interactive) {
                   console.log(chalk.green(
                     `${result.status} ${target.peer.peerId.slice(0, 12)}… `
-                    + `(${result.parsedProbeCount}/${result.probeCount} scoreable, `
+                    + (result.tokenizerPrecheck?.outcome === 'mismatch'
+                      ? `(tokenizer pre-check: ${describeTokenizerCounts(result.tokenizerPrecheck)}, `
+                      : `(${result.parsedProbeCount}/${result.probeCount} scoreable, `)
                     + `$${result.cost.estimatedCostUsd.toFixed(6)})`,
                   ))
                 }

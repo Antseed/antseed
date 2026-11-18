@@ -2,8 +2,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { Wallet } from 'ethers'
-import { keccak256 } from 'ethers'
+import { keccak256, Wallet } from 'ethers'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
   KBF_CALIBRATION_METHOD,
@@ -48,6 +47,18 @@ import {
   selectEpochQuestionSet,
   type EpochQuestionSetV1,
 } from './probe-bank.js'
+import { ConcurrencyLimiter } from './audit-concurrency.js'
+import {
+  describeTokenizerMismatch,
+  measureTokenizerReference,
+  runTokenizerPrecheck,
+  summarizeTokenizerPrecheck,
+  tokenizerCrowd,
+  tokenizerPrecheckCost,
+  TOKENIZER_PRECHECK_RULE,
+  type TokenizerBackerV1,
+  type TokenizerPrecheckV1,
+} from './tokenizer-precheck.js'
 import {
   emptyAuditCostSummary,
   summarizeAuditExchangeCosts,
@@ -70,6 +81,11 @@ export interface FixtureAudit {
   signer?: Wallet
   /** The run flagged the result as a confirmation of another auditor's DIFF. */
   confirmsDiff?: boolean
+  /**
+   * The seller signs input tokens from another tokenizer: the tokenizer pre-check finds a mismatch and the
+   * audit is DIFF with no question asked. `verdict` must be DIFF.
+   */
+  tokenizerMismatch?: boolean
   reference?: KbfReferenceV1
   /**
    * A close-call first audit (`kbf-extension-v1`): `firstWrong` wrong answers on the first set, then
@@ -282,6 +298,11 @@ export async function writeSignedAuditRun(input: {
         cumulativeCost: cost,
         evidencePath: written.path,
         evidenceHash: written.evidenceHash,
+        ...(evidence.tokenizerPrecheck ? {
+          stats: evidence.result.stats,
+          responseAuthVerified: true,
+          tokenizerPrecheck: summarizeTokenizerPrecheck(evidence.tokenizerPrecheck),
+        } : {}),
       })
     }
     const summaryPath = await writeModelAuditSummary(input.evidenceDir, input.epoch, model, {
@@ -550,6 +571,129 @@ function freshReference(reference: KbfReferenceV1, suffix = 'fresh'): KbfReferen
   return value
 }
 
+/**
+ * A tokenizer pre-check the seller fails in every round, made by the real pre-check against a seller that
+ * genuinely signs responses whose input tokens come from another tokenizer than the reference's.
+ */
+async function signedTokenizerMismatch(input: {
+  audit: FixtureAudit
+  auditor: Wallet
+  runId: string
+  peerId: string
+}): Promise<TokenizerPrecheckV1> {
+  const { audit } = input
+  const modelTokens = (text: string): number => Math.ceil(text.length / 4)
+  const sellerTokens = (text: string): number => 9 + Math.ceil(text.length / 2.5)
+  const reference = await measureTokenizerReference({
+    ask: async (contents) => ({
+      upstream: { name: 'referenceEndpoint', type: 'openai', model: audit.model },
+      results: contents.map((content) => ({ inputTokens: 5 + modelTokens(content), cachedInput: false, provider: 'Provider-A', failure: null })),
+    }),
+  })
+  const target = signedTokenizerSeller({ ...input, signer: audit.signer ?? audit.seller, count: sellerTokens })
+  // The model's other sellers: two that sign the reference's count for the first round's text, each its own pair.
+  const backers = async (): Promise<TokenizerBackerV1[]> => Promise.all([0, 1].map(async () => {
+    const signer = new Wallet(Wallet.createRandom().privateKey)
+    const backer = signedTokenizerSeller({ ...input, peerId: peerIdOf(signer), signer, count: (text) => 30 + modelTokens(text) })
+    const record = await runTokenizerPrecheck({ ...backer, reference })
+    return { peerId: backer.peerId, service: audit.service, ask: record.rounds[0]!.seller[0]! }
+  }))
+  return runTokenizerPrecheck({
+    ...target,
+    reference,
+    crowd: async (own) => {
+      const backing = await backers()
+      return tokenizerCrowd([own.delta, ...backing.map((backer) => backer.ask.delta)], reference.rounds[0]!.delta!, TOKENIZER_PRECHECK_RULE, [], backing)
+    },
+  })
+}
+
+/** A seller of `audit`'s model behind the buyer proxy that signs, with `signer`, the input tokens `count` gives. */
+function signedTokenizerSeller(input: {
+  audit: FixtureAudit
+  auditor: Wallet
+  peerId: string
+  signer: Wallet
+  count: (text: string) => number
+}): Pick<Parameters<typeof runTokenizerPrecheck>[0], 'proxyBaseUrl' | 'peerId' | 'service' | 'limiter' | 'fetchFn' | 'responseAuthReader'> & { peerId: string } {
+  const { audit, peerId } = input
+  const sent = new Map<string, Uint8Array>()
+  const headers = { 'content-type': 'application/json' }
+  return {
+    proxyBaseUrl: 'http://127.0.0.1:8377',
+    peerId,
+    service: audit.service,
+    limiter: new ConcurrencyLimiter(1),
+    fetchFn: async (_url, init) => {
+      const requestId = new Headers(init?.headers).get('x-antseed-request-id')!
+      sent.set(requestId, init!.body as Uint8Array)
+      return Response.json({}, {
+        headers: {
+          'x-antseed-request-id': requestId,
+          'x-antseed-input-tokens': '100',
+          'x-antseed-output-tokens': '20',
+          'x-antseed-total-tokens': '120',
+          'x-antseed-input-usd-per-million': '1',
+          'x-antseed-output-usd-per-million': '2',
+          'x-antseed-estimated-cost-usd': '0.00014',
+          'x-antseed-token-source': 'usage',
+          'x-antseed-provider': 'openai',
+          'x-antseed-service': audit.routedService ?? audit.service,
+        },
+      })
+    },
+    responseAuthReader: {
+      async waitForVerified({ requestId }) {
+        const body = sent.get(requestId)!
+        const content = (JSON.parse(new TextDecoder().decode(body)) as { messages: Array<{ content: string }> }).messages[0]!.content
+        const request = { requestId, method: 'POST', path: '/v1/chat/completions', headers, body }
+        const response = {
+          requestId,
+          statusCode: 200,
+          headers,
+          body: new TextEncoder().encode(JSON.stringify({
+            choices: [{ message: { role: 'assistant', content: 'Noted.' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: input.count(content), completion_tokens: 3 },
+          })),
+        }
+        const payload = createResponseAuthPayload({
+          request,
+          response,
+          buyerPeerId: input.auditor.address,
+          sellerPeerId: peerId,
+          advertisedService: audit.routedService ?? audit.service,
+          channelId: `0x${'cc'.repeat(32)}`,
+          provider: 'openai',
+          responseStartedAt: 1_000,
+          responseCompletedAt: 2_000,
+        }, input.signer)
+        const { signature: _signature, ...unsigned } = payload
+        const requestBytes = encodeHttpRequest(request)
+        const responseBytes = encodeHttpResponse(response)
+        return {
+          requestId,
+          status: 'verified',
+          responseAuth: {
+            ...payload, receivedAt: 2_500, verified: true, verificationError: null,
+            requestPreimage: requestBytes, responsePreimage: responseBytes,
+          },
+          signedPreimages: {
+            encoding: 'antseed-http-codec-v1',
+            signatureEncoding: 'antseed-response-auth-signing-v1',
+            requestBase64: Buffer.from(requestBytes).toString('base64'),
+            responseBase64: Buffer.from(responseBytes).toString('base64'),
+            responseAuthSigningBase64: Buffer.from(encodeResponseAuthSigningPayload(unsigned)).toString('base64'),
+            requestHash: keccak256(requestBytes),
+            responseHash: keccak256(responseBytes),
+          },
+          failureReason: null,
+        }
+      },
+      close() {},
+    },
+  }
+}
+
 async function writeFixtureEvidence(input: {
   audit: FixtureAudit
   reference: KbfReferenceV1
@@ -570,7 +714,12 @@ async function writeFixtureEvidence(input: {
   const wrongProbeIds = input.wrongCount === undefined
     ? undefined
     : new Set(reference.probes.slice(0, input.wrongCount).map((probe) => probe.id))
-  const exchanges = signedExchanges({ ...audit, reference, auditor: input.auditor, runId: input.runId, wrongProbeIds })
+  const tokenizerPrecheck = audit.tokenizerMismatch
+    ? await signedTokenizerMismatch({ audit, auditor: input.auditor, runId: input.runId, peerId })
+    : null
+  const exchanges = tokenizerPrecheck
+    ? []
+    : signedExchanges({ ...audit, reference, auditor: input.auditor, runId: input.runId, wrongProbeIds })
   const answersById = new Map<string, number | null>()
   const matchesById = new Map<string, 0 | 1 | null>()
   for (const exchange of exchanges) {
@@ -584,11 +733,13 @@ async function writeFixtureEvidence(input: {
   const fragment = verifyKbf(reference, { answers, matchVector }, KBF_AUDIT_VERIFY_OPTIONS)
   if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'UNKNOWN fixture verdict')
   const undetermined = audit.verdict === 'UNDETERMINED' && input.wrongCount === undefined
-  const verdict = undetermined ? 'UNDETERMINED' as const : fragment.verdict
-  const verdictReason = undetermined
-    ? 'one or more successful proxy batches lacked valid verified ResponseAuth'
-    : fragment.verdictReason
-  const cost = summarizeAuditExchangeCosts(exchanges)
+  const verdict = tokenizerPrecheck ? 'DIFF' as const : undetermined ? 'UNDETERMINED' as const : fragment.verdict
+  const verdictReason = tokenizerPrecheck
+    ? describeTokenizerMismatch(tokenizerPrecheck)
+    : undetermined
+      ? 'one or more successful proxy batches lacked valid verified ResponseAuth'
+      : fragment.verdictReason
+  const cost = tokenizerPrecheck ? tokenizerPrecheckCost(tokenizerPrecheck) : summarizeAuditExchangeCosts(exchanges)
   const evidence: ProxyAuditEvidenceV1 = {
     version: 1,
     kind: 'antseed-buyer-proxy-kbf-audit',
@@ -606,6 +757,7 @@ async function writeFixtureEvidence(input: {
       selfTest: reference.selfTest,
       probes: reference.probes,
     },
+    ...(tokenizerPrecheck ? { tokenizerPrecheck } : {}),
     exchanges,
     result: {
       selectedProbeCount: reference.probes.length,

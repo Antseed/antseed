@@ -42,6 +42,7 @@ import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { safeServiceSlug } from './slug.js'
 import type { SubmissionCandidate } from './submission-delta.js'
+import { summarizeTokenizerPrecheck, validateTokenizerPrecheck } from './tokenizer-precheck.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
@@ -888,6 +889,22 @@ export function validateAuditMatchesSummary(
   if (result.stats && canonicalHashBytes32(result.stats) !== canonicalHashBytes32(evidence.result.stats)) {
     throw new Error('first check statistics do not match its evidence')
   }
+  // A pre-check must follow from the signed responses it stores. Its mismatch is a DIFF with no question
+  // asked, and only that: a DIFF without a scoreable answer has nothing else to rest on.
+  if (evidence.tokenizerPrecheck) validateTokenizerPrecheck(evidence.tokenizerPrecheck, evidence.target.peerId)
+  // The summary's pre-check is the evidence's: the close-call decision reads the summary's.
+  const stored = evidence.tokenizerPrecheck ? summarizeTokenizerPrecheck(evidence.tokenizerPrecheck) : null
+  if (canonicalJsonStringify(stored) !== canonicalJsonStringify(result.tokenizerPrecheck ?? null)) {
+    throw new Error('the summary\'s tokenizer pre-check is not the one in its evidence')
+  }
+  const precheckDiff = evidence.tokenizerPrecheck?.outcome === 'mismatch'
+  if (precheckDiff && (evidence.result.verdict !== 'DIFF' || evidence.exchanges.length > 0)) {
+    throw new Error('a tokenizer pre-check mismatch is a DIFF with no question asked')
+  }
+  if (!precheckDiff && evidence.result.verdict === 'DIFF' && evidence.result.parsedProbeCount === 0) {
+    throw new Error('DIFF without a scoreable answer or a tokenizer pre-check mismatch')
+  }
+  if (precheckDiff && (result.extension || result.extension2)) throw new Error('extra set after a tokenizer pre-check DIFF')
   // The stage-1 verdict, recomputed from the evidence: the first check's own verdict, or after a
   // close call the pooled verdict of the first check and its extra sets.
   let stageOne: ModelAuditVerdict = evidence.result.verdict

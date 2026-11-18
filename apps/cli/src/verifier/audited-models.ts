@@ -78,11 +78,12 @@ export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.fre
     serviceAliases: ['openai/gpt-6-astra', 'openai-gpt-6-astra'],
     contrastModels: ['anthropic/claude-sonnet-5.5', 'openai/gpt-6.1-terra'],
   },
+  // GPT-6.1 Terra is the cheaper sibling a seller would serve as GPT-6.1 Sol.
   'gpt-6.1-sol': {
     upstreamModel: 'openai/gpt-6.1-sol',
     referenceProvider: OPENAI,
     serviceAliases: ['openai-gpt-61-sol', 'gpt-61-sol', 'openai/gpt-6.1-sol'],
-    contrastModels: ['anthropic/claude-haiku-5.5', 'xiaomi/mimo-v2.6-pro', 'z-ai/glm-5.3'],
+    contrastModels: ['anthropic/claude-haiku-5.5', 'z-ai/glm-5.3', 'openai/gpt-6.1-terra'],
   },
   'grok-4.7': {
     upstreamModel: 'x-ai/grok-4.7',

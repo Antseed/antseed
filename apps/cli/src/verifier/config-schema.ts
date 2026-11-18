@@ -207,6 +207,12 @@ export const VerifierConfigSchema = strictObject({
    */
   diffHoldEpochs: z.number().int().min(0).max(4).optional(),
   /**
+   * The tokenizer pre-check before a seller's questions (`tokenizer-precheck.ts`): a seller whose signed input
+   * tokens are not the audited model's is DIFF without being asked them. On by default; false audits every
+   * seller on the questions alone. Every auditor must use the same value.
+   */
+  tokenizerPrecheck: z.boolean().optional(),
+  /**
    * Retired: a first DIFF is no longer rechecked by the same auditor but confirmed by another one.
    * Accepted and ignored so configs written for earlier releases still load.
    */

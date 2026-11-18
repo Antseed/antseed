@@ -11,6 +11,7 @@ import type {
 } from './model-run.js'
 import type { ModelProbeConsensusEvidenceV1 } from './model-consensus-evidence.js'
 import { safeServiceSlug } from './slug.js'
+import { describeTokenizerCounts } from './tokenizer-precheck.js'
 
 export interface VerifierStatusV1 {
   version: 1
@@ -122,6 +123,7 @@ interface SellerAuditReportResult {
     pooled: { pValueBinomial: number | null; verdict: string; extendNext?: boolean }
   }
   extensionPending?: { reason: string }
+  tokenizerPrecheck?: { rule: string; outcome: string; sellerTokens?: number[]; modelTokens?: number[] }
 }
 
 interface SellerAuditReportFailure {
@@ -422,6 +424,9 @@ export async function renderModelAuditReports(
 function sellerResultReason(
   result: SellerAuditReportResult,
 ): string {
+  if (result.tokenizerPrecheck?.outcome === 'mismatch') {
+    return `tokenizer pre-check (${result.tokenizerPrecheck.rule}): ${describeTokenizerCounts(result.tokenizerPrecheck)}`
+  }
   if (!result.extension) {
     if (result.extensionPending) return `close call waiting for extra questions: ${result.extensionPending.reason}`
     return reportReason(result.outcomeReason)
