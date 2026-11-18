@@ -226,6 +226,7 @@ export {
   SELF_HEALTH_ERROR_STATUS,
   buildSelfHealthErrorResponse,
   describeServiceHealth,
+  VIDEO_DOWNLOAD_BUSY_CODE,
 } from './health/self-health-error.js';
 export {
   buildNetworkServiceOffers,
