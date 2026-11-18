@@ -1,6 +1,6 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe } from '@antseed/node/payments'
-import { readOutput, type OutputReadingV1 } from './output-usage.js'
+import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from './output-usage.js'
 import type { AuditCostSummaryV1 } from './proxy-evidence.js'
 import {
   askSellerSigned,
@@ -559,13 +559,15 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
     }
     if (round.long.count - round.short.count < rule.minGap) throw new Error('an echo round\'s texts are too close at the reference')
   }
+  const requestIds = requestsOf(record).flatMap((request) => request.requestIds)
+  if (new Set(requestIds).size !== requestIds.length) throw new Error('an echo check repeats a request ID: every ask must be its own request')
   const reread = (ask: EchoSellerAskV1, text: string): EchoSellerAskV1 => {
     const again = readAsk(ask.request, text, record.mode)
     if (canonicalJsonStringify(again.reading) !== canonicalJsonStringify(ask.reading) || canonicalJsonStringify(again.reply) !== canonicalJsonStringify(ask.reply)) {
       throw new Error('an echo reading differs from the signed bytes')
     }
     const exchange = signedExchange(ask.request)
-    if (exchange && promptOf(exchange.requestBody) !== outputEchoPrompt(text)) throw new Error('an echo request is not the one the seller signed')
+    if (exchange && !requestCarriesPrompt(exchange.requestBody, outputEchoPrompt(text))) throw new Error('an echo request is not the one the seller signed')
     return again
   }
   const referenceReasoning = record.referenceReasoning
@@ -596,16 +598,6 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
   }
   const judged = judgeOutputEcho({ mode: record.mode, reference: record.reference, referenceReasoning, rounds: record.rounds, precheckMatch: record.precheckMatch, crowd: record.crowd, rule })
   if (judged.outcome !== record.outcome || judged.flag !== record.flag) throw new Error(`the echo check outcome is ${record.outcome}, its rounds give ${judged.outcome}`)
-}
-
-function promptOf(requestBody: Uint8Array): string | null {
-  try {
-    const body = JSON.parse(new TextDecoder().decode(requestBody)) as { messages?: Array<{ role?: unknown; content?: unknown }> }
-    const user = body.messages?.find((message) => message.role === 'user')
-    return typeof user?.content === 'string' ? user.content : null
-  } catch {
-    return null
-  }
 }
 
 function requestsOf(record: OutputEchoV1): SignedSellerRequestV1[] {
@@ -745,7 +737,13 @@ export function createOutputEchoScreen<Settings>(input: {
         precheckMatch: options.precheckMatch,
         crowd,
         rule,
-      })
+      }).catch((error: unknown): OutputEchoV1 => ({
+        rule, mode: reference.mode!, outcome: 'inconclusive', flag: null,
+        reason: `the check failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300),
+        reference: reference.rounds.map((round) => ({ short: { text: round.short.text, count: round.short.count! }, long: { text: round.long.text, count: round.long.count! } })),
+        referenceReasoning: Math.max(0, ...reference.rounds.flatMap((round) => [...round.short.asks, ...round.long.asks].map((ask) => ask.reasoning))),
+        rounds: [], offset: { median: null, fixed: false }, precheckMatch: options.precheckMatch, crowd: null,
+      }))
     },
   }
 }

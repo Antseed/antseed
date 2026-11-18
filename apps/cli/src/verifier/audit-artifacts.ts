@@ -427,13 +427,15 @@ export async function renderModelAuditReports(
 function sellerResultReason(
   result: SellerAuditReportResult,
 ): string {
-  if (result.tokenizerPrecheck?.outcome === 'mismatch') {
+  // Only a flag that ended the audit before its questions is the reason; in a confirmation that went on past it,
+  // the questions decide.
+  if (result.tokenizerPrecheck?.outcome === 'mismatch' && result.parsedProbeCount === 0) {
     return `tokenizer pre-check (${result.tokenizerPrecheck.rule}): ${describeTokenizerCounts(result.tokenizerPrecheck)}`
   }
-  if (result.outputCap?.outcome === 'flag') {
+  if (result.outputCap?.outcome === 'flag' && result.parsedProbeCount === 0) {
     return `cap check (${result.outputCap.rule}): ${describeOutputCapSummary(result.outputCap)}: the reply limit was ignored`
   }
-  if (result.outputEcho?.outcome === 'flag') return `echo check (${result.outputEcho.rule}): ${result.outputEcho.reason}`
+  if (result.outputEcho?.outcome === 'flag' && result.parsedProbeCount === 0) return `echo check (${result.outputEcho.rule}): ${result.outputEcho.reason}`
   if (!result.extension) {
     if (result.extensionPending) return `close call waiting for extra questions: ${result.extensionPending.reason}`
     return reportReason(result.outcomeReason)

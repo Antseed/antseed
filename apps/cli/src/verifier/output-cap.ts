@@ -1,7 +1,7 @@
 import { randomInt } from 'node:crypto'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe } from '@antseed/node/payments'
-import { readOutput, type OutputReadingV1 } from './output-usage.js'
+import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from './output-usage.js'
 import type { AuditCostSummaryV1, ProxyAuditExchangeCostV1 } from './proxy-evidence.js'
 import {
   askSellerSigned,
@@ -110,14 +110,18 @@ export interface OutputCapReferenceV1 {
   measurement: OutputCapMeasurementV1 | null
 }
 
+/** Ways of asking for a count, so the request is not one fixed sentence; each gives a long plain answer on one line. */
+const CAP_PROMPTS: ReadonlyArray<(start: number) => string> = [
+  (start) => `Count upward from ${start} in English words, without digits, separated by commas, on a single line. Keep counting until you are stopped. Write nothing else.`,
+  (start) => `Please write the numbers from ${start} upward as English words, one after another on one line, separated by commas. Do not stop on your own and add nothing else.`,
+  (start) => `Starting at ${start}, spell out each following number in English words on a single line, with commas between them. Continue as long as you can, with no other text.`,
+  (start) => `List every whole number from ${start} onward written out in words, comma separated, all on one line. Go on until you run out of room and write nothing besides the list.`,
+]
+
 /** The request: a plain count in words on one line, from a random start, under the limit. */
 export function outputCapPrompt(random: (max: number) => number = randomInt): { prompt: string; start: number } {
   const start = 101 + random(800)
-  return {
-    start,
-    prompt: `Count upward from ${start} in English words, without digits, separated by commas, on a single line. `
-      + 'Keep counting until you are stopped. Write nothing else.',
-  }
+  return { start, prompt: CAP_PROMPTS[random(CAP_PROMPTS.length)]!(start) }
 }
 
 export function outputCapLimit(rule: OutputCapRule = OUTPUT_CAP_RULE, random: (max: number) => number = randomInt): number {
@@ -159,8 +163,9 @@ function measurementRule(rule: OutputCapRule): TokenizerPrecheckRule {
 export function answerToMeasure(reading: OutputReadingV1 | null, cap: number, rule: OutputCapRule = OUTPUT_CAP_RULE): string | null {
   if (!readable(reading, cap)) return null
   if (reading!.billedOutputTokens! <= cap + rule.tolerance) return null
-  const text = reading!.text
-  if (!text || text.trim().length === 0) return null
+  // Measured without its outer whitespace, which can only make it shorter.
+  const text = reading!.text?.trim()
+  if (!text) return null
   const b = ` ${text}`
   return isSafeProbe(b) ? b : null
 }
@@ -252,13 +257,16 @@ export async function runOutputCap(input: SignedSellerRequestInput & {
   const rule = input.rule ?? OUTPUT_CAP_RULE
   const asks: OutputCapAskV1[] = []
   const cap = outputCapLimit(rule)
+  // The reference's measurements stop when the audit stops.
+  const stop = input.signal
+  const ask: TokenizerReferenceAsk = stop ? (contents, signal) => input.ask(contents, signal ? AbortSignal.any([signal, stop]) : stop) : input.ask
   for (let index = 0; index < rule.sellerAsks; index += 1) {
     const { prompt } = outputCapPrompt()
     const request = await askSellerSigned(input, outputCapRequestBody({ service: input.service, prompt, cap, thinking: input.thinking ?? null }))
     const exchange = signedExchange(request)
     const reading = exchange ? readOutput(exchange.requestBody, exchange.response) : null
     const b = answerToMeasure(reading, cap, rule)
-    const measurement = b ? await measureAnswer(input.ask, b, rule) : null
+    const measurement = b ? await measureAnswer(ask, b, rule) : null
     asks.push({ prompt, cap, request, reading, measurement, class: classifyCapAnswer(reading, cap, measuredTokens(measurement, rule), rule) })
     // Asked again only when the first answer ignored the limit.
     if (asks[0]!.class !== 'cap-ignored') break
@@ -274,14 +282,22 @@ export function validateOutputCap(record: OutputCapV1): void {
   const rule = outputCapRuleById(record.rule?.id)
   if (!rule) throw new Error(`unknown cap check rule ${String(record.rule?.id)}`)
   if (canonicalJsonStringify(record.rule) !== canonicalJsonStringify(rule)) throw new Error('the cap check rule differs from the one this CLI knows')
-  if (!Array.isArray(record.asks) || record.asks.length === 0 || record.asks.length > rule.sellerAsks) throw new Error('the cap check has no asks, or too many')
+  if (!Array.isArray(record.asks) || record.asks.length > rule.sellerAsks) throw new Error('the cap check has no asks, or too many')
+  if (record.asks.length === 0) {
+    // A check that failed before it asked anything is recorded as inconclusive and nothing else.
+    if (record.outcome !== 'inconclusive') throw new Error('a cap check without asks must be inconclusive')
+    return
+  }
+  const requestIds = record.asks.flatMap((ask) => ask.request.requestIds)
+  if (new Set(requestIds).size !== requestIds.length) throw new Error('a cap check repeats a request ID: two asks must be two requests')
+  if (record.asks.length > 1 && record.asks[0]!.class !== 'cap-ignored') throw new Error('a cap check asked again after an answer that did not ignore the limit')
   const cap = record.asks[0]!.cap
   for (const ask of record.asks) {
     if (ask.cap !== cap || !Number.isInteger(cap) || cap < rule.minCap || cap > rule.maxCap) throw new Error('a cap check ask has a limit outside the rule')
     const exchange = signedExchange(ask.request)
     const reading = exchange ? readOutput(exchange.requestBody, exchange.response) : null
     if (canonicalJsonStringify(reading) !== canonicalJsonStringify(ask.reading)) throw new Error('a cap check reading differs from the signed bytes')
-    if (exchange && promptOf(exchange.requestBody) !== ask.prompt) throw new Error('a cap check prompt is not the one the seller signed')
+    if (exchange && !requestCarriesPrompt(exchange.requestBody, ask.prompt)) throw new Error('a cap check prompt is not the one the seller signed')
     const b = answerToMeasure(reading, cap, rule)
     if ((b === null) !== (ask.measurement === null) || (b !== null && ask.measurement!.b !== b)) {
       throw new Error('a cap check measurement is not of the answer the seller signed')
@@ -294,16 +310,6 @@ export function validateOutputCap(record: OutputCapV1): void {
   }
   const judged = judgeOutputCap(record.asks, rule)
   if (judged.outcome !== record.outcome) throw new Error(`the cap check outcome is ${record.outcome}, its asks give ${judged.outcome}`)
-}
-
-function promptOf(requestBody: Uint8Array): string | null {
-  try {
-    const body = JSON.parse(new TextDecoder().decode(requestBody)) as { messages?: Array<{ role?: unknown; content?: unknown }> }
-    const user = body.messages?.find((message) => message.role === 'user')
-    return typeof user?.content === 'string' ? user.content : null
-  } catch {
-    return null
-  }
 }
 
 export function outputCapRequestCount(record: OutputCapV1): number {
@@ -431,7 +437,10 @@ export function createOutputCapScreen<Settings>(input: {
         ask: input.ask(settings),
         thinking,
         rule,
-      })
+      }).catch((error: unknown): OutputCapV1 => ({
+        rule, outcome: 'inconclusive', asks: [],
+        reason: `the check failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300),
+      }))
     },
   }
 }

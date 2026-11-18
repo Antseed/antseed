@@ -1728,11 +1728,11 @@ export async function runVerifierRound(
                 if (!runProgress!.interactive) {
                   console.log(chalk.green(
                     `${result.status} ${target.peer.peerId.slice(0, 12)}… `
-                    + (result.tokenizerPrecheck?.outcome === 'mismatch'
+                    + (result.tokenizerPrecheck?.outcome === 'mismatch' && askedNoQuestion(result)
                       ? `(tokenizer pre-check: ${describeTokenizerCounts(result.tokenizerPrecheck)}, `
-                      : result.outputCap?.outcome === 'flag'
+                      : result.outputCap?.outcome === 'flag' && askedNoQuestion(result)
                         ? `(cap check: ${describeOutputCapSummary(result.outputCap)}, `
-                        : result.outputEcho?.outcome === 'flag'
+                        : result.outputEcho?.outcome === 'flag' && askedNoQuestion(result)
                           ? `(echo check: ${result.outputEcho.reason}, `
                       : `(${result.parsedProbeCount}/${result.probeCount} scoreable, `)
                     + `$${result.cost.estimatedCostUsd.toFixed(6)})`,

@@ -126,7 +126,8 @@ test('right before a send, a result another auditor judged meanwhile, or whose c
   const OTHER = '0x' + '2'.repeat(40)
   const model = modelHash('model-a')
   const service = serviceHash('model-a')
-  const audit = { modelHash: model, results: [{ agentId: 7n, serviceHash: service, verdict: VERIFIER_VERDICT.SAME }] }
+  // Its evidence's results matter only to the same-check rule, which this test does not pass.
+  const audit = { modelHash: model, results: [{ agentId: 7n, serviceHash: service, verdict: VERIFIER_VERDICT.SAME }], evidence: { results: [] } }
   const report = (verdict: number, reports: number, required: number) => ({
     agentId: 7n, serviceHash: service, auditor: OTHER, modelHash: model, verdict, round: 0, reports, required,
     blockNumber: 10, logIndex: 0, transactionHash: '0x01',

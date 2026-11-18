@@ -51,6 +51,8 @@ export function readOutput(requestBody: Uint8Array, response: { statusCode: numb
   if (!answer) return { ...head, ...NO_READING }
   const read = readAnswer(answer)
   if (!read) return { ...head, ...NO_READING }
+  // A count the seller did not sign is no count: usage with input only is billed as no output by the buyer.
+  if (!signsOutputCount(answer['usage'])) return { ...head, ...NO_READING }
   const billed = usageForBilling(requestBody, response)
   const reasoningTokens = itemisedReasoning(answer['usage'])
   return {
@@ -68,20 +70,22 @@ export function readOutput(requestBody: Uint8Array, response: { statusCode: numb
 function readAnswer(answer: Record<string, unknown>): { text: string | null; finished: boolean; reasoningMarker: boolean; shape: OutputReadingV1['shape'] } | null {
   const choices = answer['choices']
   const hasError = answer['error'] !== undefined && answer['error'] !== null
+  // An error sent with status 200 has no reading, whatever else it carries.
+  if (hasError) return null
   if (Array.isArray(choices)) {
+    // One answer only: several choices are not one reply, whatever the request asked.
+    if (choices.length !== 1) return null
     const first = choices[0]
     if (!isRecord(first)) return null
     const message = isRecord(first['message']) ? first['message'] : null
     if (!message) return null
     const content = message['content']
-    const text = choices.length !== 1 ? null
-      : typeof content === 'string' ? content
+    const text = typeof content === 'string' ? content
         : Array.isArray(content) ? textParts(content, ['text', 'output_text']) : content === null ? '' : null
     const reasoningMarker = ['reasoning', 'reasoning_content', 'reasoning_details', 'thinking'].some((key) => present(message[key]))
       || (Array.isArray(content) && content.some((part) => isRecord(part) && (part['type'] === 'thinking' || part['type'] === 'reasoning')))
     return { text, finished: first['finish_reason'] === 'stop', reasoningMarker, shape: 'chat' }
   }
-  if (hasError) return null
   if (answer['type'] === 'message' && Array.isArray(answer['content'])) {
     const blocks = answer['content'] as unknown[]
     const reasoningMarker = blocks.some((block) => isRecord(block) && (block['type'] === 'thinking' || block['type'] === 'redacted_thinking'))
@@ -109,6 +113,29 @@ function textParts(parts: readonly unknown[], types: readonly string[]): string 
     text += part['text']
   }
   return text
+}
+
+/** The usage names an output count (`completion_tokens` or `output_tokens`), as a non-negative integer. */
+function signsOutputCount(usage: unknown): boolean {
+  if (!isRecord(usage)) return false
+  return ['completion_tokens', 'output_tokens'].some((key) => Number.isInteger(usage[key]) && (usage[key] as number) >= 0)
+}
+
+/** Every string inside a JSON value, depth first. */
+export function stringsOf(value: unknown): string[] {
+  if (typeof value === 'string') return [value]
+  if (Array.isArray(value)) return value.flatMap(stringsOf)
+  if (isRecord(value)) return Object.values(value).flatMap(stringsOf)
+  return []
+}
+
+/**
+ * Whether the request the seller signed carries `prompt` as one of its texts, in any API shape the buyer proxy
+ * translates to (a Chat message's content, a Messages text block, a Responses input): the check that the seller was
+ * asked what the record says it was asked.
+ */
+export function requestCarriesPrompt(requestBody: Uint8Array, prompt: string): boolean {
+  return stringsOf(parseObject(requestBody)).includes(prompt)
 }
 
 /** The reasoning count in `completion_tokens_details` or `output_tokens_details`; null when neither has one. */

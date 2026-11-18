@@ -412,13 +412,15 @@ const SAMPLE_ECHO_CROWDS: ReadonlyArray<readonly [number, ReadonlyArray<number |
 ]
 
 /** First auditor's checks, the checks that flagged and passed here, and the verdict here. */
-const SAMPLE_CONFIRMATIONS: ReadonlyArray<readonly [AuditCheckId[], AuditCheckId[], AuditCheckId[], 'SAME' | 'DIFF']> = [
+const SAMPLE_CONFIRMATIONS: ReadonlyArray<readonly [AuditCheckId[], AuditCheckId[], AuditCheckId[], 'SAME' | 'DIFF' | 'UNDETERMINED']> = [
   [['tokens'], ['tokens'], [], 'DIFF'],
   [['kbf'], ['tokens'], [], 'DIFF'],
   [['kbf'], ['tokens', 'kbf'], [], 'DIFF'],
   [['tokens'], [], ['tokens', 'kbf'], 'SAME'],
   [['tokens'], [], ['kbf'], 'SAME'],
   [['output-cap'], ['output-cap'], [], 'DIFF'],
+  [['kbf'], ['tokens'], [], 'UNDETERMINED'],
+  [['tokens'], [], [], 'UNDETERMINED'],
 ]
 
 /** Billed output, itemised reasoning and measured answer length of sample answers on a limit of 16. */

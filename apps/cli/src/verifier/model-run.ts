@@ -72,7 +72,7 @@ import {
   type TokenizerPrecheckSeller,
   type TokenizerPrecheckV1,
 } from './tokenizer-precheck.js'
-import type { AuditCheckId } from './flagging-checks.js'
+import { flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
 import {
   describeOutputEchoFlag,
   outputEchoCost,
@@ -95,6 +95,7 @@ import { advertisedServices, findAdvertisedService } from './service-discovery.j
 import { mapWithAdaptiveConcurrency, type AuditTaskLimiter } from './audit-concurrency.js'
 import { writeJsonAtomic } from './atomic-files.js'
 import {
+  confirmationUndecidedReason,
   sanitizeOutcomeSummary,
   withBatchCounts,
   type VerificationOutcomeReasonV1,
@@ -251,12 +252,12 @@ export interface ProxyVerificationContext {
    * When set, each first audit runs the cap check after thinking discovery (`output-cap.ts`): a seller whose
    * delivered answer measures more than twice the reply limit, twice, is DIFF and is asked no question.
    */
-  outputCap?: Pick<OutputCapScreen<KbfReferenceV1>, 'check'>
+  outputCap?: Pick<OutputCapScreen<KbfReferenceV1>, 'ready' | 'check'>
   /**
    * When set, each first audit runs the echo check after the cap check (`output-echo.ts`): a seller that bills
    * output the model did not write, held against the model's other sellers, is DIFF and is asked no question.
    */
-  outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'check'>
+  outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
 }
 
 /** What a seller's batch requests carry: its thinking suppression, token budget and timeout. */
@@ -740,6 +741,11 @@ export async function verifyModelTarget(input: {
   // question batch: the auditor's own waiting is never the seller's silence.
   let precheck: TokenizerPrecheckV1 | null = null
   const screen = input.context.tokenizerPrecheck
+  // The cap and echo checks' references are measured here too, before the seller's clock starts: waiting for them
+  // is the auditor's time, not the seller's.
+  if (pending.length > 0 && exchangeByBatch.size === 0 && !input.extension) {
+    await Promise.all([input.context.outputCap?.ready(input.reference), input.context.outputEcho?.ready(input.reference)])
+  }
   if (pending.length > 0 && exchangeByBatch.size === 0 && !input.extension && screen) {
     try {
       await screen.ready(input.reference)
@@ -1114,11 +1120,28 @@ export async function verifyModelTarget(input: {
   const completedAt = Date.now()
   const authenticated = exchanges.every((exchange) => exchange.status !== 'succeeded'
     || exchange.responseAuth.status === 'verified')
-  const verdict = authenticated ? fragment.verdict : 'UNDETERMINED'
-  const verdictReason = authenticated
-    ? fragment.verdictReason
-    : 'one or more successful proxy batches lacked valid verified ResponseAuth'
-  const outcomeReason = verdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
+  // A confirmation of a DIFF the pre-check, the cap check or the echo check flagged is decided by that check alone;
+  // when it neither flagged nor passed, the audit is an undecided attempt, audited again within the confirmation
+  // attempts (`epoch-plan.ts`), and never sent (`same-check.ts`). The questions' own close calls decide themselves.
+  const undecidedChecks = input.confirming && !input.confirming.checks.includes('kbf')
+    && !input.confirming.checks.some((check) => {
+      const decided = [
+        ...flaggingChecks({ tokenizerPrecheck: precheck ?? undefined, outputCap: outputCap ?? undefined, outputEcho: outputEcho ?? undefined, exchanges: [] }, null),
+        ...passedChecks({ tokenizerPrecheck: precheck ?? undefined, outputCap: outputCap ?? undefined, outputEcho: outputEcho ?? undefined, exchanges: [] }, null),
+      ]
+      return decided.includes(check)
+    })
+    ? input.confirming.checks
+    : null
+  const verdict = undecidedChecks ? 'UNDETERMINED' : authenticated ? fragment.verdict : 'UNDETERMINED'
+  const verdictReason = undecidedChecks
+    ? `the check this confirmation must repeat (${undecidedChecks.join(', ')}) did not decide`
+    : authenticated
+      ? fragment.verdictReason
+      : 'one or more successful proxy batches lacked valid verified ResponseAuth'
+  const outcomeReason = undecidedChecks
+    ? confirmationUndecidedReason(undecidedChecks, batches.length)
+    : verdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
   // Pre-check and discovery requests are paid for like batches, so the audit that sent them counts them.
   const extraCosts = [...preQuestionCosts, discoveryCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
   const withDiscovery = (summary: AuditCostSummaryV1) => addAuditCostSummaries(summary, ...extraCosts)

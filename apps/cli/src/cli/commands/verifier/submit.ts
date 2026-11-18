@@ -476,6 +476,15 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           await writeModelAuditEvidence(audit)
           if (publishIpfs && !publication) publication = await publish(evidenceDir, banksDir, manifest, audit, pinataJwt!, readEpoch)
           const evidenceUri = publication?.uri ?? previous?.evidenceUri ?? ''
+          // A DIFF is sent only with a publication of exactly this evidence: a confirmer reads which check flagged from
+          // it (same-check.ts). This holds for the payload sent, also one rebuilt from an earlier attempt's ledger.
+          if (audit.results.some((result) => result.verdict === verifierVerdict('DIFF')) && !publication) {
+            held += 1
+            unsent.push(`${audit.key}: not sent: its DIFF has no publication of this evidence`)
+            console.warn(chalk.yellow(`${audit.key}: not sent: a DIFF goes out only with its evidence published to IPFS, and this evidence is not. `
+              + 'Submit again with publication on; the DIFF is otherwise lost this epoch.'))
+            continue
+          }
           const entry = ledgerEntry(audit, evidenceUri, publication)
           ledger.models[audit.key] = entry
           await writeModelAuditLedger(ledgerPath, ledger)
@@ -597,7 +606,7 @@ async function epochSubmissionManifest(
  * too, so the check never fails open.
  */
 export async function recheckAuditBeforeSend(input: {
-  audit: Pick<PreparedModelAudit, 'modelHash' | 'results'> & { evidence?: Pick<PreparedModelAudit['evidence'], 'results'> }
+  audit: Pick<PreparedModelAudit, 'modelHash' | 'results'> & { evidence: Pick<PreparedModelAudit['evidence'], 'results'> }
   auditor: string
   readEvents: () => Promise<readonly ServiceAuditedEvent[]>
   readMyConfirmations: (events: readonly ServiceAuditedEvent[]) => Promise<ReadonlySet<string>>
@@ -612,7 +621,7 @@ export async function recheckAuditBeforeSend(input: {
     })
     const reasons = await filter(input.audit.modelHash, input.audit.results.map((result) => ({ ...result, auditedAt: 0 })))
     const blocked = reasons.filter((reason): reason is string => reason !== null)
-    if (blocked.length === 0 && input.sameCheck && input.audit.evidence) {
+    if (blocked.length === 0 && input.sameCheck) {
       const changed = await sameCheckChanged(input.audit.modelHash, input.audit.evidence.results, input.sameCheck(events))
       if (changed) blocked.push(changed)
     }

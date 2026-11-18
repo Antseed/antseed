@@ -16,6 +16,7 @@ export type VerificationOutcomeReasonCode =
   | 'malformed_output'
   | 'transport_error'
   | 'audit_failed'
+  | 'confirmation_undecided'
 
 export type VerificationOutcomeReasonSource =
   | 'transport'
@@ -57,6 +58,22 @@ export function withBatchCounts(
   totalBatchCount: number,
 ): VerificationOutcomeReasonV1 {
   return { ...reason, affectedBatchCount, totalBatchCount }
+}
+
+/**
+ * A confirmation whose check to repeat neither flagged nor passed (an inconclusive pre-check, a cap or echo check that
+ * could not decide): an undecided attempt, audited again within the confirmation attempts, never sent.
+ */
+export function confirmationUndecidedReason(checks: readonly string[], totalBatchCount: number): VerificationOutcomeReasonV1 {
+  return {
+    code: 'confirmation_undecided',
+    summary: `the check this confirmation must repeat (${checks.join(', ')}) did not decide; the seller is audited again`,
+    retryable: true,
+    source: 'verifier',
+    affectedBatchCount: 0,
+    totalBatchCount,
+    nextAction: 'retry later',
+  }
 }
 
 export function failureOutcomeReason(message: string): VerificationOutcomeReasonV1 {

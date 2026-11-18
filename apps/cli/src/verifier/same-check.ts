@@ -27,7 +27,9 @@ import { normalized } from './utils.js'
  *   next time the seller is audited. An UNDETERMINED would not be neutral: one report records it, and it would
  *   replace a live SAME (or, in a hold epoch, a recorded DIFF) on a finding nobody confirmed;
  * - nothing flagged here: a SAME is sent only when a check that flagged there passed here; when it was
- *   inconclusive or did not run, nothing is sent. An UNDETERMINED follows the existing rules;
+ *   inconclusive or did not run, nothing is sent;
+ * - an UNDETERMINED answering a waiting DIFF is never sent: the run audits the seller again within its
+ *   confirmation attempts, and an UNDETERMINED with no waiting DIFF follows the existing rules;
  * - the first auditor's evidence cannot be read, or does not hold: nothing is sent now, and the next submit
  *   reads it again.
  *
@@ -110,7 +112,6 @@ export function sameCheckFilter(input: {
     if (candidate.verdict === VERIFIER_VERDICT.DIFF && candidate.flaggedBy.length === 0) {
       return { kind: 'exclude', reason: 'a DIFF that names no check that flagged it is not valid evidence, so it is not sent' }
     }
-    if (candidate.verdict === VERIFIER_VERDICT.UNDETERMINED) return null
     const reports = waiting.get(opinionKey(candidate.agentId, candidate.serviceHash, modelHash)) ?? []
     if (reports.length === 0) return null
     let firsts: FirstFlag[]
@@ -131,6 +132,16 @@ export function sameCheckFilter(input: {
 export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag[]): SameCheckDecision {
   const ownChecks = [...candidate.flaggedBy]
   const decisions = firsts.map((first): SameCheckDecision => {
+    // An UNDETERMINED answering a waiting DIFF is never sent: one report records it, and it would replace the
+    // seller's live SAME. The run audits the seller again within its confirmation attempts (`model-run.ts`).
+    if (candidate.verdict === VERIFIER_VERDICT.UNDETERMINED) {
+      return {
+        kind: 'exclude',
+        reason: ownChecks.length > 0
+          ? `another check (${describeChecks(ownChecks)}) flagged and ${describeChecks(first.checks)}, which flagged the waiting DIFF, did not decide; nothing is sent`
+          : `${describeChecks(first.checks)}, which flagged the waiting DIFF, did not decide in this audit; nothing is sent, so the seller keeps its record`,
+      }
+    }
     const record = (sameCheck: AuditCheckId | null, passedCheck?: AuditCheckId): SameCheckConfirmationV1 => ({
       auditor: first.auditor,
       evidenceUri: first.evidenceUri,
@@ -297,6 +308,10 @@ export async function attachFirstFlags(
   }
 }
 
+/** The oldest a first auditor's seller evidence may be at its report: one epoch (7 days), and a day for submitting. */
+const EVIDENCE_MAX_AGE_SECONDS = 8 * 24 * 60 * 60
+const CLOCK_SLACK_SECONDS = 60 * 60
+
 interface PublishedModelAudit {
   evidenceUri: string
   evidenceHash: string
@@ -340,6 +355,7 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
   if (typeof evidence['modelHash'] !== 'string' || normalized(evidence['modelHash']) !== normalized(report.modelHash)) {
     throw new Error('its evidence is for another model than its report')
   }
+  const reportedAt = await reader.blockTimestamp(report.blockNumber)
   const directory = posix.dirname(indexPath)
   const resolve = (path: unknown): string => {
     if (typeof path !== 'string') throw new Error('a published path is missing')
@@ -356,9 +372,18 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
     if (proxyAuditEvidenceHash(parsed).toLowerCase() !== audit['evidenceHash'].toLowerCase()) {
       throw new Error(`its audit evidence for agent ${agentId} does not match the hash its model audit names`)
     }
-    // The file must be about this seller and service: a hash only proves which file was published.
+    // The file must be about this seller, service and model, and made in the epoch of the report: a hash only
+    // proves which file was published.
     if (parsed.target.agentId !== agentId.toString() || normalized(hashService(parsed.target.service)) !== normalized(serviceHash)) {
       throw new Error(`its audit evidence linked for agent ${agentId} is about another seller or service`)
+    }
+    if (normalized(modelHash(parsed.reference.referenceModel)) !== normalized(report.modelHash)) {
+      throw new Error(`its audit evidence linked for agent ${agentId} is about another model`)
+    }
+    const madeAt = Date.parse(parsed.createdAt) / 1_000
+    // The evidence's time is the first auditor's clock, the report's the chain's: an hour of slack between them.
+    if (!Number.isFinite(madeAt) || madeAt > reportedAt + CLOCK_SLACK_SECONDS || madeAt < reportedAt - EVIDENCE_MAX_AGE_SECONDS) {
+      throw new Error(`its audit evidence linked for agent ${agentId} was not made in the epoch of its report`)
     }
     return parsed
   }

@@ -73,6 +73,8 @@ export function needsExtension(result: Pick<ModelVerificationTargetResult,
   // A set whose ResponseAuth failed, or a seller that refuses the request profile (temperature), is
   // UNDETERMINED whatever its p-value; extra questions do not fix that.
   if (result.responseAuthVerified === false || result.outcomeReason?.code === 'request_profile_incompatible') return false
+  // A confirmation whose check to repeat did not decide is audited again whole; its questions are not extended.
+  if (result.outcomeReason?.code === 'confirmation_undecided') return false
   const sets = extensionSets(result)
   if (sets.length === 0) {
     return classifyKbfFirstLook(result.stats, { minCoverage: KBF_AUDIT_VERIFY_OPTIONS.minCoverage, rule }) === 'extend'

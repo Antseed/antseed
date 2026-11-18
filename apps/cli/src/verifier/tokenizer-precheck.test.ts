@@ -1412,3 +1412,14 @@ test('a confirmation of a DIFF the questions flagged asks the questions even whe
   assert.equal(tokens.questionRequests.length, 0)
   assert.deepEqual(flaggingChecks(tokens.evidence, tokens.result.status), ['tokens'])
 })
+
+test('a confirmation of a pre-check DIFF whose pre-check did not run is an undecided attempt, never a SAME', async () => {
+  // A resumed or unscreened audit runs no pre-check: the check to repeat did not decide, so the questions' SAME is
+  // not this confirmation's answer. It is UNDETERMINED with a reason the epoch plan audits again, and submit sends nothing.
+  const { result, evidence, questionRequests } = await audit({ usage: MODEL_TOKENIZER, precheck: false, confirming: ['tokens'] })
+  assert.ok(questionRequests.length > 0)
+  assert.equal(result.status, 'UNDETERMINED')
+  assert.equal(result.outcomeReason?.code, 'confirmation_undecided')
+  assert.equal(needsExtension({ ...result, decisionRule: 'kbf-extension-v2' }), false)
+  assert.doesNotThrow(() => validateAuditMatchesSummary(evidence, result))
+})

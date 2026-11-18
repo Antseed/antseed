@@ -28,7 +28,9 @@ const MODEL = 'model-a'
 const CID = 'bafytestfirstauditor'
 const TX = `0x${'ab'.repeat(32)}`
 /** The first report's block time; every fixture audit is made well over an hour after it. */
-const REPORTED_AT = 1_000
+const REPORTED_AT = Date.parse('2026-10-07T00:10:00.000Z') / 1_000
+/** When the second auditor's fixture audits were made: more than an hour after the first report. */
+const CONFIRMED_AT = '2026-10-07T01:30:00.000Z'
 
 const fixture = (agentId: string, verdict: FixtureAudit['verdict'], tokenizerMismatch = false): FixtureAudit => ({
   agentId, seller: sellers[Number(agentId) - 1]!, model: MODEL, service: MODEL, verdict, ...(tokenizerMismatch ? { tokenizerMismatch } : {}),
@@ -40,7 +42,7 @@ async function prepare(directory: string, auditor: Wallet, runId: string, audits
 } = {}) {
   const evidenceDir = join(directory, runId, 'evidence')
   const banksDir = join(directory, runId, 'banks')
-  const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: '7', auditor, audits })
+  const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: '7', auditor, audits, ...(auditor === second ? { completedAt: CONFIRMED_AT } : {}) })
   const prepared = await prepareModelAudits({
     evidenceDir, banksDir, manifest, auditor: auditor.address,
     resolveAgentOwner: async () => randomWallet().address,
@@ -182,7 +184,7 @@ test('the first auditor\'s checks are read from its published evidence, close ca
     assert.deepEqual(decisions[1]?.kind === 'exclude' && decisions[1].confirmation?.firstChecks, ['kbf'])
     assert.equal(decisions[2]?.kind, 'send', 'a DIFF decided by a close call\'s extra sets reads as the questions')
     assert.deepEqual(decisions[2]?.kind === 'send' && decisions[2].confirmation.firstChecks, ['kbf'])
-    assert.equal(decisions[3], null, 'an UNDETERMINED follows the existing rules')
+    assert.equal(decisions[3]?.kind, 'exclude', 'an UNDETERMINED answering a waiting DIFF is never sent')
     assert.equal(decisions[4], null, 'a DIFF with no waiting DIFF to answer is a first look')
     assert.equal(published.fetched.filter((path) => path.endsWith('publication.json')).length, 1, 'the publication is read once per transaction')
     // A DIFF that names no check is never sent, first look or not.
@@ -321,6 +323,39 @@ test('with its evidence not published, submit sends no DIFF and says why', async
     const { prepared } = await prepare(directory, first, 'first', [fixture('1', 'SAME'), fixture('2', 'DIFF', true)], { unpublishedDiffs: 'not published' })
     assert.deepEqual(prepared.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[1n, VERIFIER_VERDICT.SAME]])
     assert.deepEqual(prepared.excluded.map((entry) => [entry.agentId, entry.reason]), [['2', 'not published']])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('an UNDETERMINED answering a waiting DIFF is never sent, whether another check flagged or none decided', () => {
+  const kbf: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['kbf'] }
+  const otherFlagged = decide(candidate(2n, VERIFIER_VERDICT.UNDETERMINED, ['tokens']), [kbf])
+  assert.equal(otherFlagged.kind, 'exclude')
+  assert.match(otherFlagged.kind === 'exclude' ? otherFlagged.reason : '', /another check \(the token-count pre-check\) flagged and the questions, which flagged the waiting DIFF, did not decide; nothing is sent/)
+  const undecided = decide(candidate(2n, VERIFIER_VERDICT.UNDETERMINED, []), [kbf])
+  assert.match(undecided.kind === 'exclude' ? undecided.reason : '', /did not decide in this audit; nothing is sent, so the seller keeps its record/)
+})
+
+test('a first auditor\'s seller file about another model, or from another epoch, holds the result back', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-same-check-'))
+  try {
+    const { audit, files } = await firstAuditor(directory)
+    const decideWith = async (published: PublishedFlagReader) => {
+      const [decision] = await sameCheckFilter({ events: [report(2n, VERIFIER_VERDICT.DIFF)], auditor: second.address, reader: published })(
+        audit.modelHash, [candidate(2n, VERIFIER_VERDICT.DIFF, ['tokens'])],
+      )
+      assert.equal(decision?.kind, 'hold')
+      return decision?.kind === 'hold' ? decision.reason : ''
+    }
+    // The report is from more than eight days after the file was made: another epoch.
+    assert.match(await decideWith({ ...reader(files, audit.evidenceHash), blockTimestamp: async () => REPORTED_AT + 9 * 86_400 }), /was not made in the epoch of its report/)
+    // The report names another model than the file is about.
+    const otherModel = `0x${'22'.repeat(32)}`
+    const [decision] = await sameCheckFilter({ events: [report(2n, VERIFIER_VERDICT.DIFF, { modelHash: otherModel })], auditor: second.address, reader: {
+      ...reader(files, audit.evidenceHash, { modelHash: otherModel }),
+    } })(otherModel, [candidate(2n, VERIFIER_VERDICT.DIFF, ['tokens'])])
+    assert.equal(decision?.kind, 'hold')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

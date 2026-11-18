@@ -9,7 +9,7 @@ import { FIXTURE_CONFIG, writeSignedAuditRun, type FixtureAudit } from './model-
 import test from 'node:test'
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
-import { readOutput, type OutputReadingV1 } from './output-usage.js'
+import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from './output-usage.js'
 import type { TokenizerReferenceAsk } from './tokenizer-precheck.js'
 import {
   OUTPUT_CAP_RULE,
@@ -167,7 +167,7 @@ test('a missing cap and a cap the translation changed decide nothing', () => {
 })
 
 test('the request is a plain count with the seller\'s thinking settings and the drawn limit last', () => {
-  const { prompt } = outputCapPrompt(() => 7)
+  const { prompt } = outputCapPrompt((max) => (max === 800 ? 7 : 0))
   assert.match(prompt, /^Count upward from 108 in English words/)
   assert.deepEqual(outputCapRequestBody({ service: 's', prompt, cap: 24, thinking: { overrides: { max_tokens: 4096, reasoning: { effort: 'none' } }, assistantPrefill: 'Sure:' } }), {
     model: 's',
@@ -355,4 +355,37 @@ test('a cap record of every outcome, written to its evidence file, passes the ch
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('the reader abstains on an error sent with choices, several choices, and usage without an output count', () => {
+  const body = (value: unknown) => ({ statusCode: 200, body: bytes(value) })
+  const answer = { choices: [{ message: { content: words(80) }, finish_reason: 'length' }], usage: { prompt_tokens: 20, completion_tokens: 900 } }
+  assert.equal(readOutput(capped(16), body({ ...answer, error: { message: 'upstream failed' } })).billedOutputTokens, null)
+  assert.equal(readOutput(capped(16), body({ ...answer, choices: [answer.choices[0], answer.choices[0]] })).billedOutputTokens, null)
+  assert.equal(readOutput(capped(16), body({ ...answer, usage: { prompt_tokens: 20 } })).billedOutputTokens, null, 'input usage only is not a signed output count')
+  assert.equal(classifyCapAnswer(readOutput(capped(16), body({ ...answer, usage: { prompt_tokens: 20 } })), 16, null), 'unread')
+  assert.equal(readOutput(capped(16), body(answer)).billedOutputTokens, 900, 'a valid answer that stopped at the limit stays readable')
+})
+
+test('the prompt is found in the signed request in every shape the proxy translates to', () => {
+  const prompt = 'Count upward from 300'
+  assert.equal(requestCarriesPrompt(bytes({ messages: [{ role: 'user', content: prompt }] }), prompt), true)
+  assert.equal(requestCarriesPrompt(bytes({ messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }] }), prompt), true)
+  assert.equal(requestCarriesPrompt(bytes({ input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }] }), prompt), true)
+  assert.equal(requestCarriesPrompt(bytes({ input: prompt }), prompt), true)
+  assert.equal(requestCarriesPrompt(bytes({ messages: [{ role: 'user', content: 'Count upward from 301' }] }), prompt), false)
+})
+
+test('two asks must be two requests, and the request sentence varies', async () => {
+  const record = await runOn(fakeSeller(() => ({ text: words(120), billed: 900 })))
+  const copied = structuredClone(record)
+  copied.asks[1] = structuredClone(copied.asks[0]!)
+  assert.throws(() => validateOutputCap(copied), /repeats a request ID/)
+  const sentences = new Set(Array.from({ length: 4 }, (_unused, index) => outputCapPrompt(() => index).prompt.split(' 10')[0]))
+  assert.equal(sentences.size, 4)
+})
+
+test('a check that fails is an inconclusive record, which rechecks at submit', () => {
+  validateOutputCap({ rule: OUTPUT_CAP_RULE, outcome: 'inconclusive', reason: 'the check failed: boom', asks: [] })
+  assert.throws(() => validateOutputCap({ rule: OUTPUT_CAP_RULE, outcome: 'pass', reason: '', asks: [] }), /without asks must be inconclusive/)
 })
