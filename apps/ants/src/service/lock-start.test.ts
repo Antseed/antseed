@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { multicallRead, projectedEarlyExitSlashBps } from '@antseed/node/payments';
 import { normalLockStarts, readLockHistory, resolveNormalStarts, restructureSources, startCandidates, type LineageRow, type LockHistory } from './lock-start.js';
-import { mergeLockStartProblem, MERGE_LOCK_START_MISMATCH } from '../position-actions.js';
+import { mergeLockStartProblem, mergeRuleHint, MERGE_LOCK_START_MISMATCH } from '../position-actions.js';
 
 vi.mock('@antseed/node/payments', async original => ({ ...await original<object>(), multicallRead: vi.fn() }));
 
@@ -40,6 +40,13 @@ describe('normal lock start', () => {
     expect(mergeLockStartProblem([{ ...positionA, normalStartEpoch: undefined }, { ...positionB, normalStartEpoch: undefined }])).toBeNull();
     // After: the rebuilt start blocks it with a reason.
     expect(mergeLockStartProblem([positionA, positionB])).toBe(MERGE_LOCK_START_MISMATCH);
+  });
+
+  it('names the shared lock start on an allowed merge and the lock start rule when a start is unknown', () => {
+    expect(mergeRuleHint([{ normalStartEpoch: 35 }, { normalStartEpoch: 35 }])).toBe('Combine the selected positions into one. They share the seller, the unlock date and the lock start (epoch 35).');
+    for (const starts of [[35, null], [null, null], [35, undefined]]) {
+      expect(mergeRuleHint(starts.map(normalStartEpoch => ({ normalStartEpoch })))).toContain('Positions merge only when they share the seller, the unlock date and the lock start');
+    }
   });
 
   it('follows split and move chains and lets a max-lock disable reset the start', () => {

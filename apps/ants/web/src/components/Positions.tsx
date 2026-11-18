@@ -1,6 +1,6 @@
 import { useMemo, useState, type MouseEvent } from 'react';
 import type { ExtendRequest, MaxLockRequest, MergeRequest, MoveRequest, PoolConfigView, PoolView, PositionView, SplitRequest } from '../../../src/api-types';
-import { mergeLockStartProblem, positionActionEpoch, positionActionProblem, scheduledMaxLock, type PositionAction } from '../../../src/position-actions';
+import { mergeLockStartProblem, mergeRuleHint, positionActionEpoch, positionActionProblem, scheduledMaxLock, type PositionAction } from '../../../src/position-actions';
 import { api } from '../api';
 import { useEpochInfo } from '../app-context';
 import { usePageData } from '../data';
@@ -147,7 +147,7 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
           <span className="bulk-bar-count">{selectedRows.length} selected · {formatAnts(sumAmounts(selectedRows), 4)} ANTS</span>
           <button type="button" className="link-button" onClick={clearSelection}>clear</button>
           <div className="bulk-bar-actions">
-            <span className="btn-wrap" title={mergeProblem ?? 'Combine the selected positions into one.'}>
+            <span className="btn-wrap" title={mergeProblem ?? mergeRuleHint(selectedRows)}>
               <Button variant="outline" size="sm" disabled={mergeProblem !== null} onClick={() => setBulkAction('merge')}>Merge {selectedRows.length > 1 ? selectedRows.length : ''}</Button>
             </span>
             <Button variant="outline" size="sm" onClick={() => setBulkAction('withdraw')}>Withdraw {selectedRows.length}</Button>
