@@ -38,13 +38,13 @@
 }
 .eye, .eyePart { position: absolute; display: block; }
 .eyePart { inset: 0; background: var(--sheet) no-repeat; background-size: var(--sheet-size); }
-.white { background-position: var(--white); }
-.iris {   /* the pupil, kept inside the white */
+.eyePart.white { background-position: var(--white); }
+.eyePart.iris {   /* the pupil, kept inside the white */
   background: none;
   -webkit-mask: var(--sheet) var(--white) / var(--sheet-size) no-repeat;
   mask: var(--sheet) var(--white) / var(--sheet-size) no-repeat;
 }
-.pupil { background-position: var(--pupil); will-change: transform; }
+.eyePart.pupil { background-position: var(--pupil); will-change: transform; }
 .lid { opacity: 0; }
 
 @media (max-width: 999px) {

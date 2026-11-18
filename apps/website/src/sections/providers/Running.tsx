@@ -17,14 +17,14 @@ const PATHS: readonly Path[] = [
     Scene: ModelsWindow,
   },
   {
-    title: 'Handle incoming requests.',
-    text: 'Review the request and its terms. Accept, decline or counter.',
+    title: 'Serve incoming requests.',
+    text: 'Requests that match your models and prices arrive and are served automatically.',
     painting: PAINTINGS.shore,
     Scene: RequestWindow,
   },
 ];
 
-/** Running a provider: setting prices, then reviewing what comes in. */
+/** Running a provider: setting prices, then serving what the network routes in. */
 export function Running(): JSX.Element {
   return (
     <Section cmp="providers/run" railClassName={styles.rail} labelledBy="providers-running-title">
@@ -36,8 +36,8 @@ export function Running(): JSX.Element {
         size="compact"
         eyebrow="Running your provider"
         id="providers-running-title"
-        title={['You set the terms.', <span className={styles.second}>You review every request.</span>]}
-        sub="Choose what you serve and at what price. Accept, decline or counter what comes in."
+        title={['You set the terms.', <span className={styles.second}>The network brings the requests.</span>]}
+        sub="Choose what you serve and at what price. Requests that match your terms are routed to you and served automatically."
         subClassName={styles.sub}
       />
       <div className={styles.cards}>

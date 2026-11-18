@@ -4,23 +4,23 @@
   composes: dots from '../../components/dots.module.css';
   --dots-top: 2px;
   --dots-bottom: 2px;
-  grid-template-columns: repeat(4, 1fr);
 }
-.step { place-items: start; align-content: start; gap: 8px; }
+.rail .steps { grid-template-columns: repeat(4, 1fr); }
+.steps .step { place-items: start; align-content: start; gap: 8px; }
 .number { margin-bottom: 16px; font: 400 40px/1 var(--site-font-pixel); font-variation-settings: 'ELSH' 40; color: var(--site-accent); }
 .name { font: 500 18px/26px var(--site-font); color: var(--site-text); }
 .text { font: 400 16px/24px var(--site-font); color: var(--site-text-body); text-wrap: pretty; }
 .command { display: flex; justify-content: center; padding: 48px var(--site-pad) 56px; }
 
 @media (max-width: 1199px) {
-  .steps { grid-template-columns: repeat(2, 1fr); }
+  .rail .steps { grid-template-columns: repeat(2, 1fr); }
   .steps .step:nth-child(3) { --dots-left: 0px; }
   .steps .step:nth-child(n+3) { --dots-top: 2px; }
 }
 @media (max-width: 760px) {
   .rail { padding-top: 72px; }
   .head { padding-bottom: 40px; }
-  .steps { grid-template-columns: 1fr; }
+  .rail .steps { grid-template-columns: 1fr; }
   .number { margin-bottom: 8px; font-size: 32px; }
   .command { padding: 32px var(--site-pad) 40px; }
 }

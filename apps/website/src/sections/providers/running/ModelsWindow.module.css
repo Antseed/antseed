@@ -7,9 +7,9 @@
 .off { opacity: .55; }
 
 .box { display: grid; place-items: center; width: 14px; height: 14px; border: 1px solid rgba(10, 26, 18, .28); border-radius: 3px; background: rgba(255, 255, 255, .9); }
-.boxOn { border: 0; background: var(--scene-accent); }
+.box.boxOn { border: 0; background: var(--scene-accent); }
 :global(:root[data-theme='dark']) .box { border-color: rgba(190, 228, 170, .36); background: rgba(255, 255, 255, .04); }
-:global(:root[data-theme='dark']) .boxOn { background: #4f7a24; }
+:global(:root[data-theme='dark']) .box.boxOn { background: #4f7a24; }
 
 .price {
   display: flex;
@@ -25,7 +25,7 @@
 }
 .price b { font-weight: 400; }
 .price span { font-size: 10.5px; color: var(--scene-muted); }
-.priceOn { border: 1px solid var(--scene-accent); box-shadow: var(--scene-ring); }
+.price.priceOn { border: 1px solid var(--scene-accent); box-shadow: var(--scene-ring); }
 .caret { width: 1.2px; height: 13px; background: var(--scene-accent); }
 .blink { animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }

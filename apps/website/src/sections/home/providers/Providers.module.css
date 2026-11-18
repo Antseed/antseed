@@ -13,7 +13,7 @@
 
 .path .panel { margin-bottom: 16px; aspect-ratio: 3 / 2; border-radius: var(--site-radius-card); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); background-position: 50% 85%; }
 /* the stall drawn 1.4× the panel's width from its right edge, so it stands left and the listing has room on the right */
-.path .ownPanel { background-size: 140% auto; background-position: 100% 85%; }
+.path .panel.ownPanel { background-size: 140% auto; background-position: 100% 85%; }
 .ownFilm { --film-left: -40%; --film-width: 140%; }
 
 .path .pathTitle { margin-bottom: 4px; font-size: 30px; line-height: 34px; font-weight: 400; letter-spacing: -1px; }
@@ -25,7 +25,7 @@
   .head .title { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
   .path .panel { aspect-ratio: 16 / 9; }
   .path .pathTitle { font-size: 24px; line-height: 28px; letter-spacing: -.8px; }
-  .path .ownPanel { background-position: 100% 79%; }
+  .path .panel.ownPanel { background-position: 100% 79%; }
   .ownFilm { --film-y: 79%; }
 }
 @media (max-width: 1199px) {
@@ -41,6 +41,6 @@
   .path .copy { padding-right: 0; }
 }
 @media (max-width: 520px) {
-  .path .ownPanel { aspect-ratio: 5 / 4; background-size: 145% auto; }   /* a little taller, so the listing has room */
+  .path .panel.ownPanel { aspect-ratio: 5 / 4; background-size: 145% auto; }   /* a little taller, so the listing has room */
   .ownFilm { --film-left: -45%; --film-width: 145%; }
 }

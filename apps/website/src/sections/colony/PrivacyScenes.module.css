@@ -1,7 +1,7 @@
 .scene { position: absolute; inset: 0; }
 .glass { position: absolute; }
 .led { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: #98c463; }
-.ledOn { background: var(--site-lime); box-shadow: 0 0 8px rgba(200, 245, 60, .6); }
+.led.ledOn { background: var(--site-lime); box-shadow: 0 0 8px rgba(200, 245, 60, .6); }
 /* the icons in lime */
 .icon { color: #a6ff3c; }
 

@@ -38,7 +38,7 @@
   color: var(--site-text-body);
   text-wrap: pretty;
 }
-.actions { align-self: start; margin-top: 16px; }
+.card .actions { align-self: start; margin-top: 16px; }
 
 /* the cards rise in, one after another */
 .card {

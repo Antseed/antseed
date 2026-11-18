@@ -654,6 +654,12 @@ importers:
         specifier: ^0.183.1
         version: 0.183.1
     devDependencies:
+      '@babel/parser':
+        specifier: ^7.29.0
+        version: 7.29.0
+      '@babel/types':
+        specifier: ^7.29.0
+        version: 7.29.0
       '@docusaurus/module-type-aliases':
         specifier: ^3.7.0
         version: 3.9.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)

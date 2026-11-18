@@ -1,6 +1,6 @@
 .ant { position: absolute; left: var(--ant-x); top: var(--ant-y); z-index: -2; width: var(--ant-w); height: var(--ant-h);
   background: var(--sheet) 0 0 / var(--sheet-w) var(--sheet-h) no-repeat; transition: filter 1.2s ease; }
-.hand { z-index: 1; background-position-y: calc(-1 * var(--ant-h)); pointer-events: none; }
+.ant.hand { z-index: 1; background-position-y: calc(-1 * var(--ant-h)); pointer-events: none; }
 .mirrored.ant { transform: scaleX(-1); }
 .ahead.ant { z-index: 1; }
 .ahead.hand { visibility: hidden; }

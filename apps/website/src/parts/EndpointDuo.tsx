@@ -4,6 +4,7 @@ import {FeatureList, type Feature} from './FeatureList';
 import {Terminal, type TerminalBlock} from './Terminal/Terminal';
 import styles from './EndpointDuo.module.css';
 import {PAINTINGS} from '../lib/paintings';
+import {sectionTitleId} from '../lib/sectionTitleId';
 
 export type EndpointCode = {
   blocks: readonly TerminalBlock[];
@@ -27,7 +28,7 @@ const TAGLINE = 'ONE ENDPOINT · EVERY TOOL';
 
 /** How a tool connects: the pitch and its points beside a terminal on a painting. */
 export function EndpointDuo({cmp, id, title, lead, points, action, code}: Props): JSX.Element {
-  const titleId = `${cmp.replace('/', '-')}-title`;
+  const titleId = sectionTitleId(cmp);
   return (
     <Duo
       cmp={cmp}

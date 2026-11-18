@@ -11,8 +11,10 @@
   align-items: flex-start;
   gap: 36px;
   padding: 64px;
+  padding-left: var(--duo-text-left, 64px);
 }
-.flip .text { padding-left: 96px; }
+/* a variable, not a `.flip .text` rule, so a page's own `.x .text` never ties with it */
+.flip { --duo-text-left: 96px; }
 .head {
   --head-gap: 16px;
   display: flex;
@@ -24,8 +26,8 @@
 @media (max-width: 899px) {
   .rail { grid-template-columns: 1fr; min-height: 0; }
   .flip .text { order: -1; }
-  .text, .flip .text { padding: 72px var(--site-pad) 56px; gap: 28px; }
+  .text { padding: 72px var(--site-pad) 56px; gap: 28px; }
 }
 @media (max-width: 760px) {
-  .text, .flip .text { padding: 56px var(--site-pad); }
+  .text { padding: 56px var(--site-pad); }
 }

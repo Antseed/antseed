@@ -20,7 +20,7 @@
   100% { opacity: 1; transform: none; }
 }
 
-.head { font-size: 13px; }
+.line.head { font-size: 13px; }
 .when { font-size: 11px; color: var(--scene-muted); }
 .title { display: flex; align-items: center; gap: 8px; }
 .tile { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 5px; background: rgba(255, 255, 255, .9); }
@@ -29,20 +29,29 @@
 .model { display: flex; align-items: center; gap: 6px; font: 400 12px/normal var(--site-font-mono); }
 .model img { display: block; width: 14px; height: 14px; }
 .from { font-size: 11px; color: var(--scene-muted); }
-.actions { display: flex; flex-wrap: wrap; gap: 7px; }
-.tap { animation: tap .24s; }
-@keyframes tap {
-  50% { transform: translateY(1px); box-shadow: 0 1px 0 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -1px 0 0 #3b5e17; }
+/* the request's status: served, with what it earned; each new request is served a moment after it arrives (useRequestLoop) */
+.status { display: grid; align-items: center; min-height: 28px; font-size: 11px; }
+.status > * { grid-area: 1 / 1; display: flex; align-items: center; gap: 5px; }
+.serving { color: var(--scene-muted); opacity: 0; }
+.done { color: var(--scene-accent); }
+.status .check { color: var(--scene-accent); }
+.serve .serving { animation: serving 2.6s both; }
+.serve .done { animation: served 2.6s both; }
+@keyframes serving {
+  0%, 12% { opacity: 0; }
+  13%, 80% { opacity: 1; }
+  90%, 100% { opacity: 0; }
 }
-.cursor { left: 61px; top: 190px; }
+@keyframes served {
+  0%, 12% { opacity: 1; }
+  13%, 80% { opacity: 0; }
+  90%, 100% { opacity: 1; }
+}
 
 @container (max-width: 359.9px) {
   .previous { left: 24px; width: 244px; }
   .current { left: 6px; width: 268px; padding: 12px; }
   .model { font-size: 11.5px; }
-  .actions { gap: 4px; }
-  .actions .action { padding: 0 7px; font-size: 11.5px; }
-  .cursor { left: 22px; top: 187px; }
 }
 @container (max-width: 279.9px) {
   .previous { left: 18px; right: 18px; width: auto; }

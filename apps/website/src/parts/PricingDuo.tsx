@@ -5,6 +5,7 @@ import {ModelCard} from './ModelCard';
 import {useMarket} from '../lib/antscan';
 import styles from './PricingDuo.module.css';
 import {PAINTINGS} from '../lib/paintings';
+import {sectionTitleId} from '../lib/sectionTitleId';
 
 const LIVE_PRICES = 'https://antseedstats.com/network';
 const SHOWN = 4;
@@ -20,7 +21,7 @@ type Props = {
 
 /** What it costs: the page's promise beside the network's most used text models and their prices (live), over a painting. */
 export function PricingDuo({cmp, id, title, accent, lead}: Props): JSX.Element {
-  const titleId = `${cmp.replace('/', '-')}-title`;
+  const titleId = sectionTitleId(cmp);
   const cardsRef = useRef<HTMLUListElement>(null);
   const cards = useMarket(cardsRef).lanes.text.filter((m) => m.price !== null).slice(0, SHOWN);
   return (

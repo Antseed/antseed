@@ -1,7 +1,9 @@
 .root { position: relative; }
 
+/* the reset in :where() has no specificity, so the minifier can't let it override the rules after it */
+:where(.trigger) { all: unset; }
 .trigger {
-  all: unset; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; color: var(--site-ink); font: 500 14px/20px var(--site-font);
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer; color: var(--site-ink); font: 500 14px/20px var(--site-font);
 }
 .trigger:hover { color: var(--site-accent); }
 .trigger:focus-visible { outline: 2px solid #789f00; outline-offset: 3px; border-radius: 4px; }

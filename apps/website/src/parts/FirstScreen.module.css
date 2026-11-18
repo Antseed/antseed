@@ -75,12 +75,15 @@
 }
 
 /* stacked inside a rail below 1200: the offer over the painting, the rail's dotted sides round both */
-@media (max-width: 1199px) {
-  .railStack {
+@media (min-width: 761px) and (max-width: 1199px) {
+  .screen.railStack {
     --gap-title: var(--stacked-title, 16px);
     --gap-sub: var(--stacked-sub, 16px);
     --gap-actions: var(--stacked-actions, 28px);
   }
+  .railStack.inset .text { padding-bottom: 48px; }
+}
+@media (max-width: 1199px) {
   .railStack .grid::before { display: block; }
   .railStack .grid {
     --dots-left: 2px;
@@ -95,7 +98,6 @@
   .railStack .panel { aspect-ratio: var(--rail-ratio, 16 / 9); }
   .railStack .panel .painting { --wash-position: var(--rail-focus, var(--focus, 50% 50%)); }
   .inset .grid { padding-bottom: 20px; }
-  .inset .text { padding-bottom: 48px; }
   .inset .panel { margin: 0 16px; border-radius: var(--site-radius-card); }
   .largeTablet .offer .title { font-size: 56px; line-height: 54px; }
   .tightTablet .offer .title { font-size: 45px; line-height: .96; }
@@ -122,7 +124,7 @@
 }
 @media (min-width: 1200px) {
   .grid { height: calc(100svh - var(--site-nav-height)); }
-  .onPage { background: var(--site-bg); }
+  .grid.onPage { background: var(--site-bg); }
   .text { padding-block: 0; }
   .panel { margin: 16px 16px 16px 0; border-radius: 16px; }
   .actions { margin-top: 16px; }

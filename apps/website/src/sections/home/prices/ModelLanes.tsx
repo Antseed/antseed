@@ -27,7 +27,8 @@ type Props = {
 const repeat = (models: readonly Model[], times: number) => Array.from({length: times}, (_, r) => models.map((m, i) => ({m, r, i}))).flat();
 
 /** The medium's models in two lanes of cards, the second going the other way. */
-export function ModelLanes({medium, models: rows, carried, side, width}: Props): JSX.Element {
+export function ModelLanes({medium, models: rows, carried, side, width}: Props): JSX.Element | null {
+  if (rows.length === 0) return null;   // no cards to repeat into a loop
   const laneCount = rows.length >= TWO_LANES_FROM ? 2 : 1;
   const slot = (carried ? carriedWidth(side) + CARRY_GAP : side + CARD_GAP);
   const loopWidth = Math.max(MIN_LOOP_WIDTH, width + 3 * slot);

@@ -10,7 +10,7 @@
   background: none;
 }
 .table tbody .row:last-child { --dots-bottom: 2px; }
-.head { --dots-top: 0px; }
+.row.head { --dots-top: 0px; }
 .row th, .row td { padding: 20px 0 21px; border: 0; background: none; text-align: left; }
 .head th { padding: 0 0 16px; font: 400 18px/1.4 var(--site-font-pixel); font-variation-settings: 'ELSH' 20; color: var(--site-text-muted); }
 .head th.good { color: var(--site-accent); }
@@ -21,7 +21,7 @@
 .hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 @media (max-width: 760px) {
-  .head { display: none; }
+  .row.head { display: none; }
   .row { grid-template-columns: 1fr; row-gap: 8px; padding: 20px 0; }
   .row th, .row td { padding: 0; }
   .row th[scope='row'] { margin-bottom: 4px; }

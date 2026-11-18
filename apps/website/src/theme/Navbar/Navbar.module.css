@@ -1,6 +1,6 @@
 .frame { position: relative; z-index: 10; }
 /* doc-like pages: the docs sidebar and TOC are laid out under a nav that stays put */
-.sticky { position: sticky; top: 0; z-index: var(--ifm-z-index-fixed, 200); }
+.frame.sticky { position: sticky; top: 0; z-index: var(--ifm-z-index-fixed, 200); }
 .home { padding: 16px 16px 0; background: var(--site-bg-hero); }
 
 /* .frame raises it over Infima's .navbar rules, which the same element carries */
@@ -23,9 +23,9 @@
 /* gaps: 24 from Blog to the switch, 16 from the switch to the buttons, 8 between buttons */
 .actions { display: flex; align-items: center; gap: 8px; }
 .pages { display: flex; gap: 32px; margin-right: 16px; font: 500 14px/20px var(--site-font); white-space: nowrap; }
-.themeSwitch { margin: 4px 8px 4px 0; }
+.actions .themeSwitch { margin: 4px 8px 4px 0; }
 .search { display: flex; margin-right: 16px; }
-.searchHidden { display: none; }
+.search.searchHidden { display: none; }
 
 @media (max-width: 1239px) {
   .links { gap: 24px; }
@@ -43,5 +43,6 @@
 }
 /* a phone: the marketing pages' nav on the sections' content line (the rail's edge + 20); the homepage's sits in the hero's frame */
 @media (max-width: 760px) {
+  .actions .download { display: none; }   /* a phone has no download in the bar */
   .frame.page .nav { padding-inline: calc((100% - var(--site-rail)) / 2 + 20px); }
 }

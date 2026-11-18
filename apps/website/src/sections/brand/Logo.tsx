@@ -28,7 +28,7 @@ function Plate({plate}: {plate: LogoPlate}): JSX.Element {
 /** The logo on its two grounds, its files, and the three rules for placing it. */
 export default function Logo(): JSX.Element {
   return (
-    <Section cmp="brand/logo" id="logo" labelledBy="logo-title" pad="all">
+    <Section cmp="brand/logo" id="logo" labelledBy="logo-title" pad="all" className={styles.section}>
       <SectionHead
         eyebrow="Logo"
         id="logo-title"

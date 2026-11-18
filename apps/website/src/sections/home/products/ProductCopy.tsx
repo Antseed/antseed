@@ -26,11 +26,11 @@ export function ProductCopy({eyebrow, titleId, title, sub, subWidth, features, p
       <div data-rv="">
         <DuoHead>
           <Heading as="h2" id={titleId} title={title} secondLine="break" strong />
-          <Sub className={styles.sub} style={{'--sub-width': `${subWidth}px`} as CSSProperties}>{sub}</Sub>
+          <Sub style={{'--sub-max': `${subWidth}px`} as CSSProperties}>{sub}</Sub>
         </DuoHead>
       </div>
       <FeatureList items={features} />
-      <Actions fill reveal>
+      <Actions fill reveal className={styles.actions}>
         <Button href={primary.href} className={styles.primary}>{primary.label}</Button>
         <Button href={secondary.href} variant="ghost">{secondary.label}</Button>
       </Actions>

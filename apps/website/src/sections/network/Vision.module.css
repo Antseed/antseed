@@ -16,5 +16,5 @@
   .rail { padding-top: 72px; }
   .vision .head { padding-bottom: 40px; }
   .vision .principles { grid-template-columns: 1fr; }
-  .vision .principle { --dots-left: 0px; padding: 24px var(--site-pad) 28px; }
+  .vision .principle { padding: 24px var(--site-pad) 28px; }
 }

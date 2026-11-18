@@ -99,6 +99,11 @@ function deal(cards: Array<LaneModel & {maker: string}>, medium: Medium): LaneMo
   return lane;
 }
 
+/** `wanted` when it has models, else the first medium that has some: a live read can empty the medium on show. */
+export function mediumWithModels(lanes: Readonly<Record<Medium, readonly LaneModel[]>>, wanted: Medium): Medium {
+  return lanes[wanted].length > 0 ? wanted : MEDIA.find((m) => lanes[m].length > 0) ?? wanted;
+}
+
 /** The lanes of the homepage price board, and the count of models on offer. Text cards need a price; media cards show one once sellers' unit prices reach Antscan. */
 export function selectMarket(market: MarketplaceResponse, list: ListPricesResponse): MarketView | null {
   if (!Array.isArray(market.offerings) || !(market.totals?.uniqueServices > 0)) return null;

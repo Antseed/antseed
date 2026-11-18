@@ -40,7 +40,7 @@
 @media (prefers-reduced-motion: no-preference) {
   .sheet:not([hidden]) { animation: arrive .22s cubic-bezier(.2, .8, .2, 1) both; }
   .sheet:not([hidden]) :is(.row, .subRow, .actions) { animation: unroll .34s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(40ms + var(--i, 9) * 35ms); }
-  .sheet.closing { animation: fadeOut .14s ease-in both; }
+  .sheet.closing:not([hidden]) { animation: fadeOut .14s ease-in both; }
   .sheet.closing * { animation: none; }
 }
 @keyframes arrive { from { opacity: 0; translate: 0 -8px; } }

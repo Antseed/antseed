@@ -1,5 +1,6 @@
+/* the reset in :where() has no specificity, so the minifier can't let it override the rules after it */
+:where(.button) { all: unset; }
 .button {
-  all: unset;
   box-sizing: border-box;
   display: block;
   max-width: 300px;

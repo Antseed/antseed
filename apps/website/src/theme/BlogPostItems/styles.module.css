@@ -29,7 +29,7 @@
 }
 
 /* Featured card: text left, illustration right (homepage split-card idiom) */
-.cardFeatured {
+.card.cardFeatured {
   padding: 24px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(240px, 360px);
@@ -177,7 +177,7 @@
   .grid {
     grid-template-columns: 1fr;
   }
-  .cardFeatured {
+  .card.cardFeatured {
     padding: 16px;
     display: flex;
     flex-direction: column;

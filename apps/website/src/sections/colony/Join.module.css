@@ -1,6 +1,6 @@
 .join .rail { padding: 0; }
 .scene { background: var(--site-bg); }
-.head { padding: 112px var(--site-pad) 16px; text-wrap: balance; }
+.scene .head { padding: 112px var(--site-pad) 16px; text-wrap: balance; }
 .join .sub { max-width: 620px; text-wrap: wrap; }
 .painting { aspect-ratio: 1312 / 560; }
 .join .painting { background-position: 50% 72%; }
@@ -52,7 +52,7 @@
 
 .answer { display: flex; align-items: center; gap: 10px; min-height: 24px; margin-top: 16px; font: 400 16px/24px var(--site-font); color: var(--site-text-small); }
 .answerDot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #a7b3ba; }
-.first { color: var(--site-text); }
+.answer.first { color: var(--site-text); }
 .first .answerDot { background: #b9ee2a; box-shadow: 0 0 0 1px rgba(10, 26, 18, .25); }
 :global(:root[data-theme='dark']) .first .answerDot { background: var(--site-lime); box-shadow: none; }
 .later .answerDot { background: var(--site-accent); }
@@ -61,16 +61,16 @@
 .note { font: 400 13px/18px var(--site-font); color: var(--site-text-small); }
 
 @media (min-width: 1200px) {
-  .head { padding-top: 124px; }
+  .scene .head { padding-top: 124px; }
   .fit { padding-bottom: 124px; }
 }
-@media (max-width: 1023px) { .head { padding-top: 88px; } }
+@media (max-width: 1023px) { .scene .head { padding-top: 88px; } }
 @media (max-width: 899px) {
   .fit { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
   .cta { align-items: stretch; }
 }
 @media (max-width: 760px) {
-  .head { --head-gap: 16px; padding: 72px var(--site-pad) 32px; }
+  .scene .head { --head-gap: 16px; padding: 72px var(--site-pad) 32px; }
   .painting { aspect-ratio: 16 / 10; }
   .join .painting { background-position: 50% 75%; }   /* the whole story: the three at their Macs and the fourth walking up */
   .fit { padding: 32px var(--site-pad) 72px; }

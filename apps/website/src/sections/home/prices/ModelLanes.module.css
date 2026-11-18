@@ -2,7 +2,7 @@
 
 /* sliding lanes: two copies, moved by one copy; paused until the flow is on screen ([data-moving]), and under the pointer */
 .slideLane { display: flex; width: max-content; animation: slide var(--duration, 120s) linear infinite paused; }
-.reverse { animation-direction: reverse; }
+.slideLane.reverse { animation-direction: reverse; }
 [data-moving] .slideLane { animation-play-state: running; }
 [data-moving] .slideLane:hover { animation-play-state: paused; }
 @keyframes slide { to { transform: translateX(-50%); } }
@@ -15,5 +15,5 @@
 /* reduced motion: each lane scrolls by hand */
 @media (prefers-reduced-motion: reduce) {
   .slideLane { width: auto; animation: none; overflow-x: auto; scrollbar-width: none; }
-  .copy { display: none; }
+  .track.copy { display: none; }
 }

@@ -5,5 +5,4 @@
 @media (max-width: 760px) {
   .rail { padding-top: 72px; }
   .head { padding-bottom: 40px; }
-  .row .point { --dots-left: 0px; }
 }

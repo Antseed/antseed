@@ -32,7 +32,7 @@ export function NetworkBoard({steps, step, leaving, windows, stageRef, svgRefs, 
     <div className={clsx(styles.board, className)}>
       <div ref={stageRef} className={styles.stage} role="img" aria-label={STAGE_LABEL}>
         {steps.map((s, i) => (
-          <div key={s.name} className={clsx(styles.layer, i === step && styles.on, i === leaving && styles.leaving, !s.holders && styles.noHolders)}>
+          <div key={s.name} className={clsx(styles.layer, i === step ? styles.on : i === leaving && styles.leaving, !s.holders && styles.noHolders)}>
             <Drawing step={s} svgRef={svgRefs[i]} />
           </div>
         ))}

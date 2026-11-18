@@ -34,7 +34,7 @@ const isExternal = (href: string) => /^https?:\/\//.test(href);
 
 /** The site's button: green (primary) or ghost. External links open in a new tab. */
 export function Button({variant = 'primary', size = 'default', className, children, ...target}: Props): JSX.Element {
-  const cls = clsx(styles.button, variant === 'ghost' && styles.ghost, SIZE_CLASS[size], target.disabled && styles.disabled, className);
+  const cls = clsx(styles.button, variant === 'ghost' ? styles.ghost : styles.primary, SIZE_CLASS[size], target.disabled && styles.disabled, className);
   if (target.disabled) return <span className={cls} aria-disabled="true">{children}</span>;
   const {href, onClick} = target;
   return isExternal(href)

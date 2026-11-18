@@ -1,11 +1,11 @@
 /* square; the tile over the surface is opaque so no margin dots show through it */
 .card { flex: none; display: flex; flex-direction: column; width: var(--card-size); height: var(--card-size); padding: 18px;
   border-radius: var(--site-radius-card); background: linear-gradient(var(--site-tile) 0 0), var(--site-surface); }
-.carried { background: none; }   /* the lane positions it */
+.card.carried { background: none; }   /* the lane positions it */
 .carried::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: linear-gradient(var(--site-tile) 0 0), var(--site-surface); }
 .top { display: flex; align-items: flex-start; justify-content: space-between; }
 .mark { width: 24px; height: 24px; background: var(--site-text); -webkit-mask: var(--mark) center / contain no-repeat; mask: var(--mark) center / contain no-repeat; }
-.inColour { background: var(--mark) center / contain no-repeat; -webkit-mask: none; mask: none; }
+.mark.inColour { background: var(--mark) center / contain no-repeat; -webkit-mask: none; mask: none; }
 .save { font: 500 14px/20px var(--site-font-mono); font-style: normal; color: var(--site-accent); }
 .name { margin-top: auto; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font: 500 15px/20px var(--site-font); color: var(--site-text); }
 .meta { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 6px 0 0; }

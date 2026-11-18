@@ -58,9 +58,11 @@
 }
 
 .copyButton:hover {
-  color: var(--as-code-text);
   background: var(--as-surface-tint);
   border-color: var(--as-code-line);
+}
+.copyButton:not(.copyButtonCopied):hover {
+  color: var(--as-code-text);
 }
 
 .copyButton:focus-visible {
@@ -68,8 +70,7 @@
   outline-offset: 1px;
 }
 
-.copyButtonCopied,
-.copyButtonCopied:hover {
+.copyButton.copyButtonCopied {
   color: var(--site-accent);
 }
 

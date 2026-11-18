@@ -7,7 +7,7 @@
   padding: 28px 40px 32px;
 }
 .figure + .figure { --dots-left: 2px; }
-.value {
+.figure .value {
   font: 400 32px/36px var(--site-font-pixel);
   font-variation-settings: 'ELSH' 20;
   font-variant-numeric: tabular-nums;

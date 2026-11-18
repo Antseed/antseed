@@ -6,7 +6,7 @@
   -webkit-mask: url(/site/assets/hero/copy.svg) center / contain no-repeat;
   mask: url(/site/assets/hero/copy.svg) center / contain no-repeat;
 }
-.done {
+.mark.done {
   background: var(--site-accent);
   -webkit-mask-image: url(/site/assets/home/icons/pixel/check.svg);
   mask-image: url(/site/assets/home/icons/pixel/check.svg);

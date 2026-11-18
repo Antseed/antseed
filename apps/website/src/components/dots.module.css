@@ -1,7 +1,8 @@
 /* Dotted outline: 2px round dots every 8px, first dot on the corner, drawn by an overlay 1px outside the box.
    Compose it (`composes: dots from '…/dots.module.css'`) and switch sides on with --dots-top/right/bottom/left: 2px. */
-.dots {
-  position: relative;
+.dots { position: relative; }
+/* every side off unless the composing class turns it on: no specificity, so that class always wins */
+:where(.dots) {
   --dots-top: 0px;
   --dots-right: 0px;
   --dots-bottom: 0px;

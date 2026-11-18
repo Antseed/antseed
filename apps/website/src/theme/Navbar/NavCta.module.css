@@ -10,9 +10,8 @@
 
 @media (max-width: 1439px) { .gateway { display: none; } }
 
-/* a touch screen: the button a 44 tall touch area; a phone has no download in the bar */
+/* a touch screen: the button a 44 tall touch area */
 @media (max-width: 1079px) {
   .download { position: relative; }
   .download::after { content: ''; position: absolute; inset: -4px -2px; }
 }
-@media (max-width: 760px) { .download { display: none; } }

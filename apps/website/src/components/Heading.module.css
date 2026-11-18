@@ -1,12 +1,14 @@
+/* The title and sub line read their sizes from variables the head's size sets, so a size never competes with the base rule on the
+   same element, and a page's class hook (two classes) on the title or sub line always wins. */
 .title {
-  font: 400 48px/46px var(--site-font-pixel);
+  font: 400 var(--title-size, 48px)/var(--title-line, 46px) var(--site-font-pixel);
   font-variation-settings: 'ELSH' 40;
-  letter-spacing: -2px;
+  letter-spacing: var(--title-tracking, -2px);
   color: var(--site-text);
 }
 .title > .second { color: var(--site-text-muted); }
 .block { display: block; text-wrap: balance; }
-.strong { color: var(--site-text-strong); }
+.title.strong { color: var(--site-text-strong); }
 
 .eyebrow {
   color: var(--site-accent);
@@ -15,43 +17,37 @@
 }
 
 .sub {
-  font: 400 18px/27px var(--site-font);
+  max-width: var(--sub-max, none);
+  font: 400 18px/var(--sub-line, 27px) var(--site-font);
   color: var(--site-text-body);
 }
 
-/* The head's own rules stay at one class of specificity (:where), so a page's class hook (two classes) always wins. */
 .head {
   --head-gap: 20px;
+  --sub-max: 780px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--head-gap);
 }
-.center { align-items: center; text-align: center; }
+.head.center { align-items: center; text-align: center; }
 .padX { padding-inline: var(--site-pad); }
-:where(.head) .sub { max-width: 780px; }
-:where(.page) .sub { max-width: 540px; }
+.head.page { --sub-max: 540px; }
 
-/* title and sub line sit 8px apart on wider screens, whatever the head's gap */
+/* title and sub line sit 8px apart on wider screens (16px, or the page's own, from 1200px), whatever the head's gap */
 @media (min-width: 761px) {
-  .title + .sub { margin-top: calc(8px - var(--head-gap, 0px)); }
+  .title + .sub { margin-top: calc(var(--title-sub, 8px) - var(--head-gap, 0px)); }
 }
 
 @media (max-width: 760px) {
-  .title { font-size: 34px; line-height: 36px; letter-spacing: -1.4px; }
-  .sub { font-size: 16px; line-height: 24px; }
+  .title { font-size: var(--title-size-phone, 34px); line-height: var(--title-line-phone, 36px); letter-spacing: -1.4px; }
+  .sub { max-width: none; font-size: 16px; line-height: 24px; }
   .sub br { display: none; }
-  :where(.head) .sub { max-width: none; }
-  :where(.page) .title { font-size: 40px; line-height: 40px; }
+  .head.page { --title-size-phone: 40px; --title-line-phone: 40px; }
 }
 
 @media (min-width: 1200px) {
-  .wide { --head-gap: 24px; }
-  .wide .title + .sub { margin-top: -8px; }
-  :where(.wide) .sub { max-width: 640px; line-height: 28px; }
-  :where(.compact) .title { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
-
-  .page { --head-gap: 16px; }
-  .page .title + .sub { margin-top: calc(var(--sub-gap, 16px) - var(--head-gap)); }
-  :where(.page) .sub { max-width: var(--sub-width, 540px); line-height: 28px; }
+  .head.wide { --head-gap: 24px; --title-sub: 16px; --sub-max: 640px; --sub-line: 28px; }
+  .head.compact { --title-size: 40px; --title-line: 40px; --title-tracking: -1.6px; }
+  .head.page { --head-gap: 16px; --title-sub: var(--sub-gap, 16px); --sub-max: var(--sub-width, 540px); --sub-line: 28px; }
 }

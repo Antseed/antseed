@@ -1,6 +1,6 @@
 import {useRef, useState, type CSSProperties, type JSX} from 'react';
 import {Heading, Section} from '../../components';
-import {useMarket} from '../../lib/antscan';
+import {mediumWithModels, useMarket} from '../../lib/antscan';
 import {MediaTabs} from './prices/MediaTabs';
 import {ModelLanes} from './prices/ModelLanes';
 import {MEDIA, type Medium} from './prices/models';
@@ -23,18 +23,21 @@ export default function Prices(): JSX.Element {
   const [shown, setShown] = useState<Medium>('text');    // the lanes on screen, after the swipe out
   const {lanes, models} = useMarket(flowRef);
   const media = MEDIA.filter((m) => lanes[m.id].length > 0);
+  // a live read can empty a medium: its tab goes, and the board falls back to one with models
+  const selected = mediumWithModels(lanes, tab);
+  const onShow = mediumWithModels(lanes, shown);
   const motion = usePricesMotion(flowRef);
   const side = motion.phone ? CARD_SIZE_PHONE : CARD_SIZE;
   // a live read that changes the models rebuilds the lanes, as a tab change does
-  const build = `${shown}-${motion.carried}-${side}-${motion.width}-${lanes[shown].map((m) => m.name).join()}`;
+  const build = `${onShow}-${motion.carried}-${side}-${motion.width}-${lanes[onShow].map((m) => m.name).join()}`;
   useCarriers(flowRef, motion.carried, motion.moving, side, build);
-  const swipe = useLaneSwipe(flowRef, shown, motion.still);
+  const swipe = useLaneSwipe(flowRef, onShow, motion.still);
 
   const select = (next: Medium) => {
-    if (next === tab) return;
+    if (next === selected) return;
     const order = (m: Medium) => media.findIndex((x) => x.id === m);
     setTab(next);
-    swipe(Math.sign(order(next) - order(tab)) || 1, () => setShown(next));
+    swipe(Math.sign(order(next) - order(selected)) || 1, next, () => setShown(next));
   };
 
   return (
@@ -43,11 +46,11 @@ export default function Prices(): JSX.Element {
         <Heading id="prices-title" title={[`${modelCountLabel(models)} models.`, 'Best Prices.']} secondLine="break" strong />
       </div>
       <div className={styles.models}>
-        <MediaTabs tabs={media} selected={tab} onSelect={select} panelId={PANEL_ID} label="Media" className={styles.tabs} />
-        <div ref={flowRef} id={PANEL_ID} role="tabpanel" aria-labelledby={`${PANEL_ID}-${tab}`}
+        <MediaTabs tabs={media} selected={selected} onSelect={select} panelId={PANEL_ID} label="Media" className={styles.tabs} />
+        <div ref={flowRef} id={PANEL_ID} role="tabpanel" aria-labelledby={`${PANEL_ID}-${selected}`}
           className={motion.carried ? styles.carriedFlow : styles.flow} data-moving={motion.moving || undefined}
           style={{'--card-size': `${side}px`} as CSSProperties}>
-          <ModelLanes key={build} medium={shown} models={lanes[shown]} carried={motion.carried} side={side} width={motion.width} />
+          <ModelLanes key={build} medium={onShow} models={lanes[onShow]} carried={motion.carried} side={side} width={motion.width} />
         </div>
       </div>
       <a className={styles.allModels} href="https://antseedstats.com/network" data-rv="">See all available models ↗</a>

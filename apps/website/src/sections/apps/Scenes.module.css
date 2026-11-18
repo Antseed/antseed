@@ -3,7 +3,7 @@
 
 .labs { display: grid; grid-template-columns: repeat(3, 26px); gap: 22px 28px; padding: 22px 26px; }
 .lab { width: 26px; height: 26px; background: var(--lab) center / contain no-repeat; }
-.mono { background: var(--glass-ink); -webkit-mask: var(--lab) center / contain no-repeat; mask: var(--lab) center / contain no-repeat; }
+.lab.mono { background: var(--glass-ink); -webkit-mask: var(--lab) center / contain no-repeat; mask: var(--lab) center / contain no-repeat; }
 
 .keys { width: min(280px, 76%); padding: 6px 14px; }
 .key { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }

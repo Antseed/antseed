@@ -5,7 +5,10 @@
   background: var(--site-accent); transform: translateX(var(--indicator-x, 0)); pointer-events: none; }
 .tabs[data-ready]::before { transition: transform .35s cubic-bezier(.65, 0, .35, 1), width .35s cubic-bezier(.65, 0, .35, 1); }
 /* each tab is the row's full height, so a click anywhere on it lands */
-.tab { all: unset; position: relative; display: grid; place-items: center; height: 48px; padding: 0 8px; cursor: pointer;
+/* the reset in :where() has no specificity, so the minifier can't let it override the rules after it */
+:where(.tab) { all: unset; }
+.tab {
+  position: relative; display: grid; place-items: center; height: 48px; padding: 0 8px; cursor: pointer;
   color: var(--tab-off); font: 500 16px/20px var(--site-font-ui); white-space: nowrap; transition: color .15s, background-color .15s; }
 .tab[aria-selected='true'] { color: var(--site-text); }
 /* hover only where there is one: on touch it sticks to the last tab tapped */

@@ -19,7 +19,10 @@
 @keyframes fed { 40% { transform: rotate(180deg) scale(1.08); } }
 
 /* the seed on the ground by the mascot: it drops in and bounces, grows on hover from its base, a click lifts it into the hand */
-.groundSeed { all: unset; position: absolute; z-index: 3; left: 0; top: 0; display: none; width: 64px; height: 89px; cursor: pointer;
+/* the reset in :where() has no specificity, so the minifier can't let it override the rules after it */
+:where(.groundSeed) { all: unset; }
+.groundSeed {
+  position: absolute; z-index: 3; left: 0; top: 0; display: none; width: 64px; height: 89px; cursor: pointer;
   transform-origin: 50% 97%; transition: scale .2s ease-out; }
 .groundSeed.groundOn { display: block; animation: drop .7s cubic-bezier(.3, 0, .4, 1) both; }
 .groundSeed img { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(180deg); filter: drop-shadow(0 3px 3px rgba(60, 30, 10, .25)); }

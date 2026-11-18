@@ -17,7 +17,9 @@
 /* the tab bar and the white thumb slid under the chosen tab (useTabThumb sets --thumb-x and --thumb-w) */
 .tabs { position: relative; display: flex; width: max-content; height: 36px; padding: 4px; border-radius: 8px; background: var(--tab);
   box-shadow: inset 0 0 0 .5px rgba(0, 0, 0, .1), inset 0 0 0 1px #e4dfd2; font: 500 13px/28px var(--site-font-ui); }
-.tabs button { all: unset; position: relative; display: grid; place-items: center; height: 28px; padding: 0 12px; border-radius: 6px; color: var(--tab-off);
+/* the reset in :where() has no specificity, so the minifier can't let it override the rules after it */
+:where(.tabs button) { all: unset; }
+.tabs button { position: relative; display: grid; place-items: center; height: 28px; padding: 0 12px; border-radius: 6px; color: var(--tab-off);
   cursor: pointer; transition: color .35s; white-space: nowrap; }
 .tabs button[aria-selected='true'] { color: var(--cmd); }
 .tabs::before { content: ''; position: absolute; top: 4px; left: 0; width: var(--thumb-w, 0); height: 28px; border-radius: 6px; background: #fff;
@@ -41,15 +43,17 @@
 .command { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #000; font: inherit;
   padding: 0; border: 0; border-radius: 0; background: none; }
 :global(:root[data-theme='dark']) .command { color: var(--cmd); }
-.copy { all: unset; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 6px; background: rgba(255, 255, 255, .08); cursor: pointer; }
+:where(.copy) { all: unset; }
+.copy { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 6px; background: rgba(255, 255, 255, .08); cursor: pointer; }
 .copy img { display: block; filter: brightness(0) opacity(.62); }   /* a white icon, darkened on the light row */
 :global(:root[data-theme='dark']) .copy img { filter: none; }
 
 .foot { margin: 0; padding: 12px 4px 0; font: 400 12.5px/20px var(--site-font-ui); color: var(--foot); }
-.foot a, .foot button { all: unset; font-weight: 500; color: var(--cmd); white-space: nowrap; cursor: pointer; }
+:where(.foot a, .foot button) { all: unset; }
+.foot a, .foot button { font-weight: 500; color: var(--cmd); white-space: nowrap; cursor: pointer; }
 .foot a:hover { color: var(--cmd); text-decoration: none; }
 
-.appRow { font: 500 14px/1 var(--site-font-ui); color: var(--cmd); }
+.row.appRow { font: 500 14px/1 var(--site-font-ui); color: var(--cmd); }
 .appName { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .get { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px 0 12px; border-radius: 6px; background: var(--site-fill); color: #fafafa;
   box-shadow: 0 3.5px .5px 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -2px 1px 0 #3b5e17;
@@ -69,7 +73,8 @@
   background: var(--site-surface); box-shadow: 0 0 0 1px rgba(236, 238, 233, .1), 0 20px 48px rgba(0, 0, 0, .5); }
 :global(:root[data-theme='dark']) .versions::backdrop { background: rgba(0, 0, 0, .5); }
 .versionsHead { display: flex; align-items: center; justify-content: space-between; margin: 0 0 8px 10px; font-size: 15px; font-weight: 500; }
-.close { all: unset; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; color: #6b7068; font-size: 20px; cursor: pointer; }
+:where(.close) { all: unset; }
+.close { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; color: #6b7068; font-size: 20px; cursor: pointer; }
 :global(:root[data-theme='dark']) .close { color: #9ba49e; }
 .build { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; color: inherit; text-decoration: none; }
 .build:hover { background: #f7f8f5; color: inherit; text-decoration: none; }

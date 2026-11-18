@@ -11,7 +11,7 @@
   visibility: hidden;
   transition: opacity .25s ease, visibility 0s .25s;
 }
-.active { opacity: 1; visibility: visible; transition: opacity .35s ease .25s; }
+.window.active { opacity: 1; visibility: visible; transition: opacity .35s ease .25s; }
 
 .head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 2px; }
 .head b { font-size: 20px; line-height: 28px; font-weight: 500; }
@@ -73,5 +73,5 @@
 .legendItem svg { flex: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .window, .active, .block, .block::before, .block span { transition: none; }
+  .window, .window.active, .block, .block::before, .block span { transition: none; }
 }

@@ -5,6 +5,7 @@ import {Glass} from './Glass/Glass';
 import {PixelIcon, type PixelIconName} from './PixelIcon';
 import styles from './PrivacyPair.module.css';
 import {PAINTINGS, type PaintingName} from '../lib/paintings';
+import {sectionTitleId} from '../lib/sectionTitleId';
 
 export type PrivacySide = {text: ReactNode; href: string};
 
@@ -29,7 +30,7 @@ type Props = {
 
 /** Anonymous and Private side by side: each a painting with its name on glass, the promise and a link under it. */
 export function PrivacyPair({cmp, id, title, anonymous = DEFAULT_ANONYMOUS, private: privateSide = DEFAULT_PRIVATE}: Props): JSX.Element {
-  const titleId = `${cmp.replace('/', '-')}-title`;
+  const titleId = sectionTitleId(cmp);
   const cards: readonly Card[] = [
     {name: 'Anonymous', icon: 'user', painting: 'pond', side: anonymous},
     {name: 'Private', icon: 'lock', painting: 'ferns', side: privateSide},

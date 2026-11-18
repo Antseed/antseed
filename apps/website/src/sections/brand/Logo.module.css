@@ -17,7 +17,7 @@
   box-shadow: inset 0 0 0 1px var(--site-tile-line);
   background: #fcfcfc;
 }
-.night { background: var(--site-surface-dark); }
+.ground.night { background: var(--site-surface-dark); }
 
 .caption { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
 .title { font: 500 16px/24px var(--site-font); color: var(--site-text); }
@@ -25,7 +25,7 @@
 .files a { color: var(--site-accent); }
 .files a:hover { color: var(--site-accent); text-decoration: underline; text-underline-offset: 3px; }
 
-.rules { margin-top: 40px; }
+.section .rules { margin-top: 40px; }
 
 @media (max-width: 899px) {
   .plates { grid-template-columns: 1fr; }

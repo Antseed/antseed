@@ -1,4 +1,5 @@
 import {useEffect, useLayoutEffect, useRef, type RefObject} from 'react';
+import {followSelectedTab} from '../../../../lib/followSelectedTab';
 import {isStill} from '../../../../lib/motion';
 
 const SLIDE = {duration: 350, easing: 'cubic-bezier(.65, 0, .35, 1)'};
@@ -14,18 +15,10 @@ export function useTabThumb(list: RefObject<HTMLElement | null>, selected: numbe
   useIsoLayoutEffect(() => {
     const el = list.current;
     if (!el) return;
-    const place = () => {
-      const tab = el.querySelectorAll<HTMLElement>('[role="tab"]')[selected];
-      if (!tab) return;
-      el.style.setProperty('--thumb-x', `${tab.offsetLeft}px`);
-      el.style.setProperty('--thumb-w', `${tab.offsetWidth}px`);
-    };
-    place();
-    const ro = new ResizeObserver(place);
-    ro.observe(el);
+    const {place, stop} = followSelectedTab(el, selected, '--thumb');
     let live = true;
     document.fonts.ready.then(() => { if (!live) return; place(); void el.offsetWidth; el.classList.add(readyClass); });
-    return () => { live = false; ro.disconnect(); };
+    return () => { live = false; stop(); };
   }, [list, selected, readyClass]);
 
   const previous = useRef(selected);

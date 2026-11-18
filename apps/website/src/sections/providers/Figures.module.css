@@ -1,7 +1,7 @@
 .band { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; padding: 28px 40px 32px; }
 .figure { display: flex; flex-direction: column; gap: 8px; }
 .label { font: 400 13px/16px var(--site-font); color: var(--site-ink-muted); }
-.value {
+.figure .value {
   --figure-ink: #0a1a12;
   font: 400 32px/36px var(--site-font-pixel);
   font-variation-settings: 'ELSH' 20;
@@ -15,5 +15,5 @@
 }
 @media (max-width: 760px) {
   .band { grid-template-columns: 1fr 1fr; row-gap: 28px; padding: 24px 20px 28px; }
-  .value { font-size: 28px; line-height: 32px; }
+  .figure .value { font-size: 28px; line-height: 32px; }
 }

@@ -1,4 +1,5 @@
 import {useEffect, useLayoutEffect, type RefObject} from 'react';
+import {followSelectedTab} from '../../../lib/followSelectedTab';
 
 /**
  * Places a sliding indicator under the selected tab: writes `--indicator-x` and `--indicator-w` on `bar`, and sets `data-ready` once
@@ -8,16 +9,7 @@ export function useTabIndicator(bar: RefObject<HTMLElement | null>, selected: nu
   useLayoutEffect(() => {
     const el = bar.current;
     if (!el) return;
-    const place = () => {
-      const tab = el.querySelectorAll<HTMLElement>('[role="tab"]')[selected];
-      if (!tab) return;
-      el.style.setProperty('--indicator-x', `${tab.offsetLeft}px`);
-      el.style.setProperty('--indicator-w', `${tab.offsetWidth}px`);
-    };
-    place();
-    const ro = new ResizeObserver(place);
-    ro.observe(el);
-    return () => ro.disconnect();
+    return followSelectedTab(el, selected, '--indicator').stop;
   }, [bar, selected]);
 
   useEffect(() => {

@@ -25,7 +25,7 @@
   0%, 100% { transform: translateY(0) rotate(-3deg); }
   50% { transform: translateY(-7%) rotate(3deg); }
 }
-.moving .pupil, .moving .coin { animation-play-state: running; }
+.moving .ant > .pupil, .moving .coin { animation-play-state: running; }
 :global(:root[data-theme='dark']) .ant { filter: brightness(.84) saturate(.83) contrast(1.12); }
 :global(:root[data-theme='dark']) .coin { filter: drop-shadow(0 0 18px rgba(200, 245, 60, .3)); }
-@media (prefers-reduced-motion: reduce) { .pupil, .coin { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .ant > .pupil, .moving .ant > .pupil, .coin, .moving .coin { animation: none; } }

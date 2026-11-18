@@ -1,5 +1,4 @@
-.sub { max-width: var(--sub-width); }
+/* no downloads or setup on a phone: the docs stay */
 @media (max-width: 760px) {
-  .sub { max-width: none; }
-  .primary { display: none; }   /* no downloads or setup on a phone: the docs stay */
+  .actions .primary { display: none; }
 }

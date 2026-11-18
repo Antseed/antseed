@@ -13,8 +13,9 @@
   }
   .line { display: block; min-height: 44px; margin: 16px 12px 24px; font: 400 15px/22px var(--site-font); color: #66746b; }
 }
+/* the reset in :where() has no specificity, so the minifier can't let it override the rules after it */
+:where(.segment) { all: unset; }
 .segment {
-  all: unset;
   position: relative;
   box-sizing: border-box;
   display: grid;

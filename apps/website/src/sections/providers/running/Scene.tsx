@@ -24,12 +24,12 @@ export function CheckIcon({className}: {className?: string}): JSX.Element {
   return <svg className={clsx(styles.check, className)} viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 8.6l3 3 6.6-7" /></svg>;
 }
 
-type MiniButtonProps = {ghost?: boolean; className?: string; children: ReactNode};
+type MiniButtonProps = {className?: string; children: ReactNode};
 
 /** A picture of the site's button at the scene's size: never a control. */
-export const MiniButton = forwardRef<HTMLSpanElement, MiniButtonProps>(function MiniButton({ghost, className, children}, ref) {
-  return <span ref={ref} className={clsx(styles.button, ghost && styles.ghost, className)}>{children}</span>;
-});
+export function MiniButton({className, children}: {className?: string; children: ReactNode}): JSX.Element {
+  return <span className={clsx(styles.button, className)}>{children}</span>;
+}
 
 /** A logo on a small glass tile (or bare, for logos with their own background). */
 export function Logo({src, glass = true, className}: {src: string; glass?: boolean; className?: string}): JSX.Element {

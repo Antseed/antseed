@@ -1,7 +1,7 @@
 .rail { padding-top: 120px; }
 .head { padding-bottom: 56px; }
 .row .point { --dots-top: 2px; place-items: start; align-content: start; gap: 28px; }
-.demo { min-height: 96px; }
+.point .demo { min-height: 96px; }
 
 /* the margin matrix, as on the page behind the rail */
 .grid {
@@ -23,11 +23,10 @@
 }
 
 @media (max-width: 1199px) {
-  .demo { flex-direction: column; align-items: flex-start; }
+  .point .demo { flex-direction: column; align-items: flex-start; }
 }
 @media (max-width: 760px) {
   .rail { padding-top: 72px; }
   .head { padding-bottom: 40px; }
-  .row .point { --dots-left: 0px; }
-  .demo { flex-direction: row; min-height: 0; }
+  .point .demo { flex-direction: row; min-height: 0; }
 }

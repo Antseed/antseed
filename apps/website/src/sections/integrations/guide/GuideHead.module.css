@@ -15,7 +15,7 @@
   color: var(--site-text);
 }
 .title { max-width: 760px; }
-.sub { max-width: 640px; }
+.head .sub { max-width: 640px; }
 .sub code, .description code { font-size: .9em; color: var(--site-text); }
 
 .facts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }

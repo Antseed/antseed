@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import type {ListPricesResponse, Offering} from './api.ts';
-import {mediumOf, selectMarket} from './lanes.ts';
+import {mediumOf, mediumWithModels, selectMarket} from './lanes.ts';
 import {makerOf} from './makers.ts';
 import {cleanName, familyKey, pickName} from './names.ts';
 
@@ -35,6 +35,15 @@ test('one family per model, however the seller writes it', () => {
   assert.equal(key('minimax/h3/text-to-video'), key('minimax-h3-image-to-video'));
   assert.equal(key('fal-ai/kling-video/v3/pro/text-to-video'), key('kling-v3-pro-image-to-video'));
   assert.notEqual(key('gpt-image-2', true), key('gpt-2', true));
+});
+
+test('a medium a live read emptied gives way to the first with models', () => {
+  const model = {name: 'Flux 2 Pro', logo: 'labs-color/bfl.svg', providers: 2, price: 0.015, save: null};
+  const lanes = {text: [model], image: [], video: [model], voice: []};
+  assert.equal(mediumWithModels(lanes, 'video'), 'video');
+  assert.equal(mediumWithModels(lanes, 'image'), 'text');
+  assert.equal(mediumWithModels({...lanes, text: []}, 'voice'), 'video');
+  assert.equal(mediumWithModels({text: [], image: [], video: [], voice: []}, 'image'), 'image');
 });
 
 test('names read as titles', () => {

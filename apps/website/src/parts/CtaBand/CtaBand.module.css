@@ -17,7 +17,7 @@
 /* two classes deep: these override the shared heading and button sizes */
 .card .title { margin: 0; max-width: 760px; font-size: 44px; line-height: 48px; letter-spacing: -1px; text-wrap: balance; }
 .card .sub { margin: 8px 0 0; max-width: 520px; line-height: 28px; text-wrap: balance; }
-.card .subPretty { text-wrap: pretty; }
+.card .sub.subPretty { text-wrap: pretty; }
 .card .actions { margin-top: 32px; justify-content: center; gap: 24px; }
 
 .card .allVersions, .card .allVersions:hover { font: 500 16px/24px var(--site-font); color: var(--site-accent); text-decoration: none; }

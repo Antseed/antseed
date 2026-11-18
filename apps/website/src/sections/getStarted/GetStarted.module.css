@@ -62,7 +62,7 @@
   background: var(--site-surface);
 }
 .shot { display: block; width: 100%; height: auto; border-radius: 12px; }
-.flush { width: calc(100% + 16px); margin: -8px -8px 0; }
+.shot.flush { width: calc(100% + 16px); margin: -8px -8px 0; }
 .stepText { display: flex; align-items: center; gap: 16px; font: 400 16px/24px var(--site-font); color: var(--site-text); }
 .number {
   display: grid;

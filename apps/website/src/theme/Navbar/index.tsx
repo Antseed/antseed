@@ -58,7 +58,7 @@ export default function Navbar(): JSX.Element {
           </div>
           <ThemeSwitch className={styles.themeSwitch} />
           <GatewayCta />
-          <DownloadCta />
+          <DownloadCta className={styles.download} />
           <MenuButton
             buttonRef={menuButton}
             open={menu.expanded}
