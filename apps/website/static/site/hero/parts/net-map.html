@@ -1,0 +1,42 @@
+<!-- How the network works, on the painted map (Design, 17 Nov, Elio's pick to compare with the layers): the ants act one request out
+     on the left, the card on the right names the step they are at. The five steps are production's (sections.html, .ns), one open at a
+     time; net-map.js plays them in turn and the map follows (data-step, data-on), a click holds one. Coordinates are the board's own
+     (1248 × 560), the same in the SVG and in --x / --y. The painting is map-2, the board with burrows the ants stand in as pawns. -->
+<div class="nm" data-nm data-js data-step="1">
+  <div class="nm-board" aria-hidden="true">
+    <svg class="nm-svg" viewBox="0 0 1248 560" preserveAspectRatio="none">
+      <!-- the DHT: four of its peers, each a seed in a burrow, a faint mesh between them; your lookup hops through three, dotted
+           (drawn by its mask) -->
+      <mask id="nm-look-m" maskUnits="userSpaceOnUse" x="0" y="0" width="1248" height="560"><path class="nm-look-m" pathLength="1" d="M150 104 Q 270 120 375 254 Q 470 100 593 108 Q 650 180 595 254"/></mask>
+      <path class="nm-mesh" d="M375 262 L593 116 L595 262 Z M375 262 L131 430"/>
+      <path class="nm-look" mask="url(#nm-look-m)" d="M150 104 Q 270 120 375 254 Q 470 100 593 108 Q 650 180 595 254"/>
+      <!-- the direct routes, along the painting's trails: down the terraces, along the striped field, over the bridge to B (the
+           cheapest); once B goes dark, down the same trail to A -->
+      <path class="nm-route nm-rb" id="nm-rb" pathLength="1" d="M152 146 C156 147 162 149 173 153 C184 157 204 164 215 170 C226 176 233 185 240 192 C247 199 252 205 257 212 C262 219 268 229 268 236 C268 243 261 250 255 256 C249 262 241 264 231 270 C221 276 202 284 193 289 C184 294 177 298 180 302 C183 306 198 310 211 315 C224 320 242 326 257 331 C272 336 289 339 303 342 C317 345 328 348 339 351 C350 354 358 360 367 363 C376 366 384 368 390 372 C396 376 393 387 403 386 C413 385 430 376 450 368 C470 360 496 345 520 335 C544 325 578 314 595 310 C612 306 611 310 623 311 C635 312 650 314 668 316 C686 318 708 326 728 326 C748 326 771 323 785 318 C799 313 806 301 810 298"/>
+      <path class="nm-route nm-ra" id="nm-ra" pathLength="1" d="M152 146 C156 147 162 149 173 153 C184 157 204 164 215 170 C226 176 233 185 240 192 C247 199 252 205 257 212 C262 219 268 229 268 236 C268 243 261 250 255 256 C249 262 241 264 231 270 C221 276 202 284 193 289 C184 294 177 298 180 302 C183 306 198 310 211 315 C224 320 242 326 257 331 C272 336 289 339 303 342 C317 345 328 348 339 351 C350 354 358 360 367 363 C376 366 384 368 390 372 C396 376 399 381 403 386 C407 391 404 398 412 404 C420 410 432 418 450 424 C468 430 500 435 520 440 C540 445 563 450 572 452"/>
+    </svg>
+
+    <!-- the pieces stand in the painting's burrows (map-2), their feet at --x / --y -->
+    <i class="nm-seed s1" style="--x: 375; --y: 282"></i><i class="nm-seed s2" style="--x: 593; --y: 136"></i><i class="nm-seed s3" style="--x: 595; --y: 282"></i><i class="nm-seed" style="--x: 131; --y: 450"></i>
+    <p class="nm-glass nm-tag nm-dht" style="--x: 486; --y: 196">BitTorrent DHT</p>
+
+    <figure class="nm-ant nm-you" style="--x: 134; --y: 138"><img loading="lazy" decoding="async" src="/site/assets/home/net/ant-you-idle-day.webp" width="207" height="320" alt=""><figcaption class="nm-glass">You</figcaption></figure>
+
+    <figure class="nm-ant nm-prov" data-p="a" style="--x: 595; --y: 450"><i class="nm-ring"></i><img loading="lazy" decoding="async" src="/site/assets/home/net/ant-prov-idle-day.webp" data-dark="/site/assets/home/net/ant-prov-idle-night.webp" width="217" height="320" alt=""><figcaption class="nm-glass">Provider</figcaption><b class="nm-glass nm-price">$0.11/M</b></figure>
+    <figure class="nm-ant nm-prov" data-p="b" style="--x: 827; --y: 284"><i class="nm-ring"></i><img loading="lazy" decoding="async" src="/site/assets/home/net/ant-prov-idle-day.webp" data-dark="/site/assets/home/net/ant-prov-idle-night.webp" width="217" height="320" alt=""><figcaption class="nm-glass">Provider</figcaption><b class="nm-glass nm-price">$0.094/M</b></figure>
+    <figure class="nm-ant nm-prov" data-p="c" style="--x: 825; --y: 138"><i class="nm-ring"></i><img loading="lazy" decoding="async" src="/site/assets/home/net/ant-prov-idle-day.webp" data-dark="/site/assets/home/net/ant-prov-idle-night.webp" width="217" height="320" alt=""><figcaption class="nm-glass">Provider</figcaption><b class="nm-glass nm-price">$0.13/M</b></figure>
+
+    <!-- what travels: the request (a white bubble), the answer (the hero's seed), the payment (a USDC coin and its value) -->
+    <i class="nm-tok nm-bubble"></i>
+    <i class="nm-tok nm-answer"><img loading="lazy" decoding="async" src="/site/assets/hero/seed-day.webp" data-dark="/site/assets/hero/seed-night.webp" width="470" height="651" alt=""></i>
+    <i class="nm-tok nm-coin"><img loading="lazy" decoding="async" src="/site/assets/home/v6/net-nocrypto-usdc.svg" width="20" height="20" alt=""><b class="nm-glass">0.00038 USDC</b></i>
+  </div>
+
+  <div class="nm-card" role="tablist" aria-label="How a request travels" aria-orientation="vertical">
+    <button type="button" role="tab" aria-selected="true" data-to="1"><i class="nm-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 2h8v2H6zM4 4h2v2H4zm10 0h2v2h-2zM2 6h2v8H2zm14 0h2v8h-2zM4 14h2v2H4zm10 0h2v2h-2zM6 16h8v2H6zm10 0h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2z"/></svg></i><b><span class="nm-n">1</span>Look up</b><span class="nm-more"><span><em>Your device asks the DHT, the address book BitTorrent uses, who serves your model.</em><small>Mainline DHT</small></span></span></button>
+    <button type="button" role="tab" aria-selected="false" tabindex="-1" data-to="2"><i class="nm-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5h14v2H8zm12 2h2v10h-2zM8 17h14v2H8zM6 7h2v2H6zM4 9h2v2H4zm-2 2h2v2H2zm2 2h2v2H4zm2 2h2v2H6zm4-4h2v2h-2z"/></svg></i><b><span class="nm-n">2</span>Pick</b><span class="nm-more"><span><em>An open market: providers answer with their price, you pick.</em><small>$0.094/M · cheapest</small></span></span></button>
+    <button type="button" role="tab" aria-selected="false" tabindex="-1" data-to="3"><i class="nm-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 2h4v2H4zM2 4h2v4H2zm6 0h2v4H8zM4 8h4v2H4zm4 0h2v2H8zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm2 0h4v2h-4zm-2 2h2v4h-2zm6 0h2v4h-2zm-4 4h4v2h-4z"/></svg></i><b><span class="nm-n">3</span>Talk directly</b><span class="nm-more"><span><em>Your device connects straight to that provider. Nobody sits in the middle.</em><small>peer to peer</small></span></span></button>
+    <button type="button" role="tab" aria-selected="false" tabindex="-1" data-to="4"><i class="nm-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 2h8v2H8zM4 4h4v2H4zm12 0h4v2h-4zM4 6h2v2H4zm14 0h2v2h-2zM2 8h2v8H2zm18 0h2v8h-2zM4 16h2v2H4zm14 0h2v2h-2zM4 18h4v2H4zm12 0h4v2h-4zM8 20h8v2H8zm2-12h4v2h-4zm-2 2h2v4H8zm6 0h2v4h-2zm-4 4h4v2h-4z"/></svg></i><b><span class="nm-n">4</span>Pay per request</b><span class="nm-more"><span><em>You sign the running usage total.</em><small><img loading="lazy" decoding="async" src="/site/assets/home/v6/net-nocrypto-usdc.svg" width="14" height="14" alt="">Usage authorization → USDC on Base</small></span></span></button>
+    <button type="button" role="tab" aria-selected="false" tabindex="-1" data-to="5"><i class="nm-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 10h2v10H4zm0-2h16v2H4zm12-4h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm-2 2h2v2h-2zm-2 2h2v2h-2z"/></svg></i><b><span class="nm-n">5</span>Move on</b><span class="nm-more"><span><em>If a provider goes down, your next request goes to another.</em><small>always on</small></span></span></button>
+  </div>
+</div>

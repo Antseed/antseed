@@ -1,0 +1,67 @@
+/* ── Footer: the painted meadow (sections.html) ───────────────────────────
+   On top of sections.css's footer rules: all the text on the page's colour, and under it the painted meadow, full bleed, coming out of the
+   page through its own sky. --scene is the picture's height; the rail leaves room for all of it but the sky, so nothing written touches the picture. */
+
+.s-foot.meadow { container-type: inline-size; overflow: hidden; background: var(--page); --scene: 51cqw; }   /* 110cqw wide at 2752:1276 */
+.s-foot.meadow .s-rail { flex: none; background: none; padding-bottom: calc(var(--scene) * .76); }
+.s-foot.meadow .legal { margin-top: 40px; }
+.s-foot .made { color: var(--m); }
+/* the social links (call of 17 Nov: out of the nav, into this row): X, GitHub, Telegram as icons between the credit and the theme switch.
+   An 18 glyph in a 32 box, 4 apart, in the row's ink; the boxes pulled in above and below so the row keeps its 20 */
+.s-foot .social { display: flex; gap: 4px; margin: -6px 0; }
+.s-foot .social a { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; color: var(--t); transition: color .15s; }
+.s-foot .social a:hover { color: var(--o); }
+.s-foot .social a:focus-visible { outline: 2px solid var(--o); outline-offset: 1px; }
+.s-foot .social svg { width: 18px; height: 18px; fill: currentColor; }
+
+/* wider than the footer (110%, 2 of it off to the left), which leaves the painting's torn paper edges outside; the sky fades out over the page */
+.s-foot.meadow .scene { position: absolute; left: -2cqw; bottom: 0; width: 110cqw; height: var(--scene);
+  -webkit-mask-image: linear-gradient(#0000 22%, #0000002e 26%, #00000070 30%, #000000c0 34%, #000000ef 38%, #000 42%);
+  mask-image: linear-gradient(#0000 22%, #0000002e 26%, #00000070 30%, #000000c0 34%, #000000ef 38%, #000 42%); }
+.s-foot.meadow .scene { --fit-x: 46%; }   /* where the film is cropped across: the eyes' layer (below) follows it */
+.s-foot.meadow .scene :is(img, video) { display: block; width: 100%; height: 100%; object-fit: cover; object-position: var(--fit-x) 100%; }
+
+/* at night the same painting by night, its seeds glowing, its sky near the page's colour, over the day one. When the theme flips (.theming:
+   index.html) the night closes in from the edges toward the sun, low at the end of the river (--sun-x, --sun-y), as if the light were drawn
+   into it, and the other way at dawn: the light spreads out from the sun. --sun is how far from the sun the day still holds, as a share of
+   the way to the farthest corner */
+@property --sun { syntax: "<percentage>"; inherits: false; initial-value: 130%; }
+.s-foot.meadow .scene { --sun-x: 77%; --sun-y: 24%; }
+.s-foot.meadow .scene .night { position: absolute; inset: 0; --sun: 130%;
+  -webkit-mask-image: radial-gradient(circle farthest-corner at var(--sun-x) var(--sun-y), #0000 calc(var(--sun) - 22%), #000 var(--sun));
+  mask-image: radial-gradient(circle farthest-corner at var(--sun-x) var(--sun-y), #0000 calc(var(--sun) - 22%), #000 var(--sun)); }
+:root[data-theme="dark"] .s-foot.meadow .scene .night { --sun: 0%; }
+/* the switch: no sun of its own any more, the footer changes with the page, inside its crossfade (index.html, the view transition), in step
+   to the frame; without one it changes at once, as the page does (Elio, 13 Nov) */
+/* its loop (night-loop.js): the same night moving (the river, the grass, the ants), over the still once it plays. By day the same pair
+   (17 Nov): the day's still is an image of its own, lazy as the night's, so no page fetches it at its top (it was the film's poster,
+   asked for at once); the day's film lies over it and comes in once it has a frame */
+.s-foot.meadow .scene video.day { position: absolute; inset: 0; }
+.s-foot.meadow .scene video:is(.day, .night) { opacity: 0; transition: opacity .8s; }
+.s-foot.meadow .scene video:is(.day, .night).on { opacity: 1; }
+.theming .s-foot.meadow .scene video:is(.day, .night) { transition: none; }
+
+/* at night a few fireflies over the meadow, low by the ants (fireflies.js), with the night, at once */
+.s-foot.meadow .scene canvas.flies { display: none; position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+:root[data-theme="dark"] .s-foot.meadow .scene canvas.flies { display: block; }
+
+/* the awake ants' eyes, with a mouse (footer-eyes.js): the film's box as object-fit places it (all its height or all the scene's width,
+   at --fit-x across and the bottom), each eye a share of it; in each, the white, the pupil kept to the white (.iris), the lid. One cell
+   each of the theme's sheet (--sheet), scaled to the eye's box (--size). The night's set is a .night: it shows and hides with the
+   night's still and film, at once */
+.s-foot.meadow .scene .eyes { position: absolute; inset: 0; pointer-events: none; }
+.s-foot.meadow .scene:not(.eyed) .eyes { display: none; }
+.s-foot .eyes .frame { position: absolute; left: var(--fit-x); bottom: 0; width: max(100%, var(--scene) * 16 / 9); aspect-ratio: 16 / 9; translate: calc(var(--fit-x) * -1) 0; }
+.s-foot .eyes i, .s-foot .eyes b { position: absolute; display: block; }
+.s-foot .eyes b { inset: 0; background: var(--sheet) no-repeat; background-size: var(--size); }
+.s-foot .eyes .white { background-position: var(--white); }
+.s-foot .eyes .iris { background: none; -webkit-mask: var(--sheet) var(--white) / var(--size) no-repeat; mask: var(--sheet) var(--white) / var(--size) no-repeat; }
+.s-foot .eyes .pupil { background-position: var(--pupil); will-change: transform; }
+.s-foot .eyes .lid { opacity: 0; }
+
+/* narrower, the picture stops following the width so the ants keep their size, cropped round them */
+@media (max-width: 999px) {
+  .s-foot.meadow { --scene: max(min(123cqw, 520px), 64cqw); }
+  .s-foot.meadow .scene { left: 0; width: 100cqw; }
+  .s-foot .made { flex-basis: 100%; }
+}

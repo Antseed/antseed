@@ -1,0 +1,178 @@
+/* How the network works, as one map of the whole system (17 Nov, after the call with Amos and Pranit): net-layers.js draws it into
+   #net-layers, on the homepage (hero/parts/layers.html, data-cut="home", 1248 / 560) and on the network page (layers-large.html,
+   data-cut="network", 1248 / 720). The board is a 1248-wide stage scaled to its slot (--s); on the network's painted wash, the DHT
+   above, the peers on glass tiles in the middle, Base as one glass slab below. Colours, glass and lines as parts/net-map.css.
+   Five kinds of text, no more: a place's name (Geist Pixel 20, ink), a layer's name (Geist 13 / 500, ink, after its pixel numeral),
+   a caption's body (Geist 13 / 400, --t), a glass tag for an actor or a value (Geist 13 / 500, or Geist Mono 12), a moving chip.
+   Desktop only for now (1200 and up); under that the board only scales down. */
+.nl { --ink: #1b211e; --t: #343b37; --o: #4f7a24; --n: #2f5609; --lime: #b9ee2a; --under: #5f8a12; --usdc: #2775ca; --ants: #3f7d1e;
+  --glass: rgba(255, 255, 255, .66); --dense: rgba(255, 255, 255, .84); --solid: #fbfcf9; --edge: rgba(255, 255, 255, .9); --light: rgba(255, 255, 255, .5); --halo: rgba(250, 248, 242, .85);
+  --sh: 0 8px 32px rgba(20, 51, 30, .16), inset 0 1px 0 0 var(--light);
+  --pl: rgba(255, 255, 255, .46); --pl-on: rgba(255, 255, 255, .78); --rim: rgba(255, 255, 255, .95); --slab: #fff; --shade: rgba(20, 51, 30, .3);
+  /* the text's floor: no text under 12.5px on screen however small the stage is drawn (1440 wide: the stage at its own size, 13 and
+     12); --k is how much the 13px text grew, and the captions' widths grow with it so they wrap the same */
+  --s: 1; --f13: max(13px, calc(12.5px / var(--s))); --f12: max(12px, calc(12.5px / var(--s))); --k: max(1, calc(.9615 / var(--s)));
+  position: relative; width: 100%; aspect-ratio: 1248 / 560; overflow: hidden; border-radius: inherit; z-index: 1; background: #f6f3ea; color: var(--ink); text-align: left;
+  font: 400 13px/18px Geist, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+.nl[data-cut="network"] { aspect-ratio: 1248 / 720; }
+:root[data-theme="dark"] .nl { --ink: #f5f7f5; --t: #d3d9d5; --o: #c8f53c; --n: #c8f53c; --lime: #c8f53c; --under: transparent; --usdc: #6fb0f5; --ants: #86c43c;
+  --glass: rgba(14, 33, 23, .66); --dense: rgba(14, 33, 23, .84); --solid: #12261b; --edge: rgba(150, 200, 145, .3); --light: rgba(190, 228, 170, .12); --halo: rgba(12, 20, 16, .92);
+  --sh: 0 8px 32px rgba(8, 26, 14, .32), inset 0 1px 0 0 var(--light);
+  --pl: rgba(14, 33, 23, .46); --pl-on: rgba(16, 38, 26, .8); --rim: rgba(170, 215, 160, .4); --slab: #07140d; --shade: rgba(0, 0, 0, .5);
+  background: #2c3330; }
+/* the network's own wash, toned as the site's paintings; asked for once the board is near the screen (net-layers.js, [data-lit]) */
+.nl::before { content: ""; position: absolute; inset: 0; background: center / cover no-repeat; filter: saturate(.74); opacity: .9; }
+.nl[data-lit]::before { background-image: url(/site/assets/home/lavis-v6/network.webp); }
+:root[data-theme="dark"] .nl::before { filter: saturate(.7) brightness(.4); opacity: 1; }
+:root[data-theme="dark"] .nl[data-lit]::before { background-image: url(/site/assets/home/lavis-v6/network-dark.webp); }
+.nl-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; transform: scale(var(--s)); }
+.nl-svg, .nl-html { position: absolute; inset: 0; width: 100%; height: 100%; }
+.nl-svg { overflow: visible; }
+.nl-html :where(p, ul, h3, button) { margin: 0; padding: 0; }
+.nl-html :where(i, em, s) { font-style: normal; text-decoration: none; }
+
+/* drawn: the glass plates (Base, each peer's own tile): a clear face with a white edge, a little thickness, a soft shadow */
+.nl-svg :is(path, ellipse, line) { stroke-linecap: round; stroke-linejoin: round; }
+.nl-pl-shade { fill: var(--shade); filter: blur(10px); opacity: .55; }
+.nl-pl-slab { opacity: .5; }
+:root[data-theme="dark"] .nl-pl-slab { opacity: .25; }   /* the night's wash shows through the plates, as the day's does */
+.nl-pl-slab path { fill: var(--slab); }
+.nl-pl-face { fill: var(--pl); stroke: var(--rim); stroke-width: 1; }
+.nl-tile .nl-pl-face { fill: var(--pl-on); }
+.nl-tile .nl-pl-shade { filter: blur(5px); opacity: .45; }
+/* the direct routes: the map's lime dotted line, its darker twin under it; the one you use heavier, the others' twin fainter */
+.nl-route { fill: none; stroke: var(--lime); stroke-width: 3.5; stroke-dasharray: 0 9; transition: stroke .35s, opacity .35s; }
+.nl-route.under { stroke: var(--under); stroke-width: 5.5; }
+.nl-route.fine { stroke-width: 2.6; stroke-dasharray: 0 7; }
+.nl-route.fine.under { stroke-width: 4.4; opacity: .4; }
+.nl-ring { fill: color-mix(in srgb, var(--lime) 26%, transparent); stroke: var(--lime); stroke-width: 3; filter: drop-shadow(0 0 1px var(--under)); transform-box: fill-box; transform-origin: center; }
+/* the DHT's mesh, and your lookup into it: addresses, never a prompt, so not a route */
+.nl-mesh { fill: none; stroke: var(--o); stroke-width: 1.2; stroke-dasharray: 2 5; opacity: .7; }
+.nl-dot { fill: var(--ink); opacity: .22; }
+.nl-look { fill: none; stroke: var(--o); stroke-width: 1.8; stroke-dasharray: 2 6; }
+/* the usage authorization's own lane: thin, ink */
+.nl-sig { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray: 1 5; opacity: .6; }
+/* on Base: two rails, solid: USDC's blue, ANTS's green; a point on them for each peer; your link and your provider's down to
+   them; the hollow point where a budget waits */
+.nl-usdc, .nl-ants { fill: none; stroke-width: 2; }
+.nl-usdc { stroke: var(--usdc); }
+.nl-ants { stroke: var(--ants); }
+.nl-drop { stroke-width: 1.4; stroke-dasharray: 2 5; }
+.nl-node { stroke: var(--rim); stroke-width: 1; }
+.nl-node.usdc { fill: var(--usdc); }
+.nl-node.ants { fill: var(--ants); }
+.nl-node.hold { fill: var(--pl-on); stroke: var(--usdc); stroke-width: 1.6; transform-box: fill-box; transform-origin: center; }
+
+/* placed: the ants, the glass names, the captions */
+.nl-ant { position: absolute; max-width: none; filter: drop-shadow(0 3px 3px rgba(20, 40, 20, .28)); }
+.nl-ant.flip { transform: scaleX(-1); }
+.nl-seed { position: absolute; width: 16px; height: 22px; max-width: none; filter: drop-shadow(0 2px 2px rgba(20, 40, 20, .3)); transform-origin: 50% 100%; }
+.nl img:not([src]) { visibility: hidden; }
+.nl-glass { border: .5px solid var(--edge); background: var(--glass); box-shadow: var(--sh); backdrop-filter: blur(12px) saturate(1.2); -webkit-backdrop-filter: blur(12px) saturate(1.2); }
+/* a glass tag, as the map's: an actor's name or a value; denser, no blur behind it */
+.nl-tag { position: absolute; z-index: 1; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border: .5px solid var(--edge); border-radius: 7px; background: var(--dense); white-space: nowrap;
+  font: 500 var(--f13)/1 Geist, system-ui, sans-serif; color: var(--ink); box-shadow: 0 3px 8px rgba(20, 51, 30, .14), inset 0 1px 0 0 var(--light); }
+.nl-tag.mono, .nl-price { font: 500 var(--f12)/1 "Geist Mono", ui-monospace, monospace; }
+.nl-price { margin-left: 2px; color: var(--t); }
+.nl-tag.c { transform: translateX(-50%); }
+.nl-tag.r { transform: translateX(-100%); }
+.nl-ic { flex: none; display: inline-block; width: 12px; height: 12px; }
+.nl[data-lit] .nl-ic { background: currentColor; -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; }
+/* the three places' names, quiet, down the left edge: Geist Pixel, each led by its icon; a button, so the pointer or the keyboard
+   lights that place alone */
+.nl-zone { position: absolute; display: inline-flex; align-items: center; gap: 8px; border: 0; border-radius: 4px; background: none; white-space: nowrap; cursor: default; text-align: left;
+  font: 400 20px/24px "Geist Pixel Var", "Geist Mono", monospace; font-variation-settings: "ELSH" 20; letter-spacing: -.5px; color: var(--ink); text-shadow: 0 0 10px var(--halo), 0 0 3px var(--halo); }
+.nl-zone .nl-ic, .nl-zone .nl-base { width: 14px; height: 14px; }
+.nl-base { border-radius: 3px; }
+:root[data-theme="dark"] .nl-base { opacity: .8; }
+.nl-zone:focus-visible { outline: 2px solid var(--o); outline-offset: 4px; }
+/* a caption: body text; .num opens with its layer's numeral, hung in the margin, and its name */
+.nl-cap { position: absolute; box-sizing: content-box; width: calc(var(--w) * var(--k)); font: 400 var(--f13)/1.385 Geist, system-ui, sans-serif; color: var(--t); text-wrap: pretty; text-shadow: 0 0 8px var(--halo), 0 0 2px var(--halo); }
+.nl-cap b { font-weight: 500; color: var(--ink); }
+.nl-cap.num { padding-left: 24px; }
+.nl-cap .n { position: absolute; left: 0; top: 0; font: 400 20px/calc(var(--f13) * 1.385) "Geist Pixel Var", "Geist Mono", monospace; font-variation-settings: "ELSH" 6; color: var(--n); }   /* square dots at this size: the rounder, the less ink (sections.css) */
+.nl-cap.one { width: auto; white-space: nowrap; }
+.nl-cap.r { text-align: right; transform: translateX(-100%); }
+.nl-cap.ra { transform: translateX(-100%); }   /* held by its right edge, read from its left */
+.nl-cap[data-f] { cursor: default; }
+/* a provider's four signals: lit, or struck out; the key that names them, under Reputation */
+.nl-sigs { gap: 7px; padding: 0 8px; }
+.nl-no { position: relative; display: inline-flex; opacity: .4; }
+.nl-no::after { content: ""; position: absolute; left: -2px; right: -2px; top: 50%; height: 1px; background: currentColor; transform: rotate(-45deg); }
+.nl-key { display: grid; gap: 2px; margin-top: 8px; color: var(--ink); }
+.nl-key li { display: flex; align-items: center; gap: 7px; list-style: none; white-space: nowrap; }
+/* your device's window: each provider's score as a bar, and yours, one line down through the three */
+.nl-card { position: absolute; display: flex; flex-direction: column; gap: 6px; box-sizing: border-box; width: calc(var(--w) * var(--k)); padding: 12px; border-radius: 10px; font: 400 var(--f13)/1.385 Geist, system-ui, sans-serif; }
+.nl-card h3 { font: 500 var(--f13)/1.385 Geist, system-ui, sans-serif; }
+.nl-score { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 0 10px; line-height: 24px; }
+.nl-score .bar { grid-column: 2; justify-self: start; margin-left: 60%; transform: translateX(-50%); white-space: nowrap; line-height: 20px; color: var(--t); }
+.nl-score b { font-weight: 500; white-space: nowrap; }
+.nl-score em { color: var(--t); }
+.nl-score em.ok { font-weight: 500; color: var(--n); }
+.nl-score .skip { color: var(--t); }
+.nl-meter { position: relative; height: 3px; border-radius: 2px; background: color-mix(in srgb, var(--ink) 14%, transparent); }
+.nl-meter::before { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--v); border-radius: 2px; background: var(--n); }
+.nl-meter.skip::before { background: var(--t); }
+.nl-meter::after { content: ""; position: absolute; left: 60%; top: -10.5px; width: 1px; height: 24px; background: var(--ink); }
+
+/* what travels (net-layers.js moves them) */
+.nl-tok { position: absolute; left: 0; top: 0; max-width: none; opacity: 0; will-change: transform, opacity; pointer-events: none; transition: none !important; }
+.nl-chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border: .5px solid var(--edge); border-radius: 999px; background: var(--solid); white-space: nowrap;
+  font: 500 var(--f12)/1 Geist, system-ui, sans-serif; color: var(--ink); box-shadow: 0 3px 8px rgba(20, 51, 30, .18), inset 0 1px 0 0 var(--light); }
+.nl-chip img { width: 10px; height: 14px; }
+.nl-coin { width: 22px; height: 22px; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .3)); }
+.nl-coin.usdc { border-radius: 50%; background: #fff; }
+.nl-coin.small { width: 14px; height: 14px; }
+.nl-coin.ants { width: 26px; height: 28px; }
+.nl-coin img { display: block; width: 100%; height: 100%; }
+.nl-pip { width: 9px; height: 9px; border-radius: 50%; background: var(--lime); box-shadow: 0 0 0 1.5px var(--under), 0 0 8px var(--lime); }
+.nl-pip.ants { background: var(--ants); box-shadow: 0 0 0 1.5px var(--rim); }
+.nl-pip.sig { background: var(--ink); box-shadow: 0 0 0 1.5px var(--rim); }   /* the signed total the provider takes to Base: the authorization's ink, not money */
+.nl-grain { width: 12px; height: 17px; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .3)); }
+
+/* the three layers, along the board's foot: the key to the numerals, and a control: open one and the map keeps only its part lit */
+.nl-tabs { position: absolute; display: flex; width: var(--w); border-radius: 10px; overflow: hidden; }
+.nl-tabs button { position: relative; flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 16px; border: 0; background: none; text-align: left; cursor: pointer; white-space: nowrap;
+  font: 400 var(--f13)/20px Geist, system-ui, sans-serif; color: var(--t); transition: background-color .25s; }
+.nl-tabs button + button { box-shadow: inset .5px 0 0 color-mix(in srgb, var(--ink) 12%, transparent); }
+.nl-tabs i { font: 400 20px/20px "Geist Pixel Var", "Geist Mono", monospace; font-variation-settings: "ELSH" 6; color: var(--n); }
+.nl-tabs b { font: 500 var(--f13)/20px Geist, system-ui, sans-serif; color: var(--ink); transition: color .25s; }
+.nl-tabs span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.nl-tabs button::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--n); opacity: 0; transition: opacity .25s; }
+.nl-tabs button:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.nl-tabs button[aria-pressed="true"] { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.nl-tabs button[aria-pressed="true"]::after { opacity: 1; }
+.nl-tabs button[aria-pressed="true"] b { color: var(--n); }
+.nl-tabs button:focus-visible { outline: 2px solid var(--o); outline-offset: -2px; }
+
+/* a layer, a mechanism or a place in focus: the rest of the map steps back. Provider B's turn offline: it dims, its routes go grey,
+   and the line that says so shows on the route that is down, only then */
+.nl :is([data-g], [data-p], [data-b]) { transition: opacity .35s; }
+.nl-tag.fail { opacity: 0; }
+.nl[data-fail] [data-b] { opacity: .35; }
+.nl[data-fail] .nl-route.b { stroke: var(--t); opacity: .5; }
+.nl[data-fail] .nl-route.b.under { stroke: transparent; }
+.nl[data-fail] .nl-tag.fail { opacity: 1; }
+.nl.focus .off { opacity: .14; }
+.nl.focus[data-fail] .nl-tag.fail.off { opacity: .14; }
+.nl-tag.fail.off { opacity: 0; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .nl[data-run] .nl-route:not(.fine) { animation: nl-run 1.8s linear infinite; }
+  .nl[data-run] .nl-ring.hit { animation: nl-swell 1.1s ease-in-out; }
+  .nl[data-run] .nl-node.hit { animation: nl-swell 1.1s ease-in-out; }
+  .nl[data-run] .nl-ic.hit { animation: nl-pulse 1s ease-out; }
+  .nl[data-run] .nl-seed.hit { animation: nl-flash .6s ease-out; }
+}
+@keyframes nl-run { to { stroke-dashoffset: -18; } }
+@keyframes nl-swell { 40% { scale: 1.22; } }
+@keyframes nl-pulse { 30% { scale: 1.8; color: var(--o); } }
+@keyframes nl-flash { 40% { scale: 1.5; filter: drop-shadow(0 0 6px var(--lime)) drop-shadow(0 0 2px var(--lime)); } }
+
+/* the homepage's cut: the same picture, lighter; its foot strip pairs the plain name with Amos's line */
+.nl[data-cut="home"] .nl-tabs button { flex: 1 1 auto; padding: 0 14px; }
+
+/* the panel the board goes into on the homepage (.s-net-panel, Web's): once the layers are in it, it holds only them, at their size,
+   without its own painting, its padding for the five cards or its rail (Web may move these rules to launch.css) */
+.s-net-panel:has(#net-layers) { padding: 0; height: auto; aspect-ratio: auto; background: none; }
+.s-net-panel:has(#net-layers)::before, .s-net-panel:has(#net-layers)::after, .s-net-panel:has(#net-layers) > :not(#net-layers, .lp-slot, canvas) { display: none; }

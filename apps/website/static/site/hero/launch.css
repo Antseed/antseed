@@ -1,0 +1,62 @@
+/* The launch (18 Nov, merge brief of 17 Nov): Amos's content in our packaging. What sections.css and v6.css did not have: the slots
+   Design's visuals fill (parts.js), the four privacy cards, the provider paths' two lines. Loaded after micro.css. */
+
+/* a slot over a painting panel: the whole panel, a size container its fragment measures itself against; empty, it takes no clicks */
+.lp-slot { display: contents; }
+.lp-slot.lp-on { position: absolute; inset: 0; z-index: 2; display: block; container-type: size; }
+.lp-slot--layers.lp-on { position: relative; inset: auto; width: 100%; aspect-ratio: 1248 / 560; container-type: size; }
+/* Amos's film over the gateway painting (gw-film.css); the router steps back under it */
+.s-gw-panel.has-film > .gw { display: none; }
+/* the network board: the three layers (Design's board, painted in the part) fill the panel; the panel's own map, frame and rail step back */
+.s-page .s-net .s-net-panel.lp-has { flex: none; display: block; aspect-ratio: auto; height: auto; min-height: 0; padding: 0; }   /* over sections.css's board rules (.s-page .s-net .s-net-panel:not(…)) */
+.s-net-panel.lp-has::before, .s-net-panel.lp-has::after { content: none; }
+.s-net-panel.lp-has > :not(.lp-slot) { display: none; }
+/* and it asks for no painting of its own, from the first paint: both launch boards (the painted map, the layered diagram) come through
+   the slot and paint theirs, and the old five-card board's (map-5, 636 KB by day) was fetched, then covered. If no part comes to the slot
+   (parts.js marks the panel .lp-miss), the old board shows as it did, its painting with it */
+.s-net-panel:has(> .lp-slot):not(.lp-miss) { --wash: none; --wash-d: none; }
+@media (max-width: 760px) { .lp-slot--layers.lp-on { aspect-ratio: 4 / 5; } }   /* a phone: the part's tall layout (under 1.6) */
+.lp-video[hidden] { display: none; }
+
+/* the provider paths: Amos's two lines, the second in gray as every title's */
+.s-path-h span { color: var(--g); }
+.s-path-copy { display: grid; gap: 8px; }
+.s-path .s-path-panel { position: relative; }
+
+/* the console's five chapters on a phone: the row scrolls sideways rather than cutting the last one */
+@media (max-width: 560px) { .gwc-tabs { overflow-x: auto; scrollbar-width: none; } .gwc-tabs::-webkit-scrollbar { display: none; } }
+
+/* The paintings come as the visitor nears them (theme.js): while the root says they wait (.wash-lazy), a panel not yet within 1200px of
+   the screen (.wash-near) asks for no picture, on itself, its ::before or its ::after, and is plain in its own colour; --wash and
+   --wash-d stay as they are. A page's first section is its first screen: its painting is never held and loads as it always did. The
+   network panel's own picture is its board's, the painted map's (parts/net-map.css) or the layered diagram's (net-layers.css): it waits
+   with the panel. On screen only: a printed page has them all */
+@media screen {
+  .wash-lazy .wash:not(.wash-near, .s-page > .s-sec:first-child .wash),
+  .wash-lazy .wash:not(.wash-near, .s-page > .s-sec:first-child .wash)::before,
+  .wash-lazy .wash:not(.wash-near, .s-page > .s-sec:first-child .wash)::after,
+  .wash-lazy .wash:not(.wash-near) :is(.nm-board, .lp-nl-board)::before { background-image: none !important; }
+}
+/* A panel that is near but has not arrived yet is held plain by card-unveil.js (sections.css, [data-unveil]). It asks for its painting
+   all the same, at no size, so the arrival finds it loaded as it did when every painting came with the page */
+.wash-lazy .s-page .wash.wash-near:is([data-unveil="wait"], [data-unveil="soon"]) { background-image: var(--wash); background-size: 0 0; }
+:root[data-theme="dark"].wash-lazy .s-page .wash.wash-near:is([data-unveil="wait"], [data-unveil="soon"]) { background-image: var(--wash-d, var(--wash)); }
+
+/* Work in progress (Elio, 18 Nov): he redraws the network's board himself. Until then each of its two panels (the homepage's #network,
+   the network page's three layers) keeps the board's box, no corner, and shows the wash the layered diagram sat on (net-layers.css .nl,
+   toned the same), with one glass label in the middle (the glass of the network page's cards, network.css .wc-chip). Two pictures, one
+   per theme; the hidden one is never asked for, and both wait for the screen (loading="lazy"). Nothing moves. */
+.lp-wip { position: relative; display: grid; place-items: center; overflow: hidden; isolation: isolate; background: #f6f3ea; }
+:root[data-theme="dark"] .lp-wip { background: #2c3330; }
+.lp-wip > img { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; object-fit: cover; filter: saturate(.74); opacity: .9; }
+:root[data-theme="dark"] .lp-wip > img { filter: saturate(.7) brightness(.4); opacity: 1; }
+.lp-wip > .night, :root[data-theme="dark"] .lp-wip > .day { display: none; }
+:root[data-theme="dark"] .lp-wip > .night { display: block; }
+.lp-wip > p { margin: 0; padding: 6px 14px; border: .5px solid #fff; border-radius: 999px; background: rgba(255, 255, 255, .7); color: #0a1a12;
+  box-shadow: 0 0 0 .5px rgba(10, 26, 18, .14), 0 12px 32px rgba(20, 51, 89, .16); backdrop-filter: blur(14px) saturate(1.3); -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  font: 500 13px/18px Geist, system-ui, sans-serif; white-space: nowrap; }
+:root[data-theme="dark"] .lp-wip > p { border-color: rgba(150, 200, 145, .42); background: rgba(14, 33, 23, .66); color: #ecf3ee;
+  box-shadow: 0 12px 32px rgba(8, 26, 14, .3), inset 0 .5px 0 rgba(190, 228, 170, .16); }
+/* the homepage's: the board's own box (.lp-slot--layers, 1248 / 560, the rail's width), as far under the head as the board was */
+.lp-wip--home { flex: none; width: 100%; aspect-ratio: 1248 / 560; margin-top: 56px; }
+@media (max-width: 760px) { .lp-wip--home { aspect-ratio: 4 / 5; margin-top: 40px; } }

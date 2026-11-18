@@ -1,0 +1,124 @@
+/* How the network works, on the painted map (parts/net-map.html, net-map.js). The part fills its slot (launch.css sizes it: the
+   homepage's at 1248 / 560, the network page's the whole panel). The map is map-2, the board with burrows for the ants as pawns, washed
+   as the page's other paintings and drawn a little smaller than the board (its edges fade into the paper); the pieces stand in its
+   burrows at --x / --y in the board's 1248 × 560; the card floats on its right. Desktop only for now. */
+.nm { --ink: #1b211e; --t: #4b534e; --m: #646b67; --o: #4f7a24; --lime: #b9ee2a; --under: #5f8a12; --lift: rgba(24, 44, 10, .55);
+  --glass: rgba(255, 255, 255, .62); --edge: rgba(255, 255, 255, .9); --light: rgba(255, 255, 255, .5); --sh: rgba(20, 51, 30, .16);
+  --blur: blur(12px) saturate(1.2);
+  position: absolute; inset: 0; overflow: hidden; border-radius: inherit; font: 400 14px/20px Geist, system-ui, sans-serif; color: var(--ink);
+  text-align: left; -webkit-font-smoothing: antialiased; }
+:root[data-theme="dark"] .nm { --ink: #f5f7f5; --t: #c2c8c4; --m: #a4aba7; --o: #c8f53c; --lime: #c8f53c; --under: transparent; --lift: rgba(0, 0, 0, .65);
+  --glass: rgba(14, 33, 23, .62); --edge: rgba(150, 200, 145, .3); --light: rgba(190, 228, 170, .12); --sh: rgba(8, 26, 14, .32);
+  --blur: blur(12px) saturate(1.15) brightness(.85); }
+.lp-slot:has(> .nm) { border-radius: inherit; }
+.nm :where(p, figure, figcaption) { margin: 0; }
+.nm-glass { background: var(--glass); box-shadow: inset 0 0 0 .5px var(--edge), inset 0 1px 0 0 var(--light), 0 6px 18px var(--sh);
+  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); }
+
+/* the board: the painting under everything, the pieces placed in its units */
+.nm-board { position: absolute; inset: 0; background: #f6f3ea; }
+:root[data-theme="dark"] .nm-board { background: #39403d; }
+/* the painting at 90% of the board's height, from its left edge (its right end under the card), fading out at its foot and its right */
+.nm-board::before { content: ""; position: absolute; left: 0; top: 5%; width: 95.19%; height: 90%; background: url(/site/assets/home/net/map-2-day.webp) 0 0 / 100% 100% no-repeat;
+  filter: saturate(.74);
+  -webkit-mask-image: linear-gradient(#000 92%, transparent), linear-gradient(to right, #000 86%, transparent); -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(#000 92%, transparent), linear-gradient(to right, #000 86%, transparent); mask-composite: intersect; }
+:root[data-theme="dark"] .nm-board::before { background-image: url(/site/assets/home/net/map-2-night.webp); }
+.nm-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.nm [style*="--x"] { position: absolute; left: calc(var(--x) / 12.48 * 1%); top: calc(var(--y) / 5.6 * 1%); }
+.nm-tok { position: absolute; left: 0; top: 0; }
+
+/* the ants: each standing in its burrow, its feet at its spot; its name under the burrow */
+.nm-ant { width: 0; height: 0; z-index: 2; transition: filter .5s, opacity .5s; }
+.nm-ant img { position: absolute; left: 0; bottom: -4px; translate: -50% 0; display: block; width: auto; height: 76px; filter: drop-shadow(0 4px 5px rgba(20, 40, 20, .28)); }
+.nm-you img { height: 80px; }
+.nm-ant figcaption { position: absolute; left: 0; top: 16px; translate: -50% 0; padding: 2px 8px; border-radius: 6px; font: 500 12px/16px Geist, system-ui, sans-serif; white-space: nowrap; }
+/* the ring round a provider's burrow once the lookup finds it; its price on its left, clear of the ants above and below */
+.nm-ring { position: absolute; left: 0; top: 0; width: 80px; height: 32px; translate: -50% -50%; border-radius: 50%;
+  box-shadow: 0 0 0 3px var(--lime), 0 0 0 4px var(--under), 0 2px 4px 3px var(--lift); opacity: 0; scale: .6; transition: opacity .4s, scale .5s cubic-bezier(.3, 1.6, .5, 1); }
+.nm-price { position: absolute; right: 32px; bottom: 24px; translate: 4px 0; padding: 3px 9px; border-radius: 6px;
+  font: 500 12px/16px "Geist Mono", ui-monospace, monospace; color: var(--ink); white-space: nowrap; opacity: 0; transition: opacity .35s, translate .35s, background .35s, color .35s; }
+
+/* the DHT: three of its peers (the hero's seed), the mesh between them, faint; your lookup, dotted, hops through them */
+.nm-seed { width: 20px; height: 28px; translate: -50% -88%; z-index: 1; background: url(/site/assets/hero/seed-day.webp) center / contain no-repeat;
+  filter: drop-shadow(0 2px 3px rgba(20, 40, 20, .3)); opacity: 0; transition: opacity .5s, scale .4s; }
+:root[data-theme="dark"] .nm-seed { background-image: url(/site/assets/hero/seed-night.webp); }
+.nm-svg path { fill: none; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; }
+.nm-mesh { stroke: var(--lime); stroke-width: 1.5; stroke-dasharray: 2 6; opacity: 0; transition: opacity .5s; filter: drop-shadow(0 1px 1px var(--lift)); }
+/* your lookup dotted (Elio, 13 Nov: your lookup dotted, your links solid), drawn by its mask */
+.nm-look { stroke: var(--lime); stroke-width: 3; stroke-dasharray: 0 8; filter: drop-shadow(0 1px 1px var(--lift)); transition: opacity .5s; }
+.nm-look-m { stroke: #fff; stroke-width: 12; stroke-dasharray: 1; stroke-dashoffset: 1; }
+.nm-tag { translate: -50% -50%; padding: 2px 8px; border-radius: 6px; font: 500 12px/16px "Geist Mono", ui-monospace, monospace; opacity: 0; transition: opacity .5s; }
+.nm-route { stroke: var(--lime); stroke-width: 4; stroke-dasharray: 1; stroke-dashoffset: 1; filter: drop-shadow(0 0 1px var(--under)) drop-shadow(0 1px 1.5px var(--lift));
+  transition: stroke-dashoffset .9s cubic-bezier(.5, 0, .3, 1), opacity .5s; }
+
+/* what travels (net-map.js moves them along the routes): visible only on the way */
+.nm-tok { z-index: 3; translate: -50% -50%; opacity: 0; transition: opacity .2s; pointer-events: none; }
+.nm-tok.go { opacity: 1; }
+.nm-bubble { width: 26px; height: 20px; border-radius: 7px; background: #fff; box-shadow: 0 2px 6px rgba(20, 40, 20, .3); }
+.nm-bubble::after { content: ""; position: absolute; left: 5px; bottom: -5px; border: 5px solid transparent; border-top-color: #fff; border-left-color: #fff; border-width: 4px 5px; }
+.nm-answer img { display: block; width: 24px; height: auto; filter: drop-shadow(0 2px 3px rgba(20, 40, 20, .35)); }
+.nm-coin { display: flex; align-items: center; gap: 6px; }
+.nm-coin img { width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 2px 5px rgba(0, 0, 0, .3); }
+.nm-coin b { padding: 2px 7px; border-radius: 6px; font: 500 12px/16px "Geist Mono", ui-monospace, monospace; white-space: nowrap; }
+.nm-coin { translate: -12px -50%; }   /* the coin on the route, its value beside it */
+
+/* the states, as net-map.js turns them on (data-on, a word each) */
+.nm[data-on~="dht"] :is(.nm-seed, .nm-mesh, .nm-dht) { opacity: 1; }
+.nm[data-on~="quiet"] :is(.nm-seed, .nm-mesh, .nm-dht) { opacity: .45; }
+.nm[data-on~="quiet"] .nm-dht { opacity: 0; }
+.nm[data-on~="look"] .nm-look-m { stroke-dashoffset: 0; transition: stroke-dashoffset 1.5s linear; }
+.nm[data-on~="quiet"] .nm-look { opacity: .35; }
+.nm[data-on~="s1"] .s1, .nm[data-on~="s2"] .s2, .nm[data-on~="s3"] .s3 { animation: nm-flash .6s ease-out; }
+.nm[data-on~="ra"] [data-p="a"] .nm-ring, .nm[data-on~="rb"] [data-p="b"] .nm-ring, .nm[data-on~="rc"] [data-p="c"] .nm-ring { opacity: 1; scale: 1; }
+.nm[data-on~="pa"] [data-p="a"] .nm-price, .nm[data-on~="pb"] [data-p="b"] .nm-price, .nm[data-on~="pc"] [data-p="c"] .nm-price { opacity: 1; translate: 0 0; }
+/* the pick: its price in the accent, the others step back */
+.nm[data-on~="pickb"] [data-p="b"] .nm-price, .nm[data-on~="picka"] [data-p="a"] .nm-price { background: var(--lime); color: #0a1a12; box-shadow: 0 2px 8px var(--lift); }
+.nm[data-on~="pickb"]:not([data-on~="picka"]) :is([data-p="a"], [data-p="c"]) .nm-price { opacity: 0; }
+.nm[data-on~="pickb"]:not([data-on~="picka"])[data-on~="pa"][data-on~="pc"] :is([data-p="a"], [data-p="c"]) .nm-price { opacity: .55; }
+.nm[data-on~="rtb"] .nm-rb, .nm[data-on~="rta"] .nm-ra { stroke-dashoffset: 0; }
+/* B goes dark: grey, its ring and its route gone */
+.nm[data-on~="offb"] [data-p="b"] { filter: grayscale(1); opacity: .55; }
+.nm[data-on~="offb"] [data-p="b"] .nm-ring { opacity: 0; }
+.nm[data-on~="offb"] .nm-rb { opacity: 0; }
+.nm[data-on~="offb"] [data-p="b"] .nm-price { background: var(--glass); color: var(--m); text-decoration: line-through; }
+/* a provider glad to serve: a hop */
+.nm-prov.hop img, .nm-you.hop img { animation: nm-hop .55s ease-out; }
+@keyframes nm-flash { 40% { scale: 1.5; filter: drop-shadow(0 0 8px var(--lime)) drop-shadow(0 0 2px var(--lime)); } }
+@keyframes nm-hop { 40% { translate: 0 -10px; } }
+
+/* the card, on the 8px grid: 8 round its five rows; a row 8 above and below its 24px line, 16 from the bar at its left; the open row its
+   line 8 under its name and its detail 16 under that, 16 to its foot; a 2px bar by the open row, from its name's top to its foot */
+.nm-card { position: absolute; right: 24px; top: 50%; translate: 0 -50%; z-index: 4; width: 336px; box-sizing: border-box; display: flex; flex-direction: column;
+  padding: 8px; border-radius: 12px; background: var(--glass); box-shadow: inset 0 0 0 .5px var(--edge), inset 0 1px 0 0 var(--light), 0 8px 32px var(--sh);
+  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); }
+.nm-card button { position: relative; display: grid; grid-template-columns: 16px minmax(0, 1fr); grid-template-areas: "i h" "m m"; column-gap: 8px; align-items: center;
+  width: 100%; padding: 8px 16px; border: 0; border-radius: 8px; background: none; font: inherit; color: var(--t); text-align: left; cursor: pointer;
+  transition: padding .45s cubic-bezier(.4, 0, .2, 1); }
+.nm-card button[aria-selected="true"] { padding-bottom: 16px; }
+.nm-ic { grid-area: i; display: block; width: 16px; height: 16px; color: var(--m); transition: color .3s; }
+.nm-ic svg { display: block; width: 100%; height: 100%; }
+.nm-card b { grid-area: h; font: 500 15px/24px Geist, system-ui, sans-serif; color: var(--t); transition: color .3s; }
+.nm-n { margin-right: 8px; font: 400 15px/24px "Geist Pixel Var", "Geist Mono", monospace; font-variation-settings: "ELSH" 20; color: var(--m); transition: color .3s; }
+.nm-more { grid-area: m; display: grid; grid-template-rows: 0fr; transition: grid-template-rows .45s cubic-bezier(.4, 0, .2, 1); }
+.nm-more > span { display: flex; flex-direction: column; overflow: hidden; }
+.nm-more em { padding-top: 8px; font: 400 14px/20px Geist, system-ui, sans-serif; font-style: normal; color: var(--t); text-wrap: pretty; }
+.nm-more small { display: flex; align-items: center; gap: 8px; padding-top: 16px; font: 500 12px/16px "Geist Mono", ui-monospace, monospace; color: var(--m); }
+.nm-more small img { width: 14px; height: 14px; }
+.nm-card [aria-selected="true"] .nm-more { grid-template-rows: 1fr; }
+.nm-card [aria-selected="true"] b { color: var(--ink); }
+.nm-card [aria-selected="true"] :is(.nm-ic, .nm-n) { color: var(--o); }
+.nm-card [aria-selected="false"]:hover :is(b, .nm-ic, .nm-n) { color: var(--ink); }
+.nm-card button:focus-visible { outline: 2px solid var(--o); outline-offset: -2px; }
+/* the bar: a quiet track by the open row, the accent filling it as it plays (--p from net-map.js) */
+.nm-card button::before, .nm-card button::after { content: ""; position: absolute; left: 0; top: 8px; bottom: 16px; width: 2px; border-radius: 1px; opacity: 0; transition: opacity .3s; }
+.nm-card button::after { background: color-mix(in srgb, var(--ink) 12%, transparent); }
+.nm-card button::before { z-index: 1; background: var(--o); transform-origin: 50% 0; scale: 1 var(--p, 0); }
+.nm-card [aria-selected="true"]::before, .nm-card [aria-selected="true"]::after { opacity: 1; }
+
+/* a step set at once (net-map.js): no transitions on the way */
+.nm.nm-now *, .nm.nm-now *::before, .nm.nm-now *::after { transition: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .nm *, .nm *::before, .nm *::after { transition-duration: 0s !important; animation: none !important; }
+}

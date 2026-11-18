@@ -1,0 +1,401 @@
+<!-- Antseed homepage, everything below the hero. Figma: file 5tLvMmeKGyUsZgrhY4ogTG, page "Homepage · v4 + dark": 696:3 (light) and 696:5169 (dark).
+     Loaded into hero/index.html (#sections) with sections.css and sections.js. Panels marked .wash get a watercolour wash: --wash in light,
+     --wash-d in dark (assets/home/lavis-v6, each baked to match Figma's own adjustments on that wash); .mz instead would give them the
+     round-dot mosaic from sections.js. Black logos are marked .ink: they go light in dark. -->
+<!-- the v6 scenes (the cards, the network, Private by design) and the painted footer: v6.css, footer.css -->
+<link rel="stylesheet" href="/site/hero/v6.css">
+<link rel="stylesheet" href="/site/hero/footer.css">
+<div class="s-page">
+
+<!-- The mission: the one place the page says why Antseed exists -->
+<!-- "What is Antseed" is removed for the launch (merge brief, 17 Nov) -->
+
+<!-- 700+ models: text, image, video and voice through the one API. The four media side by side, each a tab (sections.js), over
+     their models going by in two lanes, each a card: its maker's mark, its price, how many providers serve it and, for text, its saving on the lab's price.
+     AntSeedStats' most used models and their prices, kept in models.json with the date they were read (node texture-lab/models-refresh.mjs) -->
+<section class="s-sec s-prices" id="prices" aria-labelledby="s-prices-h">
+  <div class="s-rail s-pad">
+    <header class="s-head">
+      <h2 class="s-h2" id="s-prices-h">700+ models.<br><span>Best Prices.</span></h2>
+    </header>
+    <div class="s-models">
+      <div class="s-media" role="tablist" aria-label="Media">
+        <button type="button" role="tab" id="s-m-text" aria-controls="s-m-list" aria-selected="true" data-medium="text">Text</button>
+        <button type="button" role="tab" id="s-m-image" aria-controls="s-m-list" aria-selected="false" tabindex="-1" data-medium="image">Image</button>
+        <button type="button" role="tab" id="s-m-video" aria-controls="s-m-list" aria-selected="false" tabindex="-1" data-medium="video">Video</button>
+        <button type="button" role="tab" id="s-m-voice" aria-controls="s-m-list" aria-selected="false" tabindex="-1" data-medium="voice">Voice</button>
+      </div>
+      <div id="s-m-list" class="s-flow" role="tabpanel" aria-labelledby="s-m-text"></div>
+    </div>
+    <div class="s-models-foot">
+      <a class="s-link" href="https://antseedstats.com/network">See all available models ↗</a>
+    </div>
+  </div>
+</section>
+
+<!-- The products, each a half of text and a half of picture, 120px apart -->
+<div class="s-prods">
+
+<!-- Antseed Gateway: a command-line tool, so a terminal and nothing else -->
+<section class="s-sec s-duo" id="gateway" aria-labelledby="s-gw-h">
+  <div class="s-rail">
+    <div class="s-duo-text">
+      <a class="s-eyebrow" href="https://antseed.com/docs/gateway/">Antseed Gateway&nbsp;<span class="chev">›</span></a>
+      <div class="s-duo-head">
+        <h2 class="s-h3" id="s-gw-h">Be your own<br><span>AI router.</span></h2>
+        <p class="s-sub" style="--sub: 420px">Run the gateway and route every agent’s requests across the network on your rules. Your keys, your budgets, no middleman.</p>
+      </div>
+      <ul class="s-feats">
+        <li><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/lock.svg)"></i>Your endpoint. A key and budget for each agent.</li>
+        <li><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/directions.svg)"></i>Route by price, speed, privacy or provider</li>
+        <li><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/user.svg)"></i>Run your own workspace for your team</li>
+        <li><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/analytics.svg)"></i>Track your balances and usage. Pay by card, Apple Pay and more</li>
+      </ul>
+      <div class="s-actions"><a class="s-btn" href="https://antseed.com/docs/quickstart/">Set Up Gateway</a><a class="s-btn ghost" href="https://antseed.com/docs/gateway/">Learn more</a></div>
+    </div>
+    <!-- launch: Design's console (parts/gateway-console) fills this panel once it lands, and the router steps back; the video Antseed
+         sends goes in the slot (data-video-slot) -->
+    <div class="wash land s-duo-panel s-gw-panel has-film" style="--wash: url(/site/assets/home/vignettes/gw-day.webp); --wash-d: url(/site/assets/home/vignettes/gw-night.webp)">
+      <!-- the Gateway on film (Amos, 16 Nov): the real console, recorded on a throwaway gateway with an empty wallet. A question answered
+           by a provider on the network, the models and providers it can reach, a key made with a budget, then usage and routing. It plays,
+           muted, while on screen; the chapters under it jump and light with the film (gw-film.js, gw-film.css). The router above stays
+           hidden under it; Design's console (gw-console.*) is kept aside, not linked (Elio, 17 Nov) -->
+      <figure class="gw-film">
+        <div class="gw-bar"><span class="gw-lights"><i></i><i></i><i></i></span><span class="gw-url">localhost:8379/console</span></div>
+        <video muted playsinline loop preload="none" poster="/site/assets/home/gateway-demo/gateway-film-poster.jpg" aria-label="The Antseed Gateway console in use: a question answered by a provider on the network, the list of models and providers, an API key created with a daily and monthly budget, then usage and routing rules"><source src="/site/assets/home/gateway-demo/gateway-film.mp4" type="video/mp4"></video>
+        <div class="gw-chapters" role="group" aria-label="Chapters">
+          <button type="button" data-t="0">Ask</button><button type="button" data-t="14.2">Models</button><button type="button" data-t="17.7">Providers</button><button type="button" data-t="22">Keys &amp; budgets</button><button type="button" data-t="31.4">Usage</button>
+        </div>
+      </figure>
+      <div class="gw" role="img" aria-label="Your router, on your own machine. Three callers, Claude Code, a support bot and a research agent, each with its own key, send their requests to your gateway at localhost:8379, on the same plate. Its rules send each request straight to a provider on the network, one route at a time: Claude Code's by price to the cheapest, at $0.02 per million tokens, the support bot's by speed to the fastest, at $0.05, and the research agent's by privacy to one running in a TEE, at $0.03">
+        <div class="gw-plate">
+          <div class="gw-lay"><svg class="gw-links" aria-hidden="true"></svg></div>
+          <ul class="gw-callers">
+            <li class="gw-caller" data-gw="in"><i class="gw-ic color" style="--i:url(/site/assets/home/icons/labs-color/anthropic.svg)"></i><b>Claude Code</b></li>
+            <li class="gw-caller" data-gw="in"><i class="gw-ic" style="--i:url(/site/assets/home/icons/pixel/message.svg)"></i><b>Support bot</b></li>
+            <li class="gw-caller" data-gw="in"><i class="gw-ic gw-av" style="--i:url(/site/assets/home/icons/teammate-anna.webp)"></i><b data-placeholder="copy">Anna</b></li>
+          </ul>
+          <div class="gw-win" data-gw="hub">
+            <p class="gw-title"><b>Your gateway</b><span>localhost:8379</span></p>
+            <dl class="gw-rules" data-placeholder="copy">
+              <div><dt>Price</dt><dd>cheapest first</dd></div>
+              <div><dt>Speed</dt><dd>under 400 ms</dd></div>
+              <div><dt>Privacy</dt><dd>TEE only</dd></div>
+            </dl>
+          </div>
+        </div>
+        <div class="gw-net">
+          <ul class="gw-provs">
+            <li class="gw-prov" data-gw="out" data-row="0" data-rule="cheapest"><span>0x5e…a2</span><span>$0.02/M</span></li>
+            <li class="gw-prov" data-gw="out" data-row="1" data-rule="fastest"><span>0xb7…1d</span><span>$0.05/M</span></li>
+            <li class="gw-prov" data-gw="out" data-row="2" data-rule="TEE only"><span>0x91…c4</span><span>$0.03/M · TEE</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Antseed Desktop: the app, one window, from Pranit's prototype (claude.ai/artifact/4jXS6KFNt6wwx4RYxXpCv5), playing a short loop
+     (sections.js): the model picker opens and Kimi K3.1 is picked, Private is switched on (the ant puts on its sunglasses), a prompt is
+     typed and sent, and a reply comes in. The app keeps the site's theme throughout, light by day and its night theme in dark (Elio, 12 Nov:
+     the app's own Private turns it to night, held off for the day captures). Each state of the app is its own capture (assets/home/desktop,
+     rendered at 1100×860, 12 Nov; day-*, and in dark night-*: data-dark); the cursor, the typing and the messages are drawn here. Still with
+     reduced motion. PLACEHOLDER for Pranit: the Colony version replaces this once it exists, in the frame marked data-slot="colony" -->
+<section class="s-sec s-duo s-duo-flip" id="desktop" aria-labelledby="s-vpn-h">
+  <div class="s-rail">
+    <div class="wash land s-duo-panel s-vpn-panel" style="--wash: url(/site/assets/home/vignettes/v02-day.webp); --wash-d: url(/site/assets/home/vignettes/v02-night.webp)">
+      <div class="vpn">
+        <div class="vpn-win app" data-slot="colony" role="img" aria-label="Antseed Desktop: a model is picked, Private is switched on, a prompt is sent and a signed reply comes in">
+          <div class="app-k" aria-hidden="true">
+            <img class="st anon" src="/site/assets/home/desktop/day-1-anon.webp" data-dark="/site/assets/home/desktop/night-1-anon.webp" width="1100" height="860" alt="" loading="lazy" decoding="async">
+            <img class="st menu" src="/site/assets/home/desktop/day-2-menu.webp" data-dark="/site/assets/home/desktop/night-2-menu.webp" alt="" loading="lazy" decoding="async">
+            <img class="st kimi" src="/site/assets/home/desktop/day-3-kimi.webp" data-dark="/site/assets/home/desktop/night-3-kimi.webp" alt="" loading="lazy" decoding="async">
+            <img class="st priv" src="/site/assets/home/desktop/day-4-private.webp" data-dark="/site/assets/home/desktop/night-4-private.webp" alt="" loading="lazy" decoding="async">
+            <img class="st talk" src="/site/assets/home/desktop/day-5-talk.webp" data-dark="/site/assets/home/desktop/night-5-talk.webp" alt="" loading="lazy" decoding="async">
+            <p class="typed"><span></span><i></i></p>
+            <p class="me">Summarise this lease in three risks</p>
+            <div class="ai"><p></p><span class="sig">Kimi K3.1 · in a TEE · signed by 0x7a…3f</span></div>
+            <img class="cur" src="/site/assets/home/v6/net-cursor.svg" width="21" height="27" alt="">
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="s-duo-text">
+      <a class="s-eyebrow" href="https://antseed.com/docs/desktop/">Antseed Desktop&nbsp;<span class="chev">›</span></a>
+      <div class="s-duo-head">
+        <h2 class="s-h3" id="s-vpn-h">Ask anything,<br><span>on any model.</span></h2>
+        <p class="s-sub" style="--sub: 404px">Antseed runs on your computer. Your chat, your agents and your apps all go through it.</p>
+      </div>
+      <ul class="s-feats">
+        <li><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/blocks.svg)"></i><span>Pick any model at the best available price,<br> or start free</span></li>
+        <li><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/plug.svg)"></i><span>Connect Claude Code, Codex, OpenCode<br> and your other apps</span></li>
+        <li><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/lock.svg)"></i><span>Go Private and providers can't read your chats</span></li>
+        <li><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/blocks.svg)"></i><span>Stake ANTS and manage your rewards, right in the app.</span></li>
+      </ul>
+      <div class="s-actions"><a class="s-btn" href="https://github.com/Antseed/antseed/releases/latest" target="_blank" rel="noopener noreferrer">Get Antseed Desktop</a><a class="s-btn ghost" href="https://antseed.com/docs/desktop/">Learn more</a></div>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<!-- Privacy and trust (Elio, 17 Nov): production's component, the head over four tabs beside one panel, the incognito ant sitting on the
+     panel, played by the page's scroll while the frame holds (sections.js). The tabs and the four screens are Amos's (his hero/revision.js,
+     16 Nov), word for word, each screen redrawn as ours: one glass window over the panel's painting (privacy-v4.css). The frame and its
+     run in a box of their own, so the frame stops sticking where the run ends; the dot mosaic (.tw) frames the whole dark block. No
+     payment here: the top-up and "No crypto needed" are in _amos-parts/privacy-payment.html -->
+<section class="s-sec s-priv" id="privacy" aria-labelledby="s-priv-h">
+  <div class="s-pv-hold">
+  <div class="s-pv-pin">
+    <div class="tw" aria-hidden="true"></div>
+    <div class="s-pv-top">
+      <div class="s-rail s-center">
+        <a class="s-eyebrow" href="https://antseed.com/docs/security/">Privacy and trust&nbsp;<span class="chev">›</span></a>
+        <h2 class="s-h2" id="s-priv-h">Privacy <span>and trust.</span></h2>
+        <p class="s-sub s-narrow">Choose the privacy you need, and verify what you get.</p>
+      </div>
+    </div>
+    <div class="s-rail s-center">
+      <div class="s-pv">
+        <div class="s-pv-side">
+          <div class="s-pv-list" role="tablist" aria-labelledby="s-priv-h" aria-orientation="vertical">
+            <button class="s-pv-tab" type="button" role="tab" id="pv-t1" aria-controls="pv-p1" aria-selected="true" tabindex="0"><b>Direct, P2P by design</b><span><span>A direct connection removes the intermediary.</span></span></button>
+            <button class="s-pv-tab" type="button" role="tab" id="pv-t2" aria-controls="pv-p2" aria-selected="false" tabindex="-1"><b>Know which model you get</b><span><span>Independent auditors compare answers against a genuine model’s knowledge fingerprint.</span></span></button>
+            <button class="s-pv-tab" type="button" role="tab" id="pv-t3" aria-controls="pv-p3" aria-selected="false" tabindex="-1"><b>Private inside a TEE</b><span><span>Verified secure hardware protects the data inside it, even from the server operator.</span></span></button>
+            <button class="s-pv-tab" type="button" role="tab" id="pv-t4" aria-controls="pv-p4" aria-selected="false" tabindex="-1"><b>Reputation &amp; routing</b><span><span>Identity, stake and verifications help you choose who serves your requests.</span></span></button>
+          </div>
+        </div>
+        <div class="s-pv-stage">
+          <button class="s-pv-ant" type="button" aria-label="Tickle the ant"><video class="idle on" disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" muted playsinline preload="none" aria-hidden="true" loop poster="/site/assets/home/ant-incognito-idle-poster.webp" width="480" height="798" data-clip="idle"></video><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" muted playsinline preload="none" aria-hidden="true" width="480" height="798" data-clip="laugh"></video><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" muted playsinline preload="none" aria-hidden="true" width="480" height="798" data-clip="frown"></video></button>
+          <!-- 1 · Direct, P2P by design: your device, the dotted thread to your provider, a green dot running it -->
+          <div class="wash s-pv-panel on" role="tabpanel" id="pv-p1" aria-labelledby="pv-t1" style="--wash: url(/site/assets/home/vignettes/v04-day.webp); --wash-d: url(/site/assets/home/vignettes/v04-night.webp)">
+            <div class="pv4" data-mi="pv4">
+              <div class="pv4-win" data-pv-frame>
+                <h3 class="pv4-h">Your prompt takes<br>the direct route.</h3>
+                <div class="pv4-route">
+                  <figure><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/laptop.svg)" aria-hidden="true"></i><figcaption>Your device</figcaption></figure>
+                  <i class="pv4-thread" aria-hidden="true"><b></b></i>
+                  <figure><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/server.svg)" aria-hidden="true"></i><figcaption>Your provider</figcaption></figure>
+                </div>
+                <p class="pv4-result">Encrypted in transit · no middleman</p>
+                <p class="pv4-p">A direct connection removes the intermediary. The provider can still read what it serves unless you choose a verified TEE.</p>
+              </div>
+            </div>
+          </div>
+          <!-- 2 · Know which model you get: the genuine model's answer pattern beside the provider's, the same shape -->
+          <div class="wash s-pv-panel" role="tabpanel" id="pv-p2" aria-labelledby="pv-t2" inert style="--wash: url(/site/assets/home/vignettes/v08-day.webp); --wash-d: url(/site/assets/home/vignettes/v08-night.webp)">
+            <div class="pv4" data-mi="pv4">
+              <div class="pv4-win" data-pv-frame>
+                <h3 class="pv4-h">A model has a pattern.<br>Auditors check it.</h3>
+                <div class="pv4-fp">
+                  <div><p>Genuine model</p><div class="pv4-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+                  <div><p>Provider’s answers</p><div class="pv4-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+                </div>
+                <p class="pv4-result">Same questions. Compare the answer patterns.</p>
+                <p class="pv4-p">Models remember obscure facts differently, including their mistakes. Auditors ask fresh questions and compare the error rate with a trusted reference.</p>
+                <a class="pv4-link" href="https://antseed.com/docs/verify/overview/">How model audits work →</a>
+              </div>
+            </div>
+          </div>
+          <!-- 3 · Private inside a TEE: the provider's server, the verified enclave lit inside it, the operator kept out -->
+          <div class="wash s-pv-panel" role="tabpanel" id="pv-p3" aria-labelledby="pv-t3" inert style="--wash: url(/site/assets/home/vignettes/v09-day.webp); --wash-d: url(/site/assets/home/vignettes/v09-night.webp)">
+            <div class="pv4" data-mi="pv4">
+              <div class="pv4-win" data-pv-frame>
+                <h3 class="pv4-h">Private where<br>the model runs.</h3>
+                <div class="pv4-server">
+                  <p>Provider’s server</p>
+                  <div class="pv4-enclave">
+                    <p class="pv4-enclave-h"><i class="f-ic pv4-ck" style="--i:url(/site/assets/home/icons/pixel/check.svg)" aria-hidden="true"></i>Verified enclave</p>
+                    <p class="pv4-enclave-flow">Your prompt → Model → Answer</p>
+                    <p class="pv4-enclave-s">Data is decrypted only inside</p>
+                  </div>
+                  <p class="pv4-operator">Server operator: no access to data inside</p>
+                </div>
+                <p class="pv4-p">Check the hardware attestation before sending sensitive data. Encryption protects the connection; the TEE protects data during processing.</p>
+                <a class="pv4-link" href="https://antseed.com/docs/verify-tee/">Verify a TEE →</a>
+              </div>
+            </div>
+          </div>
+          <!-- 4 · Reputation & routing: what backs the provider, row by row -->
+          <div class="wash s-pv-panel" role="tabpanel" id="pv-p4" aria-labelledby="pv-t4" inert style="--wash: url(/site/assets/home/vignettes/v05-day.webp); --wash-d: url(/site/assets/home/vignettes/v05-night.webp)">
+            <div class="pv4" data-mi="pv4">
+              <div class="pv4-win" data-pv-frame>
+                <h3 class="pv4-h">Verified identity.<br>Staked reputation.</h3>
+                <dl class="pv4-ledger">
+                  <div><dt>Domain verification</dt><dd><i class="f-ic pv4-ck" style="--i:url(/site/assets/home/icons/pixel/check.svg)" aria-hidden="true"></i>Domain ownership verified</dd></div>
+                  <div><dt>GitHub verification</dt><dd><i class="f-ic pv4-ck" style="--i:url(/site/assets/home/icons/pixel/check.svg)" aria-hidden="true"></i>GitHub account verified</dd></div>
+                  <div><dt>Staking reputation</dt><dd>ANTS staked behind the provider</dd></div>
+                  <div><dt>Routing</dt><dd>Identity + stake → provider selection</dd></div>
+                </dl>
+                <p class="pv4-p">Domain and GitHub verifications establish the provider’s identity. ANTS staking backs its reputation. Your device uses these signals to help choose who serves your requests.</p>
+                <a class="pv4-link" href="https://antseed.com/docs/reputation/">How reputation works →</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="s-pv-run" aria-hidden="true"></div>
+  </div>
+</section>
+
+<!-- Providers: the vision, then two paths, each a big painted panel and its text with its own button (Amos's copy, 16 Nov). The pictures
+     are the final paintings, assets/home/providers (stall, colony; day and night as --wash and --wash-d), moving (providers-live.js), with
+     Design's glass over them (providers-v4.css): the stall on the left and Amos's listing on the right; the three Macs cabled as one provider -->
+<section class="s-sec s-prov" id="providers" aria-labelledby="s-prov-h">
+  <div class="s-rail">
+    <header class="s-head s-padx">
+      <a class="s-eyebrow" href="https://antseed.com/docs/provide/">Providers&nbsp;<span class="chev">›</span></a>
+      <h2 class="s-h2" id="s-prov-h">Millions of computers.<br> <span>A world of AI providers.</span></h2>
+      <p class="s-sub">Antseed lets anyone join in. Go on your own, or join a Colony.</p>
+    </header>
+    <div class="s-paths">
+      <article class="s-path">
+        <div class="wash land s-path-panel" style="--wash: url(/site/assets/home/providers/stall-day.webp); --wash-d: url(/site/assets/home/providers/stall-night.webp)" role="img" aria-label="An ant in round glasses and a grey hoodie keeps its own market stall in a birch wood, a price board hanging at its side, baskets on the counter and a small silver computer at its foot">
+          <div class="pv-live pv-stall" aria-hidden="true"><div class="pv-set" data-set="day"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" muted playsinline loop preload="none" data-src="/site/assets/home/providers/stall-day"></video><i class="pv-sign"><img alt="" decoding="async" data-src="/site/assets/home/providers/stall-sign-day.webp"></i><img class="pv-ant" alt="" decoding="async" data-src="/site/assets/home/providers/stall-ant-day.webp"><i class="pv-eye l" data-rest="-0.0742 -0.0789" data-travel="0.3546 0.3553"><b style="transform: translate(-7.42%, -7.89%)"></b></i><i class="pv-eye r" data-rest="0.2813 -0.0487" data-travel="0.295 0.3384"><b style="transform: translate(28.13%, -4.87%)"></b></i></div><div class="pv-set" data-set="night"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" muted playsinline loop preload="none" data-src="/site/assets/home/providers/stall-night"></video><i class="pv-sign"><img alt="" decoding="async" data-src="/site/assets/home/providers/stall-sign-night.webp"></i><img class="pv-ant" alt="" decoding="async" data-src="/site/assets/home/providers/stall-ant-night.webp"><i class="pv-eye l" data-rest="-0.0742 -0.0789" data-travel="0.3546 0.3553"><b style="transform: translate(-7.42%, -7.89%)"></b></i><i class="pv-eye r" data-rest="0.2813 -0.0487" data-travel="0.295 0.3384"><b style="transform: translate(28.13%, -4.87%)"></b></i></div></div>
+          <div class="pvy pvy-own">
+            <div class="pvy-glass pvy-card">
+              <p class="pvy-card-h"><i class="pvy-dot"></i>Your provider</p>
+              <dl>
+                <div><dt>Models &amp; services</dt><dd>You choose</dd></div>
+                <div><dt>Price per request</dt><dd>You set</dd></div>
+                <div><dt>Buyer connection</dt><dd>Direct</dd></div>
+              </dl>
+              <p class="pvy-flow"><span>Request received</span><i>→</i><span>serve</span><i>→</i><span>settle</span></p>
+            </div>
+          </div>
+        </div>
+        <div class="s-path-text">
+          <h3 class="s-path-h">Become your own provider.</h3>
+          <div class="s-path-copy"><p>Serve open models on your GPUs, capacity you hold, a router you built, a specialized service or an agent. Set your terms, build your reputation and reach buyers across the network.</p></div>
+          <div class="s-actions"><a class="s-btn" href="/providers/">Become a provider →</a></div>
+        </div>
+      </article>
+      <article class="s-path" id="colony">
+        <div class="wash land s-path-panel" style="--wash: url(/site/assets/home/providers/colony-day.webp); --wash-d: url(/site/assets/home/providers/colony-night.webp)" role="img" aria-label="Three ants in hoodies tend their Mac Studios on a meadow: one polishes its Mac with a cloth, one peers at the glowing seed in the middle, one pats its Mac. Each Mac Studio is joined to the seed by a glowing root.">
+          <div class="pv-live pv-colony" aria-hidden="true"><div class="pv-set" data-set="day"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" muted playsinline loop preload="none" data-src="/site/assets/home/providers/colony-day"></video></div><div class="pv-set" data-set="night"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" muted playsinline loop preload="none" data-src="/site/assets/home/providers/colony-night"></video></div></div>
+          <div class="pvy pvy-colony">
+            <div class="pvy-glass pvy-label">
+              <p class="pvy-label-h">Many Macs. One provider.</p>
+              <p class="pvy-label-s">Shared capacity · operator-managed routing</p>
+            </div>
+          </div>
+        </div>
+        <div class="s-path-text">
+          <h3 class="s-path-h">Join a Colony. <span>Or create one</span></h3>
+          <div class="s-path-copy"><p>Join together with others and let your machine serve while you’re away. We started the first one, Antseed Colony. The idea is a network of many Colonies.</p></div>
+          <div class="s-actions"><a class="s-btn" href="/colony/">Explore Colonies →</a></div>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- The network: the vision first (millions of computers will serve AI), then BitTorrent as the how -->
+<section class="s-sec s-net" id="network" aria-labelledby="s-net-h" data-net-look="illustrated">
+  <div class="s-rail">
+    <header class="s-head s-padx">
+      <a class="s-eyebrow" href="/network/">How the network works&nbsp;<span class="chev">›</span></a>
+      <h2 class="s-h2" id="s-net-h">Building the world’s largest<br> <span>inference liquidity network.</span></h2>
+      <p class="s-sub">A fully peer-to-peer network for AI — like BitTorrent for inference. Buyers connect directly to independent providers, with no middleman. Anyone can supply intelligence, on their own terms.</p>
+    </header>
+    <!-- the network as it works, on the repainted map (map-4, sections.css). Two styles of the same board, data-net-style:
+         "steps" (amos-09-r2, the default): five glass cards in a row, one per step, each drawing a lime line to the next as net-steps.js
+         plays them in turn (all shown before it is in view and with reduced motion); the list below is their copy, each card led by
+         its icon (amos-09-r3: pixel glyphs drawn on the 24-pixel grid of the site's pixelarticons, 2 px a pixel), its number back in the
+         name's line (amos-09-r4: "1 Look up", in the pixel face; hidden from screen readers, which have the list's own order).
+         Each card opens on a small square painting of an ant doing that step (amos-09-r6, assets/home/net/steps, day and night by
+         data-dark), its icon now beside its name. Each icon makes its own small move as its card lights up, and on hover.
+         "map" (amos-09, ?net=map): the painted board, net.js: you, the providers and other people as ants on the map, one request in
+         five steps, data-step="all" all of them numbered (or "1" to "5", one step), the rail naming them; take data-net away and its
+         loop plays again -->
+    <!-- Work in progress (Elio, 18 Nov): he redraws the board himself. Until then the panel is the network's wash and one glass label
+         (launch.css, .lp-wip); the board below is unplugged, kept whole in a <template> (inert: nothing in it loads or runs). To plug it
+         back: take it out of the template, drop the .lp-wip panel, list its part on <body data-parts> again (index.html) -->
+    <div class="lp-wip lp-wip--home"><img class="day" src="/site/assets/home/lavis-v6/network.webp" width="1344" height="581" alt="" loading="lazy" decoding="async"><img class="night" src="/site/assets/home/lavis-v6/network-dark.webp" width="1344" height="581" alt="" loading="lazy" decoding="async"><p>Work in progress</p></div>
+    <template data-unplugged="network board">
+    <div class="wash s-net-panel" data-net="still" data-step="all" data-net-style="steps">
+      <div class="lp-slot lp-slot--layers" data-part="net-map"></div>
+      <ol class="ns" data-placeholder="copy">
+        <li><img class="ns-art" src="/site/assets/home/net/steps/1-lookup-day.webp" data-dark="/site/assets/home/net/steps/1-lookup-night.webp" width="640" height="640" alt="" loading="lazy" decoding="async"><i class="ns-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 2h8v2H6zM4 4h2v2H4zm10 0h2v2h-2zM2 6h2v8H2zm14 0h2v8h-2zM4 14h2v2H4zm10 0h2v2h-2zM6 16h8v2H6zm10 0h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2z"/></svg></i><h3><b class="ns-n" aria-hidden="true">1</b>Look up</h3><p>Your device asks the DHT, the address book BitTorrent uses, who serves your model.</p><span>Mainline DHT</span></li>
+        <li><img class="ns-art" src="/site/assets/home/net/steps/2-pick-day.webp" data-dark="/site/assets/home/net/steps/2-pick-night.webp" width="640" height="640" alt="" loading="lazy" decoding="async"><i class="ns-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5h14v2H8zm12 2h2v10h-2zM8 17h14v2H8zM6 7h2v2H6zM4 9h2v2H4zm-2 2h2v2H2zm2 2h2v2H4zm2 2h2v2H6zm4-4h2v2h-2z"/></svg></i><h3><b class="ns-n" aria-hidden="true">2</b>Pick</h3><p>An open market: providers answer with their price, you pick.</p><span>$0.094/M · cheapest</span></li>
+        <li><img class="ns-art" src="/site/assets/home/net/steps/3-talk-day.webp" data-dark="/site/assets/home/net/steps/3-talk-night.webp" width="640" height="640" alt="" loading="lazy" decoding="async"><i class="ns-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 2h4v2H4zM2 4h2v4H2zm6 0h2v4H8zM4 8h4v2H4zm4 0h2v2H8zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm2 0h4v2h-4zm-2 2h2v4h-2zm6 0h2v4h-2zm-4 4h4v2h-4z"/></svg></i><h3><b class="ns-n" aria-hidden="true">3</b>Talk directly</h3><p>Your device connects straight to that provider. Nobody sits in the middle.</p><span>peer to peer</span></li>
+        <li><img class="ns-art" src="/site/assets/home/net/steps/4-pay-day.webp" data-dark="/site/assets/home/net/steps/4-pay-night.webp" width="640" height="640" alt="" loading="lazy" decoding="async"><i class="ns-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 2h8v2H8zM4 4h4v2H4zm12 0h4v2h-4zM4 6h2v2H4zm14 0h2v2h-2zM2 8h2v8H2zm18 0h2v8h-2zM4 16h2v2H4zm14 0h2v2h-2zM4 18h4v2H4zm12 0h4v2h-4zM8 20h8v2H8zm2-12h4v2h-4zm-2 2h2v4H8zm6 0h2v4h-2zm-4 4h4v2h-4z"/></svg></i><h3><b class="ns-n" aria-hidden="true">4</b>Pay per request</h3><p>Each request is paid on its own, in USDC.</p><span><img src="/site/assets/home/v6/net-nocrypto-usdc.svg" width="14" height="14" alt="">0.00038 USDC</span></li>
+        <li><img class="ns-art" src="/site/assets/home/net/steps/5-move-day.webp" data-dark="/site/assets/home/net/steps/5-move-night.webp" width="640" height="640" alt="" loading="lazy" decoding="async"><i class="ns-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 10h2v10H4zm0-2h16v2H4zm12-4h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm-2 2h2v2h-2zm-2 2h2v2h-2z"/></svg></i><h3><b class="ns-n" aria-hidden="true">5</b>Move on</h3><p>If a provider goes down, your next request goes to another.</p><span>always on</span></li>
+      </ol>
+      <ol class="nd-rail" data-placeholder="copy">
+        <li><b>1</b><span>Look up</span></li>
+        <li><b>2</b><span>Pick</span></li>
+        <li><b>3</b><span>Talk directly</span></li>
+        <li><b>4</b><span>Pay per request</span></li>
+        <li><b>5</b><span>Move on</span></li>
+      </ol>
+    </div>
+    </template>
+    <!-- the three points under the board (amos-09-r10, Elio 16 Nov: back as they were, under the bar), in the story's order: a name, then the line -->
+    <div class="s-points">
+      <div><p class="s-cap"><b>Open market</b> Independent providers all over the world compete on price.</p></div>
+      <div><p class="s-cap"><b>Pay per request</b> Every payment settles in <span class="s-tok"><img src="/site/assets/home/v6/net-nocrypto-usdc.svg" width="16" height="16" alt="">USDC</span> on Base.</p></div>
+      <div><p class="s-cap"><b>Always on</b> If one provider goes down, your request moves on to another.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- $ANTS moves to the network page (/network/#token) for the launch -->
+
+<!-- FAQ: answers from the current antseed.com -->
+<section class="s-sec s-faq" id="faq" aria-labelledby="s-faq-h">
+  <div class="s-rail">
+    <h2 class="s-h3" id="s-faq-h">Frequently asked<br><span>questions.</span></h2>
+    <div class="qs">
+      <details name="faq" open><summary>What is the difference between the gateway and Antseed Desktop?</summary>
+        <div class="a"><p>Use the gateway to manage shared access: run your own endpoint on a server and give each agent, app, or teammate their own API key, with budgets and the models and providers you choose. Use Antseed Desktop to connect the tools on your computer, without deploying a server. Both reach the same network.</p><a href="https://antseed.com/docs/gateway/">Read the gateway docs&nbsp;→</a></div></details>
+      <details name="faq"><summary>How is this different from OpenRouter?</summary>
+        <div class="a"><p>OpenRouter is a centralized aggregator: it decides which models are listed, routes every request through its own servers, and holds provider payouts until withdrawal. Antseed removes the aggregator from routing. Requests go peer-to-peer, payments settle onchain directly to the provider's wallet, and anyone can provide, no approval needed.</p></div></details>
+      <details name="faq"><summary>Are the models offered the "real" models?</summary>
+        <div class="a"><p>Independent auditors test providers with Knowledge Boundary Fingerprinting: fresh questions that distinguish the genuine model from look-alikes. Results and evidence are public. A confirmed mismatch reduces service reputation. This is statistical evidence, not a guarantee for every response.</p></div></details>
+      <details name="faq"><summary>Do I need crypto?</summary>
+        <div class="a"><p>No. Top up with a card or Apple Pay. Payments to providers settle in USDC on the Base blockchain, but you never have to touch it.</p></div></details>
+      <details name="faq"><summary>What happens when LLMs become so good that anyone can do anything?</summary>
+        <div class="a"><p>That is exactly what we want. When LLMs become dramatically more capable, costs collapse and more people can run their own capable LLMs on their own hardware. Those people become Antseed providers: the supply side grows, not shrinks. The value is in what you build on top: the skills, the workflows, the domain expertise, the agent orchestration.</p></div></details>
+      <details name="faq"><summary>Isn't this just like P2P file sharing? Netflix killed that.</summary>
+        <div class="a"><p>Netflix and Spotify won because humans are happy to pay a simple subscription for a clean UI. Agents don't care about UI. An agent just needs the service, the price, and the reliability, and on those axes an open P2P network with no middleman and no markup wins every time.</p></div></details>
+      <details name="faq"><summary>Is Antseed built for agents specifically?</summary>
+        <div class="a"><p>It works for humans today and is being used by humans now. But USDC-native payments, no account system, open discovery and always-on peers make the network ideal for agents. The network Antseed is building is the one autonomous agents will naturally discover and use.</p></div></details>
+      <details name="faq"><summary>How can a provider offer AI models below lab price?</summary>
+        <div class="a"><p>Providers compete: some run open models on their own hardware, some sell capacity they legitimately hold. Providers must build their own service on top of upstream APIs and comply with upstream terms.</p></div></details>
+      <details name="faq"><summary>Why would a provider use Antseed instead of just building their own API?</summary>
+        <div class="a"><p>Because distribution is the hard part. On Antseed a provider plugs into existing demand: buyers, discovery, reputation, and onchain settlement come with the network. Serve a request, get paid, automatically.</p></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- Footer. Links go to the docs, to other sites or to this page. Blog and Terms will be our own pages: placeholders (data-placeholder="page"); Media kit opens the brand kit (/brand/, a work in progress, Elio 13 Nov) -->
+<div class="lp-slot lp-slot--band" data-part="cta-band"></div>
+<footer class="s-sec s-foot meadow">
+  <!-- the painting by day and by night, wide (21:9) so the footer with its text comes to about 16:9: the same meadow without the hill
+       between the ants and the river (Hermès, Magnific Nano Banana 2.1 at 1K, 12 Nov; the three pairs in 02_Brand/footer-wide-2026-11-12,
+       this one d1/n1). 1584 wide for now: a sharper copy once the upscale is agreed -->
+  <div class="scene" aria-hidden="true"><img class="day" src="/site/assets/home/footer/meadow-loop-day-poster.webp" width="1920" height="1080" alt="" loading="lazy" decoding="async"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" class="day" muted loop playsinline preload="none" data-src="/site/assets/home/footer/meadow-loop-day"></video><img class="night" src="/site/assets/home/footer/meadow-loop-night-poster.webp" width="1920" height="1080" alt="" loading="lazy" decoding="async"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" class="night" muted loop playsinline preload="none" data-src="/site/assets/home/footer/meadow-loop-night"></video><canvas class="flies"></canvas></div>
+  <div class="s-rail">
+    <div class="cols">
+      <a class="brand" href="/" aria-label="Antseed"><img class="ink" src="/site/assets/hero/logo.svg" width="95.3464" height="33" alt="Antseed"></a>
+      <div class="col"><p>Product</p><a href="#desktop">Antseed Desktop</a><a href="#gateway">Gateway</a><a href="#prices">Models &amp; prices</a><a href="https://antseed.com/docs/">Docs</a></div>
+      <div class="col"><p>Network</p><a href="/network/">How it works</a><a href="#providers">Providers</a><a href="/colony/">Colony</a><a href="/network/#token">$ANTS</a><a href="https://antseedstats.com">AntSeedStats&nbsp;↗</a></div>
+      <div class="col"><p>Resources</p><a href="https://antseed.com/blog/">Blog</a><a href="/brand/">Media kit</a><a href="/ants/">Token details</a><a href="https://github.com/antseed">GitHub&nbsp;↗</a></div>
+      <div class="col"><p>Legal</p><a href="https://antseed.com/terms-of-service/">Terms</a></div>
+    </div>
+    <div class="legal"><span>© 2026 Antseed Foundation</span><p class="made">Made with love by <a href="https://astraos.io">AstraOS</a></p><div class="social"><a href="https://x.com/antseed" target="_blank" rel="noopener noreferrer" aria-label="Antseed on X"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg></a><a href="https://github.com/Antseed/antseed" target="_blank" rel="noopener noreferrer" aria-label="Antseed on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a><a href="https://t.me/antseed" target="_blank" rel="noopener noreferrer" aria-label="Antseed on Telegram"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg></a></div>
+      <!-- the theme: System, Light or Dark (sections.js) -->
+      <div class="theme" role="group" aria-label="Theme">
+        <button type="button" data-mode="system" aria-label="System theme" aria-pressed="true"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="8.5" rx="1.5"/><path d="M5.5 13.75h5M8 11.25v2.5"/></svg></button>
+        <button type="button" data-mode="light" aria-label="Light theme" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></button>
+        <button type="button" data-mode="dark" aria-label="Dark theme" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z"/></svg></button>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</div>

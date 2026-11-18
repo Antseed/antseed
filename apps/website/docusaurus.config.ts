@@ -2,6 +2,7 @@ import type {Config, Plugin, PluginConfig, PluginModule} from '@docusaurus/types
 import type * as Preset from '@docusaurus/preset-classic';
 import integrationsPagesPlugin from './plugins/integrations-pages';
 import docsSearchPlugin from './plugins/docs-search';
+import staticPagesPlugin from './plugins/static-pages';
 import prismTheme from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
@@ -149,6 +150,7 @@ const config: Config = {
     integrationsPagesPlugin,
     // Docs search index for src/theme/SearchBar (the ⌘K modal).
     docsSearchPlugin,
+    staticPagesPlugin,
   ],
 
   // General Sans — the design's display/body face (Geist stays for app-chrome/mono).

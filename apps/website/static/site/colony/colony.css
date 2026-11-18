@@ -1,0 +1,358 @@
+/* The Colony page (17 Nov): the homepage's components (sections.css, launch.css) in this page's layouts. Only what those sheets do not
+   have lives here: the page's base, the hero and the sign-up scene with their title on the painting, the glass labels on the paintings,
+   the four steps, the first Colony's facts, the night band's three points and where your Mac fits. */
+
+/* the page's base, as the network page's and /ants/'s: the homepage keeps its own in index.html */
+:root { --page: #fff; --ink: #090b0c; --nav-grey: #737373; --cmd: #0a1a12; --acid: #c8f53c; }
+:root[data-theme="dark"] { --page: #0f1312; --ink: #eceee9; --nav-grey: #9ba49e; --cmd: #eceee9; }
+html, body { margin: 0; background: var(--page); color: var(--ink); font-family: Geist, system-ui, sans-serif; }
+img { display: block; }
+nav, nav * { box-sizing: border-box; }
+nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it (Elio, 17 Nov); its glass is shell.css's */
+nav > a { display: block; }
+.s-page { margin: 0; }
+html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 17 Nov): an anchor lands at the very top, a full-fold section fills the screen */
+[data-colony-link][hidden] { display: none; }   /* a link still waiting for its URL in config.json stays out, a button's display or not */
+
+/* ── every head: 8 between the title and its sub line (Elio, 17 Nov, every page); the eyebrow to the title stays. A head's flex gap
+   sets both, so the sub line takes it back: 20 - 12 in a section head, 16 - 8 in the duo's. Desktop only until Elio validates it */
+@media (min-width: 1200px) {
+  .s-head > .s-h2 + .s-sub { margin-top: -12px; }
+  .s-duo-head > .s-h3 + .s-sub { margin-top: -8px; }
+}
+
+/* ── the glass labels on the paintings: the homepage scenes' glass (light frosted by day, smoked green at night), each pinned to the
+   thing it names. The painting is drawn cover in its panel (a size container), --a its aspect (1600:893), --px/--py where the cover
+   sits, --fx/--fy the label's spot as a share of the painting: so it stays on its Mac at every panel size */
+.cl-glass { --glass: rgba(255, 255, 255, .7); --edge: #fff; --sh: 0 0 0 .5px rgba(10, 26, 18, .14), 0 12px 32px 0 rgba(20, 51, 89, .16);
+  border: .5px solid var(--edge); background: var(--glass); box-shadow: var(--sh); color: #0a1a12;
+  backdrop-filter: blur(14px) saturate(1.3); -webkit-backdrop-filter: blur(14px) saturate(1.3); }
+:root[data-theme="dark"] .cl-glass { --glass: rgba(14, 33, 23, .66); --edge: rgba(150, 200, 145, .42); color: #ecf3ee;
+  --sh: 0 12px 32px 0 rgba(8, 26, 14, .3), inset 0 .5px 0 0 rgba(190, 228, 170, .16); }
+.cl-hero-panel, .cl-how-panel, .cl-first-panel { container-type: size; --a: 1.7917; --px: .5; --py: .5; }
+.cl-chip { position: absolute; z-index: 2; margin: 0; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  font: 500 11.5px/15px Geist, system-ui, sans-serif; white-space: nowrap; pointer-events: none;
+  --w: max(100cqw, 100cqh * var(--a)); --h: calc(var(--w) / var(--a));
+  left: calc((100cqw - var(--w)) * var(--px) + var(--fx) * var(--w)); top: calc((100cqh - var(--h)) * var(--py) + var(--fy) * var(--h)); translate: -50% -50%; }
+.cl-chip i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #4f7a24; }
+.cl-chip.lime i { background: #b9ee2a; box-shadow: 0 0 0 1px rgba(10, 26, 18, .25); }
+:root[data-theme="dark"] .cl-chip i { background: #98c463; }
+:root[data-theme="dark"] .cl-chip.lime i { background: #c8f53c; box-shadow: none; }
+.cl-chip.cl-end { translate: -100% -50%; }   /* held by its right end, by the painting's edge */
+
+/* ── the top: the march fills the rail; from 1200 wide the title sits on its calm sky, top left */
+.cl-top .s-rail { padding: 0; }
+.cl-hero { position: relative; }
+.cl-hero-panel { aspect-ratio: 1312 / 850; min-height: 780px; }   /* tall enough that the march starts under the title's last line */
+.cl-hero-head { position: absolute; z-index: 3; top: 0; left: 0; max-width: 640px; padding: 72px 0 0 80px; }
+.cl-hero-head .s-h2 { margin: 0; font-size: 56px; line-height: 54px; }   /* as the network page's title; an h1's own margins off */
+.cl-hero-head .s-sub { max-width: 540px; }
+
+/* ── where this goes: the homepage's introduction, as it was */
+.s-intro .s-lede p { margin: 0; }
+
+/* ── find your place in a Colony: the two-option section, the homepage's Providers exactly (06_Amos-feedback/TWO-OPTION-SECTION.md,
+   Elio, 17 Nov): rail 120 / 124, h2 40/40, head to paths 64, two 588 x 331 paintings, titles 24/28 on one line, the whole block in one
+   1440 x 900 screen. Desktop only until Elio validates it: below 1200 the section keeps its first layout */
+@media (min-width: 1200px) {
+  .cl-paths .s-rail { padding-bottom: 124px; }
+  .cl-paths .s-h2 { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
+  .cl-paths .s-paths { margin-top: 64px; }
+  .cl-paths .s-path-panel { aspect-ratio: 16 / 9; }
+  .cl-paths .s-path-h { font-size: 24px; line-height: 28px; letter-spacing: -.8px; }
+  .cl-paths .s-path-h br { display: none; }   /* the name, then its state in grey, on one line */
+  .cl-paths .s-path-h span { white-space: nowrap; }
+  .cl-paths .s-h2, .cl-paths .s-sub, .cl-paths .s-path-h, .cl-paths .s-path-text p { text-wrap: balance; }   /* no word or two alone */
+}
+
+/* ── how it works: as the homepage's network, the head, the painting, then the four steps as its facts */
+.cl-how .s-rail { padding-top: 120px; }
+.cl-how-panel { aspect-ratio: 1312 / 620; margin-top: 56px; background-position: 50% 72%; --py: .72; }
+.cl-steps { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.cl-steps > div { place-items: start; padding: 32px 32px 48px; }
+.cl-steps p { max-width: none; text-wrap: pretty; }
+
+/* ── the first Mac Colony: the homepage's duo; its facts, each a name over its line, dotted between as the gateway's list */
+.cl-first-panel { background-position: 50% 60%; --py: .6; }
+.cl-facts { align-self: stretch; margin: 0; }
+.cl-facts > div { padding: 14px 0; }
+.cl-facts > div + div { background: radial-gradient(circle at 1px 1px, var(--dot) .85px, transparent 1.25px) 0 0 / 8px 2px repeat-x; }
+.cl-facts dt { font: 500 16px/24px Geist, sans-serif; color: var(--t); }
+.cl-facts dd { margin: 2px 0 0; font: 400 16px/24px Geist, sans-serif; color: var(--b); text-wrap: pretty; }
+
+/* ── private by design: the homepage's night band (its dots by dither.js), three points under the title, each its kit icon in lime */
+.cl-priv .s-rail { position: relative; z-index: 1; }
+.cl-priv-points { width: 100%; max-width: 1080px; margin-top: 64px; }
+.cl-priv-points > div { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; padding: 8px 40px 8px; }
+.cl-priv-points p { max-width: none; }
+.cl-priv .f-ic { background: var(--acid); }
+.cl-priv .s-link { margin-top: 56px; color: var(--acid) !important; }
+
+/* ── sign up: the join scene at night, its line on the night sky above it (the painting's own top colour, so sky and painting are one);
+   under it, where your Mac fits and the button */
+.cl-join .s-rail { padding: 0; }
+.cl-join-scene { background: var(--page); }
+:root[data-theme="dark"] .cl-join-scene { background: #0e1614; }
+.cl-join-head { align-items: center; text-align: center; padding: 112px var(--pad) 16px; }
+:root[data-theme="dark"] .cl-join-head { --t: #f2f4ef; --g: #9fb1a6; --b: #cdd5d0; }
+.cl-join-panel { position: relative; aspect-ratio: 1312 / 560; background-position: 50% 72%; }
+/* the painting's sky fades up into the band's, so the two read as one night */
+.cl-join-panel::after { content: ""; position: absolute; inset: 0 0 auto; height: 48%; pointer-events: none; background: linear-gradient(var(--page), transparent); }
+:root[data-theme="dark"] .cl-join-panel::after { background: linear-gradient(#0e1614, rgba(14, 22, 20, 0)); }
+:root[data-theme="dark"] .cl-join-head .s-eyebrow { color: var(--acid) !important; }
+.cl-join-head .s-sub { max-width: 620px; }
+.cl-join-head .s-h2 { text-wrap: balance; }
+.cl-fit { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 32px 56px; padding: 56px var(--pad) 72px; }
+.cl-fit-h { margin: 0 0 16px; font: 500 18px/26px Geist, sans-serif; color: var(--t); }
+.cl-fit-fields { display: flex; flex-wrap: wrap; gap: 12px; }
+.cl-fit-fields label { display: grid; gap: 6px; font: 400 13px/18px Geist, sans-serif; color: var(--m); }
+/* a select in the kit's terms: the ghost button's tile and hairline, radius 10, its chevron drawn */
+.cl-fit-fields select { width: 220px; height: 44px; padding: 0 40px 0 14px; border: 0; border-radius: 10px; background-color: var(--tile);
+  box-shadow: inset 0 0 0 1px var(--tile-line); color: var(--t); font: 400 15px/20px Geist, sans-serif; cursor: pointer; appearance: none; -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 20px) 19px, calc(100% - 15px) 19px; background-size: 5px 5px; background-repeat: no-repeat; }
+.cl-fit-fields select:hover { background-color: var(--tile-hi); }
+.cl-fit-fields select:focus-visible { outline: 2px solid #789f00; outline-offset: 2px; }
+:root[data-theme="dark"] .cl-fit-fields select option { background: #181d1b; color: #eceee9; }
+.cl-fit-out { display: flex; align-items: center; gap: 10px; min-height: 24px; margin: 16px 0 0; font: 400 16px/24px Geist, sans-serif; color: var(--m); }
+.cl-fit-out i { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--off); }
+.cl-fit-out.first { color: var(--t); }
+.cl-fit-out.first i { background: #b9ee2a; box-shadow: 0 0 0 1px rgba(10, 26, 18, .25); }
+:root[data-theme="dark"] .cl-fit-out.first i { background: var(--acid); box-shadow: none; }
+.cl-fit-out.later i { background: var(--o); }
+.cl-fit-cta { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
+.cl-fit-cta p { margin: 0; font: 400 13px/18px Geist, sans-serif; color: var(--m); }
+
+/* ── narrower */
+@media (max-width: 1199px) {
+  .cl-hero-head { position: static; max-width: none; padding: 96px var(--pad) 56px; }
+  .cl-hero-panel { aspect-ratio: 16 / 9; min-height: 0; }
+}
+@media (max-width: 1023px) {
+  .cl-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cl-steps > div:nth-child(3) { --dl: 0px; }
+  .cl-steps > div:nth-child(n + 3) { --dt: 2px; }
+  .cl-priv-points > div { padding-inline: 24px; }
+  .cl-join-head { padding: 88px var(--pad) 16px; }
+}
+@media (max-width: 899px) {
+  .cl-first-panel { height: 420px; }
+  .cl-fit { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+  .cl-fit-cta { align-items: stretch; }
+  .cl-fit-cta .s-btn { justify-content: center; }
+}
+@media (max-width: 760px) {
+  .cl-hero-head { padding: 72px var(--pad) 40px; }
+  .cl-hero-head .s-h2 { font-size: 40px; line-height: 40px; }
+  .cl-hero-head .s-actions { align-self: stretch; }
+  .cl-hero-head .s-actions .s-btn { flex: 1 1 auto; justify-content: center; }
+  .cl-hero-panel { aspect-ratio: 4 / 3; --px: .86; background-position: 86% 50%; }   /* the front of the march: the Mac Studio held up */
+  .cl-how .s-rail { padding-top: 72px; }
+  .cl-how-panel { aspect-ratio: 4 / 3; margin-top: 40px; --px: .8; background-position: 80% 72%; }
+  .cl-steps { grid-template-columns: minmax(0, 1fr); }
+  .cl-steps > div { padding: 24px var(--pad) 28px; }
+  .cl-first-panel { height: 320px; }
+  .cl-priv-points { margin-top: 40px; }
+  .cl-priv-points > div { padding: 24px 24px; }
+  .cl-priv .s-link { margin-top: 40px; }
+  .cl-join-head { padding: 72px var(--pad) 8px; }
+  .cl-join-panel { aspect-ratio: 4 / 3; background-position: 30% 75%; }
+  .cl-fit { padding: 40px var(--pad) 56px; }
+  .cl-fit-fields label { flex: 1 1 140px; }
+  .cl-fit-fields select { width: 100%; }
+  .cl-chip { padding: 3px 8px; font-size: 10.5px; line-height: 14px; }
+}
+
+/* ── the top as /providers/' and /ants/' (Elio, 17 Nov): across the whole width, the text on the rail's edge, the march filling the
+   right half; eyebrow 16, title 8, sub 36, button. Desktop only */
+@media (min-width: 1200px) {
+  .cl-top .s-rail { width: 100%; max-width: none; padding: 0; }
+  .cl-top .s-rail::before { display: none; }
+  .cl-top { background: var(--page); }   /* white, as their tops: no dotted margin round it */
+  .cl-hero { container-type: inline-size; display: grid; grid-template-columns: 1fr 1fr; height: clamp(520px, calc(100svh - 69px - 128px), 820px); background: var(--page); }   /* their height to the pixel (704 at 1440 x 900) */
+  .cl-hero-head { --rail-w: round(down, min(1312px, 100cqw - 2 * clamp(16px, 6.4vw, 96px)), 16px);
+    position: static; max-width: none; justify-content: center; gap: 16px; padding: 56px 40px 56px calc((100cqw - var(--rail-w)) / 2 + 40px); }
+  .cl-hero-head > * { margin: 0; }
+  .cl-hero-head .s-h2 { font-size: 48px; line-height: 46px; text-wrap: balance; }
+  .cl-hero-head .s-h2 span { display: block; }
+  .cl-hero-head > .s-h2 + .s-sub { margin-top: -8px; max-width: 460px; text-wrap: balance; }
+  .cl-hero-head .s-actions { margin-top: 20px; }
+  .cl-hero-panel { aspect-ratio: auto; min-height: 0; height: 100%; border-radius: 0; --px: .86; background-position: 86% 50%; }
+}
+/* Build a Colony's button: the green one, faded, nothing to click yet */
+.cl-soon { opacity: .45; pointer-events: none; }
+
+/* ── How it works, the first Mac Colony, Private by design: one fold each at 1440 x 900 (Elio, 17 Nov), 120 / 124 inside, the content
+   centred; How it works' painting takes what the head and the steps leave, cover, so it is the same painting, less sky. Desktop only */
+@media (min-width: 1200px) {
+  .cl-how, .cl-first, .cl-priv { height: 100svh; }
+  .cl-how .s-rail, .cl-first .s-rail, .cl-priv .s-rail { box-sizing: border-box; height: 100%; min-height: 0; padding-top: 120px; padding-bottom: 124px; }
+  .cl-how .s-rail, .cl-priv .s-rail { display: flex; flex-direction: column; justify-content: center; }
+  .cl-how .s-h2 { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }   /* as the two-option head */
+  .cl-how-panel { flex: 1 1 0; min-height: 0; aspect-ratio: auto; margin-top: 40px; }
+  .cl-steps > div { padding: 24px 32px 0; }
+  .cl-first .s-rail { align-content: center; }
+  .cl-first-panel { height: 100%; }
+  .cl-first .s-duo-text { gap: 24px; padding-block: 0; }
+  .cl-first .cl-facts > div { padding: 10px 0; }
+}
+
+/* ── aside.com's type scale (Elio's reference, measured 17 Nov at 1440): section titles 44/48, its hero 48/52, sub lines 18/28. Elio's
+   rules of the day win where they differ: the two-option head stays 40/40 and 18/27 (locked), 8 under a title (aside 16), 20 from the
+   eyebrow (aside 24), 120 / 124 round a section (aside 96), 44px buttons (aside 40). Desktop only */
+@media (min-width: 1200px) {
+  .cl .s-h2, .cl .s-h3, .cl .s-faq .s-h3 { font-size: 44px; line-height: 48px; letter-spacing: -1px; }
+  .cl .cl-hero-head .s-h2 { font-size: 48px; line-height: 52px; }
+  .cl .cl-paths .s-h2 { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
+  .cl .s-sub { line-height: 28px; }
+  .cl .cl-paths .s-sub { line-height: 27px; }
+}
+
+/* ── aside.com everywhere (Elio, 17 Nov, overruling the day's rules): sections 96 top and bottom, as tall as their content; eyebrow 24,
+   title 16, sub line (max 640); head to content 40; titles 44/48, sub lines 18/28; buttons 40 tall, 12 in, 16px; titles break where they
+   fall. Last in the sheet, so it wins over the blocks above. Desktop only */
+@media (min-width: 1200px) {
+  .cl .cl-how, .cl .cl-first, .cl .cl-priv, .cl .cl-how .s-rail, .cl .cl-first .s-rail, .cl .cl-priv .s-rail { height: auto; }
+  .cl :is(.s-intro, .cl-paths, .cl-how, .cl-priv, .s-faq) .s-rail { padding-top: 96px; padding-bottom: 96px; }
+  .cl .cl-join-head { padding-top: 96px; }
+  .cl .cl-fit { padding-bottom: 96px; }
+  .cl .s-head { gap: 24px; }
+  .cl .s-head > .s-h2 + .s-sub { margin-top: -8px; }   /* 24 less 8: 16 under the title */
+  .cl .s-head .s-sub { max-width: 640px; }
+  .cl .cl-hero-head { gap: 16px; }
+  .cl .cl-hero-head > .s-h2 + .s-sub { margin-top: 0; }
+  .cl .cl-hero-head .s-actions { margin-top: 16px; }   /* 32 under the sub, as aside's hero */
+  .cl .s-duo-text { gap: 24px; }
+  .cl .s-duo-head { gap: 16px; }
+  .cl .s-duo-head > .s-h3 + .s-sub { margin-top: 0; }
+  .cl .cl-paths .s-h2 { font-size: 44px; line-height: 48px; letter-spacing: -1px; }
+  .cl .cl-paths .s-sub { line-height: 28px; }
+  .cl .cl-paths .s-paths { margin-top: 40px; }
+  .cl .cl-how-panel { flex: none; aspect-ratio: 1312 / 620; margin-top: 40px; }
+  .cl .cl-first-panel { height: auto; min-height: 560px; }
+  .cl :is(h1, h2) > br { display: none; }   /* the grey half follows on the same line, and breaks where it falls */
+  .cl .cl-priv .s-eyebrow + .s-h2 { margin-top: 4px; }   /* the band's 20, plus 4: 24 */
+  .cl .s-btn, .cl .s-btn.big { height: 40px; padding: 0 12px; font-size: 16px; line-height: 24px; }
+}
+
+/* ── Private by design: three illustrated cards (Elio, 17 Nov), a night watercolour under the kit's smoked glass, the point under each.
+   aside's card grid: 24 apart, 16 to the text. Desktop only (below 1200 the three points stay as they were) */
+.cl-pcards { display: none; }
+@media (min-width: 1200px) {
+  .cl .cl-priv-points { display: none; }
+  .cl-pcards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; width: 100%; max-width: 1248px; margin-top: 40px; padding: 0 24px; box-sizing: border-box; text-align: left; }
+  .cl-pcards article { display: flex; flex-direction: column; gap: 16px; }
+  .cl-pcards .s-cap { margin: 0; max-width: none; text-wrap: pretty; }
+  .cl-pcard { position: relative; aspect-ratio: 4 / 3; border-radius: 16px; overflow: hidden; background: #0e1614 var(--wash) center / cover;
+    box-shadow: inset 0 0 0 1px rgba(150, 200, 145, .14); container-type: inline-size; }
+  .pc-g { position: absolute; margin: 0; border: .5px solid rgba(150, 200, 145, .42); background: rgba(14, 33, 23, .66); color: #ecf3ee;
+    box-shadow: 0 12px 32px 0 rgba(8, 26, 14, .3), inset 0 .5px 0 0 rgba(190, 228, 170, .16);
+    backdrop-filter: blur(14px) saturate(1.3); -webkit-backdrop-filter: blur(14px) saturate(1.3); font: 400 12px/16px Geist, sans-serif; }
+  .pc-g i, .pc-g dd i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #98c463; flex: none; }
+  .pc-g i.on, .pc-g dd i.on { background: #c8f53c; box-shadow: 0 0 8px rgba(200, 245, 60, .6); }
+  .pc-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-weight: 500; white-space: nowrap; }
+  .pc-win { padding: 12px 14px; border-radius: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .pc-h { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 13px; line-height: 17px; font-weight: 500; }
+  .pc-h img, .pc-key img { width: 14px; height: 14px; filter: invert(86%) sepia(56%) saturate(600%) hue-rotate(28deg); }
+  .pc-t { margin: 0; color: #9fb1a6; }
+  .pc-win dl { margin: 0; }
+  .pc-win dl > div { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: .5px solid rgba(236, 243, 238, .12); }
+  .pc-win dt { color: #9fb1a6; }
+  .pc-win dd { margin: 0; display: flex; align-items: center; gap: 6px; color: #c8f53c; font-weight: 500; }
+  /* 1: the request leaves as ciphertext and reaches one Mac */
+  .pc-from { left: 7%; top: 12%; }
+  .pc-cipher { left: 7%; right: 7%; top: 38%; padding: 8px 12px; border-radius: 8px; font: 400 11.5px/16px "Geist Mono", monospace; color: #98c463;
+    letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: clip; }
+  .pc-to { right: 7%; bottom: 10%; width: 52%; }
+  /* 2: the key inside the enclave */
+  .pc-enclave { left: 50%; top: 50%; translate: -50% -50%; width: 66%; }
+  .pc-key { display: flex; align-items: center; gap: 8px; margin: 0; padding: 8px 10px; border-radius: 8px; background: rgba(200, 245, 60, .08);
+    border: .5px dashed rgba(200, 245, 60, .5); color: #ecf3ee; font-weight: 500; }
+  /* 3: Apple's attestation, SIP on */
+  .pc-attest { left: 50%; top: 44%; translate: -50% -50%; width: 70%; }
+  .pc-ok { right: 8%; bottom: 10%; }
+}
+
+/* ── Private by design fills the fold again (Elio, 17 Nov): exactly the screen's height, head, cards and the TEE link centred in it */
+@media (min-width: 1200px) {
+  .cl .cl-priv { height: 100svh; min-height: 0 !important; }   /* exactly the fold: sections.js rounds sections up to 8px with an inline min-height (900 would become 904) */
+  .cl .cl-priv .s-rail { box-sizing: border-box; height: 100%; display: flex; flex-direction: column; justify-content: center; padding-top: 72px; padding-bottom: 72px; }
+}
+
+/* ── where this goes: aside's introduction text (Elio, 17 Nov), 20/28 on a 638 column, in place of 26/36. Desktop only */
+@media (min-width: 1200px) {
+  .cl .s-intro .s-lede p { font-size: 20px; line-height: 28px; letter-spacing: 0; max-width: 638px; }
+}
+
+/* ── the top fills the first screen under the nav (Elio, 17 Nov), the painting inset 16 with soft corners, as aside's card; Where this
+   goes starts on the scroll. Desktop only */
+@media (min-width: 1200px) {
+  .cl .cl-top { min-height: 0 !important; }   /* sections.js's 8px rounding would push it past the fold */
+  .cl .cl-hero { height: calc(100svh - 69px); }
+  .cl .cl-hero-panel { margin: 16px 16px 16px 0; height: auto; border-radius: 16px; }
+}
+
+/* ── Private by design: 96 between the title and the cards, as aside's privacy section (Elio, 17 Nov). Desktop only */
+@media (min-width: 1200px) {
+  .cl .cl-pcards { margin-top: 96px; }
+}
+
+/* ── 124 above and below every section in place of aside's 96 (Elio, 17 Nov); Private by design a little taller than the screen, so the
+   night fills it wherever the wheel stops. Desktop only */
+@media (min-width: 1200px) {
+  .cl :is(.s-intro, .cl-paths, .cl-how, .s-faq) .s-rail { padding-top: 124px; padding-bottom: 124px; }
+  .cl .cl-join-head { padding-top: 124px; }
+  .cl .cl-fit { padding-bottom: 124px; }
+  .cl .cl-priv { height: calc(100svh + 96px); }
+  .cl .cl-priv .s-rail { padding-top: 124px; padding-bottom: 124px; }
+}
+
+/* ── the first Mac Colony fills the screen exactly (Elio, 17 Nov): its dotted top at the top, Private by design's night just under the
+   fold. Desktop only */
+@media (min-width: 1200px) {
+  .cl .cl-first { height: 100svh; min-height: 0 !important; }   /* sections.js's 8px rounding would add 4 */
+  .cl .cl-first .s-rail { box-sizing: border-box; height: 100%; padding-top: 124px; padding-bottom: 124px; align-content: center; }
+  .cl .cl-first-panel { height: 100%; min-height: 0; }
+}
+
+/* ── the top's text as Elio set it in Figma (Colony frame, 17 Nov): the grey half follows on the title's line, 544 wide; the sub line
+   324 wide. Desktop only */
+@media (min-width: 1200px) {
+  .cl .cl-hero-head .s-h2 { max-width: 544px; text-wrap: wrap; }
+  .cl .cl-hero-head .s-h2 span { display: inline; }
+  .cl .cl-hero-head > .s-h2 + .s-sub { max-width: 324px; text-wrap: wrap; }
+}
+
+/* ── the text widths Elio set in Figma (Colony frame, 17 Nov): each path's text across its whole 588 column, wrapping where it falls;
+   the sign-up line 620. Desktop only */
+@media (min-width: 1200px) {
+  .cl .cl-paths .s-path-text p { max-width: none; padding-right: 0; text-wrap: wrap; }
+  .cl .cl-join-head .s-sub { max-width: 620px; }
+}
+@media (min-width: 1200px) {
+  .cl .cl-paths .s-path:nth-child(2) .s-path-text p { max-width: 536px; }   /* Build a Colony's text at its Figma width: the line breaks before "You choose" */
+}
+
+/* ── each path as a card (Elio's Figma, 17 Nov): its title, text and buttons 16 in from the painting's edges. Desktop only */
+@media (min-width: 1200px) {
+  .cl .cl-paths .s-path-text > * { margin-left: 16px; margin-right: 16px; }
+}
+
+/* ── the paths' text widths Elio shortened in Figma (17 Nov): Join 468, Build 398. Desktop only */
+@media (min-width: 1200px) {
+  .cl .cl-paths .s-path:nth-child(1) .s-path-text p { max-width: 468px; }
+  .cl .cl-paths .s-path:nth-child(2) .s-path-text p { max-width: 398px; }
+}
+
+/* ── the titles back as they were before the aside pass (Elio, 17 Nov; commit c56fe62): 48/46 at -2, two lines, ink then grey; Find your
+   place and How it works 40/40 at -1.6; the FAQ 42; the top's title on two lines. Only the titles: every other aside value stays.
+   Desktop only */
+@media (min-width: 1200px) {
+  .cl :is(h1, h2) > br { display: inline; }
+  .cl .s-h2, .cl .s-h3 { font-size: 48px; line-height: 46px; letter-spacing: -2px; }
+  .cl .s-faq .s-h3 { font-size: 42px; line-height: 46px; letter-spacing: -2px; }
+  .cl .cl-paths .s-h2, .cl .cl-how .s-h2 { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
+  .cl .cl-hero-head .s-h2 { font-size: 48px; line-height: 46px; letter-spacing: -2px; max-width: none; }
+  .cl .cl-hero-head .s-h2 span { display: block; }
+  .cl .cl-hero-head .s-h2 > br { display: none; }   /* the span's block does the break */
+}

@@ -1,0 +1,1129 @@
+/* Antseed homepage below the hero. Figma 696:3 "Antseed | Homepage · v4", 1504 wide: white sections in a 1312 rail, 96px margins of
+   #fcfcfc with a matrix of dots, dotted outlines, Geist throughout. Uses the fonts each page's head loads: Geist, Geist Mono 400 and 500,
+   and Geist's → and ↗ on their own request (Google's latin subset leaves them out, and they then fell back to a thin system arrow).
+   Dark is Figma 696:5169, on <html data-theme="dark"> (the head script in index.html sets it): the colour tokens below, swapped. */
+
+/* the colours. --t text, --g the grey half of titles, --b body copy, --m small print, --o green text, --dot the dotted lines and margin
+   dots, --empty a bar's unlit dots; --fill the green of buttons and lit dots, the same in both themes. The routing window, the network
+   and What you get's cards keep the light values; the Providers' windows go dark at night with their own colours (v6.css, night glass) */
+.s-page, :root[data-theme="dark"] :is(.s-lr-panel, .s-net-panel, .s-get .s-card-panel) {
+  --t: #30382c; --g: #929292; --b: #56656f; --m: #66746b; --o: #4f7a24; --dot: #e2e2e2; --empty: #e6eadc;
+}
+.s-page {
+  --page: #fcfcfc; --rail-bg: #fff; --title: #000; --fill: #4f7a24; --fill-hi: #436a1e;
+  --tile: rgba(214, 219, 211, .2); --tile-hi: rgba(214, 219, 211, .4); --tile-line: rgba(64, 76, 66, .1);   /* the ghost button and the model cards */
+  --priv: #181d1b; --priv-dot: #363b3a;   /* Private by design keeps its night grey by day too (Elio, 12 Nov) */
+  --logo: none;   /* the black logos (.ink) */
+  /* the cards' corner, aside.com's (11.2, Elio's reference, 12 Nov), and what sits inside nests under it (v6.css: a window 8,
+     a popover 6, a control 5, a small tile 3, and where a box shares a corner, the outer radius less the inset, 2 at least) */
+  --r-card: 11px;
+}
+/* dark, Figma 696:5169: the page #0f1312, the rail #181d1b, text #eceee9 and #9ba49e, green text #98c463; buttons keep their green */
+:root[data-theme="dark"] .s-page {
+  --t: #eceee9; --g: #9ba49e; --b: #9ba49e; --m: #9ba49e; --o: #98c463; --dot: #3d4340; --empty: #29302c;
+  --page: #0f1312; --rail-bg: #181d1b; --title: #eceee9; --fill-hi: #5b8a2b;
+  --tile: rgba(255, 255, 255, .06); --tile-hi: rgba(255, 255, 255, .1); --tile-line: rgba(255, 255, 255, .1);
+  --priv: #181d1b; --priv-dot: #363b3a;
+  --logo: invert(.93);   /* black to #ececec, as the hero's */
+}
+/* at night no pale lips: the green button keeps only its deeper green lip, the ghost buttons a faint dark one */
+:root[data-theme="dark"] .s-btn { box-shadow: inset 0 -2px 1px 0 #3b5e17; }
+:root[data-theme="dark"] .s-btn.ghost { box-shadow: inset 0 -1px 1px 0 rgba(0, 0, 0, .2); }
+.s-page {
+  --acid: #c8f53c; --ink: #0a1a12; --line: rgba(0, 0, 0, .07); --ok: #2fa36b; --off: #a7b3ba;
+  --gut: clamp(16px, 6.4vw, 96px);            /* 96 at 1504, as in Figma */
+  --rail: min(1312px, 100% - 2 * var(--gut));
+  --pad: clamp(20px, 9.64vw, 145px);          /* the rail's inner margin, 145 at 1504 */
+  margin: 0 -16px;                            /* the hero's body has a 16px gutter: sections run edge to edge */
+  font-family: Geist, system-ui, sans-serif; color: var(--t);
+  /* the margins: Figma's "Trame", a 2px dot every 8px. One dot sits on the page's centre line and one on its top edge, so with the rail
+     a multiple of 16 wide and every section a multiple of 8 high (sections.js), the rail's edges and every section's top land on the dots */
+  background: radial-gradient(circle at 4px 4px, var(--dot) .85px, #0000 1.25px) 50% -4px / 8px 8px, var(--page);
+}
+@supports (width: round(down, 10px, 4px)) { .s-page { --rail: round(down, min(1312px, 100% - 2 * var(--gut)), 16px); } }
+.s-page *, .s-page *::before, .s-page *::after { box-sizing: border-box; }
+/* resets at zero specificity, so any class below wins */
+:where(.s-page) :where(p, h2, ul) { margin: 0; padding: 0; }
+:where(.s-page) ul { list-style: none; }
+:where(.s-page) a { color: inherit; text-decoration: none; }
+:where(.s-page) img { display: block; }
+
+.s-sec { position: relative; display: flex; flex-direction: column; }
+.s-rail { position: relative; flex: 1 0 auto; width: var(--rail); margin: 0 auto; background: var(--rail-bg); isolation: isolate; }
+
+/* The dotted outlines: Figma's 2px strokes with a 0 dash, an 8px gap and round caps, centred on the edge, so 2px round dots every 8px,
+   the first on the corner. Drawn by an overlay 1px larger than the box all round, one strip of dots per side, each side switched on by
+   setting --dt, --dr, --db or --dl to 2px; --dot is the colour. The rails draw theirs under their content, as Figma does (a panel
+   against the edge hides half the dots); in the margins the outline's dots fall on the matrix's own */
+:where(.s-rail, .s-points > div, .s-tk-top, .s-ants, .s-ants > div, .qs details, .s-foot .legal) { position: relative; --dt: 0px; --dr: 0px; --db: 0px; --dl: 0px; }
+:where(.s-rail, .s-points > div, .s-tk-top, .s-ants, .s-ants > div, .qs details, .s-foot .legal)::before {
+  --d: radial-gradient(circle at 1px 1px, var(--dot) .85px, #0000 1.25px);
+  content: ""; position: absolute; inset: -1px; pointer-events: none;
+  background: var(--d) 0 0 / 8px var(--dt) repeat-x, var(--d) 100% 0 / var(--dr) 8px repeat-y,
+    var(--d) 0 100% / 8px var(--db) repeat-x, var(--d) 0 0 / var(--dl) 8px repeat-y;
+}
+.s-rail { --dt: 2px; --dr: 2px; --dl: 2px; }
+.s-rail::before { z-index: -1; }
+.s-pad { padding: 120px var(--pad); }
+.s-padx { padding-inline: var(--pad); }
+.s-center { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 120px 0; }
+
+/* type */
+/* the section titles in Geist Pixel Grid (ELSH 40), as Figma v4: 48/46, -2px; the FAQ's smaller */
+.s-h2, .s-h3 { font: 400 48px/46px "Geist Pixel Var", Geist, sans-serif; font-variation-settings: "ELSH" 40; letter-spacing: -2px; color: var(--t); }
+.s-get .s-h2 { line-height: 55px; }
+.s-faq .s-h3 { font-size: 42px; }
+.s-h2 span, .s-h3 span { color: var(--g); }
+.s-sub { font: 400 18px/27px Geist, sans-serif; color: var(--b); }
+.s-eyebrow, .s-link { font: 500 16px/24px Geist, sans-serif; color: var(--o) !important; }
+/* the eyebrows (and "Backed by" on the hero page) in Geist Pixel with round dots, as the key figures; the hero's panel sets --eb-elsh and --eb-size */
+.s-eyebrow, .s-pixel { font: 400 calc(16px * var(--eb-size, 1.125))/1.5 "Geist Pixel Var", Geist, sans-serif; font-variation-settings: "ELSH" var(--eb-elsh, 20); }
+.s-eyebrow .chev, .s-pixel .chev { display: inline-block; }
+.s-head { --head-gap: 20px; display: flex; flex-direction: column; gap: var(--head-gap); align-items: flex-start; }
+/* a section's title and its sub line 8 apart on a laptop (Elio, 18 Nov), whatever its head's own gap (--head-gap, inherited; none: 0) */
+@media (min-width: 761px) { .s-sec :is(.s-h2, .s-h3) + .s-sub { margin-top: calc(8px - var(--head-gap, 0px)); } }
+.s-head .s-sub { max-width: 780px; }
+.s-narrow { max-width: 620px; }
+.mono, .s-page code { font-family: "Geist Mono", ui-monospace, monospace; }
+
+/* buttons, checks */
+.s-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }   /* a button and its Learn more side by side, 12px apart everywhere (Elio, 16 Nov) */
+.s-btn { display: inline-flex; align-items: center; justify-content: center; height: 44px; padding: 0 20px; border-radius: 10px; background: var(--fill); color: #fff !important;
+  font: 500 15px/20px Geist, sans-serif; white-space: nowrap; transition: background .15s;
+  box-shadow: 0 3.5px .5px 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -2px 1px 0 #3b5e17; }   /* Figma v4: a dark lip, a soft drop */
+.s-btn:hover { background: var(--fill-hi); }
+.s-btn[aria-disabled="true"] { cursor: default; }   /* waiting for its page (data-href, data-placeholder="page"): a button's look, no link yet */
+.s-btn.ghost { background: var(--tile); color: var(--t) !important; border: 1px solid var(--tile-line);
+  box-shadow: 0 1.5px 0 0 rgba(255, 255, 255, .6), inset 0 -1px 2px 0 rgba(48, 56, 44, .2); }
+.s-btn.ghost:hover { background: var(--tile-hi); }
+.s-btn.big { height: 48px; padding: 0 24px; font-size: 16px; }
+
+/* the mosaic panel: sections.js paints round dots from assets/home/mosaic.png into a canvas behind the content */
+.mz { position: relative; overflow: hidden; isolation: isolate; }
+.mz > canvas.mz-c { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; pointer-events: none; }
+/* the product panels (Gateway, Desktop, the providers' cards, $ANTS) take a landscape vignette instead of a plain wash, the same way:
+   assets/home/vignettes/vNN-day.webp and vNN-night.webp, 4:3 (placeholder crops of the site's paintings until the final ones land) */
+/* the wash panel: one of the direction's six plain watercolour washes (02_Brand/direction-meadow-2026-11-02/fonds-aquarelle, 1376×768),
+   cropped per panel in assets/home/lavis at twice its size at most, never enlarged; sky, blue, sage, ochre, terracotta and violet in turn */
+.wash { position: relative; overflow: hidden; isolation: isolate; background: #f6f3ea var(--wash) center / cover no-repeat; }
+/* in dark, each wash's own darker copy (--wash-d), baked from Figma's adjustments on that wash (696:5169): all near one luminance, same
+   hue; the glass over it unchanged */
+:root[data-theme="dark"] .wash { background-color: #39403d; background-image: var(--wash-d, var(--wash)); }
+/* until a landscape panel arrives (card-unveil.js) its painting waits and the panel is plain in its own colour; the arrival is a canvas
+   over the painting, under everything in the panel, that lifts */
+.s-page .wash:is([data-unveil="wait"], [data-unveil="soon"]) { background-image: none; }
+/* its windows wait hidden, then pop from the centre as the painting starts to grow round them (Elio, 12 Nov): a little smaller, faded,
+   to their size (scale and opacity, so their own transforms stand) */
+.s-page .wash:is([data-unveil="wait"], [data-unveil="soon"]) > :not(canvas) { opacity: 0; scale: .9; }
+.s-page .wash[data-unveil="run"] > :not(canvas) { transition: opacity .55s ease-out, scale .9s cubic-bezier(.2, .9, .25, 1.12); }
+.wash > canvas.cu { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; pointer-events: none; }
+.lights { display: flex; gap: 8.7px; }
+.lights i { width: 13px; height: 13px; border-radius: 50%; background: #ff5f57; }
+.lights i:nth-child(2) { background: #febc2e; }
+.lights i:nth-child(3) { background: #28c840; }
+
+/* ── Introducing Antseed ─────────────────────────────────────────────── */
+.s-intro .s-rail { padding: 120px 0; }   /* the network's figures are in the band under the hero (index.html) */
+.s-split { display: grid; grid-template-columns: 320px minmax(0, 702px); padding: 0 var(--pad); }
+.s-pixel { color: var(--o) !important; align-self: start; font-size: calc(18.667px * var(--eb-size, 1.125)); line-height: 27px; }   /* 21px here in Figma */
+.s-lede { display: flex; flex-direction: column; gap: 20px; font: 400 26px/36px Geist, sans-serif; letter-spacing: -.01em; color: var(--t); }
+.s-lede .dim { max-width: 581px; color: var(--g); }   /* Figma breaks it after "or the" */
+
+/* ── Live prices: text, image, video and voice ───────────────────────── */
+.s-prices .s-rail { display: flex; flex-direction: column; align-items: flex-start; gap: 56px; }
+.s-prices .s-head { gap: 16px; }
+.s-models { width: 100%; }
+.s-prices .s-h2 { color: var(--title); }   /* as the products' titles */
+/* the four media as tabs (Elio, 12 Nov: the switch did not read as tabs): the names across the rail's whole width, out of its inner
+   margin to the section's edges where the dotted outline runs (Elio, 12 Nov), a hairline under them all, and under the chosen one a
+   green line that slides from name to name (::before, placed at --tx and --tw: sections.js); the names grey, the chosen one black. Each
+   tab is the row's full height, so a click anywhere on it lands; the hover shows only where there is one (on a touch screen it stuck to
+   the last tab tapped) */
+.s-media { --seg-ring: #e4dfd2;
+  position: relative; display: grid; grid-template-columns: repeat(4, 1fr); width: calc(100% + 2 * var(--pad)); margin: 0 calc(-1 * var(--pad));
+  box-shadow: inset 0 -1px 0 var(--seg-ring); }
+:root[data-theme="dark"] .s-media { --seg-ring: rgba(236, 238, 233, .14); }
+.s-media::before { content: ""; position: absolute; left: 0; bottom: 0; width: var(--tw, 0); height: 2px; border-radius: 1px; background: var(--o);
+  transform: translateX(var(--tx, 0)); pointer-events: none; }
+.s-media.ready::before { transition: transform .35s cubic-bezier(.65, 0, .35, 1), width .35s cubic-bezier(.65, 0, .35, 1); }
+.s-media button { all: unset; position: relative; display: grid; place-items: center; height: 48px; padding: 0 8px; cursor: pointer;
+  color: var(--g); font: 500 16px/20px "Instrument Sans", Geist, sans-serif; white-space: nowrap; transition: color .35s; }
+.s-media button[aria-selected="true"] { color: var(--t); }
+@media (hover: hover) { .s-media button:hover { color: var(--t); } }
+.s-media button:focus-visible { outline: 2px solid var(--o); outline-offset: -6px; border-radius: 8px; }
+@media (prefers-reduced-motion: reduce) { .s-media.ready::before, .s-media button { transition: none; } }
+/* the tabs' contrast (amos-04b): the names 16px 500, the inactive ones darkened to 5.3:1 on the rail's white (dark keeps --g, 6.6:1 on the rail),
+   and a faint fill on hover, 150ms: about 4% ink by day, 6% white by night */
+.s-media { --seg-off: #6b6b6b; --seg-hover: rgba(48, 56, 44, .04); }
+:root[data-theme="dark"] .s-media { --seg-off: var(--g); --seg-hover: rgba(255, 255, 255, .06); }
+.s-media button { color: var(--seg-off); transition: color .15s, background-color .15s; }
+.s-media button[aria-selected="true"] { color: var(--t); }
+@media (hover: hover) { .s-media button:hover { color: var(--t); background-color: var(--seg-hover); } }
+/* the models: lanes of cards the whole width of the screen, out of the rail and over the dotted margins, cut only at the screen's edges,
+   no fade (the rest of the section stays in the rail). The flow is 100vw, centred on the rail; the section clips it sideways, so a
+   classic scrollbar's few px never scroll the page. Each lane holds its cards twice
+   and slides by one copy, slowly, the second one the other way; still while off screen (.on), the one under the pointer still too,
+   and with reduced motion each lane scrolls by hand instead (sections.js builds them) */
+.s-prices { overflow-x: clip; }
+.s-flow { --card: 176px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; width: 100vw; margin: 32px 0 0 calc(50% - 50vw);
+  padding: 12px 0; background: var(--rail-bg); }   /* the rail's white runs on behind the lanes, over the margins' dots, edge to edge */
+.s-lane { display: flex; width: max-content; animation: s-lane var(--dur, 120s) linear infinite paused; }
+.s-lane.back { animation-direction: reverse; }
+.s-flow.on .s-lane { animation-play-state: running; }
+.s-flow.on .s-lane:hover { animation-play-state: paused; }
+@keyframes s-lane { to { transform: translateX(-50%); } }
+.s-lane > ul { display: flex; gap: 12px; padding-right: 12px; }
+/* a card, square: the maker's mark top left, in the text colour, and a text model's saving top right; at the bottom the name, then its
+   price and, beside it, how many providers serve it (the network's nodes icon, as "Found 12 providers") */
+.s-mcard { flex: none; display: flex; flex-direction: column; width: var(--card); height: var(--card); padding: 18px; border-radius: var(--r-card);
+  background: linear-gradient(var(--tile) 0 0), var(--rail-bg); }   /* the tile over the rail's white, opaque: over the margins no dots show through */
+.s-mcard .top { display: flex; align-items: flex-start; justify-content: space-between; }
+.s-mcard .mark { width: 24px; height: 24px; background: var(--t); -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; }
+.s-mcard .mark.color { background: var(--i) center / contain no-repeat; -webkit-mask: none; mask: none; }   /* a brand's colour mark, as it is */
+.s-mcard em { font: 500 14px/20px "Geist Mono", monospace; font-style: normal; color: var(--o); }
+.s-mcard b { margin-top: auto; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font: 500 15px/20px Geist, sans-serif; color: var(--t); }
+.s-mcard p { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 6px; }
+.s-mcard code { font: 400 12.5px/16px "Geist Mono", monospace; color: var(--t); white-space: nowrap; }
+.s-mcard code span { color: var(--m); }
+.s-mcard .prov { display: inline-flex; align-items: center; gap: 4px; font: 400 12px/16px Geist, sans-serif; color: var(--m); font-variant-numeric: tabular-nums; }
+.s-mcard .prov i { width: 12px; height: 12px; align-self: center; background: currentColor; -webkit-mask: url(/site/assets/home/v6/net-bt-nodes.svg) center / contain no-repeat; mask: url(/site/assets/home/v6/net-bt-nodes.svg) center / contain no-repeat; }
+.s-page .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Ant mode (an experiment, the switch under the lanes): each card walks on its own (sections.js), a little apart, along a gently
+   winding path; it stops now and then and the ones behind close in, then set off again in turn */
+.s-flow.ants { gap: 0; }
+.s-lane.ant { position: relative; width: auto; height: calc(var(--card) + 20px); animation: none; }
+.s-lane.ant > ul { position: absolute; inset: 0; padding: 0; }
+.s-lane.ant .s-mcard { position: absolute; left: 0; top: 10px; will-change: transform; cursor: pointer; }   /* a click sends it rushing on (sections.js) */
+/* Carry mode, the lanes' default: each card as it is, hauled by a little ant (assets/home/carry, its build.py) at its trailing side,
+   the second lane walking the other way (the ant mirrored, never the card). The ant is two layers of one sprite, stepped by
+   background-position: the ant behind the card and its near hand over the card's edge by its lower corner, so the card sits between, or,
+   for some (.ahead, sections.js), the whole ant in front; the
+   card's tile moves to ::before to slip in between. Each lane's geometry comes from the sprite's table as variables (sections.js):
+   the ant's cell (--aw, --ah) with its corner on the card's (--ax, --ay), the sheet (--sw, --sh), the feet below the card (--below) */
+.s-flow.carry { gap: 28px; padding: 30px 0 24px; }   /* the hop's room over the first lane; the lanes twice as far apart, and room under
+   the last, so every carrier's shadow shows whole (Elio, 12 Nov) */
+.s-lane.ant.carry { height: calc(var(--card) + var(--below) + 2 * 6px); }
+.s-lane.ant.carry .s-mcard { top: 6px; background: none; }
+.s-mcard.carry::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: linear-gradient(var(--tile) 0 0), var(--rail-bg); }
+.s-mcard.carry .ant { position: absolute; left: var(--ax); top: var(--ay); z-index: -2; width: var(--aw); height: var(--ah);
+  background: var(--sheet, url(/site/assets/home/carry/ant.webp)) 0 0 / var(--sw) var(--sh) no-repeat; transition: filter 1.2s ease; }   /* each carrier its own sheet and cell (sections.js, VARIANTS) */
+.s-mcard.carry .ant.hand { z-index: 1; background-position-y: calc(-1 * var(--ah)); pointer-events: none; }
+.s-lane.carry.back .ant { transform: scaleX(-1); }
+/* the ground under a carrier (Elio, 12 Nov: so it walks on something): one soft shadow on the ground at the feet, from the ant's
+   side to the far end of its card, even all along (a blurred pill, not a radial fade) and a little deeper on the ant's side, with a
+   paper grain in it so it is not too smooth. Kept on the ground as the card bobs and hops (sections.js) */
+.s-mcard.carry .shade { --sh-ink: 52, 38, 18; --sh-a: .085; --sh-b: .05; --sh-dir: to right; position: absolute; z-index: -3; pointer-events: none;
+  left: calc(min(var(--ax), 0px) + 10px); right: calc(min(100% - var(--ax) - var(--aw), 0px) + 10px); top: calc(100% + var(--below) - 2px); height: 8px;   /* half as dark, 30% lower, set a little lower (Elio, 12 Nov) */
+  border-radius: 50%; filter: blur(4px);
+  background: linear-gradient(var(--sh-dir), rgba(var(--sh-ink), var(--sh-a)), rgba(var(--sh-ink), var(--sh-b)) 45%, rgba(var(--sh-ink), var(--sh-b)));
+  -webkit-mask: var(--grain) 0 0 / 96px 96px; mask: var(--grain) 0 0 / 96px 96px;
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1.4 -.15'/%3E%3C/filter%3E%3Crect width='96' height='96' filter='url(%23g)'/%3E%3C/svg%3E"); }
+.s-lane.carry.back .shade { --sh-dir: to left; }   /* the ant on the card's other side */
+:root[data-theme="dark"] .s-mcard.carry .shade { --sh-ink: 0, 0, 0; --sh-a: .17; --sh-b: .11; }
+.s-mcard.carry.ahead .ant { z-index: 1; }   /* this one walks in front of its card, the whole of it */
+.s-mcard.carry.ahead .ant.hand { visibility: hidden; }
+/* at night the ant takes the night's light, as the hero's mascot (index.html); the card stays the card */
+:root[data-theme="dark"] .s-mcard.carry .ant { filter: brightness(.84) saturate(.83) contrast(1.12); }
+.s-models-foot { display: flex; align-items: center; justify-content: space-between; gap: 24px; width: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  .s-lane { width: auto; animation: none; overflow-x: auto; scrollbar-width: none; }
+  .s-lane > ul[aria-hidden] { display: none; }
+}
+
+/* ── Gateway and Antseed Desktop: half text, half a wash panel, 120px apart ─ */
+/* between them the rail stays white, without its side dots; each product has its own outline, the last no bottom one (the next section's top) */
+.s-prods { display: flex; flex-direction: column; gap: 120px; padding-bottom: 120px;   /* the same space under Desktop as between the two */
+  background: linear-gradient(var(--rail-bg) 0 0) 50% 0 / var(--rail) 100% no-repeat; }
+.s-duo .s-rail { display: grid; grid-template-columns: 1fr 1fr; min-height: 624px; --db: 2px; }
+.s-duo-text { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 36px; padding: 64px; }
+.s-duo-head { --head-gap: 16px; display: flex; flex-direction: column; gap: var(--head-gap); max-width: 480px; }
+.s-duo-head .s-sub { max-width: var(--sub, none); }
+.s-duo-text .s-actions { gap: 12px; }   /* the main button and its Learn more (ghost), as in the close */   /* Figma sets each product's line breaks by width (--sub) */
+.s-duo-flip .s-duo-text { padding-left: 96px; }
+.s-duo-text .s-h3 { color: var(--title); }
+.s-feats { align-self: stretch; }
+.s-feats li { display: flex; align-items: center; gap: 12px; padding: 8px 0; font: 400 16px/24px Geist, sans-serif; color: var(--t); }
+.s-feats li + li { --dt: 2px; }
+.s-feats li::before { left: 35px; }
+/* the Desktop list's lines break where the sense does (Elio, 12 Nov), the icon centred on the two; on a phone the text wraps as it may */
+@media (max-width: 760px) { .s-feats br { display: none; } }   /* the dotted line starts with the text (icon 24 + gap 12), so the icons stand alone */
+/* each feature's icon alone, centred on its text's lines: a pixelarticons glyph (assets/home/icons/pixel, MIT, the same 12-pixel grid
+   as Utexo's pixel icons) in the titles' grey (Elio, 12 Nov), through its mask, at 24px so each of its pixels is a whole 2px */
+.f-ic { flex: none; width: 24px; height: 24px; background: var(--g); -webkit-mask: var(--i) center / 24px no-repeat; mask: var(--i) center / 24px no-repeat; }
+
+/* smoked green glass over the landscape: a dark green at partial opacity, frosted, a hairline in a lighter tint of the same green. At 64% (was 74%,
+   12 Nov) more of the painting shows; the text a shade lighter to keep its contrast over the bright day sky (body 3.6:1 as before, colours 4.5:1) */
+.term { --dot: rgba(150, 196, 150, .22); position: absolute; left: 91px; top: 115px; width: 860px; border-radius: 8px; overflow: hidden; background: rgba(14, 33, 23, .64);
+  border: .5px solid rgba(150, 200, 145, .42); box-shadow: 0 12px 32px 0 rgba(8, 26, 14, .26), inset 0 .5px 0 0 rgba(190, 228, 170, .16);
+  backdrop-filter: blur(10px) saturate(1.3); -webkit-backdrop-filter: blur(10px) saturate(1.3); font: 400 11.475px/20.06px "Geist Mono", monospace; color: #cbd8d0; }
+.t-bar { position: relative; display: flex; align-items: center; height: 34px; padding: 0 14px; background: rgba(150, 200, 145, .06); --db: 2px; }
+.t-lights { display: flex; gap: 6.8px; }
+.t-lights i { width: 10px; height: 10px; border-radius: 50%; background: #ff5f57; }
+.t-lights i:nth-child(2) { background: #febc2e; }
+.t-lights i:nth-child(3) { background: #28c840; }
+.t-title { position: absolute; left: 50%; transform: translateX(-50%); font-size: 10.2px; line-height: 17.85px; letter-spacing: .2px; color: #d5ddd9; }
+.t-pane { position: relative; padding: 15.3px 22.1px 17px; }
+.t-pane + .t-pane { --dt: 2px; padding-top: 16.15px; }
+.t-tag { position: absolute; right: 15px; top: 12px; font-size: 9.35px; line-height: 16.4px; letter-spacing: .56px; color: #d5ddd9; }
+.term .ln { white-space: pre; }
+.term .ln b { font-weight: 400; color: #ddf988; }
+.term .c { color: #ecf3ee; }
+.term .u { color: #d3f5e3; }
+.term .j { color: #e6f0ea; }
+.term .cur { display: inline-block; width: 7px; height: 13px; vertical-align: -2px; background: #c8f53c; animation: s-blink 1.1s steps(1) infinite; }
+@keyframes s-blink { 50% { opacity: 0; } }
+.term.typing .ln { visibility: hidden; }
+.term.typing .ln.shown { visibility: visible; }
+.term .rest { visibility: hidden; }   /* the part of a command not typed yet (sections.js) */
+.term .cur.busy { animation: none; }   /* steady while keys come in */
+
+/* ── Gateway: your own router (amos-05, square and told one route at a time in amos-05-r2), where the terminal was ──────────────────────
+   Two sides, not three (no hub between you and the network, the client's rule): your side is one soft glass plate that holds your
+   callers, each with its own key, on top and your gateway under them, a v6 glass window (v6.css .v6c-win) with its address and its rules;
+   the network is the providers standing on the painting under the plate, off it, in the network map's frosted tags (.nd-tag). Composed
+   for the square panel and the same on a phone: callers, gateway, providers, top to bottom, each route a column (Elio, 16 Nov). Your
+   links in the map's lime: one down from each caller into the gateway, and one out of the gateway's bottom edge, straight down its
+   column to its own provider, the rule's word on a tag over that provider, the rule's row lit in the gateway while it plays (amos-05-r3);
+   a request (the map's white bubble) rides the line. Drawn by sections.js from where the pieces sit, which also tells the three routes
+   in turn: what is not in the route is dimmed, never hidden, its glass kept whole and only what is on it quieter (--o) */
+.s-gw-panel { container: gw / inline-size; }
+.gw { --gw-ink: #0a1a12; --gw-t: #30382c; --gw-m: #6b7068; --gw-line: #b9ee2a; --gw-lift: rgba(24, 44, 10, .55);
+  --gw-win: rgba(255, 255, 255, .52); --gw-win-edge: #fff; --gw-win-sh: 0 14px 40px 0 rgba(20, 51, 89, .14);
+  --gw-plate: rgba(255, 255, 255, .2); --gw-plate-edge: #fff; --gw-plate-line: 0 0 0 .5px rgba(10, 26, 18, .16);   /* by day a white edge and a dark hairline round it, so the plate holds on the pale sky */
+  --gw-under: #5f8a12;   /* by day each line rides on the map's deeper lime (net.js's bubble dots), so 1.5px of lime reads on the sky */
+  --gw-tag: rgba(255, 255, 255, .74); --gw-tag-t: #1b211e; --gw-tag-m: #5d6660; --gw-tag-edge: rgba(255, 255, 255, .9); --gw-tag-sh: rgba(30, 36, 32, .18);
+  --gw-w: min(100%, 416px);
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 16px;
+  font: 400 12px/16px Geist, system-ui, sans-serif; color: var(--gw-ink); -webkit-font-smoothing: antialiased; }
+:root[data-theme="dark"] .gw { --gw-ink: #ecf3ee; --gw-t: #cbd8d0; --gw-m: #9fb1a6; --gw-line: #c8f53c; --gw-lift: rgba(0, 0, 0, .6);
+  --gw-win: rgba(14, 33, 23, .58); --gw-win-edge: rgba(150, 200, 145, .42); --gw-win-sh: 0 12px 32px 0 rgba(8, 26, 14, .26), inset 0 .5px 0 0 rgba(190, 228, 170, .16);
+  --gw-plate: rgba(14, 33, 23, .16); --gw-plate-edge: rgba(150, 200, 145, .3); --gw-plate-line: 0 0 0 0 transparent; --gw-under: transparent;
+  --gw-tag: rgba(226, 230, 227, .2); --gw-tag-t: #f5f7f5; --gw-tag-m: #c9d0cc; --gw-tag-edge: rgba(255, 255, 255, .3); --gw-tag-sh: rgba(0, 0, 0, .32); }
+.gw :where(ul, dl, dd, p) { margin: 0; padding: 0; list-style: none; }
+.gw b { font-weight: 500; }
+/* your side: the plate, frosted lightly so the painting shows through (amos-05-r4, Elio: too white: its fill halved, the windows on it a
+   little lighter too, the blur a touch stronger so the glass still reads); on it the callers over the gateway, in the v6 windows' glass */
+.gw-plate { position: relative; display: flex; flex-direction: column; gap: 28px; width: var(--gw-w); padding: 14px; border: .5px solid var(--gw-plate-edge); border-radius: 14px;
+  background: var(--gw-plate); box-shadow: var(--gw-plate-line), var(--gw-win-sh); backdrop-filter: blur(8px) saturate(1.15); -webkit-backdrop-filter: blur(8px) saturate(1.15); }
+.gw-callers, .gw-provs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.gw-caller, .gw-win { border: .5px solid var(--gw-win-edge); background: var(--gw-win); box-shadow: var(--gw-win-sh);
+  backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3); }   /* the lines passing under show only as a soft glow (Elio, 16 Nov) */
+.gw-caller { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 7px 4px; border-radius: 6px; white-space: nowrap; }
+/* each caller's icon left of its name (amos-05-r6, Elio): Claude Code the Claude mark in its colour, as on the price cards; the support
+   bot a chat bubble and Maya a person, drawn in the feature list's pixel icons (icons/pixel), in the plate's text grey */
+.gw-ic { flex: none; width: 14px; height: 14px; background: var(--gw-t); -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; }
+.gw-ic.color { background: var(--i) center / contain no-repeat; -webkit-mask: none; mask: none; }
+/* a teammate (the bullet's "agent, app and teammate"): a tiny round picture, an ant's head, a hairline round it */
+.gw-ic.gw-av { width: 16px; height: 16px; margin-block: -1px; border-radius: 50%; background: var(--i) center / cover no-repeat; -webkit-mask: none; mask: none;
+  box-shadow: 0 0 0 .5px rgba(10, 26, 18, .25); }
+.gw-title span, .gw-rules dd, .gw-prov, .gw-rule { font-family: "Geist Mono", ui-monospace, monospace; }
+.gw-win { padding: 12px 14px 8px; border-radius: 8px; }
+.gw-title { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; }
+.gw-title b { font-size: 12.5px; }
+.gw-title span { font-size: 10.5px; line-height: 14px; color: var(--gw-m); }
+.gw-rules > div { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 10px; height: 26px; white-space: nowrap; }
+.gw-rules dt { font-size: 11.5px; color: var(--gw-t); }
+.gw-rules dd { font-size: 10.5px; color: var(--gw-ink); }
+/* the row that chose the route playing: a lime dot in the window's margin, the lines' lime (--hi, sections.js) */
+.gw-rules > div::before { content: ""; position: absolute; left: -9px; top: 50%; width: 5px; height: 5px; margin-top: -2.5px; border-radius: 50%;
+  background: var(--gw-line); box-shadow: 0 0 0 .5px var(--gw-under); opacity: var(--hi, 0); }
+/* dimmed, not washed out: the glass stays whole, only what is on it goes quieter (--o, sections.js) */
+.gw-caller > *, .gw-prov > *, .gw-rule > *, .gw-rules > div > * { opacity: var(--o, 1); }
+/* the network: the providers off the plate, on the painting, under the callers' columns, in the network map's glass tags; room above
+   them for the lines to come down and for each line's rule tag */
+.gw-net { width: var(--gw-w); margin-top: 88px; padding: 0 14px; }
+.gw-prov, .gw-rule { border: .5px solid var(--gw-tag-edge); background: var(--gw-tag); color: var(--gw-tag-t); white-space: nowrap;
+  box-shadow: 0 4px 12px var(--gw-tag-sh), inset 0 .5px 0 var(--gw-tag-edge); backdrop-filter: blur(14px) saturate(.8); -webkit-backdrop-filter: blur(14px) saturate(.8); }
+.gw-prov { display: flex; flex-direction: column; align-items: center; padding: 6px 4px; border-radius: 6px; font-size: 10.5px; line-height: 14px; }
+.gw-prov span + span { color: var(--gw-tag-m); }
+/* the links (sections.js): your lime, 1.5px, a soft shadow under it to lift it off the painting, each route twice: dimmed underneath
+   (.dim, always there) and lit over it (.hi), drawn as its route plays; the rule tags on them; the request. They pass under the glass
+   (amos-05-r6, Elio): drawn in the plate, first, so the callers, the gateway and the providers, all painted after, lie over them, and
+   each line starts and ends a little inside its windows, seen leaving from under one edge and going in under the next. .gw-lay pins
+   the drawing to the plate's corner; sections.js sets the svg over the whole picture from there, so it draws in the picture's px */
+.gw-lay { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+/* the windows are positioned too, after the lines in the markup, so they paint over them and their blur softens what passes under */
+.gw-caller, .gw-win, .gw-prov, .gw-rule { position: relative; }
+.gw-links { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none;
+  filter: drop-shadow(0 0 .5px var(--gw-lift)) drop-shadow(0 1px 1.5px var(--gw-lift)); }
+.gw-links path { fill: none; stroke: var(--gw-line); stroke-width: 1.5; stroke-linecap: round; }
+.gw-links path.u { stroke: var(--gw-under); stroke-width: 3; }
+.gw-links .dim { opacity: .35; }
+.gw-links .tick { fill: var(--gw-line); stroke: var(--gw-under); stroke-width: .75; }
+.gw-links .bub path { fill: #fff; stroke: rgba(10, 26, 18, .2); stroke-width: 1; }
+.gw-links .bub circle { fill: #5f8a12; }
+.gw-rule { position: absolute; left: 0; top: 0; padding: 2px 5px; border-radius: 4px; font-size: 9.5px; line-height: 12px; }
+/* narrow (a phone): a little less glass and room round the pieces, so each name and price fits on its line with the providers still
+   under the callers' columns; on the narrowest a price may take two lines */
+@container gw (max-width: 420px) {
+  .gw { --gw-w: 100%; padding-inline: 8px; }
+  .gw-plate { padding: 8px; gap: 26px; }
+  .gw-callers, .gw-provs { gap: 6px; }
+  .gw-caller, .gw-prov { padding-inline: 2px; }
+  .gw-caller { gap: 4px; }
+  .gw-ic { width: 12px; height: 12px; }
+  .gw-win { padding-inline: 12px; }
+  .gw-net { margin-top: 80px; padding: 0 8px; }
+}
+@container gw (max-width: 300px) { .gw-prov span { white-space: normal; text-align: center; } }
+/* where a caller's icon and name no longer fit on one line, the icon goes over the name */
+@container gw (max-width: 310px) { .gw-caller { flex-direction: column; gap: 3px; padding-block: 6px; } }
+/* the whole diagram an eighth larger in its window where the window has the room (amos-05-r4, Elio: less empty margin round the plate);
+   zoom scales its box with it, so sections.js draws the links in the same px. On a phone it keeps its size, so every price still fits */
+@container gw (min-width: 421px) { .gw { zoom: 1.13; } }
+@container gw (min-width: 520px) { .gw { zoom: 1.32; } }   /* larger again, read at a glance (Elio, 16 Nov) */
+@media (max-width: 899px) { .s-duo .s-gw-panel { height: auto; } .s-gw-panel .gw { position: relative; inset: auto; padding-block: 48px; } }
+
+/* the app: one window, sitting as the Gateway's terminal does, mirrored (Elio, 12 Nov): its panel half the rail as the Gateway's, the
+   window 115px under the panel's top and 91px from its side by the text, the terminal's offsets, and running off the rail's outer edge
+   by a sixth of it (the app's sidebar, where nothing plays), never nearer than 64px to the panel's foot (on a wide screen it then runs
+   off by less). On a phone (under 900px) the terminal's 40 and 24, and the panel ends 40 under the window */
+.vpn { position: absolute; inset: 0; container-type: size; }
+.vpn .vpn-win { position: absolute; top: 115px; right: 91px; width: min((100cqw - 91px) * 1.2, (100cqh - 179px) * 1400 / 1095); }
+/* the app's loop (sections.js): a box at the app's own size, 1100 by 860, scaled to the window (--k); each state a capture laid where
+   it sits in the app, shown in turn (.on); the typing, the two messages and the cursor drawn over them in the app's own type and colours */
+.app { position: relative; overflow: hidden; }
+.app-k { position: absolute; left: 0; top: 0; width: 1100px; height: 860px; transform: scale(var(--k, .5)); transform-origin: 0 0; }
+.app .st { position: absolute; display: block; opacity: 0; transition: opacity .35s ease; }
+.app .st.anon { inset: 0; width: 1100px; height: 860px; opacity: 1; }
+.app .st.priv { inset: 0; width: 1100px; height: 860px; transition-duration: .6s; }
+.app .st.menu { left: 425px; top: 400px; width: 355px; height: 440px; transition-duration: .18s; }
+.app .st.kimi { left: 310px; top: 786px; width: 705px; height: 50px; }
+.app .st.talk { left: 480px; top: 200px; width: 380px; height: 220px; }
+.app .st.on { opacity: 1; }
+/* by day in the app's day colours (its message box's ink, #16181d), at night in its night ones */
+.app .typed { position: absolute; left: 321px; top: 701px; width: 684px; font: 400 16px/24px Geist, sans-serif; color: #16181d; white-space: nowrap; opacity: 0; }
+.app .typed.on { opacity: 1; }
+.app .typed i { display: inline-block; width: 1.5px; height: 18px; margin-left: 1px; vertical-align: -3px; background: currentColor; animation: s-blink 1s steps(1) infinite; }
+.app .me, .app .ai { position: absolute; opacity: 0; transform: translateY(8px); transition: opacity .35s ease, transform .35s ease; font: 400 14.5px/22px Geist, sans-serif; color: #16181d; }
+.app .me { right: 110px; top: 132px; max-width: 420px; padding: 10px 16px; border-radius: 16px; background: rgba(22, 24, 29, .06); }
+.app .ai { left: 318px; top: 200px; width: 560px; padding: 16px 20px; border-radius: 14px; background: rgba(255, 255, 255, .78); border: 1px solid rgba(22, 24, 29, .08);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.app .ai p { min-height: 66px; }
+.app .sig { display: block; margin-top: 10px; font: 400 12px/16px Geist, sans-serif; color: #6b6f7a; opacity: 0; transition: opacity .3s; }
+.app .sig::before { content: "✓ "; color: #4f7a24; }
+:root[data-theme="dark"] .app :is(.typed, .me, .ai) { color: #eef0f7; }
+:root[data-theme="dark"] .app .me { background: rgba(255, 255, 255, .1); }
+:root[data-theme="dark"] .app .ai { background: rgba(14, 20, 44, .62); border-color: rgba(255, 255, 255, .16); }
+:root[data-theme="dark"] .app .sig { color: #9aa1ba; }
+:root[data-theme="dark"] .app .sig::before { color: #c6f06a; }
+.app .sig.on { opacity: 1; }
+.app .me.on, .app .ai.on { opacity: 1; transform: none; }
+.app .cur { position: absolute; left: 0; top: 0; width: 21px; height: 27px; opacity: 0; transform: translate(var(--cx, 880px), var(--cy, 560px)) scale(var(--cs, 1));
+  transition: transform .75s cubic-bezier(.45, 0, .2, 1), opacity .3s; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .25)); }
+.app .cur.on { opacity: 1; }
+.app .cur.tap { transition-duration: .12s; }
+/* no outline: the window is its shadow and its frosted glass. The glass is tinted as the app's chrome, light by day, Private or not;
+   at night the terminal's smoked green glass, as every screen on the landscapes */
+.vpn-win { flex: none; height: auto; aspect-ratio: 1400 / 1095; border-radius: 8px; background: rgba(250, 249, 244, .4);
+  box-shadow: 0 2px 6px rgba(61, 43, 18, .08), 0 28px 64px 0 rgba(61, 43, 18, .2); backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px) saturate(1.2); }   /* Figma's 32 background blur */
+/* at night the terminal's smoked green glass (v6.css, night glass), its hairline drawn over the captures */
+:root[data-theme="dark"] .vpn-win { background-color: rgba(14, 33, 23, .64); backdrop-filter: blur(10px) saturate(1.3); -webkit-backdrop-filter: blur(10px) saturate(1.3);
+  outline: .5px solid rgba(150, 200, 145, .42); outline-offset: -.5px; }
+/* the sidebar and the top bar frosted: over the full captures (anon, priv) a mask (assets/home/desktop/frost-mask.webp, made from the
+   captures) keeps the chat card whole below its top bar (x 297 to 1389, y 73 to 1085 of the 1400 × 1095 captures) and lays the app's flat
+   chrome around it, sidebar, top bar and margins, at 70%, so the window's glass and the landscape come through a little; the text, icons
+   and buttons drawn on that chrome stay whole and keep their contrast. The menu, the model row, the reply and the typing sit inside the
+   card, so they stay whole too */
+.app .st:is(.anon, .priv) {
+  -webkit-mask: url(/site/assets/home/desktop/frost-mask.webp) 0 0 / 100% 100% no-repeat;
+  mask: url(/site/assets/home/desktop/frost-mask.webp) 0 0 / 100% 100% no-repeat;
+}
+/* with both frosted, the day capture would show through Private's chrome: once Private has faded in, the first capture steps out, and
+   it is back at once when Private fades out */
+.app .st.anon { transition: opacity 0s; }
+.app:has(.st.priv.on) .st.anon { opacity: 0; transition-delay: .6s; }
+
+
+/* ── What you get: the live routing window ───────────────────────────── */
+.s-get .s-h2 { margin-top: 20px; }
+.s-lr-panel { --k: 1; align-self: stretch; height: calc(830px * var(--k)); margin-top: 64px; text-align: left; }
+.lr { position: absolute; left: calc(70px * var(--k)); top: calc(60px * var(--k)); width: 1172.6px; height: 709.2px; transform: scale(var(--k)); transform-origin: 0 0;
+  border-radius: 21.7px; background: rgba(255, 255, 255, .62); backdrop-filter: blur(19.5px); -webkit-backdrop-filter: blur(19.5px);
+  box-shadow: 0 5px 11px rgba(0, 0, 0, .05), 0 20px 20px rgba(0, 0, 0, .04), 0 44px 27px rgba(0, 0, 0, .02), 0 79px 32px rgba(0, 0, 0, .01); }
+.lr-bar { position: relative; display: flex; align-items: center; justify-content: space-between; height: 56.5px; padding: 0 15.2px 0 19.5px; border-bottom: 1.09px solid rgba(10, 26, 18, .07); }
+.lr-title { position: absolute; left: 50%; transform: translateX(-50%); font: 500 14.1px/14.1px "Instrument Sans", sans-serif; color: var(--m); }
+.seg { display: flex; gap: 2.2px; padding: 3.3px; border-radius: 8.7px; background: #f7f8f5; box-shadow: inset 0 0 0 1.1px #e1e5df; }
+.seg button { all: unset; display: flex; white-space: nowrap; align-items: center; gap: 7.6px; height: 30.4px; padding: 0 11.9px; border-radius: 6.5px; cursor: pointer;
+  font: 500 14.1px/14.1px "Instrument Sans", sans-serif; color: var(--m); }
+.seg button[aria-selected="true"] { background: #fff; color: var(--ink); box-shadow: 0 0 0 1.1px #e1e5df, 0 1.1px 2.2px rgba(4, 23, 15, .08); }
+.seg button:focus-visible { outline: 2px solid var(--o); outline-offset: 1px; }
+.seg .ic { width: 16.3px; height: 16.3px; background: currentColor; -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; }
+.lr-head { display: flex; justify-content: space-between; align-items: center; padding: 17.4px 26.1px 13px; font: 500 13px/13px "Geist Mono", monospace; color: #26352c; }
+.lr-head .cap { font-size: 12.5px; letter-spacing: 1px; text-transform: uppercase; }
+.live { display: inline-flex; align-items: center; gap: 8.7px; }
+.live i { width: 7.6px; height: 7.6px; border-radius: 50%; background: #17a062; animation: s-pulse 2s ease-in-out infinite; }
+@keyframes s-pulse { 50% { opacity: .35; } }
+.receipt { display: flex; align-items: center; height: 49.9px; margin: 0 23.3px; padding: 0 17.4px; border-radius: 10.9px; background: rgba(255, 255, 255, .86);
+  box-shadow: inset 0 0 0 1.1px rgba(255, 255, 255, .95), 0 1.1px 2.2px rgba(4, 23, 15, .05); overflow: hidden; }
+.rc { display: flex; align-items: center; gap: 0 10.9px; white-space: nowrap; font: 400 14.7px/14.7px "Geist Mono", monospace; color: var(--ink); transition: opacity .25s, transform .25s; }
+.rc.out { opacity: 0; transform: translateY(-6px); }
+.rc b, .rc .ok { font-weight: 500; }
+.rc .ok { color: #0e7a4f; }
+.rc .mu { color: var(--m); }
+.rc i { width: 3.3px; height: 3.3px; border-radius: 50%; background: #98a39b; }
+.dg { position: relative; height: 539.8px; padding-top: 23.9px; }
+.dg > * { position: absolute; }
+.wires { left: 0; top: 23.9px; width: 1172.6px; height: 516px; overflow: visible; }
+.wires path { fill: none; stroke: #0a1a12; stroke-opacity: .28; stroke-width: 1.1; stroke-dasharray: 1.1 3.3; transition: stroke .3s, stroke-opacity .3s; }
+.wires path.on { stroke: #0e7a4f; stroke-opacity: 1; stroke-width: 1.64; stroke-dasharray: 4.69 4.69; animation: s-flow .8s linear infinite; }
+.wires rect { fill: #fff; stroke: #0a1a12; stroke-width: 1.1; }
+@keyframes s-flow { to { stroke-dashoffset: -9.38; } }
+.dg .cap { top: 23.9px; font: 500 11.4px/11.4px "Geist Mono", monospace; letter-spacing: 1.1px; text-transform: uppercase; color: var(--m); }
+.tools-cap { left: 28.1px; }
+.provs-cap { left: 853.6px; }
+.tools, .provs { left: 0; top: 23.9px; }
+.chip { position: absolute; display: flex; align-items: center; border-radius: 13px; background: rgba(255, 255, 255, .78);
+  box-shadow: 0 10.9px 9.3px -13px rgba(91, 91, 91, .05); transition: background .3s, box-shadow .3s; }
+.chip.on { background: #fff; }
+.tools .chip { left: 28.1px; width: 230.8px; height: 63.3px; gap: 13px; padding: 0 15.2px; }
+.tools .chip:nth-child(1) { top: 50.4px; } .tools .chip:nth-child(2) { top: 167.6px; } .tools .chip:nth-child(3) { top: 284.9px; } .tools .chip:nth-child(4) { top: 402.2px; }
+.tools .chip.on { box-shadow: inset 0 0 0 1.6px #0e7a4f, 0 10.9px 9.3px -13px rgba(91, 91, 91, .05); }
+.ico { flex: none; display: grid; place-items: center; width: 34.7px; height: 34.7px; border-radius: 8.7px; background: #fff; box-shadow: inset 0 0 0 1.1px #e1e5df; }
+.ico img { width: 21.7px; height: 21.7px; }
+.ico.ink { background: var(--ink); box-shadow: none; }
+.ico.ink img { width: 17.4px; height: 17.4px; }
+.chip p { display: flex; flex-direction: column; gap: 3.3px; min-width: 0; }
+.tools b { font: 500 15.7px/20.5px "Instrument Sans", sans-serif; letter-spacing: -.2px; color: var(--ink); }
+.chip p span { font: 400 12.5px/15px "Geist Mono", monospace; color: var(--m); white-space: nowrap; }
+.provs .chip { left: 853.6px; width: 290.8px; height: 77.4px; gap: 10.9px; padding: 0 15.2px; }
+.provs .chip:nth-child(1) { top: 36.4px; } .provs .chip:nth-child(2) { top: 158.3px; } .provs .chip:nth-child(3) { top: 280.2px; } .provs .chip:nth-child(4) { top: 402.2px; }
+.provs .chip > img { flex: none; width: 23.9px; height: 23.9px; }
+.provs b { font: 500 13.6px/16.3px "Geist Mono", monospace; color: var(--ink); white-space: nowrap; }
+.provs em { margin-left: auto; padding: 4.3px 8.7px; border-radius: 6.5px; background: rgba(10, 26, 18, .06); font: 500 13px/14px "Geist Mono", monospace; font-style: normal; color: #26352c; transition: background .3s, color .3s; }
+.provs .on em { background: rgba(23, 160, 98, .12); color: #0e7a4f; }
+.state { position: absolute; right: 11px; top: -9.8px; padding: 2.2px 7.6px; border-radius: 5.4px; background: #0e7a4f; font: 500 11.4px/19.5px "Geist Mono", monospace; letter-spacing: .3px; color: #fff;
+  opacity: 0; transform: translateY(4px); transition: opacity .3s, transform .3s; }
+.provs .on .state { opacity: 1; transform: none; }
+.hub { left: 450.3px; top: 176.3px; width: 211.1px; height: 212.1px; display: flex; flex-direction: column; align-items: center; padding: 23.9px 15.2px; border-radius: 4.3px; background: #fff;
+  box-shadow: 0 1.1px 2.2px rgba(4, 23, 15, .08), 0 7.6px 12.3px -21.7px rgba(4, 23, 15, .1); }
+.hub::after { content: ""; position: absolute; inset: -10.9px; border: 1.1px solid rgba(10, 26, 18, .18); border-radius: 6.5px; pointer-events: none; }
+.hdl { position: absolute; width: 7.6px; height: 7.6px; background: #fff; border: 1.1px solid var(--ink); }
+.hdl:nth-child(1) { left: -4.3px; top: -4.3px; } .hdl:nth-child(2) { right: -4.3px; top: -4.3px; } .hdl:nth-child(3) { left: -4.3px; bottom: -4.3px; } .hdl:nth-child(4) { right: -4.3px; bottom: -4.3px; }
+.hub > img { width: 30.4px; height: 30.4px; }
+.hub .hub-t { margin-top: 9.8px; font: 500 14.7px/19.1px "Instrument Sans", sans-serif; letter-spacing: -.1px; color: var(--ink); }
+.hub .hub-l { margin-top: auto; font: 500 10.3px/10.9px "Geist Mono", monospace; letter-spacing: .8px; text-transform: uppercase; color: var(--m); }
+.hub .hub-v { margin-top: 5.4px; font: 400 22px/22px "Geist Pixel Var", "Geist Mono", monospace; letter-spacing: -.02em; color: var(--ink); font-variant-numeric: tabular-nums; }
+/* the diagram's figures in Geist Pixel, as the stats, its ELSH set by size: the rounder the dots, the more ink they lose, so the
+   smaller the figure the nearer the square end (1) it sits, to stay readable */
+.hub .hub-v { font-variation-settings: "ELSH" 14; }
+.provs em { font-family: "Geist Pixel Var", "Geist Mono", monospace; font-weight: 400; font-variation-settings: "ELSH" 6; }
+
+/* ── cards with a small mosaic panel (What you get, Providers, Privacy) ─ */
+.s-get .s-rail { padding-bottom: 117px; }
+.s-get .s-narrow { margin-top: 56px; }
+.s-cards { display: grid; gap: 24px; width: 100%; padding: 0 24px; text-align: left; }
+.s-cards.four { grid-template-columns: repeat(4, 1fr); margin-top: 56px; }
+.s-cards article { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.s-card-panel { display: grid; place-items: center; height: 260px; border-radius: var(--r-card); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); }
+.s-card-panel.tall { height: 300px; }
+.s-cap { padding-right: 16px; font: 400 16px/24px Geist, sans-serif; color: var(--b); }
+.s-cap b { font-weight: 500; color: var(--t); }
+
+.mini { display: flex; flex-direction: column; gap: 10px; width: 238px; max-width: calc(100% - 32px); padding: 14px; border-radius: 12px;
+  font: 400 12.5px/18px Geist, sans-serif; color: var(--t); }
+/* Figma's glass, on the mini window (Heavy users keeps its v4 scene; the other cards are v6.css's) */
+.s-get .mini { border: .5px solid #fff; background: rgba(255, 255, 255, .33); box-shadow: 0 20px 48px 0 rgba(20, 51, 89, .14);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+.mini .row { display: flex; align-items: center; gap: 8px; min-height: 18px; white-space: nowrap; }
+.mini em { margin-left: auto; font: 500 11.5px/18px "Geist Mono", monospace; font-style: normal; color: var(--o); }
+.mini em.warn { font-size: 11px; color: #e8742c; }
+.mini em.ol, .mini .ol { color: var(--o); }
+/* a pixel bar, as the price rows': columns of three 3px dots 4.5px apart, --of of them, the first --on lit */
+.px { position: relative; display: block; width: calc(var(--of) * 4.5px - 1.5px); max-width: 100%; height: 12px; background: radial-gradient(circle at 1.5px 1.5px, var(--empty) 1.25px, #0000 1.65px) 0 0 / 4.5px 4.5px; }
+.px::after { content: ""; position: absolute; inset: 0 auto 0 0; width: calc(var(--on) * 4.5px); max-width: 100%;
+  background: radial-gradient(circle at 1.5px 1.5px, var(--o) 1.25px, #0000 1.65px) 0 0 / 4.5px 4.5px; }
+.px.warn::after { background-image: radial-gradient(circle at 1.5px 1.5px, #e8742c 1.25px, #0000 1.65px); }
+
+/* ── Providers ───────────────────────────────────────────────────────── */
+.s-prov .s-rail { padding: 120px 0; }
+/* the two paths (amos-08): side by side on the cards' width, each a painted panel, 3:2, then its text under it, no frame round the two.
+   The paintings (assets/home/providers, 3:2) cover the panel, centred low so the characters are never cut */
+.s-paths { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; width: 100%; margin-top: 64px; padding: 0 24px; text-align: left; }
+/* each path a column of four rows shared with the other (subgrid), so the two names, lines and buttons start level */
+.s-path { display: grid; grid-row: span 4; grid-template-rows: subgrid; row-gap: 12px; min-width: 0; }
+.s-path-panel { margin-bottom: 16px; aspect-ratio: 3 / 2; border-radius: var(--r-card); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); background-position: 50% 85%; }
+.s-path-text { display: contents; }
+.s-path-h { margin: 0 0 4px; font: 400 30px/34px "Geist Pixel Var", Geist, sans-serif; font-variation-settings: "ELSH" 40; letter-spacing: -1px; color: var(--t); }
+.s-path-copy { display: flex; flex-direction: column; gap: 12px; }
+.s-path-text p { max-width: 500px; padding-right: 32px; text-wrap: pretty; font: 400 16px/24px Geist, sans-serif; color: var(--b); }
+.s-path-text p.ink { font-weight: 500; color: var(--t); }
+.s-path-text .s-actions { margin-top: 16px; align-self: start; }
+/* the two paintings move (providers-live.js): over each poster, the film of the theme showing, laid as the poster is (cover, 50% 85%:
+   a box of the painting's own shape, the panel's width), under the cursor's trail (wash-led.js, z-index -1) and the arrival's cover
+   (card-unveil.js), which it waits for. A set shows once its film has a frame (.on), which is the poster, so nothing is seen to change */
+.s-paths .pv-live { position: absolute; inset: 0; z-index: -2; overflow: hidden; border-radius: inherit; pointer-events: none; }
+.s-page .s-paths .wash[data-unveil] > .pv-live { visibility: hidden; opacity: 1; scale: none; transition: none; }
+.pv-set { position: absolute; left: 0; top: 85%; width: 100%; aspect-ratio: 1600 / 1074; translate: 0 -85%; visibility: hidden; }
+:root:not([data-theme="dark"]) .pv-set.on[data-set="day"], :root[data-theme="dark"] .pv-set.on[data-set="night"] { visibility: visible; }
+.pv-set video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
+.pv-colony .pv-set { aspect-ratio: 1600 / 1073; }   /* its poster's own shape */
+/* the stall's ant, in its box of the painting (art/round3/providers: 874, 611, 315 × 370 of 2048 × 1374), its pupils painted out */
+/* the price board on its nail, out of the film (Elio, 16 Nov): a pendulum, slowing at each end and quickest through the middle */
+.pv-sign { position: absolute; left: 32.52%; top: 43.741%; width: 11.035%; height: 14.41%; transform-origin: 50% 1.52%;
+  animation: pv-swing 1.5s cubic-bezier(.37, 0, .63, 1) -.75s infinite alternate paused; }   /* from the middle, upright as painted */
+.pv-set[data-set="night"] .pv-sign { left: 32.275%; width: 11.328%; height: 14.265%; transform-origin: 50.86% 1.53%; }
+.pv-sign img { display: block; width: 100%; height: 100%; }
+.pv-live.run .pv-sign { animation-play-state: running; }
+@keyframes pv-swing { from { rotate: -5deg; } to { rotate: 5deg; } }
+.pv-ant { position: absolute; left: 42.676%; top: 44.469%; width: 15.381%; height: 26.929%; }
+/* its pupils, each over its white: a box the white's size, kept to its ellipse, the pupil (cut from the painting) centred in it and moved
+   by a share of the box (providers-live.js); at rest where it is painted */
+.pv-eye { position: absolute; overflow: hidden; border-radius: 50%; }
+.pv-eye.l { left: 48.727%; top: 54.598%; width: 3.357%; height: 5.029%; }
+.pv-eye.r { left: 54.396%; top: 54.659%; width: 2.382%; height: 4.503%; }
+.pv-eye b { position: absolute; inset: 0; background: url(/site/assets/home/providers/stall-pupil-day.webp) center / 34.9% 34.73% no-repeat; }
+.pv-eye.r b { background-size: 49.19% 38.79%; }
+.pv-set[data-set="night"] .pv-eye b { background-image: url(/site/assets/home/providers/stall-pupil-night.webp); }
+@media (prefers-reduced-motion: reduce) { .s-paths .pv-live { display: none; } }
+@media (max-width: 1199px) {
+  .s-path-text p { padding-right: 8px; }
+  .s-path-h { font-size: 26px; line-height: 30px; }
+}
+@media (max-width: 760px) {
+  .s-paths { grid-template-columns: 1fr; margin-top: 40px; padding: 0 16px; }
+  .s-path + .s-path { margin-top: 56px; }
+  .s-path-panel { margin-bottom: 8px; }
+  .s-path-text p { padding-right: 0; }
+}
+/* the earnings: a plain band the rail's width, dotted above and below and between its cells, the buttons on the right */
+/* the key figures in Geist Pixel (the hero page declares "Geist Pixel Var") at the Circle end of its ELSH axis, 20, where the dots are
+   round, and larger than their Geist size (--fs) so each dot reads, but never wider than their column (--fit: the widest figure fills it);
+   the hero's panel sets --fig-elsh and --fig-size. Labels stay in Geist */
+
+/* ── The network ─────────────────────────────────────────────────────── */
+.s-net .s-rail { padding-top: 120px; }
+.s-net .s-head .s-sub { max-width: 760px; }
+/* the panel is the map's shape (1584 by 672), so the whole board shows; on a phone it is taller and shows a slice of it (net.js places
+   the painting where the board's spots expect it, and marks the panel .nd-tall) */
+.s-net-panel { aspect-ratio: 33 / 14; margin-top: 64px; --wash: url(/site/assets/home/net/map-2-day.webp); --wash-d: url(/site/assets/home/net/map-2-night.webp); }
+/* the loop keeps map-2, with all its clearings; the still board takes map-4, painted without five of them (amos-09-art), as the steps do */
+.s-net-panel[data-net="still"] { --wash: url(/site/assets/home/net/map-4-day.webp); --wash-d: url(/site/assets/home/net/map-4-night.webp); }
+/* the map a touch less saturated, as washed as the rest of the page's paintings, so it reads as the setting and the pieces stand out
+   (Elio, 12 Nov: not grey, just in tune). The painting moves to a layer under the board with the filter, where net.js sizes and places
+   it (inherited), and the unveil's canvas, which paints it while it arrives, takes the same filter */
+:root .s-page .s-net-panel { --map-tone: saturate(.74); background-image: none; }
+.s-net-panel::before { content: ""; position: absolute; inset: 0; z-index: -2; pointer-events: none; background: var(--wash) no-repeat;
+  background-size: inherit; background-position: inherit; filter: var(--map-tone); }
+:root[data-theme="dark"] .s-net-panel::before { background-image: var(--wash-d, var(--wash)); }
+.s-page .s-net-panel:is([data-unveil="wait"], [data-unveil="soon"])::before { visibility: hidden; }
+.s-net-panel > canvas.cu { filter: var(--map-tone); }
+/* the network's diagram (net.js): an SVG the panel's size, in its own units, over the map seen from above, laid out like a board game.
+   Colour says whose it is (Elio, 12 Nov): everything of yours in the site's lime (Elio, 13 Nov: no blue), a deeper one on the day's map
+   so it reads on the fields, the bright --acid at night; your lookup dotted, your links solid, a wider glow of the same lime round what
+   travels on them; the others' links neutral and faint. The DHT's seeds the hero's seed, glowing amber at night as in the hand; a
+   request a white speech bubble with lime dots, the answer the same seed, the payment a USDC coin, each casting a soft shadow on the
+   fields (.nd-fall). An offline provider goes grey (net.js, #nd-grey) */
+.nd { position: absolute; inset: 0; width: 100%; height: 100%; display: block; overflow: visible; pointer-events: none;
+  --nd-link: #b9ee2a; --nd-dot: #5f8a12; --nd-other: rgba(185, 238, 42, .62); --nd-lift: rgba(24, 44, 10, .55); --nd-edge: rgba(10, 26, 18, .2);
+  --nd-shadow: rgba(40, 46, 20, .5); --nd-base: #f4efdc; --nd-base-edge: #b9b08c; --nd-pbase: #bedc62; --nd-pbase-edge: #6f8f2a; }
+:root[data-theme="dark"] .nd { --nd-link: #c8f53c; --nd-dot: #5f8a12; --nd-other: rgba(200, 245, 60, .7); --nd-lift: rgba(0, 0, 0, .6); --nd-edge: rgba(0, 0, 0, .35);
+  --nd-shadow: rgba(0, 0, 0, .6); --nd-base: #7d8a83; --nd-base-edge: #47524c; --nd-pbase: #94bc3c; --nd-pbase-edge: #4e6c1c; }
+.nd :is(line, path) { fill: none; vector-effect: non-scaling-stroke; }
+/* every line in the lime, thick, no outline (Elio, 13 Nov: still not legible): a soft dark shadow under it lifts it off the painting */
+.nd-look, .nd-link, .nd-olink, .nd-rings { filter: drop-shadow(0 1px 1.5px var(--nd-lift)); }
+.nd-look path { stroke: var(--nd-link); stroke-width: 7; stroke-linecap: round; stroke-dasharray: 0 13; }
+.nd-look circle { fill: var(--nd-link); }
+.nd-link path { stroke: var(--nd-link); stroke-width: 5.5; stroke-linecap: round; }
+.nd-link .lit { stroke-width: 16; stroke-opacity: .3; }
+.nd-olink path { stroke: var(--nd-other); stroke-width: 3.5; stroke-linecap: round; }
+.nd-rings ellipse { fill: none; stroke: var(--nd-link); stroke-width: 4; }
+.nd-base .top { fill: var(--nd-base); } .nd-base .side { fill: var(--nd-base-edge); }
+.nd-n.prov .nd-base .top { fill: var(--nd-pbase); } .nd-n.prov .nd-base .side { fill: var(--nd-pbase-edge); }
+.nd .night, :root[data-theme="dark"] .nd .day, .nd-halo { display: none; }
+:root[data-theme="dark"] .nd :is(.night, .nd-halo) { display: inline; }
+:root[data-theme="dark"] .nd-halo { mix-blend-mode: screen; }
+.nd-bub path { fill: #fff; stroke: var(--nd-edge); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.nd-bub circle { fill: var(--nd-dot); }
+.nd-coin circle { fill: #fff; stroke: var(--nd-edge); stroke-width: 1; }
+.nd-fall ellipse { fill: var(--nd-shadow); fill-opacity: .45; }
+/* over the board (net.js, .nd-ui): a name tag under each ant and over the lookup's arc, the prices, the travellers' labels, and the card
+   that says what a thing is. Every tag, price and label is frosted glass with no tint (Elio, 13 Nov: "verre", glass, not green): the
+   painting blurred and its colour calmed under a light neutral fill, white by day, a pale smoke at night, a fine light edge, a soft light
+   along its top and a soft shadow; ink on it by day, near-white at night. The price picked is the lime itself, ink on it; an offline one
+   the same glass, its word greyed. The card is the site's popover, frosted white, with the cards' corner; at night the dark green glass. The
+   targets have no look of their own; your links' are a wide unseen stroke (.nd-hits) */
+.nd-ui { position: absolute; inset: 0; pointer-events: none; }
+.nd-ui, .nd-rail {
+  --tag: rgba(255, 255, 255, .74); --tag-t: #1b211e; --tag-edge: rgba(255, 255, 255, .9); --tag-light: rgba(255, 255, 255, .6);
+  --tag-y: #4f7a24; --tag-sh: rgba(30, 36, 32, .18); --tag-pick: #c8f53c; --tag-off: var(--tag); --tag-off-t: #7a817d; }
+:root[data-theme="dark"] :is(.nd-ui, .nd-rail) { --tag: rgba(226, 230, 227, .2); --tag-t: #f5f7f5; --tag-edge: rgba(255, 255, 255, .3); --tag-light: rgba(255, 255, 255, .2);
+  --tag-y: #c8f53c; --tag-sh: rgba(0, 0, 0, .32); --tag-off-t: #c2c8c4; }
+.nd-hit { all: unset; position: absolute; left: 0; top: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+  pointer-events: auto; -webkit-tap-highlight-color: transparent; }
+.nd-hit.look { justify-content: center; }
+.nd-hit.dht { border-radius: 50%; }
+.nd-tag { padding: 4px 7px; border-radius: 6px; background: var(--tag); color: var(--tag-t); font: 500 12px/12px Geist, system-ui, sans-serif; white-space: nowrap;
+  backdrop-filter: blur(10px) saturate(.4); -webkit-backdrop-filter: blur(10px) saturate(.4);
+  box-shadow: inset 0 0 0 .5px var(--tag-edge), inset 0 1px 0 0 var(--tag-light), 0 2px 8px var(--tag-sh); }
+/* at night the painting under the smoke a touch dimmer, so the white text holds over the bright river too */
+:root[data-theme="dark"] .nd-tag { backdrop-filter: blur(10px) saturate(.4) brightness(.78); -webkit-backdrop-filter: blur(10px) saturate(.4) brightness(.78); }
+.nd-tall .nd-tag { padding: 3px 6px; font-size: 11px; }
+/* the prices in the tags' place under the providers found, the one picked the acid itself, solid, an offline one its word greyed; the labels
+   riding with your travellers, every payment with its value (net.js places both) */
+.nd-chip, .nd-fly { position: absolute; left: 0; top: 0; transform-origin: 50% 0; }
+.nd-chip { font: 500 12px/12px "Geist Mono", ui-monospace, monospace; pointer-events: auto; transition: background-color .3s, color .3s; }
+.nd-tall .nd-chip { font-size: 11px; }
+.nd-chip.pick { background: var(--tag-pick); color: #0a1a12; box-shadow: inset 0 0 0 .5px rgba(9, 11, 12, .14), inset 0 1px 0 0 rgba(255, 255, 255, .5), 0 2px 8px var(--tag-sh); }
+.nd-chip.off { background: var(--tag-off); color: var(--tag-off-t); }
+.nd-fly { pointer-events: none; }
+.nd-hit:focus-visible .nd-tag, .nd-hit.dht:focus-visible { outline: 2px solid var(--tag-y); outline-offset: 3px; }
+.nd-hit.look:focus-visible { opacity: 1 !important; }
+.nd-hits path { stroke: transparent; stroke-width: 14; pointer-events: visibleStroke; }
+.nd-tip { position: absolute; z-index: 1; left: 0; top: 0; width: max-content; max-width: 232px; padding: 9px 12px; border-radius: var(--r-card, 11px);
+  font: 400 13px/18px Geist, system-ui, sans-serif; color: #56605a; text-wrap: balance; pointer-events: none;
+  border: .5px solid rgba(255, 255, 255, .7); background: rgba(255, 255, 255, .86); box-shadow: 0 10px 28px rgba(20, 51, 89, .2);
+  backdrop-filter: blur(12px) saturate(1.2); -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  opacity: 0; visibility: hidden; transition: opacity .15s, visibility 0s .15s; }
+.nd-tip.on { opacity: 1; visibility: visible; transition: opacity .15s; }
+.nd-tip b { font-weight: 500; color: #0f1a12; }
+:root[data-theme="dark"] .nd-tip b { color: #fff; }
+:root[data-theme="dark"] .nd-tip { color: #b8c2bb; border-color: rgba(150, 200, 145, .34); background: rgba(16, 38, 26, .9); box-shadow: 0 10px 28px rgba(0, 0, 0, .34); }
+@media (prefers-reduced-motion: reduce) { .nd-tip, .nd-tip.on, .nd-chip { transition: none; } }
+/* USDC's own mark before the word, its size, one unit with it */
+.s-tok { white-space: nowrap; }
+.s-tok img { display: inline-block; width: .8em; height: .8em; margin-right: .22em; vertical-align: -.08em; }
+/* the still story (amos-09, net.js data-net="still"): one request in five steps. Along the board's bottom a strip of the tags' glass
+   names them, the step shown in ink and the others grey (all in ink for the frame with all of them); on the map each step's number
+   before the tag of what it numbers, a small glass disc in the site's pixel face, as quiet as the tags. On a phone the strip gives only
+   the step shown its words. The strip is a band under the map: the panel grows by its height and net.js lays the board out above it */
+.s-net-panel[data-net="still"] { aspect-ratio: auto; height: auto; padding-bottom: calc(100% * 14 / 33 + 36px); }
+.nd-rail { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: space-evenly; gap: 16px; min-height: 36px; box-sizing: border-box; margin: 0; padding: 8px 20px; list-style: none;
+  background: var(--tag); color: var(--tag-off-t); font: 500 13px/18px Geist, system-ui, sans-serif; white-space: nowrap;
+  backdrop-filter: blur(10px) saturate(.4); -webkit-backdrop-filter: blur(10px) saturate(.4); box-shadow: inset 0 .5px 0 0 var(--tag-edge), 0 -2px 8px var(--tag-sh); }
+:root[data-theme="dark"] .nd-rail { backdrop-filter: blur(10px) saturate(.4) brightness(.78); -webkit-backdrop-filter: blur(10px) saturate(.4) brightness(.78); }
+.s-net-panel:not([data-net="still"]) .nd-rail { display: none; }
+.nd-rail li { display: flex; align-items: center; gap: 7px; }
+.nd-rail li.on { color: var(--tag-t); }
+.nd-rail b, .nd-num { font: 400 13px/1 "Geist Pixel Var", "Geist Mono", monospace; font-variation-settings: "ELSH" 20; }
+.nd-num { position: absolute; left: 0; top: 0; display: grid; place-items: center; width: 19px; height: 19px; border-radius: 50%; padding-top: 1px; box-sizing: border-box;
+  background: var(--tag); color: var(--tag-t); font-size: 12px; backdrop-filter: blur(10px) saturate(.4); -webkit-backdrop-filter: blur(10px) saturate(.4);
+  box-shadow: inset 0 0 0 .5px var(--tag-edge), inset 0 1px 0 0 var(--tag-light), 0 2px 8px var(--tag-sh); }
+:root[data-theme="dark"] .nd-num { backdrop-filter: blur(10px) saturate(.4) brightness(.78); -webkit-backdrop-filter: blur(10px) saturate(.4) brightness(.78); }
+/* the price chips name their provider first, in the tags' face, grey (net.js, the still story) */
+.nd-chip .nd-who { margin-right: 5px; font-family: Geist, system-ui, sans-serif; opacity: .55; }
+.nd-chip.off .nd-who { opacity: 1; }
+/* on a phone the name over the price, so the chip stays under its provider */
+.nd-tall .nd-chip { text-align: center; }
+.nd-tall .nd-chip .nd-who { display: block; margin: 0 0 3px; font-size: 10px; line-height: 10px; }
+.nd-tall .nd-num { width: 17px; height: 17px; font-size: 11px; }
+.nd-tall .nd-rail { flex-wrap: wrap; justify-content: center; gap: 4px 14px; padding: 7px 12px; font-size: 12px; line-height: 16px; }
+.nd-tall .nd-rail li:not(.on) span { display: none; }
+:root[data-theme="dark"] .nd-rail { color: rgba(245, 247, 245, .5); }
+@media (max-width: 760px) { .s-net-panel[data-net="still"] { padding-bottom: 0; height: clamp(470px, 133vw, 550px); } }
+/* the network in five steps (amos-09-r2, net-steps.js), the board's default style; data-net-style="map" brings back the painted board
+   above. The board follows the head (amos-09-r5: the three points are gone, the cards say it). On the map, whole, as a cover, as
+   before amos-09-r3 (map-5: map-4 with its last six clearings painted out and at twice its size, 4224 by 1792, so it holds sharp at
+   2x at every width, Magnific, amos-09-r5), under a light wash of the page's surface, deeper behind the cards; five cards in a row, each
+   the tags' neutral frosted glass (amos-09-r3, Elio, 16 Nov: lighter, the painting softly through): a light fill over the painting
+   blurred and calmed, a fine light edge, a soft light along its top, a soft shadow; ink on it by day, near-white at night. Each card its
+   icon in the accent (a pixel glyph, sections.html), its number and name ("1 Look up", the number in the pixel face), one line, and one small mono detail held at its foot. A thin line runs
+   from each card's icon row to the next card: its track always there, quiet (::after), the lime drawn over it (::before, net-steps.js
+   draws it, --p, and lights it, --pl). A card not reached yet keeps its glass, its content dimmed (--in from 0 to 1, net-steps.js).
+   Below 1200 px the cards stack in a column, the line running down from icon to icon: on a tablet each card one row (icon, name and
+   detail on top, the line under), on a phone the detail under the line */
+.s-page .s-net-panel { margin-top: 80px; }
+/* a screen's worth at 1440 by 900 (Elio, 16 Nov): the cards, with their paintings, make the board tall enough */
+.s-page .s-net-panel:not([data-net-style="map"]) { --gap: 40px; display: flex; align-items: center; aspect-ratio: auto; height: auto; min-height: 0; padding: 104px 48px;
+  background-size: cover; background-position: 50% 50%; }
+.s-net-panel[data-net="still"]:not([data-net-style="map"]) { --wash: url(/site/assets/home/net/map-5-day.webp); --wash-d: url(/site/assets/home/net/map-5-night.webp); }
+.s-net-panel:not([data-net-style="map"]) .nd-rail, .s-net-panel[data-net-style="map"] .ns { display: none; }
+.s-net-panel:not([data-net-style="map"])::after { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: linear-gradient(rgba(255, 255, 255, .2), rgba(255, 255, 255, .6) 30%, rgba(255, 255, 255, .6) 70%, rgba(255, 255, 255, .2)); }
+:root[data-theme="dark"] .s-net-panel:not([data-net-style="map"])::after {
+  background: linear-gradient(rgba(24, 29, 27, .2), rgba(24, 29, 27, .58) 30%, rgba(24, 29, 27, .58) 70%, rgba(24, 29, 27, .2)); }
+.ns { --ns-ink: #1b211e; --ns-t: #4b534e; --ns-m: #646b67; --ns-o: #4f7a24; --ns-line: #8cbf1a; --ns-track: rgba(40, 56, 30, .2); --ns-ic: 20px;
+  --ns-lw: 4px; --ns-pad: 20px; --ns-art: calc((100cqw - 4 * var(--gap)) / 5 - 2 * var(--ns-pad)); --ns-lift: 0 1px 2.5px rgba(24, 44, 10, .5);
+  /* the gateway's glass (Elio, 16 Nov: less white, the green of the painting through it), then a little more white for the text's contrast */
+  --ns-glass: rgba(255, 255, 255, .36); --ns-edge: rgba(255, 255, 255, .9); --ns-light: rgba(255, 255, 255, .5); --ns-sh: rgba(20, 51, 30, .14);
+  --ns-blur: blur(10px) saturate(1.15);
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--gap); width: 100%; margin: 0; padding: 0; list-style: none;
+  container-type: inline-size; }
+:root[data-theme="dark"] .ns { --ns-ink: #f5f7f5; --ns-t: #c2c8c4; --ns-m: #a4aba7; --ns-o: #c8f53c; --ns-line: var(--acid); --ns-track: rgba(8, 12, 10, .4);
+  --ns-lift: 0 1px 3px rgba(0, 0, 0, .7);
+  --ns-glass: rgba(14, 33, 23, .3); --ns-edge: rgba(150, 200, 145, .3); --ns-light: rgba(190, 228, 170, .12); --ns-sh: rgba(8, 26, 14, .3);
+  --ns-blur: blur(10px) saturate(1.15) brightness(.82); }
+/* each card: its painting on top, square, then the icon beside "N Name", the line, the mono detail at its foot (amos-09-r6) */
+.ns > li { position: relative; display: grid; grid-template-columns: var(--ns-ic) minmax(0, 1fr); grid-template-areas: "a a" "n h" "p p" "d d";
+  grid-template-rows: auto auto auto 1fr; column-gap: 10px; align-items: center; padding: var(--ns-pad); border-radius: 8px; background: var(--ns-glass);
+  box-shadow: inset 0 0 0 .5px var(--ns-edge), inset 0 1px 0 0 var(--ns-light), 0 10px 30px var(--ns-sh);
+  backdrop-filter: var(--ns-blur); -webkit-backdrop-filter: var(--ns-blur); }
+.ns > li > * { opacity: calc(.36 + .64 * var(--in, 1)); }
+.ns-ic { grid-area: n; align-self: start; display: block; width: var(--ns-ic); height: var(--ns-ic); margin-top: 1px; color: var(--ns-o); }   /* on the name's first line, when it wraps */
+/* the step's painting (an ant doing it, day and night, sections.js swaps them by data-dark), the cards' corner less their inset */
+.ns-art { grid-area: a; display: block; width: 100%; height: auto; aspect-ratio: 1; margin-bottom: 16px; border-radius: 6px; object-fit: cover; }
+.ns-ic svg { display: block; width: 100%; height: 100%; }
+.ns h3 { grid-area: h; align-self: start; margin: 0; font: 500 16px/22px Geist, system-ui, sans-serif; color: var(--ns-ink); }
+/* the step's number before its name, in the site's pixel face and the accent, so the sequence reads with the names (amos-09-r4, Elio) */
+.ns-n { margin-right: 8px; font: 400 16px/22px "Geist Pixel Var", "Geist Mono", monospace; font-variation-settings: "ELSH" 20; color: var(--ns-o); }
+.ns p { grid-area: p; align-self: start; margin: 6px 0 0; font: 400 14px/20px Geist, system-ui, sans-serif; color: var(--ns-t); }
+.ns span { grid-area: d; align-self: end; display: flex; align-items: center; gap: 6px; padding-top: 20px; font: 500 12px/16px "Geist Mono", ui-monospace, monospace; color: var(--ns-m); white-space: nowrap; }
+.ns span img { flex: none; width: 14px; height: 14px; }   /* USDC's own token by its amount, as on the painted board */
+/* the line between two cards 4px, the lime lifted off the painting by a soft dark shadow, as the painted board's links (Elio, 16 Nov:
+   not legible), its track a quiet dark tint; it joins the cards' paintings at their middle */
+.ns > li:not(:last-child)::before, .ns > li:not(:last-child)::after { content: ""; position: absolute; left: 100%; top: calc(var(--ns-pad) + (var(--ns-art) - var(--ns-lw)) / 2);
+  width: var(--gap); height: var(--ns-lw); border-radius: calc(var(--ns-lw) / 2); pointer-events: none; }
+.ns > li:not(:last-child)::after { background: var(--ns-track); }
+.ns > li:not(:last-child)::before { z-index: 1; background: var(--ns-line); box-shadow: var(--ns-lift); opacity: var(--pl, 1); transform-origin: 0 50%; transform: scaleX(var(--p, 1)); }
+/* each icon its own small move as its card lights up (.go, net-steps.js), the same on hover, half a second, transforms only, none with
+   reduced motion: the magnifier wiggles, the tag swings on its hole, the nodes pulse, the coin flips, the arrow nudges on */
+@media (prefers-reduced-motion: no-preference) {
+  .ns > li:nth-child(1).go .ns-ic svg, .ns > li:nth-child(1):hover .ns-ic { animation: ns-wiggle .52s ease-in-out; }
+  .ns > li:nth-child(2).go .ns-ic svg, .ns > li:nth-child(2):hover .ns-ic { animation: ns-swing .56s ease-in-out; transform-origin: 85% 50%; }
+  .ns > li:nth-child(3).go .ns-ic svg, .ns > li:nth-child(3):hover .ns-ic { animation: ns-pulse .48s ease-out; }
+  .ns > li:nth-child(4).go .ns-ic svg, .ns > li:nth-child(4):hover .ns-ic { animation: ns-flip .56s ease-in-out; }
+  .ns > li:nth-child(5).go .ns-ic svg, .ns > li:nth-child(5):hover .ns-ic { animation: ns-nudge .46s ease-out; }
+}
+@keyframes ns-wiggle { 0%, 100% { transform: rotate(0); } 20% { transform: rotate(-14deg); } 45% { transform: rotate(10deg); } 70% { transform: rotate(-5deg); } }
+@keyframes ns-swing { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-16deg); } 55% { transform: rotate(9deg); } 80% { transform: rotate(-3deg); } }
+@keyframes ns-pulse { 0%, 100% { transform: scale(1); } 35% { transform: scale(1.22); } 70% { transform: scale(.94); } }
+@keyframes ns-flip { 0% { transform: perspective(80px) rotateY(0); } 100% { transform: perspective(80px) rotateY(360deg); } }
+@keyframes ns-nudge { 0%, 100% { transform: translateX(0); } 40% { transform: translateX(5px); } 70% { transform: translateX(-1px); } }
+@media (max-width: 1199px) {
+  .s-page .s-net-panel:not([data-net-style="map"]) { --gap: 24px; padding: 96px 40px; }
+  .ns { grid-template-columns: minmax(0, 600px); justify-content: center; }
+  /* in a column the painting sits small at the card's left, beside the text, so the column stays short */
+  .ns { --ns-pad: 16px; --ns-art: 88px; }
+  .ns > li { grid-template-columns: calc(var(--ns-art) + 6px) var(--ns-ic) minmax(0, 1fr) auto; grid-template-areas: "a n h d" "a p p p"; grid-template-rows: auto 1fr;
+    column-gap: 12px; }
+  .ns-art { align-self: start; width: var(--ns-art); margin: 0; }
+  .ns span { align-self: center; padding: 0 0 0 16px; }
+  .ns > li:not(:last-child)::before, .ns > li:not(:last-child)::after { left: calc(var(--ns-pad) + (var(--ns-art) - var(--ns-lw)) / 2); top: 100%; width: var(--ns-lw); height: var(--gap); }
+  .ns > li:not(:last-child)::before { transform-origin: 50% 0; transform: scaleY(var(--p, 1)); }
+}
+/* a phone (amos-09-r7, Elio, 16 Nov: the steps one at a time, each filling the screen): the cards side by side in a strip the screen's
+   width, one in view, swiped or slid by the story (net-steps.js), each laid out as in the row, its painting the card's width on top; the
+   line between two cards runs across the gap at the paintings' middle */
+@media (max-width: 760px) {
+  .s-page .s-net-panel { margin-top: 40px; }
+  .s-page .s-net-panel:not([data-net-style="map"]) { --gap: 16px; padding: 56px 0; }
+  .ns { --ns-pad: 16px; --ns-art: calc(100cqw - 2 * var(--ns-pad)); display: flex; justify-content: flex-start; gap: var(--gap); padding: 0 16px;
+    overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x mandatory; scroll-padding-inline: 16px; scrollbar-width: none; }
+  .ns::-webkit-scrollbar { display: none; }
+  .ns > li { flex: 0 0 100cqw; scroll-snap-align: start; scroll-snap-stop: always;
+    grid-template-columns: var(--ns-ic) minmax(0, 1fr); grid-template-areas: "a a" "n h" "p p" "d d"; grid-template-rows: auto auto auto 1fr; column-gap: 10px; }
+  .ns-art { width: 100%; margin: 0 0 16px; }
+  .ns h3, .ns-n { font-size: 18px; line-height: 24px; }
+  .ns-ic { margin-top: 2px; }
+  .ns p { font-size: 15px; line-height: 22px; }
+  .ns span { align-self: end; padding: 20px 0 0; }
+  .ns > li:not(:last-child)::before, .ns > li:not(:last-child)::after { left: 100%; top: calc(var(--ns-pad) + (var(--ns-art) - var(--ns-lw)) / 2); width: var(--gap); height: var(--ns-lw); }
+  .ns > li:not(:last-child)::before { transform-origin: 0 50%; transform: scaleX(var(--p, 1)); }
+}
+/* two looks of the network (amos-09-r10, Elio 16 Nov), both on the painted map, data-net-look on the section:
+   "compact": the cards without their paintings, a shorter board and the three points under it;
+   "illustrated", the default (Elio, 16 Nov): each card opens on its painting, the points under it too. On the preview a switch flips them (sections.js) */
+.s-points { display: grid; grid-template-columns: repeat(3, 1fr); text-align: left; }
+.s-points > div { display: grid; place-items: center; padding: 40px 32px 48px; }
+.s-points > div + div { --dl: 2px; }
+.s-points p { max-width: 300px; padding-right: 0; text-wrap: balance; }   /* each block as near a rectangle as it goes (Elio, 12 Nov) */
+.s-points .mi-t { display: block; }
+.s-net[data-net-look="compact"] .ns-art { display: none; }
+.s-net[data-net-look="compact"] .ns { --ns-art: 22px; }   /* the line between two cards runs level with the names */
+/* one screen, both looks (Elio, 16 Nov): the head, the board and the three points fill the screen's height at least; the board takes what
+   is left, its cards centred in it (with the paintings it needs about all of it, without them it grows) */
+.s-net .s-rail { display: flex; flex-direction: column; min-height: calc(100svh - 4px); padding-top: 72px; }   /* less the section's 4px of edges */
+.s-page .s-net .s-net-panel:not([data-net-style="map"]) { flex: 1 0 auto; margin-top: 56px; padding-block: 40px; }
+.s-net .s-points > div { padding: 28px 32px 32px; }
+@media (max-width: 1199px) {
+  .s-net[data-net-look="compact"] .ns { --ns-art: var(--ns-ic); }
+  .s-net[data-net-look="compact"] .ns > li { grid-template-columns: var(--ns-ic) minmax(0, 1fr) auto; grid-template-areas: "n h d" ". p p"; }
+  .s-points > div { padding: 28px 16px; }
+}
+@media (max-width: 760px) {
+  .s-page .s-net .s-net-panel:not([data-net-style="map"]) { margin-top: 40px; padding-block: 32px; }
+  .s-net .s-rail { padding-top: 56px; }
+  .s-net[data-net-look="compact"] .ns { --ns-art: 24px; }
+  .s-net[data-net-look="compact"] .ns > li { grid-template-columns: var(--ns-ic) minmax(0, 1fr); grid-template-areas: "n h" "p p" "d d"; }
+  .s-points { grid-template-columns: 1fr; }
+  .s-points > div { padding: 28px 24px; }
+  .s-points > div + div { --dl: 0px; --dt: 2px; }
+}
+/* the switch between the two looks (sections.js), above the board at its right, in its top margin */
+.net-look { display: flex; justify-content: flex-end; gap: 4px; margin: 16px 0 -44px; position: relative; z-index: 1; }
+@media (max-width: 760px) { .net-look { margin: 12px 0 -32px; } }
+.net-look button { height: 28px; padding: 0 10px; border: 1px solid var(--tile-line); border-radius: 8px; background: var(--tile); color: var(--g); font: 500 12px/1 Geist, sans-serif; cursor: pointer; }
+.net-look button[aria-pressed="true"] { color: var(--t); background: var(--tile-hi); }
+/* $ANTS: two halves as the products, the text and a square frame for the token's image, a watercolour coin; under
+   them its live figures, then supply, provider pools and verification, three columns on one grid (subgrid) so their names, lines and
+   captions start level */
+.s-tk-top { display: grid; grid-template-columns: 1fr 1fr; align-items: center; --db: 2px; }
+.s-tk-top .s-duo-text { padding: 96px 64px; }
+.s-tk-frame { padding: 64px 64px 64px 0; }
+.s-tk-panel { display: grid; place-items: center; aspect-ratio: 1; border-radius: var(--r-card); }
+.s-tk-coin { display: block; width: 56%; height: auto; }
+/* the mascot looking up, its arms raised, the coin floating over its hands, slowly rising and falling (Elio, 12 Nov) */
+/* the ant rises from the panel's foot, seen down to just under its arms (its feet never in the wheat); the coin, nearly its old size, high, takes the room (Elio, 12 Nov) */
+.s-tk-panel .s-tk-ant { position: absolute; left: 50%; top: 56%; height: 62%; aspect-ratio: 544 / 769; translate: -50% 0; }
+.s-tk-ant > img { display: block; width: 100%; height: 100%; }
+/* its pupils tremble, in awe, as in manga: small quick jumps, both eyes together, the size unchanged (Elio, 12 Nov) */
+.s-tk-ant > .s-tk-pupil { position: absolute; height: auto; animation: s-tk-awe .48s steps(1) infinite; }
+@keyframes s-tk-awe {
+  0% { translate: 0 0; } 17% { translate: .9px -.6px; } 33% { translate: -.8px .7px; }
+  50% { translate: .6px .7px; } 67% { translate: -.9px -.5px; } 83% { translate: .4px -.9px; } }
+.s-tk-panel .s-tk-coin { position: absolute; left: 50%; top: 5%; width: 48%; translate: -50% 0; filter: drop-shadow(0 12px 14px rgba(40, 60, 20, .18));
+  animation: s-tk-float 3.6s ease-in-out infinite; }
+@keyframes s-tk-float { 0%, 100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(-7%) rotate(3deg); } }
+:root[data-theme="dark"] .s-tk-panel .s-tk-ant { filter: brightness(.84) saturate(.83) contrast(1.12); }   /* the night's light, as the hero's mascot */
+:root[data-theme="dark"] .s-tk-panel .s-tk-coin { filter: drop-shadow(0 0 18px rgba(200, 245, 60, .3)); }
+@media (prefers-reduced-motion: reduce) { .s-tk-panel :is(.s-tk-coin, .s-tk-pupil) { animation: none; } }
+.s-ants { display: grid; grid-template-columns: repeat(3, 1fr); }
+.s-ants > div { display: flex; flex-direction: column; gap: 12px; padding: 40px 56px 48px 40px; }
+.s-ants > div + div { --dl: 2px; }
+.s-ants.pts { --dt: 2px; grid-template-rows: auto 1fr auto; }
+.s-ants.pts > div { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 12px; }
+.s-ants p { font: 400 16px/24px Geist, sans-serif; color: var(--m); text-wrap: pretty; }
+.s-ants b { font: 400 24px/28px "Geist Pixel Var", Geist, sans-serif; font-variation-settings: "ELSH" var(--fig-elsh, 20); color: var(--t); }
+.s-ants.figs b { font-size: 40px; line-height: 44px; font-variant-numeric: tabular-nums; }
+.s-ants .cap { margin-top: 8px; font: 400 12.5px/18px "Geist Mono", monospace; color: var(--o); }
+/* the section is the two halves only (amos-10): the second line under the title in grey; the .s-ants rules above stay for the /ants partial (_amos-parts/ants-token-details.html) */
+.s-token .s-sub.dim { color: var(--g); }
+.s-token .s-duo-head .s-sub { text-wrap: balance; }
+
+/* ── Privacy ─────────────────────────────────────────────────────────── */
+/* dark from margin to margin, the whole of it (the head, the points and their panel) framed by Figma's dot mosaic (663:4166, assets/home/privacy-dots.svg): 1504 by 832, dots round the edges only, one round dot a cell as Meadow · Mascot's.
+   .tw lays it at its own size as two bands, its top half from the top and its bottom half from the bottom: at Figma's 832 that is the
+   whole mosaic, and a taller box keeps a strip of its top and bottom rows (160px at least), its sides going on down the middle
+   (dither.js repeats their rows), behind the panel. The ants walking it are dither.js's. The top line runs across the whole width, on the margin's dots; the rail draws
+   none of its own. */
+.s-priv { --dot: var(--priv-dot); --t: #f2f4ef; --g: #7b827e; --b: #a4aca7; background: var(--priv); }   /* in dark the rail's #181d1b, dots darker */
+/* one frame (.s-pv-pin, the mosaic's box: amos-07, Elio 17 Nov): the head, then the four points beside one panel; the run after it. From
+   900 wide and 600 tall (sections.js puts .pv-pin on the section) the frame sticks, a screen tall with its rail in the middle (held by
+   its bottom when taller than the screen); the run (--pv-run, a step of the page's scroll per point) is the room the page scrolls through
+   while it holds. Elsewhere the run is nothing */
+.s-pv-top { position: relative; flex: none; display: flex; flex-direction: column; }   /* the head, before the held rail (production's) */
+.s-pv-hold, .s-pv-pin { position: relative; flex: 1 0 auto; display: flex; flex-direction: column; }   /* the hold: the pin's run ends with it */
+.s-pv-run { flex: none; height: var(--pv-run, 0px); }
+.s-priv.pv-pin .s-pv-pin { position: sticky; top: var(--pv-top, 0px); min-height: 100vh; justify-content: center; }
+.s-priv .tw { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.s-priv .tw canvas { position: absolute; top: 0; left: 0; }   /* the mosaic, in fine dots, drawn by dither.js */
+.s-priv::before { content: ""; position: absolute; z-index: 1; left: 0; right: 0; top: -1px; height: 2px; pointer-events: none;
+  background: radial-gradient(circle at 4px 1px, var(--dot) .85px, #0000 1.25px) 50% 0 / 8px 2px repeat-x; }
+.s-priv .s-rail { padding-bottom: 123px; background: none; --dt: 0px; --dr: 0px; --dl: 0px; }   /* no margin lines here: they fought the dots' hover */
+.s-priv .s-pv-top > .s-rail { padding-bottom: 0; }
+.s-priv .s-pv-pin > .s-rail { flex: none; padding-top: 0; }
+/* held, the rail is the tabs and the panel only, a screen tall, the ant's room (--pv-ant, sections.js) above the panel: the head scrolls
+   off above it, as production's levels did, so the frame fits a laptop screen */
+.s-priv.pv-pin .s-pv-pin > .s-rail { min-height: 100vh; justify-content: center; padding-block: clamp(40px, 10vh, 120px); }
+.s-priv .s-eyebrow { color: var(--acid) !important; }
+.s-priv .s-h2 { margin-top: 20px; }
+.s-priv .s-sub { margin-top: 20px; max-width: 600px; }
+/* the incognito ant (assets/home/ant-incognito, three films): sitting on the panel's top edge by its right corner, legs over the
+   edge, over every point's panel and staying as they change, so she holds with the frame (amos-07-r4: back where she sat before the
+   pin); a sixth of the panel wide; mirrored, looking left, toward the text (Elio, 12 Nov). Her seat, 89% down the picture, on the edge;
+   at night the hero mascot's light */
+.s-pv-ant { position: absolute; z-index: 2; right: 5%; bottom: 100%; width: clamp(68px, 17%, 127px); height: auto; translate: 0 12%; transform: scaleX(-1); pointer-events: auto; cursor: pointer; padding: 0; border: 0; background: none; border-radius: 40% 40% 16% 16%; }
+/* her three films stacked: the idle loop, and the laugh or the pout a click plays once (sections.js); one shows at a time */
+.s-pv-ant video { display: block; width: 100%; height: auto; }
+.s-pv-ant video:not(.idle) { position: absolute; inset: 0; }
+.s-pv-ant video:not(.on) { opacity: 0; }
+.s-pv-ant:focus-visible { outline: 2px solid var(--focus, #6f9b3a); outline-offset: 4px; }
+@media (prefers-reduced-motion: reduce) { .s-pv-ant { cursor: default; } }
+:root[data-theme="dark"] .s-pv-ant { filter: brightness(.84) saturate(.83) contrast(1.12); }
+/* the four points as a list beside one panel (after inspora's feature sections): the chosen one in the text colour, its line showing
+   under its name, the others at 40% (60% under the pointer); the panel shows its screen (privacy-v4.css). The panels sit on one another
+   and cross-fade. (The thread of dots sections.js can draw round the screen is off) */
+.s-pv { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); align-items: center; gap: 28px 56px; width: 100%; max-width: 1160px;
+  margin-top: 64px; padding: 0 24px; text-align: left; }
+.s-priv.pv-pin .s-pv { margin-top: 0; padding-top: var(--pv-ant, 160px); }
+.s-pv-side { display: flex; flex-direction: column; justify-content: flex-start; }
+.s-pv-list { display: flex; flex-direction: column; gap: 4px; min-height: var(--pv-list-h, 0px); }   /* its tallest state (sections.js): no jump as the tabs change */
+.s-pv-dots { position: absolute; left: 0; top: 0; pointer-events: none; display: none; }   /* the thread is off (Elio, 12 Nov) */
+.s-pv-tab { display: grid; grid-template-rows: auto 0fr; width: 100%; padding: 18px 24px; border: 0; border-radius: 14px; background: none;
+  text-align: left; cursor: pointer; color: var(--t); font: 500 18px/26px Geist, sans-serif; transition: grid-template-rows .45s cubic-bezier(.2, .7, .2, 1); }
+.s-pv-tab > * { transition: opacity .3s ease; }
+.s-pv-tab[aria-selected="false"] > * { opacity: .4; }
+.s-pv-tab[aria-selected="false"]:hover > * { opacity: .6; }
+.s-pv-tab[aria-selected="true"] { grid-template-rows: auto 1fr; cursor: default; }
+.s-pv-tab > b { font-weight: inherit; }   /* the names at the tab's 500, as the FAQ's questions: a <b> alone went to a synthetic 700 (Geist is loaded at 400 and 500) */
+.s-pv-tab > span { overflow: hidden; }
+.s-pv-tab > span > span { display: block; padding-top: 8px; font: 400 16px/24px Geist, sans-serif; color: var(--b); text-wrap: pretty;
+  opacity: 0; visibility: hidden; transition: opacity .2s, visibility 0s .2s; }
+.s-pv-tab[aria-selected="true"] > span > span { opacity: 1; visibility: visible; transition: opacity .35s .15s, visibility 0s; }
+.s-pv-tab:focus-visible { outline: 2px solid var(--acid); outline-offset: 2px; }
+/* the panels in one cell, so the tallest screen sets the stage and the four share its size; each its painting, its screen in the middle */
+.s-pv-stage { position: relative; display: grid; }
+.s-pv-panel { grid-area: 1 / 1; display: grid; grid-template-rows: minmax(0, 1fr); place-items: center; height: 460px; padding: 0 32px; border-radius: var(--r-card);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08); transition: opacity .4s ease, visibility 0s; }
+.s-pv-panel:not(.on) { opacity: 0; visibility: hidden; transition: opacity .4s ease, visibility 0s .4s; }
+/* each arrival (card-unveil.js, on first view and on every choice): the screen only grows, and its window fades itself, as an
+   ancestor's opacity would cut its frost off the painting until it ended (the glass showed the painting sharp, then frosted at once);
+   its pieces come in with its own play (privacy-v4.css) */
+.s-page .s-pv-panel:is([data-unveil="wait"], [data-unveil="soon"]) > :not(canvas) { opacity: 1; }
+.s-page .s-pv-panel:is([data-unveil="wait"], [data-unveil="soon"]) .pv4-win { opacity: 0; }
+.s-page .s-pv-panel[data-unveil="run"] .pv4-win { transition: opacity .55s ease-out; }
+@media (max-width: 1199px) {
+  .s-priv .s-pv { gap: 28px 40px; }
+  .s-pv-panel { height: 400px; padding: 0 28px; }
+}
+@media (min-width: 900px) and (max-height: 760px) { .s-pv-panel { height: 400px; } }   /* a short laptop screen holds the frame too */
+@media (min-width: 900px) { .s-pv .pv4-win { scale: var(--pv-s, 1); } }   /* each screen fitted to the panel's height (sections.js) */
+@media (max-width: 899px) {
+  /* the list over the panel; room above the panel for the ant */
+  .s-pv-stage { margin-top: 96px; }
+  .s-pv-panel { height: auto; min-height: 300px; padding: 32px 24px; }
+  .s-pv-ant { width: 93px; }
+  .s-priv .s-pv { grid-template-columns: minmax(0, 1fr); gap: 24px; max-width: 640px; }
+}
+@media (max-width: 760px) {
+  .s-pv-ant { width: 68px; }
+  .s-pv-stage { margin-top: 72px; }
+  .s-priv .s-rail { padding-bottom: 72px; }
+  .s-priv .s-pv { margin-top: 40px; padding: 0 16px; }
+  .s-pv-tab { padding: 14px 18px; font-size: 17px; line-height: 24px; }
+  .s-pv-tab > span > span { font-size: 15px; line-height: 22px; }
+  .s-pv-panel { padding: 28px 20px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .s-pv-tab, .s-pv-tab > *, .s-pv-tab > span > span, .s-pv-panel { transition: none !important; }
+}
+
+/* ── FAQ ─────────────────────────────────────────────────────────────── */
+.s-faq .s-rail { display: grid; grid-template-columns: 360px minmax(0, 662px); padding: 120px var(--pad); }
+.qs details { padding: 22px 0 23px; --dt: 2px; }
+.qs details:last-child { --db: 2px; }
+.qs summary { display: flex; justify-content: space-between; align-items: center; gap: 24px; cursor: pointer; list-style: none; font: 500 18px/26px Geist, sans-serif; color: var(--t); }
+.qs summary::-webkit-details-marker { display: none; }
+.qs summary::after { content: "+"; flex: none; width: 13px; text-align: center; font: 400 22px/26px Geist, sans-serif; color: var(--g); }
+.qs details[open] summary::after { content: "−"; }
+.qs summary:focus-visible { outline: 2px solid var(--o); outline-offset: 4px; border-radius: 2px; }
+.qs .a { display: flex; flex-direction: column; gap: 14px; padding-top: 14px; }
+.qs .a p { max-width: 600px; font: 400 16px/25px Geist, sans-serif; color: var(--b); }
+.qs .a a { align-self: flex-start; font: 500 15px/22px Geist, sans-serif; color: var(--o); }
+.s-faq { interpolate-size: allow-keywords; }
+.qs details::details-content { height: 0; overflow: clip; transition: height .25s ease, content-visibility .25s allow-discrete; }
+.qs details[open]::details-content { height: auto; }
+
+/* ── Footer ──────────────────────────────────────────────────────────── */
+.s-foot .s-rail { padding: 72px 0 40px; --dl: 0px; --dr: 0px; }
+.s-foot .cols { display: grid; grid-template-columns: 352fr 240fr 240fr 240fr 240fr; }
+.s-foot .brand { padding: 0 48px; }
+.s-foot .col { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; font: 400 14px/20px Geist, sans-serif; color: var(--t); }
+.s-foot .col p { font-weight: 500; color: var(--g); }
+.s-foot .col a:hover, .s-foot .legal a:hover { color: var(--o); }
+.s-foot .ink { filter: var(--logo); }   /* the logo, black, light at night */
+.s-foot .legal { display: flex; gap: 24px; margin-top: 64px; padding-top: 24px; --dt: 2px; font: 400 14px/20px Geist, sans-serif; color: var(--t); }
+.s-foot .legal span { flex: 1; color: var(--m); white-space: nowrap; }
+/* the theme switch: three icon buttons, the chosen one on a tile */
+.s-foot .theme { display: flex; gap: 2px; margin: -4px 0; }
+.theme button { all: unset; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; color: var(--m); cursor: pointer; transition: color .15s, background-color .15s; }
+.theme button:hover { color: var(--t); }
+.theme button[aria-pressed="true"] { color: var(--t); background: var(--tile); box-shadow: inset 0 0 0 1px var(--tile-line); }
+.theme button:focus-visible { outline: 2px solid var(--o); outline-offset: 1px; }
+.theme svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ── coming into view (sections.js) ──────────────────────────────────── */
+/* a big figure while it counts: its final text under it, hidden, holds the width; tabular figures so the digits keep their place */
+.s-page [data-count] { font-variant-numeric: tabular-nums; }
+.tally { display: inline-grid; }
+.tally > * { grid-area: 1 / 1; }
+.tally > :first-child { visibility: hidden; }
+/* only once sections.js has put .rv on .s-page, and never with reduced motion: blocks rise 20px and fade in, big panels 24px from .98,
+   --i their place in the batch; the price rows from 14px and .97, the bottom one first, each bar filling just after its row lands */
+@media (prefers-reduced-motion: no-preference) {
+  .s-page { --rv-ease: cubic-bezier(.2, .7, .2, 1); }
+  .s-page.rv [data-rv] { transition: opacity .6s var(--rv-ease), transform .7s var(--rv-ease); transition-delay: calc(var(--i, 0) * 50ms); }
+  .s-page.rv [data-rv]:not(.rv-in) { opacity: 0; transform: translateY(20px); }
+  .s-page.rv [data-rv="panel"] { transition-duration: .8s; }
+  .s-page.rv [data-rv="panel"]:not(.rv-in) { transform: translateY(24px) scale(.98); }
+  .s-page.rv }
+
+/* ── narrower screens ────────────────────────────────────────────────── */
+@media (max-width: 1199px) {
+  .s-split { grid-template-columns: 220px minmax(0, 1fr); }
+    .s-cards.four { grid-template-columns: repeat(2, 1fr); }
+  .s-faq .s-rail { grid-template-columns: 280px minmax(0, 1fr); }
+  .s-foot .cols { grid-template-columns: repeat(4, 1fr); row-gap: 40px; }
+  .s-foot .brand { grid-column: 1 / -1; padding: 0; }
+}
+@media (max-width: 899px) {
+  .s-duo .s-rail { grid-template-columns: 1fr; min-height: 0; }
+  .s-duo-flip .s-duo-text { order: -1; }
+  .s-duo-text, .s-duo-flip .s-duo-text { padding: 72px var(--pad) 56px; gap: 28px; }
+  .s-duo-panel { min-height: 0; height: 480px; }
+  .term { left: 24px; top: 40px; }
+  .s-vpn-panel { height: auto; }
+  .vpn { position: relative; padding: 40px 24px 40px 0; container-type: normal; }
+  .vpn .vpn-win { position: relative; top: auto; right: auto; width: 120%; margin-left: -20%; }   /* its right edge 24 in, a sixth off the left */
+  .s-tk-top { grid-template-columns: 1fr; }
+  .s-tk-top .s-duo-text { padding: 72px var(--pad) 40px; gap: 28px; }
+  .s-tk-frame { padding: 0 var(--pad) 56px; }
+  .s-tk-panel { max-width: 440px; }
+  .s-ants { grid-template-columns: 1fr; }
+  .s-ants > div + div { --dl: 0px; --dt: 2px; }
+  .s-ants.pts { grid-template-rows: none; }
+  .s-ants.pts > div { display: flex; grid-row: auto; }
+  .s-ants.figs { grid-template-columns: repeat(3, 1fr); }   /* the three figures stay side by side on a tablet */
+  .s-ants.figs > div { padding: 32px 24px 36px; }
+  .s-ants.figs > div + div { --dl: 2px; --dt: 0px; }
+  .s-ants.figs b { font-size: 32px; line-height: 36px; }
+  .s-faq .s-rail { grid-template-columns: 1fr; gap: 40px; }
+  /* the routing window stops scaling and stacks: tools, your device, providers */
+  .s-lr-panel { height: auto; padding: 40px 16px; }
+  .lr { position: relative; left: auto; top: auto; width: auto; height: auto; transform: none; }
+  .lr-title { display: none; }
+  .lr-head { gap: 12px; flex-wrap: wrap; padding: 16px 16px 12px; }
+  .receipt { height: auto; min-height: 50px; margin: 0 12px; padding: 12px 14px; }
+  .rc { flex-wrap: wrap; row-gap: 6px; white-space: normal; font-size: 13px; line-height: 16px; }
+  .dg { height: auto; display: flex; flex-direction: column; gap: 12px; padding: 24px 12px 20px; }
+  .dg > * { position: relative; }
+  .wires { display: none; }
+  .dg .cap { top: 0; left: 0; }
+  .tools-cap { order: 0; } .tools { order: 1; } .hub { order: 2; } .provs-cap { order: 3; } .provs { order: 4; }
+  .tools, .provs { top: 0; display: flex; flex-direction: column; gap: 10px; }
+  .tools .chip, .provs .chip { position: relative; left: auto; top: auto !important; width: 100%; }
+  .provs .chip { height: 64px; }
+  .hub { left: auto; top: auto; width: auto; height: auto; margin: 20px 11px; padding: 20px 16px; gap: 0; }
+  .hub .hub-l { margin-top: 16px; }
+}
+@media (max-width: 760px) {
+  .s-pad { padding: 72px var(--pad); }
+  .s-priv .s-rail { padding-bottom: 72px; }
+  .s-center { padding: 72px 0; }
+  .s-intro .s-rail, .s-net .s-rail { padding-top: 72px; }
+  .s-intro .s-rail { padding-bottom: 72px; }
+  .s-tk-top .s-duo-text { padding: 56px var(--pad) 32px; }
+  .s-tk-frame { padding: 0 var(--pad) 40px; }
+  .s-prov .s-rail { padding: 72px 0; }
+  .s-prods { gap: 64px; padding-bottom: 64px; }
+  .s-duo-text, .s-duo-flip .s-duo-text { padding: 56px var(--pad); }
+  .s-duo-text .s-actions { align-self: stretch; }
+  .s-duo-text .s-actions .s-btn { flex: 1 1 auto; }   /* the two buttons share a line, or each takes a whole one */
+  .s-lede .dim, .s-duo-head .s-sub { max-width: none; }
+  .s-h2, .s-h3, .s-faq .s-h3 { font-size: 34px; line-height: 36px; letter-spacing: -1.4px; }
+  .s-get .s-h2 { line-height: 38px; }
+  .s-sub { font-size: 16px; line-height: 24px; }
+  .s-sub br { display: none; }
+  .s-split { grid-template-columns: 1fr; gap: 20px; }
+  .s-lede { font-size: 20px; line-height: 28px; gap: 16px; }
+    .s-prices .s-rail { gap: 40px; }
+  .s-flow { --card: 152px; }
+  .s-mcard { padding: 14px; }
+  .s-mcard b { font-size: 14px; line-height: 18px; }
+  .s-get .s-h2 br { display: none; }
+  .seg button { padding: 0 9px; font-size: 13px; }
+  .s-lr-panel { margin-top: 40px; }
+  .s-cards.four { grid-template-columns: 1fr; padding: 0 16px; margin-top: 40px; }
+  .s-get .s-narrow { margin-top: 40px; padding: 0 20px; }
+  .s-priv .s-sub { padding: 0 20px; }
+  .s-head .s-sub { max-width: none; }
+  /* on a phone the figures keep their size, already as wide as their column: the panel's size is for wider screens */
+  .s-net-panel { margin-top: 40px; aspect-ratio: auto; height: clamp(440px, 125vw, 520px); }
+  .s-ants > div { padding: 28px 20px 32px; }
+  .s-ants.figs { grid-template-columns: 1fr; }
+  .s-ants.figs > div + div { --dl: 0px; --dt: 2px; }
+  .s-ants.figs b { font-size: 32px; line-height: 36px; }
+  .s-faq .s-rail { padding: 72px var(--pad); }
+  .qs summary { font-size: 16px; line-height: 24px; }
+  .s-foot .cols { grid-template-columns: 1fr 1fr; }
+  .s-foot .legal { flex-wrap: wrap; }
+  .s-foot .legal span { flex-basis: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wires path.on, .live i, .term .cur { animation: none; }
+  .rc, .chip, .state, .wires path { transition: none; }
+  .qs details::details-content { transition: none; }
+}
+
+/* the site's films are painting, never players: no picture-in-picture, skip or other media buttons on hover (Safari showed them on the incognito ant, Elio, 13 Nov) */
+video::-webkit-media-controls, video::-webkit-media-controls-enclosure, video::-webkit-media-controls-panel, video::-webkit-media-controls-overlay-play-button, video::-webkit-media-controls-start-playback-button { display: none !important; -webkit-appearance: none; }

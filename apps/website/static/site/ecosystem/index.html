@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The Ecosystem page (17 Nov): Antseed's directory (its projects, links and words) in our packaging: the shared nav and footer,
+     the aside scale (06_Amos-feedback/ASIDE-SCALE.md), painted cards under the kit's glass; ecosystem.css holds only this page's layouts -->
+<script src="/site/hero/theme.js"></script>
+<title>Ecosystem · Antseed</title>
+<meta name="description" content="Explore projects, explorers, dashboards, and applications built on top of Antseed.">
+<meta property="og:title" content="Ecosystem · Antseed">
+<meta property="og:description" content="Explore projects, explorers, dashboards, and applications built on top of Antseed.">
+<link rel="icon" type="image/svg+xml" href="/site/assets/home/icons/ant-mark.svg">
+<!-- the first screen's painting, asked for at once and first (the browser would otherwise find it only once the CSS is read): the day's
+     file for a light system, the night's for a dark one, the same URLs the page's styles show, so each is fetched once -->
+<link rel="preload" as="image" href="/site/assets/ecosystem/hero-day.webp" fetchpriority="high" media="(prefers-color-scheme: light)">
+<link rel="preload" as="image" href="/site/assets/ecosystem/hero-night.webp" fetchpriority="high" media="(prefers-color-scheme: dark)">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- the fonts, asked from here and not from inside sections.css, so the browser finds them while it reads the head: the families, then
+     Geist's two arrows (Google's latin subset leaves out → and ↗; its text= parameter needs a request of its own) -->
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500&family=Geist:wght@400;500&family=Geist+Mono:wght@400;500&display=block" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&text=%E2%86%92%E2%86%97&display=block" rel="stylesheet">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/site/assets/fonts/GeistPixel-VariableFont_ELSH.woff2">
+<link rel="stylesheet" href="/site/hero/shell.css">
+<link rel="stylesheet" href="/site/hero/site-nav.css">
+<link rel="stylesheet" href="/site/hero/v6.css">
+<link rel="stylesheet" href="/site/hero/footer.css">
+<link rel="stylesheet" href="/site/hero/sections.css">
+<link rel="stylesheet" href="/site/hero/micro.css">
+<link rel="stylesheet" href="/site/hero/launch.css">
+<link rel="stylesheet" href="/site/ecosystem/ecosystem.css">
+</head>
+<body class="ec" data-parts="cta-band">
+  <nav>
+    <a href="/" aria-label="Antseed"><img src="/site/assets/hero/logo.svg" width="95.3464" height="33" alt="Antseed"></a>
+    <div class="links"><a href="/network/">Network</a>
+      <div class="dd"><button type="button" class="dd-t" aria-expanded="false" aria-controls="dd-prov">Providers<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3"/></svg></button>
+        <div class="dd-m" id="dd-prov" hidden>
+          <a href="/providers/"><b>Own provider</b><span>Sell your models or AI service at your price</span></a>
+          <a href="/colony/"><b>Join a Colony</b><span>Share your computer with a pool while you’re away</span></a>
+        </div>
+      </div>
+      <a href="/ecosystem/" aria-current="page">Ecosystem</a><a href="https://antseedstats.com/network" target="_blank" rel="noopener noreferrer">Live prices&nbsp;↗</a>
+    </div>
+    <div class="acts"><div class="nav-txt"><a href="https://antseed.com/docs/">Docs</a><a href="https://antseed.com/blog/">Blog</a></div><button type="button" class="theme-btn" id="nav-theme" role="switch" aria-checked="false" aria-label="Dark theme"><span class="i-sun"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></span><span class="i-moon"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z"/></svg></span><i class="knob" aria-hidden="true"></i></button><a class="cta ghost" href="https://antseed.com/docs/quickstart/">Set Up Gateway</a><a class="cta" id="nav-get" href="https://github.com/Antseed/antseed/releases/latest" target="_blank" rel="noopener noreferrer"><span class="long">Download Desktop</span><span class="short">Download</span></a><button type="button" class="menu-btn" aria-expanded="false" aria-controls="site-menu">Menu</button></div>
+  </nav>
+<script src="/site/hero/nav.js" defer></script>
+<script src="/site/hero/site-nav.js" defer></script>
+<div id="sections"><div class="s-page">
+
+<!-- The top, as /colony/'s: the offer on the left, the painted map of the network on the right, inset 16 -->
+<section class="s-sec ec-top" aria-labelledby="ec-h">
+  <div class="ec-hero">
+    <header class="ec-hero-head">
+      <p class="s-eyebrow">Ecosystem</p>
+      <h1 class="s-h2" id="ec-h">Explore the<br> <span>Antseed ecosystem.</span></h1>
+      <p class="s-sub">Connect with builders, providers, explorers, and AI-focused projects growing around peer-to-peer AI infrastructure.</p>
+      <div class="s-actions"><a class="s-btn" href="https://antseedstats.com/network" target="_blank" rel="noopener noreferrer">Explore live network →</a><a class="s-btn ghost" href="https://antseed.com/docs/">Build on Antseed</a></div>
+    </header>
+    <div class="wash land ec-hero-panel" style="--wash: url(/site/assets/ecosystem/hero-day.webp); --wash-d: url(/site/assets/ecosystem/hero-night.webp)" role="img" aria-label="A little village of ant projects around an anthill and its Mac Studio: a market stall, a lookout tower with a telescope, a notice board of charts, a workshop, a map table and a post box, linked by paths and twig bridges"></div>
+  </div>
+</section>
+
+<!-- Live projects (Elio, 17 Nov): aside's card row, three across, each card a link to the project with a thin outline: a screenshot of the
+     project's own site (taken 17 Nov at 1440x1080, shots/), then the project's name in ink and its one line from Antseed's directory (Elio, 17 Nov: straight to the point), as the site's three-up card rows -->
+<section class="s-sec ec-live" id="projects" aria-labelledby="ec-live-h">
+  <div class="s-rail">
+    <header class="s-head s-padx">
+      <p class="s-eyebrow">Discover Antseed ecosystem</p>
+      <h2 class="s-h2" id="ec-live-h">Live<br> <span>projects.</span></h2>
+      <p class="s-sub">A directory of applications, tools, and infrastructure built on or around Antseed.</p>
+    </header>
+    <div class="s-paths ec-grid">
+
+      <a class="s-path ec-card" href="https://diemantseed.com" target="_blank" rel="noopener noreferrer">
+        <div class="s-path-panel ec-panel ec-shot"><img src="/site/ecosystem/shots/diem.webp" width="1200" height="900" alt="The diemantseed.com site" loading="lazy" decoding="async"></div>
+        <div class="s-path-text">
+          <div class="s-path-copy"><p class="s-cap"><b>Diem Antseed.</b> A DIEM provider capacity program built around Antseed.</p></div>
+        </div>
+      </a>
+
+      <a class="s-path ec-card" href="https://antseedstats.com" target="_blank" rel="noopener noreferrer">
+        <div class="s-path-panel ec-panel ec-shot"><img src="/site/ecosystem/shots/stats.webp" width="1200" height="900" alt="The antseedstats.com site" loading="lazy" decoding="async"></div>
+        <div class="s-path-text">
+          <div class="s-path-copy"><p class="s-cap"><b>AntSeedStats.</b> The metrics and intelligence layer of the Antseed ecosystem.</p></div>
+        </div>
+      </a>
+
+      <a class="s-path ec-card" href="https://antscan.co/" target="_blank" rel="noopener noreferrer">
+        <div class="s-path-panel ec-panel ec-shot"><img src="/site/ecosystem/shots/antscan.webp" width="1200" height="900" alt="The antscan.co site" loading="lazy" decoding="async"></div>
+        <div class="s-path-text">
+          <div class="s-path-copy"><p class="s-cap"><b>Antscan.</b> An Antseed explorer for Base settlements, service offers, channels, and emissions.</p></div>
+        </div>
+      </a>
+
+      <a class="s-path ec-card" href="https://antseedpoints.com" target="_blank" rel="noopener noreferrer">
+        <div class="s-path-panel ec-panel ec-shot"><img src="/site/ecosystem/shots/points.webp" width="1200" height="900" alt="The antseedpoints.com site" loading="lazy" decoding="async"></div>
+        <div class="s-path-text">
+          <div class="s-path-copy"><p class="s-cap"><b>Antseed Points.</b> Earn points when you spend on AI through Antseed.</p></div>
+        </div>
+      </a>
+
+      <a class="s-path ec-card" href="https://antseedmarkets.com" target="_blank" rel="noopener noreferrer">
+        <div class="s-path-panel ec-panel ec-shot"><img src="/site/ecosystem/shots/markets.webp" width="1200" height="900" alt="The antseedmarkets.com site" loading="lazy" decoding="async"></div>
+        <div class="s-path-text">
+          <div class="s-path-copy"><p class="s-cap"><b>antseedmarkets.</b> Trade lANTS with 0 fees, built on OpenSea’s Seaport, Opensourced since day 1.</p></div>
+        </div>
+      </a>
+
+      <a class="s-path ec-card" href="https://lants.eth.limo" target="_blank" rel="noopener noreferrer">
+        <div class="s-path-panel ec-panel ec-shot"><img src="/site/ecosystem/shots/lants.webp" width="1200" height="900" alt="The lants.eth.limo site" loading="lazy" decoding="async"></div>
+        <div class="s-path-text">
+          <div class="s-path-copy"><p class="s-cap"><b>lANTS Market.</b> A board and USDC market for lANTS staking positions on Antseed.</p></div>
+        </div>
+      </a>
+
+      <a class="s-path ec-card" href="https://sippar.network/seedstore/" target="_blank" rel="noopener noreferrer">
+        <div class="s-path-panel ec-panel ec-shot"><img src="/site/ecosystem/shots/seedstore.webp" width="1200" height="900" alt="The SeedStore on sippar.network site" loading="lazy" decoding="async"></div>
+        <div class="s-path-text">
+          <div class="s-path-copy"><p class="s-cap"><b>SeedStore.</b> Live data for your agent, served as models on Antseed by Sippar.</p></div>
+        </div>
+      </a>
+
+      <a class="s-path ec-card" href="https://sippar.network/seedtunnel/" target="_blank" rel="noopener noreferrer">
+        <div class="s-path-panel ec-panel ec-shot"><img src="/site/ecosystem/shots/seedtunnel.webp" width="1200" height="900" alt="The SeedTunnel on sippar.network site" loading="lazy" decoding="async"></div>
+        <div class="s-path-text">
+          <div class="s-path-copy"><p class="s-cap"><b>SeedTunnel.</b> The easy way into Antseed for teams: top AI models and live data, in your own gateway or in the AI you already use.</p></div>
+        </div>
+      </a>
+
+      <!-- the ninth card (Elio, 17 Nov): a project of yours, in Antseed's own words (Ecosystem amplification), shared with the community -->
+      <a class="s-path ec-card ec-yours" href="https://t.me/antseed" target="_blank" rel="noopener noreferrer">
+        <div class="wash land s-path-panel ec-panel" style="--wash: url(/site/assets/home/vignettes/v05-day.webp); --wash-d: url(/site/assets/home/vignettes/v05-night.webp)" aria-hidden="true">
+          <div class="eg eg-win"><p class="eg-top"><b>Your project</b><span>Add it</span></p>
+            <p class="eg-pills"><span>App</span><span>Explorer</span><span>Provider</span><span>Agent</span><span>Router</span><span>Managed product</span></p></div>
+        </div>
+        <div class="s-path-text">
+          <div class="s-path-copy"><p class="s-cap"><b>Ecosystem amplification.</b> Building on Antseed? Share it with the community and we can add it to this directory.</p></div>
+        </div>
+      </a>
+
+    </div>
+    <div class="ec-notes">
+      <p class="ec-note"><b>Submission guidelines.</b> Projects should add value on top of Antseed infrastructure. Raw API-key resale and subscription credential sharing do not belong in the ecosystem.</p>
+      <p class="ec-note">* Ecosystem listings are for discovery only and do not represent endorsement, sponsorship, verification, or approval by Antseed. Review each project independently before using it.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Build, explore, connect (Elio, 17 Nov): structured as /network/'s "What lives where": the whole screen, the head centred, then three
+     cards, each the screenshot of where it leads, its name in ink and its line under it -->
+<section class="s-sec ec-build" aria-labelledby="ec-build-h">
+  <div class="s-rail s-center">
+    <header class="s-head s-center">
+      <p class="s-eyebrow">Build, explore, connect</p>
+      <h2 class="s-h2" id="ec-build-h">An AI-first market<br> <span>for builders.</span></h2>
+      <p class="s-sub">Antseed gives projects a local API surface, open provider marketplace, and onchain payments so teams can build products on top of independent AI supply.</p>
+    </header>
+    <div class="s-paths ec-grid ec-places">
+      <a class="s-path ec-card" href="https://antseedstats.com/network" target="_blank" rel="noopener noreferrer">
+        <div class="s-path-panel ec-panel ec-shot"><img src="/site/ecosystem/shots/explorer.webp" width="1200" height="900" alt="The AntSeedStats network page" loading="lazy" decoding="async"></div>
+        <div class="s-path-text">
+          <div class="s-path-copy"><p class="s-cap"><b>Network Explorer.</b> Watch live providers, market prices, usage, and routing activity across the Antseed network.</p></div>
+        </div>
+      </a>
+      <a class="s-path ec-card" href="https://antseed.com/docs/">
+        <div class="s-path-panel ec-panel ec-shot"><img src="/site/ecosystem/shots/docs.webp" width="1200" height="900" alt="The Antseed documentation" loading="lazy" decoding="async"></div>
+        <div class="s-path-text">
+          <div class="s-path-copy"><p class="s-cap"><b>Developer Docs.</b> Use Antseed as peer-to-peer AI infrastructure from apps, agents, routers, and existing tools.</p></div>
+        </div>
+      </a>
+      <a class="s-path ec-card" href="/providers/">
+        <div class="s-path-panel ec-panel ec-shot"><img src="/site/ecosystem/shots/providers.webp" width="1200" height="900" alt="The Antseed providers page" loading="lazy" decoding="async"></div>
+        <div class="s-path-text">
+          <div class="s-path-copy"><p class="s-cap"><b>Provider Hub.</b> Launch a differentiated AI service, managed product, agent, router, or inference provider.</p></div>
+        </div>
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- Ecosystem pillars: four ways to plug in, each a kit icon, a name and its line -->
+<section class="s-sec ec-pillars" aria-labelledby="ec-pil-h">
+  <div class="s-rail">
+    <header class="s-head s-padx">
+      <p class="s-eyebrow">Ecosystem pillars</p>
+      <h2 class="s-h2" id="ec-pil-h">Where builders<br> <span>can plug in.</span></h2>
+      <p class="s-sub">From dashboards to managed AI products, the network expands when each layer gets easier to discover and use.</p>
+    </header>
+    <div class="ec-row ec-row-4">
+      <div class="ec-tile"><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/laptop.svg)"></i><h3>Applications</h3><p>Products that turn Antseed providers into user-facing AI workflows.</p></div>
+      <div class="ec-tile"><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/blocks.svg)"></i><h3>Infrastructure</h3><p>Explorers, routers, gateways, dashboards, and services that make the network easier to use.</p></div>
+      <div class="ec-tile"><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/server.svg)"></i><h3>Providers</h3><p>Independent operators serving differentiated AI capabilities, agents, TEE services, or managed products.</p></div>
+      <div class="ec-tile"><i class="f-ic" style="--i:url(/site/assets/home/icons/pixel/plug.svg)"></i><h3>Integrations</h3><p>Tools and frameworks that connect existing developer workflows to the local Antseed endpoint.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- The close (the invitation to add a project is the ninth project card, its guidelines under the cards) -->
+<section class="s-sec ec-add" aria-labelledby="ec-close-h">
+  <div class="s-rail">
+    <header class="s-head s-center ec-close">
+      <h2 class="s-h2" id="ec-close-h">Build, learn, and grow<br> <span>with Antseed.</span></h2>
+      <p class="s-sub">Use the docs, connect your tools, or launch a provider to help expand the peer-to-peer AI network.</p>
+      <div class="s-actions"><a class="s-btn" href="https://antseed.com/docs/">Explore resources →</a><a class="s-btn ghost" href="/providers/">Become a provider</a></div>
+      <p class="ec-links"><a href="https://antseed.com/docs/">Docs</a><a href="https://antseed.com/integrations/">Integrations</a><a href="https://t.me/antseed" target="_blank" rel="noopener noreferrer">Telegram ↗</a></p>
+    </header>
+  </div>
+</section>
+
+
+
+
+<!-- Footer. Links go to the docs, to other sites or to this page. Blog and Terms will be our own pages: placeholders (data-placeholder="page"); Media kit opens the brand kit (/brand/, a work in progress, Elio 13 Nov) -->
+<div class="lp-slot lp-slot--band" data-part="cta-band"></div>
+<footer class="s-sec s-foot meadow">
+  <!-- the painting by day and by night, wide (21:9) so the footer with its text comes to about 16:9: the same meadow without the hill
+       between the ants and the river (Hermès, Magnific Nano Banana 2.1 at 1K, 12 Nov; the three pairs in 02_Brand/footer-wide-2026-11-12,
+       this one d1/n1). 1584 wide for now: a sharper copy once the upscale is agreed -->
+  <div class="scene" aria-hidden="true"><img class="day" src="/site/assets/home/footer/meadow-loop-day-poster.webp" width="1920" height="1080" alt="" loading="lazy" decoding="async"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" class="day" muted loop playsinline preload="none" data-src="/site/assets/home/footer/meadow-loop-day"></video><img class="night" src="/site/assets/home/footer/meadow-loop-night-poster.webp" width="1920" height="1080" alt="" loading="lazy" decoding="async"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" class="night" muted loop playsinline preload="none" data-src="/site/assets/home/footer/meadow-loop-night"></video><canvas class="flies"></canvas></div>
+  <div class="s-rail">
+    <div class="cols">
+      <a class="brand" href="/" aria-label="Antseed"><img class="ink" src="/site/assets/hero/logo.svg" width="95.3464" height="33" alt="Antseed"></a>
+      <div class="col"><p>Product</p><a href="/#desktop">Antseed Desktop</a><a href="/#gateway">Gateway</a><a href="/#prices">Models &amp; prices</a><a href="https://antseed.com/docs/">Docs</a></div>
+      <div class="col"><p>Network</p><a href="/network/">How it works</a><a href="/#providers">Providers</a><a href="/colony/">Colony</a><a href="/network/#token">$ANTS</a><a href="https://antseedstats.com">AntSeedStats&nbsp;↗</a></div>
+      <div class="col"><p>Resources</p><a href="https://antseed.com/blog/">Blog</a><a href="/brand/">Media kit</a><a href="/ants/">Token details</a><a href="https://github.com/antseed">GitHub&nbsp;↗</a></div>
+      <div class="col"><p>Legal</p><a href="https://antseed.com/terms-of-service/">Terms</a></div>
+    </div>
+    <div class="legal"><span>© 2026 Antseed Foundation</span><p class="made">Made with love by <a href="https://astraos.io">AstraOS</a></p><div class="social"><a href="https://x.com/antseed" target="_blank" rel="noopener noreferrer" aria-label="Antseed on X"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg></a><a href="https://github.com/Antseed/antseed" target="_blank" rel="noopener noreferrer" aria-label="Antseed on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a><a href="https://t.me/antseed" target="_blank" rel="noopener noreferrer" aria-label="Antseed on Telegram"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg></a></div>
+      <!-- the theme: System, Light or Dark (sections.js) -->
+      <div class="theme" role="group" aria-label="Theme">
+        <button type="button" data-mode="system" aria-label="System theme" aria-pressed="true"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="8.5" rx="1.5"/><path d="M5.5 13.75h5M8 11.25v2.5"/></svg></button>
+        <button type="button" data-mode="light" aria-label="Light theme" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></button>
+        <button type="button" data-mode="dark" aria-label="Dark theme" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z"/></svg></button>
+      </div>
+    </div>
+  </div>
+</footer>
+</div></div>
+<script type="module">
+import('/site/hero/parts.js');
+import('/site/hero/dither.js'); import('/site/hero/sections.js'); import('/site/hero/micro.js'); import('/site/hero/card-unveil.js'); import('/site/hero/wash-led.js');
+import('/site/hero/night-loop.js'); import('/site/hero/footer-eyes.js'); import('/site/hero/fireflies.js').then((m) => m.scan()); 
+</script>
+</body>
+</html>

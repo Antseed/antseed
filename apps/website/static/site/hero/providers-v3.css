@@ -1,0 +1,61 @@
+/* Providers: Amos's two diagrams on our two paintings (merge, 17 Nov): hero/parts/providers-overlays.html. Load after sections.css.
+   The overlay covers its painted panel; anything placed by --x/--y sits at that point of the painting (1600 × 1073, drawn cover, so the
+   panel's 3:2 shows it nearly whole). The glass is the scenes' (v6.css): light frosted by day, the terminal's smoked green at night. */
+.pvx { --ink: #0a1a12; --t: #30382c; --m: #5d6660; --o: #4f7a24; --lime: #b9ee2a; --lift: rgba(24, 44, 10, .55);
+  --glass: rgba(255, 255, 255, .62); --edge: #fff; --sh: 0 0 0 .5px rgba(10, 26, 18, .14), 0 12px 32px 0 rgba(20, 51, 89, .14);
+  position: absolute; inset: 0; z-index: 1; container-type: size; pointer-events: none;
+  font: 400 12px/16px Geist, system-ui, sans-serif; color: var(--ink); text-align: left; -webkit-font-smoothing: antialiased; }
+:root[data-theme="dark"] .pvx { --ink: #ecf3ee; --t: #cbd8d0; --m: #9fb1a6; --o: #98c463; --lime: #c8f53c; --lift: rgba(0, 0, 0, .6);
+  --glass: rgba(14, 33, 23, .62); --edge: rgba(150, 200, 145, .42); --sh: 0 12px 32px 0 rgba(8, 26, 14, .3), inset 0 .5px 0 0 rgba(190, 228, 170, .16); }
+.pvx :where(p, dl, dt, dd) { margin: 0; }
+.pvx-glass { border: .5px solid var(--edge); background: var(--glass); box-shadow: var(--sh);
+  backdrop-filter: blur(14px) saturate(1.3); -webkit-backdrop-filter: blur(14px) saturate(1.3); }
+/* a point of the painting, the panel being the painting's 1600 × 1073 shown cover (its 3:2 within a pixel of it) */
+.pvx [style*="--x"] { position: absolute; left: calc(var(--x) / 1600 * 100%); top: calc(var(--y) / 1073 * 100%); translate: -50% -50%; }
+.pvx-links { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.pvx-line { fill: none; stroke: var(--lime); stroke-width: 4; stroke-linecap: round; stroke-dasharray: 2 14; filter: drop-shadow(0 1.5px 1px var(--lift)); }
+.pvx-buyer { translate: 0 -50% !important; }
+.pvx-chip { padding: 4px 9px; border-radius: 999px; font-size: 11px; line-height: 14px; font-weight: 500; white-space: nowrap; }
+
+/* own provider: the listing in the wood right of the stall, rows of name over value; under them the request's three steps */
+.pvx-card { position: absolute; left: 72.5%; top: 22%; width: 25%; display: flex; flex-direction: column; gap: 8px; padding: 10px 11px; border-radius: 8px; }
+.pvx-card-h { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 15px; font-weight: 500; }
+.pvx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--o); box-shadow: 0 0 0 3px color-mix(in srgb, var(--o) 22%, transparent); }
+.pvx-card dl { display: flex; flex-direction: column; }
+.pvx-card dl > div { display: flex; flex-direction: column; padding: 5px 0; border-top: .5px solid color-mix(in srgb, var(--ink) 12%, transparent); }
+.pvx-card dt { font-size: 10.5px; line-height: 13px; color: var(--m); }
+.pvx-card dd { font-size: 12px; line-height: 15px; font-weight: 500; color: var(--o); }
+.pvx-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 5px; padding-top: 6px; border-top: .5px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  font: 400 10px/13px "Geist Mono", monospace; color: var(--t); }
+.pvx-flow i { font-style: normal; color: var(--m); }
+
+/* colony: the name over the meadow's sky; each Mac named under it */
+.pvx-label { position: absolute; left: 50%; top: 9%; translate: -50% 0; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 9px 16px; border-radius: 8px; white-space: nowrap; }
+.pvx-label-h { font-size: 14px; line-height: 18px; font-weight: 500; }
+.pvx-label-s { font: 400 10.5px/14px "Geist Mono", monospace; color: var(--t); }
+.pvx-mac { font-size: 10.5px; padding: 3px 8px; }
+
+/* the play, while the panel is on screen (micro.js .mi-on on the path's panel): the dashes run along the links, the request's steps light in turn */
+@media (prefers-reduced-motion: no-preference) {
+  .pvx-line { animation: pvx-run 1.6s linear infinite; }
+  .pvx-flow span { animation: pvx-step 3.6s infinite; }
+  .pvx-flow span:nth-of-type(2) { animation-delay: 1.2s; }
+  .pvx-flow span:nth-of-type(3) { animation-delay: 2.4s; }
+}
+@keyframes pvx-run { to { stroke-dashoffset: -32; } }
+@keyframes pvx-step { 0%, 33% { color: var(--o); } 34%, 100% { color: var(--t); } }
+
+/* a narrower panel: the listing larger in proportion, over the right trees; the Macs' names give way below a phone's width */
+@container (max-width: 520px) {
+  .pvx-card { left: auto; right: 2%; top: 4%; width: 37%; gap: 4px; padding: 7px 8px; border-radius: 6px; }
+  .pvx-card-h { font-size: 11px; line-height: 14px; }
+  .pvx-card dl > div { padding: 2px 0; }
+  .pvx-card dt { font-size: 9.5px; line-height: 11px; }
+  .pvx-card dd { font-size: 10.5px; line-height: 13px; }
+  .pvx-flow { padding-top: 4px; font-size: 9px; line-height: 11px; }
+  .pvx-chip { font-size: 10px; padding: 3px 7px; }
+  .pvx-label { top: 6%; padding: 7px 12px; }
+  .pvx-label-h { font-size: 13px; line-height: 16px; }
+  .pvx-label-s { font-size: 9.5px; line-height: 12px; }
+}
+@container (max-width: 400px) { .pvx-mac { display: none; } }

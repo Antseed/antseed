@@ -1,0 +1,70 @@
+{
+  "source": "https://antseedstats.com, its API (https://antseedstats.com/developers): /models, /models/images, /models/video, /models/speech, /prices; the network figures from its home page",
+  "read": "2026-11-12",
+  "rule": "Each medium's most used models, one per family, a few per maker, dealt maker by maker; only makers whose mark we have. price: text, lowest paid input price among healthy listings ($/M tokens); image $/image; video $/s; voice $/M characters. save: that text listing's saving on the lab's list price. Refresh: node texture-lab/models-refresh.mjs",
+  "media": {
+    "text": [
+      {"name":"GPT-6 Astra","logo":"labs/openai.svg","providers":36,"price":0.09,"save":99},
+      {"name":"Kimi K3","logo":"labs/moonshot.svg","providers":35,"price":0.002,"save":99},
+      {"name":"Claude Opus 5.5","logo":"labs-color/anthropic.svg","providers":27,"price":0.094,"save":98},
+      {"name":"GLM 5.3","logo":"labs/zai.svg","providers":36,"price":0.002,"save":99},
+      {"name":"Gemini 4 Argon","logo":"labs-color/google.svg","providers":13,"price":0.113,"save":94},
+      {"name":"MiniMax M2.7 Highspeed","logo":"labs-color/minimax.svg","providers":7,"price":0.2,"save":5},
+      {"name":"DeepSeek V4.1 Flash","logo":"labs-color/deepseek.svg","providers":30,"price":0.0031,"save":86},
+      {"name":"Grok 4.3","logo":"labs/xai.svg","providers":17,"price":0.105,"save":92},
+      {"name":"Qwen 3.5 397B","logo":"labs-color/qwen.svg","providers":21,"price":0.375,"save":38},
+      {"name":"GPT-6.1 Sol","logo":"labs/openai.svg","providers":29,"price":0.04,"save":98},
+      {"name":"Kimi K2.7 Code","logo":"labs/moonshot.svg","providers":17,"price":0.0629,"save":90},
+      {"name":"Claude Sonnet 5","logo":"labs-color/anthropic.svg","providers":29,"price":0.0367,"save":98},
+      {"name":"GLM 4.5 Air","logo":"labs/zai.svg","providers":7,"price":0.0142,"save":93},
+      {"name":"Gemini 2.5 Flash","logo":"labs-color/google.svg","providers":14,"price":0.0286,"save":90},
+      {"name":"DeepSeek Chat","logo":"labs-color/deepseek.svg","providers":12,"price":0.028,"save":91},
+      {"name":"Grok 4.20 Multi-Agent","logo":"labs/xai.svg","providers":5,"price":0.781,"save":38},
+      {"name":"Qwen 3 Coder 480B Turbo","logo":"labs-color/qwen.svg","providers":16,"price":0.175,"save":42},
+      {"name":"GPT-5.5","logo":"labs/openai.svg","providers":37,"price":0.0515,"save":99},
+      {"name":"Claude Fable 5.1","logo":"labs-color/anthropic.svg","providers":24,"price":0.15,"save":99},
+      {"name":"Gemini 4 Carbon","logo":"labs-color/google.svg","providers":4,"price":0.2,"save":90},
+      {"name":"DeepSeek V4 Flash Vision Exp","logo":"labs-color/deepseek.svg","providers":2,"price":0.03,"save":93},
+      {"name":"Grok Build 0.1","logo":"labs/xai.svg","providers":10,"price":0.622,"save":38},
+      {"name":"Qwen 3 VL 30B A3B Instruct","logo":"labs-color/qwen.svg","providers":4,"price":0.14,"save":7}
+    ],
+    "image": [
+      {"name":"GPT Image 2","logo":"labs/openai.svg","providers":8,"price":0.003},
+      {"name":"Nano Banana Pro","logo":"labs-color/google.svg","providers":5,"price":0.0272},
+      {"name":"Seedream V5 Pro","logo":"labs-color/bytedance.svg","providers":1,"price":0.135},
+      {"name":"Flux 2 Pro","logo":"labs/bfl.svg","providers":5,"price":0.015},
+      {"name":"Qwen Image","logo":"labs-color/qwen.svg","providers":4,"price":0.015},
+      {"name":"Recraft V4","logo":"labs/recraft.svg","providers":4,"price":0.025},
+      {"name":"Grok Imagine","logo":"labs/xai.svg","providers":4,"price":0.015},
+      {"name":"Z-Image Turbo","logo":"labs-color/alibaba.svg","providers":4,"price":0.0043},
+      {"name":"Ideogram V4.5","logo":"labs/ideogram.svg","providers":2,"price":0.127},
+      {"name":"Venice SD35","logo":"labs-color/stability.svg","providers":5,"price":0.0043},
+      {"name":"MiniMax H3 Image","logo":"labs-color/minimax.svg","providers":1,"price":0.02},
+      {"name":"GPT Image 2.5 Flare","logo":"labs/openai.svg","providers":6,"price":0.0055},
+      {"name":"Gemini 3.1 Flash Image","logo":"labs-color/google.svg","providers":1,"price":0.012},
+      {"name":"Wan 2.7 Pro","logo":"labs-color/alibaba.svg","providers":3,"price":0.0469}
+    ],
+    "video": [
+      {"name":"Seedance 2.5","logo":"labs-color/bytedance.svg","providers":4,"price":0.547},
+      {"name":"Kling V3 Pro","logo":"labs-color/kling.svg","providers":5,"price":0.0678},
+      {"name":"LTX Video 2.5 Pro","logo":"labs/lightricks.svg","providers":2,"price":0.0726},
+      {"name":"Wan 3.0 Prime","logo":"labs-color/alibaba.svg","providers":3,"price":0.091},
+      {"name":"HappyHorse 1.1","logo":"labs/happyhorse.svg","providers":2,"price":0.077},
+      {"name":"Grok Imagine Video V1.5","logo":"labs/xai.svg","providers":3,"price":0.069},
+      {"name":"Veo 3.1 Fast","logo":"labs-color/google.svg","providers":4,"price":0.0605},
+      {"name":"MiniMax H3","logo":"labs-color/minimax.svg","providers":6,"price":0.011},
+      {"name":"Runway Gen-4.5","logo":"labs/runway.svg","providers":2,"price":0.081},
+      {"name":"Flux 3","logo":"labs/bfl.svg","providers":4,"price":0.0933},
+      {"name":"Kling Video AI Avatar V2 Pro","logo":"labs-color/kling.svg","providers":1,"price":0.115},
+      {"name":"Gemini Omni Flash 1.1","logo":"labs-color/google.svg","providers":6,"price":0.0583}
+    ],
+    "voice": [
+      {"name":"Gemini 3.1 Flash TTS","logo":"labs-color/google.svg","providers":2,"price":93.8},
+      {"name":"ElevenLabs Turbo v2.5","logo":"labs/elevenlabs.svg","providers":2,"price":31.3},
+      {"name":"xAI TTS v1","logo":"labs/xai.svg","providers":2,"price":9.38},
+      {"name":"Qwen 3 TTS 0.6B","logo":"labs-color/qwen.svg","providers":2,"price":43.8},
+      {"name":"MiniMax Speech-02 HD","logo":"labs-color/minimax.svg","providers":2,"price":62.5}
+    ]
+  },
+  "network": {"users":20280,"tokens":767620000000}
+}

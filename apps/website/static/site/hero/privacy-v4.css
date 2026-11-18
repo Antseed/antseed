@@ -1,0 +1,113 @@
+/* Privacy and trust: Amos's four screens (his hero/revision.js, 16 Nov), every word of them and in his order (an eyebrow, a title, his
+   picture, its result, a line, a link; no eyebrow, as the site's other windows), redrawn as ours (Elio, 17 Nov): one window of the scenes' smoked green glass (v6.css: the same
+   tint, frost, hairline and shadow, by day and at night) over the panel's painting, centred and only as wide as it reads well, so the
+   painting shows round it; inside, the page's type and the network's greens. The panel and its place are sections.css's. */
+.pv4 { display: grid; justify-items: center; width: 100%; }
+.pv4 :where(p, h3, dl, dt, dd, figure, figcaption) { margin: 0; }
+.pv4-win { --pv-glass: rgba(14, 33, 23, .46); --pv-frost: saturate(1.7) brightness(.66);   /* the scenes' glass, a touch deeper: here it carries body text */
+  display: flex; flex-direction: column; gap: 16px; width: min(100%, 540px); padding: 32px; border-radius: 8px; text-align: left;
+  border: .5px solid rgba(150, 200, 145, .42); background: var(--pv-glass); color: #f2f4ef;
+  backdrop-filter: blur(10px) var(--pv-frost); -webkit-backdrop-filter: blur(10px) var(--pv-frost);
+  box-shadow: 0 12px 32px rgba(8, 26, 14, .22), inset 0 .5px 0 rgba(190, 228, 170, .16);
+  font: 400 14px/22px Geist, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+.pv4-win { --g: #9ba49e; }   /* the kit's icons (.f-ic) in the grey the site gives them on a dark ground */
+.pv4-ck { display: inline-block; vertical-align: top; margin: -2px 4px -2px -4px; background: currentColor; }   /* the kit's check, in its line's colour */
+:root[data-theme="dark"] .pv4-win { --pv-glass: rgba(14, 33, 23, .4); --pv-frost: saturate(1.5) brightness(.9); }
+.pv4-h { margin-bottom: 8px; font: 400 28px/32px "Geist Pixel Var", Geist, sans-serif; font-variation-settings: "ELSH" 20; letter-spacing: -1px; color: #f2f4ef; }   /* the cards' titles (.s-path-h), its dots squarer at this size so the light lines keep their ink */
+.pv4-result { margin-top: 4px; font: 500 14px/22px Geist, sans-serif; color: #d4f75c; }
+.pv4-result + .pv4-p { margin-top: -8px; }
+.pv4-p { color: #eef3ef; text-wrap: pretty; }
+.pv4-link { align-self: flex-start; font: 500 14px/22px Geist, sans-serif; color: #dcf39c; text-decoration: none; }
+.pv4-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.pv4-link:focus-visible { outline: 2px solid var(--acid); outline-offset: 2px; border-radius: 2px; }
+
+/* 1 · the route: your device and your provider in the site's pixel icons (pixelarticons' laptop and server, as the kit), the dotted thread between them, a green dot running it
+   from one to the other, again and again (still, in the thread's middle, for reduced motion) */
+.pv4-route { display: flex; align-items: flex-start; gap: 16px; padding: 4px 0; }
+.pv4-route figure { flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 88px; }
+.pv4-route figcaption { font-size: 13px; line-height: 20px; color: #e6ece8; }
+.pv4-thread { position: relative; flex: 1; height: 24px; margin: 0 4px; }   /* one row as tall as the icons: the line, its head and the dot share its axis (y 11 to 13) */
+.pv4-thread::before { content: ""; position: absolute; left: 0; right: 16px; top: 11px; height: 2px;   /* the dotted line in the kit's pixels, 2px squares */
+  background: linear-gradient(90deg, #c8f53c 2px, transparent 2px) 0 0 / 6px 2px repeat-x; }
+.pv4-thread::after { content: ""; position: absolute; right: 0; top: 0; width: 24px; height: 24px; background: #c8f53c;   /* the kit's chevron: its tip is the line's row */
+  -webkit-mask: url(/site/assets/home/icons/pixel/chevron-right.svg) 0 0 / 24px 24px no-repeat; mask: url(/site/assets/home/icons/pixel/chevron-right.svg) 0 0 / 24px 24px no-repeat; }
+.pv4-thread b { position: absolute; left: 0; top: 8px; width: 8px; height: 8px; border-radius: 50%; background: #c8f53c;
+  box-shadow: 0 0 8px rgba(200, 245, 60, .8); animation: pv4-run 2.4s cubic-bezier(.45, 0, .55, 1) infinite; }
+@keyframes pv4-run { 0% { left: 0; opacity: 0; } 12% { opacity: 1; } 80% { opacity: 1; } 92%, 100% { left: calc(100% - 24px); opacity: 0; } }
+.s-pv-panel:not(.on) .pv4-thread b { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) { .pv4-thread b { animation: none; left: calc(50% - 4px); } }
+
+/* 2 · the two answer patterns side by side, each in its own box, bar for bar the same (Amos's heights: every third tall and lit,
+   every fourth short, every fifth mid) */
+.pv4-fp { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pv4-fp > div { display: grid; gap: 10px; padding: 14px 16px 16px; border: .5px solid rgba(205, 216, 209, .4); border-radius: 6px; }
+.pv4-fp p { font-size: 13px; line-height: 20px; color: #e6ece8; }
+.pv4-bars { display: flex; align-items: center; justify-content: space-between; height: 38px; }
+.pv4-bars i { width: 7px; height: 20px; border-radius: 5px; background: #98c463; transform-origin: 50% 50%; }
+.pv4-bars i:nth-child(3n) { height: 36px; background: #c8f53c; }
+.pv4-bars i:nth-child(4n) { height: 12px; }
+.pv4-bars i:nth-child(5n) { height: 28px; }
+
+/* 3 · the provider's server, in the dotted line of the site's rules; the enclave lit inside it; the operator outside it */
+.pv4-server { display: grid; gap: 12px; padding: 16px; border: 1px dotted rgba(205, 216, 209, .55); border-radius: 6px;
+  font-size: 12px; line-height: 18px; color: #e6ece8; }
+.pv4-enclave { display: grid; gap: 6px; padding: 12px 14px; border: .5px solid rgba(200, 245, 60, .6); border-radius: 5px; background: rgba(14, 33, 23, .3); color: #f2f4ef; }   /* a dark tint and a hairline: the light green lifted the ground under its small print */
+.pv4-enclave-h { font-weight: 500; color: #dcf39c; }
+.pv4-enclave-flow { font-size: 14px; line-height: 22px; }
+.pv4-enclave-s, .pv4-operator { font-size: 12px; line-height: 16px; color: #e6ece8; }
+
+/* 4 · the ledger: what backs the provider, row by row, on the site's dotted rule */
+.pv4-ledger { display: grid; font-size: 13px; line-height: 20px; }
+.pv4-ledger > div { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0;
+  background: radial-gradient(circle at 1px 1px, rgba(205, 216, 209, .5) .85px, #0000 1.25px) 0 100% / 6px 2px repeat-x; }
+.pv4-ledger > div:first-child { padding-top: 0; }
+.pv4-ledger dt { color: #f2f4ef; }
+.pv4-ledger dd { color: #dcf39c; text-align: right; }
+
+/* the play, each time the point is chosen (micro.js: .mi-in on the panel): the bars grow, the enclave lights,
+   the rows land, the result comes */
+.mi .wash .pv4-bars i { transition: scale .5s cubic-bezier(.2, .7, .2, 1), opacity .5s; transition-delay: calc(.2s + var(--n, 0) * 60ms); }
+.mi .wash .pv4-fp > div + div .pv4-bars i { transition-delay: calc(.8s + var(--n, 0) * 60ms); }
+.mi .wash:not(.mi-in) .pv4-bars i { scale: 1 .15; opacity: .2; }
+.pv4-bars i:nth-child(2) { --n: 1; } .pv4-bars i:nth-child(3) { --n: 2; } .pv4-bars i:nth-child(4) { --n: 3; } .pv4-bars i:nth-child(5) { --n: 4; } .pv4-bars i:nth-child(6) { --n: 5; }
+.pv4-bars i:nth-child(7) { --n: 6; } .pv4-bars i:nth-child(8) { --n: 7; } .pv4-bars i:nth-child(9) { --n: 8; } .pv4-bars i:nth-child(10) { --n: 9; } .pv4-bars i:nth-child(11) { --n: 10; } .pv4-bars i:nth-child(12) { --n: 11; }
+.mi .wash .pv4-enclave { transition: border-color .6s .4s, background-color .6s .4s; }
+.mi .wash:not(.mi-in) .pv4-enclave { border-color: rgba(200, 245, 60, .15); background-color: transparent; }
+.mi .wash .pv4-ledger > div { transition: opacity .35s, translate .45s cubic-bezier(.2, .7, .2, 1); transition-delay: calc(var(--n, 0) * .12s); }
+.pv4-ledger > div:nth-child(2) { --n: 1; } .pv4-ledger > div:nth-child(3) { --n: 2; } .pv4-ledger > div:nth-child(4) { --n: 3; }
+.mi .wash:not(.mi-in) .pv4-ledger > div { opacity: 0; translate: 0 4px; }
+.mi .wash .pv4-result { transition: opacity .4s .9s; }
+.mi .wash:not(.mi-in) .pv4-result { opacity: 0; }
+
+/* held (sections.js puts .pv-pin on the section, 900 wide and up), the whole section is one screen (Elio, 17 Nov): the head, then the
+   points beside a taller panel, the block centred in the screen; the ant stands up beside the head instead of claiming room above */
+@media (min-width: 900px) {
+  .s-priv.pv-pin .s-pv-pin { justify-content: center; padding-block: clamp(24px, 4vh, 48px); }
+  .s-priv.pv-pin .s-pv-top > .s-rail { padding-top: 0; }
+  .s-priv.pv-pin .s-pv-pin > .s-rail { min-height: 0; padding-block: 0; }
+  .s-priv.pv-pin .s-pv { margin-top: clamp(32px, 5vh, 56px); padding-top: 0; }
+  .s-pv-panel { height: clamp(420px, 100vh - 280px, 580px); }
+}
+
+@media (max-width: 1199px) {
+  .pv4-win { width: min(100%, 480px); padding: 28px; }
+}
+@media (max-width: 760px) {
+  .pv4-win { width: 100%; gap: 14px; padding: 22px 18px; font-size: 13px; line-height: 20px; }
+  .pv4-h { margin-bottom: 4px; font-size: 24px; line-height: 28px; }
+  .pv4-route { gap: 8px; }
+  .pv4-route figure { min-width: 0; }
+  .pv4-route figcaption { font-size: 12px; line-height: 18px; white-space: nowrap; }
+  .pv4-thread { min-width: 40px; margin: 0; }
+  .pv4-fp { gap: 8px; }
+  .pv4-fp > div { padding: 12px 10px 14px; }
+  .pv4-fp p { font-size: 12px; line-height: 18px; }
+  .pv4-bars { height: 30px; }
+  .pv4-bars i { width: 5px; }
+  .pv4-bars i:nth-child(3n) { height: 28px; } .pv4-bars i:nth-child(4n) { height: 10px; } .pv4-bars i:nth-child(5n) { height: 22px; } .pv4-bars i { height: 16px; }
+  .pv4-server { padding: 12px 12px 14px; }
+  .pv4-enclave { padding: 10px 12px; }
+  .pv4-ledger > div { flex-direction: column; gap: 2px; }
+  .pv4-ledger dd { text-align: left; }
+}
+@media (prefers-reduced-motion: reduce) { .mi .wash :is(.pv4-bars i, .pv4-enclave, .pv4-ledger > div, .pv4-result) { transition: none; } }

@@ -1,0 +1,87 @@
+<!-- The Gateway's console (merge of Amos's site into ours, 17 Nov). Web pastes this inside .s-gw-panel in place of (or after) the
+     router diagram (.gw); styles hero/gw-console.css, motion hero/gw-console.js (import it with the other modules).
+     Five screens, each what Amos's film (assets/home/gateway-demo) shows at that chapter, in our glass over the gateway painting.
+     The chapters advance on their own while the panel is on screen; a click picks one.
+     Antseed's video: put a <video muted playsinline loop src=… poster=…> in .gwc-video and give each chapter a data-t (seconds);
+     the console then plays the film in its window and the chapters seek it, as Amos's did. Empty, the HTML screens show. -->
+<div class="gwc" data-gwc>
+  <div class="gwc-win">
+    <p class="gwc-bar"><b>Antseed Gateway</b><span>localhost:8393/v1</span></p>
+    <div class="gwc-tabs" role="tablist" aria-label="Gateway console">
+      <button type="button" role="tab" id="gwc-t1" aria-controls="gwc-p1" aria-selected="true" data-t="0">Ask</button>
+      <button type="button" role="tab" id="gwc-t2" aria-controls="gwc-p2" aria-selected="false" tabindex="-1" data-t="14.2">Models</button>
+      <button type="button" role="tab" id="gwc-t3" aria-controls="gwc-p3" aria-selected="false" tabindex="-1" data-t="17.7">Providers</button>
+      <button type="button" role="tab" id="gwc-t4" aria-controls="gwc-p4" aria-selected="false" tabindex="-1" data-t="22">Keys &amp; budgets</button>
+      <button type="button" role="tab" id="gwc-t5" aria-controls="gwc-p5" aria-selected="false" tabindex="-1" data-t="31.4">Usage</button>
+    </div>
+    <div class="gwc-screens">
+      <div class="gwc-video"></div>
+
+      <!-- Ask: one model, routed on its own to a seller; the question, the answer, who served it -->
+      <section class="gwc-p on" role="tabpanel" id="gwc-p1" aria-labelledby="gwc-t1">
+        <p class="gwc-pick"><b>DeepSeek V4 Flash</b><span class="gwc-tag free">Free</span><span class="gwc-m">Auto · Open Forge</span></p>
+        <p class="gwc-q">Explain peer-to-peer networks in one sentence.</p>
+        <p class="gwc-a">Peer-to-peer (P2P) networks are decentralized systems where every participant (“peer”) acts as both a client and a server, sharing resources like files or computing power directly with one another instead of relying on a central authority or server.</p>
+        <p class="gwc-by"><span class="gwc-ok">✓</span><b>Open Forge</b><span class="gwc-m">· trust 93 ·</span><span class="gwc-tag free">Free</span><u>Pin</u><u>Try another seller</u></p>
+      </section>
+
+      <!-- Models: every model and router on the network, its providers and its price range -->
+      <section class="gwc-p" role="tabpanel" id="gwc-p2" aria-labelledby="gwc-t2" hidden>
+        <p class="gwc-h"><b>Models</b><span>Every model and router on the network.</span></p>
+        <table class="gwc-t">
+          <thead><tr><th>Model</th><th>Providers</th><th>Input $/M</th><th>Output $/M</th></tr></thead>
+          <tbody>
+            <tr><td><b>GPT 6.1 Sol</b><span class="gwc-tags"><span class="gwc-tag tee">Full TEE</span></span></td><td>32</td><td>$0.019–$2.50</td><td>$0.057–$12.50</td></tr>
+            <tr><td><b>Kimi K3</b><span class="gwc-tags"><span class="gwc-tag tee">Full TEE</span></span></td><td>29</td><td>$0.014–$4.69</td><td>$0.103–$38.89</td></tr>
+            <tr><td><b>DeepSeek V4 1 Flash</b><span class="gwc-tags"><span class="gwc-tag free">Free</span><span class="gwc-tag tee">Partial TEE</span></span></td><td>27</td><td>$0–$0.375</td><td>$0–$1.50</td></tr>
+            <tr><td><b>GLM 5.3 Flash</b><span class="gwc-tags"><span class="gwc-tag free">Free</span><span class="gwc-tag tee">Full TEE</span></span></td><td>26</td><td>$0–$0.219</td><td>$0–$0.729</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Providers: who sells, verified how, at what price, with what trust; filters for domain or GitHub, TEE, free -->
+      <section class="gwc-p" role="tabpanel" id="gwc-p3" aria-labelledby="gwc-t3" hidden>
+        <p class="gwc-filters"><span><i class="gwc-sw on"></i>Domain or GitHub</span><span><i class="gwc-sw"></i>TEE</span><span><i class="gwc-sw"></i>Free</span></p>
+        <table class="gwc-t">
+          <thead><tr><th>Provider</th><th class="gwc-wide">Domain / GitHub</th><th>Input $/M</th><th>Output $/M</th><th>Trust</th></tr></thead>
+          <tbody>
+            <tr><td><b>GesundAI</b></td><td class="gwc-wide">—</td><td>$0.08–$5.00</td><td>$0.15–$25.00</td><td>98</td></tr>
+            <tr><td><b>Open Forge</b><span class="gwc-tags"><span class="gwc-tag free">Free</span></span></td><td class="gwc-wide">—</td><td>$0–$2.85</td><td>$0–$14.25</td><td>93</td></tr>
+            <tr><td><b>Phala</b><span class="gwc-tags"><span class="gwc-tag tee">Full TEE</span></span></td><td class="gwc-wide">phala.com</td><td>$0–$3.00</td><td>$0–$15.00</td><td>89</td></tr>
+            <tr><td><b>Super Seeder</b><span class="gwc-tags"><span class="gwc-tag free">Free</span></span></td><td class="gwc-wide">super-seeder.com</td><td>$0–$18.94</td><td>$0–$94.70</td><td>89</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Keys & budgets: a key per agent or app, each spending from the workspace's wallet, under the buyer's own limits -->
+      <section class="gwc-p" role="tabpanel" id="gwc-p4" aria-labelledby="gwc-t4" hidden>
+        <p class="gwc-h"><b>API keys</b><span>Each key spends from this workspace’s wallet.</span></p>
+        <table class="gwc-t">
+          <thead><tr><th>Name</th><th>Owner</th><th>This month</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td><b>Web chat</b><span class="gwc-id">antseed_Gi6M…zs7o</span></td><td>You</td><td>$0.00</td><td><span class="gwc-tag on">Active</span></td></tr>
+            <tr><td><b>Research agent</b><span class="gwc-id">antseed_BBk…etXs</span></td><td>You</td><td>$0.00</td><td><span class="gwc-tag on">Active</span></td></tr>
+          </tbody>
+        </table>
+        <div class="gwc-rules">
+          <p><b>Buyer config</b></p>
+          <p>Only sellers with trust 55 or more.</p>
+          <p>Pays at most $5.00/M input, $30.00/M output.</p>
+        </div>
+      </section>
+
+      <!-- Usage: spend and token usage over time -->
+      <section class="gwc-p" role="tabpanel" id="gwc-p5" aria-labelledby="gwc-t5" hidden>
+        <p class="gwc-h"><b>Activity</b><span>Spend and token usage over time · 30 days</span></p>
+        <dl class="gwc-tiles">
+          <div><dt>Spend</dt><dd>$0.00</dd></div>
+          <div><dt>Requests</dt><dd>9</dd><dd class="gwc-m">1 failed</dd></div>
+          <div><dt>Input tokens</dt><dd>3,199</dd><dd class="gwc-m">512 cached</dd></div>
+          <div><dt>Output tokens</dt><dd>221</dd></div>
+        </dl>
+        <p class="gwc-m gwc-cap">Requests per day</p>
+        <div class="gwc-chart" aria-hidden="true"><i style="--v:.2"></i><i style="--v:.35"></i><i style="--v:.15"></i><i style="--v:.5"></i><i style="--v:.3"></i><i style="--v:.65"></i><i style="--v:.4"></i><i style="--v:.8"></i><i style="--v:.55"></i><i style="--v:1"></i><i style="--v:.7"></i><i style="--v:.45"></i></div>
+      </section>
+    </div>
+  </div>
+</div>

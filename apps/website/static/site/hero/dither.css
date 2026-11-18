@@ -1,0 +1,8 @@
+/* The homepage's dither (dither.js): points at the edges of the film's clouds. The canvas holds one pixel per cell, scaled up crisp */
+/* each cell a small round dot: the mask's tile is one cell (--c, HERO_CELL in dither.js) */
+.dz-hero { --c: 2px; --r: .86px; --f: .14px; image-rendering: pixelated; pointer-events: none;
+  -webkit-mask: radial-gradient(circle, #000 var(--r), transparent calc(var(--r) + var(--f))) 0 0 / var(--c) var(--c);
+  mask: radial-gradient(circle, #000 var(--r), transparent calc(var(--r) + var(--f))) 0 0 / var(--c) var(--c); }
+/* in the film's .paint, so the opening's scroll scales and clips it with the meadow; under the night, which tints it with the film */
+.hero canvas.dz-hero { inset: 0 auto auto 0; animation: dz-in .6s ease-out both; }
+@keyframes dz-in { from { opacity: 0; } }

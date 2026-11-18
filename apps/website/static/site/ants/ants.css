@@ -1,0 +1,76 @@
+/* /ants/ (launch, 18 Nov): only what the page adds to the homepage's sheets. Its base as /network/'s (network.css). */
+:root { --page: #fff; --ink: #090b0c; --nav-grey: #737373; --cmd: #0a1a12; --acid: #c8f53c; }
+:root[data-theme="dark"] { --page: #0f1312; --ink: #eceee9; --nav-grey: #9ba49e; --cmd: #eceee9; }
+html, body { margin: 0; background: var(--page); color: var(--ink); font-family: Geist, system-ui, sans-serif; }
+img { display: block; }
+nav, nav * { box-sizing: border-box; }
+nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it (Elio, 17 Nov); its glass is shell.css's */
+nav > a { display: block; }
+.s-page { margin: 0; }
+
+/* The first screen (Elio, 17 Nov): the top across the whole width, no margins, so tall that the figures under it still show above the
+   fold. Its text sits on the figures' left edge (the rail's, plus the figures' own padding, --in); the painting fills the other half. */
+.ap-hero { --in: 40px; --figs: 128px; container-type: inline-size; display: grid; grid-template-columns: 1fr 1fr;
+  height: clamp(520px, calc(100svh - 69px - var(--figs)), 820px); background: var(--rail-bg, var(--page)); }
+/* the design system's head: eyebrow, title and subtitle 16px apart (20 under the title), 36 to the button */
+.ap-text { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 36px;
+  --rail-w: round(down, min(1312px, 100cqw - 2 * clamp(16px, 6.4vw, 96px)), 16px);   /* the rail's width (sections.css), on the page's */
+  padding: 56px 40px 56px calc((100cqw - var(--rail-w)) / 2 + var(--in)); }
+.ap-head { display: flex; flex-direction: column; gap: 16px; }
+.ap-head > * { margin: 0; }
+.ap-head .s-sub { margin-top: 4px; max-width: 460px; text-wrap: balance; }
+.ap-head .s-h2, .ap-head .s-h2 span { text-wrap: balance; }
+.ap-head .s-h2 span { display: block; }   /* its own block, so the grey line balances on its own */
+/* the token's painting filling its half: no frame, no corners; the coin and the ant sized on its height, so they hold at any width */
+.ap-paint { aspect-ratio: auto; height: 100%; border-radius: 0; }
+.ap-paint .s-tk-coin { width: auto; height: 46%; top: 6%; }
+
+/* the figures, smaller, so they sit on the first screen */
+.ap .s-ants.figs > div { padding: 28px 40px 32px; gap: 8px; }
+.ap .s-ants.figs b { font-size: 32px; line-height: 36px; }
+
+@media (max-width: 1023px) { .ap-hero { --in: 24px; } .ap .s-ants.figs > div { padding: 24px 24px 28px; } }
+/* below 900 the halves stack (the design system's duo): the text, then the painting square, the width of the screen */
+@media (max-width: 899px) {
+  .ap-hero { grid-template-columns: 1fr; height: auto; }
+  .ap-text { --edge: calc((100cqw - var(--rail-w)) / 2 + var(--in)); padding: 56px var(--edge) 48px; gap: 28px; }   /* the same edge each side */
+  .ap-paint { height: auto; aspect-ratio: 1; }
+}
+@media (max-width: 760px) {
+  .ap-hero { --in: 20px; }
+  .ap-text { padding-block: 48px 40px; }
+  .ap-text .s-actions { align-self: stretch; }
+  .ap-text .s-actions .s-btn { flex: 1 1 auto; }
+  .ap .s-ants.figs > div { padding: 24px 20px 28px; }
+}
+
+/* Supply and Provider pools: the homepage's duo (sections.css); under the rows, Amos's caption in the kit's mono */
+.ap-duo .s-feats { margin: 0; padding: 0; list-style: none; }
+.ap-duo .s-sub { text-wrap: balance; }   /* no word left alone on the last line */
+
+/* ── the aside scale, as on /colony/ (06_Amos-feedback/ASIDE-SCALE.md, Elio, 17 Nov: « applique-le partout »). It replaces the day's
+   earlier rules (8 under a title, forced two-line titles). Desktop only, from 1200 wide: below, the page keeps its first layout */
+@media (min-width: 1200px) {
+  /* §1 the page's base: anchors land at the very top (the nav scrolls away); the page's buttons 40 tall, 12 in, 16px */
+  html { scroll-padding-top: 0; }
+  .ap .s-btn, .ap .s-btn.big { height: 40px; padding: 0 12px; font-size: 16px; line-height: 24px; }
+
+  /* §3 the top: the whole first screen under the nav, the figures just under the fold (Elio, 17 Nov); on white; the painting inset 16
+     at the top, right and bottom, radius 16 */
+  .ap .s-token { min-height: 0 !important; }   /* sections.js rounds every section up to 8px */
+  .ap-hero { height: calc(100svh - 69px); background: var(--page); }
+  .ap-text { gap: 32px; }   /* sub to buttons */
+  .ap-head { gap: 16px; }   /* eyebrow, title, sub */
+  .ap-head .s-sub { margin-top: 0; max-width: 460px; line-height: 28px; text-wrap: wrap; }
+  .ap-paint { margin: 16px 16px 16px 0; height: auto; border-radius: 16px; overflow: hidden; }
+
+  /* §2 Supply and Provider pools: 124 above and below, as tall as their content; eyebrow 24, title 16, sub; the titles as before
+     the pass (Elio, 17 Nov): two lines, ink then grey; sub lines 18/28. The painting takes the text's height */
+  .ap-duo .s-rail { box-sizing: border-box; min-height: 0; padding-top: 124px; padding-bottom: 124px; }
+  .ap-duo .s-duo-text { gap: 24px; padding-block: 0; }
+  .ap-duo .s-duo-head { gap: 16px; }
+  .ap-duo .s-sub { line-height: 28px; }
+  .ap-duo .s-duo-head .s-sub { max-width: none; text-wrap: pretty; }   /* across the head's column, no word alone on the last line */
+  /* sections.css puts 8 under every title (its --head-gap rule): the heads' own gaps set it here */
+  .ap .ap-head > .s-h2 + .s-sub, .ap .ap-duo .s-duo-head > .s-h3 + .s-sub { margin-top: 0; }
+}

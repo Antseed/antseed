@@ -1,0 +1,264 @@
+/* The network page (launch, 18 Nov): Amos's /network/ copy, word for word, in the homepage's components (sections.css): the hero with its
+   three layers, the token's two halves, the two paths, the introduction's split, a wide painting with its windows, a duo, the points,
+   the FAQ's two columns. What they don't have is here: the glass windows over the paintings (DESIGN.md: white glass by day, smoked
+   green at night) and the page's layouts. */
+/* the page's base, as /ants/'s (ants.css): the homepage's keeps its own in index.html */
+:root { --page: #fff; --ink: #090b0c; --nav-grey: #737373; --cmd: #0a1a12; --acid: #c8f53c; }
+:root[data-theme="dark"] { --page: #0f1312; --ink: #eceee9; --nav-grey: #9ba49e; --cmd: #eceee9; }
+html, body { margin: 0; background: var(--page); color: var(--ink); font-family: Geist, system-ui, sans-serif; }
+img { display: block; }
+nav, nav * { box-sizing: border-box; }
+nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it (Elio, 17 Nov); its glass is shell.css's */
+nav > a { display: block; }
+.s-page { margin: 0; }
+.nw :where(ul, ol) { margin: 0; padding: 0; list-style: none; }
+
+/* line breaks (Elio, 17 Nov: no line ends on two or three stray words): each title's two tones a block of its own, each balanced;
+   the short texts balanced, the long ones laid out so their last line is not a lone word */
+.nw .s-page :is(h1, h2, h3) { text-wrap: balance; }
+.nw .s-page :is(h1, h2, h3) > br { display: none; }
+.nw .s-page :is(h1, h2, h3) > span { display: block; }
+.nw .s-page :is(p, li) { text-wrap: pretty; }
+.nw .s-page :is(.s-cap, .nw-list li, .nw-place p, .s-feats li span, .nw-docs span, .s-lede > p) { text-wrap: balance; }
+
+/* every section head: 8 from its title to its sub line (Elio, 17 Nov, every page), the eyebrow and the rest as they were */
+@media (min-width: 761px) {
+  .nw .s-head > :is(h1, h2, h3) + .s-sub { margin-top: -12px; }   /* the head's gap is 20 */
+  .nw .s-duo-head > :is(h2, h3) + .s-sub { margin-top: -8px; }     /* the duo's is 16 */
+}
+
+/* the top: the hero of /providers/, /ants/ and /colony/ (colony.css, c29ab82): across the whole width, the text from the rail's edge,
+   the painting filling the right half; eyebrow, 16, title 48/46, 8, sub (460), 36, button. Desktop; below, the head over the painting */
+.nw-hero-panel { aspect-ratio: 4 / 3; }
+@media (min-width: 1200px) {
+  .nw-top .s-rail { width: 100%; max-width: none; padding: 0; }
+  .nw-top .s-rail::before { display: none; }
+  .nw-hero { container-type: inline-size; display: grid; grid-template-columns: 1fr 1fr; height: clamp(520px, calc(100svh - 69px), 820px); }
+  .nw-hero-head { --rail-w: round(down, min(1312px, 100cqw - 2 * clamp(16px, 6.4vw, 96px)), 16px);
+    display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 16px;
+    padding: 56px 40px 56px calc((100cqw - var(--rail-w)) / 2 + 40px); }
+  .nw-hero-head > * { margin: 0; }
+  .nw-hero-head { container-type: inline-size; }
+  .nw-hero-head .s-h2 { font-size: min(45px, 100cqi / 12.15); line-height: .96; }   /* two lines, always (Elio): «inference liquidity network.» needs 581 at 48 and the text has 544 (wider, under 24 would stay before the painting), so 45 at 1440, less on a smaller screen */
+  .nw-hero-head > .s-h2 + .s-sub { margin-top: -8px; max-width: 460px; text-wrap: balance; }
+  .nw-hero-head .s-actions { margin-top: 20px; }
+  .nw-hero-panel { aspect-ratio: auto; min-height: 0; height: 100%; border-radius: 0; background-position: 50% 50%; }
+}
+
+/* the sections with a head over their content: the homepage's 120 above, 64 from the head to what follows */
+.nw-pay .s-rail, .nw-where .s-rail, .nw-vision .s-rail { padding-top: 120px; }
+
+/* ── a glass window over a painting: white glass by day, smoked green at night (DESIGN.md, Elevation) ── */
+.nw-win { display: flex; flex-direction: column; gap: 14px; padding: 20px 22px 22px; border-radius: 8px; text-align: left;
+  border: .5px solid #fff; background: rgba(255, 255, 255, .62); color: var(--t);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); box-shadow: 0 14px 40px rgba(20, 51, 89, .14);
+  font: 400 14px/22px Geist, system-ui, sans-serif; }
+.nw-win :where(p, h3) { margin: 0; }
+:root[data-theme="dark"] .nw-win { --t: #ecf3ee; --b: #cbd8d0; --g: #9fb0a5;
+  border-color: rgba(150, 200, 145, .42); background: rgba(14, 33, 23, .64);
+  backdrop-filter: blur(10px) saturate(1.3); -webkit-backdrop-filter: blur(10px) saturate(1.3);
+  box-shadow: 0 12px 32px rgba(8, 26, 14, .26), inset 0 .5px 0 rgba(190, 228, 170, .16); }
+.nw-win-t { font: 400 12px/16px "Geist Mono", monospace; color: var(--g); }
+.nw-win-h { display: flex; align-items: center; gap: 10px; font: 500 16px/24px Geist, sans-serif; color: var(--t); }
+.nw-win .f-ic { width: 20px; height: 20px; -webkit-mask-size: 20px; mask-size: 20px; }
+
+/* ── USDC and ANTS: the two-option section (TWO-OPTION-SECTION.md, the homepage's Providers at 1440: rail 120 / 124, head to paths 64,
+   two 16:9 panels 24 apart, panel to title 28, title 24/28, title to text 16, text to buttons 28) ── */
+@media (min-width: 761px) {
+  .nw-pay .s-rail { padding-bottom: 124px; }
+  .nw-pay .s-h2 { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
+  .nw-pay .s-paths { margin-top: 64px; }
+  .nw-pay .s-path-panel { aspect-ratio: 16 / 9; }
+  .nw-pay .s-path-h { margin-bottom: 16px; font-size: 32px; line-height: 36px; letter-spacing: -1.07px; }   /* Elio, 17 Nov: a bigger title, 28 down to its first point (16 + the column's 12) */
+}
+/* one big coin on each painting, the two facing each other: the USDC coin faces right, the ANTS coin left. They float as the token's did */
+.nw-coin-panel { position: relative; }
+.nw-big-coin { position: absolute; left: 50%; top: 9%; height: 82%; width: auto; translate: -50% 0;
+  filter: drop-shadow(0 12px 14px rgba(40, 60, 20, .18)); animation: s-tk-float 3.6s ease-in-out infinite; }
+.nw-usdc { animation-delay: -1.8s; }   /* the two coins float out of step */
+:root[data-theme="dark"] .nw-big-coin { filter: drop-shadow(0 0 18px rgba(200, 245, 60, .3)); }
+:root[data-theme="dark"] .nw-usdc { filter: drop-shadow(0 0 18px rgba(140, 180, 255, .24)); }   /* its own light at night: cool, not the ANTS coin's lime */
+@media (prefers-reduced-motion: reduce) { .nw-big-coin { animation: none; } }
+
+/* the two paths' text: Amos's points, then the buttons */
+.nw-list { align-self: start; width: 100%; }   /* the products' features (sections.css .s-feats): a kit icon, the point, a dotted line between */
+.nw-list li { padding: 12px 0; color: var(--b); }   /* 24 between two points, so each reads on its own (Elio, 17 Nov) */
+.nw-list li:first-child { padding-top: 0; }
+.nw-list li:last-child { padding-bottom: 0; }
+.nw-list li > span { max-width: 380px; }   /* short lines, about half the column, each point on two (Elio's Figma) */
+.nw-list .s-link { font-size: inherit; line-height: inherit; }
+.nw-soon { color: var(--g); }
+
+/* what we're building: Colony's "Where this goes", the lede's line in ink, the two reasons in grey (sections.css .s-lede .dim), each named in ink */
+.nw-build .s-lede p { margin: 0; }
+.nw-build .nw-ink { color: var(--t); }
+.nw .s-page .nw-build .s-lede > p { text-wrap: pretty; }   /* across its 638, as Colony's */
+.nw .s-page .nw-build .s-lede > p:last-child { text-wrap: balance; }   /* the short one: two even lines, not «makes it liquid.» alone */
+
+/* what lives where: Colony's Private by design (colony.css, 1585ce6 and e4177a6) in the light. Exactly the fold at 1440 x 900, the
+   head and the cards centred in it; three cards 24 apart, each a 4:3 watercolour under the kit's glass (white by day, smoked green at
+   night), 16 to its point. Desktop only */
+@media (min-width: 1200px) {
+  .nw .nw-where { height: 100svh; min-height: 0 !important; }   /* exactly the fold: sections.js rounds sections up to 8px inline */
+  .nw .nw-where .s-rail { box-sizing: border-box; height: 100%; display: flex; flex-direction: column; justify-content: center; padding-top: 72px; padding-bottom: 72px; }
+}
+/* the cards at every width (three across from 1200, fewer on a smaller screen) */
+@media all {
+  .nw-wcards { --ink: #0a1a12; --m: #5d6660; --gr: #4f7a24; --glass: rgba(255, 255, 255, .7); --edge: #fff; --line: rgba(10, 26, 18, .1);
+    --sh: 0 0 0 .5px rgba(10, 26, 18, .14), 0 12px 32px rgba(20, 51, 89, .16);
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 24px; width: 100%; max-width: 1248px; margin-top: 40px; padding: 0 24px; box-sizing: border-box; text-align: left; }
+  :root[data-theme="dark"] .nw-wcards { --ink: #ecf3ee; --m: #9fb1a6; --gr: #c8f53c; --glass: rgba(14, 33, 23, .66); --edge: rgba(150, 200, 145, .42); --line: rgba(236, 243, 238, .12);
+    --sh: 0 12px 32px rgba(8, 26, 14, .3), inset 0 .5px 0 rgba(190, 228, 170, .16); }
+  .nw-wcards article { display: flex; flex-direction: column; gap: 16px; }
+  .nw-wcards .s-cap { margin: 0; padding: 0; max-width: none; }
+  .nw-wcard { position: relative; aspect-ratio: 4 / 3; border-radius: 16px; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); }
+  :root[data-theme="dark"] .nw-wcard { box-shadow: inset 0 0 0 1px rgba(150, 200, 145, .14); }
+  .wc-g { position: absolute; margin: 0; border: .5px solid var(--edge); background: var(--glass); color: var(--ink); box-shadow: var(--sh);
+    backdrop-filter: blur(14px) saturate(1.3); -webkit-backdrop-filter: blur(14px) saturate(1.3); font: 400 12px/16px Geist, sans-serif; }
+  .wc-g i { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--m); }
+  .wc-g i.on { background: var(--gr); box-shadow: 0 0 0 3px color-mix(in srgb, var(--gr) 20%, transparent); }
+  .wc-g img { width: 14px; height: 14px; opacity: .8; }
+  :root[data-theme="dark"] .wc-g img:not(.wc-logo) { filter: invert(1); }
+  .wc-g .wc-logo { width: 12px; height: 12px; border-radius: 3px; opacity: 1; }
+  .wc-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-weight: 500; white-space: nowrap; }
+  .wc-win { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 10px; }
+  .wc-h { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 13px; line-height: 17px; font-weight: 500; }
+  .wc-t { margin: 0; color: var(--m); text-wrap: balance; }
+  .wc-win dl { margin: 0; }
+  .wc-win dl > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; border-top: .5px solid var(--line); }
+  .wc-win dt { color: var(--m); }
+  .wc-win dd { margin: 0; display: flex; }
+  /* 1: your machine keeps its settings */
+  .wc-mid { left: 50%; top: 50%; translate: -50% -50%; width: 64%; }
+  /* 2: the request goes to the provider you chose and the response comes back, nothing between */
+  .wc-from { left: 7%; top: 11%; }
+  .wc-req { left: 22%; top: 33%; }
+  .wc-res { left: 34%; top: 49%; color: var(--m); }
+  .wc-to { right: 7%; bottom: 9%; width: 56%; }
+  /* 3: Base holds the money's records, never the words */
+  .wc-base { left: 50%; top: 9%; translate: -50% 0; width: 64%; }
+  .wc-never { right: 7%; bottom: 8%; }
+}
+
+/* trust you can check: the duo's features with Amos's name before each line; the window scores two providers */
+.nw-trust .s-feats b { font-weight: 500; }
+@media (min-width: 900px) {   /* the title on its two lines at any width: its size follows its column, 48 at 1440 */
+  .nw-trust .s-duo-text { container-type: inline-size; }
+  .nw-trust .s-h3 { font-size: min(48px, 100cqi / 9.6); line-height: .96; }
+}
+.nw-trust-panel { display: grid; place-items: center; padding: 40px 32px; }
+.nw-score { width: min(100%, 380px); gap: 16px; }
+.nw-prov { display: grid; gap: 8px; }
+.nw-prov + .nw-prov { padding-top: 16px; border-top: .5px solid rgba(10, 26, 18, .1); }
+:root[data-theme="dark"] .nw-prov + .nw-prov { border-top-color: rgba(190, 228, 170, .16); }
+.nw-prov-n { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 12px; }
+.nw-prov-n b { white-space: nowrap; }
+.nw-prov-n b { font-weight: 500; color: var(--t); }
+.nw-prov-n span { font: 400 12px/16px "Geist Mono", monospace; color: var(--g); }
+.nw-prov-n .nw-ok { color: #4f7a24; }
+:root[data-theme="dark"] .nw-prov-n .nw-ok { color: #98c463; }
+.nw-sig { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.nw-sig li { display: flex; align-items: center; gap: 6px; font-size: 13px; line-height: 20px; color: var(--g); }
+.nw-sig li::before { content: ""; width: 6px; height: 6px; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--g); }
+.nw-sig li.on { color: var(--t); }
+.nw-sig li.on::before { background: #4f7a24; box-shadow: none; }
+:root[data-theme="dark"] .nw-sig li.on::before { background: #98c463; }
+.nw-skip .nw-prov-n b, .nw-skip .nw-sig { opacity: .6; }
+
+/* our vision: the head, then the four principles in the homepage's points */
+.nw-head, .nw-vision .s-head { padding-bottom: 64px; }
+.nw-vision .s-points > div { --dt: 2px; place-items: start; }
+.nw-vision .s-points > div + div { --dl: 2px; }
+.nw-four { grid-template-columns: repeat(4, 1fr); }
+.nw-four p { max-width: none; }
+
+/* every layer is open: the FAQ's two columns, the five layers a row each between dotted lines */
+.nw-open .s-rail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 64px; align-items: start; padding: 120px var(--pad); }
+.nw-open-head { display: flex; flex-direction: column; align-items: flex-start; gap: 32px; }
+.nw-open .s-h3 { font-size: 42px; }
+.nw-docs li { position: relative; }
+.nw-docs li::before, .nw-docs li:last-child::after { content: ""; position: absolute; left: -1px; right: -1px; top: -1px; height: 2px; pointer-events: none;
+  background: radial-gradient(circle at 1px 1px, var(--dot) .85px, #0000 1.25px) 0 0 / 8px 2px repeat-x; }
+.nw-docs li:last-child::after { top: auto; bottom: -1px; }
+.nw-docs a { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 24px; row-gap: 4px; padding: 22px 0 23px; text-decoration: none; }
+.nw-docs b { font: 500 18px/26px Geist, sans-serif; color: var(--t); transition: color .15s; }
+.nw-docs span { grid-column: 1; font: 400 16px/25px Geist, sans-serif; color: var(--b); }
+.nw-docs a::after { content: "→"; grid-column: 2; grid-row: 1 / span 2; align-self: center; font: 400 18px/26px Geist, sans-serif; color: var(--g); transition: color .15s, translate .15s; }
+.nw-docs a:hover b, .nw-docs a:hover::after { color: var(--o); }
+.nw-docs a:hover::after { translate: 3px 0; }
+.nw-docs a:focus-visible { outline: 2px solid var(--o); outline-offset: 4px; border-radius: 2px; }
+
+@media (max-width: 1199px) {
+  .nw-open .s-rail { column-gap: 48px; }
+  .nw-places { grid-template-columns: minmax(0, 520px); justify-content: center; aspect-ratio: auto; gap: 16px; padding: 56px 32px; }
+}
+@media (max-width: 1023px) {
+  .nw-four { grid-template-columns: 1fr 1fr; }
+  .nw-four > div:nth-child(3) { --dl: 0px; }
+  .nw-why { grid-template-columns: 1fr; gap: 16px; }
+}
+@media (max-width: 899px) {
+  .nw-open .s-rail { grid-template-columns: 1fr; gap: 40px; }
+  .nw-trust-panel { height: auto; padding: 48px 24px; }
+}
+@media (max-width: 760px) {
+  .nw-top .s-rail, .nw-pay .s-rail, .nw-where .s-rail, .nw-vision .s-rail { padding-top: 72px; }
+  .nw-pay .s-rail { padding-bottom: 72px; }
+  .nw-top .s-h2 { font-size: 40px; line-height: 40px; }
+  .nw-panel { margin-top: 40px; aspect-ratio: 4 / 5; }   /* the three layers' tall layout, as the homepage's */
+  .nw-list { padding-right: 0; }
+  .nw-places { margin-top: 40px; padding: 32px 16px; }
+  .nw-head, .nw-vision .s-head { padding-bottom: 40px; }
+  .nw-four { grid-template-columns: 1fr; }
+  .nw-four > div + div { --dl: 0px; }
+  .nw-open .s-rail { padding: 72px var(--pad); }
+  .nw-open .s-h3 { font-size: 34px; }
+  .nw-docs b { font-size: 16px; line-height: 24px; }
+  .nw-docs span { font-size: 15px; line-height: 22px; }
+}
+
+/* ── USDC pays / $ANTS makes inference liquid: each path as a card, as Colony's (Elio's Figma, 17 Nov): its title, text and button 16
+   in from the painting's edges. Desktop only */
+@media (min-width: 1200px) {
+  .nw-pay .s-path-text > * { margin-left: 16px; margin-right: 16px; max-width: calc(100% - 32px); box-sizing: border-box; }
+}
+
+/* ── the aside scale (06_Amos-feedback/ASIDE-SCALE.md, built on /colony/ with Elio, 17 Nov: « applique-le partout »). It replaces the
+   two-option values and the earlier head rules above, except the section titles (Elio, 17 Nov: « remets les titres comme ils
+   étaient »): their sizes, two lines and the USDC/ANTS head's 64 to its panels stay as above. Kept from Elio's asks on this page: the two-line hero and Trust titles, the
+   USDC/ANTS titles at 32 with 28 to their icon points and the points' short lines, What lives where on the whole screen. Desktop only */
+@media (min-width: 1200px) {
+  /* §1 page: anchors with no offset (the nav scrolls away), the page's buttons 40 tall */
+  html { scroll-padding-top: 0; }
+  .nw .s-page .s-btn, .nw .s-page .s-btn.big { height: 40px; padding: 0 12px; font-size: 16px; line-height: 24px; }
+  /* §2 sections and heads: 124 above and below, eyebrow 24 to the title, the title 44/48 flowing on one line (its grey half inline),
+     16 to the sub (18/28, 640), 40 to the content */
+  .nw .s-page :is(.nw-build, .nw-pay, .nw-vision, .nw-open) .s-rail { padding-top: 124px; padding-bottom: 124px; }
+  .nw .s-page .s-head { gap: 24px; }
+  .nw .s-page .s-head > :is(h1, h2, h3) + .s-sub { margin-top: -8px; }
+  .nw .s-page .s-head .s-sub { line-height: 28px; max-width: 640px; }
+  .nw .nw-vision .s-head { padding-bottom: 40px; }
+  .nw .nw-build .s-lede > p { font-size: 20px; line-height: 28px; letter-spacing: 0; max-width: 638px; }
+  /* the duo (Trust): eyebrow 24, title 16 to its sub; its title on Elio's two lines, at the scale's 44 */
+  .nw .nw-trust .s-duo-text { gap: 24px; }
+  .nw .nw-trust .s-duo-head { gap: 16px; }
+  .nw .nw-trust .s-duo-head > .s-h3 + .s-sub { margin-top: 0; }
+  /* §3 the hero: the first screen under the nav, the painting inset 16 (top, right, bottom) with soft corners; eyebrow, 16, title,
+     16, sub (324), 32, buttons. Its title stays on Elio's two lines, at the scale's 44 (48 would need a third) */
+  .nw .nw-top { min-height: 0 !important; }   /* sections.js's 8px rounding would push it past the fold */
+  .nw .nw-hero { height: calc(100svh - 69px); }
+  .nw .nw-hero-panel { margin: 16px 16px 16px 0; height: auto; border-radius: 16px; }
+  .nw .nw-hero-head { gap: 16px; }
+  .nw .nw-hero-head > .s-h2 + .s-sub { margin-top: 0; max-width: 340px; text-wrap: balance; }   /* §3's 324 is Colony's text; this one on two lines, no word left over */
+  .nw .nw-hero-head .s-actions { margin-top: 16px; }
+  /* §4 two-option (USDC / ANTS): 40 from the head, each path a card, its title, points and buttons 16 in from the painting's edges */
+  .nw .nw-pay .s-path-text > * { margin-left: 16px; margin-right: 16px; }
+  .nw .nw-pay .nw-list { max-width: calc(100% - 32px); }
+  /* §5 the card row (What lives where): 96 from the head, as aside's privacy section */
+  .nw .nw-wcards { margin-top: 96px; }
+}
+
+/* The network in three layers (Elio, 17 Nov): the homepage's layers board, large, on its own flat ground */
+.nw-layers-panel { position: relative; aspect-ratio: 1248 / 720; margin-top: 40px; }
+@media (max-width: 760px) { .nw-layers-panel { aspect-ratio: 4 / 5; } }
+@media (min-width: 1200px) { .nw .s-page .nw-layers .s-rail { padding-block: 124px; } }

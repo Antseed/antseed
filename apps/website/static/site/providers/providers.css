@@ -1,0 +1,99 @@
+/* The providers page (launch, 18 Nov): the homepage's components (sections.css, v6.css, providers-v4.css) in this page's layouts. The top
+   as the homepage's Gateway, the stall square on its right; the band of figures as the homepage's under its hero; the homepage's two
+   paths, a v6 window over each painting; reputation as the homepage's Desktop, its picture on the left. */
+/* the page's base, as /network/'s: the homepage's keeps its own in index.html */
+:root { --page: #fff; --ink: #090b0c; --nav-grey: #737373; --cmd: #0a1a12; --acid: #c8f53c; }
+:root[data-theme="dark"] { --page: #0f1312; --ink: #eceee9; --nav-grey: #9ba49e; --cmd: #eceee9; }
+html, body { margin: 0; background: var(--page); color: var(--ink); font-family: Geist, system-ui, sans-serif; }
+img { display: block; }
+nav, nav * { box-sizing: border-box; }
+nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it (Elio, 17 Nov); its glass is shell.css's */
+nav > a { display: block; }
+.s-page { margin: 0; }
+
+/* the top (Elio, 17 Nov, as /ants/): across the whole width, no rail and no dotted lines, so tall that the figures under it still show
+   above the fold; the margins start with the figures. The Gateway's two halves: the offer on the figures' left edge (the rail's, plus
+   their padding, --in), in the middle of the height; the stall filling its half, no frame, no corners (as /ants/'s painting). The painting and its
+   film laid as a cover, 85% down as on the homepage (the set as wide as the panel or as its height takes, centred), so the ant and its
+   board stay in the middle whatever the screen */
+.pp-frame { display: contents; }
+.pp-top { --figs: 128px; display: block; height: clamp(480px, calc(100svh - 69px - var(--figs)), 820px); }   /* so tall that the figures under it still show above the fold (as /ants/); sections.js rounds every section up to 8px, hence 128 for a band of 120 */
+.pp-top .s-rail { --in: 40px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); width: 100%; height: 100%; min-height: 0; }
+.pp-top .s-rail::before { display: none; }   /* the rail's dotted outline, 1px past its edges: none on the screen's width */
+.pp-top .s-duo-text { align-items: flex-start; padding: 56px 40px 56px calc((100vw - round(down, min(1312px, 100vw - 2 * var(--gut)), 16px)) / 2 + var(--in)); }   /* on the figures' left edge */
+.pp-offer { display: flex; flex-direction: column; align-items: flex-start; }
+.pp-top :is(.s-eyebrow, .s-h3, .s-sub) { margin: 0; }
+/* each tone of a title its own block, balanced: no word left alone on a line (as /network/'s) */
+.pp :is(h1, h2) > br { display: none; }
+.pp :is(h1, h2) > span { display: block; text-wrap: balance; }
+.pp-top .s-duo-head { max-width: none; gap: 20px; margin-top: 16px; }   /* the design system's head (DESIGN.md, as /ants/): eyebrow, 16, title, 20, line, 36, button */
+.pp-top .s-duo-head .s-sub { max-width: 460px; text-wrap: pretty; }
+.pp-top .s-actions { margin-top: 36px; }
+.pp-stall { height: 100%; margin: 0; border-radius: 0; container-type: size; background-size: cover; background-position: 50% 85%; }
+.pp-stall .pv-live { position: absolute; inset: 0; z-index: -2; overflow: hidden; border-radius: inherit; pointer-events: none; }
+.pp-stall .pv-set { left: 50%; width: max(100cqw, 100cqh * 1600 / 1074); translate: -50% -85%; }
+
+/* the band: four figures, a small grey label over its value (as the homepage's .backers), the hero's text on their left edge */
+.pp-band { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; padding: 28px 40px 32px; }   /* as /ants/'s figures, so they show on the first screen */
+.pp-band .fig { display: flex; flex-direction: column; gap: 8px; }
+.pp-band p { margin: 0; font: 400 13px/16px Geist, sans-serif; color: var(--nav-grey); }
+.pp-band b { font: 400 32px/36px "Geist Pixel Var", Geist; font-variation-settings: "ELSH" var(--fig-elsh, 20); color: var(--cmd); font-variant-numeric: tabular-nums; }
+
+/* running it: the two-option section, the homepage's Providers (.s-prov: rail 120/124, head to paths 64, panels 16:9, titles 24/28 in
+   providers-v4.css); each window centred on its painting, the painting's foot in view under it */
+.pp-card { display: grid; place-items: center; container-type: inline-size; background-position: 50% 85%; }
+
+/* reputation: the record in the provider card's glass, in the middle of its painting */
+.pp-rep-panel .pvy-card { right: auto; left: 50%; translate: -50% -50%; width: min(300px, 72%); }
+.pp-rep-panel .pvy-card dd { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 1023px) { .pp-top .s-rail { --in: 24px; } .pp-band { padding: 24px 24px 28px; } }
+@media (max-width: 899px) {
+  .pp-top { height: auto; }
+  .pp-top .s-rail { grid-template-columns: 1fr; height: auto; }
+  .pp-top .s-duo-text { --edge: calc((100vw - round(down, min(1312px, 100vw - 2 * var(--gut)), 16px)) / 2 + var(--in)); padding: 56px var(--edge) 48px; }
+  .pp-stall { height: auto; aspect-ratio: 1; }
+  .pp-rep-panel { height: 400px; }
+}
+@media (max-width: 760px) {
+  .pp-top .s-h3 { font-size: 40px; line-height: 40px; }
+  .pp-top .s-rail { --in: 20px; }
+  .pp-top .s-duo-text { padding-block: 48px 40px; }
+  .pp-band { grid-template-columns: 1fr 1fr; row-gap: 28px; padding: 24px 20px 28px; }
+  .pp-band b { font-size: 28px; line-height: 32px; }
+  .pp-run .s-rail { padding: 72px 0; }
+  .pp-card { aspect-ratio: auto; height: 300px; }   /* the windows' own height, as the homepage's cards had it (.s-card-panel.tall) */
+}
+
+/* ── the aside scale, as built on /colony/ (Elio, 17 Nov, « applique-le partout »: 06_Amos-feedback/ASIDE-SCALE.md, in place of the
+   two-option spec and the day's earlier rules). Last in the sheet, so it wins. Desktop only, from 1200 */
+@media (min-width: 1200px) {
+  html { scroll-padding-top: 0; }   /* the nav scrolls away: an anchor lands at the very top */
+  /* §1 the page's buttons: 40 tall, 12 in, 16/24 (not the v6 windows' own) */
+  .pp .s-actions .s-btn { height: 40px; padding: 0 12px; font-size: 16px; line-height: 24px; }
+  /* §2 every head: eyebrow 24, title, 16, sub line 18/28 (max 640); 124 round each section. The titles stay as they were, two lines,
+     ink then grey, at their own sizes (Elio, 17 Nov) */
+  .pp .s-sub, .pp .pp-run .s-sub { line-height: 28px; }
+  .pp .s-head { gap: 24px; }
+  .pp .s-head > .s-h2 + .s-sub { margin-top: -8px; }   /* 24 less 8: 16 under the title */
+  .pp .s-head .s-sub { max-width: 640px; }
+  .pp .s-duo-text { gap: 24px; }
+  .pp .s-duo-head { gap: 16px; }
+  .pp .s-duo-head > .s-h3 + .s-sub { margin-top: 0; }   /* sections.css takes the head's gap back to 8: 16 here */
+  /* §3 the top: the first screen under the nav, the offer centred on the rail's edge plus 40; eyebrow 16, title, 16, sub, 32,
+     button; the stall inset 16 at the top, right and bottom, soft corners */
+  .pp .pp-top { height: calc(100svh - 69px); min-height: 0 !important; }   /* sections.js rounds every section up to 8px with an inline min-height */
+  .pp .pp-top .s-duo-text { padding-block: 0; }
+  .pp .pp-top .s-duo-head { gap: 16px; margin-top: 16px; }
+  .pp .pp-top .s-actions { margin-top: 32px; }
+  .pp .pp-stall { height: auto; margin: 16px 16px 16px 0; border-radius: 16px; }
+  /* §4 running it: the two-option section, 124 / 124, head to panels 40; each path a card, its title and text 16 in from the painting's
+     edges, the text across the column */
+  .pp .pp-run .s-rail { padding-top: 124px; padding-bottom: 124px; }
+  .pp .pp-run .s-paths { margin-top: 40px; }
+  .pp .pp-run .s-path-text > * { margin-left: 16px; margin-right: 16px; }
+  .pp .pp-run .s-path-text p { max-width: none; padding-right: 0; text-wrap: wrap; }
+  /* reputation: the duo, 124 / 124, its painting at the inner height */
+  .pp .pp-rep .s-rail { box-sizing: border-box; min-height: 0; padding-top: 124px; padding-bottom: 124px; }
+  .pp .pp-rep-panel { min-height: 560px; }
+}

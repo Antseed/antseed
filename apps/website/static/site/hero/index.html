@@ -1,0 +1,2038 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- the theme, before anything paints: the mode kept in localStorage 'antseed.theme' ('system', the default, 'light' or 'dark'), resolved
+     against the system's preference into <html data-theme="light|dark"> with its color-scheme and the page's background (no white flash).
+     window.antseedTheme.get() gives the mode, .set(mode) keeps and applies it; every apply after the first dispatches 'themechange' on
+     document (the hero repaints its caches on it). In 'system' mode it follows the system live -->
+<script src="/site/hero/theme.js"></script>
+<title>Antseed | The Open Market for AI Inference</title>
+<meta name="description" content="Give your agents, apps, and team access to 700+ AI models at lower prices, with built-in privacy and full control.">
+<meta property="og:title" content="Antseed | The Open Market for AI Inference">
+<meta property="og:description" content="Give your agents, apps, and team access to 700+ AI models at lower prices, with built-in privacy and full control.">
+<link rel="icon" type="image/svg+xml" href="/site/assets/home/icons/ant-mark.svg">
+<!-- the version, set before the first paint: none or ?whimsical2 = Meadow · Whimsical 2 (Figma 382:3995, the village meadow), ?mascot =
+     Meadow · Mascot (Figma 331:7835); kept too: ?meadow = Meadow (no class), ?whimsical = Meadow · Whimsical 1
+     (Figma 348:8383, Elio's looping film behind it), ?square = Meadow Square (Figma 221:2). Both Whimsicals also get .whimsical, all they share -->
+<script>{
+  const q = new URLSearchParams(location.search), v = ['mascot', 'whimsical2', 'whimsical', 'square', 'meadow'].find((k) => q.has(k)) || 'whimsical2';
+  if (v !== 'meadow') document.documentElement.classList.add(...(v.startsWith('whimsical') ? ['whimsical', v === 'whimsical' ? 'whimsical1' : v] : [v]));
+  // Whimsical 2 opens full screen and unfolds on scroll (the script under the hero); not with reduced motion, nor for still captures
+  if (v === 'whimsical2' && !q.has('still') && !q.has('demo') && !matchMedia('(prefers-reduced-motion: reduce)').matches) document.documentElement.classList.add('veil');   // no zoom intro (Elio, 17 Nov: the hero opens as the card, the nav at the top of the page)
+  // .veil: the painting held under a cover in the hero's colour until unveil.js lets it arrive (the text is there from the first frame)
+  // Meadow · Mascot's text block comes in with its intro (.go, from the hero's script); at once for captures, and this timer should the script fail
+  if (v === 'mascot') { if (q.has('still') || q.has('demo')) document.documentElement.classList.add('go'); else setTimeout(() => document.documentElement.classList.add('go'), 4000); }
+}</script>
+<!-- the first screen's painting, asked for at once and first (the browser would otherwise find it only once the CSS is read): the day's
+     file for a light system, the night's for a dark one, the same URLs the page's styles show, so each is fetched once -->
+<link rel="preload" as="image" href="/site/assets/hero/video/hero-ground-poster.webp" fetchpriority="high" media="(prefers-color-scheme: light)">
+<link rel="preload" as="image" href="/site/assets/hero/night/whimsical-2-night-b.webp" fetchpriority="high" media="(prefers-color-scheme: dark)">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- the fonts, asked from here and not from inside sections.css, so the browser finds them while it reads the head: the families, then
+     Geist's two arrows (Google's latin subset leaves out → and ↗; its text= parameter needs a request of its own) -->
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500&family=Geist:wght@400;500&family=Geist+Mono:wght@400;500&family=Figtree&display=block" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&text=%E2%86%92%E2%86%97&display=block" rel="stylesheet">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/site/assets/fonts/GeistPixel-VariableFont_ELSH.woff2">
+<link rel="stylesheet" href="/site/hero/shell.css">
+<link rel="stylesheet" href="/site/hero/site-nav.css">
+<style>
+  /* Figma: Antseed file, node 323:7285 "Antseed | Homepage · Meadow 4 · Round" */
+  :root {
+    --page: #ffffff; --hero: #fdfdff; --ink: #090b0c; --title: #1c1c1c; --title-2: #595959; --nav-grey: #737373;
+    --cmd: #0a1a12; --acid: #c8f53c; --outline: #c3c3c3; --tab: #f7f8f5; --tab-off: #6b7068; --foot: rgba(10, 26, 18, 0.62); --check: #26352c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--page); color: var(--ink); font-family: Geist, system-ui, sans-serif; }
+  body { padding: 16px 16px 0; }
+  img { display: block; }
+
+  /* the hero fills the screen with the same 16px margin all round; the backers come on scroll (never below 600px, where the text block would crowd) */
+  .hero { position: relative; display: flex; flex-direction: column; align-items: center; height: max(600px, calc(100svh - 32px)); overflow: hidden; background: var(--hero); }
+  .hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .hero.seeding { cursor: none; }
+  .hero.on-ui { cursor: auto; }   /* over the nav, the pill and the install panel: the arrow, the seed under them */
+  .hero .puppet, .paint { display: none; }
+  /* Whimsical 2's nearest leaves and flowers, over the mascot's lower body (Elio, 13 Nov: it stands in the painting, not on it): a copy of
+     the painting's own bottom right on the painting's box, over the mascot's canvas, drawn by the script after the mascot's */
+  .hero canvas.fore { display: none; pointer-events: none; }
+  .whimsical2 .hero canvas.fore { display: block; inset: 73px 2px 0; width: calc(100% - 4px); height: calc(100% - 73px); }
+
+
+  .content { position: relative; z-index: 2; flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    padding: 78px 16px; }   /* Figma: 78/100 in an 832 frame that runs 22px past the card's bottom edge, so the block sits centred */
+  .content > * { max-width: 100%; }
+  /* Figma: acid green (over white and 10% grey), a 1px stroke inside over a white inner edge, and the blur */
+  .pill { display: flex; align-items: center; gap: 2px; height: 24px; padding: 0 11px; border-radius: 999px;
+    box-shadow: inset 0 0 0 1px rgba(9,11,12,.06), inset 0 0 0 1px rgba(255,255,255,.75); backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+    background: var(--acid); color: var(--ink); font: 400 12px/16px Figtree; text-decoration: none; }
+  .pill b { font: inherit; }
+  .pill .chev { width: 6px; height: 12px; position: relative; }
+  .pill .chev img { position: absolute; left: 0; top: 0; }
+  /* the news item stands apart from the title: 32px above it at 1440, 28 at 1024, 20 on a phone. The pill is lifted (the title, the install block and the
+     CTA stay where they are), not the title pushed down; its box was 10px from the title, the flex gap */
+  .pill { position: relative; top: -22px; }
+  @media (max-width: 1100px) { .pill { top: -18px; } }
+  @media (max-width: 760px) { .pill { top: -10px; } }
+  /* Figma keeps the title's frame 170px tall and lets the two lines spill over it evenly */
+  /* the title, as Figma's Meadow and Whimsical frames (348:8383, 356:8944), on all three versions: Geist Pixel at ELSH 11, 90/93, -8% */
+  h1 { display: flex; flex-direction: column; justify-content: center; height: 170px; margin: 0; padding: 12.36px; font: 400 90px/93px "Geist Pixel Var", Geist, sans-serif; font-variation-settings: "ELSH" 11;
+    letter-spacing: -0.08em; text-align: center; color: var(--title); white-space: nowrap; opacity: .82; }
+  h1 span { display: block; color: var(--title-2); }
+  @media (max-width: 1023px) and (min-width: 761px) { h1 { font-size: 8.4vw; line-height: 1.04; } }   /* "intelligence network" on one line, inside a tablet */
+
+  /* the install block: 600px wide as on antseed.com, on a 4px rhythm: 12 inside, the tabs (36), 12, the command (48), 12, the footer line (20);
+     the Desktop app tab has the same two rows */
+  .install { position: relative; isolation: isolate; box-sizing: border-box; margin-top: 16px; width: 600px; max-width: 100%; padding: 12px; border-radius: 12px;
+    box-shadow: inset 0 0 0 0.5px var(--outline), inset 0 0 0 1px rgba(255,255,255,.75);
+    background: rgba(182,180,140,.11); backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); }
+  /* the second stroke, in Linear Dodge over the first: lighter toward the left edge */
+  .install::before { content: ""; position: absolute; inset: 0; padding: 0.5px; border-radius: inherit; pointer-events: none; mix-blend-mode: plus-lighter;
+    background: radial-gradient(100% 100% at 0% 50%, #171e02, rgba(130,146,81,0));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+  .tabs { position: relative; display: flex; width: max-content; box-sizing: border-box; height: 36px; padding: 4px; border-radius: 8px; background: var(--tab); box-shadow: inset 0 0 0 0.5px rgba(0,0,0,.1), inset 0 0 0 1px #e4dfd2;
+    font: 500 13px/28px "Instrument Sans"; }
+  .tabs button { all: unset; position: relative; display: grid; place-items: center; height: 28px; padding: 0 12px; border-radius: 6px; color: var(--tab-off); cursor: pointer; transition: color .35s; }
+  .tabs button { white-space: nowrap; }
+  .tabs [aria-selected="true"] { color: var(--cmd); }
+  /* the white thumb under the chosen tab, slid to it (its place and width set by the script; still while the page first lays out) */
+  .tabs::before { content: ""; position: absolute; top: 4px; left: 0; width: var(--tw, 0); height: 28px; border-radius: 6px; background: #fff;
+    box-shadow: 0 0 0 1px #e4dfd2, 0 1px 2px rgba(4,23,15,.08); transform: translateX(var(--tx, 0)); }
+  .tabs.ready::before { transition: transform .35s cubic-bezier(.65, 0, .35, 1), width .35s cubic-bezier(.65, 0, .35, 1); }
+  @media (prefers-reduced-motion: reduce) { .tabs.ready::before, .tabs button { transition: none; } }
+  .install :focus-visible { outline: 2px solid #789f00; outline-offset: 2px; }
+  /* the proposed wash inside the panel (set from the settings panel; none by default), under the content, inside the strokes */
+  .cta-wash { position: absolute; inset: 1px; z-index: -1; border-radius: 11px; background: center / cover no-repeat; pointer-events: none; }
+  /* the two tabs' panels, one over the other so the block keeps its height; the script slides the chosen one in after the thumb */
+  .panels { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .panel { grid-area: 1 / 1; }
+  .panel[inert] { opacity: 0; visibility: hidden; }
+  .cmd { display: flex; align-items: center; gap: 12px; box-sizing: border-box; height: 48px; margin-top: 12px; padding: 0 6px 0 16px; border-radius: 8px; background: rgba(10,26,18,.1);
+    font: 400 13px/13px "Geist Mono", monospace; }
+  .cmd em { font-style: normal; color: #789f00; }
+  .cmd code { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #000; font: inherit; }   /* narrower than the command: cut with …, the copy button copies it whole */
+  .copy { all: unset; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 6px; background: rgba(255,255,255,.08); cursor: pointer; }
+  .copy img { filter: brightness(0) opacity(.62); }   /* the icon is white: dark on the light command line */
+  :root[data-theme="dark"] .copy img, .square .copy img { filter: none; }
+  .foot { margin: 0; padding: 12px 4px 0; font: 400 12.5px/20px "Instrument Sans"; color: var(--foot); }
+  .foot a, .foot button { all: unset; font-weight: 500; color: var(--cmd); white-space: nowrap; cursor: pointer; }
+  /* Desktop app, the same rows as the gateway: the app in the command's place, its download (for the computer it is opened on; a phone
+     gets the releases page) where the copy button is, and the other platforms in the line under it, every build a click away */
+  .app-row { font: 500 14px/1 "Instrument Sans"; color: var(--cmd); }
+  .app-row > span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  /* the main action in the CTA green, as the nav's (Elio, 12 Nov: it had gone black) */
+  .get { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px 0 12px; border-radius: 6px; background: #4f7a24; color: #fafafa;
+    box-shadow: 0 3.5px .5px 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -2px 1px 0 #3b5e17;
+    font: 500 13px/1 "Instrument Sans"; text-decoration: none; white-space: nowrap; transition: background .15s; }
+  .get:hover { background: #456b1f; }
+  .get svg { width: 14px; height: 14px; fill: currentColor; }
+  .get .short { display: none; }
+  @media (max-width: 640px) { .get .long { display: none; } .get .short { display: inline; } }
+  .versions { width: min(360px, calc(100vw - 32px)); box-sizing: border-box; padding: 16px; border: 0; border-radius: 12px; background: #fff; color: var(--cmd);
+    box-shadow: 0 0 0 1px #e4dfd2, 0 20px 48px rgba(4,23,15,.16); font: 400 13px/18px "Instrument Sans"; text-align: left; }
+  .versions::backdrop { background: rgba(10,26,18,.18); }
+  .versions header { display: flex; align-items: center; justify-content: space-between; margin: 0 0 8px 10px; font-size: 15px; font-weight: 500; }
+  .versions header button { all: unset; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; color: var(--tab-off); font-size: 20px; cursor: pointer; }
+  .versions .row { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; color: inherit; text-decoration: none; }
+  .versions .row:hover { background: var(--tab); }
+  .versions .row svg { width: 18px; height: 18px; fill: currentColor; }
+  .versions .row b { display: block; font-weight: 500; }
+  .versions .row small { display: block; font-size: 12px; color: var(--foot); }
+  .versions .row i { font-style: normal; font-size: 12px; color: #789f00; }
+  .versions > a { display: block; margin-top: 12px; text-align: center; color: var(--foot); text-decoration: none; font-size: 12.5px; }
+
+  /* the cursor: your request, as a seed; over the mascot, under the nav, the pill and the install panel */
+  .cursor { position: absolute; z-index: 1; left: 0; top: 0; width: 64px; height: 89px; pointer-events: none; opacity: 0; transition: opacity .15s; }
+  .cursor img { width: 100%; height: 100%; transform: rotate(180deg); filter: drop-shadow(0 6px 8px rgba(80,40,10,.28)); }
+  .cursor.fed img { animation: fed .3s ease-out; }
+  @keyframes fed { 40% { transform: rotate(180deg) scale(1.08); } }
+  .seeding .cursor { opacity: 1; }
+  /* once the mascot has eaten it, no seed in hand: the system cursor, until the one on the ground is picked up */
+  .hero.empty { cursor: auto; }
+  .hero.empty .cursor { opacity: 0; transition: none; }
+  /* that seed, standing by the mascot upright and as big as in the hand, the same seed (Elio, 13 Nov): it drops in and bounces, grows a
+     little on hover (from its base, which stays on the ground), and a click lifts it into the hand as it is, its shadow left to fade
+     on the ground (the script under the mascot); not on phones (no mascot there). Its size is the cursor's (--seed-w, --seed-h) */
+  .ground-seed { all: unset; position: absolute; z-index: 3; left: 0; top: 0; display: none; width: var(--seed-w, 64px); height: var(--seed-h, 89px); cursor: pointer;
+    transform-origin: 50% 97%; transition: scale .2s ease-out; }
+  .ground-seed.on { display: block; animation: seed-drop .7s cubic-bezier(.3, 0, .4, 1) both; }
+  .ground-seed img { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(180deg); filter: drop-shadow(0 3px 3px rgba(60, 30, 10, .25)); }
+  .ground-seed::before { content: ""; position: absolute; left: 12%; right: 12%; bottom: -2px; height: 9px; border-radius: 50%; background: rgba(50, 30, 10, .28);
+    filter: blur(2px); transition: opacity .25s; }
+  .ground-seed:hover, .ground-seed:focus-visible { scale: 1.08; }
+  .ground-seed:focus-visible { outline: 2px solid #789f00; outline-offset: 4px; border-radius: 8px; }
+  .ground-seed.taken { pointer-events: none; }
+  .ground-seed.taken img { visibility: hidden; }
+  .ground-seed.taken::before { opacity: 0; }
+  /* while it is lifted the seed in hand shows at once, where the one on the ground was */
+  .hero.lifting .cursor { transition: none; }
+  @keyframes seed-drop { 0% { transform: translateY(-140px); opacity: 0; } 12% { opacity: 1; } 60% { transform: none; } 75% { transform: translateY(-12px); } 90%, 100% { transform: none; } }
+  @media (max-width: 760px) { .ground-seed.on { display: none; } }
+  /* at night the seed glows as the footer's (Elio, 12 Nov): amber from the core (seed-night.webp), a halo round it, and on the ground a
+     pool of its light instead of a shadow */
+  :root[data-theme="dark"] .cursor img { filter: drop-shadow(0 0 6px rgba(255, 200, 100, .85)) drop-shadow(0 0 22px rgba(255, 150, 50, .62)) drop-shadow(0 0 56px rgba(255, 128, 32, .4)); }
+  :root[data-theme="dark"] .ground-seed img { filter: drop-shadow(0 0 6px rgba(255, 200, 100, .85)) drop-shadow(0 0 22px rgba(255, 150, 50, .62)) drop-shadow(0 0 56px rgba(255, 128, 32, .4)); }   /* as in the hand */
+  :root[data-theme="dark"] .ground-seed::before { left: -14px; right: -14px; bottom: -4px; height: 20px; background: radial-gradient(closest-side, rgba(255, 170, 70, .5), rgba(255, 140, 40, 0)); filter: none; mix-blend-mode: screen; }
+  @media (prefers-reduced-motion: reduce) { .ground-seed.on { animation: none; } .ground-seed, .ground-seed::before { transition: none; } }
+
+  /* the walking ant (Square only), bottom right, a little past the card's edge: 52px in from the right as in Figma, less when the install block would touch it */
+  body > .stage { position: relative; }
+  .walking { display: none; position: absolute; z-index: 6; right: max(0px, min(52px, calc(50% - 576px))); bottom: 0; width: 245px; height: 357px; overflow: hidden; pointer-events: none; }
+  .walking img { width: 245px; height: 420px; object-fit: contain; }
+  /* at night the mascot takes the night's light: a little darker, cooler, less saturated, as the painting behind it */
+  .hero .puppet, .walking img { transition: filter 1.2s ease; }
+  :root[data-theme="dark"] :is(.hero .puppet, .walking img) { filter: brightness(.84) saturate(.83) contrast(1.12); }
+
+  /* the band under the hero: the network's figures, four equal columns on the rails' width, each a small grey label over its
+     value (Geist Pixel, as the sections' figures); two columns on a phone */
+  .backers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; max-width: 1312px; margin: 0 auto; padding: 48px clamp(0px, 4vw, 64px) 40px; }
+  .backers .fig { display: flex; flex-direction: column; gap: 14px; }
+  .backers p { margin: 0; font: 400 13px/16px Geist, sans-serif; color: var(--nav-grey); }
+  .backers b { font: 400 clamp(34px, 3.6vw, 52px)/1 "Geist Pixel Var", Geist; font-variation-settings: "ELSH" var(--fig-elsh, 20); color: var(--cmd); font-variant-numeric: tabular-nums; }
+  @media (max-width: 760px) {
+    .links { display: none; }
+    .hero { height: auto; }
+    h1 { height: auto; padding: 12px 0; font-size: 46px; line-height: 50px; white-space: normal; }
+    .backers { grid-template-columns: 1fr 1fr; row-gap: 32px; padding: 32px 4px 24px; }
+    .backers b { font-size: 34px; }
+  }
+
+  /* Meadow Square, Figma 221:2 "Antseed | Homepage · Meadow 4": square corners, square tiles, the pixel title, the walking ant */
+
+  .square .content { padding-bottom: 84px; }
+  .square .cta, .square .pill { border-radius: 0; }
+  .square .pill { background: rgba(200,245,60,.12); box-shadow: inset 0 0 0 1px rgba(9,11,12,.06); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .square .install { background: rgba(255,255,255,.9); }
+  .square .install::before { mix-blend-mode: normal; }
+  .square .tabs { box-shadow: inset 0 0 0 1px #e4dfd2; }
+  .square .cmd { background: var(--cmd); }
+  .square .cmd em { color: var(--acid); }
+  .square .cmd code { color: #e9f1ec; }
+  .square .pill b { font: 400 16px/16px ABeeZee; }
+  .square h1 { display: block; height: auto; font: 400 94px/93px "Geist Pixel", Geist, sans-serif; letter-spacing: -0.06em; color: #344c28; opacity: 1; }
+  .square h1 span { color: #7b7b64; }
+  .square .walking { display: block; }
+
+  @media (max-width: 1199px) { .square .walking { display: none; } }
+
+  /* Meadow · Mascot, Figma 331:7835: the reaching mascot, the text block higher (181px down an 873px card, kept in proportion), the title tighter */
+  .mascot .hero .puppet, .whimsical .hero .puppet { display: block; }
+  .mascot .content { padding-bottom: max(78px, calc((100svh - 32px) * 0.33)); }
+  /* its intro's entrance, as Design's network prototype: the pill, the title's two lines and the install block fade up 14px in turn when the
+     network starts lighting (the script adds .go to <html>; the head's timer does it anyway). Not with reduced motion */
+  @media (prefers-reduced-motion: no-preference) {
+    .mascot:not(.go) .content > * { opacity: 0; }
+    .mascot.go .content > :is(.pill, h1, .install), .mascot.go h1 span { animation: enter .52s cubic-bezier(.45, 0, .55, 1) both; }
+    .mascot.go h1 { animation-delay: 90ms; }
+    .mascot.go h1 span { animation-delay: 200ms; }
+    .mascot.go .install { animation-delay: 380ms; }
+  }
+  @keyframes enter { from { opacity: 0; transform: translateY(14px); } }
+  /* Whimsical's arrival: the pill, the title and the install block fade up from a touch smaller, in turn, as the windows over the
+     site's paintings do (sections.css), while the painting grows in behind them (unveil.js; Elio, 12 Nov) */
+  @media (prefers-reduced-motion: no-preference) {
+    .whimsical.intro .content > :is(.pill, h1, .install) { animation: arrive-in .55s ease-out both, arrive-grow .9s cubic-bezier(.2, .9, .25, 1.12) both; }
+    .whimsical.intro .content > h1 { animation-delay: 80ms; }
+    .whimsical.intro .content > .install { animation-delay: 180ms; }
+  }
+  @keyframes arrive-in { from { opacity: 0; } }
+  @keyframes arrive-grow { from { scale: .94; } }
+
+  /* Meadow · Whimsical, Figma 348:8383 and 356:8944: the watercolour meadow itself behind the text (no mosaic; the seed cursor stays), a
+     solid white nav, a white pill, the pixel title, a warm glass panel, the shaded mascot; the text block's top at 17.2% of the card
+     (150px down an 873px one), never closer than 24px under the nav */
+  .whimsical .paint { display: block; position: absolute; inset: 73px 2px 0; overflow: hidden; background: 50% 50% / cover no-repeat; }
+  /* Each Whimsical plays a film (the script under the hero) over its first frame, which is all there is with reduced motion. Both are drawn at
+     12 a second; each loop is repeated 4 times so it restarts less often. Whimsical 1: the meadow with two ants on a leaf (720p, 2 s).
+     Whimsical 2: Figma 382:3995's framing, the card filled under the nav from the top, its bottom running past the card; clouds drifting
+     (1280×700, 2.5 s, its last half second cross-faded into its first so the drift loops) */
+  .whimsical1 .paint { background-image: url(/site/assets/hero/video/whimsical-1-poster.webp); }
+  .paint video { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .4s; }
+  .paint video.on { opacity: 1; }
+  /* Whimsical 2's day (Video, 13 Nov, approved by Elio): the meadow looping on its own (4 s, a plain sky), and over its sky five
+     painted clouds drifting across in CSS, each at its own pace (55 to 60 s), cut above the horizon. Both sit in a 16:9 stage that
+     covers the painting as object-fit: cover would, centred, so every cloud value (a share of the stage) stays on the painted sky at
+     any size. With reduced motion the film is gone (the poster) and the clouds hold the painting's own layout */
+  .paint .stage { position: absolute; inset: 0; }
+  .paint .clouds { display: none; }
+  .whimsical2 .paint { container-type: size; background-image: url(/site/assets/hero/video/hero-ground-poster.webp); background-position: 50% 50%; }
+  .whimsical2 .paint .stage { inset: auto; left: 50%; top: 50%; width: max(100cqw, 177.7778cqh); aspect-ratio: 16 / 9; min-height: 0; translate: -50% -50%; }
+  .whimsical2 .paint .stage > video { position: absolute; inset: 0; }   /* the film fills the stage, never sizes it */
+  /* The first frame can come while the hero is only half read (the film's script, right after the painting, holds the parser until the
+     styles are in): the hero is then short, and the stage, centred in it, jumped when the text arrived (a layout shift of .38 on a slow
+     phone). Until something follows the hero, which says it is whole, the stage is left out of the frame; the poster under it is there */
+  .hero:not(:has(~ *)) .paint .stage { visibility: hidden; }
+  .whimsical2 .paint .clouds { display: block; position: absolute; inset: 0; clip-path: inset(0 0 52% 0); pointer-events: none; }
+  .paint .cloud { position: absolute; display: block; height: auto; left: var(--left); top: var(--top); width: var(--w);
+    animation: drift var(--dur) linear var(--delay) infinite; will-change: transform; }
+  @keyframes drift { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(var(--travel), 0, 0); } }
+  .cloud.e2 { --left: -18.3333%; --top: 21.8519%; --w: 17.0833%; --travel: 700%; --dur: 98.33s; --delay: -95.422s; }
+  .cloud.e1 { --left: -14.2188%; --top: 2.037%; --w: 12.9688%; --travel: 890.361%; --dur: 91.67s; --delay: -77.857s; }
+  .cloud.c3 { --left: -16.5104%; --top: 30.3704%; --w: 15.2604%; --travel: 771.672%; --dur: 100.00s; --delay: -55.550s; }
+  .cloud.c2 { --left: -19.7917%; --top: 9.6296%; --w: 18.5417%; --travel: 652.809%; --dur: 96.67s; --delay: -60.687s; }
+  .cloud.c1 { --left: -39.2708%; --top: 11.8519%; --w: 38.0208%; --travel: 369.589%; --dur: 93.33s; --delay: -32.657s; }
+  /* (each 40% slower than Video's numbers, the delays with them so the painting's layout still holds at the start: Elio, 13 Nov) */
+  @media (prefers-reduced-motion: reduce) { .paint .cloud { animation-play-state: paused; } }
+  .whimsical #matrix { display: none; }
+  .whimsical nav { background: #fff; backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .whimsical .content { justify-content: flex-start; padding: max(24px, calc((100svh - 32px) * 0.172 - 69px)) 16px 24px; }
+  .whimsical .pill { background: #fff; box-shadow: inset 0 0 0 1px #fff; backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
+  .whimsical .install { background: rgba(255,253,219,.33); }
+  @media (max-width: 760px) {
+    .mascot .hero .puppet, .whimsical .hero .puppet, .whimsical2 .hero canvas.fore { display: none; }
+    .mascot .content, .whimsical .content { padding-bottom: 78px; }
+    .whimsical .content { padding-top: 78px; }
+  }   /* below ~1200px the ant would sit on the install block */
+  @media (max-width: 760px) { .square .hero { height: auto; } .square h1 { font-size: 46px; line-height: 48px; } }
+  @media (prefers-reduced-motion: reduce) { .cursor.fed img { animation: none; } }
+  /* Whimsical 2's opening (.intro): the film fills the screen and the mascot walks in; the scroll shrinks it into the card; the nav is on
+     it from the first frame, at the top of the screen (Elio, 17 Nov); the pill, the title and the install block are there from the first frame. The stage runs 80svh longer than the hero, which holds still (sticky) until
+     that scroll is played; the script under the hero sets every value from it. The card overflows the hero while it is larger (.rising),
+     never the page sideways. On a phone the card fills the screen, the block a little higher, clear of the hills */
+  /* the clip sits on the stage, widened over the body's 16px gutter: on body it reaches the viewport, which ignores it */
+  /* (the page's own stage only, body > .stage: the painting's film has a .stage of its own, which these would shift 16px left) */
+  .intro body > .stage { overflow-x: clip; margin-inline: -16px; padding-inline: 16px; }
+  .intro body > .stage::after { content: ""; display: block; height: 80svh; }
+  .intro .hero { position: sticky; top: 16px; }
+  .intro .hero.rising { overflow: visible; }
+  .intro :is(.paint, .fore) { transform-origin: 0 0; }
+  /* the painting's arrival at load (unveil.js): covered in the hero's colour from the first frame, then a canvas with holes takes over */
+  .veil .paint::after { content: ""; position: absolute; inset: 0; z-index: 3; background: var(--hero); }
+  .paint > canvas.hv { position: absolute; inset: 0; z-index: 3; width: 100%; height: 100%; pointer-events: none; }
+  /* and as it arrives the painting settles from a touch larger to its size (Elio, 12 Nov: a growth and a fade, as the site's pictures),
+     the film, the night and its fireflies, and the sky's points (their origin the painting's centre, set by dither.js) */
+  .arriving .paint > :is(.stage, .night, .flies, canvas.dz-hero) { animation: paint-settle var(--arrive, 1.5s) cubic-bezier(.2, .7, .3, 1) both; }
+  @keyframes paint-settle { from { scale: 1.07; } }
+  @media (max-width: 760px) {
+    .intro .hero { min-height: calc(100svh - 32px); }
+    .intro.whimsical .content { padding-top: 40px; }
+  }
+
+  /* Dark (<html data-theme="dark">, set by the script at the top): Figma 696:5169, "Homepage · v4 + dark". The page #0f1312, its
+     surfaces #181d1b, text #eceee9 and #9ba49e, green text #98c463, the CTAs as in light. The tokens are set on the hero's own parts
+     (not :root), so the sections keep theirs (sections.css) */
+  :root[data-theme="dark"] body { background: #0f1312; color: #eceee9; }
+  :root[data-theme="dark"] :is(.hero, .backers) {
+    --page: #0f1312; --hero: #0f1312; --surface: #181d1b; --ink: #eceee9; --title: #eceee9; --title-2: #9ba49e; --nav-grey: #9ba49e;
+    --cmd: #eceee9; --outline: rgba(236, 238, 233, .12); --tab: #181d1b; --tab-off: #9ba49e; --foot: rgba(236, 238, 233, .62); --green: #98c463;
+  }
+  /* at night the pill is neutral glass, so the hero's only green is its button */
+  :root[data-theme="dark"] .pill { background: rgba(24, 29, 27, .78); color: var(--ink); box-shadow: inset 0 0 0 .5px rgba(236, 238, 233, .16);
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  :root[data-theme="dark"] .pill .chev img { filter: invert(1); }
+  :root[data-theme="dark"] .install { box-shadow: inset 0 0 0 0.5px var(--outline), inset 0 0 0 1px rgba(255, 255, 255, .04); }
+  /* at night the switch reads on the green glass (Elio, 12 Nov): a darker tray, the thumb a lit green-grey with its own edge, the off tab lighter */
+  :root[data-theme="dark"] .tabs { background: rgba(0, 0, 0, .24); box-shadow: inset 0 0 0 1px rgba(236, 238, 233, .06); --tab-off: #b3bdb6; }
+  :root[data-theme="dark"] .tabs::before { background: rgba(190, 228, 170, .16); box-shadow: 0 0 0 1px rgba(190, 228, 170, .26); }
+  /* the green button at night: its lip a deeper green, no pale line under it */
+  :root[data-theme="dark"] .cmd { background: rgba(190, 228, 170, .1); }
+  :root[data-theme="dark"] .cmd em, :root[data-theme="dark"] .versions .row i { color: var(--green); }
+  :root[data-theme="dark"] .cmd code { color: var(--ink); }
+  :root[data-theme="dark"] .install :focus-visible, :root[data-theme="dark"] .ground-seed:focus-visible { outline-color: var(--green); }
+  :root[data-theme="dark"] .get { background: #4f7a24; color: #fafafa; }
+  :root[data-theme="dark"] .get:hover { background: #5b8a2b; }
+  :root[data-theme="dark"] .versions { background: var(--surface); box-shadow: 0 0 0 1px rgba(236, 238, 233, .1), 0 20px 48px rgba(0, 0, 0, .5); }
+  :root[data-theme="dark"] .versions::backdrop { background: rgba(0, 0, 0, .5); }
+  :root[data-theme="dark"] .versions .row:hover { background: rgba(236, 238, 233, .06); }
+  :root[data-theme="dark"] .hp-dot { background: rgba(24, 29, 27, .92); box-shadow: inset 0 0 0 0.5px rgba(236, 238, 233, .2), 0 2px 8px rgba(0, 0, 0, .3); }
+  :root[data-theme="dark"] .hp-dot::after { background: #eceee9; }
+  /* Whimsical at night: the same film, dimmed and turned blue through a multiplied wash (the sky deepest, so the title reads),
+     and fireflies over the meadow, lit like the mosaic's dots; inside the film's frame, so the opening moves them with it.
+     The nav sits on the page as in light; the pill is Figma's acid, the panel a darker glass */
+  .paint .night, .paint .flies { display: none; }
+  :root[data-theme="dark"].whimsical .paint { isolation: isolate; }
+  :root[data-theme="dark"].whimsical .paint .night { display: block; position: absolute; inset: 0; mix-blend-mode: multiply; pointer-events: none;
+    background: linear-gradient(#202a44, #34405c 38%, #56606e 62%, #5a6258); opacity: var(--night, 1); }
+  .whimsical .paint .flies { display: block; position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0; }
+  :root[data-theme="dark"].whimsical .paint .flies { opacity: var(--fireflies, 1); }
+  /* Whimsical 2 at night: no wash but the same meadow painted at night (crescent moon; ?night=a full moon, ?night=c none), still, the film
+     stopped under it. When the theme flips (.theming, the script under the hero; never on load, not with reduced motion) the night fades
+     in over the whole painting at once, evenly, and out the same way at dawn (Elio, 16 Nov: a fade, not the sweep from the sky down).
+     --fade is the night's share, 0 by day, 1 at night */
+  @property --fade { syntax: "<number>"; inherits: false; initial-value: 0; }
+  /* the switch's crossfade of the whole page (antseedTheme.set, the head script) */
+  ::view-transition-old(root), ::view-transition-new(root) { animation-duration: .6s; animation-timing-function: ease-in-out; }
+  :root.whimsical2 .paint .night, :root[data-theme="dark"].whimsical2 .paint .night { display: block; position: absolute; inset: 0; pointer-events: none;
+    mix-blend-mode: normal; background: url(/site/assets/hero/night/whimsical-2-night-b.webp) 50% 0 / cover no-repeat; --fade: 0; opacity: var(--fade); }
+  :root[data-theme="dark"].whimsical2 .paint .night { --fade: 1; }
+  :root.whimsical2 .paint[data-night="a"] .night { background-image: url(/site/assets/hero/night/whimsical-2-night-a.webp); }
+  :root.whimsical2 .paint[data-night="c"] .night { background-image: url(/site/assets/hero/night/whimsical-2-night-c.webp); }
+  .theming .paint .night { transition: --fade 1.2s ease-in-out; }
+  /* its loop (night-loop.js): the same night moving, over the still once it plays, inside the night's fade */
+  .paint .night video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 50% 0; opacity: 0; transition: opacity .8s; }
+  .paint .night video.on { opacity: 1; }
+  /* the fireflies (fireflies.js): a canvas inside the night (Whimsical 2), so its fade brings them and takes them, in step */
+  :root[data-theme="dark"].whimsical nav { background: var(--page); }
+  /* at night the install card is the Gateway terminal's glass (sections.css .term, Elio, 12 Nov): smoked green, its green hairline and inner light */
+  :root[data-theme="dark"].whimsical .install { background: rgba(14, 33, 23, .64);
+    box-shadow: inset 0 0 0 .5px rgba(150, 200, 145, .42), inset 0 .5px 0 0 rgba(190, 228, 170, .16), 0 12px 32px 0 rgba(8, 26, 14, .26);
+    backdrop-filter: blur(10px) saturate(1.3); -webkit-backdrop-filter: blur(10px) saturate(1.3); }
+</style>
+</head>
+<body data-parts="cta-band">
+<div class="stage">
+<section class="hero" id="hero">
+  <div class="paint"><div class="stage"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" muted autoplay loop playsinline preload="none" aria-hidden="true"></video><div class="clouds" aria-hidden="true"><img class="cloud e2" src="/site/assets/hero/clouds/cloud-e2.webp" alt="" decoding="async"><img class="cloud e1" src="/site/assets/hero/clouds/cloud-e1.webp" alt="" decoding="async"><img class="cloud c3" src="/site/assets/hero/clouds/cloud-c3.webp" alt="" decoding="async"><img class="cloud c2" src="/site/assets/hero/clouds/cloud-c2.webp" alt="" decoding="async"><img class="cloud c1" src="/site/assets/hero/clouds/cloud-c1.webp" alt="" decoding="async"></div></div><i class="night"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" muted loop playsinline preload="none" aria-hidden="true" data-src="/site/assets/hero/night/whimsical-2-night-b-loop.mp4"></video><canvas class="flies" aria-hidden="true"></canvas></i></div>
+  <script>{   // The Whimsicals' film. Muted before it has a source (what Safari needs to autoplay it), shown over the poster (the .paint
+    // behind it) only once it actually plays; if autoplay is refused (Safari's Low Power Mode, a data saver) it starts on the first move,
+    // tap or key. Elsewhere, and with reduced motion, there is no film: the poster alone.
+    // It is asked for only once the page has loaded (1.2 MB that would otherwise race the poster, the type and the styles): the poster is
+    // its first frame, so the picture is whole from the start and the film takes over from it as before
+    const paint = document.currentScript.previousElementSibling, v = paint.querySelector('video'), c = document.documentElement.classList;
+    const film = c.contains('whimsical1') ? 'whimsical-1' : c.contains('whimsical2') ? 'whimsical-2' : null;
+    const night = new URLSearchParams(location.search).get('night');   // ?night=a or c: Whimsical 2's other two nights
+    if (night === 'a' || night === 'c') paint.dataset.night = night;
+    // Whimsical 2 at night shows its night painting, still: the film waits under it
+    const still = () => film === 'whimsical-2' && document.documentElement.dataset.theme === 'dark';
+    if (film && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      v.muted = v.defaultMuted = true;
+      v.addEventListener('playing', () => v.classList.add('on'), { once: true });
+      const start = () => {
+        v.src = film === 'whimsical-2'   // the day's ground loop, WebM where it plays, else MP4 (Safari)
+          ? `/site/assets/hero/video/hero-ground-loop.${v.canPlayType('video/webm; codecs="vp9"') ? 'webm' : 'mp4'}`
+          : `/site/assets/hero/video/${film}.mp4`;
+        const go = () => (still() ? v.pause() : v.play().catch(() => {}));
+        (still() ? Promise.reject() : v.play()).catch(() => { for (const e of ['pointermove', 'pointerdown', 'keydown', 'touchstart']) addEventListener(e, go, { once: true, passive: true }); });
+        // paused while the hero is off screen or the tab hidden, so it decodes nothing nobody sees
+        let seen = true;
+        const sync = () => (seen && !document.hidden ? go() : v.pause());
+        new IntersectionObserver(([e]) => { seen = e.isIntersecting; sync(); }).observe(v.parentElement);
+        document.addEventListener('visibilitychange', sync);
+        document.addEventListener('themechange', sync);
+      };
+      if (document.readyState === 'complete') start(); else addEventListener('load', start, { once: true });
+    } else v.remove();
+  }</script>
+  <script type="module" src="/site/hero/fireflies.js"></script>   <!-- the night's fireflies, flying (the hero's here, the footer's once it is in) -->
+  <script type="module" async src="/site/hero/unveil.js"></script>   <!-- the painting's arrival, as soon as the painting is there (not after the whole page) -->
+  <canvas id="matrix"></canvas>
+  <canvas id="puppet" class="puppet"></canvas>
+  <canvas id="fore" class="fore" aria-hidden="true"></canvas>   <!-- the painting's nearest leaves, in front of the mascot (the script after the mascot's) -->
+  <button class="ground-seed" type="button" aria-label="Pick up the seed"><img src="/site/assets/hero/seed-day.webp" alt=""></button>
+  <nav>
+    <a href="/" aria-label="Antseed"><img src="/site/assets/hero/logo.svg" width="95.3464" height="33" alt="Antseed"></a>
+    <div class="links"><a href="/network/">Network</a>
+      <div class="dd"><button type="button" class="dd-t" aria-expanded="false" aria-controls="dd-prov">Providers<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3"/></svg></button>
+        <div class="dd-m" id="dd-prov" hidden>
+          <a href="/providers/"><b>Own provider</b><span>Sell your models or AI service at your price</span></a>
+          <a href="/colony/"><b>Join a Colony</b><span>Share your computer with a pool while you’re away</span></a>
+        </div>
+      </div>
+      <a href="/ecosystem/">Ecosystem</a><a href="https://antseedstats.com/network" target="_blank" rel="noopener noreferrer">Live prices&nbsp;↗</a>
+    </div>
+    <div class="acts"><div class="nav-txt"><a href="https://antseed.com/docs/">Docs</a><a href="https://antseed.com/blog/">Blog</a></div><button type="button" class="theme-btn" id="nav-theme" role="switch" aria-checked="false" aria-label="Dark theme"><span class="i-sun"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></span><span class="i-moon"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z"/></svg></span><i class="knob" aria-hidden="true"></i></button><a class="cta ghost" href="https://antseed.com/docs/quickstart/">Set Up Gateway</a><a class="cta" id="nav-get" href="https://github.com/Antseed/antseed/releases/latest" target="_blank" rel="noopener noreferrer"><span class="long">Download Desktop</span><span class="short">Download</span></a><button type="button" class="menu-btn" aria-expanded="false" aria-controls="site-menu">Menu</button></div>
+  </nav>
+<script src="/site/hero/nav.js" defer></script>
+<script src="/site/hero/site-nav.js" defer></script>
+  <div class="content">
+    <a class="pill" href="/blog" data-placeholder="page"><span>We raised <b>$2.4M</b>, led by Spark Capital</span><span class="chev"><img src="/site/assets/hero/chevron-right.svg" width="12" height="12" alt=""></span></a>
+    <h1>The open <span>intelligence network</span></h1>
+    <div class="install"><i class="cta-wash" aria-hidden="true"></i>
+      <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+        <symbol id="os-mac" viewBox="0 0 20 20"><path d="M9.72749 6.01831C8.99749 6.01831 7.86749 5.18831 6.67749 5.21831C5.10749 5.23831 3.66749 6.12831 2.85749 7.53831C1.22749 10.3683 2.43749 14.5483 4.02749 16.8483C4.80749 17.9683 5.72749 19.2283 6.94749 19.1883C8.11749 19.1383 8.55749 18.4283 9.97749 18.4283C11.3875 18.4283 11.7875 19.1883 13.0275 19.1583C14.2875 19.1383 15.0875 18.0183 15.8575 16.8883C16.7475 15.5883 17.1175 14.3283 17.1375 14.2583C17.1075 14.2483 14.6875 13.3183 14.6575 10.5183C14.6375 8.17831 16.5675 7.05831 16.6575 7.00831C15.5575 5.39831 13.8675 5.21831 13.2775 5.17831C11.7375 5.05831 10.4475 6.01831 9.72749 6.01831ZM12.3275 3.65831C12.9775 2.87831 13.4075 1.78831 13.2875 0.708313C12.3575 0.748313 11.2375 1.32831 10.5675 2.10831C9.96749 2.79831 9.44749 3.90831 9.58749 4.96831C10.6175 5.04831 11.6775 4.43831 12.3275 3.65831Z"/></symbol><symbol id="os-win" viewBox="0 0 20 20"><path d="M2.50083 4.56583L8.64833 3.71917V9.65833H2.5L2.50083 4.56583ZM2.50083 15.4342L8.64833 16.2817V10.415H2.5L2.50083 15.4342ZM9.32417 16.3717L17.5008 17.5V10.415H9.32417V16.3717ZM9.32417 3.62833V9.65833H17.5008V2.5L9.32417 3.62833Z"/></symbol><symbol id="os-linux" viewBox="0 0 24 24"><path d="M14.62 8.35c-.42.28-1.75 1.04-1.95 1.19c-.39.31-.75.29-1.14-.01c-.2-.16-1.53-.92-1.95-1.19c-.48-.31-.45-.7.08-.92c1.64-.69 3.28-.64 4.91.03c.49.21.51.6.05.9m7.22 7.28c-.93-2.09-2.2-3.99-3.84-5.66a4.3 4.3 0 0 1-1.06-1.88c-.1-.33-.17-.67-.24-1.01c-.2-.88-.29-1.78-.7-2.61c-.73-1.58-2-2.4-3.84-2.47c-1.81.05-3.16.81-3.95 2.4c-.21.43-.36.88-.46 1.34c-.17.76-.32 1.55-.5 2.32c-.15.65-.45 1.21-.96 1.71c-1.61 1.57-2.9 3.37-3.88 5.35c-.14.29-.28.58-.37.88c-.19.66.29 1.12.99.96c.44-.09.88-.18 1.3-.31c.41-.15.57-.05.67.35c.65 2.15 2.07 3.66 4.24 4.5c4.12 1.56 8.93-.66 9.97-4.58c.07-.27.17-.37.47-.27c.46.14.93.24 1.4.35c.49.09.85-.16.92-.64c.03-.26-.06-.49-.16-.73"/></symbol>
+      </svg>
+      <div class="tabs" role="tablist" aria-label="How to start">
+        <button type="button" role="tab" id="tab-app" aria-selected="true" aria-controls="panel-app">Desktop app</button>
+        <button type="button" role="tab" id="tab-gateway" aria-selected="false" aria-controls="panel-gateway" tabindex="-1">Set up AI gateway</button>
+      </div>
+      <div class="panels">
+        <div class="panel" id="panel-gateway" role="tabpanel" aria-labelledby="tab-gateway" inert>
+          <div class="cmd"><em>$</em><code>curl -fsSL https://antseed.com/install.sh | bash</code>
+            <button class="copy" type="button" aria-label="Copy"><img src="/site/assets/hero/copy.svg" width="14" height="14" alt=""></button></div>
+          <p class="foot">Paste it into a terminal or your agent. <a href="https://antseed.com/docs/quickstart/">Gateway docs →</a></p>
+        </div>
+        <div class="panel" id="panel-app" role="tabpanel" aria-labelledby="tab-app">
+          <div class="cmd app-row"><span>Antseed Desktop</span>
+            <a class="get" href="https://download.antseed.com/vpr/mac-arm64" target="_blank" rel="noopener noreferrer"><svg aria-hidden="true"><use href="#os-mac"/></svg><span class="long">Download for macOS</span><span class="short">Download</span></a></div>
+          <p class="foot"><span class="others">Also on Windows and Linux.</span> <button class="all" type="button">All versions →</button></p>
+        </div>
+      </div>
+      <dialog class="versions" aria-label="All download versions">
+        <header>Download Antseed Desktop<button type="button" aria-label="Close">×</button></header>
+        <a class="row" href="https://download.antseed.com/vpr/mac-arm64"><svg><use href="#os-mac"/></svg><span><b>macOS</b><small>Apple Silicon</small></span></a>
+        <a class="row" href="https://download.antseed.com/vpr/mac-x64"><svg><use href="#os-mac"/></svg><span><b>macOS</b><small>Intel</small></span></a>
+        <a class="row" href="https://download.antseed.com/vpr/win-x64"><svg><use href="#os-win"/></svg><span><b>Windows</b><small>x64 installer</small></span></a>
+        <a class="row" href="https://download.antseed.com/vpr/linux-x64"><svg><use href="#os-linux"/></svg><span><b>Linux</b><small>AppImage · x86_64</small></span></a>
+        <a class="row" href="https://download.antseed.com/vpr/linux-arm64"><svg><use href="#os-linux"/></svg><span><b>Linux</b><small>AppImage · ARM64</small></span></a>
+        <a href="https://github.com/AntSeed/antseed/releases" target="_blank" rel="noopener noreferrer">Older versions &amp; .deb packages →</a>
+      </dialog>
+    </div>
+  </div>
+  <div class="cursor" id="cursor"><img src="/site/assets/hero/seed-day.webp" alt=""></div>
+  <script>{   // Day and night. The seed in hand and on the ground: the day one, or at night the one glowing amber. When the theme flips (the
+    // footer's switch, or the system's), <html> is .theming for 2 s: the paintings change over 1.2 to 1.8 s (the night's fade, the fireflies, the footer's sun:
+    // the styles above and footer.css), the seeds light up last going to night and go out first going to day ('seedink' tells the
+    // mascot's canvas). Never on load, nothing with reduced motion
+    const root = document.documentElement, calm = matchMedia('(prefers-reduced-motion: reduce)');
+    const seeds = document.currentScript.parentElement.querySelectorAll('.ground-seed img, .cursor img');
+    const ink = () => {
+      const src = `/site/assets/hero/seed-${root.dataset.theme === 'dark' ? 'night' : 'day'}.webp`;
+      for (const i of seeds) if (i.getAttribute('src') !== src) i.src = src;
+      document.dispatchEvent(new Event('seedink'));
+    };
+    ink();
+    let lit, done;
+    document.addEventListener('themechange', () => {
+      clearTimeout(lit); clearTimeout(done);
+      if (calm.matches) { root.classList.remove('theming'); ink(); return; }
+      root.classList.add('theming');
+      lit = setTimeout(ink, root.dataset.theme === 'dark' ? 900 : 0);
+      done = setTimeout(() => root.classList.remove('theming'), 2000);   // the footer's sun takes 1.8 s
+    });
+  }</script>
+</section>
+<div class="walking"><img src="/site/assets/hero/ant-walk.png" width="245" height="420" alt="" loading="lazy"></div>
+</div>
+<script>
+// Whimsical 2's opening (.intro), played by the scroll over the stage's extra 80svh (progress p, 0 to 1). At 0 the film fills the screen;
+// toward 1 it shrinks into the card: scaled as one (its frame keeps its shape), trimmed to a box that eases from the screen to the card.
+// The mascot's canvas moves with the card's bottom right corner (heroCard: how far, read by the mascot for its eyes). The nav is there
+// from the first frame, opaque, at the very top and as wide as the screen, and eases with the box to its place on the card (Elio, 17 Nov). The leaves in front of the mascot (canvas.fore) are the painting's own, so they move as it does (heroCard.x, y, s:
+// the painting's top left in the hero and its scale, read by their drawing; heroCard.fore, that drawing, asked again on every change). The pill, the title and the install block stay in their place from the first frame, over the film.
+// Set before the first paint, then once per frame only while p changes; at 1 every value is cleared, so the hero is exactly as it was.
+window.heroCard = { dx: 0, dy: 0, p: 1 };
+if (document.documentElement.classList.contains('intro')) {
+  const card = window.heroCard, stage = document.querySelector('.stage'), hero = document.getElementById('hero'), paint = hero.querySelector('.paint');
+  const nav = hero.querySelector('nav'), puppet = document.getElementById('puppet'), fore = document.getElementById('fore');
+  const clamp = (v) => Math.min(1, Math.max(0, v)), inOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (2 - 2 * t) ** 3 / 2);
+  let m, shown = -1, queued = false;
+  // the screen and the card as laid out (transforms do not count), in hero px
+  function measure() {
+    const cw = paint.offsetWidth, ch = paint.offsetHeight, vt = -parseFloat(getComputedStyle(hero).top), vw = document.documentElement.clientWidth, vh = innerHeight;
+    m = { cl: paint.offsetLeft, ct: paint.offsetTop, cw, ch, vl: -hero.offsetLeft, vt, vw, vh, s0: Math.max(vw / cw, vh / ch, 1), hw: hero.offsetWidth, run: stage.offsetHeight - hero.offsetHeight };
+  }
+  function apply(p) {
+    shown = p; card.p = p;
+    hero.classList.toggle('rising', p < 1);
+    if (p >= 1) {
+      card.dx = card.dy = 0; card.x = m.cl; card.y = m.ct; card.s = 1; card.fore?.();
+      for (const el of [paint, fore, nav, puppet]) el.style.removeProperty('transform'), el.style.removeProperty('clip-path'), el.style.removeProperty('opacity'), el.style.removeProperty('translate'), el.style.removeProperty('width');
+      return;
+    }
+    // the card: the box eased from the screen to the card, the film scaled to cover it, centred across it and from its top
+    const e = inOut(p), at = (a, b) => a + (b - a) * e, s = at(m.s0, 1);
+    const L = at(m.vl, m.cl), T = at(m.vt, m.ct), R = at(m.vl + m.vw, m.cl + m.cw), B = at(m.vt + m.vh, m.ct + m.ch), X = (L + R) / 2 - m.cw * s / 2;
+    const side = (m.cw * s - (R - L)) / 2 / s;
+    for (const el of [paint, fore]) {
+      el.style.transform = `translate(${X - m.cl}px, ${T - m.ct}px) scale(${s})`;
+      el.style.clipPath = `inset(0 ${side}px ${(m.ch * s - (B - T)) / s}px ${side}px)`;
+    }
+    card.dx = R - (m.cl + m.cw); card.dy = B - (m.ct + m.ch); card.x = X; card.y = T; card.s = s; card.fore?.();
+    puppet.style.translate = `${card.dx}px ${card.dy}px`;
+    // the nav: on the box's top edge and across its width, from the screen's top to its own place on the card
+    nav.style.transform = `translateY(${(1 - e) * m.vt}px)`; nav.style.width = `calc(100% + ${(1 - e) * (m.vw - m.hw)}px)`;
+  }
+  const progress = () => clamp(scrollY / m.run);
+  const tick = () => { queued = false; const p = progress(); if (p !== shown) apply(p); };
+  addEventListener('scroll', () => { if (!queued && progress() !== shown) { queued = true; requestAnimationFrame(tick); } }, { passive: true });
+  const again = () => { measure(); apply(progress()); };
+  measure(); apply(progress());
+  addEventListener('resize', again);
+  new ResizeObserver(again).observe(hero);
+  document.fonts.ready.then(again);
+}
+</script>
+<!-- the network, live: four columns, each a small label over its value. The figures are AntSeedStats' (antseedstats.com):
+     as written here by hand, then models.json's (active users and tokens, kept by node texture-lab/models-refresh.mjs, as the API has neither),
+     then its API's, read by the page (models and providers) -->
+<div class="backers">
+  <div class="fig"><p>Active users</p><b data-fig="users">19,252</b></div>
+  <div class="fig"><p>Tokens consumed</p><b data-fig="tokens">742.8B</b></div>
+  <div class="fig"><p>Models</p><b data-fig="models">906</b></div>
+  <div class="fig"><p>Providers</p><b data-fig="providers">267</b></div>
+</div>
+<!-- the rest of the homepage: sections.html, sections.css, sections.js -->
+<div id="sections"></div>
+<link rel="stylesheet" href="/site/hero/sections.css">
+<link rel="stylesheet" href="/site/hero/micro.css">
+<link rel="stylesheet" href="/site/hero/launch.css">
+<link rel="stylesheet" href="/site/hero/privacy-v4.css">
+<link rel="stylesheet" href="/site/hero/providers-v4.css">
+<link rel="stylesheet" href="/site/hero/gw-film.css">
+<script>
+// The install block, as on antseed.com: the tabs (click, or the arrow keys, Home and End), the copy button, and the desktop app's download
+// for this computer (a phone gets the releases page), marked "Detected" in the list of every build. And the band's live figures
+{
+  // the thumb slides to the chosen tab; the panel leaving and the one arriving both slide a little the same way, fading (not with reduced motion)
+  const list = document.querySelector('.tabs'), tabs = [...list.querySelectorAll('[role="tab"]')], panel = (t) => document.getElementById(t.getAttribute('aria-controls'));
+  const calm = matchMedia('(prefers-reduced-motion: reduce)'), motion = { duration: 350, easing: 'cubic-bezier(.65, 0, .35, 1)' };
+  let current = 0;
+  const thumb = () => { const t = tabs[current]; list.style.setProperty('--tx', `${t.offsetLeft}px`); list.style.setProperty('--tw', `${t.offsetWidth}px`); };
+  thumb(); new ResizeObserver(thumb).observe(list);
+  document.fonts.ready.then(() => { thumb(); list.offsetWidth; list.classList.add('ready'); });   // placed first, then it may slide
+  const show = (tab, focus) => {
+    const i = tabs.indexOf(tab);
+    if (focus) tab.focus();
+    if (i === current) return;
+    const d = Math.sign(i - current), from = panel(tabs[current]), to = panel(tab);
+    for (const t of tabs) { const on = t === tab; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1; panel(t).inert = !on; }
+    current = i; thumb();
+    if (calm.matches) return;
+    from.animate([{ opacity: 1, transform: 'none', visibility: 'visible' }, { opacity: 0, transform: `translateX(${12 * d}px)`, visibility: 'visible' }], motion);
+    to.animate([{ opacity: 0, transform: `translateX(${-12 * d}px)` }, { opacity: 1, transform: 'none' }], motion);
+  };
+  tabs.forEach((t, i) => {
+    t.addEventListener('click', () => show(t));
+    t.addEventListener('keydown', (e) => {
+      const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
+      if (to === undefined) return;
+      e.preventDefault(); show(tabs[(to + tabs.length) % tabs.length], true);
+    });
+  });
+
+  const copy = document.querySelector('.copy'), icon = copy.querySelector('img');
+  // the Clipboard API needs https (or localhost) and permission: otherwise the older way, through a selected textarea
+  const write = async (text) => {
+    try { await navigator.clipboard.writeText(text); return true; } catch {
+      const t = Object.assign(document.createElement('textarea'), { value: text }); document.body.append(t); t.select();
+      const ok = document.execCommand('copy'); t.remove(); return ok;
+    }
+  };
+  copy.addEventListener('click', async () => {
+    if (!await write(document.querySelector('.cmd code').textContent)) return;
+    icon.src = '/site/assets/hero/check.svg'; copy.ariaLabel = 'Copied';
+    clearTimeout(copy.timer); copy.timer = setTimeout(() => { icon.src = '/site/assets/hero/copy.svg'; copy.ariaLabel = 'Copy'; }, 1500);
+  });
+
+  const ua = navigator.userAgent, get = document.querySelector('.get'), versions = document.querySelector('.versions');
+  const os = /Win/.test(ua) ? 'win-x64' : /Linux/.test(ua) ? (/aarch64|arm64/i.test(ua) ? 'linux-arm64' : 'linux-x64') : 'mac-arm64';
+  // the button names this computer's system, the line under it the other two; a phone gets every system's releases
+  const NAMES = { mac: 'macOS', win: 'Windows', linux: 'Linux' }, family = os.split('-')[0], others = document.querySelector('.others');
+  if (/iPhone|iPad|Android/i.test(ua)) {
+    get.href = 'https://github.com/AntSeed/antseed/releases/latest'; get.querySelector('svg').remove();
+    get.querySelector('.long').textContent = 'Download'; others.textContent = 'For macOS, Windows and Linux.';
+  } else {
+    get.href = document.getElementById('nav-get').href = `https://download.antseed.com/vpr/${os}`; get.querySelector('use').setAttribute('href', `#os-${family}`);
+    get.querySelector('.long').textContent = `Download for ${NAMES[family]}`;
+    others.textContent = `Also on ${Object.keys(NAMES).filter((f) => f !== family).map((f) => NAMES[f]).join(' and ')}.`;
+    versions.querySelector(`.row[href$="/${os}"]`).append(Object.assign(document.createElement('i'), { textContent: 'Detected' }));
+  }
+  document.querySelector('.all').addEventListener('click', () => versions.showModal());
+  versions.querySelector('header button').addEventListener('click', () => versions.close());
+  versions.addEventListener('click', (e) => {   // a click on the backdrop closes it
+    const r = versions.getBoundingClientRect();
+    if (e.target === versions && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)) versions.close();
+  });
+
+  // the band: the figures from models.json (active users, tokens), then AntSeedStats' API (models,
+  // providers), each kept as written when its source does not answer
+  const backers = document.querySelector('.backers');
+  // the figures count up (from about 70% of what is written, never from 0) as the band comes into view, once (count.js, as $ANTS's); a live value that lands meanwhile becomes the count's end
+  const count = import('./count.js').then((c) => { c.figures(backers, '[data-fig]'); return c; });
+  const fig = (key, n) => { const el = backers.querySelector(`[data-fig="${key}"]`); if (el && n > 0) count.then((c) => c.set(el, n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n.toLocaleString('en-US'))); };
+  const json = (url) => fetch(url).then((r) => (r.ok ? r.json() : Promise.reject(r.status)));
+  json('models.json').then(({ network: n }) => { fig('users', n?.users); fig('tokens', n?.tokens); }).catch(() => {});
+  json('https://antseedstats.com/api/v1/network/summary').then(({ data }) => fig('providers', data.lifetime.sellers)).catch(() => {});
+  json('https://antseedstats.com/api/v1/models?limit=1').then(({ data }) => fig('models', data.total)).catch(() => {});
+}
+</script>
+<script type="module">import('./dither.js'); document.getElementById('sections').innerHTML = await (await fetch('sections.html')).text(); import('./parts.js'); import('./sections.js'); import('./gw-film.js'); import('./micro.js'); import('./card-unveil.js'); import('./wash-led.js'); import('./night-loop.js'); import('./footer-eyes.js'); import('./fireflies.js').then((m) => m.scan());</script>
+<script type="module">
+import { settings, paperOf, heroPanel, store } from '/site/assets/hero-panel.js';
+// The background is a watercolour meadow with flat paper in the middle (assets/hero/meadow-*.png),
+// turned into a mosaic in three steps: one colour per tile, a glow behind the text set here, then each
+// tile's opacity from its colour, so the paper drops out and the leaves and daisies stay.
+// Ants are olive pixels walking the grid. Hover: the cursor becomes a seed (your seed) and the ants
+// near it line up behind it in single file, following its path. The ant at the head is served every
+// `serve` ms: it walks off with a piece of the seed and drops it further out, where a small seed pops.
+// The nearest ants go to that seed, take from it and carry it further in turn, a few hops; each seed
+// gives a piece or two, then fades. Every seed comes from the cursor's, never more than `maxSeeds` at once.
+// Click: the seed goes out to the whole network, every ant comes.
+
+// ── settings ─────────────────────────────────────────────────────────────
+// Everything the hero is tuned by. The settings panel (P, or ?panel: it loads only then; assets/hero-panel.js) binds to
+// S, a live copy of this block; its "Copy settings" button gives this block back with the current values.
+const DEFAULTS = {
+  // the mosaic: the Figma grid (CSS px), square tiles or round dots (dot: their diameter), and the paper under the see-through tiles (or read off the watercolour)
+  source: 'auto', cell: 15.5, tile: 11.5, shape: 'round', dot: 13, paper: '#fdfdff', paperFromImage: false,
+  // the watercolour first goes through gamma (above 1 lightens the mid-tones) and brightness (added, as a share of white);
+  // then a tile's opacity rises with its ink (colour, or darkness against the paper) from low to high; below low it is gone
+  gamma: 1, brightness: 0, saturation: 1.1, contrast: 1.08, low: 0.07, high: 0.24,
+  // the glow: an ellipse round the text where tiles fade out, in multiples of the text block
+  glowStrength: 0.9, glowWidth: 1.2, glowHeight: 1.45, glowSoft: 0.65,
+  // the ants: size in px, one per `antPer` cells; serve in ms; pace scales every step time
+  antSize: 7.5, antInk: '#546818', antPer: 70, maxQueue: 28, serve: 650, pace: 1,
+  // the trail they leave (strength, seconds to fade by half, colour), and how many cells behind the seed the line starts
+  trail: 0.3, trailLength: 0.38, trailInk: '#0a1a12', queueOffset: 1,
+  // the seeds they carry: how far (cells), how many hops, how long they last (s), how many at once, colour, size in px
+  dropFirstNear: 8, dropFirstFar: 18, dropNextNear: 6, dropNextFar: 14, hops: 3, lifeMin: 6, lifeMax: 9, maxSeeds: 4,
+  seedInk: '#b86746', seedSize: 8,
+  // the cursor seed (px wide), and the colours of the heat round it and the ripple when an ant is served
+  cursorSize: 64, halo: true, wave: true, ripple1: '#c8f53c', ripple2: '#f6c445', ripple3: '#e8742c',
+  // Meadow · Mascot's intro, once at load: when its peers wake (ms after the title starts, spread over netSpread), how fast their
+  // ripples run (cells a second) and how far they bend the grid (px)
+  netWake: 520, netSpread: 360, netSpeed: 28, netBend: 4.5,
+  // the mascot at the bottom right (Meadow only): shown, its width, how far its drawn edge sits from the card's right (px, negative runs
+  // past it), the share of its height cut off by the bottom edge; how near the pointer (px) wakes it, how fast it moves, how far the
+  // arms lift from rest (deg), how far its pupils travel (0 to 1), how wide its mouth opens (px of the art)
+  mascotOn: true, mascotSize: 420, mascotInset: 40, mascotCrop: 0.22, mascotReach: 420, armSpeed: 6, armLift: 150, pupilTravel: 0.8, mouthSize: 30,
+  // how many times a second it is drawn: 0 = every frame; the Whimsicals draw it at their films' 12, as by hand (the pointer is still read at once)
+  mascotFps: 0,
+  // the seed: within `squintReach` px of the bridge of its nose its eyes cross on it, more as it nears; within `catchReach` px of its
+  // mouth it takes it, chews it in three bites over `chewTime` ms (crumbs per bite), swallows, and a new one lies on the ground by it.
+  squintReach: 150, catchReach: 30, chewTime: 1200, crumbs: 5,
+  // Whimsical's ant: each part graded once, a gamma (above 1 deepens the browns and keeps the eye whites white) then a saturation,
+  // and the strength of the white rim lit from the title. Whimsical 2's paler meadow starts softer (see BASE below)
+  antGamma: 1.6, antSaturation: 1, rimAlpha: 0.28,
+  // the key figures below the hero, in Geist Pixel: the shape of its dots (ELSH: 1 square, 20 round, 40 grid) and their size, a multiple
+  // of the Geist size they replace, never wider than their column (not on a phone, where they already fill it)
+  figElsh: 20, figSize: 1.3,
+  // the eyebrows ("Backed by", the small links above the section titles) in the same font: dot shape, and size as a multiple of their Geist size
+  ebElsh: 20, ebSize: 1.125,
+  // a proposal: one of the direction's six watercolour washes inside the CTA panel, under its content, at this opacity ('none': as it is)
+  ctaWash: 'none', ctaWashOpacity: 0.5,
+  // dark (<html data-theme="dark">), Figma 696:5169's lit mosaic: the paper and the unlit dots; a tile lights up with its colour (chroma)
+  // from litFrom to litTo, its hue kept (greens pulled toward lime), its saturation × litSat (plus a floor) and its lightness at litLight;
+  // the lit ones glow like LEDs (strength, blur px; drawn once into the mosaic at rest, never per frame); the ants, their trail and the
+  // seeds in night colours, the ants with a glow too. Whimsical at night: the strength of the blue wash over the film, and the fireflies'
+  darkPaper: '#0f1312', darkDot: '#2b312e', litFrom: 0.07, litTo: 0.2, litSat: 1.6, litLight: 0.62, litGlow: 0.6, litGlowSize: 7,
+  darkAntInk: '#a6e05a', darkTrailInk: '#98c463', darkSeedInk: '#ffb347', night: 1, fireflies: 1,
+};
+// The version, from <html> (see the top of the page). Meadow and Meadow · Mascot share their saved settings and presets (the same
+// mosaic); Whimsical 1, Whimsical 2 and Square keep their own. Square starts from this block with square tiles, the Whimsicals with the
+// mascot at 12 drawings a second. Whimsical 1 has Figma's standing ant (373:5), ungraded (Figma only adds the rim), at the right edge
+// as in Figma but smaller, clear of the install block;
+// Whimsical 2 a softer grade of the rigged one, nearer the art as drawn
+const VARIANT = ['mascot', 'whimsical', 'square'].find((v) => document.documentElement.classList.contains(v)) || '';
+const SQUARE = VARIANT === 'square', WHIMSICAL = VARIANT === 'whimsical', MASCOT = VARIANT === 'mascot' || WHIMSICAL;
+const WHIMSICAL2 = document.documentElement.classList.contains('whimsical2'), WHIMSICAL1 = WHIMSICAL && !WHIMSICAL2;
+const PAGE = SQUARE || WHIMSICAL ? `meadow-${VARIANT}${WHIMSICAL2 ? '2' : ''}` : 'meadow';
+const BASE = SQUARE ? { ...DEFAULTS, shape: 'square' } : WHIMSICAL ? { ...DEFAULTS, mascotFps: 24, ...(WHIMSICAL2 ? { antGamma: 1.45, rimAlpha: 0.14 }
+  : { antGamma: 1, mascotSize: 360, mascotInset: 34, mascotCrop: 0.26 }) } : DEFAULTS;
+const S = settings(PAGE, BASE);   // ?demo and ?still: the file's values, no panel
+if (!store.get(`${PAGE}.shapePicked`)) S.shape = BASE.shape;   // a saved shape counts only once picked in the panel
+const params = new URLSearchParams(location.search);
+// Meadow · Mascot plays its network intro once at load (see "the intro"); not with reduced motion, nor for captures
+const NET = VARIANT === 'mascot' && !matchMedia('(prefers-reduced-motion: reduce)').matches && !params.has('demo') && !params.has('still');
+// The watercolours the mosaic can be sampled from. auto: the wide meadow, the tall one on portrait screens.
+const PLATES = {
+  auto: ['meadow, auto', null],
+  'meadow-wide': ['meadow wide', '/site/assets/hero/meadow-wide.webp'],
+  'meadow-tall': ['meadow tall', '/site/assets/hero/meadow-tall.webp'],
+  'meadow-banner': ['meadow banner', '/site/assets/hero/meadow-banner.png'],
+  'meadow-poster': ['meadow poster', '/site/assets/hero/meadow-poster.png'],
+  'meadow-wide-a': ['meadow wide a', '/site/assets/hero/generated/meadow-wide-a.png'],
+  'meadow-wide-b': ['meadow wide b', '/site/assets/hero/generated/meadow-wide-b.png'],
+  'meadow-tall-a': ['meadow tall a', '/site/assets/hero/generated/meadow-tall-a.png'],
+  'meadow-banner-a': ['meadow banner a', '/site/assets/hero/generated/meadow-banner-a.png'],
+  'meadow-banner-b': ['meadow banner b', '/site/assets/hero/generated/meadow-banner-b.png'],
+  'meadow-poster-a': ['meadow poster a', '/site/assets/hero/generated/meadow-poster-a.png'],
+  background: ['hero background', '/site/assets/hero/background.png'],
+  'seed-meadow': ['seed meadow', '/site/assets/seed-meadow.png'],
+  sky: ['sky watercolour', '/site/assets/watercolor.png'],
+  file: ['your file', null],
+};
+if (!PLATES[S.source]) S.source = 'auto';
+
+let OX = 2, OY = 2;   // the grid's top-left tile, set by layout()
+const hero = document.getElementById('hero'), canvas = document.getElementById('matrix'), ctx = canvas.getContext('2d');
+const cursorEl = document.getElementById('cursor');
+const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const rand = (n) => Math.floor(Math.random() * n);
+const clampI = (v, a, b) => Math.max(a, Math.min(b, v));
+const between = ([a, b]) => a + Math.random() * (b - a);
+const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const clear = (i, j) => smooth(0.2, 0.85, veil[j * cols + i]);   // 0 in the glow behind the text, 1 outside
+
+// the colours, as numbers, from S (again whenever a setting changes or the theme flips); and the pixel type: figures and eyebrows (sections.css)
+let DARK = document.documentElement.dataset.theme === 'dark';
+let PAPER, INK, RIPPLE, DOT, antSprite = null;
+function colours() {
+  const paper = DARK ? S.darkPaper : S.paper;
+  PAPER = rgb(paper); hero.style.setProperty('--hero', paper); INK = rgb(DARK ? S.darkTrailInk : S.trailInk); RIPPLE = [S.ripple1, S.ripple2, S.ripple3].map(rgb);
+  DOT = rgb(S.darkDot); antSprite = DARK ? sprite(S.darkAntInk, S.antSize, S.antSize * 0.9) : null;
+  hero.style.setProperty('--night', S.night); hero.style.setProperty('--fireflies', S.fireflies);
+  for (const [v, k] of [['--fig-elsh', 'figElsh'], ['--fig-size', 'figSize'], ['--eb-elsh', 'ebElsh'], ['--eb-size', 'ebSize']]) document.documentElement.style.setProperty(v, S[k]);
+  const wash = document.querySelector('.cta-wash');
+  wash.style.backgroundImage = S.ctaWash === 'none' ? 'none' : `url(/site/assets/hero/cta-wash/${S.ctaWash}.webp)`; wash.style.opacity = S.ctaWashOpacity;
+}
+
+// the local server sometimes drops a request when many arrive at once: try an image three times
+const load = (src, tries = 3) => new Promise((ok) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => (tries > 1 ? load(src, tries - 1).then(ok) : ok(null)); i.src = src; });
+const images = {};
+const plate = (key) => (images[key] ||= load(PLATES[key][1]));
+// The two meadows are fetched (322 KB) only by a look that draws the mosaic. The Whimsicals hide it (#matrix) and draw none of it, so
+// they ask for no plate, unless the panel has the paper's colour read off the image
+let meadowWide = null, meadowTall = null;
+const sampled = () => !WHIMSICAL || S.paperFromImage;
+const meadows = async () => { if (sampled() && !meadowWide) [meadowWide, meadowTall] = await Promise.all([plate('meadow-wide'), plate('meadow-tall')]); };
+await meadows();
+let picked = null, fileImage = null;   // the chosen plate when it is not auto
+async function pickSource() { picked = S.source === 'file' ? fileImage : S.source === 'auto' ? null : sampled() ? await plate(S.source) : null; await meadows(); }
+// round mode: a dot `q` px across centred on (x, y), where square mode fills a square
+function dot(x, y, q) { ctx.beginPath(); ctx.arc(x, y, q / 2, 0, Math.PI * 2); ctx.fill(); }
+// one tile of the mosaic, in the current fill, on g
+function tile(g, i, j) {
+  if (S.shape === 'round') { g.beginPath(); g.arc(OX + i * CELL + TILE / 2, OY + j * CELL + TILE / 2, S.dot / 2, 0, Math.PI * 2); g.fill(); }
+  else g.fillRect(OX + i * CELL, OY + j * CELL, TILE, TILE);
+}
+const stillTiles = document.createElement('canvas');   // the mosaic at rest (layout)
+const smooth = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
+// dark: a dot (or square) with its glow, drawn once and then laid down whole; `m` is half its side, in CSS px
+function sprite(ink, size, blur) {
+  const dpr = devicePixelRatio || 1, m = Math.ceil(size / 2 + blur * 1.5), c = document.createElement('canvas'), g = c.getContext('2d');
+  c.width = c.height = Math.ceil(m * 2 * dpr); g.scale(dpr, dpr); g.fillStyle = g.shadowColor = ink;
+  const draw = () => { g.beginPath(); if (S.shape === 'round') g.arc(m, m, size / 2, 0, Math.PI * 2); else g.rect(m - size / 2, m - size / 2, size, size); g.fill(); };
+  g.shadowBlur = blur; draw(); g.shadowBlur = 0; draw();
+  c.m = m; return c;
+}
+// dark: a tile's lit colour from its graded one: the hue kept, the olives and greens pulled toward Figma's lime (78°), more saturated, at litLight
+function lit([r, g, b]) {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = (mx - mn) / 255, l = (mx + mn) / 510;
+  let h = !d ? 0 : mx === r ? ((g - b) / 255 / d + 6) % 6 : mx === g ? (b - r) / 255 / d + 2 : (r - g) / 255 / d + 4;
+  h *= 60; if (h > 38 && h < 170) h = 78 + (h - 78) * 0.3;
+  const s = Math.min(1, (d ? d / (1 - Math.abs(2 * l - 1)) : 0) * S.litSat + 0.3), L = Math.min(0.8, Math.max(0.4, S.litLight + (h < 55 ? -0.06 : 0.04) + (l - 0.55) * 0.4));   // the oranges deeper, the limes paler, as Figma's
+  const c = (1 - Math.abs(2 * L - 1)) * s, x = c * (1 - Math.abs((h / 60) % 2 - 1)), o = L - c / 2;
+  const [r1, g1, b1] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  return [(r1 + o) * 255, (g1 + o) * 255, (b1 + o) * 255];
+}
+const glowLayer = document.createElement('canvas'), GS = 0.5;   // dark: the lit tiles' glow, blurred, at half a CSS px (nothing sharp in it to lose)
+let GLOW = false, glowed = null;   // and the tiles it reaches (a lit one or its neighbour), the only ones a frame lays it back under
+
+let panel = null;   // the settings panel, once loaded
+let regradeAnt = null;   // Whimsical: grades the ant again after its settings change
+let tuned = 0;   // bumped by every change in the panel, so the mascot draws again
+let W, H, CELL, TILE, cols = 0, rows = 0, base, filled, veil, trail, heat, text, ants = [];
+function layout() {
+  const dpr = devicePixelRatio || 1, r = hero.getBoundingClientRect();
+  W = r.width; H = r.height; CELL = S.cell; TILE = S.tile;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const [oldCols, oldRows] = [cols, rows];
+  // only whole dots, like a display: as many as fit across the card and in the band under the nav (Figma: the mosaic
+  // starts 4px below it, so the nav floats over plain paper), centred in that space
+  const D = S.shape === 'round' ? S.dot : TILE, top = document.querySelector('nav').offsetHeight + 4;
+  cols = Math.max(1, Math.floor((W - D) / CELL) + 1); rows = Math.max(1, Math.floor((H - top - D) / CELL) + 1);   // at least one, for a hidden tab
+  OX = (W - (cols - 1) * CELL - TILE) / 2; OY = top + (H - top - (rows - 1) * CELL - TILE) / 2;
+  // 1. one colour per tile: the meadow (tall one on portrait screens), cover-fitted and averaged
+  const img = picked || (H > W && meadowTall) || meadowWide;   // none where no mosaic is drawn (the Whimsicals): the tiles below are then never shown
+  if (img && S.paperFromImage && !DARK) { const p = paperOf(img); if (p && p !== S.paper) { S.paper = p; colours(); panel?.refresh(); } }
+  //    over the whole card, as in Figma: the rows under the nav are sampled, then left out
+  const skip = Math.max(0, Math.round(OY / CELL)), all = rows + skip;
+  const s = document.createElement('canvas'); s.width = cols; s.height = all;
+  const c = s.getContext('2d', { willReadFrequently: true }); c.imageSmoothingQuality = 'high';
+  if (img) { const k = Math.max(cols / img.width, all / img.height); c.drawImage(img, (cols - img.width * k) / 2, (all - img.height * k) / 2, img.width * k, img.height * k); }
+  const d = c.getImageData(0, skip, cols, rows).data;
+  // 2. the glow, centred on the text block (pill to install)
+  //    (Mascot measures the block as laid out, its entrance's 14px rise left out)
+  const h = hero.getBoundingClientRect(), pill = rectOf(document.querySelector('.pill'), h), inst = rectOf(document.querySelector('.install'), h);
+  const gx = (pill.left + pill.right) / 2 - h.left, gy = (pill.top + inst.bottom) / 2 - h.top;
+  const rx = inst.width / 2 * S.glowWidth, ry = (inst.bottom - pill.top) / 2 * S.glowHeight;
+  base = new Float32Array(cols * rows * 3); filled = new Uint8Array(cols * rows); veil = new Float32Array(cols * rows);
+  const glowA = DARK ? new Float32Array(cols * rows) : null;
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+    const p = (j * cols + i) * 4, q = j * cols + i;
+    let rgb = [d[p], d[p + 1], d[p + 2]].map((v) => Math.max(0, Math.min(255, 255 * (v / 255) ** (1 / S.gamma) + S.brightness * 255)));
+    const lum = (rgb[0] + rgb[1] + rgb[2]) / 3;
+    rgb = rgb.map((v) => Math.max(0, Math.min(255, 128 + (lum + (v - lum) * S.saturation - 128) * S.contrast)));
+    // 3. the film: ink = colour (chroma) or darkness against the paper
+    const ink = Math.max((Math.max(...rgb) - Math.min(...rgb)) / 255, (236 - lum) / 255 * 1.4);
+    const e = Math.hypot((OX + i * CELL + TILE / 2 - gx) / rx, (OY + j * CELL + TILE / 2 - gy) / ry);
+    veil[q] = 1 - S.glowStrength * (1 - smooth(1 - S.glowSoft, 1 + S.glowSoft, e));
+    const a = smooth(S.low, S.high, ink) * veil[q];
+    if (DARK) {   // the unlit dot and the lit colour, as far as the tile's colour goes, laid on the dark paper as the tile's opacity (the pale unlit ones a little stronger)
+      const t = smooth(S.litFrom, S.litTo, (Math.max(...rgb) - Math.min(...rgb)) / 255), L = t > 0 ? lit(rgb) : DOT, an = a ** 0.6;
+      for (let ch = 0; ch < 3; ch++) base[q * 3 + ch] = PAPER[ch] + (DOT[ch] - PAPER[ch]) * (1 - t) * an + (L[ch] - PAPER[ch]) * t * a;
+      glowA[q] = t * a;
+    } else for (let ch = 0; ch < 3; ch++) base[q * 3 + ch] = PAPER[ch] + (rgb[ch] - PAPER[ch]) * a;
+    filled[q] = a > 0.03 ? 1 : 0;
+  }
+  // 4. the mosaic at rest, drawn once: each frame lays it down and redraws only the tiles a trail, the halo or a ripple tints
+  stillTiles.width = canvas.width; stillTiles.height = canvas.height;
+  const sg = stillTiles.getContext('2d'); sg.setTransform(dpr, 0, 0, dpr, 0, 0);
+  for (let q = 0; q < cols * rows; q++) if (filled[q]) {
+    sg.fillStyle = `rgb(${base[q * 3] | 0},${base[q * 3 + 1] | 0},${base[q * 3 + 2] | 0})`;
+    tile(sg, q % cols, Math.floor(q / cols));
+  }
+  // dark: the lit tiles again, small, blurred into their glow, and added over the mosaic (each frame lays it back under a tile it redraws)
+  GLOW = DARK && MOSAIC && S.litGlow > 0;
+  if (GLOW) {
+    const src = document.createElement('canvas'), sc = src.getContext('2d');
+    src.width = glowLayer.width = Math.ceil(W * GS); src.height = glowLayer.height = Math.ceil(H * GS); sc.scale(GS, GS);
+    for (let q = 0; q < cols * rows; q++) if (glowA[q] > 0.04) {
+      sc.globalAlpha = glowA[q]; sc.fillStyle = `rgb(${base[q * 3] | 0},${base[q * 3 + 1] | 0},${base[q * 3 + 2] | 0})`; tile(sc, q % cols, Math.floor(q / cols));
+    }
+    glowed = new Uint8Array(cols * rows);
+    for (let q = 0; q < cols * rows; q++) if (glowA[q] > 0.04) {
+      const i = q % cols, j = Math.floor(q / cols);
+      for (let y = Math.max(0, j - 1); y <= Math.min(rows - 1, j + 1); y++) for (let x = Math.max(0, i - 1); x <= Math.min(cols - 1, i + 1); x++) glowed[y * cols + x] = 1;
+    }
+    const gl = glowLayer.getContext('2d'); gl.filter = `blur(${S.litGlowSize * GS}px)`; gl.drawImage(src, 0, 0); gl.filter = 'none';
+    sg.globalCompositeOperation = 'lighter'; sg.globalAlpha = S.litGlow; sg.drawImage(glowLayer, 0, 0, W, H);
+    sg.globalCompositeOperation = 'source-over'; sg.globalAlpha = 1;
+  }
+  // seeds keep off the text block
+  text = [cellOf(pill.left - h.left - 20, pill.top - h.top - 20), cellOf(inst.right - h.left + 20, inst.bottom - h.top + 20)];
+  text[0][0] = Math.min(text[0][0], cellOf(inst.left - h.left - 20, 0)[0]);
+  // a new grid starts the ants afresh; the same grid (a colour or glow change) keeps them walking
+  if (cols !== oldCols || rows !== oldRows) {
+    trail = new Float32Array(cols * rows); heat = new Float32Array(cols * rows);
+    ants = []; path.length = 0; queue.length = 0; seeds.length = 0;
+  }
+  countAnts();
+  net?.plan();
+}
+// an element's box in the page; for Mascot without its transform (an offset box from the hero's corner), so its entrance does not move it
+function rectOf(el, h) {
+  if (VARIANT !== 'mascot') return el.getBoundingClientRect();
+  let x = 0, y = 0;
+  for (let e = el; e && e !== hero; e = e.offsetParent) { x += e.offsetLeft; y += e.offsetTop; }
+  return { left: h.left + x, top: h.top + y, right: h.left + x + el.offsetWidth, bottom: h.top + y + el.offsetHeight, width: el.offsetWidth, height: el.offsetHeight };
+}
+function newAnt(i, j) { return { i, j, pi: i, pj: j, t: 1, dur: 120, dir: rand(4), sense: 10 + Math.random() * 26, state: 'wander', goal: null, seed: null, depth: 0 }; }
+// one ant per `antPer` cells: add some, or let the extra ones go
+function countAnts() {
+  const n = Math.round(cols * rows / S.antPer);
+  while (ants.length < n) ants.push(newAnt(rand(cols), rand(rows)));
+  for (const a of ants.splice(n)) { if (a.seed) a.seed.claims--; const k = queue.indexOf(a); if (k >= 0) queue.splice(k, 1); }
+}
+function sizeCursor() {
+  cursorEl.style.width = `${S.cursorSize}px`; cursorEl.style.height = `${S.cursorSize * 89 / 64}px`;
+  hero.style.setProperty('--seed-w', `${S.cursorSize}px`); hero.style.setProperty('--seed-h', `${S.cursorSize * 89 / 64}px`);   // the one on the ground too
+}
+
+// ── the cursor seed and the path it leaves ──────────────────────────────
+const pointer = { x: 0, y: 0, sx: 0, sy: 0, on: false, visible: false };
+const hand = { empty: false };   // the mascot has eaten the seed and the next one still lies on the ground: the ants have nothing to follow
+const path = [];    // grid cells, path[0] = the seed's cell, then where it has been
+const queue = [];   // ants in line: queue[k] walks to slot(k)
+let broadcastUntil = 0, lastServe = 0;
+const cellOf = (x, y) => [clampI(Math.floor((x - OX) / CELL), 0, cols - 1), clampI(Math.floor((y - OY) / CELL), 0, rows - 1)];
+function trackPath() {
+  const [ci, cj] = cellOf(pointer.sx, pointer.sy);
+  if (!path.length) { path.push([ci, cj]); return; }
+  // walk from the last cell to the new one in grid steps, so the line can follow it exactly
+  let [i, j] = path[0];
+  while (i !== ci || j !== cj) {
+    if (Math.abs(ci - i) >= Math.abs(cj - j)) i += Math.sign(ci - i); else j += Math.sign(cj - j);
+    path.unshift([i, j]);
+  }
+  path.length = Math.min(path.length, S.maxQueue + S.queueOffset + 7);
+}
+const slot = (k) => path[Math.min(k + S.queueOffset, path.length - 1)];
+function release() { for (const a of queue) a.state = 'wander'; queue.length = 0; path.length = 0; }
+
+// ── seeds on the grid ────────────────────────────────────────────────────
+// A seed gives `uses` pieces (two for a first hop, then one), each to the ant that comes for it.
+const seeds = [];
+const inText = (i, j) => i >= text[0][0] && i <= text[1][0] && j >= text[0][1] && j <= text[1][1];
+function dropNear([ci, cj], range) {
+  for (let t = 0; t < 30; t++) {
+    const a = Math.random() * Math.PI * 2, d = between(range);
+    const i = Math.round(ci + Math.cos(a) * d), j = Math.round(cj + Math.sin(a) * d);
+    if (i < 1 || j < 1 || i >= cols - 1 || j >= rows - 1 || inText(i, j)) continue;
+    if (seeds.some((s) => Math.abs(s.i - i) + Math.abs(s.j - j) < 4)) continue;
+    return [i, j];
+  }
+  return null;
+}
+// seeds on the grid plus seeds on their way: the cap counts both
+const inFlight = () => seeds.length + ants.filter((a) => a.state === 'carry').length;
+function plant([i, j], depth, now) {
+  const s = { i, j, depth, born: now, end: now + between([S.lifeMin, S.lifeMax]) * 1000, uses: depth < 2 ? 2 : 1, claims: 0 };
+  seeds.push(s);
+  // the nearest wandering ants come for it
+  const near = ants.filter((a) => a.state === 'wander').sort((a, b) => (Math.abs(a.i - i) + Math.abs(a.j - j)) - (Math.abs(b.i - i) + Math.abs(b.j - j)));
+  for (const a of near.slice(0, s.uses)) { a.state = 'fetch'; a.seed = s; s.claims++; }
+}
+
+// ── ripples ──────────────────────────────────────────────────────────────
+const ripples = [];
+const ripple = (i, j, now, big = false) => ripples.push({ i, j, start: now, speed: big ? 40 : 20, life: big ? 1500 : 650 });
+
+// ── ant steps ────────────────────────────────────────────────────────────
+const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+function toward(a, g) {
+  const dx = g[0] - a.i, dy = g[1] - a.j;
+  if (!dx && !dy) return -1;
+  return Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 0 : 2) : (dy > 0 ? 1 : 3);
+}
+function step(a, now) {
+  trail[a.j * cols + a.i] = Math.min(1, trail[a.j * cols + a.i] + (a.state === 'line' ? 0.25 : 0.5));
+  a.pi = a.i; a.pj = a.j; a.t = 0;
+  let d = -1;
+  if (a.state === 'line') {
+    d = toward(a, slot(queue.indexOf(a)));
+    a.dur = 55;
+  } else if (a.state === 'carry') {
+    // carrying a piece of seed out: drop it where it was headed, a new seed pops there
+    if (a.i === a.goal[0] && a.j === a.goal[1]) { plant(a.goal, a.depth, now); a.state = 'wander'; a.goal = null; }
+    else d = Math.random() < 0.85 ? toward(a, a.goal) : rand(4);
+    a.dur = 70 + Math.random() * 30;
+  } else if (a.state === 'fetch') {
+    // going to a seed: take a piece and carry it further, or, once the hops are done, keep it
+    const s = a.seed;
+    if (!s.uses || now > s.end) { a.state = 'wander'; a.seed = null; }
+    else if (a.i === s.i && a.j === s.j) {
+      s.uses--; s.claims--; a.seed = null; a.state = 'wander';
+      if (!s.uses) s.end = Math.min(s.end, now + 500);
+      const goal = s.depth < S.hops && inFlight() < S.maxSeeds && dropNear([s.i, s.j], [S.dropNextNear, S.dropNextFar]);
+      if (goal) { a.state = 'carry'; a.depth = s.depth + 1; a.goal = goal; }
+    } else d = Math.random() < 0.85 ? toward(a, [s.i, s.j]) : rand(4);
+    a.dur = 70 + Math.random() * 30;
+  } else {
+    // wander, or head for the end of the line when the seed is close enough
+    const tail = path.length ? slot(queue.length) : null;
+    const reach = now < broadcastUntil ? 999 : a.sense;
+    if (tail && pointer.on && queue.length < S.maxQueue && Math.abs(tail[0] - a.i) + Math.abs(tail[1] - a.j) <= reach) {
+      if (Math.abs(tail[0] - a.i) + Math.abs(tail[1] - a.j) <= 1) { a.state = 'line'; queue.push(a); a.dur = 55 * S.pace; return; }
+      d = Math.random() < 0.8 ? toward(a, tail) : rand(4);
+      a.dur = 65 + Math.random() * 30;
+    } else if ((a.seed = seeds.find((s) => s.claims < s.uses && now - s.born > 300 && Math.abs(s.i - a.i) + Math.abs(s.j - a.j) <= Math.min(a.sense, 14)))) {
+      a.seed.claims++; a.state = 'fetch'; a.dur = 70 * S.pace; return;
+    } else {
+      d = Math.random() < 0.7 ? a.dir : (a.dir + (Math.random() < 0.5 ? 1 : 3)) % 4;
+      a.dur = 120 + Math.random() * 80;
+    }
+  }
+  a.dur *= S.pace;
+  if (d < 0) return;
+  let ni = a.i + DIRS[d][0], nj = a.j + DIRS[d][1];
+  if (ni < 0 || nj < 0 || ni >= cols || nj >= rows) { d = (d + 2) % 4; ni = a.i + DIRS[d][0]; nj = a.j + DIRS[d][1]; }
+  a.dir = d; a.i = clampI(ni, 0, cols - 1); a.j = clampI(nj, 0, rows - 1);
+}
+function serve(now) {
+  const head = queue[0];
+  if (!head || now - lastServe < S.serve) return;
+  const [si, sj] = slot(0);
+  if (head.i !== si || head.j !== sj) return;
+  lastServe = now;
+  if (S.wave) ripple(path[0][0], path[0][1], now);
+  cursorEl.classList.remove('fed'); void cursorEl.offsetWidth; cursorEl.classList.add('fed');
+  queue.shift();
+  const goal = inFlight() < S.maxSeeds && dropNear(path[0], [S.dropFirstNear, S.dropFirstFar]);
+  if (goal) { head.state = 'carry'; head.depth = 1; head.goal = goal; } else head.state = 'wander';
+}
+
+// ── frame ────────────────────────────────────────────────────────────────
+// Every frame eases the cursor seed. The ants and the mosaic step at most 60 times a second while the pointer moves and 30 when
+// it rests; the Whimsicals, whose mosaic is hidden, keep the ants walking (they still feed the seed) but draw nothing. Nothing runs
+// while the hero is off screen or the tab hidden: the loops stop, and start again when it is back.
+let last = performance.now(), lastInput = -1e9, queued = false, cursorAt = '';
+const MOSAIC = !WHIMSICAL;
+let heroOn = true;
+const wakers = new Set([() => wake()]);
+new IntersectionObserver(([e]) => { heroOn = e.isIntersecting; if (heroOn) wakers.forEach((f) => f()); }).observe(hero);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) wakers.forEach((f) => f()); });
+function wake() { if (!queued && !still) { queued = true; requestAnimationFrame(frame); } }
+function frame(now) {
+  queued = false;
+  if (!heroOn || document.hidden) return;
+  pointer.sx += (pointer.x - pointer.sx) * 0.3; pointer.sy += (pointer.y - pointer.sy) * 0.3;
+  const at = `translate(${pointer.sx - S.cursorSize / 2}px, ${pointer.sy - S.cursorSize * 44 / 64}px) rotate(${(pointer.x - pointer.sx) * 0.5}deg)`;
+  if (at !== cursorAt) { cursorEl.style.transform = cursorAt = at; }
+  wake();
+  if (net?.running) return net.frame(now);   // Meadow · Mascot's intro: the ants wait
+  if (!still && now - last < (now - lastInput < 2000 ? 1000 / 60 : 1000 / 30) - 2) return;
+  const dt = Math.min(64, now - last); last = now;
+  while (queue.length > S.maxQueue) queue.pop().state = 'wander';
+  if (pointer.on && !hand.empty) { trackPath(); serve(now); }
+  // seeds fade once spent or old
+  for (let k = seeds.length - 1; k >= 0; k--) if (now > seeds[k].end) seeds.splice(k, 1);
+
+  for (const a of ants) { a.t += dt / a.dur; if (a.t >= 1) step(a, now); }
+  const decay = 0.5 ** (dt / (Math.max(0.02, S.trailLength) * 1000));
+  for (let i = 0; i < trail.length; i++) { trail[i] *= decay; heat[i] *= 0.88; }
+  if (pointer.on && !hand.empty && S.halo) {
+    const [ci, cj] = path[0] || cellOf(pointer.sx, pointer.sy), R = 7;
+    for (let j = cj - R; j <= cj + R; j++) for (let i = ci - R; i <= ci + R; i++) {
+      if (i < 0 || j < 0 || i >= cols || j >= rows) continue;
+      const v = 1 - Math.hypot(i - ci, j - cj) / R;
+      if (v > 0) heat[j * cols + i] = Math.max(heat[j * cols + i], v);
+    }
+  }
+  for (let r = ripples.length - 1; r >= 0; r--) if (now - ripples[r].start > ripples[r].life) ripples.splice(r, 1);
+
+  if (!MOSAIC) return;
+  ctx.clearRect(0, 0, W, H); ctx.drawImage(stillTiles, 0, 0, W, H);
+  const half = (S.shape === 'round' ? S.dot : TILE) / 2 + 1;
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+    const k = j * cols + i;
+    let R = base[k * 3], G = base[k * 3 + 1], B = base[k * 3 + 2], moved = false;
+    const tr = trail[k] * S.trail * veil[k];
+    if (tr > 0.01) { R += (INK[0] - R) * tr; G += (INK[1] - G) * tr; B += (INK[2] - B) * tr; moved = true; }
+    const h = heat[k];
+    if (h > 0.02) { const c = RIPPLE[h > 0.66 ? 2 : h > 0.33 ? 1 : 0], m = 0.2 + h * 0.45; R += (c[0] - R) * m; G += (c[1] - G) * m; B += (c[2] - B) * m; moved = true; }
+    for (const p of ripples) {
+      const age = (now - p.start) / p.life, band = Math.abs(Math.hypot(i - p.i, j - p.j) - (now - p.start) / 1000 * p.speed);
+      if (band < 1.5) { const c = RIPPLE[Math.min(2, Math.floor(band))], m = (1 - age) * 0.85; R += (c[0] - R) * m; G += (c[1] - G) * m; B += (c[2] - B) * m; moved = true; }
+    }
+    if (!moved || (filled[k] && (R | 0) === (base[k * 3] | 0) && (G | 0) === (base[k * 3 + 1] | 0) && (B | 0) === (base[k * 3 + 2] | 0))) continue;   // as at rest: already laid down
+    const cx = OX + i * CELL + TILE / 2, cy = OY + j * CELL + TILE / 2;
+    ctx.clearRect(cx - half, cy - half, half * 2, half * 2);   // the resting tile goes, so its edge does not show round the tinted one
+    if (GLOW && glowed[k]) {   // and the glow there comes back from its layer
+      ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = S.litGlow;
+      ctx.drawImage(glowLayer, (cx - half) * GS, (cy - half) * GS, half * 2 * GS, half * 2 * GS, cx - half, cy - half, half * 2, half * 2);
+      ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    }
+    ctx.fillStyle = `rgb(${R | 0},${G | 0},${B | 0})`; tile(ctx, i, j);
+  }
+
+  // seeds: a pixel that pops in, a little larger than its tile's centre, and fades when spent
+  for (const s of seeds) {
+    const age = now - s.born, pop = age < 160 ? 0.4 + age / 160 * 0.9 : age < 320 ? 1.3 - (age - 160) / 160 * 0.3 : 1;
+    ctx.globalAlpha = Math.max(0, Math.min(1, age / 120, (s.end - now) / 500)) * clear(s.i, s.j);
+    const q = S.seedSize * pop, x = OX + s.i * CELL + TILE / 2, y = OY + s.j * CELL + TILE / 2;
+    ctx.fillStyle = DARK ? S.darkSeedInk : S.seedInk;
+    if (S.shape === 'round') dot(x, y, q); else ctx.fillRect(Math.round(x - q / 2), Math.round(y - q / 2), q, q);
+  }
+  ctx.globalAlpha = 1;
+  // ants: one olive pixel (or dot) each, sliding tile to tile, fading out in the glow behind the text (and in, after Mascot's intro)
+  const antsIn = net ? net.fade(now) : 1;
+  for (const a of ants) {
+    const e = a.t < 1 ? a.t * a.t * (3 - 2 * a.t) : 1;
+    ctx.globalAlpha = (clear(a.pi, a.pj) + (clear(a.i, a.j) - clear(a.pi, a.pj)) * e) * antsIn;
+    if (ctx.globalAlpha < 0.02) continue;
+    const x = OX + (a.pi + (a.i - a.pi) * e) * CELL + TILE / 2, y = OY + (a.pj + (a.j - a.pj) * e) * CELL + TILE / 2;
+    if (antSprite) ctx.drawImage(antSprite, x - antSprite.m, y - antSprite.m, antSprite.m * 2, antSprite.m * 2);   // dark: lit, with its glow
+    else {
+      ctx.fillStyle = S.antInk;
+      if (S.shape === 'round') dot(x, y, S.antSize); else ctx.fillRect(Math.round(x - S.antSize / 2), Math.round(y - S.antSize / 2), S.antSize, S.antSize);
+    }
+    if (a.state === 'carry') {
+      const q = S.seedSize * 0.5625, [dx, dy] = DIRS[a.dir];
+      ctx.fillStyle = DARK ? S.darkSeedInk : S.seedInk;
+      if (S.shape === 'round') dot(x + dx * S.antSize * 0.7, y + dy * S.antSize * 0.7, q);
+      else ctx.fillRect(Math.round(x + dx * S.antSize * 0.7 - q / 2), Math.round(y + dy * S.antSize * 0.7 - q / 2), q, q);
+    }
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+// ── Meadow · Mascot: the intro ───────────────────────────────────────────
+// Once, at load: Design's network prototype (prototypes/hero-network.html) on this mosaic. Nothing is there; the title comes in, then
+// peers wake at scattered points of the mosaic (never a centre, never behind the text) and each sends a ripple: a dot comes on as the
+// ripple reaches it, pushed outward and tinted in the accent as the front passes, and where two ripples meet the two peers link up
+// along the rows, until the whole mosaic is on (about 1.6 s), its dark glow coming up with the last dots. Then the peers let go and
+// what is left is the mosaic at rest, exactly: from there the hero is as it always was (the seed, the ants and their line, the hover,
+// the mascot, which comes in as they let go), and this layer only answers `running` (false) and `fade` (the ants coming in over half a second).
+// While it plays the ants wait; the seed cursor follows the pointer as ever. Not with reduced motion, nor for ?demo or ?still captures.
+// The Intro folder of the panel replays it with its new values.
+const net = !NET ? null : (() => {
+  const ACC = { light: rgb('#4f7a24'), dark: rgb('#98c463') };   // the one accent: the CTA's green, and the dark's green text
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+  const css = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+  const seeded = (seed) => () => { seed |= 0; seed = seed + 0x6d2b79f5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const cx = (i) => OX + i * CELL + TILE / 2, cy = (j) => OY + j * CELL + TILE / 2;
+  const R0 = () => (S.shape === 'round' ? S.dot : TILE) / 2;
+  const accent = () => (DARK ? ACC.dark : ACC.light);
+  // in the dark, a soft light round whatever the network lights
+  const halo = document.createElement('canvas'); halo.width = halo.height = 64;
+  { const g = halo.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, css(ACC.dark, 0.55)); gr.addColorStop(0.35, css(ACC.dark, 0.18)); gr.addColorStop(1, css(ACC.dark, 0)); g.fillStyle = gr; g.fillRect(0, 0, 64, 64); }
+  let start = null, running = true, once = false, endAt = null, lastI = 0, key = '', peers = [], edges = [], tOn, ux, uy, tAll = 0, tEnd = 0, R = seeded(7);
+
+  function pip(x, y, r, c, a = 1) {
+    ctx.fillStyle = css(c, a);
+    if (S.shape === 'round') { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); } else ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  function shine(x, y, r, a) {
+    if (!DARK || a <= 0.01) return;
+    ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = a; ctx.drawImage(halo, x - r, y - r, r * 2, r * 2); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  }
+  // along the rows then the columns, or the other way, whichever stays further from the text
+  function route(A, B) {
+    const way = (rowFirst) => {
+      const out = [[A.i, A.j]]; let i = A.i, j = A.j;
+      const go = (di, dj) => { while (i !== B.i && di) { i += di; out.push([i, j]); } while (j !== B.j && dj) { j += dj; out.push([i, j]); } };
+      if (rowFirst) { go(Math.sign(B.i - i), 0); go(0, Math.sign(B.j - j)); } else { go(0, Math.sign(B.j - j)); go(Math.sign(B.i - i), 0); }
+      return out;
+    };
+    const cost = (p) => p.reduce((s, [i, j]) => s + (1 - veil[j * cols + i]), 0), r = way(true), c = way(false);
+    return cost(r) <= cost(c) ? r : c;
+  }
+  // The peers (5 to 12, spread out, clear of the text, waking at random moments), when each dot comes on (the first ripple to reach
+  // it) and which way it is pushed, and the links: a tree that reaches every peer, plus each peer to its nearest. Made again only when
+  // the grid or the text's glow changes (a resize), not for a theme
+  function plan(force) {
+    let sum = 0; for (let q = 0; q < veil.length; q += 7) sum += veil[q];
+    const k = `${cols},${rows},${OX.toFixed(1)},${OY.toFixed(1)},${sum.toFixed(2)}`;
+    if (k === key && !force) return;
+    key = k; R = seeded(7);
+    const N = cols * rows, want = Math.max(5, Math.min(12, Math.round(N / 260))), gap = Math.sqrt(N / want) * 0.85;
+    const cand = []; for (let q = 0; q < N; q++) if (veil[q] > 0.75 && filled[q]) cand.push(q);
+    for (let n = cand.length - 1; n > 0; n--) { const m = (R() * (n + 1)) | 0; [cand[n], cand[m]] = [cand[m], cand[n]]; }
+    peers = [];
+    for (const q of cand) {
+      const i = q % cols, j = (q / cols) | 0;
+      if (peers.every((p) => Math.hypot(p.i - i, p.j - j) >= gap)) peers.push({ i, j, t: 0 });
+      if (peers.length === want) break;
+    }
+    peers.forEach((p) => { p.t = S.netWake + R() * S.netSpread; });
+    tOn = new Float32Array(N); ux = new Float32Array(N); uy = new Float32Array(N); tAll = 0; edges = [];
+    if (!peers.length) { tEnd = 400; return; }   // no room for a peer (a tiny screen): the mosaic simply comes on
+    for (let q = 0; q < N; q++) {
+      const i = q % cols, j = (q / cols) | 0; let best = Infinity, o = peers[0];
+      for (const p of peers) { const t = p.t + Math.hypot(i - p.i, j - p.j) / S.netSpeed * 1000; if (t < best) { best = t; o = p; } }
+      tOn[q] = best; const L = Math.hypot(i - o.i, j - o.j) || 1; ux[q] = (i - o.i) / L; uy[q] = (j - o.j) / L;
+      if (filled[q] && best > tAll) tAll = best;
+    }
+    const pairs = new Set(), pair = (a, b) => (a < b ? `${a}-${b}` : `${b}-${a}`), dist = (a, b) => Math.hypot(peers[a].i - peers[b].i, peers[a].j - peers[b].j);
+    const inTree = [0];
+    while (inTree.length < peers.length) {
+      let bd = Infinity, ba = 0, bb = 0;
+      for (const a of inTree) for (let b = 0; b < peers.length; b++) if (!inTree.includes(b) && dist(a, b) < bd) { bd = dist(a, b); ba = a; bb = b; }
+      pairs.add(pair(ba, bb)); inTree.push(bb);
+    }
+    peers.forEach((_, a) => { let bd = Infinity, bb = -1; peers.forEach((_, b) => { if (b !== a && dist(a, b) < bd) { bd = dist(a, b); bb = b; } }); if (bb >= 0) pairs.add(pair(a, bb)); });
+    edges = [...pairs].map((s) => {
+      const [a, b] = s.split('-').map(Number), A = peers[a], B = peers[b], dab = dist(a, b), path = route(A, B);
+      const at = clamp01((dab / 2 + (B.t - A.t) * S.netSpeed / 2000) / dab);   // where along it the two ripples meet, and when
+      return { a, b, path, meet: (A.t + B.t + dab / S.netSpeed * 1000) / 2, mid: Math.round(at * (path.length - 1)) };
+    });
+    // it is over once every dot is on, the peers have let go (tAll + 700) and the last link has faded (900 after its meeting)
+    tEnd = Math.max(tAll + 700, ...edges.map((e) => e.meet + 900));
+  }
+  // the lighting, dot by dot; the dark glow comes up over the last ones, as the mosaic at rest lays it (so the hand-over is seamless)
+  function lighting(t) {
+    const A = accent(), tint = DARK ? 0.6 : 0.75, r0 = R0();
+    for (let q = 0; q < filled.length; q++) {
+      if (!filled[q]) continue;
+      const dt = t - tOn[q]; if (dt < 0) continue;
+      const front = Math.exp(-(((dt - 70) / 85) ** 2)), i = q % cols, j = (q / cols) | 0;
+      const x = cx(i) + ux[q] * S.netBend * front, y = cy(j) + uy[q] * S.netBend * front, r = r0 * (0.45 + 0.55 * smooth(0, 170, dt)) * (1 + 0.28 * front);
+      const m = tint * front * veil[q];
+      pip(x, y, r, [0, 1, 2].map((c) => base[q * 3 + c] + (A[c] - base[q * 3 + c]) * m));
+      if (front > 0.15) shine(x, y, r * 3, front * veil[q] * 0.45);
+    }
+    const g = smooth(tAll - 350, tAll + 350, t);
+    if (GLOW && g > 0) { ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = S.litGlow * g; ctx.drawImage(glowLayer, 0, 0, W, H); ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; }
+  }
+  // a link lights from where the two ripples met out to both peers, then lets go
+  function links(t) {
+    const A = accent(), r0 = R0();
+    for (const e of edges) {
+      const f = t - e.meet; if (f < 0 || f > 900) continue;
+      const reach = smooth(0, 320, f) * e.path.length, fade = 1 - smooth(380, 900, f);
+      e.path.forEach(([i, j], k) => {
+        const d = Math.abs(k - e.mid); if (d > reach / 2) return;
+        const a = fade * Math.max(0.35, veil[j * cols + i]) * (1 - 0.4 * d / (reach / 2 + 1));
+        pip(cx(i), cy(j), r0 * 0.62, A, a); shine(cx(i), cy(j), r0 * 2.6, a * 0.5);
+      });
+    }
+  }
+  // the peers pop as they wake, and let go once every dot is on
+  function drawPeers(t) {
+    const A = accent(), r0 = R0(), out = 1 - smooth(tAll + 100, tAll + 700, t);
+    if (out <= 0) return;
+    peers.forEach((p) => {
+      const f = t - p.t; if (f < 0) return;
+      const pop = 1 + 0.7 * Math.exp(-f / 160);
+      pip(cx(p.i), cy(p.j), r0 * 0.95 * pop, A, out); shine(cx(p.i), cy(p.j), r0 * 4, out * 0.9);
+    });
+  }
+
+  return {
+    plan,
+    get running() { return running; },
+    get over() { return once; },   // lit through once (the mascot comes in then, and stays through a replay)
+    // the ants' opacity: none while it plays, then in over half a second
+    fade: (now) => (running ? 0 : smooth(endAt, endAt + 500, now)),
+    // the start, once the fonts are in and the mosaic is laid out: the text block's entrance (CSS) and the lighting together
+    start() { if (start !== null) return; start = performance.now(); document.documentElement.classList.add('go'); wake(); },
+    replay() { if (start === null) return; plan(true); start = performance.now(); running = true; endAt = null; wake(); },
+    frame(now) {
+      if (start === null) return;   // before it starts: the bare paper
+      const t = now - start;
+      if (t >= tEnd) {   // over: the mosaic at rest, and the hero's own frame from the next one on
+        running = false; once = true; endAt = now;
+        ctx.clearRect(0, 0, W, H); ctx.drawImage(stillTiles, 0, 0, W, H);
+        return;
+      }
+      if (t >= tAll) once = true;   // every dot on: the mascot comes in as the peers let go
+      if (now - lastI < 1000 / 60 - 2) return;
+      lastI = now;
+      ctx.clearRect(0, 0, W, H);
+      if (t < tAll + 400) lighting(t); else ctx.drawImage(stillTiles, 0, 0, W, H);
+      links(t); drawPeers(t);
+    },
+  };
+})();
+
+// ── input ────────────────────────────────────────────────────────────────
+// Over the nav, the pill and the install block the seed goes under them and the normal cursor comes back.
+const isUi = (e) => e.target.closest('nav, .pill, .install, .ground-seed');
+hero.addEventListener('pointermove', (e) => {
+  const r = hero.getBoundingClientRect();
+  pointer.x = e.clientX - r.left; pointer.y = e.clientY - r.top; lastInput = performance.now();
+  if (!pointer.on) { pointer.sx = pointer.x; pointer.sy = pointer.y; pointer.on = true; }
+  hero.classList.add('seeding'); hero.classList.toggle('on-ui', !!isUi(e));
+});
+hero.addEventListener('pointerleave', () => { pointer.on = false; hero.classList.remove('seeding', 'on-ui'); release(); });
+hero.addEventListener('click', (e) => {
+  if (isUi(e) || !path.length) return;
+  if (S.wave) ripple(path[0][0], path[0][1], performance.now(), true);
+  broadcastUntil = performance.now() + 2600;
+});
+addEventListener('resize', () => { layout(); if (still) frame(performance.now()); });
+
+colours(); sizeCursor(); await pickSource(); layout();
+// the theme flipped (the switch, or the system's in 'system' mode): the colours, the mosaic at rest and its glow again; the ants walk on
+document.addEventListener('themechange', () => {
+  const dark = document.documentElement.dataset.theme === 'dark';
+  if (dark === DARK) return;
+  DARK = dark; tuned++; colours(); layout();
+  if (still) requestAnimationFrame(frame); else wake();
+});
+Promise.race([document.fonts?.ready, new Promise((ok) => setTimeout(ok, 3500))]).then(() => { layout(); net?.start(); if (still) requestAnimationFrame(frame); });
+// ?demo: the cursor parked on the hero, for still captures
+if (params.has('demo')) { pointer.x = pointer.sx = W * 0.2; pointer.y = pointer.sy = H * 0.74; pointer.on = true; hero.classList.add('seeding'); }
+if (still) requestAnimationFrame(frame); else wake();
+
+// ── the mascot ───────────────────────────────────────────────────────────
+// Meadow · Mascot and Whimsical only. A puppet at the bottom right, on its own canvas over the mosaic, big, its legs cut off by the card's bottom edge. Its eyes
+// follow the pointer anywhere on the page; when the pointer comes within `mascotReach` px holding the seed, its mouth opens and its arms turn
+// round their shoulders toward it (rotation only, eased), and both settle back when it leaves. With no seed in hand (the system cursor:
+// over the panels, or once it has eaten) it wants nothing and keeps its lost look (Elio, 13 Nov).
+// Reduced motion: the eyes only. It shrinks, then hides, rather than cover the install block, and is off on phones.
+// RIG: the Design session's parts (02_Brand/…/mascots/rig, README there), copied to assets/hero/ant-rig, loaded as WebP with alpha (the
+// PNGs' own size, cwebp -near_lossless 60 -q 100 -m 6: 387 KB for 2,961; the PNGs stay beside them as the masters). The art faces right
+// and is drawn mirrored, so every point below is in the files' own px. The body and arms (v2) share the neutral pose's frame,
+// so at rest they draw exactly as it; without them it falls back to the neutral pose, where only the eyes and the mouth move.
+const RIG = WHIMSICAL1 ? {
+  // Whimsical 1: Figma's standing ant (Antseed 373:5, "Walking"), arms crossed, one still image whose eyes alone move: it watches
+  // the seed, crossing its eyes on it near its nose, and neither opens its mouth nor eats. Its painted irises are painted out and each
+  // eye's line redrawn as one smooth stroke (assets/hero/ant-standing/eye-masks.py; `outline`, the curve both follow); the iris is
+  // drawn inside that curve, from the painted iris's place (`rest`, a glance to its right) toward the pointer, at most `reach` px of
+  // the art, and the line (`lids`) laid back over it
+  neutral: '/site/assets/hero/ant-standing/ant-standing.webp',
+  size: [1448, 2158], box: [117, 92, 1246, 1988],   // the image, and Figma's crop of it (the layer's 462 × 788)
+  flip: false,   // as drawn; smaller than Figma's 462 px, so its antennae clear the install block and the title
+  shadeAt: 462,   // the Figma width its rim's offset and blur are given at
+  eyes: [
+    { x: 578, y: 690, rest: [22, 0], reach: [30, 10], iris: 34,
+      outline: [516,657, 560,656, 612,657, 626,668, 637,684, 641,700, 636,713, 620,721, 597,725, 575,722, 556,716, 540,710, 534,700, 525,680] },
+    { x: 885, y: 596, rest: [-9, 18], reach: [42, 22], iris: 46,
+      outline: [892,537, 897,526, 920,523, 945,525, 963,529, 970,537, 968,560, 964,590, 959,606, 948,621, 930,634, 910,643, 890,651, 860,664,
+        830,669, 810,665, 798,652, 796,636, 802,616, 815,595, 829,585, 849,572, 873,556, 886,543] },
+  ],
+  lids: { src: '/site/assets/hero/ant-standing/ant-standing-lids.webp', at: [504, 512] },
+  irisInk: ['#1e130d', ['#7d5c44', '#3b281c'], '#0a0605'], jitter: 0,   // its rim, ring (light at the bottom, dark at the edge) and pupil, as painted
+  eats: false, mouth: [758, 772],   // the smirk, only for its eyes to cross toward
+  head: [700, 620],
+  arms: [],
+} : {
+  neutral: '/site/assets/hero/ant-rig/ant-neutral.webp',
+  body: '/site/assets/hero/ant-rig/ant-body.webp',   // v2: the neutral pose with the arms painted out
+  size: [1024, 1024], box: [252, 115, 772, 928],   // the 1024 frame all parts share, and the ant's drawn bounds in it
+  shadeAt: 317,
+  flip: true,   // faces left, toward the middle of the hero
+  eyes: [{ x: 525, y: 422, rx: 64, ry: 64 }, { x: 717, y: 417, rx: 46, ry: 57 }],   // the eye whites
+  pupil: 16, pupilInk: '#2b1b12', jitter: 2.5,   // how far (px of the art) the pupils tremble while it is awake
+  lost: [[-1, 0], [1, 0]],   // the lost look at rest, each eye's way in the art: apart, sideways, the two pupils level (Elio, 13 Nov: one higher looked too much)
+  // the painted mouth: its centre, and the box round its line (the bar and its two end ticks), painted out under the open mouth.
+  // Open, it is the $ANTS ant's mouth (assets/home/ants-token-ant.webp): a small round leaning a little, in the art's dark line,
+  // dark red inside with a pink tongue low on one side (Elio, 13 Nov)
+  mouth: [640, 485], mouthLine: [612, 470, 668, 500],
+  // the painted line between its end ticks: its two ends (x, y) and its thickness, where the shutting mouth lies flat (Elio, 13 Nov)
+  mouthBar: [624, 484.9, 654, 484.5, 3.5],
+  mouthInk: '#3a1209', mouthInside: '#782b1c', mouthTongue: '#e8a497', mouthTilt: 0.08,
+  head: [600, 520],   // the pointer's distance is measured from here
+  // the antennae, in a breeze (Elio, 13 Nov): each one's box of the art above the head (left, top, right, and the row where it meets
+  // the head, which stays put), the row under its ball (the ball moves whole above it), how far its tip goes (px of the art), and how
+  // far behind the first it follows (s)
+  antennae: [{ box: [480, 110, 588, 253], ball: 184, sway: 6, lag: 0 }, { box: [626, 156, 750, 271], ball: 229, sway: 5, lag: 0.55 }],
+  // v2 arms, at their real length: the image, the shoulder's centre in it (pivot), where that goes on the body, the arm's
+  // direction at rest (deg, 0 = right, 90 = down), whether it sits under the body. Each lifts counter-clockwise, toward the front.
+  // The arm images are on the same frame, so the pivot is the shoulder: everything above it is transparent, so it turns clean.
+  // The back arm is the front one mirrored, hidden behind the body at rest, so it comes out whole when it lifts
+  arms: [
+    { img: '/site/assets/hero/ant-rig/ant-arm-back.webp', pivot: [646, 668], shoulder: [646, 668], rest: 87, under: true },
+    { img: '/site/assets/hero/ant-rig/ant-arm-front.webp', pivot: [424, 664], shoulder: [424, 664], rest: 87, under: false },
+  ],
+};
+if (MASCOT) {
+  const puppet = document.getElementById('puppet'), pc = puppet.getContext('2d');
+  let [neutral, body, lids, ...armImgs] = await Promise.all([RIG.neutral, RIG.body, RIG.lids?.src, ...RIG.arms.map((a) => a.img)].map((src) => src && load(src)));
+  // an eye's outline, a closed Catmull-Rom curve through its points (the same curve its painted-out white and redrawn line follow)
+  for (const e of RIG.eyes) if (e.outline) {
+    const p = e.outline, n = p.length / 2, at = (i) => [p[(i + n) % n * 2], p[(i + n) % n * 2 + 1]];
+    e.path = new Path2D(); e.path.moveTo(...at(0));
+    for (let i = 0; i < n; i++) {
+      const [a, b, c, d] = [at(i - 1), at(i), at(i + 1), at(i + 2)];
+      e.path.bezierCurveTo(b[0] + (c[0] - a[0]) / 6, b[1] + (c[1] - a[1]) / 6, c[0] - (d[0] - b[0]) / 6, c[1] - (d[1] - b[1]) / 6, c[0], c[1]);
+    }
+  }
+  const rigged = !!(body && armImgs.every(Boolean));   // the arms move only once the v2 parts are all there
+  // the face without its closed mouth, for under the open one: the line's pixels (and one round them) filled in from the skin
+  // around them, smoothed inward, so no corner of it shows while the mouth opens or shuts. Made from the art as drawn (Whimsical
+  // grades it), again whenever that changes (Elio, 13 Nov)
+  let mouthless = null, mouthFrom = null;
+  const paintOutMouth = (src) => {
+    const [x0, y0, x1, y1] = RIG.mouthLine, w = x1 - x0, h = y1 - y0;
+    const m = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+    m.canvas.width = w; m.canvas.height = h; m.drawImage(src, x0, y0, w, h, 0, 0, w, h);
+    const img = m.getImageData(0, 0, w, h), d = img.data, sum = (i) => d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2];
+    const skin = Array.from({ length: w * h }, (_, i) => sum(i)).sort((a, b) => a - b)[(w * h) >> 1];   // the box is mostly skin
+    const line = Uint8Array.from({ length: w * h }, (_, i) => sum(i) < skin * 0.8);
+    const sum0 = Array.from({ length: w * h }, (_, i) => sum(i)), src0 = sum0.map((_, i) => [d[i * 4], d[i * 4 + 1], d[i * 4 + 2]]);
+    const hole = line.map((_, i) => {
+      const x = i % w, y = (i / w) | 0;
+      if (x < 1 || y < 1 || x > w - 2 || y > h - 2) return 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (line[i + dy * w + dx]) return 1;
+      return 0;
+    });
+    for (let pass = 0; pass < 160; pass++) for (let i = 0; i < w * h; i++) if (hole[i]) {
+      for (let c = 0; c < 3; c++) d[i * 4 + c] = (d[(i - 1) * 4 + c] + d[(i + 1) * 4 + c] + d[(i - w) * 4 + c] + d[(i + w) * 4 + c]) / 4;
+    }
+    // the line's own ink, its darkest pixels' mean, for the mouth's outline, so the shut mouth lies on it in the same colour
+    const core = src0.filter((_, i) => sum0[i] < skin * 0.4), ink = core.length ? `rgb(${[0, 1, 2].map((c) => Math.round(core.reduce((t, q) => t + q[c], 0) / core.length)).join()})` : RIG.mouthInk;
+    m.putImageData(img, 0, 0);
+    const out = document.createElement('canvas'); out.width = w; out.height = h; out.getContext('2d').drawImage(m.canvas, 0, 0);
+    return { img: out, ink };   // a plain canvas to draw from, not the one read back (Chrome drew that one off-colour now and then)
+  };
+  // The antennae in a breeze (Elio, 13 Nov), from the art itself, no new drawing: each one's box above the head is redrawn at every
+  // drawing, row by row, moved sideways by a slow wave a little irregular (three slow sines), the second antenna a moment behind the
+  // first. Nothing moves at the row where it meets the head, more toward the tip (as the square of the height, so it bends from its
+  // base), and the ball moves whole. Each row is resampled between pixels (premultiplied, so the outline stays clean) and written into a
+  // copy of the art, so no seam shows between the rows nor at the base. Not with reduced motion
+  let swayFrom = null, swayArt = null, swayBoxes = null;
+  const swayTips = (now) => (RIG.antennae || []).map((a) => {
+    const t = now / 1000 - a.lag;
+    return a.sway * (0.62 * Math.sin(t * 1.53) + 0.28 * Math.sin(t * 2.37 + 1.7) + 0.1 * Math.sin(t * 3.9 + 0.4));
+  });
+  function swaying(art, tips) {
+    if (still || !RIG.antennae || !art) return art;
+    if (art !== swayFrom) {
+      swayFrom = art;
+      const r = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+      r.canvas.width = RIG.size[0]; r.canvas.height = RIG.size[1]; r.drawImage(art, 0, 0, ...RIG.size);
+      swayBoxes = RIG.antennae.map(({ box: [x0, y0, x1, y1] }) => { const src = r.getImageData(x0, y0, x1 - x0, y1 - y0); return { src, out: new ImageData(src.width, src.height) }; });
+      swayArt = document.createElement('canvas').getContext('2d'); swayArt.canvas.width = RIG.size[0]; swayArt.canvas.height = RIG.size[1];
+      swayArt.drawImage(r.canvas, 0, 0);
+    }
+    RIG.antennae.forEach((a, n) => {
+      const [x0, y0, , y1] = a.box, { src, out } = swayBoxes[n], w = src.width, s = src.data, o = out.data;
+      for (let y = 0; y < src.height; y++) {
+        const u = Math.min(1, (y1 - y0 - y) / (y1 - a.ball)), off = tips[n] * u * u, fl = Math.floor(off), fr = off - fl, row = y * w * 4;
+        for (let x = 0; x < w; x++) {   // this row at x is the art's at x - off: its two pixels, weighted by their share and their alpha
+          const i0 = x - fl, i1 = i0 - 1, q = row + x * 4;
+          const a0 = i0 >= 0 && i0 < w ? s[row + i0 * 4 + 3] * (1 - fr) : 0, a1 = i1 >= 0 && i1 < w ? s[row + i1 * 4 + 3] * fr : 0, al = a0 + a1;
+          if (al < 0.5) { o[q] = o[q + 1] = o[q + 2] = o[q + 3] = 0; continue; }
+          for (let c = 0; c < 3; c++) o[q + c] = ((a0 && s[row + i0 * 4 + c] * a0) + (a1 && s[row + i1 * 4 + c] * a1)) / al;
+          o[q + 3] = al;
+        }
+      }
+      swayArt.putImageData(out, x0, y0);
+    });
+    return swayArt.canvas;
+  }
+  // the card's corner, moved by Whimsical 2's opening (the script under the hero); its canvas moves with it, so the pointer is read back
+  const card = window.heroCard || { dx: 0, dy: 0, p: 1 };
+  const look = { x: 0, y: 0, on: false, panel: false };   // the pointer, in hero px, and whether it is over the install panel
+  const eyes = RIG.eyes.map((e) => ({ x: e.rest?.[0] || 0, y: e.rest?.[1] || 0, jx: 0, jy: 0, jt: 0 })), arms = RIG.arms.map(() => ({ lift: 0 }));
+  let shown = 0, awake = 0, gape = 0, watching = 0, last = performance.now();
+  addEventListener('pointermove', (e) => {
+    const r = hero.getBoundingClientRect(); look.x = e.clientX - r.left; look.y = e.clientY - r.top; look.on = true;
+    look.panel = !!e.target.closest?.('.install');   // the install panel wakes it too, wherever it is
+  });
+  document.documentElement.addEventListener('pointerleave', () => { look.on = false; });
+  const ease = (dt, speed) => 1 - Math.exp(-dt * speed);
+  const wrap = (d) => ((d % 360) + 360) % 360;
+  // how far (deg, counter-clockwise from rest) the arm turns to point at (x, y), within armLift; past the far end it goes to the nearer end
+  function aim(arm, x, y) {
+    const d = wrap(arm.rest - Math.atan2(y - arm.shoulder[1], x - arm.shoulder[0]) * 180 / Math.PI);
+    return d <= S.armLift ? d : d < S.armLift + (360 - S.armLift) / 2 ? S.armLift : 0;
+  }
+  function drawArm(g, i) {
+    const arm = RIG.arms[i];
+    g.save(); g.translate(...arm.shoulder); g.rotate(-arms[i].lift * Math.PI / 180);
+    g.drawImage(armImgs[i], -arm.pivot[0], -arm.pivot[1]);
+    g.restore();
+  }
+  // Whimsical treats it as Figma 356:8944 does its ant, at Figma's 317px ant: exposure -0.14, and a white inner shadow offset 26, 6,
+  // blur 4.8 (a CSS-style radius: half of it as the canvas blur), added in Linear Dodge at 28%, lit from the title (the rim on its left).
+  // Figma's art is a richer, darker brown than ours: each part is graded with a gamma that darkens the mid-tones and keeps the eye
+  // whites white (a plain darkening greys them), to the mean colour of Figma's rendered ant (174, 116, 83), rim included (antGamma,
+  // antSaturation, rimAlpha: Whimsical 1's values; Whimsical 2's are softer).
+  // The whole ant is drawn on a layer first (only its own square, resampled at high quality so the ink stays crisp), so the rim follows the arms
+  const SHADE = { dx: 26, dy: 6, blur: 2.4 };   // at RIG.shadeAt px wide
+  if (WHIMSICAL) {
+    const art = { neutral, body, armImgs };
+    let lut, sat;
+    const grade = (img) => {
+      if (!img) return img;
+      const g = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+      g.canvas.width = img.naturalWidth; g.canvas.height = img.naturalHeight; g.drawImage(img, 0, 0);
+      const im = g.getImageData(0, 0, g.canvas.width, g.canvas.height), d = im.data;
+      for (let p = 0; p < d.length; p += 4) {
+        const r = lut[d[p]], gr = lut[d[p + 1]], b = lut[d[p + 2]], l = 0.299 * r + 0.587 * gr + 0.114 * b;
+        d[p] = l + (r - l) * sat; d[p + 1] = l + (gr - l) * sat; d[p + 2] = l + (b - l) * sat;
+      }
+      g.putImageData(im, 0, 0); return g.canvas;
+    };
+    regradeAnt = () => {
+      lut = Float32Array.from({ length: 256 }, (_, v) => 255 * (v / 255) ** S.antGamma); sat = S.antSaturation;
+      neutral = grade(art.neutral); body = grade(art.body); armImgs = art.armImgs.map(grade);
+    };
+    regradeAnt();
+  }
+  const lay = document.createElement('canvas').getContext('2d'), rim = document.createElement('canvas').getContext('2d');
+
+  // The seed. Held near the bridge of its nose, it crosses its eyes on it, more as it nears. At its mouth it takes it: the seed flies in,
+  // three bites (the mouth opens and shuts, crumbs of the seed's own colours fall), a swallow, and back at rest. Then the hand is empty (the system cursor) and a new seed drops on the ground beside it: hover lifts it, a click picks it up,
+  // and round again. Not on phones (no mascot there) nor with reduced motion. The sequence is stepped at 24 a second, the films' own rate (Elio, 13 Nov)
+  // The seed it flies in is the day one, or at night the glowing one, switched when the hand's seed is ('seedink', under the hero)
+  const seedDay = await load('/site/assets/hero/seed-day.webp'), groundSeed = document.querySelector('.ground-seed');
+  let seedImg = seedDay;
+  load('/site/assets/hero/seed-night.webp').then((night) => {
+    const pick = () => { seedImg = night && document.documentElement.dataset.theme === 'dark' ? night : seedDay; };
+    pick(); document.addEventListener('seedink', pick);
+  });
+  const crumbInks = (() => {   // five inks from the day seed's opaque pixels, dark to light
+    if (!seedDay) return ['#8a5a3a'];
+    const c = document.createElement('canvas').getContext('2d', { willReadFrequently: true }); c.canvas.width = 32; c.canvas.height = 44; c.drawImage(seedDay, 0, 0, 32, 44);
+    const d = c.getImageData(0, 0, 32, 44).data, px = [];
+    for (let p = 0; p < d.length; p += 4) if (d[p + 3] > 240) px.push([d[p], d[p + 1], d[p + 2]]);
+    px.sort((a, b) => a[0] + a[1] + a[2] - b[0] - b[1] - b[2]);
+    return [0.1, 0.3, 0.5, 0.7, 0.85].map((q) => `rgb(${px[Math.floor(q * (px.length - 1))].join(',')})`);
+  })();
+  const BITES = 3, FLY = 200, SWALLOW = 250, TICK = 1000 / 24;
+  const crumbs = [];
+  let eat = null;   // { start, from: [x, y], bitten }
+  const mouthAt = { x: 0, y: 0, open: false };   // the mouth in hero px, and whether it is there to eat (shown, not on a phone), from its last drawing
+  const setEmpty = (on) => { hand.empty = on; hero.classList.toggle('empty', on); };
+  // tested on every move, not only when it is drawn (12 a second), so a quick pass over the mouth still counts
+  function tryCatch(now) {
+    if (!mouthAt.open || eat || hand.empty || !look.on || look.panel || !hero.classList.contains('seeding') || hero.classList.contains('on-ui')
+      || Math.hypot(look.x - mouthAt.x, look.y - mouthAt.y) >= S.catchReach) return;
+    eat = { start: now, from: [pointer.sx - card.dx, pointer.sy - card.dy], bitten: 0 }; setEmpty(true);   // from where the seed is drawn, on the canvas
+  }
+  addEventListener('pointermove', () => tryCatch(performance.now()));
+  function spill(x, y) {
+    for (let i = 0; i < S.crumbs; i++) crumbs.push({ x: x + (Math.random() - 0.5) * 16, y: y + 4, vx: (Math.random() - 0.5) * 130, vy: 10 - Math.random() * 90,
+      r: 1.5 + Math.random() * 2.5, rot: Math.random() * Math.PI, ink: crumbInks[Math.floor(Math.random() * crumbInks.length)], life: 0.7 + Math.random() * 0.4 });
+  }
+  // a click lifts it into the hand (Elio, 13 Nov: it faded and the hand's popped up): the seed in hand starts where this one stands, at
+  // its size (grown by the hover) and with its shadow, and eases onto the pointer, its size and shadow the hand's; this one is gone at
+  // once, its shadow left on the ground to fade
+  groundSeed.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (groundSeed.classList.contains('taken')) return;
+    const r = hero.getBoundingClientRect(), on = groundSeed.querySelector('img'), b = on.getBoundingClientRect(), held = cursorEl.querySelector('img');
+    const [cx, cy] = e.detail ? [e.clientX, e.clientY] : [b.left + b.width / 2, b.top + b.height / 2];   // from the keyboard: the seed's middle
+    pointer.x = cx - r.left; pointer.y = cy - r.top;
+    pointer.sx = b.left + b.width / 2 - r.left; pointer.sy = b.top + b.height / 2 - r.top - S.cursorSize * 0.5 / 64;   // the hand holds it 0.5/64 above its middle
+    const from = { scale: `${b.height / (S.cursorSize * 89 / 64)}`, filter: getComputedStyle(on).filter };
+    hero.classList.add('lifting'); groundSeed.classList.add('taken');
+    setEmpty(false); hero.classList.add('seeding'); hero.classList.remove('on-ui');   // the pointer was on the button, now gone
+    getComputedStyle(cursorEl).opacity;   // shown at once, not faded in
+    held.animate([from, { scale: '1', filter: getComputedStyle(held).filter }], { duration: 280, easing: 'cubic-bezier(.3, 0, .2, 1)' });
+    requestAnimationFrame(() => hero.classList.remove('lifting'));
+    setTimeout(() => groundSeed.classList.remove('on', 'taken'), 300);
+  });
+
+  // Drawn at most 60 times a second (or mascotFps), and only when something changed: still and alone, nothing is drawn.
+  // Off screen or in a hidden tab the loop stops (the hero's wakers start it again)
+  let queuedM = false, drawn = '', rimKey = '';
+  // Whimsical 2's opening: the first time it shows it walks in from the screen's right edge to its spot, its canvas stepping (a bob and a
+  // tilt per step, tied to the ground covered so it slows as it stops) on the compositor; not once the opening is played, nor when still
+  let walked = !document.documentElement.classList.contains('intro') || still;
+  function walkIn(left, w) {
+    walked = true;
+    if (card.p >= 0.99 || !heroOn || document.hidden || !puppet.offsetParent) return;
+    const far = document.documentElement.clientWidth - (hero.getBoundingClientRect().left + card.dx + left) + 24, STEPS = 6, frames = [];
+    for (let i = 0; i <= 60; i++) {
+      const e = 1 - (1 - i / 60) ** 2.4, ph = e * STEPS * Math.PI, fade = 1 - e * e;
+      frames.push({ transform: `translate(${far * (1 - e)}px, ${-Math.abs(Math.sin(ph)) * 9 * fade}px) rotate(${Math.sin(ph) * 2.5 * fade}deg)` });
+    }
+    puppet.style.transformOrigin = `${left + w / 2}px ${H}px`;
+    puppet.animate(frames, { duration: 2100, easing: 'linear', fill: 'backwards' });
+  }
+  const wakeM = () => { if (!queuedM) { queuedM = true; requestAnimationFrame(mascot); } };
+  wakers.add(wakeM);
+
+  // The leaves in front (Whimsical 2, Elio, 13 Nov: the mascot set inside the painting, not laid on it). The meadow's nearest plants at
+  // its bottom right, daisies, the clover, stems, blades and sprigs, painted again on their own (Nano Banana, keyed from a flat blue)
+  // and laid exactly over their twins in the film, so where they are drawn they hide the film's own. Each plant is drawn whole, never
+  // cut along the mascot (Elio, 13 Nov: a daisy torn in two at its outline looked chemical): the flower heads as pieces of their own,
+  // the rest as one body of leaves and stems, a seam between plants on its left. By day they sway as the film's do, in step with the
+  // frame it shows, a little less: each head carried whole and turned on its stem by the film's own motion there, measured once
+  // (assets/hero/video/hero-ground-leaves.json); each stem and tall sprig bent from its foot to match, along its length; the rest of the
+  // leaves by the film's broad sway (hero-ground-leaves-sway.png), gently. At night the same plants in the night painting's colours,
+  // posed once as its plants stand, still (its loop hardly moves), and over the mascot only (its plants were painted again, not quite
+  // where the day's stand). Never over the eyes or the mouth (an oval round each, in the art's px, following it as it walks in). It
+  // moves as the painting does: its arrival (the settling scale, read live, and the cover's holes), the opening (heroCard) and the
+  // theme's fade. Off on phones (no mascot); with reduced motion as the poster has them, still
+  const fore = WHIMSICAL2 && document.getElementById('fore'), fc = fore && fore.getContext('2d');
+  const LEAVES = '/site/assets/hero/video/hero-ground-leaves', NIGHT_LEAVES = '/site/assets/hero/night/whimsical-2-night-leaves';
+  const NIGHT_POSE = 92;   // the film's frame the night was painted from: its plants stand so
+  // how high the plants in front reach (Elio, 13 Nov: lower, to see the mascot): the lower part of its body, under the bandana, in the
+  // art's rows; above, they pass behind it, fading out over FADE px (CSS), a head whole or not at all
+  const CAP = 668, FADE = 36;
+  // the ovals the leaves never cross: each eye and the mouth (open too), a little wider than they are (centre and radii, the art's px)
+  const FACE = [[525, 422, 84, 84], [717, 417, 66, 77], [640, 500, 58, 52]];
+  const foreAt = { fx: 0, fy: 0, k: 0, shown: 0 };   // the mascot's frame and how shown, from its last drawing
+  let foreQueued = false, foreDrawn = null, drawFore = () => {};
+  const queueFore = () => { if (fc && !foreQueued) { foreQueued = true; requestAnimationFrame(drawFore); } };
+  // The plants posed as the film's stand at frame n (or as the poster's, n < 0), in the plate's own px. The body is bent on the graphics
+  // card, sampled backwards: near each head's stem and each tall stem, that stem's sway, nothing at its foot, all of it at its tip, with
+  // the square of the height between (a stem bending, not sliding); elsewhere the film's broad sway, at half. Then each head is laid on
+  // whole, moved with its stem's tip and turned as the stem leans. Where there is no WebGL the body stays as painted, the heads still move
+  function poser(body, heads, field, units) {
+    const out = Object.assign(document.createElement('canvas'), { width: body.naturalWidth, height: body.naturalHeight }), g = out.getContext('2d');
+    const ctl = [...units.heads.map((h) => ({ tip: h.c, foot: h.foot, dx: h.dx, dy: h.dy, sig: 18 })),
+      ...units.stems.map((s) => ({ tip: s.tip, foot: s.foot, dx: s.dx, dy: null, sig: 26 }))].slice(0, 8);
+    const c = Object.assign(document.createElement('canvas'), { width: out.width, height: out.height });
+    const gl = c.getContext('webgl', { premultipliedAlpha: true, antialias: false });
+    let bend = null;
+    if (gl) {
+      const shader = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+      const prog = gl.createProgram();
+      gl.attachShader(prog, shader(gl.VERTEX_SHADER, 'attribute vec2 p; varying vec2 uv; void main() { uv = p * 0.5 + 0.5; uv.y = 1.0 - uv.y; gl_Position = vec4(p, 0.0, 1.0); }'));
+      gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, `precision highp float; varying vec2 uv; uniform sampler2D P, F; uniform vec2 size; uniform float broad;
+        uniform vec4 stem[8]; uniform vec3 sway[8];
+        void main() {
+          vec2 p = uv * size, d = vec2(0.0); float near = 0.0;
+          for (int i = 0; i < 8; i++) {
+            vec4 s = stem[i]; float t = clamp((s.w - p.y) / max(1.0, s.w - s.y), 0.0, 1.0);
+            float g = exp(-0.5 * pow((p.x - mix(s.z, s.x, t)) / max(1.0, sway[i].z), 2.0)) * step(0.5, sway[i].z);
+            d += sway[i].xy * t * t * g; near += g;
+          }
+          vec4 f = texture2D(F, uv); d = d / max(1.0, near) + (1.0 - min(1.0, near)) * (f.rg - 0.5) * broad;
+          gl_FragColor = texture2D(P, uv - d / size);
+        }`));
+      gl.linkProgram(prog); gl.useProgram(prog);
+      if (gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+        const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+        [[body, true], [field, false]].forEach(([img, pre], i) => {
+          gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+          gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, pre); gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+          for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+        });
+        const u = (n) => gl.getUniformLocation(prog, n);
+        gl.uniform1i(u('P'), 0); gl.uniform1i(u('F'), 1); gl.uniform2f(u('size'), c.width, c.height);
+        gl.uniform4fv(u('stem'), new Float32Array(Array.from({ length: 8 }, (_, i) => (ctl[i] ? [...ctl[i].tip, ...ctl[i].foot] : [0, 0, 0, 1])).flat()));
+        const swayAt = u('sway'), broadAt = u('broad');
+        gl.viewport(0, 0, c.width, c.height); gl.clearColor(0, 0, 0, 0);
+        bend = (n) => {
+          gl.uniform3fv(swayAt, new Float32Array(Array.from({ length: 8 }, (_, i) => (ctl[i] ? [ctl[i].dx[n], ctl[i].dy ? ctl[i].dy[n] : 0, ctl[i].sig] : [0, 0, 0])).flat()));
+          gl.uniform1f(broadAt, units.field.max * 2 * units.field.w1[n] * 0.5);
+          gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); return c;
+        };
+      }
+    }
+    // cap: the row (plate px) above which the plants pass behind the mascot, fading out over `fade` px; a head goes behind whole
+    const posed = (n, cap = -Infinity, fade = 0) => {
+      g.globalCompositeOperation = 'source-over'; g.clearRect(0, 0, out.width, out.height);
+      g.drawImage(n >= 0 && bend ? bend(n) : body, 0, 0);
+      if (cap > 0) {
+        const gr = g.createLinearGradient(0, cap - fade, 0, cap); gr.addColorStop(0, '#0000'); gr.addColorStop(1, '#000');
+        g.globalCompositeOperation = 'destination-in'; g.fillStyle = gr; g.fillRect(0, 0, out.width, out.height); g.globalCompositeOperation = 'source-over';
+      }
+      for (const h of units.heads) {   // each head whole: on its stem's tip, leaning as the stem does; above the cap, behind
+        const dx = n >= 0 ? h.dx[n] : 0, dy = n >= 0 ? h.dy[n] : 0, [cx, cy] = h.c, [sx, sy, sw, sh] = h.sprite, [bx, by] = h.box;
+        if (cy + dy < cap - fade / 2) continue;
+        g.save(); g.translate(cx + dx, cy + dy); g.rotate(Math.atan2(dx, h.foot[1] - cy) * 0.6);
+        g.drawImage(heads, sx, sy, sw, sh, bx - cx, by - cy, sw, sh); g.restore();
+      }
+      return out;
+    };
+    posed.size = [out.width, out.height];
+    return posed;
+  }
+  if (fc) {
+    let plates = null, day = null, nightPoser = null, nightPose = null, nightKey = '', units = null;   // fetched the first time they are needed (never on a phone)
+    const paint = hero.querySelector('.paint'), stage = paint.querySelector('.stage'), night = paint.querySelector('.night');
+    const dayV = stage?.querySelector('video'), tmp = document.createElement('canvas').getContext('2d');
+    const pics = {};   // the night still, loaded once from the painting's own styles (its size places the night's plants)
+    const pic = (el) => {
+      const src = /url\(\s*['"]?([^'")]+)/.exec(getComputedStyle(el).backgroundImage)?.[1];
+      if (src && !(src in pics)) { pics[src] = null; load(src).then((i) => { pics[src] = i; queueFore(); }); }
+      return src && pics[src];
+    };
+    const playing = (v) => v?.isConnected && v.classList.contains('on') && v.readyState >= 2 && v;
+    // a new drawing on each of the film's frames, with the frame's own time, so the plants stand as in that frame (where a browser
+    // cannot say, at each of its time updates, from the film's clock)
+    if (dayV) {
+      if (dayV.requestVideoFrameCallback) { const on = (_, meta) => { dayV.shownAt = meta.mediaTime; queueFore(); dayV.requestVideoFrameCallback(on); }; dayV.requestVideoFrameCallback(on); }
+      else dayV.addEventListener('timeupdate', queueFore);
+    }
+    card.fore = queueFore; wakers.add(queueFore);
+    document.addEventListener('themechange', queueFore);
+    new ResizeObserver(queueFore).observe(paint);
+    const root = document.documentElement;
+    drawFore = () => {
+      foreQueued = false;
+      if (!heroOn || document.hidden) return;
+      const veiled = root.classList.contains('veil'), cover = paint.querySelector('canvas.hv');
+      // the painting moving on its own (its arrival, the theme's fade): drawn on every frame until it rests
+      if (veiled || cover || root.classList.contains('arriving') || root.classList.contains('theming')) queueFore();
+      const cw = paint.offsetWidth, ch = paint.offsetHeight, dpr = Math.min(2, devicePixelRatio || 1);
+      if (fore.width !== Math.round(cw * dpr) || fore.height !== Math.round(ch * dpr)) { fore.width = Math.round(cw * dpr); fore.height = Math.round(ch * dpr); foreDrawn = null; }
+      fc.setTransform(1, 0, 0, 1, 0, 0);
+      if (foreDrawn) fc.clearRect(...foreDrawn); else fc.clearRect(0, 0, fore.width, fore.height);
+      foreDrawn = null;
+      const f = foreAt;
+      if (veiled || f.shown < 0.01 || !fore.offsetParent) return;
+      if (!plates) {
+        plates = Promise.all([`${LEAVES}.webp`, `${LEAVES}-heads.webp`, `${NIGHT_LEAVES}.webp`, `${NIGHT_LEAVES}-heads.webp`, `${LEAVES}-sway.png`].map(load)
+          .concat(fetch(`${LEAVES}.json`).then((r) => r.json()).catch(() => null)))
+          .then(([body, heads, nBody, nHeads, field, u]) => {
+            if (!body || !heads || !field || !u) return;
+            units = u; day = poser(body, heads, field, u);
+            if (nBody && nHeads) nightPoser = poser(nBody, nHeads, field, u);
+            queueFore();
+          });
+        return;
+      }
+      if (!day) return;
+      // the mascot's frame in the painting's own px: the painting's top left in the hero and its scale (the opening), the mascot's canvas moved with the card
+      const X = card.x ?? paint.offsetLeft, Y = card.y ?? paint.offsetTop, s = card.s ?? 1;
+      const at = (hx, hy) => [(hx + card.dx - X) / s, (hy + card.dy - Y) / s], capY = at(0, f.fy + CAP * f.k)[1];
+      // while it walks in, its steps (the canvas's own animation), so the guard goes where its eyes are
+      let step = null;
+      if (puppet.getAnimations().length) {
+        const [tx, ty] = getComputedStyle(puppet).transformOrigin.split(' ').map(parseFloat);
+        step = new DOMMatrix().translate(tx, ty).multiply(new DOMMatrix(getComputedStyle(puppet).transform)).translate(-tx, -ty);
+        queueFore();
+      }
+      // the part drawn: the plants' own corner of the painting, its bottom right (whole plants, wherever they reach)
+      const rx = Math.max(0, Math.floor(cw * 0.45 * dpr)), ry = Math.max(0, Math.floor(ch * 0.3 * dpr));
+      const rw = fore.width - rx, rh = fore.height - ry;
+      if (rw <= 0 || rh <= 0) return;
+      if (tmp.canvas.width !== rw || tmp.canvas.height !== rh) { tmp.canvas.width = rw; tmp.canvas.height = rh; }
+      const settle = root.classList.contains('arriving') ? parseFloat(getComputedStyle(stage || night).scale) || 1 : 1;
+      const local = (g) => { g.setTransform(dpr, 0, 0, dpr, -rx, -ry); g.translate(cw / 2, ch / 2); g.scale(settle, settle); g.translate(-cw / 2, -ch / 2); };
+      // the night's share, the same everywhere: its fade (the styles above), 0 by day, 1 at night
+      const fade = night ? parseFloat(getComputedStyle(night).getPropertyValue('--fade')) || 0 : 0;
+      const nightGrad = () => `rgba(0, 0, 0, ${fade})`;
+      // one painting's plants, at their place (and kept to their share of the night), laid on the leaves
+      const layer = (picture, rect, share, onAnt) => {
+        tmp.globalCompositeOperation = 'source-over'; tmp.setTransform(1, 0, 0, 1, 0, 0); tmp.clearRect(0, 0, rw, rh);
+        local(tmp); tmp.imageSmoothingQuality = 'high'; tmp.drawImage(picture, ...rect);
+        if (share) { tmp.globalCompositeOperation = share; tmp.fillStyle = nightGrad(tmp); tmp.fillRect(-cw, -ch, cw * 3, ch * 3); }
+        if (onAnt) {   // kept to the mascot as it is now (its canvas, moved with the card and its steps)
+          tmp.globalCompositeOperation = 'destination-in'; tmp.setTransform(dpr / s, 0, 0, dpr / s, dpr * (card.dx - X) / s - rx, dpr * (card.dy - Y) / s - ry);
+          if (step) tmp.transform(step.a, step.b, step.c, step.d, step.e, step.f);
+          tmp.drawImage(puppet, 0, 0, W, H);
+        }
+        fc.drawImage(tmp.canvas, rx, ry);
+      };
+      if (fade < 1) {   // the day: on the film's 16:9 stage, covering the painting from its centre, as the frame shown
+        const sw = Math.max(cw, ch * 16 / 9), sh = sw * 9 / 16, sx = Math.round((cw - sw) / 2), sy = Math.round((ch - sh) / 2), u = sw / 1920, [px, py, pw, ph] = units.day;
+        const v = playing(dayV), n = v && !still ? Math.round((v.shownAt ?? v.currentTime) * units.fps) % units.frames : -1, k = day.size[1] / (ph * u);
+        layer(day(n, (capY - (sy + py * u)) * k, FADE / s * k), [sx + px * u, sy + py * u, pw * u, ph * u], fade > 0 && 'destination-out');
+      }
+      const nightStill = night && fade > 0 && nightPoser && pic(night);
+      if (nightStill) {   // the night: on the night still, covering the painting from the top, over the mascot only; posed once, again if the cap moves
+        const u = Math.max(cw / nightStill.naturalWidth, ch / nightStill.naturalHeight), nx = (cw - nightStill.naturalWidth * u) / 2, [px, py, pw, ph] = units.night;
+        const k = day.size[1] / (ph * u), key = `${Math.round((capY - py * u) * k)} ${Math.round(FADE / s * k)}`;
+        if (key !== nightKey) {   // kept in a canvas of its own (the graphics card's may be cleared once shown)
+          const g = nightPoser(NIGHT_POSE, (capY - py * u) * k, FADE / s * k); nightKey = key;
+          nightPose ||= Object.assign(document.createElement('canvas'), { width: g.width, height: g.height });
+          const c = nightPose.getContext('2d'); c.clearRect(0, 0, g.width, g.height); c.drawImage(g, 0, 0);
+        }
+        layer(nightPose, [nx + px * u, py * u, pw * u, ph * u], fade < 1 && 'destination-in', true);
+      }
+      // the arrival's cover: where the painting is not there yet, neither are its leaves
+      fc.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (cover) { fc.globalCompositeOperation = 'destination-out'; fc.drawImage(cover, 0, 0, cw, ch); }
+      // never over the eyes or the mouth: an oval round each, soft over its last sixth; while it walks in, where its steps take them
+      fc.globalCompositeOperation = 'destination-out';
+      for (const [ex, ey, erx, ery] of FACE) {
+        let hx = f.fx + (RIG.flip ? -1 : 1) * ex * f.k, hy = f.fy + ey * f.k;
+        if (step) ({ x: hx, y: hy } = step.transformPoint({ x: hx, y: hy }));
+        const [ox, oy] = at(hx, hy), q = f.k / s;
+        fc.save(); fc.translate(ox, oy); fc.scale(erx * q * 1.2, ery * q * 1.2);
+        const face = fc.createRadialGradient(0, 0, 0, 0, 0, 1); face.addColorStop(0.83, '#000'); face.addColorStop(1, '#0000');
+        fc.fillStyle = face; fc.beginPath(); fc.arc(0, 0, 1, 0, Math.PI * 2); fc.fill(); fc.restore();
+      }
+      fc.globalCompositeOperation = 'source-over';
+      foreDrawn = [rx, ry, rw, rh];
+    };
+  }
+  function mascot(now) {
+    queuedM = false;
+    if (!heroOn || document.hidden) return;
+    wakeM();
+    const step = 1000 / (S.mascotFps > 0 ? S.mascotFps : 60);   // drawn in steps of 1/fps s, eased over the whole step
+    if (now - last < step - 2) return;
+    const dt = Math.min(Math.max(64, step * 1.5), now - last) / 1000; last = now;
+    const dpr = devicePixelRatio || 1;
+    if (puppet.width !== Math.round(W * dpr) || puppet.height !== Math.round(H * dpr)) { puppet.width = Math.round(W * dpr); puppet.height = Math.round(H * dpr); drawn = ''; }
+    // its width and spot: as set, slid right past the edge (at most a quarter of it) and then made smaller to clear the install block
+    const [bx0, by0, bx1, by1] = RIG.box;
+    const hr = hero.getBoundingClientRect(), ir = document.querySelector('.install').getBoundingClientRect();
+    const space = W - (ir.right - hr.left) - 16;
+    let w = S.mascotSize, right = Math.min(S.mascotInset, space - w);
+    if (right < -w / 4) { w = space / 0.75; right = -w / 4; }
+    const k = w / (bx1 - bx0), sx = RIG.flip ? -1 : 1;
+    // the frame's origin on screen: the drawn box's right edge `right` px in, `mascotCrop` of its height below the bottom edge
+    const fx = RIG.flip ? W - right + bx0 * k : W - right - bx1 * k, fy = H + S.mascotCrop * (by1 - by0) * k - by1 * k;
+    const showing = S.mascotOn && neutral && w >= S.mascotSize * 0.6 && (!net || net.over);   // Mascot: once its intro has played
+    if (showing && !walked) walkIn(W - right - w, w);
+    shown += ((showing ? 1 : 0) - shown) * ease(dt, 10);
+    if (fc && (foreAt.fx !== fx || foreAt.fy !== fy || foreAt.k !== k || Math.abs(foreAt.shown - shown) > 0.005)) { Object.assign(foreAt, { fx, fy, k, shown }); queueFore(); }
+    if (shown > 0.01) {
+      const px = (look.x - card.dx - fx) / k * sx, py = (look.y - card.dy - fy) / k;   // the pointer, in the frame's px
+      const mouthX = fx + sx * RIG.mouth[0] * k, mouthY = fy + RIG.mouth[1] * k;   // the mouth, in hero px
+      // holding the seed over the scene (not the panels): the eyes cross on it near the nose, and the mouth takes it
+      const holding = !still && puppet.offsetParent && shown > 0.9 && !hand.empty && !eat && look.on && !look.panel
+        && hero.classList.contains('seeding') && !hero.classList.contains('on-ui');
+      mouthAt.x = mouthX + card.dx; mouthAt.y = mouthY + card.dy; mouthAt.open = RIG.eats !== false && !still && !!puppet.offsetParent && shown > 0.9; tryCatch(now);
+      const bridge = [(RIG.eyes[0].x + RIG.eyes[1].x) / 2, (RIG.eyes[0].y + RIG.eyes[1].y) / 2];
+      let tx = px, ty = py, cross = holding && S.squintReach > 0 ? Math.max(0, 1 - Math.hypot(px - bridge[0], py - bridge[1]) * k / S.squintReach) : 0;
+      let open = gape, smile = 0, fly = -1;
+      if (eat) {
+        const t = Math.floor((now - eat.start) / TICK) * TICK, chew = S.chewTime;
+        if (t < FLY + chew + SWALLOW) { tx = RIG.mouth[0]; ty = RIG.mouth[1]; cross = 1; }   // on the seed in its mouth
+        // each bite spills its crumbs as the mouth starts to shut (any bite a slow tab skipped over still comes, late)
+        const c = Math.max(0, Math.min(BITES, (t - FLY) / chew * BITES)), due = Math.min(BITES, Math.floor(c + 0.5));
+        while (eat.bitten < due) { eat.bitten++; spill(mouthX, mouthY); }
+        if (t < FLY) { open = 1; fly = t / FLY; }
+        else if (t < FLY + chew) { const f = c % 1; open = f < 0.5 ? f * 2 : (1 - f) * 2; }
+        else if (t < FLY + chew + SWALLOW) open = 0;
+        // swallowed, it is simply back at rest, its lost look and closed mouth: no smile, no look up (Elio, 13 Nov: it felt odd)
+        else { eat = null; groundSeed.classList.add('on'); }
+      }
+      // its corner (Elio, 13 Nov): a little more than the hero's lower right quarter. Outside it, it rests, lost; inside, it follows the
+      // pointer with its eyes, and only with the seed in hand does it reach for it, its mouth open. Fed (the hand empty), it only watches
+      const zone = look.on && !still && look.x >= W * 0.42 && look.y >= H * 0.36;
+      const near = holding && zone;
+      watching += ((zone ? 1 : 0) - watching) * ease(dt, 8);
+      awake += ((near ? 1 : 0) - awake) * ease(dt, near ? S.armSpeed : S.armSpeed * 2);   // the mouth shuts twice as fast as it opens (Elio, 13 Nov)
+      if (Math.abs((near ? 1 : 0) - awake) < 0.004) awake = near ? 1 : 0;   // and comes to rest, so it is shut or open, not nearly
+      // the mouth follows a step behind (eased again, so it starts and ends gently): drawn 12 times a second, it then lies flat on the
+      // painted line for a drawing or two each way, shutting and opening, rather than leaping from it (Elio, 13 Nov)
+      gape += (awake - gape) * ease(dt, near ? S.armSpeed : S.armSpeed * 2);
+      if (Math.abs(awake - gape) < 0.004) gape = awake;
+      if (rigged) RIG.arms.forEach((arm, i) => { arms[i].lift += ((near ? aim(arm, px, py) : 0) - arms[i].lift) * ease(dt, S.armSpeed); });
+      // the pupils' next places (eased as before), then the drawing only if anything on it moved
+      const irises = RIG.eyes.map((e, i) => {
+        const dx = tx - e.x, dy = ty - e.y, d = Math.hypot(dx, dy) || 1, m = look.on || eat ? Math.max(S.pupilTravel * Math.min(1, d / 200), cross) : 0, p = eyes[i];
+        const [reachX, reachY] = e.reach || [e.rx - RIG.pupil - 5, e.ry - RIG.pupil - 5];
+        // at rest the lost look, as the page's other ants (Elio, 13 Nov: following the pointer all the time it stared, too clever): the
+        // pupils apart, sideways, three quarters of the way to their rims, level with each other. Only reaching for the seed, eating
+        // or crossing on it does it look at it
+        const lost = RIG.lost?.[i], level = (RIG.eyes[0].y + RIG.eyes[1].y) / 2 - e.y;   // both pupils at the eyes' mean height
+        const [restX, restY] = e.rest || (lost ? [lost[0] * reachX * 0.75, level + lost[1] * reachY * 0.75] : [0, 0]);
+        const w = !lost ? (m ? 1 : 0) : eat || cross > 0 ? 1 : Math.max(awake, watching);
+        // looking, each eye turns toward the pointer as far as its white lets it (the pupil against the rim), so with the seed between
+        // its eyes they cross of themselves, each to its inner rim (Elio, 13 Nov: no forced squint, only where the pointer is); within a
+        // little of the eye's centre it eases back toward the middle
+        const rim = e.rx ? 1 / Math.hypot(dx / d / e.rx, dy / d / e.ry) - RIG.pupil * 0.45 : 0, far = Math.min(1, d / 60);
+        const fx2 = !m ? restX : e.rx ? dx / d * rim * far : dx / d * reachX * m, fy2 = !m ? restY : e.rx ? dy / d * rim * far : dy / d * reachY * m;
+        let gx = restX + (fx2 - restX) * w, gy = restY + (fy2 - restY) * w;
+        p.x += (gx - p.x) * ease(dt, 14); p.y += (gy - p.y) * ease(dt, 14);
+        if (now - p.jt > 45) { p.jt = now; p.jx = Math.random() * 2 - 1; p.jy = Math.random() * 2 - 1; }
+        return [e.x + p.x + p.jx * RIG.jitter * awake, e.y + p.y + p.jy * RIG.jitter * awake];
+      });
+      // the seed on the ground stands just left of it, near the card's bottom (placed even when the drawing is unchanged: the card may have moved)
+      if (groundSeed.classList.contains('on')) {
+        const sw = S.cursorSize, sh = sw * 89 / 64;
+        const left = `${Math.round((RIG.flip ? fx - bx1 * k : fx + bx0 * k) - 38 - sw / 2 + card.dx)}px`, top = `${Math.round(H - 20 - sh + card.dy)}px`;
+        if (groundSeed.style.left !== left || groundSeed.style.top !== top) { groundSeed.style.left = left; groundSeed.style.top = top; }
+      }
+      const tips = still ? [] : swayTips(now);
+      const sig = [W, H, fx, fy, k, shown, open, smile, fly, tuned, ...irises.flat(), ...arms.map((r) => r.lift), ...tips].map((v) => Math.round(v * 20)).join();
+      if (sig === drawn && !crumbs.length) return;
+      drawn = sig;
+      pc.setTransform(dpr, 0, 0, dpr, 0, 0); pc.clearRect(0, 0, W, H);
+      let g = pc, box = null;
+      if (WHIMSICAL) {
+        const sw = RIG.size[0] * k, sh = RIG.size[1] * k, x0 = Math.max(0, Math.floor(RIG.flip ? fx - sw : fx)), y0 = Math.max(0, Math.floor(fy));
+        box = [x0, y0, Math.max(1, Math.min(W, Math.ceil(RIG.flip ? fx : fx + sw)) - x0), Math.max(1, Math.min(H, Math.ceil(fy + sh)) - y0)];
+        for (const c of [lay.canvas, rim.canvas]) {
+          const cw = Math.round(box[2] * dpr), ch = Math.round(box[3] * dpr);
+          if (c.width !== cw || c.height !== ch) { c.width = cw; c.height = ch; }
+        }
+        lay.setTransform(dpr, 0, 0, dpr, -box[0] * dpr, -box[1] * dpr); lay.clearRect(box[0], box[1], box[2], box[3]); lay.imageSmoothingQuality = 'high';
+        g = lay;
+      }
+      const a = box ? 1 : shown;   // Whimsical's layer is drawn whole, and faded as it is laid on the page (a half-clear layer would turn the rim over all of it)
+      g.globalAlpha = a; g.save(); g.translate(fx, fy); g.scale(k * sx, k);
+      if (rigged) { RIG.arms.forEach((arm, i) => arm.under && drawArm(g, i)); g.drawImage(swaying(body, tips), 0, 0, ...RIG.size); }
+      else g.drawImage(swaying(neutral, tips), 0, 0, ...RIG.size);
+      // pupils: toward the pointer, kept inside each eye white; awake, they tremble a little with excitement
+      RIG.eyes.forEach((e, i) => {
+        const [cx, cy] = irises[i];
+        if (e.path) {   // an iris, in the eye's opening: ring, pupil, the painted catchlights (top right, and a small one below)
+          const r = e.iris, [rimInk, ringInk, pupilInk] = RIG.irisInk;
+          g.save(); g.clip(e.path);
+          g.fillStyle = rimInk; g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.fill();
+          const ring = g.createRadialGradient(cx, cy + r * 0.3, r * 0.2, cx, cy, r * 0.9); ring.addColorStop(0, ringInk[0]); ring.addColorStop(1, ringInk[1]);
+          g.fillStyle = ring; g.beginPath(); g.arc(cx, cy, r * 0.9, 0, Math.PI * 2); g.fill();
+          g.fillStyle = pupilInk; g.beginPath(); g.arc(cx, cy, r * 0.68, 0, Math.PI * 2); g.fill();
+          g.fillStyle = '#fff'; g.beginPath(); g.ellipse(cx + r * 0.32, cy - r * 0.38, r * 0.24, r * 0.17, -0.5, 0, Math.PI * 2); g.fill();
+          g.beginPath(); g.ellipse(cx + r * 0.3, cy + r * 0.2, r * 0.1, r * 0.05, 0, 0, Math.PI * 2); g.fill();
+          // the lid's shadow over the top of the eye, so the iris sits in it rather than on it
+          const top = Math.min(...e.outline.filter((_, j) => j % 2)), lid = g.createLinearGradient(0, top, 0, top + r * 0.9);
+          lid.addColorStop(0, 'rgba(70, 40, 25, .35)'); lid.addColorStop(1, 'rgba(70, 40, 25, 0)');
+          g.fillStyle = lid; g.fillRect(e.x - 200, top, 400, r * 0.9);
+          g.restore();
+        } else {
+          g.fillStyle = RIG.pupilInk; g.beginPath(); g.arc(cx, cy, RIG.pupil, 0, Math.PI * 2); g.fill();
+          g.fillStyle = '#fff'; g.beginPath(); g.arc(cx + RIG.pupil * 0.35, cy - RIG.pupil * 0.35, RIG.pupil * 0.3, 0, Math.PI * 2); g.fill();
+        }
+      });
+      // the mouth (awake, or chewing), one shape from shut to open (Elio, 13 Nov). Shut, it is a flat line lying exactly on the painted one
+      // (its place, length, thickness and ink: `mouthBar`, and the art's own ink); opening, the line parts into a slit that grows down
+      // into the open oval, an upright one, narrower and taller, so it gapes, its top a little over the line. The shape is a
+      // superellipse, a bar shut and an ellipse open. The painted line is painted out under it over the first `C` of the way, so its end
+      // ticks fade out as the line parts and back once it lies flat again: no jump, shutting or opening. Pleased, the smile, with the
+      // painted line painted out under it too (Elio, 13 Nov: the two overlapped), fading in and out with it
+      if (lids) g.drawImage(lids, ...RIG.lids.at);   // the eyes' lines, back over the irises
+      if (RIG.eats !== false && RIG.mouthLine && (open > 0 || smile > 0)) {
+        const art = rigged ? body : neutral, C = 0.25, RING = 4;   // the outline's width, px of the art
+        if (art !== mouthFrom) { mouthFrom = art; mouthless = art ? paintOutMouth(art) : null; }
+        const ink = mouthless?.ink || RIG.mouthInk, patch = Math.max(smile, Math.min(1, open / C));
+        if (mouthless && patch > 0) { g.globalAlpha = a * patch; g.drawImage(mouthless.img, RIG.mouthLine[0], RIG.mouthLine[1]); g.globalAlpha = a; }
+        if (open > 0) {
+          const [lx0, ly0, lx1, ly1, th] = RIG.mouthBar, [mx, my] = RIG.mouth, h = th / 2, f = Math.max(0, (open - C) / (1 - C));
+          const rxO = S.mouthSize * 0.5, ryO = S.mouthSize * 1.1, cyO = my - 6 + ryO * 0.82, lx = (lx0 + lx1) / 2, ly = (ly0 + ly1) / 2;
+          const rx = (lx1 - lx0) / 2 + (rxO - (lx1 - lx0) / 2) * f, ry = h + (ryO - h) * f;
+          const cx = lx + (mx - lx) * f, cy = ly + (ry - h) * (cyO - ly) / (ryO - h), n = 2 + 6 * (1 - f) ** 8;   // an ellipse once a little open
+          const shape = (ex, ey) => {
+            const path = new Path2D();
+            for (let j = 0; j < 72; j++) {
+              const t = j / 72 * Math.PI * 2, c = Math.cos(t), s = Math.sin(t);
+              path.lineTo(ex * Math.sign(c) * Math.abs(c) ** (2 / n), ey * Math.sign(s) * Math.abs(s) ** (2 / n));
+            }
+            path.closePath(); return path;
+          };
+          g.save(); g.translate(cx, cy); g.rotate(Math.atan2(ly1 - ly0, lx1 - lx0) * (1 - f) + RIG.mouthTilt * f);
+          g.fillStyle = ink; g.fill(shape(rx, ry));
+          // its outline as thick as the painted line shut, and the art's full outline once open: just parted, the line splits into
+          // two thin lips with the dark inside between them, rather than thickening into a bar
+          const ring = Math.min(RING, Math.max(h, ry * 0.45)), ix = rx - ring, iy = ry - ring;
+          if (iy > 0.2) {
+            const inside = shape(ix, iy);
+            g.fillStyle = RIG.mouthInside; g.fill(inside); g.clip(inside);
+            g.fillStyle = RIG.mouthTongue; g.beginPath(); g.ellipse(-ix * 0.3, iy * 0.78, ix * 0.85, iy * 0.55, -0.12, 0, Math.PI * 2); g.fill();
+          }
+          g.restore();
+        }
+        if (smile > 0) {
+          const [mx, my] = RIG.mouth;
+          g.globalAlpha = a * smile; g.strokeStyle = ink; g.lineWidth = 5; g.lineCap = 'round';
+          g.beginPath(); g.arc(mx, my - 18, 26, Math.PI * 0.22, Math.PI * 0.78); g.stroke(); g.globalAlpha = a;
+        }
+      }
+      if (rigged) RIG.arms.forEach((arm, i) => !arm.under && drawArm(g, i));
+      g.restore(); g.globalAlpha = 1;
+      if (box) {
+        const [x0, y0, bw, bh] = box, c = lay.canvas, u = w / RIG.shadeAt * dpr;   // Figma px to layer px
+        pc.globalAlpha = shown; pc.drawImage(c, x0, y0, bw, bh);
+        // the rim: white, less the ant moved by the offset (blurred), kept inside the ant. It follows the ant's outline only
+        // (the eyes and mouth are inside it), so it is made again only when that moves: the arms, the size, the spot
+        const key = [c.width, c.height, u, fx % 1, fy % 1, tuned, ...arms.map((r) => r.lift), ...tips].map((v) => v.toFixed(2)).join();   // the antennae too
+        if (key !== rimKey) {
+          rimKey = key;
+          rim.setTransform(1, 0, 0, 1, 0, 0); rim.globalCompositeOperation = 'source-over'; rim.filter = 'none';
+          rim.fillStyle = '#fff'; rim.fillRect(0, 0, c.width, c.height);
+          rim.globalCompositeOperation = 'destination-out'; rim.filter = `blur(${SHADE.blur * u}px)`; rim.drawImage(c, SHADE.dx * u, SHADE.dy * u);
+          rim.globalCompositeOperation = 'destination-in'; rim.filter = 'none'; rim.drawImage(c, 0, 0);
+        }
+        pc.globalCompositeOperation = 'lighter'; pc.globalAlpha = S.rimAlpha * shown; pc.drawImage(rim.canvas, x0, y0, bw, bh);
+        pc.globalCompositeOperation = 'source-over'; pc.globalAlpha = 1;
+      }
+      // the seed on its way in, shrinking into the mouth; the crumbs, falling and fading
+      if (fly >= 0 && seedImg) {
+        const e = fly * fly, q = S.cursorSize * (1 - 0.8 * e), x = eat.from[0] + (mouthX - eat.from[0]) * e, y = eat.from[1] + (mouthY - eat.from[1]) * e;
+        pc.save(); pc.translate(x, y); pc.rotate(Math.PI); pc.drawImage(seedImg, -q / 2, -q * 89 / 128, q, q * 89 / 64); pc.restore();
+      }
+      for (let i = crumbs.length - 1; i >= 0; i--) {
+        const c = crumbs[i]; c.vy += 520 * dt; c.x += c.vx * dt; c.y += c.vy * dt; c.life -= dt;
+        if (c.life <= 0) { crumbs.splice(i, 1); continue; }
+        pc.globalAlpha = Math.min(1, c.life / 0.4); pc.fillStyle = c.ink;
+        pc.beginPath(); pc.ellipse(c.x, c.y, c.r, c.r * 0.7, c.rot, 0, Math.PI * 2); pc.fill();
+      }
+      pc.globalAlpha = 1;
+      if (document.documentElement.dataset.theme === 'dark') queueFore();   // the night's leaves are kept to the mascot as just drawn
+    } else if (drawn !== 'gone') { drawn = 'gone'; pc.setTransform(dpr, 0, 0, dpr, 0, 0); pc.clearRect(0, 0, W, H); }   // faded out: cleared once
+  }
+  wakeM();
+}
+
+// ── the settings panel ───────────────────────────────────────────────────
+// Shared by the three heroes (assets/hero-panel.js). Tweakpane loads only when the panel is asked for (P, ?panel), so a visitor's page
+// asks the CDN for nothing and the hero runs without it.
+// What a change needs: a new sample of the watercolour, a new ant count, the cursor's size, or nothing (read live).
+const RESAMPLE = new Set(['cell', 'tile', 'shape', 'dot', 'paper', 'gamma', 'brightness', 'saturation', 'contrast', 'low', 'high', 'glowStrength', 'glowWidth', 'glowHeight', 'glowSoft',
+  'darkPaper', 'darkDot', 'litFrom', 'litTo', 'litSat', 'litLight', 'litGlow', 'litGlowSize']);
+let pending = 0, pendingGrade = 0;
+async function apply(key) {
+  tuned++; colours();
+  if (key === 'shape') store.set(`${PAGE}.shapePicked`, true);
+  if (key === 'paper' && S.paperFromImage) { S.paperFromImage = false; panel.refresh(); }   // a colour picked by hand wins
+  if (key === 'source' || key === 'paperFromImage') { await pickSource(); layout(); }
+  else if (RESAMPLE.has(key)) { cancelAnimationFrame(pending); pending = requestAnimationFrame(layout); }   // once per frame while dragging
+  else if (key === 'antPer') countAnts();
+  else if (key === 'antGamma' || key === 'antSaturation') { cancelAnimationFrame(pendingGrade); pendingGrade = requestAnimationFrame(() => regradeAnt?.()); }
+  else if (key === 'cursorSize') sizeCursor();
+  else if (key.startsWith('net')) net?.replay();
+  if (still) requestAnimationFrame(frame);
+}
+async function applyAll() { tuned++; colours(); sizeCursor(); regradeAnt?.(); await pickSource(); layout(); if (still) requestAnimationFrame(frame); }
+try {
+  panel = await heroPanel({
+    page: PAGE, title: { '': 'Meadow', mascot: 'Meadow · Mascot', whimsical: `Meadow · Whimsical ${WHIMSICAL2 ? 2 : 1}`, square: 'Meadow Square' }[VARIANT], DEFAULTS: BASE, S, apply, applyAll,
+    onFile: async (img) => { fileImage = img; S.source = 'file'; await apply('source'); },
+    // Whimsical has no mosaic: only its mascot
+    schema: [
+      ...(WHIMSICAL ? [] : [
+      { folder: 'Mosaic', expanded: true, controls: [
+        ['source', { label: 'watercolour', options: Object.fromEntries(Object.entries(PLATES).map(([k, [text]]) => [text, k])) }],
+        { button: 'Replace image…', file: true },
+        ['cell', 6, 40, 0.5], ['tile', 1, 40, 0.5],
+        ['shape', { options: { square: 'square', round: 'round' } }], ['dot', 1, 40, 0.5, 'dot size'],
+        ['paper'], ['paperFromImage', 'paper from image'],
+        ['gamma', 0.2, 3, 0.01], ['brightness', -0.5, 0.5, 0.01],
+        ['saturation', 0, 3, 0.01], ['contrast', 0.5, 2, 0.01],
+        ['low', 0, 0.6, 0.005, 'opacity from'], ['high', 0.01, 1, 0.005, 'opacity full at'],
+      ] },
+      ...(VARIANT === 'mascot' ? [{ folder: 'Intro', controls: [
+        ['netWake', 0, 3000, 10, 'peers wake ms'], ['netSpread', 0, 2000, 10, 'over ms'], ['netSpeed', 5, 120, 1, 'ripple cells/s'], ['netBend', 0, 12, 0.1, 'ripple bend px'],
+      ] }] : []),
+      { folder: 'Glow behind the text', controls: [
+        ['glowStrength', 0, 1, 0.01, 'strength'], ['glowWidth', 0.3, 3, 0.01, 'width'], ['glowHeight', 0.3, 3, 0.01, 'height'], ['glowSoft', 0.05, 1.5, 0.01, 'softness'],
+      ] },
+      { folder: 'Ants', expanded: true, controls: [
+        ['antSize', 1, 16, 0.1, 'size'], ['antInk', 'colour'], ['antPer', 20, 400, 1, 'one per cells'], ['pace', 0.2, 3, 0.01],
+        ['maxQueue', 0, 80, 1, 'line length'], ['queueOffset', 0, 10, 1, 'line starts'], ['serve', 100, 3000, 10, 'serve every ms'],
+        ['trail', 0, 1, 0.01], ['trailLength', 0.02, 3, 0.01, 'trail fades s'], ['trailInk', 'trail colour'],
+      ] },
+      { folder: 'Seeds', controls: [
+        ['dropFirstNear', 1, 60, 1, 'first drop from'], ['dropFirstFar', 1, 80, 1, 'first drop to'],
+        ['dropNextNear', 1, 60, 1, 'next drop from'], ['dropNextFar', 1, 80, 1, 'next drop to'],
+        ['hops', 1, 8, 1], ['lifeMin', 0.5, 30, 0.1, 'life from s'], ['lifeMax', 0.5, 30, 0.1, 'life to s'], ['maxSeeds', 0, 20, 1, 'at once'],
+        ['seedInk', 'colour'], ['seedSize', 1, 30, 0.5, 'size px'],
+      ] },
+      { folder: 'Cursor', controls: [
+        ['cursorSize', 24, 200, 1, 'seed width'], ['halo', 'heat'], ['wave', 'ripple'],
+        ['ripple1', 'colour 1'], ['ripple2', 'colour 2'], ['ripple3', 'colour 3'],
+      ] },
+      { folder: 'Dark', controls: [
+        ['darkPaper', 'paper'], ['darkDot', 'unlit dot'], ['litFrom', 0, 0.5, 0.005, 'lit from'], ['litTo', 0.01, 0.8, 0.005, 'lit fully at'],
+        ['litSat', 0, 3, 0.01, 'lit saturation'], ['litLight', 0.3, 0.85, 0.01, 'lit lightness'], ['litGlow', 0, 1.5, 0.01, 'glow'], ['litGlowSize', 0, 24, 0.5, 'glow blur px'],
+        ['darkAntInk', 'ants'], ['darkTrailInk', 'trail'], ['darkSeedInk', 'seeds'],
+      ] },
+      ]),
+      ...(WHIMSICAL ? [{ folder: 'Night (dark)', controls: [['night', 0, 1, 0.01, 'blue wash'], ['fireflies', 0, 1, 0.01, 'fireflies']] }] : []),
+      ...(!MASCOT ? [] : [{ folder: 'Mascot', expanded: WHIMSICAL, controls: [
+        ['mascotOn', 'show'], ['mascotSize', 100, 900, 1, 'width'], ['mascotInset', -300, 700, 1, 'from right'], ['mascotCrop', 0, 0.7, 0.01, 'cut off below'],
+        ...(RIG.eats === false ? [] : [['mascotReach', 50, 1200, 5, 'wakes within px'], ['armSpeed', 0.5, 20, 0.1, 'speed'], ['armLift', 0, 240, 1, 'arm lift deg']]),
+        ['pupilTravel', 0, 1, 0.01, 'pupil travel'], ['mascotFps', 0, 30, 1, 'drawn per second'], ['squintReach', 0, 400, 5, 'cross-eyed within px'],
+        ...(RIG.eats === false ? [] : [['mouthSize', 6, 80, 1, 'mouth size'], ['catchReach', 5, 120, 1, 'catches within px'], ['chewTime', 400, 4000, 50, 'chew ms'],
+          ['crumbs', 0, 20, 1, 'crumbs per bite']]),
+        ...(WHIMSICAL ? [['antGamma', 1, 2.4, 0.01, 'grade gamma'], ['antSaturation', 0.5, 1.5, 0.01, 'grade saturation'], ['rimAlpha', 0, 0.6, 0.01, 'rim']] : []),
+      ] }]),
+      { folder: 'CTA panel', controls: [
+        ['ctaWash', { label: 'wash', options: Object.fromEntries(['none', 'sky', 'cerulean-lilac', 'sage', 'ochre', 'terracotta', 'violet-bluegreen'].map((k) => [k, k])) }],
+        ['ctaWashOpacity', 0, 1, 0.01, 'wash opacity'],
+      ] },
+      { folder: 'Pixel type', controls: [
+        ['figElsh', 0, 80, 1, 'figures ELSH'], ['figSize', 0.6, 2, 0.01, 'figures size'], ['ebElsh', 0, 80, 1, 'eyebrows ELSH'], ['ebSize', 0.6, 3, 0.01, 'eyebrows size'],
+      ] },
+    ],
+  });
+} catch (err) { console.warn('settings panel not loaded', err); }
+</script>
+</body>
+</html>

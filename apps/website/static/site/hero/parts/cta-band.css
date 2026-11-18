@@ -1,0 +1,23 @@
+/* The closing call to action (cta-band.html): aside's last band on the aside scale (06_Amos-feedback/ASIDE-SCALE.md). A card 24 in from
+   the rail's edges, radius 24, the content centred; behind it the Private by design dots, faint on a pale green-blue ground by day,
+   the night band's at night */
+/* its slot sits in the page's flow, not over a panel as the other parts' do (launch.css .lp-slot.lp-on) */
+.lp-slot.lp-slot--band.lp-on { position: static; inset: auto; display: block; container-type: normal; }
+.cta-band { min-height: 0 !important; }   /* sections.js's round-up to 8 off: the 24 under the card stays 24 */
+.cta-band .s-rail { padding: 124px 0 24px; }   /* 24 under the card, as on its sides: inset evenly in the rail, the footer right under it */
+.cta-card { box-sizing: border-box; position: relative; isolation: isolate; overflow: hidden; margin: 0 24px; padding: 128px 48px; border-radius: 24px;
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  background: radial-gradient(120% 90% at 50% 100%, #e3e6e4 0%, #eef0ef 45%, #f7f8f7 100%); box-shadow: inset 0 0 0 1px rgba(10, 26, 18, .06); }
+:root[data-theme="dark"] .cta-card { background: radial-gradient(120% 90% at 50% 100%, #15241c 0%, #111a16 50%, #0e1614 100%); box-shadow: inset 0 0 0 1px rgba(150, 200, 145, .14); }
+/* the field laid on a 16 grid that fills the card edge to edge (dither.js privacyDots, fit): the card's width and its height (448 at
+   1440) whole multiples of 16, so the outer dots sit 8 from every edge, half the grid's step */
+.cta-card .tw { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.cta-card .tw canvas { position: absolute; top: 0; left: 0; }
+.cta-card .tw canvas:first-child { opacity: .22; }   /* the field's dots, made for the night, faint on the day's pale ground */
+:root[data-theme="dark"] .cta-card .tw canvas:first-child { opacity: 1; }
+.cta-card > :not(.tw) { margin: 0; }
+.cta-card .s-h2 { font-size: 44px; line-height: 48px; letter-spacing: -1px; text-wrap: balance; max-width: 760px; }
+.cta-card .s-sub { margin-top: 16px; max-width: 520px; line-height: 28px; text-wrap: balance; }
+.cta-card .s-actions { margin-top: 32px; justify-content: center; gap: 24px; }
+.cta-card .s-btn { height: 40px; padding: 0 12px; font-size: 16px; line-height: 24px; }
+:root[data-theme="dark"] .cta-card { --t: #f2f4ef; --g: #9fb1a6; --b: #cdd5d0; }

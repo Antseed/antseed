@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The providers page (launch, 18 Nov): Amos's /providers/ copy, word for word, in our packaging (pages brief, 17 Nov). The nav and the
+     footer are the homepage's; the sections are the homepage's components (sections.css, v6.css), plus providers.css for this page's layouts -->
+<script src="/site/hero/theme.js"></script>
+<title>Become your own provider · Antseed</title>
+<meta name="description" content="Offer open models on your GPUs, capacity you hold, a router you built, a specialized service or an agent.">
+<meta property="og:title" content="Become your own provider · Antseed">
+<meta property="og:description" content="Offer open models on your GPUs, capacity you hold, a router you built, a specialized service or an agent.">
+<link rel="icon" type="image/svg+xml" href="/site/assets/home/icons/ant-mark.svg">
+<!-- the first screen's painting, asked for at once and first (the browser would otherwise find it only once the CSS is read): the day's
+     file for a light system, the night's for a dark one, the same URLs the page's styles show, so each is fetched once -->
+<link rel="preload" as="image" href="/site/assets/home/providers/stall-day.webp" fetchpriority="high" media="(prefers-color-scheme: light)">
+<link rel="preload" as="image" href="/site/assets/home/providers/stall-night.webp" fetchpriority="high" media="(prefers-color-scheme: dark)">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- the fonts, asked from here and not from inside sections.css, so the browser finds them while it reads the head: the families, then
+     Geist's two arrows (Google's latin subset leaves out → and ↗; its text= parameter needs a request of its own) -->
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500&family=Geist:wght@400;500&family=Geist+Mono:wght@400;500&display=block" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&text=%E2%86%92%E2%86%97&display=block" rel="stylesheet">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="/site/assets/fonts/GeistPixel-VariableFont_ELSH.woff2">
+<link rel="stylesheet" href="/site/hero/shell.css">
+<link rel="stylesheet" href="/site/hero/site-nav.css">
+<link rel="stylesheet" href="/site/hero/v6.css">
+<link rel="stylesheet" href="/site/hero/footer.css">
+<link rel="stylesheet" href="/site/hero/sections.css">
+<link rel="stylesheet" href="/site/hero/micro.css">
+<link rel="stylesheet" href="/site/hero/launch.css">
+<link rel="stylesheet" href="/site/hero/providers-v4.css">
+<link rel="stylesheet" href="/site/providers/providers.css">
+</head>
+<body class="pp" data-parts="cta-band">
+  <nav class="nw-nav">
+    <a href="/" aria-label="Antseed"><img src="/site/assets/hero/logo.svg" width="95.3464" height="33" alt="Antseed"></a>
+    <div class="links"><a href="/network/">Network</a>
+      <div class="dd"><button type="button" class="dd-t" aria-expanded="false" aria-controls="dd-prov">Providers<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3"/></svg></button>
+        <div class="dd-m" id="dd-prov" hidden>
+          <a href="/providers/"><b>Own provider</b><span>Sell your models or AI service at your price</span></a>
+          <a href="/colony/"><b>Join a Colony</b><span>Share your computer with a pool while you’re away</span></a>
+        </div>
+      </div>
+      <a href="/ecosystem/">Ecosystem</a><a href="https://antseedstats.com/network" target="_blank" rel="noopener noreferrer">Live prices&nbsp;↗</a>
+    </div>
+    <div class="acts"><div class="nav-txt"><a href="https://antseed.com/docs/">Docs</a><a href="https://antseed.com/blog/">Blog</a></div><button type="button" class="theme-btn" id="nav-theme" role="switch" aria-checked="false" aria-label="Dark theme"><span class="i-sun"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></span><span class="i-moon"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z"/></svg></span><i class="knob" aria-hidden="true"></i></button><a class="cta ghost" href="https://antseed.com/docs/quickstart/">Set Up Gateway</a><a class="cta" id="nav-get" href="https://github.com/Antseed/antseed/releases/latest" target="_blank" rel="noopener noreferrer"><span class="long">Download Desktop</span><span class="short">Download</span></a><button type="button" class="menu-btn" aria-expanded="false" aria-controls="site-menu">Menu</button></div>
+  </nav>
+<script src="/site/hero/nav.js" defer></script>
+<script src="/site/hero/site-nav.js" defer></script>
+<div id="sections"><div class="s-page">
+
+<!-- The top, as the homepage's Gateway: the offer on the left, on the right the homepage's own-provider stall cut square, the ant and its
+     price board (providers-live.js: the film, the board, the ant's pupils; it finds the panel through .s-paths, here a box of no layout) -->
+<section class="s-sec s-duo pp-top" aria-labelledby="pp-h">
+  <div class="s-rail">
+    <div class="s-duo-text">
+      <div class="pp-offer">
+      <p class="s-eyebrow">Your own provider</p>
+      <div class="s-duo-head">
+        <h1 class="s-h3" id="pp-h">Your service.<br> <span>Your price. Your buyers.</span></h1>
+        <p class="s-sub">Offer open models on your GPUs, capacity you hold, a router you built, a specialized service or an agent.</p>
+      </div>
+      <div class="s-actions"><a class="s-btn" href="https://antseed.com/docs/provide/">Set up your provider →</a></div>
+      </div>
+    </div>
+    <div class="s-paths pp-frame">
+      <div class="wash land s-duo-panel pp-stall" style="--wash: url(/site/assets/home/providers/stall-day.webp); --wash-d: url(/site/assets/home/providers/stall-night.webp)" role="img" aria-label="An ant in round glasses and a grey hoodie keeps its own market stall in a birch wood, a price board hanging at its side, baskets on the counter and a small computer by the stall">
+        <div class="pv-live pv-stall" aria-hidden="true"><div class="pv-set" data-set="day"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" muted playsinline loop preload="none" data-src="/site/assets/home/providers/stall-day"></video><i class="pv-sign"><img alt="" decoding="async" data-src="/site/assets/home/providers/stall-sign-day.webp"></i><img class="pv-ant" alt="" decoding="async" data-src="/site/assets/home/providers/stall-ant-day.webp"><i class="pv-eye l" data-rest="-0.0742 -0.0789" data-travel="0.3546 0.3553"><b style="transform: translate(-7.42%, -7.89%)"></b></i><i class="pv-eye r" data-rest="0.2813 -0.0487" data-travel="0.295 0.3384"><b style="transform: translate(28.13%, -4.87%)"></b></i></div><div class="pv-set" data-set="night"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" muted playsinline loop preload="none" data-src="/site/assets/home/providers/stall-night"></video><i class="pv-sign"><img alt="" decoding="async" data-src="/site/assets/home/providers/stall-sign-night.webp"></i><img class="pv-ant" alt="" decoding="async" data-src="/site/assets/home/providers/stall-ant-night.webp"><i class="pv-eye l" data-rest="-0.0742 -0.0789" data-travel="0.3546 0.3553"><b style="transform: translate(-7.42%, -7.89%)"></b></i><i class="pv-eye r" data-rest="0.2813 -0.0487" data-travel="0.295 0.3384"><b style="transform: translate(28.13%, -4.87%)"></b></i></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- the network for a provider, live: four columns, each a small label over its value, as the homepage's band under its hero. AntSeedStats'
+     (antseedstats.com): as written here (17 Nov), then the homepage's models.json (active users) and its API (requests, USDC settled,
+     providers), read by providers.js; each kept as written when its source does not answer -->
+<section class="s-sec pp-figs" aria-label="The network today">
+  <div class="s-rail">
+    <div class="pp-band">
+      <div class="fig"><p>Active users</p><b data-fig="users">20,280</b></div>
+      <div class="fig"><p>Requests served</p><b data-fig="requests">24.7M</b></div>
+      <div class="fig"><p>USDC settled</p><b data-fig="settled">$397.1K</b></div>
+      <div class="fig"><p>Providers</p><b data-fig="providers">276</b></div>
+    </div>
+  </div>
+</section>
+
+<!-- Running it: the two-option section, locked (06_Amos-feedback/TWO-OPTION-SECTION.md: the homepage's Providers, .s-prov, its sizes in
+     providers-v4.css). A head, then two paths, each a v6 window over its painting (v6.css; micro.js plays them) and Amos's line under it -->
+<section class="s-sec s-prov pp-run" aria-labelledby="pp-run-h">
+  <div class="s-rail">
+    <header class="s-head s-padx">
+      <p class="s-eyebrow">Running your provider</p>
+      <h2 class="s-h2" id="pp-run-h">You set the terms.<br> <span>You review every request.</span></h2>
+      <p class="s-sub">Choose what you serve and at what price. Accept, decline or counter what comes in.</p>
+    </header>
+    <div class="s-paths">
+      <article class="s-path">
+        <div class="wash land s-path-panel pp-card" style="--wash: url(/site/assets/home/vignettes/v03-day.webp); --wash-d: url(/site/assets/home/vignettes/v03-night.webp)">
+          <div class="v6c v6c-p v6-gpu" role="img" aria-label="Models to serve on an RTX 5090: qwen3.8-omni-flash at $0.03 per million tokens, deepseek-v4.1-flash with its price being typed at $0.02, kimi-k3 unchecked, and the Go live button" data-mi="v6-gpu">
+            <div class="v6c-win v6-gpu-win">
+              <p class="v6-gpu-head"><b>Models to serve</b><span>RTX 5090<i> · 32 GB</i></span></p>
+              <div class="v6-gpu-row">
+                <p><i class="v6c-box on"><svg class="v6c-ico v6c-check" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 8.6l3 3 6.6-7"/></svg></i><span class="v6c-glass v6c-logo"><img src="/site/assets/home/icons/qwen.svg" alt=""></span>qwen3.8-omni-flash</p>
+                <p class="v6c-price"><b>$0.03</b><span>/M</span></p>
+              </div>
+              <div class="v6-gpu-row">
+                <p><i class="v6c-box on"><svg class="v6c-ico v6c-check" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 8.6l3 3 6.6-7"/></svg></i><span class="v6c-logo"><img src="/site/assets/home/icons/deepseek.svg" alt=""></span>deepseek-v4.1-flash</p>
+                <p class="v6c-price on"><b>$0.02</b><i class="v6c-caret"></i><span>/M</span></p>
+              </div>
+              <div class="v6-gpu-row off">
+                <p><i class="v6c-box"></i><span class="v6c-glass v6c-logo"><img src="/site/assets/home/icons/kimi.svg" alt=""></span>kimi-k3</p>
+                <p class="v6c-price"><b>$0.05</b><span>/M</span></p>
+              </div>
+              <p class="v6-gpu-go"><span class="s-btn v6c-btn">Go live</span></p>
+            </div>
+            <svg class="v6c-cursor" viewBox="0 0 15 20.5" aria-hidden="true"><path d="M1.2 1.2V16.4l3.7-3.5 2.4 5.7 2.5-1.1-2.4-5.5h5.2z"/></svg>
+          </div>
+        </div>
+        <div class="s-path-text">
+          <h3 class="s-path-h">Set your own price.</h3>
+          <div class="s-path-copy"><p>You choose what to serve and the terms on which you offer it.</p></div>
+        </div>
+      </article>
+      <article class="s-path">
+        <div class="wash land s-path-panel pp-card" style="--wash: url(/site/assets/home/vignettes/v04-day.webp); --wash-d: url(/site/assets/home/vignettes/v04-night.webp)">
+          <div class="v6c v6c-p v6-cap" role="img" aria-label="An incoming request for claude-haiku-5.5, 2,140 tokens from 0x5e…a2 offering $0.02 per million, with Accept, Decline and Counter at $0.03. The previous request, served, sits behind it" data-mi="v6-cap">
+            <div class="v6c-win v6-cap-prev">
+              <p class="v6-cap-line"><b>Incoming request</b><span class="ok">Served</span></p>
+              <p class="v6c-mono v6-cap-sub">deepseek-v4.1-flash · 860 tokens</p>
+            </div>
+            <div class="v6c-win v6-cap-win">
+              <p class="v6-cap-line v6-cap-head"><span class="v6-cap-title"><span class="v6-cap-tile"><span class="v6c-glass"><img src="/site/assets/home/icons/plug.svg" alt=""></span></span><b>Incoming request</b></span><span>now</span></p>
+              <div class="v6-cap-req">
+                <p class="v6c-mono"><img src="/site/assets/home/icons/anthropic.svg" alt="">claude-haiku-5.5<span class="v6-cap-tok">· 2,140 tokens</span></p>
+                <p class="v6-cap-from">from 0x5e…a2 · offers $0.02/M</p>
+              </div>
+              <p class="v6-cap-acts"><span class="s-btn v6c-btn"><svg class="v6c-ico v6c-check" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 8.6l3 3 6.6-7"/></svg> Accept</span><span class="s-btn ghost v6c-btn">Decline</span><span class="s-btn ghost v6c-btn">Counter at $0.03</span></p>
+            </div>
+            <svg class="v6c-cursor" viewBox="0 0 15 20.5" aria-hidden="true"><path d="M1.2 1.2V16.4l3.7-3.5 2.4 5.7 2.5-1.1-2.4-5.5h5.2z"/></svg>
+          </div>
+        </div>
+        <div class="s-path-text">
+          <h3 class="s-path-h">Handle incoming requests.</h3>
+          <div class="s-path-copy"><p>Review the request and its terms. Accept, decline or counter.</p></div>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- Reputation, as the homepage's Desktop: its picture on the left, a provider's record in the glass of the homepage's provider card
+     (providers-v4.css .pvy-card), what Amos says builds it; the text and its two docs on the right -->
+<section class="s-sec s-duo s-duo-flip pp-rep" aria-labelledby="pp-rep-h">
+  <div class="s-rail">
+    <div class="wash land s-duo-panel pp-rep-panel" style="--wash: url(/site/assets/providers/king-day.webp); --wash-d: url(/site/assets/providers/king-night.webp)">
+      <div class="pvy" role="img" aria-label="A provider's reputation: its settled usage, the ANTS staked behind it, its responses signed and its model fingerprint verified">
+        <div class="pvy-glass pvy-card">
+          <p class="pvy-card-h"><i class="pvy-dot"></i>Your reputation</p>
+          <dl>
+            <div><dt>Settled usage</dt><dd>12,480 requests · $1,204</dd></div>
+            <div><dt>ANTS staked</dt><dd>25,000 ANTS</dd></div>
+            <div><dt>Responses</dt><dd>Signed</dd></div>
+            <div><dt>Model fingerprint</dt><dd>Verified</dd></div>
+          </dl>
+        </div>
+      </div>
+    </div>
+    <div class="s-duo-text">
+      <div class="s-duo-head">
+        <h2 class="s-h3" id="pp-rep-h">Build your<br> <span>reputation.</span></h2>
+        <p class="s-sub">Settled usage and the ANTS staked behind your provider give buyers a reputation they can check. Responses are signed, and model fingerprints help verify what you serve.</p>
+      </div>
+      <div class="s-actions"><a class="s-btn" href="https://antseed.com/docs/provide/">Provider setup docs</a><a class="s-btn ghost" href="https://antseed.com/docs/provide/staking/">Staking docs</a></div>
+    </div>
+  </div>
+</section>
+
+<!-- Footer. Links go to the docs, to other sites or to this page. Blog and Terms will be our own pages: placeholders (data-placeholder="page"); Media kit opens the brand kit (/brand/, a work in progress, Elio 13 Nov) -->
+<div class="lp-slot lp-slot--band" data-part="cta-band"></div>
+<footer class="s-sec s-foot meadow">
+  <!-- the painting by day and by night, wide (21:9) so the footer with its text comes to about 16:9: the same meadow without the hill
+       between the ants and the river (Hermès, Magnific Nano Banana 2.1 at 1K, 12 Nov; the three pairs in 02_Brand/footer-wide-2026-11-12,
+       this one d1/n1). 1584 wide for now: a sharper copy once the upscale is agreed -->
+  <div class="scene" aria-hidden="true"><img class="day" src="/site/assets/home/footer/meadow-loop-day-poster.webp" width="1920" height="1080" alt="" loading="lazy" decoding="async"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" class="day" muted loop playsinline preload="none" data-src="/site/assets/home/footer/meadow-loop-day"></video><img class="night" src="/site/assets/home/footer/meadow-loop-night-poster.webp" width="1920" height="1080" alt="" loading="lazy" decoding="async"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" class="night" muted loop playsinline preload="none" data-src="/site/assets/home/footer/meadow-loop-night"></video><canvas class="flies"></canvas></div>
+  <div class="s-rail">
+    <div class="cols">
+      <a class="brand" href="/" aria-label="Antseed"><img class="ink" src="/site/assets/hero/logo.svg" width="95.3464" height="33" alt="Antseed"></a>
+      <div class="col"><p>Product</p><a href="/#desktop">Antseed Desktop</a><a href="/#gateway">Gateway</a><a href="/#prices">Models &amp; prices</a><a href="https://antseed.com/docs/">Docs</a></div>
+      <div class="col"><p>Network</p><a href="/network/">How it works</a><a href="/#providers">Providers</a><a href="/colony/">Colony</a><a href="/network/#token">$ANTS</a><a href="https://antseedstats.com">AntSeedStats&nbsp;↗</a></div>
+      <div class="col"><p>Resources</p><a href="https://antseed.com/blog/">Blog</a><a href="/brand/">Media kit</a><a href="/ants/">Token details</a><a href="https://github.com/antseed">GitHub&nbsp;↗</a></div>
+      <div class="col"><p>Legal</p><a href="https://antseed.com/terms-of-service/">Terms</a></div>
+    </div>
+    <div class="legal"><span>© 2026 Antseed Foundation</span><p class="made">Made with love by <a href="https://astraos.io">AstraOS</a></p><div class="social"><a href="https://x.com/antseed" target="_blank" rel="noopener noreferrer" aria-label="Antseed on X"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg></a><a href="https://github.com/Antseed/antseed" target="_blank" rel="noopener noreferrer" aria-label="Antseed on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a><a href="https://t.me/antseed" target="_blank" rel="noopener noreferrer" aria-label="Antseed on Telegram"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg></a></div>
+      <!-- the theme: System, Light or Dark (sections.js) -->
+      <div class="theme" role="group" aria-label="Theme">
+        <button type="button" data-mode="system" aria-label="System theme" aria-pressed="true"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="8.5" rx="1.5"/><path d="M5.5 13.75h5M8 11.25v2.5"/></svg></button>
+        <button type="button" data-mode="light" aria-label="Light theme" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></button>
+        <button type="button" data-mode="dark" aria-label="Dark theme" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z"/></svg></button>
+      </div>
+    </div>
+  </div>
+</footer>
+</div></div>
+<script type="module">
+import('/site/hero/parts.js'); import('/site/hero/sections.js'); import('/site/hero/micro.js'); import('/site/hero/card-unveil.js'); import('/site/hero/wash-led.js'); import('/site/hero/night-loop.js'); import('/site/hero/footer-eyes.js'); import('/site/hero/fireflies.js').then((m) => m.scan()); import('/site/providers/providers.js');
+</script>
+</body>
+</html>

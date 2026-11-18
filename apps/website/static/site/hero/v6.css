@@ -1,0 +1,438 @@
+/* Antseed homepage v6 scenes, loaded by sections.html after sections.css: the For the people and
+   Providers cards (cards.css) and Private by design (net.css). The motion lives in micro.css / micro.js; the network's diagram is net.js. */
+
+/* ════ the cards (cards.css) ════ */
+/* Antseed homepage v6: the scenes in the "For the people" cards (Agents, Privacy, Teams) and the Providers cards (Open-source models,
+   API capacity, Paid per request). Figma 5tLvMmeKGyUsZgrhY4ogTG, v6 light 729:2 and dark 729:5168, each scene a layer "v6 · …".
+   Heavy users keeps its v4 scene (Elio's review): nothing here for it.
+
+   Each scene is a stage the size of its Figma card (297.5 × 260 for the four, 404.66 × 300 for the three), its windows placed as in
+   Figma, centred in the card (.s-card-panel, a size container). Nothing is scaled: on narrower cards compact layouts take over (the
+   windows hang from the card's edges, a few details give way, see "narrower cards"), so no text renders under 10px from 390 to 1504.
+   The windows are glass, light by day as in Figma; at night the Gateway terminal's smoked green glass (night glass, at the end). The
+   colours are the scene's own, not the page's themed tokens.
+   Loaded after sections.css. Everything is scoped under .v6c; scene classes are v6-agents-…, v6-privacy-…, v6-teams-…, v6-gpu-…, v6-cap-…, v6-colony-…. */
+
+.s-card-panel:has(> .v6c) { container-type: inline-size; }
+
+/* the radii, nested under the card's (--r-card, sections.css): a window in a card 8, a popover 6, a control (field, button, row) 5,
+   a small tile 3, as aside.com's; where a box shares a corner with the one holding it, the outer radius less the inset, 2 at least (--r-min). The
+   scenes of Private by design are scaled (--v6-k, sections.css), so every radius divides by it and shows at these sizes */
+:is(.v6c, .v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) {
+  --v6-k: 1;
+  --r-win: calc(8px / var(--v6-k)); --r-pop: calc(6px / var(--v6-k)); --r-ctl: calc(5px / var(--v6-k)); --r-sm: calc(3px / var(--v6-k)); --r-min: calc(2px / var(--v6-k));
+}
+
+.v6c {
+  --v6-ink: #0a1a12; --v6-t: #30382c; --v6-m: #6b7068; --v6-o: #4f7a24; --v6-o-soft: rgba(79, 122, 36, .1); --v6-ring: 0 0 0 3px rgba(79, 122, 36, .16);
+  /* the site's tokens the buttons read, held at their light values (the windows stay light in dark) */
+  --t: #30382c; --tile: rgba(214, 219, 211, .2); --tile-hi: rgba(214, 219, 211, .4); --tile-line: rgba(64, 76, 66, .1);
+  --W: 297.5px; --H: 260px;
+  position: absolute; left: 50%; top: 50%; width: var(--W); height: var(--H); margin: calc(var(--H) / -2) 0 0 calc(var(--W) / -2);
+  transform: scale(var(--s, 1)); pointer-events: none; text-align: left;
+  font: 400 12px/normal Geist, system-ui, sans-serif; color: var(--v6-ink); -webkit-font-smoothing: antialiased;
+}
+.v6c-p { --W: 404.66px; --H: 300px; }
+.v6c * { box-sizing: border-box; margin: 0; padding: 0; }
+.v6c p, .v6c li, .v6c dt, .v6c dd { white-space: nowrap; }
+.v6c ul { list-style: none; }
+.v6c b { font-weight: 500; }
+.v6c i { font-style: normal; }
+.v6c img { display: block; flex: none; }
+.v6c-mono { font-family: "Geist Mono", ui-monospace, monospace; }
+
+/* the glass windows (Figma: 62% white, 14 blur, a white half-pixel edge) */
+.v6c-win { position: absolute; display: flex; flex-direction: column; overflow: hidden; border: .5px solid #fff; border-radius: var(--r-win);
+  background: rgba(255, 255, 255, .62); box-shadow: 0 14px 40px 0 rgba(20, 51, 89, .14); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+/* the small glass tile behind a logo */
+.v6c-glass { flex: none; display: grid; place-items: center; width: 16px; height: 16px; border: .4px solid #fff; border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, .33); box-shadow: 0 14px 35px 0 rgba(20, 51, 89, .14); }
+.v6c-glass img { width: 9.5px; height: 9.5px; }
+/* a dropdown menu */
+.v6c-menu { position: absolute; display: flex; flex-direction: column; gap: 1px; padding: 4px; border: .5px solid rgba(10, 26, 18, .08); border-radius: var(--r-pop);
+  background: rgba(255, 255, 255, .96); box-shadow: 0 10px 28px 0 rgba(20, 51, 89, .2); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.v6c-menu li { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; border-radius: var(--r-sm); color: var(--v6-t); }
+.v6c-menu li > span { display: flex; align-items: center; gap: 7px; }
+.v6c-menu li.on { background: var(--v6-o-soft); color: var(--v6-ink); font-weight: 500; }
+/* line icons, drawn in the scene's colours */
+.v6c-ico { flex: none; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.v6c-check { color: var(--v6-o); stroke-width: 1.7; }
+.v6c-chev { width: 10px; height: 10px; color: var(--v6-m); }
+/* the pointer (macOS arrow, Figma's 15.3 × 20.4) */
+.v6c-cursor { position: absolute; z-index: 3; width: 15.3px; height: 20.4px; overflow: visible; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .3)); }
+.v6c-cursor path { fill: #111; stroke: #fff; stroke-width: 1.1; stroke-linejoin: round; }
+/* fields, as in a settings form */
+.v6c-label { font-size: 10.5px; color: var(--v6-m); }
+.v6c-select { display: flex; align-items: center; justify-content: space-between; height: 30px; padding: 0 9px; border: .5px solid rgba(10, 26, 18, .12); border-radius: var(--r-ctl);
+  background: rgba(255, 255, 255, .94); font-size: 11.5px; }
+.v6c-select.on { border: 1px solid var(--v6-o); box-shadow: var(--v6-ring); font-size: 12px; font-weight: 500; }
+.v6c-select > span { display: flex; align-items: center; gap: 6px; }
+.v6c-select .v6c-chev { width: 13px; height: 13px; }
+/* the site's buttons (.s-btn, .s-btn.ghost from sections.css), at the scene's size */
+.v6c .v6c-btn { gap: 5px; height: 28px; padding: 0 12px; border-radius: var(--r-ctl); font: 500 12px/16px Geist, sans-serif; transition: none;
+  box-shadow: 0 2px .5px 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -1.5px .5px 0 #3b5e17; }
+.v6c .v6c-btn.ghost { font-weight: 400; border-width: .5px; background: rgba(255, 255, 255, .7); box-shadow: 0 1px 0 0 rgba(255, 255, 255, .6), inset 0 -1px 1.5px 0 rgba(48, 56, 44, .2); }
+.v6c .v6c-btn .v6c-check { color: #fff; width: 12px; height: 12px; stroke-width: 1.8; }
+
+/* ── Agents · Hermes, model provider (Figma 730:87) ── */
+.v6-agents-win { left: 22px; top: 28px; width: 236px; gap: 11px; padding: 14px; }
+.v6-agents-title { display: flex; align-items: center; gap: 7px; font-size: 12.5px; }
+.v6-agents-title img { width: 16px; height: 16px; }
+.v6-agents-title span { font-size: 12px; color: var(--v6-m); }
+.v6-agents-field { display: flex; flex-direction: column; gap: 5px; width: 208px; }
+.v6-agents-win .v6c-select img { width: 14px; height: 14px; }
+.v6-agents-menu { left: 72px; top: 124px; width: 172px; padding: 5px; font-size: 12px; }
+.v6-agents-menu li { border-radius: var(--r-min); }   /* 8 less its 5 inset */
+.v6-agents-menu img, .v6-agents-menu .v6c-link { width: 14px; height: 14px; }
+.v6-agents-menu .v6c-link { color: var(--v6-t); stroke-width: 1.3; }
+.v6-agents .v6c-cursor { left: 112px; top: 138px; }
+
+/* ── Privacy · the request as the provider sees it (Figma 734:131): the window runs off the card's right edge ── */
+.v6-privacy-win { left: 34px; top: 44px; width: 300px; }
+.v6-privacy-endpoint { display: flex; align-items: center; gap: 7px; padding: 14px 16px 10px; font: 400 11px/normal "Geist Mono", monospace; }
+.v6-privacy-endpoint b { padding: 2px 5px; border-radius: var(--r-sm); background: rgba(79, 122, 36, .12); font-size: 10px; color: var(--v6-o); }
+.v6-privacy-tabs { display: flex; gap: 16px; padding: 0 16px; font-size: 11.5px; color: var(--v6-m); }
+.v6-privacy-tabs span { padding-bottom: 6px; border-bottom: 2px solid transparent; }
+.v6-privacy-tabs .on { font-weight: 500; color: var(--v6-ink); border-color: var(--v6-o); }
+.v6-privacy-fields { display: flex; flex-direction: column; gap: 9px; padding: 12px 16px 18px; font: 400 11px/14px "Geist Mono", monospace; }
+.v6-privacy-fields div { display: flex; align-items: center; }
+.v6-privacy-fields dt { width: 72px; color: var(--v6-m); }
+.v6-privacy-fields dd { display: flex; align-items: center; gap: 5px; }
+.v6-privacy-fields .ok { color: var(--v6-o); }
+.v6-privacy-fields .v6c-shield { width: 12px; height: 12px; stroke-width: 1.3; }
+
+/* ── Teams · spend against budget, and the agent's model access (reworked after Elio's review of Figma 730:236) ── */
+.v6-teams-win { left: 16px; top: 22px; width: 266px; padding: 8px 12px; }
+.v6-teams-row { display: grid; grid-template-columns: 118px 66px 58px; align-items: center; height: 36px; }
+.v6-teams-head { height: 22px; font-size: 10px; color: var(--v6-m); }
+.v6-teams-head span:nth-child(2) { padding-left: 7px; }   /* over the chips' labels */
+.v6-teams-head span:last-child { text-align: right; }
+.v6-teams-who { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.v6-teams-who.v6c-mono { font-size: 10.5px; }
+.v6c-avatar { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: rgba(79, 122, 36, .16); font-size: 10px; font-weight: 500; color: var(--v6-o); }
+.v6-teams-who .v6c-glass { width: 20px; height: 20px; }
+.v6-teams-who .v6c-glass img { width: 12px; height: 12px; }
+.v6-teams-access { justify-self: start; display: flex; align-items: center; gap: 3px; padding: 3px 6px; border: 1px solid transparent; border-radius: var(--r-ctl);
+  font-size: 11px; color: var(--v6-t); }
+.v6-teams-access.on { border-color: var(--v6-o); background: rgba(255, 255, 255, .96); box-shadow: var(--v6-ring); font-weight: 500; color: var(--v6-ink); }
+.v6-teams-use { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font: 400 10.5px/13px "Geist Mono", monospace; color: var(--v6-ink); }
+.v6-teams-use i { color: var(--v6-m); }
+.v6-teams-use b { position: relative; width: 100%; height: 3px; border-radius: 2px; background: rgba(79, 122, 36, .14); overflow: hidden; }
+.v6-teams-use b::after { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--used); border-radius: 2px; background: var(--v6-o); }
+.v6-teams-menu { left: 136px; top: 156px; width: 152px; font-size: 11.5px; }
+.v6-teams-menu .v6c-check { width: 11px; height: 11px; }
+.v6-teams .v6c-cursor { left: 257px; top: 212px; }   /* in the empty space under the check, clear of every label */
+
+/* ── Open-source models · models to serve (Figma 732:35) ── */
+.v6-gpu-win { left: 44px; top: 34px; width: 316px; gap: 6px; padding: 16px; }
+.v6-gpu-head, .v6-gpu-row { display: flex; align-items: center; justify-content: space-between; }
+.v6-gpu-head { height: 26px; font-size: 13px; }
+.v6-gpu-head span { font: 400 10.5px/normal "Geist Mono", monospace; color: var(--v6-m); }
+.v6-gpu-row { height: 36px; font: 400 12px/normal "Geist Mono", monospace; }
+.v6-gpu-row > p:first-child { display: flex; align-items: center; gap: 8px; }
+.v6-gpu-row.off { opacity: .55; }
+.v6c-box { display: grid; place-items: center; width: 14px; height: 14px; border: 1px solid rgba(10, 26, 18, .28); border-radius: var(--r-sm); background: rgba(255, 255, 255, .9); }
+.v6c-box.on { border: 0; background: var(--v6-o); }
+.v6c-box .v6c-check { width: 12px; height: 12px; color: #fff; stroke-width: 1.8; }
+.v6c-logo { display: grid; place-items: center; width: 16px; height: 16px; }
+.v6c-logo > img { width: 16px; height: 16px; }
+.v6c-glass.v6c-logo > img { width: 9.5px; height: 9.5px; }
+.v6c-price { display: flex; align-items: center; gap: 3px; width: 84px; height: 26px; padding: 0 8px; border: .5px solid rgba(10, 26, 18, .12); border-radius: var(--r-ctl);
+  background: rgba(255, 255, 255, .94); font: 400 11.5px/normal "Geist Mono", monospace; }
+.v6c-price b { font-weight: 400; }
+.v6c-price span { font-size: 10.5px; color: var(--v6-m); }
+.v6c-price.on { border: 1px solid var(--v6-o); box-shadow: var(--v6-ring); }
+.v6c-caret { width: 1.2px; height: 13px; background: var(--v6-o); }
+.v6-gpu-go { padding-top: 8px; }
+.v6-gpu-go .v6c-btn { height: 30px; padding: 0 14px; }
+.v6-gpu .v6c-cursor { left: 318px; top: 150px; }
+
+/* ── API capacity · an incoming request (Figma 732:84), the site's own buttons ── */
+.v6-cap-prev { left: 70px; top: 28px; width: 288px; gap: 4px; padding: 12px 16px; opacity: .6; }
+.v6-cap-line { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
+.v6-cap-line .ok { font-size: 11px; color: var(--v6-o); }
+.v6-cap-sub { font-size: 11px; color: var(--v6-m); }
+.v6-cap-win { left: 40px; top: 70px; width: 324px; gap: 12px; padding: 16px; }
+.v6-cap-head { font-size: 13px; }
+.v6-cap-head > span:last-child { font-size: 11px; color: var(--v6-m); }
+.v6-cap-title { display: flex; align-items: center; gap: 8px; }
+.v6-cap-tile { display: grid; place-items: center; width: 26px; height: 26px; border-radius: var(--r-ctl); background: rgba(255, 255, 255, .9); }
+.v6-cap-tile .v6c-glass { border-radius: var(--r-min); }   /* 6 less its 5 inset */
+.v6-cap-req { display: flex; flex-direction: column; gap: 4px; }
+.v6-cap-req .v6c-mono { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.v6-cap-req .v6c-mono img { width: 14px; height: 14px; }
+.v6-cap-from { font-size: 11px; color: var(--v6-m); }
+.v6-cap-acts { display: flex; flex-wrap: wrap; gap: 7px; }
+.v6-cap .v6c-cursor { left: 61px; top: 190px; }   /* in Accept's left padding, clear of its label */
+
+/* ── Colony · a Mac serving (placeholder for Pranit: Colony is not documented yet) ── */
+.v6-colony-win { left: 36px; top: 46px; width: 332px; gap: 2px; padding: 12px 16px 14px; }
+.v6-colony-head, .v6-colony-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.v6-colony-head { height: 32px; padding: 0 8px; font-size: 13px; }
+.v6-colony-head span { display: flex; align-items: center; gap: 6px; font: 400 11px/normal "Geist Mono", monospace; color: var(--v6-o); }
+.v6-colony-on { width: 6px; height: 6px; border-radius: 50%; background: var(--v6-o); }
+.v6-colony-row { height: 36px; padding: 0 8px; border-radius: var(--r-ctl); font: 400 11.5px/normal "Geist Mono", monospace; white-space: nowrap; }
+.v6-colony-row > span:first-child { color: var(--v6-m); }
+.v6-colony-row b { font-weight: 400; color: var(--v6-ink); }
+.v6-colony-row.last { background: rgba(79, 122, 36, .09); }
+.v6-colony-row.last > span:first-child { color: var(--v6-ink); }
+.v6-colony-row.pause { margin-top: 6px; font: 400 12px/normal Geist, sans-serif; }
+.v6-colony-row.pause > span:first-child { color: var(--v6-t); }
+.v6-colony-switch { position: relative; flex: none; width: 28px; height: 16px; border-radius: 8px; background: rgba(10, 26, 18, .16); }
+.v6-colony-switch::after { content: ""; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .2); }
+
+/* ── narrower cards: compact layouts, never scaled, so no text renders under 10px ── */
+/* the four, narrower than Figma's 297.5 (230 at 1200 to 297 at 1500; 292 at 761–899): the stage takes the card's width and each window
+   hangs from the card's edges instead of Figma's places, a few details giving way where the room runs out */
+@container (max-width: 297px) {
+  .v6c-g { left: 0; width: 100%; margin-left: 0; }
+  .v6-agents-win { left: 12px; right: 12px; width: auto; }
+  .v6-agents-field { width: auto; }
+  .v6-agents-menu { left: auto; right: 12px; }
+  .v6-agents .v6c-cursor { left: calc(100% - 144px); }   /* on Antseed, 40 in from the menu's left edge as in Figma */
+  .v6-privacy-win { left: 16px; }   /* still runs off the right edge */
+  .v6-privacy-fields dt { width: 64px; }
+  .v6-teams-win { left: 8px; right: 8px; width: auto; padding: 8px 10px; }
+  .v6-teams-row { grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 6px; }
+  .v6-teams-who { gap: 6px; font-size: 11.5px; }
+  .v6-teams-who.v6c-mono { font-size: 10px; }
+  .v6-teams-access { padding: 3px 5px; font-size: 10.5px; }
+  .v6-teams-use { font-size: 10px; }
+  .v6-teams-menu { left: auto; right: 8px; }
+  .v6-teams .v6c-cursor { left: calc(100% - 39px); }
+}
+/* the names keep their room: first the avatars go, then (at 1200–1240) the budgets after the spend, the bars still showing the share */
+@container (max-width: 265px) { .v6-teams-who :is(.v6c-avatar, .v6c-glass) { display: none; } }
+@container (max-width: 239px) { .v6-teams-use i { display: none; } .v6-teams-use { min-width: 36px; } }
+
+/* the three: 404.66 wide in Figma. Narrower down to 360 (the 1300–1440 desktops) the stage keeps its size and only its margin runs
+   past the card. Below 360 (phones, 272–336; the 1100–1300 desktops) a compact stage, 280 wide, its windows narrower */
+@container (max-width: 359.9px) {
+  .v6c-p { --W: 280px; }
+  .v6-gpu-win { left: 12px; width: 256px; padding: 12px; }
+  .v6-gpu-head i, .v6-gpu-row .v6c-logo { display: none; }   /* "· 32 GB" and the logos */
+  .v6c-price { width: 62px; padding: 0 5px; }
+  .v6-gpu .v6c-cursor { left: 249px; top: 155px; }
+  .v6-cap-prev { left: 24px; width: 244px; }
+  .v6-cap-win { left: 6px; width: 268px; padding: 12px; }
+  .v6-cap-req .v6c-mono { font-size: 11.5px; }
+  .v6-cap-acts { gap: 4px; }
+  .v6c .v6-cap-acts .v6c-btn { padding: 0 7px; font-size: 11.5px; }   /* the three buttons keep to one line */
+  .v6-cap .v6c-cursor { left: 22px; top: 187px; }
+  .v6-colony-win { left: 8px; width: 264px; padding: 10px 8px 12px; }
+}
+/* narrower than 280 (the 900–1100 desktops, 229 at 900): the stage takes the card's width, the windows hang from its edges */
+@container (max-width: 279.9px) {
+  .v6c-p { left: 0; width: 100%; margin-left: 0; }
+  .v6-gpu-win { left: 6px; right: 6px; width: auto; padding: 12px 10px; }
+  .v6-gpu-row { font-size: 11px; }
+  .v6-gpu-row .v6c-box { display: none; }   /* kimi-k3 stays dimmed */
+  .v6-gpu .v6c-cursor { left: calc(100% - 25px); }
+  .v6-cap-prev { left: 18px; right: 18px; width: auto; }
+  .v6-cap-sub { overflow: hidden; text-overflow: ellipsis; }
+  .v6-cap-win { left: 6px; right: 6px; width: auto; }
+  .v6-cap-tok { display: none; }   /* "· 2,140 tokens" */
+  .v6-colony-win { left: 6px; right: 6px; width: auto; }
+  .v6-colony-row { padding: 0 6px; }
+}
+
+/* ════ the network and Private by design (net.css) ════ */
+/* Homepage v6, group "net": the four Private by design cards (the BitTorrent panel is now net.js). Figma 5tLvMmeKGyUsZgrhY4ogTG, v6 light 729:2,
+   v6 dark 729:5168. By day each scene keeps Figma's colours (dark glass and white popovers in the privacy cards), set on each scene
+   root and never swapped by the page's dark tokens; at night they take the Gateway terminal's smoked green glass (night glass, at the end).
+   Loaded after hero/sections.css; fonts Geist and Geist Mono as the page loads them. */
+
+/* ── shared ─────────────────────────────────────────────────────────── */
+:is(.v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) {
+  --v6-ink: #0a1a12; --v6-t: #30382c; --v6-m: #6b7068; --v6-green: #4f7a24;            /* on light glass */
+  --v6-lt: #f2f4ef; --v6-lm: #aebdb5; --v6-lime: #98c463;                               /* on dark glass */
+  font-family: Geist, system-ui, sans-serif; font-weight: 400; color: var(--v6-t); text-align: left;
+}
+:where(.v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) :where(p, ol, ul, li) { margin: 0; padding: 0; list-style: none; }   /* zero specificity: every class below wins */
+:is(.v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct), :is(.v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) * { box-sizing: border-box; }
+:is(.v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) img { display: block; flex: none; }
+:is(.v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) i { flex: none; font-style: normal; }
+
+/* ── Private by design: the four cards ──────────────────────────────── */
+/* each scene is Figma's 297.5×260 card, laid at its size in the middle of the card (298 at 1504, 404 at 1024, 304 at 390);
+   on a narrower card (230–297, the 1200–1500 desktops) it takes the card's width instead, each piece hanging from its edges (below) */
+:is(.v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) { position: absolute; inset: 0; container-type: inline-size; }
+:is(.v6-noacc-stage, .v6-signed-stage, .v6-tee-stage, .v6-nocrypto-stage, .v6-pseudo-stage, .v6-direct-stage) { position: absolute; left: 50%; top: 0; width: 297.5px; height: 260px;
+  translate: -50% 0; transform-origin: 50% 50%; }
+/* glass, in both themes (Elio, 12 Nov): the windows the Gateway terminal's smoked green glass, the popovers frosted white. Thinner than
+   the terminal's (Elio, 12 Nov: "not transparent enough"), so the painting shows through a 10px frost: a lighter tint over a frost that
+   dims and saturates what it shows (--pv-glass, --pv-frost), so the light text stays readable on the pale day skies (about 3.3:1 there,
+   7:1 and more at night; the terminal's 64% gave 4.7:1 by day). The scenes
+   are scaled (--v6-k), so the frost, the hairline, the inner highlight and the shadow divide by it and show at the terminal's sizes */
+:is(.v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) {
+  --pv-glass: rgba(14, 33, 23, .3); --pv-frost: saturate(1.6) brightness(.72); --v6-lm: #cdd8d1; }
+:root[data-theme="dark"] :is(.v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) { --pv-glass: rgba(14, 33, 23, .3); --pv-frost: saturate(1.5) brightness(.95); }
+:is(.v6-noacc-win, .v6-signed-win, .v6-tee-bar, .v6-tee-tip, .v6-nocrypto-settled, .v6-pseudo-win, .v6-direct-you, .v6-direct-prov, .v6-direct-cap) {
+  --px: calc(1px / var(--v6-k));
+  border: calc(.5 * var(--px)) solid rgba(150, 200, 145, .42); background: var(--pv-glass); color: var(--v6-lt);
+  backdrop-filter: blur(calc(10 * var(--px))) var(--pv-frost); -webkit-backdrop-filter: blur(calc(10 * var(--px))) var(--pv-frost);
+  box-shadow: 0 calc(12 * var(--px)) calc(32 * var(--px)) 0 rgba(8, 26, 14, .22), inset 0 calc(.5 * var(--px)) 0 0 rgba(190, 228, 170, .16); }
+:is(.v6-noacc-menu, .v6-signed-pop, .v6-tee-menu) {
+  border: .5px solid rgba(255, 255, 255, .7); background: rgba(255, 255, 255, .74); color: var(--v6-t);
+  backdrop-filter: blur(12px) saturate(1.2); -webkit-backdrop-filter: blur(12px) saturate(1.2); box-shadow: 0 10px 28px rgba(20, 51, 89, .2); }
+:is(.v6-noacc-cursor, .v6-signed-cursor, .v6-tee-cursor) { position: absolute; width: 21px; height: 27px; pointer-events: none; }
+:is(.v6-noacc-menu, .v6-tee-menu) li { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: var(--r-min); font-size: 12px; line-height: 15px; white-space: nowrap; }
+:is(.v6-noacc-menu, .v6-tee-menu) li.on { background: rgba(79, 122, 36, .1); font-weight: 500; color: var(--v6-ink); }
+:is(.v6-noacc-menu, .v6-tee-menu) .tick { margin-left: auto; }
+
+/* No account: a top-up with the amounts in chips; the "Pay with" field open on Apple Pay, its menu hanging from it */
+.v6-noacc-win { position: absolute; left: 24px; top: 30px; width: 250px; display: flex; flex-direction: column; gap: 13px; padding: 16px; border-radius: var(--r-win); }
+.v6-noacc-row { display: flex; align-items: baseline; justify-content: space-between; }
+.v6-noacc-row b { font-size: 13px; line-height: 16px; font-weight: 500; }
+.v6-noacc-row span { font: 400 10.5px/13px "Geist Mono", monospace; color: var(--v6-lm); }
+.v6-noacc-amounts { display: flex; gap: 6px; }
+.v6-noacc-amounts span { padding: 5.5px 12px; border: .5px solid rgba(255, 255, 255, .18); border-radius: 999px; background: rgba(255, 255, 255, .06);
+  font: 400 12px/15px "Geist Mono", monospace; }
+.v6-noacc-amounts .on { border-color: transparent; background: var(--v6-lime); font-weight: 500; color: #0f1312; }
+.v6-noacc-pay { display: flex; flex-direction: column; gap: 6px; }
+.v6-noacc-label { font-size: 10.5px; line-height: 13px; color: var(--v6-lm); }
+.v6-noacc-field { position: relative; }
+.v6-noacc-select { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border: 1px solid var(--v6-lime); border-radius: var(--r-ctl);
+  background: rgba(255, 255, 255, .08); box-shadow: 0 0 0 3px rgba(152, 196, 99, .2); font-size: 12px; line-height: 15px; }
+.v6-noacc-select .chev { margin-left: auto; }
+.v6-noacc-menu { position: absolute; z-index: 1; left: 0; right: 0; top: calc(100% + 6px); display: flex; flex-direction: column; gap: 1px; padding: 5px; border-radius: var(--r-pop); }
+.v6-noacc-menu li img:first-child { width: 14px; }
+.v6-noacc-cursor { z-index: 2; left: 150px; top: 76px; }   /* on Apple Pay's row, between its name and the tick */
+
+/* Signed responses: a reply from claude-haiku-5.5 with its Signed badge; the verification popover under the cursor */
+.v6-signed-win { position: absolute; left: 20px; top: 26px; width: 244px; display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: var(--r-win); }
+.v6-signed-model { display: flex; align-items: center; gap: 7px; font: 400 11px/14px "Geist Mono", monospace; }
+.v6-signed-model i { display: grid; place-items: center; width: 18px; height: 18px; border-radius: var(--r-sm); background: rgba(255, 255, 255, .92); }
+.v6-signed-text { width: 216px; font-size: 12px; line-height: 17px; }
+.v6-signed-foot { display: flex; align-items: center; gap: 8px; font: 400 10.5px/13px "Geist Mono", monospace; color: var(--v6-lm); }
+.v6-signed-badge { display: flex; align-items: center; gap: 4px; padding: 3px 8px; border: .5px solid rgba(152, 196, 99, .5); border-radius: 999px;
+  background: rgba(152, 196, 99, .14); font: 500 11px/14px Geist, sans-serif; color: var(--v6-lime); }
+.v6-signed-pop { position: absolute; left: 92px; top: 160px; width: 188px; display: flex; flex-direction: column; gap: 7px; padding: 12px; border-radius: var(--r-pop); }
+.v6-signed-by { display: flex; align-items: center; gap: 7px; font-size: 12px; line-height: 15px; font-weight: 500; color: var(--v6-ink); white-space: nowrap; }
+.v6-signed-fp { display: flex; justify-content: space-between; font-size: 11px; line-height: 14px; color: var(--v6-m); }
+.v6-signed-fp b { font-weight: 500; color: var(--v6-green); }
+.v6-signed-sha { font: 400 10.5px/13px "Geist Mono", monospace; color: var(--v6-m); }
+.v6-signed-cursor { left: 59px; top: 144px; }
+
+/* TEE providers: the providers filter open on TEE only, the enclave tooltip, Verify attestation on */
+.v6-tee-bar { position: absolute; left: 18px; top: 26px; display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: var(--r-win); }
+.v6-tee-bar p { display: flex; align-items: center; gap: 5px; padding: 5px 9px; border-radius: var(--r-ctl); white-space: nowrap; }
+.v6-tee-filter { border: .5px solid rgba(152, 196, 99, .6); background: rgba(255, 255, 255, .12); font-size: 11px; line-height: 14px; font-weight: 500; }
+.v6-tee-model { font: 400 10.5px/14px "Geist Mono", monospace; }
+.v6-tee-model i { display: grid; place-items: center; width: 14px; height: 14px; border-radius: var(--r-sm); background: rgba(255, 255, 255, .92); }
+.v6-tee-menu { position: absolute; left: 22px; top: 70px; width: 156px; display: flex; flex-direction: column; gap: 1px; padding: 5px; border-radius: var(--r-pop); }
+.v6-tee-menu .v6-tee-cap { padding: 5px 8px 3px; font-size: 10px; line-height: 13px; color: var(--v6-m); }
+.v6-tee-menu .v6-tee-att { justify-content: space-between; padding: 8px 8px 6px; font-size: 11.5px; }
+.v6-tee-toggle { position: relative; width: 28px; height: 16px; border-radius: 8px; background: var(--v6-green); }
+.v6-tee-toggle::after { content: ""; position: absolute; left: 14px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; transition: left .2s; }
+.v6-tee-tip { position: absolute; left: 160px; top: 104px; width: 134px; padding: 9px 11px; border-radius: var(--r-pop); font-size: 11px; line-height: 15px; }
+.v6-tee-cursor { left: 109px; top: 128px; }
+
+/* No crypto needed: the card and Apple Pay in front; behind, 0.0021 USDC settling on Base */
+.v6-nocrypto-trail { position: absolute; left: 96px; top: 140px; }
+.v6-nocrypto-settled { position: absolute; left: 120px; top: 196px; display: flex; align-items: center; gap: 6px; padding: 6px 11px 6px 7px; border-radius: 999px;
+  opacity: .72; font: 400 10.5px/13px "Geist Mono", monospace; white-space: nowrap; }
+.v6-nocrypto-settled span { font-size: 10px; color: var(--v6-lm); }
+/* an ID-1 card, 85.6:54: the buttons' green with a light sheen from the top left, a gold chip, number and name in mono */
+.v6-nocrypto-card { position: absolute; left: 29.5px; top: 54px; width: 128px; height: 80.75px; padding: 12px 12px 10px; border-radius: var(--r-ctl); rotate: -8deg;
+  display: flex; flex-direction: column; overflow: hidden; isolation: isolate; color: #fff;
+  background: linear-gradient(145deg, #6a9a35 0%, #4f7a24 48%, #3d6118 100%);
+  box-shadow: inset 0 0 0 .5px rgba(255, 255, 255, .22), inset 0 1px 0 rgba(255, 255, 255, .25),
+    0 1px 2px rgba(18, 36, 8, .2), 0 6px 12px -4px rgba(18, 36, 8, .28), 0 16px 30px -8px rgba(20, 51, 89, .3); }
+.v6-nocrypto-card::before { content: ""; position: absolute; z-index: -1; inset: 0;   /* the sheen */
+  background: linear-gradient(118deg, rgba(255, 255, 255, .26) 0%, rgba(255, 255, 255, .08) 38%, rgba(255, 255, 255, 0) 39%),
+    radial-gradient(120% 90% at 100% 110%, rgba(0, 0, 0, .14), rgba(0, 0, 0, 0) 60%); }
+.v6-nocrypto-chip { position: relative; width: 19px; height: 14.5px; border-radius: var(--r-min);
+  background: linear-gradient(135deg, #f3e3ad 0%, #d4b265 45%, #c19a48 60%, #ead39a 100%);
+  box-shadow: inset 0 0 0 .5px rgba(110, 80, 20, .45); }
+.v6-nocrypto-chip::before { content: ""; position: absolute; inset: 3.5px 0; border-block: .5px solid rgba(110, 80, 20, .45); }   /* the contact lines */
+.v6-nocrypto-chip::after { content: ""; position: absolute; inset: 0 6.5px; border-inline: .5px solid rgba(110, 80, 20, .45); }
+.v6-nocrypto-num { margin-top: auto; white-space: nowrap; font: 500 11px/13px "Geist Mono", monospace; letter-spacing: .06em; text-shadow: 0 .5px 0 rgba(0, 0, 0, .18); }
+.v6-nocrypto-name { display: flex; white-space: nowrap; justify-content: space-between; margin-top: 4px; font: 400 10px/12px "Geist Mono", monospace; letter-spacing: .04em;
+  text-transform: uppercase; color: rgba(255, 255, 255, .8); }
+.v6-nocrypto-apple { position: absolute; left: 161.5px; top: 45px; width: 96px; height: 46px; rotate: 6deg; display: flex; align-items: center; justify-content: center; gap: 3px;
+  border: .5px solid rgba(10, 26, 18, .06); border-radius: var(--r-pop); background: rgba(255, 255, 255, .97); box-shadow: 0 10px 22px rgba(20, 51, 89, .2);
+  font-size: 17px; line-height: 21px; font-weight: 500; color: var(--v6-ink); }
+
+/* Pseudonymous (amos-07): one window, what the network knows of you, a row each: the name in the glass's grey, the value in its ink */
+.v6-pseudo-stage { width: min(320px, 100cqw / var(--v6-k) - 16px); }   /* wider than Figma's card, so the window holds its own beside the TEE scene */
+.v6-pseudo-win { position: absolute; left: 50%; top: 50%; translate: -50% -50%; width: min(307px, 100% - 12px); display: flex; flex-direction: column; gap: 14px; margin: 0;
+  padding: 18px 18px; border-radius: var(--r-win); font: 400 12px/15px "Geist Mono", monospace; }
+.v6-pseudo-win > div { display: flex; justify-content: space-between; gap: 16px; white-space: nowrap; }
+.v6-pseudo-win :is(dt, dd) { margin: 0; }
+.v6-pseudo-win dt { color: var(--v6-lm); }
+
+/* Direct, peer to peer (amos-07): your device and the provider, two chips of the same glass, one straight line in the network map's
+   lime between them, nothing on it, and under its middle the words, on a small glass label */
+.v6-direct-stage { display: flex; align-items: center; width: min(400px, 100cqw / var(--v6-k) - 16px); padding: 0 12px; }   /* wider than the others, so the line has room; never past its panel, once scaled */
+.v6-direct-you, .v6-direct-prov { position: relative; flex: none; display: flex; flex-direction: column; gap: 2px; padding: 9px 12px; border-radius: var(--r-win);
+  font: 400 11px/14px "Geist Mono", monospace; white-space: nowrap; }   /* Geist Mono at the TEE mock-up's size */
+.v6-direct-you { min-height: 46px; justify-content: center; }   /* as tall as the provider's two lines */
+.v6-direct-prov span { font-size: 10.5px; line-height: 13px; color: var(--v6-lm); }
+.v6-direct-link { position: relative; flex: 1; }
+.v6-direct-line { display: block; height: 2.5px; border-radius: 1px; background: #b9ee2a; box-shadow: 0 1px 1.5px rgba(24, 44, 10, .55); transform-origin: 0 50%; }
+.v6-direct-cap { position: absolute; left: 50%; top: 10px; translate: -50% 0; padding: 3px 8px; border-radius: var(--r-pop); font: 400 10.5px/13px "Geist Mono", monospace; white-space: nowrap; }
+:root[data-theme="dark"] .v6-direct-line { background: #c8f53c; box-shadow: 0 1px 1.5px rgba(0, 0, 0, .6); }
+/* a narrow panel: the line is shorter than its words, so they drop under the chips instead of crossing them */
+@container (max-width: 440px) { .v6-direct-cap { top: 28px; } }
+
+/* narrower than Figma's card (230 at 1200 to 297 at 1500): the stage takes the card's width, nothing scales, every piece hangs from the
+   card's edges, and the TEE tip moves under its menu */
+@container (max-width: 297px) {
+  :is(.v6-noacc-stage, .v6-signed-stage, .v6-tee-stage, .v6-nocrypto-stage, .v6-pseudo-stage, .v6-direct-stage) { left: 0; width: 100%; translate: none; }
+  .v6-noacc-win { left: 12px; right: 12px; width: auto; }
+  .v6-noacc-cursor { left: calc(100% - 68px); }
+  .v6-signed-win { left: 10px; right: 10px; width: auto; }
+  .v6-signed-text { width: auto; }
+  .v6-signed-pop { left: auto; right: 10px; }
+  .v6-signed-cursor { left: 49px; }
+  .v6-tee-bar { left: 8px; gap: 3px; }
+  .v6-tee-bar p { gap: 4px; padding: 5px 7px; }
+  .v6-tee-model i { display: none; }
+  .v6-tee-menu { left: 8px; width: 148px; }
+  .v6-tee-cursor { left: 95px; }
+  .v6-tee-menu li { padding: 4px 8px; }
+  .v6-tee-menu .v6-tee-att { padding: 6px 8px 4px; }
+  .v6-tee-tip { left: 8px; right: 8px; top: auto; bottom: 8px; width: auto; padding: 7px 10px; }   /* under the menu, across the card */
+  .v6-nocrypto-card { left: 8px; }
+  .v6-nocrypto-apple { left: auto; right: 10px; }
+  .v6-nocrypto-trail { left: calc(50% - 64px); }
+  .v6-nocrypto-settled { left: auto; right: 8px; }
+}
+@container (max-width: 255px) { .v6-nocrypto-settled span { display: none; } }   /* the Base mark stays */
+
+/* ════ night glass ════ */
+/* At night every glass screen over the landscapes is the Gateway terminal's smoked green glass (sections.css .term; Private by design's
+   windows keep their own thinner glass, above, in both themes): a dark green at 64%,
+   frosted 18px, a hairline in a lighter tint of the same green; inside, light text, faint light hairlines on the fields, the green
+   buttons kept (Elio, 12 Nov: "a dark green like the Antseed Gateway's terminal"). The popovers over them the same green, denser, so
+   they read over the window they hang from. By day everything above stands. */
+:root[data-theme="dark"] .v6c-win {
+  border: .5px solid rgba(150, 200, 145, .42); background: rgba(14, 33, 23, .64); color: var(--v6-lt, #ecf3ee);
+  box-shadow: 0 12px 32px 0 rgba(8, 26, 14, .26), inset 0 .5px 0 0 rgba(190, 228, 170, .16);
+  backdrop-filter: blur(10px) saturate(1.3); -webkit-backdrop-filter: blur(10px) saturate(1.3); }
+:root[data-theme="dark"] :is(.v6c-menu, .v6-noacc-menu, .v6-signed-pop, .v6-tee-menu) {
+  border: .5px solid rgba(150, 200, 145, .34); background: rgba(16, 38, 26, .94); box-shadow: 0 10px 28px 0 rgba(0, 0, 0, .34); }
+/* the scenes' own colours, lit: the ink and greys of the terminal's text, the dark theme's green for green text and accents */
+:root[data-theme="dark"] :is(.v6c, .v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) {
+  --v6-ink: #ecf3ee; --v6-t: #cbd8d0; --v6-m: #9fb1a6; --v6-o: #98c463; --v6-green: #98c463;
+  --v6-o-soft: rgba(152, 196, 99, .14); --v6-ring: 0 0 0 3px rgba(152, 196, 99, .2); }
+:root[data-theme="dark"] .v6c { --t: #eceee9; --tile: rgba(255, 255, 255, .06); --tile-hi: rgba(255, 255, 255, .1); --tile-line: rgba(190, 228, 170, .22); }
+/* the cards' fields, boxes and tiles */
+:root[data-theme="dark"] :is(.v6c-select, .v6c-price) { border-color: rgba(190, 228, 170, .22); background: rgba(255, 255, 255, .06); }
+:root[data-theme="dark"] :is(.v6c-select, .v6c-price).on { border-color: var(--v6-o); }
+:root[data-theme="dark"] .v6c-box { border-color: rgba(190, 228, 170, .36); background: rgba(255, 255, 255, .04); }
+:root[data-theme="dark"] .v6c-box.on { background: #4f7a24; }   /* the buttons' green under the white check */
+:root[data-theme="dark"] .v6c-glass { border-color: rgba(255, 255, 255, .5); background: rgba(255, 255, 255, .9); }   /* white tiles, so the logos keep their colours */
+:root[data-theme="dark"] .v6-colony-row.last { background: rgba(152, 196, 99, .12); }
+:root[data-theme="dark"] .v6-colony-switch { background: rgba(255, 255, 255, .18); }
+/* the buttons: the green one keeps only its deeper lip, the ghost ones go smoked, as the page's buttons at night (sections.css) */
+:root[data-theme="dark"] .v6c .v6c-btn { box-shadow: inset 0 -1.5px .5px 0 #3b5e17; }
+:root[data-theme="dark"] .v6c .v6c-btn.ghost { background: var(--tile); box-shadow: inset 0 -1px 1px 0 rgba(0, 0, 0, .2); }
+/* Private by design: the menus' rows and icons. Their grey and black icons lit, their dark green ticks and shields in the light green */
+:root[data-theme="dark"] :is(.v6-noacc-menu, .v6-tee-menu) li.on { background: rgba(152, 196, 99, .16); }
+:root[data-theme="dark"] .v6-noacc-menu li img:first-child { filter: brightness(0) invert(.9); }
+:root[data-theme="dark"] :is(.v6-noacc-menu, .v6-tee-menu, .v6-signed-pop) img:is([src*="check-green"], [src*="tee-shield.svg"], [src*="shieldok"]) { filter: brightness(1.8); }
+:root[data-theme="dark"] .v6-nocrypto-apple { color: #0a1a12; }   /* the Apple Pay button stays white, its label dark */
+
+@media (prefers-reduced-motion: reduce) { .v6-tee-toggle::after { transition: none; } }

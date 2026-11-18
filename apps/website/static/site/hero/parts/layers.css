@@ -1,0 +1,2 @@
+/* the three layers' sheet, for parts.js (it links parts/<name>.css): the one sheet, hero/net-layers.css */
+@import url('../net-layers.css');

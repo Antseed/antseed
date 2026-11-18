@@ -1,0 +1,44 @@
+/* The page shell the homepage and /ants/ share: Geist Pixel, the nav on the page and its day/night button. (The hero's own nav rules, for Whimsical and the intro, stay in index.html.) */
+/* Geist Pixel, variable on its ELSH axis (the pixel's shape: 1 square … 20 circle); Google Fonts serves only its default shape, so the lab serves the file.
+   As WOFF2 (39 KB for the TTF's 3.6 MB: the same 481 glyphs and axis, compressed without loss), preloaded by each page's head; the TTF stays as the fallback */
+@font-face { font-family: "Geist Pixel Var"; src: url(/site/assets/fonts/GeistPixel-VariableFont_ELSH.woff2) format("woff2"), url(/site/assets/fonts/GeistPixel-VariableFont_ELSH.ttf) format("truetype"); font-weight: 400; font-display: block; }
+
+nav { position: relative; z-index: 3; flex: none; width: 100%; height: 69px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px;
+  background: rgba(255,255,255,.78); backdrop-filter: blur(2.5px); -webkit-backdrop-filter: blur(2.5px); box-shadow: 0 20px 12px rgba(0,0,0,.02); }
+.links { position: absolute; left: 50%; top: 26px; transform: translateX(-50%); display: flex; gap: 40px; font: 500 14px/20px Geist; white-space: nowrap; }
+.links a { color: var(--ink); text-decoration: none; }
+.links a.dim { color: var(--nav-grey); }
+/* green as the sections' buttons since Figma v4 (483:126): a dark lip, a soft drop */
+.cta { display: flex; align-items: center; height: 36px; padding: 0 13px; border-radius: 10px; background: #4f7a24; color: #fafafa;
+  box-shadow: 0 3.5px .5px 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -2px 1px 0 #3b5e17;
+  font: 500 14px/20px "Instrument Sans"; text-decoration: none; white-space: nowrap; }
+/* Antseed Desktop is the main action, the gateway the second: the same size, on the nav's glass with a hairline */
+.acts { display: flex; gap: 8px; }
+/* the day/night switch (nav-theme, Elio 16 Nov: a slider, so one sees the mode can change): a small track, the sun at its left and the
+   moon at its right, a round knob under the one showing; it slides across as the theme flips (the footer's switch does the same) */
+.theme-btn { position: relative; display: flex; align-items: center; justify-content: space-between; flex: none; width: 52px; height: 28px; margin: 4px 6px 4px 0;
+  padding: 0 7px; border: 0; border-radius: 999px; background: rgba(10, 26, 18, .06); box-shadow: inset 0 0 0 1px rgba(10, 26, 18, .12); color: var(--nav-grey); cursor: pointer; }
+.theme-btn span { position: relative; z-index: 1; display: grid; transition: color .25s; }
+/* the footer's line sun and moon (sections.html .theme), drawn at 14px: the stroke scaled up so it reads as the footer's 1.25 at 16px */
+.theme-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.43; stroke-linecap: round; stroke-linejoin: round; }
+.theme-btn .i-sun, :root[data-theme="dark"] .theme-btn .i-moon { color: var(--ink); }
+:root[data-theme="dark"] .theme-btn .i-sun { color: var(--nav-grey); }
+.theme-btn .knob { position: absolute; left: 3px; top: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(10, 26, 18, .2);
+  transition: translate .25s cubic-bezier(.3, .7, .2, 1); }
+:root[data-theme="dark"] .theme-btn .knob { translate: 24px 0; background: #3a433e; box-shadow: 0 1px 3px rgba(0, 0, 0, .4), inset 0 .5px 0 rgba(255, 255, 255, .12); }
+:root[data-theme="dark"] .theme-btn { background: rgba(255, 255, 255, .06); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14); }
+.theme-btn:hover { box-shadow: inset 0 0 0 1px rgba(10, 26, 18, .24); }
+:root[data-theme="dark"] .theme-btn:hover { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .26); }
+.theme-btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .theme-btn .knob, .theme-btn span { transition: none; } }
+.cta.ghost { padding: 0 15px; background: rgba(10, 26, 18, .04); color: var(--cmd); box-shadow: inset 0 0 0 1px rgba(10, 26, 18, .12); }
+.cta.ghost:hover { background: rgba(10, 26, 18, .08); }
+:root[data-theme="dark"] .cta.ghost { background: rgba(255, 255, 255, .06); color: #eceee9; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
+@media (max-width: 520px) { .cta.ghost { display: none; } }   /* on a phone, only the main one fits by the logo */
+@media (max-width: 1199px) { .links { left: 151px; transform: none; } }   /* with the toggle, the centred links would meet the buttons: they follow the logo instead */
+@media (max-width: 1023px) { .links { display: none; } }   /* narrower, the centred links would run into the two buttons */
+
+/* dark: the nav's glass, its black logo to #ececec, the green button's deeper lip */
+:root[data-theme="dark"] nav { background: rgba(24, 29, 27, .78); }
+:root[data-theme="dark"] nav > a > img { filter: invert(.93); }   /* the black logo, to #ececec */
+:root[data-theme="dark"] .cta:not(.ghost) { box-shadow: inset 0 -2px 1px 0 #3b5e17; }

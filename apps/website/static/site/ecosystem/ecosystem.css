@@ -1,0 +1,127 @@
+/* The Ecosystem page (17 Nov): Antseed's directory in our system, on the aside scale (06_Amos-feedback/ASIDE-SCALE.md). The homepage's
+   sheets (sections.css, launch.css) give the pieces; only the page's base, its top, the project cards' glass and the tiles live here.
+   Desktop first: from 1200 wide. */
+
+/* the page's base, as /colony/'s */
+:root { --page: #fff; --ink: #090b0c; --nav-grey: #737373; --cmd: #0a1a12; --acid: #c8f53c; }
+:root[data-theme="dark"] { --page: #0f1312; --ink: #eceee9; --nav-grey: #9ba49e; --cmd: #eceee9; }
+html, body { margin: 0; background: var(--page); color: var(--ink); font-family: Geist, system-ui, sans-serif; }
+img { display: block; }
+nav, nav * { box-sizing: border-box; }
+nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it */
+nav > a { display: block; }
+.s-page { margin: 0; }
+html { scroll-padding-top: 0; }
+
+/* the kit's glass on the paintings: light frosted by day, smoked green at night */
+.eg { --glass: rgba(255, 255, 255, .72); --edge: #fff; --sh: 0 0 0 .5px rgba(10, 26, 18, .14), 0 12px 32px 0 rgba(20, 51, 89, .16);
+  --tx: #0a1a12; --mu: #5d6660; --o: #4f7a24; --lime: #b9ee2a; --line: rgba(10, 26, 18, .1);
+  position: absolute; margin: 0; border: .5px solid var(--edge); background: var(--glass); box-shadow: var(--sh); color: var(--tx);
+  backdrop-filter: blur(14px) saturate(1.3); -webkit-backdrop-filter: blur(14px) saturate(1.3); font: 400 12px/16px Geist, sans-serif; }
+:root[data-theme="dark"] .eg { --glass: rgba(14, 33, 23, .68); --edge: rgba(150, 200, 145, .42); --tx: #ecf3ee; --mu: #9fb1a6; --o: #98c463; --lime: #c8f53c;
+  --line: rgba(236, 243, 238, .12); --sh: 0 12px 32px 0 rgba(8, 26, 14, .3), inset 0 .5px 0 0 rgba(190, 228, 170, .16); }
+
+@media (min-width: 1200px) {
+  /* ── sections: the aside scale */
+  .ec :is(.ec-live, .ec-pillars, .ec-add) .s-rail { padding-top: 124px; padding-bottom: 124px; }
+  .ec .s-head { gap: 24px; }
+  .ec .s-head > .s-h2 + .s-sub { margin-top: -8px; }
+  .ec .s-head .s-sub { max-width: 640px; line-height: 28px; }
+  /* the titles as before the aside pass (Elio, 17 Nov, as /network/ since 023d89a): sections.css's Geist Pixel 48/46 at -2, two lines
+     forced by the <br> (ink, then grey) */
+  .ec .s-btn, .ec .s-btn.big { height: 40px; padding: 0 12px; font-size: 16px; line-height: 24px; }
+
+  /* ── the top: the first screen under the nav, the offer on the left on the rail's edge, the map on the right inset 16 */
+  .ec-top { min-height: 0 !important; background: var(--page); }
+  .ec-hero { container-type: inline-size; display: grid; grid-template-columns: 1fr 1fr; height: calc(100svh - 69px); }
+  .ec-hero-head { --rail-w: round(down, min(1312px, 100cqw - 2 * clamp(16px, 6.4vw, 96px)), 16px);
+    display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 16px;
+    padding: 56px 40px 56px calc((100cqw - var(--rail-w)) / 2 + 40px); }
+  .ec-hero-head > * { margin: 0; }
+  .ec-hero-head { container-type: inline-size; }
+  .ec-hero-head .s-h2 { font-size: min(45px, 100cqi / 12.15); line-height: .96; max-width: 544px; }   /* /network/'s hero title: 45 on two lines */
+  .ec-hero-head .s-sub { max-width: 440px; line-height: 28px; }
+  .ec-hero-head .s-actions { margin-top: 16px; }
+  .ec-hero-panel { margin: 16px 16px 16px 0; border-radius: 16px; background-position: 50% 50%; }
+
+  /* ── live projects: the site's three-up card row (ASIDE-SCALE §5, as /colony/'s), 24 apart: the image 4:3 at radius 16 with its hairline,
+     then 16 below, the text opening on the project's name in ink (Elio, 17 Nov); each card a link to the project */
+  .ec-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 64px 24px; margin-top: 96px; }   /* head to a card row: 96 (ASIDE-SCALE §2) */
+  .ec-card { display: flex; flex-direction: column; gap: 16px; color: inherit; text-decoration: none; }
+  .ec-card:focus-visible { outline: 2px solid #789f00; outline-offset: 4px; border-radius: 8px; }
+  .ec-card .s-path-panel { position: relative; aspect-ratio: 4 / 3; margin: 0; border-radius: 8px;   /* Elio: less rounded */
+    overflow: hidden; box-shadow: none; }
+  .ec-shot { background: var(--tile); }
+  .ec-shot::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--tile-line); pointer-events: none; }
+  .ec-shot img { width: 100%; height: 100%; object-fit: cover; object-position: top center; transition: scale .3s ease-out; }
+  .ec-card:hover .ec-shot img { scale: 1.02; }
+  .ec-card .s-path-text { display: block; }
+  .ec-card .s-path-copy { margin: 0; }
+  .ec-card .s-cap { margin: 0; max-width: none; padding-right: 0; text-wrap: pretty; }
+  .ec-card:hover .s-cap b { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+  /* Build, explore, connect: /network/'s What lives where (the whole screen, the head centred, 96 to the three cards) */
+  .ec .ec-build { height: 100svh; min-height: 0 !important; }   /* exactly the fold: sections.js rounds sections up to 8px inline */
+  .ec .ec-build .s-rail { box-sizing: border-box; height: 100%; display: flex; flex-direction: column; justify-content: center; padding-top: 72px; padding-bottom: 72px; }
+  .ec .ec-build .s-head { align-items: center; text-align: center; padding: 0; }
+  .ec .ec-places { row-gap: 0; }
+  .ec-notes { display: flex; flex-direction: column; gap: 8px; margin: 48px 24px 0; max-width: 760px; }
+  .ec-note { margin: 0; font: 400 13px/20px Geist, sans-serif; color: var(--m, #737373); }
+  .ec-note b { font-weight: 500; color: var(--t); }
+
+  /* the glass on each painting: the window centred, the Live chip top left */
+  .eg-live { left: 16px; top: 16px; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-weight: 500; }
+  .eg-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--lime); box-shadow: 0 0 8px var(--lime); }
+  .eg-win { left: 50%; top: 54%; translate: -50% -50%; width: 72%; padding: 12px 14px; border-radius: 10px; display: flex; flex-direction: column; gap: 9px; }
+  .eg-win p, .eg-win dl, .eg-win ul { margin: 0; }
+  .eg-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; line-height: 17px; }
+  .eg-top b { font-weight: 500; }
+  .eg-top span { color: var(--mu); font: 400 11px/14px "Geist Mono", monospace; }
+  .eg-k { color: var(--mu); font-size: 11px; line-height: 14px; }
+  .eg-big { font-size: 15px; line-height: 19px; font-weight: 500; }
+  .eg-bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .eg-bar i { display: block; height: 100%; background: var(--o); border-radius: 3px; }
+  .eg-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+  .eg-pills span { padding: 2px 8px; border-radius: 999px; border: .5px solid var(--line); color: var(--o); font-weight: 500; font-size: 11px; }
+  .eg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+  .eg-grid dt, .eg-rows dt, .eg-board dt { color: var(--mu); font-size: 11px; line-height: 14px; }
+  .eg-grid dd { margin: 0; font-size: 15px; line-height: 19px; font-weight: 500; }
+  .eg-bars { display: flex; align-items: flex-end; gap: 6px; height: 28px; }
+  .eg-bars i { flex: 1; border-radius: 2px 2px 0 0; background: var(--o); opacity: .8; }
+  .eg-rows > div, .eg-board > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 5px 0; border-top: .5px solid var(--line); }
+  .eg-rows dd, .eg-board dd { margin: 0; font-weight: 500; color: var(--o); }
+  .eg-rows dt { font: 400 11px/14px "Geist Mono", monospace; }
+  .eg-board > div > * { flex: 1; }
+  .eg-board > div.h { border-top: 0; }
+  .eg-board > div.h dd { color: var(--mu); font-weight: 400; font-size: 11px; }
+  .eg-board dd.buy { flex: none; padding: 1px 8px; border-radius: 6px; background: var(--o); color: #fff; font-size: 11px; }
+  .eg-search { padding: 6px 10px; border-radius: 7px; border: .5px solid var(--line); color: var(--mu); }
+  .eg-flow { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .eg-flow span { display: flex; flex-direction: column; font-weight: 500; font-size: 13px; }
+  .eg-flow small { color: var(--mu); font-weight: 400; font-size: 10.5px; }
+  .eg-flow i { font-style: normal; color: var(--mu); }
+  .eg-nft { padding: 8px 10px; border-radius: 8px; border: .5px dashed var(--o); }
+  .eg-ask { padding: 7px 10px; border-radius: 8px; background: var(--line); }
+  .eg-steps { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .eg-steps li::before { content: "✓"; margin-right: 6px; color: var(--o); font-weight: 500; }
+
+  /* ── tiles (resources, pillars): the project cards' language without the image (ui-ux-pro-max review, 17 Nov): the same 1px outline
+     and radius, Elio's card spacings (20 top, 32 left, 16 right, 32 bottom, 16 between), the name in Geist Pixel; the resources are links
+     as a whole, the pillars are not (no hover) */
+  .ec-row { display: grid; gap: 24px; width: 100%; box-sizing: border-box; padding: 0 24px; margin-top: 96px; }
+  .ec-row-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ec-row-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .ec-tile { box-sizing: border-box; display: flex; flex-direction: column; align-items: flex-start; gap: 16px; padding: 20px 16px 32px 32px;
+    border: 1px solid var(--tile-line); border-radius: 16px; color: inherit; text-decoration: none; transition: background-color .2s; }
+  a.ec-tile:hover { background: var(--tile); }
+  a.ec-tile:focus-visible { outline: 2px solid #789f00; outline-offset: 2px; }
+  .ec-tile .f-ic { background: var(--o); margin: 12px 0 8px; }
+  .ec-tile h3 { margin: 0; font: 400 28px/32px "Geist Pixel Var", Geist, sans-serif; font-variation-settings: "ELSH" 40; letter-spacing: -1px; color: var(--t); }
+  .ec-row-4 .ec-tile h3 { font-size: 24px; line-height: 28px; letter-spacing: -.8px; }
+  .ec-tile p { margin: 0; font: 400 16px/24px Geist, sans-serif; color: var(--b); text-wrap: pretty; }
+
+  /* ── the close */
+  .ec-close { align-items: center; text-align: center; }
+  .ec-links { display: flex; gap: 24px; margin: 8px 0 0; font: 500 15px/20px Geist, sans-serif; }
+  .ec-links a { color: var(--o); text-decoration: none; }
+  .ec-links a:hover { text-decoration: underline; text-underline-offset: 3px; }
+}

@@ -1,0 +1,135 @@
+/* Antseed homepage below the hero: the micro-animations inside the illustration cards and the twinkling dots behind Private by design (micro.js adds the hooks).
+   Everything sits under .mi, which micro.js sets only without reduced motion: so with it, every card shows its end state and nothing loops.
+   .mi-in plays a card once as it comes into view; .mi-loop / .mi-on keep its loop running only while it is on screen.
+   Transform and opacity throughout, plus a few colours and widths on small elements, once. */
+@property --mi-elsh { syntax: "<number>"; inherits: true; initial-value: 20; }
+
+/* a scene put back to its start before it plays again (Private by design's panels, each time one is chosen): at once, no transition */
+.mi .wash.mi-reset, .mi .wash.mi-reset * { transition: none !important; }
+
+/* a loop off screen is paused, whatever it is (the gateway's cursor too) */
+.mi .mi-loop:not(.mi-on), .mi .mi-loop:not(.mi-on) *, .mi .mi-loop:not(.mi-on) *::before, .mi .mi-loop:not(.mi-on) *::after { animation-play-state: paused !important; }
+
+@keyframes mi-ping { 0% { transform: scale(1); opacity: .55; } 70%, 100% { transform: scale(2.6); opacity: 0; } }
+
+/* the eyebrows' › leans on hover */
+.mi :is(.s-eyebrow, .s-pixel) .chev { transition: transform .2s; }
+.mi :is(.s-eyebrow, .s-pixel):is(:hover, :focus-visible) .chev { transform: translateX(3px); }
+
+/* a green led's soft ring, from the led's own colour */
+.mi .mi-ping { position: relative; }
+.mi .mi-ping::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: inherit; animation: mi-ping 2.4s ease-out .6s infinite both; }
+
+
+/* ── Antseed Desktop: the windows rise in ── */
+.mi .s-vpn-panel .vpn-win { transition: opacity .6s, transform .6s cubic-bezier(.2, .7, .2, 1); transition-delay: .2s; }   /* after the panel's own rise has begun */
+.mi .s-vpn-panel .vpn-win + .vpn-win { transition-delay: .32s; }
+.mi .s-vpn-panel:not(.mi-in) .vpn-win { opacity: 0; transform: translateY(12px); }
+
+/* ── For the people ── */
+/* Agents: the provider menu drops, the pointer slides onto Antseed, its check pops */
+.mi .v6-agents-menu { transition: opacity .35s .35s, transform .45s .35s cubic-bezier(.2, .7, .2, 1); }
+.mi .wash:not(.mi-in) .v6-agents-menu { opacity: 0; transform: translateY(-6px); }
+.mi .v6-agents .v6c-cursor { transition: opacity .3s .65s, transform .6s .65s cubic-bezier(.3, .7, .3, 1); }
+.mi .wash:not(.mi-in) .v6-agents .v6c-cursor { opacity: 0; transform: translate(26px, 30px); }
+.mi .v6-agents-menu .v6c-check { transition: opacity .2s 1.25s, transform .35s 1.25s cubic-bezier(.3, 1.6, .5, 1); }
+.mi .wash:not(.mi-in) .v6-agents-menu .v6c-check { opacity: 0; transform: scale(.4); }
+/* Heavy users: the plan fills and runs out, then Antseed fills and its next column keeps blinking on */
+.mi .mi-heavy .px::after { transition: width .8s steps(var(--on)); }
+.mi .mi-heavy .px:not(.warn)::after { transition-duration: .5s; transition-delay: 1.2s; }
+.mi .mi-heavy:not(.mi-in) .px::after { width: 0; }
+.mi .mi-heavy em.warn { transition: opacity .4s .85s; }
+.mi .mi-heavy:not(.mi-in) em.warn { opacity: 0; }
+.mi-next { position: absolute; z-index: 1; top: 0; bottom: 0; left: calc(var(--on) * 4.5px); width: 4.5px; opacity: 0;
+  background: radial-gradient(circle at 1.5px 1.5px, var(--o) 1.25px, #0000 1.65px) 0 0 / 4.5px 4.5px; }
+.mi .mi-heavy.mi-in .mi-next { animation: mi-dip 1.6s ease-in-out 1.8s infinite; }
+/* Privacy: the field values come in one after another (--mi-i), then a light runs over "encrypted · TEE" */
+.mi .v6-privacy-fields dd { transition: opacity .3s, transform .35s cubic-bezier(.2, .7, .2, 1); transition-delay: calc(var(--mi-i) * 120ms + 400ms); }
+.mi .wash:not(.mi-in) .v6-privacy-fields dd { opacity: 0; transform: translateX(-4px); }
+.mi .v6-privacy .mi-sweep { color: #0000; -webkit-background-clip: text; background-clip: text; animation: mi-sweep 4s ease-in-out 2s infinite;
+  background-image: linear-gradient(90deg, var(--v6-o) 40%, #a6dc5c 50%, var(--v6-o) 60%); background-size: 300% 100%; background-position: 100% 0; }
+@keyframes mi-sweep { 0% { background-position: 100% 0; } 35%, 100% { background-position: 0 0; } }
+/* Teams: each spend fills its bar (--mi-i), then the agent's model menu opens under its chip and the check pops */
+.mi .v6-teams-use b::after { transform-origin: 0 50%; transition: transform .7s cubic-bezier(.2, .7, .2, 1); transition-delay: calc(var(--mi-i) * 120ms + 300ms); }
+.mi .wash:not(.mi-in) .v6-teams-use b::after { transform: scaleX(0); }
+.mi .v6-teams-menu { transition: opacity .3s 1s, transform .4s 1s cubic-bezier(.2, .7, .2, 1); }
+.mi .wash:not(.mi-in) .v6-teams-menu { opacity: 0; transform: translateY(-4px); }
+.mi .v6-teams-menu .v6c-check { transition: opacity .2s 1.4s, transform .35s 1.4s cubic-bezier(.3, 1.6, .5, 1); }
+.mi .wash:not(.mi-in) .v6-teams-menu .v6c-check { opacity: 0; transform: scale(.4); }
+.mi .v6-teams .v6c-cursor { transition: opacity .3s 1.1s, transform .5s 1.1s cubic-bezier(.3, .7, .3, 1); }
+.mi .wash:not(.mi-in) .v6-teams .v6c-cursor { opacity: 0; transform: translate(-14px, -18px); }
+
+/* ── Providers ── */
+/* Open-source models: the caret blinks while the price types in (micro.js) */
+.mi .v6-gpu .v6c-caret { animation: mi-caret 1s steps(1) infinite; }
+@keyframes mi-caret { 50% { opacity: 0; } }
+/* API capacity: the new request rises over the one served; every few seconds Accept is pressed and the next one comes in */
+.mi .v6-cap-win { transition: opacity .45s .25s, transform .55s .25s cubic-bezier(.2, .7, .2, 1); }
+.mi .wash:not(.mi-in) .v6-cap-win { opacity: 0; transform: translateY(8px); }
+.mi .v6-cap-win.mi-again { animation: mi-again-y 1.3s cubic-bezier(.2, .7, .2, 1); }
+@keyframes mi-again-y { 0% { opacity: 1; transform: none; } 25% { opacity: 0; transform: translateY(-6px); } 45% { opacity: 0; transform: translateY(8px); } 100% { opacity: 1; transform: none; } }
+.mi .v6-cap-acts .s-btn.mi-tap { animation: mi-tap .24s; }
+@keyframes mi-tap { 50% { transform: translateY(1px); box-shadow: 0 1px 0 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -1px 0 0 #3b5e17; } }
+/* Colony: its rows land from the top, one after another; the last payment flashes now and then */
+.mi .v6-colony-row { transition: opacity .4s, transform .4s cubic-bezier(.2, .7, .2, 1); transition-delay: calc(var(--mi-i) * 90ms + 200ms); }
+.mi .wash:not(.mi-in) .v6-colony-row { opacity: 0; transform: translateY(-6px); }
+.mi .v6-colony-row.last { position: relative; }
+.mi .v6-colony-row.last::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: rgba(79, 122, 36, .12); opacity: 0; pointer-events: none;
+  animation: mi-flash 5s ease-in-out 2.5s infinite; }
+:root[data-theme="dark"] .mi .v6-colony-row.last::after { background: rgba(152, 196, 99, .16); }
+@keyframes mi-flash { 0%, 30%, 100% { opacity: 0; } 10% { opacity: 1; } }
+
+/* ── The network (its diagram plays from net.js) ── */
+/* the three points under it */
+.mi .s-points .mi-t { transition: opacity .5s, transform .5s cubic-bezier(.2, .7, .2, 1); transition-delay: calc(var(--mi-i) * 100ms); }
+.mi .s-points:not(.mi-in) .mi-t { opacity: 0; transform: translateY(6px); }
+
+/* ── Private by design ── */
+/* No account: $20 is picked over $5 (micro.js), then the Pay with menu drops and the pointer comes to Apple Pay */
+.mi .v6-noacc-amounts span { transition: background-color .3s, color .3s, border-color .3s; }
+.mi .v6-noacc-menu { transition: opacity .3s .9s, transform .4s .9s cubic-bezier(.2, .7, .2, 1); }
+.mi .wash:not(.mi-in) .v6-noacc-menu { opacity: 0; transform: translateY(-4px); }
+.mi .v6-noacc-cursor { transition: opacity .3s 1.15s, transform .6s 1.15s cubic-bezier(.3, .7, .3, 1); }
+.mi .wash:not(.mi-in) .v6-noacc-cursor { opacity: 0; transform: translate(14px, 22px); }
+/* Signed responses: the badge pops, the pointer comes to it, the proof rises under it */
+.mi .v6-signed-badge { transition: opacity .25s .35s, transform .35s .35s cubic-bezier(.3, 1.6, .5, 1); }
+.mi .wash:not(.mi-in) .v6-signed-badge { opacity: 0; transform: scale(.7); }
+.mi .v6-signed-cursor { transition: opacity .3s .65s, transform .6s .65s cubic-bezier(.3, .7, .3, 1); }
+.mi .wash:not(.mi-in) .v6-signed-cursor { opacity: 0; transform: translate(30px, 34px); }
+.mi .v6-signed-pop { transition: opacity .35s 1.15s, transform .45s 1.15s cubic-bezier(.2, .7, .2, 1); }
+.mi .wash:not(.mi-in) .v6-signed-pop { opacity: 0; transform: translateY(6px); }
+/* TEE providers: the filter's menu drops, the pointer comes to TEE only, attestation switches on, the enclave tip appears */
+.mi .v6-tee-menu { transition: opacity .3s .3s, transform .4s .3s cubic-bezier(.2, .7, .2, 1); }
+.mi .wash:not(.mi-in) .v6-tee-menu { opacity: 0; transform: translateY(-4px); }
+.mi .v6-tee-cursor { transition: opacity .3s .55s, transform .6s .55s cubic-bezier(.3, .7, .3, 1); }
+.mi .wash:not(.mi-in) .v6-tee-cursor { opacity: 0; transform: translate(14px, 22px); }
+.mi .v6-tee-toggle { transition: background-color .25s 1s; }
+.mi .v6-tee-toggle::after { transition: left .25s 1s cubic-bezier(.3, .7, .3, 1); }
+.mi .wash:not(.mi-in) .v6-tee-toggle { background-color: #c9cfc6; }
+:root[data-theme="dark"] .mi .wash:not(.mi-in) .v6-tee-toggle { background-color: rgba(255, 255, 255, .2); }
+.mi .wash:not(.mi-in) .v6-tee-toggle::after { left: 2px; }
+.mi .v6-tee-tip { transition: opacity .35s 1.5s, transform .45s 1.5s cubic-bezier(.2, .7, .2, 1); }
+.mi .wash:not(.mi-in) .v6-tee-tip { opacity: 0; transform: translateY(4px); }
+/* No crypto needed: the trail draws from the card to the USDC, which settles at its end; the card and Apple Pay float */
+.mi .v6-nocrypto-trail { -webkit-mask: linear-gradient(90deg, #000 45%, #0000 55%) 100% 0 / 220% 100% no-repeat; mask: linear-gradient(90deg, #000 45%, #0000 55%) 100% 0 / 220% 100% no-repeat;
+  transition: -webkit-mask-position 1s .4s ease-in-out, mask-position 1s .4s ease-in-out; }
+.mi .wash.mi-in .v6-nocrypto-trail { -webkit-mask-position: 0 0; mask-position: 0 0; }
+.mi .v6-nocrypto-settled { transition: opacity .4s 1.2s, transform .45s 1.2s cubic-bezier(.2, .7, .2, 1); }
+.mi .wash:not(.mi-in) .v6-nocrypto-settled { opacity: 0; transform: translateY(4px); }
+.mi .v6-nocrypto-card { animation: mi-float 5s ease-in-out infinite alternate; }
+.mi .v6-nocrypto-apple { animation: mi-float 6s ease-in-out -2s infinite alternate; }
+@keyframes mi-float { from { transform: translateY(-2px); } to { transform: translateY(2px); } }
+
+/* ── FAQ: the + turns into a − ── */
+.mi .qs summary { position: relative; }
+.mi .qs details summary::after { content: ""; height: 26px; background: linear-gradient(currentColor 0 0) 50% 50% / 12px 1.5px no-repeat; }
+.mi .qs summary::before { content: ""; position: absolute; right: 5.75px; top: 50%; width: 1.5px; height: 12px; margin-top: -6px; background: var(--g); transition: transform .2s; }
+.mi .qs details[open] summary::before { transform: rotate(90deg); }
+
+/* ── Footer: the ant wiggles when you point at it ── */
+.mi .s-foot .brand:is(:hover, :focus-visible) img { animation: mi-wiggle .3s ease-in-out; }
+@keyframes mi-wiggle { 33% { transform: rotate(-4deg); } 66% { transform: rotate(4deg); } }
+
+/* the providers' cards, one after another (micro.js): faded and a little low until they come in */
+.mi .mi-card { opacity: 0; translate: 0 18px; }
+.mi .mi-card.mi-in { opacity: 1; translate: 0 0; transition: opacity .32s ease-out, translate .42s cubic-bezier(.2, .9, .25, 1); transition-delay: calc(var(--mi-i, 0) * 110ms); }
