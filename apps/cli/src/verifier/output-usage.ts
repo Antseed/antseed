@@ -55,6 +55,8 @@ export function readOutput(requestBody: Uint8Array, response: { statusCode: numb
   if (!signsOutputCount(answer['usage'])) return { ...head, ...NO_READING }
   const billed = usageForBilling(requestBody, response)
   const reasoningTokens = itemisedReasoning(answer['usage'])
+  // A reasoning count that is negative or above the billed output is malformed usage: no reading.
+  if (reasoningTokens !== null && (reasoningTokens < 0 || reasoningTokens > billed.usage.outputTokens)) return { ...head, ...NO_READING }
   return {
     ...head,
     billedOutputTokens: billed.usage.outputTokens,

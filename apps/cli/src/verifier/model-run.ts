@@ -865,6 +865,8 @@ export async function verifyModelTarget(input: {
         serviceAliases: [...input.reference.serviceAliases, ...currentServiceNames(input.reference.referenceModel)],
       }, input.reference, {
         thinking: settings.thinking,
+        // The model's other sellers are asked with the reference's thinking setting.
+        crowdThinking: kbfTargetThinkingSuppression(input.reference),
         precheckMatch: precheck?.outcome === 'match',
         clock: {
           signal: deadline.controller.signal,

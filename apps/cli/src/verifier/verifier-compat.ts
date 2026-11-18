@@ -63,7 +63,7 @@ import {
   type OutputCapClass,
 } from './output-cap.js'
 import { SIGNED_REQUEST_TRIES } from './signed-seller-request.js'
-import { ECHO_CROWD_TIME_LIMIT_MS, OUTPUT_ECHO_RULE, echoCrowdObjection, judgeEchoRound, outputEchoPrompt } from './output-echo.js'
+import { ECHO_CROWD_TIME_LIMIT_MS, OUTPUT_ECHO_RULE, echoCrowdObjection, judgeEchoRound, judgeOutputEcho, outputEchoPrompt } from './output-echo.js'
 import { AUDIT_CHECK_IDS, type AuditCheckId } from './flagging-checks.js'
 import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
 import {
@@ -280,6 +280,22 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
         }).verdict
       }),
       crowd: SAMPLE_ECHO_CROWDS.map(([amount, votes, ownSpread]) => echoCrowdObjection(amount, votes, ownSpread) === null),
+      // Whole judgements, both modes and the fixed-amount gate: each sample is every text asked twice at the given
+      // short and long counts, against three backing sellers at 0 and one at 1.
+      judged: SAMPLE_ECHO_JUDGEMENTS.map(([mode, short, long, reasoning]) => {
+        const echo = (count: number) => ({ request: {} as never, reading: null, reply: { count, reasoning, unusable: null } })
+        const rounds = [0, 1, 2].map(() => {
+          const asks = { short: [echo(short), echo(short)], long: [echo(long), echo(long)] }
+          return { ...asks, ...judgeEchoRound({ ...asks, reference: { short: 60, long: 360 }, referenceReasoning: reasoning, mode }) }
+        })
+        const vote = (value: number) => ({ peerId: `sample-${value}`, short: echo(60), long: echo(360), growth: value, offset: value, reasoning: 0, sentHere: true })
+        const judged = judgeOutputEcho({
+          mode, rounds, precheckMatch: true, referenceReasoning: [reasoning, reasoning, reasoning],
+          reference: [0, 1, 2].map(() => ({ short: { text: 's', count: 60 }, long: { text: 'l', count: 360 } })),
+          crowd: { votes: [vote(0), vote(0), vote(0), vote(1)], incomplete: false },
+        })
+        return [judged.outcome, judged.growth.outcome, judged.fixedAmount.outcome]
+      }),
     },
     // A result that answers another auditor's waiting DIFF: sent as DIFF only when one of these checks flagged in
     // both, as SAME only when a check that flagged there passed here, otherwise not at all; made at least
@@ -404,6 +420,11 @@ const SAMPLE_PROBE_TEXTS: readonly string[] = [
 /** A seller's short and long counts per ask, against a reference of 60 and 360 tokens. */
 const SAMPLE_ECHO_ROUNDS: ReadonlyArray<ReadonlyArray<readonly [number | null, number | null]>> = [
   [[60, 360]], [[63, 363]], [[61, 366], [61, 366]], [[61, 366], [60, 360]], [[61, 366], [61, 380]], [[61, 366]], [[null, 360]],
+]
+
+/** Mode, the seller's short and long counts (reference 60 and 360), and the reasoning of each reply. */
+const SAMPLE_ECHO_JUDGEMENTS: ReadonlyArray<readonly ['plain' | 'visible', number, number, number]> = [
+  ['plain', 60, 360, 0], ['plain', 63, 363, 0], ['plain', 60, 460, 0], ['plain', 90, 390, 0], ['visible', 60, 360, 4], ['visible', 60, 460, 4],
 ]
 
 /** A flagged amount, the other sellers' votes, the seller's own spread. */

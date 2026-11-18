@@ -402,7 +402,10 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
       // Every flag is recomputed from the stored records, as `verifier submit` checks its own.
       if (first.tokenizerPrecheck) validateTokenizerPrecheck(first.tokenizerPrecheck, first.target.peerId)
       if (first.outputCap) validateOutputCap(first.outputCap)
-      if (first.outputEcho) validateOutputEcho(first.outputEcho, first.target.peerId)
+      if (first.outputEcho) {
+        validateOutputEcho(first.outputEcho, first.target.peerId)
+        if (first.outputEcho.precheckMatch !== (first.tokenizerPrecheck?.outcome === 'match')) throw new Error('its echo check\'s pre-check match is not its pre-check')
+      }
       const checks = flaggingChecks(first, await questionsVerdict(result, first, (audit) => sellerEvidence(audit, agentId, serviceHash)))
       if (checks.length === 0) throw new Error(`its evidence for agent ${agentId} shows no check that flagged`)
       return checks

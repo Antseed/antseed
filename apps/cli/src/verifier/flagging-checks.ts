@@ -28,7 +28,8 @@ export function flaggingChecks(
   const checks: AuditCheckId[] = []
   if (evidence.tokenizerPrecheck?.outcome === 'mismatch') checks.push('tokens')
   if (evidence.outputCap?.outcome === 'flag') checks.push('output-cap')
-  if (evidence.outputEcho?.outcome === 'flag') checks.push(evidence.outputEcho.flag === 'offset' ? 'output-offset' : 'output-echo')
+  if (evidence.outputEcho?.growth?.outcome === 'flag') checks.push('output-echo')
+  if (evidence.outputEcho?.fixedAmount?.outcome === 'flag') checks.push('output-offset')
   if (evidence.exchanges.length > 0 && kbfVerdict === 'DIFF') checks.push('kbf')
   return checks
 }
@@ -44,7 +45,9 @@ export function passedChecks(
   const checks: AuditCheckId[] = []
   if (evidence.tokenizerPrecheck?.outcome === 'match') checks.push('tokens')
   if (evidence.outputCap?.outcome === 'pass') checks.push('output-cap')
-  if (evidence.outputEcho?.outcome === 'pass') checks.push('output-echo', 'output-offset')
+  // Each finding passes on its own: a seller that only failed to be a candidate has not passed.
+  if (evidence.outputEcho?.growth?.outcome === 'pass') checks.push('output-echo')
+  if (evidence.outputEcho?.fixedAmount?.outcome === 'pass') checks.push('output-offset')
   if (evidence.exchanges.length > 0 && kbfVerdict === 'SAME') checks.push('kbf')
   return checks
 }

@@ -88,6 +88,8 @@ export interface FixtureAudit {
    * audit is DIFF with no question asked. `verdict` must be DIFF.
    */
   tokenizerMismatch?: boolean
+  /** The tokenizer pre-check ran and matched: the seller counts input like the model. The audit asks its questions. */
+  tokenizerMatch?: boolean
   /**
    * A cap check record (`output-cap.ts`) written into the evidence. A `flag` makes the audit a DIFF with no
    * question asked, as in a real run; any other outcome is stored beside the questions.
@@ -625,6 +627,26 @@ async function signedTokenizerMismatch(input: {
   })
 }
 
+/** A pre-check that matched: the seller signs the model's own count. */
+async function signedTokenizerMatch(input: {
+  audit: FixtureAudit
+  auditor: Wallet
+  runId: string
+  peerId: string
+}): Promise<TokenizerPrecheckV1> {
+  const modelTokens = (text: string): number => 5 + Math.ceil(text.length / 4)
+  const reference = await measureTokenizerReference({
+    ask: async (contents) => ({
+      upstream: { name: 'referenceEndpoint', type: 'openai', model: input.audit.model },
+      results: contents.map((content) => ({ inputTokens: modelTokens(content), cachedInput: false, provider: 'Provider-A', failure: null })),
+    }),
+  })
+  const target = signedTokenizerSeller({ ...input, signer: input.audit.signer ?? input.audit.seller, count: (text) => 40 + modelTokens(text) })
+  const record = await runTokenizerPrecheck({ ...target, reference })
+  if (record.outcome !== 'match') throw new Error(`fixture pre-check gave ${record.outcome}, expected match`)
+  return record
+}
+
 /** A seller of `audit`'s model behind the buyer proxy that signs, with `signer`, the input tokens `count` gives. */
 function signedTokenizerSeller(input: {
   audit: FixtureAudit
@@ -734,6 +756,9 @@ async function writeFixtureEvidence(input: {
   const tokenizerPrecheck = audit.tokenizerMismatch
     ? await signedTokenizerMismatch({ audit, auditor: input.auditor, runId: input.runId, peerId })
     : null
+  const precheckMatch = audit.tokenizerMatch
+    ? await signedTokenizerMatch({ audit, auditor: input.auditor, runId: input.runId, peerId })
+    : null
   const preQuestionFlag = audit.outputCap?.outcome === 'flag' ? describeOutputCapFlag(audit.outputCap)
     : audit.outputEcho?.outcome === 'flag' ? describeOutputEchoFlag(audit.outputEcho) : null
   const exchanges = tokenizerPrecheck || preQuestionFlag
@@ -779,6 +804,7 @@ async function writeFixtureEvidence(input: {
       probes: reference.probes,
     },
     ...(tokenizerPrecheck ? { tokenizerPrecheck } : {}),
+    ...(precheckMatch ? { tokenizerPrecheck: precheckMatch } : {}),
     ...(audit.outputCap ? { outputCap: audit.outputCap } : {}),
     ...(audit.outputEcho ? { outputEcho: audit.outputEcho } : {}),
     exchanges,

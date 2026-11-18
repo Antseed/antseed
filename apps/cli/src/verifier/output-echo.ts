@@ -14,13 +14,14 @@ import { generateTokenizerProbe } from './tokenizer-precheck.js'
  * The echo check, rule `output-echo-v1`: does a seller bill the output tokens the model wrote?
  *
  * The seller repeats a short and a long text word for word, in three rounds. The output tokens it signs are
- * compared with this epoch's reference for the same texts. Two things can flag, each only behind the model's
- * other sellers (the crowd) and with wide margins:
+ * compared with this epoch's reference for the same texts. Two findings are judged apart, each with its own
+ * outcome, and each only behind the model's other sellers (the crowd) and with wide margins:
  * - `growth`: the seller's count grows faster from the short to the long text than the reference's, in every
  *   round and again when asked again. A constant a host adds to every reply cancels out of the growth.
- * - `offset`: the seller adds the same large amount to every reply, short and long, far above what the model's
- *   other sellers add.
- * Nothing else ever flags; anything unclear decides nothing.
+ * - `offset` (the fixed amount): the seller adds the same large amount to every reply, short and long, on both
+ *   asks, far above what the model's other sellers add.
+ * Anything unclear decides nothing, and only a seller that kept to the model's count passes: a confirmer must
+ * not clear another auditor's finding on a reply that only failed to be a candidate.
  *
  * Every constant is here, frozen. The margins (`growthFloor`, `growthShare`, `offsetFloor`, `spreadFactor`) are
  * chosen above every honest value seen in the evals and on live sellers (constants of 3 tokens without reasoning
@@ -30,11 +31,11 @@ export interface OutputEchoRule {
   id: 'output-echo-v1'
   /** Rounds of one short and one long text. */
   rounds: number
-  /** Tokens within which two counts are the same. The tokenizer pre-check's. */
+  /** Tokens within which two counts of one text are the same (a seller's two asks; a crowd vote's two texts). */
   tolerance: number
-  /** Times the reference is asked each text; every ask must agree. */
+  /** Times the reference is asked each text; every ask must agree (exactly in `plain` mode). */
   referenceAsks: number
-  /** Times a text is written before the model is left unjudged by this check this run. */
+  /** Times a round's pair is written again before the model is left unjudged this run. */
   textTries: number
   /** The long text must measure at least this many tokens more than the short one at the reference. */
   minGap: number
@@ -44,7 +45,7 @@ export interface OutputEchoRule {
   growthFloor: number
   /** … and above this share of the reference's gap between the two texts, in every round. Chosen margin. */
   growthShare: number
-  /** An offset flag needs the fixed amount above this many tokens. Chosen margin. */
+  /** An offset flag needs the fixed amount, and its lead over the other sellers' median, above this many tokens. */
   offsetFloor: number
   /** The flagged amount must exceed the other sellers' median by more than this many times their spread. */
   spreadFactor: number
@@ -54,6 +55,13 @@ export interface OutputEchoRule {
   minOthers: number
   /** Other sellers that must sign the reference's count (within the tolerance). */
   minBackers: number
+  /**
+   * Whether a fixed-amount finding may flag a seller or clear a waiting flag. When false it is computed, stored and
+   * shown, and decides nothing: no data on live sellers is behind it yet.
+   */
+  offsetCounts: boolean
+  /** The same for any finding of a model counted on its visible answer (`visible` mode). */
+  visibleCounts: boolean
 }
 
 export const OUTPUT_ECHO_RULE: OutputEchoRule = Object.freeze({
@@ -71,6 +79,8 @@ export const OUTPUT_ECHO_RULE: OutputEchoRule = Object.freeze({
   minSpread: 2,
   minOthers: 3,
   minBackers: 2,
+  offsetCounts: false,
+  visibleCounts: false,
 })
 
 export function outputEchoRuleById(id: string): OutputEchoRule | undefined {
@@ -81,7 +91,7 @@ export function outputEchoRuleById(id: string): OutputEchoRule | undefined {
  * How a model's echoes are counted this run, decided by its reference:
  * - `plain`: the reference echoes without any reasoning; a reply with a reasoning marker is not usable;
  * - `visible`: the reference itemises reasoning on every echo; the count is billed minus itemised reasoning, a
- *   reply that does not itemise is not usable, and each round's tolerance grows by its largest itemised count.
+ *   reply that does not itemise is not usable, and each round's tolerance grows by its own largest itemised count.
  */
 export type EchoMode = 'plain' | 'visible'
 
@@ -95,23 +105,29 @@ export interface EchoReplyV1 {
   unusable: string | null
 }
 
-/** Reads one echo reply in a mode. Usable: signed usage, one finished answer, the text byte for byte, and the mode's reasoning rule. */
+/**
+ * Reads one echo reply in a mode. Usable: signed usage, one finished answer, the text byte for byte, and the mode's
+ * reasoning rule. An itemised reasoning count that is negative, not whole or above the billed count is malformed
+ * usage: not usable in either mode.
+ */
 export function readEchoReply(reading: OutputReadingV1 | null, text: string, mode: EchoMode): EchoReplyV1 {
-  const reasoning = reading?.reasoningTokens ?? 0
+  const itemised = reading?.reasoningTokens ?? null
+  const billed = reading?.billedOutputTokens ?? null
+  const malformed = itemised !== null && (!Number.isInteger(itemised) || itemised < 0 || (billed !== null && itemised > billed))
+  const reasoning = malformed || itemised === null ? 0 : itemised
   const no = (why: string): EchoReplyV1 => ({ count: null, reasoning, unusable: why })
-  if (!reading || reading.shape === null || reading.billedOutputTokens === null) return no('no reading')
+  if (!reading || reading.shape === null || billed === null) return no('no reading')
   if (reading.estimated) return no('no signed usage')
+  if (malformed) return no('malformed reasoning count')
   if (!reading.oneAnswer || reading.stops) return no('not one plain answer')
   if (!reading.finished) return no('not finished')
   if (reading.text !== text) return no('the text was changed')
-  if (mode === 'plain') {
-    return reading.reasoningMarker ? no('reasoning shown') : { count: reading.billedOutputTokens, reasoning: 0, unusable: null }
-  }
-  if (reading.reasoningTokens === null) return no('reasoning not itemised')
-  return { count: reading.billedOutputTokens - reading.reasoningTokens, reasoning, unusable: null }
+  if (mode === 'plain') return reading.reasoningMarker ? no('reasoning shown') : { count: billed, reasoning: 0, unusable: null }
+  if (itemised === null) return no('reasoning not itemised')
+  return { count: billed - itemised, reasoning, unusable: null }
 }
 
-/** The request to repeat `text`, with the seller's own thinking settings. */
+/** The request to repeat `text`. */
 export function outputEchoPrompt(text: string): string {
   return `Repeat the text below exactly as it is written, with nothing before or after it.\n\n${text}`
 }
@@ -150,7 +166,7 @@ export interface EchoReferenceTextV1 {
   kind: 'short' | 'long'
   text: string
   asks: Array<{ count: number | null; reasoning: number; provider: string | null; unusable: string | null }>
-  /** The text's count at the reference: every ask usable, from one provider, within the tolerance; null otherwise. */
+  /** The text's count at the reference: every ask usable, from one provider, agreeing (exactly in `plain` mode); null otherwise. */
   count: number | null
   failure: string | null
 }
@@ -160,6 +176,8 @@ export interface OutputEchoReferenceV1 {
   rule: OutputEchoRule
   upstream: unknown
   mode: EchoMode | null
+  /** The one provider every reference reply came from; null when the route names none. */
+  provider: string | null
   /** Short and long texts of each round. */
   rounds: Array<{ short: EchoReferenceTextV1; long: EchoReferenceTextV1 }>
   applies: boolean
@@ -173,41 +191,60 @@ export type EchoReferenceAsk = (texts: readonly string[], signal?: AbortSignal) 
 }>
 
 /** The reference's count of a text from its asks, in a mode (`EchoReferenceTextV1.count`). */
-export function referenceEchoCount(asks: EchoReferenceTextV1['asks'], rule: OutputEchoRule = OUTPUT_ECHO_RULE): { count: number | null; failure: string | null } {
+export function referenceEchoCount(
+  asks: EchoReferenceTextV1['asks'],
+  mode: EchoMode,
+  rule: OutputEchoRule = OUTPUT_ECHO_RULE,
+): { count: number | null; failure: string | null } {
   if (asks.length < rule.referenceAsks) return { count: null, failure: `the reference was asked ${asks.length} of ${rule.referenceAsks} times` }
   const unusable = asks.find((ask) => ask.unusable !== null)
   if (unusable) return { count: null, failure: `the reference's echo is not usable (${unusable.unusable})` }
-  const providers = new Set(asks.map((ask) => ask.provider))
-  if (providers.size !== 1) return { count: null, failure: 'the reference answered from more than one provider' }
+  if (new Set(asks.map((ask) => ask.provider)).size !== 1) return { count: null, failure: 'the reference answered from more than one provider' }
   const counts = asks.map((ask) => ask.count!)
-  if (Math.max(...counts) - Math.min(...counts) > rule.tolerance) return { count: null, failure: `the reference did not agree with itself (${counts.join(', ')})` }
+  // In `plain` mode the reference must give one count; in `visible` mode its visible counts agree within the tolerance.
+  const allowed = mode === 'plain' ? 0 : rule.tolerance
+  if (Math.max(...counts) - Math.min(...counts) > allowed) return { count: null, failure: `the reference did not agree with itself (${counts.join(', ')})` }
   return { count: counts[0]!, failure: null }
+}
+
+/** The longest the reference's measurement of a model's texts may take; sellers' audits wait for it, off their clocks. */
+export const ECHO_REFERENCE_TIME_LIMIT_MS = 10 * 60_000
+
+function roundReasoning(round: { short: EchoReferenceTextV1; long: EchoReferenceTextV1 }): number {
+  return Math.max(0, ...[...round.short.asks, ...round.long.asks].map((ask) => ask.reasoning))
 }
 
 /**
  * Writes the run's texts for a model and measures each on the reference, twice. The mode is the reference's:
  * `plain` when every echo is usable without reasoning, else `visible` when every echo itemises reasoning and
- * agrees with itself on its visible count. A text without a count is written again, up to `textTries`. The
- * check applies only when every round has both counts and a gap of at least `minGap`. Never rejects.
+ * agrees with itself on its visible count. A pair without both counts, or whose gap is too narrow, is written
+ * again, up to `textTries`. The check applies only when every round has both counts and its gap, every reply came
+ * from one provider, and (in `visible` mode) no round's reasoning alone puts its tolerance at the growth floor.
+ * Never rejects; stops at `timeLimitMs`.
  */
 export async function prepareOutputEchoReference(input: {
   ask: EchoReferenceAsk
   rule?: OutputEchoRule
   write?: (kind: 'short' | 'long') => string
+  timeLimitMs?: number
 }): Promise<OutputEchoReferenceV1> {
   const rule = input.rule ?? OUTPUT_ECHO_RULE
   const write = input.write ?? ((kind: 'short' | 'long') => writeEchoText(kind))
+  const limit = AbortSignal.timeout(input.timeLimitMs ?? ECHO_REFERENCE_TIME_LIMIT_MS)
   let upstream: unknown = null
-  const measure = async (kind: 'short' | 'long', text: string): Promise<{ plain: EchoReferenceTextV1; visible: EchoReferenceTextV1 }> => {
-    const texts = Array.from({ length: rule.referenceAsks }, () => text)
-    let asked: Awaited<ReturnType<EchoReferenceAsk>>
-    try {
-      asked = await input.ask(texts)
-      upstream = asked.upstream
-    } catch (error) {
-      const failure = `the reference could not be asked: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300)
+  type Both = { plain: EchoReferenceTextV1; visible: EchoReferenceTextV1 }
+  const measure = async (kind: 'short' | 'long', text: string): Promise<Both> => {
+    const failed = (failure: string): Both => {
       const empty = { kind, text, asks: [], count: null, failure }
       return { plain: empty, visible: empty }
+    }
+    if (limit.aborted) return failed('the reference\'s time is up')
+    let asked: Awaited<ReturnType<EchoReferenceAsk>>
+    try {
+      asked = await input.ask(Array.from({ length: rule.referenceAsks }, () => text), limit)
+      upstream = asked.upstream
+    } catch (error) {
+      return failed(`the reference could not be asked: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300))
     }
     const inMode = (mode: EchoMode): EchoReferenceTextV1 => {
       const asks = asked.results.map((result) => {
@@ -215,20 +252,19 @@ export async function prepareOutputEchoReference(input: {
         const reply = result.failure ? { count: null, reasoning: 0, unusable: result.failure } : readEchoReply(reading, text, mode)
         return { count: reply.count, reasoning: reply.reasoning, provider: result.provider, unusable: reply.unusable }
       })
-      const judged = referenceEchoCount(asks, rule)
+      const judged = referenceEchoCount(asks, mode, rule)
       return { kind, text, asks, count: judged.count, failure: judged.failure }
     }
     return { plain: inMode('plain'), visible: inMode('visible') }
   }
-  const measured: Array<Record<'short' | 'long', { plain: EchoReferenceTextV1; visible: EchoReferenceTextV1 }>> = []
+  const usable = (pair: Record<'short' | 'long', Both>): boolean => (['plain', 'visible'] as const).some((mode) => (
+    pair.short[mode].count !== null && pair.long[mode].count !== null && pair.long[mode].count! - pair.short[mode].count! >= rule.minGap
+  ))
+  const measured: Array<Record<'short' | 'long', Both>> = []
   for (let round = 0; round < rule.rounds; round += 1) {
-    const pair = {} as Record<'short' | 'long', { plain: EchoReferenceTextV1; visible: EchoReferenceTextV1 }>
-    for (const kind of ['short', 'long'] as const) {
-      let result = await measure(kind, write(kind))
-      for (let attempt = 1; attempt < rule.textTries && result.plain.count === null && result.visible.count === null; attempt += 1) {
-        result = await measure(kind, write(kind))
-      }
-      pair[kind] = result
+    let pair = { short: await measure('short', write('short')), long: await measure('long', write('long')) }
+    for (let attempt = 1; attempt < rule.textTries && !usable(pair) && !limit.aborted; attempt += 1) {
+      pair = { short: await measure('short', write('short')), long: await measure('long', write('long')) }
     }
     measured.push(pair)
   }
@@ -236,15 +272,23 @@ export async function prepareOutputEchoReference(input: {
   const mode: EchoMode | null = all.every((text) => text.plain.count !== null) ? 'plain'
     : all.every((text) => text.visible.count !== null) ? 'visible' : null
   const rounds = measured.map((pair) => ({ short: pair.short[mode ?? 'plain'], long: pair.long[mode ?? 'plain'] }))
+  const providers = [...new Set(rounds.flatMap((round) => [...round.short.asks, ...round.long.asks].map((ask) => ask.provider)))]
+  const result = (applies: boolean, reason: string): OutputEchoReferenceV1 => ({
+    rule, upstream, mode, provider: providers.length === 1 ? providers[0] ?? null : null, rounds, applies, reason,
+  })
   if (!mode) {
     const failed = rounds.flatMap((round) => [round.short, round.long]).find((text) => text.count === null)
-    return { rule, upstream, mode, rounds, applies: false, reason: `the reference did not echo cleanly (${failed?.failure ?? 'no count'}), so the echo check does not apply to the model this run` }
+    return result(false, `the reference did not echo cleanly (${failed?.failure ?? 'no count'}), so the echo check does not apply to the model this run`)
   }
-  const narrow = rounds.find((round) => round.long.count! - round.short.count! < rule.minGap)
-  if (narrow) {
-    return { rule, upstream, mode, rounds, applies: false, reason: `a long text measured less than ${rule.minGap} tokens more than its short one, so the echo check does not apply this run` }
+  // One serving provider for every text: two hosts behind one route could each add their own constant.
+  if (providers.length !== 1) return result(false, 'the reference answered from more than one provider across the texts, so the echo check does not apply this run')
+  if (rounds.some((round) => round.long.count! - round.short.count! < rule.minGap)) {
+    return result(false, `a long text measured less than ${rule.minGap} tokens more than its short one, so the echo check does not apply this run`)
   }
-  return { rule, upstream, mode, rounds, applies: true, reason: `the reference echoes cleanly (${mode})` }
+  if (mode === 'visible' && rounds.some((round) => rule.tolerance + roundReasoning(round) >= rule.growthFloor)) {
+    return result(false, `the reference's own reasoning puts a round's margin at or above ${rule.growthFloor} tokens, so the echo check could not decide and does not apply this run`)
+  }
+  return result(true, `the reference echoes cleanly (${mode})`)
 }
 
 /** One ask of a text to the seller. */
@@ -260,7 +304,7 @@ export interface EchoRoundV1 {
   long: EchoSellerAskV1[]
   /** Growth of each ask pair: (seller − reference on long) − (seller − reference on short); null when not usable. */
   growths: Array<number | null>
-  /** The round's tolerance: the rule's, plus its largest itemised reasoning in `visible` mode. */
+  /** The round's tolerance: the rule's, plus this round's largest itemised reasoning in `visible` mode. */
   tolerance: number
   verdict: 'within' | 'over' | 'unusable' | 'unstable'
 }
@@ -272,15 +316,17 @@ export interface EchoCrowdVoteV1 {
   long: EchoSellerAskV1
   /** Null when its echoes are not usable. */
   growth: number | null
-  /** Its excess on the short text; null when not usable. */
+  /** Its fixed amount: the same excess on both texts within the tolerance; null when not usable or not fixed. */
   offset: number | null
-  /** The largest reasoning its replies showed: itemised, or the excess of a reply with a reasoning marker. */
+  /** The largest reasoning its replies showed: itemised, or the excess of an exact echo that shows reasoning. */
   reasoning: number
+  /** This check sent the vote's requests (their cost is counted here); false for a vote shared from another check. */
+  sentHere: boolean
 }
 
 export interface EchoCrowdV1 {
   votes: EchoCrowdVoteV1[]
-  /** Not every other seller answered within the crowd's time: nothing is decided. */
+  /** Not every other seller answered within the crowd's time, or the audit stopped: nothing is decided. */
   incomplete: boolean
 }
 
@@ -289,14 +335,21 @@ export type OutputEchoOutcome = 'flag' | 'pass' | 'inconclusive'
 export interface OutputEchoV1 {
   rule: OutputEchoRule
   mode: EchoMode
+  /** The overall outcome: `flag` when a finding that counts flagged; `pass` when growth (and in `plain` mode the fixed amount) passed. */
   outcome: OutputEchoOutcome
   /** What flagged; null unless the outcome is `flag`. */
   flag: 'growth' | 'offset' | null
+  /** The growth's own outcome and reason. */
+  growth: { outcome: OutputEchoOutcome; reason: string }
+  /** The fixed amount's own outcome and reason. */
+  fixedAmount: { outcome: OutputEchoOutcome; reason: string }
   reason: string
   /** The reference's counts, as measured for this run (texts and counts only). */
   reference: Array<{ short: { text: string; count: number }; long: { text: string; count: number } }>
-  /** The largest reasoning the reference itemised on these texts (0 in `plain` mode). Stored as measured, like its counts. */
-  referenceReasoning: number
+  /** Each round's largest reasoning the reference itemised (0 in `plain` mode). Stored as measured, like its counts. */
+  referenceReasoning: number[]
+  /** The one provider every reference reply came from, when the route names it. */
+  referenceProvider: string | null
   rounds: EchoRoundV1[]
   /** The seller's fixed amount per reply: the median excess, and whether every reply is within the tolerance of it. */
   offset: { median: number | null; fixed: boolean }
@@ -317,7 +370,7 @@ export function judgeEchoRound(input: {
   short: readonly EchoSellerAskV1[]
   long: readonly EchoSellerAskV1[]
   reference: { short: number; long: number }
-  /** The largest itemised reasoning of the reference's asks of these two texts (`visible` mode). */
+  /** This round's largest itemised reasoning at the reference (`visible` mode). */
   referenceReasoning: number
   mode: EchoMode
   rule?: OutputEchoRule
@@ -334,18 +387,19 @@ export function judgeEchoRound(input: {
   const first = growths[0] ?? null
   const second = growths[1] ?? null
   if (first === null) return { growths, tolerance, verdict: 'unusable' }
-  // In `visible` mode each text is asked twice whatever it gives, and the seller's own two visible counts must agree.
-  if (input.mode === 'visible') {
+  if (asks >= 2) {
     if (second === null) return { growths, tolerance, verdict: 'unusable' }
+    // Every text asked twice: the seller's own two counts of each text must agree.
     for (const side of [input.short, input.long]) {
-      if (Math.abs(side[0]!.reply.count! - side[1]!.reply.count!) > rule.tolerance) return { growths, tolerance, verdict: 'unstable' }
+      if (Math.abs(side[0]!.reply.count! - side[1]!.reply.count!) > tolerance) return { growths, tolerance, verdict: 'unstable' }
     }
   }
-  if (first <= tolerance) return { growths, tolerance, verdict: 'within' }
-  // Over: only a growth the seller repeats is held against it.
-  if (second === null) return { growths, tolerance, verdict: 'unusable' }
-  if (second <= tolerance) return { growths, tolerance, verdict: 'within' }
-  if (Math.abs(second - first) > tolerance) return { growths, tolerance, verdict: 'unstable' }
+  // In `visible` mode each text is asked twice whatever it gives.
+  if (input.mode === 'visible' && asks < 2) return { growths, tolerance, verdict: 'unusable' }
+  if (first <= tolerance) return asks < 2 || second! <= tolerance ? { growths, tolerance, verdict: 'within' } : { growths, tolerance, verdict: 'unstable' }
+  // Over: only a growth the seller repeats is held against it; over once and within on the repeat is undecided.
+  if (asks < 2) return { growths, tolerance, verdict: 'unusable' }
+  if (second! <= tolerance || Math.abs(second! - first) > tolerance) return { growths, tolerance, verdict: 'unstable' }
   return { growths, tolerance, verdict: 'over' }
 }
 
@@ -355,32 +409,40 @@ export function echoCrowdVote(
   short: EchoSellerAskV1,
   long: EchoSellerAskV1,
   reference: { short: number; long: number },
+  rule: OutputEchoRule = OUTPUT_ECHO_RULE,
+  sentHere = true,
 ): EchoCrowdVoteV1 {
   const usable = short.reply.count !== null && long.reply.count !== null
-  const markedExcess = (ask: EchoSellerAskV1, count: number): number => (
-    ask.reading?.reasoningMarker && ask.reading.billedOutputTokens !== null ? Math.max(0, ask.reading.billedOutputTokens - count) : 0
+  // The reasoning an exact echo shows without itemising it: what it bills above the model's count.
+  const shownExcess = (ask: EchoSellerAskV1, count: number): number => (
+    ask.reply.unusable === 'reasoning shown' && ask.reading?.billedOutputTokens !== null && ask.reading?.billedOutputTokens !== undefined
+      ? Math.max(0, ask.reading.billedOutputTokens - count) : 0
   )
+  const shortExcess = usable ? short.reply.count! - reference.short : null
+  const longExcess = usable ? long.reply.count! - reference.long : null
   return {
     peerId,
     short,
     long,
-    growth: usable ? (long.reply.count! - reference.long) - (short.reply.count! - reference.short) : null,
-    offset: usable ? short.reply.count! - reference.short : null,
-    reasoning: Math.max(short.reply.reasoning, long.reply.reasoning, markedExcess(short, reference.short), markedExcess(long, reference.long)),
+    growth: usable ? longExcess! - shortExcess! : null,
+    offset: usable && Math.abs(longExcess! - shortExcess!) <= rule.tolerance ? shortExcess : null,
+    reasoning: Math.max(short.reply.reasoning, long.reply.reasoning, shownExcess(short, reference.short), shownExcess(long, reference.long)),
+    sentHere,
   }
 }
 
 /**
- * Whether the crowd holds a flagged amount (`growth` or `offset`) against the seller:
- * at least `minOthers` other sellers measured, at least `minBackers` of them within the tolerance of the
- * reference, none within the tolerance of the flagged amount, and the amount more than `spreadFactor` times their
- * spread above their median. Returns why not, or null when it holds.
+ * Whether the crowd holds a flagged amount (`growth` or `offset`) against the seller: at least `minOthers` other
+ * sellers measured, at least `minBackers` of them within the tolerance of the reference, none within the tolerance
+ * of the flagged amount, and the amount more than `spreadFactor` times their spread above their median (and more
+ * than `minLead` above it). Returns why not, or null when it holds.
  */
 export function echoCrowdObjection(
   amount: number,
   votes: readonly (number | null)[],
   ownSpread: number,
   rule: OutputEchoRule = OUTPUT_ECHO_RULE,
+  minLead = 0,
 ): string | null {
   const measured = votes.filter((vote): vote is number => vote !== null)
   if (measured.length < rule.minOthers) return `${measured.length} of the model's other sellers could be measured, ${rule.minOthers} are needed`
@@ -392,20 +454,23 @@ export function echoCrowdObjection(
   if (amount - center <= rule.spreadFactor * spread) {
     return `the amount is not more than ${rule.spreadFactor} times the other sellers' spread (${spread}) above their median (${center})`
   }
+  if (amount - center <= minLead) return `the amount is not more than ${minLead} tokens above the other sellers' median (${center})`
   return null
 }
+
+type Judged = Pick<OutputEchoV1, 'outcome' | 'flag' | 'reason' | 'offset' | 'growth' | 'fixedAmount'> & { needsCrowd: boolean; needsSecondAsks: boolean }
 
 /** The outcome of a seller's echo check from its rounds, its pre-check and the crowd (`null` crowd: not asked). */
 export function judgeOutputEcho(input: {
   mode: EchoMode
   reference: OutputEchoV1['reference']
-  /** The largest reasoning the reference showed on these texts. */
-  referenceReasoning: number
-  rounds: readonly Pick<EchoRoundV1, 'growths' | 'verdict' | 'short' | 'long'>[]
+  /** Each round's largest reasoning at the reference. */
+  referenceReasoning: readonly number[]
+  rounds: readonly Pick<EchoRoundV1, 'growths' | 'verdict' | 'short' | 'long' | 'tolerance'>[]
   precheckMatch: boolean
   crowd: EchoCrowdV1 | null
   rule?: OutputEchoRule
-}): { outcome: OutputEchoOutcome; flag: OutputEchoV1['flag']; reason: string; offset: OutputEchoV1['offset']; needsCrowd: boolean } {
+}): Judged {
   const rule = input.rule ?? OUTPUT_ECHO_RULE
   const excesses = input.rounds.flatMap((round, index) => [
     ...round.short.map((ask) => (ask.reply.count === null ? null : ask.reply.count - input.reference[index]!.short.count)),
@@ -415,50 +480,83 @@ export function judgeOutputEcho(input: {
     median: excesses.length > 0 ? median(excesses) : null,
     fixed: excesses.length > 0 && Math.max(...excesses) - Math.min(...excesses) <= rule.tolerance,
   }
+  const notDecided = (reason: string): OutputEchoV1['growth'] => ({ outcome: 'inconclusive', reason })
+  const done = (growth: OutputEchoV1['growth'], fixedAmount: OutputEchoV1['fixedAmount'], extra: { needsCrowd?: boolean; needsSecondAsks?: boolean } = {}): Judged => {
+    // A finding the rule does not count yet is stored and shown, and decides nothing: neither a flag nor a pass.
+    const counts = (finding: 'growth' | 'offset'): boolean => (input.mode === 'visible' ? rule.visibleCounts : true)
+      && (finding === 'offset' ? rule.offsetCounts : true)
+    const held = (finding: 'growth' | 'offset', value: OutputEchoV1['growth']): OutputEchoV1['growth'] => (
+      counts(finding) || value.outcome === 'inconclusive' ? value : notDecided(`${value.outcome}, stored and not counted yet: ${value.reason}`)
+    )
+    const g = held('growth', growth)
+    const f = held('offset', fixedAmount)
+    const flag = g.outcome === 'flag' ? 'growth' as const : f.outcome === 'flag' ? 'offset' as const : null
+    // The overall pass needs every finding that counts to pass.
+    const outcome: OutputEchoOutcome = flag ? 'flag'
+      : g.outcome === 'pass' && (f.outcome === 'pass' || !counts('offset') || input.mode === 'visible') ? 'pass' : 'inconclusive'
+    const reason = flag === 'growth' ? g.reason : flag === 'offset' ? f.reason : `growth: ${g.reason}; fixed amount: ${f.reason}`
+    return { outcome, flag, reason, offset, growth: g, fixedAmount: f, needsCrowd: extra.needsCrowd ?? false, needsSecondAsks: extra.needsSecondAsks ?? false }
+  }
   const unclear = input.rounds.find((round) => round.verdict === 'unusable' || round.verdict === 'unstable')
   if (input.rounds.length < rule.rounds || unclear) {
-    return { outcome: 'inconclusive', flag: null, offset, needsCrowd: false, reason: unclear ? `a round was ${unclear.verdict}` : 'not every round was asked' }
+    const why = unclear ? `a round was ${unclear.verdict}` : 'not every round was asked'
+    return done(notDecided(why), notDecided(why))
   }
   const sellerReasoning = Math.max(0, ...input.rounds.flatMap((round) => [...round.short, ...round.long].map((ask) => ask.reply.reasoning)))
   const crowdReasoning = Math.max(0, ...(input.crowd?.votes ?? []).map((vote) => vote.reasoning))
-  const reasoningSeen = Math.max(input.referenceReasoning, sellerReasoning, crowdReasoning)
+  const reasoningSeen = Math.max(0, ...input.referenceReasoning, sellerReasoning, crowdReasoning)
+  const allGrowths = input.rounds.flatMap((round) => round.growths.filter((growth): growth is number => growth !== null))
+  const minGrowth = Math.min(...allGrowths)
 
-  const minGrowth = Math.min(...input.rounds.map((round) => Math.min(...round.growths.filter((growth): growth is number => growth !== null))))
+  // Growth: a pass is every round within a margin below the growth floor; a candidate is every round over.
   const growthCandidate = input.rounds.every((round) => round.verdict === 'over')
-  const offsetCandidate = input.mode === 'plain' && offset.fixed && offset.median !== null && offset.median > rule.offsetFloor
-  if (!growthCandidate && !offsetCandidate) return { outcome: 'pass', flag: null, offset, needsCrowd: false, reason: 'the seller bills the model\'s growth' }
-  if (!input.precheckMatch) return { outcome: 'inconclusive', flag: null, offset, needsCrowd: false, reason: 'this audit\'s pre-check did not match, so the seller\'s tokenizer is not known to be the reference\'s' }
-  if (!input.crowd) return { outcome: 'inconclusive', flag: null, offset, needsCrowd: true, reason: 'the model\'s other sellers were not asked' }
-  if (input.crowd.incomplete) return { outcome: 'inconclusive', flag: null, offset, needsCrowd: true, reason: 'not every other seller of the model answered in time' }
+  const growthPass = input.rounds.every((round) => round.verdict === 'within' && round.tolerance < rule.growthFloor)
+  // Fixed amount (plain mode only): a pass is a median excess at or below the floor; a candidate is the same amount
+  // above it on every reply, every text asked twice.
+  const offsetJudged = input.mode === 'plain' && offset.median !== null
+  const offsetPass = offsetJudged && offset.median! <= rule.offsetFloor
+  const offsetCandidate = offsetJudged && offset.fixed && offset.median! > rule.offsetFloor
+  const allAskedTwice = input.rounds.every((round) => round.short.length >= 2 && round.long.length >= 2)
 
-  const reasons: string[] = []
+  let growth: OutputEchoV1['growth'] = growthPass ? { outcome: 'pass', reason: 'the seller bills the model\'s growth' }
+    : notDecided(growthCandidate ? 'a candidate' : 'the growth is neither within the margin in every round nor over in every round')
+  let fixedAmount: OutputEchoV1['fixedAmount'] = !offsetJudged ? notDecided('not judged in visible mode')
+    : offsetPass ? { outcome: 'pass', reason: `the seller adds ${offset.median} tokens or fewer` }
+      : notDecided(offsetCandidate ? 'a candidate' : 'the amount above the floor is not the same on every reply')
+  if (!growthCandidate && !offsetCandidate) return done(growth, fixedAmount)
+  if (offsetCandidate && !allAskedTwice) return done(growth, notDecided('a candidate, to be asked every text again'), { needsSecondAsks: true })
+  if (!input.precheckMatch) {
+    const why = 'this audit\'s pre-check did not match, so the seller\'s tokenizer is not known to be the reference\'s'
+    return done(growthCandidate ? notDecided(why) : growth, offsetCandidate ? notDecided(why) : fixedAmount)
+  }
+  if (!input.crowd || input.crowd.incomplete) {
+    const why = input.crowd ? 'not every other seller of the model answered in time' : 'the model\'s other sellers were not asked'
+    return done(growthCandidate ? notDecided(why) : growth, offsetCandidate ? notDecided(why) : fixedAmount, { needsCrowd: !input.crowd })
+  }
   if (growthCandidate) {
     const gaps = input.reference.map((round) => round.long.count - round.short.count)
-    const ownSpread = Math.max(...input.rounds.flatMap((round) => round.growths.filter((growth): growth is number => growth !== null)))
-      - minGrowth
-    const margin = input.rounds.every((round, index) => round.growths.every((growth) => growth === null
-      || (growth > rule.growthFloor && growth > rule.growthShare * gaps[index]!)))
+    const ownSpread = Math.max(...allGrowths) - minGrowth
+    const margin = input.rounds.every((round, index) => round.growths.every((value) => value === null
+      || (value > rule.growthFloor && value > rule.growthShare * gaps[index]!)))
     const objection = !margin
       ? `the growth is not above ${rule.growthFloor} tokens and ${rule.growthShare * 100}% of the reference's gap in every round`
       : minGrowth <= rule.tolerance + reasoningSeen
         ? `the growth is not above the ${reasoningSeen} tokens of reasoning seen on these texts`
         : echoCrowdObjection(minGrowth, input.crowd.votes.map((vote) => vote.growth), ownSpread, rule)
-    if (!objection) {
-      return { outcome: 'flag', flag: 'growth', offset, needsCrowd: true, reason: `the seller's output grows ${minGrowth} or more tokens faster than the model's from a short to a long reply, in every round, twice` }
-    }
-    reasons.push(`growth: ${objection}`)
+    growth = objection
+      ? notDecided(objection)
+      : { outcome: 'flag', reason: `the seller's output grows ${minGrowth} or more tokens faster than the model's from a short to a long reply, in every round, twice` }
   }
   if (offsetCandidate) {
     const ownSpread = Math.max(...excesses) - Math.min(...excesses)
     const objection = offset.median! <= rule.tolerance + reasoningSeen
       ? `the amount is not above the ${reasoningSeen} tokens of reasoning seen on these texts`
-      : echoCrowdObjection(offset.median!, input.crowd.votes.map((vote) => vote.offset), ownSpread, rule)
-    if (!objection) {
-      return { outcome: 'flag', flag: 'offset', offset, needsCrowd: true, reason: `the seller adds ${offset.median} tokens to every reply, far above the model's other sellers` }
-    }
-    reasons.push(`offset: ${objection}`)
+      : echoCrowdObjection(offset.median!, input.crowd.votes.map((vote) => vote.offset), ownSpread, rule, rule.offsetFloor)
+    fixedAmount = objection
+      ? notDecided(objection)
+      : { outcome: 'flag', reason: `the seller adds ${offset.median} tokens to every reply, short and long, twice, far above the model's other sellers` }
   }
-  return { outcome: 'inconclusive', flag: null, offset, needsCrowd: true, reason: reasons.join('; ') }
+  return done(growth, fixedAmount, { needsCrowd: true })
 }
 
 function readAsk(request: SignedSellerRequestV1, text: string, mode: EchoMode): EchoSellerAskV1 {
@@ -481,13 +579,13 @@ function referenceView(reference: OutputEchoReferenceV1): OutputEchoV1['referenc
   }))
 }
 
-function referenceReasoningOf(reference: OutputEchoReferenceV1): number {
-  return Math.max(0, ...reference.rounds.flatMap((round) => [...round.short.asks, ...round.long.asks].map((ask) => ask.reasoning)))
-}
+/** The reason stored when the audit stopped before the check could decide. */
+export const ECHO_STOPPED_REASON = 'the audit stopped before the check decided'
 
 /**
  * Runs the echo check on one seller. A round is asked once, and again when it is over (always twice in `visible`
- * mode). The crowd is asked only when the seller could be flagged. Never rejects.
+ * mode, and every text twice for a fixed-amount candidate). The crowd is asked only when the seller could be
+ * flagged. Nothing is decided once the audit has stopped. Never rejects.
  */
 export async function runOutputEcho(input: SignedSellerRequestInput & {
   reference: OutputEchoReferenceV1
@@ -502,30 +600,49 @@ export async function runOutputEcho(input: SignedSellerRequestInput & {
   if (!reference.applies || !reference.mode) return null
   const mode = reference.mode
   const view = referenceView(reference)
-  const referenceReasoning = referenceReasoningOf(reference)
+  const referenceReasoning = reference.rounds.map(roundReasoning)
   const rounds: EchoRoundV1[] = []
-  for (const texts of view) {
-    const counts = { short: texts.short.count, long: texts.long.count }
+  const judgeRound = (index: number, short: EchoSellerAskV1[], long: EchoSellerAskV1[]) => judgeEchoRound({
+    short, long, reference: { short: view[index]!.short.count, long: view[index]!.long.count }, referenceReasoning: referenceReasoning[index]!, mode, rule,
+  })
+  for (const [index, texts] of view.entries()) {
     const short = [await askEcho(input, texts.short.text, mode, input.thinking, rule)]
     const long = [await askEcho(input, texts.long.text, mode, input.thinking, rule)]
-    let judged = judgeEchoRound({ short, long, reference: counts, referenceReasoning, mode, rule })
-    // Asked again when it is over, and always in `visible` mode, where the seller's own two counts must agree.
+    let judged = judgeRound(index, short, long)
     const firstGrowth = judged.growths[0] ?? null
     if (firstGrowth !== null && (mode === 'visible' || firstGrowth > judged.tolerance)) {
       short.push(await askEcho(input, texts.short.text, mode, input.thinking, rule))
       long.push(await askEcho(input, texts.long.text, mode, input.thinking, rule))
-      judged = judgeEchoRound({ short, long, reference: counts, referenceReasoning, mode, rule })
+      judged = judgeRound(index, short, long)
     }
     rounds.push({ short, long, ...judged })
     if (judged.verdict === 'unusable' || judged.verdict === 'unstable') break
   }
   let crowd: EchoCrowdV1 | null = null
-  let judged = judgeOutputEcho({ mode, reference: view, referenceReasoning, rounds, precheckMatch: input.precheckMatch, crowd, rule })
+  const judge = () => judgeOutputEcho({ mode, reference: view, referenceReasoning, rounds, precheckMatch: input.precheckMatch, crowd, rule })
+  let judged = judge()
+  if (judged.needsSecondAsks) {
+    // A fixed amount rests on every text asked twice: a single reply decides nothing.
+    for (const [index, round] of rounds.entries()) {
+      if (round.short.length < 2) round.short.push(await askEcho(input, view[index]!.short.text, mode, input.thinking, rule))
+      if (round.long.length < 2) round.long.push(await askEcho(input, view[index]!.long.text, mode, input.thinking, rule))
+      Object.assign(round, judgeRound(index, round.short, round.long))
+    }
+    judged = judge()
+  }
   if (judged.needsCrowd) {
     crowd = await input.crowd()
-    judged = judgeOutputEcho({ mode, reference: view, referenceReasoning, rounds, precheckMatch: input.precheckMatch, crowd, rule })
+    judged = judge()
   }
-  return { rule, mode, outcome: judged.outcome, flag: judged.flag, reason: judged.reason, reference: view, referenceReasoning, rounds, offset: judged.offset, precheckMatch: input.precheckMatch, crowd }
+  // A decision made after the audit stopped is no decision.
+  if (input.signal?.aborted && judged.outcome !== 'inconclusive') {
+    const why = { outcome: 'inconclusive' as const, reason: ECHO_STOPPED_REASON }
+    judged = { ...judged, outcome: 'inconclusive', flag: null, reason: ECHO_STOPPED_REASON, growth: why, fixedAmount: why }
+  }
+  return {
+    rule, mode, outcome: judged.outcome, flag: judged.flag, growth: judged.growth, fixedAmount: judged.fixedAmount, reason: judged.reason,
+    reference: view, referenceReasoning, referenceProvider: reference.provider, rounds, offset: judged.offset, precheckMatch: input.precheckMatch, crowd,
+  }
 }
 
 /** Asks one other seller the first round's two texts, once each, as a crowd vote. Never rejects. */
@@ -539,13 +656,15 @@ export async function askEchoVote(
   const mode = reference.mode ?? 'plain'
   const short = await askEcho(input, view.short.text, mode, thinking, rule)
   const long = await askEcho(input, view.long.text, mode, thinking, rule)
-  return echoCrowdVote(input.peerId, short, long, { short: view.short.count, long: view.long.count })
+  return echoCrowdVote(input.peerId, short, long, { short: view.short.count, long: view.long.count }, rule)
 }
+
+const peerKey = (peerId: string): string => peerId.toLowerCase().replace(/^0x/, '')
 
 /**
  * Recomputes a stored echo check from the bytes the seller and the crowd signed, as `verifier submit` does before
- * it sends the result. The reference's counts are taken as stored, as the pre-check's are. Throws when anything
- * stored differs from what the bytes and the rule give.
+ * it sends the result. The reference's counts and reasoning are taken as stored, as the pre-check's are: they are
+ * the auditor's own measurement. Throws when anything stored differs from what the bytes and the rule give.
  */
 export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string): void {
   const rule = outputEchoRuleById(record.rule?.id)
@@ -559,8 +678,19 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
     }
     if (round.long.count - round.short.count < rule.minGap) throw new Error('an echo round\'s texts are too close at the reference')
   }
+  const reasoning = record.referenceReasoning
+  if (!Array.isArray(reasoning) || reasoning.length !== rule.rounds
+    || reasoning.some((value) => !Number.isInteger(value) || value < 0 || (record.mode === 'plain' && value !== 0))) {
+    throw new Error('the echo check\'s reference reasoning is not valid')
+  }
+  if (!Array.isArray(record.rounds) || record.rounds.length > rule.rounds) throw new Error('the echo check has more rounds than its rule')
   const requestIds = requestsOf(record).flatMap((request) => request.requestIds)
   if (new Set(requestIds).size !== requestIds.length) throw new Error('an echo check repeats a request ID: every ask must be its own request')
+  const signedBy = (ask: EchoSellerAskV1, peerId: string | undefined, who: string): void => {
+    if (!peerId || ask.request.responseAuth?.status !== 'verified') return
+    const signer = ask.request.responseAuth.record?.sellerPeerId
+    if (typeof signer !== 'string' || peerKey(signer) !== peerKey(peerId)) throw new Error(`an echo reply of ${who} is not signed by it`)
+  }
   const reread = (ask: EchoSellerAskV1, text: string): EchoSellerAskV1 => {
     const again = readAsk(ask.request, text, record.mode)
     if (canonicalJsonStringify(again.reading) !== canonicalJsonStringify(ask.reading) || canonicalJsonStringify(again.reply) !== canonicalJsonStringify(ask.reply)) {
@@ -570,34 +700,45 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
     if (exchange && !requestCarriesPrompt(exchange.requestBody, outputEchoPrompt(text))) throw new Error('an echo request is not the one the seller signed')
     return again
   }
-  const referenceReasoning = record.referenceReasoning
-  if (!Number.isInteger(referenceReasoning) || referenceReasoning < 0 || (record.mode === 'plain' && referenceReasoning !== 0)) {
-    throw new Error('the echo check\'s reference reasoning is not valid')
-  }
-  if (record.rounds.length > rule.rounds) throw new Error('the echo check has more rounds than its rule')
   for (const [index, round] of record.rounds.entries()) {
     const texts = record.reference[index]!
-    round.short.forEach((ask) => reread(ask, texts.short.text))
-    round.long.forEach((ask) => reread(ask, texts.long.text))
-    const judged = judgeEchoRound({ short: round.short, long: round.long, reference: { short: texts.short.count, long: texts.long.count }, referenceReasoning, mode: record.mode, rule })
+    for (const [asks, text] of [[round.short, texts.short.text], [round.long, texts.long.text]] as const) {
+      for (const ask of asks) {
+        reread(ask, text)
+        signedBy(ask, auditedPeerId, 'the audited seller')
+      }
+    }
+    const judged = judgeEchoRound({ short: round.short, long: round.long, reference: { short: texts.short.count, long: texts.long.count }, referenceReasoning: reasoning[index]!, mode: record.mode, rule })
     if (canonicalJsonStringify(judged.growths) !== canonicalJsonStringify(round.growths) || judged.verdict !== round.verdict || judged.tolerance !== round.tolerance) {
       throw new Error('an echo round does not give its stored verdict')
     }
   }
   if (record.crowd) {
     const first = record.reference[0]!
+    const peers = new Set(auditedPeerId ? [peerKey(auditedPeerId)] : [])
     for (const vote of record.crowd.votes) {
-      if (auditedPeerId && vote.peerId.toLowerCase().replace(/^0x/, '') === auditedPeerId.toLowerCase().replace(/^0x/, '')) {
-        throw new Error('the audited seller votes in its own crowd')
-      }
+      if (typeof vote.peerId !== 'string' || peers.has(peerKey(vote.peerId))) throw new Error('an echo crowd vote is the audited seller\'s, or a second vote of one seller')
+      peers.add(peerKey(vote.peerId))
       const short = reread(vote.short, first.short.text)
       const long = reread(vote.long, first.long.text)
-      const again = echoCrowdVote(vote.peerId, short, long, { short: first.short.count, long: first.long.count })
+      signedBy(vote.short, vote.peerId, 'a crowd seller')
+      signedBy(vote.long, vote.peerId, 'a crowd seller')
+      const again = echoCrowdVote(vote.peerId, short, long, { short: first.short.count, long: first.long.count }, rule, vote.sentHere)
       if (again.growth !== vote.growth || again.offset !== vote.offset || again.reasoning !== vote.reasoning) throw new Error('an echo crowd vote does not follow from its replies')
     }
   }
-  const judged = judgeOutputEcho({ mode: record.mode, reference: record.reference, referenceReasoning, rounds: record.rounds, precheckMatch: record.precheckMatch, crowd: record.crowd, rule })
-  if (judged.outcome !== record.outcome || judged.flag !== record.flag) throw new Error(`the echo check outcome is ${record.outcome}, its rounds give ${judged.outcome}`)
+  // A check that failed before asking anything is inconclusive with no rounds.
+  if (record.rounds.length === 0) {
+    if (record.outcome !== 'inconclusive' || record.flag !== null) throw new Error('an echo check without rounds must be inconclusive')
+    return
+  }
+  const judged = judgeOutputEcho({ mode: record.mode, reference: record.reference, referenceReasoning: reasoning, rounds: record.rounds, precheckMatch: record.precheckMatch, crowd: record.crowd, rule })
+  const stopped = record.outcome === 'inconclusive' && record.flag === null && record.reason === ECHO_STOPPED_REASON
+  const same = judged.outcome === record.outcome && judged.flag === record.flag
+    && canonicalJsonStringify([judged.growth, judged.fixedAmount, judged.offset, judged.reason]) === canonicalJsonStringify([record.growth, record.fixedAmount, record.offset, record.reason])
+  if (!same && !(stopped && canonicalJsonStringify(judged.offset) === canonicalJsonStringify(record.offset))) {
+    throw new Error(`the echo check outcome is ${record.outcome}, its rounds give ${judged.outcome}`)
+  }
 }
 
 function requestsOf(record: OutputEchoV1): SignedSellerRequestV1[] {
@@ -607,13 +748,21 @@ function requestsOf(record: OutputEchoV1): SignedSellerRequestV1[] {
   ]
 }
 
-export function outputEchoRequestCount(record: OutputEchoV1): number {
-  return requestsOf(record).reduce((total, request) => total + request.requestIds.length, 0)
+/** The requests this check sent: its own asks and the crowd votes it asked (a shared vote is counted where it was sent). */
+function sentRequests(record: OutputEchoV1): SignedSellerRequestV1[] {
+  return [
+    ...record.rounds.flatMap((round) => [...round.short, ...round.long].map((ask) => ask.request)),
+    ...(record.crowd?.votes ?? []).filter((vote) => vote.sentHere).flatMap((vote) => [vote.short.request, vote.long.request]),
+  ]
 }
 
-/** What the echo check's requests cost, the crowd's included. They are paid for like question batches. */
+export function outputEchoRequestCount(record: OutputEchoV1): number {
+  return sentRequests(record).reduce((total, request) => total + request.requestIds.length, 0)
+}
+
+/** What the echo check's requests cost, the crowd votes it sent included. They are paid for like question batches. */
 export function outputEchoCost(record: OutputEchoV1): AuditCostSummaryV1 {
-  const requests = requestsOf(record)
+  const requests = sentRequests(record)
   const priced = requests.flatMap((request) => request.attemptCosts)
   return {
     inputTokens: priced.reduce((total, cost) => total + cost.inputTokens, 0),
@@ -630,6 +779,8 @@ export interface OutputEchoSummary {
   rule: string
   outcome: OutputEchoOutcome
   flag: OutputEchoV1['flag']
+  growth: OutputEchoOutcome
+  fixedAmount: OutputEchoOutcome
   reason: string
   growths: Array<Array<number | null>>
   offset: number | null
@@ -640,6 +791,8 @@ export function summarizeOutputEcho(record: OutputEchoV1): OutputEchoSummary {
     rule: record.rule.id,
     outcome: record.outcome,
     flag: record.flag,
+    growth: record.growth.outcome,
+    fixedAmount: record.fixedAmount.outcome,
     reason: record.reason,
     growths: record.rounds.map((round) => round.growths),
     offset: record.offset.median,
@@ -663,6 +816,8 @@ export interface OutputEchoScreen<Settings> {
     settings: Settings,
     options: {
       thinking: Parameters<typeof outputEchoRequestBody>[0]['thinking']
+      /** The thinking setting the model's other sellers are asked with: the reference's (the audited seller gets its own). */
+      crowdThinking: Parameters<typeof outputEchoRequestBody>[0]['thinking']
       precheckMatch: boolean
       clock?: SignedSellerRequestInput['clock']
     },
@@ -681,20 +836,23 @@ export function createOutputEchoScreen<Settings>(input: {
   ask: (settings: Settings) => EchoReferenceAsk
   rule?: OutputEchoRule
   crowdTimeLimitMs?: number
+  referenceTimeLimitMs?: number
 }): OutputEchoScreen<Settings> {
   const rule = input.rule ?? OUTPUT_ECHO_RULE
-  const key = (peerId: string): string => peerId.toLowerCase().replace(/^0x/, '')
   let prepared: Promise<OutputEchoReferenceV1> | null = null
   const ready = (settings: Settings): Promise<OutputEchoReferenceV1> => {
-    prepared ??= prepareOutputEchoReference({ ask: input.ask(settings), rule }).catch((error: unknown): OutputEchoReferenceV1 => ({
-      rule, upstream: null, mode: null, rounds: [], applies: false,
+    prepared ??= prepareOutputEchoReference({
+      ask: input.ask(settings), rule, ...(input.referenceTimeLimitMs !== undefined ? { timeLimitMs: input.referenceTimeLimitMs } : {}),
+    }).catch((error: unknown): OutputEchoReferenceV1 => ({
+      rule, upstream: null, mode: null, provider: null, rounds: [], applies: false,
       reason: `the reference could not be asked (${error instanceof Error ? error.message : String(error)}), so the echo check does not apply this run`,
     }))
     return prepared
   }
-  // One vote per other seller and run, shared by every check of the model that needs it.
+  // One vote per other seller and run, shared by every check of the model that needs it. A vote that measured
+  // nothing is dropped, so the next check that needs it asks again.
   const votes = new Map<string, Promise<EchoCrowdVoteV1>>()
-  const request = (seller: { peerId: string; service: string; serviceAliases?: readonly string[] }): SignedSellerRequestInput => ({
+  const request = (seller: { peerId: string; service: string; serviceAliases?: readonly string[] }, signal?: AbortSignal): SignedSellerRequestInput => ({
     proxyBaseUrl: input.proxyBaseUrl,
     peerId: seller.peerId,
     service: seller.service,
@@ -703,31 +861,49 @@ export function createOutputEchoScreen<Settings>(input: {
     limiter: input.limiter,
     ...(input.requestTimeoutMs !== undefined ? { requestTimeoutMs: input.requestTimeoutMs } : {}),
     ...(input.fetchFn ? { fetchFn: input.fetchFn } : {}),
+    ...(signal ? { signal } : {}),
   })
   return {
     ready,
     async check(seller, settings, options) {
       const reference = await ready(settings)
       if (!reference.applies) return null
+      const stop = options.clock?.signal
       const crowd = async (): Promise<EchoCrowdV1> => {
-        const others = input.sellers.filter((other) => key(other.peerId) !== key(seller.peerId))
+        const limit = AbortSignal.timeout(input.crowdTimeLimitMs ?? ECHO_CROWD_TIME_LIMIT_MS)
+        const ends = stop ? AbortSignal.any([limit, stop]) : limit
+        const others = input.sellers.filter((other) => peerKey(other.peerId) !== peerKey(seller.peerId))
         const asked = others.map((other) => {
-          let pending = votes.get(key(other.peerId))
-          if (!pending) {
-            pending = askEchoVote(request(other), reference, null, rule)
-            votes.set(key(other.peerId), pending)
-          }
+          const key = peerKey(other.peerId)
+          const shared = votes.get(key)
+          if (shared) return shared.then((vote) => ({ ...vote, sentHere: false }))
+          // Queued asks stop with the crowd's time, so no paid request is left running after it.
+          const pending = askEchoVote(request(other, limit), reference, options.crowdThinking, rule)
+          votes.set(key, pending)
+          void pending.then((vote) => { if (vote.growth === null && votes.get(key) === pending) votes.delete(key) })
           return pending
         })
-        let timer: ReturnType<typeof setTimeout> | undefined
-        const late = new Promise<'late'>((resolve) => { timer = setTimeout(() => resolve('late'), input.crowdTimeLimitMs ?? ECHO_CROWD_TIME_LIMIT_MS) })
-        const settled = await Promise.race([Promise.all(asked), late])
-        clearTimeout(timer)
+        const settled = await Promise.race([
+          Promise.all(asked),
+          new Promise<'late'>((resolve) => {
+            if (ends.aborted) resolve('late')
+            else ends.addEventListener('abort', () => resolve('late'), { once: true })
+          }),
+        ])
         if (settled === 'late') {
           const done = await Promise.all(asked.map((vote) => Promise.race([vote, Promise.resolve(null)])))
           return { votes: done.filter((vote): vote is EchoCrowdVoteV1 => vote !== null), incomplete: true }
         }
         return { votes: settled, incomplete: false }
+      }
+      const failed = (why: string): OutputEchoV1 => {
+        const reason = why.slice(0, 300)
+        return {
+          rule, mode: reference.mode!, outcome: 'inconclusive', flag: null, reason,
+          growth: { outcome: 'inconclusive', reason }, fixedAmount: { outcome: 'inconclusive', reason },
+          reference: referenceView(reference), referenceReasoning: reference.rounds.map(roundReasoning), referenceProvider: reference.provider,
+          rounds: [], offset: { median: null, fixed: false }, precheckMatch: options.precheckMatch, crowd: null,
+        }
       }
       return runOutputEcho({
         ...request(seller),
@@ -737,13 +913,7 @@ export function createOutputEchoScreen<Settings>(input: {
         precheckMatch: options.precheckMatch,
         crowd,
         rule,
-      }).catch((error: unknown): OutputEchoV1 => ({
-        rule, mode: reference.mode!, outcome: 'inconclusive', flag: null,
-        reason: `the check failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300),
-        reference: reference.rounds.map((round) => ({ short: { text: round.short.text, count: round.short.count! }, long: { text: round.long.text, count: round.long.count! } })),
-        referenceReasoning: Math.max(0, ...reference.rounds.flatMap((round) => [...round.short.asks, ...round.long.asks].map((ask) => ask.reasoning))),
-        rounds: [], offset: { median: null, fixed: false }, precheckMatch: options.precheckMatch, crowd: null,
-      }))
+      }).catch((error: unknown) => failed(`the check failed: ${error instanceof Error ? error.message : String(error)}`))
     },
   }
 }

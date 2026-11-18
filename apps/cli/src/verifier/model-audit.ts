@@ -986,6 +986,10 @@ export function validateAuditMatchesSummary(
   if (evidence.outputEcho) {
     if (precheckDiff || capDiff) throw new Error('an echo check after a DIFF that ended the audit')
     validateOutputEcho(evidence.outputEcho, evidence.target.peerId)
+    // Its pre-check anchor is this audit's own pre-check, not a stored claim.
+    if (evidence.outputEcho.precheckMatch !== (evidence.tokenizerPrecheck?.outcome === 'match')) {
+      throw new Error('the echo check\'s pre-check match is not this audit\'s pre-check')
+    }
   }
   const storedEcho = evidence.outputEcho ? summarizeOutputEcho(evidence.outputEcho) : null
   if (canonicalJsonStringify(storedEcho) !== canonicalJsonStringify(result.outputEcho ?? null)) {

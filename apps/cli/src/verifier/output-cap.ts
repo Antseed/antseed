@@ -65,13 +65,15 @@ export function outputCapRuleById(id: string): OutputCapRule | undefined {
  * - `unread`: nothing can be read (no signed answer, estimated usage, several answers, stop sequences,
  *   a limit the translation changed, an unknown shape);
  * - `within`: billed at most the limit plus the tolerance;
- * - `reasoning-outside-cap`: billed above, but billed minus itemised reasoning is within (honest on some hosts);
+ * - `reasoning-outside-cap`: billed above, billed minus itemised reasoning within, and the answer measured within
+ *   the limit (honest on some hosts);
+ * - `reasoning-unmeasured`: the same, but the answer could not be measured: not a pass;
  * - `unexplained`: billed above, nothing itemised, and the answer does not measure above the limit;
  * - `over-cap`: billed above, and the answer or billed minus reasoning is above the limit, but the answer is
  *   not above `flagFactor` times it; shown, never a flag;
  * - `cap-ignored`: the delivered answer alone measures more than `flagFactor` times the limit.
  */
-export type OutputCapClass = 'unread' | 'within' | 'reasoning-outside-cap' | 'unexplained' | 'over-cap' | 'cap-ignored'
+export type OutputCapClass = 'unread' | 'within' | 'reasoning-outside-cap' | 'reasoning-unmeasured' | 'unexplained' | 'over-cap' | 'cap-ignored'
 
 /** The reference's measurement of one delivered answer: A, then A + answer. */
 export interface OutputCapMeasurementV1 {
@@ -193,10 +195,12 @@ export function classifyCapAnswer(
   if (billed <= limit) return 'within'
   if (measured !== null && measured > rule.flagFactor * cap) return 'cap-ignored'
   const reasoning = reading!.reasoningTokens
-  if (reasoning !== null && billed - reasoning <= limit && (measured === null || measured <= limit)) return 'reasoning-outside-cap'
+  if (reasoning !== null && billed - reasoning <= limit && (measured === null || measured <= limit)) {
+    return measured === null ? 'reasoning-unmeasured' : 'reasoning-outside-cap'
+  }
   if (measured !== null && measured > limit) return 'over-cap'
   if (reasoning === null) return 'unexplained'
-  return billed - reasoning > limit ? 'over-cap' : 'reasoning-outside-cap'
+  return billed - reasoning > limit ? 'over-cap' : 'reasoning-unmeasured'
 }
 
 /** The outcome from the asks' classes: a flag only when every ask of the rule ignored the limit. */

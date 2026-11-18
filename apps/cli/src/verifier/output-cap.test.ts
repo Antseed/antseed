@@ -108,7 +108,8 @@ test('reasoning billed outside the cap is never a flag', () => {
   // Shaped like the eval's Grok 4.7 replies on its maker's route: 408 and 50 billed on a limit of 16, all but 16 itemised.
   for (const [billed, reasoning] of [[408, 392], [50, 34]] as const) {
     const reading = readOutput(capped(16), chat('Three hundred and one, three', { completion_tokens: billed, completion_tokens_details: { reasoning_tokens: reasoning } }))
-    assert.equal(classifyCapAnswer(reading, 16, null), 'reasoning-outside-cap')
+    assert.equal(classifyCapAnswer(reading, 16, null), 'reasoning-unmeasured', 'not measured: not a pass')
+    assert.equal(judgeOutputCap([{ class: 'reasoning-unmeasured' }]).outcome, 'inconclusive')
     assert.equal(answerToMeasure(reading, 16), ' Three hundred and one, three', 'still measured, since it is billed over')
     assert.equal(classifyCapAnswer(reading, 16, 9), 'reasoning-outside-cap')
   }

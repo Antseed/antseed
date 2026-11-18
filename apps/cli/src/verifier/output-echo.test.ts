@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Wallet } from 'ethers'
 import { prepareModelAudits } from './model-audit.js'
-import { FIXTURE_CONFIG, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
+import { FIXTURE_CONFIG, peerIdOf, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
 import test from 'node:test'
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { isSafeProbe } from '@antseed/node/payments'
@@ -55,7 +55,7 @@ const round = (asks: Array<[number | null, number | null]>, mode: 'plain' | 'vis
 }
 
 const vote = (growth: number | null, offset: number | null = 0, reasoning = 0): EchoCrowdVoteV1 => ({
-  peerId: `peer-${Math.random()}`, short: ask(null), long: ask(null), growth, offset, reasoning,
+  peerId: `peer-${Math.random()}`, short: ask(null), long: ask(null), growth, offset, reasoning, sentHere: true,
 })
 
 test('an echo is usable only when signed, finished, one answer, byte for byte, and without reasoning in plain mode', () => {
@@ -78,11 +78,13 @@ test('an echo is usable only when signed, finished, one answer, byte for byte, a
 
 test('the reference counts a text only when its two asks agree, from one provider', () => {
   const asked = (count: number | null, provider = 'maker', unusable: string | null = null) => ({ count, reasoning: 0, provider, unusable })
-  assert.deepEqual(referenceEchoCount([asked(60), asked(60)]), { count: 60, failure: null })
-  assert.match(referenceEchoCount([asked(60), asked(64)]).failure!, /did not agree with itself/)
-  assert.match(referenceEchoCount([asked(60), asked(60, 'other')]).failure!, /more than one provider/)
-  assert.match(referenceEchoCount([asked(60), asked(null, 'maker', 'not finished')]).failure!, /not usable \(not finished\)/)
-  assert.match(referenceEchoCount([asked(60)]).failure!, /asked 1 of 2 times/)
+  assert.deepEqual(referenceEchoCount([asked(60), asked(60)], 'plain'), { count: 60, failure: null })
+  assert.match(referenceEchoCount([asked(60), asked(61)], 'plain').failure!, /did not agree with itself/, 'plain mode needs the same count')
+  assert.equal(referenceEchoCount([asked(60), asked(61)], 'visible').count, 60, 'visible mode allows the tolerance')
+  assert.match(referenceEchoCount([asked(60), asked(64)], 'visible').failure!, /did not agree with itself/)
+  assert.match(referenceEchoCount([asked(60), asked(60, 'other')], 'plain').failure!, /more than one provider/)
+  assert.match(referenceEchoCount([asked(60), asked(null, 'maker', 'not finished')], 'plain').failure!, /not usable \(not finished\)/)
+  assert.match(referenceEchoCount([asked(60)], 'plain').failure!, /asked 1 of 2 times/)
 })
 
 test('a round is over only when its growth repeats; a constant offset cancels', () => {
@@ -92,8 +94,10 @@ test('a round is over only when its growth repeats; a constant offset cancels', 
   assert.equal(round([[63, 363]]).verdict, 'within')
   // 2% more on output: 66 more on long, 1 more on short → growth 5, over; it repeats.
   assert.equal(round([[61, 366], [61, 366]]).verdict, 'over')
-  // Over once and within when asked again: within.
-  assert.equal(round([[61, 366], [60, 360]]).verdict, 'within')
+  // Over once and within when asked again: undecided, not within.
+  assert.equal(round([[61, 366], [60, 360]]).verdict, 'unstable')
+  // +40 then 0 on the repeat: the seller's own two counts disagree.
+  assert.equal(round([[60, 400], [60, 360]]).verdict, 'unstable')
   // Both over but further apart than the tolerance: unstable, decides nothing.
   assert.equal(round([[61, 366], [61, 380]]).verdict, 'unstable')
   // Over but not asked again, or the second ask not usable: unusable.
@@ -124,9 +128,13 @@ test('the crowd must back the reference, measure enough sellers, share nothing, 
   assert.match(echoCrowdObjection(60, [0, 0, 30], 0)!, /not more than 3 times the other sellers' spread \(30\)/)
 })
 
-const judge = (rounds: ReturnType<typeof round>[], crowd: EchoCrowdVoteV1[] | null, options: { precheckMatch?: boolean; incomplete?: boolean; referenceReasoning?: number } = {}) => judgeOutputEcho({
-  mode: 'plain', reference: REFERENCE, referenceReasoning: options.referenceReasoning ?? 0, rounds,
+/** The rule with the fixed-amount finding counted, as it will be once the dry pass shows it clean. */
+const COUNTING = { ...OUTPUT_ECHO_RULE, offsetCounts: true }
+
+const judge = (rounds: ReturnType<typeof round>[], crowd: EchoCrowdVoteV1[] | null, options: { precheckMatch?: boolean; incomplete?: boolean; rule?: typeof OUTPUT_ECHO_RULE } = {}) => judgeOutputEcho({
+  mode: 'plain', reference: REFERENCE, referenceReasoning: [0, 0, 0], rounds,
   precheckMatch: options.precheckMatch ?? true, crowd: crowd ? { votes: crowd, incomplete: options.incomplete ?? false } : null,
+  ...(options.rule ? { rule: options.rule } : {}),
 })
 
 test('an honest seller and one that adds a small constant are consistent, and nobody else is asked', () => {
@@ -159,16 +167,37 @@ test('a relay that drops reasoning and reports zero (16 to 17 tokens, about 6% o
   assert.match(judged.reason, /not above 20 tokens and 10% of the reference's gap in every round/)
 })
 
-test('a seller that adds the same large amount to every reply is flagged as an offset only behind the crowd', () => {
-  const padded = [round([[90, 390]]), round([[90, 390]]), round([[91, 390]])]
-  assert.equal(padded.every((entry) => entry.verdict === 'within'), true)
-  const flagged = judge(padded, [vote(0, 0), vote(0, 3), vote(0, -1)])
-  assert.deepEqual([flagged.outcome, flagged.flag, flagged.offset.median], ['flag', 'offset', 30])
-  // A small constant is never an offset flag, nor one another seller shares (a relay), nor one that varies.
+test('a fixed amount is judged on every text asked twice, behind the crowd, and counts only when the rule says so', () => {
+  // On single replies it is only a candidate: every text is asked again first.
+  const once = [round([[90, 390]]), round([[90, 390]]), round([[91, 390]])]
+  assert.deepEqual([judge(once, null).needsSecondAsks, judge(once, null).fixedAmount.outcome], [true, 'inconclusive'])
+  const padded = [round([[90, 390], [90, 390]]), round([[90, 390], [90, 390]]), round([[91, 390], [90, 391]])]
+  const crowd = [vote(0, 0), vote(0, 3), vote(0, -1)]
+  const counted = judge(padded, crowd, { rule: COUNTING })
+  assert.deepEqual([counted.outcome, counted.flag, counted.offset.median, counted.fixedAmount.outcome], ['flag', 'offset', 30, 'flag'])
+  // Under the shipped rule the finding is stored and shown, and decides nothing.
+  const held = judge(padded, crowd)
+  assert.deepEqual([held.outcome, held.flag, held.fixedAmount.outcome], ['pass', null, 'inconclusive'], 'the growth counts and passes; the fixed amount is only stored')
+  assert.match(held.fixedAmount.reason, /^flag, stored and not counted yet: the seller adds 30 tokens/)
+  // The lead over the crowd's median must be above 20 tokens: +21 against a crowd at +2 is not enough.
+  const close = [round([[81, 381], [81, 381]]), round([[81, 381], [81, 381]]), round([[81, 381], [81, 381]])]
+  assert.match(judge(close, [vote(0, 2), vote(0, 2), vote(0, 0), vote(0, 0), vote(0, 3)], { rule: COUNTING }).reason, /not more than 20 tokens above the other sellers' median/)
+  // A small constant passes; one another seller shares is a relay; one that varies decides nothing.
   assert.equal(judge([round([[75, 375]]), round([[75, 375]]), round([[75, 375]])], null).outcome, 'pass')
-  assert.match(judge(padded, [vote(0, 0), vote(0, 30), vote(0, -1)]).reason, /offset: another seller of the model signs the same amount/)
-  const varying = [round([[90, 390]]), round([[80, 380]]), round([[90, 390]])]
-  assert.equal(judge(varying, null).outcome, 'pass')
+  assert.match(judge(padded, [vote(0, 0), vote(0, 30), vote(0, -1)], { rule: COUNTING }).reason, /fixed amount: another seller of the model signs the same amount/)
+  assert.equal(judge([round([[90, 390]]), round([[80, 380]]), round([[90, 390]])], null, { rule: COUNTING }).fixedAmount.outcome, 'inconclusive')
+})
+
+test('only a seller that kept to the model\'s count passes each finding', () => {
+  // Over the margin in two rounds of three: not a candidate, and not a pass either.
+  const partly = judge([round([[61, 366], [61, 366]]), round([[61, 366], [61, 366]]), round([[60, 360]])], null)
+  assert.deepEqual([partly.outcome, partly.growth.outcome], ['inconclusive', 'inconclusive'])
+  const honest = judge([round([[60, 360]]), round([[60, 360]]), round([[60, 360]])], null, { rule: COUNTING })
+  assert.deepEqual([honest.outcome, honest.growth.outcome, honest.fixedAmount.outcome], ['pass', 'pass', 'pass'])
+  // Under the shipped rule the fixed amount's pass is stored and clears nothing; the growth's pass counts.
+  const shipped = judge([round([[60, 360]]), round([[60, 360]]), round([[60, 360]])], null)
+  assert.deepEqual([shipped.outcome, shipped.growth.outcome, shipped.fixedAmount.outcome], ['pass', 'pass', 'inconclusive'])
+  assert.match(shipped.fixedAmount.reason, /^pass, stored and not counted yet/)
 })
 
 test('a round that cannot be read or does not repeat decides nothing', () => {
@@ -221,10 +250,10 @@ function fakeNetwork(billing: Record<string, (text: string) => number>) {
     return Response.json(reply, { headers: { 'x-antseed-request-id': requestId } })
   }
   const responseAuthReader = {
-    async waitForVerified(input: { requestId: string }) {
+    async waitForVerified(input: { requestId: string; sellerPeerId: string }) {
       const bytes = signed.get(input.requestId)!
       return {
-        requestId: input.requestId, status: 'verified' as const, responseAuth: null, failureReason: null,
+        requestId: input.requestId, status: 'verified' as const, responseAuth: { sellerPeerId: input.sellerPeerId }, failureReason: null,
         signedPreimages: {
           encoding: 'antseed-http-codec-v1' as const, signatureEncoding: 'antseed-response-auth-signing-v1' as const,
           requestBase64: Buffer.from(bytes.request).toString('base64'), responseBase64: Buffer.from(bytes.response).toString('base64'),
@@ -255,8 +284,8 @@ const echoReference: EchoReferenceAsk = async (texts) => ({
   })),
 })
 
-const screenFor = (network: ReturnType<typeof fakeNetwork>, ask: EchoReferenceAsk = echoReference) => createOutputEchoScreen<null>({
-  sellers: PEERS.map((peerId) => ({ peerId, service: SERVICE })),
+const screenFor = (network: ReturnType<typeof fakeNetwork>, ask: EchoReferenceAsk = echoReference, peers: readonly string[] = PEERS) => createOutputEchoScreen<null>({
+  sellers: peers.map((peerId) => ({ peerId, service: SERVICE })),
   proxyBaseUrl: 'http://127.0.0.1:1', responseAuthReader: network.responseAuthReader, limiter: new ConcurrencyLimiter(4),
   fetchFn: network.fetchFn, ask: () => ask,
 })
@@ -265,7 +294,7 @@ const honestBilling = (text: string): number => tokens(text)
 
 test('an honest seller passes on six requests, and the model\'s other sellers are not asked', async () => {
   const network = fakeNetwork(Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])))
-  const record = await screenFor(network).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, precheckMatch: true })
+  const record = await screenFor(network).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true })
   assert.equal(record?.outcome, 'pass')
   assert.equal(record?.mode, 'plain')
   assert.equal(outputEchoRequestCount(record!), 6)
@@ -275,7 +304,7 @@ test('an honest seller passes on six requests, and the model\'s other sellers ar
 
 test('a seller that bills a quarter more output is flagged once three other sellers back the reference, and the record rechecks', async () => {
   const network = fakeNetwork({ ...Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])), [PEERS[0]!]: (text) => Math.round(tokens(text) * 1.25) })
-  const record = (await screenFor(network).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, precheckMatch: true }))!
+  const record = (await screenFor(network).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true }))!
   assert.deepEqual([record.outcome, record.flag], ['flag', 'growth'])
   assert.deepEqual(record.rounds.map((entry) => entry.verdict), ['over', 'over', 'over'])
   assert.equal(record.crowd?.votes.length, 3)
@@ -288,22 +317,27 @@ test('a seller that bills a quarter more output is flagged once three other sell
   const relabelled = structuredClone(record)
   relabelled.outcome = 'pass'
   assert.throws(() => validateOutputEcho(relabelled, PEERS[0]), /outcome is pass, its rounds give flag/)
-  assert.throws(() => validateOutputEcho(record, PEERS[1]), /votes in its own crowd/)
+  const ownVote = structuredClone(record)
+  ownVote.crowd!.votes[0]!.peerId = PEERS[0]!
+  assert.throws(() => validateOutputEcho(ownVote, PEERS[0]), /audited seller's, or a second vote/)
+  assert.throws(() => validateOutputEcho(record, PEERS[1]), /not signed by it/, 'replies are bound to the seller that signed them')
   // The same seller with its pre-check not a match decides nothing.
-  const unknown = (await screenFor(network).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, precheckMatch: false }))!
+  const unknown = (await screenFor(network).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: false }))!
   assert.equal(unknown.outcome, 'inconclusive')
 })
 
-test('a seller that adds the same 30 tokens to every reply is flagged as a fixed amount; a crowd that does the same is a relay', async () => {
+test('a seller that adds the same 30 tokens to every reply is found, asked every text twice, and stored without counting; a crowd that does the same is a relay', async () => {
   const padded = (text: string): number => tokens(text) + 30
   const alone = fakeNetwork({ ...Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])), [PEERS[0]!]: padded })
-  const record = (await screenFor(alone).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, precheckMatch: true }))!
-  assert.deepEqual([record.outcome, record.flag, record.offset], ['flag', 'offset', { median: 30, fixed: true }])
+  const record = (await screenFor(alone).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true }))!
+  assert.deepEqual([record.outcome, record.flag, record.offset], ['pass', null, { median: 30, fixed: true }])
+  assert.match(record.fixedAmount.reason, /^flag, stored and not counted yet/)
+  assert.ok(record.rounds.every((entry) => entry.short.length === 2 && entry.long.length === 2), 'every text asked twice')
   validateOutputEcho(record, PEERS[0])
   const relay = fakeNetwork({ ...Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])), [PEERS[0]!]: padded, [PEERS[1]!]: padded })
-  const shared = (await screenFor(relay).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, precheckMatch: true }))!
-  assert.equal(shared.outcome, 'inconclusive')
-  assert.match(shared.reason, /offset: another seller of the model signs the same amount/)
+  const shared = (await screenFor(relay).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true }))!
+  assert.equal(shared.fixedAmount.outcome, 'inconclusive')
+  assert.match(shared.fixedAmount.reason, /another seller of the model signs the same amount/)
 })
 
 test('a reference that changes the text or disagrees with itself leaves the model unjudged, and no seller is asked', async () => {
@@ -316,30 +350,37 @@ test('a reference that changes the text or disagrees with itself leaves the mode
       ? { ...result, response: { ...result.response, body: new TextEncoder().encode(new TextDecoder().decode(result.response.body).replace(/"completion_tokens":(\d+)/, (_all, value: string) => `"completion_tokens":${Number(value) + 5 + call}`)) } }
       : result)) }
   }
-  const record = await screenFor(network, drifting).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, precheckMatch: true })
+  const record = await screenFor(network, drifting).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true })
   assert.equal(record, null)
   assert.equal(network.asked.size, 0)
 })
 
 test('an echo record of every outcome, written to its evidence file, passes the check submit makes', async () => {
-  const honest = Object.fromEntries(PEERS.map((peer) => [peer, honestBilling]))
-  const run = async (billing: (text: string) => number, precheckMatch = true) => (await screenFor(fakeNetwork({ ...honest, [PEERS[0]!]: billing }))
-    .check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, precheckMatch }))!
+  // Each record is made for the seller the fixture writes it under, so its replies are signed by that seller.
+  const wallets = Array.from({ length: 4 }, () => new Wallet(Wallet.createRandom().privateKey))
+  const crowdPeers = PEERS.slice(1)
+  const honest = Object.fromEntries(crowdPeers.map((peer) => [peer, honestBilling]))
+  let next = 0
+  const run = async (billing: (text: string) => number, precheckMatch = true) => {
+    const peer = peerIdOf(wallets[next++]!)
+    return (await screenFor(fakeNetwork({ ...honest, [peer]: billing }), echoReference, [peer, ...crowdPeers])
+      .check({ peerId: peer, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch }))!
+  }
   const records = {
     pass: await run(honestBilling),
     growth: await run((text) => Math.round(tokens(text) * 1.25)),
     offset: await run((text) => tokens(text) + 30),
     inconclusive: await run((text) => Math.round(tokens(text) * 1.25), false),
   }
-  assert.deepEqual(Object.values(records).map((record) => [record.outcome, record.flag]), [['pass', null], ['flag', 'growth'], ['flag', 'offset'], ['inconclusive', null]])
+  assert.deepEqual(Object.values(records).map((record) => [record.outcome, record.flag]), [['pass', null], ['flag', 'growth'], ['pass', null], ['inconclusive', null]])
   const directory = await mkdtemp(join(tmpdir(), 'antseed-output-echo-'))
   try {
     const evidenceDir = join(directory, 'evidence')
     const banksDir = join(directory, 'banks')
     const auditor = new Wallet(Wallet.createRandom().privateKey)
     const audits: FixtureAudit[] = Object.values(records).map((record, index) => ({
-      agentId: String(index + 1), seller: new Wallet(Wallet.createRandom().privateKey), model: 'model-a', service: 'model-a',
-      verdict: record.outcome === 'flag' ? 'DIFF' : 'SAME', outputEcho: record,
+      agentId: String(index + 1), seller: wallets[index]!, model: 'model-a', service: 'model-a',
+      verdict: record.outcome === 'flag' ? 'DIFF' : 'SAME', outputEcho: record, ...(record.precheckMatch ? { tokenizerMatch: true } : {}),
     }))
     const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor, audits })
     const prepared = await prepareModelAudits({
@@ -347,7 +388,8 @@ test('an echo record of every outcome, written to its evidence file, passes the 
       resolveAgentOwner: async () => new Wallet(Wallet.createRandom().privateKey).address, config: FIXTURE_CONFIG,
     })
     assert.deepEqual(prepared.excluded, [])
-    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.flaggedBy), [[], ['output-echo'], ['output-offset'], []])
+    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.flaggedBy), [[], ['output-echo'], [], []])
+    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.passedBy?.filter((check) => check.startsWith('output'))), [['output-echo'], [], ['output-echo'], []])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
