@@ -11,7 +11,8 @@ export FAL_IMAGE_API_KEY=<seller-fal-key>
 
 - `FAL_IMAGE_API_KEY`: fal API key, sent as `Authorization: Key <key>`
 - `FAL_IMAGE_BASE_URL`: optional, defaults to `https://fal.run`
-- `ANTSEED_ALLOWED_SERVICES`: fal endpoint IDs such as `openai/gpt-image-2` or `fal-ai/nano-banana-pro` (64 characters at most). The service ID is the endpoint ID; aliases are not supported.
+- `ANTSEED_ALLOWED_SERVICES`: the services to sell (64 characters at most), each a fal endpoint ID such as `openai/gpt-image-2` or `fal-ai/nano-banana-pro`, or a name of your own that `ANTSEED_SERVICE_ALIAS_MAP_JSON` maps to one
+- `ANTSEED_SERVICE_ALIAS_MAP_JSON`: optional, service → fal endpoint ID (`upstreamModel` in the seller config), such as `openai/gpt-image-2.5-flare` → `openai/gpt-image-2.5/flare/text-to-image`. Buyers call the service by its own name; the seller sends it to the endpoint.
 - `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON`: `openai-images` pricing with `output_images`, optionally matched on `size`, `quality` or `resolution`
 - `ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON`: optional, service → fal edit endpoint (`imageEditModel` in the seller config), such as `openai/gpt-image-2` → `openai/gpt-image-2/edit`. Edits are billed with the service's own pricing.
 - `ANTSEED_SERVICE_CAPABILITIES_JSON`: optional capabilities to advertise
