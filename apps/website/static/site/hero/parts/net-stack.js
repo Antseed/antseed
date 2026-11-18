@@ -262,6 +262,7 @@ export default async (slot) => {
     }
     light(s, s.beats.length - 1);
   };
+  const lifts = (s) => s.slabs.map((sl) => +(sl.el.getAttribute('transform')?.match(/translate\(0 (-?[\d.]+)/)?.[1] || 0));
   const rest = (s, lifted = 0, linked = true) => {
     for (const sl of s.slabs) lifted ? sl.el.setAttribute('transform', `translate(0 ${lifted[sl.el.dataset.n] || 0})`) : sl.el.removeAttribute('transform');
     s.wait.forEach((el) => el.classList.toggle('nsk-h', !linked));
@@ -313,33 +314,49 @@ export default async (slot) => {
   const play = async (k, g) => {
     const s = steps[k];
     along = 0; bar(k, 0);
+    // a step played again: what it shows fades out first, nothing is wiped at once
+    if (s.beats.some((bt) => [...bt.g.children].some((el) => !el.classList.contains('nsk-h')))) {
+      for (const bt of s.beats) for (const el of bt.g.children) el.classList.add('nsk-h');
+      s.blocks.forEach((el) => el.classList.add('nsk-h'));
+      await tween(350, g);
+    }
     blank(s);
     await tween(350, g);
     for (let b = 0; b < s.beats.length; b++) { await beat(s, b, g); await tween(GAP, g); }
   };
   // from step a to step b: a's flows and links step back, b fades in over a with its slabs where a had them, a goes, the slabs
   // move, the links and ports come back
+  // A is left as it stands, mid-flow or mid-lift (a click can come at any time): nothing jumps to its end first
   const turn = async (a, b, g) => {
     const A = steps[a], B = steps[b];
     for (const bt of A.beats) for (const el of bt.g.children) el.classList.add('nsk-h');
     A.wait.forEach((el) => el.classList.add('nsk-h'));
     await tween(300, g);
+    const now = Object.fromEntries(A.slabs.map((sl, i) => [sl.el.dataset.n, lifts(A)[i]]));
+    const from = B.slabs.map((sl) => sl.up[a] - sl.up[b] + (now[sl.el.dataset.n] || 0));
     blank(B);
-    rest(B, Object.fromEntries(B.slabs.map((sl) => [sl.el.dataset.n, sl.up[a] - sl.up[b]])), false);
+    rest(B, Object.fromEntries(B.slabs.map((sl, i) => [sl.el.dataset.n, from[i]])), false);
     show(b); A.svg.classList.add('was');
     await tween(FADE, g);
     A.svg.classList.remove('was');
-    const from = B.slabs.map((sl) => sl.up[a] - sl.up[b]);
+    await tween(FADE, g);   // A fades out under B before anything moves, so no slab of A trails behind
     if (from.some(Boolean)) await tween(LIFT, g, (p) => B.slabs.forEach((sl, i) => sl.el.setAttribute('transform', `translate(0 ${(from[i] * (1 - ease(p))).toFixed(2)})`)));
     rest(B);
     await tween(300, g);
   };
+  // the step on show brought to rest from wherever it was stopped: its slabs glide home, its links fade back
+  const settle = async (k, g) => {
+    const s = steps[k], from = lifts(s);
+    show(k);
+    if (from.some(Boolean)) await tween(LIFT, g, (p) => s.slabs.forEach((sl, i) => sl.el.setAttribute('transform', `translate(0 ${(from[i] * (1 - ease(p))).toFixed(2)})`)));
+    rest(s);
+  };
   const run = async (k, loop) => {
     const g = ++gen;
     try {
-      // whatever was under way is put straight first: the step on show at rest, the others away
-      steps.forEach((s, i) => { rest(s); if (i !== cur) full(s); });
-      if (k !== cur) { full(steps[cur]); await turn(cur, k, g); } else show(k);
+      // the steps out of sight are put straight; the one on show is left as it stands and leaves (or replays) from there
+      steps.forEach((s, i) => { if (i !== cur) { rest(s); full(s); } });
+      if (k !== cur) await turn(cur, k, g); else await settle(k, g);
       for (;;) {
         await play(k, g);
         if (!loop) return;

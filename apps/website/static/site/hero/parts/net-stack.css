@@ -22,8 +22,8 @@
    A block is quiet (q*) until its beat lights it (l*); its bar takes the step's colour */
 .nsk-side { position: relative; display: grid; min-height: 0; border-radius: 12px; background: #fff; box-shadow: inset 0 0 0 1px #e2e2e2; }   /* as tall as its longest window: the three share one cell */
 .nsk-w { grid-area: 1 / 1; display: flex; flex-direction: column; gap: 18px; padding: 24px 28px 20px; opacity: 0; visibility: hidden;
-  font-size: 13px; line-height: 21px; transition: opacity .45s ease, visibility 0s .45s; }
-.nsk-w.on { opacity: 1; visibility: visible; transition: opacity .45s ease; }
+  font-size: 13px; line-height: 21px; transition: opacity .25s ease, visibility 0s .25s; }
+.nsk-w.on { opacity: 1; visibility: visible; transition: opacity .35s ease .25s; }   /* one window out, then the next in: never two texts over each other */
 .nsk-b { position: relative; padding-left: 15px; transition: opacity .35s ease; }
 .nsk-b.nsk-h { opacity: 0; }
 .nsk-b::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; border-radius: 1.5px; background: #e2e2e2; transition: background-color .35s ease; }
