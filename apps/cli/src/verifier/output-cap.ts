@@ -77,6 +77,8 @@ export type OutputCapClass = 'unread' | 'within' | 'reasoning-outside-cap' | 're
 
 /** The reference's measurement of one delivered answer: A, then A + answer. */
 export interface OutputCapMeasurementV1 {
+  /** The route may serve several providers and named none: the measurement's host is unknown, so it measures nothing. */
+  ambiguous?: true
   a: string
   /** The answer as measured: a space, then the visible text. */
   b: string
@@ -113,12 +115,18 @@ export interface OutputCapReferenceV1 {
   applies: boolean
   reason: string
   measurement: OutputCapMeasurementV1 | null
-  /** The reference's own reply to the capped request: the limit, what it billed and itemised, and what its answer measures. */
+  /** The reference's own reply to the capped request: the limit, what it billed and itemised, and what its answer measures (shown in a dry pass). */
   ownReply: { cap: number; billed: number | null; reasoning: number | null; measured: number | null } | null
 }
 
 /** The reference's reply to one capped request: the request sent and the answer's bytes; null when it could not be asked. */
-export type CapReferenceReply = (prompt: string, cap: number, signal?: AbortSignal) => Promise<{ requestBody: Uint8Array; response: { statusCode: number; body: Uint8Array } } | null>
+export type CapReferenceReply = (prompt: string, cap: number, signal?: AbortSignal) => Promise<{
+  requestBody: Uint8Array
+  response: { statusCode: number; body: Uint8Array }
+  /** The provider the answer names, and whether the route serves one provider. */
+  provider?: string | null
+  oneProvider?: boolean
+} | null>
 
 /** Ways of asking for a count, so the request is not one fixed sentence; each gives a long plain answer on one line. */
 const CAP_PROMPTS: ReadonlyArray<(start: number) => string> = [
@@ -160,7 +168,7 @@ export function outputCapRequestBody(input: {
 
 /** The measured length of an answer at the reference; null when it was not measured or the measurement does not agree. */
 export function measuredTokens(measurement: OutputCapMeasurementV1 | null, rule: OutputCapRule = OUTPUT_CAP_RULE): number | null {
-  if (!measurement) return null
+  if (!measurement || measurement.ambiguous) return null
   return referenceDelta(measurement.reference.asks, measurementRule(rule)).delta
 }
 
@@ -233,12 +241,21 @@ export function judgeOutputCap(asks: readonly Pick<OutputCapAskV1, 'class'>[], r
 /** Measures `b` at the reference after a fresh `a`; the measurement is kept whatever it gives. */
 async function measureAnswer(ask: TokenizerReferenceAsk, b: string, rule: OutputCapRule): Promise<OutputCapMeasurementV1> {
   const a = generateTokenizerProbe().a
+  // A route that may serve several providers and names none leaves the measurement's host unknown: no measurement.
+  let ambiguous = false
   const measured = await measureTokenizerReference({
-    ask,
+    ask: async (contents, signal) => {
+      const asked = await ask(contents, signal) as Awaited<ReturnType<TokenizerReferenceAsk>> & { oneProvider?: boolean }
+      if (asked.oneProvider === false && asked.results.every((result) => !result.provider)) ambiguous = true
+      return asked
+    },
     probes: [{ a, b }],
     rule: measurementRule(rule),
   })
-  return { a, b, reference: measured.rounds[0]! }
+  const round = measured.rounds[0]!
+  return ambiguous
+    ? { ambiguous: true, a, b, reference: { ...round, delta: null, failure: 'the reference\'s route may serve several providers and names none' } }
+    : { a, b, reference: round }
 }
 
 /**
@@ -257,6 +274,9 @@ export async function prepareOutputCapReference(input: { ask: TokenizerReference
     replied = await input.askReply(prompt, cap)
   } catch {
     replied = null
+  }
+  if (replied && replied.oneProvider === false && !replied.provider) {
+    return notApplying('the reference\'s route may serve several providers and names none', null, { cap, billed: null, reasoning: null, measured: null })
   }
   const reading = replied ? readOutput(replied.requestBody, replied.response) : null
   if (!readable(reading, cap)) return notApplying('the reference\'s own answer to a capped request could not be read', null, { cap, billed: null, reasoning: null, measured: null })
@@ -356,7 +376,8 @@ export function validateOutputCap(record: OutputCapV1): void {
       throw new Error('a cap check measurement is not of the answer the seller signed')
     }
     if (ask.measurement) {
-      const recomputed = referenceDelta(ask.measurement.reference.asks, measurementRule(rule))
+      // An ambiguous route measures nothing; otherwise the stored length follows from the stored asks.
+      const recomputed = ask.measurement.ambiguous ? { delta: null } : referenceDelta(ask.measurement.reference.asks, measurementRule(rule))
       if (recomputed.delta !== ask.measurement.reference.delta) throw new Error('a cap check measurement does not give its stored length')
     }
     if (classifyCapAnswer(reading, cap, measuredTokens(ask.measurement, rule), rule) !== ask.class) throw new Error('a cap check class differs from its reading')
@@ -465,6 +486,8 @@ export function createOutputCapScreen<Settings>(input: {
   rule?: OutputCapRule
   /** A dry pass also measures answers that kept to the limit (`runOutputCap`). */
   measureWithin?: boolean
+  /** Told the reference record once it is prepared (the run writes it beside the model's audits). */
+  onReady?: (reference: OutputCapReferenceV1) => void
 }): OutputCapScreen<Settings> {
   const rule = input.rule ?? OUTPUT_CAP_RULE
   let prepared: Promise<OutputCapReferenceV1> | null = null
@@ -472,7 +495,10 @@ export function createOutputCapScreen<Settings>(input: {
     prepared ??= Promise.resolve().then(() => prepareOutputCapReference({ ask: input.ask(settings), askReply: input.askReply(settings), rule })).catch((error: unknown): OutputCapReferenceV1 => ({
       rule, upstream: null, applies: false, measurement: null, ownReply: null,
       reason: `the reference could not be asked (${error instanceof Error ? error.message : String(error)}), so the cap check does not apply this run`,
-    }))
+    })).then((reference) => {
+      try { input.onReady?.(reference) } catch { /* a report is never a reason to fail the check */ }
+      return reference
+    })
     return prepared
   }
   return {

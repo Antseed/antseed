@@ -45,6 +45,8 @@ export interface OutputEchoRule {
   minGap: number
   /** Passages of each round's long text (a short text is one): different lengths, so the gaps differ on purpose. */
   longPassages: number[]
+  /** The largest round gap must be at least this many times the smallest, measured: close gaps cannot tell a factor from a fixed extra. */
+  minGapRatio: number
   /** Reply limit of every echo request. */
   maxTokens: number
   /** A growth flag needs the growth above this many tokens, in every round. Chosen margin. */
@@ -78,6 +80,7 @@ export const OUTPUT_ECHO_RULE: OutputEchoRule = Object.freeze({
   textTries: 3,
   minGap: 150,
   longPassages: [3, 4, 6],
+  minGapRatio: 4 / 3,
   maxTokens: 1024,
   growthFloor: 20,
   growthShare: 0.1,
@@ -219,6 +222,11 @@ export function referenceEchoCount(
 /** The longest the reference's measurement of a model's texts may take; sellers' audits wait for it, off their clocks. */
 export const ECHO_REFERENCE_TIME_LIMIT_MS = 10 * 60_000
 
+/** The largest gap is at least `minGapRatio` times the smallest. */
+function gapsDiffer(gaps: readonly number[], rule: OutputEchoRule): boolean {
+  return gaps.length > 0 && Math.max(...gaps) >= rule.minGapRatio * Math.min(...gaps)
+}
+
 function roundReasoning(round: { short: EchoReferenceTextV1; long: EchoReferenceTextV1 }): number {
   return Math.max(0, ...[...round.short.asks, ...round.long.asks].map((ask) => ask.reasoning))
 }
@@ -296,6 +304,9 @@ export async function prepareOutputEchoReference(input: {
   if (providers[0] === null && !oneProvider) return result(false, 'the reference\'s route may serve several providers and names none, so the echo check does not apply this run')
   if (rounds.some((round) => round.long.count! - round.short.count! < rule.minGap)) {
     return result(false, `a long text measured less than ${rule.minGap} tokens more than its short one, so the echo check does not apply this run`)
+  }
+  if (!gapsDiffer(rounds.map((round) => round.long.count! - round.short.count!), rule)) {
+    return result(false, `the rounds' gaps are too close (largest under ${rule.minGapRatio.toFixed(2)} times the smallest), so the echo check does not apply this run`)
   }
   if (mode === 'visible' && rounds.some((round) => rule.tolerance + roundReasoning(round) >= rule.growthFloor)) {
     return result(false, `the reference's own reasoning puts a round's margin at or above ${rule.growthFloor} tokens, so the echo check could not decide and does not apply this run`)
@@ -610,6 +621,27 @@ function referenceView(reference: OutputEchoReferenceV1): OutputEchoV1['referenc
 export const ECHO_STOPPED_REASON = 'the audit stopped before the check decided'
 
 /**
+ * The findings of a check whose audit stopped: each finding keeps what it was decided as before any extra ask and
+ * the crowd (`before`), unless that changed afterwards; a flag always needs the crowd, so it never stands.
+ */
+export function stoppedEcho(
+  before: Pick<OutputEchoV1, 'growth' | 'fixedAmount'>,
+  after: Pick<OutputEchoV1, 'growth' | 'fixedAmount'>,
+  mode: EchoMode,
+  rule: OutputEchoRule = OUTPUT_ECHO_RULE,
+): Pick<OutputEchoV1, 'outcome' | 'flag' | 'reason' | 'growth' | 'fixedAmount'> {
+  const stopped = { outcome: 'inconclusive' as const, reason: ECHO_STOPPED_REASON }
+  const keep = (first: OutputEchoV1['growth'], last: OutputEchoV1['growth']) => (
+    first.outcome !== 'flag' && canonicalJsonStringify(first) === canonicalJsonStringify(last) ? first : stopped
+  )
+  const growth = keep(before.growth, after.growth)
+  const fixedAmount = keep(before.fixedAmount, after.fixedAmount)
+  const offsetCounts = rule.offsetCounts && mode === 'plain'
+  const outcome = growth.outcome === 'pass' && (fixedAmount.outcome === 'pass' || !offsetCounts) && (mode === 'plain' || rule.visibleCounts) ? 'pass' as const : 'inconclusive' as const
+  return { outcome, flag: null, reason: ECHO_STOPPED_REASON, growth, fixedAmount }
+}
+
+/**
  * Runs the echo check on one seller. A round is asked once, and again when it is over (always twice in `visible`
  * mode, and every text twice for a fixed-amount candidate). The crowd is asked only when the seller could be
  * flagged. Nothing is decided once the audit has stopped. Never rejects.
@@ -648,6 +680,8 @@ export async function runOutputEcho(input: SignedSellerRequestInput & {
   let crowd: EchoCrowdV1 | null = null
   const judge = () => judgeOutputEcho({ mode, reference: view, referenceReasoning, rounds, precheckMatch: input.precheckMatch, crowd, rule })
   let judged = judge()
+  // What was decided before any extra ask or crowd: a stop later does not undo it (`stoppedEcho`).
+  const before = judged
   if (judged.needsSecondAsks) {
     // A fixed amount rests on every text asked twice: a single reply decides nothing. These repeats are its own and
     // never touch the growth's rounds.
@@ -664,11 +698,8 @@ export async function runOutputEcho(input: SignedSellerRequestInput & {
     crowd = await input.crowd()
     judged = judge()
   }
-  // A decision made after the audit stopped is no decision.
-  if (input.signal?.aborted && judged.outcome !== 'inconclusive') {
-    const why = { outcome: 'inconclusive' as const, reason: ECHO_STOPPED_REASON }
-    judged = { ...judged, outcome: 'inconclusive', flag: null, reason: ECHO_STOPPED_REASON, growth: why, fixedAmount: why }
-  }
+  // A decision that needed work after the audit stopped is no decision; one made before it stands.
+  if (input.signal?.aborted) judged = { ...judged, ...stoppedEcho(before, judged, mode, rule) }
   return {
     rule, mode, outcome: judged.outcome, flag: judged.flag, growth: judged.growth, fixedAmount: judged.fixedAmount, reason: judged.reason,
     reference: view, referenceReasoning, referenceProvider: reference.provider, rounds, offset: judged.offset, precheckMatch: input.precheckMatch, crowd,
@@ -708,6 +739,7 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
     }
     if (round.long.count - round.short.count < rule.minGap) throw new Error('an echo round\'s texts are too close at the reference')
   }
+  if (!gapsDiffer(record.reference.map((round) => round.long.count - round.short.count), rule)) throw new Error('the echo check\'s round gaps are too close to each other')
   const reasoning = record.referenceReasoning
   if (!Array.isArray(reasoning) || reasoning.length !== rule.rounds
     || reasoning.some((value) => !Number.isInteger(value) || value < 0 || (record.mode === 'plain' && value !== 0))) {
@@ -776,13 +808,20 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
     return
   }
   const judged = judgeOutputEcho({ mode: record.mode, reference: record.reference, referenceReasoning: reasoning, rounds: record.rounds, precheckMatch: record.precheckMatch, crowd: record.crowd, rule })
-  const stopped = record.outcome === 'inconclusive' && record.flag === null && record.reason === ECHO_STOPPED_REASON
-    && record.growth.outcome === 'inconclusive' && record.fixedAmount.outcome === 'inconclusive'
   const same = judged.outcome === record.outcome && judged.flag === record.flag
     && canonicalJsonStringify([judged.growth, judged.fixedAmount, judged.offset, judged.reason]) === canonicalJsonStringify([record.growth, record.fixedAmount, record.offset, record.reason])
-  if (!same && !(stopped && canonicalJsonStringify(judged.offset) === canonicalJsonStringify(record.offset))) {
-    throw new Error(`the echo check outcome is ${record.outcome}, its rounds give ${judged.outcome}`)
+  if (same) return
+  // A stopped check: what it was before any extra ask and the crowd is recomputed from its first replies alone.
+  if (record.reason === ECHO_STOPPED_REASON) {
+    const first = judgeOutputEcho({
+      mode: record.mode, reference: record.reference, referenceReasoning: reasoning, precheckMatch: record.precheckMatch, crowd: null, rule,
+      rounds: record.rounds.map(({ repeats: _repeats, ...round }) => round),
+    })
+    const expected = stoppedEcho(first, judged, record.mode, rule)
+    if (canonicalJsonStringify([expected.outcome, expected.flag, expected.growth, expected.fixedAmount, judged.offset])
+      === canonicalJsonStringify([record.outcome, record.flag, record.growth, record.fixedAmount, record.offset])) return
   }
+  throw new Error(`the echo check outcome is ${record.outcome}, its rounds give ${judged.outcome}`)
 }
 
 function requestsOf(record: OutputEchoV1): SignedSellerRequestV1[] {
@@ -881,6 +920,8 @@ export function createOutputEchoScreen<Settings>(input: {
   rule?: OutputEchoRule
   crowdTimeLimitMs?: number
   referenceTimeLimitMs?: number
+  /** Told the reference record once it is prepared (the run writes it beside the model's audits). */
+  onReady?: (reference: OutputEchoReferenceV1) => void
 }): OutputEchoScreen<Settings> {
   const rule = input.rule ?? OUTPUT_ECHO_RULE
   let prepared: Promise<OutputEchoReferenceV1> | null = null
@@ -890,7 +931,10 @@ export function createOutputEchoScreen<Settings>(input: {
     }).catch((error: unknown): OutputEchoReferenceV1 => ({
       rule, upstream: null, mode: null, provider: null, rounds: [], applies: false,
       reason: `the reference could not be asked (${error instanceof Error ? error.message : String(error)}), so the echo check does not apply this run`,
-    }))
+    })).then((reference) => {
+      try { input.onReady?.(reference) } catch { /* a report is never a reason to fail the check */ }
+      return reference
+    })
     return prepared
   }
   // One vote per other seller and run, shared by every check of the model that needs it. A vote that measured

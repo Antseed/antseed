@@ -942,7 +942,7 @@ export async function askReferenceInputTokens(input: {
   timeoutMs?: number
   /** Once aborted, no request is tried again: the measurement's time is up. */
   signal?: AbortSignal
-}): Promise<{ upstream: ReferenceUpstreamProvenanceV1; results: ReferenceInputTokensV1[] }> {
+}): Promise<{ upstream: ReferenceUpstreamProvenanceV1; oneProvider: boolean; results: ReferenceInputTokensV1[] }> {
   const endpoint = input.config?.referenceEndpoint
   if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
   const catalog = input.catalog ?? null
@@ -995,7 +995,16 @@ export async function askReferenceInputTokens(input: {
     }
     return result
   }))
-  return { upstream: referenceUpstreamProvenance(endpoint, route), results }
+  return { upstream: referenceUpstreamProvenance(endpoint, route), oneProvider: routeServesOneProvider(route), results }
+}
+
+/**
+ * Whether a reference route serves one provider: a pinned peer, a provider pin of one, or an endpoint that is not a
+ * router. A router that may serve several and names none in its answers leaves a measurement's host unknown.
+ */
+function routeServesOneProvider(route: ReferenceRequestRoute): boolean {
+  const router = route.upstream?.type === 'openrouter' || /openrouter\.ai/i.test(route.baseUrl)
+  return route.type === 'antseed' || (route.providerRouting?.order.length ?? 0) === 1 || !router
 }
 
 /**
@@ -1064,9 +1073,7 @@ export async function askReferenceReplies(input: {
     }
     return result
   }))
-  const router = route.upstream?.type === 'openrouter' || /openrouter\.ai/i.test(route.baseUrl)
-  const oneProvider = route.type === 'antseed' || (route.providerRouting?.order.length ?? 0) === 1 || !router
-  return { upstream: referenceUpstreamProvenance(endpoint, route), oneProvider, results }
+  return { upstream: referenceUpstreamProvenance(endpoint, route), oneProvider: routeServesOneProvider(route), results }
 }
 
 /** The provider an OpenRouter-style answer names; null when it names none. */

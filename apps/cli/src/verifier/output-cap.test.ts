@@ -463,3 +463,16 @@ test('the cap check applies only when the model\'s own host keeps the limit and 
   const silent = await prepareOutputCapReference({ ask: wordReference, askReply: async () => null })
   assert.match(silent.reason, /own answer to a capped request could not be read/)
 })
+
+test('the cap measurement and the reference\'s own reply decline a route that may serve several providers and names none', async () => {
+  const unnamed: TokenizerReferenceAsk = async (contents, signal) => {
+    const asked = await wordReference(contents, signal)
+    return { ...asked, oneProvider: false, results: asked.results.map((result) => ({ ...result, provider: null })) } as Awaited<ReturnType<TokenizerReferenceAsk>>
+  }
+  const reference = await prepareOutputCapReference({ ask: unnamed, askReply: keptReply })
+  assert.equal(reference.applies, false)
+  assert.match(reference.reason, /could not measure its own answer \(the reference's route may serve several providers and names none\)/)
+  const unnamedReply: CapReferenceReply = async (prompt, cap) => ({ ...(await keptReply(prompt, cap))!, provider: null, oneProvider: false })
+  const replied = await prepareOutputCapReference({ ask: wordReference, askReply: unnamedReply })
+  assert.match(replied.reason, /route may serve several providers and names none/)
+})

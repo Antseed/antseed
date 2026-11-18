@@ -53,7 +53,7 @@ import {
   mapConcurrently,
   mapInLanes,
 } from '../../../verifier/audit-concurrency.js'
-import { acquirePidFileLock } from '../../../verifier/atomic-files.js'
+import { acquirePidFileLock, writeJsonAtomic } from '../../../verifier/atomic-files.js'
 import { findAdvertisedService } from '../../../verifier/service-discovery.js'
 import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
@@ -557,6 +557,18 @@ export async function loadRunConfirmations(input: {
   } catch (error) {
     console.warn(chalk.yellow(`Could not read reports waiting for a confirmation: ${asError(error).message}`))
     return new Map()
+  }
+}
+
+/**
+ * Writes what a model's cap or echo reference decided this run (whether the check applies, why, and the reference's
+ * own numbers) beside the model's audits, for the run's report and a dry pass. Never fails the run.
+ */
+async function writeOutputCheckReference(directory: string, model: string, check: 'output-cap' | 'output-echo', record: unknown): Promise<void> {
+  try {
+    await writeJsonAtomic(join(directory, `${check}-reference.json`), { version: 1, kind: 'antseed-verifier-output-check-reference', model, check, record }, true)
+  } catch {
+    // The report is best effort.
   }
 }
 
@@ -1546,6 +1558,7 @@ export async function runVerifierRound(
           const outputCap = config.verifier?.outputChecks === false ? null : createOutputCapScreen<KbfReferenceV1>({
             // A dry pass (nothing submitted) also measures answers that kept to the limit, to show the measurement's scale.
             measureWithin: capMeasureWithin,
+            onReady: (record) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, 'output-cap', record),
             proxyBaseUrl: laneProxy.baseUrl,
             responseAuthReader: responseAuthReader!,
             limiter: batchLimiter,
@@ -1575,12 +1588,13 @@ export async function runVerifierRound(
                 requestLimiter: precheckReferenceLimiter,
               })
               const first = replied.results[0]
-              return first?.response ? { requestBody: first.requestBody, response: first.response } : null
+              return first?.response ? { requestBody: first.requestBody, response: first.response, provider: first.provider, oneProvider: replied.oneProvider } : null
             },
           })
           // The echo check of this model's sellers (`createOutputEchoScreen`): its texts are written and measured on
           // the reference once, and its crowd is every seller of the model the buyer would audit, as for the pre-check.
           const outputEcho = config.verifier?.outputChecks === false ? null : createOutputEchoScreen<KbfReferenceV1>({
+            onReady: (record) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, 'output-echo', record),
             sellers: tokenizerPrecheckSellers(laneProxy.peers, verifierModelServices(config.verifier, model), targetPolicyFor(model)),
             proxyBaseUrl: laneProxy.baseUrl,
             responseAuthReader: responseAuthReader!,

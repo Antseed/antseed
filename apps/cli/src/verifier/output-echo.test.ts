@@ -14,6 +14,7 @@ import { readOutput } from './output-usage.js'
 import {
   ECHO_STOPPED_REASON,
   OUTPUT_ECHO_RULE,
+  stoppedEcho,
   createOutputEchoScreen,
   echoCrowdVote,
   prepareOutputEchoReference,
@@ -378,8 +379,10 @@ test('an echo record of every outcome, written to its evidence file, passes the 
     inconclusive: await run((text) => Math.round(tokens(text) * 1.25), false),
   }
   // A check stopped before it decided is stored inconclusive in every finding, and rechecks as such.
-  const stopped = { ...await run(honestBilling), outcome: 'inconclusive' as const, flag: null, reason: ECHO_STOPPED_REASON,
-    growth: { outcome: 'inconclusive' as const, reason: ECHO_STOPPED_REASON }, fixedAmount: { outcome: 'inconclusive' as const, reason: ECHO_STOPPED_REASON } }
+  // A check whose audit stopped after its growth was decided: the growth stands, the rest is stored as stopped.
+  const base = await run(honestBilling)
+  const stopped = { ...base, ...stoppedEcho(base, base, 'plain') }
+  assert.deepEqual([stopped.outcome, stopped.growth.outcome, stopped.reason], ['pass', 'pass', ECHO_STOPPED_REASON])
   assert.deepEqual(Object.values(records).map((record) => [record.outcome, record.flag]), [['pass', null], ['flag', 'growth'], ['pass', null], ['inconclusive', null]])
   const directory = await mkdtemp(join(tmpdir(), 'antseed-output-echo-'))
   try {
@@ -398,7 +401,7 @@ test('an echo record of every outcome, written to its evidence file, passes the 
     assert.deepEqual(prepared.excluded, [])
     assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.flaggedBy), [[], ['output-echo'], [], [], []])
     assert.ok(records.offset.rounds.every((round) => round.repeats !== undefined), 'the fixed-amount record with its repeats went through the file')
-    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.passedBy?.filter((check) => check.startsWith('output'))), [['output-echo'], [], ['output-echo'], [], []])
+    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.passedBy?.filter((check) => check.startsWith('output'))), [['output-echo'], [], ['output-echo'], [], ['output-echo']])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -471,4 +474,23 @@ test('a reasoning count that is not a whole number gives no reading', () => {
     body: new TextEncoder().encode(JSON.stringify({ choices: [{ message: { content: TEXT }, finish_reason: 'stop' }], usage: { completion_tokens: 60, completion_tokens_details: { reasoning_tokens: 12.5 } } })),
   })
   assert.equal(reply.billedOutputTokens, null)
+})
+
+test('the rounds\' gaps must differ by at least 4 to 3, or the check does not apply', async () => {
+  const short = writeEchoText('short')
+  const long = writeEchoText('long', undefined, 4)
+  const same = await prepareOutputEchoReference({ ask: echoReference, write: (kind) => (kind === 'short' ? short : long) })
+  assert.equal(same.applies, false)
+  assert.match(same.reason, /gaps are too close/)
+  const differing = await prepareOutputEchoReference({ ask: echoReference })
+  assert.equal(differing.applies, true)
+})
+
+test('a stop after the growth was decided keeps it; a candidate that needed the crowd is stopped', () => {
+  const pass = { outcome: 'pass' as const, reason: 'the seller bills the model\'s growth' }
+  const candidate = { outcome: 'inconclusive' as const, reason: 'a candidate' }
+  const kept = stoppedEcho({ growth: pass, fixedAmount: candidate }, { growth: pass, fixedAmount: { outcome: 'inconclusive', reason: 'x' } }, 'plain')
+  assert.deepEqual([kept.outcome, kept.growth, kept.fixedAmount.reason], ['pass', pass, ECHO_STOPPED_REASON])
+  const cut = stoppedEcho({ growth: candidate, fixedAmount: candidate }, { growth: { outcome: 'flag', reason: 'x' }, fixedAmount: candidate }, 'plain')
+  assert.deepEqual([cut.outcome, cut.flag, cut.growth.reason], ['inconclusive', null, ECHO_STOPPED_REASON])
 })
