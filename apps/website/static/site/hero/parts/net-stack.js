@@ -262,6 +262,13 @@ export default async (slot) => {
     }
     light(s, s.beats.length - 1);
   };
+  // a step set while out of sight is set at once: its parts must not still be fading out as it fades in (that was the flash)
+  const snap = (s, fn) => {
+    for (const el of [s.svg, s.win]) el.classList.add('nsk-snap');
+    fn();
+    s.svg.getBoundingClientRect(); s.win.getBoundingClientRect();
+    for (const el of [s.svg, s.win]) el.classList.remove('nsk-snap');
+  };
   const lifts = (s) => s.slabs.map((sl) => +(sl.el.getAttribute('transform')?.match(/translate\(0 (-?[\d.]+)/)?.[1] || 0));
   const rest = (s, lifted = 0, linked = true) => {
     for (const sl of s.slabs) lifted ? sl.el.setAttribute('transform', `translate(0 ${lifted[sl.el.dataset.n] || 0})`) : sl.el.removeAttribute('transform');
@@ -334,8 +341,7 @@ export default async (slot) => {
     await tween(300, g);
     const now = Object.fromEntries(A.slabs.map((sl, i) => [sl.el.dataset.n, lifts(A)[i]]));
     const from = B.slabs.map((sl) => sl.up[a] - sl.up[b] + (now[sl.el.dataset.n] || 0));
-    blank(B);
-    rest(B, Object.fromEntries(B.slabs.map((sl, i) => [sl.el.dataset.n, from[i]])), false);
+    snap(B, () => { blank(B); rest(B, Object.fromEntries(B.slabs.map((sl, i) => [sl.el.dataset.n, from[i]])), false); });
     show(b); A.svg.classList.add('was');
     await tween(FADE, g);
     A.svg.classList.remove('was');
@@ -355,7 +361,7 @@ export default async (slot) => {
     const g = ++gen;
     try {
       // the steps out of sight are put straight; the one on show is left as it stands and leaves (or replays) from there
-      steps.forEach((s, i) => { if (i !== cur) { rest(s); full(s); } });
+      steps.forEach((s, i) => { if (i !== cur) snap(s, () => { rest(s); full(s); }); });
       if (k !== cur) await turn(cur, k, g); else await settle(k, g);
       for (;;) {
         await play(k, g);
@@ -380,7 +386,7 @@ export default async (slot) => {
     run(k, false);
   }));
   if (still) return;
-  blank(steps[0]);
+  snap(steps[0], () => blank(steps[0]));
   new IntersectionObserver(([e]) => {
     const was = seen;
     seen = e.isIntersecting;

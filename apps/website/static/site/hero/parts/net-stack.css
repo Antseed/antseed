@@ -15,6 +15,7 @@
 
 /* what a beat brings in, and the links and ports that wait for the slabs to settle */
 .nsk-i { transition: opacity .35s ease; }
+.nsk-snap, .nsk-snap * { transition: none !important; }   /* net-stack.js snap: a hidden step set at once */
 .nsk-i.nsk-h { opacity: 0; }
 .nsk-dot { pointer-events: none; }
 
