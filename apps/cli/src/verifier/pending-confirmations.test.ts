@@ -26,6 +26,7 @@ import {
   verdictTallies,
   waitingReportBlocks,
 } from './pending-confirmations.js'
+import { localConfirmationDecision } from './flagging-checks.js'
 
 const A = getAddress('0x00000000000000000000000000000000000000a1')
 const B = getAddress('0x00000000000000000000000000000000000000b2')
@@ -507,4 +508,14 @@ test('a local result answers a waiting DIFF only when it decided a check that fl
   assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, decided: ['kbf', 'output-cap'] }), true)
   // A confirmation that ran and did not decide is retried by the epoch plan within its attempts, not here.
   assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, decided: 'undecided-confirmation' }), true)
+})
+
+test('a questions confirmation that ended UNDETERMINED after its attempts answers the target and is not planned again', () => {
+  const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['kbf' as const], firstReportedAt: 10_000 }
+  const undetermined = { status: 'UNDETERMINED', parsedProbeCount: 40, tokenizerPrecheck: { outcome: 'match' }, outcomeReason: { code: 'deadline_exceeded' } }
+  const later = { service: 'served-a', completedAt: 10_000 + 7_200 }
+  // Still within its attempts: the epoch plan audits it again, so it does not answer yet.
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: localConfirmationDecision(undetermined, false) }), false)
+  // Its attempts are used up (the cell is done): it answers, and the seller is not audited in every run.
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: localConfirmationDecision(undetermined, true) }), true)
 })

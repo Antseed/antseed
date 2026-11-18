@@ -23,6 +23,7 @@ import {
   runOutputCap,
   summarizeOutputCap,
   validateOutputCap,
+  type CapReferenceReply,
   type OutputCapV1,
   answerToMeasure,
   classifyCapAnswer,
@@ -242,6 +243,12 @@ function fakeSeller(answer: (cap: number, call: number) => { text: string; bille
   return { fetchFn, responseAuthReader, bodies }
 }
 
+/** The model's own host keeps the limit: it answers `cap` words and bills `cap`. */
+const keptReply: CapReferenceReply = async (prompt, cap) => ({
+  requestBody: bytes({ messages: [{ role: 'user', content: prompt }], max_tokens: cap }),
+  response: { statusCode: 200, body: bytes({ choices: [{ message: { content: Array.from({ length: cap }, () => 'one').join(' ') }, finish_reason: 'length' }], usage: { prompt_tokens: 20, completion_tokens: cap } }) },
+})
+
 /** A reference that counts one token per word, from one provider, never cached: A + B minus A is B's word count. */
 const wordReference: TokenizerReferenceAsk = async (contents) => ({
   upstream: { kind: 'test' },
@@ -249,7 +256,7 @@ const wordReference: TokenizerReferenceAsk = async (contents) => ({
 })
 
 const runOn = async (seller: ReturnType<typeof fakeSeller>, ask: TokenizerReferenceAsk = wordReference) => {
-  const reference = await prepareOutputCapReference({ ask })
+  const reference = await prepareOutputCapReference({ askReply: keptReply, ask })
   return runOutputCap({
     proxyBaseUrl: 'http://127.0.0.1:1', peerId: PEER, service: SERVICE,
     responseAuthReader: seller.responseAuthReader, limiter: new ConcurrencyLimiter(1), fetchFn: seller.fetchFn,
@@ -307,11 +314,11 @@ test('a reference that cannot measure a count makes the check not apply: no sell
   const silent: TokenizerReferenceAsk = async (contents) => ({ upstream: null, results: contents.map(() => ({ inputTokens: null, failure: 'no usage' })) })
   const cached: TokenizerReferenceAsk = async (contents) => ({ upstream: null, results: contents.map((content) => ({ inputTokens: content.length, cachedInput: true, provider: 'maker', failure: null })) })
   for (const ask of [silent, cached]) {
-    const reference = await prepareOutputCapReference({ ask })
+    const reference = await prepareOutputCapReference({ askReply: keptReply, ask })
     assert.equal(reference.applies, false)
     const seller = fakeSeller(() => ({ text: words(120), billed: 900 }))
     const screen = createOutputCapScreen<null>({
-      proxyBaseUrl: 'http://127.0.0.1:1', responseAuthReader: seller.responseAuthReader, limiter: new ConcurrencyLimiter(1), fetchFn: seller.fetchFn, ask: () => ask,
+      proxyBaseUrl: 'http://127.0.0.1:1', responseAuthReader: seller.responseAuthReader, limiter: new ConcurrencyLimiter(1), fetchFn: seller.fetchFn, ask: () => ask, askReply: () => keptReply,
     })
     assert.equal(await screen.check({ peerId: PEER, service: SERVICE }, null, null), null)
     assert.equal(seller.bodies.length, 0)
@@ -323,7 +330,7 @@ test('the screen measures the reference once for every seller of the model', asy
   const counting: TokenizerReferenceAsk = async (contents, signal) => { asked += 1; return wordReference(contents, signal) }
   const seller = fakeSeller((cap) => ({ text: words(2), billed: cap }))
   const screen = createOutputCapScreen<null>({
-    proxyBaseUrl: 'http://127.0.0.1:1', responseAuthReader: seller.responseAuthReader, limiter: new ConcurrencyLimiter(1), fetchFn: seller.fetchFn, ask: () => counting,
+    proxyBaseUrl: 'http://127.0.0.1:1', responseAuthReader: seller.responseAuthReader, limiter: new ConcurrencyLimiter(1), fetchFn: seller.fetchFn, ask: () => counting, askReply: () => keptReply,
   })
   await Promise.all([screen.check({ peerId: PEER, service: SERVICE }, null, null), screen.check({ peerId: PEER, service: SERVICE }, null, null)])
   assert.equal(asked, 1, 'within the limit: only the reference test asked the reference')
@@ -336,6 +343,12 @@ test('a cap record of every outcome, written to its evidence file, passes the ch
     // Billed far over the limit, on two lines the reference cannot measure: unexplained.
     inconclusive: await runOn(fakeSeller(() => ({ text: `${words(40)}\n${words(40)}`, billed: 900 }))),
   }
+  // A dry pass's record: an answer within the limit, measured too.
+  const measuredWithin = await runOutputCap({
+    proxyBaseUrl: 'http://127.0.0.1:1', peerId: PEER, service: SERVICE, ...(() => { const seller = fakeSeller((cap) => ({ text: words(Math.floor(cap / 3)), billed: cap })); return { responseAuthReader: seller.responseAuthReader, fetchFn: seller.fetchFn } })(),
+    limiter: new ConcurrencyLimiter(1), reference: await prepareOutputCapReference({ askReply: keptReply, ask: wordReference }), ask: wordReference, thinking: null, measureWithin: true,
+  })
+  assert.notEqual(measuredWithin.asks[0]!.measurement, null)
   assert.deepEqual(Object.entries(records).map(([name, record]) => [name, record.outcome]), [['pass', 'pass'], ['flag', 'flag'], ['inconclusive', 'inconclusive']])
   const directory = await mkdtemp(join(tmpdir(), 'antseed-output-cap-'))
   try {
@@ -346,15 +359,15 @@ test('a cap record of every outcome, written to its evidence file, passes the ch
       agentId, seller: new Wallet(Wallet.createRandom().privateKey), model: 'model-a', service: 'model-a', verdict, outputCap,
     })
     const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor, audits: [
-      seller('1', 'SAME', records.pass), seller('2', 'DIFF', records.flag), seller('3', 'SAME', records.inconclusive),
+      seller('1', 'SAME', records.pass), seller('2', 'DIFF', records.flag), seller('3', 'SAME', records.inconclusive), seller('4', 'SAME', measuredWithin),
     ] })
     const prepared = await prepareModelAudits({
       evidenceDir, banksDir, manifest, auditor: auditor.address,
       resolveAgentOwner: async () => new Wallet(Wallet.createRandom().privateKey).address, config: FIXTURE_CONFIG,
     })
     assert.deepEqual(prepared.excluded, [])
-    assert.deepEqual(prepared.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[1n, VERIFIER_VERDICT.SAME], [2n, VERIFIER_VERDICT.DIFF], [3n, VERIFIER_VERDICT.SAME]])
-    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.flaggedBy), [[], ['output-cap'], []])
+    assert.deepEqual(prepared.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[1n, VERIFIER_VERDICT.SAME], [2n, VERIFIER_VERDICT.DIFF], [3n, VERIFIER_VERDICT.SAME], [4n, VERIFIER_VERDICT.SAME]])
+    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.flaggedBy), [[], ['output-cap'], [], []])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -399,7 +412,7 @@ test('a check that fails is an inconclusive record, which rechecks at submit', (
 
 test('a dry pass measures answers that kept to the limit too, and the record still rechecks', async () => {
   const seller = fakeSeller((cap) => ({ text: words(Math.floor(cap / 3)), billed: cap }))
-  const reference = await prepareOutputCapReference({ ask: wordReference })
+  const reference = await prepareOutputCapReference({ askReply: keptReply, ask: wordReference })
   const record = await runOutputCap({
     proxyBaseUrl: 'http://127.0.0.1:1', peerId: PEER, service: SERVICE,
     responseAuthReader: seller.responseAuthReader, limiter: new ConcurrencyLimiter(1), fetchFn: seller.fetchFn,
@@ -425,4 +438,28 @@ test('the prompt is found in requests the buyer proxy translates for a seller on
       assert.equal(requestCarriesPrompt(translated.request.body, prompt), true, to)
     }
   }
+})
+
+test('the cap check applies only when the model\'s own host keeps the limit and its answer measures what it billed', async () => {
+  const kept = await prepareOutputCapReference({ ask: wordReference, askReply: keptReply })
+  assert.equal(kept.applies, true)
+  assert.deepEqual([kept.ownReply?.billed, kept.ownReply?.measured === kept.ownReply?.cap], [kept.ownReply?.cap, true])
+  // The host bills 900 and delivers a long answer: every honest seller passing the request through would look the same.
+  const ignoring: CapReferenceReply = async (prompt, cap) => ({
+    requestBody: bytes({ messages: [{ role: 'user', content: prompt }], max_tokens: cap }),
+    response: { statusCode: 200, body: bytes({ choices: [{ message: { content: words(200) }, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 900 } }) },
+  })
+  const loose = await prepareOutputCapReference({ ask: wordReference, askReply: ignoring })
+  assert.equal(loose.applies, false)
+  assert.match(loose.reason, /the model's own host billed 900 on a limit of \d+/)
+  // Within the limit, but the answer measures far from what was billed: the measurement's scale is not trusted.
+  const offScale: CapReferenceReply = async (prompt, cap) => ({
+    requestBody: bytes({ messages: [{ role: 'user', content: prompt }], max_tokens: cap }),
+    response: { statusCode: 200, body: bytes({ choices: [{ message: { content: 'one two' }, finish_reason: 'length' }], usage: { prompt_tokens: 20, completion_tokens: cap } }) },
+  })
+  const scale = await prepareOutputCapReference({ ask: wordReference, askReply: offScale })
+  assert.equal(scale.applies, false)
+  assert.match(scale.reason, /own answer measures 2 where it billed \d+ for it/)
+  const silent = await prepareOutputCapReference({ ask: wordReference, askReply: async () => null })
+  assert.match(silent.reason, /own answer to a capped request could not be read/)
 })

@@ -69,6 +69,21 @@ export function decidedChecks(result: {
   return checks
 }
 
+/**
+ * What a finished local result decided, for `localResultAnswersConfirmation`: the checks it decided, or
+ * `undecided-confirmation` for a confirmation that ran and did not decide. That is a result the epoch plan audits
+ * again within its attempts (`confirmation_undecided`), or one whose cell is done UNDETERMINED: its attempts are
+ * used up, so it answers the target and the seller is not planned again in every run.
+ */
+export function localConfirmationDecision(
+  result: Parameters<typeof decidedChecks>[0] & { outcomeReason?: { code?: string } | null },
+  done: boolean,
+): AuditCheckId[] | 'undecided-confirmation' {
+  if (result.outcomeReason?.code === 'confirmation_undecided') return 'undecided-confirmation'
+  if (done && result.status === 'UNDETERMINED') return 'undecided-confirmation'
+  return decidedChecks(result)
+}
+
 /** A plain name for people, as in a verdict reason. */
 export function describeAuditCheck(check: AuditCheckId): string {
   switch (check) {

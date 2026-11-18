@@ -59,7 +59,7 @@ import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelSe
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { alreadyJudgedByOther, otherOpinions, type OtherOpinion } from '../../../verifier/third-opinion.js'
 import { attachFirstFlags } from '../../../verifier/same-check.js'
-import { decidedChecks } from '../../../verifier/flagging-checks.js'
+import { localConfirmationDecision } from '../../../verifier/flagging-checks.js'
 import { fetchIpfsText } from '@antseed/model-verifier'
 import { DIFF_HOLD_EPOCHS, diffHolds, type DiffHolds } from '../../../verifier/diff-hold.js'
 import { auditorRemovedMessage, createAuditorApprovalGate } from '../../../verifier/auditor-approval.js'
@@ -1013,7 +1013,7 @@ export async function runVerifierRound(
             ? {
               service: cell.result.service,
               completedAt: Date.parse(completedAt) / 1_000,
-              decided: cell.result.outcomeReason?.code === 'confirmation_undecided' ? 'undecided-confirmation' as const : decidedChecks(cell.result),
+              decided: localConfirmationDecision(cell.result, cell.action === 'done'),
             }
             : null
           return localResultAnswersConfirmation(confirmation, local) ? undefined : confirmation
@@ -1536,12 +1536,16 @@ export async function runVerifierRound(
               return reference
             },
           })
+          const capMeasureWithin = process.env['ANTSEED_VERIFIER_CAP_MEASURE_WITHIN'] === '1'
+          if (capMeasureWithin) {
+            runProgress!.above(() => console.log(chalk.yellow(`${model}: ANTSEED_VERIFIER_CAP_MEASURE_WITHIN is on: the cap check also measures answers that kept to the limit (a dry pass's diagnostic; it costs reference requests and changes no result)`)))
+          }
           // The cap check of this model's sellers (`createOutputCapScreen`): whether it applies is decided once, by
           // the reference measuring a count in words on the route of the seller's question set; each seller's
           // answers billed over the limit are measured there too.
           const outputCap = config.verifier?.outputChecks === false ? null : createOutputCapScreen<KbfReferenceV1>({
             // A dry pass (nothing submitted) also measures answers that kept to the limit, to show the measurement's scale.
-            measureWithin: process.env['ANTSEED_VERIFIER_CAP_MEASURE_WITHIN'] === '1',
+            measureWithin: capMeasureWithin,
             proxyBaseUrl: laneProxy.baseUrl,
             responseAuthReader: responseAuthReader!,
             limiter: batchLimiter,
@@ -1557,6 +1561,22 @@ export async function runVerifierRound(
               buyerProxyPort: config.buyer.proxyPort,
               requestLimiter: precheckReferenceLimiter,
             }),
+            // The model's own reply to a capped request: the check applies only when it keeps the limit.
+            askReply: (settings) => async (prompt, cap, signal) => {
+              const replied = await askReferenceReplies({
+                model,
+                settings,
+                contents: [prompt],
+                ...(signal ? { signal } : {}),
+                maxTokens: cap,
+                config: config.verifier,
+                catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
+                buyerProxyPort: config.buyer.proxyPort,
+                requestLimiter: precheckReferenceLimiter,
+              })
+              const first = replied.results[0]
+              return first?.response ? { requestBody: first.requestBody, response: first.response } : null
+            },
           })
           // The echo check of this model's sellers (`createOutputEchoScreen`): its texts are written and measured on
           // the reference once, and its crowd is every seller of the model the buyer would audit, as for the pre-check.

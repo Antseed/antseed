@@ -12,6 +12,7 @@ import { ConcurrencyLimiter } from './audit-concurrency.js'
 import type { OutputReadingV1 } from './output-usage.js'
 import { readOutput } from './output-usage.js'
 import {
+  ECHO_STOPPED_REASON,
   OUTPUT_ECHO_RULE,
   createOutputEchoScreen,
   echoCrowdVote,
@@ -210,7 +211,7 @@ test('a round that cannot be read or does not repeat decides nothing', () => {
   assert.match(judge([round([[60, 360]])], null).reason, /not every round was asked/)
 })
 
-test('the texts are guard-safe single paragraphs without quotation marks, and a long one is four short ones long', () => {
+test('the texts are guard-safe single paragraphs without quotation marks, and a long one is several short ones long', () => {
   for (let index = 0; index < 20; index += 1) {
     const short = writeEchoText('short')
     const long = writeEchoText('long')
@@ -361,7 +362,7 @@ test('a reference that changes the text or disagrees with itself leaves the mode
 
 test('an echo record of every outcome, written to its evidence file, passes the check submit makes', async () => {
   // Each record is made for the seller the fixture writes it under, so its replies are signed by that seller.
-  const wallets = Array.from({ length: 4 }, () => new Wallet(Wallet.createRandom().privateKey))
+  const wallets = Array.from({ length: 5 }, () => new Wallet(Wallet.createRandom().privateKey))
   const crowdPeers = PEERS.slice(1)
   const honest = Object.fromEntries(crowdPeers.map((peer) => [peer, honestBilling]))
   let next = 0
@@ -376,13 +377,16 @@ test('an echo record of every outcome, written to its evidence file, passes the 
     offset: await run((text) => tokens(text) + 30),
     inconclusive: await run((text) => Math.round(tokens(text) * 1.25), false),
   }
+  // A check stopped before it decided is stored inconclusive in every finding, and rechecks as such.
+  const stopped = { ...await run(honestBilling), outcome: 'inconclusive' as const, flag: null, reason: ECHO_STOPPED_REASON,
+    growth: { outcome: 'inconclusive' as const, reason: ECHO_STOPPED_REASON }, fixedAmount: { outcome: 'inconclusive' as const, reason: ECHO_STOPPED_REASON } }
   assert.deepEqual(Object.values(records).map((record) => [record.outcome, record.flag]), [['pass', null], ['flag', 'growth'], ['pass', null], ['inconclusive', null]])
   const directory = await mkdtemp(join(tmpdir(), 'antseed-output-echo-'))
   try {
     const evidenceDir = join(directory, 'evidence')
     const banksDir = join(directory, 'banks')
     const auditor = new Wallet(Wallet.createRandom().privateKey)
-    const audits: FixtureAudit[] = Object.values(records).map((record, index) => ({
+    const audits: FixtureAudit[] = [...Object.values(records), stopped].map((record, index) => ({
       agentId: String(index + 1), seller: wallets[index]!, model: 'model-a', service: 'model-a',
       verdict: record.outcome === 'flag' ? 'DIFF' : 'SAME', outputEcho: record, ...(record.precheckMatch ? { tokenizerMatch: true } : {}),
     }))
@@ -392,8 +396,9 @@ test('an echo record of every outcome, written to its evidence file, passes the 
       resolveAgentOwner: async () => new Wallet(Wallet.createRandom().privateKey).address, config: FIXTURE_CONFIG,
     })
     assert.deepEqual(prepared.excluded, [])
-    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.flaggedBy), [[], ['output-echo'], [], []])
-    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.passedBy?.filter((check) => check.startsWith('output'))), [['output-echo'], [], ['output-echo'], []])
+    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.flaggedBy), [[], ['output-echo'], [], [], []])
+    assert.ok(records.offset.rounds.every((round) => round.repeats !== undefined), 'the fixed-amount record with its repeats went through the file')
+    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.passedBy?.filter((check) => check.startsWith('output'))), [['output-echo'], [], ['output-echo'], [], []])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

@@ -106,11 +106,19 @@ export interface OutputCapV1 {
 export interface OutputCapReferenceV1 {
   rule: OutputCapRule
   upstream: unknown
-  /** The reference measured a text of the kind a seller delivers (a count in words) cleanly. */
+  /**
+   * The model's own host answered a capped request within the limit, and its answer, measured the way a seller's is,
+   * is what it billed for it: then the check applies to the model this run.
+   */
   applies: boolean
   reason: string
   measurement: OutputCapMeasurementV1 | null
+  /** The reference's own reply to the capped request: the limit, what it billed and itemised, and what its answer measures. */
+  ownReply: { cap: number; billed: number | null; reasoning: number | null; measured: number | null } | null
 }
+
+/** The reference's reply to one capped request: the request sent and the answer's bytes; null when it could not be asked. */
+export type CapReferenceReply = (prompt: string, cap: number, signal?: AbortSignal) => Promise<{ requestBody: Uint8Array; response: { statusCode: number; body: Uint8Array } } | null>
 
 /** Ways of asking for a count, so the request is not one fixed sentence; each gives a long plain answer on one line. */
 const CAP_PROMPTS: ReadonlyArray<(start: number) => string> = [
@@ -237,21 +245,39 @@ async function measureAnswer(ask: TokenizerReferenceAsk, b: string, rule: Output
  * Whether the cap check applies to the model this epoch: the reference must measure a count in words
  * cleanly (two equal measurements from one provider, no cached input). Never rejects.
  */
-export async function prepareOutputCapReference(input: { ask: TokenizerReferenceAsk; rule?: OutputCapRule }): Promise<OutputCapReferenceV1> {
+export async function prepareOutputCapReference(input: { ask: TokenizerReferenceAsk; askReply: CapReferenceReply; rule?: OutputCapRule }): Promise<OutputCapReferenceV1> {
   const rule = input.rule ?? OUTPUT_CAP_RULE
-  const { start } = outputCapPrompt()
-  const words = Array.from({ length: 24 }, (_word, index) => numberWords(start + index)).join(', ')
-  const measurement = await measureAnswer(input.ask, ` ${words}`, rule)
-  const applies = measurement.reference.delta !== null
-  return {
-    rule,
-    upstream: null,
-    applies,
-    reason: applies
-      ? `the reference measured a count in words as ${measurement.reference.delta} tokens`
-      : `the reference could not measure a count in words (${measurement.reference.failure ?? 'no difference'}), so the cap check does not apply to the model this epoch`,
-    measurement,
+  const cap = outputCapLimit(rule)
+  const { prompt } = outputCapPrompt()
+  const notApplying = (why: string, measurement: OutputCapMeasurementV1 | null, ownReply: OutputCapReferenceV1['ownReply']): OutputCapReferenceV1 => ({
+    rule, upstream: null, applies: false, measurement, ownReply, reason: `${why}, so the cap check does not apply to the model this run`,
+  })
+  let replied: Awaited<ReturnType<CapReferenceReply>>
+  try {
+    replied = await input.askReply(prompt, cap)
+  } catch {
+    replied = null
   }
+  const reading = replied ? readOutput(replied.requestBody, replied.response) : null
+  if (!readable(reading, cap)) return notApplying('the reference\'s own answer to a capped request could not be read', null, { cap, billed: null, reasoning: null, measured: null })
+  const billed = reading!.billedOutputTokens!
+  const reasoning = reading!.reasoningTokens
+  const b = answerToMeasure(reading, cap, rule, true)
+  if (!b) return notApplying('the reference\'s own answer could not be measured', null, { cap, billed, reasoning, measured: null })
+  const measurement = await measureAnswer(input.ask, b, rule)
+  const measured = measuredTokens(measurement, rule)
+  const ownReply = { cap, billed, reasoning, measured }
+  if (measured === null) return notApplying(`the reference could not measure its own answer (${measurement.reference.failure ?? 'no difference'})`, measurement, ownReply)
+  // The model's own host keeps the limit: what an honest seller passing the request through delivers.
+  if (billed > cap + rule.tolerance && measured > rule.flagFactor * cap) {
+    return notApplying(`the model's own host billed ${billed} on a limit of ${cap} with an answer of ${measured}`, measurement, ownReply)
+  }
+  // The scale: the answer measures what the host billed for it, so a seller's measured answer means what it says.
+  const visible = billed - (reasoning ?? 0)
+  if (Math.abs(measured - visible) > rule.tolerance) {
+    return notApplying(`the reference's own answer measures ${measured} where it billed ${visible} for it`, measurement, ownReply)
+  }
+  return { rule, upstream: null, applies: true, measurement, ownReply, reason: `the reference kept a limit of ${cap} (billed ${billed}) and its answer measures ${measured}` }
 }
 
 /** Runs the cap check on one seller. Never rejects: a failure is an inconclusive outcome. */
@@ -434,6 +460,8 @@ export function createOutputCapScreen<Settings>(input: {
   fetchFn?: typeof fetch
   /** The reference's input-token measurement for the model, on the route of the audit's question set. */
   ask: (settings: Settings) => TokenizerReferenceAsk
+  /** The reference's own reply to a capped request, on the same route. */
+  askReply: (settings: Settings) => CapReferenceReply
   rule?: OutputCapRule
   /** A dry pass also measures answers that kept to the limit (`runOutputCap`). */
   measureWithin?: boolean
@@ -441,8 +469,8 @@ export function createOutputCapScreen<Settings>(input: {
   const rule = input.rule ?? OUTPUT_CAP_RULE
   let prepared: Promise<OutputCapReferenceV1> | null = null
   const ready = (settings: Settings): Promise<OutputCapReferenceV1> => {
-    prepared ??= prepareOutputCapReference({ ask: input.ask(settings), rule }).catch((error: unknown): OutputCapReferenceV1 => ({
-      rule, upstream: null, applies: false, measurement: null,
+    prepared ??= Promise.resolve().then(() => prepareOutputCapReference({ ask: input.ask(settings), askReply: input.askReply(settings), rule })).catch((error: unknown): OutputCapReferenceV1 => ({
+      rule, upstream: null, applies: false, measurement: null, ownReply: null,
       reason: `the reference could not be asked (${error instanceof Error ? error.message : String(error)}), so the cap check does not apply this run`,
     }))
     return prepared

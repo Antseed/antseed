@@ -537,6 +537,8 @@ export function judgeOutputEcho(input: {
   const offsetPass = offsetJudged && offset.median! <= rule.offsetFloor
   const offsetCandidate = offsetJudged && offset.fixed && offset.median! > rule.offsetFloor
   const allAskedTwice = input.rounds.every((round) => (round.short.length >= 2 && round.long.length >= 2) || round.repeats !== undefined)
+  // Every repeat must be readable: an unreadable one leaves the fixed amount undecided.
+  const repeatsUnreadable = input.rounds.some((round) => round.repeats && (round.repeats.short.reply.count === null || round.repeats.long.reply.count === null))
 
   let growth: OutputEchoV1['growth'] = growthPass ? { outcome: 'pass', reason: 'the seller bills the model\'s growth' }
     : notDecided(growthCandidate ? 'a candidate' : 'the growth is neither within the margin in every round nor over in every round')
@@ -549,6 +551,7 @@ export function judgeOutputEcho(input: {
     return done(growthCandidate ? notDecided(why) : growth, offsetCandidate ? notDecided(why) : fixedAmount)
   }
   if (offsetCandidate && !allAskedTwice) return done(growth, notDecided('a candidate, to be asked every text again'), { needsSecondAsks: true })
+  if (offsetCandidate && repeatsUnreadable) fixedAmount = notDecided('a repeat of a text could not be read')
   if (!input.crowd || input.crowd.incomplete) {
     const why = input.crowd ? 'not every other seller of the model answered in time' : 'the model\'s other sellers were not asked'
     return done(growthCandidate ? notDecided(why) : growth, offsetCandidate ? notDecided(why) : fixedAmount, { needsCrowd: !input.crowd })
@@ -571,7 +574,7 @@ export function judgeOutputEcho(input: {
       ? notDecided(objection)
       : { outcome: 'flag', reason: `the seller's output grows ${minGrowth} or more tokens faster than the model's from a short to a long reply, in every round, twice` }
   }
-  if (offsetCandidate) {
+  if (offsetCandidate && !repeatsUnreadable) {
     const ownSpread = Math.max(...excesses) - Math.min(...excesses)
     const objection = offset.median! <= rule.tolerance + reasoningSeen
       ? `the amount is not above the ${reasoningSeen} tokens of reasoning seen on these texts`
