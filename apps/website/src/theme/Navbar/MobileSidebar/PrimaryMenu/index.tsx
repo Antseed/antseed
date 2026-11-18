@@ -1,20 +1,10 @@
 import type {JSX} from 'react';
 import {useNavbarMobileSidebar} from '@docusaurus/theme-common/internal';
-import NavLink from '../../NavLink';
-import {MENU_TAIL, NETWORK, PROVIDERS} from '../../links';
+import {PhoneMenuLinks} from '../../PhoneMenu';
+import styles from './PrimaryMenu.module.css';
 
-const ITEMS = [NETWORK, ...PROVIDERS, ...MENU_TAIL];
-
-/** The mobile sidebar's main menu (behind "Back to main menu"): the phone menu's links in Docusaurus' menu markup. */
+/** The docs sidebar's main menu (behind "Back to main menu"): the same links, in the same look, as the phone menu on other pages. */
 export default function NavbarMobilePrimaryMenu(): JSX.Element {
   const {toggle} = useNavbarMobileSidebar();
-  return (
-    <ul className="menu__list">
-      {ITEMS.map((item) => (
-        <li key={item.href} className="menu__list-item">
-          <NavLink item={item} className="menu__link" onClick={toggle} arrow />
-        </li>
-      ))}
-    </ul>
-  );
+  return <PhoneMenuLinks onNavigate={toggle} className={styles.links} />;
 }

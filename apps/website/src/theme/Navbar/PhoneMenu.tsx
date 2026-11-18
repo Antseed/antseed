@@ -22,28 +22,35 @@ type Props = {
  * nav's two buttons at its foot.
  */
 export default function PhoneMenu({phase, sheetRef, onNavigate}: Props): JSX.Element {
-  const row = (i: number) => ({className: styles.row, style: order(i), onClick: onNavigate});
   return (
     <div ref={sheetRef} id={PHONE_MENU_ID} className={clsx(styles.sheet, phase === 'closing' && styles.closing)} hidden={phase === 'closed'}>
-      <div className={styles.links}>
-        <NavLink item={NETWORK} {...row(0)} />
-        <NavLink item={PROVIDERS_PAGE} {...row(1)} />
-        <div className={styles.sub}>
-          {PROVIDERS.map((item, i) => (
-            <NavLink key={item.href} item={item} className={styles.subRow} style={order(2 + i)} onClick={onNavigate}>
-              <b className={styles.subTitle}>{item.label}</b>
-              <span className={styles.subText}>{item.shortDescription}</span>
-            </NavLink>
-          ))}
-        </div>
-        {MENU_TAIL.map((item, i) => (
-          <NavLink key={item.href} item={item} arrow {...row(2 + PROVIDERS.length + i)} />
-        ))}
-      </div>
+      <PhoneMenuLinks onNavigate={onNavigate} />
       <div className={styles.actions}>
         <DownloadCta className={styles.action} />
         <GatewayCta className={styles.action} />
       </div>
+    </div>
+  );
+}
+
+/** The menu's links: the same list in the phone sheet and in the docs sidebar's main menu, so both read the same. */
+export function PhoneMenuLinks({onNavigate, className}: {onNavigate: () => void; className?: string}): JSX.Element {
+  const row = (i: number) => ({className: styles.row, style: order(i), onClick: onNavigate});
+  return (
+    <div className={clsx(styles.links, className)}>
+      <NavLink item={NETWORK} {...row(0)} />
+      <NavLink item={PROVIDERS_PAGE} {...row(1)} />
+      <div className={styles.sub}>
+        {PROVIDERS.map((item, i) => (
+          <NavLink key={item.href} item={item} className={styles.subRow} style={order(2 + i)} onClick={onNavigate}>
+            <b className={styles.subTitle}>{item.label}</b>
+            <span className={styles.subText}>{item.shortDescription}</span>
+          </NavLink>
+        ))}
+      </div>
+      {MENU_TAIL.map((item, i) => (
+        <NavLink key={item.href} item={item} arrow {...row(2 + PROVIDERS.length + i)} />
+      ))}
     </div>
   );
 }
