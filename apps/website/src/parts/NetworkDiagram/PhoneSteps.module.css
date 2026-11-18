@@ -1,4 +1,4 @@
-/* Shown on a phone only. The card stays light at night, so do its controls. */
+/* Shown on a phone only. */
 .segments, .line { display: none; }
 
 @media (max-width: 760px) {
@@ -9,9 +9,9 @@
     margin: 4px 12px 0;
     padding: 4px;
     border-radius: 6px;
-    background: #e9e9e6;
+    background: var(--face-top);
   }
-  .line { display: block; min-height: 44px; margin: 16px 12px 24px; font: 400 15px/22px var(--site-font); color: #66746b; }
+  .line { display: block; min-height: 44px; margin: 16px 12px 24px; font: 400 15px/22px var(--site-font); color: var(--site-text-body); }
 }
 /* the reset in :where() has no specificity, so the minifier can't let it override the rules after it */
 :where(.segment) { all: unset; }
@@ -24,11 +24,11 @@
   border-radius: 3px;
   cursor: pointer;
   font: 500 15px/20px var(--site-font);
-  color: #66746b;
+  color: var(--site-text-small);
   transition: color .2s, background-color .2s;
 }
-.segment[aria-current] { background: #fff; color: #0a1a12; box-shadow: 0 1px 2px rgba(10, 26, 18, .08); }
-.segment:focus-visible { outline: 2px solid #5f8a12; outline-offset: 2px; }
+.segment[aria-current] { background: var(--site-surface); color: var(--site-text); box-shadow: 0 1px 2px rgba(10, 26, 18, .08); }
+.segment:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 2px; }
 .bar {
   position: absolute;
   left: 12px;
@@ -36,7 +36,7 @@
   bottom: 6px;
   height: 2px;
   border-radius: 1px;
-  background: rgba(10, 26, 18, .08) linear-gradient(#5f8a12, #5f8a12) no-repeat;
+  background: var(--site-dot) linear-gradient(var(--site-accent), var(--site-accent)) no-repeat;
   background-size: calc(var(--progress, 0) * 100%) 100%;
 }
-.line b { font-weight: 500; color: #0a1a12; }
+.line b { font-weight: 500; color: var(--site-text); }

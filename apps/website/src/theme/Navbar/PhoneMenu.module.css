@@ -35,7 +35,7 @@
 /* the nav's two buttons, full width at the sheet's foot; a phone has no downloads */
 .actions { display: grid; gap: 12px; margin-top: auto; }
 .actions .action { display: flex; justify-content: center; height: 48px; font-size: 16px; }
-@media (max-width: 760px) { .actions { display: none; } }
+@media (min-width: 761px) { .actions { display: none; } }
 
 /* it arrives from a little above, its rows unrolling one after another; it leaves in a quick fade (CLOSE_MS in usePhoneMenu) */
 @media (prefers-reduced-motion: no-preference) {

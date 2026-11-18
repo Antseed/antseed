@@ -15,25 +15,23 @@
 .frame.home .nav { background: var(--site-bg-hero); backdrop-filter: none; -webkit-backdrop-filter: none; }
 :global(:root[data-theme='dark']) .frame.home .nav { background: var(--site-bg-hero); }
 
-.links { display: flex; align-items: center; gap: 32px; margin: 0 auto 0 64px; font: 500 14px/20px var(--site-font); white-space: nowrap; }
+.links { display: flex; align-items: center; gap: 32px; margin: 0 auto 0 clamp(80px, calc(40vw - 360px), 240px); font: 500 14px/20px var(--site-font); white-space: nowrap; }
 .link { color: var(--site-ink); text-decoration: none; }
 .link:hover { color: var(--site-accent); text-decoration: none; }
 .link:focus-visible { outline: 2px solid #789f00; outline-offset: 3px; border-radius: 4px; }
 
-/* gaps: 24 from Blog to the switch, 16 from the switch to the buttons, 8 between buttons */
+.social { display: inline-grid; place-items: center; width: 24px; height: 36px; }
 .actions { display: flex; align-items: center; gap: 8px; }
-.pages { display: flex; gap: 32px; margin-right: 16px; font: 500 14px/20px var(--site-font); white-space: nowrap; }
 .actions .themeSwitch { margin: 4px 8px 4px 0; }
 .search { display: flex; margin-right: 16px; }
 .search.searchHidden { display: none; }
 
 @media (max-width: 1239px) {
   .links { gap: 24px; }
-  .pages { gap: 16px; margin-right: 4px; }
   .search { margin-right: 4px; }
 }
 @media (max-width: 1079px) {
-  .links, .pages { display: none; }
+  .links { display: none; }
   .search { margin-right: 0; }
 }
 
@@ -43,6 +41,6 @@
 }
 /* a phone: the marketing pages' nav on the sections' content line (the rail's edge + 20); the homepage's sits in the hero's frame */
 @media (max-width: 760px) {
-  .actions .download { display: none; }   /* a phone has no download in the bar */
+  .actions .barGateway { display: none; }
   .frame.page .nav { padding-inline: calc((100% - var(--site-rail)) / 2 + 20px); }
 }

@@ -1,6 +1,7 @@
 import {memo, type JSX, type ReactNode, type Ref, type RefObject} from 'react';
 import clsx from 'clsx';
 import {StepWindow} from './StepWindow';
+import {PaintedLayers} from './PaintedLayers';
 import type {NetworkStep} from './steps';
 import type {WindowState} from './useStepCycle';
 import styles from './NetworkBoard.module.css';
@@ -30,6 +31,7 @@ type Props = {
 export function NetworkBoard({steps, step, leaving, windows, stageRef, svgRefs, className, overlay, children}: Props): JSX.Element {
   return (
     <div className={clsx(styles.board, className)}>
+      <PaintedLayers />
       <div ref={stageRef} className={styles.stage} role="img" aria-label={STAGE_LABEL}>
         {steps.map((s, i) => (
           <div key={s.name} className={clsx(styles.layer, i === step ? styles.on : i === leaving && styles.leaving, !s.holders && styles.noHolders)}>

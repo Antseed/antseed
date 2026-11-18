@@ -58,7 +58,7 @@ export const NETWORK_STEPS: readonly NetworkStep[] = [
   {
     name: 'Discovery',
     layer: 'Mainline DHT',
-    accent: '#C8F53C',
+    accent: 'var(--site-lime)',
     point: 'Buyers and providers find each other peer to peer.',
     Drawing: Step1Drawing,
     blocks: [
@@ -97,7 +97,7 @@ export const NETWORK_STEPS: readonly NetworkStep[] = [
   {
     name: 'Payments',
     layer: 'Base',
-    accent: '#0000FF',
+    accent: 'var(--site-accent)',
     point: 'USDC moves directly between buyers and providers.',
     Drawing: Step2Drawing,
     blocks: [
@@ -125,7 +125,7 @@ export const NETWORK_STEPS: readonly NetworkStep[] = [
   {
     name: 'Trust',
     layer: 'ANTS',
-    accent: '#3F7D1E',
+    accent: 'var(--site-fill)',
     point: 'ANTS backs providers’ reputation and makes inference liquid.',
     Drawing: Step3Drawing,
     holders: true,

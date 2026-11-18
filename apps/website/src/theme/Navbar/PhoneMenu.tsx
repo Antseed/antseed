@@ -1,6 +1,6 @@
 import type {CSSProperties, JSX, Ref} from 'react';
 import clsx from 'clsx';
-import {DownloadCta, GatewayCta} from './NavCta';
+import {GatewayCta} from './NavCta';
 import NavLink from './NavLink';
 import {MENU_TAIL, NETWORK, PROVIDERS, PROVIDERS_PAGE} from './links';
 import type {SheetPhase} from './usePhoneMenu';
@@ -25,10 +25,6 @@ export default function PhoneMenu({phase, sheetRef, onNavigate}: Props): JSX.Ele
   return (
     <div ref={sheetRef} id={PHONE_MENU_ID} className={clsx(styles.sheet, phase === 'closing' && styles.closing)} hidden={phase === 'closed'}>
       <PhoneMenuLinks onNavigate={onNavigate} />
-      <div className={styles.actions}>
-        <DownloadCta className={styles.action} />
-        <GatewayCta className={styles.action} />
-      </div>
     </div>
   );
 }
@@ -51,6 +47,7 @@ export function PhoneMenuLinks({onNavigate, className}: {onNavigate: () => void;
       {MENU_TAIL.map((item, i) => (
         <NavLink key={item.href} item={item} arrow {...row(2 + PROVIDERS.length + i)} />
       ))}
+      <div className={styles.actions}><GatewayCta className={styles.action} onClick={onNavigate} /></div>
     </div>
   );
 }

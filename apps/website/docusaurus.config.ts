@@ -257,7 +257,7 @@ const config: Config = {
     colorMode: {
       defaultMode: 'light',
       disableSwitch: false,
-      respectPrefersColorScheme: true,
+      respectPrefersColorScheme: false,
     },
     navbar: {
       // The site nav is a swizzled component (src/theme/Navbar, links in src/theme/Navbar/links.ts) that renders the design's markup
@@ -271,7 +271,6 @@ const config: Config = {
         {to: '/ecosystem/', label: 'Ecosystem', position: 'left'},
         {href: 'https://antseedstats.com/network', label: 'Live prices', position: 'left'},
         {to: '/docs/', label: 'Docs', position: 'right'},
-        {to: '/blog/', label: 'Blog', position: 'right'},
       ],
     },
     prism: {

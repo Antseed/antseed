@@ -7,7 +7,6 @@ export const NETWORK: NavItem = {label: 'Network', href: '/network/'};
 export const ECOSYSTEM: NavItem = {label: 'Ecosystem', href: '/ecosystem/'};
 export const LIVE_PRICES: NavItem = {label: 'Live prices', href: 'https://antseedstats.com/network'};
 export const DOCS: NavItem = {label: 'Docs', href: '/docs/'};
-export const BLOG: NavItem = {label: 'Blog', href: '/blog/'};
 export const GATEWAY: NavItem = {label: 'Set Up Gateway', href: '/docs/quickstart/'};
 
 /** The Providers menu: `description` in the bar's dropdown, `shortDescription` where the phone menu has less room. */
@@ -30,7 +29,7 @@ export const PROVIDERS: readonly ProviderItem[] = [
 export const PROVIDERS_PAGE: NavItem = {label: 'Providers', href: '/providers/'};
 
 /** The phone menu's rows after the providers' pages. */
-export const MENU_TAIL: readonly NavItem[] = [ECOSYSTEM, LIVE_PRICES, DOCS, BLOG];
+export const MENU_TAIL: readonly NavItem[] = [ECOSYSTEM, LIVE_PRICES, DOCS];
 
 export const isExternal = (href: string): boolean => /^https?:\/\//.test(href);
 

@@ -9,8 +9,9 @@ import Logo from './Logo';
 import NavLink from './NavLink';
 import ProvidersMenu from './ProvidersMenu';
 import PhoneMenu, {MenuButton, PHONE_MENU_ID} from './PhoneMenu';
-import {DownloadCta, GatewayCta} from './NavCta';
-import {BLOG, DOCS, ECOSYSTEM, LIVE_PRICES, NETWORK, isDocsRoute} from './links';
+import {GatewayCta} from './NavCta';
+import {SOCIAL_LINKS} from '../Footer/links';
+import {DOCS, ECOSYSTEM, LIVE_PRICES, NETWORK, isDocsRoute} from './links';
 import {usePhoneMenu} from './usePhoneMenu';
 import styles from './Navbar.module.css';
 
@@ -46,19 +47,20 @@ export default function Navbar(): JSX.Element {
           <ProvidersMenu />
           <NavLink item={ECOSYSTEM} className={styles.link} />
           <NavLink item={LIVE_PRICES} className={styles.link} arrow />
+          <NavLink item={DOCS} className={styles.link} />
         </div>
         <div className={styles.actions}>
           {/* mounted everywhere so ⌘K works on every page; the button only shows on doc-like pages */}
           <div className={clsx(styles.search, !docs && styles.searchHidden)}>
             <SearchBar />
           </div>
-          <div className={styles.pages}>
-            <NavLink item={DOCS} className={styles.link} />
-            <NavLink item={BLOG} className={styles.link} />
-          </div>
+          {SOCIAL_LINKS.filter(({href}) => /^https:\/\/(github\.com|x\.com)\//.test(href)).map(({label, href, viewBox, path}) => (
+            <a key={href} href={href} aria-label={label} title={label} className={clsx(styles.link, styles.social)} target="_blank" rel="noopener noreferrer">
+              <svg width="18" height="18" viewBox={viewBox} fill="currentColor" aria-hidden="true"><path d={path} /></svg>
+            </a>
+          ))}
           <ThemeSwitch className={styles.themeSwitch} />
-          <GatewayCta />
-          <DownloadCta className={styles.download} />
+          <GatewayCta className={styles.barGateway} />
           <MenuButton
             buttonRef={menuButton}
             open={menu.expanded}

@@ -101,7 +101,7 @@ function centreOnTile(t: SVGTextElement): () => void {
   const was = {anchor: t.getAttribute('text-anchor'), x: span.getAttribute('x'), y: span.getAttribute('y')};
   t.setAttribute('text-anchor', 'middle');
   span.setAttribute('x', ((m.d * dx - m.c * dy) / det).toFixed(2));
-  span.setAttribute('y', ((-m.b * dx + m.a * dy) / det + Number(t.getAttribute('font-size')) * CAP_CENTRE).toFixed(2));
+  span.setAttribute('y', ((-m.b * dx + m.a * dy) / det + parseFloat(getComputedStyle(t).fontSize) * CAP_CENTRE).toFixed(2));
   return () => {
     if (was.anchor === null) t.removeAttribute('text-anchor'); else t.setAttribute('text-anchor', was.anchor);
     span.setAttribute('x', was.x ?? '0');

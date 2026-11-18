@@ -1,21 +1,45 @@
-/* A light card the rail's width, light in both themes: as high as its drawing, never taller than a screen less the row of points. */
+/* Paper, ink and three face tones shared by the illustration and its key. */
 .board {
+  --face-top: color-mix(in srgb, var(--site-surface) 92%, var(--site-accent));
+  --face-left: color-mix(in srgb, var(--site-surface) 80%, var(--site-accent));
+  --face-right: color-mix(in srgb, var(--site-surface) 65%, var(--site-accent));
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 404px;
   gap: 8px;
   padding: 8px;
   overflow: hidden;
-  background: #f5f5f3;
-  color: #0a1a12;
+  background: radial-gradient(circle, color-mix(in srgb, var(--site-dot) 60%, transparent) .65px, transparent .85px) 0 0 / 8px 8px var(--site-bg);
+  color: var(--site-text);
   font-family: var(--site-font);
 }
 .stage {
+  isolation: isolate;
+  background: var(--site-surface);
   position: relative;
   align-self: center;
   min-width: 0;
   aspect-ratio: 1272 / 892;   /* the drawings' view */
   max-height: calc(100svh - 184px);
+}
+.swatches { position: absolute; pointer-events: none; }
+.nightPrint { display: none; }
+:global(:root[data-theme='dark']) .nightPrint { display: inline; }
+:global(:root[data-theme='dark']) .dayPrint { display: none; }
+.stage::before {
+  content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: url('/site/assets/paintings/pond-day.webp') center bottom / cover no-repeat;
+  opacity: .2;
+  mask-image: radial-gradient(ellipse at 50% 48%, transparent 26%, #000 84%);
+}
+:global(:root[data-theme='dark']) .stage::before { background-image: url('/site/assets/paintings/pond-night.webp'); }
+.board .drawing [data-n='Slab / DHT'] > path:nth-child(3) { fill: url(#network-print-clover); }
+.board .drawing [data-n='Slab / Base'] > path:nth-child(3) { fill: url(#network-print-pond); }
+.board .drawing [data-n='Slab / ANTS'] > path:nth-child(3) { fill: url(#network-print-ferns); }
+.drawing text { paint-order: stroke fill; stroke: var(--site-surface); stroke-width: 2.5px; stroke-linejoin: round; }
+/* Pool A–C sit on angled green tiles. Give the lettering its own contrast in both themes. */
+.board .drawing [data-n='Slab / ANTS'] > text[fill='white'] {
+  font-size: 12px; font-weight: 700; fill: white; stroke: #263520; stroke-width: 2px;
 }
 .layer {
   position: absolute;
@@ -30,6 +54,27 @@
 
 .drawing { display: block; width: 100%; height: 100%; }
 .drawing text { font-family: var(--site-font); }
+/* Style the exported artwork by paint, leaving the attributes read by the animation intact.
+   Scope to the board so the same mapping reaches animated riders and the legend. */
+.board [fill='white'] { fill: var(--site-surface); }
+.board [fill='#0A1A12'] { fill: var(--site-text); }
+.board :is([fill='#66746B'], [fill='#9BA49E']) { fill: var(--site-text-small); }
+.board :is([fill='#0000FF'], [fill='#0000C2'], [fill='#3F7D1E'], [fill='#2F5F16'], [fill='#5F8A12']) { fill: var(--site-accent); }
+.board :is([fill='#C8F53C'], [fill='#B9EE2A'], [fill='#A8D926']) { fill: var(--site-lime); }
+.board :is([fill='#F4F4FF'], [fill='#F3F7EF'], [fill='#FBFDF0'], [fill='#EBEBFF'], [fill='#E9F2E3'], [fill='#F1F2EF']) { fill: var(--face-top); }
+.board :is([fill='#D9D9FF'], [fill='#D7E5CD'], [fill='#ECF8BF']) { fill: var(--face-left); }
+.board :is([fill='#C6C6FF'], [fill='#C7DABB'], [fill='#E1F2A6']) { fill: var(--face-right); }
+.board [fill='#E2E2E2'] { fill: var(--site-dot); }
+.board [stroke='#0A1A12'] { stroke: var(--site-text); }
+.board :is([stroke='#00008F'], [stroke='#234A10'], [stroke='#5F8A12']) { stroke: var(--site-accent); }
+.board :is([stroke='#9C9CEC'], [stroke='#9DBA8A'], [stroke='#B4C97C'], [stroke='#9BA49E']) { stroke: var(--site-text-small); }
+.board :is([stroke='#EAEAEA'], [stroke='#BFC4BF']) { stroke: var(--site-dot); }
+.drawing [stop-color='#F8F9F6'] { stop-color: var(--site-surface); }
+.drawing [stop-color='#ECEFE9'] { stop-color: var(--face-top); }
+.drawing [stop-color='#E6E8E3'] { stop-color: var(--face-left); }
+.drawing [stop-color='#D6DAD3'] { stop-color: var(--face-right); }
+/* Score badges carry dark ink on a lime chip even in night mode. */
+.drawing [data-n='score highlight'] text { fill: #30382c; }
 .drawing :is(path, circle, rect) { vector-effect: non-scaling-stroke; }   /* lines keep their weight at any size */
 .drawing [data-fade] { transition: opacity .35s ease; }
 .drawing [data-fade][data-hidden] { opacity: 0; }
@@ -42,8 +87,8 @@
   display: grid;
   min-height: 0;
   border-radius: 12px;
-  background: #fff;
-  box-shadow: inset 0 0 0 1px #e2e2e2;
+  background: var(--site-surface);
+  box-shadow: inset 0 0 0 1px var(--site-dot);
 }
 
 /* tablets: the window under the drawing, the drawing the card's full width so its labels stay readable */
