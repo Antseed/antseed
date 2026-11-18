@@ -4,6 +4,7 @@ import type { RuntimeMode, RuntimeProcessState } from './runtime/process-manager
 import type { ConnectedAppsState } from './connected-apps/patching/connection.js';
 import type { TelegramBridgeStatus } from './telegram/bridge.js';
 import type { ChatModel, ChatRoutePreview, ConversationFlags, OutgoingPrivacy } from '../shared/chat-gateway-types.js';
+import type { StudioProjectDetail, StudioProjectSummary } from '../shared/studio.js';
 import type {
   DepositStepSignal,
   FirstModelShownSignal,
@@ -241,6 +242,24 @@ const api = {
   },
   pickDirectory(): Promise<{ ok: boolean; path: string | null }> {
     return ipcRenderer.invoke('desktop:pick-directory');
+  },
+  studioList(): Promise<{ ok: boolean; data?: StudioProjectSummary[]; error?: string }> {
+    return ipcRenderer.invoke('studio:list');
+  },
+  studioDesk(id: string, action?: DeskAction): Promise<{ ok: boolean; data?: Desk; error?: string }> {
+    return ipcRenderer.invoke('studio:desk', id, action);
+  },
+  studioCreate(name: string): Promise<{ ok: boolean; data?: StudioProjectSummary; error?: string }> {
+    return ipcRenderer.invoke('studio:create', { name });
+  },
+  studioGet(id: string): Promise<{ ok: boolean; data?: StudioProjectDetail; error?: string }> {
+    return ipcRenderer.invoke('studio:get', { id });
+  },
+  studioProjectChat(id: string, model?: string): Promise<{ ok: boolean; conversationId?: string | null; error?: string }> {
+    return ipcRenderer.invoke('studio:project-chat', { id, model });
+  },
+  studioOpenFolder(id: string): Promise<{ ok: boolean; error?: string }> {
+    return ipcRenderer.invoke('studio:open-folder', { id });
   },
   openExternalUrl(url: string): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('desktop:open-external-url', url) as Promise<{ ok: boolean; error?: string }>;
@@ -501,3 +520,4 @@ if (isAppDocument) {
 }
 
 export type DesktopBridge = typeof api;
+import type { Desk, DeskAction } from '../shared/director.js';

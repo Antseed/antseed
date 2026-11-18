@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Desktop Studio keeps each video's storyboard, source files and takes in a local project. Producers can preview a rough cut, compare versions and send feedback to the project agent with the scene and clip time attached.
+
 ## 2026-11-18 — CLI 0.1.253, Node 0.2.186, Desktop 0.2.89
 
 ### Packages

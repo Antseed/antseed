@@ -30,6 +30,7 @@ import { usePrivateMode } from '../hooks/usePrivateMode';
 const VIEWS_WITH_HEADER_ACTIONS: ReadonlySet<ViewName> = new Set<ViewName>([
   'chat',
   'tools',
+  'studio',
   'rewards',
   'deposit',
   'desktop',

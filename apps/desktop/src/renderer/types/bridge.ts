@@ -182,6 +182,7 @@ export type ChatPermissionMode = 'manual' | 'full';
 
 import type { ChatModel, ChatRoutePreview, ConversationFlags, OutgoingPrivacy } from '../../shared/chat-gateway-types.js';
 export type { ChatModel, ChatRouteCandidate, ChatRoutePreview, ConversationFlags } from '../../shared/chat-gateway-types.js';
+import type { StudioProjectDetail, StudioProjectSummary } from '../../shared/studio.js';
 
 export type ToolApprovalDecision = 'allow_once' | 'always_allow' | 'deny';
 // Mirrors TelegramBridgeStatus in apps/desktop/src/main/telegram/bridge.ts
@@ -232,6 +233,7 @@ export type PreparedChatAttachment = {
 };
 
 export type DesktopBridge = {
+  studioDesk?: (id: string, action?: DeskAction) => Promise<{ ok: boolean; data?: Desk; error?: string }>;
   /** `process.platform` from the preload (Node side). */
   platform?:
     | 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku' | 'linux'
@@ -281,6 +283,11 @@ export type DesktopBridge = {
   chatAiGetWorkspace?: () => Promise<{ ok: boolean; data?: { current: string; default: string }; error?: string }>;
   chatAiSetWorkspace?: (workspacePath: string) => Promise<{ ok: boolean; data?: { current: string; default: string }; error?: string }>;
   pickDirectory?: () => Promise<{ ok: boolean; path: string | null }>;
+  studioList?: () => Promise<{ ok: boolean; data?: StudioProjectSummary[]; error?: string }>;
+  studioCreate?: (name: string) => Promise<{ ok: boolean; data?: StudioProjectSummary; error?: string }>;
+  studioGet?: (id: string) => Promise<{ ok: boolean; data?: StudioProjectDetail; error?: string }>;
+  studioProjectChat?: (id: string, model?: string) => Promise<{ ok: boolean; conversationId?: string | null; error?: string }>;
+  studioOpenFolder?: (id: string) => Promise<{ ok: boolean; error?: string }>;
   openExternalUrl?: (url: string) => Promise<{ ok: boolean; error?: string }>;
   openTool?: (toolName: string) => Promise<{ ok: boolean; error?: string; fallback?: string }>;
   voiceTranscribe?: (audio: ArrayBuffer) => Promise<{ ok: boolean; text?: string; error?: string }>;
@@ -388,4 +395,4 @@ export interface FreeTierSharing {
   buyer: string;
   stakers: Array<{ staker: string; expiresAt: number; expired: boolean }>;
 }
-
+import type { Desk, DeskAction } from '../../shared/director.js';

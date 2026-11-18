@@ -190,6 +190,14 @@
    Chat layout
    =================================================================== */
 
+.chat-embedded {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
 .chat-container {
   display: flex;
   flex-direction: row;

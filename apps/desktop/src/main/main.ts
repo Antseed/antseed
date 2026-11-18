@@ -38,6 +38,9 @@ import {
 import { createDesktopTray } from './ui/tray.js';
 import { ensureConfig } from './runtime/config-io.js';
 import { registerAttachmentScheme, installAttachmentProtocol } from './chat/attachments/protocol.js';
+import { installStudioProtocol } from './studio/protocol.js';
+import { STUDIO_SCHEME } from '../shared/studio.js';
+import { registerStudioIpc } from './ipc/studio.js';
 import { disableSandboxIfAppImageCannotSandbox } from './linux-sandbox.js';
 import {
   APP_ICON_PATH,
@@ -167,7 +170,7 @@ async function recordTelemetryCleanShutdown(): Promise<void> {
 // The `antseed-attachment://` scheme must be registered as privileged
 // *before* `app.whenReady()` fires. The actual request handler is wired
 // inside whenReady() once Electron's protocol module is usable.
-registerAttachmentScheme();
+registerAttachmentScheme([STUDIO_SCHEME]);
 
 disableSandboxIfAppImageCannotSandbox();
 
@@ -361,10 +364,12 @@ const telegramBridge = createTelegramBridge({
 });
 
 registerTelegramIpc({ telegramBridge });
+registerStudioIpc({ engine: piChatEngine });
 
 app.whenReady().then(async () => {
   if (IS_SAFE_STORAGE_EXPORT) return;
   installAttachmentProtocol();
+  installStudioProtocol();
   app.setName(INTERNAL_APP_NAME);
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
