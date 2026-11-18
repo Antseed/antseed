@@ -305,6 +305,14 @@ describe('positions table', () => {
     expect(html).toContain('Funds are not withdrawn automatically.');
   });
 
+  it('shows the lock start merges compare under the unlock date only when it is known', () => {
+    mocks.epoch.mockReturnValue({ current: 27, genesis: 1775728461, epochDuration: 604800 });
+    expect(renderPosition({ stakeStartEpoch: 26, normalStartEpoch: 24 })).toContain('lock started epoch 24</span>');
+    expect(renderPosition({ state: 'pending', stakeStartEpoch: 28, normalStartEpoch: 28 })).toContain('lock starts epoch 28</span>');
+    expect(renderPosition({ normalStartEpoch: null })).not.toContain('lock start');
+    expect(renderPosition({ maxLocked: true, maxLockedNext: true, normalStartEpoch: 24 })).not.toContain('lock started');
+  });
+
   it('does not imply an automatic unlock date for an existing perpetual lock', () => {
     const html = renderPosition({ maxLocked: true, maxLockedNext: true });
     expect(html).toContain('>Max lock</span>');
