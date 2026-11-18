@@ -85,7 +85,7 @@ function start() {
     loop(cap, every(5500, async () => { replay(accept, 'mi-tap'); await wait(280); replay(win, 'mi-again'); }));
   }
   if (colony) { stagger($$('.v6-colony-row', colony)); once([colony]); loop(colony); }
-  // the providers' two paths come in one after another, left to right (Elio, 12 Nov): those that come into view together each a
+  // the providers' two paths come in one after another, left to right: those that come into view together each a
   // beat after the one before; on a phone, stacked, each as it comes
   const provs = $$('.s-prov .s-paths > article');
   if (provs.length) {

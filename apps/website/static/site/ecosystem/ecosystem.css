@@ -1,4 +1,4 @@
-/* The Ecosystem page (17 Nov): Antseed's directory in our system, on the aside scale (06_Amos-feedback/ASIDE-SCALE.md). The homepage's
+/* The Ecosystem page: Antseed's directory in our system, on the aside scale (06_Amos-feedback/ASIDE-SCALE.md). The homepage's
    sheets (sections.css, launch.css) give the pieces; only the page's base, its top, the project cards' glass and the tiles live here.
    Desktop first: from 1200 wide. */
 
@@ -27,7 +27,7 @@ html { scroll-padding-top: 0; }
   .ec .s-head { gap: 24px; }
   .ec .s-head > .s-h2 + .s-sub { margin-top: -8px; }
   .ec .s-head .s-sub { max-width: 640px; line-height: 28px; }
-  /* the titles as before the aside pass (Elio, 17 Nov, as /network/ since 023d89a): sections.css's Geist Pixel 48/46 at -2, two lines
+  /* the titles as before the aside pass: sections.css's Geist Pixel 48/46 at -2, two lines
      forced by the <br> (ink, then grey) */
   .ec .s-btn, .ec .s-btn.big { height: 40px; padding: 0 12px; font-size: 16px; line-height: 24px; }
 
@@ -45,11 +45,11 @@ html { scroll-padding-top: 0; }
   .ec-hero-panel { margin: 16px 16px 16px 0; border-radius: 16px; background-position: 50% 50%; }
 
   /* ── live projects: the site's three-up card row (ASIDE-SCALE §5, as /colony/'s), 24 apart: the image 4:3 at radius 16 with its hairline,
-     then 16 below, the text opening on the project's name in ink (Elio, 17 Nov); each card a link to the project */
+     then 16 below, the text opening on the project's name in ink; each card a link to the project */
   .ec-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 64px 24px; margin-top: 96px; }   /* head to a card row: 96 (ASIDE-SCALE §2) */
   .ec-card { display: flex; flex-direction: column; gap: 16px; color: inherit; text-decoration: none; }
   .ec-card:focus-visible { outline: 2px solid #789f00; outline-offset: 4px; border-radius: 8px; }
-  .ec-card .s-path-panel { position: relative; aspect-ratio: 4 / 3; margin: 0; border-radius: 8px;   /* Elio: less rounded */
+  .ec-card .s-path-panel { position: relative; aspect-ratio: 4 / 3; margin: 0; border-radius: 8px;   /* less rounded */
     overflow: hidden; box-shadow: none; }
   .ec-shot { background: var(--tile); }
   .ec-shot::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--tile-line); pointer-events: none; }
@@ -104,8 +104,8 @@ html { scroll-padding-top: 0; }
   .eg-steps { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 4px; }
   .eg-steps li::before { content: "✓"; margin-right: 6px; color: var(--o); font-weight: 500; }
 
-  /* ── tiles (resources, pillars): the project cards' language without the image (ui-ux-pro-max review, 17 Nov): the same 1px outline
-     and radius, Elio's card spacings (20 top, 32 left, 16 right, 32 bottom, 16 between), the name in Geist Pixel; the resources are links
+  /* ── tiles (resources, pillars): the project cards' language without the image: the same 1px outline
+     and radius, the card spacings (20 top, 32 left, 16 right, 32 bottom, 16 between), the name in Geist Pixel; the resources are links
      as a whole, the pillars are not (no hover) */
   .ec-row { display: grid; gap: 24px; width: 100%; box-sizing: border-box; padding: 0 24px; margin-top: 96px; }
   .ec-row-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }

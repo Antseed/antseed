@@ -2,11 +2,11 @@
 // The panel's painting is the map, seen from above at 30° with no vanishing point, like a game board; the pieces stand on its painted
 // clearings, each the same size wherever it is, the lower on screen the more in front. Its pieces are ants on little round bases: you
 // (the hero's mascot), the AI providers (the geek in round glasses, green bases) and other people (the amber ant in a blue bandana).
-// Small seeds float over the fields, the hero's seed (Elio, 13 Nov: a seed, not a dot of light): the DHT, BitTorrent's address book that
+// Small seeds float over the fields, the hero's seed: the DHT, BitTorrent's address book that
 // everyone shares. They run no models; they only point devices to providers. Nothing else joins them: a line is drawn only while
 // something travels on it, or while a link is in use.
-// Three rules keep it legible (Elio, 12 Nov: everything moved at once, one sign meant several things):
-//   colour says whose it is: everything of yours in the site's lime (your lookup dotted, your links solid; Elio, 13 Nov: no blue), the
+// Three rules keep it legible:
+//   colour says whose it is: everything of yours in the site's lime, the
 //   others' neutral, faint;
 //   shape says what it is, the same for everyone: a request is a small white speech bubble, an answer the seed, a payment a USDC coin;
 //   motion says the direction: one thing moves at a time, leaving from someone and landing at someone.
@@ -28,12 +28,12 @@
 // own (POSE, ROLE). It runs only while on screen, writes an attribute only when its value changes, and with reduced motion is one
 // composed still: the prices with the one picked, your link, the answer on its way back, the lookup's path faint.
 // The sprites are made by assets/home/net/make-sprites.py, the ant's poses cut from Hermès's paintings.
-// Tags (an HTML layer over the board, .nd-ui): every ant wears its name, You, Provider or User (Elio, 13 Nov: each its tag); every piece,
+// Tags (an HTML layer over the board, .nd-ui): every ant wears its name, You, Provider or User; every piece,
 // seed, chip and your links can be pointed at, focused (the first of each kind) or tapped, which shows what it is in one short sentence
 // (TIP), in a card over the board.
 const NS = 'http://www.w3.org/2000/svg';
 const ART = '/site/assets/home/net/';
-// the hero's seed, the one in its cursor, by day and at night (Elio, 13 Nov): the DHT's seeds and the answer you get back
+// the hero's seed, the one in its cursor, by day and at night: the DHT's seeds and the answer you get back
 const SEEDART = { day: '/site/assets/hero/seed-day.webp', night: '/site/assets/hero/seed-night.webp' };
 const USDC = '/site/assets/home/v6/net-nocrypto-usdc.svg';
 const LOOP = 22800, BREATH = 4560;   // the breath and the seeds' drift divide the loop, so nothing jumps when it starts again
@@ -51,9 +51,9 @@ const TIP = {
   price: ['Price', 'Each provider publishes its own price. Your device compares them and picks.'],
   off: ['Offline', 'A provider that stops answering is left out. Your next request goes to the next one.'],
 };
-// a price as the Models section writes it (sections.js usd(), per million tokens)
+// a price as the Models section writes it (sections.js usd, per million tokens)
 const usd = (v) => `$${v >= 0.1 ? v.toFixed(2) : +v.toPrecision(2)}/M`;
-// what one request costs at a provider's price, for the coin's label: about 4,000 tokens, in USDC to two figures (Elio, 13 Nov: every
+// what one request costs at a provider's price, for the coin's label: about 4,000 tokens, in USDC to two figures (every
 // payment shows its value, every time)
 const paid = (price) => `${+(4000 * price / 1e6).toPrecision(2)} USDC`;
 // the boards, one per map painting (assets/home/net/<map>-day.webp and -night.webp; the panel's --wash names the one shown, and the board
@@ -64,11 +64,11 @@ const paid = (price) => `${+(4000 * price / 1e6).toPrecision(2)} USDC`;
 //   on a map drawn 560px tall;
 //   where the ants stand, on the painting's clearings, in fractions of the map ([x, y, facing: 1 right, -1 left]): you, the providers,
 //   the others. map-2 has fifteen clearings, five across and three deep; the landscape board holds its nine pieces as a chequerboard
-//   with one more in the middle, three in each row, so no corner or row is left bare (Elio, 13 Nov: one was missing top right); the
+//   with one more in the middle, three in each row, so no corner or row is left bare; the
 //   phone's slice shows six, all taken;
 //   hops: the three DHT seeds your lookup goes through ([x, y] of the ground under each, and its height in px at that size), dht: how
 //   many seeds in all (the rest scattered over the fields, clear of the pieces); found: the providers the lookup finds, in the order
-//   they ring, and prices: theirs ($ per million tokens: around Claude Opus 5.5's lowest, $0.094, models.json 12 Nov);
+//   they ring, and prices: theirs;
 //   others: the others' links ([person, provider, start ms, length ms], never more than two at once), stillOthers: the moment the
 //   still shows of them.
 const SPOTS = {
@@ -78,7 +78,7 @@ const SPOTS = {
       view: [0.5, 0.5, 1], size: 80,
       you: [0.502, 0.837],
       // left to right: bottom left, top left, the middle, right of the middle, top right, and bottom right of the middle. The map's
-      // four clearings nobody stood on are painted over (fields and bushes, Elio, 13 Nov); the two the phone's board uses get a piece
+      // four clearings nobody stood on are painted over; the two the phone's board uses get a piece
       provs: [[0.11, 0.836, 1], [0.114, 0.212, 1], [0.5, 0.503, -1], [0.7, 0.505, -1], [0.892, 0.21, -1], [0.698, 0.835, -1]],
       // bottom right, left of the middle, top middle, top right of the middle
       users: [[0.894, 0.837, -1], [0.316, 0.503, 1], [0.5, 0.212, -1], [0.693, 0.21, -1]],
@@ -133,7 +133,7 @@ const POSE = {
   cheer: { day: 'ant-cheer-day', night: 'ant-cheer-night', w: 0.6453, fx: 0.4818, fy: 0.9915, k: 1 },         // arms up, mouth open
   send: { day: 'ant-send-day', night: 'ant-send-night', w: 0.6985, fx: 0.4925, fy: 0.9916, k: 1 },            // a toss, one arm out
 };
-// one ant a role (Elio, 12 Nov: the archetypes): you the mascot, a provider the geek, a user the amber ant in a bandana. A pose a role
+// one ant a role: you the mascot, a provider the geek, a user the amber ant in a bandana. A pose a role
 // does not have is left out, so it stays itself (idle, still hopping and leaning) rather than turning into the mascot; you keep the mascot's
 const ROLE = {
   you: { keep: true, idle: { day: 'ant-you-idle-day', night: 'ant-you-idle-night', w: 0.6462, fx: 0.5351, fy: 0.9919, k: 1 } },
@@ -151,7 +151,7 @@ const T = { toss: 300, hop0: 500, hop: 700, hopDur: 600, found: 2700, ring: 420,
   link: 6400, linkDur: 700, ask: 7300, off: 15200, repick: 15800, relink: 16100, ask2: 16900, rest: 21500, fade: 22000 };
 // where each caption's beat starts (Open market, Pay per request, Always on), and where the rest starts, when none is
 const BEATS = [0, 7200, 15000, 21500];
-// a trip, from its start: the request flies (fly) and stays where it lands for hold, so it can be read (Elio, 12 Nov), before the
+// a trip, from its start: the request flies (fly) and stays where it lands for hold, so it can be read, before the
 // provider catches it; the provider tosses the answer at res, it flies back (back) and waits by you for hold before you hug it; you pay
 // at pay, the coin flies (payFly) and waits by the provider for hold before it is taken. The first slow, with labels; the second quicker
 const TRIP = { fly: 1600, hold: 700, res: 2600, back: 1600, pay: 5300, payFly: 1600 };
@@ -302,7 +302,7 @@ export function mount(panel, { still = false } = {}) {
   const play = () => { if (!still && seen && scene && !raf) { t0 = 0; raf = requestAnimationFrame(tick); } };
   const stop = () => { cancelAnimationFrame(raf); raf = 0; };
 
-  // for captures and checks: hold the frame at t ms into the loop (play() picks the loop up again)
+  // for captures and checks: hold the frame at t ms into the loop (play picks the loop up again)
   panel.netAt = (t) => { stop(); frame(t % LOOP); };
   // for the captions: go to the start of beat i (0, 1, 2) and play on from there
   panel.netJump = (i) => {
@@ -373,7 +373,7 @@ function layout(svg, ui, W, H, B, MAP, tall) {
   };
   // the point on the fields straight under s (the same x on screen; its y on the ground line between the two)
   const ground = (q, s) => ({ x: at(q, s).x, y: q.ga.y + (q.gb.y - q.ga.y) * s });
-  // where a line meets an ant: at its side toward the other end, chest high, never over its head (Elio, 12 Nov); and the lines are drawn
+  // where a line meets an ant: at its side toward the other end, chest high, never over its head; and the lines are drawn
   // under the pieces, so one passing another ant goes behind it
   const side = (n, m) => ({ x: n.x + ((m.ax ?? m.x) < n.x ? -1 : 1) * A * 0.34, y: n.y, kind: n.kind });
 
@@ -427,7 +427,7 @@ function layout(svg, ui, W, H, B, MAP, tall) {
   const grey = el('feColorMatrix', { type: 'saturate', values: '1' }, el('filter', { id: 'nd-grey' }, defs));
   const g = (cls) => el('g', { class: cls }, svg);
   // the layers: the map, the ground (the rings, the shadows of what flies), the long lines (others' links, the lookup, yours) under the
-  // pieces, so none crosses an ant (Elio, 12 Nov), the seeds, then what travels along the lines
+  // pieces, so none crosses an ant, the seeds, then what travels along the lines
   const gRing = g('nd-rings'), gFall = g('nd-fall'), gOther = g('nd-olink'), gLook = g('nd-look'), gLink = g('nd-link'), gNode = g('nd-nodes'), gDht = g('nd-dht'), gPk = g('nd-pk'), gHit = g('nd-hits');
   const ring = (n) => el('ellipse', { cx: n.x.toFixed(1), cy: n.y.toFixed(1), rx: 0, ry: 0, opacity: 0 }, gRing);
   const hopPaths = hops.map(() => el('path', {}, gLook));

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- The Colony page (17 Nov): the page Antseed sent (its copy and its paintings, word for word) rebuilt in our packaging: the homepage's
+<!-- The Colony page: the page Antseed sent (its copy and its paintings, word for word) rebuilt in our packaging: the homepage's
      nav and footer, its components (sections.css), its painted panels and their glass labels; colony.css holds only this page's layouts,
      colony.js the sign-up links (config.json) and where your Mac fits -->
 <script src="/site/hero/theme.js"></script>
@@ -192,7 +192,7 @@
   </div>
 </section>
 
-<!-- Sign up, before the FAQ (Elio, 17 Nov): the join scene by day (at night in the dark theme), the closing line on its sky; under it, where your Mac fits (nothing is sent) and the button.
+<!-- Sign up, before the FAQ: the join scene by day (at night in the dark theme), the closing line on its sky; under it, where your Mac fits (nothing is sent) and the button.
      The button opens the sign-up form once config.json has its address; until then it stays here and the note says when it opens -->
 <section class="s-sec cl-join" id="join" aria-labelledby="cl-join-h">
   <div class="s-rail">
@@ -243,12 +243,11 @@
 
 
 
-<!-- Footer. Links go to the docs, to other sites or to this page. Blog and Terms will be our own pages: placeholders (data-placeholder="page"); Media kit opens the brand kit (/brand/, a work in progress, Elio 13 Nov) -->
+<!-- Footer. Links go to the docs, to other sites or to this page. Blog and Terms will be our own pages: placeholders (data-placeholder="page"); Media kit opens the brand kit -->
 <div class="lp-slot lp-slot--band" data-part="cta-band"></div>
 <footer class="s-sec s-foot meadow">
   <!-- the painting by day and by night, wide (21:9) so the footer with its text comes to about 16:9: the same meadow without the hill
-       between the ants and the river (Hermès, Magnific Nano Banana 2.1 at 1K, 12 Nov; the three pairs in 02_Brand/footer-wide-2026-11-12,
-       this one d1/n1). 1584 wide for now: a sharper copy once the upscale is agreed -->
+       between the ants and the river. 1584 wide for now: a sharper copy once the upscale is agreed -->
   <div class="scene" aria-hidden="true"><img class="day" src="/site/assets/home/footer/meadow-loop-day-poster.webp" width="1920" height="1080" alt="" loading="lazy" decoding="async"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" class="day" muted loop playsinline preload="none" data-src="/site/assets/home/footer/meadow-loop-day"></video><img class="night" src="/site/assets/home/footer/meadow-loop-night-poster.webp" width="1920" height="1080" alt="" loading="lazy" decoding="async"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" class="night" muted loop playsinline preload="none" data-src="/site/assets/home/footer/meadow-loop-night"></video><canvas class="flies"></canvas></div>
   <div class="s-rail">
     <div class="cols">
@@ -272,7 +271,7 @@
 <script type="module">
 import('/site/hero/parts.js');
 import('/site/hero/dither.js'); import('/site/hero/sections.js'); import('/site/hero/micro.js'); import('/site/hero/card-unveil.js'); import('/site/hero/wash-led.js');
-import('/site/hero/night-loop.js'); import('/site/hero/footer-eyes.js'); import('/site/hero/fireflies.js').then((m) => m.scan()); import('./colony.js');
+import('/site/hero/night-loop.js'); import('/site/hero/footer-eyes.js'); import('/site/hero/fireflies.js').then((m) => m.scan()); import('/site/colony/colony.js');
 </script>
 </body>
 </html>

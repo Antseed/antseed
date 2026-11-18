@@ -1,4 +1,4 @@
-/* Providers, second pass (Design, Elio's notes of 17 Nov): hero/parts/providers-v4.html. Load after sections.css (in place of
+/* Providers, second pass: hero/parts/providers-v4.html. Load after sections.css (in place of
    providers-v3.css). The glass is the scenes' (v6.css): light frosted by day, the terminal's smoked green at night. */
 .pvy { --ink: #0a1a12; --t: #30382c; --m: #5d6660; --o: #4f7a24; --lime: #b9ee2a; --under: #5f8a12; --lift: rgba(24, 44, 10, .5);
   --glass: rgba(255, 255, 255, .7); --edge: #fff; --sh: 0 0 0 .5px rgba(10, 26, 18, .14), 0 12px 32px 0 rgba(20, 51, 89, .16);
@@ -14,7 +14,7 @@
 /* ── own provider: the moving painting slides left, the listing on the right ── */
 /* the poster and the film set (sections.css .pv-set) drawn 1.4 times the panel's width, their right edges on the panel's: the stall,
    painted in the middle, then stands at the panel's left edge about as far in as the listing is from the right one, with as much air
-   between the two (Elio, 17 Nov); the swinging board, the ant and its eyes are inside the set and move with it */
+   between the two; the swinging board, the ant and its eyes are inside the set and move with it */
 .s-path-panel:has(> .pvy-own) { background-size: 140% auto; background-position: 100% 85%; }
 .s-path-panel:has(> .pvy-own) .pv-set { left: -40%; width: 140%; }
 .pvy-card { position: absolute; right: 5.7%;   /* as far from the edge as the stall is from it and from the listing */
@@ -69,7 +69,7 @@
   .s-path-panel:has(> .pvy-own) .pv-set { left: -45%; width: 145%; }
 }
 
-/* ── the section's text (Elio, 17 Nov) ── */
+/* ── the section's text ── */
 /* each title on one line where the column allows, its grey half kept whole: both title rows are then one line and level */
 .s-path-h span { white-space: nowrap; }
 /* long lines broken in the middle, never a word or two left alone (the .s-prov prefix wins over sections.css's text-wrap: pretty) */
@@ -85,12 +85,12 @@
   .pvy-flow { padding-top: 4px; }
 }
 
-/* ── the whole section in one screen on a laptop (Elio, 18 Nov): eyebrow to both buttons inside 1440 × 900 ── */
+/* ── the whole section in one screen on a laptop: eyebrow to both buttons inside 1440 × 900 ── */
 /* titles a step smaller, the pixel style and the two tones kept; the paths as wide as before, the head where every section's is, the
    paintings landscape (16:9) and reframed: the stall, held at 1.4 times the width, lifted so its roof and the Mac stay whole */
 @media (min-width: 761px) {
   .s-prov .s-h2 { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
-  .s-prov .s-rail { padding-bottom: 124px; }   /* Figma 820:1261 (Elio, 18 Nov): rail 120 / 124, head to paths 64 */
+  .s-prov .s-rail { padding-bottom: 124px; }   /* Figma 820:1261: rail 120 / 124, head to paths 64 */
   .s-prov .s-paths { margin-top: 64px; }
   .s-prov .s-path-panel { aspect-ratio: 16 / 9; }
   .s-prov .s-path-h { font-size: 24px; line-height: 28px; letter-spacing: -.8px; }

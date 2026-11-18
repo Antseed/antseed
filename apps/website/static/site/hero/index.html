@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- the theme, before anything paints: the mode kept in localStorage 'antseed.theme' ('system', the default, 'light' or 'dark'), resolved
      against the system's preference into <html data-theme="light|dark"> with its color-scheme and the page's background (no white flash).
-     window.antseedTheme.get() gives the mode, .set(mode) keeps and applies it; every apply after the first dispatches 'themechange' on
+     window.antseedTheme.get gives the mode, .set(mode) keeps and applies it; every apply after the first dispatches 'themechange' on
      document (the hero repaints its caches on it). In 'system' mode it follows the system live -->
 <script src="/site/hero/theme.js"></script>
 <title>Antseed | The Open Market for AI Inference</title>
@@ -13,14 +13,13 @@
 <meta property="og:title" content="Antseed | The Open Market for AI Inference">
 <meta property="og:description" content="Give your agents, apps, and team access to 700+ AI models at lower prices, with built-in privacy and full control.">
 <link rel="icon" type="image/svg+xml" href="/site/assets/home/icons/ant-mark.svg">
-<!-- the version, set before the first paint: none or ?whimsical2 = Meadow · Whimsical 2 (Figma 382:3995, the village meadow), ?mascot =
-     Meadow · Mascot (Figma 331:7835); kept too: ?meadow = Meadow (no class), ?whimsical = Meadow · Whimsical 1
-     (Figma 348:8383, Elio's looping film behind it), ?square = Meadow Square (Figma 221:2). Both Whimsicals also get .whimsical, all they share -->
+<!-- the version, set before the first paint: none or ?whimsical2 = Meadow · Whimsical 2, ?mascot =
+     Meadow · Mascot; kept too: ?meadow = Meadow (no class), ?whimsical = Meadow · Whimsical 1, ?square = Meadow Square. Both Whimsicals also get .whimsical, all they share -->
 <script>{
   const q = new URLSearchParams(location.search), v = ['mascot', 'whimsical2', 'whimsical', 'square', 'meadow'].find((k) => q.has(k)) || 'whimsical2';
   if (v !== 'meadow') document.documentElement.classList.add(...(v.startsWith('whimsical') ? ['whimsical', v === 'whimsical' ? 'whimsical1' : v] : [v]));
   // Whimsical 2 opens full screen and unfolds on scroll (the script under the hero); not with reduced motion, nor for still captures
-  if (v === 'whimsical2' && !q.has('still') && !q.has('demo') && !matchMedia('(prefers-reduced-motion: reduce)').matches) document.documentElement.classList.add('veil');   // no zoom intro (Elio, 17 Nov: the hero opens as the card, the nav at the top of the page)
+  if (v === 'whimsical2' && !q.has('still') && !q.has('demo') && !matchMedia('(prefers-reduced-motion: reduce)').matches) document.documentElement.classList.add('veil');   // no zoom intro
   // .veil: the painting held under a cover in the hero's colour until unveil.js lets it arrive (the text is there from the first frame)
   // Meadow · Mascot's text block comes in with its intro (.go, from the hero's script); at once for captures, and this timer should the script fail
   if (v === 'mascot') { if (q.has('still') || q.has('demo')) document.documentElement.classList.add('go'); else setTimeout(() => document.documentElement.classList.add('go'), 4000); }
@@ -55,7 +54,7 @@
   .hero.seeding { cursor: none; }
   .hero.on-ui { cursor: auto; }   /* over the nav, the pill and the install panel: the arrow, the seed under them */
   .hero .puppet, .paint { display: none; }
-  /* Whimsical 2's nearest leaves and flowers, over the mascot's lower body (Elio, 13 Nov: it stands in the painting, not on it): a copy of
+  /* Whimsical 2's nearest leaves and flowers, over the mascot's lower body: a copy of
      the painting's own bottom right on the painting's box, over the mascot's canvas, drawn by the script after the mascot's */
   .hero canvas.fore { display: none; pointer-events: none; }
   .whimsical2 .hero canvas.fore { display: block; inset: 73px 2px 0; width: calc(100% - 4px); height: calc(100% - 73px); }
@@ -122,7 +121,7 @@
      gets the releases page) where the copy button is, and the other platforms in the line under it, every build a click away */
   .app-row { font: 500 14px/1 "Instrument Sans"; color: var(--cmd); }
   .app-row > span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  /* the main action in the CTA green, as the nav's (Elio, 12 Nov: it had gone black) */
+  /* the main action in the CTA green, as the nav's */
   .get { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px 0 12px; border-radius: 6px; background: #4f7a24; color: #fafafa;
     box-shadow: 0 3.5px .5px 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -2px 1px 0 #3b5e17;
     font: 500 13px/1 "Instrument Sans"; text-decoration: none; white-space: nowrap; transition: background .15s; }
@@ -152,7 +151,7 @@
   /* once the mascot has eaten it, no seed in hand: the system cursor, until the one on the ground is picked up */
   .hero.empty { cursor: auto; }
   .hero.empty .cursor { opacity: 0; transition: none; }
-  /* that seed, standing by the mascot upright and as big as in the hand, the same seed (Elio, 13 Nov): it drops in and bounces, grows a
+  /* that seed, standing by the mascot upright and as big as in the hand, the same seed: it drops in and bounces, grows a
      little on hover (from its base, which stays on the ground), and a click lifts it into the hand as it is, its shadow left to fade
      on the ground (the script under the mascot); not on phones (no mascot there). Its size is the cursor's (--seed-w, --seed-h) */
   .ground-seed { all: unset; position: absolute; z-index: 3; left: 0; top: 0; display: none; width: var(--seed-w, 64px); height: var(--seed-h, 89px); cursor: pointer;
@@ -170,7 +169,7 @@
   .hero.lifting .cursor { transition: none; }
   @keyframes seed-drop { 0% { transform: translateY(-140px); opacity: 0; } 12% { opacity: 1; } 60% { transform: none; } 75% { transform: translateY(-12px); } 90%, 100% { transform: none; } }
   @media (max-width: 760px) { .ground-seed.on { display: none; } }
-  /* at night the seed glows as the footer's (Elio, 12 Nov): amber from the core (seed-night.webp), a halo round it, and on the ground a
+  /* at night the seed glows as the footer's: amber from the core (seed-night.webp), a halo round it, and on the ground a
      pool of its light instead of a shadow */
   :root[data-theme="dark"] .cursor img { filter: drop-shadow(0 0 6px rgba(255, 200, 100, .85)) drop-shadow(0 0 22px rgba(255, 150, 50, .62)) drop-shadow(0 0 56px rgba(255, 128, 32, .4)); }
   :root[data-theme="dark"] .ground-seed img { filter: drop-shadow(0 0 6px rgba(255, 200, 100, .85)) drop-shadow(0 0 22px rgba(255, 150, 50, .62)) drop-shadow(0 0 56px rgba(255, 128, 32, .4)); }   /* as in the hand */
@@ -220,7 +219,7 @@
   /* Meadow · Mascot, Figma 331:7835: the reaching mascot, the text block higher (181px down an 873px card, kept in proportion), the title tighter */
   .mascot .hero .puppet, .whimsical .hero .puppet { display: block; }
   .mascot .content { padding-bottom: max(78px, calc((100svh - 32px) * 0.33)); }
-  /* its intro's entrance, as Design's network prototype: the pill, the title's two lines and the install block fade up 14px in turn when the
+  /* its intro's entrance, as the design's network prototype: the pill, the title's two lines and the install block fade up 14px in turn when the
      network starts lighting (the script adds .go to <html>; the head's timer does it anyway). Not with reduced motion */
   @media (prefers-reduced-motion: no-preference) {
     .mascot:not(.go) .content > * { opacity: 0; }
@@ -231,7 +230,7 @@
   }
   @keyframes enter { from { opacity: 0; transform: translateY(14px); } }
   /* Whimsical's arrival: the pill, the title and the install block fade up from a touch smaller, in turn, as the windows over the
-     site's paintings do (sections.css), while the painting grows in behind them (unveil.js; Elio, 12 Nov) */
+     site's paintings do (sections.css), while the painting grows in behind them */
   @media (prefers-reduced-motion: no-preference) {
     .whimsical.intro .content > :is(.pill, h1, .install) { animation: arrive-in .55s ease-out both, arrive-grow .9s cubic-bezier(.2, .9, .25, 1.12) both; }
     .whimsical.intro .content > h1 { animation-delay: 80ms; }
@@ -251,7 +250,7 @@
   .whimsical1 .paint { background-image: url(/site/assets/hero/video/whimsical-1-poster.webp); }
   .paint video { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .4s; }
   .paint video.on { opacity: 1; }
-  /* Whimsical 2's day (Video, 13 Nov, approved by Elio): the meadow looping on its own (4 s, a plain sky), and over its sky five
+  /* Whimsical 2's day: the meadow looping on its own (4 s, a plain sky), and over its sky five
      painted clouds drifting across in CSS, each at its own pace (55 to 60 s), cut above the horizon. Both sit in a 16:9 stage that
      covers the painting as object-fit: cover would, centred, so every cloud value (a share of the stage) stays on the painted sky at
      any size. With reduced motion the film is gone (the poster) and the clouds hold the painting's own layout */
@@ -273,7 +272,7 @@
   .cloud.c3 { --left: -16.5104%; --top: 30.3704%; --w: 15.2604%; --travel: 771.672%; --dur: 100.00s; --delay: -55.550s; }
   .cloud.c2 { --left: -19.7917%; --top: 9.6296%; --w: 18.5417%; --travel: 652.809%; --dur: 96.67s; --delay: -60.687s; }
   .cloud.c1 { --left: -39.2708%; --top: 11.8519%; --w: 38.0208%; --travel: 369.589%; --dur: 93.33s; --delay: -32.657s; }
-  /* (each 40% slower than Video's numbers, the delays with them so the painting's layout still holds at the start: Elio, 13 Nov) */
+  
   @media (prefers-reduced-motion: reduce) { .paint .cloud { animation-play-state: paused; } }
   .whimsical #matrix { display: none; }
   .whimsical nav { background: #fff; backdrop-filter: none; -webkit-backdrop-filter: none; }
@@ -288,7 +287,7 @@
   @media (max-width: 760px) { .square .hero { height: auto; } .square h1 { font-size: 46px; line-height: 48px; } }
   @media (prefers-reduced-motion: reduce) { .cursor.fed img { animation: none; } }
   /* Whimsical 2's opening (.intro): the film fills the screen and the mascot walks in; the scroll shrinks it into the card; the nav is on
-     it from the first frame, at the top of the screen (Elio, 17 Nov); the pill, the title and the install block are there from the first frame. The stage runs 80svh longer than the hero, which holds still (sticky) until
+     it from the first frame, at the top of the screen; the pill, the title and the install block are there from the first frame. The stage runs 80svh longer than the hero, which holds still (sticky) until
      that scroll is played; the script under the hero sets every value from it. The card overflows the hero while it is larger (.rising),
      never the page sideways. On a phone the card fills the screen, the block a little higher, clear of the hills */
   /* the clip sits on the stage, widened over the body's 16px gutter: on body it reaches the viewport, which ignores it */
@@ -301,7 +300,7 @@
   /* the painting's arrival at load (unveil.js): covered in the hero's colour from the first frame, then a canvas with holes takes over */
   .veil .paint::after { content: ""; position: absolute; inset: 0; z-index: 3; background: var(--hero); }
   .paint > canvas.hv { position: absolute; inset: 0; z-index: 3; width: 100%; height: 100%; pointer-events: none; }
-  /* and as it arrives the painting settles from a touch larger to its size (Elio, 12 Nov: a growth and a fade, as the site's pictures),
+  /* and as it arrives the painting settles from a touch larger to its size,
      the film, the night and its fireflies, and the sky's points (their origin the painting's centre, set by dither.js) */
   .arriving .paint > :is(.stage, .night, .flies, canvas.dz-hero) { animation: paint-settle var(--arrive, 1.5s) cubic-bezier(.2, .7, .3, 1) both; }
   @keyframes paint-settle { from { scale: 1.07; } }
@@ -323,7 +322,7 @@
     backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
   :root[data-theme="dark"] .pill .chev img { filter: invert(1); }
   :root[data-theme="dark"] .install { box-shadow: inset 0 0 0 0.5px var(--outline), inset 0 0 0 1px rgba(255, 255, 255, .04); }
-  /* at night the switch reads on the green glass (Elio, 12 Nov): a darker tray, the thumb a lit green-grey with its own edge, the off tab lighter */
+  /* at night the switch reads on the green glass: a darker tray, the thumb a lit green-grey with its own edge, the off tab lighter */
   :root[data-theme="dark"] .tabs { background: rgba(0, 0, 0, .24); box-shadow: inset 0 0 0 1px rgba(236, 238, 233, .06); --tab-off: #b3bdb6; }
   :root[data-theme="dark"] .tabs::before { background: rgba(190, 228, 170, .16); box-shadow: 0 0 0 1px rgba(190, 228, 170, .26); }
   /* the green button at night: its lip a deeper green, no pale line under it */
@@ -349,7 +348,7 @@
   :root[data-theme="dark"].whimsical .paint .flies { opacity: var(--fireflies, 1); }
   /* Whimsical 2 at night: no wash but the same meadow painted at night (crescent moon; ?night=a full moon, ?night=c none), still, the film
      stopped under it. When the theme flips (.theming, the script under the hero; never on load, not with reduced motion) the night fades
-     in over the whole painting at once, evenly, and out the same way at dawn (Elio, 16 Nov: a fade, not the sweep from the sky down).
+     in over the whole painting at once, evenly, and out the same way at dawn.
      --fade is the night's share, 0 by day, 1 at night */
   @property --fade { syntax: "<number>"; inherits: false; initial-value: 0; }
   /* the switch's crossfade of the whole page (antseedTheme.set, the head script) */
@@ -365,7 +364,7 @@
   .paint .night video.on { opacity: 1; }
   /* the fireflies (fireflies.js): a canvas inside the night (Whimsical 2), so its fade brings them and takes them, in step */
   :root[data-theme="dark"].whimsical nav { background: var(--page); }
-  /* at night the install card is the Gateway terminal's glass (sections.css .term, Elio, 12 Nov): smoked green, its green hairline and inner light */
+  /* at night the install card is the Gateway terminal's glass: smoked green, its green hairline and inner light */
   :root[data-theme="dark"].whimsical .install { background: rgba(14, 33, 23, .64);
     box-shadow: inset 0 0 0 .5px rgba(150, 200, 145, .42), inset 0 .5px 0 0 rgba(190, 228, 170, .16), 0 12px 32px 0 rgba(8, 26, 14, .26);
     backdrop-filter: blur(10px) saturate(1.3); -webkit-backdrop-filter: blur(10px) saturate(1.3); }
@@ -489,7 +488,7 @@
 // Whimsical 2's opening (.intro), played by the scroll over the stage's extra 80svh (progress p, 0 to 1). At 0 the film fills the screen;
 // toward 1 it shrinks into the card: scaled as one (its frame keeps its shape), trimmed to a box that eases from the screen to the card.
 // The mascot's canvas moves with the card's bottom right corner (heroCard: how far, read by the mascot for its eyes). The nav is there
-// from the first frame, opaque, at the very top and as wide as the screen, and eases with the box to its place on the card (Elio, 17 Nov). The leaves in front of the mascot (canvas.fore) are the painting's own, so they move as it does (heroCard.x, y, s:
+// from the first frame, opaque, at the very top and as wide as the screen, and eases with the box to its place on the card. The leaves in front of the mascot (canvas.fore) are the painting's own, so they move as it does (heroCard.x, y, s:
 // the painting's top left in the hero and its scale, read by their drawing; heroCard.fore, that drawing, asked again on every change). The pill, the title and the install block stay in their place from the first frame, over the film.
 // Set before the first paint, then once per frame only while p changes; at 1 every value is cleared, so the hero is exactly as it was.
 window.heroCard = { dx: 0, dy: 0, p: 1 };
@@ -620,15 +619,15 @@ if (document.documentElement.classList.contains('intro')) {
   // providers), each kept as written when its source does not answer
   const backers = document.querySelector('.backers');
   // the figures count up (from about 70% of what is written, never from 0) as the band comes into view, once (count.js, as $ANTS's); a live value that lands meanwhile becomes the count's end
-  const count = import('./count.js').then((c) => { c.figures(backers, '[data-fig]'); return c; });
+  const count = import('/site/hero/count.js').then((c) => { c.figures(backers, '[data-fig]'); return c; });
   const fig = (key, n) => { const el = backers.querySelector(`[data-fig="${key}"]`); if (el && n > 0) count.then((c) => c.set(el, n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n.toLocaleString('en-US'))); };
   const json = (url) => fetch(url).then((r) => (r.ok ? r.json() : Promise.reject(r.status)));
-  json('models.json').then(({ network: n }) => { fig('users', n?.users); fig('tokens', n?.tokens); }).catch(() => {});
+  json('/site/hero/models.json').then(({ network: n }) => { fig('users', n?.users); fig('tokens', n?.tokens); }).catch(() => {});
   json('https://antseedstats.com/api/v1/network/summary').then(({ data }) => fig('providers', data.lifetime.sellers)).catch(() => {});
   json('https://antseedstats.com/api/v1/models?limit=1').then(({ data }) => fig('models', data.total)).catch(() => {});
 }
 </script>
-<script type="module">import('./dither.js'); document.getElementById('sections').innerHTML = await (await fetch('sections.html')).text(); import('./parts.js'); import('./sections.js'); import('./gw-film.js'); import('./micro.js'); import('./card-unveil.js'); import('./wash-led.js'); import('./night-loop.js'); import('./footer-eyes.js'); import('./fireflies.js').then((m) => m.scan());</script>
+<script type="module">import('/site/hero/dither.js'); document.getElementById('sections').innerHTML = await (await fetch('/site/hero/sections.html')).text(); import('/site/hero/parts.js'); import('/site/hero/sections.js'); import('/site/hero/gw-film.js'); import('/site/hero/micro.js'); import('/site/hero/card-unveil.js'); import('/site/hero/wash-led.js'); import('/site/hero/night-loop.js'); import('/site/hero/footer-eyes.js'); import('/site/hero/fireflies.js').then((m) => m.scan());</script>
 <script type="module">
 import { settings, paperOf, heroPanel, store } from '/site/assets/hero-panel.js';
 // The background is a watercolour meadow with flat paper in the middle (assets/hero/meadow-*.png),
@@ -692,7 +691,7 @@ const DEFAULTS = {
 };
 // The version, from <html> (see the top of the page). Meadow and Meadow · Mascot share their saved settings and presets (the same
 // mosaic); Whimsical 1, Whimsical 2 and Square keep their own. Square starts from this block with square tiles, the Whimsicals with the
-// mascot at 12 drawings a second. Whimsical 1 has Figma's standing ant (373:5), ungraded (Figma only adds the rim), at the right edge
+// mascot at 12 drawings a second. Whimsical 1 has Figma's standing ant (373:5), ungraded, at the right edge
 // as in Figma but smaller, clear of the install block;
 // Whimsical 2 a softer grade of the rigged one, nearer the art as drawn
 const VARIANT = ['mascot', 'whimsical', 'square'].find((v) => document.documentElement.classList.contains(v)) || '';
@@ -726,7 +725,7 @@ const PLATES = {
 };
 if (!PLATES[S.source]) S.source = 'auto';
 
-let OX = 2, OY = 2;   // the grid's top-left tile, set by layout()
+let OX = 2, OY = 2;   // the grid's top-left tile, set by layout
 const hero = document.getElementById('hero'), canvas = document.getElementById('matrix'), ctx = canvas.getContext('2d');
 const cursorEl = document.getElementById('cursor');
 const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -1103,7 +1102,7 @@ function frame(now) {
 }
 
 // ── Meadow · Mascot: the intro ───────────────────────────────────────────
-// Once, at load: Design's network prototype (prototypes/hero-network.html) on this mosaic. Nothing is there; the title comes in, then
+// Once, at load: the design's network prototype (prototypes/hero-network.html) on this mosaic. Nothing is there; the title comes in, then
 // peers wake at scattered points of the mosaic (never a centre, never behind the text) and each sends a ripple: a dot comes on as the
 // ripple reaches it, pushed outward and tinted in the accent as the front passes, and where two ripples meet the two peers link up
 // along the rows, until the whole mosaic is on (about 1.6 s), its dark glow coming up with the last dots. Then the peers let go and
@@ -1286,9 +1285,9 @@ if (still) requestAnimationFrame(frame); else wake();
 // Meadow · Mascot and Whimsical only. A puppet at the bottom right, on its own canvas over the mosaic, big, its legs cut off by the card's bottom edge. Its eyes
 // follow the pointer anywhere on the page; when the pointer comes within `mascotReach` px holding the seed, its mouth opens and its arms turn
 // round their shoulders toward it (rotation only, eased), and both settle back when it leaves. With no seed in hand (the system cursor:
-// over the panels, or once it has eaten) it wants nothing and keeps its lost look (Elio, 13 Nov).
+// over the panels, or once it has eaten) it wants nothing and keeps its lost look.
 // Reduced motion: the eyes only. It shrinks, then hides, rather than cover the install block, and is off on phones.
-// RIG: the Design session's parts (02_Brand/…/mascots/rig, README there), copied to assets/hero/ant-rig, loaded as WebP with alpha (the
+// RIG: the mascot's parts, in assets/hero/ant-rig, loaded as WebP with alpha (the
 // PNGs' own size, cwebp -near_lossless 60 -q 100 -m 6: 387 KB for 2,961; the PNGs stay beside them as the masters). The art faces right
 // and is drawn mirrored, so every point below is in the files' own px. The body and arms (v2) share the neutral pose's frame,
 // so at rest they draw exactly as it; without them it falls back to the neutral pose, where only the eyes and the mouth move.
@@ -1322,16 +1321,16 @@ const RIG = WHIMSICAL1 ? {
   flip: true,   // faces left, toward the middle of the hero
   eyes: [{ x: 525, y: 422, rx: 64, ry: 64 }, { x: 717, y: 417, rx: 46, ry: 57 }],   // the eye whites
   pupil: 16, pupilInk: '#2b1b12', jitter: 2.5,   // how far (px of the art) the pupils tremble while it is awake
-  lost: [[-1, 0], [1, 0]],   // the lost look at rest, each eye's way in the art: apart, sideways, the two pupils level (Elio, 13 Nov: one higher looked too much)
+  lost: [[-1, 0], [1, 0]],   // the lost look at rest, each eye's way in the art: apart, sideways, the two pupils level
   // the painted mouth: its centre, and the box round its line (the bar and its two end ticks), painted out under the open mouth.
   // Open, it is the $ANTS ant's mouth (assets/home/ants-token-ant.webp): a small round leaning a little, in the art's dark line,
-  // dark red inside with a pink tongue low on one side (Elio, 13 Nov)
+  // dark red inside with a pink tongue low on one side
   mouth: [640, 485], mouthLine: [612, 470, 668, 500],
-  // the painted line between its end ticks: its two ends (x, y) and its thickness, where the shutting mouth lies flat (Elio, 13 Nov)
+  // the painted line between its end ticks: its two ends (x, y) and its thickness, where the shutting mouth lies flat
   mouthBar: [624, 484.9, 654, 484.5, 3.5],
   mouthInk: '#3a1209', mouthInside: '#782b1c', mouthTongue: '#e8a497', mouthTilt: 0.08,
   head: [600, 520],   // the pointer's distance is measured from here
-  // the antennae, in a breeze (Elio, 13 Nov): each one's box of the art above the head (left, top, right, and the row where it meets
+  // the antennae, in a breeze: each one's box of the art above the head (left, top, right, and the row where it meets
   // the head, which stays put), the row under its ball (the ball moves whole above it), how far its tip goes (px of the art), and how
   // far behind the first it follows (s)
   antennae: [{ box: [480, 110, 588, 253], ball: 184, sway: 6, lag: 0 }, { box: [626, 156, 750, 271], ball: 229, sway: 5, lag: 0.55 }],
@@ -1359,7 +1358,7 @@ if (MASCOT) {
   const rigged = !!(body && armImgs.every(Boolean));   // the arms move only once the v2 parts are all there
   // the face without its closed mouth, for under the open one: the line's pixels (and one round them) filled in from the skin
   // around them, smoothed inward, so no corner of it shows while the mouth opens or shuts. Made from the art as drawn (Whimsical
-  // grades it), again whenever that changes (Elio, 13 Nov)
+  // grades it), again whenever that changes
   let mouthless = null, mouthFrom = null;
   const paintOutMouth = (src) => {
     const [x0, y0, x1, y1] = RIG.mouthLine, w = x1 - x0, h = y1 - y0;
@@ -1384,7 +1383,7 @@ if (MASCOT) {
     const out = document.createElement('canvas'); out.width = w; out.height = h; out.getContext('2d').drawImage(m.canvas, 0, 0);
     return { img: out, ink };   // a plain canvas to draw from, not the one read back (Chrome drew that one off-colour now and then)
   };
-  // The antennae in a breeze (Elio, 13 Nov), from the art itself, no new drawing: each one's box above the head is redrawn at every
+  // The antennae in a breeze, from the art itself, no new drawing: each one's box above the head is redrawn at every
   // drawing, row by row, moved sideways by a slow wave a little irregular (three slow sines), the second antenna a moment behind the
   // first. Nothing moves at the row where it meets the head, more toward the tip (as the square of the height, so it bends from its
   // base), and the ball moves whole. Each row is resampled between pixels (premultiplied, so the outline stays clean) and written into a
@@ -1474,7 +1473,7 @@ if (MASCOT) {
 
   // The seed. Held near the bridge of its nose, it crosses its eyes on it, more as it nears. At its mouth it takes it: the seed flies in,
   // three bites (the mouth opens and shuts, crumbs of the seed's own colours fall), a swallow, and back at rest. Then the hand is empty (the system cursor) and a new seed drops on the ground beside it: hover lifts it, a click picks it up,
-  // and round again. Not on phones (no mascot there) nor with reduced motion. The sequence is stepped at 24 a second, the films' own rate (Elio, 13 Nov)
+  // and round again. Not on phones (no mascot there) nor with reduced motion. The sequence is stepped at 24 a second, the films' own rate
   // The seed it flies in is the day one, or at night the glowing one, switched when the hand's seed is ('seedink', under the hero)
   const seedDay = await load('/site/assets/hero/seed-day.webp'), groundSeed = document.querySelector('.ground-seed');
   let seedImg = seedDay;
@@ -1506,7 +1505,7 @@ if (MASCOT) {
     for (let i = 0; i < S.crumbs; i++) crumbs.push({ x: x + (Math.random() - 0.5) * 16, y: y + 4, vx: (Math.random() - 0.5) * 130, vy: 10 - Math.random() * 90,
       r: 1.5 + Math.random() * 2.5, rot: Math.random() * Math.PI, ink: crumbInks[Math.floor(Math.random() * crumbInks.length)], life: 0.7 + Math.random() * 0.4 });
   }
-  // a click lifts it into the hand (Elio, 13 Nov: it faded and the hand's popped up): the seed in hand starts where this one stands, at
+  // a click lifts it into the hand: the seed in hand starts where this one stands, at
   // its size (grown by the hover) and with its shadow, and eases onto the pointer, its size and shadow the hand's; this one is gone at
   // once, its shadow left on the ground to fade
   groundSeed.addEventListener('click', (e) => {
@@ -1545,10 +1544,10 @@ if (MASCOT) {
   const wakeM = () => { if (!queuedM) { queuedM = true; requestAnimationFrame(mascot); } };
   wakers.add(wakeM);
 
-  // The leaves in front (Whimsical 2, Elio, 13 Nov: the mascot set inside the painting, not laid on it). The meadow's nearest plants at
+  // The leaves in front. The meadow's nearest plants at
   // its bottom right, daisies, the clover, stems, blades and sprigs, painted again on their own (Nano Banana, keyed from a flat blue)
   // and laid exactly over their twins in the film, so where they are drawn they hide the film's own. Each plant is drawn whole, never
-  // cut along the mascot (Elio, 13 Nov: a daisy torn in two at its outline looked chemical): the flower heads as pieces of their own,
+  // cut along the mascot: the flower heads as pieces of their own,
   // the rest as one body of leaves and stems, a seam between plants on its left. By day they sway as the film's do, in step with the
   // frame it shows, a little less: each head carried whole and turned on its stem by the film's own motion there, measured once
   // (assets/hero/video/hero-ground-leaves.json); each stem and tall sprig bent from its foot to match, along its length; the rest of the
@@ -1560,7 +1559,7 @@ if (MASCOT) {
   const fore = WHIMSICAL2 && document.getElementById('fore'), fc = fore && fore.getContext('2d');
   const LEAVES = '/site/assets/hero/video/hero-ground-leaves', NIGHT_LEAVES = '/site/assets/hero/night/whimsical-2-night-leaves';
   const NIGHT_POSE = 92;   // the film's frame the night was painted from: its plants stand so
-  // how high the plants in front reach (Elio, 13 Nov: lower, to see the mascot): the lower part of its body, under the bandana, in the
+  // how high the plants in front reach: the lower part of its body, under the bandana, in the
   // art's rows; above, they pass behind it, fading out over FADE px (CSS), a head whole or not at all
   const CAP = 668, FADE = 36;
   // the ovals the leaves never cross: each eye and the mouth (open too), a little wider than they are (centre and radii, the art's px)
@@ -1788,18 +1787,18 @@ if (MASCOT) {
         if (t < FLY) { open = 1; fly = t / FLY; }
         else if (t < FLY + chew) { const f = c % 1; open = f < 0.5 ? f * 2 : (1 - f) * 2; }
         else if (t < FLY + chew + SWALLOW) open = 0;
-        // swallowed, it is simply back at rest, its lost look and closed mouth: no smile, no look up (Elio, 13 Nov: it felt odd)
+        // swallowed, it is simply back at rest, its lost look and closed mouth: no smile, no look up
         else { eat = null; groundSeed.classList.add('on'); }
       }
-      // its corner (Elio, 13 Nov): a little more than the hero's lower right quarter. Outside it, it rests, lost; inside, it follows the
+      // its corner: a little more than the hero's lower right quarter. Outside it, it rests, lost; inside, it follows the
       // pointer with its eyes, and only with the seed in hand does it reach for it, its mouth open. Fed (the hand empty), it only watches
       const zone = look.on && !still && look.x >= W * 0.42 && look.y >= H * 0.36;
       const near = holding && zone;
       watching += ((zone ? 1 : 0) - watching) * ease(dt, 8);
-      awake += ((near ? 1 : 0) - awake) * ease(dt, near ? S.armSpeed : S.armSpeed * 2);   // the mouth shuts twice as fast as it opens (Elio, 13 Nov)
+      awake += ((near ? 1 : 0) - awake) * ease(dt, near ? S.armSpeed : S.armSpeed * 2);   // the mouth shuts twice as fast as it opens
       if (Math.abs((near ? 1 : 0) - awake) < 0.004) awake = near ? 1 : 0;   // and comes to rest, so it is shut or open, not nearly
       // the mouth follows a step behind (eased again, so it starts and ends gently): drawn 12 times a second, it then lies flat on the
-      // painted line for a drawing or two each way, shutting and opening, rather than leaping from it (Elio, 13 Nov)
+      // painted line for a drawing or two each way, shutting and opening, rather than leaping from it
       gape += (awake - gape) * ease(dt, near ? S.armSpeed : S.armSpeed * 2);
       if (Math.abs(awake - gape) < 0.004) gape = awake;
       if (rigged) RIG.arms.forEach((arm, i) => { arms[i].lift += ((near ? aim(arm, px, py) : 0) - arms[i].lift) * ease(dt, S.armSpeed); });
@@ -1807,14 +1806,14 @@ if (MASCOT) {
       const irises = RIG.eyes.map((e, i) => {
         const dx = tx - e.x, dy = ty - e.y, d = Math.hypot(dx, dy) || 1, m = look.on || eat ? Math.max(S.pupilTravel * Math.min(1, d / 200), cross) : 0, p = eyes[i];
         const [reachX, reachY] = e.reach || [e.rx - RIG.pupil - 5, e.ry - RIG.pupil - 5];
-        // at rest the lost look, as the page's other ants (Elio, 13 Nov: following the pointer all the time it stared, too clever): the
+        // at rest the lost look, as the page's other ants: the
         // pupils apart, sideways, three quarters of the way to their rims, level with each other. Only reaching for the seed, eating
         // or crossing on it does it look at it
         const lost = RIG.lost?.[i], level = (RIG.eyes[0].y + RIG.eyes[1].y) / 2 - e.y;   // both pupils at the eyes' mean height
         const [restX, restY] = e.rest || (lost ? [lost[0] * reachX * 0.75, level + lost[1] * reachY * 0.75] : [0, 0]);
         const w = !lost ? (m ? 1 : 0) : eat || cross > 0 ? 1 : Math.max(awake, watching);
         // looking, each eye turns toward the pointer as far as its white lets it (the pupil against the rim), so with the seed between
-        // its eyes they cross of themselves, each to its inner rim (Elio, 13 Nov: no forced squint, only where the pointer is); within a
+        // its eyes they cross of themselves, each to its inner rim; within a
         // little of the eye's centre it eases back toward the middle
         const rim = e.rx ? 1 / Math.hypot(dx / d / e.rx, dy / d / e.ry) - RIG.pupil * 0.45 : 0, far = Math.min(1, d / 60);
         const fx2 = !m ? restX : e.rx ? dx / d * rim * far : dx / d * reachX * m, fy2 = !m ? restY : e.rx ? dy / d * rim * far : dy / d * reachY * m;
@@ -1871,12 +1870,12 @@ if (MASCOT) {
           g.fillStyle = '#fff'; g.beginPath(); g.arc(cx + RIG.pupil * 0.35, cy - RIG.pupil * 0.35, RIG.pupil * 0.3, 0, Math.PI * 2); g.fill();
         }
       });
-      // the mouth (awake, or chewing), one shape from shut to open (Elio, 13 Nov). Shut, it is a flat line lying exactly on the painted one
+      // the mouth (awake, or chewing), one shape from shut to open. Shut, it is a flat line lying exactly on the painted one
       // (its place, length, thickness and ink: `mouthBar`, and the art's own ink); opening, the line parts into a slit that grows down
       // into the open oval, an upright one, narrower and taller, so it gapes, its top a little over the line. The shape is a
       // superellipse, a bar shut and an ellipse open. The painted line is painted out under it over the first `C` of the way, so its end
       // ticks fade out as the line parts and back once it lies flat again: no jump, shutting or opening. Pleased, the smile, with the
-      // painted line painted out under it too (Elio, 13 Nov: the two overlapped), fading in and out with it
+      // painted line painted out under it too, fading in and out with it
       if (lids) g.drawImage(lids, ...RIG.lids.at);   // the eyes' lines, back over the irises
       if (RIG.eats !== false && RIG.mouthLine && (open > 0 || smile > 0)) {
         const art = rigged ? body : neutral, C = 0.25, RING = 4;   // the outline's width, px of the art

@@ -1,4 +1,4 @@
-/* The Gateway's film (Amos, 16 Nov) in our packaging: one window over the gateway painting, the kit's glass (white .96 on blur, radius 11,
+/* The Gateway's film in our packaging: one window over the gateway painting, the kit's glass (white .96 on blur, radius 11,
    hairline, soft drop), its chapters under the film with the green line filling as it plays. At night, the window's green-black glass. */
 .s-gw-panel.has-film { display: grid; place-items: center; padding: 40px 32px; }
 .gw-film { width: 100%; max-width: 640px; margin: 0; border-radius: 11px; overflow: hidden;

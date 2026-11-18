@@ -1,6 +1,6 @@
 <!-- Antseed homepage, everything below the hero. Figma: file 5tLvMmeKGyUsZgrhY4ogTG, page "Homepage · v4 + dark": 696:3 (light) and 696:5169 (dark).
      Loaded into hero/index.html (#sections) with sections.css and sections.js. Panels marked .wash get a watercolour wash: --wash in light,
-     --wash-d in dark (assets/home/lavis-v6, each baked to match Figma's own adjustments on that wash); .mz instead would give them the
+     --wash-d in dark; .mz instead would give them the
      round-dot mosaic from sections.js. Black logos are marked .ink: they go light in dark. -->
 <!-- the v6 scenes (the cards, the network, Private by design) and the painted footer: v6.css, footer.css -->
 <link rel="stylesheet" href="/site/hero/v6.css">
@@ -8,7 +8,7 @@
 <div class="s-page">
 
 <!-- The mission: the one place the page says why Antseed exists -->
-<!-- "What is Antseed" is removed for the launch (merge brief, 17 Nov) -->
+<!-- "What is Antseed" is removed for the launch -->
 
 <!-- 700+ models: text, image, video and voice through the one API. The four media side by side, each a tab (sections.js), over
      their models going by in two lanes, each a card: its maker's mark, its price, how many providers serve it and, for text, its saving on the lab's price.
@@ -53,13 +53,13 @@
       </ul>
       <div class="s-actions"><a class="s-btn" href="https://antseed.com/docs/quickstart/">Set Up Gateway</a><a class="s-btn ghost" href="https://antseed.com/docs/gateway/">Learn more</a></div>
     </div>
-    <!-- launch: Design's console (parts/gateway-console) fills this panel once it lands, and the router steps back; the video Antseed
+    <!-- launch: the design's console (parts/gateway-console) fills this panel once it lands, and the router steps back; the video Antseed
          sends goes in the slot (data-video-slot) -->
     <div class="wash land s-duo-panel s-gw-panel has-film" style="--wash: url(/site/assets/home/vignettes/gw-day.webp); --wash-d: url(/site/assets/home/vignettes/gw-night.webp)">
-      <!-- the Gateway on film (Amos, 16 Nov): the real console, recorded on a throwaway gateway with an empty wallet. A question answered
+      <!-- the Gateway on film: the real console, recorded on a throwaway gateway with an empty wallet. A question answered
            by a provider on the network, the models and providers it can reach, a key made with a budget, then usage and routing. It plays,
            muted, while on screen; the chapters under it jump and light with the film (gw-film.js, gw-film.css). The router above stays
-           hidden under it; Design's console (gw-console.*) is kept aside, not linked (Elio, 17 Nov) -->
+           hidden under it; the design's console (gw-console.*) is kept aside, not linked -->
       <figure class="gw-film">
         <div class="gw-bar"><span class="gw-lights"><i></i><i></i><i></i></span><span class="gw-url">localhost:8379/console</span></div>
         <video muted playsinline loop preload="none" poster="/site/assets/home/gateway-demo/gateway-film-poster.jpg" aria-label="The Antseed Gateway console in use: a question answered by a provider on the network, the list of models and providers, an API key created with a daily and monthly budget, then usage and routing rules"><source src="/site/assets/home/gateway-demo/gateway-film.mp4" type="video/mp4"></video>
@@ -98,9 +98,7 @@
 
 <!-- Antseed Desktop: the app, one window, from Pranit's prototype (claude.ai/artifact/4jXS6KFNt6wwx4RYxXpCv5), playing a short loop
      (sections.js): the model picker opens and Kimi K3.1 is picked, Private is switched on (the ant puts on its sunglasses), a prompt is
-     typed and sent, and a reply comes in. The app keeps the site's theme throughout, light by day and its night theme in dark (Elio, 12 Nov:
-     the app's own Private turns it to night, held off for the day captures). Each state of the app is its own capture (assets/home/desktop,
-     rendered at 1100×860, 12 Nov; day-*, and in dark night-*: data-dark); the cursor, the typing and the messages are drawn here. Still with
+     typed and sent, and a reply comes in. The app keeps the site's theme throughout, light by day and its night theme in dark. Each state of the app is its own capture; the cursor, the typing and the messages are drawn here. Still with
      reduced motion. PLACEHOLDER for Pranit: the Colony version replaces this once it exists, in the frame marked data-slot="colony" -->
 <section class="s-sec s-duo s-duo-flip" id="desktop" aria-labelledby="s-vpn-h">
   <div class="s-rail">
@@ -140,9 +138,8 @@
 
 </div>
 
-<!-- Privacy and trust (Elio, 17 Nov): production's component, the head over four tabs beside one panel, the incognito ant sitting on the
-     panel, played by the page's scroll while the frame holds (sections.js). The tabs and the four screens are Amos's (his hero/revision.js,
-     16 Nov), word for word, each screen redrawn as ours: one glass window over the panel's painting (privacy-v4.css). The frame and its
+<!-- Privacy and trust: production's component, the head over four tabs beside one panel, the incognito ant sitting on the
+     panel, played by the page's scroll while the frame holds (sections.js). The tabs and the four screens are Amos's, word for word, each screen redrawn as ours: one glass window over the panel's painting (privacy-v4.css). The frame and its
      run in a box of their own, so the frame stops sticking where the run ends; the dot mosaic (.tw) frames the whole dark block. No
      payment here: the top-up and "No crypto needed" are in _amos-parts/privacy-payment.html -->
 <section class="s-sec s-priv" id="privacy" aria-labelledby="s-priv-h">
@@ -241,9 +238,9 @@
   </div>
 </section>
 
-<!-- Providers: the vision, then two paths, each a big painted panel and its text with its own button (Amos's copy, 16 Nov). The pictures
+<!-- Providers: the vision, then two paths, each a big painted panel and its text with its own button. The pictures
      are the final paintings, assets/home/providers (stall, colony; day and night as --wash and --wash-d), moving (providers-live.js), with
-     Design's glass over them (providers-v4.css): the stall on the left and Amos's listing on the right; the three Macs cabled as one provider -->
+     the design's glass over them (providers-v4.css): the stall on the left and Amos's listing on the right; the three Macs cabled as one provider -->
 <section class="s-sec s-prov" id="providers" aria-labelledby="s-prov-h">
   <div class="s-rail">
     <header class="s-head s-padx">
@@ -311,7 +308,7 @@
          "map" (amos-09, ?net=map): the painted board, net.js: you, the providers and other people as ants on the map, one request in
          five steps, data-step="all" all of them numbered (or "1" to "5", one step), the rail naming them; take data-net away and its
          loop plays again -->
-    <!-- Work in progress (Elio, 18 Nov): he redraws the board himself. Until then the panel is the network's wash and one glass label
+    <!-- Work in progress: the board is being redrawn. Until then the panel is the network's wash and one glass label
          (launch.css, .lp-wip); the board below is unplugged, kept whole in a <template> (inert: nothing in it loads or runs). To plug it
          back: take it out of the template, drop the .lp-wip panel, list its part on <body data-parts> again (index.html) -->
     <div class="lp-wip lp-wip--home"><img class="day" src="/site/assets/home/lavis-v6/network.webp" width="1344" height="581" alt="" loading="lazy" decoding="async"><img class="night" src="/site/assets/home/lavis-v6/network-dark.webp" width="1344" height="581" alt="" loading="lazy" decoding="async"><p>Work in progress</p></div>
@@ -334,7 +331,7 @@
       </ol>
     </div>
     </template>
-    <!-- the three points under the board (amos-09-r10, Elio 16 Nov: back as they were, under the bar), in the story's order: a name, then the line -->
+    <!-- the three points under the board, in the story's order: a name, then the line -->
     <div class="s-points">
       <div><p class="s-cap"><b>Open market</b> Independent providers all over the world compete on price.</p></div>
       <div><p class="s-cap"><b>Pay per request</b> Every payment settles in <span class="s-tok"><img src="/site/assets/home/v6/net-nocrypto-usdc.svg" width="16" height="16" alt="">USDC</span> on Base.</p></div>
@@ -372,12 +369,11 @@
   </div>
 </section>
 
-<!-- Footer. Links go to the docs, to other sites or to this page. Blog and Terms will be our own pages: placeholders (data-placeholder="page"); Media kit opens the brand kit (/brand/, a work in progress, Elio 13 Nov) -->
+<!-- Footer. Links go to the docs, to other sites or to this page. Blog and Terms will be our own pages: placeholders (data-placeholder="page"); Media kit opens the brand kit -->
 <div class="lp-slot lp-slot--band" data-part="cta-band"></div>
 <footer class="s-sec s-foot meadow">
   <!-- the painting by day and by night, wide (21:9) so the footer with its text comes to about 16:9: the same meadow without the hill
-       between the ants and the river (Hermès, Magnific Nano Banana 2.1 at 1K, 12 Nov; the three pairs in 02_Brand/footer-wide-2026-11-12,
-       this one d1/n1). 1584 wide for now: a sharper copy once the upscale is agreed -->
+       between the ants and the river. 1584 wide for now: a sharper copy once the upscale is agreed -->
   <div class="scene" aria-hidden="true"><img class="day" src="/site/assets/home/footer/meadow-loop-day-poster.webp" width="1920" height="1080" alt="" loading="lazy" decoding="async"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" class="day" muted loop playsinline preload="none" data-src="/site/assets/home/footer/meadow-loop-day"></video><img class="night" src="/site/assets/home/footer/meadow-loop-night-poster.webp" width="1920" height="1080" alt="" loading="lazy" decoding="async"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" class="night" muted loop playsinline preload="none" data-src="/site/assets/home/footer/meadow-loop-night"></video><canvas class="flies"></canvas></div>
   <div class="s-rail">
     <div class="cols">

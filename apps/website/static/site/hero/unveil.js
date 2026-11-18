@@ -11,7 +11,7 @@ const PITCH = 8;          // the grid, in CSS px
 const DOT = 0.42;         // a dot's radius, × the pitch
 const BAND = 0.34;        // the fringe's width, in the oval's units (1 reaches the card's corners)
 const SOLID = 0.22;       // the inner part of the fringe where the painting comes in cell by cell
-const DELAY = 100, DURATION = 1500;   // ms: it starts as soon as the title is up (Elio, 12 Nov: 550 felt like a wait)
+const DELAY = 100, DURATION = 1500;   // ms: it starts as soon as the title is up
 const FADE = 0.55;        // the share of the arrival over which the painting inside the oval fades up from the hero's colour
 const ease = (t) => 1 - (1 - t) ** 3;
 const hash = (x, y, s) => { const v = Math.sin(x * 127.1 + y * 311.7 + s * 74.7) * 43758.5453; return v - Math.floor(v); };

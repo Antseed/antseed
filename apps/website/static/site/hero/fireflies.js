@@ -1,4 +1,4 @@
-// The night's fireflies (Elio, 13 Nov), drawn on one canvas per painting: the hero's (inside its night, so they come and go with the
+// The night's fireflies, drawn on one canvas per painting: the hero's (inside its night, so they come and go with the
 // night's sweep) and the footer's meadow (a few, low over the ants). In the mosaic's lit colours.
 // The hero has three depths. Far, toward the far ridge: tiny faint points that barely drift. Mid: a little larger, wandering slowly.
 // Near: a handful that really fly, wandering with small darts and hovers, each blinking on its own rhythm (a quick rise, a hold, a long

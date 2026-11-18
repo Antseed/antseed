@@ -1,14 +1,14 @@
-/* /ants/ (launch, 18 Nov): only what the page adds to the homepage's sheets. Its base as /network/'s (network.css). */
+/* /ants/: only what the page adds to the homepage's sheets. Its base as /network/'s (network.css). */
 :root { --page: #fff; --ink: #090b0c; --nav-grey: #737373; --cmd: #0a1a12; --acid: #c8f53c; }
 :root[data-theme="dark"] { --page: #0f1312; --ink: #eceee9; --nav-grey: #9ba49e; --cmd: #eceee9; }
 html, body { margin: 0; background: var(--page); color: var(--ink); font-family: Geist, system-ui, sans-serif; }
 img { display: block; }
 nav, nav * { box-sizing: border-box; }
-nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it (Elio, 17 Nov); its glass is shell.css's */
+nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it; its glass is shell.css's */
 nav > a { display: block; }
 .s-page { margin: 0; }
 
-/* The first screen (Elio, 17 Nov): the top across the whole width, no margins, so tall that the figures under it still show above the
+/* The first screen: the top across the whole width, no margins, so tall that the figures under it still show above the
    fold. Its text sits on the figures' left edge (the rail's, plus the figures' own padding, --in); the painting fills the other half. */
 .ap-hero { --in: 40px; --figs: 128px; container-type: inline-size; display: grid; grid-template-columns: 1fr 1fr;
   height: clamp(520px, calc(100svh - 69px - var(--figs)), 820px); background: var(--rail-bg, var(--page)); }
@@ -48,14 +48,14 @@ nav > a { display: block; }
 .ap-duo .s-feats { margin: 0; padding: 0; list-style: none; }
 .ap-duo .s-sub { text-wrap: balance; }   /* no word left alone on the last line */
 
-/* ── the aside scale, as on /colony/ (06_Amos-feedback/ASIDE-SCALE.md, Elio, 17 Nov: « applique-le partout »). It replaces the day's
+/* ── the aside scale, as on /colony/. It replaces the day's
    earlier rules (8 under a title, forced two-line titles). Desktop only, from 1200 wide: below, the page keeps its first layout */
 @media (min-width: 1200px) {
   /* §1 the page's base: anchors land at the very top (the nav scrolls away); the page's buttons 40 tall, 12 in, 16px */
   html { scroll-padding-top: 0; }
   .ap .s-btn, .ap .s-btn.big { height: 40px; padding: 0 12px; font-size: 16px; line-height: 24px; }
 
-  /* §3 the top: the whole first screen under the nav, the figures just under the fold (Elio, 17 Nov); on white; the painting inset 16
+  /* §3 the top: the whole first screen under the nav, the figures just under the fold; on white; the painting inset 16
      at the top, right and bottom, radius 16 */
   .ap .s-token { min-height: 0 !important; }   /* sections.js rounds every section up to 8px */
   .ap-hero { height: calc(100svh - 69px); background: var(--page); }
@@ -65,7 +65,7 @@ nav > a { display: block; }
   .ap-paint { margin: 16px 16px 16px 0; height: auto; border-radius: 16px; overflow: hidden; }
 
   /* §2 Supply and Provider pools: 124 above and below, as tall as their content; eyebrow 24, title 16, sub; the titles as before
-     the pass (Elio, 17 Nov): two lines, ink then grey; sub lines 18/28. The painting takes the text's height */
+     the pass: two lines, ink then grey; sub lines 18/28. The painting takes the text's height */
   .ap-duo .s-rail { box-sizing: border-box; min-height: 0; padding-top: 124px; padding-bottom: 124px; }
   .ap-duo .s-duo-text { gap: 24px; padding-block: 0; }
   .ap-duo .s-duo-head { gap: 16px; }

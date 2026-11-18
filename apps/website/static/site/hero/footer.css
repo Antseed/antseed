@@ -6,7 +6,7 @@
 .s-foot.meadow .s-rail { flex: none; background: none; padding-bottom: calc(var(--scene) * .76); }
 .s-foot.meadow .legal { margin-top: 40px; }
 .s-foot .made { color: var(--m); }
-/* the social links (call of 17 Nov: out of the nav, into this row): X, GitHub, Telegram as icons between the credit and the theme switch.
+/* the social links: X, GitHub, Telegram as icons between the credit and the theme switch.
    An 18 glyph in a 32 box, 4 apart, in the row's ink; the boxes pulled in above and below so the row keeps its 20 */
 .s-foot .social { display: flex; gap: 4px; margin: -6px 0; }
 .s-foot .social a { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; color: var(--t); transition: color .15s; }
@@ -32,9 +32,8 @@
   mask-image: radial-gradient(circle farthest-corner at var(--sun-x) var(--sun-y), #0000 calc(var(--sun) - 22%), #000 var(--sun)); }
 :root[data-theme="dark"] .s-foot.meadow .scene .night { --sun: 0%; }
 /* the switch: no sun of its own any more, the footer changes with the page, inside its crossfade (index.html, the view transition), in step
-   to the frame; without one it changes at once, as the page does (Elio, 13 Nov) */
-/* its loop (night-loop.js): the same night moving (the river, the grass, the ants), over the still once it plays. By day the same pair
-   (17 Nov): the day's still is an image of its own, lazy as the night's, so no page fetches it at its top (it was the film's poster,
+   to the frame; without one it changes at once, as the page does */
+/* its loop (night-loop.js): the same night moving (the river, the grass, the ants), over the still once it plays. By day the same pair: the day's still is an image of its own, lazy as the night's, so no page fetches it at its top (it was the film's poster,
    asked for at once); the day's film lies over it and comes in once it has a frame */
 .s-foot.meadow .scene video.day { position: absolute; inset: 0; }
 .s-foot.meadow .scene video:is(.day, .night) { opacity: 0; transition: opacity .8s; }

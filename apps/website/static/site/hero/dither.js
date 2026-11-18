@@ -1,7 +1,7 @@
 // The homepage's dither, loaded with the sections (index.html):
 // 1. fine dither points at the edges of Whimsical 2's clouds, read from the film itself, in the painting's colours
 // 3. the fine dots behind Private by design, which the cursor lights up and ants walk
-// (2, the daisy, sprig and leaf symbols on the washes, is gone, Elio's call, 12 Nov: the landscapes break into the LED mosaic under the cursor instead, wash-led.js)
+
 // The sky: one canvas pixel per cell; dither.css masks each cell to a small round dot.
 const link = Object.assign(document.createElement('link'), { rel: 'stylesheet', href: new URL('dither.css', import.meta.url).href });
 document.head.append(link);
@@ -143,8 +143,8 @@ function heroLayer(paint) {
 }
 
 
-// the sky starts with the hero (Elio, 12 Nov: it waited for the mascot's walk, three seconds after the title), and grows in
-// (off since the day became a plain-skied ground loop with its clouds in CSS, Video, 13 Nov: the film has no clouds left to read)
+// the sky starts with the hero, and grows in
+
 if (root.classList.contains('whimsical2') && !document.querySelector('#hero .paint .clouds')) heroLayer(document.querySelector('#hero .paint'));
 
 // ── 3. the dots behind Private by design ──
@@ -154,10 +154,10 @@ if (root.classList.contains('whimsical2') && !document.querySelector('#hero .pai
 // The ants are the Mascot's: smaller lime dots walking the same grid a cell at a time, mostly straight on, now and then turning, the dots they cross
 // tinted for a moment behind them. They come in on the mosaic, wander, and after a while fade and come in elsewhere; they keep clear of the title.
 // A click on the background calls the nearest ones: they head for it, mill about there a moment and go back to wandering.
-const PRIV_STEP = 15.45, PRIV_R = 2.4, ANT_R = 1.9, PRIV_NEAR = 110;   // the dots small and delicate (Elio, 12 Nov: 6.5 and 3.75 were too big)
+const PRIV_STEP = 15.45, PRIV_R = 2.4, ANT_R = 1.9, PRIV_NEAR = 110;   // the dots small and delicate
 const SIDE = 30 * PRIV_STEP;   // the side rows repeated down a tall box's middle: 30 rows of the mosaic's sides only (160 to 623 from the top)
 const ANT_DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]], ANT_INK = '#c8f53c', ANT_CALL = 720, ANT_CALLED = 6;
-// opts.fit (the closing call to action's card, 17 Nov): the mosaic laid cell for cell on a grid of opts.step that fills the box edge to edge,
+// opts.fit: the mosaic laid cell for cell on a grid of opts.step that fills the box edge to edge,
 // its left and top columns and rows from the mosaic's left and top, its right and bottom from its right and bottom, so the frame is whole
 // at any size, with one dot at most per cell and none of the band's offsets
 // The mosaic is one file per theme (34 KB each). Only the theme on screen is fetched, once for the page however many bands draw it; the
@@ -318,5 +318,5 @@ const sections = document.getElementById('sections');
 if (sections.children.length) below();
 else new MutationObserver((_, o) => { if (sections.children.length) { o.disconnect(); below(); } }).observe(sections, { childList: true });
 
-// the same field for other bands (hero/parts/cta-band.js, the closing call to action, 17 Nov)
+// the same field for other bands
 export { privacyDots };

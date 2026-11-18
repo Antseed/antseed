@@ -2,7 +2,7 @@
 // five glass cards on the map (.ns > li, their copy in sections.html), each joined to the next by a line (a quiet track, the card's
 // ::after, and the lime drawn over it, its ::before, sections.css). While on screen it plays them in turn: card 1 lights up, its line
 // draws to card 2, card 2 lights up, and so on to 5; it holds on the whole picture, fades it all back to rest and starts again. At rest
-// nothing goes: every card keeps its glass and its content dimmed, every line its track (Elio, 16 Nov: the steps not reached stay
+// nothing goes: every card keeps its glass and its content dimmed, every line its track (the steps not reached stay
 // visible). A card's light is its --in, a line's length its --p and its light its --pl, all from 0 to 1, so the CSS alone shows the
 // whole picture: before it is in view, with reduced motion, without this script. The time stands still off screen and while the
 // panel's painting is still arriving (card-unveil.js), so the story starts once the board is there: on the whole picture a moment,
@@ -10,7 +10,7 @@
 // As a card lights up it takes .go, and its icon makes its own small move (sections.css; the same move plays on hover); .go comes off
 // as the picture fades back to rest, so the move plays again next time round, and it is only given on the way, never all at once when
 // the story starts. On a phone, one card at a time (amos-09-r7). The lime bar along the
-// board's edge is gone (Elio, 16 Nov: it did not keep pace with the lines).
+// board's edge is gone.
 
 const LEAD = 300;     // ms at rest before card 1
 const CARD = 500;     // a card lighting up

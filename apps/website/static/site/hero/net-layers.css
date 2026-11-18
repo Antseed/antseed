@@ -1,4 +1,4 @@
-/* How the network works, as one map of the whole system (17 Nov, after the call with Amos and Pranit): net-layers.js draws it into
+/* How the network works, as one map of the whole system: net-layers.js draws it into
    #net-layers, on the homepage (hero/parts/layers.html, data-cut="home", 1248 / 560) and on the network page (layers-large.html,
    data-cut="network", 1248 / 720). The board is a 1248-wide stage scaled to its slot (--s); on the network's painted wash, the DHT
    above, the peers on glass tiles in the middle, Base as one glass slab below. Colours, glass and lines as parts/net-map.css.
@@ -172,7 +172,7 @@
 /* the homepage's cut: the same picture, lighter; its foot strip pairs the plain name with Amos's line */
 .nl[data-cut="home"] .nl-tabs button { flex: 1 1 auto; padding: 0 14px; }
 
-/* the panel the board goes into on the homepage (.s-net-panel, Web's): once the layers are in it, it holds only them, at their size,
-   without its own painting, its padding for the five cards or its rail (Web may move these rules to launch.css) */
+/* the panel the board goes into on the homepage: once the layers are in it, it holds only them, at their size,
+   without its own painting, its padding for the five cards or its rail */
 .s-net-panel:has(#net-layers) { padding: 0; height: auto; aspect-ratio: auto; background: none; }
 .s-net-panel:has(#net-layers)::before, .s-net-panel:has(#net-layers)::after, .s-net-panel:has(#net-layers) > :not(#net-layers, .lp-slot, canvas) { display: none; }

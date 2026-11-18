@@ -1,4 +1,4 @@
-// The Providers' two cards move (Elio, 16 Nov). Each card's painting stays its poster (the panel's --wash, --wash-d): the still with reduced
+// The Providers' two cards move. Each card's painting stays its poster (the panel's --wash, --wash-d): the still with reduced
 // motion, for ?still and ?demo captures, and until its film can play. Over it, one looping film per card and theme (assets/home/providers,
 // WebM where it plays, else MP4), whose first frame is the poster, so the film takes over with nothing to see. Each moving thing was
 // animated on its own and the scene put back together (art/round3/providers):

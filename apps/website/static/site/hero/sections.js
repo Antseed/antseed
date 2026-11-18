@@ -92,7 +92,7 @@ const fmt = (el, v) => {
   const dec = +el.dataset.dec || 0;
   return (el.dataset.prefix || '') + v.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec, useGrouping: !!el.dataset.group }) + (el.dataset.suffix || '');
 };
-const counters = new Map();   // element → start()
+const counters = new Map();   // element → start
 if (!still) root.querySelectorAll('[data-count]').forEach((el) => {
   const end = el.textContent, to = +el.dataset.count, tally = document.createElement('span'), ghost = document.createElement('span'), run = document.createElement('span');
   tally.className = 'tally'; ghost.textContent = end; run.textContent = fmt(el, 0);
@@ -153,9 +153,9 @@ if (lede && !still) {
 // The lanes have two moving modes, the switch under them ("Ants") between the two: the mascot carrying each model (the default), or
 // the cards walking on their own (Ant mode); the plain sliding lanes stay for reduced motion. The little ant's sprite and its table
 // (assets/home/carry, built by its build.py) come with models.json
-// Unique ants (Amos, 16 Nov): every carrier is one of VARIANTS, its own size and its own sheet (a sprite and its table, carry/<sheet>.webp
+// Unique ants: every carrier is one of VARIANTS, its own size and its own sheet (a sprite and its table, carry/<sheet>.webp
 // and .json, as build.py writes them). Every one carries its card as the worker does, the same poses, its hand on the card's lower
-// corner (Elio, 16 Nov: the young one's card on its head did not work, every ant holds it the same way). CARRY says, for each way, where
+// corner. CARRY says, for each way, where
 // the card sits from the point of the painted card where the sheet holds it (the sheet's corner, on the card's bottom at its hold):
 // dx, dy (sheet px, the real card that far right and down of the painted one) and which layer is in front: 'hand' (the ant behind, what
 // of it lies over the painted card over it) or 'ant' (the whole ant in front); push's ahead: the share that walk in front of their card
@@ -190,7 +190,7 @@ if (models) {
     + `<span class="prov" title="${m.providers} ${many(m.providers)}"><i aria-hidden="true"></i>${m.providers}<span class="sr"> ${many(m.providers)}</span></span></p></li>`;
   // a carried model: the card as it is, with the little ant behind it (.ant) and its arm and hand over its lower corner (.ant.hand)
   const carried = (m, medium) => card(m, medium).replace('<li class="s-mcard">', '<li class="s-mcard carry"><i class="ant" aria-hidden="true"></i><i class="ant hand" aria-hidden="true"></i><i class="shade" aria-hidden="true"></i>');
-  const SPEED = [1, 0.81, 1.12];   // the launch (Amos's parade, 17 Nov): the second lane at 47 px/s to the first's 58, the other way
+  const SPEED = [1, 0.81, 1.12];   // the launch: the second lane at 47 px/s to the first's 58, the other way
   const fill = (tab) => {
     const medium = tab.dataset.medium, rows = models.media[medium] || [], LANES = rows.length >= 4 ? 2 : 1, carry = ant.on && ant.carry;
     const side = parseFloat(getComputedStyle(flow).getPropertyValue('--card')) || 176, size = carry ? ant.reach(side) : side;
@@ -226,10 +226,10 @@ if (models) {
   // the card a touch, those behind queueing up (carryOn); standing still it stands on both feet, lost; a click and it hops
   // (LIFT px more, a little bounce as it lands), then sprints to catch up with the ones ahead, its queue after it.
   const ANT_GAP = 44, KEEP = 10, GO = 18, WAVE = 6, BEND = 600, POP = 0.42, RUSH = 3.4;
-  const CARRY_GAP = 36, CARRY_PACE = 58 / 32,   /* Amos's pace, 58 px/s (launch, 17 Nov) */ HOP = 0.56, LIFT = 10, SETTLE = 0.75, STILL = 8;   // a carrier hurries: half again as fast as the lanes did (Elio, 12 Nov), its short, even steps at ~26 a second
+  const CARRY_GAP = 36, CARRY_PACE = 58 / 32,   /* Amos's pace, 58 px/s */ HOP = 0.56, LIFT = 10, SETTLE = 0.75, STILL = 8;   // a carrier hurries: half again as fast as the lanes did, its short, even steps at ~26 a second
   // a fixed coin per carrier, from its lane and place, so the ants in front and behind fall the same way on every load
   const coin = (k, i) => { let t = Math.imul((k + 1) * 7919 + i * 104729, 2654435761) >>> 0; t ^= t >>> 15; t = Math.imul(t, 2246822507) >>> 0; t ^= t >>> 13; return t / 4294967296; };
-  // coin() comes out signed, from -0.5 to 0.5 (so every carrier walks in front of its card, as on production); draw(), 0 to 1
+  // coin comes out signed, from -0.5 to 0.5 (so every carrier walks in front of its card, as on production); draw, 0 to 1
   const draw = (k, i) => ((coin(k, i) * 4294967296) >>> 0) / 4294967296;
   const ant = { on: false, carry: false, lanes: [], raf: 0, last: 0, vt: 0, seen: false,
     // a variant as it walks today: its own sheet and way of carrying once CARRY_ART is on and it has a sheet of its own that has come,
@@ -331,7 +331,7 @@ if (models) {
           else if (a.rush > 0) { a.rush -= dt; if (gap < ANT_GAP + 4) a.rush = 0; }   // caught up with the tail ahead (or gave up)
           let want = pace, rate = ln.carry ? 2.2 : 1.8;                                   // sets off softly
           if (a === ln.held || a.pop > 0) { want = 0; rate = 12; }                         // stops short under the pointer
-          else if (a.rush > 0) { want = ln.carry ? Math.min(2 * ln.V, pace + (gap - ANT_GAP) * 1.6) : pace + Math.min(ln.V * RUSH, (gap - ANT_GAP) * 1.6); rate = 5; }   // hurries, easing in as it nears: a carrier at twice the lane's pace (Elio, 13 Nov)
+          else if (a.rush > 0) { want = ln.carry ? Math.min(2 * ln.V, pace + (gap - ANT_GAP) * 1.6) : pace + Math.min(ln.V * RUSH, (gap - ANT_GAP) * 1.6); rate = 5; }   // hurries, easing in as it nears: a carrier at twice the lane's pace
           else if (a.rest > 0 || a.queued) { want = 0; rate = 7; }
           else if (ln.carry && gap > CARRY_GAP + 6) { want = Math.min(2 * ln.V, ln.V + (gap - CARRY_GAP) * 1.4); rate = 4; }   // a gap opened ahead: it closes it, as on Amos's
           a.v += (want - a.v) * Math.min(1, dt * rate);
@@ -339,15 +339,15 @@ if (models) {
           if (a.v > room) { a.v = Math.max(0, room); if (a.v < 1 && want > 0 && !a.rush) a.queued = true; }   // never closer than KEEP: it waits in line
           a.x = ((a.x + ln.dir * a.v * dt) % ln.L + ln.L) % ln.L;
           // the walk cycle, as far as it went; hurrying, a carrier takes quick little steps, its walk at one and a half times the ground
-          // it covers (Elio, 13 Nov: no big stride, short fast feet)
+          // it covers
           if (ln.carry) { a.wp = (a.wp + a.v * dt * (a.rush > 0 && a.pop <= 0 ? 1.5 : 1)) % a.L.walk.length; if (a.rush > 0) a.rp += a.v * dt; }
         }
       }
       this.draw(now);
-      // the next frame keeps this one's clock (wake() would restart it and lose ~1 ms a frame, ~6% of the pace)
+      // the next frame keeps this one's clock (wake would restart it and lose ~1 ms a frame, ~6% of the pace)
       if (!still && !document.hidden) this.raf = requestAnimationFrame((t) => this.frame(t));
     },
-    // the carriers (Elio, 17 Nov). Each follows the one ahead like a car: at the lane's pace and spacing it walks the lane's pace; it
+    // the carriers. Each follows the one ahead like a car: at the lane's pace and spacing it walks the lane's pace; it
     // aims for a gap that grows with the speed ahead, from KEEP (standing) to CARRY_GAP (walking), and never goes faster than its cap,
     // the lane's pace, or more while it has a boost (b). The one under the pointer stops (or hops, on a click): those behind ease up and
     // queue KEEP apart; those ahead walk on, and once out of sight past the edge each waits for the one behind it, so the gap ahead is
@@ -382,7 +382,7 @@ if (models) {
         a.v = Math.max(0, Math.min(a.v, (g - 4) / dt));   // never into the one ahead
         if (a.b && ln.t - a.kt > 0.8 && ((g < CARRY_GAP + 4 && a.v > 0.97 * V) || ln.t - a.kt > 40)) a.b = 0;   // back in step
         a.x = ((a.x + ln.dir * a.v * dt) % ln.L + ln.L) % ln.L;
-        a.wp = (a.wp + a.v * dt * (a.v > 1.1 * V ? 1.5 : 1)) % a.L.walk.length;   // hurrying, short quick steps (Elio, 13 Nov)
+        a.wp = (a.wp + a.v * dt * (a.v > 1.1 * V ? 1.5 : 1)) % a.L.walk.length;   // hurrying, short quick steps
       }
     },
     draw(now) {
@@ -422,7 +422,7 @@ if (models) {
     },
   };
   const tabNow = () => tabs.find((b) => b.getAttribute('aria-selected') === 'true') || tabs[0];
-  // the ants always carry the models once the sprite's table has come (Elio, 12 Nov: no switch any more); without it, or with reduced
+  // the ants always carry the models once the sprite's table has come; without it, or with reduced
   // motion, the cards walk on their own
   ant.on = !still;
   if (sprite) ant.carry = true;
@@ -436,7 +436,7 @@ if (models) {
     media.style.setProperty('--tx', `${t.offsetLeft}px`); media.style.setProperty('--tw', `${t.offsetWidth}px`);
   };
   // the tabs: a click, or the arrow keys, Home and End, as the install block's in index.html. The chosen medium's lanes fade in
-  // the lanes change with a swipe the way the tab went (Elio, 13 Nov): the old ones slip out to the side, blurred and fading, the new
+  // the lanes change with a swipe the way the tab went: the old ones slip out to the side, blurred and fading, the new
   // ones come in from the other side and sharpen. A quick second click cuts the first swipe short
   let swipe = 0;
   const show = (tab, focus) => {
@@ -558,7 +558,7 @@ if (gw) {
       return { g, lines, tick, out, len, rest: lo };
     });
     bub = bubble();
-    // under the glass the lines blur (Elio, 16 Nov): drawn sharp outside the windows, and inside each window a heavily blurred twin
+    // under the glass the lines blur: drawn sharp outside the windows, and inside each window a heavily blurred twin
     // of the same lines (live <use> copies, so they animate with them), each half kept to its side by a mask of the windows' boxes
     const wins = [...ins, hub, ...outs].map(box), rect = (r, fill) => { const e = el('rect'); [['x', r.l], ['y', r.t], ['width', r.r - r.l], ['height', r.b - r.t]].forEach(([k, v]) => e.setAttribute(k, f(v))); e.setAttribute('fill', fill); return e; };
     const full = { l: -W, t: -H, r: 2 * W, b: 2 * H }, defs = el('defs'), mk = (id, base, win) => { const m = el('mask'); m.id = id; m.setAttribute('maskUnits', 'userSpaceOnUse'); m.append(rect(full, base), ...wins.map((r) => rect(r, win))); return m; };
@@ -582,7 +582,7 @@ if (gw) {
   };
   // the painting's horizon (assets/home/vignettes/gw-*.webp, square, its hills at HZ of its height) held just above the rule tags, a
   // quarter of the way up from them to the plate, so the plate's sky and the providers' land read as two places at every shape of
-  // the panel (amos-05-r6, Elio): the painting covers the panel and is scaled up only as far as that needs. Measured as fractions of
+  // the panel: the painting covers the panel and is scaled up only as far as that needs. Measured as fractions of
   // the picture, which fills its panel, so the panels' rise and unveil (scaled) never skew it
   const wash = gw.closest('.wash'), HZ = .705;
   const horizon = () => {
@@ -714,7 +714,7 @@ if (lr) {
   const fit = () => panel.style.setProperty('--k', wide.matches ? Math.min(1, panel.clientWidth / 1310).toFixed(4) : 1);
   new ResizeObserver(fit).observe(panel); wide.addEventListener('change', fit);
 
-  // the wires, in the diagram's own px (Figma): each tool's right edge, the side of your device, each provider's left edge
+  // the wires, in the diagram's own px: each tool's right edge, the side of your device, each provider's left edge
   const TOOLS = [82.05, 199.25, 316.55, 433.85], PROVS = [75.1, 197, 318.9, 440.9], HUB = { l: 450.3, r: 661.4, y: 258.45 };
   const TOOL_X = 258.9, PROV_X = 853.6, TRUNK = 118, R = 16;
   const bend = (x0, y0, xt, x1, y1) => {   // horizontal to the trunk, rounded, vertical, rounded, horizontal on
@@ -1017,7 +1017,7 @@ if (pv) {
 
 // ── 4. the theme switch ──────────────────────────────────────────────────
 // Each button sets its mode with window.antseedTheme.set (the head script in index.html: it keeps the choice, sets <html data-theme>
-// and dispatches 'themechange'); the pressed one follows antseedTheme.get(), on load and on every 'themechange'. Without the head
+// and dispatches 'themechange'); the pressed one follows antseedTheme.get, on load and on every 'themechange'. Without the head
 // script it still switches the page, for this visit only
 const themes = root.querySelector('.s-foot .theme');
 if (themes) {
@@ -1051,10 +1051,10 @@ if (netPanel && ['steps', 'map'].includes(netQuery.get('net'))) netPanel.dataset
 const netMap = netPanel?.dataset.netStyle === 'map';
 const netStill = still || !netMap || netPanel?.dataset.net === 'still';
 if (netPanel && netStep) netPanel.dataset.step = netStep;
-// the three layers (Design's part, parts.js) take the board's place when listed: the old board is not drawn under them
+// the three layers take the board's place when listed: the old board is not drawn under them
 const netLayers = (document.body.dataset.parts || '').split(',').includes('layers');
 if (netPanel && !netLayers) import(netMap ? './net.js' : './net-steps.js').then((m) => m.mount(netPanel, { still })).catch((err) => console.warn('network diagram not drawn', err));
-// the network has one look for the launch, the illustrated one (merge brief, 17 Nov): no switch, no ?net-look
+// the network has one look for the launch, the illustrated one: no switch, no ?net-look
 // the captions are its timeline: the beat playing lights its caption ('netbeat'), and each caption is a button that plays its beat.
 // With reduced motion, or as a still (data-net), the board does not play, so neither
 const netPoints = root.querySelector('.s-points');
@@ -1070,13 +1070,13 @@ if (netPanel && netPoints && !netStill) {
     netPoints.classList.toggle('playing', b >= 0);
     cells.forEach((c, i) => c.classList.toggle('on', i === b));
   });
-  // under the caption playing, a bar filling as its beat goes, so one reads where the story is (Elio, 13 Nov); from empty at the next
+  // under the caption playing, a bar filling as its beat goes, so one reads where the story is; from empty at the next
   netPanel.addEventListener('netprogress', (e) => {
     const { beat: b, p } = e.detail;
     cells.forEach((c, i) => c.style.setProperty('--beat', i === b ? p : 0));
   });
 }
-// the captions under it: each as wide as its longest line, so its cell centres the text itself, not a box wider than it (Elio, 12 Nov)
+// the captions under it: each as wide as its longest line, so its cell centres the text itself, not a box wider than it
 const caps = [...root.querySelectorAll('.s-points p')];
 if (caps.length) {
   const hug = () => caps.forEach((p) => {
@@ -1093,7 +1093,7 @@ if (caps.length) {
   new ResizeObserver(hug).observe(caps[0].closest('.s-points'));
 }
 
-// Private by design: the incognito ant (Video's Kling takes, 13 Nov). She idles in a loop (smiling, legs swinging); a click (or Enter)
+// Private by design: the incognito ant. She idles in a loop (smiling, legs swinging); a click (or Enter)
 // plays her laugh once, or one time in five a short pout, then she is back to the loop. Every film starts and ends on the same pose,
 // so every hand-over is a plain cut: a click waits for the loop's end. HEVC with alpha in WebKit (Safari), VP9 with alpha elsewhere.
 // Fetched as the section nears, played only while on screen; with reduced motion her still, and the click does nothing
@@ -1109,7 +1109,7 @@ if (caps.length) {
     clips.idle.addEventListener('canplay', idle);   // in case it was asked to play before it could
     document.addEventListener('themechange', idle);
     // Every hand-over is a plain cut between two frames that are the same picture: the incoming film is already sitting on its frame 0
-    // (sought while hidden, never at the switch), it is shown first, then played; nothing fades (Elio, 13 Nov)
+    // (sought while hidden, never at the switch), it is shown first, then played; nothing fades
     const seek0 = (v) => { if (v.currentTime) try { v.currentTime = 0; } catch {} };
     for (const [n, v] of Object.entries(clips)) if (n !== 'idle') v.addEventListener('ended', () => {
       busy = null; show(clips.idle, false); idle(); seek0(v);

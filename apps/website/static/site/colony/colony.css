@@ -1,4 +1,4 @@
-/* The Colony page (17 Nov): the homepage's components (sections.css, launch.css) in this page's layouts. Only what those sheets do not
+/* The Colony page: the homepage's components (sections.css, launch.css) in this page's layouts. Only what those sheets do not
    have lives here: the page's base, the hero and the sign-up scene with their title on the painting, the glass labels on the paintings,
    the four steps, the first Colony's facts, the night band's three points and where your Mac fits. */
 
@@ -8,14 +8,14 @@
 html, body { margin: 0; background: var(--page); color: var(--ink); font-family: Geist, system-ui, sans-serif; }
 img { display: block; }
 nav, nav * { box-sizing: border-box; }
-nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it (Elio, 17 Nov); its glass is shell.css's */
+nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it; its glass is shell.css's */
 nav > a { display: block; }
 .s-page { margin: 0; }
-html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 17 Nov): an anchor lands at the very top, a full-fold section fills the screen */
+html { scroll-padding-top: 0; }   /* the nav scrolls away with the page: an anchor lands at the very top, a full-fold section fills the screen */
 [data-colony-link][hidden] { display: none; }   /* a link still waiting for its URL in config.json stays out, a button's display or not */
 
-/* ── every head: 8 between the title and its sub line (Elio, 17 Nov, every page); the eyebrow to the title stays. A head's flex gap
-   sets both, so the sub line takes it back: 20 - 12 in a section head, 16 - 8 in the duo's. Desktop only until Elio validates it */
+/* ── every head: 8 between the title and its sub line; the eyebrow to the title stays. A head's flex gap
+   sets both, so the sub line takes it back: 20 - 12 in a section head, 16 - 8 in the duo's. Desktop only for now */
 @media (min-width: 1200px) {
   .s-head > .s-h2 + .s-sub { margin-top: -12px; }
   .s-duo-head > .s-h3 + .s-sub { margin-top: -8px; }
@@ -51,9 +51,8 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 1
 /* ── where this goes: the homepage's introduction, as it was */
 .s-intro .s-lede p { margin: 0; }
 
-/* ── find your place in a Colony: the two-option section, the homepage's Providers exactly (06_Amos-feedback/TWO-OPTION-SECTION.md,
-   Elio, 17 Nov): rail 120 / 124, h2 40/40, head to paths 64, two 588 x 331 paintings, titles 24/28 on one line, the whole block in one
-   1440 x 900 screen. Desktop only until Elio validates it: below 1200 the section keeps its first layout */
+/* ── find your place in a Colony: the two-option section, the homepage's Providers exactly: rail 120 / 124, h2 40/40, head to paths 64, two 588 x 331 paintings, titles 24/28 on one line, the whole block in one
+   1440 x 900 screen. Desktop only for now: below 1200 the section keeps its first layout */
 @media (min-width: 1200px) {
   .cl-paths .s-rail { padding-bottom: 124px; }
   .cl-paths .s-h2 { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
@@ -163,7 +162,7 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 1
   .cl-chip { padding: 3px 8px; font-size: 10.5px; line-height: 14px; }
 }
 
-/* ── the top as /providers/' and /ants/' (Elio, 17 Nov): across the whole width, the text on the rail's edge, the march filling the
+/* ── the top as /providers/' and /ants/': across the whole width, the text on the rail's edge, the march filling the
    right half; eyebrow 16, title 8, sub 36, button. Desktop only */
 @media (min-width: 1200px) {
   .cl-top .s-rail { width: 100%; max-width: none; padding: 0; }
@@ -182,7 +181,7 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 1
 /* Build a Colony's button: the green one, faded, nothing to click yet */
 .cl-soon { opacity: .45; pointer-events: none; }
 
-/* ── How it works, the first Mac Colony, Private by design: one fold each at 1440 x 900 (Elio, 17 Nov), 120 / 124 inside, the content
+/* ── How it works, the first Mac Colony, Private by design: one fold each at 1440 x 900, 120 / 124 inside, the content
    centred; How it works' painting takes what the head and the steps leave, cover, so it is the same painting, less sky. Desktop only */
 @media (min-width: 1200px) {
   .cl-how, .cl-first, .cl-priv { height: 100svh; }
@@ -197,7 +196,7 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 1
   .cl-first .cl-facts > div { padding: 10px 0; }
 }
 
-/* ── aside.com's type scale (Elio's reference, measured 17 Nov at 1440): section titles 44/48, its hero 48/52, sub lines 18/28. Elio's
+/* ── aside.com's type scale: section titles 44/48, its hero 48/52, sub lines 18/28. the design's
    rules of the day win where they differ: the two-option head stays 40/40 and 18/27 (locked), 8 under a title (aside 16), 20 from the
    eyebrow (aside 24), 120 / 124 round a section (aside 96), 44px buttons (aside 40). Desktop only */
 @media (min-width: 1200px) {
@@ -208,7 +207,7 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 1
   .cl .cl-paths .s-sub { line-height: 27px; }
 }
 
-/* ── aside.com everywhere (Elio, 17 Nov, overruling the day's rules): sections 96 top and bottom, as tall as their content; eyebrow 24,
+/* ── aside.com everywhere: sections 96 top and bottom, as tall as their content; eyebrow 24,
    title 16, sub line (max 640); head to content 40; titles 44/48, sub lines 18/28; buttons 40 tall, 12 in, 16px; titles break where they
    fall. Last in the sheet, so it wins over the blocks above. Desktop only */
 @media (min-width: 1200px) {
@@ -235,7 +234,7 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 1
   .cl .s-btn, .cl .s-btn.big { height: 40px; padding: 0 12px; font-size: 16px; line-height: 24px; }
 }
 
-/* ── Private by design: three illustrated cards (Elio, 17 Nov), a night watercolour under the kit's smoked glass, the point under each.
+/* ── Private by design: three illustrated cards, a night watercolour under the kit's smoked glass, the point under each.
    aside's card grid: 24 apart, 16 to the text. Desktop only (below 1200 the three points stay as they were) */
 .cl-pcards { display: none; }
 @media (min-width: 1200px) {
@@ -273,18 +272,18 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 1
   .pc-ok { right: 8%; bottom: 10%; }
 }
 
-/* ── Private by design fills the fold again (Elio, 17 Nov): exactly the screen's height, head, cards and the TEE link centred in it */
+/* ── Private by design fills the fold again: exactly the screen's height, head, cards and the TEE link centred in it */
 @media (min-width: 1200px) {
   .cl .cl-priv { height: 100svh; min-height: 0 !important; }   /* exactly the fold: sections.js rounds sections up to 8px with an inline min-height (900 would become 904) */
   .cl .cl-priv .s-rail { box-sizing: border-box; height: 100%; display: flex; flex-direction: column; justify-content: center; padding-top: 72px; padding-bottom: 72px; }
 }
 
-/* ── where this goes: aside's introduction text (Elio, 17 Nov), 20/28 on a 638 column, in place of 26/36. Desktop only */
+/* ── where this goes: aside's introduction text, 20/28 on a 638 column, in place of 26/36. Desktop only */
 @media (min-width: 1200px) {
   .cl .s-intro .s-lede p { font-size: 20px; line-height: 28px; letter-spacing: 0; max-width: 638px; }
 }
 
-/* ── the top fills the first screen under the nav (Elio, 17 Nov), the painting inset 16 with soft corners, as aside's card; Where this
+/* ── the top fills the first screen under the nav, the painting inset 16 with soft corners, as aside's card; Where this
    goes starts on the scroll. Desktop only */
 @media (min-width: 1200px) {
   .cl .cl-top { min-height: 0 !important; }   /* sections.js's 8px rounding would push it past the fold */
@@ -292,12 +291,12 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 1
   .cl .cl-hero-panel { margin: 16px 16px 16px 0; height: auto; border-radius: 16px; }
 }
 
-/* ── Private by design: 96 between the title and the cards, as aside's privacy section (Elio, 17 Nov). Desktop only */
+/* ── Private by design: 96 between the title and the cards, as aside's privacy section. Desktop only */
 @media (min-width: 1200px) {
   .cl .cl-pcards { margin-top: 96px; }
 }
 
-/* ── 124 above and below every section in place of aside's 96 (Elio, 17 Nov); Private by design a little taller than the screen, so the
+/* ── 124 above and below every section in place of aside's 96; Private by design a little taller than the screen, so the
    night fills it wherever the wheel stops. Desktop only */
 @media (min-width: 1200px) {
   .cl :is(.s-intro, .cl-paths, .cl-how, .s-faq) .s-rail { padding-top: 124px; padding-bottom: 124px; }
@@ -307,7 +306,7 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 1
   .cl .cl-priv .s-rail { padding-top: 124px; padding-bottom: 124px; }
 }
 
-/* ── the first Mac Colony fills the screen exactly (Elio, 17 Nov): its dotted top at the top, Private by design's night just under the
+/* ── the first Mac Colony fills the screen exactly: its dotted top at the top, Private by design's night just under the
    fold. Desktop only */
 @media (min-width: 1200px) {
   .cl .cl-first { height: 100svh; min-height: 0 !important; }   /* sections.js's 8px rounding would add 4 */
@@ -315,7 +314,7 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 1
   .cl .cl-first-panel { height: 100%; min-height: 0; }
 }
 
-/* ── the top's text as Elio set it in Figma (Colony frame, 17 Nov): the grey half follows on the title's line, 544 wide; the sub line
+/* ── the top's text as designed: the grey half follows on the title's line, 544 wide; the sub line
    324 wide. Desktop only */
 @media (min-width: 1200px) {
   .cl .cl-hero-head .s-h2 { max-width: 544px; text-wrap: wrap; }
@@ -323,7 +322,7 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 1
   .cl .cl-hero-head > .s-h2 + .s-sub { max-width: 324px; text-wrap: wrap; }
 }
 
-/* ── the text widths Elio set in Figma (Colony frame, 17 Nov): each path's text across its whole 588 column, wrapping where it falls;
+/* ── the designed text widths: each path's text across its whole 588 column, wrapping where it falls;
    the sign-up line 620. Desktop only */
 @media (min-width: 1200px) {
   .cl .cl-paths .s-path-text p { max-width: none; padding-right: 0; text-wrap: wrap; }
@@ -333,18 +332,18 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page (Elio, 1
   .cl .cl-paths .s-path:nth-child(2) .s-path-text p { max-width: 536px; }   /* Build a Colony's text at its Figma width: the line breaks before "You choose" */
 }
 
-/* ── each path as a card (Elio's Figma, 17 Nov): its title, text and buttons 16 in from the painting's edges. Desktop only */
+/* ── each path as a card: its title, text and buttons 16 in from the painting's edges. Desktop only */
 @media (min-width: 1200px) {
   .cl .cl-paths .s-path-text > * { margin-left: 16px; margin-right: 16px; }
 }
 
-/* ── the paths' text widths Elio shortened in Figma (17 Nov): Join 468, Build 398. Desktop only */
+/* ── the paths' designed text widths: Join 468, Build 398. Desktop only */
 @media (min-width: 1200px) {
   .cl .cl-paths .s-path:nth-child(1) .s-path-text p { max-width: 468px; }
   .cl .cl-paths .s-path:nth-child(2) .s-path-text p { max-width: 398px; }
 }
 
-/* ── the titles back as they were before the aside pass (Elio, 17 Nov; commit c56fe62): 48/46 at -2, two lines, ink then grey; Find your
+/* ── the titles back as they were before the aside pass: 48/46 at -2, two lines, ink then grey; Find your
    place and How it works 40/40 at -1.6; the FAQ 42; the top's title on two lines. Only the titles: every other aside value stays.
    Desktop only */
 @media (min-width: 1200px) {

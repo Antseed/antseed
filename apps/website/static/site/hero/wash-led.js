@@ -16,7 +16,7 @@
 const root = document.documentElement;
 const PITCH = 8;           // the grid, CSS px, as the hero's opening
 const DOT = 0.42;          // a dot's radius, × the pitch
-const RADIUS = 88;         // the cursor's reach, CSS px (Elio, 12 Nov: as wide as at first)
+const RADIUS = 88;         // the cursor's reach, CSS px
 const HALF_LIFE = 0.3;     // s: how fast the trail fades
 const SQUARE = 0.46, ROUND = 0.5, PAPERED = 0.8, GONE = 1.06;   // the levels where a cell turns into a flat square, a dot (the paper coming up round it until PAPERED), bare paper
 const PAPER = { light: '#ffffff', dark: '#181d1b' };   // the rail's paper (sections.css --rail-bg)
@@ -44,7 +44,7 @@ const load = (url) => {
 function panel(el) {
   const w = { el, c: null, ctx: null, key: '', cols: 0, rows: 0, dpr: 1, heat: null, jit: null, ink: null, ready: false, px: -1, py: -1, box: null, panes: [] };
   // the frosted windows showing on the panel, each with its canvas (made once, kept) and how much of what is behind its tint lets through
-  // (Elio, 12 Nov: the trail stays under the windows, seen through their frost as under the coin, never drawn on the glass: no panes)
+
   const glass = () => {
     for (const { c, g } of w.panes) g.clearRect(0, 0, c.width, c.height);
     w.panes = [];

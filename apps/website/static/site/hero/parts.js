@@ -1,4 +1,4 @@
-// The launch's visual parts (Antseed · Design, 17 Nov): each slot <div class="lp-slot" data-part="name"> is filled with parts/name.html,
+// The launch's visual parts: each slot <div class="lp-slot" data-part="name"> is filled with parts/name.html,
 // its style parts/name.css linked once. A fragment whose root carries data-js gets parts/name.js run on it (export default (el) => {}).
 // Only the parts listed on <body data-parts="a,b"> load (they are listed as they are merged), so an empty slot asks for nothing.
 // ?parts=a,b loads others too, to look at a part in place before it is listed. A filled slot gets .lp-on (launch.css lets the

@@ -1,5 +1,5 @@
-/* Privacy and trust: Amos's four screens (his hero/revision.js, 16 Nov), every word of them and in his order (an eyebrow, a title, his
-   picture, its result, a line, a link; no eyebrow, as the site's other windows), redrawn as ours (Elio, 17 Nov): one window of the scenes' smoked green glass (v6.css: the same
+/* Privacy and trust: Amos's four screens, every word of them and in his order (an eyebrow, a title, his
+   picture, its result, a line, a link; no eyebrow, as the site's other windows), redrawn as ours: one window of the scenes' smoked green glass (v6.css: the same
    tint, frost, hairline and shadow, by day and at night) over the panel's painting, centred and only as wide as it reads well, so the
    painting shows round it; inside, the page's type and the network's greens. The panel and its place are sections.css's. */
 .pv4 { display: grid; justify-items: center; width: 100%; }
@@ -79,7 +79,7 @@
 .mi .wash .pv4-result { transition: opacity .4s .9s; }
 .mi .wash:not(.mi-in) .pv4-result { opacity: 0; }
 
-/* held (sections.js puts .pv-pin on the section, 900 wide and up), the whole section is one screen (Elio, 17 Nov): the head, then the
+/* held (sections.js puts .pv-pin on the section, 900 wide and up), the whole section is one screen: the head, then the
    points beside a taller panel, the block centred in the screen; the ant stands up beside the head instead of claiming room above */
 @media (min-width: 900px) {
   .s-priv.pv-pin .s-pv-pin { justify-content: center; padding-block: clamp(24px, 4vh, 48px); }

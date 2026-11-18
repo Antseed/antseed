@@ -1,6 +1,6 @@
-/* The launch nav (18 Nov, Amos's links in our look): Network, the Providers menu, Ecosystem, Live prices; then Docs, Blog, the day/night
-   slider and the two buttons (the social links live in the footer's legal row: call of 17 Nov). Shared by the six pages (site-nav.js runs the menus). */
-/* The links sit in the nav's own row (call of 17 Nov: more room after the logo): 64 after it, the rest of the row's room between them and
+/* The launch nav: Network, the Providers menu, Ecosystem, Live prices; then Docs, Blog, the day/night
+   slider and the two buttons. Shared by the six pages (site-nav.js runs the menus). */
+/* The links sit in the nav's own row: 64 after it, the rest of the row's room between them and
    the right side, so everything shares the nav's centre line. Gaps: 32 between links (Docs / Blog too), 24 from Blog to the slider, 16 from
    the slider to the buttons, 8 between the two buttons (.acts' own gap, shell.css). */
 nav .links { position: static; transform: none; margin: 0 auto 0 64px; gap: 32px; align-items: center; }

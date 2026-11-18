@@ -12,9 +12,9 @@
 .s-page {
   --page: #fcfcfc; --rail-bg: #fff; --title: #000; --fill: #4f7a24; --fill-hi: #436a1e;
   --tile: rgba(214, 219, 211, .2); --tile-hi: rgba(214, 219, 211, .4); --tile-line: rgba(64, 76, 66, .1);   /* the ghost button and the model cards */
-  --priv: #181d1b; --priv-dot: #363b3a;   /* Private by design keeps its night grey by day too (Elio, 12 Nov) */
+  --priv: #181d1b; --priv-dot: #363b3a;   /* Private by design keeps its night grey by day too */
   --logo: none;   /* the black logos (.ink) */
-  /* the cards' corner, aside.com's (11.2, Elio's reference, 12 Nov), and what sits inside nests under it (v6.css: a window 8,
+  /* the cards' corner, aside.com's, and what sits inside nests under it (v6.css: a window 8,
      a popover 6, a control 5, a small tile 3, and where a box shares a corner, the outer radius less the inset, 2 at least) */
   --r-card: 11px;
 }
@@ -80,14 +80,14 @@
 .s-eyebrow, .s-pixel { font: 400 calc(16px * var(--eb-size, 1.125))/1.5 "Geist Pixel Var", Geist, sans-serif; font-variation-settings: "ELSH" var(--eb-elsh, 20); }
 .s-eyebrow .chev, .s-pixel .chev { display: inline-block; }
 .s-head { --head-gap: 20px; display: flex; flex-direction: column; gap: var(--head-gap); align-items: flex-start; }
-/* a section's title and its sub line 8 apart on a laptop (Elio, 18 Nov), whatever its head's own gap (--head-gap, inherited; none: 0) */
+/* a section's title and its sub line 8 apart on a laptop, whatever its head's own gap (--head-gap, inherited; none: 0) */
 @media (min-width: 761px) { .s-sec :is(.s-h2, .s-h3) + .s-sub { margin-top: calc(8px - var(--head-gap, 0px)); } }
 .s-head .s-sub { max-width: 780px; }
 .s-narrow { max-width: 620px; }
 .mono, .s-page code { font-family: "Geist Mono", ui-monospace, monospace; }
 
 /* buttons, checks */
-.s-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }   /* a button and its Learn more side by side, 12px apart everywhere (Elio, 16 Nov) */
+.s-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }   /* a button and its Learn more side by side, 12px apart everywhere */
 .s-btn { display: inline-flex; align-items: center; justify-content: center; height: 44px; padding: 0 20px; border-radius: 10px; background: var(--fill); color: #fff !important;
   font: 500 15px/20px Geist, sans-serif; white-space: nowrap; transition: background .15s;
   box-shadow: 0 3.5px .5px 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -2px 1px 0 #3b5e17; }   /* Figma v4: a dark lip, a soft drop */
@@ -112,7 +112,7 @@
 /* until a landscape panel arrives (card-unveil.js) its painting waits and the panel is plain in its own colour; the arrival is a canvas
    over the painting, under everything in the panel, that lifts */
 .s-page .wash:is([data-unveil="wait"], [data-unveil="soon"]) { background-image: none; }
-/* its windows wait hidden, then pop from the centre as the painting starts to grow round them (Elio, 12 Nov): a little smaller, faded,
+/* its windows wait hidden, then pop from the centre as the painting starts to grow round them: a little smaller, faded,
    to their size (scale and opacity, so their own transforms stand) */
 .s-page .wash:is([data-unveil="wait"], [data-unveil="soon"]) > :not(canvas) { opacity: 0; scale: .9; }
 .s-page .wash[data-unveil="run"] > :not(canvas) { transition: opacity .55s ease-out, scale .9s cubic-bezier(.2, .9, .25, 1.12); }
@@ -134,8 +134,8 @@
 .s-prices .s-head { gap: 16px; }
 .s-models { width: 100%; }
 .s-prices .s-h2 { color: var(--title); }   /* as the products' titles */
-/* the four media as tabs (Elio, 12 Nov: the switch did not read as tabs): the names across the rail's whole width, out of its inner
-   margin to the section's edges where the dotted outline runs (Elio, 12 Nov), a hairline under them all, and under the chosen one a
+/* the four media as tabs: the names across the rail's whole width, out of its inner
+   margin to the section's edges where the dotted outline runs, a hairline under them all, and under the chosen one a
    green line that slides from name to name (::before, placed at --tx and --tw: sections.js); the names grey, the chosen one black. Each
    tab is the row's full height, so a click anywhere on it lands; the hover shows only where there is one (on a touch screen it stuck to
    the last tab tapped) */
@@ -201,7 +201,7 @@
    card's tile moves to ::before to slip in between. Each lane's geometry comes from the sprite's table as variables (sections.js):
    the ant's cell (--aw, --ah) with its corner on the card's (--ax, --ay), the sheet (--sw, --sh), the feet below the card (--below) */
 .s-flow.carry { gap: 28px; padding: 30px 0 24px; }   /* the hop's room over the first lane; the lanes twice as far apart, and room under
-   the last, so every carrier's shadow shows whole (Elio, 12 Nov) */
+   the last, so every carrier's shadow shows whole */
 .s-lane.ant.carry { height: calc(var(--card) + var(--below) + 2 * 6px); }
 .s-lane.ant.carry .s-mcard { top: 6px; background: none; }
 .s-mcard.carry::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: linear-gradient(var(--tile) 0 0), var(--rail-bg); }
@@ -209,11 +209,11 @@
   background: var(--sheet, url(/site/assets/home/carry/ant.webp)) 0 0 / var(--sw) var(--sh) no-repeat; transition: filter 1.2s ease; }   /* each carrier its own sheet and cell (sections.js, VARIANTS) */
 .s-mcard.carry .ant.hand { z-index: 1; background-position-y: calc(-1 * var(--ah)); pointer-events: none; }
 .s-lane.carry.back .ant { transform: scaleX(-1); }
-/* the ground under a carrier (Elio, 12 Nov: so it walks on something): one soft shadow on the ground at the feet, from the ant's
+/* the ground under a carrier: one soft shadow on the ground at the feet, from the ant's
    side to the far end of its card, even all along (a blurred pill, not a radial fade) and a little deeper on the ant's side, with a
    paper grain in it so it is not too smooth. Kept on the ground as the card bobs and hops (sections.js) */
 .s-mcard.carry .shade { --sh-ink: 52, 38, 18; --sh-a: .085; --sh-b: .05; --sh-dir: to right; position: absolute; z-index: -3; pointer-events: none;
-  left: calc(min(var(--ax), 0px) + 10px); right: calc(min(100% - var(--ax) - var(--aw), 0px) + 10px); top: calc(100% + var(--below) - 2px); height: 8px;   /* half as dark, 30% lower, set a little lower (Elio, 12 Nov) */
+  left: calc(min(var(--ax), 0px) + 10px); right: calc(min(100% - var(--ax) - var(--aw), 0px) + 10px); top: calc(100% + var(--below) - 2px); height: 8px;   /* half as dark, 30% lower, set a little lower */
   border-radius: 50%; filter: blur(4px);
   background: linear-gradient(var(--sh-dir), rgba(var(--sh-ink), var(--sh-a)), rgba(var(--sh-ink), var(--sh-b)) 45%, rgba(var(--sh-ink), var(--sh-b)));
   -webkit-mask: var(--grain) 0 0 / 96px 96px; mask: var(--grain) 0 0 / 96px 96px;
@@ -245,14 +245,13 @@
 .s-feats li { display: flex; align-items: center; gap: 12px; padding: 8px 0; font: 400 16px/24px Geist, sans-serif; color: var(--t); }
 .s-feats li + li { --dt: 2px; }
 .s-feats li::before { left: 35px; }
-/* the Desktop list's lines break where the sense does (Elio, 12 Nov), the icon centred on the two; on a phone the text wraps as it may */
+/* the Desktop list's lines break where the sense does, the icon centred on the two; on a phone the text wraps as it may */
 @media (max-width: 760px) { .s-feats br { display: none; } }   /* the dotted line starts with the text (icon 24 + gap 12), so the icons stand alone */
 /* each feature's icon alone, centred on its text's lines: a pixelarticons glyph (assets/home/icons/pixel, MIT, the same 12-pixel grid
-   as Utexo's pixel icons) in the titles' grey (Elio, 12 Nov), through its mask, at 24px so each of its pixels is a whole 2px */
+   as Utexo's pixel icons) in the titles' grey, through its mask, at 24px so each of its pixels is a whole 2px */
 .f-ic { flex: none; width: 24px; height: 24px; background: var(--g); -webkit-mask: var(--i) center / 24px no-repeat; mask: var(--i) center / 24px no-repeat; }
 
-/* smoked green glass over the landscape: a dark green at partial opacity, frosted, a hairline in a lighter tint of the same green. At 64% (was 74%,
-   12 Nov) more of the painting shows; the text a shade lighter to keep its contrast over the bright day sky (body 3.6:1 as before, colours 4.5:1) */
+/* smoked green glass over the landscape: a dark green at partial opacity, frosted, a hairline in a lighter tint of the same green. At 64% more of the painting shows; the text a shade lighter to keep its contrast over the bright day sky (body 3.6:1 as before, colours 4.5:1) */
 .term { --dot: rgba(150, 196, 150, .22); position: absolute; left: 91px; top: 115px; width: 860px; border-radius: 8px; overflow: hidden; background: rgba(14, 33, 23, .64);
   border: .5px solid rgba(150, 200, 145, .42); box-shadow: 0 12px 32px 0 rgba(8, 26, 14, .26), inset 0 .5px 0 0 rgba(190, 228, 170, .16);
   backdrop-filter: blur(10px) saturate(1.3); -webkit-backdrop-filter: blur(10px) saturate(1.3); font: 400 11.475px/20.06px "Geist Mono", monospace; color: #cbd8d0; }
@@ -281,7 +280,7 @@
    Two sides, not three (no hub between you and the network, the client's rule): your side is one soft glass plate that holds your
    callers, each with its own key, on top and your gateway under them, a v6 glass window (v6.css .v6c-win) with its address and its rules;
    the network is the providers standing on the painting under the plate, off it, in the network map's frosted tags (.nd-tag). Composed
-   for the square panel and the same on a phone: callers, gateway, providers, top to bottom, each route a column (Elio, 16 Nov). Your
+   for the square panel and the same on a phone: callers, gateway, providers, top to bottom, each route a column. Your
    links in the map's lime: one down from each caller into the gateway, and one out of the gateway's bottom edge, straight down its
    column to its own provider, the rule's word on a tag over that provider, the rule's row lit in the gateway while it plays (amos-05-r3);
    a request (the map's white bubble) rides the line. Drawn by sections.js from where the pieces sit, which also tells the three routes
@@ -301,15 +300,14 @@
   --gw-tag: rgba(226, 230, 227, .2); --gw-tag-t: #f5f7f5; --gw-tag-m: #c9d0cc; --gw-tag-edge: rgba(255, 255, 255, .3); --gw-tag-sh: rgba(0, 0, 0, .32); }
 .gw :where(ul, dl, dd, p) { margin: 0; padding: 0; list-style: none; }
 .gw b { font-weight: 500; }
-/* your side: the plate, frosted lightly so the painting shows through (amos-05-r4, Elio: too white: its fill halved, the windows on it a
-   little lighter too, the blur a touch stronger so the glass still reads); on it the callers over the gateway, in the v6 windows' glass */
+/* your side: the plate, frosted lightly so the painting shows through; on it the callers over the gateway, in the v6 windows' glass */
 .gw-plate { position: relative; display: flex; flex-direction: column; gap: 28px; width: var(--gw-w); padding: 14px; border: .5px solid var(--gw-plate-edge); border-radius: 14px;
   background: var(--gw-plate); box-shadow: var(--gw-plate-line), var(--gw-win-sh); backdrop-filter: blur(8px) saturate(1.15); -webkit-backdrop-filter: blur(8px) saturate(1.15); }
 .gw-callers, .gw-provs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .gw-caller, .gw-win { border: .5px solid var(--gw-win-edge); background: var(--gw-win); box-shadow: var(--gw-win-sh);
-  backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3); }   /* the lines passing under show only as a soft glow (Elio, 16 Nov) */
+  backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3); }   /* the lines passing under show only as a soft glow */
 .gw-caller { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 7px 4px; border-radius: 6px; white-space: nowrap; }
-/* each caller's icon left of its name (amos-05-r6, Elio): Claude Code the Claude mark in its colour, as on the price cards; the support
+/* each caller's icon left of its name: Claude Code the Claude mark in its colour, as on the price cards; the support
    bot a chat bubble and Maya a person, drawn in the feature list's pixel icons (icons/pixel), in the plate's text grey */
 .gw-ic { flex: none; width: 14px; height: 14px; background: var(--gw-t); -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; }
 .gw-ic.color { background: var(--i) center / contain no-repeat; -webkit-mask: none; mask: none; }
@@ -337,8 +335,7 @@
 .gw-prov { display: flex; flex-direction: column; align-items: center; padding: 6px 4px; border-radius: 6px; font-size: 10.5px; line-height: 14px; }
 .gw-prov span + span { color: var(--gw-tag-m); }
 /* the links (sections.js): your lime, 1.5px, a soft shadow under it to lift it off the painting, each route twice: dimmed underneath
-   (.dim, always there) and lit over it (.hi), drawn as its route plays; the rule tags on them; the request. They pass under the glass
-   (amos-05-r6, Elio): drawn in the plate, first, so the callers, the gateway and the providers, all painted after, lie over them, and
+   (.dim, always there) and lit over it (.hi), drawn as its route plays; the rule tags on them; the request. They pass under the glass: drawn in the plate, first, so the callers, the gateway and the providers, all painted after, lie over them, and
    each line starts and ends a little inside its windows, seen leaving from under one edge and going in under the next. .gw-lay pins
    the drawing to the plate's corner; sections.js sets the svg over the whole picture from there, so it draws in the picture's px */
 .gw-lay { position: absolute; left: 0; top: 0; width: 0; height: 0; }
@@ -368,13 +365,13 @@
 @container gw (max-width: 300px) { .gw-prov span { white-space: normal; text-align: center; } }
 /* where a caller's icon and name no longer fit on one line, the icon goes over the name */
 @container gw (max-width: 310px) { .gw-caller { flex-direction: column; gap: 3px; padding-block: 6px; } }
-/* the whole diagram an eighth larger in its window where the window has the room (amos-05-r4, Elio: less empty margin round the plate);
+/* the whole diagram an eighth larger in its window where the window has the room;
    zoom scales its box with it, so sections.js draws the links in the same px. On a phone it keeps its size, so every price still fits */
 @container gw (min-width: 421px) { .gw { zoom: 1.13; } }
-@container gw (min-width: 520px) { .gw { zoom: 1.32; } }   /* larger again, read at a glance (Elio, 16 Nov) */
+@container gw (min-width: 520px) { .gw { zoom: 1.32; } }   /* larger again, read at a glance */
 @media (max-width: 899px) { .s-duo .s-gw-panel { height: auto; } .s-gw-panel .gw { position: relative; inset: auto; padding-block: 48px; } }
 
-/* the app: one window, sitting as the Gateway's terminal does, mirrored (Elio, 12 Nov): its panel half the rail as the Gateway's, the
+/* the app: one window, sitting as the Gateway's terminal does, mirrored: its panel half the rail as the Gateway's, the
    window 115px under the panel's top and 91px from its side by the text, the terminal's offsets, and running off the rail's outer edge
    by a sixth of it (the app's sidebar, where nothing plays), never nearer than 64px to the panel's foot (on a wide screen it then runs
    off by less). On a phone (under 900px) the terminal's 40 and 24, and the panel ends 40 under the window */
@@ -559,7 +556,7 @@
 .pv-set video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
 .pv-colony .pv-set { aspect-ratio: 1600 / 1073; }   /* its poster's own shape */
 /* the stall's ant, in its box of the painting (art/round3/providers: 874, 611, 315 × 370 of 2048 × 1374), its pupils painted out */
-/* the price board on its nail, out of the film (Elio, 16 Nov): a pendulum, slowing at each end and quickest through the middle */
+/* the price board on its nail, out of the film: a pendulum, slowing at each end and quickest through the middle */
 .pv-sign { position: absolute; left: 32.52%; top: 43.741%; width: 11.035%; height: 14.41%; transform-origin: 50% 1.52%;
   animation: pv-swing 1.5s cubic-bezier(.37, 0, .63, 1) -.75s infinite alternate paused; }   /* from the middle, upright as painted */
 .pv-set[data-set="night"] .pv-sign { left: 32.275%; width: 11.328%; height: 14.265%; transform-origin: 50.86% 1.53%; }
@@ -599,8 +596,7 @@
 .s-net-panel { aspect-ratio: 33 / 14; margin-top: 64px; --wash: url(/site/assets/home/net/map-2-day.webp); --wash-d: url(/site/assets/home/net/map-2-night.webp); }
 /* the loop keeps map-2, with all its clearings; the still board takes map-4, painted without five of them (amos-09-art), as the steps do */
 .s-net-panel[data-net="still"] { --wash: url(/site/assets/home/net/map-4-day.webp); --wash-d: url(/site/assets/home/net/map-4-night.webp); }
-/* the map a touch less saturated, as washed as the rest of the page's paintings, so it reads as the setting and the pieces stand out
-   (Elio, 12 Nov: not grey, just in tune). The painting moves to a layer under the board with the filter, where net.js sizes and places
+/* the map a touch less saturated, as washed as the rest of the page's paintings, so it reads as the setting and the pieces stand out. The painting moves to a layer under the board with the filter, where net.js sizes and places
    it (inherited), and the unveil's canvas, which paints it while it arrives, takes the same filter */
 :root .s-page .s-net-panel { --map-tone: saturate(.74); background-image: none; }
 .s-net-panel::before { content: ""; position: absolute; inset: 0; z-index: -2; pointer-events: none; background: var(--wash) no-repeat;
@@ -609,7 +605,7 @@
 .s-page .s-net-panel:is([data-unveil="wait"], [data-unveil="soon"])::before { visibility: hidden; }
 .s-net-panel > canvas.cu { filter: var(--map-tone); }
 /* the network's diagram (net.js): an SVG the panel's size, in its own units, over the map seen from above, laid out like a board game.
-   Colour says whose it is (Elio, 12 Nov): everything of yours in the site's lime (Elio, 13 Nov: no blue), a deeper one on the day's map
+   Colour says whose it is: everything of yours in the site's lime, a deeper one on the day's map
    so it reads on the fields, the bright --acid at night; your lookup dotted, your links solid, a wider glow of the same lime round what
    travels on them; the others' links neutral and faint. The DHT's seeds the hero's seed, glowing amber at night as in the hand; a
    request a white speech bubble with lime dots, the answer the same seed, the payment a USDC coin, each casting a soft shadow on the
@@ -620,7 +616,7 @@
 :root[data-theme="dark"] .nd { --nd-link: #c8f53c; --nd-dot: #5f8a12; --nd-other: rgba(200, 245, 60, .7); --nd-lift: rgba(0, 0, 0, .6); --nd-edge: rgba(0, 0, 0, .35);
   --nd-shadow: rgba(0, 0, 0, .6); --nd-base: #7d8a83; --nd-base-edge: #47524c; --nd-pbase: #94bc3c; --nd-pbase-edge: #4e6c1c; }
 .nd :is(line, path) { fill: none; vector-effect: non-scaling-stroke; }
-/* every line in the lime, thick, no outline (Elio, 13 Nov: still not legible): a soft dark shadow under it lifts it off the painting */
+/* every line in the lime, thick, no outline: a soft dark shadow under it lifts it off the painting */
 .nd-look, .nd-link, .nd-olink, .nd-rings { filter: drop-shadow(0 1px 1.5px var(--nd-lift)); }
 .nd-look path { stroke: var(--nd-link); stroke-width: 7; stroke-linecap: round; stroke-dasharray: 0 13; }
 .nd-look circle { fill: var(--nd-link); }
@@ -638,7 +634,7 @@
 .nd-coin circle { fill: #fff; stroke: var(--nd-edge); stroke-width: 1; }
 .nd-fall ellipse { fill: var(--nd-shadow); fill-opacity: .45; }
 /* over the board (net.js, .nd-ui): a name tag under each ant and over the lookup's arc, the prices, the travellers' labels, and the card
-   that says what a thing is. Every tag, price and label is frosted glass with no tint (Elio, 13 Nov: "verre", glass, not green): the
+   that says what a thing is. Every tag, price and label is frosted glass with no tint: the
    painting blurred and its colour calmed under a light neutral fill, white by day, a pale smoke at night, a fine light edge, a soft light
    along its top and a soft shadow; ink on it by day, near-white at night. The price picked is the lime itself, ink on it; an offline one
    the same glass, its word greyed. The card is the site's popover, frosted white, with the cards' corner; at night the dark green glass. The
@@ -715,7 +711,7 @@
    above. The board follows the head (amos-09-r5: the three points are gone, the cards say it). On the map, whole, as a cover, as
    before amos-09-r3 (map-5: map-4 with its last six clearings painted out and at twice its size, 4224 by 1792, so it holds sharp at
    2x at every width, Magnific, amos-09-r5), under a light wash of the page's surface, deeper behind the cards; five cards in a row, each
-   the tags' neutral frosted glass (amos-09-r3, Elio, 16 Nov: lighter, the painting softly through): a light fill over the painting
+   the tags' neutral frosted glass: a light fill over the painting
    blurred and calmed, a fine light edge, a soft light along its top, a soft shadow; ink on it by day, near-white at night. Each card its
    icon in the accent (a pixel glyph, sections.html), its number and name ("1 Look up", the number in the pixel face), one line, and one small mono detail held at its foot. A thin line runs
    from each card's icon row to the next card: its track always there, quiet (::after), the lime drawn over it (::before, net-steps.js
@@ -723,7 +719,7 @@
    Below 1200 px the cards stack in a column, the line running down from icon to icon: on a tablet each card one row (icon, name and
    detail on top, the line under), on a phone the detail under the line */
 .s-page .s-net-panel { margin-top: 80px; }
-/* a screen's worth at 1440 by 900 (Elio, 16 Nov): the cards, with their paintings, make the board tall enough */
+/* a screen's worth at 1440 by 900: the cards, with their paintings, make the board tall enough */
 .s-page .s-net-panel:not([data-net-style="map"]) { --gap: 40px; display: flex; align-items: center; aspect-ratio: auto; height: auto; min-height: 0; padding: 104px 48px;
   background-size: cover; background-position: 50% 50%; }
 .s-net-panel[data-net="still"]:not([data-net-style="map"]) { --wash: url(/site/assets/home/net/map-5-day.webp); --wash-d: url(/site/assets/home/net/map-5-night.webp); }
@@ -734,7 +730,7 @@
   background: linear-gradient(rgba(24, 29, 27, .2), rgba(24, 29, 27, .58) 30%, rgba(24, 29, 27, .58) 70%, rgba(24, 29, 27, .2)); }
 .ns { --ns-ink: #1b211e; --ns-t: #4b534e; --ns-m: #646b67; --ns-o: #4f7a24; --ns-line: #8cbf1a; --ns-track: rgba(40, 56, 30, .2); --ns-ic: 20px;
   --ns-lw: 4px; --ns-pad: 20px; --ns-art: calc((100cqw - 4 * var(--gap)) / 5 - 2 * var(--ns-pad)); --ns-lift: 0 1px 2.5px rgba(24, 44, 10, .5);
-  /* the gateway's glass (Elio, 16 Nov: less white, the green of the painting through it), then a little more white for the text's contrast */
+  /* the gateway's glass, then a little more white for the text's contrast */
   --ns-glass: rgba(255, 255, 255, .36); --ns-edge: rgba(255, 255, 255, .9); --ns-light: rgba(255, 255, 255, .5); --ns-sh: rgba(20, 51, 30, .14);
   --ns-blur: blur(10px) saturate(1.15);
   display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--gap); width: 100%; margin: 0; padding: 0; list-style: none;
@@ -754,13 +750,12 @@
 .ns-art { grid-area: a; display: block; width: 100%; height: auto; aspect-ratio: 1; margin-bottom: 16px; border-radius: 6px; object-fit: cover; }
 .ns-ic svg { display: block; width: 100%; height: 100%; }
 .ns h3 { grid-area: h; align-self: start; margin: 0; font: 500 16px/22px Geist, system-ui, sans-serif; color: var(--ns-ink); }
-/* the step's number before its name, in the site's pixel face and the accent, so the sequence reads with the names (amos-09-r4, Elio) */
+/* the step's number before its name, in the site's pixel face and the accent, so the sequence reads with the names */
 .ns-n { margin-right: 8px; font: 400 16px/22px "Geist Pixel Var", "Geist Mono", monospace; font-variation-settings: "ELSH" 20; color: var(--ns-o); }
 .ns p { grid-area: p; align-self: start; margin: 6px 0 0; font: 400 14px/20px Geist, system-ui, sans-serif; color: var(--ns-t); }
 .ns span { grid-area: d; align-self: end; display: flex; align-items: center; gap: 6px; padding-top: 20px; font: 500 12px/16px "Geist Mono", ui-monospace, monospace; color: var(--ns-m); white-space: nowrap; }
 .ns span img { flex: none; width: 14px; height: 14px; }   /* USDC's own token by its amount, as on the painted board */
-/* the line between two cards 4px, the lime lifted off the painting by a soft dark shadow, as the painted board's links (Elio, 16 Nov:
-   not legible), its track a quiet dark tint; it joins the cards' paintings at their middle */
+/* the line between two cards 4px, the lime lifted off the painting by a soft dark shadow, as the painted board's links, its track a quiet dark tint; it joins the cards' paintings at their middle */
 .ns > li:not(:last-child)::before, .ns > li:not(:last-child)::after { content: ""; position: absolute; left: 100%; top: calc(var(--ns-pad) + (var(--ns-art) - var(--ns-lw)) / 2);
   width: var(--gap); height: var(--ns-lw); border-radius: calc(var(--ns-lw) / 2); pointer-events: none; }
 .ns > li:not(:last-child)::after { background: var(--ns-track); }
@@ -791,7 +786,7 @@
   .ns > li:not(:last-child)::before, .ns > li:not(:last-child)::after { left: calc(var(--ns-pad) + (var(--ns-art) - var(--ns-lw)) / 2); top: 100%; width: var(--ns-lw); height: var(--gap); }
   .ns > li:not(:last-child)::before { transform-origin: 50% 0; transform: scaleY(var(--p, 1)); }
 }
-/* a phone (amos-09-r7, Elio, 16 Nov: the steps one at a time, each filling the screen): the cards side by side in a strip the screen's
+/* a phone: the cards side by side in a strip the screen's
    width, one in view, swiped or slid by the story (net-steps.js), each laid out as in the row, its painting the card's width on top; the
    line between two cards runs across the gap at the paintings' middle */
 @media (max-width: 760px) {
@@ -810,17 +805,17 @@
   .ns > li:not(:last-child)::before, .ns > li:not(:last-child)::after { left: 100%; top: calc(var(--ns-pad) + (var(--ns-art) - var(--ns-lw)) / 2); width: var(--gap); height: var(--ns-lw); }
   .ns > li:not(:last-child)::before { transform-origin: 0 50%; transform: scaleX(var(--p, 1)); }
 }
-/* two looks of the network (amos-09-r10, Elio 16 Nov), both on the painted map, data-net-look on the section:
+/* two looks of the network, both on the painted map, data-net-look on the section:
    "compact": the cards without their paintings, a shorter board and the three points under it;
-   "illustrated", the default (Elio, 16 Nov): each card opens on its painting, the points under it too. On the preview a switch flips them (sections.js) */
+   "illustrated", the default: each card opens on its painting, the points under it too. On the preview a switch flips them (sections.js) */
 .s-points { display: grid; grid-template-columns: repeat(3, 1fr); text-align: left; }
 .s-points > div { display: grid; place-items: center; padding: 40px 32px 48px; }
 .s-points > div + div { --dl: 2px; }
-.s-points p { max-width: 300px; padding-right: 0; text-wrap: balance; }   /* each block as near a rectangle as it goes (Elio, 12 Nov) */
+.s-points p { max-width: 300px; padding-right: 0; text-wrap: balance; }   /* each block as near a rectangle as it goes */
 .s-points .mi-t { display: block; }
 .s-net[data-net-look="compact"] .ns-art { display: none; }
 .s-net[data-net-look="compact"] .ns { --ns-art: 22px; }   /* the line between two cards runs level with the names */
-/* one screen, both looks (Elio, 16 Nov): the head, the board and the three points fill the screen's height at least; the board takes what
+/* one screen, both looks: the head, the board and the three points fill the screen's height at least; the board takes what
    is left, its cards centred in it (with the paintings it needs about all of it, without them it grows) */
 .s-net .s-rail { display: flex; flex-direction: column; min-height: calc(100svh - 4px); padding-top: 72px; }   /* less the section's 4px of edges */
 .s-page .s-net .s-net-panel:not([data-net-style="map"]) { flex: 1 0 auto; margin-top: 56px; padding-block: 40px; }
@@ -852,11 +847,11 @@
 .s-tk-frame { padding: 64px 64px 64px 0; }
 .s-tk-panel { display: grid; place-items: center; aspect-ratio: 1; border-radius: var(--r-card); }
 .s-tk-coin { display: block; width: 56%; height: auto; }
-/* the mascot looking up, its arms raised, the coin floating over its hands, slowly rising and falling (Elio, 12 Nov) */
-/* the ant rises from the panel's foot, seen down to just under its arms (its feet never in the wheat); the coin, nearly its old size, high, takes the room (Elio, 12 Nov) */
+/* the mascot looking up, its arms raised, the coin floating over its hands, slowly rising and falling */
+/* the ant rises from the panel's foot, seen down to just under its arms (its feet never in the wheat); the coin, nearly its old size, high, takes the room */
 .s-tk-panel .s-tk-ant { position: absolute; left: 50%; top: 56%; height: 62%; aspect-ratio: 544 / 769; translate: -50% 0; }
 .s-tk-ant > img { display: block; width: 100%; height: 100%; }
-/* its pupils tremble, in awe, as in manga: small quick jumps, both eyes together, the size unchanged (Elio, 12 Nov) */
+/* its pupils tremble, in awe, as in manga: small quick jumps, both eyes together, the size unchanged */
 .s-tk-ant > .s-tk-pupil { position: absolute; height: auto; animation: s-tk-awe .48s steps(1) infinite; }
 @keyframes s-tk-awe {
   0% { translate: 0 0; } 17% { translate: .9px -.6px; } 33% { translate: -.8px .7px; }
@@ -887,7 +882,7 @@
    (dither.js repeats their rows), behind the panel. The ants walking it are dither.js's. The top line runs across the whole width, on the margin's dots; the rail draws
    none of its own. */
 .s-priv { --dot: var(--priv-dot); --t: #f2f4ef; --g: #7b827e; --b: #a4aca7; background: var(--priv); }   /* in dark the rail's #181d1b, dots darker */
-/* one frame (.s-pv-pin, the mosaic's box: amos-07, Elio 17 Nov): the head, then the four points beside one panel; the run after it. From
+/* one frame: the head, then the four points beside one panel; the run after it. From
    900 wide and 600 tall (sections.js puts .pv-pin on the section) the frame sticks, a screen tall with its rail in the middle (held by
    its bottom when taller than the screen); the run (--pv-run, a step of the page's scroll per point) is the room the page scrolls through
    while it holds. Elsewhere the run is nothing */
@@ -910,7 +905,7 @@
 .s-priv .s-sub { margin-top: 20px; max-width: 600px; }
 /* the incognito ant (assets/home/ant-incognito, three films): sitting on the panel's top edge by its right corner, legs over the
    edge, over every point's panel and staying as they change, so she holds with the frame (amos-07-r4: back where she sat before the
-   pin); a sixth of the panel wide; mirrored, looking left, toward the text (Elio, 12 Nov). Her seat, 89% down the picture, on the edge;
+   pin); a sixth of the panel wide; mirrored, looking left, toward the text. Her seat, 89% down the picture, on the edge;
    at night the hero mascot's light */
 .s-pv-ant { position: absolute; z-index: 2; right: 5%; bottom: 100%; width: clamp(68px, 17%, 127px); height: auto; translate: 0 12%; transform: scaleX(-1); pointer-events: auto; cursor: pointer; padding: 0; border: 0; background: none; border-radius: 40% 40% 16% 16%; }
 /* her three films stacked: the idle loop, and the laugh or the pout a click plays once (sections.js); one shows at a time */
@@ -928,7 +923,7 @@
 .s-priv.pv-pin .s-pv { margin-top: 0; padding-top: var(--pv-ant, 160px); }
 .s-pv-side { display: flex; flex-direction: column; justify-content: flex-start; }
 .s-pv-list { display: flex; flex-direction: column; gap: 4px; min-height: var(--pv-list-h, 0px); }   /* its tallest state (sections.js): no jump as the tabs change */
-.s-pv-dots { position: absolute; left: 0; top: 0; pointer-events: none; display: none; }   /* the thread is off (Elio, 12 Nov) */
+.s-pv-dots { position: absolute; left: 0; top: 0; pointer-events: none; display: none; }   /* the thread is off */
 .s-pv-tab { display: grid; grid-template-rows: auto 0fr; width: 100%; padding: 18px 24px; border: 0; border-radius: 14px; background: none;
   text-align: left; cursor: pointer; color: var(--t); font: 500 18px/26px Geist, sans-serif; transition: grid-template-rows .45s cubic-bezier(.2, .7, .2, 1); }
 .s-pv-tab > * { transition: opacity .3s ease; }
@@ -1125,5 +1120,5 @@
   .qs details::details-content { transition: none; }
 }
 
-/* the site's films are painting, never players: no picture-in-picture, skip or other media buttons on hover (Safari showed them on the incognito ant, Elio, 13 Nov) */
+/* the site's films are painting, never players: no picture-in-picture, skip or other media buttons on hover */
 video::-webkit-media-controls, video::-webkit-media-controls-enclosure, video::-webkit-media-controls-panel, video::-webkit-media-controls-overlay-play-button, video::-webkit-media-controls-start-playback-button { display: none !important; -webkit-appearance: none; }

@@ -1,4 +1,4 @@
-// The Gateway's film (Amos, 16 Nov, his revision.js): plays, muted, while on screen; its chapters jump and light with the film, a line
+// The Gateway's film: plays, muted, while on screen; its chapters jump and light with the film, a line
 // filling under the one playing; with reduced motion it stays on its poster, with the video's controls.
 const film = document.querySelector('.gw-film');
 if (film) {

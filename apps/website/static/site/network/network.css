@@ -1,4 +1,4 @@
-/* The network page (launch, 18 Nov): Amos's /network/ copy, word for word, in the homepage's components (sections.css): the hero with its
+/* The network page: Amos's /network/ copy, word for word, in the homepage's components (sections.css): the hero with its
    three layers, the token's two halves, the two paths, the introduction's split, a wide painting with its windows, a duo, the points,
    the FAQ's two columns. What they don't have is here: the glass windows over the paintings (DESIGN.md: white glass by day, smoked
    green at night) and the page's layouts. */
@@ -8,12 +8,12 @@
 html, body { margin: 0; background: var(--page); color: var(--ink); font-family: Geist, system-ui, sans-serif; }
 img { display: block; }
 nav, nav * { box-sizing: border-box; }
-nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it (Elio, 17 Nov); its glass is shell.css's */
+nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it; its glass is shell.css's */
 nav > a { display: block; }
 .s-page { margin: 0; }
 .nw :where(ul, ol) { margin: 0; padding: 0; list-style: none; }
 
-/* line breaks (Elio, 17 Nov: no line ends on two or three stray words): each title's two tones a block of its own, each balanced;
+/* line breaks: each title's two tones a block of its own, each balanced;
    the short texts balanced, the long ones laid out so their last line is not a lone word */
 .nw .s-page :is(h1, h2, h3) { text-wrap: balance; }
 .nw .s-page :is(h1, h2, h3) > br { display: none; }
@@ -21,7 +21,7 @@ nav > a { display: block; }
 .nw .s-page :is(p, li) { text-wrap: pretty; }
 .nw .s-page :is(.s-cap, .nw-list li, .nw-place p, .s-feats li span, .nw-docs span, .s-lede > p) { text-wrap: balance; }
 
-/* every section head: 8 from its title to its sub line (Elio, 17 Nov, every page), the eyebrow and the rest as they were */
+/* every section head: 8 from its title to its sub line, the eyebrow and the rest as they were */
 @media (min-width: 761px) {
   .nw .s-head > :is(h1, h2, h3) + .s-sub { margin-top: -12px; }   /* the head's gap is 20 */
   .nw .s-duo-head > :is(h2, h3) + .s-sub { margin-top: -8px; }     /* the duo's is 16 */
@@ -39,7 +39,7 @@ nav > a { display: block; }
     padding: 56px 40px 56px calc((100cqw - var(--rail-w)) / 2 + 40px); }
   .nw-hero-head > * { margin: 0; }
   .nw-hero-head { container-type: inline-size; }
-  .nw-hero-head .s-h2 { font-size: min(45px, 100cqi / 12.15); line-height: .96; }   /* two lines, always (Elio): «inference liquidity network.» needs 581 at 48 and the text has 544 (wider, under 24 would stay before the painting), so 45 at 1440, less on a smaller screen */
+  .nw-hero-head .s-h2 { font-size: min(45px, 100cqi / 12.15); line-height: .96; }   /* two lines, always: «inference liquidity network.» needs 581 at 48 and the text has 544 (wider, under 24 would stay before the painting), so 45 at 1440, less on a smaller screen */
   .nw-hero-head > .s-h2 + .s-sub { margin-top: -8px; max-width: 460px; text-wrap: balance; }
   .nw-hero-head .s-actions { margin-top: 20px; }
   .nw-hero-panel { aspect-ratio: auto; min-height: 0; height: 100%; border-radius: 0; background-position: 50% 50%; }
@@ -69,7 +69,7 @@ nav > a { display: block; }
   .nw-pay .s-h2 { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
   .nw-pay .s-paths { margin-top: 64px; }
   .nw-pay .s-path-panel { aspect-ratio: 16 / 9; }
-  .nw-pay .s-path-h { margin-bottom: 16px; font-size: 32px; line-height: 36px; letter-spacing: -1.07px; }   /* Elio, 17 Nov: a bigger title, 28 down to its first point (16 + the column's 12) */
+  .nw-pay .s-path-h { margin-bottom: 16px; font-size: 32px; line-height: 36px; letter-spacing: -1.07px; }   /* a bigger title, 28 down to its first point (16 + the column's 12) */
 }
 /* one big coin on each painting, the two facing each other: the USDC coin faces right, the ANTS coin left. They float as the token's did */
 .nw-coin-panel { position: relative; }
@@ -82,10 +82,10 @@ nav > a { display: block; }
 
 /* the two paths' text: Amos's points, then the buttons */
 .nw-list { align-self: start; width: 100%; }   /* the products' features (sections.css .s-feats): a kit icon, the point, a dotted line between */
-.nw-list li { padding: 12px 0; color: var(--b); }   /* 24 between two points, so each reads on its own (Elio, 17 Nov) */
+.nw-list li { padding: 12px 0; color: var(--b); }   /* 24 between two points, so each reads on its own */
 .nw-list li:first-child { padding-top: 0; }
 .nw-list li:last-child { padding-bottom: 0; }
-.nw-list li > span { max-width: 380px; }   /* short lines, about half the column, each point on two (Elio's Figma) */
+.nw-list li > span { max-width: 380px; }   /* short lines, about half the column, each point on two */
 .nw-list .s-link { font-size: inherit; line-height: inherit; }
 .nw-soon { color: var(--g); }
 
@@ -217,15 +217,14 @@ nav > a { display: block; }
   .nw-docs span { font-size: 15px; line-height: 22px; }
 }
 
-/* ── USDC pays / $ANTS makes inference liquid: each path as a card, as Colony's (Elio's Figma, 17 Nov): its title, text and button 16
+/* ── USDC pays / $ANTS makes inference liquid: each path as a card, as Colony's: its title, text and button 16
    in from the painting's edges. Desktop only */
 @media (min-width: 1200px) {
   .nw-pay .s-path-text > * { margin-left: 16px; margin-right: 16px; max-width: calc(100% - 32px); box-sizing: border-box; }
 }
 
-/* ── the aside scale (06_Amos-feedback/ASIDE-SCALE.md, built on /colony/ with Elio, 17 Nov: « applique-le partout »). It replaces the
-   two-option values and the earlier head rules above, except the section titles (Elio, 17 Nov: « remets les titres comme ils
-   étaient »): their sizes, two lines and the USDC/ANTS head's 64 to its panels stay as above. Kept from Elio's asks on this page: the two-line hero and Trust titles, the
+/* ── the aside scale. It replaces the
+   two-option values and the earlier head rules above, except the section titles: their sizes, two lines and the USDC/ANTS head's 64 to its panels stay as above. Kept on purpose on this page: the two-line hero and Trust titles, the
    USDC/ANTS titles at 32 with 28 to their icon points and the points' short lines, What lives where on the whole screen. Desktop only */
 @media (min-width: 1200px) {
   /* §1 page: anchors with no offset (the nav scrolls away), the page's buttons 40 tall */
@@ -239,12 +238,12 @@ nav > a { display: block; }
   .nw .s-page .s-head .s-sub { line-height: 28px; max-width: 640px; }
   .nw .nw-vision .s-head { padding-bottom: 40px; }
   .nw .nw-build .s-lede > p { font-size: 20px; line-height: 28px; letter-spacing: 0; max-width: 638px; }
-  /* the duo (Trust): eyebrow 24, title 16 to its sub; its title on Elio's two lines, at the scale's 44 */
+  /* the duo (Trust): eyebrow 24, title 16 to its sub; its title on its two lines, at the scale's 44 */
   .nw .nw-trust .s-duo-text { gap: 24px; }
   .nw .nw-trust .s-duo-head { gap: 16px; }
   .nw .nw-trust .s-duo-head > .s-h3 + .s-sub { margin-top: 0; }
   /* §3 the hero: the first screen under the nav, the painting inset 16 (top, right, bottom) with soft corners; eyebrow, 16, title,
-     16, sub (324), 32, buttons. Its title stays on Elio's two lines, at the scale's 44 (48 would need a third) */
+     16, sub (324), 32, buttons. Its title stays on its two lines, at the scale's 44 (48 would need a third) */
   .nw .nw-top { min-height: 0 !important; }   /* sections.js's 8px rounding would push it past the fold */
   .nw .nw-hero { height: calc(100svh - 69px); }
   .nw .nw-hero-panel { margin: 16px 16px 16px 0; height: auto; border-radius: 16px; }
@@ -258,7 +257,7 @@ nav > a { display: block; }
   .nw .nw-wcards { margin-top: 96px; }
 }
 
-/* The network in three layers (Elio, 17 Nov): the homepage's layers board, large, on its own flat ground */
+/* The network in three layers: the homepage's layers board, large, on its own flat ground */
 .nw-layers-panel { position: relative; aspect-ratio: 1248 / 720; margin-top: 40px; }
 @media (max-width: 760px) { .nw-layers-panel { aspect-ratio: 4 / 5; } }
 @media (min-width: 1200px) { .nw .s-page .nw-layers .s-rail { padding-block: 124px; } }

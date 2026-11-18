@@ -4,7 +4,7 @@
 /* ════ the cards (cards.css) ════ */
 /* Antseed homepage v6: the scenes in the "For the people" cards (Agents, Privacy, Teams) and the Providers cards (Open-source models,
    API capacity, Paid per request). Figma 5tLvMmeKGyUsZgrhY4ogTG, v6 light 729:2 and dark 729:5168, each scene a layer "v6 · …".
-   Heavy users keeps its v4 scene (Elio's review): nothing here for it.
+   Heavy users keeps its v4 scene: nothing here for it.
 
    Each scene is a stage the size of its Figma card (297.5 × 260 for the four, 404.66 × 300 for the three), its windows placed as in
    Figma, centred in the card (.s-card-panel, a size container). Nothing is scaled: on narrower cards compact layouts take over (the
@@ -41,7 +41,7 @@
 .v6c img { display: block; flex: none; }
 .v6c-mono { font-family: "Geist Mono", ui-monospace, monospace; }
 
-/* the glass windows (Figma: 62% white, 14 blur, a white half-pixel edge) */
+/* the glass windows */
 .v6c-win { position: absolute; display: flex; flex-direction: column; overflow: hidden; border: .5px solid #fff; border-radius: var(--r-win);
   background: rgba(255, 255, 255, .62); box-shadow: 0 14px 40px 0 rgba(20, 51, 89, .14); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
 /* the small glass tile behind a logo */
@@ -58,7 +58,7 @@
 .v6c-ico { flex: none; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .v6c-check { color: var(--v6-o); stroke-width: 1.7; }
 .v6c-chev { width: 10px; height: 10px; color: var(--v6-m); }
-/* the pointer (macOS arrow, Figma's 15.3 × 20.4) */
+/* the pointer */
 .v6c-cursor { position: absolute; z-index: 3; width: 15.3px; height: 20.4px; overflow: visible; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .3)); }
 .v6c-cursor path { fill: #111; stroke: #fff; stroke-width: 1.1; stroke-linejoin: round; }
 /* fields, as in a settings form */
@@ -74,7 +74,7 @@
 .v6c .v6c-btn.ghost { font-weight: 400; border-width: .5px; background: rgba(255, 255, 255, .7); box-shadow: 0 1px 0 0 rgba(255, 255, 255, .6), inset 0 -1px 1.5px 0 rgba(48, 56, 44, .2); }
 .v6c .v6c-btn .v6c-check { color: #fff; width: 12px; height: 12px; stroke-width: 1.8; }
 
-/* ── Agents · Hermes, model provider (Figma 730:87) ── */
+/* ── Agents · Hermes, model provider ── */
 .v6-agents-win { left: 22px; top: 28px; width: 236px; gap: 11px; padding: 14px; }
 .v6-agents-title { display: flex; align-items: center; gap: 7px; font-size: 12.5px; }
 .v6-agents-title img { width: 16px; height: 16px; }
@@ -87,7 +87,7 @@
 .v6-agents-menu .v6c-link { color: var(--v6-t); stroke-width: 1.3; }
 .v6-agents .v6c-cursor { left: 112px; top: 138px; }
 
-/* ── Privacy · the request as the provider sees it (Figma 734:131): the window runs off the card's right edge ── */
+/* ── Privacy · the request as the provider sees it: the window runs off the card's right edge ── */
 .v6-privacy-win { left: 34px; top: 44px; width: 300px; }
 .v6-privacy-endpoint { display: flex; align-items: center; gap: 7px; padding: 14px 16px 10px; font: 400 11px/normal "Geist Mono", monospace; }
 .v6-privacy-endpoint b { padding: 2px 5px; border-radius: var(--r-sm); background: rgba(79, 122, 36, .12); font-size: 10px; color: var(--v6-o); }
@@ -101,7 +101,7 @@
 .v6-privacy-fields .ok { color: var(--v6-o); }
 .v6-privacy-fields .v6c-shield { width: 12px; height: 12px; stroke-width: 1.3; }
 
-/* ── Teams · spend against budget, and the agent's model access (reworked after Elio's review of Figma 730:236) ── */
+/* ── Teams · spend against budget, and the agent's model access ── */
 .v6-teams-win { left: 16px; top: 22px; width: 266px; padding: 8px 12px; }
 .v6-teams-row { display: grid; grid-template-columns: 118px 66px 58px; align-items: center; height: 36px; }
 .v6-teams-head { height: 22px; font-size: 10px; color: var(--v6-m); }
@@ -123,7 +123,7 @@
 .v6-teams-menu .v6c-check { width: 11px; height: 11px; }
 .v6-teams .v6c-cursor { left: 257px; top: 212px; }   /* in the empty space under the check, clear of every label */
 
-/* ── Open-source models · models to serve (Figma 732:35) ── */
+/* ── Open-source models · models to serve ── */
 .v6-gpu-win { left: 44px; top: 34px; width: 316px; gap: 6px; padding: 16px; }
 .v6-gpu-head, .v6-gpu-row { display: flex; align-items: center; justify-content: space-between; }
 .v6-gpu-head { height: 26px; font-size: 13px; }
@@ -147,7 +147,7 @@
 .v6-gpu-go .v6c-btn { height: 30px; padding: 0 14px; }
 .v6-gpu .v6c-cursor { left: 318px; top: 150px; }
 
-/* ── API capacity · an incoming request (Figma 732:84), the site's own buttons ── */
+/* ── API capacity · an incoming request, the site's own buttons ── */
 .v6-cap-prev { left: 70px; top: 28px; width: 288px; gap: 4px; padding: 12px 16px; opacity: .6; }
 .v6-cap-line { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
 .v6-cap-line .ok { font-size: 11px; color: var(--v6-o); }
@@ -259,8 +259,8 @@
 :is(.v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) { position: absolute; inset: 0; container-type: inline-size; }
 :is(.v6-noacc-stage, .v6-signed-stage, .v6-tee-stage, .v6-nocrypto-stage, .v6-pseudo-stage, .v6-direct-stage) { position: absolute; left: 50%; top: 0; width: 297.5px; height: 260px;
   translate: -50% 0; transform-origin: 50% 50%; }
-/* glass, in both themes (Elio, 12 Nov): the windows the Gateway terminal's smoked green glass, the popovers frosted white. Thinner than
-   the terminal's (Elio, 12 Nov: "not transparent enough"), so the painting shows through a 10px frost: a lighter tint over a frost that
+/* glass, in both themes: the windows the Gateway terminal's smoked green glass, the popovers frosted white. Thinner than
+   the terminal's, so the painting shows through a 10px frost: a lighter tint over a frost that
    dims and saturates what it shows (--pv-glass, --pv-frost), so the light text stays readable on the pale day skies (about 3.3:1 there,
    7:1 and more at night; the terminal's 64% gave 4.7:1 by day). The scenes
    are scaled (--v6-k), so the frost, the hairline, the inner highlight and the shadow divide by it and show at the terminal's sizes */
@@ -405,7 +405,7 @@
 /* At night every glass screen over the landscapes is the Gateway terminal's smoked green glass (sections.css .term; Private by design's
    windows keep their own thinner glass, above, in both themes): a dark green at 64%,
    frosted 18px, a hairline in a lighter tint of the same green; inside, light text, faint light hairlines on the fields, the green
-   buttons kept (Elio, 12 Nov: "a dark green like the Antseed Gateway's terminal"). The popovers over them the same green, denser, so
+   buttons kept. The popovers over them the same green, denser, so
    they read over the window they hang from. By day everything above stands. */
 :root[data-theme="dark"] .v6c-win {
   border: .5px solid rgba(150, 200, 145, .42); background: rgba(14, 33, 23, .64); color: var(--v6-lt, #ecf3ee);

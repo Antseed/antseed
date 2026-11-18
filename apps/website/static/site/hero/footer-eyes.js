@@ -1,4 +1,4 @@
-// The footer's two awake ants watch the pointer (Elio, 13 Nov). Over the meadow's film (footer.css, night-loop.js) each of their four eyes
+// The footer's two awake ants watch the pointer. Over the meadow's film (footer.css, night-loop.js) each of their four eyes
 // is drawn again from the After Effects kit (assets/home/footer/eyes: make-atlas.py, eyes.json): the eye's white without its pupil, which
 // covers the film's eye up to its painted outline, the pupil over it, kept to the white, then the lid. At rest each pupil is where the
 // painting has it, so the layer can't be told from the film; the pupils ease toward the pointer, each in its own ellipse, the two of one

@@ -2,7 +2,7 @@
 // figures(box, sel) finds the figures in box and shows each at 70% of what it says (the last known value, never 0); when box comes into view (a third of it), once, they count up to what
 // they say, fast then slowing hard at the end. A figure is its text: a number with its prefix and suffix ("19,252", "742.8B", "Epoch 30"),
 // thousands and decimals as written. set(el, text) gives a figure a new value (a live one): before its count it waits for it, during
-// it the count heads there instead, after it the text is just replaced. With reduced motion nothing counts: set() only writes.
+// it the count heads there instead, after it the text is just replaced. With reduced motion nothing counts: set only writes.
 const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const MS = 2200;
 const FROM = 0.7;   // a count starts at this share of its value: a figure never shows 0

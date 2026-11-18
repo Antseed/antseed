@@ -1,4 +1,4 @@
-/* The providers page (launch, 18 Nov): the homepage's components (sections.css, v6.css, providers-v4.css) in this page's layouts. The top
+/* The providers page: the homepage's components (sections.css, v6.css, providers-v4.css) in this page's layouts. The top
    as the homepage's Gateway, the stall square on its right; the band of figures as the homepage's under its hero; the homepage's two
    paths, a v6 window over each painting; reputation as the homepage's Desktop, its picture on the left. */
 /* the page's base, as /network/'s: the homepage's keeps its own in index.html */
@@ -7,11 +7,11 @@
 html, body { margin: 0; background: var(--page); color: var(--ink); font-family: Geist, system-ui, sans-serif; }
 img { display: block; }
 nav, nav * { box-sizing: border-box; }
-nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it (Elio, 17 Nov); its glass is shell.css's */
+nav { position: relative; z-index: 10; }   /* at the top of the page, scrolling away with it; its glass is shell.css's */
 nav > a { display: block; }
 .s-page { margin: 0; }
 
-/* the top (Elio, 17 Nov, as /ants/): across the whole width, no rail and no dotted lines, so tall that the figures under it still show
+/* the top: across the whole width, no rail and no dotted lines, so tall that the figures under it still show
    above the fold; the margins start with the figures. The Gateway's two halves: the offer on the figures' left edge (the rail's, plus
    their padding, --in), in the middle of the height; the stall filling its half, no frame, no corners (as /ants/'s painting). The painting and its
    film laid as a cover, 85% down as on the homepage (the set as wide as the panel or as its height takes, centred), so the ant and its
@@ -65,14 +65,13 @@ nav > a { display: block; }
   .pp-card { aspect-ratio: auto; height: 300px; }   /* the windows' own height, as the homepage's cards had it (.s-card-panel.tall) */
 }
 
-/* ── the aside scale, as built on /colony/ (Elio, 17 Nov, « applique-le partout »: 06_Amos-feedback/ASIDE-SCALE.md, in place of the
-   two-option spec and the day's earlier rules). Last in the sheet, so it wins. Desktop only, from 1200 */
+/* ── the aside scale, as built on /colony/. Last in the sheet, so it wins. Desktop only, from 1200 */
 @media (min-width: 1200px) {
   html { scroll-padding-top: 0; }   /* the nav scrolls away: an anchor lands at the very top */
   /* §1 the page's buttons: 40 tall, 12 in, 16/24 (not the v6 windows' own) */
   .pp .s-actions .s-btn { height: 40px; padding: 0 12px; font-size: 16px; line-height: 24px; }
   /* §2 every head: eyebrow 24, title, 16, sub line 18/28 (max 640); 124 round each section. The titles stay as they were, two lines,
-     ink then grey, at their own sizes (Elio, 17 Nov) */
+     ink then grey, at their own sizes */
   .pp .s-sub, .pp .pp-run .s-sub { line-height: 28px; }
   .pp .s-head { gap: 24px; }
   .pp .s-head > .s-h2 + .s-sub { margin-top: -8px; }   /* 24 less 8: 16 under the title */

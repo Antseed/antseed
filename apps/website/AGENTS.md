@@ -5,7 +5,8 @@ antseed.com: marketing pages, the docs (`/docs`), the blog, the integration guid
 ## Inside
 
 - `docusaurus.config.ts` — site config, client redirects, navbar, announcement bar. `sidebars.ts` — the one docs sidebar.
-- `docs/<section>/*.md` — the docs; `blog/` — posts (`authors.yml`, images in `static/img/blog/<slug>/`); `src/pages/` — marketing pages.
+- `docs/<section>/*.md` — the docs; `blog/` — posts (`authors.yml`, images in `static/img/blog/<slug>/`); `src/pages/` — the other React pages (agents, apps, brand, coding, get-started, integrations, privacy, the token page `/ants-token/`…).
+- `static/site/` — the six marketing pages, `/`, `/network/`, `/providers/`, `/ants/`, `/colony/` and `/ecosystem/`: hand-built HTML, CSS and JS, not React, served by `plugins/static-pages.ts` (the `src/components/StaticPage` stub). **Read `static/site/AGENTS.md` before touching them**; it maps the files, the duplicated nav and footer, day and night, and the common edits. `scripts/site-models-refresh.mjs` refreshes their price list (`static/site/hero/models.json`) from AntSeedStats.
 - `src/integrations/integrations.ts` — the integration catalog. `plugins/integrations-pages.ts` turns it into routes and `llms-connect.txt`, and copies `skills/join-buyer/SKILL.md` to `static/skill.md`.
 - `static/` — served as is, including `install.sh`, `install-gateway.sh`, `llms.txt`, `_headers` and `_redirects`.
 - Where to add: a doc page is a file in its section with `id`, `slug`, `title`, `description` frontmatter, plus a `sidebars.ts` entry. An integration guide is an entry in `integrations.ts`. A moved doc URL is a `redirects` entry in `docusaurus.config.ts`, and a `_redirects` line when agents or curl fetch it.
@@ -38,6 +39,13 @@ antseed.com: marketing pages, the docs (`/docs`), the blog, the integration guid
 - React 19 types have no global `JSX`; import it.
 - `showLastUpdateTime` takes the date from git. A page whose date must not move pins `last_update` in frontmatter.
 - `static/mika/*` is unlisted and `noindex`; do not link it. `package-lock.json` is stale; install with pnpm from the root.
+
+## Marketing pages (`static/site/`)
+
+Their own guide is `static/site/AGENTS.md`. The PR that brought them in (the launch, 18 Nov 2026) touched three "Ask first" items, as agreed with Antseed:
+- **Positioning copy:** the six pages carry Amos's copy word for word.
+- **Navbar:** the static pages have their own nav, with Amos's links: Network, the Providers menu, Ecosystem, Live prices, Docs, Blog. The Docusaurus navbar in `docusaurus.config.ts`, which the docs and the other React pages use, is unchanged.
+- **Analytics:** GTM and both site verification tags are not edited. `plugins/static-pages.ts` copies them from the site's head into each static page at build time, so a change to them in `docusaurus.config.ts` reaches these pages too.
 
 **Ask first:** changing or removing a published doc `slug`, a redirect or a page agents fetch (`/skill.md`, `/llms.txt`, `/llms-connect.txt`, `/install.sh`, `/install-gateway.sh`); TEE, privacy or positioning copy; the announcement bar, navbar or analytics (GTM, site verification tags).
 

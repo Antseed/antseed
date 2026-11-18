@@ -1,8 +1,8 @@
 // The settings panel shared by the live heroes (hero/ and its versions, hero-hybrid/).
-//
+
 // Each page keeps its own `const DEFAULTS = {…}` block and a live copy, S, that its drawing code reads.
-// `settings()` builds S at start (the file's values, plus what was last tuned in this browser);
-// `heroPanel()` is called last and binds the page's controls to S. A visitor needs none of it, so nothing of it loads with the page:
+// `settings` builds S at start (the file's values, plus what was last tuned in this browser);
+// `heroPanel` is called last and binds the page's controls to S. A visitor needs none of it, so nothing of it loads with the page:
 // Tweakpane (a CDN) and the page's copy of itself (for Copy settings) are fetched only once the panel is asked for, with P or ?panel,
 // or because it was left open last time in this browser. From then on it is as it always was: folded, a small dot inside the hero, top
 // right under the nav; open or folded is remembered across reloads and across the three pages; P toggles it.
@@ -44,18 +44,18 @@ export function paperOf(img) {
 //   [key, label?]                   a colour, a switch or a text, from the value's type
 //   [key, { …Tweakpane params }]    anything else (a list: { label, options })
 //   { button: 'Replace image…', file: true }   the local-file picker; the image goes to onFile(img)
-// apply(key): one setting changed. applyAll(): many did (a preset, Reset). onFile(img): a local image was picked.
+// apply(key): one setting changed. applyAll: many did (a preset, Reset). onFile(img): a local image was picked.
 export async function heroPanel(opts) {
   if (capture) return null;
   const { page, S, applyAll } = opts;
-  // what the page holds from the start: refresh() reaches the panel once there is one
+  // what the page holds from the start: refresh reaches the panel once there is one
   let real = null, loading = null;
   const handle = { pane: null, refresh() { real?.refresh(); } };
   const isP = (e) => e.key?.toLowerCase() === 'p' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.target.closest?.('input, textarea, select');
   const ask = (e) => { if (isP(e)) { removeEventListener('keydown', ask); load(true); } };   // the first P builds it, open; after that the panel's own P toggles it
   const load = (open) => (loading ||= build(opts, open).then((r) => { real = r; handle.pane = r.pane; },
     (err) => { loading = null; addEventListener('keydown', ask); console.warn('settings panel not loaded', err); }));
-  // console access for scripted tuning, panel or not: hero.S, then hero.refresh()
+  // console access for scripted tuning, panel or not: hero.S, then hero.refresh
   window.hero = { S, refresh() { real?.refresh(); store.set(`${page}.state`, S); applyAll(); } };
   if (params.has('panel')) await load(true);
   else if (store.get('hero.panel.open')) await load();
@@ -155,7 +155,7 @@ async function build({ page, title, DEFAULTS, S, schema, apply, applyAll, onFile
     hasFile = true; await onFile(img); refresh(); save();
   });
 
-  // console access for scripted tuning: hero.S, then hero.refresh()
+  // console access for scripted tuning: hero.S, then hero.refresh
   window.hero = { S, refresh() { refresh(); save(); applyAll(); } };
   return { pane, refresh };
 }
