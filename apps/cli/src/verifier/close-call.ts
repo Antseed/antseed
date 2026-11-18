@@ -54,11 +54,12 @@ export function latestExtension(
  * has none yet, or its latest pooled look is still a close call and the rule allows one more.
  */
 export function needsExtension(result: Pick<ModelVerificationTargetResult,
-  'decisionRule' | 'stats' | 'responseAuthVerified' | 'extension' | 'extension2'>): boolean {
+  'decisionRule' | 'stats' | 'responseAuthVerified' | 'extension' | 'extension2' | 'outcomeReason'>): boolean {
   const rule = closeCallRule(result)
   if (!rule || !result.stats) return false
-  // A set whose ResponseAuth failed is UNDETERMINED whatever its p-value; extra questions do not fix that.
-  if (result.responseAuthVerified === false) return false
+  // A set whose ResponseAuth failed, or a seller that refuses the request profile (temperature), is
+  // UNDETERMINED whatever its p-value; extra questions do not fix that.
+  if (result.responseAuthVerified === false || result.outcomeReason?.code === 'request_profile_incompatible') return false
   const sets = extensionSets(result)
   if (sets.length === 0) {
     return classifyKbfFirstLook(result.stats, { minCoverage: KBF_AUDIT_VERIFY_OPTIONS.minCoverage, rule }) === 'extend'

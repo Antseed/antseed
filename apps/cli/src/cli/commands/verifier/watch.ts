@@ -5,15 +5,19 @@ import chalk from 'chalk'
 import { loadConfig } from '../../../config/loader.js'
 import { acquirePidFileLock } from '../../../verifier/atomic-files.js'
 import { promptHidden } from '../../prompt-hidden.js'
+import { getAddress } from 'ethers'
 import { keystoreAddress, loadKeystoreSigner } from './auditor-identity.js'
-import { RUN_TUNING_OPTIONS, runTuningArgs, validateRunTuningOptions, type RunOptions } from './run.js'
+import { RUN_TUNING_OPTIONS, auditEpochReader, chainClock, runTuningArgs, validateRunTuningOptions, type RunOptions } from './run.js'
+import { resolveAuditEpochWindow } from '../../../verifier/audit-epoch.js'
 import { getGlobalOptions, type GlobalOptions } from '../types.js'
 
 /** Besides its own options, `watch` takes `run`'s tuning options (`RUN_TUNING_OPTIONS`) for every tick's run. */
 interface WatchOptions extends Pick<RunOptions,
-  'allowProbeReuse' | 'enroll' | 'maxEnrollmentRequests' | 'ignorePreRunChecks' | 'maxRounds' | 'confirm'> {
+  'enroll' | 'maxEnrollmentRequests' | 'ignorePreRunChecks' | 'maxRounds' | 'confirm'> {
   interval: string
   once?: boolean
+  /** `--no-submit` sets this to false: every tick runs only `run`, and nothing is signed. */
+  submit?: boolean
   auditor?: string
   keystore?: string
   rpcUrl?: string
@@ -25,6 +29,11 @@ interface WatchOptions extends Pick<RunOptions,
 export const DEFAULT_WATCH_INTERVAL_MINUTES = 10
 
 export type WatchStep = 'run' | 'submit'
+
+/** The steps of every tick: `run`, then `submit`, or only `run` with `--no-submit`. */
+export function watchSteps(options: Pick<WatchOptions, 'submit'>): readonly WatchStep[] {
+  return options.submit === false ? ['run'] : ['run', 'submit']
+}
 
 /**
  * One `verifier` subcommand per step, in a child process of this CLI: `run` audits this auditor's
@@ -48,7 +57,7 @@ export function watchStepArgs(step: WatchStep, globals: Pick<GlobalOptions, 'con
 }
 
 /**
- * Runs `run` then `submit` every `intervalMs` until `signal` aborts (or once). A failed step is
+ * Runs `steps` (default `run` then `submit`) every `intervalMs` until `signal` aborts (or once). A failed step is
  * logged and the loop goes on: `run` exits non-zero whenever a model had no sellers, and the next
  * tick retries whatever is left. Every tick sees the reports other auditors submitted since the
  * last one, so a DIFF waiting for this auditor's confirmation is audited within one interval.
@@ -57,11 +66,15 @@ export function watchStepArgs(step: WatchStep, globals: Pick<GlobalOptions, 'con
 export async function runWatchLoop(input: {
   intervalMs: number
   once: boolean
+  /** Each tick's steps, in order (`watchSteps`); default `run` then `submit`. */
+  steps?: readonly WatchStep[]
   signal: AbortSignal
   step: (step: WatchStep) => Promise<number>
   sleep: (ms: number, signal: AbortSignal) => Promise<void>
   log: (line: string) => void
   now?: () => Date
+  /** How long to wait before the next tick; default `intervalMs` (see `nextWatchTickDelayMs`). */
+  nextDelayMs?: () => Promise<number>
 }): Promise<{ ticks: number; failed: WatchStep[] }> {
   const now = input.now ?? (() => new Date())
   let ticks = 0
@@ -70,7 +83,7 @@ export async function runWatchLoop(input: {
     ticks += 1
     failed = []
     input.log(chalk.bold(`\n[${now().toISOString()}] verifier watch: tick ${ticks}`))
-    for (const step of ['run', 'submit'] as const) {
+    for (const step of input.steps ?? ['run', 'submit']) {
       if (input.signal.aborted) break
       const code = await input.step(step)
       if (code !== 0 && !input.signal.aborted) {
@@ -81,10 +94,26 @@ export async function runWatchLoop(input: {
       }
     }
     if (input.once || input.signal.aborted) break
-    input.log(chalk.dim(`Next tick in ${Math.round(input.intervalMs / 60_000)} minute(s).`))
-    await input.sleep(input.intervalMs, input.signal)
+    const delayMs = input.nextDelayMs ? await input.nextDelayMs() : input.intervalMs
+    input.log(chalk.dim(delayMs < input.intervalMs
+      ? `Next tick in ${Math.max(1, Math.round(delayMs / 60_000))} minute(s), when the next epoch has started.`
+      : `Next tick in ${Math.round(delayMs / 60_000)} minute(s).`))
+    await input.sleep(delayMs, input.signal)
   }
   return { ticks, failed }
+}
+
+/** After the epoch ends, the next tick waits this long, so the chain's next block is in the new epoch. */
+export const NEXT_EPOCH_GRACE_SECONDS = 30
+
+/**
+ * The wait before the next tick: the interval, or less when the epoch ends sooner, so the new
+ * epoch's audits start right after it begins instead of up to one interval later. Late in an epoch
+ * `run` opens no new audit window (`MIN_SECONDS_FOR_ANOTHER_ROUND`); this is the other half.
+ */
+export function nextWatchTickDelayMs(intervalMs: number, epochEndsAt: number, nowSeconds: number): number {
+  const untilNextEpochMs = (epochEndsAt - nowSeconds + NEXT_EPOCH_GRACE_SECONDS) * 1_000
+  return untilNextEpochMs > 0 ? Math.min(intervalMs, untilNextEpochMs) : intervalMs
 }
 
 /**
@@ -93,16 +122,59 @@ export async function runWatchLoop(input: {
  * the keystore: pass the keystore's address as `--auditor` instead. A keystore in the config
  * (`verifier.keystore`) needs nothing, since `run` reads it itself.
  */
-export async function resolveWatchAuditor(
+export function resolveWatchAuditor(
   options: Pick<WatchOptions, 'auditor' | 'keystore'>,
-  addressOf: (keystore: string) => Promise<string> = keystoreSignerAddress,
-): Promise<string | undefined> {
+  keystoreSigner: string | undefined,
+): string | undefined {
   if (options.auditor || !options.keystore) return options.auditor
-  return addressOf(options.keystore)
+  return keystoreSigner
 }
 
-async function keystoreSignerAddress(keystore: string): Promise<string> {
-  return (await keystoreAddress(keystore)) ?? (await loadKeystoreSigner(keystore)).address
+/**
+ * The keystore `watch` unlocks at start (`unlockWatchKeystore`), or none. Without `--no-submit` it is
+ * the one `submit` signs with: `--keystore`, then `verifier.keystore`. With it nothing is signed, so
+ * nothing is unlocked and no password is asked. `run` then finds the auditor without one: `--auditor`,
+ * `verifier.auditor`, or the address `verifier.keystore` records (`resolveAuditorAddress`). Refused
+ * when the auditor could only be learned by unlocking a keystore: `--keystore` without `--auditor`
+ * (watch would pass its address to `run`), or a `verifier.keystore` that does not record its address.
+ */
+export async function watchKeystoreToUnlock(
+  options: Pick<WatchOptions, 'submit' | 'auditor' | 'keystore'>,
+  config: { keystore?: string; auditor?: string } | undefined,
+  recordedAddress: (keystore: string) => Promise<string | null> = keystoreAddress,
+): Promise<string | undefined> {
+  if (options.submit !== false) return options.keystore ?? config?.keystore
+  if (options.keystore && !options.auditor) {
+    throw new Error('--no-submit signs nothing, so --keystore is not unlocked to learn the auditor; pass --auditor <address> instead')
+  }
+  if (!options.auditor && !config?.auditor && config?.keystore && !(await recordedAddress(config.keystore))) {
+    throw new Error(`verifier.keystore ${config.keystore} does not record its address, and --no-submit signs nothing, so it is not unlocked to learn it; pass --auditor <address> or set verifier.auditor`)
+  }
+  return undefined
+}
+
+/**
+ * Unlocks the keystore `submit` will sign with once, when `watch` starts, so a wrong password (or a
+ * keystore that signs as another auditor than `--auditor` or `verifier.auditor`) stops `watch` at
+ * once instead of at the first submit, after a whole run. Returns the signer's address.
+ */
+export async function unlockWatchKeystore(
+  keystore: string,
+  expected: { auditor?: string; configAuditor?: string },
+  unlock: (keystore: string) => Promise<{ address: string }> = loadKeystoreSigner,
+): Promise<string> {
+  let address: string
+  try {
+    address = getAddress((await unlock(keystore)).address)
+  } catch (error) {
+    throw new Error(`could not unlock the keystore ${keystore} (${error instanceof Error ? error.message : String(error)}); check the password or ANTSEED_KEYSTORE_PASSWORD`)
+  }
+  for (const [from, auditor] of [['--auditor', expected.auditor], ['verifier.auditor', expected.configAuditor]] as const) {
+    if (auditor && getAddress(auditor) !== address) {
+      throw new Error(`${from} ${getAddress(auditor)} does not match the keystore ${keystore}, which signs as ${address}`)
+    }
+  }
+  return address
 }
 
 export function parseWatchInterval(value: string): number {
@@ -114,14 +186,15 @@ export function parseWatchInterval(value: string): number {
 export function registerVerifierWatchCommand(verifier: Command): void {
   const watch = verifier
     .command('watch')
-    .description('keep auditing: every interval, run this auditor\'s assigned models and the reports from other auditors waiting for its confirmation, then submit the results')
+    .description('keep auditing: every interval, run this auditor\'s assigned models and the reports from other auditors waiting for its confirmation, then submit the results (unless --no-submit)')
     .option('--interval <minutes>', 'minutes between ticks', String(DEFAULT_WATCH_INTERVAL_MINUTES))
     .option('--once', 'run one tick (run, then submit) and exit, e.g. from cron')
+    .option('--no-submit', 'only audit: every tick runs run and nothing is signed or submitted, so no keystore password is needed; send the results with `antseed verifier submit` before the epoch ends')
     .option('--auditor <address>', 'auditor address to assign models for (default: verifier.auditor, verifier.keystore, or the data-dir identity)')
     .option('--keystore <path>', 'sign with this encrypted JSON keystore; the password is read from ANTSEED_KEYSTORE_PASSWORD or asked once at start')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override for submissions')
     .option('--no-publish-ipfs', 'do not publish audit evidence to IPFS (by default it is pinned to Pinata; needs PINATA_JWT)')
-    .option('--skip-version-check', 'run even if this CLI is older than the latest release')
+    .option('--skip-version-check', 'run even if the latest release audits differently from this CLI')
   for (const option of RUN_TUNING_OPTIONS) watch.option(option.flags, `run: ${option.description}`)
   watch
     .action(async (options: WatchOptions, command: Command) => {
@@ -130,17 +203,23 @@ export function registerVerifierWatchCommand(verifier: Command): void {
       const globals = getGlobalOptions(command)
       const config = await loadConfig(globals.config)
       const env = { ...process.env }
+      const submits = options.submit !== false
+      // With --no-submit no tick signs, so no tick's run gets a password to unlock anything with.
+      if (!submits) delete env['ANTSEED_KEYSTORE_PASSWORD']
       // Every tick signs in a child process, which has no terminal to ask on, so ask once here.
-      const keystore = options.keystore ?? config.verifier?.keystore
+      const keystore = await watchKeystoreToUnlock(options, config.verifier)
       if (keystore && !env['ANTSEED_KEYSTORE_PASSWORD']) {
         env['ANTSEED_KEYSTORE_PASSWORD'] = await promptHidden(
           `Keystore password for ${keystore}: `,
           'the keystore needs a terminal to ask for the password, or set ANTSEED_KEYSTORE_PASSWORD.',
         )
-        // A keystore without a recorded address is decrypted below to find it.
         process.env['ANTSEED_KEYSTORE_PASSWORD'] = env['ANTSEED_KEYSTORE_PASSWORD']
       }
-      const auditor = await resolveWatchAuditor(options)
+      const keystoreSigner = keystore
+        ? await unlockWatchKeystore(keystore, { auditor: options.auditor, configAuditor: config.verifier?.auditor })
+        : undefined
+      if (keystoreSigner) console.log(chalk.dim(`Keystore unlocked: submits sign as ${keystoreSigner}`))
+      const auditor = resolveWatchAuditor(options, keystoreSigner)
       if (auditor && !options.auditor) console.log(chalk.dim(`Auditing as ${auditor}, the address of ${options.keystore}`))
       const stepOptions: WatchOptions = { ...options, auditor }
       const evidenceDir = config.verifier?.evidenceDir ?? join(globals.dataDir, 'verifier', 'evidence')
@@ -159,12 +238,27 @@ export function registerVerifierWatchCommand(verifier: Command): void {
         console.log(chalk.cyan(
           options.once ? 'verifier watch: one tick' : `verifier watch: a tick every ${Math.round(intervalMs / 60_000)} minute(s); stop with Ctrl-C`,
         ))
+        if (!submits) {
+          console.log(chalk.cyan('--no-submit: watch only audits; nothing is signed or submitted, and no keystore is unlocked.'))
+          console.log(chalk.cyan(
+            `The results wait in ${evidenceDir}: send them with \`antseed verifier submit\` in the same epoch, since results not submitted before the epoch ends are not recorded.`,
+          ))
+        }
         const { failed } = await runWatchLoop({
           intervalMs,
           once: options.once === true,
+          steps: watchSteps(options),
           signal: controller.signal,
           log: (line) => console.log(line),
           sleep: abortableSleep,
+          nextDelayMs: async () => {
+            try {
+              const { window } = await resolveAuditEpochWindow(() => auditEpochReader(config))
+              return nextWatchTickDelayMs(intervalMs, window.endsAt, await chainClock(config)())
+            } catch {
+              return intervalMs
+            }
+          },
           step: (step) => new Promise<number>((resolve) => {
             console.log(chalk.cyan(`$ antseed verifier ${step}`))
             child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, ...watchStepArgs(step, globals, stepOptions)], {

@@ -10,13 +10,13 @@ const log = (message) => console.log(`[seller] ${new Date().toISOString()} ${mes
 let seller = null;
 let stopping = false;
 
-async function start({ id, dataDir, configPath, bootstrapNodes, payments }) {
+async function start({ id, dataDir, configPath, bootstrapNodes, payments, ports }) {
   const sdk = await import(join(repo, 'packages/node/dist/index.js'));
   const { loadConfig } = await import(join(repo, 'apps/cli/dist/config/loader.js'));
   const { buildSellerPluginRuntimeEnv } = await import(join(repo, 'apps/cli/dist/cli/commands/seller/start.js'));
   const { buildPluginConfig } = await import(join(repo, 'apps/cli/dist/plugins/loader.js'));
   const config = await loadConfig(configPath);
-  seller = new sdk.AntseedNode({ ...testbenchNodeOptions({ role: 'seller', dataDir, bootstrapNodes, payments }), displayName: `testbench-${id}` });
+  seller = new sdk.AntseedNode({ ...testbenchNodeOptions({ role: 'seller', dataDir, bootstrapNodes, payments }), ...(ports ?? {}), displayName: `testbench-${id}` });
   for (const [name, providerConfig] of Object.entries(config.seller.providers)) {
     const pluginDir = WORKSPACE_PLUGINS[providerConfig.plugin];
     if (!pluginDir) throw new Error(`Unsupported plugin ${providerConfig.plugin}`);

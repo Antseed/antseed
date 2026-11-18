@@ -9,9 +9,9 @@ import {
   type SerializedHttpResponse,
 } from '@antseed/node';
 
-export function videoDownloadError(request: SerializedHttpRequest, statusCode: number, code: string, message: string): SerializedHttpResponse {
+export function videoDownloadError(request: SerializedHttpRequest, statusCode: number, code: string, message: string, headers: Record<string, string> = {}): SerializedHttpResponse {
   return {
-    requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json' },
+    requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json', ...headers },
     body: Buffer.from(JSON.stringify({ error: { code, message } })),
   };
 }
@@ -113,13 +113,24 @@ export async function streamVideoResponse(
   }
 }
 
+/**
+ * The code of the answer when every download slot is taken. The seller passes
+ * it to the buyer unchanged instead of reporting an upstream rate limit; it
+ * must match `VIDEO_DOWNLOAD_BUSY_CODE` in `@antseed/node`, which this package
+ * does not import so that it still loads under an older node.
+ */
+export const VIDEO_DOWNLOAD_BUSY_CODE = 'video_download_busy';
+/** Seconds a buyer waits before trying a busy download again. */
+export const VIDEO_DOWNLOAD_BUSY_RETRY_AFTER_SECONDS = 5;
+
 /** {@link streamVideoResponse} limited to `maxDownloads` at a time; call once per provider instance. */
 export function createVideoResponseStreamer(maxDownloads: number): typeof streamVideoResponse {
   let activeDownloads = 0;
   return async (request, upstream, callbacks, download) => {
     if (activeDownloads >= maxDownloads) {
       await upstream.body?.cancel();
-      return videoDownloadError(request, 429, 'video_download_busy', 'Too many concurrent video downloads');
+      return videoDownloadError(request, 429, VIDEO_DOWNLOAD_BUSY_CODE, 'Too many concurrent video downloads; retry shortly',
+        { 'retry-after': String(VIDEO_DOWNLOAD_BUSY_RETRY_AFTER_SECONDS) });
     }
     activeDownloads += 1;
     try {

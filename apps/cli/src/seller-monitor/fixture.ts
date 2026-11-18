@@ -8,7 +8,10 @@ export interface FixtureRequest {
   at: number
   sessionId: string
   tokens: number
+  /** The receipt's floored cost; a seller records one for failed requests too. */
   costCents: number
+  /** Defaults to the price at which the tokens come to exactly `costCents`. */
+  unitPriceCentsPerThousandTokens?: number
   service?: string
   statusCode?: number
   requestId?: string
@@ -33,7 +36,8 @@ export function writeSellerFixture(dataDir: string, input: { state?: Record<stri
       const tokens = { inputTokens: Math.round(request.tokens * 0.7), outputTokens: request.tokens - Math.round(request.tokens * 0.7), totalTokens: request.tokens, method: 'provider-usage' as const, confidence: 'high' as const }
       const common = { sessionId: request.sessionId, timestamp: request.at, provider: 'openai', sellerPeerId: 'seller', buyerPeerId: request.buyer ?? `fa1e${String(1 + (index % 4)).padStart(36, '0')}`, tokens }
       metering.insertEvent({ ...common, eventId: eventIdOf(id), latencyMs: 400 + (index * 97) % 2_600, statusCode: request.statusCode ?? 200, wasStreaming: true, ...(request.service ? { service: request.service } : {}), ...(request.requestId ? { requestId: request.requestId } : {}) })
-      if ((request.statusCode ?? 200) < 400 && request.costCents > 0) metering.insertReceipt({ ...common, receiptId: `receipt-${id}`, eventId: eventIdOf(id), unitPriceCentsPerThousandTokens: 0, costCents: request.costCents, signature: '' })
+      const unitPriceCentsPerThousandTokens = request.unitPriceCentsPerThousandTokens ?? (request.tokens > 0 ? (request.costCents * 1000) / request.tokens : 0)
+      if (request.costCents > 0) metering.insertReceipt({ ...common, receiptId: `receipt-${id}`, eventId: eventIdOf(id), unitPriceCentsPerThousandTokens, costCents: request.costCents, signature: '' })
       if (!sessions.has(request.sessionId)) {
         sessions.add(request.sessionId)
         metering.upsertSession({ sessionId: request.sessionId, sellerPeerId: 'seller', buyerPeerId: 'buyer', provider: 'openai', startedAt: request.at, endedAt: null, totalRequests: 1, totalTokens: request.tokens, totalCostCents: request.costCents, avgLatencyMs: 400, peerSwitches: 0, disputedReceipts: 0 })

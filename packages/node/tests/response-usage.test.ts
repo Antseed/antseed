@@ -128,18 +128,29 @@ describe('readStreamEvents', () => {
   const read = (text: string) => [...readStreamEvents(text)];
 
   it('reads each event with its names and the JSON its data lines carry, leaving out [DONE]', () => {
-    expect(read('event: delta\ndata: {"a":1}\n\ndata: [DONE]\n\n')).toEqual([{ names: ['delta'], values: [{ a: 1 }] }]);
+    expect(read('event: delta\ndata: {"a":1}\n\ndata: [DONE]\n\n')).toEqual([{ names: ['delta'], values: [{ a: 1 }], data: '{"a":1}', closed: true }]);
   });
 
   it('joins the data lines of one event into one payload', () => {
-    expect(read('data: {"a":\ndata: 1}\n\n')).toEqual([{ names: [], values: [{ a: 1 }] }]);
+    expect(read('data: {"a":\ndata: 1}\n\n')).toEqual([{ names: [], values: [{ a: 1 }], data: '{"a":\n1}', closed: true }]);
   });
 
   it('reads the lines of a stream with no blank lines one by one', () => {
-    expect(read('data: {"a":1}\ndata: {"b":2}\n')).toEqual([{ names: [], values: [{ a: 1 }, { b: 2 }] }]);
+    expect(read('data: {"a":1}\ndata: {"b":2}\n')).toEqual([{ names: [], values: [{ a: 1 }, { b: 2 }], data: '{"a":1}\n{"b":2}', closed: false }]);
   });
 
   it('keeps an error event whose data is not JSON', () => {
-    expect(read('data: {"a":1}\n\nevent: error\ndata: upstream dropped\n\n')).toEqual([{ names: [], values: [{ a: 1 }] }, { names: ['error'], values: [] }]);
+    expect(read('data: {"a":1}\n\nevent: error\ndata: upstream dropped\n\n')).toEqual([
+      { names: [], values: [{ a: 1 }], data: '{"a":1}', closed: true },
+      { names: ['error'], values: [], data: 'upstream dropped', closed: true },
+    ]);
+  });
+
+  it('gives the payload a standard client reads, and whether the event was closed', () => {
+    // The line-by-line fallback keeps the JSON line; the payload a client reads is not JSON.
+    expect(read('data: {"a":1}\ndata: not json\n\ndata: {"b":2}\n')).toEqual([
+      { names: [], values: [{ a: 1 }], data: '{"a":1}\nnot json', closed: true },
+      { names: [], values: [{ b: 2 }], data: '{"b":2}', closed: false },
+    ]);
   });
 });

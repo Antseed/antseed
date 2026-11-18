@@ -494,6 +494,14 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
   let textBlockStarted = false;
   let hadTextBlock = false;
   let openToolIndex: number | null = null;
+  // The open tool block's arguments so far, and the calls that started while
+  // they were still incomplete. Some upstreams interleave parallel calls'
+  // argument chunks; an Anthropic block can't take deltas once stopped, so a
+  // later call waits (start and deltas, in order) until the open one's
+  // arguments are whole JSON, then streams. Calls that arrive one after
+  // another stream as they come.
+  let openToolArguments = '';
+  const heldTools = new Map<number, { start: Extract<CanonicalStreamEvent, { type: 'tool_call_start' }>; deltas: string[] }>();
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
 
@@ -527,6 +535,66 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
     });
   };
 
+  const isWholeJson = (text: string): boolean => {
+    if (text.trim().length === 0) return false;
+    try {
+      JSON.parse(text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const closeOpenTool = (emitted: Array<{ event?: string; data: unknown | string }>): void => {
+    if (openToolIndex === null) return;
+    emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
+    openToolIndex = null;
+    openToolArguments = '';
+  };
+
+  const emitToolDelta = (emitted: Array<{ event?: string; data: unknown | string }>, index: number, partialJson: string): void => {
+    emitted.push({
+      event: 'content_block_delta',
+      data: {
+        type: 'content_block_delta',
+        index: toolBlockIndex(index),
+        delta: { type: 'input_json_delta', partial_json: partialJson },
+      },
+    });
+  };
+
+  const openTool = (emitted: Array<{ event?: string; data: unknown | string }>, event: Extract<CanonicalStreamEvent, { type: 'tool_call_start' }>): void => {
+    emitted.push({
+      event: 'content_block_start',
+      data: {
+        type: 'content_block_start',
+        index: toolBlockIndex(event.index),
+        content_block: {
+          type: 'tool_use',
+          id: event.id || `toolu_${event.index + 1}`,
+          name: event.name || 'tool',
+          input: {},
+        },
+      },
+    });
+    openToolIndex = event.index;
+    openToolArguments = '';
+  };
+
+  /** Streams held calls in order while the open block is done (`all`: every one, at the end of the response). */
+  const releaseHeldTools = (emitted: Array<{ event?: string; data: unknown | string }>, all: boolean): void => {
+    while (heldTools.size > 0 && (all || openToolIndex === null || isWholeJson(openToolArguments))) {
+      const [index, held] = heldTools.entries().next().value!;
+      heldTools.delete(index);
+      closeOpenTool(emitted);
+      openTool(emitted, held.start);
+      for (const delta of held.deltas) {
+        emitToolDelta(emitted, index, delta);
+        openToolArguments += delta;
+      }
+    }
+  };
+
   return {
     render(events, chunk) {
       const emitted: Array<{ event?: string; data: unknown | string }> = [];
@@ -539,10 +607,8 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'text_delta') {
           startMessage(emitted, null);
-          if (openToolIndex !== null) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
-            openToolIndex = null;
-          }
+          releaseHeldTools(emitted, true);
+          closeOpenTool(emitted);
           if (!textBlockStarted) {
             textBlockStarted = true;
             hadTextBlock = true;
@@ -564,45 +630,35 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
             textBlockStarted = false;
           }
-          if (openToolIndex !== null && openToolIndex !== event.index) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
+          if (openToolIndex === event.index || heldTools.has(event.index)) continue;
+          if (openToolIndex !== null && (heldTools.size > 0 || !isWholeJson(openToolArguments))) {
+            heldTools.set(event.index, { start: event, deltas: [] });
+            continue;
           }
-          emitted.push({
-            event: 'content_block_start',
-            data: {
-              type: 'content_block_start',
-              index: toolBlockIndex(event.index),
-              content_block: {
-                type: 'tool_use',
-                id: event.id || `toolu_${event.index + 1}`,
-                name: event.name || 'tool',
-                input: {},
-              },
-            },
-          });
-          openToolIndex = event.index;
+          closeOpenTool(emitted);
+          openTool(emitted, event);
           continue;
         }
 
         if (event.type === 'tool_call_delta') {
           startMessage(emitted, null);
-          emitted.push({
-            event: 'content_block_delta',
-            data: {
-              type: 'content_block_delta',
-              index: toolBlockIndex(event.index),
-              delta: { type: 'input_json_delta', partial_json: event.argumentsDelta },
-            },
-          });
+          const held = heldTools.get(event.index);
+          if (held) {
+            held.deltas.push(event.argumentsDelta);
+            continue;
+          }
+          emitToolDelta(emitted, event.index, event.argumentsDelta);
+          if (event.index === openToolIndex) {
+            openToolArguments += event.argumentsDelta;
+            releaseHeldTools(emitted, false);
+          }
           continue;
         }
 
         if (event.type === 'response_done') {
           startMessage(emitted, null);
-          if (openToolIndex !== null) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
-            openToolIndex = null;
-          }
+          releaseHeldTools(emitted, true);
+          closeOpenTool(emitted);
           if (textBlockStarted) {
             emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
             textBlockStarted = false;

@@ -1,6 +1,6 @@
 {
   "name": "@antseed/ants",
-  "version": "0.1.67",
+  "version": "0.1.71",
   "description": "ANTS staking dashboard and service layer for the Antseed CLI",
   "files": [
     "dist"
@@ -39,7 +39,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "sass": "^1.97.3",
-    "typescript": "^5.6.0",
+    "typescript": "catalog:",
     "vite": "^6.0.0",
     "vitest": "^2.1.9",
     "@rainbow-me/rainbowkit": "^2.2.10",

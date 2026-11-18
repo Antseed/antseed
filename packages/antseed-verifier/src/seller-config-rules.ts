@@ -52,7 +52,7 @@ const RESERVED_ENV = /^(?:ANTSEED_|POSTHOG_|CDP_)/
 const CONFIG_KEYS = {
   config: new Set(['identity', 'seller', 'payments', 'network', 'telemetry']),
   seller: new Set([
-    'reserveFloor', 'maxConcurrentBuyers', 'providers', 'publicAddress', 'verifications', 'maxUploadBodyBytes',
+    'reserveFloor', 'maxConcurrentBuyers', 'providers', 'publicAddress', 'verifications', 'maxUploadBodyBytes', 'maxInFlightRequestBytes',
     'maxInboundConnections', 'maxInboundConnectionsPerIp', 'announceProviderIds', 'inboundIdleTimeoutMs', 'verifiers', 'healthCheck', 'gasCheck', 'gasRefuel', 'freeTier',
     'alerts', 'restrictedCountries', 'freeUsage', 'buyerLimits',
   ]),

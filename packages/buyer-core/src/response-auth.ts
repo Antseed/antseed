@@ -5,13 +5,15 @@ import type { ResponseAuthPayload } from '@antseed/protocol/messages';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
 import { ANTSEED_STREAMING_RESPONSE_HEADER } from '@antseed/protocol/http';
 import { bytesToHex, hexToBytes, signData, verifySignature } from '@antseed/protocol/signing';
-import { encodeHttpRequest, encodeHttpResponse, encodeHttpResponsePrefix } from '@antseed/protocol/request-codec';
-import { createIncrementalKeccak256, keccak256Hex } from './keccak.js';
+import { encodeHttpRequestPrefix, encodeHttpResponsePrefix } from '@antseed/protocol/request-codec';
+import { createIncrementalKeccak256, keccak256HexOfParts } from './keccak.js';
 
 const RESPONSE_AUTH_DOMAIN = 'antseed-response-auth-v1';
 
 export interface ResponseAuthInput {
   request: SerializedHttpRequest;
+  /** `hashRequest` of the request, when the caller hashed it already. `request.body` is then not read. */
+  requestHash?: string;
   response: SerializedHttpResponse;
   buyerPeerId: string;
   sellerPeerId: string;
@@ -46,7 +48,7 @@ export function createResponseAuthPayload(input: ResponseAuthInput, signer: Wall
     advertisedService: input.advertisedService,
     provider: input.provider,
     statusCode: input.response.statusCode,
-    requestHash: hashRequest(input.request),
+    requestHash: input.requestHash ?? hashRequest(input.request),
     responseHash: hashResponse(input.response),
     responseStartedAt: input.responseStartedAt,
     responseCompletedAt: input.responseCompletedAt,
@@ -107,13 +109,18 @@ export function verifyResponseAuth(
   return { valid: true };
 }
 
+/** Keccak-256 of the request's wire encoding. The body is hashed in place, not copied into an encoding first. */
 export function hashRequest(request: SerializedHttpRequest): string {
-  return keccak256Hex(encodeHttpRequest(request));
+  const { body, ...requestWithoutBody } = request;
+  return keccak256HexOfParts([encodeHttpRequestPrefix(requestWithoutBody, body.length), body]);
 }
 
+/** Keccak-256 of the response's wire encoding, hashed like `hashRequest`. */
 export function hashResponse(response: SerializedHttpResponse): string {
   if (response.streamedBody) return response.streamedBody.responseHash;
-  return keccak256Hex(encodeHttpResponse(stripStreamingHeader(response)));
+  const { body: sentBody, ...responseWithoutBody } = stripStreamingHeader(response);
+  const body = sentBody ?? new Uint8Array(0);
+  return keccak256HexOfParts([encodeHttpResponsePrefix(responseWithoutBody, body.length), body]);
 }
 
 export function createStreamingResponseHash(response: SerializedHttpResponse) {

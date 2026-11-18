@@ -13,7 +13,7 @@ import {
   type ResolvedAuditReference,
 } from '@antseed/model-verifier'
 import { loadConfig } from '../../../config/loader.js'
-import { createVerifierClient } from '../../payment-utils.js'
+import { createVerifierClient, useVerifierEventCache } from '../../payment-utils.js'
 import { getGlobalOptions } from '../types.js'
 
 interface CheckOptions {
@@ -74,6 +74,7 @@ export function registerVerifierCheckCommand(verifier: Command): void {
       if (options.audit) {
         resolved = await resolveAuditReference(options.audit, resolveOptions)
       } else {
+        useVerifierEventCache(getGlobalOptions(command).dataDir)
         const config = await loadConfig(getGlobalOptions(command).config)
         const verifierClient = createVerifierClient(config, options.rpcUrl ? { rpcUrl: options.rpcUrl } : {})
         const latest = latestPublishedAudit(await verifierClient.queryModelAudits({ model: modelHash(model) }))

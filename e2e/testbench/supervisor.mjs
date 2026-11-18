@@ -9,7 +9,7 @@ import { chmod, copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBuyerRouter } from './lib/buyer-router.mjs';
-import { bindUpstream, listModels, WORKSPACE_PLUGINS } from './lib/config.mjs';
+import { bindUpstream, listModels, repriceProviders, WORKSPACE_PLUGINS } from './lib/config.mjs';
 import { blocksInUse, copyIn, pruneCache, resolveForkBlock, seedFromLegacy, writeBack } from './lib/cache.mjs';
 import { ANVIL_FEE_ARGS, chainReader, prepareChain, prepareLocalChain, selectedReservesReleased } from './lib/chain.mjs';
 import { chainContracts, deployLocalStack, killForge, localGenesisTimestamp } from './lib/local-deploy.mjs';
@@ -21,7 +21,7 @@ import { anvilExitMessage, assertLocalUrl, freePort, isAddressInUse, isolatedEnv
 import { acquireLock, isOwnedProcessAlive, ownProcessEntry, processStartTime, releaseLock } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest, MANIFEST_VERSION, TESTBENCH_CHAIN_IDS } from './lib/manifest.mjs';
 import { startMock } from './lib/mock.mjs';
-import { assertCliConfig, cliBuyerConfig, cliSellerConfig, paymentsConfig, testbenchNodeOptions } from './lib/node-options.mjs';
+import { assertCliConfig, cliBuyerConfig, cliSellerConfig, paymentsConfig, TESTBENCH_PEER_REFRESH_INTERVAL_MS, testbenchNodeOptions } from './lib/node-options.mjs';
 import { resetRunState, testbenchPaths } from './lib/paths.mjs';
 import { logOffsets, peerLogs } from './lib/stress.mjs';
 import { createPrng, derive } from './lib/prng.mjs';
@@ -239,10 +239,12 @@ async function startSellerWorker(seller) {
     child.on('message', onMessage);
     child.once('exit', (code) => rejectReady(new Error(`seller ${seller.id} exited with ${code} (see logs/seller-${seller.id}.log)`)));
   });
-  child.send({ type: 'start', id: seller.id, dataDir: seller.dataDir, configPath: seller.configPath, bootstrapNodes: seller.bootstrapNodes, payments: seller.payments });
+  // A restarted seller keeps its ports, like a real one (and like cli mode): a buyer still reaches it at the address it has.
+  child.send({ type: 'start', id: seller.id, dataDir: seller.dataDir, configPath: seller.configPath, bootstrapNodes: seller.bootstrapNodes, payments: seller.payments, ports: seller.ports });
   let timer;
   try {
     const info = await Promise.race([ready, untilAborted(startup.abort.signal), new Promise((_, rejectTimeout) => { timer = setTimeout(() => rejectTimeout(new Error(`seller ${seller.id} start timeout`)), 120_000); })]);
+    seller.ports = { dhtPort: info.dhtPort, signalingPort: info.signalingPort };
     return trackSeller(seller.id, child, info);
   } catch (error) {
     // Not in state.workers yet, so the shutdown would not see it: stop it here, before the start's failure is handled.
@@ -369,7 +371,7 @@ function injectNeedAuthLoss(bpm) {
 async function startBuyerProcess(port) {
   const { peerId, bootstrapNodes, payments, chain, routingPreferences } = buyerRuntime;
   const launch = async (candidatePort) => {
-    await saveJson(manifest.buyerConfig, assertCliConfig(cliBuyerConfig({ proxyPort: candidatePort, routingPreferences, maxPricing: plan.topology.buyer.maxPricing, chain, bootstrapNodes, payments }), 'buyer'));
+    await saveJson(manifest.buyerConfig, assertCliConfig(cliBuyerConfig({ proxyPort: candidatePort, routingPreferences, maxPricing: plan.topology.buyer.maxPricing, chain, bootstrapNodes, payments, peerRefreshIntervalMs: plan.topology.buyer.peerRefreshIntervalMs }), 'buyer'));
     const url = `http://127.0.0.1:${candidatePort}`;
     const { node } = await launchCliNode({
       who: 'buyer',
@@ -424,7 +426,7 @@ async function startBuyerInProcess(port) {
     const loaded = await loadConfig(manifest.buyerConfig);
     // As `antseed buyer start` does, so maxPricing and the reputation floor apply here too; set before the proxy serves.
     state.buyer.setRouter(await createBuyerRouter(repo, loaded));
-    const candidate = new BuyerProxy({ node: state.buyer, port: candidatePort, dataDir: paths.buyer, configPath: manifest.buyerConfig, routingPreferences: loaded.buyer.routingPreferences, backgroundRefreshIntervalMs: 60_000 });
+    const candidate = new BuyerProxy({ node: state.buyer, port: candidatePort, dataDir: paths.buyer, configPath: manifest.buyerConfig, routingPreferences: loaded.buyer.routingPreferences, backgroundRefreshIntervalMs: plan.topology.buyer.peerRefreshIntervalMs ?? TESTBENCH_PEER_REFRESH_INTERVAL_MS });
     await candidate.start();
     return candidate;
   };
@@ -830,14 +832,34 @@ async function main() {
         await writeManifest({ sellers: manifest.sellers.map((seller) => (seller.id === params.id ? { ...seller, process: undefined, online: false } : seller)) });
         return { crashed };
       },
-      'POST /sellers/:id/start': async ({ params }) => {
+      // `refreshBuyer: false` leaves the buyer's peer cache alone: it keeps the announcement it had until its own refresh.
+      'POST /sellers/:id/start': async ({ params, body }) => {
         const spec = specs.get(params.id);
         if (!spec) throw Object.assign(new Error(`Unknown seller ${params.id}`), { statusCode: 404 });
         if (state.workers.has(params.id)) return { started: false };
         const worker = await startSeller(spec);
         await writeManifest({ sellers: manifest.sellers.map((seller) => (seller.id === params.id ? { ...seller, process: worker.process, online: true, dhtPort: worker.info.dhtPort, signalingPort: worker.info.signalingPort } : seller)) });
-        await discover([params.id]);
+        if (body.refreshBuyer !== false) await discover([params.id]);
         return { started: true };
+      },
+      // A seller reads its pricing when it starts, so a new price is set while it is stopped and applies from its next start.
+      'POST /sellers/:id/pricing': async ({ params, body }) => {
+        const spec = specs.get(params.id);
+        if (!spec) throw Object.assign(new Error(`Unknown seller ${params.id}`), { statusCode: 404 });
+        if (state.workers.has(params.id)) throw Object.assign(new Error(`Seller ${params.id} is running; stop it before changing its pricing`), { statusCode: 409 });
+        const config = await readJson(spec.configPath);
+        let providers;
+        try {
+          providers = repriceProviders(config.seller.providers, body);
+        } catch (error) {
+          throw Object.assign(error, { statusCode: 400 });
+        }
+        config.seller.providers = providers;
+        await saveJson(spec.configPath, cliMode ? assertCliConfig(config, 'seller') : config);
+        state.mocks.get(params.id)?.setPricing(mockPricing(providers));
+        const pricing = Object.fromEntries(Object.entries(providers).map(([name, provider]) => [name, { defaults: provider.defaults ?? null, services: Object.fromEntries(Object.entries(provider.services).map(([id, service]) => [id, service.pricing ?? null])) }]));
+        log(`Seller ${params.id} pricing ${JSON.stringify(pricing)} from its next start (control request)`);
+        return { pricing };
       },
       'POST /buyer/stop': async () => {
         const stopped = await stopBuyer();
