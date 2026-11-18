@@ -53,7 +53,7 @@ nav > a { display: block; }
   .pp-top .s-rail { grid-template-columns: 1fr; height: auto; }
   .pp-top .s-duo-text { --edge: calc((100vw - round(down, min(1312px, 100vw - 2 * var(--gut)), 16px)) / 2 + var(--in)); padding: 56px var(--edge) 48px; }
   .pp-stall { height: auto; aspect-ratio: 1; }
-  .pp-rep-panel { height: 400px; }
+  .pp-rep-panel { height: auto; aspect-ratio: 1; }   /* the painting whole: the king and his crown, the sign and the ants */
 }
 @media (max-width: 760px) {
   .pp-top .s-h3 { font-size: 40px; line-height: 40px; }
@@ -63,6 +63,35 @@ nav > a { display: block; }
   .pp-band b { font-size: 28px; line-height: 32px; }
   .pp-run .s-rail { padding: 72px 0; }
   .pp-card { aspect-ratio: auto; height: 300px; }   /* the windows' own height, as the homepage's cards had it (.s-card-panel.tall) */
+}
+
+/* tablets: the two paths one under the other where side by side their windows would be cut; the reputation's
+   painting slid right in its tall half, so the king and his crown stay whole */
+@media (min-width: 761px) and (max-width: 899px) {
+  .pp .pp-run .s-paths { grid-template-columns: 1fr; }
+  .pp .pp-run .s-path + .s-path { margin-top: 48px; }
+}
+@media (min-width: 900px) and (max-width: 1199px) { .pp .pp-rep-panel { background-position: 75% 50%; } }
+
+/* ── phones: one 20 inset inside the rail for every text and card, the head gaps on the 8/12/16/24/32 steps ── */
+@media (max-width: 760px) {
+  .pp .s-page { --pad: 20px; }
+  /* the top: eyebrow 16, title 16, sub 28, button 40, the stall */
+  .pp .pp-top .s-duo-head { gap: 16px; }
+  .pp .pp-top .s-actions { margin-top: 28px; }
+  /* running it: the cards on the head's edge; painting 24 title 16 text; 48 between the two paths */
+  .pp .pp-run .s-paths { padding: 0 20px; }
+  .pp .pp-run .s-path-panel { margin-bottom: 12px; }
+  .pp .pp-run .s-path + .s-path { margin-top: 48px; }
+  .pp .pp-run .s-rail { padding-bottom: 64px; }   /* the path's empty fourth row adds its 12 */
+  /* reputation: 64 over the title, 40 from the buttons to the painting (square, as on a tablet); the record over the sky left of the king,
+     clear of the sign and the ants, its type at 12 and up */
+  .pp .pp-rep .s-duo-text { padding: 64px var(--pad) 40px; }
+  .pp .pp-rep-panel .pvy-card { left: 44%; top: 5%; translate: -50% 0; width: 58%; gap: 6px; padding: 10px 12px; }   /* over the clouds, above the sign and the ants, left of the king */
+  .pp .pp-rep-panel .pvy-card-h { font-size: 13px; line-height: 16px; }
+  .pp .pp-rep-panel .pvy-card dl > div { padding: 3px 0; }
+  .pp .pp-rep-panel .pvy-card dt { font-size: 12px; line-height: 15px; }
+  .pp .pp-rep-panel .pvy-card dd { font-size: 13px; line-height: 16px; white-space: nowrap; }
 }
 
 /* ── the aside scale, as built on /colony/. Last in the sheet, so it wins. Desktop only, from 1200 */

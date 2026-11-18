@@ -1,5 +1,5 @@
 /* The launch: the client's content in our packaging. What sections.css and v6.css did not have: the slots
-   the design's visuals fill (parts.js), the four privacy cards, the provider paths' two lines. Loaded after micro.css. */
+   Design's visuals fill (parts.js), the four privacy cards, the provider paths' two lines. Loaded after micro.css. */
 
 /* a slot over a painting panel: the whole panel, a size container its fragment measures itself against; empty, it takes no clicks */
 .lp-slot { display: contents; }
@@ -42,7 +42,7 @@
 .wash-lazy .s-page .wash.wash-near:is([data-unveil="wait"], [data-unveil="soon"]) { background-image: var(--wash); background-size: 0 0; }
 :root[data-theme="dark"].wash-lazy .s-page .wash.wash-near:is([data-unveil="wait"], [data-unveil="soon"]) { background-image: var(--wash-d, var(--wash)); }
 
-/* Work in progress: the network's board is being redrawn. Until then each of its two panels (the homepage's #network,
+/* Work in progress: he redraws the network's board himself. Until then each of its two panels (the homepage's #network,
    the network page's three layers) keeps the board's box, no corner, and shows the wash the layered diagram sat on (net-layers.css .nl,
    toned the same), with one glass label in the middle (the glass of the network page's cards, network.css .wc-chip). Two pictures, one
    per theme; the hidden one is never asked for, and both wait for the screen (loading="lazy"). Nothing moves. */

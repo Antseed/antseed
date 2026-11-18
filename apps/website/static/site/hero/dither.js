@@ -148,7 +148,7 @@ function heroLayer(paint) {
 if (root.classList.contains('whimsical2') && !document.querySelector('#hero .paint .clouds')) heroLayer(document.querySelector('#hero .paint'));
 
 // ── 3. the dots behind Private by design ──
-// The Figma mosaic (assets/home/privacy-dots.svg and its -dark: 13px round dots 15.45px apart, round the edges), drawn as Meadow · Mascot draws its
+// The the design mosaic (assets/home/privacy-dots.svg and its -dark: 13px round dots 15.45px apart, round the edges), drawn as Meadow · Mascot draws its
 // own (index.html, ?mascot): one round dot to a cell, laid as it always was, its top from the top of the section, its bottom from the bottom, its sides between. One canvas
 // holds it still; a second what moves: a few dots twinkling lime or nearly white, the dots the cursor warms, which linger and fade, and the ants.
 // The ants are the Mascot's: smaller lime dots walking the same grid a cell at a time, mostly straight on, now and then turning, the dots they cross

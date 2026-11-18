@@ -670,7 +670,7 @@ if (app) {
 const lr = root.querySelector('.lr');
 if (lr) {
   const panel = lr.closest('.s-lr-panel'), wide = matchMedia('(min-width: 900px)');
-  // the window is drawn at Figma's size (1172.6 wide in a 1312 panel) and scaled to the panel
+  // the window is drawn at the design's size (1172.6 wide in a 1312 panel) and scaled to the panel
   const fit = () => panel.style.setProperty('--k', wide.matches ? Math.min(1, panel.clientWidth / 1310).toFixed(4) : 1);
   new ResizeObserver(fit).observe(panel); wide.addEventListener('change', fit);
 
@@ -775,6 +775,10 @@ const pv = root.querySelector('.s-pv');
 if (pv) {
   const sec = pv.closest('.s-priv'), list = pv.querySelector('.s-pv-list'), stage = pv.querySelector('.s-pv-stage');
   const pin = sec.querySelector('.s-pv-pin'), span = pin.parentElement, STEP = 0.8, roomy = matchMedia('(min-width: 900px) and (min-height: 600px)');
+  // a phone: one point's screen with its line does not fit a phone's screen, so nothing holds: the four points
+  // stand one under another, each its name and line over its painting and screen, all shown (.pv-stack, sections.css), each playing as it
+  // comes into view (micro.js listens for pv:select)
+  const stacked = matchMedia('(max-width: 760px)');
   let pinned = false, top = 0, step = 1, held = false, quiet = 0;   // span: the frame and its run (.s-pv-hold); top: the frame's sticky top (above 0 when it is taller than the screen); held: a scroll of ours under way
   let replay = null;
   import('./card-unveil.js').then((m) => { replay = m.replay; }).catch(() => {});
@@ -879,9 +883,10 @@ if (pv) {
   // the auto-advance
   let timer = 0;
   const hold = () => pv.matches(':hover') || pv.matches(':focus-within');
-  const tick = () => { clearTimeout(timer); timer = 0; if (!still && !pinned && seen && !document.hidden) timer = setTimeout(() => { if (!hold()) choose((cur + 1) % tabs.length); else tick(); }, AUTO); };
+  const tick = () => { clearTimeout(timer); timer = 0; if (!still && !pinned && !stacked.matches && seen && !document.hidden) timer = setTimeout(() => { if (!hold()) choose((cur + 1) % tabs.length); else tick(); }, AUTO); };
   // how: 'key' (the arrow keys: the tab takes the focus), 'scroll' (the page's scroll chose it), or none (a click, the timer)
   function choose(i, how) {
+    if (stacked.matches) return;   // a phone: the four stand one under another, nothing to choose
     if (how === 'key') tabs[i].focus({ preventScroll: pinned });
     if (pinned && how !== 'scroll' && i !== cur) go(i);
     if (i !== cur) {
@@ -963,6 +968,19 @@ if (pv) {
   addEventListener('resize', relayout);
   roomy.addEventListener('change', relayout);
   measure();
+  const shown = new WeakSet();
+  const seeIo = new IntersectionObserver((es) => es.forEach((e) => {
+    if (!e.isIntersecting || !stacked.matches || shown.has(e.target)) return;
+    shown.add(e.target); sec.dispatchEvent(new CustomEvent('pv:select', { detail: { panel: e.target } }));
+  }), { threshold: 0.35 });
+  const stack = () => {
+    const on = stacked.matches;
+    sec.classList.toggle('pv-stack', on);
+    panels.forEach((p, k) => { p.classList.toggle('on', on || k === cur); p.inert = !on && k !== cur; if (on) seeIo.observe(p); else seeIo.unobserve(p); });
+    if (on) panels.forEach((p, k) => { if (k !== cur) p.removeAttribute('data-unveil'); });
+    tick();
+  };
+  stack(); stacked.addEventListener('change', () => { stack(); relayout(); });
   pv.addEventListener('pointerleave', tick); pv.addEventListener('focusout', tick);
   // the pointer over the panel brightens the thread (a mouse or pen: a tap has no hover); still, it shows at once
   const hover = (on) => (e) => { if (e.pointerType === 'touch') return; over = on; if (still) { hp = on ? 1 : 0; draw(performance.now()); } };

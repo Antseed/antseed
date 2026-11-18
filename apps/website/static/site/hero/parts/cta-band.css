@@ -21,3 +21,18 @@
 .cta-card .s-actions { margin-top: 32px; justify-content: center; gap: 24px; }
 .cta-card .s-btn { height: 40px; padding: 0 12px; font-size: 16px; line-height: 24px; }
 :root[data-theme="dark"] .cta-card { --t: #f2f4ef; --g: #9fb1a6; --b: #cdd5d0; }
+
+/* ── a phone: the card 16 in from the rail, 24 inside, so the title wraps at the sections' phone size and the sub at a full
+   measure; 56 above it, 16 under it, as on its sides ── */
+@media (max-width: 760px) {
+  .cta-band .s-rail { padding: 56px 0 16px; }
+  .cta-card { margin: 0 16px; padding: 72px 24px; border-radius: 20px; }
+  .cta-card .s-h2 { font-size: 34px; line-height: 36px; letter-spacing: -1.4px; }   /* the sections' phone title size */
+  .cta-card .s-sub { margin-top: 16px; font-size: 16px; line-height: 24px; }
+  .cta-card .s-actions { margin-top: 28px; flex-direction: column; gap: 12px; }
+  .cta-card .s-btn { height: 44px; padding: 0 20px; }
+  .cta-card .s-link { padding-block: 10px; }
+  .cta-card .s-actions { display: none; }   /* no downloads on a phone: the title and its line alone */
+  /* the dots kept to the card's edges, clear behind the words */
+  .cta-card .tw { -webkit-mask-image: radial-gradient(farthest-side, #0000 72%, #0008 86%, #000 100%); mask-image: radial-gradient(farthest-side, #0000 72%, #0008 86%, #000 100%); }
+}

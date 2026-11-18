@@ -27,7 +27,7 @@
 // painting, one board for landscape and one for phones (fewer pieces, on a slice of the map), spread evenly over its painted clearings. Each pose of the ant is a sprite of its
 // own (POSE, ROLE). It runs only while on screen, writes an attribute only when its value changes, and with reduced motion is one
 // composed still: the prices with the one picked, your link, the answer on its way back, the lookup's path faint.
-// The sprites are made by assets/home/net/make-sprites.py, the ant's poses cut from Hermès's paintings.
+// The sprites are made by assets/home/net/make-sprites.py, the ant's poses cut from the paintings.
 // Tags (an HTML layer over the board, .nd-ui): every ant wears its name, You, Provider or User; every piece,
 // seed, chip and your links can be pointed at, focused (the first of each kind) or tapped, which shows what it is in one short sentence
 // (TIP), in a card over the board.

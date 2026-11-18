@@ -34,14 +34,29 @@ nav > a { display: block; }
 @media (max-width: 899px) {
   .ap-hero { grid-template-columns: 1fr; height: auto; }
   .ap-text { --edge: calc((100cqw - var(--rail-w)) / 2 + var(--in)); padding: 56px var(--edge) 48px; gap: 28px; }   /* the same edge each side */
-  .ap-paint { height: auto; aspect-ratio: 1; }
+  .ap-paint { height: auto; aspect-ratio: 1; max-width: none; }   /* the whole width, not the homepage frame's 440 (it stopped short at 768) */
 }
+/* a tablet, stacked: the painting at its own 4:3, so it is not a screen-tall square */
+@media (min-width: 761px) and (max-width: 899px) { .ap-paint { aspect-ratio: 4 / 3; } }
 @media (max-width: 760px) {
   .ap-hero { --in: 20px; }
   .ap-text { padding-block: 48px 40px; }
   .ap-text .s-actions { align-self: stretch; }
   .ap-text .s-actions .s-btn { flex: 1 1 auto; }
   .ap .s-ants.figs > div { padding: 24px 20px 28px; }
+  /* a phone: eyebrow, title and sub 16 apart (no extra 4 over the sub), 28 to the button, 40 to the painting */
+  .ap-head .s-sub { margin-top: 0; }
+}
+
+/* Supply and Provider pools on a phone: the text on the hero's and the figures' line, 20 inside the rail, so one
+   left edge runs down the page; eyebrow 16 over the title, 24 between the blocks, 32 over the buttons; the painting whole and square,
+   as drawn (no crop), 40 under the buttons and 24 over the next section's line. The eyebrows' links 44 tall to the touch, same place */
+@media (max-width: 760px) {
+  .ap-duo .s-duo-text { padding: 64px 20px 40px; gap: 24px; }
+  .ap-duo .s-duo-text > .s-eyebrow { margin-block: -10px -18px; padding-block: 10px; }
+  .ap-duo .s-duo-text > .s-actions { margin-top: 8px; }
+  .ap-duo .s-duo-panel { height: auto; aspect-ratio: 1; }
+  .ap-duo .s-rail { padding-bottom: 24px; }
 }
 
 /* Supply and Provider pools: the homepage's duo (sections.css); under the rows, the client's caption in the kit's mono */

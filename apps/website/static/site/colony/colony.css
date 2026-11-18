@@ -196,7 +196,7 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page: an anch
   .cl-first .cl-facts > div { padding: 10px 0; }
 }
 
-/* ── aside.com's type scale: section titles 44/48, its hero 48/52, sub lines 18/28. the design's
+/* ── aside.com's type scale: section titles 44/48, its hero 48/52, sub lines 18/28. The design's
    rules of the day win where they differ: the two-option head stays 40/40 and 18/27 (locked), 8 under a title (aside 16), 20 from the
    eyebrow (aside 24), 120 / 124 round a section (aside 96), 44px buttons (aside 40). Desktop only */
 @media (min-width: 1200px) {
@@ -322,14 +322,14 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page: an anch
   .cl .cl-hero-head > .s-h2 + .s-sub { max-width: 324px; text-wrap: wrap; }
 }
 
-/* ── the designed text widths: each path's text across its whole 588 column, wrapping where it falls;
+/* ── the text widths as designed: each path's text across its whole 588 column, wrapping where it falls;
    the sign-up line 620. Desktop only */
 @media (min-width: 1200px) {
   .cl .cl-paths .s-path-text p { max-width: none; padding-right: 0; text-wrap: wrap; }
   .cl .cl-join-head .s-sub { max-width: 620px; }
 }
 @media (min-width: 1200px) {
-  .cl .cl-paths .s-path:nth-child(2) .s-path-text p { max-width: 536px; }   /* Build a Colony's text at its Figma width: the line breaks before "You choose" */
+  .cl .cl-paths .s-path:nth-child(2) .s-path-text p { max-width: 536px; }   /* Build a Colony's text at its the design width: the line breaks before "You choose" */
 }
 
 /* ── each path as a card: its title, text and buttons 16 in from the painting's edges. Desktop only */
@@ -337,7 +337,7 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page: an anch
   .cl .cl-paths .s-path-text > * { margin-left: 16px; margin-right: 16px; }
 }
 
-/* ── the paths' designed text widths: Join 468, Build 398. Desktop only */
+/* ── the paths' text widths as designed: Join 468, Build 398. Desktop only */
 @media (min-width: 1200px) {
   .cl .cl-paths .s-path:nth-child(1) .s-path-text p { max-width: 468px; }
   .cl .cl-paths .s-path:nth-child(2) .s-path-text p { max-width: 398px; }
@@ -354,4 +354,87 @@ html { scroll-padding-top: 0; }   /* the nav scrolls away with the page: an anch
   .cl .cl-hero-head .s-h2 { font-size: 48px; line-height: 46px; letter-spacing: -2px; max-width: none; }
   .cl .cl-hero-head .s-h2 span { display: block; }
   .cl .cl-hero-head .s-h2 > br { display: none; }   /* the span's block does the break */
+}
+
+/* ── Private by design below 1200: the three illustrated cards, one under the other (the desktop's in one row),
+   the glass windows wider so their lines fit a narrow card; the TEE link a 44 tall target */
+@media (max-width: 1199px) {
+  .cl-pcards { display: grid; grid-template-columns: minmax(0, 1fr); gap: 40px; width: 100%; max-width: 480px; margin-top: 40px; padding: 0 var(--pad); text-align: left; }
+  .cl-pcards article { display: flex; flex-direction: column; gap: 16px; }
+  .cl-pcards .s-cap { margin: 0; padding: 0; max-width: none; text-wrap: pretty; }
+  .cl-pcard { position: relative; aspect-ratio: 5 / 4; border-radius: 16px; overflow: hidden; background: #0e1614 var(--wash) center / cover;
+    box-shadow: inset 0 0 0 1px rgba(150, 200, 145, .14); }
+  .pc-g { position: absolute; margin: 0; border: .5px solid rgba(150, 200, 145, .42); background: rgba(14, 33, 23, .66); color: #ecf3ee;
+    box-shadow: 0 12px 32px 0 rgba(8, 26, 14, .3), inset 0 .5px 0 0 rgba(190, 228, 170, .16);
+    backdrop-filter: blur(14px) saturate(1.3); -webkit-backdrop-filter: blur(14px) saturate(1.3); font: 400 12px/16px Geist, sans-serif; }
+  .pc-g i, .pc-g dd i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #98c463; flex: none; }
+  .pc-g i.on, .pc-g dd i.on { background: #c8f53c; box-shadow: 0 0 8px rgba(200, 245, 60, .6); }
+  .pc-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-weight: 500; white-space: nowrap; }
+  .pc-win { padding: 12px 14px; border-radius: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .pc-h { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 13px; line-height: 17px; font-weight: 500; }
+  .pc-h img, .pc-key img { width: 14px; height: 14px; filter: invert(86%) sepia(56%) saturate(600%) hue-rotate(28deg); }
+  .pc-t { margin: 0; color: #9fb1a6; }
+  .pc-win dl { margin: 0; }
+  .pc-win dl > div { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: .5px solid rgba(236, 243, 238, .12); }
+  .pc-win dt { color: #9fb1a6; }
+  .pc-win dd { margin: 0; display: flex; align-items: center; gap: 6px; color: #c8f53c; font-weight: 500; }
+  .pc-from { left: 6%; top: 10%; }
+  .pc-cipher { left: 6%; right: 6%; top: 32%; padding: 8px 12px; border-radius: 8px; font: 400 12px/16px "Geist Mono", monospace; color: #98c463;
+    letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: clip; }
+  .pc-to { right: 6%; bottom: 8%; width: 70%; }
+  .pc-enclave { left: 50%; top: 50%; translate: -50% -50%; width: 80%; }
+  .pc-key { display: flex; align-items: center; gap: 8px; margin: 0; padding: 8px 10px; border-radius: 8px; background: rgba(200, 245, 60, .08);
+    border: .5px dashed rgba(200, 245, 60, .5); color: #ecf3ee; font-weight: 500; }
+  .pc-attest { left: 50%; top: 42%; translate: -50% -50%; width: 88%; }
+  .pc-ok { right: 6%; bottom: 8%; }
+  .cl-priv .s-link.cl-limits { display: inline-flex; align-items: center; min-height: 44px; margin-top: 30px; }
+}
+
+/* ── phones: the homepage's phone rules (sections.css, 760 and under) with this page's gutter at 20 inside the
+   rail, every section 72 top and bottom, heads 16 apart (eyebrow, title, sub), 24 from the sub to the buttons, 32 to 40 round a painting */
+@media (max-width: 760px) {
+  .cl .s-page { --pad: 20px; }
+  .cl .s-head { --head-gap: 16px; }
+
+  /* the top: eyebrow 16 title 16 sub 24 buttons 40 painting */
+  .cl-hero-head { gap: 16px; padding: 72px var(--pad) 40px; }
+  .cl-hero-head .s-actions { margin-top: 8px; }
+
+  /* where this goes */
+  .cl .s-split { gap: 16px; }
+
+  /* the two options: the cards on the text's edge, 48 between them, each button the whole width */
+  .cl .cl-paths .s-paths { padding: 0 var(--pad); }
+  .cl .cl-paths .s-path + .s-path { margin-top: 48px; }
+  .cl .cl-paths .s-path-text .s-actions { align-self: stretch; }
+  .cl .cl-paths .s-path-text .s-btn { flex: 1 1 auto; }
+
+  /* how it works: 32 to the painting, the steps 24 apart, 72 under the last */
+  .cl-how-panel { margin-top: 32px; }
+  .cl-steps > div { padding: 24px var(--pad); }
+  .cl-steps > div:last-child { padding-bottom: 72px; }
+
+  /* the first Mac Colony: eyebrow, title and sub, the painting, the facts, the button (the duo's text block opened so the painting can
+     come in under the head) */
+  .cl .cl-first .s-duo-text { display: contents; }
+  .cl .cl-first .s-rail > * { min-width: 0; }
+  .cl .cl-first .s-duo-text > * { margin-inline: var(--pad); }
+  .cl .cl-first .s-eyebrow { order: 1; margin-top: 72px; }
+  .cl .cl-first .s-duo-head { order: 2; margin-top: 16px; }
+  .cl .cl-first-panel { order: 3; height: auto; aspect-ratio: 4 / 3; margin-top: 32px; }
+  .cl .cl-first .cl-facts { order: 4; margin-top: 16px; }
+  .cl .cl-first .s-actions { order: 5; margin-top: 24px; margin-bottom: 72px; }
+
+  /* private by design: the text inside the gutter too; its long grey line scaled to stay one line */
+  .cl .cl-priv .s-rail { padding-inline: var(--pad); }
+  .cl .cl-priv .cl-pcards { padding: 0; }
+  .cl .cl-priv .s-eyebrow + .s-h2 { margin-top: 16px; font-size: min(34px, 7.8vw); line-height: 1.06; }
+
+  /* sign up: 32 from the sub to the painting, 32 from the painting to the form, 72 under the button */
+  .cl-join-head { padding: 72px var(--pad) 32px; }
+  .cl-join-panel { aspect-ratio: 16 / 10; background-position: 50% 75%; }   /* the whole story: the three at their Macs and the fourth walking up */
+  .cl-fit { padding: 32px var(--pad) 72px; }
+
+  /* the questions: 32 from the title to the list */
+  .cl .s-faq .s-rail { gap: 32px; }
 }

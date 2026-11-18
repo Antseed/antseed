@@ -111,3 +111,4 @@
   .pv4-ledger dd { text-align: left; }
 }
 @media (prefers-reduced-motion: reduce) { .mi .wash :is(.pv4-bars i, .pv4-enclave, .pv4-ledger > div, .pv4-result) { transition: none; } }
+@media (max-width: 1079px) { .pv4-link { position: relative; } .pv4-link::after { content: ""; position: absolute; inset: -11px 0; } }   /* each screen's docs link, a 44 tall touch area */

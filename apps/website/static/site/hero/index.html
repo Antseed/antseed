@@ -38,7 +38,7 @@
 <link rel="stylesheet" href="/site/hero/shell.css">
 <link rel="stylesheet" href="/site/hero/site-nav.css">
 <style>
-  /* Figma: Antseed file, "Antseed | Homepage · Meadow 4 · Round" */
+  /* the design: Antseed file, "Antseed | Homepage · Meadow 4 · Round" */
   :root {
     --page: #ffffff; --hero: #fdfdff; --ink: #090b0c; --title: #1c1c1c; --title-2: #595959; --nav-grey: #737373;
     --cmd: #0a1a12; --acid: #c8f53c; --outline: #c3c3c3; --tab: #f7f8f5; --tab-off: #6b7068; --foot: rgba(10, 26, 18, 0.62); --check: #26352c;
@@ -61,9 +61,9 @@
 
 
   .content { position: relative; z-index: 2; flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
-    padding: 78px 16px; }   /* Figma: 78/100 in an 832 frame that runs 22px past the card's bottom edge, so the block sits centred */
+    padding: 78px 16px; }   /* the design: 78/100 in an 832 frame that runs 22px past the card's bottom edge, so the block sits centred */
   .content > * { max-width: 100%; }
-  /* Figma: acid green (over white and 10% grey), a 1px stroke inside over a white inner edge, and the blur */
+  /* the design: acid green (over white and 10% grey), a 1px stroke inside over a white inner edge, and the blur */
   .pill { display: flex; align-items: center; gap: 2px; height: 24px; padding: 0 11px; border-radius: 999px;
     box-shadow: inset 0 0 0 1px rgba(9,11,12,.06), inset 0 0 0 1px rgba(255,255,255,.75); backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
     background: var(--acid); color: var(--ink); font: 400 12px/16px Figtree; text-decoration: none; }
@@ -75,8 +75,8 @@
   .pill { position: relative; top: -22px; }
   @media (max-width: 1100px) { .pill { top: -18px; } }
   @media (max-width: 760px) { .pill { top: -10px; } }
-  /* Figma keeps the title's frame 170px tall and lets the two lines spill over it evenly */
-  /* the title, as Figma's Meadow and Whimsical frames on all three versions: Geist Pixel at ELSH 11, 90/93, -8% */
+  /* the design keeps the title's frame 170px tall and lets the two lines spill over it evenly */
+  /* the title, as the design's Meadow and Whimsical frames on all three versions: Geist Pixel at ELSH 11, 90/93, -8% */
   h1 { display: flex; flex-direction: column; justify-content: center; height: 170px; margin: 0; padding: 12.36px; font: 400 90px/93px "Geist Pixel Var", Geist, sans-serif; font-variation-settings: "ELSH" 11;
     letter-spacing: -0.08em; text-align: center; color: var(--title); white-space: nowrap; opacity: .82; }
   h1 span { display: block; color: var(--title-2); }
@@ -176,7 +176,7 @@
   :root[data-theme="dark"] .ground-seed::before { left: -14px; right: -14px; bottom: -4px; height: 20px; background: radial-gradient(closest-side, rgba(255, 170, 70, .5), rgba(255, 140, 40, 0)); filter: none; mix-blend-mode: screen; }
   @media (prefers-reduced-motion: reduce) { .ground-seed.on { animation: none; } .ground-seed, .ground-seed::before { transition: none; } }
 
-  /* the walking ant (Square only), bottom right, a little past the card's edge: 52px in from the right as in Figma, less when the install block would touch it */
+  /* the walking ant (Square only), bottom right, a little past the card's edge: 52px in from the right as in the design, less when the install block would touch it */
   body > .stage { position: relative; }
   .walking { display: none; position: absolute; z-index: 6; right: max(0px, min(52px, calc(50% - 576px))); bottom: 0; width: 245px; height: 357px; overflow: hidden; pointer-events: none; }
   .walking img { width: 245px; height: 420px; object-fit: contain; }
@@ -198,7 +198,7 @@
     .backers b { font-size: 34px; }
   }
 
-  /* Meadow Square, Figma "Antseed | Homepage · Meadow 4": square corners, square tiles, the pixel title, the walking ant */
+  /* Meadow Square, the design "Antseed | Homepage · Meadow 4": square corners, square tiles, the pixel title, the walking ant */
 
   .square .content { padding-bottom: 84px; }
   .square .cta, .square .pill { border-radius: 0; }
@@ -216,10 +216,10 @@
 
   @media (max-width: 1199px) { .square .walking { display: none; } }
 
-  /* Meadow · Mascot, Figma: the reaching mascot, the text block higher (181px down an 873px card, kept in proportion), the title tighter */
+  /* Meadow · Mascot, the design: the reaching mascot, the text block higher (181px down an 873px card, kept in proportion), the title tighter */
   .mascot .hero .puppet, .whimsical .hero .puppet { display: block; }
   .mascot .content { padding-bottom: max(78px, calc((100svh - 32px) * 0.33)); }
-  /* its intro's entrance, as the design's network prototype: the pill, the title's two lines and the install block fade up 14px in turn when the
+  /* its intro's entrance, as Design's network prototype: the pill, the title's two lines and the install block fade up 14px in turn when the
      network starts lighting (the script adds .go to <html>; the head's timer does it anyway). Not with reduced motion */
   @media (prefers-reduced-motion: no-preference) {
     .mascot:not(.go) .content > * { opacity: 0; }
@@ -239,13 +239,13 @@
   @keyframes arrive-in { from { opacity: 0; } }
   @keyframes arrive-grow { from { scale: .94; } }
 
-  /* Meadow · Whimsical, Figma and: the watercolour meadow itself behind the text (no mosaic; the seed cursor stays), a
+  /* Meadow · Whimsical, the design and: the watercolour meadow itself behind the text (no mosaic; the seed cursor stays), a
      solid white nav, a white pill, the pixel title, a warm glass panel, the shaded mascot; the text block's top at 17.2% of the card
      (150px down an 873px one), never closer than 24px under the nav */
   .whimsical .paint { display: block; position: absolute; inset: 73px 2px 0; overflow: hidden; background: 50% 50% / cover no-repeat; }
   /* Each Whimsical plays a film (the script under the hero) over its first frame, which is all there is with reduced motion. Both are drawn at
      12 a second; each loop is repeated 4 times so it restarts less often. Whimsical 1: the meadow with two ants on a leaf (720p, 2 s).
-     Whimsical 2: Figma's framing, the card filled under the nav from the top, its bottom running past the card; clouds drifting
+     Whimsical 2: the design's framing, the card filled under the nav from the top, its bottom running past the card; clouds drifting
      (1280×700, 2.5 s, its last half second cross-faded into its first so the drift loops) */
   .whimsical1 .paint { background-image: url(/site/assets/hero/video/whimsical-1-poster.webp); }
   .paint video { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .4s; }
@@ -309,7 +309,7 @@
     .intro.whimsical .content { padding-top: 40px; }
   }
 
-  /* Dark (<html data-theme="dark">, set by the script at the top): Figma "Homepage · v4 + dark". The page #0f1312, its
+  /* Dark (<html data-theme="dark">, set by the script at the top): the design "Homepage · v4 + dark". The page #0f1312, its
      surfaces #181d1b, text #eceee9 and #9ba49e, green text #98c463, the CTAs as in light. The tokens are set on the hero's own parts
      (not :root), so the sections keep theirs (sections.css) */
   :root[data-theme="dark"] body { background: #0f1312; color: #eceee9; }
@@ -339,7 +339,7 @@
   :root[data-theme="dark"] .hp-dot::after { background: #eceee9; }
   /* Whimsical at night: the same film, dimmed and turned blue through a multiplied wash (the sky deepest, so the title reads),
      and fireflies over the meadow, lit like the mosaic's dots; inside the film's frame, so the opening moves them with it.
-     The nav sits on the page as in light; the pill is Figma's acid, the panel a darker glass */
+     The nav sits on the page as in light; the pill is the design's acid, the panel a darker glass */
   .paint .night, .paint .flies { display: none; }
   :root[data-theme="dark"].whimsical .paint { isolation: isolate; }
   :root[data-theme="dark"].whimsical .paint .night { display: block; position: absolute; inset: 0; mix-blend-mode: multiply; pointer-events: none;
@@ -368,9 +368,20 @@
   :root[data-theme="dark"].whimsical .install { background: rgba(14, 33, 23, .64);
     box-shadow: inset 0 0 0 .5px rgba(150, 200, 145, .42), inset 0 .5px 0 0 rgba(190, 228, 170, .16), 0 12px 32px 0 rgba(8, 26, 14, .26);
     backdrop-filter: blur(10px) saturate(1.3); -webkit-backdrop-filter: blur(10px) saturate(1.3); }
+  /* a phone: the hero's small controls keep their look, each a 44 tall touch area; the figures 40 under the
+     painting and 48 over the first section */
+  @media (max-width: 1079px) {
+    .pill::after, .tabs button::after, .get::after, .foot .all::after { content: ""; position: absolute; inset: -10px 0; }
+    .tabs button::after { inset: -8px 0; }
+    .get::after { inset: -4px 0; }
+    .get, .foot .all { position: relative; }
+  }
+  @media (max-width: 760px) { .backers { padding: 40px 4px 48px; } }
+  /* no downloads on a phone: the install block is left out, nothing in its place */
+  @media (max-width: 760px) { .hero .install { display: none; } .hero { min-height: clamp(520px, 150vw, 640px); } .whimsical .content { padding-top: 56px; } }   /* the card a portrait, the title in the sky, the meadow under it */
 </style>
 </head>
-<body data-parts="cta-band,net-stack">
+<body class="home" data-parts="cta-band,net-stack">
 <div class="stage">
 <section class="hero" id="hero">
   <div class="paint"><div class="stage"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" muted autoplay loop playsinline preload="none" aria-hidden="true"></video><div class="clouds" aria-hidden="true"><img class="cloud e2" src="/site/assets/hero/clouds/cloud-e2.webp" alt="" decoding="async"><img class="cloud e1" src="/site/assets/hero/clouds/cloud-e1.webp" alt="" decoding="async"><img class="cloud c3" src="/site/assets/hero/clouds/cloud-c3.webp" alt="" decoding="async"><img class="cloud c2" src="/site/assets/hero/clouds/cloud-c2.webp" alt="" decoding="async"><img class="cloud c1" src="/site/assets/hero/clouds/cloud-c1.webp" alt="" decoding="async"></div></div><i class="night"><video disablepictureinpicture disableremoteplayback x-webkit-airplay="deny" controlslist="nodownload nofullscreen noremoteplayback noplaybackrate" muted loop playsinline preload="none" aria-hidden="true" data-src="/site/assets/hero/night/whimsical-2-night-b-loop.mp4"></video><canvas class="flies" aria-hidden="true"></canvas></i></div>
@@ -421,7 +432,7 @@
       </div>
       <a href="/ecosystem/">Ecosystem</a><a href="https://antseedstats.com/network" target="_blank" rel="noopener noreferrer">Live prices&nbsp;↗</a>
     </div>
-    <div class="acts"><div class="nav-txt"><a href="https://antseed.com/docs/">Docs</a><a href="https://antseed.com/blog/">Blog</a></div><button type="button" class="theme-btn" id="nav-theme" role="switch" aria-checked="false" aria-label="Dark theme"><span class="i-sun"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></span><span class="i-moon"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z"/></svg></span><i class="knob" aria-hidden="true"></i></button><a class="cta ghost" href="https://antseed.com/docs/quickstart/">Set Up Gateway</a><a class="cta" id="nav-get" href="https://github.com/Antseed/antseed/releases/latest" target="_blank" rel="noopener noreferrer"><span class="long">Download Desktop</span><span class="short">Download</span></a><button type="button" class="menu-btn" aria-expanded="false" aria-controls="site-menu">Menu</button></div>
+    <div class="acts"><div class="nav-txt"><a href="https://antseed.com/docs/">Docs</a><a href="https://antseed.com/blog/">Blog</a></div><button type="button" class="theme-btn" id="nav-theme" role="switch" aria-checked="false" aria-label="Dark theme"><span class="i-sun"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></span><span class="i-moon"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z"/></svg></span><i class="knob" aria-hidden="true"></i></button><a class="cta ghost" href="https://antseed.com/docs/quickstart/">Set Up Gateway</a><a class="cta" id="nav-get" href="https://github.com/Antseed/antseed/releases/latest" target="_blank" rel="noopener noreferrer"><span class="long">Download Desktop</span><span class="short">Download</span></a><button type="button" class="menu-btn" aria-expanded="false" aria-controls="site-menu" aria-label="Menu"><svg viewBox="0 0 16 16" aria-hidden="true"><path class="b" d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/><path class="x" d="M3.75 3.75l8.5 8.5M12.25 3.75l-8.5 8.5"/></svg></button></div>
   </nav>
 <script src="/site/hero/nav.js" defer></script>
 <script src="/site/hero/site-nav.js" defer></script>
@@ -644,7 +655,7 @@ import { settings, paperOf, heroPanel, store } from '/site/assets/hero-panel.js'
 // Everything the hero is tuned by. The settings panel (P, or ?panel: it loads only then; assets/hero-panel.js) binds to
 // S, a live copy of this block; its "Copy settings" button gives this block back with the current values.
 const DEFAULTS = {
-  // the mosaic: the Figma grid (CSS px), square tiles or round dots (dot: their diameter), and the paper under the see-through tiles (or read off the watercolour)
+  // the mosaic: the design grid (CSS px), square tiles or round dots (dot: their diameter), and the paper under the see-through tiles (or read off the watercolour)
   source: 'auto', cell: 15.5, tile: 11.5, shape: 'round', dot: 13, paper: '#fdfdff', paperFromImage: false,
   // the watercolour first goes through gamma (above 1 lightens the mid-tones) and brightness (added, as a share of white);
   // then a tile's opacity rises with its ink (colour, or darkness against the paper) from low to high; below low it is gone
@@ -682,7 +693,7 @@ const DEFAULTS = {
   ebElsh: 20, ebSize: 1.125,
   // a proposal: one of the direction's six watercolour washes inside the CTA panel, under its content, at this opacity ('none': as it is)
   ctaWash: 'none', ctaWashOpacity: 0.5,
-  // dark (<html data-theme="dark">), Figma's lit mosaic: the paper and the unlit dots; a tile lights up with its colour (chroma)
+  // dark (<html data-theme="dark">), the design's lit mosaic: the paper and the unlit dots; a tile lights up with its colour (chroma)
   // from litFrom to litTo, its hue kept (greens pulled toward lime), its saturation × litSat (plus a floor) and its lightness at litLight;
   // the lit ones glow like LEDs (strength, blur px; drawn once into the mosaic at rest, never per frame); the ants, their trail and the
   // seeds in night colours, the ants with a glow too. Whimsical at night: the strength of the blue wash over the film, and the fireflies'
@@ -691,8 +702,8 @@ const DEFAULTS = {
 };
 // The version, from <html> (see the top of the page). Meadow and Meadow · Mascot share their saved settings and presets (the same
 // mosaic); Whimsical 1, Whimsical 2 and Square keep their own. Square starts from this block with square tiles, the Whimsicals with the
-// mascot at 12 drawings a second. Whimsical 1 has Figma's standing ant ungraded, at the right edge
-// as in Figma but smaller, clear of the install block;
+// mascot at 12 drawings a second. Whimsical 1 has the design's standing ant ungraded, at the right edge
+// as in the design but smaller, clear of the install block;
 // Whimsical 2 a softer grade of the rigged one, nearer the art as drawn
 const VARIANT = ['mascot', 'whimsical', 'square'].find((v) => document.documentElement.classList.contains(v)) || '';
 const SQUARE = VARIANT === 'square', WHIMSICAL = VARIANT === 'whimsical', MASCOT = VARIANT === 'mascot' || WHIMSICAL;
@@ -777,12 +788,12 @@ function sprite(ink, size, blur) {
   g.shadowBlur = blur; draw(); g.shadowBlur = 0; draw();
   c.m = m; return c;
 }
-// dark: a tile's lit colour from its graded one: the hue kept, the olives and greens pulled toward Figma's lime (78°), more saturated, at litLight
+// dark: a tile's lit colour from its graded one: the hue kept, the olives and greens pulled toward the design's lime (78°), more saturated, at litLight
 function lit([r, g, b]) {
   const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = (mx - mn) / 255, l = (mx + mn) / 510;
   let h = !d ? 0 : mx === r ? ((g - b) / 255 / d + 6) % 6 : mx === g ? (b - r) / 255 / d + 2 : (r - g) / 255 / d + 4;
   h *= 60; if (h > 38 && h < 170) h = 78 + (h - 78) * 0.3;
-  const s = Math.min(1, (d ? d / (1 - Math.abs(2 * l - 1)) : 0) * S.litSat + 0.3), L = Math.min(0.8, Math.max(0.4, S.litLight + (h < 55 ? -0.06 : 0.04) + (l - 0.55) * 0.4));   // the oranges deeper, the limes paler, as Figma's
+  const s = Math.min(1, (d ? d / (1 - Math.abs(2 * l - 1)) : 0) * S.litSat + 0.3), L = Math.min(0.8, Math.max(0.4, S.litLight + (h < 55 ? -0.06 : 0.04) + (l - 0.55) * 0.4));   // the oranges deeper, the limes paler, as the design's
   const c = (1 - Math.abs(2 * L - 1)) * s, x = c * (1 - Math.abs((h / 60) % 2 - 1)), o = L - c / 2;
   const [r1, g1, b1] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
   return [(r1 + o) * 255, (g1 + o) * 255, (b1 + o) * 255];
@@ -800,7 +811,7 @@ function layout() {
   canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const [oldCols, oldRows] = [cols, rows];
-  // only whole dots, like a display: as many as fit across the card and in the band under the nav (Figma: the mosaic
+  // only whole dots, like a display: as many as fit across the card and in the band under the nav (the design: the mosaic
   // starts 4px below it, so the nav floats over plain paper), centred in that space
   const D = S.shape === 'round' ? S.dot : TILE, top = document.querySelector('nav').offsetHeight + 4;
   cols = Math.max(1, Math.floor((W - D) / CELL) + 1); rows = Math.max(1, Math.floor((H - top - D) / CELL) + 1);   // at least one, for a hidden tab
@@ -808,7 +819,7 @@ function layout() {
   // 1. one colour per tile: the meadow (tall one on portrait screens), cover-fitted and averaged
   const img = picked || (H > W && meadowTall) || meadowWide;   // none where no mosaic is drawn (the Whimsicals): the tiles below are then never shown
   if (img && S.paperFromImage && !DARK) { const p = paperOf(img); if (p && p !== S.paper) { S.paper = p; colours(); panel?.refresh(); } }
-  //    over the whole card, as in Figma: the rows under the nav are sampled, then left out
+  //    over the whole card, as in the design: the rows under the nav are sampled, then left out
   const skip = Math.max(0, Math.round(OY / CELL)), all = rows + skip;
   const s = document.createElement('canvas'); s.width = cols; s.height = all;
   const c = s.getContext('2d', { willReadFrequently: true }); c.imageSmoothingQuality = 'high';
@@ -1102,7 +1113,7 @@ function frame(now) {
 }
 
 // ── Meadow · Mascot: the intro ───────────────────────────────────────────
-// Once, at load: the design's network prototype (prototypes/hero-network.html) on this mosaic. Nothing is there; the title comes in, then
+// Once, at load: Design's network prototype (prototypes/hero-network.html) on this mosaic. Nothing is there; the title comes in, then
 // peers wake at scattered points of the mosaic (never a centre, never behind the text) and each sends a ripple: a dot comes on as the
 // ripple reaches it, pushed outward and tinted in the accent as the front passes, and where two ripples meet the two peers link up
 // along the rows, until the whole mosaic is on (about 1.6 s), its dark glow coming up with the last dots. Then the peers let go and
@@ -1287,20 +1298,20 @@ if (still) requestAnimationFrame(frame); else wake();
 // round their shoulders toward it (rotation only, eased), and both settle back when it leaves. With no seed in hand (the system cursor:
 // over the panels, or once it has eaten) it wants nothing and keeps its lost look.
 // Reduced motion: the eyes only. It shrinks, then hides, rather than cover the install block, and is off on phones.
-// RIG: the mascot's parts, in assets/hero/ant-rig, loaded as WebP with alpha (the
+// RIG: the mascot's parts, copied to assets/hero/ant-rig, loaded as WebP with alpha (the
 // PNGs' own size, cwebp -near_lossless 60 -q 100 -m 6: 387 KB for 2,961; the PNGs stay beside them as the masters). The art faces right
 // and is drawn mirrored, so every point below is in the files' own px. The body and arms (v2) share the neutral pose's frame,
 // so at rest they draw exactly as it; without them it falls back to the neutral pose, where only the eyes and the mouth move.
 const RIG = WHIMSICAL1 ? {
-  // Whimsical 1: Figma's standing ant (Antseed "Walking"), arms crossed, one still image whose eyes alone move: it watches
+  // Whimsical 1: the design's standing ant (Antseed "Walking"), arms crossed, one still image whose eyes alone move: it watches
   // the seed, crossing its eyes on it near its nose, and neither opens its mouth nor eats. Its painted irises are painted out and each
   // eye's line redrawn as one smooth stroke (assets/hero/ant-standing/eye-masks.py; `outline`, the curve both follow); the iris is
   // drawn inside that curve, from the painted iris's place (`rest`, a glance to its right) toward the pointer, at most `reach` px of
   // the art, and the line (`lids`) laid back over it
   neutral: '/site/assets/hero/ant-standing/ant-standing.webp',
-  size: [1448, 2158], box: [117, 92, 1246, 1988],   // the image, and Figma's crop of it (the layer's 462 × 788)
-  flip: false,   // as drawn; smaller than Figma's 462 px, so its antennae clear the install block and the title
-  shadeAt: 462,   // the Figma width its rim's offset and blur are given at
+  size: [1448, 2158], box: [117, 92, 1246, 1988],   // the image, and the design's crop of it (the layer's 462 × 788)
+  flip: false,   // as drawn; smaller than the design's 462 px, so its antennae clear the install block and the title
+  shadeAt: 462,   // the design width its rim's offset and blur are given at
   eyes: [
     { x: 578, y: 690, rest: [22, 0], reach: [30, 10], iris: 34,
       outline: [516,657, 560,656, 612,657, 626,668, 637,684, 641,700, 636,713, 620,721, 597,725, 575,722, 556,716, 540,710, 534,700, 525,680] },
@@ -1442,10 +1453,10 @@ if (MASCOT) {
     g.drawImage(armImgs[i], -arm.pivot[0], -arm.pivot[1]);
     g.restore();
   }
-  // Whimsical treats it as Figma does its ant, at Figma's 317px ant: exposure -0.14, and a white inner shadow offset 26, 6,
+  // Whimsical treats it as the design does its ant, at the design's 317px ant: exposure -0.14, and a white inner shadow offset 26, 6,
   // blur 4.8 (a CSS-style radius: half of it as the canvas blur), added in Linear Dodge at 28%, lit from the title (the rim on its left).
-  // Figma's art is a richer, darker brown than ours: each part is graded with a gamma that darkens the mid-tones and keeps the eye
-  // whites white (a plain darkening greys them), to the mean colour of Figma's rendered ant (174, 116, 83), rim included (antGamma,
+  // the design's art is a richer, darker brown than ours: each part is graded with a gamma that darkens the mid-tones and keeps the eye
+  // whites white (a plain darkening greys them), to the mean colour of the design's rendered ant (174, 116, 83), rim included (antGamma,
   // antSaturation, rimAlpha: Whimsical 1's values; Whimsical 2's are softer).
   // The whole ant is drawn on a layer first (only its own square, resampled at high quality so the ink stays crisp), so the rim follows the arms
   const SHADE = { dx: 26, dy: 6, blur: 2.4 };   // at RIG.shadeAt px wide
@@ -1916,7 +1927,7 @@ if (MASCOT) {
       if (rigged) RIG.arms.forEach((arm, i) => !arm.under && drawArm(g, i));
       g.restore(); g.globalAlpha = 1;
       if (box) {
-        const [x0, y0, bw, bh] = box, c = lay.canvas, u = w / RIG.shadeAt * dpr;   // Figma px to layer px
+        const [x0, y0, bw, bh] = box, c = lay.canvas, u = w / RIG.shadeAt * dpr;   // the design px to layer px
         pc.globalAlpha = shown; pc.drawImage(c, x0, y0, bw, bh);
         // the rim: white, less the ant moved by the offset (blurred), kept inside the ant. It follows the ant's outline only
         // (the eyes and mouth are inside it), so it is made again only when that moves: the arms, the size, the spot

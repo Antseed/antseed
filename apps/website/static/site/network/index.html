@@ -43,7 +43,7 @@
       </div>
       <a href="/ecosystem/">Ecosystem</a><a href="https://antseedstats.com/network" target="_blank" rel="noopener noreferrer">Live prices&nbsp;↗</a>
     </div>
-    <div class="acts"><div class="nav-txt"><a href="https://antseed.com/docs/">Docs</a><a href="https://antseed.com/blog/">Blog</a></div><button type="button" class="theme-btn" id="nav-theme" role="switch" aria-checked="false" aria-label="Dark theme"><span class="i-sun"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></span><span class="i-moon"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z"/></svg></span><i class="knob" aria-hidden="true"></i></button><a class="cta ghost" href="https://antseed.com/docs/quickstart/">Set Up Gateway</a><a class="cta" id="nav-get" href="https://github.com/Antseed/antseed/releases/latest" target="_blank" rel="noopener noreferrer"><span class="long">Download Desktop</span><span class="short">Download</span></a><button type="button" class="menu-btn" aria-expanded="false" aria-controls="site-menu">Menu</button></div>
+    <div class="acts"><div class="nav-txt"><a href="https://antseed.com/docs/">Docs</a><a href="https://antseed.com/blog/">Blog</a></div><button type="button" class="theme-btn" id="nav-theme" role="switch" aria-checked="false" aria-label="Dark theme"><span class="i-sun"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></span><span class="i-moon"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z"/></svg></span><i class="knob" aria-hidden="true"></i></button><a class="cta ghost" href="https://antseed.com/docs/quickstart/">Set Up Gateway</a><a class="cta" id="nav-get" href="https://github.com/Antseed/antseed/releases/latest" target="_blank" rel="noopener noreferrer"><span class="long">Download Desktop</span><span class="short">Download</span></a><button type="button" class="menu-btn" aria-expanded="false" aria-controls="site-menu" aria-label="Menu"><svg viewBox="0 0 16 16" aria-hidden="true"><path class="b" d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/><path class="x" d="M3.75 3.75l8.5 8.5M12.25 3.75l-8.5 8.5"/></svg></button></div>
   </nav>
 <script src="/site/hero/nav.js" defer></script>
 <script src="/site/hero/site-nav.js" defer></script>
@@ -81,9 +81,9 @@
   </div>
 </section>
 
-<!-- The network in three layers: the network's board, animated (hero/parts/net-stack: three steps, 1680 × 1040), on its own
-     flat ground; the client's caption as the title. The board before it stays unplugged in a <template> (to plug it back: its slot out of
-     the template in place of net-stack's, layers-large on <body data-parts> again) -->
+<!-- The network in three layers: the homepage's layers board, large (hero/parts/layers-large, hero/net-layers.*), on
+     its own flat ground (a diagram, no painting); the client's caption as the title. Since the panel is the design's own board, animated; the board before it stays unplugged in a <template>
+     (to plug it back: its slot out of the template in place of net-stack's, layers-large on <body data-parts> again) -->
 <section class="s-sec nw-layers" aria-labelledby="nw-layers-h">
   <div class="s-rail">
     <header class="s-head s-padx">
@@ -93,7 +93,8 @@
     <div class="nw-layers-panel"><div class="lp-slot lp-slot--panel" data-part="net-stack"></div>
       <template data-unplugged="network board"><div class="lp-slot lp-slot--panel" data-part="layers-large"></div></template>
     </div>
-    <!-- the board's three steps, as the homepage's row under the same board: each a button that shows its step (parts/net-stack.js) -->
+    <!-- the board's three steps, as the homepage's row under the same board: each a button that shows its step (parts/net-stack.js).
+         The lines are the client's -->
     <div class="s-points">
       <div><button type="button" data-nsk-go="1"><b>Discovery</b> Buyers and providers find each other peer to peer.</button></div>
       <div><button type="button" data-nsk-go="2"><b>Payments</b> USDC moves directly between buyers and providers.</button></div>

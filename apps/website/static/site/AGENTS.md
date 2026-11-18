@@ -1,6 +1,6 @@
 # static/site: the marketing pages
 
-These are the six marketing pages: `/`, `/network/`, `/providers/`, `/ants/`, `/colony/` and `/ecosystem/`. Each is hand-built HTML, CSS and JS, not React. AstraOS designed and built them.
+These are the six marketing pages: `/`, `/network/`, `/providers/`, `/ants/`, `/colony/` and `/ecosystem/`. Each is hand-built HTML, CSS and JS, not React.
 
 This guide covers this folder. For the rest of the website (docs, React pages, plugins), see `apps/website/AGENTS.md`.
 
@@ -122,13 +122,13 @@ After an edit, search for the old text across `static/site/`. No copy should kee
   - UI controls (theme switch, menu, chevrons) use line icons.
 - **Ants:**
   - Every ant drawn has slightly lost, wall-eyed pupils, looking a little apart. Keep that on any new or edited ant.
-  - Watercolour paintings come from AstraOS's painting process. Don't generate replacements in another style.
+  - The watercolour paintings share one hand-painted style. Don't generate replacements in another style.
 
 ## Known state
 
-- **Desktop is done. Mobile isn't designed yet.**
-  - Below desktop widths, some sections keep their first layout, and `/ecosystem/` overflows sideways on a phone.
-  - CSS comments that say "desktop only" mark rules that wait for the mobile pass.
+- **Desktop and phone layouts are done for the six pages.**
+  - On phones, the nav becomes a menu button, and the download and Gateway buttons are hidden.
+  - On phones, the network diagram is static, with a three-step control.
 - **The network diagram is an animated board in three steps (Discovery, Payments, Trust).**
   - It's on the homepage (`#network` in `hero/sections.html`, its box `.lp-stack` in `hero/launch.css`) and on `/network/` (the three layers).
   - It's the part `hero/parts/net-stack.*`: the slot `data-part="net-stack"`, listed on both pages' `<body data-parts>`. Its drawings are `assets/network/diagram/step-1.svg` to `step-3.svg` and `ants-coin.webp`.
@@ -185,4 +185,4 @@ pnpm --filter @antseed/website preview
 - Check that there are no console errors, no failed requests (a 404 on a `/site/` file means a relative or wrong path), and no horizontal scroll.
 - Check that films play, and that day and night swap every painting.
 
-Comments in these files describe intent and measurements. Where a comment mentions Figma, it refers to the design file AstraOS keeps. The values in the CSS are the truth.
+Comments in these files describe intent and measurements. Where a comment and the CSS disagree, the CSS is the truth.

@@ -64,3 +64,14 @@
   .s-foot.meadow .scene { left: 0; width: 100cqw; }
   .s-foot .made { flex-basis: 100%; }
 }
+
+/* ── phones and tablets: the same look, every link and button a 44 tall touch area ── */
+@media (max-width: 1079px) {
+  .s-foot .col a { padding-block: 12px; margin-block: -12px; }   /* 20 tall links, rows 34 apart as before: the areas overlap, the look is the same */
+  .s-foot .brand { position: relative; }
+  .s-foot .brand::after { content: ""; position: absolute; inset: -6px 0; }
+  .s-foot .made a { padding-block: 13px; }   /* inline: its padding takes no room */
+  .s-foot .social a, .s-foot .theme button { position: relative; }
+  .s-foot .social a::after { content: ""; position: absolute; inset: -6px 0; }
+  .s-foot .theme button::after { content: ""; position: absolute; inset: -8px 0; }
+}

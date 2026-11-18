@@ -33,23 +33,52 @@ nav .links { position: static; transform: none; margin: 0 auto 0 64px; gap: 32px
 :root[data-theme="dark"] :is(.nav-txt a, nav .links a, .dd-t):hover { color: #98c463; }
 .cta .short { display: none; }
 
-/* the phone menu: a button where the links were, and a popover under the nav */
-.menu-btn { display: none; height: 36px; padding: 0 12px; border: 0; border-radius: 10px; background: rgba(10, 26, 18, .04); box-shadow: inset 0 0 0 1px rgba(10, 26, 18, .12);
-  color: var(--ink); font: 500 14px/20px "Instrument Sans", Geist, sans-serif; cursor: pointer; }
-:root[data-theme="dark"] .menu-btn { background: rgba(255, 255, 255, .06); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); color: #eceee9; }
-.site-menu { position: absolute; z-index: 20; top: 100%; left: 8px; right: 8px; display: grid; padding: 8px; max-height: calc(100svh - 100px); overflow-y: auto; border-radius: 11px;
-  background: rgba(255, 255, 255, .98); box-shadow: inset 0 0 0 .5px rgba(10, 26, 18, .08), 0 10px 28px rgba(20, 51, 89, .2); }
+/* the phone menu: a burger where the links were, a line icon at the footer's stroke in a 44 box, a cross while open;
+   the sheet under the nav (site-nav.js), on the page's colour, its links at one size, Providers' two pages under it, the buttons at its foot */
+.menu-btn { display: none; place-items: center; width: 44px; height: 44px; margin: 0 -10px 0 0; padding: 0; border: 0; border-radius: 10px; background: none;
+  color: var(--ink); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.menu-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; }
+.menu-btn .x, .menu-btn[aria-expanded="true"] .b { display: none; }
+.menu-btn[aria-expanded="true"] .x { display: inline; }
+.menu-btn:focus-visible { outline: 2px solid #789f00; outline-offset: -4px; }
+:root[data-theme="dark"] .menu-btn { color: #eceee9; }
+.site-menu { --sm-ink: #0a1a12; --sm-grey: #66746b; position: fixed; z-index: 60; left: 0; right: 0; bottom: 0; top: var(--sm-top, 69px);
+  display: flex; flex-direction: column; gap: 32px; padding: 16px var(--sm-x, 20px) max(24px, env(safe-area-inset-bottom)); overflow-y: auto; overscroll-behavior: contain;
+  background: #fcfcfc; box-shadow: inset 0 1px 0 rgba(10, 26, 18, .08); font-family: Geist, sans-serif; }
 .site-menu[hidden] { display: none; }
-.site-menu > a { display: grid; gap: 2px; padding: 10px 12px; border-radius: 6px; color: var(--ink); text-decoration: none; font: 500 15px/20px Geist, sans-serif; }
-.site-menu > a:hover { background: rgba(214, 219, 211, .4); }
-.site-menu > a span { font: 400 12.5px/17px Geist, sans-serif; color: var(--nav-grey); }
-.site-menu > p { margin: 0; padding: 12px 12px 2px; font: 400 12px/16px Geist, sans-serif; color: var(--nav-grey); }
-:root[data-theme="dark"] .site-menu { background: rgba(16, 38, 26, .97); box-shadow: inset 0 0 0 .5px rgba(150, 200, 145, .34), 0 10px 28px rgba(0, 0, 0, .34); }
-:root[data-theme="dark"] .site-menu > a { color: #eceee9; }
-:root[data-theme="dark"] :is(.site-menu > a span, .site-menu > p) { color: #9ba49e; }
+.sm-links { display: grid; }
+.sm-links > a { display: flex; align-items: center; min-height: 52px; color: var(--sm-ink); text-decoration: none; font: 500 19px/24px Geist, sans-serif; }
+.sm-sub { display: grid; padding: 0 0 8px 16px; }
+.sm-sub a { display: grid; align-content: center; gap: 2px; min-height: 52px; padding: 6px 0; color: var(--sm-ink); text-decoration: none; }
+.sm-sub b { font: 500 16px/22px Geist, sans-serif; }
+.sm-sub span { font: 400 14px/20px Geist, sans-serif; color: var(--sm-grey); }
+.site-menu a:active { opacity: .6; }
+.sm-acts { display: grid; gap: 12px; margin-top: auto; }
+.site-menu .sm-acts .cta { display: flex; justify-content: center; height: 48px; font-size: 16px; }
+.site-menu .cta .long { display: inline; }
+.site-menu .cta .short { display: none; }
+:root[data-theme="dark"] .site-menu { --sm-ink: #eceee9; --sm-grey: #9ba49e; background: #0f1312; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08); }
+.menu-open, .menu-open body { overflow: hidden; }   /* the page behind holds still while the menu is open */
 
 @media (max-width: 1439px) { .acts .cta.ghost { display: none; } }
 @media (max-width: 1239px) { nav .links { gap: 24px; } .nav-txt { gap: 16px; margin-right: 4px; } }
-@media (max-width: 1079px) { nav .links, .nav-txt { display: none; } .menu-btn { display: block; } }
+@media (max-width: 1079px) { nav .links, .nav-txt { display: none; } .menu-btn { display: grid; } }
 @media (max-width: 560px) { .cta .long { display: none; } .cta .short { display: inline; } }
+/* a phone: the bar holds the logo, the day/night slider and the burger; no app buttons on a phone, in the bar or the menu; a tablet keeps them */
+@media (max-width: 760px) { nav .acts > .cta { display: none; } }
+/* the slider, the only control left beside the burger, a 44 tall touch area */
+@media (max-width: 1079px) { nav .theme-btn::after { content: ""; position: absolute; inset: -8px -4px; } }
 @media (prefers-reduced-motion: reduce) { .dd-t svg { transition: none; } }
+@media (max-width: 1079px) { nav .acts > .cta { position: relative; } nav .acts > .cta::after { content: ""; position: absolute; inset: -4px -2px; } }
+@media (max-width: 760px) { .sm-acts { display: none; } }
+/* the menu's arrival: the sheet fades in from a little above, its rows unroll one after another; it leaves in a quick fade */
+@media (prefers-reduced-motion: no-preference) {
+  .site-menu:not([hidden]) { animation: sm-in .22s cubic-bezier(.2, .8, .2, 1) both; }
+  .site-menu:not([hidden]) :is(.sm-links > a, .sm-sub a, .sm-acts) { animation: sm-row .34s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(40ms + var(--i, 9) * 35ms); }
+  .site-menu.closing { animation: sm-out .14s ease-in both; }
+  .site-menu.closing * { animation: none; }
+}
+@keyframes sm-in { from { opacity: 0; translate: 0 -8px; } }
+@keyframes sm-row { from { opacity: 0; translate: 0 -6px; } }
+@keyframes sm-out { to { opacity: 0; } }
+@media (max-width: 1079px) { nav > a:first-child { position: relative; } nav > a:first-child::after { content: ""; position: absolute; inset: -6px -4px; } }   /* the logo, a 44 tall touch area */

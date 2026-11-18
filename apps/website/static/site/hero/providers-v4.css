@@ -90,10 +90,25 @@
    paintings landscape (16:9) and reframed: the stall, held at 1.4 times the width, lifted so its roof and the Mac stay whole */
 @media (min-width: 761px) {
   .s-prov .s-h2 { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
-  .s-prov .s-rail { padding-bottom: 124px; }   /* Figma: rail 120 / 124, head to paths 64 */
+  .s-prov .s-rail { padding-bottom: 124px; }   /* the design: rail 120 / 124, head to paths 64 */
   .s-prov .s-paths { margin-top: 64px; }
   .s-prov .s-path-panel { aspect-ratio: 16 / 9; }
   .s-prov .s-path-h { font-size: 24px; line-height: 28px; letter-spacing: -.8px; }
   .s-path-panel:has(> .pvy-own) { background-position: 100% 79%; }
   .s-path-panel:has(> .pvy-own) .pv-set { top: 79%; translate: 0 -79%; }
+}
+
+/* ── a phone: nothing written under 12. The stall's panel a little taller (5:4) so the listing has the room;
+   the colony's line under its title wraps, centred ── */
+@media (max-width: 520px) {
+  .s-prov .s-path-panel:has(> .pvy-own) { aspect-ratio: 5 / 4; }   /* the film set, 145% of the width, still covers it */
+  .pvy-card { right: 3%; width: 47%; gap: 6px; padding: 9px 10px; }
+  .pvy-card-h { font-size: 13px; line-height: 16px; }
+  .pvy-card dl > div { padding: 3px 0; }
+  .pvy-card dt { font-size: 12px; line-height: 15px; }
+  .pvy-card dd { font-size: 12.5px; line-height: 16px; }
+  .pvy-flow { padding-top: 5px; font-size: 12px; line-height: 15px; }
+  .pvy-label { width: max-content; max-width: 88%; padding: 8px 14px; white-space: normal; text-align: center; }
+  .pvy-label-h { font-size: 14px; line-height: 18px; }
+  .pvy-label-s { font-size: 12px; line-height: 15px; text-wrap: balance; }
 }

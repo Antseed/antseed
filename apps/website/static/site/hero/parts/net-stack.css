@@ -11,13 +11,14 @@
 .nsk-stage > svg.on { opacity: 1; visibility: visible; z-index: 1; transition: opacity .45s ease; }
 .nsk-stage > svg.was { opacity: 1; visibility: visible; transition: none; }   /* the step being left stays under the one fading in */
 .nsk-stage text { font-family: Geist, system-ui, sans-serif; }
-.nsk-stage :is(path, circle, rect) { vector-effect: non-scaling-stroke; }   /* the drawing is shown under Figma's size: its lines keep their weight */
+.nsk-stage :is(path, circle, rect) { vector-effect: non-scaling-stroke; }   /* the drawing is shown under the design's size: its lines keep their weight */
 
 /* what a beat brings in, and the links and ports that wait for the slabs to settle */
 .nsk-i { transition: opacity .35s ease; }
 .nsk-snap, .nsk-snap * { transition: none !important; }   /* net-stack.js snap: a hidden step set at once */
 .nsk-i.nsk-h { opacity: 0; }
 .nsk-dot { pointer-events: none; }
+.nsk-home { visibility: hidden !important; }   /* a flow's amount stays measured (net-stack.js enlarges it) but only its copy is seen, riding */
 
 /* the window: one per step, the step's shown.
    A block is quiet (q*) until its beat lights it (l*); its bar takes the step's colour */
@@ -63,10 +64,40 @@
 :root[data-theme="dark"] .nsk-bar { background-color: rgba(236, 243, 238, .12); --nsk-go: #b9ee2a; }
 .s-points [data-nsk-go]:focus-visible { outline: 2px solid var(--o); outline-offset: 6px; border-radius: 4px; }
 
-/* a narrow screen (not designed yet): the window under the drawing */
-@media (max-width: 900px) {
+/* under 1200 (tablets, phones): the window under the drawing, the drawing the card's full width, so its labels stay readable
+   (fit enlarges them to 11px down to about 760); each step's whole cell is its button (44px and more) */
+@media (max-width: 1199px) {
   .nsk { grid-template-columns: minmax(0, 1fr); }
-  .nsk-side { min-height: 520px; }
+  .nsk-stage { justify-self: center; width: 100%; }
+  .nsk-side { grid-template-columns: minmax(0, 1fr); }   /* the window as wide as the card, never its longest row */
+  .s-points [data-nsk-go] { max-width: none; }
+  .s-points [data-nsk-go]::after { content: ""; position: absolute; inset: 0; }   /* the cell (position: relative, sections.css) */
+}
+/* a phone (net-stack.js, phone): the drawing is the section, whole and still, the card's full width, cut to its slabs and cubes;
+   its words give way to three group names, set in HTML under their cubes (phone); the amounts ride their flows as their coins. The window gives way to a
+   three-part control under the drawing and the step's line, as the site's other text. Above 760 neither is shown */
+.nsk-seg, .nsk-line, .nsk-tags { display: none; }
+@media (max-width: 760px) {
+  .nsk { gap: 0; padding: 24px 0 0; }   /* one rhythm: 24 above the drawing, 16 to the control, 16 to the line, 24 under it */
+  .nsk-stage { aspect-ratio: 984 / 921; max-height: none; overflow: hidden; }   /* VIEW (-12 112 1272 892) cut to 116 104 984 921: room under the cubes for their names */
+  .nsk-stage > svg { inset: 0.869% auto auto -13.008%; width: 129.27%; height: 96.85%; }
+  .nsk-stage :is(text, [data-n="score highlight"], [data-n^="Pill"] rect) { visibility: hidden; }
+  .nsk-tags { display: block; position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+  .nsk-tags span { position: absolute; font-size: 12px; line-height: 15px; font-weight: 500; white-space: nowrap; color: #0a1a12; }
+  /* the ANTS holders only act in Trust: before it they and their name are out of the lines' way */
+  .nsk-stage > svg:not(:nth-of-type(3)) [data-n="Holders"] { visibility: hidden; }
+  .nsk-tag-ants { opacity: 0; transition: opacity .45s ease; }
+  .nsk[data-step="3"] .nsk-tag-ants { opacity: 1; }
+  .nsk-side, .s-points.nsk-row { display: none; }
+  .nsk-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin: 4px 12px 0; padding: 4px; border-radius: 6px; background: #e9e9e6; }
+  .nsk-sg { all: unset; position: relative; box-sizing: border-box; display: grid; place-items: center; height: 44px; border-radius: 3px; cursor: pointer;
+    font: 500 15px/20px Geist, system-ui, sans-serif; color: #66746b; transition: color .2s, background-color .2s; }
+  .nsk-sg[aria-current] { background: #fff; color: #0a1a12; box-shadow: 0 1px 2px rgba(10, 26, 18, .08); }
+  .nsk-sg:focus-visible { outline: 2px solid #5f8a12; outline-offset: 2px; }
+  .nsk-sg-bar { position: absolute; left: 12px; right: 12px; bottom: 6px; height: 2px; border-radius: 1px; background: rgba(10, 26, 18, .08) linear-gradient(#5f8a12, #5f8a12) no-repeat;
+    background-size: calc(var(--p, 0) * 100%) 100%; }
+  .nsk-line { display: block; min-height: 44px; margin: 16px 12px 24px; font-size: 15px; line-height: 22px; color: #66746b; }
+  .nsk-line b { font-weight: 500; color: #0a1a12; }
 }
 @media (prefers-reduced-motion: reduce) {
   .nsk-stage > svg, .nsk-stage > svg.on, .nsk-w, .nsk-w.on, .nsk-i, .nsk-b, .nsk-b::before, .nsk-b span { transition: none; }

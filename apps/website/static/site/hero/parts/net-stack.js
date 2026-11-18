@@ -1,5 +1,5 @@
 // The network in three layers, animated (parts/net-stack.html, net-stack.css): parts.js calls default(slot) once the markup is in.
-// Three steps, each one of Figma's frames (assets/network/diagram/step-N.svg, the layers' names in data-n). The drawing is inlined at
+// Three steps, each one of the design's frames (assets/network/diagram/step-N.svg, the layers' names in data-n). The drawing is inlined at
 // the left, the three stacked; the frame's data window is taken out of the SVG and set in HTML at its right (window), one per step.
 // A step plays its beats in order (the groups "Beat N · …"): each flow (a path named "Flow / …", drawn from its source to its
 // destination) is revealed along its length by a mask, a dot riding its head; what follows it in the group (arrowhead, pill, label)
@@ -8,10 +8,10 @@
 // The three points under the board (the section's [data-nsk-go], in the page) are the controls: the current one is marked
 // aria-current, a click holds that step and replays it; the loop starts again when the panel comes back on screen. Nothing runs
 // while the panel or the tab is out of sight. With reduced motion each step shows complete and only the points change it.
-// The drawing is shown well under Figma's size, so its upright labels and pills are enlarged in place to stay readable (fit).
+// The drawing is shown well under the design's size, so its upright labels and pills are enlarged in place to stay readable (fit).
 const ART = new URL('/site/assets/network/diagram/', import.meta.url);
 const NS = 'http://www.w3.org/2000/svg';
-const STEPS = 3, GAP = 500, HOLD = 2500, FADE = 450, LIFT = 800;
+const STEPS = 3, GAP = 500, HOLD = 2500, FADE = 450, LIFT = 800, RIDE = 2000;   // RIDE: an amount's trip along its flow
 // how far each slab is lifted in each step
 const UP = { 'Slab / DHT': [0, -161, -161], 'Slab / Base': [0, 0, -161] };
 // flows of one beat start 220 ms apart; where one must land before the others leave, the beat's flows in groups
@@ -31,8 +31,8 @@ const CANCEL = Symbol('cancel');
 const ease = (p) => (p < .5 ? 2 * p * p : 1 - 2 * (1 - p) * (1 - p));
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
-// Figma's window (the SVG group "Window": blocks "Step / …", each a bar, a title and rows of text and pills) as HTML: the same rows
-// in the same order, a table's cells at Figma's columns, the tones kept as classes (q* quiet, l* lit)
+// the design's window (the SVG group "Window": blocks "Step / …", each a bar, a title and rows of text and pills) as HTML: the same rows
+// in the same order, a table's cells at the design's columns, the tones kept as classes (q* quiet, l* lit)
 function windowOf(svg, k) {
   const win = svg.querySelector('[data-n="Window"]');
   const out = h('div', 'nsk-w');
@@ -70,7 +70,7 @@ function windowOf(svg, k) {
     return box;
   });
   win.remove();
-  // the legend leaves the drawing for the foot of the window, at Figma's size (its own small drawing, cut to its box)
+  // the legend leaves the drawing for the foot of the window, at the design's size (its own small drawing, cut to its box)
   // (each row: its symbol as a small drawing cut to it, then its words; two columns)
   const lg = svg.querySelector('[data-n="Legend"]');
   if (lg) {
@@ -150,6 +150,9 @@ export default async (slot) => {
           return { el, at: best };
         });
         f.after = f.after.filter((el) => !/^hop/.test(el.dataset.n || ''));
+        // the amount a flow carries (10 USDC, 50,000 ANTS…) never sits on the drawing: a copy rides the flow, then goes
+        f.pill = f.after.find((el) => /^Pill \//.test(el.dataset.n || ''));
+        if (f.pill) { f.pill.classList.add('nsk-home'); f.after = f.after.filter((el) => el !== f.pill); }
         g.append(f.dot);
       }
       const key = Object.keys(ORDER).find((w) => g.dataset.n.includes(w));
@@ -160,10 +163,10 @@ export default async (slot) => {
     return { svg, beats, wait, slabs, labels: labels(svg) };
   }
 
-  // ---- the labels: what is enlarged, and about which point. Upright text, pills and score chips, taken in the stacks Figma sets
+  // ---- the labels: what is enlarged, and about which point. Upright text, pills and score chips, taken in the stacks the design sets
   // them in (a name over its note or its pill: same left or right edge, one under the other), each stack growing from the edge it is
   // aligned on (the side of its cube), a lone label from the side nearer the drawing's middle. The legend grows from its corner; the
-  // slabs' names along their edge. Tiles and pools keep Figma's size (their text sits on a shape).
+  // slabs' names along their edge. Tiles and pools keep the design's size (their text sits on a shape).
   function labels(svg) {
     const els = new Set([...svg.querySelectorAll('g[data-n^="Pill"], rect[data-n="score highlight"]')]);
     for (const t of svg.querySelectorAll('text:not([transform])')) {
@@ -174,7 +177,7 @@ export default async (slot) => {
     const items = [...els].map((el) => { const b = el.getBBox(); return { el, l: b.x, r: b.x + b.width, t: b.y, b: b.y + b.height, id: 0 }; });
     items.forEach((it, i) => { it.id = i; it.sx = 0; it.sy = 0; });
     // a cube's name sits under its cube, ending (buyers) or starting (providers) plumb with the cube's front edge, and
-    // whatever Figma set under the name (a note, a pill, a score) moves with it: the same place in every step
+    // whatever the design set under the name (a note, a pill, a score) moves with it: the same place in every step
     for (const cube of svg.querySelectorAll('[data-n^="Cube /"]')) {
       const name = items.find((it) => it.el.tagName === 'text' && cube.contains(it.el));
       const face = (end) => [...cube.children].find((c) => (c.getAttribute('fill') || '').endsWith(end))?.getBBox();
@@ -211,7 +214,19 @@ export default async (slot) => {
       return { items: st, side, ax: side === 'l' ? L : side === 'r' ? R : mid, ay: (st[0].t + st[0].b) / 2, dx: 0 };
     });
     const lg = svg.querySelector('[data-n="Legend"]'), lb = lg?.getBBox();
-    const names = [...svg.querySelectorAll('[data-n^="Slab /"] > text[transform]')].map((el) => ({ el, size: +el.getAttribute('font-size') }));
+    // a slab's name grows; a pool's name (white, on its tile) keeps the design's size and sits in the middle of its tile
+    const flat = [...svg.querySelectorAll('[data-n^="Slab /"] > text[transform]')];
+    for (const t of flat.filter((el) => el.getAttribute('fill') === 'white')) {
+      const m = t.transform.baseVal.consolidate()?.matrix, ts = t.querySelector('tspan');
+      const tiles = [...t.parentNode.children].filter((c) => c.tagName === 'path').map((c) => { const b = c.getBBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2, w: b.width }; }).filter((c) => c.w < 80);
+      if (!m || !ts || !tiles.length) continue;
+      const near = tiles.sort((a, c) => Math.hypot(a.x - m.e, a.y - m.f) - Math.hypot(c.x - m.e, c.y - m.f))[0];
+      const dx = near.x - m.e, dy = near.y - m.f, det = m.a * m.d - m.b * m.c;
+      const u = (m.d * dx - m.c * dy) / det, v = (-m.b * dx + m.a * dy) / det;
+      t.setAttribute('text-anchor', 'middle');
+      ts.setAttribute('x', u.toFixed(2)); ts.setAttribute('y', (v + +t.getAttribute('font-size') * .36).toFixed(2));
+    }
+    const names = flat.filter((el) => el.getAttribute('fill') !== 'white').map((el) => ({ el, size: +el.getAttribute('font-size') }));
     return { stacks: out, legend: lg && { el: lg, x: lb.x, y: lb.y + lb.height }, names };
   }
   function fit() {
@@ -298,15 +313,44 @@ export default async (slot) => {
   // the step's bar under way: the share of its beats played, the beat in hand counted by how far its flows have run
   let along = 0;
   const step = (k, b, n, e) => { along = Math.max(along, (b + e) / n); bar(k, along); };
+  // money moving: a copy of the flow's amount carried along its head, eased in and out and slow enough to follow, held a moment
+  // where it lands, then gone (the window keeps the figure); one amount at a time, as the beats come
+  const rider = (f) => {
+    const w = document.createElementNS(NS, 'g'), c = f.pill.cloneNode(true);
+    w.setAttribute('class', 'nsk-dot nsk-i nsk-h');
+    c.classList.remove('nsk-h', 'nsk-i', 'nsk-home');
+    w.append(c); f.dot.after(w);
+    const b = w.getBBox(); w.cx = b.x + b.width / 2; w.cy = b.y + b.height / 2;
+    // on a phone only the coin of the amount shows (its words are hidden): the coin, not the pill, rides the line
+    const coin = matchMedia('(max-width: 760px)').matches && c.querySelector('image');
+    if (coin) {
+      const cb = coin.getBBox(), m = c.transform.baseVal.consolidate()?.matrix;
+      const at = new DOMPoint(cb.x + cb.width / 2, cb.y + cb.height / 2);
+      const q = m ? at.matrixTransform(m) : at;
+      w.cx = q.x; w.cy = q.y;
+    }
+    return w;
+  };
   const draw = async (f, g, onp = () => {}) => {
-    f.el.classList.remove('nsk-h'); f.dot.classList.remove('nsk-h');
-    const ms = Math.max(900, Math.min(1200, 700 + f.len * .8));
-    await tween(ms, g, (p) => {
-      const e = ease(p), at = f.el.getPointAtLength(f.len * e);
-      pen(f, e); onp(e);
-      f.dot.setAttribute('cx', at.x); f.dot.setAttribute('cy', at.y);
-      for (const hp of f.hops) if (e >= hp.at) hp.el.classList.remove('nsk-h');
-    });
+    const ride = f.pill ? rider(f) : null, head = ride || f.dot;
+    const put = (at) => {
+      if (ride) ride.setAttribute('transform', `translate(${(at.x - ride.cx).toFixed(2)} ${(at.y - ride.cy).toFixed(2)})`);
+      else { f.dot.setAttribute('cx', at.x); f.dot.setAttribute('cy', at.y); }
+    };
+    put(f.el.getPointAtLength(0));
+    if (ride) getComputedStyle(ride).opacity;   // so it fades in where it starts
+    f.el.classList.remove('nsk-h'); head.classList.remove('nsk-h');
+    const ms = ride ? RIDE : Math.max(900, Math.min(1200, 700 + f.len * .8));
+    try {
+      await tween(ms, g, (p) => {
+        const e = ease(p), at = f.el.getPointAtLength(f.len * e);
+        pen(f, e); onp(e); put(at);
+        for (const hp of f.hops) if (e >= hp.at) hp.el.classList.remove('nsk-h');
+      });
+      if (ride) await tween(500, g);
+    } finally {
+      if (ride) { ride.classList.add('nsk-h'); setTimeout(() => ride.remove(), 450); }
+    }
     f.dot.classList.add('nsk-h');
     for (const el of [...f.hops.map((hp) => hp.el), ...f.after]) el.classList.remove('nsk-h');
   };
@@ -379,6 +423,7 @@ export default async (slot) => {
   show(0);
   root.classList.add('nsk-ready');
   points[0]?.closest('.s-points')?.classList.add('nsk-row');   // from here the row shows which step is on
+  phone(root, stage, steps[0].svg, points, bars);
   points.forEach((p) => p.addEventListener('click', () => {
     const k = +p.dataset.nskGo - 1;
     if (still) { gen++; steps.forEach((s) => { rest(s); full(s); }); show(k); bar(k, 1); return; }
@@ -395,3 +440,50 @@ export default async (slot) => {
     if (!started) { started = true; run(0, true); } else if (held && away) { held = false; run(cur, true); }   // a held step loops again once the panel has left and come back
   }, { threshold: .35 }).observe(stage);
 };
+
+// ---- a phone (max-width 760px; the elements made here are hidden above it): the drawing whole, the window not shown; the section's row
+// of points gives way to a three-part control under the drawing (the same buttons' clicks, their bars) and the step's own line. It
+// only watches what the player does (the step on root, the points' bars), so the player itself is unchanged.
+function phone(root, stage, svg, points, bars) {
+  const seg = h('div', 'nsk-seg'), line = h('p', 'nsk-line');
+  const btns = points.map((p, i) => {
+    const b = h('button', 'nsk-sg', NAMES[i][0]);
+    b.type = 'button';
+    b.append(h('i', 'nsk-sg-bar'));
+    b.addEventListener('click', () => p.click());
+    return b;
+  });
+  seg.append(...btns);
+  stage.after(seg, line);
+  // who is who, in three groups (the Discovery line's words, and the holders' own name), in HTML at the site's size, each centred under
+  // its cubes (the holders' over theirs), clear of them; the cubes stand in the same place in every step
+  const tags = h('div', 'nsk-tags');
+  tags.setAttribute('aria-hidden', 'true');
+  stage.append(tags);
+  const who = [['Buyers', '[data-n="Cube / You"], [data-n="Cube / Team workspace"], [data-n="Cube / AI agent"]'],
+    ['Providers', '[data-n^="Cube / Provider"]'], [svg.querySelector('[data-n="Holders"] text')?.textContent || '', '[data-n="Holders"]']]
+    .map(([name, sel], i) => ({ gs: [...svg.querySelectorAll(sel)], el: tags.appendChild(h('span', i === 2 ? 'nsk-tag-ants' : '', name)), over: i === 2 }));   // the holders' over their cubes, where no line runs
+  const place = () => {
+    const S = stage.getBoundingClientRect();
+    if (!S.width || getComputedStyle(tags).display === 'none') return;
+    for (const { gs, el, over } of who) {
+      let L = Infinity, R = -Infinity, T = Infinity, B = -Infinity;
+      for (const g of gs) for (const c of g.querySelectorAll(':scope :not(text):not(g):not(tspan)')) { const r = c.getBoundingClientRect(); if (!r.width) continue; L = Math.min(L, r.left); R = Math.max(R, r.right); T = Math.min(T, r.top); B = Math.max(B, r.bottom); }
+      const w = el.offsetWidth;
+      el.style.left = `${Math.max(4, Math.min(S.width - w - 4, (L + R) / 2 - S.left - w / 2)).toFixed(1)}px`;
+      el.style.top = `${(over ? T - S.top - el.offsetHeight - 4 : B - S.top + 6).toFixed(1)}px`;
+    }
+  };
+  new ResizeObserver(place).observe(stage);
+  const sync = () => {
+    const k = (+root.dataset.step || 1) - 1;
+    btns.forEach((b, i) => (i === k ? b.setAttribute('aria-current', 'step') : b.removeAttribute('aria-current')));
+    const p = points[k], name = p?.querySelector('b')?.textContent || '';
+    line.replaceChildren(h('b', '', name), ` ${(p?.textContent || '').replace(name, '').trim()}`);
+    bars.forEach((el, i) => btns[i]?.style.setProperty('--p', el.style.getPropertyValue('--p') || 0));
+  };
+  const mo = new MutationObserver(sync);
+  mo.observe(root, { attributes: true, attributeFilter: ['data-step'] });
+  for (const el of bars) mo.observe(el, { attributes: true, attributeFilter: ['style'] });
+  sync();
+}

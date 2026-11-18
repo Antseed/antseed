@@ -21,11 +21,6 @@ html { scroll-padding-top: 0; }
 :root[data-theme="dark"] .eg { --glass: rgba(14, 33, 23, .68); --edge: rgba(150, 200, 145, .42); --tx: #ecf3ee; --mu: #9fb1a6; --o: #98c463; --lime: #c8f53c;
   --line: rgba(236, 243, 238, .12); --sh: 0 12px 32px 0 rgba(8, 26, 14, .3), inset 0 .5px 0 0 rgba(190, 228, 170, .16); }
 
-/* the project screenshots at every width: as wide as their card, cut to it, never their 1200 × 900 file size (desktop sets the
-   card's 4:3 frame below) */
-.ec-shot { min-width: 0; max-width: 100%; overflow: hidden; }
-.ec-shot img { width: 100%; height: 100%; object-fit: cover; object-position: top center; }
-
 @media (min-width: 1200px) {
   /* ── sections: the aside scale */
   .ec :is(.ec-live, .ec-pillars, .ec-add) .s-rail { padding-top: 124px; padding-bottom: 124px; }
@@ -58,7 +53,7 @@ html { scroll-padding-top: 0; }
     overflow: hidden; box-shadow: none; }
   .ec-shot { background: var(--tile); }
   .ec-shot::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--tile-line); pointer-events: none; }
-  .ec-shot img { height: 100%; transition: scale .3s ease-out; }
+  .ec-shot img { width: 100%; height: 100%; object-fit: cover; object-position: top center; transition: scale .3s ease-out; }
   .ec-card:hover .ec-shot img { scale: 1.02; }
   .ec-card .s-path-text { display: block; }
   .ec-card .s-path-copy { margin: 0; }
@@ -110,7 +105,7 @@ html { scroll-padding-top: 0; }
   .eg-steps li::before { content: "✓"; margin-right: 6px; color: var(--o); font-weight: 500; }
 
   /* ── tiles (resources, pillars): the project cards' language without the image: the same 1px outline
-     and radius, the card spacings (20 top, 32 left, 16 right, 32 bottom, 16 between), the name in Geist Pixel; the resources are links
+     and radius, the design's card spacings (20 top, 32 left, 16 right, 32 bottom, 16 between), the name in Geist Pixel; the resources are links
      as a whole, the pillars are not (no hover) */
   .ec-row { display: grid; gap: 24px; width: 100%; box-sizing: border-box; padding: 0 24px; margin-top: 96px; }
   .ec-row-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -130,3 +125,85 @@ html { scroll-padding-top: 0; }
   .ec-links a { color: var(--o); text-decoration: none; }
   .ec-links a:hover { text-decoration: underline; text-underline-offset: 3px; }
 }
+
+/* ── narrower than a laptop: the homepage's phone values (sections.css,
+   /colony/): the rail with its dotted sides, heads at the rail's --pad, card rows 16 in, sections 72 above and below. Desktop untouched */
+@media (max-width: 1199px) {
+  /* the top: in a rail like the sections under it, eyebrow, title, sub, buttons, then the painting 16 in from the rail's sides */
+  .ec-hero { position: relative; width: var(--rail); margin: 0 auto; padding-bottom: 20px; background: var(--rail-bg); isolation: isolate; }
+  .ec-hero::before { content: ""; position: absolute; inset: -1px; z-index: -1; pointer-events: none;
+    --d: radial-gradient(circle at 1px 1px, var(--dot) .85px, #0000 1.25px);
+    background: var(--d) 100% 0 / 2px 8px repeat-y, var(--d) 0 0 / 2px 8px repeat-y; }
+  .ec-hero-head { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; padding: 96px var(--pad) 48px; }
+  .ec-hero-head > * { margin: 0; }
+  .ec-hero-head .s-h2 { font-size: 45px; line-height: .96; }
+  .ec-hero-head > .s-h2 + .s-sub { margin-top: 0; max-width: 560px; }
+  .ec-hero-head .s-actions { margin-top: 12px; }   /* 16 + 12: the sub 28 from the buttons */
+  .ec-hero-panel { margin: 0 16px; aspect-ratio: 16 / 10; border-radius: 11px; background-position: 50% 42%; }
+
+  /* the card rows (Live projects, Build, explore, connect): each card the screenshot at 4:3, cropped from the top, then its line */
+  .ec-grid { margin-top: 64px; row-gap: 48px; }
+  .ec-card { display: flex; flex-direction: column; gap: 16px; grid-row: auto; color: inherit; text-decoration: none; }
+  .ec-card:focus-visible { outline: 2px solid #789f00; outline-offset: 4px; border-radius: 8px; }
+  .ec-card .s-path-panel { position: relative; aspect-ratio: 4 / 3; margin: 0; border-radius: 8px; overflow: hidden; box-shadow: none; }
+  .ec-shot { background: var(--tile); }
+  .ec-shot::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--tile-line); pointer-events: none; }
+  .ec-shot img { width: 100%; height: 100%; object-fit: cover; object-position: top center; }
+  .ec-card .s-path-text { display: block; }
+  .ec-card .s-path-copy { margin: 0; }
+  .ec-card .s-cap { margin: 0; max-width: none; padding-right: 0; text-wrap: pretty; }
+  .ec .ec-build .s-head { padding: 0 var(--pad); }
+  .ec-notes { display: flex; flex-direction: column; gap: 12px; margin: 48px 24px 0; max-width: 760px; }
+  .ec-note { margin: 0; font: 400 13px/20px Geist, sans-serif; color: var(--m, #737373); }
+  .ec-note b { font-weight: 500; color: var(--t); }
+
+  /* the ninth card's glass: the window centred on the painting */
+  .eg-win { left: 50%; top: 50%; translate: -50% -50%; width: 76%; padding: 12px 14px; border-radius: 10px; display: flex; flex-direction: column; gap: 10px; }
+  .eg-win p { margin: 0; }
+  .eg-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 14px; line-height: 18px; }
+  .eg-top b { font-weight: 500; }
+  .eg-top span { color: var(--mu); font: 400 12px/16px "Geist Mono", monospace; }
+  .eg-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+  .eg-pills span { padding: 2px 8px; border-radius: 999px; border: .5px solid var(--line); color: var(--o); font-weight: 500; font-size: 12px; }
+
+  /* the pillars: the tiles two across, then one */
+  .ec-row { display: grid; gap: 16px; width: 100%; box-sizing: border-box; padding: 0 24px; margin-top: 64px; }
+  .ec-row-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ec-tile { box-sizing: border-box; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 24px 24px 28px;
+    border: 1px solid var(--tile-line); border-radius: 16px; }
+  .ec-tile .f-ic { background: var(--o); margin: 0 0 4px; }
+  .ec-tile h3 { margin: 0; font: 400 24px/28px "Geist Pixel Var", Geist, sans-serif; font-variation-settings: "ELSH" 40; letter-spacing: -.8px; color: var(--t); }
+  .ec-tile p { margin: 0; font: 400 16px/24px Geist, sans-serif; color: var(--b); text-wrap: pretty; }
+  .ec-pillars .s-rail { padding-top: 96px; padding-bottom: 96px; }
+
+  /* the close: centred, the buttons, then the three links as 44-tall targets */
+  .ec-add .s-rail { padding-top: 96px; padding-bottom: 96px; }
+  .ec-close { align-items: center; text-align: center; padding: 0 var(--pad); }
+  .ec-close .s-actions { justify-content: center; margin-top: 8px; }
+  .ec-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 24px; margin: 0; font: 500 15px/20px Geist, sans-serif; }
+  .ec-links a { display: inline-flex; align-items: center; min-height: 44px; color: var(--o); text-decoration: none; }
+}
+@media (max-width: 760px) {
+  .ec .s-page { --pad: 20px; }   /* the phone gutter inside the rail, as /colony/ and /ants/: text and cards on one edge */
+  .ec .s-head { --head-gap: 16px; }
+  .ec-hero-head { padding: 72px var(--pad) 40px; }
+  .ec-hero-head .s-h2 { font-size: 40px; line-height: 40px; }
+  .ec-hero-head .s-actions { align-self: stretch; }
+  .ec-hero-head .s-actions .s-btn { flex: 1 1 auto; }
+  .ec-hero-panel { margin: 0 var(--pad); aspect-ratio: 4 / 5; background-position: 50% 40%; }   /* the painting's own portrait shape: the anthill and its Mac Studio in the middle */
+  .ec-live .s-rail { padding-top: 72px; padding-bottom: 72px; }
+  .ec-grid { margin-top: 40px; row-gap: 48px; padding: 0 var(--pad); }
+  .ec-grid .ec-card + .ec-card { margin-top: 0; }   /* sections.css spaces its two paths 56 apart: the row gap does it here */
+  .ec-notes { margin: 48px var(--pad) 0; }
+  .ec-row { margin-top: 40px; padding: 0 var(--pad); }
+  .ec-row-4 { grid-template-columns: minmax(0, 1fr); }
+  .ec-tile { padding: 20px 20px 24px; }
+  .ec-pillars .s-rail, .ec-add .s-rail { padding-top: 72px; padding-bottom: 72px; }
+  .ec-close .s-actions { align-self: stretch; margin-top: 12px; }
+  .ec-close .s-actions .s-btn { flex: 1 1 auto; }
+  .ec .s-head .s-h2, .ec .s-center .s-sub { text-wrap: balance; }   /* a wrapped line never leaves one word alone */
+  .ec :is(.s-head, .ec-hero-head) .s-sub { text-wrap: pretty; }
+  .ec .s-center .s-sub { text-wrap: balance; }
+}
+/* AI-first kept whole, never broken at its hyphen, in the title's ink (the grey is the title's other span) */
+.ec .s-h2 .ec-nb { white-space: nowrap; color: inherit; }

@@ -3,13 +3,13 @@
 
 /* ════ the cards (cards.css) ════ */
 /* Antseed homepage v6: the scenes in the "For the people" cards (Agents, Privacy, Teams) and the Providers cards (Open-source models,
-   API capacity, Paid per request). Figma 5tLvMmeKGyUsZgrhY4ogTG, v6 light and dark each scene a layer "v6 · …".
+   API capacity, Paid per request). The design 5tLvMmeKGyUsZgrhY4ogTG, v6 light and dark each scene a layer "v6 · …".
    Heavy users keeps its v4 scene: nothing here for it.
 
-   Each scene is a stage the size of its Figma card (297.5 × 260 for the four, 404.66 × 300 for the three), its windows placed as in
-   Figma, centred in the card (.s-card-panel, a size container). Nothing is scaled: on narrower cards compact layouts take over (the
+   Each scene is a stage the size of its the design card (297.5 × 260 for the four, 404.66 × 300 for the three), its windows placed as in
+   the design, centred in the card (.s-card-panel, a size container). Nothing is scaled: on narrower cards compact layouts take over (the
    windows hang from the card's edges, a few details give way, see "narrower cards"), so no text renders under 10px from 390 to 1504.
-   The windows are glass, light by day as in Figma; at night the Gateway terminal's smoked green glass (night glass, at the end). The
+   The windows are glass, light by day as in the design; at night the Gateway terminal's smoked green glass (night glass, at the end). The
    colours are the scene's own, not the page's themed tokens.
    Loaded after sections.css. Everything is scoped under .v6c; scene classes are v6-agents-…, v6-privacy-…, v6-teams-…, v6-gpu-…, v6-cap-…, v6-colony-…. */
 
@@ -182,14 +182,14 @@
 .v6-colony-switch::after { content: ""; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .2); }
 
 /* ── narrower cards: compact layouts, never scaled, so no text renders under 10px ── */
-/* the four, narrower than Figma's 297.5 (230 at 1200 to 297 at 1500; 292 at 761–899): the stage takes the card's width and each window
-   hangs from the card's edges instead of Figma's places, a few details giving way where the room runs out */
+/* the four, narrower than the design's 297.5 (230 at 1200 to 297 at 1500; 292 at 761–899): the stage takes the card's width and each window
+   hangs from the card's edges instead of the design's places, a few details giving way where the room runs out */
 @container (max-width: 297px) {
   .v6c-g { left: 0; width: 100%; margin-left: 0; }
   .v6-agents-win { left: 12px; right: 12px; width: auto; }
   .v6-agents-field { width: auto; }
   .v6-agents-menu { left: auto; right: 12px; }
-  .v6-agents .v6c-cursor { left: calc(100% - 144px); }   /* on Antseed, 40 in from the menu's left edge as in Figma */
+  .v6-agents .v6c-cursor { left: calc(100% - 144px); }   /* on Antseed, 40 in from the menu's left edge as in the design */
   .v6-privacy-win { left: 16px; }   /* still runs off the right edge */
   .v6-privacy-fields dt { width: 64px; }
   .v6-teams-win { left: 8px; right: 8px; width: auto; padding: 8px 10px; }
@@ -205,7 +205,7 @@
 @container (max-width: 265px) { .v6-teams-who :is(.v6c-avatar, .v6c-glass) { display: none; } }
 @container (max-width: 239px) { .v6-teams-use i { display: none; } .v6-teams-use { min-width: 36px; } }
 
-/* the three: 404.66 wide in Figma. Narrower down to 360 (the 1300–1440 desktops) the stage keeps its size and only its margin runs
+/* the three: 404.66 wide in the design. Narrower down to 360 (the 1300–1440 desktops) the stage keeps its size and only its margin runs
    past the card. Below 360 (phones, 272–336; the 1100–1300 desktops) a compact stage, 280 wide, its windows narrower */
 @container (max-width: 359.9px) {
   .v6c-p { --W: 280px; }
@@ -237,8 +237,8 @@
 }
 
 /* ════ the network and Private by design (net.css) ════ */
-/* Homepage v6, group "net": the four Private by design cards (the BitTorrent panel is now net.js). Figma 5tLvMmeKGyUsZgrhY4ogTG, v6 light
-   v6 dark . By day each scene keeps Figma's colours (dark glass and white popovers in the privacy cards), set on each scene
+/* Homepage v6, group "net": the four Private by design cards (the BitTorrent panel is now net.js). The design 5tLvMmeKGyUsZgrhY4ogTG, v6 light
+   v6 dark . By day each scene keeps the design's colours (dark glass and white popovers in the privacy cards), set on each scene
    root and never swapped by the page's dark tokens; at night they take the Gateway terminal's smoked green glass (night glass, at the end).
    Loaded after hero/sections.css; fonts Geist and Geist Mono as the page loads them. */
 
@@ -254,7 +254,7 @@
 :is(.v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) i { flex: none; font-style: normal; }
 
 /* ── Private by design: the four cards ──────────────────────────────── */
-/* each scene is Figma's 297.5×260 card, laid at its size in the middle of the card (298 at 1504, 404 at 1024, 304 at 390);
+/* each scene is the design's 297.5×260 card, laid at its size in the middle of the card (298 at 1504, 404 at 1024, 304 at 390);
    on a narrower card (230–297, the 1200–1500 desktops) it takes the card's width instead, each piece hanging from its edges (below) */
 :is(.v6-noacc, .v6-signed, .v6-tee, .v6-nocrypto, .v6-pseudo, .v6-direct) { position: absolute; inset: 0; container-type: inline-size; }
 :is(.v6-noacc-stage, .v6-signed-stage, .v6-tee-stage, .v6-nocrypto-stage, .v6-pseudo-stage, .v6-direct-stage) { position: absolute; left: 50%; top: 0; width: 297.5px; height: 260px;
@@ -355,7 +355,7 @@
   font-size: 17px; line-height: 21px; font-weight: 500; color: var(--v6-ink); }
 
 /* Pseudonymous: one window, what the network knows of you, a row each: the name in the glass's grey, the value in its ink */
-.v6-pseudo-stage { width: min(320px, 100cqw / var(--v6-k) - 16px); }   /* wider than Figma's card, so the window holds its own beside the TEE scene */
+.v6-pseudo-stage { width: min(320px, 100cqw / var(--v6-k) - 16px); }   /* wider than the design's card, so the window holds its own beside the TEE scene */
 .v6-pseudo-win { position: absolute; left: 50%; top: 50%; translate: -50% -50%; width: min(307px, 100% - 12px); display: flex; flex-direction: column; gap: 14px; margin: 0;
   padding: 18px 18px; border-radius: var(--r-win); font: 400 12px/15px "Geist Mono", monospace; }
 .v6-pseudo-win > div { display: flex; justify-content: space-between; gap: 16px; white-space: nowrap; }
@@ -376,7 +376,7 @@
 /* a narrow panel: the line is shorter than its words, so they drop under the chips instead of crossing them */
 @container (max-width: 440px) { .v6-direct-cap { top: 28px; } }
 
-/* narrower than Figma's card (230 at 1200 to 297 at 1500): the stage takes the card's width, nothing scales, every piece hangs from the
+/* narrower than the design's card (230 at 1200 to 297 at 1500): the stage takes the card's width, nothing scales, every piece hangs from the
    card's edges, and the TEE tip moves under its menu */
 @container (max-width: 297px) {
   :is(.v6-noacc-stage, .v6-signed-stage, .v6-tee-stage, .v6-nocrypto-stage, .v6-pseudo-stage, .v6-direct-stage) { left: 0; width: 100%; translate: none; }

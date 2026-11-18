@@ -1,4 +1,4 @@
-<!-- Antseed homepage, everything below the hero. Figma: file 5tLvMmeKGyUsZgrhY4ogTG, page "Homepage · v4 + dark": (light) and (dark).
+<!-- Antseed homepage, everything below the hero. The design: file 5tLvMmeKGyUsZgrhY4ogTG, page "Homepage · v4 + dark": (light) and (dark).
      Loaded into hero/index.html (#sections) with sections.css and sections.js. Panels marked .wash get a watercolour wash: --wash in light,
      --wash-d in dark; .mz instead would give them the
      round-dot mosaic from sections.js. Black logos are marked .ink: they go light in dark. -->
@@ -53,13 +53,13 @@
       </ul>
       <div class="s-actions"><a class="s-btn" href="https://antseed.com/docs/quickstart/">Set Up Gateway</a><a class="s-btn ghost" href="https://antseed.com/docs/gateway/">Learn more</a></div>
     </div>
-    <!-- launch: the design's console (parts/gateway-console) fills this panel once it lands, and the router steps back; the video Antseed
+    <!-- launch: Design's console (parts/gateway-console) fills this panel once it lands, and the router steps back; the video Antseed
          sends goes in the slot (data-video-slot) -->
     <div class="wash land s-duo-panel s-gw-panel has-film" style="--wash: url(/site/assets/home/vignettes/gw-day.webp); --wash-d: url(/site/assets/home/vignettes/gw-night.webp)">
       <!-- the Gateway on film: the real console, recorded on a throwaway gateway with an empty wallet. A question answered
            by a provider on the network, the models and providers it can reach, a key made with a budget, then usage and routing. It plays,
            muted, while on screen; the chapters under it jump and light with the film (gw-film.js, gw-film.css). The router above stays
-           hidden under it; the design's console (gw-console.*) is kept aside, not linked -->
+           hidden under it; Design's console (gw-console.*) is kept aside, not linked -->
       <figure class="gw-film">
         <div class="gw-bar"><span class="gw-lights"><i></i><i></i><i></i></span><span class="gw-url">localhost:8379/console</span></div>
         <video muted playsinline loop preload="none" poster="/site/assets/home/gateway-demo/gateway-film-poster.jpg" aria-label="The Antseed Gateway console in use: a question answered by a provider on the network, the list of models and providers, an API key created with a daily and monthly budget, then usage and routing rules"><source src="/site/assets/home/gateway-demo/gateway-film.mp4" type="video/mp4"></video>
@@ -240,7 +240,7 @@
 
 <!-- Providers: the vision, then two paths, each a big painted panel and its text with its own button. The pictures
      are the final paintings, assets/home/providers (stall, colony; day and night as --wash and --wash-d), moving (providers-live.js), with
-     the design's glass over them (providers-v4.css): the stall on the left and the client's listing on the right; the three Macs cabled as one provider -->
+     Design's glass over them (providers-v4.css): the stall on the left and the client's listing on the right; the three Macs cabled as one provider -->
 <section class="s-sec s-prov" id="providers" aria-labelledby="s-prov-h">
   <div class="s-rail">
     <header class="s-head s-padx">
@@ -308,9 +308,8 @@
          "map" (?net=map): the painted board, net.js: you, the providers and other people as ants on the map, one request in
          five steps, data-step="all" all of them numbered (or "1" to "5", one step), the rail naming them; take data-net away and its
          loop plays again -->
-    <!-- The network's board, animated (parts/net-stack: three steps, 1680 × 1040; its box is launch.css's .lp-stack). The board
-         before it is unplugged, kept whole in a <template> (inert: nothing in it loads or runs). To plug it back: take it out of the
-         template, drop the .lp-stack panel, list its part on <body data-parts> again (index.html) -->
+    <!-- Since the panel is the design's own board, animated. The board before it is unplugged, kept whole in a <template> (inert: nothing in it loads or runs). To
+         plug it back: take it out of the template, drop the .lp-stack panel, list its part on <body data-parts> again (index.html) -->
     <div class="lp-stack"><div class="lp-slot lp-slot--panel" data-part="net-stack"></div></div>
     <template data-unplugged="network board">
     <div class="wash s-net-panel" data-net="still" data-step="all" data-net-style="steps">
@@ -331,9 +330,9 @@
       </ol>
     </div>
     </template>
-    <!-- the three points under the board: the board's three steps, each a button that shows its step (parts/net-stack.js; the one
-         on show is marked aria-current). The row ends on the section's way out, a button to the network page. The board and this row
-         hold in one 1440 × 900 screen; the head scrolls away above them -->
+    <!-- the three points under the board: the board's three steps, in the row's style, each a button that shows its
+         step (parts/net-stack.js; the one on show is marked aria-current). The lines are the client's. The row ends on the section's way out, a real button to the network page (the eyebrow's link stays too). The board
+         and this row hold in one 1440 × 900 screen; the head scrolls away above them -->
     <div class="s-points s-points--go">
       <div><button type="button" data-nsk-go="1"><b>Discovery</b> Buyers and providers find each other peer to peer.</button></div>
       <div><button type="button" data-nsk-go="2"><b>Payments</b> USDC moves directly between buyers and providers.</button></div>

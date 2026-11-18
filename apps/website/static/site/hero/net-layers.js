@@ -1,4 +1,4 @@
-// How the network works, as ONE map of the whole system (after a call with the client: the diagram has to cover what
+// How the network works, as ONE map of the whole system (after the call with the client: the diagram has to cover what
 // Antseed is and does, dense but legible). Drawn into [data-nl]: hero/parts/layers.html (the homepage, data-cut="home") and
 // layers-large.html (the network page, data-cut="network").
 // Two structures, and the first one leads:

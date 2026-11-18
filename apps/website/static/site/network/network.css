@@ -202,7 +202,7 @@ nav > a { display: block; }
   .nw-trust-panel { height: auto; padding: 48px 24px; }
 }
 @media (max-width: 760px) {
-  .nw-top .s-rail, .nw-pay .s-rail, .nw-where .s-rail, .nw-vision .s-rail { padding-top: 72px; }
+  .nw-pay .s-rail, .nw-where .s-rail, .nw-vision .s-rail { padding-top: 72px; }   /* the top's 72 is its head's own (below) */
   .nw-pay .s-rail { padding-bottom: 72px; }
   .nw-top .s-h2 { font-size: 40px; line-height: 40px; }
   .nw-panel { margin-top: 40px; aspect-ratio: 4 / 5; }   /* the three layers' tall layout, as the homepage's */
@@ -224,7 +224,7 @@ nav > a { display: block; }
 }
 
 /* ── the aside scale. It replaces the
-   two-option values and the earlier head rules above, except the section titles: their sizes, two lines and the USDC/ANTS head's 64 to its panels stay as above. Kept on purpose on this page: the two-line hero and Trust titles, the
+   two-option values and the earlier head rules above, except the section titles: their sizes, two lines and the USDC/ANTS head's 64 to its panels stay as above. Kept from the design's asks on this page: the two-line hero and Trust titles, the
    USDC/ANTS titles at 32 with 28 to their icon points and the points' short lines, What lives where on the whole screen. Desktop only */
 @media (min-width: 1200px) {
   /* §1 page: anchors with no offset (the nav scrolls away), the page's buttons 40 tall */
@@ -238,12 +238,12 @@ nav > a { display: block; }
   .nw .s-page .s-head .s-sub { line-height: 28px; max-width: 640px; }
   .nw .nw-vision .s-head { padding-bottom: 40px; }
   .nw .nw-build .s-lede > p { font-size: 20px; line-height: 28px; letter-spacing: 0; max-width: 638px; }
-  /* the duo (Trust): eyebrow 24, title 16 to its sub; its title on its two lines, at the scale's 44 */
+  /* the duo (Trust): eyebrow 24, title 16 to its sub; its title on the design's two lines, at the scale's 44 */
   .nw .nw-trust .s-duo-text { gap: 24px; }
   .nw .nw-trust .s-duo-head { gap: 16px; }
   .nw .nw-trust .s-duo-head > .s-h3 + .s-sub { margin-top: 0; }
   /* §3 the hero: the first screen under the nav, the painting inset 16 (top, right, bottom) with soft corners; eyebrow, 16, title,
-     16, sub (324), 32, buttons. Its title stays on its two lines, at the scale's 44 (48 would need a third) */
+     16, sub (324), 32, buttons. Its title stays on the design's two lines, at the scale's 44 (48 would need a third) */
   .nw .nw-top { min-height: 0 !important; }   /* sections.js's 8px rounding would push it past the fold */
   .nw .nw-hero { height: calc(100svh - 69px); }
   .nw .nw-hero-panel { margin: 16px 16px 16px 0; height: auto; border-radius: 16px; }
@@ -257,9 +257,62 @@ nav > a { display: block; }
   .nw .nw-wcards { margin-top: 96px; }
 }
 
-/* The network in three layers: the animated board (hero/parts/net-stack), the card as high as its drawing, and under it the board's
-   three steps as points, as on the homepage. The card and the row hold in one 1440 × 900 screen; the row closes the section, so the
-   rail keeps its 124 above only */
+/* The network in three layers: his animated board (hero/parts/net-stack), the card as high as its drawing, and
+   under it the board's three steps as points, as on the homepage. The card and the row hold in one 1440 × 900 screen; the row
+   closes the section, so the rail keeps its 124 above only */
 .nw-layers-panel { position: relative; margin-top: 40px; }
 .nw-layers .s-points > div { padding: 48px 32px; }
 @media (min-width: 1200px) { .nw .s-page .nw-layers .s-rail { padding-block: 124px 0; } }
+
+/* ── tablet and phone. Below 1200 only, so the desktop stays as it
+   is. The homepage's and Colony's phone values: the text at the rail's inner margin (--pad), sections 72 above and below on a phone,
+   head gaps of 16, 28 from a sub line to its buttons, 40 from the buttons to a painting ── */
+@media (max-width: 1199px) {
+  /* the hero: the head over the painting, as Colony's (colony.css): eyebrow 16, title 16, sub 28, buttons, 56 to the painting */
+  .nw-hero-head { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; padding: 96px var(--pad) 56px; }
+  .nw-hero-head > * { margin: 0; }
+  .nw-hero-head .s-sub { max-width: 540px; }
+  .nw-hero-head .s-actions { margin-top: 12px; }
+  .nw-hero-panel { aspect-ratio: 16 / 9; }
+  /* the three layers: the homepage's 120 above its head, as the other sections at this width */
+  .nw-layers .s-rail { padding-top: 120px; }
+}
+@media (max-width: 760px) {
+  .nw-hero-head { padding: 72px var(--pad) 40px; container-type: inline-size; }
+  /* the title as large as lets «liquidity network.» hold one line (40 on a wide phone, about 31 on a 375 one): the ink line, then the grey */
+  .nw-top .nw-hero-head .s-h2 { font-size: min(40px, 100cqi / 8); line-height: 1; letter-spacing: -1.4px; }
+  .nw-hero-head .s-sub { max-width: none; }
+  .nw-hero-head .s-actions { align-self: stretch; }
+  .nw-hero-head .s-actions .s-btn { flex: 1 1 auto; }
+  .nw-hero-panel { aspect-ratio: 4 / 3; }
+
+  /* the three layers: 72 above; its three steps a row each, 24 above and 28 below as Colony's steps */
+  .nw-layers .s-rail { padding-top: 72px; }
+  .nw-layers .s-points > div { padding: 24px var(--pad) 28px; }
+
+  /* USDC / ANTS: the two buttons share a line, or each takes a whole one */
+  .nw-pay .s-path-text .s-actions { align-self: stretch; margin-top: 28px; }
+  .nw-pay .s-path-text .s-actions .s-btn { flex: 1 1 auto; }
+
+  /* what lives where: each card taller (4:5) so its glass windows hold without crossing; 40 between a card's point and the next card */
+  .nw-wcards { gap: 40px; padding: 0 16px; }
+  .nw-wcard { aspect-ratio: 4 / 5; }
+  .wc-from { top: 8%; }
+  .wc-req { left: 14%; top: 24%; }
+  .wc-res { left: 26%; top: 37%; }
+  .wc-to { right: 6%; bottom: 6%; width: 72%; }
+  .wc-mid, .wc-base { width: 76%; }
+  .wc-base { top: 8%; }
+  .wc-never { left: 50%; right: auto; translate: -50% 0; bottom: 6%; width: max-content; }
+
+  /* trust: its link a full tap target, the line around it unchanged */
+  .nw-trust .s-duo-text > .s-link { padding-block: 10px; margin-block: -10px; }
+
+  /* the vision's four points: the text at the rail's inner margin, as its head */
+  .nw-vision .s-points > div { padding: 24px var(--pad) 28px; }
+
+  /* every layer is open: its two buttons the column's width */
+  .nw-open-head { gap: 28px; }
+  .nw-open-head .s-actions { align-self: stretch; }
+  .nw-open-head .s-actions .s-btn { flex: 1 1 auto; }
+}
