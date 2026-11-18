@@ -193,6 +193,13 @@ describe('same-epoch position actions', () => {
     expect(writes.mergeStakes).not.toHaveBeenCalled();
   });
 
+  it('explains the pool\'s InvalidValue() merge refusal instead of an unknown custom error (#1390)', async () => {
+    const { ctx, call, writes } = pendingFixture();
+    call.mockRejectedValueOnce(Object.assign(new Error('execution reverted (unknown custom error)'), { code: 'CALL_EXCEPTION', data: '0xaa7feadc' }));
+    await expect(merge(ctx, { positionIds: [7, 8] })).rejects.toThrow('started their locks at different epochs');
+    expect(writes.mergeStakes).not.toHaveBeenCalled();
+  });
+
   it('does not misreport an RPC failure as incompatible lock terms', async () => {
     const { ctx, call, writes } = pendingFixture();
     call.mockRejectedValueOnce(new Error('RPC unavailable'));
