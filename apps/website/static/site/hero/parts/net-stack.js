@@ -20,8 +20,8 @@ const ORDER = { 'recognized usage': [[0], [1, 2, 3]], 'scores': [[0, 1, 2], [3]]
 const READ = 11, GROW = 1.75;
 // a label grows from the side of its stack that faces the drawing's middle; these few from the side named (l, r, m)
 const SIDE = { 'Pill / 10 USDC': 'l' };
-// the gap between a cube's outer edge and its name
-const CUBE_GAP = 14;
+// the gap between a cube's bottom corner and its name
+const CUBE_GAP = 8;
 // the view of each drawing once the window and the legend have left it (both now in the side panel): tight around the slabs,
 // the cubes and their names, so the drawing takes the room they freed
 const VIEW = '-12 112 1272 892';
@@ -173,17 +173,17 @@ export default async (slot) => {
     }
     const items = [...els].map((el) => { const b = el.getBBox(); return { el, l: b.x, r: b.x + b.width, t: b.y, b: b.y + b.height, id: 0 }; });
     items.forEach((it, i) => { it.id = i; it.sx = 0; it.sy = 0; });
-    // a cube's name sits level with the middle of its cube's outer edge, ending (buyers) or starting (providers) a step off it, and
+    // a cube's name sits under its cube, ending (buyers) or starting (providers) plumb with the cube's front edge, and
     // whatever Figma set under the name (a note, a pill, a score) moves with it: the same place in every step
     for (const cube of svg.querySelectorAll('[data-n^="Cube /"]')) {
       const name = items.find((it) => it.el.tagName === 'text' && cube.contains(it.el));
       const face = (end) => [...cube.children].find((c) => (c.getAttribute('fill') || '').endsWith(end))?.getBBox();
       const fl = face('-l)'), fr = face('-r)');
       if (!name || !fl || !fr) continue;
-      const buyer = fl.x + fr.x < 1240, edge = buyer ? 'r' : 'l', f = buyer ? fl : fr;
-      // the outer upright edge of that side face: its top corner down to where the face's slope starts
-      const mid = f.y + (f.height - f.width * Math.tan(Math.PI / 6)) / 2;
-      const dx = buyer ? fl.x - CUBE_GAP - name.r : fr.x + fr.width + CUBE_GAP - name.l, dy = mid - (name.t + name.b) / 2;
+      const buyer = fl.x + fr.x < 1240, edge = buyer ? 'r' : 'l';
+      // under the cube: a buyer's name ends, a provider's starts, plumb with the cube's front edge (where its two faces meet)
+      const front = fl.x + fl.width, bottom = fl.y + fl.height;
+      const dx = front - name[edge], dy = bottom + CUBE_GAP - name.t;
       const stack = [name];
       for (let more = true; more;) {
         more = false;
