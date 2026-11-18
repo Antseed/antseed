@@ -6,7 +6,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
-## 2026-11-18 — CLI 0.1.253, Node 0.2.186
+## 2026-11-18 — CLI 0.1.253, Node 0.2.186, Desktop 0.2.89
 
 ### Packages
 
@@ -24,6 +24,10 @@ This project uses selective package publishing. Each release entry lists the pub
 - `@antseed/payments@0.1.113`
 - `@antseed/ants@0.1.71`
 - `@antseed/gateway-console@0.1.36`
+
+### Desktop
+
+- `@antseed/desktop@0.2.89`
 
 ### Added
 
