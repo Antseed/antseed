@@ -24,8 +24,9 @@
   visibility: hidden;
   transition: opacity .45s ease, visibility 0s .45s;
 }
-.on { opacity: 1; visibility: visible; z-index: 1; transition: opacity .45s ease; }
-.leaving { opacity: 1; visibility: visible; transition: none; }   /* stays under the step fading in */
+/* shown states are two classes, so they beat .layer whatever order the production minifier puts the rules in */
+.layer.on { opacity: 1; visibility: visible; z-index: 1; transition: opacity .45s ease; }
+.layer.leaving { opacity: 1; visibility: visible; transition: none; }   /* stays under the step fading in */
 
 .drawing { display: block; width: 100%; height: 100%; }
 .drawing text { font-family: var(--site-font); }
@@ -62,5 +63,5 @@
   .windows { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .layer, .on, .drawing [data-fade] { transition: none; }
+  .layer, .layer.on, .drawing [data-fade] { transition: none; }
 }
