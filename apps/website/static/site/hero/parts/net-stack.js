@@ -107,10 +107,11 @@ export default async (slot) => {
 
   // a phone (760 and under, as the page opens) plays its own drawings, composed for a portrait frame (phone-N.svg: the layers apart in
   // a column, buyers and providers each up their own lane); the window still comes from the design's frames, though a phone does not show it
-  const PHONE = matchMedia('(max-width: 760px)').matches;
+  const MQ = matchMedia('(max-width: 760px)');
+  const PHONE = MQ.matches;
   const get = (f) => fetch(new URL(f, ART)).then((r) => (r.ok ? r.text() : Promise.reject(r.status)));
   const texts = await Promise.all([1, 2, 3].map((n) => get(`step-${n}.svg`)));
-  const phones = PHONE ? await Promise.all([1, 2, 3].map((n) => get(`phone-${n}.svg`))) : null;
+  let phones = PHONE ? await Promise.all([1, 2, 3].map((n) => get(`phone-${n}.svg`))) : null;
   await document.fonts.ready;   // the labels are measured below
   const inline = (t) => {
     const svg = document.importNode(new DOMParser().parseFromString(t, 'image/svg+xml').documentElement, true);
@@ -119,11 +120,17 @@ export default async (slot) => {
     for (const im of svg.querySelectorAll('image[href]:not([href^="data:"])')) im.setAttribute('href', new URL(im.getAttribute('href'), ART).href);
     return svg;
   };
-  const steps = texts.map((t, k) => {
-    let svg = inline(t);
+  // a step's drawing: the design's frame (its window taken out of it), or on a phone its own drawing; the window from the frame either way
+  const drawing = (k, ph) => {
+    let svg = inline(texts[k]);
     stage.append(svg);
     const win = windowOf(svg, k);
-    if (phones) { const ph = inline(phones[k]); svg.replaceWith(ph); svg = ph; }
+    if (ph) { const p = inline(phones[k]); svg.replaceWith(p); svg = p; }
+    return { svg, win };
+  };
+  let onPhone = PHONE;
+  const steps = texts.map((t, k) => {
+    const { svg, win } = drawing(k, PHONE);
     side.append(win.el);
     return { ...prepare(svg, k), win: win.el, blocks: win.blocks };
   });
@@ -436,15 +443,51 @@ export default async (slot) => {
     away = false; started = true;
     run(k, true);   // a clicked step plays from its start, then the loop carries on from it (the design,)
   }));
+  // the window crossing 760 either way: the other set of drawings comes in, in place, and the step on show starts over from it (its
+  // flows, amounts and labels are the new drawing's); the window, the row and the control are the same throughout
+  MQ.addEventListener('change', async () => {
+    const ph = MQ.matches;
+    if (ph === onPhone) return;
+    // the phone drawings are fetched the first time they are needed; until they are in, the step on show plays on undisturbed
+    if (ph && !phones) { try { phones = await Promise.all([1, 2, 3].map((n) => get(`phone-${n}.svg`))); } catch { return; } }
+    if (ph !== MQ.matches || ph === onPhone) return;   // crossed back meanwhile
+    onPhone = ph;
+    gen++;   // whatever plays stops
+    steps.forEach((st, k) => {
+      const { svg } = drawing(k, ph);
+      st.svg.replaceWith(svg);
+      Object.assign(st, prepare(svg, k));
+    });
+    fit();
+    steps.forEach((st) => snap(st, () => { rest(st); full(st); }));
+    show(cur);
+    if (still) { bar(cur, 1); return; }
+    if (started) run(cur, true); else snap(steps[0], () => blank(steps[0]));
+  });
   if (still) return;
   snap(steps[0], () => blank(steps[0]));
-  new IntersectionObserver(([e]) => {
+  const onSeen = (now) => {
     const was = seen;
-    seen = e.isIntersecting;
+    seen = now;
     if (!seen) { away = started; return; }
     if (was) return;
     if (!started) { started = true; run(0, true); } else if (held && away) { held = false; run(cur, true); }   // a held step loops again once the panel has left and come back
-  }, { threshold: .35 }).observe(stage);
+  };
+  new IntersectionObserver(([e]) => onSeen(e.isIntersecting), { threshold: .35 }).observe(stage);
+  // a resize can leave the observer's last word stale (the page reflows under it): the panel's place is checked again after a
+  // resize and while scrolling, as long as it is thought out of sight
+  let checking = 0;
+  const recheck = () => {
+    if (checking) return;
+    checking = requestAnimationFrame(() => {
+      checking = 0;
+      const r = stage.getBoundingClientRect(), shown = Math.min(r.bottom, innerHeight) - Math.max(r.top, 0);
+      const now = r.height > 0 && shown >= .35 * Math.min(r.height, innerHeight);
+      if (now !== seen) onSeen(now);
+    });
+  };
+  addEventListener('resize', recheck, { passive: true });
+  addEventListener('scroll', () => { if (!seen) recheck(); }, { passive: true });
 };
 
 // ---- a phone (max-width 760px; the elements made here are hidden above it): the drawing whole, the window not shown; the section's row
