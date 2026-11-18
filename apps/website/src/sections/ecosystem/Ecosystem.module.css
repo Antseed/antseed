@@ -1,0 +1,83 @@
+/* The ecosystem's sections share one scale: 124px round each section from 1200px wide (96 narrower, 72 on phones), card rows, the
+   pillar tiles. */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 48px 24px;
+  width: 100%;
+  margin-top: 64px;
+  padding: 0 24px;
+}
+.notes { display: flex; flex-direction: column; gap: 12px; max-width: 760px; margin: 48px 24px 0; }
+.note { font: 400 13px/20px var(--site-font); color: var(--site-text-small); }
+.note b { font-weight: 500; color: var(--site-text); }
+
+/* where builders start: the head centred, three cards under it */
+.buildRail { display: flex; flex-direction: column; align-items: center; }
+/* AI-first kept whole, never broken at its hyphen */
+.nowrap { white-space: nowrap; }
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  width: 100%;
+  margin-top: 64px;
+  padding: 0 24px;
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 24px 24px 28px;
+  border: 1px solid var(--site-tile-line);
+  border-radius: 16px;
+}
+.icon { margin: 0 0 4px; color: var(--site-accent); }
+.tileName {
+  font: 400 24px/28px var(--site-font-pixel);
+  font-variation-settings: 'ELSH' 40;
+  letter-spacing: -.8px;
+  color: var(--site-text);
+}
+.tileLine { font: 400 16px/24px var(--site-font); color: var(--site-text-body); text-wrap: pretty; }
+
+.links { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 24px; font: 500 15px/20px var(--site-font); }
+/* each link a 44px tall target */
+.links a { display: inline-flex; align-items: center; min-height: 44px; color: var(--site-accent); }
+.links a:hover { color: var(--site-accent); text-decoration: underline; text-underline-offset: 3px; }
+
+@media (min-width: 1200px) {
+  .section .rail { padding-block: 124px; }
+  .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 64px 24px; margin-top: 96px; }
+  .notes { gap: 8px; }
+  .places { row-gap: 0; }
+  .build { height: 100svh; }   /* exactly the screen */
+  .build .buildRail { justify-content: center; padding-block: 72px; }
+  .build .head { padding-inline: 0; }
+  .tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; margin-top: 96px; }
+  .tile { gap: 16px; padding: 20px 16px 32px 32px; }
+  .icon { margin: 12px 0 8px; }
+  .close { padding-block: 120px; }
+  .links { flex-wrap: nowrap; margin-top: 8px; }
+  .links a { display: inline; min-height: 0; }
+}
+@media (max-width: 1199px) {
+  .section .rail { padding-block: 96px; }
+  .build .buildRail { padding-block: 120px; }
+  .close .actions { margin-top: 8px; }
+}
+@media (max-width: 760px) {
+  .section .head { --head-gap: 16px; }
+  .section .rail, .build .buildRail { padding-block: 72px; }
+  .head .title { text-wrap: balance; }   /* a wrapped line never leaves one word alone */
+  .head .sub { text-wrap: pretty; }
+  .head .centeredSub { text-wrap: balance; }
+  .grid { grid-template-columns: minmax(0, 1fr); margin-top: 40px; padding: 0 var(--site-pad); }
+  .notes { margin: 48px var(--site-pad) 0; }
+  .tiles { grid-template-columns: minmax(0, 1fr); margin-top: 40px; padding: 0 var(--site-pad); }
+  .tile { padding: 20px 20px 24px; }
+  .close .actions { margin-top: 12px; }
+}

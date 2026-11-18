@@ -1,0 +1,41 @@
+/* Shown on a phone only. The card stays light at night, so do its controls. */
+.segments, .line { display: none; }
+
+@media (max-width: 760px) {
+  .segments {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    margin: 4px 12px 0;
+    padding: 4px;
+    border-radius: 6px;
+    background: #e9e9e6;
+  }
+  .line { display: block; min-height: 44px; margin: 16px 12px 24px; font: 400 15px/22px var(--site-font); color: #66746b; }
+}
+.segment {
+  all: unset;
+  position: relative;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  height: 44px;
+  border-radius: 3px;
+  cursor: pointer;
+  font: 500 15px/20px var(--site-font);
+  color: #66746b;
+  transition: color .2s, background-color .2s;
+}
+.segment[aria-current] { background: #fff; color: #0a1a12; box-shadow: 0 1px 2px rgba(10, 26, 18, .08); }
+.segment:focus-visible { outline: 2px solid #5f8a12; outline-offset: 2px; }
+.bar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(10, 26, 18, .08) linear-gradient(#5f8a12, #5f8a12) no-repeat;
+  background-size: calc(var(--progress, 0) * 100%) 100%;
+}
+.line b { font-weight: 500; color: #0a1a12; }

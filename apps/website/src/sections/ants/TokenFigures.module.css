@@ -1,0 +1,25 @@
+.figures { display: grid; grid-template-columns: repeat(3, 1fr); }
+.figure {
+  composes: dots from '../../components/dots.module.css';
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 28px 40px 32px;
+}
+.figure + .figure { --dots-left: 2px; }
+.value {
+  font: 400 32px/36px var(--site-font-pixel);
+  font-variation-settings: 'ELSH' 20;
+  font-variant-numeric: tabular-nums;
+  color: var(--site-text);
+}
+.caption { font: 400 16px/24px var(--site-font); color: var(--site-text-small); text-wrap: pretty; }
+
+@media (max-width: 1023px) {
+  .figure { padding: 24px 24px 28px; }
+}
+@media (max-width: 760px) {
+  .figures { grid-template-columns: 1fr; }
+  .figure { padding: 24px 20px 28px; }
+  .figure + .figure { --dots-left: 0px; --dots-top: 2px; }
+}

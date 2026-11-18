@@ -1,0 +1,22 @@
+.head .sub { max-width: 440px; text-wrap: balance; }
+
+@media (max-width: 899px) {
+  .section .panel { height: 480px; }
+}
+/* a phone: the text 20 inside the rail, on the first screen's line; eyebrow 16 over the title, 24 between the blocks, 32 over the
+   buttons; the painting whole and square, 24 over the next section */
+@media (max-width: 760px) {
+  .section .rail { padding-bottom: 24px; }
+  .section .text { gap: 24px; padding: 64px 20px 40px; }
+  .eyebrow { margin-bottom: -8px; }
+  .actions { margin-top: 8px; }
+  .section .panel { height: auto; aspect-ratio: 1; }
+  .section .head { max-width: 480px; }
+  .head .sub { max-width: none; }
+}
+@media (min-width: 1200px) {
+  .section .rail { box-sizing: border-box; min-height: 0; padding-block: 124px; }
+  .section .text { gap: 24px; padding-block: 0; }
+  .section .head { gap: 16px; }
+  .section .head .sub { max-width: none; margin-top: 0; line-height: 28px; text-wrap: pretty; }
+}

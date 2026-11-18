@@ -1,0 +1,52 @@
+/* The painting is 110% of the footer's width, 2% of it off to the left, so its torn paper edges stay outside; its sky fades into the
+   page. --meadow-height comes from the footer. --fit-x is where the painting is cropped across; the eyes' frame follows it. */
+.scene {
+  --fit-x: 46%;
+  --sun-x: 77%;
+  --sun-y: 24%;
+  position: absolute; left: -2cqw; bottom: 0; width: 110cqw; height: var(--meadow-height);
+  -webkit-mask-image: linear-gradient(#0000 22%, #0000002e 26%, #00000070 30%, #000000c0 34%, #000000ef 38%, #000 42%);
+  mask-image: linear-gradient(#0000 22%, #0000002e 26%, #00000070 30%, #000000c0 34%, #000000ef 38%, #000 42%);
+}
+
+.still, .film { display: block; width: 100%; height: 100%; object-fit: cover; object-position: var(--fit-x) 100%; }
+.overlay { position: absolute; inset: 0; }
+
+/* --sun: how far from the sun the day still shows, as a share of the way to the farthest corner (130% all day, 0% all night) */
+@property --sun { syntax: '<percentage>'; inherits: false; initial-value: 130%; }
+.night {
+  --sun: 130%;
+  position: absolute; inset: 0;
+  -webkit-mask-image: radial-gradient(circle farthest-corner at var(--sun-x) var(--sun-y), #0000 calc(var(--sun) - 22%), #000 var(--sun));
+  mask-image: radial-gradient(circle farthest-corner at var(--sun-x) var(--sun-y), #0000 calc(var(--sun) - 22%), #000 var(--sun));
+}
+:global(:root[data-theme='dark']) .night { --sun: 0%; }
+
+/* a film fades in over its still once it has a frame; during a theme flip it switches at once, inside the page's crossfade */
+.film { transition: opacity .8s; }
+.film:not(.filmReady) { opacity: 0; }
+.flipping .film { transition: none; }
+
+.fireflies { display: none; position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+:global(:root[data-theme='dark']) .fireflies { display: block; }
+
+/* the eyes sit in the film's box as object-fit places it (all its height or all the scene's width, at --fit-x, bottom aligned) */
+.eyes { position: absolute; inset: 0; pointer-events: none; }
+.eyeFrame {
+  position: absolute; left: var(--fit-x); bottom: 0; width: max(100%, var(--meadow-height) * 16 / 9); aspect-ratio: 16 / 9;
+  translate: calc(var(--fit-x) * -1) 0;
+}
+.eye, .eyePart { position: absolute; display: block; }
+.eyePart { inset: 0; background: var(--sheet) no-repeat; background-size: var(--sheet-size); }
+.white { background-position: var(--white); }
+.iris {   /* the pupil, kept inside the white */
+  background: none;
+  -webkit-mask: var(--sheet) var(--white) / var(--sheet-size) no-repeat;
+  mask: var(--sheet) var(--white) / var(--sheet-size) no-repeat;
+}
+.pupil { background-position: var(--pupil); will-change: transform; }
+.lid { opacity: 0; }
+
+@media (max-width: 999px) {
+  .scene { left: 0; width: 100cqw; }
+}

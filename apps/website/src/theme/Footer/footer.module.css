@@ -1,144 +1,62 @@
-/* Footer — deep ink panel (#001408), brand + quick links + 3 columns (Figma) */
+/* The meadow's height follows the footer's width (container units), so the text above it keeps clear of the painting. */
 .footer {
-  background: var(--as-void-deep, #001408);
-  color: #ffffff;
-  padding: 48px 16px 120px;
+  --meadow-height: 51cqw;
+  position: relative; display: flex; flex-direction: column;
+  container-type: inline-size; overflow: hidden; background: var(--site-bg);
 }
 
-.inner {
-  max-width: 1200px;
-  margin: 0 auto;
-  display: flex;
-  justify-content: space-between;
-  gap: 48px;
-  flex-wrap: wrap;
+.rail {
+  composes: dots from '../../components/dots.module.css';
+  --dots-top: 2px;
+  width: var(--site-rail); margin: 0 auto;
+  padding: 72px 0 calc(var(--meadow-height) * .76);   /* all of the painting but its faded sky sits below the text */
 }
 
-.brandCol {
-  max-width: 264px;
+.columns { display: grid; grid-template-columns: 352fr 240fr 240fr 240fr 240fr; }
+.brand { padding: 0 48px; }
+.logo { display: block; }
+:global(:root[data-theme='dark']) .logo { filter: invert(.93); }
+@media (prefers-reduced-motion: no-preference) {
+  .brand:is(:hover, :focus-visible) .logo { animation: wiggle .3s ease-in-out; }
 }
+@keyframes wiggle { 33% { transform: rotate(-4deg); } 66% { transform: rotate(4deg); } }
 
-.brandRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.column { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; font: 400 14px/20px var(--site-font); color: var(--site-text); }
+.columnTitle { margin: 0; font-weight: 500; color: var(--site-text-muted); }
+.link { color: inherit; text-decoration: none; }
+.link:hover { color: var(--site-accent); text-decoration: none; }
+
+.bar {
+  composes: dots from '../../components/dots.module.css';
+  --dots-top: 2px;
+  display: flex; align-items: center; gap: 24px; margin-top: 40px; padding-top: 24px;
+  font: 400 14px/20px var(--site-font); color: var(--site-text);
 }
+.copyright { flex: 1; color: var(--site-text-small); white-space: nowrap; }
 
-.logo {
-  height: 32px;
-  width: auto;
-  display: block;
+.social { display: flex; gap: 4px; margin: -6px 0; }   /* 32px targets in a 20px row */
+.socialLink { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; color: var(--site-text); transition: color .15s; }
+.socialLink:hover { color: var(--site-accent); }
+.socialLink:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 1px; }
+.socialLink svg { width: 18px; height: 18px; fill: currentColor; }
+
+@media (max-width: 1199px) {
+  .columns { grid-template-columns: repeat(4, 1fr); row-gap: 40px; }
+  .brand { grid-column: 1 / -1; padding: 0; }
 }
-
-.tagline {
-  margin: 8px 0 16px;
-  font-family: var(--as-font-app);
-  font-size: 14px;
-  line-height: 20px;
-  color: #A3A29F;
+/* narrower, the painting stops following the width so the ants keep their size */
+@media (max-width: 999px) {
+  .footer { --meadow-height: max(min(123cqw, 520px), 64cqw); }
 }
-
-.social {
-  display: flex;
-  gap: 4px;
-  align-items: center;
+/* a touch screen: the same look, every link and button a 44 tall touch area (the links' areas overlap, their rows stay 34 apart) */
+@media (max-width: 1079px) {
+  .link { padding-block: 12px; margin-block: -12px; }
+  .brand, .socialLink { position: relative; }
+  .brand::after, .socialLink::after { content: ''; position: absolute; inset: -6px 0; }
 }
-
-.social a {
-  color: var(--as-gray-5);
-  transition: color 0.15s ease;
-  display: inline-flex;
-  width: 24px;
-  height: 24px;
-  align-items: center;
-  justify-content: center;
-}
-
-.social a:hover {
-  color: #ffffff;
-}
-
-.copyright {
-  margin-top: 16px;
-  font-family: var(--as-font-app);
-  font-size: 12px;
-  line-height: 16px;
-  color: #A3A29F;
-}
-
-.columns {
-  display: flex;
-  gap: clamp(40px, 6.5vw, 96px);
-  flex-wrap: wrap;
-}
-
-.column {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 100px;
-}
-
-.columnTitle {
-  font-family: var(--as-font-app);
-  font-size: 14px;
-  line-height: 20px;
-  font-weight: 600;
-  color: #ffffff;
-}
-
-.columnTitleLink {
-  font-family: var(--as-font-app);
-  font-size: 14px;
-  line-height: 20px;
-  font-weight: 400;
-  color: #ffffff;
-  text-decoration: none;
-  margin-bottom: 4px;
-}
-
-.columnTitleLink:hover {
-  color: var(--as-primary-3);
-  text-decoration: none;
-}
-
-.link {
-  font-family: var(--as-font-app);
-  font-size: 14px;
-  line-height: 20px;
-  color: #A3A29F;
-  text-decoration: none;
-  transition: color 0.15s ease;
-}
-
-.link:hover {
-  color: #ffffff;
-  text-decoration: none;
-}
-
-@media (max-width: 768px) {
-  .footer {
-    padding-bottom: 64px;
-  }
-
-  .inner {
-    flex-direction: column;
-    gap: 36px;
-  }
-
-  .columns {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    column-gap: 24px;
-    row-gap: 36px;
-  }
-
-  /* The two standalone links sit on one row of their own, so the short
-     column doesn't leave a gap beside the long Product list. */
-  .columns > .column:first-child {
-    grid-column: 1 / -1;
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 12px 24px;
-  }
+@media (max-width: 760px) {
+  .rail { padding-inline: 20px; }   /* the words on the sections' content line; the meadow stays full width */
+  .columns { grid-template-columns: 1fr 1fr; }
+  .bar { flex-wrap: wrap; }
+  .copyright { flex-basis: 100%; }
 }

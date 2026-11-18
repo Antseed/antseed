@@ -15,7 +15,7 @@ pnpm run typecheck  # Type-check with tsc
 
 - Docusaurus 3 (classic preset: docs, blog, pages)
 - React 19
-- CSS modules and global CSS (`src/css/`)
+- CSS modules and global CSS (`src/styles/`)
 - TypeScript
 
 ## Content

@@ -1,0 +1,78 @@
+/* A night band in both themes: the title's tokens set for the dark ground */
+.band {
+  --site-text: #f2f4ef;
+  --site-text-muted: #7b827e;
+  --site-text-body: #a4aca7;
+  --site-dot: #363b3a;
+  background: var(--site-surface-dark);
+}
+/* the margin's dotted line runs on across the band's top edge */
+.band::before {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  top: -1px; left: 0; right: 0;
+  height: 2px;
+  pointer-events: none;
+  background: radial-gradient(circle at 4px 1px, var(--site-dot) .85px, #0000 1.25px) 50% 0 / 8px 2px repeat-x;
+}
+.rail {
+  position: relative;
+  z-index: 1;
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: var(--site-rail);
+  margin: 0 auto;
+  padding: 120px 0 123px;
+  text-align: center;
+}
+.head { display: flex; flex-direction: column; align-items: center; }
+.band .eyebrow { color: var(--site-lime); }
+.title { margin-top: 20px; }
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  width: 100%;
+  max-width: 1248px;
+  margin-top: 56px;
+  padding: 0 16px;
+  text-align: left;
+}
+.card { display: flex; flex-direction: column; gap: 16px; }
+.band .scene {
+  aspect-ratio: 4 / 3;
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 1px rgba(150, 200, 145, .14);
+}
+.caption { font: 400 16px/24px var(--site-font); color: var(--site-text-body); text-wrap: pretty; }
+.caption b { font-weight: 500; color: var(--site-text); }
+.limits { margin-top: 56px; font: 500 16px/24px var(--site-font); color: var(--site-lime); }
+.limits:hover { color: var(--site-lime); }
+
+/* wide: a little taller than the screen, so the night fills it wherever the scroll stops */
+@media (min-width: 1200px) {
+  .band { height: calc(100svh + 96px); }
+  .rail { justify-content: center; padding-block: 124px; }
+  .title { margin-top: 4px; }
+  .cards { gap: 24px; margin-top: 96px; padding: 0 24px; }
+}
+@media (max-width: 1199px) {
+  .cards { grid-template-columns: minmax(0, 1fr); gap: 40px; max-width: 480px; margin-top: 40px; padding: 0 var(--site-pad); }
+  .band .scene { aspect-ratio: 5 / 4; }
+  /* a 44px tall target */
+  .limits { display: inline-flex; align-items: center; min-height: 44px; margin-top: 30px; }
+}
+/* a touch screen: the link's touch area 10px taller above and below */
+@media (max-width: 1079px) {
+  .limits { position: relative; }
+  .limits::after { content: ''; position: absolute; inset: -10px 0; }
+}
+@media (max-width: 760px) {
+  .rail { padding: 72px var(--site-pad); }
+  .cards { padding: 0; }
+  .head .title { margin-top: 16px; font-size: min(34px, 7.8vw); line-height: 1.06; }   /* its long grey line kept on one line */
+}

@@ -1,0 +1,18 @@
+.ant { position: absolute; left: var(--ant-x); top: var(--ant-y); z-index: -2; width: var(--ant-w); height: var(--ant-h);
+  background: var(--sheet) 0 0 / var(--sheet-w) var(--sheet-h) no-repeat; transition: filter 1.2s ease; }
+.hand { z-index: 1; background-position-y: calc(-1 * var(--ant-h)); pointer-events: none; }
+.mirrored.ant { transform: scaleX(-1); }
+.ahead.ant { z-index: 1; }
+.ahead.hand { visibility: hidden; }
+:global(:root[data-theme='dark']) .ant { filter: brightness(.84) saturate(.83) contrast(1.12); }
+
+/* one soft, grainy shadow from the ant's side to the far end of its card, a little deeper on the ant's side */
+.shade { --shade-ink: 52, 38, 18; --shade-near: .085; --shade-far: .05; --shade-dir: to right;
+  position: absolute; z-index: -3; pointer-events: none;
+  left: calc(min(var(--ant-x), 0px) + 10px); right: calc(min(100% - var(--ant-x) - var(--ant-w), 0px) + 10px); top: calc(100% + var(--below) - 2px); height: 8px;
+  border-radius: 50%; filter: blur(4px);
+  background: linear-gradient(var(--shade-dir), rgba(var(--shade-ink), var(--shade-near)), rgba(var(--shade-ink), var(--shade-far)) 45%, rgba(var(--shade-ink), var(--shade-far)));
+  -webkit-mask: var(--grain) 0 0 / 96px 96px; mask: var(--grain) 0 0 / 96px 96px;
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1.4 -.15'/%3E%3C/filter%3E%3Crect width='96' height='96' filter='url(%23g)'/%3E%3C/svg%3E"); }
+.mirrored.shade { --shade-dir: to left; }
+:global(:root[data-theme='dark']) .shade { --shade-ink: 0, 0, 0; --shade-near: .17; --shade-far: .11; }

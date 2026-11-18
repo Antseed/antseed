@@ -1,0 +1,57 @@
+.title {
+  font: 400 48px/46px var(--site-font-pixel);
+  font-variation-settings: 'ELSH' 40;
+  letter-spacing: -2px;
+  color: var(--site-text);
+}
+.title > .second { color: var(--site-text-muted); }
+.block { display: block; text-wrap: balance; }
+.strong { color: var(--site-text-strong); }
+
+.eyebrow {
+  color: var(--site-accent);
+  font: 400 18px/1.5 var(--site-font-pixel);
+  font-variation-settings: 'ELSH' 20;
+}
+
+.sub {
+  font: 400 18px/27px var(--site-font);
+  color: var(--site-text-body);
+}
+
+/* The head's own rules stay at one class of specificity (:where), so a page's class hook (two classes) always wins. */
+.head {
+  --head-gap: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--head-gap);
+}
+.center { align-items: center; text-align: center; }
+.padX { padding-inline: var(--site-pad); }
+:where(.head) .sub { max-width: 780px; }
+:where(.page) .sub { max-width: 540px; }
+
+/* title and sub line sit 8px apart on wider screens, whatever the head's gap */
+@media (min-width: 761px) {
+  .title + .sub { margin-top: calc(8px - var(--head-gap, 0px)); }
+}
+
+@media (max-width: 760px) {
+  .title { font-size: 34px; line-height: 36px; letter-spacing: -1.4px; }
+  .sub { font-size: 16px; line-height: 24px; }
+  .sub br { display: none; }
+  :where(.head) .sub { max-width: none; }
+  :where(.page) .title { font-size: 40px; line-height: 40px; }
+}
+
+@media (min-width: 1200px) {
+  .wide { --head-gap: 24px; }
+  .wide .title + .sub { margin-top: -8px; }
+  :where(.wide) .sub { max-width: 640px; line-height: 28px; }
+  :where(.compact) .title { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
+
+  .page { --head-gap: 16px; }
+  .page .title + .sub { margin-top: calc(var(--sub-gap, 16px) - var(--head-gap)); }
+  :where(.page) .sub { max-width: var(--sub-width, 540px); line-height: 28px; }
+}

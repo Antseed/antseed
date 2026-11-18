@@ -1,0 +1,55 @@
+/* The cards share their rows (subgrid), so the two titles and lines start level. */
+.card {
+  display: grid;
+  grid-row: span 4;   /* a fourth, empty row: the home page's cards keep their button there, and the spacing matches theirs */
+  grid-template-rows: subgrid;
+  row-gap: 12px;
+  min-width: 0;
+  transition: opacity .32s ease-out, translate .42s cubic-bezier(.2, .9, .25, 1);
+  transition-delay: calc(var(--card-index, 0) * 110ms);
+}
+.card.pending { opacity: 0; translate: 0 18px; transition: none; }
+
+.card .panel {
+  display: grid;
+  place-items: center;
+  container-type: inline-size;
+  margin-bottom: 16px;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--site-radius-card);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06);
+  background-position: 50% 85%;
+}
+.title {
+  margin: 0 0 4px;
+  font: 400 24px/28px var(--site-font-pixel);
+  font-variation-settings: 'ELSH' 40;
+  letter-spacing: -.8px;
+  color: var(--site-text);
+  text-wrap: balance;
+}
+.text {
+  max-width: 500px;
+  padding-right: 32px;
+  font: 400 16px/24px var(--site-font);
+  color: var(--site-text-body);
+  text-wrap: balance;
+}
+
+@media (max-width: 1199px) {
+  .text { padding-right: 8px; }
+}
+@media (max-width: 899px) {
+  .card { transition-delay: 0s; }   /* stacked: each comes in as it is reached */
+  .card + .card { margin-top: 48px; }
+}
+@media (max-width: 760px) {
+  .card .panel { margin-bottom: 12px; aspect-ratio: auto; height: 300px; }
+  .title { font-size: 26px; line-height: 30px; letter-spacing: -1px; }
+  .text { padding-right: 0; }
+}
+@media (min-width: 1200px) {
+  .title, .text { margin-inline: 16px; }
+  .text { max-width: none; padding-right: 0; text-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) { .card { transition: none; } }

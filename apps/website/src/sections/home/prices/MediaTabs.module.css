@@ -1,0 +1,14 @@
+.tabs { --tabs-ring: #e4dfd2; --tab-off: #6b6b6b; --tab-hover: rgba(48, 56, 44, .04);
+  position: relative; display: grid; grid-template-columns: repeat(4, 1fr); box-shadow: inset 0 -1px 0 var(--tabs-ring); }
+:global(:root[data-theme='dark']) .tabs { --tabs-ring: rgba(236, 238, 233, .14); --tab-off: var(--site-text-muted); --tab-hover: rgba(255, 255, 255, .06); }
+.tabs::before { content: ''; position: absolute; left: 0; bottom: 0; width: var(--indicator-w, 0); height: 2px; border-radius: 1px;
+  background: var(--site-accent); transform: translateX(var(--indicator-x, 0)); pointer-events: none; }
+.tabs[data-ready]::before { transition: transform .35s cubic-bezier(.65, 0, .35, 1), width .35s cubic-bezier(.65, 0, .35, 1); }
+/* each tab is the row's full height, so a click anywhere on it lands */
+.tab { all: unset; position: relative; display: grid; place-items: center; height: 48px; padding: 0 8px; cursor: pointer;
+  color: var(--tab-off); font: 500 16px/20px var(--site-font-ui); white-space: nowrap; transition: color .15s, background-color .15s; }
+.tab[aria-selected='true'] { color: var(--site-text); }
+/* hover only where there is one: on touch it sticks to the last tab tapped */
+@media (hover: hover) { .tab:hover { color: var(--site-text); background-color: var(--tab-hover); } }
+.tab:focus-visible { outline: 2px solid var(--site-accent); outline-offset: -6px; border-radius: 8px; }
+@media (prefers-reduced-motion: reduce) { .tabs[data-ready]::before, .tab { transition: none; } }

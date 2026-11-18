@@ -1,0 +1,21 @@
+/* Dotted outline: 2px round dots every 8px, first dot on the corner, drawn by an overlay 1px outside the box.
+   Compose it (`composes: dots from '…/dots.module.css'`) and switch sides on with --dots-top/right/bottom/left: 2px. */
+.dots {
+  position: relative;
+  --dots-top: 0px;
+  --dots-right: 0px;
+  --dots-bottom: 0px;
+  --dots-left: 0px;
+}
+.dots::before {
+  --dot-image: radial-gradient(circle at 1px 1px, var(--site-dot) .85px, #0000 1.25px);
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  background:
+    var(--dot-image) 0 0 / 8px var(--dots-top) repeat-x,
+    var(--dot-image) 100% 0 / var(--dots-right) 8px repeat-y,
+    var(--dot-image) 0 100% / 8px var(--dots-bottom) repeat-x,
+    var(--dot-image) 0 0 / var(--dots-left) 8px repeat-y;
+}

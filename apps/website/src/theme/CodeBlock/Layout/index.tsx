@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useRef, useState, type ReactNode} from 'react';
+import type {ReactNode} from 'react';
 import clsx from 'clsx';
 import {useCodeBlockContext} from '@docusaurus/theme-common/internal';
 import Container from '@theme/CodeBlock/Container';
@@ -6,6 +6,7 @@ import Title from '@theme/CodeBlock/Title';
 import Content from '@theme/CodeBlock/Content';
 import type {Props} from '@theme/CodeBlock/Layout';
 import {CheckIcon, CopyIcon} from '@site/src/components/CopyIcons';
+import {useCopy} from '@site/src/lib/useCopy';
 import styles from './styles.module.css';
 
 /* Header label per fence language. Unlisted languages show as-is. */
@@ -48,24 +49,13 @@ function FileIcon() {
 
 function CopyButton(): ReactNode {
   const {metadata} = useCodeBlockContext();
-  const [copied, setCopied] = useState(false);
-  const timeout = useRef<number | undefined>(undefined);
-
-  const copy = useCallback(() => {
-    navigator.clipboard.writeText(metadata.code).then(() => {
-      setCopied(true);
-      window.clearTimeout(timeout.current);
-      timeout.current = window.setTimeout(() => setCopied(false), 1500);
-    });
-  }, [metadata.code]);
-
-  useEffect(() => () => window.clearTimeout(timeout.current), []);
+  const {copied, copy} = useCopy();
 
   return (
     <button
       type="button"
       className={clsx(styles.copyButton, copied && styles.copyButtonCopied)}
-      onClick={copy}
+      onClick={() => copy(metadata.code)}
       aria-label={copied ? 'Copied' : 'Copy code to clipboard'}>
       {copied ? <CheckIcon /> : <CopyIcon />}
       <span>{copied ? 'Copied' : 'Copy'}</span>

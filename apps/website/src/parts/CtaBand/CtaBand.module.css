@@ -1,0 +1,37 @@
+.rail { padding: 124px 0 24px; }   /* 24 under the card, as on its sides */
+
+.card {
+  position: relative; isolation: isolate; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  margin: 0 24px; padding: 128px 48px; border-radius: 24px;
+  background: radial-gradient(120% 90% at 50% 100%, #e3e6e4 0%, #eef0ef 45%, #f7f8f7 100%);
+  box-shadow: inset 0 0 0 1px rgba(10, 26, 18, .06);
+}
+:global(:root[data-theme='dark']) .card {
+  --site-text: #f2f4ef; --site-text-muted: #9fb1a6; --site-text-body: #cdd5d0;
+  background: radial-gradient(120% 90% at 50% 100%, #15241c 0%, #111a16 50%, #0e1614 100%);
+  box-shadow: inset 0 0 0 1px rgba(150, 200, 145, .14);
+}
+
+.text { display: flex; flex-direction: column; align-items: center; }
+/* two classes deep: these override the shared heading and button sizes */
+.card .title { margin: 0; max-width: 760px; font-size: 44px; line-height: 48px; letter-spacing: -1px; text-wrap: balance; }
+.card .sub { margin: 8px 0 0; max-width: 520px; line-height: 28px; text-wrap: balance; }
+.card .subPretty { text-wrap: pretty; }
+.card .actions { margin-top: 32px; justify-content: center; gap: 24px; }
+
+.card .allVersions, .card .allVersions:hover { font: 500 16px/24px var(--site-font); color: var(--site-accent); text-decoration: none; }
+
+/* a touch screen: the link a 44 tall touch area */
+@media (max-width: 1079px) {
+  .card .allVersions { position: relative; }
+  .card .allVersions::after { content: ''; position: absolute; inset: -10px 0; }
+}
+/* a phone: the card 16 in from the rail and 24 inside, the title at the sections' phone size, and no download: the words alone */
+@media (max-width: 760px) {
+  .rail { padding: 56px 0 16px; }
+  .card { margin: 0 16px; padding: 72px 24px; border-radius: 20px; }
+  .card .title { font-size: 34px; line-height: 36px; letter-spacing: -1.4px; }
+  .card .sub { margin-top: 16px; font-size: 16px; line-height: 24px; }
+  .card .actions { display: none; }
+}

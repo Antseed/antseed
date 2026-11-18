@@ -1,0 +1,9 @@
+.rail { padding-top: 120px; }
+.head { padding-bottom: 56px; }
+.row .point { --dots-top: 2px; place-items: start; }
+
+@media (max-width: 760px) {
+  .rail { padding-top: 72px; }
+  .head { padding-bottom: 40px; }
+  .row .point { --dots-left: 0px; }
+}
