@@ -6,6 +6,24 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+## 2026-11-18 — CLI 0.1.253, Node 0.2.186
+
+### Packages
+
+- `@antseed/cli@0.1.253`
+- `@antseed/node@0.2.186`
+- `@antseed/api-adapter@0.1.65`
+- `@antseed/buyer-core@0.1.52`
+- `@antseed/web-sdk@0.1.46`
+- `@antseed/fingerprints@0.1.6`
+- `@antseed/model-verifier@0.1.6`
+- `@antseed/provider-fal-image@0.1.7`
+- `@antseed/provider-fal-video@0.1.23`
+- `@antseed/provider-alibaba-video@0.1.11`
+- `@antseed/provider-venice-video@0.1.24`
+- `@antseed/payments@0.1.113`
+- `@antseed/ants@0.1.71`
+
 ### Added
 
 - `@antseed/provider-fal-image` and `@antseed/provider-fal-video`: a service can be sold under a name of its own, like with every other provider plugin. Set `upstreamModel` (`ANTSEED_SERVICE_ALIAS_MAP_JSON`) to the fal endpoint ID, and buyers call the service by its name, for example `openai/gpt-image-2.5-flare` for `openai/gpt-image-2.5/flare/text-to-image`. Before, the plugins refused to start with an alias, so a service had to be named by its fal endpoint ID.
