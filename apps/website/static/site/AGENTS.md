@@ -108,6 +108,8 @@ After an edit, search for the old text across `static/site/`. No copy should kee
 
 ## Design rules to keep
 
+`DESIGN.md`, in this folder, is the design system reference: colours, type, spacing and components. It is partly out of date. Where it disagrees with the live homepage, the homepage wins.
+
 - **The homepage is the reference.** Match its spacing, type, buttons, cards and glass windows. Don't invent new ones.
 - **Titles are two lines:** the first half is in ink, the second in grey. That's `<h2 class="s-h2">Privacy <span>and trust.</span></h2>`: the `<span>` is the grey line.
 - **Shared components:**
