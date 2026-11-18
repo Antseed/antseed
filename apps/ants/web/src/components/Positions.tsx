@@ -152,7 +152,7 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
             </span>
             <Button variant="outline" size="sm" onClick={() => setBulkAction('withdraw')}>Withdraw {selectedRows.length}</Button>
           </div>
-          {selectedRows.length > 1 ? <span className="bulk-bar-note">{mergeProblem ?? mergeRuleHint(selectedRows)}</span> : null}
+          {selectedRows.length > 1 && mergeProblem ? <span className="bulk-bar-note">{mergeProblem}</span> : null}
         </div>
       ) : null}
       {rowAction && actionRow && data && !unavailable ? <RowActionPanel key={`${rowAction.id}:${rowAction.kind}`} kind={rowAction.kind} position={actionRow} config={data.config} pools={pools} onClose={() => setRowAction(null)} /> : null}
