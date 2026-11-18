@@ -308,10 +308,10 @@
          "map" (amos-09, ?net=map): the painted board, net.js: you, the providers and other people as ants on the map, one request in
          five steps, data-step="all" all of them numbered (or "1" to "5", one step), the rail naming them; take data-net away and its
          loop plays again -->
-    <!-- Work in progress: the board is being redrawn. Until then the panel is the network's wash and one glass label
-         (launch.css, .lp-wip); the board below is unplugged, kept whole in a <template> (inert: nothing in it loads or runs). To plug it
-         back: take it out of the template, drop the .lp-wip panel, list its part on <body data-parts> again (index.html) -->
-    <div class="lp-wip lp-wip--home"><img class="day" src="/site/assets/home/lavis-v6/network.webp" width="1344" height="581" alt="" loading="lazy" decoding="async"><img class="night" src="/site/assets/home/lavis-v6/network-dark.webp" width="1344" height="581" alt="" loading="lazy" decoding="async"><p>Work in progress</p></div>
+    <!-- The network's board, animated (parts/net-stack: three steps, 1680 × 1040; its box is launch.css's .lp-stack). The board
+         before it is unplugged, kept whole in a <template> (inert: nothing in it loads or runs). To plug it back: take it out of the
+         template, drop the .lp-stack panel, list its part on <body data-parts> again (index.html) -->
+    <div class="lp-stack"><div class="lp-slot lp-slot--panel" data-part="net-stack"></div></div>
     <template data-unplugged="network board">
     <div class="wash s-net-panel" data-net="still" data-step="all" data-net-style="steps">
       <div class="lp-slot lp-slot--layers" data-part="net-map"></div>
@@ -331,11 +331,14 @@
       </ol>
     </div>
     </template>
-    <!-- the three points under the board, in the story's order: a name, then the line -->
-    <div class="s-points">
-      <div><p class="s-cap"><b>Open market</b> Independent providers all over the world compete on price.</p></div>
-      <div><p class="s-cap"><b>Pay per request</b> Every payment settles in <span class="s-tok"><img src="/site/assets/home/v6/net-nocrypto-usdc.svg" width="16" height="16" alt="">USDC</span> on Base.</p></div>
-      <div><p class="s-cap"><b>Always on</b> If one provider goes down, your request moves on to another.</p></div>
+    <!-- the three points under the board: the board's three steps, each a button that shows its step (parts/net-stack.js; the one
+         on show is marked aria-current). The row ends on the section's way out, a button to the network page. The board and this row
+         hold in one 1440 × 900 screen; the head scrolls away above them -->
+    <div class="s-points s-points--go">
+      <div><button type="button" data-nsk-go="1"><b>Discovery</b> Buyers and providers find each other peer to peer.</button></div>
+      <div><button type="button" data-nsk-go="2"><b>Payments</b> USDC moves directly between buyers and providers.</button></div>
+      <div><button type="button" data-nsk-go="3"><b>Trust</b> ANTS backs providers’ reputation and makes inference liquid.</button></div>
+      <div><a class="s-btn" href="/network/">How the network works</a></div>
     </div>
   </div>
 </section>

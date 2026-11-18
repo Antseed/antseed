@@ -1,0 +1,72 @@
+/* The network in three layers, animated (parts/net-stack.html, net-stack.js). One light card the width of the rail: the drawing at
+   the left, its three steps stacked and cross-fading, as large as the room beside the window lets it be (the card's height is the
+   drawing's); the step's data window at the right, in HTML. With the three points under it, the card holds in one 1440 × 900
+   screen. A light design: it stays light at night. */
+.lp-slot.lp-on:has(> .nsk) { position: static; container-type: normal; }   /* the slot takes the card's height, not its panel's */
+.nsk { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 404px; gap: 8px; padding: 8px; overflow: hidden;
+  background: #f5f5f3; color: #0a1a12; font-family: Geist, system-ui, sans-serif; }   /* a plain light grey band, square: the page's dots stay outside it */
+.nsk-stage { position: relative; align-self: center; min-width: 0; aspect-ratio: 1272 / 892; max-height: calc(100svh - 184px); }   /* net-stack.js's VIEW; never taller than a screen less the points */
+.nsk-stage > svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; opacity: 0; visibility: hidden;
+  transition: opacity .45s ease, visibility 0s .45s; }
+.nsk-stage > svg.on { opacity: 1; visibility: visible; z-index: 1; transition: opacity .45s ease; }
+.nsk-stage > svg.was { opacity: 1; visibility: visible; transition: none; }   /* the step being left stays under the one fading in */
+.nsk-stage text { font-family: Geist, system-ui, sans-serif; }
+.nsk-stage :is(path, circle, rect) { vector-effect: non-scaling-stroke; }   /* the drawing is shown under Figma's size: its lines keep their weight */
+
+/* what a beat brings in, and the links and ports that wait for the slabs to settle */
+.nsk-i { transition: opacity .35s ease; }
+.nsk-i.nsk-h { opacity: 0; }
+.nsk-dot { pointer-events: none; }
+
+/* the window: one per step, the step's shown.
+   A block is quiet (q*) until its beat lights it (l*); its bar takes the step's colour */
+.nsk-side { position: relative; display: grid; min-height: 0; border-radius: 12px; background: #fff; box-shadow: inset 0 0 0 1px #e2e2e2; }   /* as tall as its longest window: the three share one cell */
+.nsk-w { grid-area: 1 / 1; display: flex; flex-direction: column; gap: 18px; padding: 24px 28px 20px; opacity: 0; visibility: hidden;
+  font-size: 13px; line-height: 21px; transition: opacity .45s ease, visibility 0s .45s; }
+.nsk-w.on { opacity: 1; visibility: visible; transition: opacity .45s ease; }
+.nsk-b { position: relative; padding-left: 15px; transition: opacity .35s ease; }
+.nsk-b.nsk-h { opacity: 0; }
+.nsk-b::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; border-radius: 1.5px; background: #e2e2e2; transition: background-color .35s ease; }
+.nsk-b.lit::before { background: var(--lit); }
+.nsk-b span { transition: color .35s ease; }
+.nsk-t { margin-bottom: 4px; font-size: 14px; font-weight: 500; }
+/* the step's name, then its layer; the legend at the foot */
+.nsk-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 2px; }
+.nsk-head b { font-size: 20px; line-height: 28px; font-weight: 500; }
+.nsk-head span { font-size: 14px; color: #66746b; }
+.nsk-key { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin-top: auto; padding-top: 16px; box-shadow: inset 0 1px 0 #eeeeec; font-size: 12px; line-height: 16px; color: #66746b; }
+.nsk-k { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.nsk-k svg { flex: none; display: block; }
+.nsk-r { display: flex; align-items: center; gap: 7px; min-height: 21px; white-space: nowrap; }
+.nsk-r > :first-child { margin-right: auto; }
+.nsk-cols { position: relative; display: block; height: 21px; }
+.nsk-cols > span { position: absolute; top: 0; }
+.nsk-pill { display: inline-flex; align-items: center; gap: 5px; height: 22px; margin-block: 1px; padding: 0 9px 0 4px; border-radius: 11px; background: #fff; box-shadow: inset 0 0 0 1px #eaeaea; color: #0a1a12; }
+.nsk-pill img { width: 14px; height: 14px; }
+.nsk-b .q1 { color: #66746b; } .nsk-b .q2 { color: #9ba49e; }
+.nsk-b.lit .l0 { color: #0a1a12; } .nsk-b.lit .l1 { color: #66746b; } .nsk-b.lit .l2 { color: #9ba49e; }
+
+/* the three points under the board are its controls (the page's .s-points, each a button [data-nsk-go]): the step on show reads
+   as the row always did, the other two step back to the grey the site gives an inactive tab (sections.css, .s-media) */
+.s-points [data-nsk-go] { all: unset; box-sizing: border-box; display: block; max-width: 300px; cursor: pointer; text-wrap: balance; text-align: center;
+  font: 400 16px/24px Geist, sans-serif; color: var(--b); transition: color .15s; }
+.s-points [data-nsk-go] b { font-weight: 500; color: var(--t); transition: color .15s; }
+/* the steps not on show step well back */
+.nsk-row { --seg-off: #b6bbb7; }
+:root[data-theme="dark"] .nsk-row { --seg-off: #4e5651; }
+.nsk-row [data-nsk-go]:not([aria-current]), .nsk-row [data-nsk-go]:not([aria-current]) b { color: var(--seg-off); }
+@media (hover: hover) { .nsk-row [data-nsk-go]:not([aria-current]):hover b { color: var(--t); } }
+/* each point's progress: a thin track along the top of its cell, against the board, filled in green as its step plays (net-stack.js sets --p) */
+.nsk-bar { position: absolute; z-index: 1; top: 0; left: 0; right: 0; height: 2px; background: rgba(10, 26, 18, .09);
+  background-image: linear-gradient(var(--nsk-go, #5f8a12), var(--nsk-go, #5f8a12)); background-repeat: no-repeat; background-size: calc(var(--p, 0) * 100%) 100%; }
+:root[data-theme="dark"] .nsk-bar { background-color: rgba(236, 243, 238, .12); --nsk-go: #b9ee2a; }
+.s-points [data-nsk-go]:focus-visible { outline: 2px solid var(--o); outline-offset: 6px; border-radius: 4px; }
+
+/* a narrow screen (not designed yet): the window under the drawing */
+@media (max-width: 900px) {
+  .nsk { grid-template-columns: minmax(0, 1fr); }
+  .nsk-side { min-height: 520px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nsk-stage > svg, .nsk-stage > svg.on, .nsk-w, .nsk-w.on, .nsk-i, .nsk-b, .nsk-b::before, .nsk-b span { transition: none; }
+}

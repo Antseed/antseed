@@ -1,0 +1,10 @@
+<!-- The network in three layers, animated: three steps, each one of
+     Figma's frames exported as it is (assets/network/diagram/step-N.svg: text kept as text, the layers' names in data-n, the view
+     cut to the drawing). net-stack.js inlines the drawings at the left and sets each frame's data window in HTML at the right, then
+     plays each step's beats in order (the groups "Beat N · …"): a flow draws from its source to its destination, then its arrowhead,
+     pills and labels show, and the window's matching block lights. The controls are the three points under the board, in the page
+     (the section's [data-nsk-go="1|2|3"]). A light design: it keeps its own light card at night. -->
+<div class="nsk" data-nsk data-js data-step="1">
+  <div class="nsk-stage" role="img" aria-label="The network in three layers. Discovery: providers announce to the Mainline DHT, you look them up and pick one, then talk to it directly. Payments: you deposit USDC on Base, reserve for a provider, sign a running total offchain, and the provider settles. Trust: ANTS holders stake on providers, settled usage is recognized, and your machine computes each provider's score."></div>
+  <div class="nsk-side" aria-hidden="true"></div>
+</div>

@@ -59,4 +59,15 @@
   box-shadow: 0 12px 32px rgba(8, 26, 14, .3), inset 0 .5px 0 rgba(190, 228, 170, .16); }
 /* the homepage's: the board's own box (.lp-slot--layers, 1248 / 560, the rail's width), as far under the head as the board was */
 .lp-wip--home { flex: none; width: 100%; aspect-ratio: 1248 / 560; margin-top: 56px; }
+/* the homepage's network board since (parts/net-stack): the card is as high as its drawing (net-stack.css), 40 under the
+   head. Its row of points is the board's three steps and, last, the button to the network page: three equal columns and the
+   button's own. The card and the row hold in one 1440 × 900 screen; the head scrolls away above them */
+.lp-stack { position: relative; flex: none; width: 100%; margin-top: 40px; }
+.s-points--go { grid-template-columns: repeat(3, 1fr) auto; }
+.s-net .s-points--go > div { padding: 48px 32px; }   /* more air, the text centred in its cell */
+.s-points--go .s-btn { white-space: nowrap; }   /* the way out holds on one line */
+/* the head's sub line: no word left alone on its last line, and a little more air under the title */
+.s-net .s-head .s-sub { text-wrap: pretty; }
+@media (min-width: 761px) { .s-net .s-head .s-h2 + .s-sub { margin-top: calc(20px - var(--head-gap, 0px)); } }
+@media (max-width: 760px) { .s-points--go { grid-template-columns: 1fr; } .s-points--go > div:last-child { place-items: start; } }
 @media (max-width: 760px) { .lp-wip--home { aspect-ratio: 4 / 5; margin-top: 40px; } }

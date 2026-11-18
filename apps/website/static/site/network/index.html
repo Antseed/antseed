@@ -31,7 +31,7 @@
 <link rel="stylesheet" href="/site/hero/launch.css">
 <link rel="stylesheet" href="/site/network/network.css">
 </head>
-<body class="nw" data-parts="cta-band">
+<body class="nw" data-parts="cta-band,net-stack">
   <nav class="nw-nav">
     <a href="/" aria-label="Antseed"><img src="/site/assets/hero/logo.svg" width="95.3464" height="33" alt="Antseed"></a>
     <div class="links"><a href="/network/">Network</a>
@@ -81,18 +81,23 @@
   </div>
 </section>
 
-<!-- The network in three layers: the homepage's layers board, large (hero/parts/layers-large, hero/net-layers.*), on
-     its own flat ground (a diagram, no painting); Amos's caption as the title. Work in progress: the board is being redrawn;
-     until then the panel is the network's wash and one glass label (hero/launch.css, .lp-wip), the board's slot unplugged in a
-     <template>. To plug it back: the slot out of the template, the wash and label out, layers-large on <body data-parts> again -->
+<!-- The network in three layers: the network's board, animated (hero/parts/net-stack: three steps, 1680 × 1040), on its own
+     flat ground; Amos's caption as the title. The board before it stays unplugged in a <template> (to plug it back: its slot out of
+     the template in place of net-stack's, layers-large on <body data-parts> again) -->
 <section class="s-sec nw-layers" aria-labelledby="nw-layers-h">
   <div class="s-rail">
     <header class="s-head s-padx">
       <h2 class="s-h2" id="nw-layers-h">A fully peer-to-peer network.<br> <span>In three connected layers.</span></h2>
       <p class="s-sub">Many users and many independent providers, connected directly. No central Antseed server.</p>
     </header>
-    <div class="nw-layers-panel lp-wip"><img class="day" src="/site/assets/home/lavis-v6/network.webp" width="1344" height="581" alt="" loading="lazy" decoding="async"><img class="night" src="/site/assets/home/lavis-v6/network-dark.webp" width="1344" height="581" alt="" loading="lazy" decoding="async"><p>Work in progress</p>
+    <div class="nw-layers-panel"><div class="lp-slot lp-slot--panel" data-part="net-stack"></div>
       <template data-unplugged="network board"><div class="lp-slot lp-slot--panel" data-part="layers-large"></div></template>
+    </div>
+    <!-- the board's three steps, as the homepage's row under the same board: each a button that shows its step (parts/net-stack.js) -->
+    <div class="s-points">
+      <div><button type="button" data-nsk-go="1"><b>Discovery</b> Buyers and providers find each other peer to peer.</button></div>
+      <div><button type="button" data-nsk-go="2"><b>Payments</b> USDC moves directly between buyers and providers.</button></div>
+      <div><button type="button" data-nsk-go="3"><b>Trust</b> ANTS backs providers’ reputation and makes inference liquid.</button></div>
     </div>
   </div>
 </section>

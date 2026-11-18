@@ -56,7 +56,7 @@ The other five pages each have their own folder: `network/`, `providers/`, `ants
 
 A slot is a `<div class="lp-slot" data-part="name">`. `parts.js` fills it with `parts/name.html` and links `parts/name.css` once. If the fragment's root has `data-js`, it also runs `parts/name.js`.
 
-Only the parts listed on `<body data-parts="a,b">` load. Today that's only `cta-band`, the call-to-action band above the footer. `?parts=name` loads another part, to try it in place.
+Only the parts listed on `<body data-parts="a,b">` load. Today that's `cta-band` (the call-to-action band above the footer, on every page) and `net-stack` (the network diagram, on the homepage and `/network/`). `?parts=name` loads another part, to try it in place.
 
 ## Duplicated markup: the nav and the footer
 
@@ -128,19 +128,17 @@ After an edit, search for the old text across `static/site/`. No copy should kee
 - **Desktop is done. Mobile isn't designed yet.**
   - Below desktop widths, some sections keep their first layout, and `/ecosystem/` overflows sideways on a phone.
   - CSS comments that say "desktop only" mark rules that wait for the mobile pass.
-- **The network diagram is a "Work in progress" placeholder,** on the homepage (`#network` in `hero/sections.html`) and on `/network/` (the three layers).
-  - Each shows the network's painting with a glass label (`.lp-wip`, in `hero/launch.css`).
-  - The old board stays in the page, inside an inert `<template>`.
-  - The files for the old diagram and the map are present but unplugged, so nothing loads them:
+- **The network diagram is an animated board in three steps (Discovery, Payments, Trust).**
+  - It's on the homepage (`#network` in `hero/sections.html`, its box `.lp-stack` in `hero/launch.css`) and on `/network/` (the three layers).
+  - It's the part `hero/parts/net-stack.*`: the slot `data-part="net-stack"`, listed on both pages' `<body data-parts>`. Its drawings are `assets/network/diagram/step-1.svg` to `step-3.svg` and `ants-coin.webp`.
+  - The row of three buttons under it (`data-nsk-go="1"` to `"3"`) shows each step.
+  - The boards before it stay in the page, inside an inert `<template>`. Their files are present but unplugged, so nothing loads them:
     - `hero/net.js`, `hero/net-steps.js`;
     - `hero/net-layers.css`, `hero/net-layers.js`;
     - `hero/parts/layers.*`, `hero/parts/layers-large.*`;
     - `hero/parts/net-layers-home.html`, `hero/parts/net-layers-network.html`;
     - `hero/parts/net-map.*`.
-  - To plug a board back in:
-    1. Take it out of its `<template>`.
-    2. Remove the `.lp-wip` panel.
-    3. Add its part to `<body data-parts>`.
+  - The `.lp-wip` rules in `hero/launch.css` are the old placeholder's. They're unused.
 - **The hero's settings panel:**
   - Pressing P on the homepage, or adding `?panel` to its URL, opens a tuning panel. It changes the hero's mosaic, ants, seeds, cursor and mascot, and it loads Tweakpane from cdn.jsdelivr.net.
   - It's a design tool, and it's harmless for visitors: settings it saves stay in that browser.
@@ -155,7 +153,7 @@ After an edit, search for the old text across `static/site/`. No copy should kee
 
 ### Unused, safe to delete
 
-- The unplugged network files listed above, once the new board is in.
+- The unplugged network files listed above, and the `.lp-wip` rules in `hero/launch.css`.
 - In `hero/index.html`'s hero module: the variants other than Whimsical 2 (`mascot`, `whimsical`, `square`, `meadow`) and their branches. This is a careful edit, because the variants share code with Whimsical 2. Check the hero at 1440 in both themes afterwards.
 - In `hero/sections.js`: the `.mz` mosaic (point 1 of its header). No panel uses it now.
 - The settings panel, as described above.

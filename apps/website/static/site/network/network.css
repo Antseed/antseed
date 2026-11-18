@@ -257,7 +257,9 @@ nav > a { display: block; }
   .nw .nw-wcards { margin-top: 96px; }
 }
 
-/* The network in three layers: the homepage's layers board, large, on its own flat ground */
-.nw-layers-panel { position: relative; aspect-ratio: 1248 / 720; margin-top: 40px; }
-@media (max-width: 760px) { .nw-layers-panel { aspect-ratio: 4 / 5; } }
-@media (min-width: 1200px) { .nw .s-page .nw-layers .s-rail { padding-block: 124px; } }
+/* The network in three layers: the animated board (hero/parts/net-stack), the card as high as its drawing, and under it the board's
+   three steps as points, as on the homepage. The card and the row hold in one 1440 × 900 screen; the row closes the section, so the
+   rail keeps its 124 above only */
+.nw-layers-panel { position: relative; margin-top: 40px; }
+.nw-layers .s-points > div { padding: 48px 32px; }
+@media (min-width: 1200px) { .nw .s-page .nw-layers .s-rail { padding-block: 124px 0; } }
