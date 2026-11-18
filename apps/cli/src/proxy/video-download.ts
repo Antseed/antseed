@@ -137,7 +137,12 @@ export async function downloadVideo(
           pending(200, 'unknown', 'video_status_unavailable', 'The video job status could not be recorded; poll again')
           return
         }
-        response.writeHead(result.statusCode, { 'content-type': 'application/json', 'cache-control': 'no-store', ...(ends ? RETIRED : {}) })
+        // A seller that is busy (429) says when to try again; that is the only seller header passed on.
+        const retryAfter = result.statusCode === 429 ? result.headers['retry-after'] : undefined
+        response.writeHead(result.statusCode, {
+          'content-type': 'application/json', 'cache-control': 'no-store', ...(ends ? RETIRED : {}),
+          ...(retryAfter && /^\d{1,6}$/.test(retryAfter) ? { 'retry-after': retryAfter } : {}),
+        })
         response.end(Buffer.from(answer))
         return
       }
