@@ -12,11 +12,11 @@
 const ART = new URL('/site/assets/network/diagram/', import.meta.url);
 const NS = 'http://www.w3.org/2000/svg';
 const STEPS = 3, GAP = 500, HOLD = 2500, FADE = 450, LIFT = 800, RIDE = 2000;   // RIDE: an amount's trip along its flow
-// how far each slab is lifted in each step
+// how far each slab is lifted in each step (the design: 161 between a slab at rest and lifted)
 const UP = { 'Slab / DHT': [0, -161, -161], 'Slab / Base': [0, 0, -161] };
 // flows of one beat start 220 ms apart; where one must land before the others leave, the beat's flows in groups
 const ORDER = { 'recognized usage': [[0], [1, 2, 3]], 'scores': [[0, 1, 2], [3]] };
-// labels: a cube's name is drawn at least READ px high on screen, up to GROW times its size
+// labels: a cube's name (13 in the design) is drawn at least READ px high on screen, up to GROW times its size
 const READ = 11, GROW = 1.75;
 // a label grows from the side of its stack that faces the drawing's middle; these few from the side named (l, r, m)
 const SIDE = { 'Pill / 10 USDC': 'l' };
@@ -100,20 +100,30 @@ export default async (slot) => {
   const stage = root.querySelector('.nsk-stage'), side = root.querySelector('.nsk-side');
   const points = [...(slot.closest('section') || document).querySelectorAll('[data-nsk-go]')];
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  // each point carries its step's progress: a thin bar along the top of its cell, where the board meets the row,
+  // each point carries its step's progress: a thin bar along the top of its cell, where the board meets the row (the design,),
   // filled as the step plays, full once it has played
   const bars = points.map((p) => { const el = h('span', 'nsk-bar'); el.setAttribute('aria-hidden', 'true'); p.parentElement.prepend(el); return el; });
   const bar = (i, v) => bars[i]?.style.setProperty('--p', Math.min(1, v).toFixed(3));
 
-  const texts = await Promise.all([1, 2, 3].map((n) => fetch(new URL(`step-${n}.svg`, ART)).then((r) => (r.ok ? r.text() : Promise.reject(r.status)))));
+  // a phone (760 and under, as the page opens) plays its own drawings, composed for a portrait frame (phone-N.svg: the layers apart in
+  // a column, buyers and providers each up their own lane); the window still comes from the design's frames, though a phone does not show it
+  const PHONE = matchMedia('(max-width: 760px)').matches;
+  const get = (f) => fetch(new URL(f, ART)).then((r) => (r.ok ? r.text() : Promise.reject(r.status)));
+  const texts = await Promise.all([1, 2, 3].map((n) => get(`step-${n}.svg`)));
+  const phones = PHONE ? await Promise.all([1, 2, 3].map((n) => get(`phone-${n}.svg`))) : null;
   await document.fonts.ready;   // the labels are measured below
-  const steps = texts.map((t, k) => {
+  const inline = (t) => {
     const svg = document.importNode(new DOMParser().parseFromString(t, 'image/svg+xml').documentElement, true);
     svg.setAttribute('aria-hidden', 'true');
     // the files point at their images from where they are; inlined, the page is the base
     for (const im of svg.querySelectorAll('image[href]:not([href^="data:"])')) im.setAttribute('href', new URL(im.getAttribute('href'), ART).href);
+    return svg;
+  };
+  const steps = texts.map((t, k) => {
+    let svg = inline(t);
     stage.append(svg);
     const win = windowOf(svg, k);
+    if (phones) { const ph = inline(phones[k]); svg.replaceWith(ph); svg = ph; }
     side.append(win.el);
     return { ...prepare(svg, k), win: win.el, blocks: win.blocks };
   });
@@ -122,7 +132,8 @@ export default async (slot) => {
     const defs = svg.querySelector('defs');
     const wait = [...svg.querySelectorAll('[data-n^="Links /"], [data-n="Scene · ports"]')];   // shown once the slabs are in place
     wait.forEach((el) => el.classList.add('nsk-i'));
-    const slabs = Object.keys(UP).map((n) => ({ el: svg.querySelector(`[data-n="${n}"]`), up: UP[n] })).filter((s) => s.el);
+    const lift = svg.dataset.lift != null ? +svg.dataset.lift / 161 : 1;   // a phone drawing's layers stand apart already: they do not lift
+    const slabs = Object.keys(UP).map((n) => ({ el: svg.querySelector(`[data-n="${n}"]`), up: UP[n].map((v) => v * lift) })).filter((s) => s.el);
     const beats = [...svg.querySelectorAll('g[data-n^="Beat"]')].map((g, b) => {
       const flows = [], lead = [];
       for (const el of [...g.children]) {
@@ -150,7 +161,7 @@ export default async (slot) => {
           return { el, at: best };
         });
         f.after = f.after.filter((el) => !/^hop/.test(el.dataset.n || ''));
-        // the amount a flow carries (10 USDC, 50,000 ANTS…) never sits on the drawing: a copy rides the flow, then goes
+        // the amount a flow carries (10 USDC, 50,000 ANTS…) never sits on the drawing: a copy rides the flow, then goes (the design,)
         f.pill = f.after.find((el) => /^Pill \//.test(el.dataset.n || ''));
         if (f.pill) { f.pill.classList.add('nsk-home'); f.after = f.after.filter((el) => el !== f.pill); }
         g.append(f.dot);
@@ -176,8 +187,8 @@ export default async (slot) => {
     }
     const items = [...els].map((el) => { const b = el.getBBox(); return { el, l: b.x, r: b.x + b.width, t: b.y, b: b.y + b.height, id: 0 }; });
     items.forEach((it, i) => { it.id = i; it.sx = 0; it.sy = 0; });
-    // a cube's name sits under its cube, ending (buyers) or starting (providers) plumb with the cube's front edge, and
-    // whatever the design set under the name (a note, a pill, a score) moves with it: the same place in every step
+    // a cube's name sits under its cube, ending (buyers) or starting (providers) plumb with the cube's front edge (the design,), and
+    // whatever the design set under the name (a note, a pill, a score) moves with it: the same place in every step (the design,)
     for (const cube of svg.querySelectorAll('[data-n^="Cube /"]')) {
       const name = items.find((it) => it.el.tagName === 'text' && cube.contains(it.el));
       const face = (end) => [...cube.children].find((c) => (c.getAttribute('fill') || '').endsWith(end))?.getBBox();
@@ -214,7 +225,7 @@ export default async (slot) => {
       return { items: st, side, ax: side === 'l' ? L : side === 'r' ? R : mid, ay: (st[0].t + st[0].b) / 2, dx: 0 };
     });
     const lg = svg.querySelector('[data-n="Legend"]'), lb = lg?.getBBox();
-    // a slab's name grows; a pool's name (white, on its tile) keeps the design's size and sits in the middle of its tile
+    // a slab's name grows; a pool's name (white, on its tile) keeps the design's size and sits in the middle of its tile (the design,)
     const flat = [...svg.querySelectorAll('[data-n^="Slab /"] > text[transform]')];
     for (const t of flat.filter((el) => el.getAttribute('fill') === 'white')) {
       const m = t.transform.baseVal.consolidate()?.matrix, ts = t.querySelector('tspan');
@@ -321,20 +332,15 @@ export default async (slot) => {
     c.classList.remove('nsk-h', 'nsk-i', 'nsk-home');
     w.append(c); f.dot.after(w);
     const b = w.getBBox(); w.cx = b.x + b.width / 2; w.cy = b.y + b.height / 2;
-    // on a phone only the coin of the amount shows (its words are hidden): the coin, not the pill, rides the line
-    const coin = matchMedia('(max-width: 760px)').matches && c.querySelector('image');
-    if (coin) {
-      const cb = coin.getBBox(), m = c.transform.baseVal.consolidate()?.matrix;
-      const at = new DOMPoint(cb.x + cb.width / 2, cb.y + cb.height / 2);
-      const q = m ? at.matrixTransform(m) : at;
-      w.cx = q.x; w.cy = q.y;
-    }
+    // near the frame's side it leans in rather than leave it (a phone's lanes run close to the edges)
+    const vb = f.el.ownerSVGElement.viewBox.baseVal;
+    w.lo = vb.x + b.width / 2 + 2; w.hi = vb.x + vb.width - b.width / 2 - 2;
     return w;
   };
   const draw = async (f, g, onp = () => {}) => {
     const ride = f.pill ? rider(f) : null, head = ride || f.dot;
     const put = (at) => {
-      if (ride) ride.setAttribute('transform', `translate(${(at.x - ride.cx).toFixed(2)} ${(at.y - ride.cy).toFixed(2)})`);
+      if (ride) ride.setAttribute('transform', `translate(${(Math.min(ride.hi, Math.max(ride.lo, at.x)) - ride.cx).toFixed(2)} ${(at.y - ride.cy).toFixed(2)})`);
       else { f.dot.setAttribute('cx', at.x); f.dot.setAttribute('cy', at.y); }
     };
     put(f.el.getPointAtLength(0));
@@ -423,12 +429,12 @@ export default async (slot) => {
   show(0);
   root.classList.add('nsk-ready');
   points[0]?.closest('.s-points')?.classList.add('nsk-row');   // from here the row shows which step is on
-  phone(root, stage, steps[0].svg, points, bars);
+  phone(root, stage, points, bars);
   points.forEach((p) => p.addEventListener('click', () => {
     const k = +p.dataset.nskGo - 1;
     if (still) { gen++; steps.forEach((s) => { rest(s); full(s); }); show(k); bar(k, 1); return; }
-    held = true; away = false; started = true;
-    run(k, false);
+    away = false; started = true;
+    run(k, true);   // a clicked step plays from its start, then the loop carries on from it (the design,)
   }));
   if (still) return;
   snap(steps[0], () => blank(steps[0]));
@@ -444,7 +450,7 @@ export default async (slot) => {
 // ---- a phone (max-width 760px; the elements made here are hidden above it): the drawing whole, the window not shown; the section's row
 // of points gives way to a three-part control under the drawing (the same buttons' clicks, their bars) and the step's own line. It
 // only watches what the player does (the step on root, the points' bars), so the player itself is unchanged.
-function phone(root, stage, svg, points, bars) {
+function phone(root, stage, points, bars) {
   const seg = h('div', 'nsk-seg'), line = h('p', 'nsk-line');
   const btns = points.map((p, i) => {
     const b = h('button', 'nsk-sg', NAMES[i][0]);
@@ -455,26 +461,7 @@ function phone(root, stage, svg, points, bars) {
   });
   seg.append(...btns);
   stage.after(seg, line);
-  // who is who, in three groups (the Discovery line's words, and the holders' own name), in HTML at the site's size, each centred under
-  // its cubes (the holders' over theirs), clear of them; the cubes stand in the same place in every step
-  const tags = h('div', 'nsk-tags');
-  tags.setAttribute('aria-hidden', 'true');
-  stage.append(tags);
-  const who = [['Buyers', '[data-n="Cube / You"], [data-n="Cube / Team workspace"], [data-n="Cube / AI agent"]'],
-    ['Providers', '[data-n^="Cube / Provider"]'], [svg.querySelector('[data-n="Holders"] text')?.textContent || '', '[data-n="Holders"]']]
-    .map(([name, sel], i) => ({ gs: [...svg.querySelectorAll(sel)], el: tags.appendChild(h('span', i === 2 ? 'nsk-tag-ants' : '', name)), over: i === 2 }));   // the holders' over their cubes, where no line runs
-  const place = () => {
-    const S = stage.getBoundingClientRect();
-    if (!S.width || getComputedStyle(tags).display === 'none') return;
-    for (const { gs, el, over } of who) {
-      let L = Infinity, R = -Infinity, T = Infinity, B = -Infinity;
-      for (const g of gs) for (const c of g.querySelectorAll(':scope :not(text):not(g):not(tspan)')) { const r = c.getBoundingClientRect(); if (!r.width) continue; L = Math.min(L, r.left); R = Math.max(R, r.right); T = Math.min(T, r.top); B = Math.max(B, r.bottom); }
-      const w = el.offsetWidth;
-      el.style.left = `${Math.max(4, Math.min(S.width - w - 4, (L + R) / 2 - S.left - w / 2)).toFixed(1)}px`;
-      el.style.top = `${(over ? T - S.top - el.offsetHeight - 4 : B - S.top + 6).toFixed(1)}px`;
-    }
-  };
-  new ResizeObserver(place).observe(stage);
+  // who is who (Buyers, Providers, ANTS holders) is written in the phone drawings themselves
   const sync = () => {
     const k = (+root.dataset.step || 1) - 1;
     btns.forEach((b, i) => (i === k ? b.setAttribute('aria-current', 'step') : b.removeAttribute('aria-current')));

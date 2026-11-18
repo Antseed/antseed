@@ -1,10 +1,10 @@
 /* The network in three layers, animated (parts/net-stack.html, net-stack.js). One light card the width of the rail: the drawing at
    the left, its three steps stacked and cross-fading, as large as the room beside the window lets it be (the card's height is the
    drawing's); the step's data window at the right, in HTML. With the three points under it, the card holds in one 1440 × 900
-   screen. A light design: it stays light at night. */
+   screen. A light design: it stays light at night (the design's frame: #f7f7f5 under a dot every 8px; the site's 16px panel corner). */
 .lp-slot.lp-on:has(> .nsk) { position: static; container-type: normal; }   /* the slot takes the card's height, not its panel's */
 .nsk { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 404px; gap: 8px; padding: 8px; overflow: hidden;
-  background: #f5f5f3; color: #0a1a12; font-family: Geist, system-ui, sans-serif; }   /* a plain light grey band, square: the page's dots stay outside it */
+  background: #f5f5f3; color: #0a1a12; font-family: Geist, system-ui, sans-serif; }   /* a plain light grey band, square (the design,): the page's dots stay outside it */
 .nsk-stage { position: relative; align-self: center; min-width: 0; aspect-ratio: 1272 / 892; max-height: calc(100svh - 184px); }   /* net-stack.js's VIEW; never taller than a screen less the points */
 .nsk-stage > svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; opacity: 0; visibility: hidden;
   transition: opacity .45s ease, visibility 0s .45s; }
@@ -20,8 +20,8 @@
 .nsk-dot { pointer-events: none; }
 .nsk-home { visibility: hidden !important; }   /* a flow's amount stays measured (net-stack.js enlarges it) but only its copy is seen, riding */
 
-/* the window: one per step, the step's shown.
-   A block is quiet (q*) until its beat lights it (l*); its bar takes the step's colour */
+/* the window (the design: white, a #e2e2e2 line, 12px corner, each block led by a 3px bar): one per step, the step's shown.
+   A block is quiet (q*) until its beat lights it (l*); its bar takes the step's colour (--lit, from the design's lit block) */
 .nsk-side { position: relative; display: grid; min-height: 0; border-radius: 12px; background: #fff; box-shadow: inset 0 0 0 1px #e2e2e2; }   /* as tall as its longest window: the three share one cell */
 .nsk-w { grid-area: 1 / 1; display: flex; flex-direction: column; gap: 18px; padding: 24px 28px 20px; opacity: 0; visibility: hidden;
   font-size: 13px; line-height: 21px; transition: opacity .25s ease, visibility 0s .25s; }
@@ -53,7 +53,7 @@
 .s-points [data-nsk-go] { all: unset; box-sizing: border-box; display: block; max-width: 300px; cursor: pointer; text-wrap: balance; text-align: center;
   font: 400 16px/24px Geist, sans-serif; color: var(--b); transition: color .15s; }
 .s-points [data-nsk-go] b { font-weight: 500; color: var(--t); transition: color .15s; }
-/* the steps not on show step well back */
+/* the steps not on show step well back (the design,) */
 .nsk-row { --seg-off: #b6bbb7; }
 :root[data-theme="dark"] .nsk-row { --seg-off: #4e5651; }
 .nsk-row [data-nsk-go]:not([aria-current]), .nsk-row [data-nsk-go]:not([aria-current]) b { color: var(--seg-off); }
@@ -76,18 +76,10 @@
 /* a phone (net-stack.js, phone): the drawing is the section, whole and still, the card's full width, cut to its slabs and cubes;
    its words give way to three group names, set in HTML under their cubes (phone); the amounts ride their flows as their coins. The window gives way to a
    three-part control under the drawing and the step's line, as the site's other text. Above 760 neither is shown */
-.nsk-seg, .nsk-line, .nsk-tags { display: none; }
+.nsk-seg, .nsk-line { display: none; }
 @media (max-width: 760px) {
-  .nsk { gap: 0; padding: 24px 0 0; }   /* one rhythm: 24 above the drawing, 16 to the control, 16 to the line, 24 under it */
-  .nsk-stage { aspect-ratio: 984 / 921; max-height: none; overflow: hidden; }   /* VIEW (-12 112 1272 892) cut to 116 104 984 921: room under the cubes for their names */
-  .nsk-stage > svg { inset: 0.869% auto auto -13.008%; width: 129.27%; height: 96.85%; }
-  .nsk-stage :is(text, [data-n="score highlight"], [data-n^="Pill"] rect) { visibility: hidden; }
-  .nsk-tags { display: block; position: absolute; inset: 0; z-index: 2; pointer-events: none; }
-  .nsk-tags span { position: absolute; font-size: 12px; line-height: 15px; font-weight: 500; white-space: nowrap; color: #0a1a12; }
-  /* the ANTS holders only act in Trust: before it they and their name are out of the lines' way */
-  .nsk-stage > svg:not(:nth-of-type(3)) [data-n="Holders"] { visibility: hidden; }
-  .nsk-tag-ants { opacity: 0; transition: opacity .45s ease; }
-  .nsk[data-step="3"] .nsk-tag-ants { opacity: 1; }
+  .nsk { gap: 0; padding: 24px 0 0; }   /* one rhythm (the design,): 24 above the drawing, 16 to the control, 16 to the line, 24 under it */
+  .nsk-stage { aspect-ratio: 352 / 572; max-height: none; }   /* the phone drawings' own frame (phone-N.svg, 0 0 352 572), the card's full width */
   .nsk-side, .s-points.nsk-row { display: none; }
   .nsk-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin: 4px 12px 0; padding: 4px; border-radius: 6px; background: #e9e9e6; }
   .nsk-sg { all: unset; position: relative; box-sizing: border-box; display: grid; place-items: center; height: 44px; border-radius: 3px; cursor: pointer;
