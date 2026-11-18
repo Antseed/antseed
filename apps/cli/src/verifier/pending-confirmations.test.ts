@@ -512,10 +512,13 @@ test('a local result answers a waiting DIFF only when it decided a check that fl
 
 test('a questions confirmation that ended UNDETERMINED after its attempts answers the target and is not planned again', () => {
   const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['kbf' as const], firstReportedAt: 10_000 }
-  const undetermined = { status: 'UNDETERMINED', parsedProbeCount: 40, tokenizerPrecheck: { outcome: 'match' }, outcomeReason: { code: 'deadline_exceeded' } }
+  const undetermined = { status: 'UNDETERMINED', parsedProbeCount: 40, tokenizerPrecheck: { outcome: 'match' }, outcomeReason: { code: 'deadline_exceeded' }, confirmsDiff: true }
   const later = { service: 'served-a', completedAt: 10_000 + 7_200 }
   // Still within its attempts: the epoch plan audits it again, so it does not answer yet.
   assert.equal(localResultAnswersConfirmation(target, { ...later, decided: localConfirmationDecision(undetermined, false) }), false)
   // Its attempts are used up (the cell is done): it answers, and the seller is not audited in every run.
   assert.equal(localResultAnswersConfirmation(target, { ...later, decided: localConfirmationDecision(undetermined, true) }), true)
+  // A first look that ended UNDETERMINED (a run that overlapped the other auditor's flag) answers nothing.
+  const { confirmsDiff: _confirmsDiff, ...firstLook } = undetermined
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: localConfirmationDecision(firstLook, true) }), false)
 })

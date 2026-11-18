@@ -12,8 +12,10 @@ import { ConcurrencyLimiter } from './audit-concurrency.js'
 import type { OutputReadingV1 } from './output-usage.js'
 import { readOutput } from './output-usage.js'
 import {
+  ECHO_SET_ASIDE_REASON,
   ECHO_STOPPED_REASON,
   OUTPUT_ECHO_RULE,
+  steadyShares,
   stoppedEcho,
   createOutputEchoScreen,
   echoCrowdVote,
@@ -382,7 +384,7 @@ test('an echo record of every outcome, written to its evidence file, passes the 
   // A check whose audit stopped after its growth was decided: the growth stands, the rest is stored as stopped.
   const base = await run(honestBilling)
   const stopped = { ...base, ...stoppedEcho(base, base, 'plain') }
-  assert.deepEqual([stopped.outcome, stopped.growth.outcome, stopped.reason], ['pass', 'pass', ECHO_STOPPED_REASON])
+  assert.deepEqual([stopped.outcome, stopped.growth.outcome, stopped.reason], ['pass', 'pass', 'the seller bills the model\'s growth; the rest was stopped with the audit'])
   assert.deepEqual(Object.values(records).map((record) => [record.outcome, record.flag]), [['pass', null], ['flag', 'growth'], ['pass', null], ['inconclusive', null]])
   const directory = await mkdtemp(join(tmpdir(), 'antseed-output-echo-'))
   try {
@@ -493,4 +495,39 @@ test('a stop after the growth was decided keeps it; a candidate that needed the 
   assert.deepEqual([kept.outcome, kept.growth, kept.fixedAmount.reason], ['pass', pass, ECHO_STOPPED_REASON])
   const cut = stoppedEcho({ growth: candidate, fixedAmount: candidate }, { growth: { outcome: 'flag', reason: 'x' }, fixedAmount: candidate }, 'plain')
   assert.deepEqual([cut.outcome, cut.flag, cut.growth.reason], ['inconclusive', null, ECHO_STOPPED_REASON])
+})
+
+test('the share test is exact: gaps of 150, 175 and 200 with a fixed 40 on long replies tie and are not steady', () => {
+  assert.equal(steadyShares([[40, 150], [40, 175], [40, 200]], OUTPUT_ECHO_RULE), false)
+  assert.equal(steadyShares([[30, 150], [35, 175], [40, 200]], OUTPUT_ECHO_RULE), true, 'a factor keeps its share')
+})
+
+test('a fixed-amount candidate whose repeats cannot all be read does not ask the crowd', () => {
+  const rounds = [round([[90, 390]]), round([[90, 390]]), round([[90, 390]])]
+  for (const entry of rounds) (entry as EchoRoundV1).repeats = { short: ask(null), long: ask(390) }
+  const judged = judge(rounds, null, { rule: COUNTING })
+  assert.deepEqual([judged.needsCrowd, judged.fixedAmount.reason, judged.growth.outcome], [false, 'a repeat of a text could not be read', 'pass'])
+})
+
+test('work for the fixed amount alone stops when the audit\'s spare time is up, keeps the growth pass, and the audit goes on', async () => {
+  const padded = (text: string): number => tokens(text) + 30
+  const network = fakeNetwork({ ...Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])), [PEERS[0]!]: padded })
+  const spare = new AbortController()
+  const audit = new AbortController()
+  const fetchFn: typeof fetch = async (url, init) => {
+    const reply = await network.fetchFn(url, init)
+    // The spare time runs out once the seller's twelve asks are in: the crowd is never asked.
+    if (network.asked.get(PEERS[0]!) === 12) spare.abort()
+    return reply
+  }
+  const record = (await screenFor({ ...network, fetchFn }).check({ peerId: PEERS[0]!, service: SERVICE }, null, {
+    thinking: null, crowdThinking: null, precheckMatch: true, spare: () => spare.signal,
+    clock: { signal: audit.signal, start: () => audit.signal, finish: () => {} },
+  }))!
+  assert.equal(audit.signal.aborted, false)
+  assert.deepEqual([record.outcome, record.growth.outcome, record.fixedAmount.reason], ['pass', 'pass', ECHO_SET_ASIDE_REASON])
+  assert.match(record.reason, /^the seller bills the model's growth; the rest was set aside so that the questions keep their time$/)
+  assert.equal(record.crowd, null)
+  assert.equal(network.asked.get(PEERS[1]!), undefined)
+  validateOutputEcho(record, PEERS[0])
 })

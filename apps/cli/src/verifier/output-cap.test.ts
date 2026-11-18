@@ -476,3 +476,30 @@ test('the cap measurement and the reference\'s own reply decline a route that ma
   const replied = await prepareOutputCapReference({ ask: wordReference, askReply: unnamedReply })
   assert.match(replied.reason, /route may serve several providers and names none/)
 })
+
+test('the reference is asked at the lowest limit, so a host with a floor above twice it declines for exactly the sellers it would flag', async () => {
+  const limits: number[] = []
+  const floored = (floor: number): CapReferenceReply => async (prompt, cap) => {
+    limits.push(cap)
+    const billed = Math.max(cap, floor)
+    return {
+      requestBody: bytes({ messages: [{ role: 'user', content: prompt }], max_tokens: cap }),
+      response: { statusCode: 200, body: bytes({ choices: [{ message: { content: Array.from({ length: billed }, () => 'one').join(' ') }, finish_reason: 'length' }], usage: { prompt_tokens: 20, completion_tokens: billed } }) },
+    }
+  }
+  // A floor of 64: a seller drawing any limit up to 31 bills over twice it, so the reference declines.
+  const high = await prepareOutputCapReference({ ask: wordReference, askReply: floored(64) })
+  assert.equal(high.applies, false)
+  assert.match(high.reason, /billed 64 on a limit of 16/)
+  // A floor of 30: no seller answer measures over twice its limit, so nothing is flagged and the check applies.
+  const low = await prepareOutputCapReference({ ask: wordReference, askReply: floored(30) })
+  assert.equal(low.applies, true)
+  assert.deepEqual([...new Set(limits)], [OUTPUT_CAP_RULE.minCap])
+})
+
+test('the cap reference says when its route raises the reply limit, and keeps the failure text', async () => {
+  const raised: CapReferenceReply = async (prompt, cap) => ({ ...(await keptReply(prompt, cap))!, requestBody: bytes({ messages: [{ role: 'user', content: prompt }], max_tokens: 1024 }) })
+  assert.match((await prepareOutputCapReference({ ask: wordReference, askReply: raised })).reason, /route raises the reply limit to 1024/)
+  const failing: CapReferenceReply = async () => { throw new Error('upstream answered 503') }
+  assert.match((await prepareOutputCapReference({ ask: wordReference, askReply: failing })).reason, /could not be read \(upstream answered 503\)/)
+})

@@ -264,22 +264,31 @@ async function measureAnswer(ask: TokenizerReferenceAsk, b: string, rule: Output
  */
 export async function prepareOutputCapReference(input: { ask: TokenizerReferenceAsk; askReply: CapReferenceReply; rule?: OutputCapRule }): Promise<OutputCapReferenceV1> {
   const rule = input.rule ?? OUTPUT_CAP_RULE
-  const cap = outputCapLimit(rule)
+  // The lowest limit a seller can draw: a host with a floor above twice it would have its honest sellers flagged, and
+  // declines here instead.
+  const cap = rule.minCap
   const { prompt } = outputCapPrompt()
   const notApplying = (why: string, measurement: OutputCapMeasurementV1 | null, ownReply: OutputCapReferenceV1['ownReply']): OutputCapReferenceV1 => ({
     rule, upstream: null, applies: false, measurement, ownReply, reason: `${why}, so the cap check does not apply to the model this run`,
   })
   let replied: Awaited<ReturnType<CapReferenceReply>>
+  let failure: string | null = null
   try {
     replied = await input.askReply(prompt, cap)
-  } catch {
+  } catch (error) {
     replied = null
+    failure = (error instanceof Error ? error.message : String(error)).slice(0, 300)
   }
   if (replied && replied.oneProvider === false && !replied.provider) {
     return notApplying('the reference\'s route may serve several providers and names none', null, { cap, billed: null, reasoning: null, measured: null })
   }
   const reading = replied ? readOutput(replied.requestBody, replied.response) : null
-  if (!readable(reading, cap)) return notApplying('the reference\'s own answer to a capped request could not be read', null, { cap, billed: null, reasoning: null, measured: null })
+  if (reading && reading.cap !== null && reading.cap > cap) {
+    return notApplying(`the reference's route raises the reply limit to ${reading.cap}`, null, { cap, billed: null, reasoning: null, measured: null })
+  }
+  if (!readable(reading, cap)) {
+    return notApplying(`the reference's own answer to a capped request could not be read${failure ? ` (${failure})` : ''}`, null, { cap, billed: null, reasoning: null, measured: null })
+  }
   const billed = reading!.billedOutputTokens!
   const reasoning = reading!.reasoningTokens
   const b = answerToMeasure(reading, cap, rule, true)

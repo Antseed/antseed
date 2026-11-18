@@ -222,6 +222,32 @@ export function referenceEchoCount(
 /** The longest the reference's measurement of a model's texts may take; sellers' audits wait for it, off their clocks. */
 export const ECHO_REFERENCE_TIME_LIMIT_MS = 10 * 60_000
 
+/**
+ * The growth is steady as a share of each gap: the smallest share is more than `spreadFactor` times the range of the
+ * shares. Exact: shares are growth / gap of whole numbers, compared by cross multiplication, so a tie rejects.
+ */
+export function steadyShares(pairs: ReadonlyArray<readonly [number, number]>, rule: OutputEchoRule): boolean {
+  if (pairs.length === 0) return false
+  const less = (a: readonly [number, number], b: readonly [number, number]) => BigInt(a[0]) * BigInt(b[1]) < BigInt(b[0]) * BigInt(a[1])
+  let min = pairs[0]!
+  let max = pairs[0]!
+  for (const pair of pairs) {
+    if (less(pair, min)) min = pair
+    if (less(max, pair)) max = pair
+  }
+  // min > k (max - min)  <=>  (1 + k) min > k max  <=>  (1 + k) a d > k c b, for min = a / b and max = c / d.
+  const [k, scale] = rationalOf(rule.spreadFactor)
+  const [a, b] = min
+  const [c, d] = max
+  return (BigInt(scale) + BigInt(k)) * BigInt(a) * BigInt(d) > BigInt(k) * BigInt(c) * BigInt(b)
+}
+
+/** A margin as a whole-number ratio (numerator, denominator); the rule's margins have at most three decimals. */
+function rationalOf(value: number): [number, number] {
+  const scale = 1000
+  return [Math.round(value * scale), scale]
+}
+
 /** The largest gap is at least `minGapRatio` times the smallest. */
 function gapsDiffer(gaps: readonly number[], rule: OutputEchoRule): boolean {
   return gaps.length > 0 && Math.max(...gaps) >= rule.minGapRatio * Math.min(...gaps)
@@ -562,7 +588,11 @@ export function judgeOutputEcho(input: {
     return done(growthCandidate ? notDecided(why) : growth, offsetCandidate ? notDecided(why) : fixedAmount)
   }
   if (offsetCandidate && !allAskedTwice) return done(growth, notDecided('a candidate, to be asked every text again'), { needsSecondAsks: true })
-  if (offsetCandidate && repeatsUnreadable) fixedAmount = notDecided('a repeat of a text could not be read')
+  if (offsetCandidate && repeatsUnreadable) {
+    fixedAmount = notDecided('a repeat of a text could not be read')
+    // Nothing is left for the crowd to decide about the fixed amount: it is not asked for it.
+    if (!growthCandidate) return done(growth, fixedAmount)
+  }
   if (!input.crowd || input.crowd.incomplete) {
     const why = input.crowd ? 'not every other seller of the model answered in time' : 'the model\'s other sellers were not asked'
     return done(growthCandidate ? notDecided(why) : growth, offsetCandidate ? notDecided(why) : fixedAmount, { needsCrowd: !input.crowd })
@@ -573,7 +603,7 @@ export function judgeOutputEcho(input: {
       || (value > rule.growthFloor && value > rule.growthShare * gaps[index]!)))
     // Steady as a share of the gap: a factor keeps its share, a fixed extra on long replies loses it as the gap grows.
     const shares = input.rounds.flatMap((round, index) => round.growths.flatMap((value) => (value === null ? [] : [value / gaps[index]!])))
-    const steady = Math.min(...shares) > rule.spreadFactor * (Math.max(...shares) - Math.min(...shares))
+    const steady = steadyShares(input.rounds.flatMap((round, index) => round.growths.flatMap((value) => (value === null ? [] : [[value, gaps[index]!] as const]))), rule)
     const objection = !margin
       ? `the growth is not above ${rule.growthFloor} tokens and ${rule.growthShare * 100}% of the reference's gap in every round`
       : !steady
@@ -619,6 +649,10 @@ function referenceView(reference: OutputEchoReferenceV1): OutputEchoV1['referenc
 
 /** The reason stored when the audit stopped before the check could decide. */
 export const ECHO_STOPPED_REASON = 'the audit stopped before the check decided'
+/** The reason stored when work for the fixed amount alone was stopped so that the questions keep their time. */
+export const ECHO_SET_ASIDE_REASON = 'set aside so that the questions keep their time'
+/** The longest the work for a fixed amount alone may take (its repeats and its crowd). */
+export const ECHO_OFFSET_ONLY_TIME_LIMIT_MS = 5 * 60_000
 
 /**
  * The findings of a check whose audit stopped: each finding keeps what it was decided as before any extra ask and
@@ -629,8 +663,9 @@ export function stoppedEcho(
   after: Pick<OutputEchoV1, 'growth' | 'fixedAmount'>,
   mode: EchoMode,
   rule: OutputEchoRule = OUTPUT_ECHO_RULE,
+  why: string = ECHO_STOPPED_REASON,
 ): Pick<OutputEchoV1, 'outcome' | 'flag' | 'reason' | 'growth' | 'fixedAmount'> {
-  const stopped = { outcome: 'inconclusive' as const, reason: ECHO_STOPPED_REASON }
+  const stopped = { outcome: 'inconclusive' as const, reason: why }
   const keep = (first: OutputEchoV1['growth'], last: OutputEchoV1['growth']) => (
     first.outcome !== 'flag' && canonicalJsonStringify(first) === canonicalJsonStringify(last) ? first : stopped
   )
@@ -638,7 +673,8 @@ export function stoppedEcho(
   const fixedAmount = keep(before.fixedAmount, after.fixedAmount)
   const offsetCounts = rule.offsetCounts && mode === 'plain'
   const outcome = growth.outcome === 'pass' && (fixedAmount.outcome === 'pass' || !offsetCounts) && (mode === 'plain' || rule.visibleCounts) ? 'pass' as const : 'inconclusive' as const
-  return { outcome, flag: null, reason: ECHO_STOPPED_REASON, growth, fixedAmount }
+  // A pass kept through the stop says what passed; the rest says why it decided nothing.
+  return { outcome, flag: null, reason: outcome === 'pass' ? `${growth.reason}; the rest was ${why === ECHO_STOPPED_REASON ? 'stopped with the audit' : why}` : why, growth, fixedAmount }
 }
 
 /**
@@ -650,8 +686,13 @@ export async function runOutputEcho(input: SignedSellerRequestInput & {
   reference: OutputEchoReferenceV1
   thinking?: Parameters<typeof outputEchoRequestBody>[0]['thinking']
   precheckMatch: boolean
-  /** The crowd's votes on the first round's texts, asked of the model's other sellers. */
-  crowd: () => Promise<EchoCrowdV1>
+  /** The crowd's votes on the first round's texts, asked of the model's other sellers; asking stops at `stop`. */
+  crowd: (stop?: AbortSignal) => Promise<EchoCrowdV1>
+  /**
+   * Fires when work for the fixed amount alone must stop so that the questions keep their time (the audit's
+   * `spare`). That work runs off the seller's idle clock and stops here without stopping the audit.
+   */
+  spare?: () => AbortSignal
   rule?: OutputEchoRule
 }): Promise<OutputEchoV1 | null> {
   const rule = input.rule ?? OUTPUT_ECHO_RULE
@@ -682,24 +723,33 @@ export async function runOutputEcho(input: SignedSellerRequestInput & {
   let judged = judge()
   // What was decided before any extra ask or crowd: a stop later does not undo it (`stoppedEcho`).
   const before = judged
+  // Work for the fixed amount alone (the growth is no candidate) runs off the seller's idle clock, within its own
+  // time and the audit's spare time: when that runs out it stops, and the audit goes on to the questions.
+  const offsetOnly = !rounds.every((round) => round.verdict === 'over')
+  const spare = offsetOnly
+    ? AbortSignal.any([AbortSignal.timeout(ECHO_OFFSET_ONLY_TIME_LIMIT_MS), ...(input.spare ? [input.spare()] : input.signal ? [input.signal] : [])])
+    : null
+  const extraInput: SignedSellerRequestInput = spare ? { ...input, clock: undefined, signal: spare } as SignedSellerRequestInput : input
   if (judged.needsSecondAsks) {
     // A fixed amount rests on every text asked twice: a single reply decides nothing. These repeats are its own and
     // never touch the growth's rounds.
     for (const [index, round] of rounds.entries()) {
       if (round.short.length >= 2 && round.long.length >= 2) continue
+      if (spare?.aborted) break
       round.repeats = {
-        short: await askEcho(input, view[index]!.short.text, mode, input.thinking, rule),
-        long: await askEcho(input, view[index]!.long.text, mode, input.thinking, rule),
+        short: await askEcho(extraInput, view[index]!.short.text, mode, input.thinking, rule),
+        long: await askEcho(extraInput, view[index]!.long.text, mode, input.thinking, rule),
       }
     }
     judged = judge()
   }
-  if (judged.needsCrowd) {
-    crowd = await input.crowd()
+  if (judged.needsCrowd && !spare?.aborted) {
+    crowd = await input.crowd(spare ?? undefined)
     judged = judge()
   }
   // A decision that needed work after the audit stopped is no decision; one made before it stands.
   if (input.signal?.aborted) judged = { ...judged, ...stoppedEcho(before, judged, mode, rule) }
+  else if (spare?.aborted) judged = { ...judged, ...stoppedEcho(before, judged, mode, rule, ECHO_SET_ASIDE_REASON) }
   return {
     rule, mode, outcome: judged.outcome, flag: judged.flag, growth: judged.growth, fixedAmount: judged.fixedAmount, reason: judged.reason,
     reference: view, referenceReasoning, referenceProvider: reference.provider, rounds, offset: judged.offset, precheckMatch: input.precheckMatch, crowd,
@@ -812,14 +862,15 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
     && canonicalJsonStringify([judged.growth, judged.fixedAmount, judged.offset, judged.reason]) === canonicalJsonStringify([record.growth, record.fixedAmount, record.offset, record.reason])
   if (same) return
   // A stopped check: what it was before any extra ask and the crowd is recomputed from its first replies alone.
-  if (record.reason === ECHO_STOPPED_REASON) {
+  for (const why of [ECHO_STOPPED_REASON, ECHO_SET_ASIDE_REASON]) {
+    if (!String(record.reason).includes(why === ECHO_STOPPED_REASON ? 'stopped' : why)) continue
     const first = judgeOutputEcho({
       mode: record.mode, reference: record.reference, referenceReasoning: reasoning, precheckMatch: record.precheckMatch, crowd: null, rule,
       rounds: record.rounds.map(({ repeats: _repeats, ...round }) => round),
     })
-    const expected = stoppedEcho(first, judged, record.mode, rule)
-    if (canonicalJsonStringify([expected.outcome, expected.flag, expected.growth, expected.fixedAmount, judged.offset])
-      === canonicalJsonStringify([record.outcome, record.flag, record.growth, record.fixedAmount, record.offset])) return
+    const expected = stoppedEcho(first, judged, record.mode, rule, why)
+    if (canonicalJsonStringify([expected.outcome, expected.flag, expected.reason, expected.growth, expected.fixedAmount, judged.offset])
+      === canonicalJsonStringify([record.outcome, record.flag, record.reason, record.growth, record.fixedAmount, record.offset])) return
   }
   throw new Error(`the echo check outcome is ${record.outcome}, its rounds give ${judged.outcome}`)
 }
@@ -903,6 +954,8 @@ export interface OutputEchoScreen<Settings> {
       crowdThinking: Parameters<typeof outputEchoRequestBody>[0]['thinking']
       precheckMatch: boolean
       clock?: SignedSellerRequestInput['clock']
+      /** The audit's spare time for work on the fixed amount alone (`runOutputEcho`). */
+      spare?: () => AbortSignal
     },
   ) => Promise<OutputEchoV1 | null>
 }
@@ -957,9 +1010,9 @@ export function createOutputEchoScreen<Settings>(input: {
       const reference = await ready(settings)
       if (!reference.applies) return null
       const stop = options.clock?.signal
-      const crowd = async (): Promise<EchoCrowdV1> => {
+      const crowd = async (sooner?: AbortSignal): Promise<EchoCrowdV1> => {
         const limit = AbortSignal.timeout(input.crowdTimeLimitMs ?? ECHO_CROWD_TIME_LIMIT_MS)
-        const ends = stop ? AbortSignal.any([limit, stop]) : limit
+        const ends = AbortSignal.any([limit, ...(stop ? [stop] : []), ...(sooner ? [sooner] : [])])
         const others = input.sellers.filter((other) => peerKey(other.peerId) !== peerKey(seller.peerId))
         const asked = others.map((other) => {
           const key = peerKey(other.peerId)
@@ -1000,6 +1053,7 @@ export function createOutputEchoScreen<Settings>(input: {
         thinking: options.thinking,
         precheckMatch: options.precheckMatch,
         crowd,
+        ...(options.spare ? { spare: options.spare } : {}),
         rule,
       }).catch((error: unknown) => failed(`the check failed: ${error instanceof Error ? error.message : String(error)}`))
     },

@@ -145,6 +145,7 @@ class LazyAuditDeadline {
   private inFlight = 0
   private idleLeftMs: number
   private idleRunningSince = 0
+  private maxStartedAt = 0
 
   constructor(readonly idleMs: number, readonly maxMs: number) {
     this.idleLeftMs = idleMs
@@ -153,7 +154,10 @@ class LazyAuditDeadline {
   /** A batch request goes out to the seller: the idle clock runs while any request is out. */
   start(): AbortSignal {
     if (this.controller.signal.aborted) return this.controller.signal
-    if (!this.maxTimer) this.maxTimer = setTimeout(() => this.abort('max'), this.maxMs)
+    if (!this.maxTimer) {
+      this.maxStartedAt = Date.now()
+      this.maxTimer = setTimeout(() => this.abort('max'), this.maxMs)
+    }
     this.inFlight += 1
     if (this.inFlight === 1) this.runIdle(this.idleLeftMs)
     return this.controller.signal
@@ -173,6 +177,15 @@ class LazyAuditDeadline {
       clearTimeout(this.idleTimer)
       this.idleTimer = null
     }
+  }
+
+  /**
+   * A signal for optional work (the echo check's fixed amount alone): it fires with the audit's, or once only
+   * `reserveMs` of the audit's total time is left, so that the questions keep it.
+   */
+  spare(reserveMs: number): AbortSignal {
+    const left = this.maxTimer ? this.maxMs - (Date.now() - this.maxStartedAt) : this.maxMs
+    return AbortSignal.any([this.controller.signal, AbortSignal.timeout(Math.max(0, left - reserveMs))])
   }
 
   /** Why the audit stopped, for its outcome reason. */
@@ -873,6 +886,8 @@ export async function verifyModelTarget(input: {
           start: () => deadline.start(),
           finish: (answered) => deadline.finish(answered),
         },
+        // Work for the fixed amount alone leaves the questions at least the idle limit of the audit's time.
+        spare: () => deadline.spare(input.context.auditTimeoutMs),
       })
     } catch (error) {
       deadline.close()

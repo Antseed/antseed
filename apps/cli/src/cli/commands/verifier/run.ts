@@ -1588,7 +1588,8 @@ export async function runVerifierRound(
                 requestLimiter: precheckReferenceLimiter,
               })
               const first = replied.results[0]
-              return first?.response ? { requestBody: first.requestBody, response: first.response, provider: first.provider, oneProvider: replied.oneProvider } : null
+              if (!first?.response) throw new Error(first?.failure ?? 'no answer')
+              return { requestBody: first.requestBody, response: first.response, provider: first.provider, oneProvider: replied.oneProvider }
             },
           })
           // The echo check of this model's sellers (`createOutputEchoScreen`): its texts are written and measured on
