@@ -147,11 +147,12 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
           <span className="bulk-bar-count">{selectedRows.length} selected · {formatAnts(sumAmounts(selectedRows), 4)} ANTS</span>
           <button type="button" className="link-button" onClick={clearSelection}>clear</button>
           <div className="bulk-bar-actions">
-            <span className="btn-wrap" title={mergeProblem ?? mergeRuleHint(selectedRows)}>
+            <span className="btn-wrap" title={mergeProblem ?? `Combine the selected positions into one. ${mergeRuleHint(selectedRows)}`}>
               <Button variant="outline" size="sm" disabled={mergeProblem !== null} onClick={() => setBulkAction('merge')}>Merge {selectedRows.length > 1 ? selectedRows.length : ''}</Button>
             </span>
             <Button variant="outline" size="sm" onClick={() => setBulkAction('withdraw')}>Withdraw {selectedRows.length}</Button>
           </div>
+          {selectedRows.length > 1 ? <span className="bulk-bar-note">{mergeProblem ?? mergeRuleHint(selectedRows)}</span> : null}
         </div>
       ) : null}
       {rowAction && actionRow && data && !unavailable ? <RowActionPanel key={`${rowAction.id}:${rowAction.kind}`} kind={rowAction.kind} position={actionRow} config={data.config} pools={pools} onClose={() => setRowAction(null)} /> : null}

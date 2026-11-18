@@ -42,11 +42,11 @@ export function mergeLockStartProblem(positions: Array<{ normalStartEpoch?: numb
   return new Set(known).size > 1 ? MERGE_LOCK_START_MISMATCH : null;
 }
 
-/** Hover text of an enabled Merge button: what the pool requires, and the shared lock start when every one is known. */
+/** What the pool requires of an allowed merge, naming the shared lock start when every one is known. */
 export function mergeRuleHint(positions: Array<{ normalStartEpoch?: number | null }>): string {
   const starts = positions.map(position => position.normalStartEpoch);
   const shared = starts.length > 0 && starts.every(start => typeof start === 'number' && start === starts[0]) ? starts[0] : null;
   return shared != null
-    ? `Combine the selected positions into one. They share the seller, the unlock date and the lock start (epoch ${shared}).`
-    : 'Combine the selected positions into one. Positions merge only when they share the seller, the unlock date and the lock start; the lock start is checked before you sign.';
+    ? `They share the seller, the unlock date and the lock start (epoch ${shared}).`
+    : 'Positions merge only when they share the seller, the unlock date and the lock start; the lock start is checked before you sign.';
 }

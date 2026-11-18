@@ -43,7 +43,7 @@ describe('normal lock start', () => {
   });
 
   it('names the shared lock start on an allowed merge and the lock start rule when a start is unknown', () => {
-    expect(mergeRuleHint([{ normalStartEpoch: 35 }, { normalStartEpoch: 35 }])).toBe('Combine the selected positions into one. They share the seller, the unlock date and the lock start (epoch 35).');
+    expect(mergeRuleHint([{ normalStartEpoch: 35 }, { normalStartEpoch: 35 }])).toBe('They share the seller, the unlock date and the lock start (epoch 35).');
     for (const starts of [[35, null], [null, null], [35, undefined]]) {
       expect(mergeRuleHint(starts.map(normalStartEpoch => ({ normalStartEpoch })))).toContain('Positions merge only when they share the seller, the unlock date and the lock start');
     }
