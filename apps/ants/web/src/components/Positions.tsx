@@ -266,7 +266,14 @@ function PositionUnlock({ position, dateOnly = false }: { position: PositionView
   if (!isOpen(position)) return <span className="muted">—</span>;
   const nextEpoch = info ? `epoch ${info.current + 1}` : 'next epoch';
   if (willBeMaxLocked(position)) return <span className="cell-stack"><span className="muted" title="Disable max lock to start the countdown.">Max lock</span>{!position.maxLocked && <span className="cell-sub">Max lock starts {nextEpoch}</span>}</span>;
-  return <span className="cell-stack"><EpochCell epoch={position.stakeEndEpoch} dateOnly={dateOnly} />{position.maxLocked ? <span className="cell-sub">Countdown starts {nextEpoch}</span> : <LockEndingNote position={position} currentEpoch={info?.current} />}</span>;
+  return <span className="cell-stack"><EpochCell epoch={position.stakeEndEpoch} dateOnly={dateOnly} />{position.maxLocked ? <span className="cell-sub">Countdown starts {nextEpoch}</span> : <>{!dateOnly && <LockStartNote position={position} currentEpoch={info?.current} />}<LockEndingNote position={position} currentEpoch={info?.current} /></>}</span>;
+}
+
+/** The pool merges only positions with the same lock start, which the public start doesn't show after a split, merge or move. */
+function LockStartNote({ position, currentEpoch }: { position: PositionView; currentEpoch?: number }) {
+  const start = position.normalStartEpoch;
+  if (typeof start !== 'number') return null;
+  return <span className="cell-sub" title="Positions merge only when they share this lock start, the seller and the unlock date. Split, merged and moved positions keep the lock start of the originals.">lock {currentEpoch !== undefined && start > currentEpoch ? 'starts' : 'started'} epoch {start}</span>;
 }
 
 /** Lock changes apply from the next epoch, so the final epoch before unlock is already too late to extend. */
