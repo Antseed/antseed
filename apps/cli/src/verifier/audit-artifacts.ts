@@ -126,6 +126,7 @@ interface SellerAuditReportResult {
   extensionPending?: { reason: string }
   tokenizerPrecheck?: { rule: string; outcome: string; sellerTokens?: number[]; modelTokens?: number[] }
   outputCap?: OutputCapSummary
+  outputEcho?: { rule: string; outcome: string; reason: string }
 }
 
 interface SellerAuditReportFailure {
@@ -432,6 +433,7 @@ function sellerResultReason(
   if (result.outputCap?.outcome === 'flag') {
     return `cap check (${result.outputCap.rule}): ${describeOutputCapSummary(result.outputCap)}: the reply limit was ignored`
   }
+  if (result.outputEcho?.outcome === 'flag') return `echo check (${result.outputEcho.rule}): ${result.outputEcho.reason}`
   if (!result.extension) {
     if (result.extensionPending) return `close call waiting for extra questions: ${result.extensionPending.reason}`
     return reportReason(result.outcomeReason)

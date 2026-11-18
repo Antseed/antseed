@@ -74,6 +74,15 @@ import {
 } from './tokenizer-precheck.js'
 import type { AuditCheckId } from './flagging-checks.js'
 import {
+  describeOutputEchoFlag,
+  outputEchoCost,
+  outputEchoRequestCount,
+  summarizeOutputEcho,
+  type OutputEchoScreen,
+  type OutputEchoSummary,
+  type OutputEchoV1,
+} from './output-echo.js'
+import {
   describeOutputCapFlag,
   outputCapCost,
   outputCapRequestCount,
@@ -243,6 +252,11 @@ export interface ProxyVerificationContext {
    * delivered answer measures more than twice the reply limit, twice, is DIFF and is asked no question.
    */
   outputCap?: Pick<OutputCapScreen<KbfReferenceV1>, 'check'>
+  /**
+   * When set, each first audit runs the echo check after the cap check (`output-echo.ts`): a seller that bills
+   * output the model did not write, held against the model's other sellers, is DIFF and is asked no question.
+   */
+  outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'check'>
 }
 
 /** What a seller's batch requests carry: its thinking suppression, token budget and timeout. */
@@ -333,6 +347,8 @@ export interface ModelVerificationTargetResult {
    * no question was asked, so the audit has no close call to extend.
    */
   outputCap?: OutputCapSummary
+  /** The echo check this audit ran before its questions; absent when none ran. On a `flag` the status is DIFF. */
+  outputEcho?: OutputEchoSummary
   /**
    * Extra set of never-seen probes asked after a close-call first audit; `status` above is then the
    * verdict on both sets pooled.
@@ -830,15 +846,47 @@ export async function verifyModelTarget(input: {
       throw error
     }
   }
-  const capEvidence = outputCap ? { outputCap } : {}
-  const capResult = outputCap ? { outputCap: summarizeOutputCap(outputCap) } : {}
+  const capEnds = outputCap?.outcome === 'flag' && endsAudit('output-cap')
+  // The echo check comes next, on the same terms, unless the cap check already ended the audit. Its crowd (the
+  // model's other sellers) is waited for on the auditor's time.
+  let outputEcho: OutputEchoV1 | null = null
+  const echoScreen = input.context.outputEcho
+  if (pending.length > 0 && exchangeByBatch.size === 0 && !input.extension && echoScreen && !capEnds) {
+    try {
+      outputEcho = await echoScreen.check({
+        peerId: input.target.peerId,
+        service: input.service,
+        serviceAliases: [...input.reference.serviceAliases, ...currentServiceNames(input.reference.referenceModel)],
+      }, input.reference, {
+        thinking: settings.thinking,
+        precheckMatch: precheck?.outcome === 'match',
+        clock: {
+          signal: deadline.controller.signal,
+          start: () => deadline.start(),
+          finish: (answered) => deadline.finish(answered),
+        },
+      })
+    } catch (error) {
+      deadline.close()
+      throw error
+    }
+  }
+  const echoCheck = outputEcho?.flag === 'offset' ? 'output-offset' as const : 'output-echo' as const
+  const echoEnds = outputEcho?.outcome === 'flag' && endsAudit(echoCheck)
+  const capEvidence = { ...(outputCap ? { outputCap } : {}), ...(outputEcho ? { outputEcho } : {}) }
+  const capResult = {
+    ...(outputCap ? { outputCap: summarizeOutputCap(outputCap) } : {}),
+    ...(outputEcho ? { outputEcho: summarizeOutputEcho(outputEcho) } : {}),
+  }
   const capCost = outputCap ? outputCapCost(outputCap) : null
-  const capRequests = outputCap ? outputCapRequestCount(outputCap) : 0
-  // What ran before the questions, paid for like batches: the pre-check and the cap check.
-  const preQuestionCosts = [precheckCost, capCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
+  const echoCost = outputEcho ? outputEchoCost(outputEcho) : null
+  const capRequests = (outputCap ? outputCapRequestCount(outputCap) : 0) + (outputEcho ? outputEchoRequestCount(outputEcho) : 0)
+  // What ran before the questions, paid for like batches: the pre-check, the cap check and the echo check.
+  const preQuestionCosts = [precheckCost, capCost, echoCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
   const preQuestionRequests = (precheck ? tokenizerPrecheckRequestCount(precheck) : 0) + capRequests
-  if (outputCap?.outcome === 'flag' && endsAudit('output-cap')) {
-    // The seller bills beyond the reply limit it was given: DIFF, and none of its questions is asked.
+  if (capEnds || echoEnds) {
+    // The seller bills beyond the reply limit it was given, or bills output the model did not write: DIFF, and none
+    // of its questions is asked.
     deadline.close()
     const unanswered = new Array<null>(input.reference.probes.length).fill(null)
     const fragment = verifyKbf(input.reference, { answers: unanswered, matchVector: unanswered }, KBF_AUDIT_VERIFY_OPTIONS)
@@ -859,7 +907,7 @@ export async function verifyModelTarget(input: {
         matchVectorHash: fragment.matchVectorHash,
         stats: fragment.stats,
         verdict: 'DIFF',
-        verdictReason: describeOutputCapFlag(outputCap),
+        verdictReason: capEnds ? describeOutputCapFlag(outputCap!) : describeOutputEchoFlag(outputEcho!),
         outcomeReason: null,
         cost: flagCost,
         cumulativeCost: flagCost,

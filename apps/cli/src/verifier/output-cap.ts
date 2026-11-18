@@ -1,4 +1,5 @@
 import { randomInt } from 'node:crypto'
+import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe } from '@antseed/node/payments'
 import { readOutput, type OutputReadingV1 } from './output-usage.js'
 import type { AuditCostSummaryV1, ProxyAuditExchangeCostV1 } from './proxy-evidence.js'
@@ -197,11 +198,15 @@ export function classifyCapAnswer(
 export function judgeOutputCap(asks: readonly Pick<OutputCapAskV1, 'class'>[], rule: OutputCapRule = OUTPUT_CAP_RULE): { outcome: OutputCapOutcome; reason: string } {
   const [first] = asks
   if (!first || first.class === 'unread') return { outcome: 'inconclusive', reason: 'the answer could not be read' }
-  if (first.class !== 'cap-ignored') return { outcome: 'pass', reason: `the answer was ${first.class}` }
+  // A pass is a limit the seller kept: billed within it, or above it only by itemised reasoning. An answer billed
+  // over the limit that could not be measured, or measured between the limit and the flag, is not a pass: a
+  // confirmer would otherwise clear another auditor's flag on an answer it never measured.
+  if (first.class === 'within' || first.class === 'reasoning-outside-cap') return { outcome: 'pass', reason: `the answer was ${first.class}` }
+  if (first.class !== 'cap-ignored') return { outcome: 'inconclusive', reason: `the answer was ${first.class}` }
   if (asks.length < rule.sellerAsks) return { outcome: 'inconclusive', reason: `asked ${asks.length} of ${rule.sellerAsks} times` }
   const later = asks.slice(1, rule.sellerAsks)
   if (later.some((ask) => ask.class === 'unread')) return { outcome: 'inconclusive', reason: 'the answer asked again could not be read' }
-  if (later.some((ask) => ask.class !== 'cap-ignored')) return { outcome: 'pass', reason: 'the limit was ignored once, not when asked again' }
+  if (later.some((ask) => ask.class !== 'cap-ignored')) return { outcome: 'inconclusive', reason: 'the limit was ignored once, not when asked again' }
   return { outcome: 'flag', reason: `the delivered answer measured more than ${rule.flagFactor} times the limit, ${rule.sellerAsks} times` }
 }
 
@@ -268,14 +273,14 @@ export async function runOutputCap(input: SignedSellerRequestInput & {
 export function validateOutputCap(record: OutputCapV1): void {
   const rule = outputCapRuleById(record.rule?.id)
   if (!rule) throw new Error(`unknown cap check rule ${String(record.rule?.id)}`)
-  if (JSON.stringify(record.rule) !== JSON.stringify(rule)) throw new Error('the cap check rule differs from the one this CLI knows')
+  if (canonicalJsonStringify(record.rule) !== canonicalJsonStringify(rule)) throw new Error('the cap check rule differs from the one this CLI knows')
   if (!Array.isArray(record.asks) || record.asks.length === 0 || record.asks.length > rule.sellerAsks) throw new Error('the cap check has no asks, or too many')
   const cap = record.asks[0]!.cap
   for (const ask of record.asks) {
     if (ask.cap !== cap || !Number.isInteger(cap) || cap < rule.minCap || cap > rule.maxCap) throw new Error('a cap check ask has a limit outside the rule')
     const exchange = signedExchange(ask.request)
     const reading = exchange ? readOutput(exchange.requestBody, exchange.response) : null
-    if (JSON.stringify(reading) !== JSON.stringify(ask.reading)) throw new Error('a cap check reading differs from the signed bytes')
+    if (canonicalJsonStringify(reading) !== canonicalJsonStringify(ask.reading)) throw new Error('a cap check reading differs from the signed bytes')
     if (exchange && promptOf(exchange.requestBody) !== ask.prompt) throw new Error('a cap check prompt is not the one the seller signed')
     const b = answerToMeasure(reading, cap, rule)
     if ((b === null) !== (ask.measurement === null) || (b !== null && ask.measurement!.b !== b)) {

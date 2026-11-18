@@ -46,6 +46,7 @@ import { safeServiceSlug } from './slug.js'
 import type { SubmissionCandidate } from './submission-delta.js'
 import { summarizeTokenizerPrecheck, validateTokenizerPrecheck } from './tokenizer-precheck.js'
 import { summarizeOutputCap, validateOutputCap } from './output-cap.js'
+import { summarizeOutputEcho, validateOutputEcho } from './output-echo.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
@@ -980,11 +981,27 @@ export function validateAuditMatchesSummary(
   if (capDiff && (evidence.result.verdict !== 'DIFF' || evidence.exchanges.length > 0)) {
     throw new Error('a cap check flag is a DIFF with no question asked')
   }
-  if (!precheckDiff && !capDiff && evidence.result.verdict === 'DIFF' && evidence.result.parsedProbeCount === 0) {
+  // The echo check runs after the cap check, so never after a cap flag that ended the audit; it is recomputed from
+  // the bytes the seller and its crowd signed.
+  if (evidence.outputEcho) {
+    if (precheckDiff || capDiff) throw new Error('an echo check after a DIFF that ended the audit')
+    validateOutputEcho(evidence.outputEcho, evidence.target.peerId)
+  }
+  const storedEcho = evidence.outputEcho ? summarizeOutputEcho(evidence.outputEcho) : null
+  if (canonicalJsonStringify(storedEcho) !== canonicalJsonStringify(result.outputEcho ?? null)) {
+    throw new Error('the summary\'s echo check is not the one in its evidence')
+  }
+  const echoCheck: AuditCheckId = evidence.outputEcho?.flag === 'offset' ? 'output-offset' : 'output-echo'
+  const echoDiff = evidence.outputEcho?.outcome === 'flag' && !continuedPast(echoCheck)
+  if (echoDiff && (evidence.result.verdict !== 'DIFF' || evidence.exchanges.length > 0)) {
+    throw new Error('an echo check flag is a DIFF with no question asked')
+  }
+  if (!precheckDiff && !capDiff && !echoDiff && evidence.result.verdict === 'DIFF' && evidence.result.parsedProbeCount === 0) {
     throw new Error('DIFF without a scoreable answer or a tokenizer pre-check mismatch, and no cap check flag')
   }
   if (precheckDiff && (result.extension || result.extension2)) throw new Error('extra set after a tokenizer pre-check DIFF')
   if (capDiff && (result.extension || result.extension2)) throw new Error('extra set after a cap check DIFF')
+  if (echoDiff && (result.extension || result.extension2)) throw new Error('extra set after an echo check DIFF')
   // The stage-1 verdict, recomputed from the evidence: the first check's own verdict, or after a
   // close call the pooled verdict of the first check and its extra sets.
   let stageOne: ModelAuditVerdict = evidence.result.verdict

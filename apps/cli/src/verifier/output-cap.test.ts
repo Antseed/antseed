@@ -1,4 +1,11 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Wallet } from 'ethers'
+import { VERIFIER_VERDICT } from '@antseed/node/payments'
+import { prepareModelAudits } from './model-audit.js'
+import { FIXTURE_CONFIG, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
 import test from 'node:test'
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
@@ -14,6 +21,7 @@ import {
   runOutputCap,
   summarizeOutputCap,
   validateOutputCap,
+  type OutputCapV1,
   answerToMeasure,
   classifyCapAnswer,
   judgeOutputCap,
@@ -134,13 +142,13 @@ test('an answer that measures more than twice the cap is cap-ignored, whatever t
 })
 
 test('cap-ignored once and within when asked again is not a flag; twice is', () => {
-  assert.deepEqual(judgeOutputCap([{ class: 'cap-ignored' }, { class: 'within' }]), { outcome: 'pass', reason: 'the limit was ignored once, not when asked again' })
+  assert.deepEqual(judgeOutputCap([{ class: 'cap-ignored' }, { class: 'within' }]), { outcome: 'inconclusive', reason: 'the limit was ignored once, not when asked again' })
   assert.equal(judgeOutputCap([{ class: 'cap-ignored' }, { class: 'unread' }]).outcome, 'inconclusive')
   assert.equal(judgeOutputCap([{ class: 'cap-ignored' }]).outcome, 'inconclusive')
   assert.equal(judgeOutputCap([{ class: 'cap-ignored' }, { class: 'cap-ignored' }]).outcome, 'flag')
-  for (const first of ['within', 'reasoning-outside-cap', 'unexplained', 'over-cap'] as const) {
-    assert.equal(judgeOutputCap([{ class: first }]).outcome, 'pass', first)
-  }
+  for (const first of ['within', 'reasoning-outside-cap'] as const) assert.equal(judgeOutputCap([{ class: first }]).outcome, 'pass', first)
+  // Over the limit without a measurement that decides is not a pass: a confirmer must not clear a flag on it.
+  for (const first of ['unexplained', 'over-cap'] as const) assert.equal(judgeOutputCap([{ class: first }]).outcome, 'inconclusive', first)
   assert.equal(judgeOutputCap([{ class: 'unread' }]).outcome, 'inconclusive')
   assert.equal(judgeOutputCap([]).outcome, 'inconclusive')
 })
@@ -277,10 +285,10 @@ test('a seller that ignores the limit twice is flagged, the record rechecks, and
   assert.throws(() => validateOutputCap(remeasured), /not of the answer the seller signed/)
 })
 
-test('ignored once and honoured when asked again is a pass', async () => {
+test('ignored once and honoured when asked again decides nothing', async () => {
   const seller = fakeSeller((cap, call) => (call === 1 ? { text: words(120), billed: 900 } : { text: words(3), billed: cap }))
   const record = await runOn(seller)
-  assert.equal(record.outcome, 'pass')
+  assert.equal(record.outcome, 'inconclusive')
   assert.deepEqual(record.asks.map((ask) => ask.class), ['cap-ignored', 'within'])
   validateOutputCap(record)
 })
@@ -316,4 +324,35 @@ test('the screen measures the reference once for every seller of the model', asy
   })
   await Promise.all([screen.check({ peerId: PEER, service: SERVICE }, null, null), screen.check({ peerId: PEER, service: SERVICE }, null, null)])
   assert.equal(asked, 1, 'within the limit: only the reference test asked the reference')
+})
+
+test('a cap record of every outcome, written to its evidence file, passes the check submit makes', async () => {
+  const records = {
+    pass: await runOn(fakeSeller((cap) => ({ text: words(Math.floor(cap / 3)), billed: cap }))),
+    flag: await runOn(fakeSeller(() => ({ text: words(120), billed: 900 }))),
+    // Billed far over the limit, on two lines the reference cannot measure: unexplained.
+    inconclusive: await runOn(fakeSeller(() => ({ text: `${words(40)}\n${words(40)}`, billed: 900 }))),
+  }
+  assert.deepEqual(Object.entries(records).map(([name, record]) => [name, record.outcome]), [['pass', 'pass'], ['flag', 'flag'], ['inconclusive', 'inconclusive']])
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-output-cap-'))
+  try {
+    const evidenceDir = join(directory, 'evidence')
+    const banksDir = join(directory, 'banks')
+    const auditor = new Wallet(Wallet.createRandom().privateKey)
+    const seller = (agentId: string, verdict: FixtureAudit['verdict'], outputCap: OutputCapV1): FixtureAudit => ({
+      agentId, seller: new Wallet(Wallet.createRandom().privateKey), model: 'model-a', service: 'model-a', verdict, outputCap,
+    })
+    const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor, audits: [
+      seller('1', 'SAME', records.pass), seller('2', 'DIFF', records.flag), seller('3', 'SAME', records.inconclusive),
+    ] })
+    const prepared = await prepareModelAudits({
+      evidenceDir, banksDir, manifest, auditor: auditor.address,
+      resolveAgentOwner: async () => new Wallet(Wallet.createRandom().privateKey).address, config: FIXTURE_CONFIG,
+    })
+    assert.deepEqual(prepared.excluded, [])
+    assert.deepEqual(prepared.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[1n, VERIFIER_VERDICT.SAME], [2n, VERIFIER_VERDICT.DIFF], [3n, VERIFIER_VERDICT.SAME]])
+    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.flaggedBy), [[], ['output-cap'], []])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })

@@ -32,13 +32,13 @@ The rest of this page explains what these commands do.
 
    Before the questions, the auditor works out how to turn off the seller's hidden reasoning ("thinking"), the way the KBF reference code does for every endpoint it checks. It sends a fixed batch of ten easy questions with each setting in turn: `reasoning: {effort: "none"}`, `reasoning: {effort: "minimal"}`, `thinking: {type: "disabled"}`, `enable_thinking: false`, a `<think></think>` prefill, then nothing. It uses the first setting that gets at least 5 answers with no reasoning tokens. If the seller keeps thinking whatever it is sent, its questions go out with 50 times the token budget (40,000 tokens per request), so it has room to think and still answer. This is worked out once per seller and model in each run; the requests and their cost are part of the audit's evidence (`sellerThinking`). Text inside `<think>…</think>` is not read as an answer.
 
-   Then the [cap check](#cap-check): one request under a small reply limit, with the seller's own thinking setting, shows whether the seller bills beyond the limit it was given. A seller that clearly does is `DIFF` and is not asked the questions.
+   Then the [cap check](#cap-check): one request under a small reply limit, with the seller's own thinking setting, shows whether the seller bills beyond the limit it was given. Then the [echo check](#echo-check): the seller repeats a short and a long text, and the output tokens it bills are compared with the model's. A seller that clearly bills more than the model wrote is `DIFF` and is not asked the questions.
 3. **Verdict.** The seller's answers are compared with the genuine ones:
 
 | Verdict | Meaning |
 |---|---|
 | `SAME` | The seller misses about as often as the genuine model |
-| `DIFF` | The seller misses clearly more often: probably a different model. Or it failed the [tokenizer pre-check](#tokenizer-pre-check), or it billed beyond the reply limit it was given ([cap check](#cap-check)) |
+| `DIFF` | The seller misses clearly more often: probably a different model. Or it failed the [tokenizer pre-check](#tokenizer-pre-check), or it billed beyond the reply limit it was given ([cap check](#cap-check)), or it billed more output than the model wrote ([echo check](#echo-check)) |
 | `UNDETERMINED` | Too few usable answers to decide |
 
    A missing, empty or unreadable answer is left out of the score, not counted as wrong. A `SAME` needs at least half the questions answered and a `DIFF` at least 80%, so a seller can't make a `DIFF` more likely by dropping answers; below that the result is `UNDETERMINED`. A batch with any answer missing is asked again up to two more times, and the try with the most answers is kept. Answers sent as `<number>X</number>` lines without question numbers are read in order when there is exactly one per question. A seller that refuses `temperature` is asked again without it and judged on those answers; the evidence records the dropped field (`omittedSamplingFields`). A seller that only accepts another `temperature` value is skipped.
@@ -88,6 +88,19 @@ The cap check asks whether a seller bills the output tokens the model wrote unde
 - **It applies to a model only when the reference can measure.** Once per run and model, the reference measures a count in words. A model whose reference cannot (it reports cached input every time, or no usage) is not cap-checked that run, and its sellers are not asked.
 
 A cap check `DIFF` means the seller ignored the limit the buyer set and billed what it delivered beyond it. It says nothing about which model the seller serves. It is submitted, confirmed and held like any other `DIFF`, and counts once another auditor's own cap check flags the seller too. `verifier submit` recomputes every reading and class from the bytes the seller signed before it sends one. `verifier.outputChecks: false` turns the check off, but every auditor must use the same setting.
+
+### Echo check
+
+The echo check asks whether a seller bills the output tokens the model wrote. It runs after the cap check, once per first audit, and only for models whose reference repeats text cleanly this run.
+
+- **Three rounds of a short and a long text.** The texts are written fresh for every run on your machine, like the pre-check's. The seller is asked to repeat each one exactly, with its own thinking setting. Your reference endpoint repeats the same texts twice each and must agree with itself, from one provider; the long text must measure at least 150 tokens more than the short one.
+- **What is compared is the growth.** For each round: how much more the seller bills than the model on the long text, minus how much more on the short text. A host that adds the same few tokens to every reply cancels out, so it is never held against the seller. A round whose growth is above 2 tokens is asked again, and counts only when the seller repeats it.
+- **Only an exact echo counts.** A reply must be the text byte for byte, finished on its own, with usage the seller signed. In a model whose reference shows no reasoning, a reply that shows any reasoning is not used. For a model whose reference itemises reasoning on every reply, the count is billed minus itemised reasoning, the seller must itemise too and repeat its own count within 2 tokens, and each round's margin grows by the largest reasoning it shows: the check then covers the visible answer only.
+- **A `DIFF` needs a wide margin and the model's other sellers.** The seller's growth must be above 20 tokens and above 10% of the gap between the two texts, in every round, twice. The first round's two texts then go to the model's other sellers your buyer would audit: at least three must answer, at least two must sign the model's own count, none may sign the same growth (that would be a shared relay, not this seller), and the seller's growth must stand more than three times their spread above their median and above any reasoning seen on these texts. The seller's own pre-check must have matched. The 20 tokens, the 10% and the three times are margins chosen above every honest value seen, not measured bounds.
+- **A fixed amount per reply** counts the same way: the same amount, within 2 tokens, on every reply of the check, above 20 tokens, standing out from the other sellers by the same margins, and shared by none of them.
+- **Anything unclear decides nothing.** A failed request, a changed or cut echo, reasoning where none is expected, a round that does not repeat, too few other sellers, or one that has not answered within five minutes.
+
+An echo check `DIFF` means the seller bills more output than the model wrote. Like the cap check, it says nothing about which model the seller serves, and counts once another auditor's own echo check flags the seller the same way. `verifier submit` recomputes every count from the bytes the seller and the other sellers signed. `verifier.outputChecks: false` turns the cap check and the echo check off together.
 
 ### Following a run
 
@@ -324,7 +337,7 @@ Each result is a report. The contract records it as the seller service's verdict
 
 So one auditor's `SAME` verifies a seller right away, and one auditor alone cannot mark a seller `DIFF`. Clearing a recorded `DIFF` takes at least `diffReplacementReports` reports of the new result, which is 1 by default (and on Base mainnet): one auditor's `SAME` or `UNDETERMINED` clears it. The owner can raise it, e.g. to 2, so one auditor alone cannot clear a `DIFF` two auditors agreed on. Only reports made after a `DIFF` was confirmed count toward clearing it, and only reports made after it was cleared count toward giving it again. While a `DIFF` waits for its second auditor, the seller keeps its current verdict. Reports count only in the epoch they were made in; a recorded verdict counts for that epoch and the next, like every verdict. Your own report never confirms itself: submitting the same result again adds nothing. When an auditor is revoked, every report still waiting for a second auditor starts over, so a revoked auditor's report never counts; verdicts already recorded stay. The contract owner can change the numbers.
 
-A `DIFF` is recorded only when two auditors flag the seller with the same check: the token-count pre-check, the cap check or the questions.
+A `DIFF` is recorded only when two auditors flag the seller with the same check: the token-count pre-check, the cap check, the echo check (its growth, or its fixed amount) or the questions.
 
 - **The confirmer knows the check before it audits.** `verifier run` reads which check flagged in the first auditor's published evidence, checked against the hash that auditor submitted, and runs that check to its end: a flag by another check does not stop the confirmation early. A confirmation whose first evidence cannot be read waits for the next run.
 - **Fresh material.** A confirmation is an audit made at least an hour after the report it answers.

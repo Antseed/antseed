@@ -63,6 +63,7 @@ import {
   type OutputCapClass,
 } from './output-cap.js'
 import { SIGNED_REQUEST_TRIES } from './signed-seller-request.js'
+import { ECHO_CROWD_TIME_LIMIT_MS, OUTPUT_ECHO_RULE, echoCrowdObjection, judgeEchoRound, outputEchoPrompt } from './output-echo.js'
 import { AUDIT_CHECK_IDS, type AuditCheckId } from './flagging-checks.js'
 import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
 import {
@@ -265,6 +266,21 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       }, 16, measured)),
       judged: SAMPLE_CAP_ASKS.map((classes) => judgeOutputCap(classes.map((entry) => ({ class: entry }))).outcome),
     },
+    // The echo check: its rule, the request, and what a round and the crowd give for fixed counts (reference 60 and
+    // 360 tokens), so a change to how either is judged changes the hash.
+    outputEcho: {
+      rule: OUTPUT_ECHO_RULE,
+      crowdTimeLimitMs: ECHO_CROWD_TIME_LIMIT_MS,
+      prompt: outputEchoPrompt('sample text'),
+      rounds: SAMPLE_ECHO_ROUNDS.map((asks) => {
+        const echo = (count: number | null) => ({ request: {} as never, reading: null, reply: { count, reasoning: 0, unusable: count === null ? 'sample' : null } })
+        return judgeEchoRound({
+          short: asks.map(([short]) => echo(short)), long: asks.map(([, long]) => echo(long)),
+          reference: { short: 60, long: 360 }, referenceReasoning: 0, mode: 'plain',
+        }).verdict
+      }),
+      crowd: SAMPLE_ECHO_CROWDS.map(([amount, votes, ownSpread]) => echoCrowdObjection(amount, votes, ownSpread) === null),
+    },
     // A result that answers another auditor's waiting DIFF: sent as DIFF only when one of these checks flagged in
     // both, as SAME only when a check that flagged there passed here, otherwise not at all; made at least
     // `minDelaySeconds` after that report. What the rule gives for fixed checks (flagged, passed, verdict).
@@ -385,6 +401,16 @@ const SAMPLE_PROBE_TEXTS: readonly string[] = [
 ]
 
 /** Signed response bodies the usage reader reads, and ones it refuses. */
+/** A seller's short and long counts per ask, against a reference of 60 and 360 tokens. */
+const SAMPLE_ECHO_ROUNDS: ReadonlyArray<ReadonlyArray<readonly [number | null, number | null]>> = [
+  [[60, 360]], [[63, 363]], [[61, 366], [61, 366]], [[61, 366], [60, 360]], [[61, 366], [61, 380]], [[61, 366]], [[null, 360]],
+]
+
+/** A flagged amount, the other sellers' votes, the seller's own spread. */
+const SAMPLE_ECHO_CROWDS: ReadonlyArray<readonly [number, ReadonlyArray<number | null>, number]> = [
+  [93, [0, 1, -1, 0], 15], [93, [0, 1], 0], [93, [0, 9, 12, null], 0], [93, [0, 0, 92], 0], [60, [0, 0, 30], 0], [93, [0, 1, -1, 0], 35],
+]
+
 /** First auditor's checks, the checks that flagged and passed here, and the verdict here. */
 const SAMPLE_CONFIRMATIONS: ReadonlyArray<readonly [AuditCheckId[], AuditCheckId[], AuditCheckId[], 'SAME' | 'DIFF']> = [
   [['tokens'], ['tokens'], [], 'DIFF'],

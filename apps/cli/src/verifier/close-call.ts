@@ -57,12 +57,15 @@ export function latestExtension(
  * A DIFF that ended before the questions: a pre-check mismatch or a cap check flag, with no question asked. In a
  * confirmation of another check's DIFF such a flag does not end the audit, and its questions decide as usual.
  */
-export function askedNoQuestion(result: Pick<ModelVerificationTargetResult, 'tokenizerPrecheck' | 'outputCap'> & { parsedProbeCount?: number }): boolean {
-  return (result.tokenizerPrecheck?.outcome === 'mismatch' || result.outputCap?.outcome === 'flag') && (result.parsedProbeCount ?? 0) === 0
+export function askedNoQuestion(
+  result: Pick<ModelVerificationTargetResult, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho'> & { parsedProbeCount?: number },
+): boolean {
+  return (result.tokenizerPrecheck?.outcome === 'mismatch' || result.outputCap?.outcome === 'flag' || result.outputEcho?.outcome === 'flag')
+    && (result.parsedProbeCount ?? 0) === 0
 }
 
 export function needsExtension(result: Pick<ModelVerificationTargetResult,
-  'decisionRule' | 'stats' | 'responseAuthVerified' | 'extension' | 'extension2' | 'outcomeReason' | 'tokenizerPrecheck' | 'outputCap'> & { parsedProbeCount?: number }): boolean {
+  'decisionRule' | 'stats' | 'responseAuthVerified' | 'extension' | 'extension2' | 'outcomeReason' | 'tokenizerPrecheck' | 'outputCap' | 'outputEcho'> & { parsedProbeCount?: number }): boolean {
   const rule = closeCallRule(result)
   if (!rule || !result.stats) return false
   // A DIFF from the tokenizer pre-check or the cap check asked no question: there is no close call to extend.

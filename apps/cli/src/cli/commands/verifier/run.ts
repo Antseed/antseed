@@ -131,9 +131,10 @@ import {
   windowIncludesSeller,
   type AuditWindowV1,
 } from '../../../verifier/audit-window.js'
-import { askReferenceInputTokens, createReferenceRequestLimiter, referenceConcurrencyWarning } from '../../../verifier/model-reference.js'
+import { askReferenceInputTokens, askReferenceReplies, createReferenceRequestLimiter, referenceConcurrencyWarning } from '../../../verifier/model-reference.js'
 import { TOKENIZER_PRECHECK_RULE, createTokenizerPrecheckScreen, describeTokenizerCounts, measureTokenizerReference } from '../../../verifier/tokenizer-precheck.js'
 import { createOutputCapScreen, describeOutputCapSummary } from '../../../verifier/output-cap.js'
+import { OUTPUT_ECHO_RULE, createOutputEchoScreen, outputEchoPrompt } from '../../../verifier/output-echo.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { askedNoQuestion, closeCallRuleForExtensions, extensionSets, latestExtension } from '../../../verifier/close-call.js'
 import {
@@ -1550,6 +1551,26 @@ export async function runVerifierRound(
               requestLimiter: precheckReferenceLimiter,
             }),
           })
+          // The echo check of this model's sellers (`createOutputEchoScreen`): its texts are written and measured on
+          // the reference once, and its crowd is every seller of the model the buyer would audit, as for the pre-check.
+          const outputEcho = config.verifier?.outputChecks === false ? null : createOutputEchoScreen<KbfReferenceV1>({
+            sellers: tokenizerPrecheckSellers(laneProxy.peers, verifierModelServices(config.verifier, model), targetPolicyFor(model)),
+            proxyBaseUrl: laneProxy.baseUrl,
+            responseAuthReader: responseAuthReader!,
+            limiter: batchLimiter,
+            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
+            ask: (settings) => async (texts, signal) => askReferenceReplies({
+              model,
+              settings,
+              contents: texts.map(outputEchoPrompt),
+              ...(signal ? { signal } : {}),
+              maxTokens: OUTPUT_ECHO_RULE.maxTokens,
+              config: config.verifier,
+              catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
+              buyerProxyPort: config.buyer.proxyPort,
+              requestLimiter: precheckReferenceLimiter,
+            }),
+          })
           // First audits and extra sets share timeouts and concurrency; only where evidence goes differs.
           const verificationContext = (peer: PeerInfo, auditEvidenceDir: string): ProxyVerificationContext => ({
             proxy: laneProxy,
@@ -1568,6 +1589,7 @@ export async function runVerifierRound(
             sellerThinking,
             ...(tokenizerPrecheck ? { tokenizerPrecheck } : {}),
             ...(outputCap ? { outputCap } : {}),
+            ...(outputEcho ? { outputEcho } : {}),
           })
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
             if (await stopIfAuditorRemoved()) {
@@ -1710,6 +1732,8 @@ export async function runVerifierRound(
                       ? `(tokenizer pre-check: ${describeTokenizerCounts(result.tokenizerPrecheck)}, `
                       : result.outputCap?.outcome === 'flag'
                         ? `(cap check: ${describeOutputCapSummary(result.outputCap)}, `
+                        : result.outputEcho?.outcome === 'flag'
+                          ? `(echo check: ${result.outputEcho.reason}, `
                       : `(${result.parsedProbeCount}/${result.probeCount} scoreable, `)
                     + `$${result.cost.estimatedCostUsd.toFixed(6)})`,
                   ))

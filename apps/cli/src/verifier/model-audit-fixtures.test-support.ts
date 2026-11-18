@@ -1,4 +1,6 @@
 // Test support: builds complete verifier runs with genuinely signed seller exchanges.
+import { describeOutputCapFlag, summarizeOutputCap, type OutputCapV1 } from './output-cap.js'
+import { describeOutputEchoFlag, summarizeOutputEcho, type OutputEchoV1 } from './output-echo.js'
 import { createHash } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -86,6 +88,13 @@ export interface FixtureAudit {
    * audit is DIFF with no question asked. `verdict` must be DIFF.
    */
   tokenizerMismatch?: boolean
+  /**
+   * A cap check record (`output-cap.ts`) written into the evidence. A `flag` makes the audit a DIFF with no
+   * question asked, as in a real run; any other outcome is stored beside the questions.
+   */
+  outputCap?: OutputCapV1
+  /** An echo check record (`output-echo.ts`), the same way. */
+  outputEcho?: OutputEchoV1
   reference?: KbfReferenceV1
   /**
    * A close-call first audit (`kbf-extension-v1`): `firstWrong` wrong answers on the first set, then
@@ -309,6 +318,8 @@ export async function writeSignedAuditRun(input: {
           responseAuthVerified: true,
           tokenizerPrecheck: summarizeTokenizerPrecheck(evidence.tokenizerPrecheck),
         } : {}),
+        ...(evidence.outputCap ? { stats: evidence.result.stats, responseAuthVerified: true, outputCap: summarizeOutputCap(evidence.outputCap) } : {}),
+        ...(evidence.outputEcho ? { stats: evidence.result.stats, responseAuthVerified: true, outputEcho: summarizeOutputEcho(evidence.outputEcho) } : {}),
       })
     }
     const summaryPath = await writeModelAuditSummary(input.evidenceDir, input.epoch, model, {
@@ -723,7 +734,9 @@ async function writeFixtureEvidence(input: {
   const tokenizerPrecheck = audit.tokenizerMismatch
     ? await signedTokenizerMismatch({ audit, auditor: input.auditor, runId: input.runId, peerId })
     : null
-  const exchanges = tokenizerPrecheck
+  const preQuestionFlag = audit.outputCap?.outcome === 'flag' ? describeOutputCapFlag(audit.outputCap)
+    : audit.outputEcho?.outcome === 'flag' ? describeOutputEchoFlag(audit.outputEcho) : null
+  const exchanges = tokenizerPrecheck || preQuestionFlag
     ? []
     : signedExchanges({ ...audit, reference, auditor: input.auditor, runId: input.runId, wrongProbeIds })
   const answersById = new Map<string, number | null>()
@@ -739,9 +752,11 @@ async function writeFixtureEvidence(input: {
   const fragment = verifyKbf(reference, { answers, matchVector }, KBF_AUDIT_VERIFY_OPTIONS)
   if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'UNKNOWN fixture verdict')
   const undetermined = audit.verdict === 'UNDETERMINED' && input.wrongCount === undefined
-  const verdict = tokenizerPrecheck ? 'DIFF' as const : undetermined ? 'UNDETERMINED' as const : fragment.verdict
+  const verdict = tokenizerPrecheck || preQuestionFlag ? 'DIFF' as const : undetermined ? 'UNDETERMINED' as const : fragment.verdict
   const verdictReason = tokenizerPrecheck
     ? describeTokenizerMismatch(tokenizerPrecheck)
+    : preQuestionFlag
+      ? preQuestionFlag
     : undetermined
       ? 'one or more successful proxy batches lacked valid verified ResponseAuth'
       : fragment.verdictReason
@@ -764,6 +779,8 @@ async function writeFixtureEvidence(input: {
       probes: reference.probes,
     },
     ...(tokenizerPrecheck ? { tokenizerPrecheck } : {}),
+    ...(audit.outputCap ? { outputCap: audit.outputCap } : {}),
+    ...(audit.outputEcho ? { outputEcho: audit.outputEcho } : {}),
     exchanges,
     result: {
       selectedProbeCount: reference.probes.length,

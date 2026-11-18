@@ -5,9 +5,9 @@ import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
  * recorded on chain only when a second auditor's check of the same name flags the seller too, on its
  * own fresh material (`same-check.ts`).
  */
-export type AuditCheckId = 'tokens' | 'output-cap' | 'kbf'
+export type AuditCheckId = 'tokens' | 'output-cap' | 'output-echo' | 'output-offset' | 'kbf'
 
-export const AUDIT_CHECK_IDS: readonly AuditCheckId[] = Object.freeze(['tokens', 'output-cap', 'kbf'])
+export const AUDIT_CHECK_IDS: readonly AuditCheckId[] = Object.freeze(['tokens', 'output-cap', 'output-echo', 'output-offset', 'kbf'])
 
 /**
  * The checks that flagged the seller in one audit, read from its evidence alone, so the auditor that
@@ -15,18 +15,20 @@ export const AUDIT_CHECK_IDS: readonly AuditCheckId[] = Object.freeze(['tokens',
  *
  * - `tokens`: the tokenizer pre-check found a mismatch.
  * - `output-cap`: the cap check flagged (`output-cap.ts`).
+ * - `output-echo`, `output-offset`: the echo check flagged a growth or a fixed amount (`output-echo.ts`).
  * - `kbf`: questions were asked and the questions' verdict (after any close-call extra sets, which is
  *   what `kbfVerdict` must be) is DIFF.
  *
  * Empty when nothing flagged.
  */
 export function flaggingChecks(
-  evidence: Pick<ProxyAuditEvidenceV1, 'tokenizerPrecheck' | 'outputCap' | 'exchanges'>,
+  evidence: Pick<ProxyAuditEvidenceV1, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho' | 'exchanges'>,
   kbfVerdict: 'SAME' | 'DIFF' | 'UNDETERMINED' | null,
 ): AuditCheckId[] {
   const checks: AuditCheckId[] = []
   if (evidence.tokenizerPrecheck?.outcome === 'mismatch') checks.push('tokens')
   if (evidence.outputCap?.outcome === 'flag') checks.push('output-cap')
+  if (evidence.outputEcho?.outcome === 'flag') checks.push(evidence.outputEcho.flag === 'offset' ? 'output-offset' : 'output-echo')
   if (evidence.exchanges.length > 0 && kbfVerdict === 'DIFF') checks.push('kbf')
   return checks
 }
@@ -36,12 +38,13 @@ export function flaggingChecks(
  * were asked and say SAME. A confirmer's SAME counts only when a check that flagged first passed here.
  */
 export function passedChecks(
-  evidence: Pick<ProxyAuditEvidenceV1, 'tokenizerPrecheck' | 'outputCap' | 'exchanges'>,
+  evidence: Pick<ProxyAuditEvidenceV1, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho' | 'exchanges'>,
   kbfVerdict: 'SAME' | 'DIFF' | 'UNDETERMINED' | null,
 ): AuditCheckId[] {
   const checks: AuditCheckId[] = []
   if (evidence.tokenizerPrecheck?.outcome === 'match') checks.push('tokens')
   if (evidence.outputCap?.outcome === 'pass') checks.push('output-cap')
+  if (evidence.outputEcho?.outcome === 'pass') checks.push('output-echo', 'output-offset')
   if (evidence.exchanges.length > 0 && kbfVerdict === 'SAME') checks.push('kbf')
   return checks
 }
@@ -51,6 +54,8 @@ export function describeAuditCheck(check: AuditCheckId): string {
   switch (check) {
     case 'tokens': return 'the token-count pre-check'
     case 'output-cap': return 'the cap check'
+    case 'output-echo': return 'the echo check'
+    case 'output-offset': return 'the echo check\'s fixed amount'
     case 'kbf': return 'the questions'
   }
 }

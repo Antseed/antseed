@@ -24,7 +24,7 @@ Audit requests are ordinary paid requests with no special label, and the seller 
 | Result | Meaning |
 |---|---|
 | **SAME** | The seller answered the way the genuine model does. This is strong evidence, not proof. |
-| **DIFF** | The seller missed far more often than the genuine model, so it is very likely serving a different model. Or it billed beyond the reply limit it was given. |
+| **DIFF** | The seller missed far more often than the genuine model, so it is very likely serving a different model. Or it billed more output than the model wrote, or beyond the reply limit it was given. |
 | **UNDETERMINED** | There weren't enough usable answers to decide, usually because the seller returned errors, timed out or sent empty answers. |
 
 A few rules keep this fair:

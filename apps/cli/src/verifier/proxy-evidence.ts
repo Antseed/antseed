@@ -17,6 +17,7 @@ import { safeServiceSlug } from './slug.js'
 import type { ThinkingDiscoveryAttemptV1, ThinkingDiscoveryStrategy } from './thinking-suppression.js'
 import type { TokenizerPrecheckV1 } from './tokenizer-precheck.js'
 import type { OutputCapV1 } from './output-cap.js'
+import type { OutputEchoV1 } from './output-echo.js'
 import type { AuditCheckId } from './flagging-checks.js'
 
 export type ExportedResponseAuthRecord = Omit<StoredResponseAuth, 'requestPreimage' | 'responsePreimage'>
@@ -160,6 +161,8 @@ export interface ProxyAuditSkipEvidenceV1 {
   tokenizerPrecheck?: TokenizerPrecheckV1
   /** The cap check that ran before the skipped request; absent when none ran. */
   outputCap?: OutputCapV1
+  /** The echo check that ran before the skipped request; absent when none ran. */
+  outputEcho?: OutputEchoV1
   exchange: ProxyAuditEvidenceExchangeV1
   result: {
     status: 'SKIPPED'
@@ -218,6 +221,11 @@ export interface ProxyAuditEvidenceV1 {
    * ran or it does not apply to the model this run. On a `flag` the verdict is DIFF and no question was asked.
    */
   outputCap?: OutputCapV1
+  /**
+   * The echo check that ran after the cap check and before the questions (`output-echo.ts`); absent when none ran
+   * or it does not apply to the model this run. On a `flag` the verdict is DIFF and no question was asked.
+   */
+  outputEcho?: OutputEchoV1
   /**
    * Set on an audit that answered another auditor's waiting DIFF: the checks that flagged it there, which ran to
    * their end here. A flag by another check did not end this audit, so a pre-check mismatch or a cap check flag

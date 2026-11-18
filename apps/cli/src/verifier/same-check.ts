@@ -7,6 +7,7 @@ import { pooledCloseCallVerdict } from './close-call.js'
 import { AUDIT_CHECK_IDS, describeAuditCheck, flaggingChecks, type AuditCheckId } from './flagging-checks.js'
 import { sanitizeOutcomeSummary } from './outcome-reason.js'
 import { validateOutputCap } from './output-cap.js'
+import { validateOutputEcho } from './output-echo.js'
 import { proxyAuditEvidenceHash, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import type { SubmissionCandidate } from './submission-delta.js'
 import { opinionKey } from './third-opinion.js'
@@ -376,6 +377,7 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
       // Every flag is recomputed from the stored records, as `verifier submit` checks its own.
       if (first.tokenizerPrecheck) validateTokenizerPrecheck(first.tokenizerPrecheck, first.target.peerId)
       if (first.outputCap) validateOutputCap(first.outputCap)
+      if (first.outputEcho) validateOutputEcho(first.outputEcho, first.target.peerId)
       const checks = flaggingChecks(first, await questionsVerdict(result, first, (audit) => sellerEvidence(audit, agentId, serviceHash)))
       if (checks.length === 0) throw new Error(`its evidence for agent ${agentId} shows no check that flagged`)
       return checks

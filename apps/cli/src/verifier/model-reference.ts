@@ -998,6 +998,73 @@ export async function askReferenceInputTokens(input: {
   return { upstream: referenceUpstreamProvenance(endpoint, route), results }
 }
 
+/**
+ * Asks a bank's reference model to repeat each of `texts`, on the bank's own route (`bankReferenceRoute`), for the
+ * echo check (`output-echo.ts`), and returns each answer's raw bytes with the request sent: the check reads them
+ * exactly as it reads a seller's. A failed request is asked up to twice more; it never throws for one request.
+ */
+export async function askReferenceReplies(input: {
+  model: string
+  settings: KbfReferenceV1
+  /** The full user message of each request. */
+  contents: readonly string[]
+  maxTokens: number
+  config: VerifierCLIConfig | undefined
+  catalog?: VerifierModelCatalog | null
+  buyerProxyPort?: number
+  fetchFn?: typeof fetch
+  requestLimiter?: ReferenceRequestLimiter
+  timeoutMs?: number
+  signal?: AbortSignal
+}): Promise<{
+  upstream: ReferenceUpstreamProvenanceV1
+  results: Array<{ requestBody: Uint8Array; response: { statusCode: number; body: Uint8Array } | null; provider: string | null; failure: string | null }>
+}> {
+  const endpoint = input.config?.referenceEndpoint
+  if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
+  const catalog = input.catalog ?? null
+  const modelConfig = resolveVerifierModelConfig(input.config, input.model, catalog)
+  const { route } = bankReferenceRoute({
+    endpoint, modelConfig, settings: input.settings, config: input.config, catalog, buyerProxyPort: input.buyerProxyPort,
+  })
+  if (input.settings.provenance && input.settings.provenance.sourceId !== referenceSourceId(endpoint, route)) {
+    throw new Error(`the echo check would ask ${referenceSourceId(endpoint, route)}, but this bank was enrolled on ${input.settings.provenance.sourceId}`)
+  }
+  const limiter = input.requestLimiter ?? createReferenceRequestLimiter(input.config)
+  const fetchFn = input.fetchFn ?? fetch
+  const timeoutMs = input.timeoutMs ?? input.settings.queryProfile.requestTimeoutMs
+  const retryBaseDelayMs = input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS
+  const encoder = new TextEncoder()
+  const ask = async (content: string) => {
+    const body = { messages: [{ role: 'user', content }], max_tokens: Math.max(input.maxTokens, route.minMaxTokens ?? 0), stream: false }
+    const read = (exchange: ReferenceRawExchange) => ({
+      requestBody: encoder.encode(exchange.requestBody),
+      response: { statusCode: exchange.status, body: encoder.encode(exchange.responseBody) },
+      provider: answeringProvider(exchange.responseBody),
+      failure: null,
+    })
+    try {
+      return read((await limiter.run(route.model, async () => {
+        if (input.signal?.aborted) throw new Error('the echo check\'s time for the reference is up')
+        return postChatCompletion(route, body, timeoutMs, fetchFn, input.signal)
+      })).exchange)
+    } catch (error) {
+      if (error instanceof EmptyReferenceResponseError && error.exchange) return read(error.exchange)
+      return { requestBody: encoder.encode(JSON.stringify(body)), response: null, provider: null, failure: asError(error).message.slice(0, 300) }
+    }
+  }
+  const results = await Promise.all(input.contents.map(async (content) => {
+    let result = await ask(content)
+    for (let retry = 1; retry < REFERENCE_INPUT_TOKENS_TRIES && result.response === null && !input.signal?.aborted; retry += 1) {
+      await sleep(retryBaseDelayMs * 3 * retry)
+      if (input.signal?.aborted) break
+      result = await ask(content)
+    }
+    return result
+  }))
+  return { upstream: referenceUpstreamProvenance(endpoint, route), results }
+}
+
 /** The provider an OpenRouter-style answer names; null when it names none. */
 function answeringProvider(responseBody: string): string | null {
   try {
