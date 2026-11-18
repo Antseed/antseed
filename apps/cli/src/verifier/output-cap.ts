@@ -161,10 +161,13 @@ function measurementRule(rule: OutputCapRule): TokenizerPrecheckRule {
   return { ...TOKENIZER_PRECHECK_RULE, referenceAsks: rule.referenceAsks }
 }
 
-/** Whether an answer billed above its limit is to be measured, and the text that would be. */
-export function answerToMeasure(reading: OutputReadingV1 | null, cap: number, rule: OutputCapRule = OUTPUT_CAP_RULE): string | null {
+/**
+ * The text of an answer to measure: one billed above its limit, or with `withinToo` any readable answer (a dry
+ * pass's diagnostic, which shows measured next to billed for answers that kept to the limit; it changes no class).
+ */
+export function answerToMeasure(reading: OutputReadingV1 | null, cap: number, rule: OutputCapRule = OUTPUT_CAP_RULE, withinToo = false): string | null {
   if (!readable(reading, cap)) return null
-  if (reading!.billedOutputTokens! <= cap + rule.tolerance) return null
+  if (!withinToo && reading!.billedOutputTokens! <= cap + rule.tolerance) return null
   // Measured without its outer whitespace, which can only make it shorter.
   const text = reading!.text?.trim()
   if (!text) return null
@@ -257,6 +260,8 @@ export async function runOutputCap(input: SignedSellerRequestInput & {
   ask: TokenizerReferenceAsk
   thinking?: Parameters<typeof outputCapRequestBody>[0]['thinking']
   rule?: OutputCapRule
+  /** A dry pass also measures answers that kept to the limit. */
+  measureWithin?: boolean
 }): Promise<OutputCapV1> {
   const rule = input.rule ?? OUTPUT_CAP_RULE
   const asks: OutputCapAskV1[] = []
@@ -264,16 +269,26 @@ export async function runOutputCap(input: SignedSellerRequestInput & {
   // The reference's measurements stop when the audit stops.
   const stop = input.signal
   const ask: TokenizerReferenceAsk = stop ? (contents, signal) => input.ask(contents, signal ? AbortSignal.any([signal, stop]) : stop) : input.ask
+  const firstStart: number[] = []
+  try {
   for (let index = 0; index < rule.sellerAsks; index += 1) {
-    const { prompt } = outputCapPrompt()
+    // Two asks are two observations: the second counts from another start.
+    let drawn = outputCapPrompt()
+    while (firstStart.includes(drawn.start)) drawn = outputCapPrompt()
+    firstStart.push(drawn.start)
+    const { prompt } = drawn
     const request = await askSellerSigned(input, outputCapRequestBody({ service: input.service, prompt, cap, thinking: input.thinking ?? null }))
     const exchange = signedExchange(request)
     const reading = exchange ? readOutput(exchange.requestBody, exchange.response) : null
-    const b = answerToMeasure(reading, cap, rule)
+    const b = answerToMeasure(reading, cap, rule, input.measureWithin === true)
     const measurement = b ? await measureAnswer(ask, b, rule) : null
     asks.push({ prompt, cap, request, reading, measurement, class: classifyCapAnswer(reading, cap, measuredTokens(measurement, rule), rule) })
     // Asked again only when the first answer ignored the limit.
     if (asks[0]!.class !== 'cap-ignored') break
+  }
+  } catch (error) {
+    // A check that fails is inconclusive, with the asks already paid for kept.
+    return { rule, outcome: 'inconclusive', reason: `the check failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300), asks }
   }
   return { rule, ...judgeOutputCap(asks, rule), asks }
 }
@@ -294,6 +309,12 @@ export function validateOutputCap(record: OutputCapV1): void {
   }
   const requestIds = record.asks.flatMap((ask) => ask.request.requestIds)
   if (new Set(requestIds).size !== requestIds.length) throw new Error('a cap check repeats a request ID: two asks must be two requests')
+  const signedIds = record.asks.flatMap((ask) => (ask.request.responseAuth?.requestId ? [ask.request.responseAuth.requestId] : []))
+  if (new Set(signedIds).size !== signedIds.length) throw new Error('a cap check repeats an authenticated request ID: two asks must be two signed requests')
+  if (record.asks.length > 1 && new Set(record.asks.map((ask) => ask.prompt)).size !== record.asks.length) throw new Error('a cap check asked the same request twice')
+  if (record.asks.some((ask) => ask.request.responseAuth?.requestId && !ask.request.requestIds.includes(ask.request.responseAuth.requestId))) {
+    throw new Error('a cap check\'s authenticated request is not one of its tries')
+  }
   if (record.asks.length > 1 && record.asks[0]!.class !== 'cap-ignored') throw new Error('a cap check asked again after an answer that did not ignore the limit')
   const cap = record.asks[0]!.cap
   for (const ask of record.asks) {
@@ -302,8 +323,10 @@ export function validateOutputCap(record: OutputCapV1): void {
     const reading = exchange ? readOutput(exchange.requestBody, exchange.response) : null
     if (canonicalJsonStringify(reading) !== canonicalJsonStringify(ask.reading)) throw new Error('a cap check reading differs from the signed bytes')
     if (exchange && !requestCarriesPrompt(exchange.requestBody, ask.prompt)) throw new Error('a cap check prompt is not the one the seller signed')
-    const b = answerToMeasure(reading, cap, rule)
-    if ((b === null) !== (ask.measurement === null) || (b !== null && ask.measurement!.b !== b)) {
+    // A measurement is required for an answer billed over the limit; one of an answer within it (a dry pass) is allowed.
+    const required = answerToMeasure(reading, cap, rule)
+    const allowed = answerToMeasure(reading, cap, rule, true)
+    if ((required !== null && ask.measurement === null) || (ask.measurement !== null && ask.measurement.b !== allowed)) {
       throw new Error('a cap check measurement is not of the answer the seller signed')
     }
     if (ask.measurement) {
@@ -412,6 +435,8 @@ export function createOutputCapScreen<Settings>(input: {
   /** The reference's input-token measurement for the model, on the route of the audit's question set. */
   ask: (settings: Settings) => TokenizerReferenceAsk
   rule?: OutputCapRule
+  /** A dry pass also measures answers that kept to the limit (`runOutputCap`). */
+  measureWithin?: boolean
 }): OutputCapScreen<Settings> {
   const rule = input.rule ?? OUTPUT_CAP_RULE
   let prepared: Promise<OutputCapReferenceV1> | null = null
@@ -427,7 +452,7 @@ export function createOutputCapScreen<Settings>(input: {
     async check(seller, settings, thinking, clock) {
       const reference = await ready(settings)
       if (!reference.applies) return null
-      return runOutputCap({
+      return Promise.resolve().then(() => runOutputCap({
         proxyBaseUrl: input.proxyBaseUrl,
         peerId: seller.peerId,
         service: seller.service,
@@ -441,7 +466,8 @@ export function createOutputCapScreen<Settings>(input: {
         ask: input.ask(settings),
         thinking,
         rule,
-      }).catch((error: unknown): OutputCapV1 => ({
+        ...(input.measureWithin ? { measureWithin: true } : {}),
+      })).catch((error: unknown): OutputCapV1 => ({
         rule, outcome: 'inconclusive', asks: [],
         reason: `the check failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300),
       }))

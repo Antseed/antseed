@@ -361,7 +361,9 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
     if (typeof path !== 'string') throw new Error('a published path is missing')
     return safeRelativePath(directory === '.' ? path : `${directory}/${path}`)
   }
-  const sellerEvidence = async (audit: unknown, agentId: bigint, serviceHash: string): Promise<ProxyAuditEvidenceV1> => {
+  const referenceIds = new Set((Array.isArray(evidence['references']) ? evidence['references'] as unknown[] : [])
+    .flatMap((entry) => (isRecord(entry) && typeof entry['referenceId'] === 'string' ? [entry['referenceId']] : [])))
+  const sellerEvidence = async (audit: unknown, agentId: bigint, serviceHash: string, expectedReferenceId: unknown): Promise<ProxyAuditEvidenceV1> => {
     if (!isRecord(audit) || typeof audit['evidenceHash'] !== 'string') throw new Error(`its result for agent ${agentId} names no audit evidence`)
     const seller = await fetchJson(resolve(audit['evidencePath']))
     if (!isRecord(seller) || seller['kind'] !== 'antseed-buyer-proxy-kbf-audit' || !Array.isArray(seller['exchanges'])
@@ -379,6 +381,10 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
     }
     if (normalized(modelHash(parsed.reference.referenceModel)) !== normalized(report.modelHash)) {
       throw new Error(`its audit evidence linked for agent ${agentId} is about another model`)
+    }
+    // The epoch: the file's question set is the one its result names, and one of this model audit's own references.
+    if (parsed.reference.referenceId !== expectedReferenceId || !referenceIds.has(parsed.reference.referenceId)) {
+      throw new Error(`its audit evidence linked for agent ${agentId} is on another question set than its model audit`)
     }
     const madeAt = Date.parse(parsed.createdAt) / 1_000
     // The evidence's time is the first auditor's clock, the report's the chain's: an hour of slack between them.
@@ -398,7 +404,7 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
       ))
       if (!result) throw new Error(`its evidence has no result for agent ${agentId} on this service`)
       if (result['verdict'] !== 'DIFF') throw new Error(`its evidence gives agent ${agentId} ${String(result['verdict'])}, not DIFF`)
-      const first = await sellerEvidence(result['audit'], agentId, serviceHash)
+      const first = await sellerEvidence(result['audit'], agentId, serviceHash, result['referenceId'])
       // Every flag is recomputed from the stored records, as `verifier submit` checks its own.
       if (first.tokenizerPrecheck) validateTokenizerPrecheck(first.tokenizerPrecheck, first.target.peerId)
       if (first.outputCap) validateOutputCap(first.outputCap)
@@ -406,7 +412,7 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
         validateOutputEcho(first.outputEcho, first.target.peerId)
         if (first.outputEcho.precheckMatch !== (first.tokenizerPrecheck?.outcome === 'match')) throw new Error('its echo check\'s pre-check match is not its pre-check')
       }
-      const checks = flaggingChecks(first, await questionsVerdict(result, first, (audit) => sellerEvidence(audit, agentId, serviceHash)))
+      const checks = flaggingChecks(first, await questionsVerdict(result, first, (audit, referenceId) => sellerEvidence(audit, agentId, serviceHash, referenceId)))
       if (checks.length === 0) throw new Error(`its evidence for agent ${agentId} shows no check that flagged`)
       return checks
     },
@@ -420,13 +426,13 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
 async function questionsVerdict(
   result: Record<string, unknown>,
   first: ProxyAuditEvidenceV1,
-  load: (audit: unknown) => Promise<ProxyAuditEvidenceV1>,
+  load: (audit: unknown, referenceId: unknown) => Promise<ProxyAuditEvidenceV1>,
 ): Promise<'SAME' | 'DIFF' | 'UNDETERMINED' | null> {
   const sets: Array<{ rule: unknown; evidence: ProxyAuditEvidenceV1 }> = []
   for (const name of ['extension', 'extension2']) {
     const extension = result[name]
     if (!isRecord(extension)) break
-    sets.push({ rule: extension['rule'], evidence: await load(extension['audit']) })
+    sets.push({ rule: extension['rule'], evidence: await load(extension['audit'], extension['referenceId']) })
   }
   if (sets.length === 0) return verdictOf(first.result.verdict)
   const rule = typeof sets[0]!.rule === 'string' ? kbfExtensionRuleById(sets[0]!.rule) : undefined

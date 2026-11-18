@@ -439,6 +439,10 @@ export async function prepareModelAudits(input: {
           : 'close call without its extra questions, so it is not submitted')
         continue
       }
+      if (result.outcomeReason?.code === 'confirmation_undecided') {
+        exclude('a confirmation whose check to repeat did not decide: it is never sent, whatever the chain shows now')
+        continue
+      }
       if (finalVerdict === 'UNDETERMINED' && failureBlame(result.outcomeReason) === 'auditor') {
         // The auditor's own failure says nothing about the seller's model, also when a run is
         // submitted directly (`--run-id`) rather than through the merged epoch.
@@ -519,6 +523,8 @@ export async function prepareModelAudits(input: {
         ...candidate,
         flaggedBy: flaggingChecks(accepted[index]!.evidence, accepted[index]!.result.status),
         passedBy: passedChecks(accepted[index]!.evidence, accepted[index]!.result.status),
+        // Freshness is the earliest evidence used: a close call's first set counts, not only its last extra set.
+        auditedAt: auditedAt(accepted[index]!, 'earliest'),
       })))
       for (let index = accepted.length - 1; index >= 0; index -= 1) {
         const decision = decisions[index]
@@ -641,7 +647,7 @@ export async function prepareModelAudits(input: {
           : {}),
         flaggedBy: flaggingChecks(evidence, result.status),
         passedBy: passedChecks(evidence, result.status),
-        auditedAt: auditedAt({ evidence, extensionEvidence, extension2Evidence }),
+        auditedAt: auditedAt({ evidence, extensionEvidence, extension2Evidence }, 'earliest'),
         ...(confirmation ? { confirmation } : {}),
       }))
       const evidence: ModelAuditEvidenceV1 = {
@@ -693,11 +699,12 @@ function auditedAt(entry: {
   evidence: ProxyAuditEvidenceV1
   extensionEvidence: ProxyAuditEvidenceV1 | null
   extension2Evidence: ProxyAuditEvidenceV1 | null
-}): number {
+}, which: 'latest' | 'earliest' = 'latest'): number {
   const times = [entry.evidence, entry.extensionEvidence, entry.extension2Evidence]
     .flatMap((evidence) => evidence ? [Date.parse(evidence.createdAt)] : [])
     .filter(Number.isFinite)
-  return times.length === 0 ? 0 : Math.max(...times) / 1_000
+  if (times.length === 0) return 0
+  return (which === 'latest' ? Math.max(...times) : Math.min(...times)) / 1_000
 }
 
 /**

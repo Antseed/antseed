@@ -429,13 +429,13 @@ function sellerResultReason(
 ): string {
   // Only a flag that ended the audit before its questions is the reason; in a confirmation that went on past it,
   // the questions decide.
-  if (result.tokenizerPrecheck?.outcome === 'mismatch' && result.parsedProbeCount === 0) {
+  if (result.tokenizerPrecheck?.outcome === 'mismatch' && result.parsedProbeCount === 0 && result.status === 'DIFF') {
     return `tokenizer pre-check (${result.tokenizerPrecheck.rule}): ${describeTokenizerCounts(result.tokenizerPrecheck)}`
   }
-  if (result.outputCap?.outcome === 'flag' && result.parsedProbeCount === 0) {
+  if (result.outputCap?.outcome === 'flag' && result.parsedProbeCount === 0 && result.status === 'DIFF') {
     return `cap check (${result.outputCap.rule}): ${describeOutputCapSummary(result.outputCap)}: the reply limit was ignored`
   }
-  if (result.outputEcho?.outcome === 'flag' && result.parsedProbeCount === 0) return `echo check (${result.outputEcho.rule}): ${result.outputEcho.reason}`
+  if (result.outputEcho?.outcome === 'flag' && result.parsedProbeCount === 0 && result.status === 'DIFF') return `echo check (${result.outputEcho.rule}): ${result.outputEcho.reason}`
   if (!result.extension) {
     if (result.extensionPending) return `close call waiting for extra questions: ${result.extensionPending.reason}`
     return reportReason(result.outcomeReason)

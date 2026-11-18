@@ -892,9 +892,20 @@ export async function verifyModelTarget(input: {
   // What ran before the questions, paid for like batches: the pre-check, the cap check and the echo check.
   const preQuestionCosts = [precheckCost, capCost, echoCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
   const preQuestionRequests = (precheck ? tokenizerPrecheckRequestCount(precheck) : 0) + capRequests
-  if (capEnds || echoEnds) {
+  // A confirmation of a DIFF the pre-check, the cap check or the echo check flagged, whose checks to repeat all ran
+  // and none decided, ends here too: its questions could not decide it, and it is audited again within its attempts.
+  const undecidedBeforeQuestions = input.confirming && !input.confirming.checks.includes('kbf')
+    && !input.confirming.checks.some((check) => [
+      ...flaggingChecks({ tokenizerPrecheck: precheck ?? undefined, outputCap: outputCap ?? undefined, outputEcho: outputEcho ?? undefined, exchanges: [] }, null),
+      ...passedChecks({ tokenizerPrecheck: precheck ?? undefined, outputCap: outputCap ?? undefined, outputEcho: outputEcho ?? undefined, exchanges: [] }, null),
+    ].includes(check))
+    ? input.confirming.checks
+    : null
+  if (capEnds || echoEnds || undecidedBeforeQuestions) {
     // The seller bills beyond the reply limit it was given, or bills output the model did not write: DIFF, and none
-    // of its questions is asked.
+    // of its questions is asked. Or a confirmation could not decide: UNDETERMINED, with the reason the plan retries.
+    const endVerdict = capEnds || echoEnds ? 'DIFF' as const : 'UNDETERMINED' as const
+    const endOutcome = endVerdict === 'DIFF' ? null : confirmationUndecidedReason(undecidedBeforeQuestions!, batches.length)
     deadline.close()
     const unanswered = new Array<null>(input.reference.probes.length).fill(null)
     const fragment = verifyKbf(input.reference, { answers: unanswered, matchVector: unanswered }, KBF_AUDIT_VERIFY_OPTIONS)
@@ -914,9 +925,10 @@ export async function verifyModelTarget(input: {
         matchVector: unanswered,
         matchVectorHash: fragment.matchVectorHash,
         stats: fragment.stats,
-        verdict: 'DIFF',
-        verdictReason: capEnds ? describeOutputCapFlag(outputCap!) : describeOutputEchoFlag(outputEcho!),
-        outcomeReason: null,
+        verdict: endVerdict,
+        verdictReason: capEnds ? describeOutputCapFlag(outputCap!) : echoEnds ? describeOutputEchoFlag(outputEcho!)
+          : `the check this confirmation must repeat (${undecidedBeforeQuestions!.join(', ')}) did not decide; its questions were not asked`,
+        outcomeReason: endOutcome,
         cost: flagCost,
         cumulativeCost: flagCost,
       },
@@ -930,8 +942,8 @@ export async function verifyModelTarget(input: {
     const written = await writeProxyAuditEvidence(input.context.evidenceDir, resolvedAuditId, evidence)
     return {
       ...target,
-      status: 'DIFF',
-      outcomeReason: null,
+      status: endVerdict,
+      outcomeReason: endOutcome,
       auditId: resolvedAuditId,
       parsedProbeCount: 0,
       probeCount: input.reference.probes.length,

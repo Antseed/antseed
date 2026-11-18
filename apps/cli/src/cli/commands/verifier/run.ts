@@ -59,6 +59,7 @@ import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelSe
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { alreadyJudgedByOther, otherOpinions, type OtherOpinion } from '../../../verifier/third-opinion.js'
 import { attachFirstFlags } from '../../../verifier/same-check.js'
+import { decidedChecks } from '../../../verifier/flagging-checks.js'
 import { fetchIpfsText } from '@antseed/model-verifier'
 import { DIFF_HOLD_EPOCHS, diffHolds, type DiffHolds } from '../../../verifier/diff-hold.js'
 import { auditorRemovedMessage, createAuditorApprovalGate } from '../../../verifier/auditor-approval.js'
@@ -1009,7 +1010,11 @@ export async function runVerifierRound(
             ? epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
             : undefined
           const local = cell?.result && completedAt
-            ? { service: cell.result.service, completedAt: Date.parse(completedAt) / 1_000 }
+            ? {
+              service: cell.result.service,
+              completedAt: Date.parse(completedAt) / 1_000,
+              decided: cell.result.outcomeReason?.code === 'confirmation_undecided' ? 'undecided-confirmation' as const : decidedChecks(cell.result),
+            }
             : null
           return localResultAnswersConfirmation(confirmation, local) ? undefined : confirmation
         }
@@ -1535,6 +1540,8 @@ export async function runVerifierRound(
           // the reference measuring a count in words on the route of the seller's question set; each seller's
           // answers billed over the limit are measured there too.
           const outputCap = config.verifier?.outputChecks === false ? null : createOutputCapScreen<KbfReferenceV1>({
+            // A dry pass (nothing submitted) also measures answers that kept to the limit, to show the measurement's scale.
+            measureWithin: process.env['ANTSEED_VERIFIER_CAP_MEASURE_WITHIN'] === '1',
             proxyBaseUrl: laneProxy.baseUrl,
             responseAuthReader: responseAuthReader!,
             limiter: batchLimiter,

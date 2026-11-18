@@ -12,6 +12,7 @@ import { modelAuditUpstreams, prepareModelAudits, writeModelAuditEvidence, type 
 import { FIXTURE_CONFIG, referenceFixture, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
 import {
   CONFIRMATION_MIN_DELAY_SECONDS,
+  attachFirstFlags,
   decide,
   sameCheckFilter,
   type FirstFlag,
@@ -356,6 +357,27 @@ test('a first auditor\'s seller file about another model, or from another epoch,
       ...reader(files, audit.evidenceHash, { modelHash: otherModel }),
     } })(otherModel, [candidate(2n, VERIFIER_VERDICT.DIFF, ['tokens'])])
     assert.equal(decision?.kind, 'hold')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('before a confirmation is audited, the first checks are read and stored; unreadable or too recent ones are not audited now', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-same-check-'))
+  try {
+    const { audit, files } = await firstAuditor(directory)
+    const target = (agentId: bigint) => ({ agentId, service: MODEL, waiting: [{ verdict: 'DIFF' as const, reports: 1, required: 2 }], ownReportedAt: null })
+    const targets = () => new Map([[MODEL, new Map([['2', target(2n)], ['3', target(3n)]])]])
+    const events = [report(2n, VERIFIER_VERDICT.DIFF), report(3n, VERIFIER_VERDICT.DIFF, { transactionHash: `0x${'ef'.repeat(32)}` })]
+    const lines: string[] = []
+    const read = targets()
+    await attachFirstFlags(read, { events, auditor: second.address, reader: reader(files, audit.evidenceHash), now: REPORTED_AT + 2 * 3_600, log: (line) => lines.push(line) })
+    assert.deepEqual(read.get(MODEL)!.get('2'), { ...target(2n), firstChecks: ['tokens'], firstReportedAt: REPORTED_AT })
+    assert.equal(read.get(MODEL)!.has('3'), false, 'its first evidence cannot be read')
+    assert.match(lines.join('\n'), /agent 3 is not audited now: which check flagged its waiting DIFF could not be read/)
+    const early = targets()
+    await attachFirstFlags(early, { events, auditor: second.address, reader: reader(files, audit.evidenceHash), now: REPORTED_AT + 600, log: () => {} })
+    assert.equal(early.get(MODEL)!.has('2'), false, 'younger than an hour: audited by a later run')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

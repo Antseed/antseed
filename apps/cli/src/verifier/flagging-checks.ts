@@ -52,6 +52,23 @@ export function passedChecks(
   return checks
 }
 
+/** The checks an audit's summary shows decided (flagged or passed), for the planner, which has no evidence at hand. */
+export function decidedChecks(result: {
+  status: string
+  parsedProbeCount?: number
+  tokenizerPrecheck?: { outcome: string }
+  outputCap?: { outcome: string }
+  outputEcho?: { growth?: string; fixedAmount?: string }
+}): AuditCheckId[] {
+  const checks: AuditCheckId[] = []
+  if (result.tokenizerPrecheck?.outcome === 'match' || result.tokenizerPrecheck?.outcome === 'mismatch') checks.push('tokens')
+  if (result.outputCap?.outcome === 'pass' || result.outputCap?.outcome === 'flag') checks.push('output-cap')
+  if (result.outputEcho?.growth === 'pass' || result.outputEcho?.growth === 'flag') checks.push('output-echo')
+  if (result.outputEcho?.fixedAmount === 'pass' || result.outputEcho?.fixedAmount === 'flag') checks.push('output-offset')
+  if ((result.parsedProbeCount ?? 0) > 0 && (result.status === 'SAME' || result.status === 'DIFF')) checks.push('kbf')
+  return checks
+}
+
 /** A plain name for people, as in a verdict reason. */
 export function describeAuditCheck(check: AuditCheckId): string {
   switch (check) {

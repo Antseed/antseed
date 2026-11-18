@@ -120,7 +120,9 @@ function textParts(parts: readonly unknown[], types: readonly string[]): string 
 /** The usage names an output count (`completion_tokens` or `output_tokens`), as a non-negative integer. */
 function signsOutputCount(usage: unknown): boolean {
   if (!isRecord(usage)) return false
-  return ['completion_tokens', 'output_tokens'].some((key) => Number.isInteger(usage[key]) && (usage[key] as number) >= 0)
+  // Every output count present must be a non-negative integer, whichever one billing then takes.
+  const present = ['completion_tokens', 'output_tokens'].filter((key) => usage[key] !== undefined && usage[key] !== null)
+  return present.length > 0 && present.every((key) => Number.isInteger(usage[key]) && (usage[key] as number) >= 0)
 }
 
 /** Every string inside a JSON value, depth first. */
@@ -131,13 +133,29 @@ export function stringsOf(value: unknown): string[] {
   return []
 }
 
+/** The texts of the user turns of a request, in each API shape the buyer proxy translates to. */
+function userTexts(body: Record<string, unknown> | null): string[] {
+  if (!body) return []
+  const textsOf = (content: unknown): string[] => {
+    if (typeof content === 'string') return [content]
+    if (!Array.isArray(content)) return []
+    return content.flatMap((part) => (isRecord(part) && typeof part['text'] === 'string'
+      && (part['type'] === 'text' || part['type'] === 'input_text') ? [part['text']] : []))
+  }
+  const turns = (value: unknown): string[] => (Array.isArray(value) ? value : []).flatMap((turn) => (
+    isRecord(turn) && turn['role'] === 'user' ? textsOf(turn['content']) : []
+  ))
+  // Chat Completions and Messages: `messages`; Responses: `input`, a string or a list of turns.
+  return [...turns(body['messages']), ...(typeof body['input'] === 'string' ? [body['input']] : turns(body['input']))]
+}
+
 /**
- * Whether the request the seller signed carries `prompt` as one of its texts, in any API shape the buyer proxy
- * translates to (a Chat message's content, a Messages text block, a Responses input): the check that the seller was
- * asked what the record says it was asked.
+ * Whether the request the seller signed asks `prompt` in a user turn, in any API shape the buyer proxy translates
+ * to (a Chat message's content, a Messages text block, a Responses input): the check that the seller was asked what
+ * the record says it was asked.
  */
 export function requestCarriesPrompt(requestBody: Uint8Array, prompt: string): boolean {
-  return stringsOf(parseObject(requestBody)).includes(prompt)
+  return userTexts(parseObject(requestBody)).includes(prompt)
 }
 
 /** The reasoning count in `completion_tokens_details` or `output_tokens_details`; null when neither has one. */

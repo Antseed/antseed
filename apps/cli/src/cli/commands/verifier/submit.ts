@@ -479,6 +479,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           // A DIFF is sent only with a publication of exactly this evidence: a confirmer reads which check flagged from
           // it (same-check.ts). This holds for the payload sent, also one rebuilt from an earlier attempt's ledger.
           if (audit.results.some((result) => result.verdict === verifierVerdict('DIFF')) && !publication) {
+            // Its ledger entry goes, so the next submit prepares the model again and its other results are not stuck.
+            delete ledger.models[audit.key]
+            await writeModelAuditLedger(ledgerPath, ledger)
             held += 1
             unsent.push(`${audit.key}: not sent: its DIFF has no publication of this evidence`)
             console.warn(chalk.yellow(`${audit.key}: not sent: a DIFF goes out only with its evidence published to IPFS, and this evidence is not. `

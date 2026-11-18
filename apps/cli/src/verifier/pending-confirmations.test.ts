@@ -498,3 +498,13 @@ test('every auditor works out the same confirmer, whatever order or case the aud
     }
   }
 })
+
+test('a local result answers a waiting DIFF only when it decided a check that flagged it', () => {
+  const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['output-cap' as const], firstReportedAt: 10_000 }
+  const later = 10_000 + 7_200
+  // A first look whose questions said SAME and whose cap check did not decide: the cap must still be asked.
+  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, decided: ['kbf'] }), false)
+  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, decided: ['kbf', 'output-cap'] }), true)
+  // A confirmation that ran and did not decide is retried by the epoch plan within its attempts, not here.
+  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, decided: 'undecided-confirmation' }), true)
+})

@@ -384,9 +384,13 @@ export interface ConfirmationTarget {
  */
 export function localResultAnswersConfirmation(
   target: ConfirmationTarget,
-  local: { service: string; completedAt: number } | null,
+  local: { service: string; completedAt: number; decided?: readonly AuditCheckId[] | 'undecided-confirmation' } | null,
 ): boolean {
   if (!local || normalized(local.service) !== normalized(target.service)) return false
+  // It must have decided a check this confirmation repeats; a confirmation that ran and did not decide is retried by
+  // the epoch plan within its attempts instead, so it counts as an answer here.
+  if (target.firstChecks && local.decided !== undefined && local.decided !== 'undecided-confirmation'
+    && !target.firstChecks.some((check) => local.decided!.includes(check))) return false
   // A confirmation is fresh material: an audit made at least an hour after the report it answers.
   if (target.firstReportedAt !== undefined && local.completedAt < target.firstReportedAt + CONFIRMATION_MIN_DELAY_SECONDS) return false
   return target.ownReportedAt === null || local.completedAt > target.ownReportedAt

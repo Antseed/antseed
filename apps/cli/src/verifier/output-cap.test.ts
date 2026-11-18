@@ -366,6 +366,8 @@ test('the reader abstains on an error sent with choices, several choices, and us
   assert.equal(readOutput(capped(16), body({ ...answer, usage: { prompt_tokens: 20 } })).billedOutputTokens, null, 'input usage only is not a signed output count')
   assert.equal(classifyCapAnswer(readOutput(capped(16), body({ ...answer, usage: { prompt_tokens: 20 } })), 16, null), 'unread')
   assert.equal(readOutput(capped(16), body(answer)).billedOutputTokens, 900, 'a valid answer that stopped at the limit stays readable')
+  assert.equal(readOutput(capped(16), body({ ...answer, usage: { completion_tokens: -1, output_tokens: 900 } })).billedOutputTokens, null, 'every output count present must be valid')
+  assert.equal(readOutput(capped(16), body({ ...answer, usage: { completion_tokens: 900, completion_tokens_details: { reasoning_tokens: 901 } } })).billedOutputTokens, null, 'reasoning above the billed output')
 })
 
 test('the prompt is found in the signed request in every shape the proxy translates to', () => {
@@ -375,6 +377,8 @@ test('the prompt is found in the signed request in every shape the proxy transla
   assert.equal(requestCarriesPrompt(bytes({ input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }] }), prompt), true)
   assert.equal(requestCarriesPrompt(bytes({ input: prompt }), prompt), true)
   assert.equal(requestCarriesPrompt(bytes({ messages: [{ role: 'user', content: 'Count upward from 301' }] }), prompt), false)
+  assert.equal(requestCarriesPrompt(bytes({ messages: [{ role: 'system', content: prompt }, { role: 'user', content: 'hi' }] }), prompt), false, 'only a user turn counts')
+  assert.equal(requestCarriesPrompt(bytes({ metadata: { note: prompt }, messages: [{ role: 'user', content: 'hi' }] }), prompt), false)
 })
 
 test('two asks must be two requests, and the request sentence varies', async () => {
@@ -389,4 +393,17 @@ test('two asks must be two requests, and the request sentence varies', async () 
 test('a check that fails is an inconclusive record, which rechecks at submit', () => {
   validateOutputCap({ rule: OUTPUT_CAP_RULE, outcome: 'inconclusive', reason: 'the check failed: boom', asks: [] })
   assert.throws(() => validateOutputCap({ rule: OUTPUT_CAP_RULE, outcome: 'pass', reason: '', asks: [] }), /without asks must be inconclusive/)
+})
+
+test('a dry pass measures answers that kept to the limit too, and the record still rechecks', async () => {
+  const seller = fakeSeller((cap) => ({ text: words(Math.floor(cap / 3)), billed: cap }))
+  const reference = await prepareOutputCapReference({ ask: wordReference })
+  const record = await runOutputCap({
+    proxyBaseUrl: 'http://127.0.0.1:1', peerId: PEER, service: SERVICE,
+    responseAuthReader: seller.responseAuthReader, limiter: new ConcurrencyLimiter(1), fetchFn: seller.fetchFn,
+    reference, ask: wordReference, thinking: null, measureWithin: true,
+  })
+  assert.equal(record.asks[0]!.class, 'within')
+  assert.notEqual(measuredTokens(record.asks[0]!.measurement), null)
+  validateOutputCap(record)
 })
