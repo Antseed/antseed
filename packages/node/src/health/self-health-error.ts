@@ -148,11 +148,9 @@ export const VIDEO_DOWNLOAD_BUSY_CODE = 'video_download_busy';
 /** Whether a provider's 429 body is the seller's own download-busy answer. */
 export function isVideoDownloadBusy(statusCode: number, text: string): boolean {
   if (statusCode !== 429 || !text.includes(VIDEO_DOWNLOAD_BUSY_CODE)) return false;
-  try {
-    return (JSON.parse(text) as { error?: { code?: unknown } }).error?.code === VIDEO_DOWNLOAD_BUSY_CODE;
-  } catch {
-    return false;
-  }
+  const error = tryParseJsonObject(text)?.['error'];
+  if (!error || typeof error !== 'object') return false;
+  return (error as { code?: unknown }).code === VIDEO_DOWNLOAD_BUSY_CODE;
 }
 
 /** Error code a seller answers with when its upstream rate or usage limits a request. */
