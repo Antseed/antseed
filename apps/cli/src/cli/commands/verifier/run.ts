@@ -58,6 +58,8 @@ import { findAdvertisedService } from '../../../verifier/service-discovery.js'
 import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { alreadyJudgedByOther, otherOpinions, type OtherOpinion } from '../../../verifier/third-opinion.js'
+import { attachFirstFlags } from '../../../verifier/same-check.js'
+import { fetchIpfsText } from '@antseed/model-verifier'
 import { DIFF_HOLD_EPOCHS, diffHolds, type DiffHolds } from '../../../verifier/diff-hold.js'
 import { auditorRemovedMessage, createAuditorApprovalGate } from '../../../verifier/auditor-approval.js'
 import { asError, normalized } from '../../../verifier/utils.js'
@@ -131,8 +133,9 @@ import {
 } from '../../../verifier/audit-window.js'
 import { askReferenceInputTokens, createReferenceRequestLimiter, referenceConcurrencyWarning } from '../../../verifier/model-reference.js'
 import { TOKENIZER_PRECHECK_RULE, createTokenizerPrecheckScreen, describeTokenizerCounts, measureTokenizerReference } from '../../../verifier/tokenizer-precheck.js'
+import { createOutputCapScreen, describeOutputCapSummary } from '../../../verifier/output-cap.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
-import { closeCallRuleForExtensions, extensionSets, latestExtension } from '../../../verifier/close-call.js'
+import { askedNoQuestion, closeCallRuleForExtensions, extensionSets, latestExtension } from '../../../verifier/close-call.js'
 import {
   confirmationTargetsByModel,
   describeTallies,
@@ -509,6 +512,26 @@ export async function loadRunConfirmations(input: {
           : `the reported service is not one of the names configured for ${entry.model}`}`,
       ))
     }
+    // Which check flagged first is read before the seller is audited, so the confirmation runs that check to its
+    // end (`model-run.ts`). A confirmation whose first evidence cannot be read, or that is younger than an hour,
+    // is not audited now: its result could not be sent (same-check.ts), and the next run tries again.
+    await attachFirstFlags(targets, {
+      events,
+      auditor: auditor.address,
+      revoked,
+      now: input.now ?? Math.floor(Date.now() / 1_000),
+      reader: {
+        modelAudits: (filter) => client.queryModelAudits(filter),
+        fetchText: (cidPath) => fetchIpfsText(cidPath),
+        reportRound: (agentId, service) => client.reportRound(agentId, service),
+        blockTimestamp: async (blockNumber) => {
+          const block = await client.provider.getBlock(blockNumber)
+          if (!block) throw new Error(`block ${blockNumber} is unavailable`)
+          return block.timestamp
+        },
+      },
+      log: (line) => console.log(chalk.yellow(line)),
+    })
     // When this auditor reported on a seller in a round the contract no longer counts, a local
     // result only answers the confirmation if it is newer than that report.
     const ownReports = ownLatestReports(events, auditor.address)
@@ -1507,6 +1530,26 @@ export async function runVerifierRound(
               return reference
             },
           })
+          // The cap check of this model's sellers (`createOutputCapScreen`): whether it applies is decided once, by
+          // the reference measuring a count in words on the route of the seller's question set; each seller's
+          // answers billed over the limit are measured there too.
+          const outputCap = config.verifier?.outputChecks === false ? null : createOutputCapScreen<KbfReferenceV1>({
+            proxyBaseUrl: laneProxy.baseUrl,
+            responseAuthReader: responseAuthReader!,
+            limiter: batchLimiter,
+            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
+            ask: (settings) => async (contents, signal) => askReferenceInputTokens({
+              model,
+              settings,
+              contents,
+              ...(signal ? { signal } : {}),
+              maxTokens: TOKENIZER_PRECHECK_RULE.maxTokens,
+              config: config.verifier,
+              catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
+              buyerProxyPort: config.buyer.proxyPort,
+              requestLimiter: precheckReferenceLimiter,
+            }),
+          })
           // First audits and extra sets share timeouts and concurrency; only where evidence goes differs.
           const verificationContext = (peer: PeerInfo, auditEvidenceDir: string): ProxyVerificationContext => ({
             proxy: laneProxy,
@@ -1524,6 +1567,7 @@ export async function runVerifierRound(
             batchLimiter,
             sellerThinking,
             ...(tokenizerPrecheck ? { tokenizerPrecheck } : {}),
+            ...(outputCap ? { outputCap } : {}),
           })
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
             if (await stopIfAuditorRemoved()) {
@@ -1602,6 +1646,11 @@ export async function runVerifierRound(
                   auditId = reserved.auditId
                 }
                 referenceSources.set(reference.referenceId, reference)
+                // A confirmation of a waiting DIFF runs the check that flagged it to its end.
+                const confirming = confirmationFor(model, target.peer)
+                const confirmingChecks = confirming?.firstChecks && normalized(confirming.service) === normalized(target.service)
+                  ? confirming.firstChecks
+                  : null
                 const verified = await verifyModelTarget({
                   context: verificationContext(target.peer, modelAuditSellersDirectory(evidenceDir, epoch, model, runId)),
                   target: target.peer,
@@ -1610,10 +1659,11 @@ export async function runVerifierRound(
                   auditId,
                   resume,
                   checkpointIdentity: { runId, epoch, model },
+                  ...(confirmingChecks ? { confirming: { checks: confirmingChecks } } : {}),
                 })
                 // New first audits are decided by the close-call rule unless it is turned off. A DIFF from
-                // the tokenizer pre-check asked no question, so no close-call rule decides it.
-                const result = verified.status !== 'SKIPPED' && closeCallRule && verified.tokenizerPrecheck?.outcome !== 'mismatch'
+                // the tokenizer pre-check or the cap check asked no question, so no close-call rule decides it.
+                const result = verified.status !== 'SKIPPED' && closeCallRule && !askedNoQuestion(verified)
                   ? { ...verified, decisionRule: closeCallRule.id }
                   : verified
                 if (result.status === 'SKIPPED') {
@@ -1658,6 +1708,8 @@ export async function runVerifierRound(
                     `${result.status} ${target.peer.peerId.slice(0, 12)}… `
                     + (result.tokenizerPrecheck?.outcome === 'mismatch'
                       ? `(tokenizer pre-check: ${describeTokenizerCounts(result.tokenizerPrecheck)}, `
+                      : result.outputCap?.outcome === 'flag'
+                        ? `(cap check: ${describeOutputCapSummary(result.outputCap)}, `
                       : `(${result.parsedProbeCount}/${result.probeCount} scoreable, `)
                     + `$${result.cost.estimatedCostUsd.toFixed(6)})`,
                   ))

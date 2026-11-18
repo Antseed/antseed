@@ -235,13 +235,19 @@ export async function writeSignedAuditRun(input: {
   auditor: Wallet
   audits: FixtureAudit[]
   epochSource?: VerifierRunManifestV1['epochSource']
+  /**
+   * When the run's audits were made (default 2026-10-07T00:02:00Z, two minutes into the fixture epoch). A
+   * confirmation must be made at least an hour after the report it answers (`same-check.ts`).
+   */
+  completedAt?: string
 }): Promise<VerifierRunManifestV1> {
   const models = [...new Set(input.audits.map((audit) => audit.model))]
+  const completedAt = input.completedAt ?? '2026-10-07T00:02:00.000Z'
   const timestamps = {
     epochStartedAt: '2026-10-07T00:00:00.000Z',
     epochEndsAt: '2026-10-08T00:00:00.000Z',
-    startedAt: '2026-10-07T00:01:00.000Z',
-    completedAt: '2026-10-07T00:02:00.000Z',
+    startedAt: new Date(Date.parse(completedAt) - 60_000).toISOString(),
+    completedAt,
   }
   const summaryModels: EpochAuditSummaryV1['models'] = []
   for (const model of models) {

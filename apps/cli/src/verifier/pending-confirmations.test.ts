@@ -291,6 +291,14 @@ test('a finished local result answers a confirmation only for the reported servi
   assert.equal(localResultAnswersConfirmation({ ...target, ownReportedAt: 600 }, { service: 'Served-A', completedAt: 700 }), true)
 })
 
+test('a local result answers a waiting DIFF only when it was made at least an hour after the first report', () => {
+  const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['kbf' as const], firstReportedAt: 10_000 }
+  // Made before the other auditor reported, or within the hour after: not fresh material, so the seller is audited again.
+  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: 9_000 }), false)
+  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: 10_000 + 3_599 }), false)
+  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: 10_000 + 3_600 }), true)
+})
+
 // Liveness edge cases: what happens to a DIFF when the auditor who should confirm it does not.
 
 test('an auditor never confirms its own DIFF, however late in the epoch', () => {

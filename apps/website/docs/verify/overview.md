@@ -24,12 +24,12 @@ Audit requests are ordinary paid requests with no special label, and the seller 
 | Result | Meaning |
 |---|---|
 | **SAME** | The seller answered the way the genuine model does. This is strong evidence, not proof. |
-| **DIFF** | The seller missed far more often than the genuine model. It is very likely serving a different model. |
+| **DIFF** | The seller missed far more often than the genuine model, so it is very likely serving a different model. Or it billed beyond the reply limit it was given. |
 | **UNDETERMINED** | There weren't enough usable answers to decide, usually because the seller returned errors, timed out or sent empty answers. |
 
 A few rules keep this fair:
 
-- One auditor can't mark a seller DIFF on its own. A DIFF is recorded only after a second auditor tests the same seller with its own questions and gets the same result.
+- One auditor can't mark a seller DIFF on its own. A DIFF is recorded only after a second auditor tests the same seller on its own material and the same check flags it again.
 - Results expire. A result counts for the epoch it was given in and the next one, so one to two weeks. Sellers are audited again every epoch, and a seller that fixes its setup recovers at its next audit.
 - Each result covers one service: one seller's offer of one model.
 - The evidence is public. The questions, the seller's answers and the statistics go to IPFS, and anyone can run the same check again.

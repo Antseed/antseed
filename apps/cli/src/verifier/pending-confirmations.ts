@@ -10,6 +10,8 @@ import {
 import { auditorRotationForModel } from './audit-assignment.js'
 import { normalized } from './utils.js'
 import { mapConcurrently } from './audit-concurrency.js'
+import type { AuditCheckId } from './flagging-checks.js'
+import { CONFIRMATION_MIN_DELAY_SECONDS } from './same-check.js'
 
 /** The reads the confirmation helpers need from the KBF audits and results contracts. */
 export interface EpochReportReader {
@@ -366,6 +368,12 @@ export interface ConfirmationTarget {
    * round the contract no longer counts; null when it has not reported on it this epoch.
    */
   ownReportedAt: number | null
+  /**
+   * For a waiting DIFF: the checks that flagged it in the first auditor's published evidence (`same-check.ts`),
+   * read before the seller is audited, and Unix seconds of that report. Unset until `verifier run` read them.
+   */
+  firstChecks?: AuditCheckId[]
+  firstReportedAt?: number
 }
 
 /**
@@ -379,6 +387,8 @@ export function localResultAnswersConfirmation(
   local: { service: string; completedAt: number } | null,
 ): boolean {
   if (!local || normalized(local.service) !== normalized(target.service)) return false
+  // A confirmation is fresh material: an audit made at least an hour after the report it answers.
+  if (target.firstReportedAt !== undefined && local.completedAt < target.firstReportedAt + CONFIRMATION_MIN_DELAY_SECONDS) return false
   return target.ownReportedAt === null || local.completedAt > target.ownReportedAt
 }
 

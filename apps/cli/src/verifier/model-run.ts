@@ -72,6 +72,16 @@ import {
   type TokenizerPrecheckSeller,
   type TokenizerPrecheckV1,
 } from './tokenizer-precheck.js'
+import type { AuditCheckId } from './flagging-checks.js'
+import {
+  describeOutputCapFlag,
+  outputCapCost,
+  outputCapRequestCount,
+  summarizeOutputCap,
+  type OutputCapScreen,
+  type OutputCapSummary,
+  type OutputCapV1,
+} from './output-cap.js'
 import { advertisedServices, findAdvertisedService } from './service-discovery.js'
 import { mapWithAdaptiveConcurrency, type AuditTaskLimiter } from './audit-concurrency.js'
 import { writeJsonAtomic } from './atomic-files.js'
@@ -228,6 +238,11 @@ export interface ProxyVerificationContext {
    * starts, and the seller's clock runs only while a pre-check request to it is out.
    */
   tokenizerPrecheck?: Pick<TokenizerPrecheckScreen<KbfReferenceV1>, 'ready' | 'check'>
+  /**
+   * When set, each first audit runs the cap check after thinking discovery (`output-cap.ts`): a seller whose
+   * delivered answer measures more than twice the reply limit, twice, is DIFF and is asked no question.
+   */
+  outputCap?: Pick<OutputCapScreen<KbfReferenceV1>, 'check'>
 }
 
 /** What a seller's batch requests carry: its thinking suppression, token budget and timeout. */
@@ -313,6 +328,11 @@ export interface ModelVerificationTargetResult {
    * and no question was asked, so the audit has no close call to extend.
    */
   tokenizerPrecheck?: TokenizerPrecheckSummary
+  /**
+   * The cap check this audit ran before its questions; absent when none ran. On a `flag` the status is DIFF and
+   * no question was asked, so the audit has no close call to extend.
+   */
+  outputCap?: OutputCapSummary
   /**
    * Extra set of never-seen probes asked after a close-call first audit; `status` above is then the
    * verdict on both sets pooled.
@@ -621,7 +641,15 @@ export async function verifyModelTarget(input: {
     model: string
   }
   extension?: boolean
+  /**
+   * The audit answers another auditor's waiting DIFF, flagged by these checks (`same-check.ts`): a flag by any
+   * other check does not end it, so the checks that must confirm always run to their end.
+   */
+  confirming?: { checks: readonly AuditCheckId[] }
 }): Promise<ModelVerificationTargetResult | ModelVerificationSkip> {
+  // Whether a flag by `check` ends this audit: always, except in a confirmation of a DIFF another check flagged.
+  const endsAudit = (check: AuditCheckId): boolean => !input.confirming || input.confirming.checks.includes(check)
+  const confirmingEvidence = input.confirming ? { confirming: { checks: [...input.confirming.checks] } } : {}
   const batches = kbfAuditBatches(input.reference.probes)
   const deadline = new LazyAuditDeadline(
     input.context.auditTimeoutMs,
@@ -716,7 +744,7 @@ export async function verifyModelTarget(input: {
   const precheckEvidence = precheck ? { tokenizerPrecheck: precheck } : {}
   const precheckResult = precheck ? { tokenizerPrecheck: summarizeTokenizerPrecheck(precheck) } : {}
   const precheckCost = precheck ? tokenizerPrecheckCost(precheck) : null
-  if (precheck?.outcome === 'mismatch') {
+  if (precheck?.outcome === 'mismatch' && endsAudit('tokens')) {
     // The seller does not count input with the model's tokenizer: DIFF, and none of its questions is asked.
     // The audit ends here, so its clock, which the pre-check started, is stopped.
     deadline.close()
@@ -725,6 +753,7 @@ export async function verifyModelTarget(input: {
     const completedAt = Date.now()
     const evidence: ProxyAuditEvidenceV1 = {
       ...evidenceHead(completedAt),
+      ...confirmingEvidence,
       ...precheckEvidence,
       exchanges: [],
       ...resumeEvidence,
@@ -780,6 +809,90 @@ export async function verifyModelTarget(input: {
     ? { sellerThinking: discovery.fresh ? discovery.record : { ...discovery.record, reused: true as const } }
     : {}
   const discoveryCost = discovery?.fresh ? summarizeDiscoveryCosts(discovery.record.attempts) : null
+  // The cap check runs where the pre-check runs (a first audit, never an extra set or a resumed audit), after
+  // discovery, so the seller gets its own thinking settings, as for its questions. Its waits for the reference are
+  // the auditor's: the seller's clock runs only while a request to the seller is out.
+  let outputCap: OutputCapV1 | null = null
+  const capScreen = input.context.outputCap
+  if (pending.length > 0 && exchangeByBatch.size === 0 && !input.extension && capScreen) {
+    try {
+      outputCap = await capScreen.check({
+        peerId: input.target.peerId,
+        service: input.service,
+        serviceAliases: [...input.reference.serviceAliases, ...currentServiceNames(input.reference.referenceModel)],
+      }, input.reference, settings.thinking, {
+        signal: deadline.controller.signal,
+        start: () => deadline.start(),
+        finish: (answered) => deadline.finish(answered),
+      })
+    } catch (error) {
+      deadline.close()
+      throw error
+    }
+  }
+  const capEvidence = outputCap ? { outputCap } : {}
+  const capResult = outputCap ? { outputCap: summarizeOutputCap(outputCap) } : {}
+  const capCost = outputCap ? outputCapCost(outputCap) : null
+  const capRequests = outputCap ? outputCapRequestCount(outputCap) : 0
+  // What ran before the questions, paid for like batches: the pre-check and the cap check.
+  const preQuestionCosts = [precheckCost, capCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
+  const preQuestionRequests = (precheck ? tokenizerPrecheckRequestCount(precheck) : 0) + capRequests
+  if (outputCap?.outcome === 'flag' && endsAudit('output-cap')) {
+    // The seller bills beyond the reply limit it was given: DIFF, and none of its questions is asked.
+    deadline.close()
+    const unanswered = new Array<null>(input.reference.probes.length).fill(null)
+    const fragment = verifyKbf(input.reference, { answers: unanswered, matchVector: unanswered }, KBF_AUDIT_VERIFY_OPTIONS)
+    const completedAt = Date.now()
+    const flagCost = addAuditCostSummaries(...preQuestionCosts, ...(discoveryCost ? [discoveryCost] : []))
+    const evidence: ProxyAuditEvidenceV1 = {
+      ...evidenceHead(completedAt),
+      ...confirmingEvidence,
+      ...sellerThinkingEvidence,
+      ...precheckEvidence,
+      ...capEvidence,
+      exchanges: [],
+      ...resumeEvidence,
+      result: {
+        selectedProbeCount: input.reference.probes.length,
+        parsedProbeCount: 0,
+        matchVector: unanswered,
+        matchVectorHash: fragment.matchVectorHash,
+        stats: fragment.stats,
+        verdict: 'DIFF',
+        verdictReason: describeOutputCapFlag(outputCap),
+        outcomeReason: null,
+        cost: flagCost,
+        cumulativeCost: flagCost,
+      },
+    }
+    const resolvedAuditId = input.auditId ?? deriveProxyAuditId({
+      targetPeerId: input.target.peerId,
+      referenceId: input.reference.referenceId,
+      completedAt,
+      evidenceHash: canonicalHashBytes32(evidence),
+    })
+    const written = await writeProxyAuditEvidence(input.context.evidenceDir, resolvedAuditId, evidence)
+    return {
+      ...target,
+      status: 'DIFF',
+      outcomeReason: null,
+      auditId: resolvedAuditId,
+      parsedProbeCount: 0,
+      probeCount: input.reference.probes.length,
+      correctProbeCount: 0,
+      incorrectProbeCount: 0,
+      correctRate: null,
+      requestCount: preQuestionRequests,
+      cost: flagCost,
+      cumulativeCost: flagCost,
+      evidencePath: written.path,
+      evidenceHash: written.evidenceHash,
+      stats: fragment.stats,
+      responseAuthVerified: true,
+      ...precheckResult,
+      ...capResult,
+    }
+  }
   let checkpointTail = Promise.resolve()
   let checkpointFailure: Error | null = null
   const persistCheckpoint = async (): Promise<void> => {
@@ -898,14 +1011,15 @@ export async function verifyModelTarget(input: {
       },
       ...sellerThinkingEvidence,
       ...precheckEvidence,
+      ...capEvidence,
       exchange: error.exchange,
       result: {
         status: 'SKIPPED',
         code: error.code,
         reason: error.reason,
         outcomeReason: withBatchCounts(error.outcomeReason, 1, batches.length),
-        // The pre-check's requests were paid for before the seller was skipped.
-        ...(precheckCost ? { cost: precheckCost } : {}),
+        // The pre-check's and the cap check's requests were paid for before the seller was skipped.
+        ...(preQuestionCosts.length > 0 ? { cost: addAuditCostSummaries(...preQuestionCosts) } : {}),
       },
     }
     const evidenceHash = canonicalHashBytes32(evidence)
@@ -929,7 +1043,7 @@ export async function verifyModelTarget(input: {
       auditId: resolvedAuditId,
       evidencePath: written.path,
       evidenceHash: written.evidenceHash,
-      ...(precheck ? { requestCount: tokenizerPrecheckRequestCount(precheck), cost: precheckCost! } : {}),
+      ...(preQuestionCosts.length > 0 ? { requestCount: preQuestionRequests, cost: addAuditCostSummaries(...preQuestionCosts) } : {}),
     }
     }
   } finally {
@@ -958,7 +1072,7 @@ export async function verifyModelTarget(input: {
     : 'one or more successful proxy batches lacked valid verified ResponseAuth'
   const outcomeReason = verdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
   // Pre-check and discovery requests are paid for like batches, so the audit that sent them counts them.
-  const extraCosts = [precheckCost, discoveryCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
+  const extraCosts = [...preQuestionCosts, discoveryCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
   const withDiscovery = (summary: AuditCostSummaryV1) => addAuditCostSummaries(summary, ...extraCosts)
   const cumulativeCost = withDiscovery(summarizeAuditExchangeCosts(exchanges))
   const newBatchIndexes = new Set(pending.map((entry) => entry.batchIndex))
@@ -968,8 +1082,10 @@ export async function verifyModelTarget(input: {
   const parsedProbeCount = correctProbeCount + incorrectProbeCount
   const evidence: ProxyAuditEvidenceV1 = {
     ...evidenceHead(completedAt),
+    ...confirmingEvidence,
     ...sellerThinkingEvidence,
     ...precheckEvidence,
+    ...capEvidence,
     exchanges,
     ...resumeEvidence,
     result: {
@@ -1007,7 +1123,7 @@ export async function verifyModelTarget(input: {
     incorrectProbeCount,
     correctRate: parsedProbeCount === 0 ? null : correctProbeCount / parsedProbeCount,
     // The question batches, and the pre-check's requests when one ran before them.
-    requestCount: exchanges.length + (precheck ? tokenizerPrecheckRequestCount(precheck) : 0),
+    requestCount: exchanges.length + preQuestionRequests,
     cost,
     cumulativeCost,
     evidencePath: written.path,
@@ -1015,6 +1131,7 @@ export async function verifyModelTarget(input: {
     stats: fragment.stats,
     responseAuthVerified: authenticated,
     ...precheckResult,
+    ...capResult,
   }
 }
 

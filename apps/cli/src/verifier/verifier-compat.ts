@@ -54,6 +54,18 @@ import {
 } from './tokenizer-precheck.js'
 import { CONFIRMATION_WINDOW_SECONDS, pendingConfirmations, type EpochReport } from './pending-confirmations.js'
 import {
+  OUTPUT_CAP_RULE,
+  classifyCapAnswer,
+  judgeOutputCap,
+  numberWords,
+  outputCapLimit,
+  outputCapPrompt,
+  type OutputCapClass,
+} from './output-cap.js'
+import { SIGNED_REQUEST_TRIES } from './signed-seller-request.js'
+import { AUDIT_CHECK_IDS, type AuditCheckId } from './flagging-checks.js'
+import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
+import {
   DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
   DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT,
   DEFAULT_REFERENCE_MINIMUM_STATISTICAL_POWER,
@@ -101,6 +113,7 @@ export function verifierRuleOverrides(config: VerifierCLIConfig | undefined): st
     ['closeCallExtensions', config?.closeCallExtensions, CLOSE_CALL_EXTENSIONS],
     ['diffHoldEpochs', config?.diffHoldEpochs, DIFF_HOLD_EPOCHS],
     ['tokenizerPrecheck', config?.tokenizerPrecheck, true],
+    ['outputChecks', config?.outputChecks, true],
     ['referenceSelfTestRuns', config?.referenceSelfTestRuns, KBF_DEFAULT_SELF_TEST_RUNS],
     ['referenceLayoutFilterPasses', config?.referenceLayoutFilterPasses, DEFAULT_LAYOUT_FILTER_PASSES],
     ['referenceMinimumProbeCount', config?.referenceMinimumProbeCount, DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT],
@@ -238,6 +251,31 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
         requestId: 'sample', statusCode: 200, headers: {}, body: new TextEncoder().encode(body),
       }))),
     },
+    // The cap check: its rule, a request written from a fixed sequence, and the class and outcome it gives for
+    // fixed answers (billed, itemised reasoning, measured length) on a limit of 16.
+    outputCap: {
+      rule: OUTPUT_CAP_RULE,
+      signedRequestTries: SIGNED_REQUEST_TRIES,
+      limit: outputCapLimit(OUTPUT_CAP_RULE, fixedSequence(7)),
+      prompt: outputCapPrompt(fixedSequence(11)).prompt,
+      words: [101, 342, 999].map(numberWords),
+      classes: SAMPLE_CAP_ANSWERS.map(([billed, reasoning, measured]) => classifyCapAnswer({
+        cap: 16, oneAnswer: true, stops: false, billedOutputTokens: billed, estimated: false, reasoningTokens: reasoning,
+        reasoningMarker: reasoning !== null, text: 'x', finished: false, shape: 'chat',
+      }, 16, measured)),
+      judged: SAMPLE_CAP_ASKS.map((classes) => judgeOutputCap(classes.map((entry) => ({ class: entry }))).outcome),
+    },
+    // A result that answers another auditor's waiting DIFF: sent as DIFF only when one of these checks flagged in
+    // both, as SAME only when a check that flagged there passed here, otherwise not at all; made at least
+    // `minDelaySeconds` after that report. What the rule gives for fixed checks (flagged, passed, verdict).
+    confirmation: {
+      checks: AUDIT_CHECK_IDS,
+      minDelaySeconds: CONFIRMATION_MIN_DELAY_SECONDS,
+      decisions: SAMPLE_CONFIRMATIONS.map(([firstChecks, flaggedBy, passedBy, verdict]) => decide(
+        { agentId: 1n, serviceHash: '0x00', verdict: verifierVerdict(verdict), auditedAt: 10_000 + CONFIRMATION_MIN_DELAY_SECONDS, flaggedBy, passedBy },
+        [{ auditor: '0x00', evidenceUri: 'ipfs://sample', evidenceHash: '0x00', reportedAt: 10_000, checks: firstChecks }],
+      ).kind),
+    },
     window: {
       minimumSecondsLeftToOpen: MIN_SECONDS_FOR_ANOTHER_ROUND,
       sellerFailureAttempts: SELLER_FAILURE_ATTEMPTS,
@@ -347,6 +385,25 @@ const SAMPLE_PROBE_TEXTS: readonly string[] = [
 ]
 
 /** Signed response bodies the usage reader reads, and ones it refuses. */
+/** First auditor's checks, the checks that flagged and passed here, and the verdict here. */
+const SAMPLE_CONFIRMATIONS: ReadonlyArray<readonly [AuditCheckId[], AuditCheckId[], AuditCheckId[], 'SAME' | 'DIFF']> = [
+  [['tokens'], ['tokens'], [], 'DIFF'],
+  [['kbf'], ['tokens'], [], 'DIFF'],
+  [['kbf'], ['tokens', 'kbf'], [], 'DIFF'],
+  [['tokens'], [], ['tokens', 'kbf'], 'SAME'],
+  [['tokens'], [], ['kbf'], 'SAME'],
+  [['output-cap'], ['output-cap'], [], 'DIFF'],
+]
+
+/** Billed output, itemised reasoning and measured answer length of sample answers on a limit of 16. */
+const SAMPLE_CAP_ANSWERS: ReadonlyArray<readonly [number, number | null, number | null]> = [
+  [16, null, null], [18, null, null], [408, 392, 9], [927, null, 6], [40, null, 30], [60, 10, 33], [927, null, 537], [927, 920, 537],
+]
+
+const SAMPLE_CAP_ASKS: ReadonlyArray<readonly OutputCapClass[]> = [
+  ['within'], ['unread'], ['cap-ignored'], ['cap-ignored', 'within'], ['cap-ignored', 'unread'], ['cap-ignored', 'cap-ignored'],
+]
+
 const SAMPLE_USAGE_BODIES: readonly string[] = [
   '{"usage":{"prompt_tokens":143,"completion_tokens":40}}',
   '{"usage":{"input_tokens":12,"cache_read_input_tokens":3,"cache_creation_input_tokens":1}}',

@@ -213,6 +213,12 @@ export const VerifierConfigSchema = strictObject({
    */
   tokenizerPrecheck: z.boolean().optional(),
   /**
+   * The output-token checks after thinking discovery (`output-cap.ts`): a seller that bills beyond the reply limit
+   * it was given, with an answer that measures more than twice that limit, is DIFF without being asked its
+   * questions. On by default. Every auditor must use the same value.
+   */
+  outputChecks: z.boolean().optional(),
+  /**
    * Retired: a first DIFF is no longer rechecked by the same auditor but confirmed by another one.
    * Accepted and ignored so configs written for earlier releases still load.
    */

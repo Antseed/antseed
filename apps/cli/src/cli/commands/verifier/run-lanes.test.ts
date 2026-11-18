@@ -20,6 +20,7 @@ const FAKE_EXPORTS: Readonly<Record<string, readonly string[]>> = {
   'cli/commands/verifier/auditor-identity.js': ['resolveAuditorAddress'],
   'verifier/auditor-set.js': ['loadAuditorSetEvents'],
   'verifier/pending-confirmations.js': ['confirmationTargetsByModel', 'loadEpochAuditEvents', 'pendingConfirmations'],
+  'verifier/same-check.js': ['attachFirstFlags'],
   'config/loader.js': ['loadConfig'],
   'config/effective.js': ['resolveEffectiveBuyerConfig'],
   'verifier/audit-epoch.js': ['resolveAuditEpochWindow'],
@@ -197,6 +198,16 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
       : []),
     loadEpochAuditEvents: () => [],
     pendingConfirmations: () => [],
+    // The first auditor's DIFF was flagged by its questions, long enough ago to be confirmed.
+    attachFirstFlags: (targets: Map<string, Map<string, { waiting: Array<{ verdict: string }>; firstChecks?: string[]; firstReportedAt?: number }>>) => {
+      for (const agents of targets.values()) {
+        for (const target of agents.values()) {
+          if (!target.waiting.some((tally) => tally.verdict === 'DIFF')) continue
+          target.firstChecks = ['kbf']
+          target.firstReportedAt = 0
+        }
+      }
+    },
     confirmationTargetsByModel: () => {
       const targets = new Map<string, Map<string, unknown>>()
       for (const { model, agentId } of scenario.confirmations) {

@@ -215,6 +215,7 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
   requireCommand('forge')
 
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-confirm-e2e-'))
+  const ipfs = await mockIpfs(directory)
   const port = await availablePort()
   const rpcUrl = `http://127.0.0.1:${port}`
   // The chain starts two minutes before the epoch, so the auditors are approved when it starts: the
@@ -272,16 +273,16 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
         verifier: { evidenceDir, banksDir, ...FIXTURE_CONFIG },
       }))
       const auditor = new Wallet(`0x${key}`)
-      const writeRun = (runId: string, audits: FixtureAudit[]) => (
-        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor, audits })
+      const writeRun = (runId: string, audits: FixtureAudit[], completedAt?: string) => (
+        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor, audits, ...(completedAt ? { completedAt } : {}) })
       )
       return { dataDir, configPath, writeRun }
     }
     const a = await setUpDataDir('auditor-a', AUDITOR_PRIVATE_KEY)
     const b = await setUpDataDir('auditor-b', SECOND_AUDITOR_PRIVATE_KEY)
     const submit = (dirs: typeof a, runId: string) => runCli(dirs.dataDir, dirs.configPath, rpcUrl, [
-      'submit', '--run-id', runId, '--no-publish-ipfs', '--yes', '--skip-version-check',
-    ])
+      'submit', '--run-id', runId, '--yes', '--skip-version-check',
+    ], ipfs.options)
     const client = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
     const epochStartedAt = GENESIS + AUDIT_EPOCH * EPOCH_DURATION
     const pendingFor = async (auditor: string) => pendingConfirmations({
@@ -323,8 +324,8 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
     ])
 
     // Each confirms with its own audit of the other's model.
-    await a.writeRun('a-confirm-gemini-4-argon', [audit(2, 'gemini-4-argon')])
-    await b.writeRun('b-confirm-claude-opus-5.5', [audit(2, 'claude-opus-5.5')])
+    await a.writeRun('a-confirm-gemini-4-argon', [audit(2, 'gemini-4-argon')], await confirmationTime(client.provider))
+    await b.writeRun('b-confirm-claude-opus-5.5', [audit(2, 'claude-opus-5.5')], await confirmationTime(client.provider))
     const confirmedByB = submit(b, 'b-confirm-claude-opus-5.5')
     assert.equal(confirmedByB.status, 0, confirmedByB.output)
     assert.match(confirmedByB.output, /claude-opus-5.5: 1 recorded, 0 waiting for another auditor/)
@@ -362,6 +363,7 @@ test('a tokenizer pre-check DIFF is one auditor\'s report until another auditor\
   requireCommand('forge')
 
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-tokenizer-e2e-'))
+  const ipfs = await mockIpfs(directory)
   const port = await availablePort()
   const rpcUrl = `http://127.0.0.1:${port}`
   // The chain starts two minutes before the epoch, so both auditors are approved when it starts.
@@ -390,11 +392,15 @@ test('a tokenizer pre-check DIFF is one auditor\'s report until another auditor\
 
     // Seller 1 serves the model. Seller 2 signs input tokens counted by another tokenizer: each auditor's
     // pre-check finds it and asks it no question. An audited model, since only those have confirmers.
+    // Seller 3 is flagged by A's questions and by B's pre-check: two findings, each seen once, so no DIFF.
     const model = 'claude-opus-5.5'
-    const sellers = [randomWallet(), randomWallet()]
+    const sellers = [randomWallet(), randomWallet(), randomWallet()]
+    castSend(rpcUrl, identityRegistryAddress, 'setOwner(uint256,address)', ['3', randomWallet().address])
+    castSend(rpcUrl, poolsAddress, 'setPower(uint256,uint256,uint256)', ['3', String(AUDIT_EPOCH), '100'])
     const reference = referenceFixture(model)
     const honest: FixtureAudit = { agentId: '1', seller: sellers[0]!, model, service: model, verdict: 'SAME', reference }
     const miscounting: FixtureAudit = { agentId: '2', seller: sellers[1]!, model, service: model, verdict: 'DIFF', tokenizerMismatch: true, reference }
+    const questioned: FixtureAudit = { agentId: '3', seller: sellers[2]!, model, service: model, verdict: 'DIFF', reference }
     const crypto = {
       chainId: 'base-local',
       rpcUrl,
@@ -414,25 +420,25 @@ test('a tokenizer pre-check DIFF is one auditor\'s report until another auditor\
         verifier: { evidenceDir, banksDir, ...FIXTURE_CONFIG },
       }))
       const auditor = new Wallet(`0x${key}`)
-      const writeRun = (runId: string, audits: FixtureAudit[]) => (
-        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor, audits })
+      const writeRun = (runId: string, audits: FixtureAudit[], completedAt?: string) => (
+        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor, audits, ...(completedAt ? { completedAt } : {}) })
       )
       return { dataDir, configPath, evidenceDir, writeRun }
     }
     const a = await setUpDataDir('auditor-a', AUDITOR_PRIVATE_KEY)
     const b = await setUpDataDir('auditor-b', SECOND_AUDITOR_PRIVATE_KEY)
     const submit = (dirs: typeof a, runId: string) => runCli(dirs.dataDir, dirs.configPath, rpcUrl, [
-      'submit', '--run-id', runId, '--no-publish-ipfs', '--yes', '--skip-version-check',
-    ])
+      'submit', '--run-id', runId, '--yes', '--skip-version-check',
+    ], ipfs.options)
     const client = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
     // Into the epoch, so every report below is in the epoch's blocks.
     await rpc(rpcUrl, 'evm_increaseTime', [180])
     await rpc(rpcUrl, 'evm_mine', [])
 
-    await a.writeRun('a-audit', [honest, miscounting])
+    await a.writeRun('a-audit', [honest, miscounting, questioned])
     const reported = submit(a, 'a-audit')
     assert.equal(reported.status, 0, reported.output)
-    assert.match(reported.output, /claude-opus-5.5: 1 recorded, 1 waiting for another auditor/)
+    assert.match(reported.output, /claude-opus-5.5: 1 recorded, 2 waiting for another auditor/)
     assert.match(reported.output, /agent 2: DIFF 1\/2/)
     assert.equal(await client.isVerified(1n), true, 'the honest seller is verified on its questions')
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 0 }, 'a pre-check DIFF is one auditor\'s report, like any DIFF')
@@ -458,11 +464,25 @@ test('a tokenizer pre-check DIFF is one auditor\'s report until another auditor\
     }
 
     // The other auditor confirms with its own pre-check, on its own probes, and the contract records the DIFF.
-    await b.writeRun('b-confirm', [miscounting])
+    // Its pre-check also flags seller 3, whose waiting DIFF came from A's questions: another check, so nothing
+    // is sent for it. The seller keeps its record and A's DIFF stays one report.
+    await b.writeRun('b-confirm', [miscounting, { ...questioned, tokenizerMismatch: true }], await confirmationTime(client.provider))
     const confirmed = submit(b, 'b-confirm')
     assert.equal(confirmed.status, 0, confirmed.output)
-    assert.match(confirmed.output, /claude-opus-5.5: 1 recorded, 0 waiting for another auditor/)
+    assert.match(confirmed.output, /a DIFF is confirmed only by the same check, so nothing is sent and the seller keeps its record/)
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
+    assert.deepEqual(await client.agentStatus(3n), { verifiedCount: 0, diffCount: 0 }, 'a DIFF by another check is no confirmation')
+    const thirdReports = await client.queryServiceAudits(3n, null, 0)
+    assert.deepEqual(thirdReports.map(({ auditor, verdict, reports, required }) => [auditor, verdict, reports, required]), [
+      [auditorA.address, VERIFIER_VERDICT.DIFF, 1, 2],
+    ], 'B sent nothing for seller 3')
+    const confirmerEvidence = JSON.parse(await readFile(modelAuditEvidencePath(b.evidenceDir, 'b-confirm', model), 'utf8')) as {
+      results: Array<{ agentId: string; flaggedBy?: string[]; confirmation?: { firstChecks: string[]; ownChecks: string[]; sameCheck: string | null } }>
+      excluded: Array<{ agentId: string | null; reason: string }>
+    }
+    assert.deepEqual(confirmerEvidence.results.map((result) => [result.agentId, result.flaggedBy, result.confirmation?.firstChecks, result.confirmation?.sameCheck]), [
+      ['2', ['tokens'], ['tokens'], 'tokens'],
+    ])
     assert.equal(await client.isVerified(2n), false)
     assert.equal(await client.isVerified(1n), true)
     const events = await client.queryServiceAudits(2n, null, 0)
@@ -484,6 +504,7 @@ test('an audit window submits its sellers together once it closes; a late seller
   requireCommand('forge')
 
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-window-e2e-'))
+  const ipfs = await mockIpfs(directory)
   const port = await availablePort()
   const rpcUrl = `http://127.0.0.1:${port}`
   // Approved before the epoch starts, as in the tests above: the confirmer comes from the epoch-start rotation.
@@ -533,16 +554,16 @@ test('an audit window submits its sellers together once it closes; a late seller
         verifier: { evidenceDir, banksDir, ...FIXTURE_CONFIG },
       }))
       const auditor = new Wallet(`0x${key}`)
-      const writeRun = (runId: string, audits: FixtureAudit[]) => (
-        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor, audits })
+      const writeRun = (runId: string, audits: FixtureAudit[], completedAt?: string) => (
+        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor, audits, ...(completedAt ? { completedAt } : {}) })
       )
       return { dataDir, configPath, evidenceDir, writeRun }
     }
     const a = await setUpDataDir('auditor-a', AUDITOR_PRIVATE_KEY)
     const b = await setUpDataDir('auditor-b', SECOND_AUDITOR_PRIVATE_KEY)
     const submit = (dirs: typeof a) => runCli(dirs.dataDir, dirs.configPath, rpcUrl, [
-      'submit', '--no-publish-ipfs', '--yes', '--skip-version-check',
-    ])
+      'submit', '--yes', '--skip-version-check',
+    ], ipfs.options)
     const client = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
     // Into the epoch, so every report below is in the epoch's blocks.
     await rpc(rpcUrl, 'evm_increaseTime', [180])
@@ -570,7 +591,7 @@ test('an audit window submits its sellers together once it closes; a late seller
     assert.equal((await client.queryServiceAudits(3n)).length, 0)
 
     // B has no window for claude-opus-5.5: its confirmation of seller 2's DIFF is submitted at once.
-    await b.writeRun('b-confirm-claude-opus-5.5', [audit(2, 'DIFF')])
+    await b.writeRun('b-confirm-claude-opus-5.5', [audit(2, 'DIFF')], await confirmationTime(client.provider))
     const confirmedByB = submit(b)
     assert.equal(confirmedByB.status, 0, confirmedByB.output)
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
@@ -634,8 +655,8 @@ test('a confirmation\'s upload retires the question set it publishes; the next c
         verifier: { evidenceDir, banksDir, ...FIXTURE_CONFIG },
       }))
       const auditor = new Wallet(`0x${key}`)
-      const writeRun = (runId: string, audits: FixtureAudit[]) => (
-        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor, audits })
+      const writeRun = (runId: string, audits: FixtureAudit[], completedAt?: string) => (
+        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor, audits, ...(completedAt ? { completedAt } : {}) })
       )
       return { dataDir, configPath, banksDir, evidenceDir, writeRun }
     }
@@ -643,7 +664,7 @@ test('a confirmation\'s upload retires the question set it publishes; the next c
     const b = await setUpDataDir('auditor-b', SECOND_AUDITOR_PRIVATE_KEY)
     const pinataLogPath = join(directory, 'pinata-uploads.jsonl')
     const pinataPreloadPath = join(directory, 'mock-pinata.mjs')
-    await writeMockPinataPreload(pinataPreloadPath, pinataLogPath)
+    await writeMockPinataPreload(pinataPreloadPath, pinataLogPath, join(directory, 'ipfs-store'))
     const submit = (dirs: typeof a, runId: string, extra: string[]) => runCli(dirs.dataDir, dirs.configPath, rpcUrl, [
       'submit', '--run-id', runId, '--skip-version-check', ...extra,
     ], { importPath: pinataPreloadPath, env: { PINATA_JWT: 'test-pinata-jwt' } })
@@ -654,19 +675,23 @@ test('a confirmation\'s upload retires the question set it publishes; the next c
     await rpc(rpcUrl, 'evm_increaseTime', [180])
     await rpc(rpcUrl, 'evm_mine', [])
 
+    const uploads = async () => (await readFile(pinataLogPath, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).length
+    // A publishes its DIFFs: B reads there which check flagged them before it confirms one (same-check.ts).
     await a.writeRun('a-reports', [diff(1), diff(2), diff(3)])
-    const reported = submit(a, 'a-reports', ['--no-publish-ipfs', '--yes'])
+    const reported = submit(a, 'a-reports', ['--yes'])
     assert.equal(reported.status, 0, reported.output)
     assert.match(reported.output, /claude-opus-5.5: 0 recorded, 3 waiting for another auditor/)
+    const reportUploads = await uploads()
 
     // B confirms seller 2 on its epoch set, outside any audit window (confirmations are never windowed).
     const first = await writeCalibratedEpochSet({ banksDir: b.banksDir, model, epoch: EPOCH, reference: referenceFixture(model, 300) })
-    await b.writeRun('b-confirm-2', [diff(2, first.reference)])
+    await b.writeRun('b-confirm-2', [diff(2, first.reference)], await confirmationTime(client.provider))
     const dryRun = submit(b, 'b-confirm-2', ['--dry-run'])
     assert.equal(dryRun.status, 0, dryRun.output)
     assert.equal(await exists(setPath), true, 'a dry run retires nothing')
     assert.equal(await exists(retiredPath(1)), false)
-    const uploadCount = async () => (await readFile(pinataLogPath, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).length
+    /** B's uploads: every upload after A's report. */
+    const uploadCount = async () => (await uploads()) - reportUploads
 
     // A `verifier run` of B's data dir is going on (a live process holds its run lock): nothing of the model is published.
     const runLockPath = join(b.evidenceDir, '.run.lock')
@@ -713,7 +738,7 @@ test('a confirmation\'s upload retires the question set it publishes; the next c
     const published = [first.reference, ...first.extensions].flatMap((reference) => reference.probes)
     const publishedIds = new Set(published.map((probe) => probe.id))
     assert.equal(reserved.reference.probes.some((probe) => publishedIds.has(probe.id)), false)
-    await b.writeRun('b-confirm-3', [diff(3, second.reference)])
+    await b.writeRun('b-confirm-3', [diff(3, second.reference)], await confirmationTime(client.provider))
     const confirmed3 = submit(b, 'b-confirm-3', ['--yes'])
     assert.equal(confirmed3.status, 0, confirmed3.output)
     assert.deepEqual(await client.agentStatus(3n), { verifiedCount: 0, diffCount: 1 })
@@ -728,7 +753,7 @@ test('a confirmation\'s upload retires the question set it publishes; the next c
     // epoch and before the upload (a preload sends the epoch change on the submit's next epoch read, in publish):
     // nothing is uploaded or retired, and the model counts as failed.
     const third = await writeCalibratedEpochSet({ banksDir: b.banksDir, model, epoch: EPOCH, reference: freshReferenceFixture(model, 'third', 300) })
-    await b.writeRun('b-confirm-1', [diff(1, third.reference)])
+    await b.writeRun('b-confirm-1', [diff(1, third.reference)], await confirmationTime(client.provider))
     const movePreloadPath = join(directory, 'move-epoch.mjs')
     await writeFile(movePreloadPath, `
 import ${JSON.stringify(pathToFileURL(pinataPreloadPath).href)}
@@ -838,8 +863,8 @@ test('a model whose auditor is absent is handed to the next active auditor from 
         payments: { preferredMethod: 'crypto', crypto },
         verifier: { evidenceDir, banksDir, auditor: wallet.address, testModels: models, ...FIXTURE_CONFIG },
       }))
-      const writeRun = (runId: string, audits: FixtureAudit[]) => (
-        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor: wallet, audits })
+      const writeRun = (runId: string, audits: FixtureAudit[], completedAt?: string) => (
+        writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor: wallet, audits, ...(completedAt ? { completedAt } : {}) })
       )
       return { dataDir, configPath, writeRun }
     }
@@ -917,6 +942,7 @@ test('a DIFF whose confirmer never reports is confirmed by another auditor from 
   requireCommand('forge')
 
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-absent-confirmer-e2e-'))
+  const ipfs = await mockIpfs(directory)
   const port = await availablePort()
   const rpcUrl = `http://127.0.0.1:${port}`
   const epochStartedAt = GENESIS + AUDIT_EPOCH * EPOCH_DURATION
@@ -943,8 +969,8 @@ test('a DIFF whose confirmer never reports is confirmed by another auditor from 
       fallback: await auditorDataDir(directory, 'fallback', fallback, chain.crypto, models),
     }
     const submit = (who: keyof typeof dirs, runId: string) => runCli(dirs[who].dataDir, dirs[who].configPath, rpcUrl, [
-      'submit', '--run-id', runId, '--no-publish-ipfs', '--yes', '--skip-version-check',
-    ])
+      'submit', '--run-id', runId, '--yes', '--skip-version-check',
+    ], ipfs.options)
     const client = new VerifierClient({ rpcUrl, contractAddress: chain.verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
     // What `verifier run` works out for each auditor, on the chain's clock.
     const pendingFor = async (auditor: Wallet) => {
@@ -987,7 +1013,7 @@ test('a DIFF whose confirmer never reports is confirmed by another auditor from 
     assert.deepEqual(await pendingFor(reporter), waiting(false, fallback), 'the reporter never confirms its own DIFF')
 
     // It audits the seller itself, also finds DIFF, and the contract records the DIFF.
-    await dirs.fallback.writeRun('fallback-confirm', [diff])
+    await dirs.fallback.writeRun('fallback-confirm', [diff], await confirmationTime(client.provider))
     const confirmed = submit('fallback', 'fallback-confirm')
     assert.equal(confirmed.status, 0, confirmed.output)
     assert.ok(confirmed.output.includes(`${model}: 1 recorded, 0 waiting for another auditor`), confirmed.output)
@@ -1121,6 +1147,7 @@ test('five auditors: a DIFF passes three missed confirmer turns to the fourth, a
   requireCommand('forge')
 
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-fallback-chain-e2e-'))
+  const ipfs = await mockIpfs(directory)
   const port = await availablePort()
   const rpcUrl = `http://127.0.0.1:${port}`
   // A week-long epoch, as on Base, so four 12-hour confirmer turns fit before halfway.
@@ -1162,8 +1189,8 @@ test('five auditors: a DIFF passes three missed confirmer turns to the fourth, a
     }
     const running = Object.keys(dirs) as Array<keyof typeof dirs>
     const submit = (who: keyof typeof dirs, runId: string) => runCli(dirs[who].dataDir, dirs[who].configPath, rpcUrl, [
-      'submit', '--run-id', runId, '--no-publish-ipfs', '--yes', '--skip-version-check',
-    ])
+      'submit', '--run-id', runId, '--yes', '--skip-version-check',
+    ], ipfs.options)
     const client = new VerifierClient({ rpcUrl, contractAddress: chain.verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
     const advance = async (seconds: number) => {
       await rpc(rpcUrl, 'evm_increaseTime', [seconds])
@@ -1223,7 +1250,7 @@ test('five auditors: a DIFF passes three missed confirmer turns to the fourth, a
     assert.deepEqual(handoversShown(), [[], [], [], []], 'before halfway no model is handed over')
 
     // c4 audits the seller in its turn, also finds DIFF, and the contract records it.
-    await dirs.c4.writeRun('c4-confirm', [audit(diffModel, 'DIFF')])
+    await dirs.c4.writeRun('c4-confirm', [audit(diffModel, 'DIFF')], await confirmationTime(client.provider))
     const confirmed = submit('c4', 'c4-confirm')
     assert.equal(confirmed.status, 0, confirmed.output)
     assert.ok(confirmed.output.includes(`${diffModel}: 1 recorded, 0 waiting for another auditor`), confirmed.output)
@@ -1628,8 +1655,8 @@ async function auditorDataDir(directory: string, name: string, wallet: Wallet, c
     payments: { preferredMethod: 'crypto', crypto },
     verifier: { evidenceDir, banksDir, auditor: wallet.address, testModels: models, ...FIXTURE_CONFIG },
   }))
-  const writeRun = (runId: string, audits: FixtureAudit[]) => (
-    writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor: wallet, audits })
+  const writeRun = (runId: string, audits: FixtureAudit[], completedAt?: string) => (
+    writeSignedAuditRun({ evidenceDir, banksDir, runId, epoch: EPOCH, auditor: wallet, audits, ...(completedAt ? { completedAt } : {}) })
   )
   return { dataDir, configPath, writeRun }
 }
@@ -1703,35 +1730,75 @@ async function rpc(rpcUrl: string, method: string, params: unknown[] = []): Prom
   return body.result
 }
 
-async function writeMockPinataPreload(path: string, logPath: string): Promise<void> {
+async function writeMockPinataPreload(path: string, logPath: string, storeDir?: string): Promise<void> {
   await writeFile(path, `
-import { appendFileSync, existsSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve, sep } from 'node:path'
 
 const originalFetch = globalThis.fetch
 const logPath = ${JSON.stringify(logPath)}
+// With a store, each upload is kept under <store>/<cid>/<path> and the default IPFS gateway serves it,
+// so another auditor's CLI reads the published evidence as it would from IPFS.
+const store = ${JSON.stringify(storeDir ?? null)}
+const gateway = 'https://ipfs.io/ipfs/'
 
 globalThis.fetch = async (input, init) => {
-  if (String(input) !== 'https://uploads.pinata.cloud/v3/files') {
+  const url = String(input)
+  if (store && url.startsWith(gateway)) {
+    const path = resolve(store, ...url.slice(gateway.length).split('/').map(decodeURIComponent))
+    if (!path.startsWith(resolve(store) + sep) || !existsSync(path)) return new Response('not found', { status: 404 })
+    return new Response(readFileSync(path), { status: 200 })
+  }
+  if (url !== 'https://uploads.pinata.cloud/v3/files') {
     return originalFetch(input, init)
   }
   // A test makes Pinata fail by creating <log>.fail.
   if (existsSync(logPath + '.fail')) return new Response('unavailable', { status: 503 })
   const form = init.body
   const metadata = JSON.parse(String(form.get('keyvalues')))
+  const files = form.getAll('file')
   appendFileSync(logPath, JSON.stringify({
     model: metadata.model,
     evidenceHash: metadata.evidenceHash,
-    files: form.getAll('file').map((file) => file.name),
+    files: files.map((file) => file.name),
   }) + '\\n')
+  const cid = store
+    // A CIDv1 in base32 (b, then a to z and 2 to 7), one per evidence hash: each hex digit becomes a letter.
+    ? 'bafy' + String(metadata.evidenceHash).slice(2).toLowerCase().replace(/[0-9a-f]/g, (digit) => 'abcdefghijklmnop'[parseInt(digit, 16)])
+    : 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3r3eifqeedsvt2eubqtskghp' + (metadata.model === 'model-a' ? 'm' : 'n')
+  if (store) {
+    for (const file of files) {
+      const target = join(store, cid, file.name)
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, Buffer.from(await file.arrayBuffer()))
+    }
+  }
   return new Response(JSON.stringify({
     data: {
-      cid: 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3r3eifqeedsvt2eubqtskghp' + (metadata.model === 'model-a' ? 'm' : 'n'),
-      size: form.getAll('file').reduce((total, file) => total + file.size, 0),
+      cid,
+      size: files.reduce((total, file) => total + file.size, 0),
       created_at: '2026-10-07T12:00:00.000Z',
     },
   }), { status: 200, headers: { 'content-type': 'application/json' } })
 }
 `)
+}
+
+/** A confirmation's audit time: an hour and a minute after the chain's time now, so it is fresh material (`same-check.ts`). */
+async function confirmationTime(provider: Parameters<typeof chainNow>[0]): Promise<string> {
+  return new Date((await chainNow(provider) + 3_660) * 1_000).toISOString()
+}
+
+/**
+ * Pinata and the IPFS gateway, mocked for every CLI the test starts: a confirming auditor reads which
+ * check flagged in the first auditor's DIFF from its published evidence (`same-check.ts`), so the
+ * auditor that reports a DIFF publishes it here.
+ */
+async function mockIpfs(directory: string): Promise<{ options: RunCliOptions; logPath: string }> {
+  const logPath = join(directory, 'pinata-uploads.jsonl')
+  const importPath = join(directory, 'mock-ipfs.mjs')
+  await writeMockPinataPreload(importPath, logPath, join(directory, 'ipfs-store'))
+  return { options: { importPath, env: { PINATA_JWT: 'test-pinata-jwt' } }, logPath }
 }
 
 function requireCommand(command: string): void {

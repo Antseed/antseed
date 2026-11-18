@@ -40,9 +40,12 @@ import {
 import { closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
+import { AUDIT_CHECK_IDS, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
+import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
 import type { SubmissionCandidate } from './submission-delta.js'
 import { summarizeTokenizerPrecheck, validateTokenizerPrecheck } from './tokenizer-precheck.js'
+import { summarizeOutputCap, validateOutputCap } from './output-cap.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
@@ -80,6 +83,18 @@ export interface ModelAuditSellerResultV1 {
    * `extension2.pooled.verdict`, computed from all three sets' stats.
    */
   extension2?: ModelAuditExtensionV1
+  /** The checks that flagged the seller in this audit (`flaggingChecks`). */
+  flaggedBy?: AuditCheckId[]
+  /** The checks that ran to a pass in this audit (`passedChecks`). */
+  passedBy?: AuditCheckId[]
+  /** Unix seconds the audit behind this result was made (its latest evidence file). */
+  auditedAt?: number
+  /**
+   * Set on a result that answers another auditor's waiting DIFF: which checks flagged there and here
+   * (`same-check.ts`). A DIFF is sent only with a check in common; a SAME only when a check that flagged
+   * there passed here.
+   */
+  confirmation?: SameCheckConfirmationV1
 }
 
 export interface ModelAuditExtensionV1 {
@@ -289,6 +304,13 @@ export async function prepareModelAudits(input: {
    * online after it opened) gets no result, unless the result confirms another auditor's DIFF.
    */
   auditWindow?: (model: string) => Promise<Pick<AuditWindowV1, 'state' | 'sellers'> | null>
+  /**
+   * For a DIFF that answers another auditor's waiting DIFF: whether the same check flagged in both
+   * audits (`sameCheckFilter`). Runs after `thirdOpinion`. Without it no result is checked.
+   */
+  sameCheck?: (modelHash: string, candidates: readonly SameCheckCandidate[]) => Promise<Array<SameCheckDecision | null>>
+  /** Set when the evidence is not published: every DIFF is left out with this reason, since no confirmer could read it. */
+  unpublishedDiffs?: string
 }): Promise<{
   audits: PreparedModelAudit[]
   excluded: Array<ExcludedSellerAuditV1 & { model: string }>
@@ -344,6 +366,7 @@ export async function prepareModelAudits(input: {
       evidence: ProxyAuditEvidenceV1
       extensionEvidence: ProxyAuditEvidenceV1 | null
       extension2Evidence: ProxyAuditEvidenceV1 | null
+      confirmation?: SameCheckConfirmationV1
     }> = []
     const seen = new Set<string>()
     let referenceModel: string | null = null
@@ -480,6 +503,37 @@ export async function prepareModelAudits(input: {
       }
       if (accepted.length === 0) break
     }
+    // A DIFF the auditor does not publish can never be confirmed: a confirmer reads which check flagged from
+    // the published evidence (`same-check.ts`).
+    if (input.unpublishedDiffs) {
+      for (let index = accepted.length - 1; index >= 0; index -= 1) {
+        const { result } = accepted[index]!
+        if (result.status !== 'DIFF') continue
+        allExcluded.push({ model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason: input.unpublishedDiffs })
+        accepted.splice(index, 1)
+      }
+    }
+    if (input.sameCheck && accepted.length > 0) {
+      const decisions = await input.sameCheck(modelHash(referenceModel), candidatesOf().map((candidate, index) => ({
+        ...candidate,
+        flaggedBy: flaggingChecks(accepted[index]!.evidence, accepted[index]!.result.status),
+        passedBy: passedChecks(accepted[index]!.evidence, accepted[index]!.result.status),
+      })))
+      for (let index = accepted.length - 1; index >= 0; index -= 1) {
+        const decision = decisions[index]
+        if (!decision) continue
+        const entry = accepted[index]!
+        if (decision.kind === 'send') {
+          entry.confirmation = decision.confirmation
+          continue
+        }
+        // Nothing is sent: the seller keeps its record. Only a hold is tried again by the next submit.
+        const { result } = entry
+        allExcluded.push({ model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason: decision.reason })
+        if (decision.kind === 'hold') heldBack.push(`${model} ${result.agentId ?? result.peerId}: ${decision.reason}`)
+        accepted.splice(index, 1)
+      }
+    }
     if (accepted.length === 0) continue
     accepted.sort((left, right) => compareResults(
       left.agentId, serviceHash(left.result.service), right.agentId, serviceHash(right.result.service),
@@ -561,7 +615,7 @@ export async function prepareModelAudits(input: {
           exchangeCount: stored.exchangeCount,
         })
       }
-      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, extensionEvidence, extension2Evidence }) => ({
+      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, extensionEvidence, extension2Evidence, confirmation }) => ({
         agentId: agentId.toString(),
         peerId: result.peerId,
         displayName: result.displayName,
@@ -584,6 +638,10 @@ export async function prepareModelAudits(input: {
         ...(result.extension2 && extension2Evidence
           ? { extension2: submittedExtension(result.extension2, extension2Evidence, evidence, evidenceDirectory) }
           : {}),
+        flaggedBy: flaggingChecks(evidence, result.status),
+        passedBy: passedChecks(evidence, result.status),
+        auditedAt: auditedAt({ evidence, extensionEvidence, extension2Evidence }),
+        ...(confirmation ? { confirmation } : {}),
       }))
       const evidence: ModelAuditEvidenceV1 = {
         version: 1,
@@ -897,14 +955,36 @@ export function validateAuditMatchesSummary(
   if (canonicalJsonStringify(stored) !== canonicalJsonStringify(result.tokenizerPrecheck ?? null)) {
     throw new Error('the summary\'s tokenizer pre-check is not the one in its evidence')
   }
-  const precheckDiff = evidence.tokenizerPrecheck?.outcome === 'mismatch'
+  // In a confirmation of another check's DIFF, a flag of a check not being confirmed did not end the audit:
+  // the questions were asked after it and decide (`model-run.ts`, `confirming`).
+  if (evidence.confirming && (!Array.isArray(evidence.confirming.checks) || evidence.confirming.checks.length === 0
+    || evidence.confirming.checks.some((check) => !AUDIT_CHECK_IDS.includes(check)))) {
+    throw new Error('a confirmation names no known check it confirms')
+  }
+  const continuedPast = (check: AuditCheckId): boolean => evidence.confirming !== undefined && !evidence.confirming.checks.includes(check)
+  const precheckDiff = evidence.tokenizerPrecheck?.outcome === 'mismatch' && !continuedPast('tokens')
   if (precheckDiff && (evidence.result.verdict !== 'DIFF' || evidence.exchanges.length > 0)) {
     throw new Error('a tokenizer pre-check mismatch is a DIFF with no question asked')
   }
-  if (!precheckDiff && evidence.result.verdict === 'DIFF' && evidence.result.parsedProbeCount === 0) {
-    throw new Error('DIFF without a scoreable answer or a tokenizer pre-check mismatch')
+  // The cap check runs after the pre-check, so never after its mismatch; it is recomputed from the bytes the seller
+  // signed, and its flag, like the pre-check's mismatch, is a DIFF with no question asked.
+  if (evidence.outputCap) {
+    if (precheckDiff) throw new Error('a cap check after a tokenizer pre-check DIFF')
+    validateOutputCap(evidence.outputCap)
+  }
+  const storedCap = evidence.outputCap ? summarizeOutputCap(evidence.outputCap) : null
+  if (canonicalJsonStringify(storedCap) !== canonicalJsonStringify(result.outputCap ?? null)) {
+    throw new Error('the summary\'s cap check is not the one in its evidence')
+  }
+  const capDiff = evidence.outputCap?.outcome === 'flag' && !continuedPast('output-cap')
+  if (capDiff && (evidence.result.verdict !== 'DIFF' || evidence.exchanges.length > 0)) {
+    throw new Error('a cap check flag is a DIFF with no question asked')
+  }
+  if (!precheckDiff && !capDiff && evidence.result.verdict === 'DIFF' && evidence.result.parsedProbeCount === 0) {
+    throw new Error('DIFF without a scoreable answer or a tokenizer pre-check mismatch, and no cap check flag')
   }
   if (precheckDiff && (result.extension || result.extension2)) throw new Error('extra set after a tokenizer pre-check DIFF')
+  if (capDiff && (result.extension || result.extension2)) throw new Error('extra set after a cap check DIFF')
   // The stage-1 verdict, recomputed from the evidence: the first check's own verdict, or after a
   // close call the pooled verdict of the first check and its extra sets.
   let stageOne: ModelAuditVerdict = evidence.result.verdict

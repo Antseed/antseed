@@ -16,6 +16,8 @@ import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import { safeServiceSlug } from './slug.js'
 import type { ThinkingDiscoveryAttemptV1, ThinkingDiscoveryStrategy } from './thinking-suppression.js'
 import type { TokenizerPrecheckV1 } from './tokenizer-precheck.js'
+import type { OutputCapV1 } from './output-cap.js'
+import type { AuditCheckId } from './flagging-checks.js'
 
 export type ExportedResponseAuthRecord = Omit<StoredResponseAuth, 'requestPreimage' | 'responsePreimage'>
 
@@ -156,6 +158,8 @@ export interface ProxyAuditSkipEvidenceV1 {
   sellerThinking?: SellerThinkingDiscoveryV1
   /** The tokenizer pre-check that ran before the skipped request; absent when none ran. */
   tokenizerPrecheck?: TokenizerPrecheckV1
+  /** The cap check that ran before the skipped request; absent when none ran. */
+  outputCap?: OutputCapV1
   exchange: ProxyAuditEvidenceExchangeV1
   result: {
     status: 'SKIPPED'
@@ -209,6 +213,17 @@ export interface ProxyAuditEvidenceV1 {
    * no answer.
    */
   tokenizerPrecheck?: TokenizerPrecheckV1
+  /**
+   * The cap check that ran after thinking discovery and before the questions (`output-cap.ts`); absent when none
+   * ran or it does not apply to the model this run. On a `flag` the verdict is DIFF and no question was asked.
+   */
+  outputCap?: OutputCapV1
+  /**
+   * Set on an audit that answered another auditor's waiting DIFF: the checks that flagged it there, which ran to
+   * their end here. A flag by another check did not end this audit, so a pre-check mismatch or a cap check flag
+   * may then sit beside the questions.
+   */
+  confirming?: { checks: AuditCheckId[] }
   exchanges: ProxyAuditEvidenceExchangeV1[]
   resume?: {
     parentAuditId: string

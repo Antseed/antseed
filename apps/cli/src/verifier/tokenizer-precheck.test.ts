@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, encodeHttpResponse, type PeerId, type PeerInfo, type StoredResponseAuth } from '@antseed/node'
 import { isSafeProbe } from '@antseed/node/payments'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
@@ -1177,6 +1178,8 @@ async function audit(options: {
   auditTimeoutMs?: number
   /** How long the other seller takes to answer. */
   backerDelayMs?: number
+  /** The audit confirms another auditor's DIFF that these checks flagged. */
+  confirming?: AuditCheckId[]
 }) {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-tokenizer-precheck-'))
   const target = seller({ usage: options.usage })
@@ -1232,6 +1235,7 @@ async function audit(options: {
       reference: referenceFixture(MODEL, PROBE_COUNT),
       ...(options.extension ? { extension: true } : {}),
       ...(options.resume ? { resume: options.resume } : {}),
+      ...(options.confirming ? { confirming: { checks: options.confirming } } : {}),
     })
     if (options.refuseQuestions) return { skipped: result, result: null as never, evidence: null as never, questionRequests, precheckRequests: target.contents, backerRequests: backer.contents }
     assert.notEqual(result.status, 'SKIPPED')
@@ -1385,4 +1389,26 @@ test('submission refuses a DIFF that neither its questions nor a pre-check misma
   assert.throws(() => validateAuditMatchesSummary(edit((copy) => { copy.tokenizerPrecheck!.rounds[0]!.seller[0]!.delta! += 9 }), result), /difference does not follow/)
   assert.throws(() => validateAuditMatchesSummary(edit((copy) => { copy.result.verdict = 'SAME' }), result), /a tokenizer pre-check mismatch is a DIFF/)
   assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, status: 'SAME' }), /verdict mismatch/)
+})
+
+test('a confirmation of a DIFF the questions flagged asks the questions even when the pre-check flags first', async () => {
+  // The first auditor's questions flagged the seller. Here the pre-check finds a mismatch first: it is recorded,
+  // and the audit goes on to the questions, the check this confirmation must run to its end.
+  const { result, evidence, questionRequests } = await audit({ usage: OTHER_TOKENIZER, confirming: ['kbf'] })
+  assert.equal(result.tokenizerPrecheck!.outcome, 'mismatch')
+  assert.ok(questionRequests.length > 0)
+  assert.equal(result.status, 'SAME', 'the questions decide: these answers are the model\'s')
+  assert.deepEqual(evidence.confirming, { checks: ['kbf'] })
+  assert.doesNotThrow(() => validateAuditMatchesSummary(evidence, result))
+  // At submit it names the pre-check as what flagged and the questions as passed: another check, so nothing is sent.
+  assert.deepEqual(flaggingChecks(evidence, result.status), ['tokens'])
+  assert.deepEqual(passedChecks(evidence, result.status), ['kbf'])
+  // Without the confirmation the same evidence is not valid: a mismatch beside questions.
+  const { confirming: _confirming, ...plain } = evidence
+  assert.throws(() => validateAuditMatchesSummary(plain, result), /a tokenizer pre-check mismatch is a DIFF with no question asked/)
+  // A confirmation of a pre-check DIFF ends at the mismatch, as a first audit does.
+  const tokens = await audit({ usage: OTHER_TOKENIZER, confirming: ['tokens'] })
+  assert.equal(tokens.result.status, 'DIFF')
+  assert.equal(tokens.questionRequests.length, 0)
+  assert.deepEqual(flaggingChecks(tokens.evidence, tokens.result.status), ['tokens'])
 })

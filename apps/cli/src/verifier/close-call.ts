@@ -53,12 +53,20 @@ export function latestExtension(
  * True when this close call still needs another extra set: its first audit is in the grey zone and
  * has none yet, or its latest pooled look is still a close call and the rule allows one more.
  */
+/**
+ * A DIFF that ended before the questions: a pre-check mismatch or a cap check flag, with no question asked. In a
+ * confirmation of another check's DIFF such a flag does not end the audit, and its questions decide as usual.
+ */
+export function askedNoQuestion(result: Pick<ModelVerificationTargetResult, 'tokenizerPrecheck' | 'outputCap'> & { parsedProbeCount?: number }): boolean {
+  return (result.tokenizerPrecheck?.outcome === 'mismatch' || result.outputCap?.outcome === 'flag') && (result.parsedProbeCount ?? 0) === 0
+}
+
 export function needsExtension(result: Pick<ModelVerificationTargetResult,
-  'decisionRule' | 'stats' | 'responseAuthVerified' | 'extension' | 'extension2' | 'outcomeReason' | 'tokenizerPrecheck'>): boolean {
+  'decisionRule' | 'stats' | 'responseAuthVerified' | 'extension' | 'extension2' | 'outcomeReason' | 'tokenizerPrecheck' | 'outputCap'> & { parsedProbeCount?: number }): boolean {
   const rule = closeCallRule(result)
   if (!rule || !result.stats) return false
-  // A DIFF from the tokenizer pre-check asked no question: there is no close call to extend.
-  if (result.tokenizerPrecheck?.outcome === 'mismatch') return false
+  // A DIFF from the tokenizer pre-check or the cap check asked no question: there is no close call to extend.
+  if (askedNoQuestion(result)) return false
   // A set whose ResponseAuth failed, or a seller that refuses the request profile (temperature), is
   // UNDETERMINED whatever its p-value; extra questions do not fix that.
   if (result.responseAuthVerified === false || result.outcomeReason?.code === 'request_profile_incompatible') return false

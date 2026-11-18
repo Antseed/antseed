@@ -12,6 +12,7 @@ import type {
 import type { ModelProbeConsensusEvidenceV1 } from './model-consensus-evidence.js'
 import { safeServiceSlug } from './slug.js'
 import { describeTokenizerCounts } from './tokenizer-precheck.js'
+import { describeOutputCapSummary, type OutputCapSummary } from './output-cap.js'
 
 export interface VerifierStatusV1 {
   version: 1
@@ -124,6 +125,7 @@ interface SellerAuditReportResult {
   }
   extensionPending?: { reason: string }
   tokenizerPrecheck?: { rule: string; outcome: string; sellerTokens?: number[]; modelTokens?: number[] }
+  outputCap?: OutputCapSummary
 }
 
 interface SellerAuditReportFailure {
@@ -426,6 +428,9 @@ function sellerResultReason(
 ): string {
   if (result.tokenizerPrecheck?.outcome === 'mismatch') {
     return `tokenizer pre-check (${result.tokenizerPrecheck.rule}): ${describeTokenizerCounts(result.tokenizerPrecheck)}`
+  }
+  if (result.outputCap?.outcome === 'flag') {
+    return `cap check (${result.outputCap.rule}): ${describeOutputCapSummary(result.outputCap)}: the reply limit was ignored`
   }
   if (!result.extension) {
     if (result.extensionPending) return `close call waiting for extra questions: ${result.extensionPending.reason}`

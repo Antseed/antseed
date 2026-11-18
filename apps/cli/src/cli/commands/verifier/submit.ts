@@ -23,6 +23,7 @@ import {
   writeModelAuditEvidence,
   writeModelAuditLedger,
   type AuditPublicationV1,
+  type ModelAuditSellerResultV1,
   type ModelAuditLedgerEntryV1,
   type ModelAuditLedgerV1,
   type PreparedModelAudit,
@@ -42,6 +43,10 @@ import {
 } from '../../../verifier/pending-confirmations.js'
 import { alreadyOnChainFilter, revocationPositions } from '../../../verifier/submission-delta.js'
 import { opinionKey, thirdOpinionFilter } from '../../../verifier/third-opinion.js'
+import { sameCheckFilter, type PublishedFlagReader } from '../../../verifier/same-check.js'
+import { canonicalJsonStringify } from '@antseed/fingerprints'
+import { fetchIpfsText } from '@antseed/model-verifier'
+import { verifierVerdict } from '@antseed/node/payments'
 import { approvedAuditorsAt, loadAuditorSetEvents, revokedSinceEpochStart } from '../../../verifier/auditor-set.js'
 import { configuredVerifierModels } from '../../../verifier/model-config.js'
 import {
@@ -269,8 +274,20 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
        * auditor can report on the same seller meanwhile; or this auditor's confirmation turn can end.
        * The reason not to send it now, or null. A failed read is a reason too: the check must not fail open.
        */
+      // Which check flagged in another auditor's waiting DIFF, read from its published evidence (same-check.ts).
+      const flagReader: PublishedFlagReader = {
+        modelAudits: (filter) => verifierClient.queryModelAudits(filter),
+        fetchText: (cidPath) => fetchIpfsText(cidPath),
+        reportRound: (agentId, service) => verifierClient.reportRound(agentId, service),
+        blockTimestamp: async (blockNumber) => {
+          const block = await verifierClient.provider.getBlock(blockNumber)
+          if (!block) throw new Error(`block ${blockNumber} is unavailable`)
+          return block.timestamp
+        },
+      }
       const recheckBeforeSend = (audit: PreparedModelAudit): Promise<string | null> => recheckAuditBeforeSend({
         audit, auditor: address, readEvents: readEpochEvents, readMyConfirmations, revoked,
+        sameCheck: (events) => sameCheckFilter({ events, auditor: address, revoked, reader: flagReader }),
       })
       const { audits: prepared, excluded, alreadyOnChain, heldBack } = await prepareModelAudits({
         evidenceDir,
@@ -305,6 +322,13 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           holdEpochs: config.verifier?.diffHoldEpochs ?? DIFF_HOLD_EPOCHS,
           reader: { serviceStatusByHash: (agentId, service) => verifierClient.serviceStatusByHash(agentId, service) },
         }).filter,
+        // A DIFF that answers another auditor's waiting DIFF is sent as DIFF only when the same check
+        // flagged in both audits; which one flagged there is read from its published evidence (same-check.ts).
+        sameCheck: sameCheckFilter({ events: epochEvents, auditor: address, revoked, reader: flagReader }),
+        ...(publishIpfs ? {} : {
+          unpublishedDiffs: 'a DIFF is sent only with its evidence published: a confirmer reads which check flagged from it, '
+            + 'so a DIFF sent with --no-publish-ipfs could never be confirmed',
+        }),
       })
       const audits = await reuseLedgerEvidence(
         prepared.map((audit) => withLedgerKey(audit, ledger, evidenceDir, manifest.runId)), ledger,
@@ -573,11 +597,13 @@ async function epochSubmissionManifest(
  * too, so the check never fails open.
  */
 export async function recheckAuditBeforeSend(input: {
-  audit: Pick<PreparedModelAudit, 'modelHash' | 'results'>
+  audit: Pick<PreparedModelAudit, 'modelHash' | 'results'> & { evidence?: Pick<PreparedModelAudit['evidence'], 'results'> }
   auditor: string
   readEvents: () => Promise<readonly ServiceAuditedEvent[]>
   readMyConfirmations: (events: readonly ServiceAuditedEvent[]) => Promise<ReadonlySet<string>>
   revoked?: ReadonlySet<string>
+  /** The same-check rule on fresh events (`sameCheckFilter`): every result is decided again, also one reused from the ledger. */
+  sameCheck?: (events: readonly ServiceAuditedEvent[]) => ReturnType<typeof sameCheckFilter>
 }): Promise<string | null> {
   try {
     const events = await input.readEvents()
@@ -586,11 +612,45 @@ export async function recheckAuditBeforeSend(input: {
     })
     const reasons = await filter(input.audit.modelHash, input.audit.results.map((result) => ({ ...result, auditedAt: 0 })))
     const blocked = reasons.filter((reason): reason is string => reason !== null)
+    if (blocked.length === 0 && input.sameCheck && input.audit.evidence) {
+      const changed = await sameCheckChanged(input.audit.modelHash, input.audit.evidence.results, input.sameCheck(events))
+      if (changed) blocked.push(changed)
+    }
     if (blocked.length === 0) return null
     return `${blocked.length} of its ${input.audit.results.length} result(s) changed since it was prepared (${blocked[0]}${blocked.length > 1 ? ', …' : ''})`
   } catch (error) {
     return `could not re-read this epoch's reports right before sending (${asError(error).message})`
   }
+}
+
+/**
+ * Decides the same-check rule again for the results of evidence about to be sent, and says what changed, or
+ * null when every decision is the one the evidence stores. A result the rule would now leave out, or decide on
+ * another first report, means the evidence must be built again: an old DIFF is never re-sent on an old decision.
+ */
+export async function sameCheckChanged(
+  modelHash: string,
+  results: readonly ModelAuditSellerResultV1[],
+  filter: ReturnType<typeof sameCheckFilter>,
+): Promise<string | null> {
+  const decisions = await filter(modelHash, results.map((result) => ({
+    agentId: BigInt(result.agentId),
+    serviceHash: result.serviceHash,
+    verdict: verifierVerdict(result.verdict),
+    auditedAt: result.auditedAt ?? 0,
+    flaggedBy: result.flaggedBy ?? [],
+    passedBy: result.passedBy ?? [],
+  })))
+  for (const [index, decision] of decisions.entries()) {
+    const result = results[index]!
+    const stored = result.confirmation ?? null
+    const now = decision?.kind === 'send' ? decision.confirmation : null
+    if (decision && decision.kind !== 'send') return `agent ${result.agentId}: ${decision.reason}`
+    if (canonicalJsonStringify(stored) !== canonicalJsonStringify(now)) {
+      return `agent ${result.agentId}: the waiting DIFF it answers changed since its evidence was prepared`
+    }
+  }
+  return null
 }
 
 /** `<evidence>/.submit.lock`, or null while another live submit holds it (a dead one's lock is taken over). */
