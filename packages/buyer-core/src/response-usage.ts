@@ -16,18 +16,41 @@ export function parseResponseUsage(body: Uint8Array): ResponseUsage {
   return streamUsage(readStreamEvents(new TextDecoder().decode(body)));
 }
 
-/** The token usage of a stream's events: the largest figure any event reports, field by field. */
+const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * Whether an event's usage is marked as the upstream's own early estimate (`estimated: true`), read
+ * from the usage object `extractUsage` counts: `usage`, else `response.usage`, else `message.usage`.
+ */
+function isEstimatedUsage(value: Record<string, unknown>): boolean {
+  const envelope = isObject(value.usage) ? value : isObject(value.response) ? value.response : isObject(value.message) ? value.message : undefined;
+  return isObject(envelope?.usage) && envelope.usage.estimated === true;
+}
+
+/**
+ * The token usage of a stream's events. The input, its fresh part and its cache hits come together
+ * from one report, the one with the most input tokens: an Anthropic `message_start` beats a
+ * `message_delta` that repeats less. Output is the largest count any event reports. A report marked
+ * `estimated` counts only when the stream reports nothing else.
+ */
 export function streamUsage(events: Iterable<StreamEvent>): ResponseUsage {
-  const total: ResponseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+  const reports: Array<{ usage: ResponseUsage; estimated: boolean }> = [];
   for (const event of events) {
     for (const value of event.values) {
-      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
-      const usage = extractUsage(value as Record<string, unknown>);
-      if (usage.inputTokens > 0) total.inputTokens = Math.max(total.inputTokens, usage.inputTokens);
-      if (usage.outputTokens > 0) total.outputTokens = Math.max(total.outputTokens, usage.outputTokens);
-      if (usage.freshInputTokens > 0) total.freshInputTokens = Math.max(total.freshInputTokens, usage.freshInputTokens);
-      if (usage.cachedInputTokens > 0) total.cachedInputTokens = Math.max(total.cachedInputTokens, usage.cachedInputTokens);
+      if (!isObject(value)) continue;
+      const usage = extractUsage(value);
+      if (usage.inputTokens > 0 || usage.outputTokens > 0) reports.push({ usage, estimated: isEstimatedUsage(value) });
     }
+  }
+  const final = reports.some((report) => !report.estimated) ? reports.filter((report) => !report.estimated) : reports;
+  const total: ResponseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+  for (const { usage } of final) {
+    if (usage.inputTokens > 0 && usage.inputTokens >= total.inputTokens) {
+      total.inputTokens = usage.inputTokens;
+      total.freshInputTokens = usage.freshInputTokens;
+      total.cachedInputTokens = usage.cachedInputTokens;
+    }
+    total.outputTokens = Math.max(total.outputTokens, usage.outputTokens);
   }
   return total;
 }

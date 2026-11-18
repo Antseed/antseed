@@ -8,6 +8,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Buyers and sellers (`@antseed/buyer-core`, `@antseed/node`): a streamed answer that reports its usage more than once is billed by one consistent report. Before, the input and its cache hits could be taken from different reports (an early estimate and the final figure), so a cached prompt could be billed as more tokens than it had.
+- Buyers and sellers (`@antseed/buyer-core`, `@antseed/node`): the fallback estimate for an answer without a usage figure skips reasoning fields marked as encrypted and respects an explicit output limit (`max_tokens`, `max_completion_tokens`, for each of `n` answers).
+- Buyer proxy (CLI): the `x-antseed-*` token and cost headers now show what the buyer signs for the answer, from the seller's own reply and with the same rounding, and an error reply shows a cost of 0. Before, an answer without a usage figure was shown at a bytes-based guess over the whole body, and error replies were priced too.
+
 - Sellers and buyers (`@antseed/node`, `@antseed/provider-core`, CLI): a video download refused because all of the seller's download slots are taken now reaches the buyer as what it is, a 429 `video_download_busy` with `Retry-After: 5`, which the buyer proxy passes on to the client. Before, the seller reported it as `upstream_rate_limited` ("rate limited on this seller right now") with no `Retry-After`, so buyers took a short wait for an upstream limit and gave up on a video that was ready.
 
 ## 2026-11-18 — CLI 0.1.253, Node 0.2.186, Desktop 0.2.89
