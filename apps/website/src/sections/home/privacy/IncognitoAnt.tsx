@@ -1,6 +1,5 @@
 import {useRef, type JSX} from 'react';
 import clsx from 'clsx';
-import {usePageLoaded} from '../../../lib/usePageLoaded';
 import {useStill} from '../../../lib/useStill';
 import {CLIPS, useIncognitoAnt} from './useIncognitoAnt';
 import styles from './Privacy.module.css';
@@ -13,7 +12,6 @@ const HEIGHT = 798;
 export function IncognitoAnt(): JSX.Element {
   const ref = useRef<HTMLButtonElement>(null);
   const still = useStill();
-  const loaded = usePageLoaded();   // the poster waits for the page, so it never races the first screen
   useIncognitoAnt(ref);
   return (
     <button ref={ref} className={styles.ant} type="button" aria-label="Tickle the ant" disabled={still} aria-hidden={still || undefined} tabIndex={still ? -1 : undefined}>
@@ -23,7 +21,7 @@ export function IncognitoAnt(): JSX.Element {
           className={clsx(styles.clip, clip === 'idle' && styles.idle)}
           data-clip={clip}
           data-shown={clip === 'idle' ? '' : undefined}
-          poster={clip === 'idle' && loaded ? POSTER : undefined}
+          poster={clip === 'idle' ? POSTER : undefined}
           loop={clip === 'idle'}
           width={WIDTH}
           height={HEIGHT}
