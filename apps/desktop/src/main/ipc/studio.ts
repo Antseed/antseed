@@ -1,6 +1,6 @@
 import { dialog, ipcMain, shell } from 'electron';
-import { changeDesk, readDesk } from '../studio/director.js';
-import type { DeskAction } from '../../shared/director.js';
+import type { TrackEdit } from '../../shared/studio-track.js';
+import { editStudioTrack, ingestStudioDeliveries, studioFolder } from '../studio/track.js';
 import type { PiChatEngine } from '../chat/engine-types.js';
 import { normalizeServiceId } from '../chat/normalize.js';
 import {
@@ -8,18 +8,40 @@ import {
   getStudioProject,
   listStudioProjects,
   setStudioProjectConversation,
+  STUDIO_DIR,
   studioProjectDir,
 } from '../studio/store.js';
 import { errorResult } from './results.js';
 
 export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
   const { engine } = deps;
-  ipcMain.handle('studio:desk', async (_event, id: string, action?: DeskAction) => {
+  // Notes about deliveries that could not be applied, shown until the user dismisses them.
+  const notices = new Map<string, string[]>();
+
+  ipcMain.handle('studio:edit', async (_event, payload: { id?: unknown; edit?: TrackEdit } | undefined) => {
     try {
-      if (!action) return { ok: true, data: await readDesk(id) };
-      const picked = action.type === 'import' ? (await dialog.showOpenDialog({ properties: ['openFile','multiSelections'], filters: [{ name: 'Pictures and footage', extensions: ['png','jpg','jpeg','webp','gif','mp4','mov','m4v','webm'] }] })).filePaths : [];
-      return { ok: true, data: await changeDesk(id, action, picked) };
-    } catch (err) { return errorResult(err); }
+      const id = typeof payload?.id === 'string' ? payload.id : '';
+      const edit = payload?.edit;
+      const detail = await getStudioProject(id);
+      if (!detail || !edit || typeof edit !== 'object' || typeof edit.type !== 'string') return { ok: false, error: 'Project not found.' };
+      const dir = await studioFolder(id, STUDIO_DIR);
+      if (edit.type === 'dismiss-notices') {
+        notices.delete(id);
+        return { ok: true, data: { track: detail.track } };
+      }
+      const picked = edit.type === 'import'
+        ? (await dialog.showOpenDialog({
+          properties: edit.anchor ? ['openFile'] : ['openFile', 'multiSelections'],
+          filters: [edit.anchor || edit.index !== undefined
+            ? { name: 'Pictures', extensions: ['png', 'jpg', 'jpeg', 'webp'] }
+            : { name: 'Pictures and videos', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'mp4', 'mov', 'm4v', 'webm'] }],
+        })).filePaths
+        : [];
+      const result = await editStudioTrack(dir, edit, { picked, board: detail.board });
+      return { ok: true, data: result };
+    } catch (err) {
+      return errorResult(err);
+    }
   });
 
   ipcMain.handle('studio:list', async () => {
@@ -40,8 +62,14 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
 
   ipcMain.handle('studio:get', async (_event, payload: { id?: unknown } | undefined) => {
     try {
-      const detail = await getStudioProject(typeof payload?.id === 'string' ? payload.id : '');
-      return detail ? { ok: true, data: detail } : { ok: false, error: 'Project not found.' };
+      const id = typeof payload?.id === 'string' ? payload.id : '';
+      const folder = studioProjectDir(id);
+      if (folder) {
+        const fresh = await ingestStudioDeliveries(await studioFolder(id, STUDIO_DIR)).catch(() => []);
+        if (fresh.length > 0) notices.set(id, [...(notices.get(id) ?? []), ...fresh].slice(-10));
+      }
+      const detail = await getStudioProject(id);
+      return detail ? { ok: true, data: { ...detail, notices: notices.get(id) ?? [] } } : { ok: false, error: 'Project not found.' };
     } catch (err) {
       return errorResult(err);
     }

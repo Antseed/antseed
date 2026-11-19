@@ -14,6 +14,8 @@ import {
   type StudioProjectDetail,
   type StudioProjectSummary,
 } from '../../shared/studio.js';
+import { emptyStudioTrack, STUDIO_DELIVERIES_DIR, STUDIO_TRACK_FILE, type StudioTrack } from '../../shared/studio-track.js';
+import { readStudioTrack, scanStudioMedia, studioCanUndo, studioLibrary } from './track.js';
 
 export const STUDIO_DIR = path.join(ANTSEED_HOME_DIR, 'studio');
 
@@ -21,9 +23,9 @@ const MAX_BOARD_BYTES = 2 * 1024 * 1024;
 
 const PROJECT_AGENTS_FILE = `# Antseed Studio project
 
-This folder is a project in Antseed Desktop's Studio. The user sees \`${STUDIO_BOARD_FILE}\` as a storyboard beside this chat.
+This folder is a project in Antseed Desktop's Studio. The user edits the film in \`${STUDIO_TRACK_FILE}\` beside this chat: anchor images in order, with a clip between each pair.
 
-Before you do anything here, read the \`antseed-studio\` skill (its SKILL.md) and follow it. Keep \`${STUDIO_BOARD_FILE}\` up to date after every step, and never edit \`${STUDIO_PROJECT_FILE}\`.
+Before you do anything here, read the \`antseed-studio\` skill (its SKILL.md) and follow it. Read \`${STUDIO_TRACK_FILE}\` but never write it, nor \`${STUDIO_PROJECT_FILE}\`: hand every file you make back through \`${STUDIO_DELIVERIES_DIR}/\` as the skill says.
 `;
 
 type ProjectFile = { name: string; createdAt: number; conversationId: string | null };
@@ -97,15 +99,33 @@ async function fileVersion(id: string, file: string, root: string): Promise<numb
   }
 }
 
-async function readProject(id: string, root: string): Promise<{ summary: StudioProjectSummary; board: StudioBoard; boardError: string | null } | null> {
+async function readTrackSafely(id: string, root: string): Promise<{ track: StudioTrack | null; error: string | null; modifiedAt: number }> {
+  const dir = projectDir(id, root);
+  let modifiedAt = 0;
+  try {
+    modifiedAt = (await stat(path.join(dir, STUDIO_TRACK_FILE))).mtimeMs;
+    return { track: await readStudioTrack(dir), error: null, modifiedAt };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { track: null, error: null, modifiedAt };
+    return { track: emptyStudioTrack(), error: `${STUDIO_TRACK_FILE} could not be read`, modifiedAt };
+  }
+}
+
+async function readProject(id: string, root: string): Promise<{ summary: StudioProjectSummary; board: StudioBoard; boardError: string | null; track: StudioTrack | null; trackError: string | null } | null> {
   const project = await readProjectFile(id, root);
   if (!project) return null;
-  const { board, error, modifiedAt } = await readBoard(id, root);
+  const { board, error, modifiedAt: boardModifiedAt } = await readBoard(id, root);
+  const read = await readTrackSafely(id, root);
+  const { error: trackError, modifiedAt: trackModifiedAt } = read;
+  // A project without a track and without a storyboard is new: it opens in the track editor.
+  const track = read.track ?? (board.shots.length === 0 && !error ? emptyStudioTrack() : null);
+  const modifiedAt = Math.max(boardModifiedAt, trackModifiedAt);
+  const stills = track ? track.anchors.map((anchor) => anchor.image) : board.shots.map((shot) => shot.still);
   let cover: StudioProjectSummary['cover'] = null;
-  for (const shot of board.shots) {
-    const version = shot.still ? await fileVersion(id, shot.still, root) : null;
-    if (shot.still && version !== null) {
-      cover = { path: shot.still, version };
+  for (const still of stills) {
+    const version = still ? await fileVersion(id, still, root) : null;
+    if (still && version !== null) {
+      cover = { path: still, version };
       break;
     }
   }
@@ -116,11 +136,13 @@ async function readProject(id: string, root: string): Promise<{ summary: StudioP
       createdAt: project.createdAt,
       updatedAt: Math.max(project.createdAt, Math.floor(modifiedAt)),
       conversationId: project.conversationId,
-      shotCount: board.shots.length,
+      shotCount: track ? track.anchors.length : board.shots.length,
       cover,
     },
     board,
     boardError: error,
+    track,
+    trackError,
   };
 }
 
@@ -142,12 +164,24 @@ export async function getStudioProject(id: string, root: string = STUDIO_DIR): P
   if (!isStudioProjectId(id)) return null;
   const project = await readProject(id, root);
   if (!project) return null;
-  const files: Record<string, number> = {};
-  await Promise.all(studioBoardFiles(project.board).map(async (file) => {
+  const media = await scanStudioMedia(projectDir(id, root));
+  const files: Record<string, number> = Object.fromEntries(media);
+  await Promise.all(studioBoardFiles(project.board).filter((file) => !(file in files)).map(async (file) => {
     const version = await fileVersion(id, file, root);
     if (version !== null) files[file] = version;
   }));
-  return { project: project.summary, folder: projectDir(id, root), board: project.board, boardError: project.boardError, files };
+  return {
+    project: project.summary,
+    folder: projectDir(id, root),
+    board: project.board,
+    boardError: project.boardError,
+    track: project.track,
+    trackError: project.trackError,
+    library: studioLibrary(project.track, media),
+    notices: [],
+    canUndo: project.track ? await studioCanUndo(projectDir(id, root)) : false,
+    files,
+  };
 }
 
 export async function createStudioProject(name: unknown, root: string = STUDIO_DIR, now: number = Date.now()): Promise<StudioProjectSummary> {

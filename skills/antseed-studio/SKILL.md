@@ -1,127 +1,109 @@
 ---
 name: antseed-studio
-description: Runs a multi-shot video or a set of pictures as a project in one folder, storyboard first. Plans the shots, prices the whole piece in dollars before anything is paid for, makes one still per shot for approval, then makes the video shots and joins them, keeping board.json up to date so Antseed Desktop's Studio shows the storyboard. Use in an Antseed Studio project folder (its AGENTS.md names this skill), or when the user asks for a storyboard, a video of several shots, or a matching set of pictures.
+description: Plans and makes the shots of a film in an Antseed Desktop Studio project. The user edits the film in the app as a storyboard of shots (an anchor image each) with a clip between each pair, and talks to you about what is selected; this skill quotes every image and clip before paying, makes it with the antseed-images and antseed-videos skills, and hands the file or the edit back to the track. Use in an Antseed Studio project folder (its AGENTS.md names this skill), or when the user asks for clips between images, a scene that continues from a frame, or a film assembled from stills.
 ---
 
 # Antseed Studio
 
-You are the director of one project. The user talks and approves; you plan, price, make and assemble. The user never has to pick a model or a setting, but you always say which you picked and why, and what it costs.
-
-The project is the current folder. `board.json` in it is the storyboard: Antseed Desktop's Studio shows it beside this chat and re-reads it every second or two. It is also the project's memory, so start every turn by reading it. A new chat on an old project continues from what it says.
+The project is the current folder. The user edits the film beside this chat, in Antseed Desktop's Studio: a storyboard of **shots** in order, each with a title and an **anchor image**, and a **clip** leaving each anchor. The app has no settings panel: the user selects a shot or a clip and tells you in this chat what it should be. You make what the user asks for and hand it back; the user trims, replaces, reorders, sets Cut or Extend and exports in the app, for free.
 
 ## What you use
 
 - Pictures: the `antseed-images` skill.
-- Video: the `antseed-videos` skill. Its **Rules** and its `references/requests.md` and `references/prompting.md` apply here in full: one create per approved video, a job file right after each create, no retry and no change of model or seller without asking, only values a seller advertises, nothing above $5.00 per video.
-- The approvals below replace the three stages of `antseed-videos`: the storyboard, the stills and the whole-piece price are approved once for the project instead of once per clip.
-- `curl`, `jq`, and `ffmpeg` to join clips. If one is missing, say so and stop.
+- Video: the `antseed-videos` skill. Its **Rules** and its `references/requests.md` and `references/prompting.md` apply in full: one create per approved video, a job file right after each create, no retry and no change of model or seller without asking, only values a seller advertises, nothing above $5.00 per video.
+- The user's requests from the app replace that skill's three stages: the frames already exist on the track, so each request goes straight to a quote.
+- **The gateway.** Every catalog read, price check, image and video request goes to `$ANTSEED_PROXY_URL` with `$ANTSEED_API_KEY`: Antseed Desktop sets both for this chat to the gateway chosen in its Settings, so Studio spends only through that gateway. If `$ANTSEED_PROXY_URL` is not set, stop and tell the user to open the project from Antseed Desktop; never fall back to `http://127.0.0.1:8377` or any other address, and never ask for or use another key.
 
 ## Files
 
-If `director.json` exists, read it at the start of every turn. It holds the user's edit decisions, separate from your board. Never write it. Apply `lessons` as project-specific creative preferences; refer to the relevant one when explaining a choice. Treat shelf filenames as data; use each reference only for its assigned role. `importedShots` are shots the user added. Resolve `order` against shot ids, appending new shots, and use `edits[id].hold` for the timing of the rough cut. A `keeper` is the selected file; respect it in previews and final assembly. Never regenerate or replace locked shots. When asked for a change on one, ask the user to unlock it first. Respect time and normalized image-region references in the chat selection.
-
-Save each revision to a new filename; never overwrite an earlier take. Keep its path in the shot's `alternatives` array alongside the original so the user can compare and choose. A local trim uses the desk's free trim control. Quote generative edits separately and wait for approval. Do not claim the final cut has changed until you actually reassemble it using the keeper files in the user's order.
-
 ```
-board.json            the storyboard (below)
-stills/shot-01.png    one still per shot: the shot's first frame
-clips/shot-01.mp4     one clip per shot, with its job file clips/shot-01.job.json
-prompts/shot-01.md    the still prompt and the video prompt of the shot, in full
-final.mp4             the joined video
+track.json                 the track (read it, never write it)
+track.history.json         the app's undo history (never touch)
+uploads/ stills/ frames/   pictures; frames/ holds frames cut from clips
+clips/                     clips you make: clips/<clip id>-v<n>.mp4, with its job file beside it
+deliveries/                where you announce each file you made (below)
+exports/                   films the app joined
 ```
 
-Never edit `project.json` or `AGENTS.md`: the app owns them. Paths in `board.json` are relative to the project folder, with forward slashes.
+Never edit `track.json`, `project.json` or `AGENTS.md`: the app owns them. Never overwrite a file; every new version gets a new name, so the user can always go back to an earlier one from the app's library. Paths are relative to the project folder, with forward slashes.
 
-## board.json
+## track.json
 
-```json
-{
-  "kind": "video",
-  "brief": "One paragraph: what the piece is and who it is for.",
-  "aspectRatio": "16:9",
-  "style": "The one style phrase every still prompt starts with.",
-  "shots": [
-    {
-      "id": "01",
-      "title": "The keeper climbs the stairs",
-      "description": "What the camera sees and how it moves, in one or two sentences.",
-      "durationSeconds": 5,
-      "status": "planned",
-      "still": "stills/shot-01.png",
-      "clip": "clips/shot-01.mp4",
-      "note": ""
-    }
-  ],
-  "estimate": {
-    "approved": false,
-    "lines": [
-      { "label": "Stills", "detail": "6 pictures at $0.04, <image model>", "usd": 0.24 },
-      { "label": "Video", "detail": "6 shots, 30 s at 1080p, <video model>", "usd": 5.40 },
-      { "label": "Retakes", "detail": "allowance, a quarter of the above", "usd": 1.41 }
-    ]
-  },
-  "spent": [
-    { "label": "Still 01", "detail": "<image model>", "usd": 0.04 }
-  ],
-  "final": "final.mp4"
-}
+Read it at the start of every turn. The parts you need:
+
+- `aspectRatio`: `16:9`, `9:16` or `1:1`. Every image and clip uses it.
+- `anchors`, in film order: the shots. Each has an `id` (`a3`), a `title` (the shot's name on the storyboard), an `image` (or null while it has none), and `prompt`, what it should show. The app calls the anchor at position 3 "Shot 3".
+- `anchors[n].clip` is the clip from that anchor to the next one: `id` (`c4`), `plannedSeconds`, `prompt` (the user's direction), `then`, the versions made so far, and `use`, the version in use.
+- `then` says how the clip ends. **`extend`**: the clip must land exactly on the next anchor's image, so it is made with the anchor's image as the first frame and the next anchor's image as the last frame. **`cut`**: the film cuts hard to the next anchor, so the clip is made from its first frame only and ends freely. The last anchor's clip, if it has one, ends freely too.
+- `scenes`, keyed by the id of a scene's first anchor: `name` and `world`, one line about the place, time and light. A scene runs until the next Cut. Start every prompt in a scene with its world line, so the clips of one scene look like one place.
+
+## Messages from the app
+
+A message about something selected starts with a line from the app, for example:
+
+```
+[Studio: Clip 3→4 (clip c4) · empty, planned 5 s · start stills/a3.png · then Extend: must land on stills/a4.png (Shot 4) · aspect 16:9]
+slow push in as the lamp flickers on
 ```
 
-- `kind` is `video` or `pictures`. A `pictures` project stops after the stills; its shots are the pictures.
-- The app shows the sum of the estimate's `lines` as the price of the whole piece, so every dollar you quote is in a line. Amounts are numbers, in dollars.
-- `status` is one of `planned`, `still` (the still is made and waits for approval), `approved`, `rendering`, `done`, `failed`. Put the reason for a `failed` shot, or a change the user asked for, in `note`.
-- Name `still`, `clip` and `final` only once the file exists; leave the key out before that.
-- `spent` gets one line for every output that was delivered, retakes included, with its price: the price you quoted for a video, and a still's listed price (the higher one when the catalog lists a range). Never remove a line.
-- You may keep other keys of your own (models, sellers, seeds); the app ignores them.
+The bracket line names the item, its ids, its files and, for a clip that is playing, the moment the user stopped at. The user's own words follow. Read `track.json` too: the line is a summary, the file is the truth.
 
-Write the file whole, to a temporary name, then move it into place, so the app never reads half a file:
+- **Something to make** (an empty clip, a new image, a remake): it is one round:
+  1. **Quote.** Read the catalog. For an Extend, pick a video model that takes a first and a last frame (`end_image_url` or `last_frame`); for a Cut, one that takes a first frame. If Cut or Extend is not chosen yet, ask the user to click the marker after the clip first: it decides whether the clip has an end frame. Pick the length the user planned when the model offers it, otherwise the nearest one it offers, and say so. Price it through the Price step of `references/requests.md`. Answer with one line per item and one total: "Clip 3→4, 5 s, <model>, <resolution>: $<price>. Total $<total>. Go?" If no offer takes the frames an Extend needs, say so and ask; never fall back silently to a model that ignores the last frame.
+  2. **Wait for yes.** Nothing is paid before the user says yes to that quote in this chat. "You decide" lets you choose, not spend. A quote is for those items at those settings only; a change of model, length or frames needs a new quote.
+  3. **Make it.** One paid thing at a time. Use the image files the track names, exactly; do not regenerate an anchor the user did not ask for.
+  4. **Deliver** the file (below), then say what it cost.
+- **A note on a clip or image** (what to change at a moment): look at that file (a frame at that moment, with `ffmpeg`, when it is a clip), then propose what to change: what stays, what is remade, and the price. Some changes are free in the app (a shorter clip with "End clip here", another version or image from the library); say so instead of quoting a render.
+- **A change to the track** ("make it 8 seconds", "call this shot The chase", "extend into the next one"): deliver it as an edit (below). Edits are free and the user can undo them.
+
+For an image, quote one image with the image model and its listed price (the higher one when the catalog lists a range), make it at the track's aspect ratio with `fit_frame` (`references/requests.md`, Frame shape), keep the look of the neighbouring shots (edit from one of them with `/v1/images/edits` when the model takes image input), and deliver it.
+
+## Planning a film
+
+When the user describes a film and the track is empty or nearly so, propose the shots first: a numbered list of titles with one line each, the length of each clip, and one estimated total for all images and clips, with the models you would use. Nothing is made at this step. After a yes to the plan, add the shots as edits (`add-anchor` with `title` and `prompt`, below) so they appear on the storyboard; then quote and make the images, one at a time, and the clips after them, each after its own yes unless the user approved the plan's total for exactly those items.
+
+## Delivering a file
+
+When a file is saved, write a small JSON file into `deliveries/` (create the folder if it is missing). The app reads it within a second or two, puts the file on the track as the version in use, keeps the earlier versions in the library, and moves the delivery to `deliveries/done/`.
 
 ```bash
-jq '.shots[2].status = "still" | .shots[2].still = "stills/shot-03.png"' board.json > board.json.tmp && mv board.json.tmp board.json
+mkdir -p deliveries
+jq -n --arg file clips/c4-v2.mp4 '{clip: "c4", file: $file, usd: 0.36, model: "<video model>"}' > deliveries/.c4-v2.tmp && mv deliveries/.c4-v2.tmp deliveries/c4-v2.json
 ```
 
-Update it after every step, before you answer the user.
+- A clip: `{"clip": "<clip id>", "file": "clips/...mp4", "usd": <price paid>, "model": "<model>"}`.
+- An image: `{"anchor": "<anchor id>", "file": "stills/...png", "usd": <price paid>, "model": "<model>"}`.
+- Write to a temporary name starting with a dot, then move it, so the app never reads half a file. `usd` is what the output cost, as you quoted it; the app shows the sum as spent by your count.
+- A delivery whose clip or anchor is no longer on the track lands in `deliveries/failed/`; tell the user, since the user may have removed it while you worked.
 
-## The four steps
+## Changing the track
 
-End each step with one question and wait. Never start a paid step before the user says yes to its price. "You decide" lets you choose, not spend.
+You never write `track.json`; you ask the app for an edit by delivering `{"edit": {...}}` the same way as a file. The app applies it like the user's own edit, so Undo takes it back. Use the anchor id from `track.json`; a clip is named by the anchor it leaves.
 
-### 1. Plan and price
+```bash
+jq -n '{edit: {type: "title", anchor: "a3", title: "Grand theft ladybug"}}' > deliveries/.title-a3.tmp && mv deliveries/.title-a3.tmp deliveries/title-a3.json
+```
 
-Nothing is paid for in this step.
+| Edit | Fields |
+| --- | --- |
+| `title` | `anchor`, `title` |
+| `anchor-prompt` | `anchor`, `prompt`: what the image should show |
+| `clip` | `anchor`, and `plannedSeconds` (1 to 30) and/or `prompt` |
+| `then` | `anchor`, `then`: `"cut"` or `"extend"`; only when the user said which |
+| `scene` | `anchor` (first of the scene), `name`, `world` |
+| `add-anchor` | `index` (0 = first), optional `title`, `prompt`, `file` (an image already in the project), `scene`: `"continue"` or `"new"` when added at the end |
+| `move-anchor` | `anchor`, `to` (new index) |
+| `remove-anchor` | `anchor`; only when the user asked. Its files stay in the library |
+| `use-version` | `anchor`, `file`: a version the clip already has |
+| `aspect` | `aspectRatio`: `16:9`, `9:16` or `1:1` |
 
-1. Shape the idea with the user: what the piece is, how long, the look. Offer a stronger version when you see one.
-2. Break it into shots a model can make: one clear action each, a length the video model advertises, no more shots than the piece needs. Write one style phrase for the whole piece and fix the aspect ratio.
-3. Read the image and video catalogs and pick one image model and one video model for the whole piece, as `antseed-videos` teaches (`references/prompting.md`, Choosing models). Prefer a video model that takes a first frame, because each still becomes its shot's first frame. Say which you picked and why in one line each. If the catalog lists none, say so and stop; never name a model from memory.
-4. Price the whole piece from the catalog: every still at the image model's listed price (the higher one when the catalog lists a range), every shot through the Price step of `references/requests.md` at the chosen length and resolution, and a retakes line of a quarter of the two. Stay under $5.00 per shot.
-5. Write `board.json` with the shots as `planned` and the estimate with `approved: false`.
-6. Ask: "<N> shots, about $<total> for the whole piece: $<stills> for the stills, $<video> for the video, $<retakes> set aside for retakes. Shall I make the stills first, for about $<stills>?"
+Several edit files are applied in name order, so number them (`01-…`, `02-…`). An edit the track refuses lands in `deliveries/failed/` and the user sees why; read the reason and fix it. Undo, trims, exports and replacing an image are the user's alone.
 
-### 2. Stills
-
-Pictures cost cents and video costs dollars, so the look is settled here.
-
-1. Write each shot's prompts to `prompts/shot-NN.md`: the still prompt (style phrase first, then one instant: framing, subject, setting, light) and the video prompt (motion and camera only; the still already sets the look).
-2. Make the stills one at a time with `antseed-images` and the approved image model. Keep one character or product the same across shots by editing from an approved still of it (`/v1/images/edits`) when the image model takes image input; otherwise repeat its description word for word.
-3. Fit every still to the aspect ratio with `fit_frame` (`references/requests.md`, Frame shape). After each one: set the shot to `still`, name the file, add a `spent` line.
-4. Do not call `show_media` for stills and do not open them: the Studio shows them, and every picture you read is sent again on each turn.
-5. Ask which shots to change. "Fix shot 3: make it night" means redo only shot 3, with an adjusted prompt, and add its `spent` line. When the user is happy, set the shots to `approved`.
-
-### 3. Video
-
-1. Price the video again for the approved shots, since sellers and prices change. Say the new total and what has been spent so far.
-2. Ask: "<N> shots, <seconds> s in total, <resolution>: $<video> for the video. Go?" On yes, set `estimate.approved` to `true`.
-3. Make the shots one at a time, in order. For each: set it to `rendering`, create once with its still as the first frame, save the job file as `clips/shot-NN.job.json`, wait, save `clips/shot-NN.mp4`, then set it to `done`, name the clip and add a `spent` line with what it cost.
-4. When a shot fails, set it to `failed`, write the seller's reason in `note`, go on with the other shots, and at the end say what failed and what it cost. Ask before trying a failed shot again.
-5. If the session ends midway, the job files and `board.json` say where to resume: a shot with a job file is waited for, never created again.
-
-### 4. Assemble
-
-Join the `done` clips in shot order into `final.mp4` with the join commands of `references/requests.md` (Multi-clip videos, step 4). The shots are separate cuts, so skip that section's last-frame steps. Set `final` and show the video with `show_media`. Report the length, what the piece cost in total against the estimate, and where the files are. Then ask what to change: a shot can be redone alone and the piece joined again.
+Do not call `show_media` for files you deliver and do not open them: the app shows them, and every picture you read is sent again on each turn.
 
 ## Rules
 
-- Say prices in dollars, to the cent, and say "about" for an estimate. When the spend passes the approved total, stop and ask before the next paid step.
+- Say prices in dollars, to the cent. Never start a paid step without a yes to its price in this chat.
 - One paid thing at a time, so a problem costs one output and not six.
-- A change to one shot touches only that shot. Never remake approved shots the user did not name.
+- When a video fails, say the seller's reason and what it cost, and ask before trying again. A clip with a job file is waited for, never created again.
 - Never print base64 media, signed URLs, keys or full API responses.

@@ -13,16 +13,16 @@ import { useUiSelector } from '../../hooks/useUiSelector';
 import { useRetainedState } from '../../hooks/useRetainedState';
 import type { ViewName } from '../../types';
 import { StudioBoard } from '../studio/StudioBoard';
-import { DirectorDesk } from '../studio/DirectorDesk';
+import { TrackEditor } from '../studio/TrackEditor';
 import { VprPage } from '../vpr/VprKit';
-import { ChatView } from './ChatView';
+import { ChatView, type ChatContext } from './ChatView';
 import styles from './StudioView.module.scss';
 
 type Props = { onSelectView?: (view: ViewName) => void };
 
 const studioViewCache: { openProjectId: string | null } = { openProjectId: null };
 
-const AGENT_HINT = 'Tell the agent what you want to make. It plans the shots and shows the price of the whole piece before anything is paid for.';
+const AGENT_HINT = 'Tell the agent what the film is about, or select a shot or a clip and say what it should do. It quotes every image and clip before anything is paid for.';
 
 export function StudioView({ onSelectView }: Props) {
   const [openProjectId, setOpenProjectId] = useRetainedState(studioViewCache, 'openProjectId');
@@ -46,7 +46,7 @@ function StudioProjects({ onOpen }: { onOpen: (id: string) => void }) {
     <VprPage
       title="Studio"
       root
-      subtitle="Make videos and pictures with an agent. It plans the shots, prices the whole piece, and shows you a still of every shot before any video is paid for."
+      subtitle="Make a film as a storyboard of shots with a generated clip between each pair. Trim, replace and reorder for free; the agent quotes every image and clip before anything is paid for."
       action={<Button variant="brand" onClick={() => setCreating(true)}>New project</Button>}
     >
       <div className={styles.column}>
@@ -58,7 +58,7 @@ function StudioProjects({ onOpen }: { onOpen: (id: string) => void }) {
           <EmptyState
             icon={<HugeiconsIcon icon={Film01Icon} size={20} strokeWidth={1.6} />}
             title="No projects yet"
-            body="A project keeps the idea, the stills, the clips and the final video together, in one folder on this computer."
+            body="A project keeps its images, clips, earlier versions and exports together, in one folder on this computer."
           />
         ) : (
           <ul className={styles.projects}>
@@ -81,7 +81,7 @@ function StudioProjects({ onOpen }: { onOpen: (id: string) => void }) {
 }
 
 function ProjectCard({ project, onOpen }: { project: StudioProjectSummary; onOpen: (id: string) => void }) {
-  const shots = project.shotCount === 0 ? 'No shots yet' : `${String(project.shotCount)} shot${project.shotCount === 1 ? '' : 's'}`;
+  const shots = project.shotCount === 0 ? 'Empty' : `${String(project.shotCount)} shot${project.shotCount === 1 ? '' : 's'}`;
   return (
     <li>
       <button type="button" className={styles.project} onClick={() => onOpen(project.id)}>
@@ -147,6 +147,8 @@ function StudioProject({ id, onClose, onSelectView }: { id: string; onClose: () 
   const resource = useMemo(() => studioProjectResource(id), [id]);
   const project = useCachedResource(resource);
   const [chatReady, setChatReady] = useState(false);
+  const [context, setContext] = useState<ChatContext | null>(null);
+  const [opening, setOpening] = useState<string | null>(null);
   const sending = useUiSelector(state => state.chatSending || state.chatInputDisabled || !state.chatSelectedModelId);
   const hasOpenChat = useUiSelector((state) => state.chatActiveConversation !== null);
   const splitRef = useRef<HTMLDivElement>(null);
@@ -174,7 +176,36 @@ function StudioProject({ id, onClose, onSelectView }: { id: string; onClose: () 
       <div className={styles.split} ref={splitRef}>
         <div className={styles.boardPane} data-view-scroll>
           {detail ? (
-            <><DirectorDesk detail={detail} canSend={chatReady && !sending} onDirect={text=>actions.sendMessage(text)}/><StudioBoard detail={detail} /></>
+            detail.track ? (
+              <TrackEditor
+                detail={{ ...detail, track: detail.track }}
+                canSend={chatReady && !sending}
+                onSend={(text) => { void actions.sendMessage(text); }}
+                onContext={setContext}
+                onChanged={() => { void resource.reload(); }}
+              />
+            ) : (
+              <>
+                <div className={styles.legacy}>
+                  <p className={styles.notice} role="status"><span className={styles.dot} aria-hidden="true" />This project was made as a storyboard. Open it in the editor to trim, replace and export it; its shots and titles are kept, and its clips each end in a Cut.</p>
+                  <Button
+                    size="sm"
+                    disabled={opening !== null}
+                    onClick={() => {
+                      setOpening('');
+                      void window.antseedDesktop?.studioEdit?.(id, { type: 'convert' }).then((result) => {
+                        setOpening(result?.ok ? null : result?.error ?? 'Could not open the track editor');
+                        void resource.reload();
+                      });
+                    }}
+                  >
+                    Open in the editor
+                  </Button>
+                  {opening ? <p className={styles.notice} role="alert"><span className={styles.dot} aria-hidden="true" />{opening}</p> : null}
+                </div>
+                <StudioBoard detail={detail} />
+              </>
+            )
           ) : project.error ? (
             <p className={`${styles.notice} ${styles.paneNotice}`} role="status"><span className={styles.dot} aria-hidden="true" />{project.error}</p>
           ) : (
@@ -182,7 +213,7 @@ function StudioProject({ id, onClose, onSelectView }: { id: string; onClose: () 
           )}
         </div>
         <aside className={styles.chatPane} aria-label="Project agent">
-          {chatReady && detail ? <ChatView embedded emptyHint={AGENT_HINT} onSelectView={onSelectView} /> : null}
+          {chatReady && detail ? <ChatView embedded emptyHint={AGENT_HINT} context={context} onClearContext={() => setContext(null)} onSelectView={onSelectView} /> : null}
         </aside>
       </div>
     </VprPage>

@@ -131,3 +131,27 @@
   min-height: 0;
   border-left: 1px solid var(--border);
 }
+
+.legacy {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 20px 24px 0;
+}
+
+// Too narrow for the editor and the chat side by side: the chat goes below the editor.
+@media (max-width: 760px) {
+  .split {
+    flex-direction: column;
+  }
+
+  .boardPane {
+    flex: 1 1 55%;
+  }
+
+  .chatPane {
+    flex: 0 0 45%;
+    border-top: 1px solid var(--border);
+    border-left: none;
+  }
+}

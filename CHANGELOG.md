@@ -8,7 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
-- Desktop Studio keeps each video's storyboard, source files and takes in a local project. Producers can preview a rough cut, compare versions and send feedback to the project agent with the scene and clip time attached.
+- Desktop Studio edits a film as a storyboard of titled shots, each an anchor image, with a clip between each pair, kept in a local project. The video sits above the storyboard; there is no settings panel: select a shot or a clip and tell the project agent in chat what it should be, and the selection travels with the message as a chip naming the exact item, file and moment. Every clip ends in a Cut or an Extend that the producer chooses on the marker after it, a clip's length is dragged on the storyboard, and the + at the end continues the scene or starts a new one. Trimming a clip sets its new end frame, which can become the next shot; replacing an image offers to remake the clips made from it; earlier images and clips stay in the project library and can be put back. The agent plans shots, renames them and changes lengths through edits the producer can undo, and quotes every image and clip before anything is paid for. Export joins the clips on the computer. Storyboards made before open in the editor with their titles kept and their clips kept as Cuts.
 
 ### Fixed
 

@@ -5,6 +5,7 @@ import type { ConnectedAppsState } from './connected-apps/patching/connection.js
 import type { TelegramBridgeStatus } from './telegram/bridge.js';
 import type { ChatModel, ChatRoutePreview, ConversationFlags, OutgoingPrivacy } from '../shared/chat-gateway-types.js';
 import type { StudioProjectDetail, StudioProjectSummary } from '../shared/studio.js';
+import type { StudioTrack, TrackEdit } from '../shared/studio-track.js';
 import type {
   DepositStepSignal,
   FirstModelShownSignal,
@@ -246,8 +247,8 @@ const api = {
   studioList(): Promise<{ ok: boolean; data?: StudioProjectSummary[]; error?: string }> {
     return ipcRenderer.invoke('studio:list');
   },
-  studioDesk(id: string, action?: DeskAction): Promise<{ ok: boolean; data?: Desk; error?: string }> {
-    return ipcRenderer.invoke('studio:desk', id, action);
+  studioEdit(id: string, edit: TrackEdit): Promise<{ ok: boolean; data?: { track: StudioTrack; message?: string; imported?: string[] }; error?: string }> {
+    return ipcRenderer.invoke('studio:edit', { id, edit });
   },
   studioCreate(name: string): Promise<{ ok: boolean; data?: StudioProjectSummary; error?: string }> {
     return ipcRenderer.invoke('studio:create', { name });
@@ -520,4 +521,3 @@ if (isAppDocument) {
 }
 
 export type DesktopBridge = typeof api;
-import type { Desk, DeskAction } from '../shared/director.js';

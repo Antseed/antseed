@@ -1,3 +1,5 @@
+import type { StudioLibraryItem, StudioTrack } from './studio-track.js';
+
 export const STUDIO_SCHEME = 'antseed-studio';
 export const STUDIO_URL_HOST = 'project';
 
@@ -53,6 +55,13 @@ export type StudioProjectDetail = {
   folder: string;
   board: StudioBoard;
   boardError: string | null;
+  /** The track editor's state; null for a storyboard made before the track editor. */
+  track: StudioTrack | null;
+  trackError: string | null;
+  library: StudioLibraryItem[];
+  /** Short notes about the agent's deliveries that could not be applied. */
+  notices: string[];
+  canUndo: boolean;
   files: Record<string, number>;
 };
 

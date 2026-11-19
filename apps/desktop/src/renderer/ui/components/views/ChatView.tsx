@@ -156,8 +156,12 @@ function formatVoiceElapsed(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+/** What the message is about, shown as a chip in the composer and sent ahead of the text. */
+export type ChatContext = { label: string; text: string; thumbnail?: string | null };
+
 type ChatViewProps = {
-  direction?: { text: string } | null;
+  context?: ChatContext | null;
+  onClearContext?: () => void;
   onSelectView?: (view: import('../../types').ViewName) => void;
   embedded?: boolean;
   emptyHint?: string;
@@ -219,7 +223,7 @@ const chatViewCache: ChatViewCache = {
   hasNewActivityWhileScrolledUp: false,
 };
 
-export function ChatView({ onSelectView, embedded = false, emptyHint, direction }: ChatViewProps) {
+export function ChatView({ onSelectView, embedded = false, emptyHint, context = null, onClearContext }: ChatViewProps) {
   const privateMode = usePrivateMode();
   const progress = useHomeProgress();
   // Counts the user's switches, so a dismissed privacy note can flash back.
@@ -291,7 +295,6 @@ export function ChatView({ onSelectView, embedded = false, emptyHint, direction 
   const [isNearBottom, setIsNearBottom] = useRetainedState(chatViewCache, 'isNearBottom');
   const [hasNewActivityWhileScrolledUp, setHasNewActivityWhileScrolledUp] = useRetainedState(chatViewCache, 'hasNewActivityWhileScrolledUp');
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { if (direction) { setInputValue(value => value ? `${value}\n${direction.text}` : direction.text); inputRef.current?.focus(); } }, [direction]);
   const messageSearchInputRef = useRef<HTMLInputElement>(null);
   const messageRefs = useRef(new Map<string, HTMLDivElement>());
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -627,8 +630,10 @@ export function ChatView({ onSelectView, embedded = false, emptyHint, direction 
   }, []);
 
   const handleSend = useCallback(() => {
-    const text = inputValue.trim();
-    if (!text && attachedFiles.length === 0) return;
+    const typed = inputValue.trim();
+    if (!typed && attachedFiles.length === 0) return;
+    // The selection travels with every message while its chip is shown.
+    const text = context && !imageMode ? `${context.text}\n${typed}` : typed;
     // A send during a privacy switch is held until the switch lands.
     if (noModelAvailable) return;
     // If the current turn is still streaming, park the draft as a pending
@@ -659,7 +664,7 @@ export function ChatView({ onSelectView, embedded = false, emptyHint, direction 
       actions.sendMessage(text, filesToSend, options);
     }
     scrollChatToBottom('smooth');
-  }, [inputValue, attachedFiles, actions, snap.chatInputDisabled, snap.chatActiveConversation, resetComposer, noModelAvailable, imageMode, privateMode]);
+  }, [inputValue, attachedFiles, actions, snap.chatInputDisabled, snap.chatActiveConversation, resetComposer, noModelAvailable, imageMode, privateMode, context]);
 
   const handleRemovePending = useCallback((id: string) => {
     setPendingQueue((prev) => prev.filter((item) => item.id !== id));
@@ -1300,6 +1305,15 @@ export function ChatView({ onSelectView, embedded = false, emptyHint, direction 
                 onChange={handleFileAttach}
                 disabled={chatComposerDisabled || imageMode}
               />
+              {context && !imageMode ? (
+                <div className={styles.chatContextChip} title={context.text}>
+                  {context.thumbnail ? <img className={styles.chatContextThumb} src={context.thumbnail} alt="" /> : null}
+                  <span className={styles.chatContextLabel}>{context.label}</span>
+                  {onClearContext ? (
+                    <button type="button" className={styles.chatContextRemove} onClick={onClearContext} aria-label={`Stop sending ${context.label} with the message`}>×</button>
+                  ) : null}
+                </div>
+              ) : null}
               <textarea
                 ref={inputRef}
                 className={styles.chatTextInput}
