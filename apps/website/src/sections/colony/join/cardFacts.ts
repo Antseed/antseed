@@ -1,4 +1,5 @@
 import {MACS, NO_MAC, type Answers} from './macs.ts';
+import {macSlug} from './sharePages.ts';
 
 /** What a waitlist card names: the first name, the Mac line and, when the welcome email gave it, the waitlist number. */
 export type CardFacts = {name: string; mac: string; number?: number};
@@ -10,10 +11,10 @@ export const SHARE_URL = 'https://antseed.com/colony/';
 const KEY = 'antseed-colony-card';
 
 /** The link a post carries: /colony/mac/macbook-air/ shows the card for that Mac as the post's picture, on X and anywhere else links
- *  get a preview (static/colony/mac/), and sends people on to /colony/. /colony/ itself without a Mac. */
+ *  get a preview (sharePages.ts), and sends people on to /colony/. /colony/ itself without a Mac. */
 export const shareUrl = (mac: string): string => {
   const model = mac.split(' · ')[0];
-  return model in MACS ? `${SHARE_URL}mac/${model.toLowerCase().replace(/\s+/g, '-')}/` : SHARE_URL;
+  return model in MACS ? `${SHARE_URL}mac/${macSlug(model)}/` : SHARE_URL;
 };
 
 /** "MacBook Pro · M3 Max · 36 GB"; nothing for someone without a Mac. */

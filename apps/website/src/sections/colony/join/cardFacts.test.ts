@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import {readFileSync, statSync} from 'node:fs';
+import {statSync} from 'node:fs';
 import {test} from 'node:test';
 import {macLine, readCard, readLink, shareText, shareUrl} from './cardFacts.ts';
 import {MACS} from './macs.ts';
+import {sharePage} from './sharePages.ts';
 
 test('the card page shows the name and Mac this browser kept from the sign-up', () => {
   assert.deepEqual(readCard('{"name":"Ada","mac":"MacBook Pro · M3 Max · 36 GB"}'), {name: 'Ada', mac: 'MacBook Pro · M3 Max · 36 GB'});
@@ -52,12 +53,11 @@ test('a post links to the page for its Mac, so the preview shows that Mac’s ca
 test('every Mac the sign-up offers has its share page and card picture', () => {
   const site = new URL('../../../../static/', import.meta.url);
   for (const mac of Object.keys(MACS)) {
-    const path = new URL(shareUrl(mac)).pathname;
-    const page = readFileSync(new URL(`.${path}index.html`, site), 'utf8');
-    const image = page.match(/property="og:image" content="https:\/\/antseed\.com\/([^"]+)"/)?.[1];
-    assert.ok(image, `${path} names its card picture`);
-    assert.match(page, new RegExp(`og:image:alt" content="My ${mac} wants in`), `${path} describes the ${mac} card`);
-    assert.equal(page.match(/name="twitter:image" content="https:\/\/antseed\.com\/([^"]+)"/)?.[1], image);
-    assert.ok(statSync(new URL(image, site)).size < 250_000, `${image} is small enough for every app's preview`);
+    const {path, image, html} = sharePage(mac);
+    assert.equal(path, new URL(shareUrl(mac)).pathname, `${mac}: a post links to its share page`);
+    assert.match(html, new RegExp(`og:image" content="https://antseed\\.com${image}"`));
+    assert.match(html, new RegExp(`twitter:image" content="https://antseed\\.com${image}"`));
+    assert.match(html, new RegExp(`og:image:alt" content="My ${mac} wants in`), `${path} describes the ${mac} card`);
+    assert.ok(statSync(new URL(`.${image}`, site)).size < 250_000, `${image} is small enough for every app's preview`);
   }
 });

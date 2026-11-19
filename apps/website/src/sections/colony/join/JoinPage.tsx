@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type JSX} from 'react';
+import {useCallback, useEffect, useRef, useState, type FormEvent, type JSX} from 'react';
 import clsx from 'clsx';
 import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
@@ -6,6 +6,7 @@ import {WAITLIST} from '../config';
 import {MACS, NO_MAC, chipsFor, memsFor, settle, stepsFor, type Answers, type Step} from './macs';
 import {prefillUrl, sourceOf} from './waitlist';
 import {macLine, rememberCard} from './cardFacts';
+import {JoinBar} from './JoinBar';
 import {JoinGroup, NextSteps, ShareCard} from './Share';
 import styles from './JoinPage.module.css';
 
@@ -150,7 +151,6 @@ export default function JoinPage(): JSX.Element {
   const help = step === 'review' && noMac ? 'We’ll open a short Google form in a new tab. Sign in with Google to confirm your email, then submit. We’ll email you when there’s a way for you to take part.'
     : question?.help;
   const title = step === 'review' && noMac ? ['Confirm and', 'join the list.'] : question?.title;
-  const progress = {width: `${done ? 100 : (at / questions) * 100 + 4}%`} as CSSProperties;
 
   return (
     <>
@@ -168,14 +168,7 @@ export default function JoinPage(): JSX.Element {
         <link rel="icon" href="/site/assets/home/icons/ant-mark.svg" />
       </Head>
       <div className={styles.page} data-cmp="colony/join-flow">
-        <header className={styles.bar}>
-          <Link className={styles.logo} to="/colony/" aria-label="Antseed Colony"><img src="/site/assets/hero/logo.svg" width={95} height={33} alt="Antseed" /></Link>
-          <div className={styles.progress} aria-hidden="true"><i className={styles.progressFill} style={progress} /></div>
-          <p className={styles.count} aria-live="polite">{done ? 'Done' : `${at + 1} of ${questions}`}</p>
-          <Link className={styles.close} to="/colony/" aria-label="Close and go back to Colony">
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
-          </Link>
-        </header>
+        <JoinBar progress={done ? 100 : (at / questions) * 100 + 4} count={done ? 'Done' : `${at + 1} of ${questions}`} live />
 
         <div className={styles.art} aria-hidden="true">
           {arts.map(({key, art}) => <div key={key} className={styles.artLayer} data-art={art} />)}

@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
 import {readLink, recallCard, type CardFacts} from './cardFacts';
+import {JoinBar} from './JoinBar';
 import {JoinGroup, NextSteps, ShareCard} from './Share';
 import styles from './JoinPage.module.css';
 
@@ -35,14 +36,7 @@ export default function JoinedPage(): JSX.Element {
         <link rel="icon" href="/site/assets/home/icons/ant-mark.svg" />
       </Head>
       <div className={styles.page} data-cmp="colony/joined">
-        <header className={styles.bar}>
-          <Link className={styles.logo} to="/colony/" aria-label="Antseed Colony"><img src="/site/assets/hero/logo.svg" width={95} height={33} alt="Antseed" /></Link>
-          <div className={styles.progress} aria-hidden="true"><i className={styles.progressFill} style={{width: '100%'}} /></div>
-          <p className={styles.count}>Done</p>
-          <Link className={styles.close} to="/colony/" aria-label="Close and go back to Colony">
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
-          </Link>
-        </header>
+        <JoinBar progress={100} count="Done" />
 
         <div className={styles.art} aria-hidden="true"><div className={styles.artLayer} data-art="done" /></div>
 
