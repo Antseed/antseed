@@ -25,11 +25,13 @@
 .swatches { position: absolute; pointer-events: none; }
 .stage::before {
   content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
-  background: url('/site/assets/paintings/pond-day.webp') center bottom / cover no-repeat;
+  background: center bottom / cover no-repeat;
   opacity: .2;
   mask-image: radial-gradient(ellipse at 50% 48%, transparent 26%, #000 84%);
 }
-:global(:root[data-theme='dark']) .stage::before { background-image: url('/site/assets/paintings/pond-night.webp'); }
+/* the pond waits until the board is near, so it never races the first screen */
+.board[data-near] .stage::before { background-image: url('/site/assets/paintings/pond-day.webp'); }
+:global(:root[data-theme='dark']) .board[data-near] .stage::before { background-image: url('/site/assets/paintings/pond-night.webp'); }
 .board .drawing [data-n='Slab / DHT'] > path:nth-child(3) { fill: url(#network-print-clover); }
 .board .drawing [data-n='Slab / Base'] > path:nth-child(3) { fill: url(#network-print-pond); }
 .board .drawing [data-n='Slab / ANTS'] > path:nth-child(3) { fill: url(#network-print-ferns); }

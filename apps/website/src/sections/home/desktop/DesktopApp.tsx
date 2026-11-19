@@ -1,6 +1,6 @@
 import {useRef, type JSX} from 'react';
 import clsx from 'clsx';
-import {usePageLoaded} from '../../../lib/usePageLoaded';
+import {useHeroPainted} from '../../../lib/heroPainted';
 import {useSiteTheme} from '../../../lib/useSiteTheme';
 import {APP_HEIGHT, APP_WIDTH, CAPTURES, PROMPT, SIGNATURE, captureSrc} from './script';
 import {useDesktopLoop} from './useDesktopLoop';
@@ -12,7 +12,7 @@ export function DesktopApp({className}: {className?: string}): JSX.Element {
   const frameRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<HTMLDivElement>(null);
   const dark = useSiteTheme() === 'dark';
-  const loaded = usePageLoaded();   // the captures wait for the page, so they never race the first screen
+  const loaded = useHeroPainted();   // the captures wait for the hero painting, so they never race the first screen
   useScaleToWidth(frameRef, appRef, APP_WIDTH);
   useDesktopLoop(frameRef);
 

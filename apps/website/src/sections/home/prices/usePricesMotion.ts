@@ -1,7 +1,7 @@
 import {useEffect, useState, type RefObject} from 'react';
 import {REDUCED_MOTION_QUERY, isStill} from '../../../lib/motion';
 import {useInView} from '../../../lib/useInView';
-import {usePageLoaded} from '../../../lib/usePageLoaded';
+import {useHeroPainted} from '../../../lib/heroPainted';
 import {usePageVisible} from '../../../lib/usePageVisible';
 
 const PHONE = '(max-width: 760px)';
@@ -23,7 +23,7 @@ export function usePricesMotion(flow: RefObject<HTMLElement | null>): PricesMoti
   const near = useInView(flow, {rootMargin: SPRITE_MARGIN, once: true});
   const onScreen = useInView(flow);
   const visible = usePageVisible();
-  const loaded = usePageLoaded();   // the ants' sprite sheets wait for the page, so they never race the first screen
+  const loaded = useHeroPainted();   // the ants' sprite sheets wait for the hero painting, so they never race the first screen
 
   useEffect(() => {
     const phone = matchMedia(PHONE);

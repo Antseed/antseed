@@ -1,4 +1,5 @@
 import {useEffect, useRef, type RefObject} from 'react';
+import {afterHeroPainted} from '../../../../lib/heroPainted';
 import type {Hand} from '../seed/hand';
 import type {MascotScene, SceneClasses, SceneEls} from './MascotScene';
 
@@ -10,8 +11,8 @@ type Refs = {[K in keyof Omit<SceneEls, 'seedImage' | 'film'>]: RefObject<HTMLEl
 type Options = {refs: Refs; hand: Hand; classes: SceneClasses; active: boolean; still: boolean};
 
 /**
- * The mascot, loaded as its own chunk once the page has loaded and only on a screen wide enough to show it, so it never weighs on
- * the first paint or on hydration. It draws only while `active` (on screen, tab visible).
+ * The mascot, loaded as its own chunk once the hero painting is on screen and only on a screen wide enough to show it, so it never
+ * weighs on the first paint or on hydration. It draws only while `active` (on screen, tab visible).
  */
 export function useMascot({refs, hand, classes, active, still}: Options): void {
   const scene = useRef<MascotScene | null>(null);
@@ -36,12 +37,11 @@ export function useMascot({refs, hand, classes, active, still}: Options): void {
         scene.current.setActive(activeRef.current);
       });
     };
-    const onLoad = () => start();
-    if (document.readyState === 'complete') start(); else window.addEventListener('load', onLoad, {once: true});
+    const cancel = afterHeroPainted(start);
     wide.addEventListener('change', start);
     return () => {
       dead = true;
-      window.removeEventListener('load', onLoad);
+      cancel();
       wide.removeEventListener('change', start);
       scene.current?.dispose();
       scene.current = null;

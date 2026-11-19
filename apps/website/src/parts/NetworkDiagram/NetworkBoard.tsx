@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import {StepWindow} from './StepWindow';
 import {PaintedLayers} from './PaintedLayers';
 import {useInView} from '../../lib/useInView';
+import {useHeroPainted} from '../../lib/heroPainted';
 import type {NetworkStep} from './steps';
 import type {WindowState} from './useStepCycle';
 import styles from './NetworkBoard.module.css';
@@ -31,9 +32,10 @@ type Props = {
 /** The light card: the step's drawing at the left (the three stacked, cross-fading), its data window at the right. */
 export function NetworkBoard({steps, step, leaving, windows, stageRef, svgRefs, className, overlay, children}: Props): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
-  const near = useInView(ref, {rootMargin: '1200px', once: true});   // the prints load as a Wash's painting does
+  const inReach = useInView(ref, {rootMargin: '1200px', once: true});   // the prints load as a Wash's painting does
+  const near = useHeroPainted() && inReach;   // and never ahead of the hero painting
   return (
-    <div ref={ref} className={clsx(styles.board, className)}>
+    <div ref={ref} className={clsx(styles.board, className)} data-near={near || undefined}>
       <PaintedLayers load={near} />
       <div ref={stageRef} className={styles.stage} role="img" aria-label={STAGE_LABEL}>
         {steps.map((s, i) => (
