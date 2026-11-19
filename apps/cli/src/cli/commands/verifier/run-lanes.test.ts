@@ -61,6 +61,7 @@ const { emptyAuditCostSummary } = await import('../../../verifier/proxy-evidence
 const { auditWindowSellersLeft, readAuditWindow } = await import('../../../verifier/audit-window.js')
 const {
   CONFIRMATION_ATTEMPTS, CONFIRMATION_RECHECK_SPACING_SECONDS, SELLER_RETRY_SPACING_SECONDS, epochCellKey, loadEpochState, readRetryGiveUps,
+  reportCellKey, reportKey,
 } = await import('../../../verifier/epoch-plan.js')
 
 setAuditedModelsForTesting({
@@ -1125,7 +1126,7 @@ test('a confirmation close call carried pending through later runs is one attemp
   assert.equal(cell.action, 'done')
 }))
 
-test('a confirmation never resumes an attempt for another report or a first look: a new reservation on the same set, the old one voided after it', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+test('a confirmation is never offered a first look\'s attempt: it is a new audit on its own reservation, and the first look\'s is kept', LANE_TIMEOUT, () => withScenario(async (scenario) => {
   const peer = 'aa'.repeat(20)
   scenario.snapshots = [snapshot([{ ...seller(peer, ['model-a']), onChainAgentId: 5 } as PeerInfo])]
   // Run 1, a first look: the seller's connection breaks; its UNDETERMINED would be resumed later this epoch.
@@ -1142,18 +1143,15 @@ test('a confirmation never resumes an attempt for another report or a first look
   scenario.confirmationsWaitOnDiff = true
   scenario.reservation = () => ({ reference: { referenceId: 'first-reference:first-audit-model-a-aaaaaaaa.json', queryProfile: FIXTURE_QUERY_PROFILE, probes: [{ id: 'p1' }] }, retired: false })
   scenario.reservationLog.length = 0
-  // A failed replacement leaves the earlier attempt as it was: nothing is voided.
-  scenario.reserveFails = true
-  await scenario.run({ peer, confirm: true })
-  assert.deepEqual(scenario.voided, [])
-  scenario.reserveFails = false
   scenario.log.length = 0
   await scenario.run({ peer, confirm: true })
   const audits = scenario.log.filter((line) => line.startsWith('audit '))
   assert.ok(audits.length > 0 && audits.every((line) => !line.endsWith(' resume')), scenario.log.join('\n'))
-  // What happens: a new audit is reserved first, on the epoch's one shared set (the same questions, asked again in
-  // full), and only then is the earlier attempt's reservation voided.
-  assert.deepEqual(scenario.reservationLog, [`reserve audit-model-a-${peer}-2 reference-model-a`, `void audit-model-a-${peer}-1`])
+  // What happens: retry material is picked by the report it was made for, so the first look's attempt is not offered.
+  // The confirmation reserves its own audit on the epoch's one shared set (the same questions, asked in full), and
+  // the first look's reservation is not voided: it stays the first look's.
+  assert.deepEqual(scenario.reservationLog, [`reserve audit-model-a-${peer}-2 reference-model-a`])
+  assert.deepEqual(scenario.voided, [])
 }))
 
 test('a retry whose set a submit published after the plan is not resumed: a new audit on the current set, the old reservation voided', LANE_TIMEOUT, () => withScenario(async (scenario) => {
@@ -1312,5 +1310,101 @@ test('a waiting extra set answers a report only for a confirmation of that repor
     scenario.log.length = 0
     await scenario.run()
     assert.deepEqual(scenario.log.filter((line) => line.startsWith('audit ')), ['audit model-a aa extension'])
+  })
+})
+
+/**
+ * Reports A, B, A for one seller: each report is planned by its own cell (result, attempts and spacing), first looks
+ * apart. One scenario per point, each a few runs with the clock moved on between them.
+ */
+test('reports A, B, A: each report keeps its own result, attempts and spacing; first looks answer none', LANE_TIMEOUT, async () => {
+  const peer = 'aa'.repeat(20)
+  const now = Math.floor(Date.now() / 1_000)
+  const A = now - 7_200
+  const B = now - 7_000
+  const step = Math.max(CONFIRMATION_RECHECK_SPACING_SECONDS, SELLER_RETRY_SPACING_SECONDS) + 60
+  const undecided = (model: string, peerId: string) => ({
+    ...closeCallResult(model, peerId), status: 'UNDETERMINED', responseAuthVerified: false,
+    outcomeReason: { code: 'transport_error', summary: 'connection reset', retryable: true, source: 'transport', affectedBatchCount: 1, totalBatchCount: 10, nextAction: 'retry later' },
+  })
+  const decided = (model: string, peerId: string) => {
+    const verdict = computeKbfVerdict({ selfHamming: 30, selfTotal: 300, minCoverage: 0.5, minDiffCoverage: 0.8, targetMatchVector: Array.from({ length: 100 }, () => 1) })
+    return { ...closeCallResult(model, peerId), status: verdict.verdict, stats: { ...verdict.stats, selfCoverage: 1 }, correctProbeCount: 100, incorrectProbeCount: 0, correctRate: 1 }
+  }
+  const scenarioWith = async (body: (input: {
+    scenario: Scenario
+    run: (input: { report: number | null; at: number }) => Promise<string[]>
+    attempts: (report: number) => Promise<number | undefined>
+  }) => Promise<void>) => withScenario(async (scenario) => {
+    scenario.snapshots = [snapshot([{ ...seller(peer, ['model-a']), onChainAgentId: 5 } as PeerInfo])]
+    const realNow = Date.now
+    const run = async ({ report, at }: { report: number | null; at: number }) => {
+      scenario.log.length = 0
+      scenario.confirmations = report === null ? [] : [{ model: 'model-a', agentId: '5' }]
+      scenario.confirmationsWaitOnDiff = report !== null
+      scenario.firstReportedAt = report ?? 0
+      Date.now = () => realNow() + at * 1_000
+      try {
+        await scenario.run({ peer, confirm: true })
+      } finally {
+        Date.now = realNow
+      }
+      return scenario.log.filter((line) => line.startsWith('audit '))
+    }
+    const attempts = async (report: number) => (await loadEpochState(scenario.evidenceDir, EPOCH))
+      .reportCells?.get(reportCellKey('model-a', peer, reportKey('model-a', report, ['kbf'])))?.attempts
+    await body({ scenario, run, attempts })
+  })
+
+  // A, then B, then A again: A's second attempt is A's own, B's attempt counts on B only.
+  await scenarioWith(async ({ scenario, run, attempts }) => {
+    scenario.firstResult = undecided
+    scenario.reservation = () => ({ reference: { referenceId: 'first-reference:first-audit-model-a-aaaaaaaa.json', queryProfile: FIXTURE_QUERY_PROFILE, probes: [{ id: 'p1' }] }, retired: false })
+    assert.equal((await run({ report: A, at: 0 })).length > 0, true)
+    // B a little later: a new report starts at zero, whatever A used.
+    assert.equal((await run({ report: B, at: step - 30 })).length > 0, true)
+    assert.deepEqual([await attempts(A), await attempts(B)], [1, 1])
+    // A waits again one spacing after its own last attempt, though B's was only 30 seconds before: A is planned, and
+    // it resumes A's own attempt, never B's.
+    const third = await run({ report: A, at: step })
+    assert.deepEqual(third, ['audit model-a aa resume'], 'A\'s own attempt is resumed')
+    assert.deepEqual(scenario.voided, [], 'B\'s reservation is B\'s: nothing is closed')
+    assert.equal(await attempts(A), 2)
+    assert.equal(await attempts(B), 1)
+    await run({ report: A, at: 2 * step })
+    assert.equal(await attempts(A), CONFIRMATION_ATTEMPTS)
+    // A's attempts are used up: the seller is held for A, although B has attempts left.
+    assert.deepEqual(await run({ report: A, at: 3 * step }), [])
+    assert.equal(await attempts(B), 1)
+  })
+  // A report whose every attempt failed stops at the confirmation limit too.
+  await scenarioWith(async ({ scenario, run, attempts }) => {
+    scenario.audit = async () => { throw new Error('connection reset by the seller') }
+    for (const index of [0, 1, 2]) await run({ report: A, at: index * step })
+    assert.equal(await attempts(A), CONFIRMATION_ATTEMPTS, 'each failure counts on A')
+    assert.deepEqual(await run({ report: A, at: 3 * step }), [], 'and then the seller is not audited for A again')
+  })
+  // B's decided result never answers A; A's own decided, fresh result does, with no new audit.
+  await scenarioWith(async ({ scenario, run }) => {
+    scenario.firstResult = decided
+    await run({ report: B, at: 0 })
+    assert.equal((await run({ report: A, at: step })).length > 0, true, 'B\'s result does not answer A')
+    assert.deepEqual(await run({ report: A, at: 2 * step }), [], 'A\'s own decided result answers A')
+  })
+  // A finished first look answers no report, and two failed first looks leave A at zero.
+  await scenarioWith(async ({ scenario, run, attempts }) => {
+    scenario.firstResult = decided
+    await run({ report: null, at: 0 })
+    assert.equal((await run({ report: A, at: step })).length > 0, true, 'a first look does not answer A')
+    assert.equal(await attempts(A), 1)
+  })
+  await scenarioWith(async ({ scenario, run, attempts }) => {
+    scenario.audit = async () => { throw new Error('connection reset by the seller') }
+    await run({ report: null, at: 0 })
+    await run({ report: null, at: step })
+    scenario.audit = async () => undefined
+    scenario.firstResult = undecided
+    assert.equal((await run({ report: A, at: 2 * step })).length > 0, true)
+    assert.equal(await attempts(A), 1, 'A starts at zero: the first looks\' failures are theirs')
   })
 })

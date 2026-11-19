@@ -329,7 +329,7 @@ td{text-align:center;padding:6px 4px}td.num{white-space:nowrap;font-size:12px}
 <div class="card"><h3>NOT SUBMITTED</h3><div class="v">${count('skipped')}</div><small>tried, not audited or not confirmed</small></div>
 </div>
 <div class="box">
-<div class="legend">${(Object.keys(STATE_LABEL) as OverviewCellState[]).map((state) => `<span><span class="dot ${state}"></span> ${STATE_LABEL[state]}</span>`).join('')}<span style="color:#888;font-weight:400">blank = not offered · hover a grey or yellow dot for the reason</span></div>
+<div class="legend">${(Object.keys(STATE_LABEL) as OverviewCellState[]).map((state) => `<span><span class="dot ${state}"></span> ${STATE_LABEL[state]}</span>`).join('')}<span style="color:#888;font-weight:400">blank = not offered · each dot is the seller's latest result this epoch, whatever report it was for · hover a dot for the reason</span></div>
 <div class="filters"><button class="on" data-f="all">All ${overview.sellers.length}</button><button data-f="ver">Verified ${verifiedSellers}</button><button data-f="diff">Has DIFF ${sellersWith('diff')}</button><input id="q" placeholder="Seller or agent ID"></div>
 <table><thead><tr><th style="text-align:left;padding-left:14px">Seller</th><th>S · D · U</th>${header}</tr></thead>
 <tbody>

@@ -437,6 +437,34 @@ test('the submission leaves out a held confirmation UNDETERMINED and says why', 
   }
 })
 
+test('the submission offers each report\'s own decided result after the seller\'s latest, so the one for the report waiting now can be sent', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-reports-'))
+  try {
+    const confirming = (status: 'DIFF' | 'UNDETERMINED', reportedAt: number, auditId: string) => result('a', status, {
+      auditId, confirmsDiff: true, confirming: ['kbf'], confirmingReportedAt: reportedAt, ...(status === 'UNDETERMINED' ? { outcomeReason: sellerDown } : {}),
+    } as Partial<ModelVerificationTargetResult>)
+    const runs = [
+      run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [confirming('DIFF', 100, 'audit-for-a')] }]),
+      run('r2', '2026-10-28T21:00:00.000Z', [{ model: 'm', results: [confirming('UNDETERMINED', 200, 'audit-for-b')] }]),
+    ]
+    const { ordinary, reports } = splitEpochRuns(EPOCH, runs)
+    const state = { epoch: EPOCH, manifests: runs.map((entry) => entry.manifest), cells: mergeEpochRuns(EPOCH, runs), ordinaryCells: ordinary, reportCells: reports }
+    const { writeJsonAtomic } = await import('./atomic-files.js')
+    for (const [index, entry] of runs.entries()) {
+      const path = join(directory, `r${index + 1}.summary.json`)
+      await writeJsonAtomic(path, entry.summaries[0])
+      entry.manifest.models = [{ model: 'm', summaryPath: path } as VerifierRunManifestV1['models'][number]]
+    }
+    const manifest = await writeEpochSubmissionManifest(directory, state)
+    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    // B's latest is held for its re-check; A's own decided DIFF is offered, so submit can send it for A.
+    assert.deepEqual(summary.results.map((entry) => entry.auditId), ['audit-for-a'])
+    assert.deepEqual(summary.failures.map((entry) => entry.peerId), ['a'])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 const GONE = 'dd'.repeat(20)
 const LAST_ATTEMPT = Date.parse('2026-10-28T12:00:00.000Z') / 1_000
 const gaveUp = (runId: string): RetryGiveUpV1 => ({

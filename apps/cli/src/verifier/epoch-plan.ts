@@ -359,7 +359,9 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
       return 'extend'
     case 'skipped':
       // A skip is decided before any request, so it is re-evaluated each run (a seller may have
-      // lowered its price, or the model is advertised again).
+      // lowered its price, or the model is advertised again). A report's runtime skips count as its attempts: they stop
+      // at the confirmation limit like any other.
+      if (cell.confirmationReport !== undefined && cell.attempts >= CONFIRMATION_ATTEMPTS) return 'done'
       return 'audit'
     case 'undetermined':
       // The retired DIFF self-recheck's UNDETERMINED cannot be submitted (`retiredRecheckResult`).
@@ -375,7 +377,9 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
       if (cell.blame === 'auditor') {
         return !cell.permanent && cell.auditorAttempts < AUDITOR_FAILURE_ATTEMPTS ? 'retry' : 'done'
       }
-      return cell.attempts < (cell.result?.confirmsDiff ? CONFIRMATION_ATTEMPTS : SELLER_FAILURE_ATTEMPTS) ? 'retry' : 'done'
+      // A confirmation, or any attempt on a report (a failure names its report, not `confirmsDiff`), gets the
+      // confirmation limit.
+      return cell.attempts < (cell.result?.confirmsDiff || cell.confirmationReport !== undefined ? CONFIRMATION_ATTEMPTS : SELLER_FAILURE_ATTEMPTS) ? 'retry' : 'done'
   }
 }
 
@@ -479,7 +483,8 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
         if (failureBlame(failure.outcomeReason, failure.reason) === 'auditor') {
           entry.auditorAttempts += 1
           entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
-        } else countSellerAttempt(entry, true)
+          // A confirmation's attempts have their own spacing and limit (as its results do): each one counts.
+        } else countSellerAttempt(entry, confirmationReportKey(failure) === null)
         entry.failure = { entry: failure, runId: manifest.runId }
         entry.last = 'failure'
       }
@@ -490,7 +495,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
           if (failureBlame(skip.outcomeReason, skip.reason) === 'auditor') {
             entry.auditorAttempts += 1
             entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
-          } else countSellerAttempt(entry, true)
+          } else countSellerAttempt(entry, confirmationReportKey(skip) === null)
         }
         entry.skip = { entry: skip, runId: manifest.runId }
         entry.last = 'skip'
@@ -717,6 +722,14 @@ export async function writeEpochSubmissionManifest(
         const skip = latestBy(runSummaries, (summary) => summary.skipped, peer)
         if (skip) skipped.push(skip)
       }
+    }
+    // Each report's own decided result is offered too, after the seller's latest one: when the report waiting now is
+    // not the one the latest result was made for, submit sends the one made for it (`model-audit.ts`), not nothing.
+    for (const cell of state.reportCells?.values() ?? []) {
+      if (normalized(cell.model) !== normalized(model) || !cell.result || finalAuditVerdict(cell.result) === null) continue
+      if (cell.state !== 'same' && cell.state !== 'diff') continue
+      if (results.some((result) => result.auditId === cell.result!.auditId)) continue
+      results.push(cell.result)
     }
     for (const failure of runSummaries.flatMap((summary) => summary.failures)) {
       if (failure.peerId.startsWith('model:') && results.length === 0) failures.push(failure)

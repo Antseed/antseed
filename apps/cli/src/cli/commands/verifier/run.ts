@@ -628,6 +628,20 @@ export interface ResumeCandidate {
   confirming?: ConfirmationIdentity
 }
 
+/**
+ * The key a retry's material is kept under: the seller, and the report it was made for when it was a confirmation, so
+ * a confirmation of one report never picks up another report's attempt (`materialFor`).
+ */
+function materialKey(model: string, peerId: string, service: string, confirming?: { checks: readonly string[]; reportedAt?: number } | null): string {
+  const base = resumeKey(model, peerId)
+  return confirming ? `${base}\u0000${liveReportKey(service, confirming.reportedAt, confirming.checks)}` : base
+}
+
+/** The report a summary row confirms, as its row names it (`confirming`, `confirmingReportedAt`). */
+function summaryConfirming(result: { confirming?: ConfirmationIdentity['checks']; confirmingReportedAt?: number }): ConfirmationIdentity | undefined {
+  return result.confirming ? { checks: result.confirming, ...(result.confirmingReportedAt !== undefined ? { reportedAt: result.confirmingReportedAt } : {}) } : undefined
+}
+
 /** Why a resume's reservation is voided when the confirmation it would serve is for another report. */
 const OTHER_REPORT_VOID_REASON = 'a confirmation of another report closes this attempt: a new audit is reserved, and the seller is asked the questions again with none of these answers reused'
 
@@ -1155,6 +1169,9 @@ export async function runVerifierRound(
           const confirmation = confirmationFor(model, peer)
           if (!confirmation) return undefined
           const cell = epochCellFor(model, peer)
+          // A report whose attempts are used up without a result to send (failures, runtime skips) is finished: nothing
+          // is sent for it, and the seller is not audited for it again.
+          if (cell?.confirmationReport !== undefined && cell.action === 'done' && !cell.result) return undefined
           const completedAt = cell?.result
             ? epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
             : undefined
@@ -1210,9 +1227,13 @@ export async function runVerifierRound(
               : new Map<string, ResumeCandidate>()),
             ...(epochState ? await loadEpochRetryCandidates(epochState, models) : new Map<string, ResumeCandidate>()),
           ])
+        // Every candidate under the report it was made for (a checkpoint's or a retry file's own identity).
+        const keyedResumeCandidates = new Map([...discoveredResumeCandidates.values()].map((candidate) => [
+          materialKey(candidate.model, candidate.peerId, candidate.service, candidate.confirming), candidate,
+        ] as const))
         const selectedResumeCandidates = selectedPeerId
-          ? filterResumeCandidatesByPeer(discoveredResumeCandidates, selectedPeerId)
-          : discoveredResumeCandidates
+          ? filterResumeCandidatesByPeer(keyedResumeCandidates, selectedPeerId)
+          : keyedResumeCandidates
         const resumeCandidates = requestedResumeManifest
           ? await filterCompatibleResumeCandidates({
             candidates: selectedResumeCandidates, banksDir, config: config.verifier, epoch, strict: true,
@@ -1228,6 +1249,14 @@ export async function runVerifierRound(
           : epochState ? await loadEpochCarriedTests(epochState, models) : new Map<string, CarriedTests>()
         // Only an explicit --resume-run limits the run to repairs.
         const resumeOnly = resumeSourceRunId !== null
+        // A seller's retry material for the report waiting for it now, or its first look's when none waits. A repair
+        // (--resume-run) reads no waiting reports: it takes the seller's attempt whatever report it was for.
+        const materialFor = <T>(map: ReadonlyMap<string, T>, model: string, peer: PeerInfo): T | undefined => {
+          const base = resumeKey(model, peer.peerId)
+          const live = confirmationFor(model, peer)
+          if (live?.firstChecks) return map.get(`${base}\u0000${liveReportKey(live.service, live.firstReportedAt, live.firstChecks)}`)
+          return map.get(base) ?? (resumeOnly ? [...map].find(([key]) => key.startsWith(`${base}\u0000`))?.[1] : undefined)
+        }
         // Close calls whose extra questions could not be asked in earlier runs this epoch: finished
         // here without repeating the first check. --fresh audits those sellers from the start instead.
         const pendingExtensions = !options.fresh && (config.verifier?.closeCallExtensions ?? 2) > 0
@@ -1362,7 +1391,7 @@ export async function runVerifierRound(
             const notAudited = (reason: string): void => {
               if (confirmationKey) confirmationSkipReasons.set(confirmationKey, [...confirmationSkipReasons.get(confirmationKey) ?? [], reason])
             }
-            const resumeCandidate = resumeCandidates.get(resumeKey(model, peer.peerId))
+            const resumeCandidate = materialFor(resumeCandidates, model, peer)
             // A close call waiting for its extra set is finished with it, unless this seller now has a report to confirm
             // and the close call's first check is older than that report allows: then it is audited fresh, so a flag
             // of it is not refused as stale at submit.
@@ -1382,7 +1411,7 @@ export async function runVerifierRound(
               !waitingIdentity || !sameConfirmation(waitingIdentity, liveIdentity)
               || !isFreshConfirmation(earliestSetTime(waitingExtension.result), liveIdentity.reportedAt!)
             ) ? undefined : waitingExtension
-            const carriedTests = carriedTestsByKey.get(resumeKey(model, peer.peerId))
+            const carriedTests = materialFor(carriedTestsByKey, model, peer)
             if (!confirmationKey && peer.onChainAgentId != null) {
               const judged = alreadyJudgedByOther(othersOpinions, peer.onChainAgentId, targetServicesFor(model, peer, resumeCandidate?.service), model)
               if (judged) {
@@ -1551,7 +1580,7 @@ export async function runVerifierRound(
           .map(({ model, skipped, targets }) => ({ model, skipped, targets }))
         runModels = preparedModels.map((entry) => entry.model)
         if (epochState) {
-          printEpochPlan(epoch, epochState, plannedModels, resumeCandidates)
+          printEpochPlan(epoch, epochState, plannedModels, resumeCandidates, (model, peer) => epochCellFor(model, peer as PeerInfo))
         }
         if (preparedModels.every((entry) => entry.targets.length === 0)) {
           if (epochState && epochState.manifests.length > 0) {
@@ -2851,7 +2880,8 @@ export interface CarriedTests {
  * only the tests that decided (`decidedRecords`), for a fresh audit to carry.
  */
 export async function loadEpochCarriedTests(state: EpochState, models: string[]): Promise<Map<string, CarriedTests>> {
-  return carriedTestsOf([...state.cells.values()]
+  const cells = state.reportCells || state.ordinaryCells ? [...state.ordinaryCells?.values() ?? [], ...state.reportCells?.values() ?? []] : [...state.cells.values()]
+  return carriedTestsOf(cells
     .filter((cell) => cell.action === 'retry' && cell.result)
     .map((cell) => ({ model: cell.model, result: cell.result! })), models)
 }
@@ -2882,7 +2912,8 @@ async function carriedTestsOf(
       if (!sameAuditTarget(evidence, result)) continue
       const records = decidedRecords(evidenceRecords(evidence))
       if (Object.keys(records).length > 0) {
-        carried.set(resumeKey(model, result.peerId), { service: result.service, records, confirming: evidence.confirming ?? null })
+        const confirming = evidence.confirming ?? summaryConfirming(result)
+        carried.set(materialKey(model, result.peerId, result.service, confirming), { service: result.service, records, confirming: confirming ?? null })
       }
     } catch {
       continue
@@ -2897,7 +2928,9 @@ export async function loadEpochRetryCandidates(
 ): Promise<Map<string, ResumeCandidate>> {
   const requested = new Set(models.map((model) => model.toLowerCase()))
   const candidates = new Map<string, ResumeCandidate>()
-  for (const cell of state.cells.values()) {
+  // Each report's cell and the first looks' apart: a retry resumes the attempt of the report it is for.
+  const cells = state.reportCells || state.ordinaryCells ? [...state.ordinaryCells?.values() ?? [], ...state.reportCells?.values() ?? []] : [...state.cells.values()]
+  for (const cell of cells) {
     if (cell.action !== 'retry' || !cell.result || cell.result.status !== 'UNDETERMINED'
       || cell.result.extension) continue
     if (!requested.has(cell.model.toLowerCase())) continue
@@ -2909,7 +2942,8 @@ export async function loadEpochRetryCandidates(
     } catch {
       continue
     }
-    candidates.set(resumeKey(model, result.peerId), {
+    const confirming = evidence.confirming ?? summaryConfirming(result)
+    candidates.set(materialKey(model, result.peerId, result.service, confirming), {
       model,
       peerId: result.peerId,
       service: result.service,
@@ -2922,7 +2956,7 @@ export async function loadEpochRetryCandidates(
       probeIds: evidence.reference.probes.map((probe) => probe.id),
       exchanges: evidence.exchanges,
       records: sameAuditTarget(evidence, result) ? decidedRecords(evidenceRecords(evidence)) : {},
-      ...(evidence.confirming ? { confirming: evidence.confirming } : {}),
+      ...(confirming ? { confirming } : {}),
     })
   }
   return candidates
@@ -2951,6 +2985,8 @@ export function printEpochPlan(
   state: EpochState,
   planned: ReadonlyArray<{ model: string; targets: ReadonlyArray<{ peer: { peerId: string }; pendingExtension?: unknown; resumeCandidate?: unknown }>; skipped: readonly unknown[]; doneCount: number; held?: readonly unknown[] }>,
   resumeCandidates: ReadonlyMap<string, ResumeCandidate>,
+  /** The cell the planner used for a seller: the waiting report's own, or the first looks'. */
+  cellFor: (model: string, peer: { peerId: string }) => EpochCell | undefined = (model, peer) => state.cells.get(epochCellKey(model, peer.peerId)),
 ): void {
   const held = planned.reduce((total, model) => total + (model.held?.length ?? 0), 0)
   const heldNote = held > 0 ? `; ${held} held after a recent DIFF, not audited this epoch` : ''
@@ -2967,7 +3003,7 @@ export function printEpochPlan(
   for (const entry of planned) {
     done += entry.doneCount
     for (const target of entry.targets) {
-      const cell = state.cells.get(epochCellKey(entry.model, target.peer.peerId))
+      const cell = cellFor(entry.model, target.peer)
       if (target.pendingExtension) closeCalls += 1
       else if (!cell || cell.state === 'skipped') fresh += 1
       else if (cell.blame === 'auditor') retryAuditor += 1
@@ -2981,6 +3017,7 @@ export function printEpochPlan(
     + `${closeCalls} close call(s) to finish, ${fresh} new${heldNote}. Running ${audits} audit(s) and ${closeCalls} follow-up(s)`
     + (resumeCandidates.size > 0 ? `; ${resumeCandidates.size} retry(s) keep their answered questions.` : '.'),
   ))
+  console.log(chalk.dim('  Each seller is counted by the cell it is planned from: a waiting report\'s own attempts for a confirmation, its first looks otherwise.'))
   console.log(chalk.dim('  Use --fresh to ignore the earlier runs.'))
 }
 

@@ -375,6 +375,8 @@ export async function prepareModelAudits(input: {
       extensionEvidence: ProxyAuditEvidenceV1 | null
       extension2Evidence: ProxyAuditEvidenceV1 | null
       confirmation?: SameCheckConfirmationV1
+      /** A second row of the same seller and service (another report's own result). */
+      alternate?: true
     }> = []
     const seen = new Set<string>()
     let referenceModel: string | null = null
@@ -475,11 +477,10 @@ export async function prepareModelAudits(input: {
         exclude(`audited against ${evidence.reference.referenceModel}, not ${referenceModel}`)
         continue
       }
+      // A second row of one seller and service is an alternative (another report's own result, offered by the epoch
+      // submission): it goes through every check, and after the confirmation decision one row is kept.
       const duplicateKey = `${agentId}:${serviceHash(result.service)}`
-      if (seen.has(duplicateKey)) {
-        exclude(`duplicate audited service ${result.service}`)
-        continue
-      }
+      const alternate = seen.has(duplicateKey)
       let owner: string
       try {
         owner = await ownerOf(agentId)
@@ -492,7 +493,7 @@ export async function prepareModelAudits(input: {
         continue
       }
       seen.add(duplicateKey)
-      accepted.push({ agentId, result, evidence, extensionEvidence, extension2Evidence })
+      accepted.push({ agentId, result, evidence, extensionEvidence, extension2Evidence, ...(alternate ? { alternate: true as const } : {}) })
     }
 
     keepOneSamePerSeller(accepted, excluded)
@@ -559,6 +560,26 @@ export async function prepareModelAudits(input: {
         const { result } = entry
         allExcluded.push({ model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason: decision.reason })
         if (decision.kind === 'hold') heldBack.push(`${model} ${result.agentId ?? result.peerId}: ${decision.reason}`)
+        accepted.splice(index, 1)
+      }
+    }
+    // One row per seller and service: the one a confirmation decision sends for the report waiting now, otherwise the
+    // first offered (the latest result of the epoch, as before).
+    {
+      const kept = new Map<string, number>()
+      for (const [index, entry] of accepted.entries()) {
+        const key = `${entry.agentId}:${serviceHash(entry.result.service)}`
+        const earlier = kept.get(key)
+        if (earlier === undefined || (entry.confirmation && !accepted[earlier]!.confirmation)) kept.set(key, index)
+      }
+      for (let index = accepted.length - 1; index >= 0; index -= 1) {
+        const entry = accepted[index]!
+        if (kept.get(`${entry.agentId}:${serviceHash(entry.result.service)}`) === index) continue
+        const { result } = entry
+        allExcluded.push({
+          model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId,
+          reason: entry.alternate ? 'another result of this seller is submitted for this service' : `duplicate audited service ${result.service}`,
+        })
         accepted.splice(index, 1)
       }
     }
