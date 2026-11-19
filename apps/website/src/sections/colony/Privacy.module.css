@@ -58,12 +58,13 @@
   .title { margin-top: 4px; }
   .cards { gap: 24px; margin-top: 96px; padding: 0 24px; }
 }
+/* one card under another, each 480px wide (the margin is outside it, so wider screens don't narrow the cards) */
 @media (max-width: 1199px) {
-  .cards { grid-template-columns: minmax(0, 1fr); gap: 40px; max-width: 480px; margin-top: 40px; padding: 0 var(--site-pad); }
+  .cards { grid-template-columns: minmax(0, 1fr); gap: 40px; max-width: calc(480px + 2 * var(--site-pad)); margin-top: 40px; padding: 0 var(--site-pad); }
   .band .scene { aspect-ratio: 5 / 4; }
 }
 @media (max-width: 760px) {
   .rail { padding: 72px var(--site-pad); }
-  .cards { padding: 0; }
+  .cards { max-width: 480px; padding: 0; }
   .head .title { margin-top: 16px; font-size: min(34px, 7.8vw); line-height: 1.06; }   /* its long grey line kept on one line */
 }

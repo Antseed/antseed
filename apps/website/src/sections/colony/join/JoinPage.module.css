@@ -56,7 +56,7 @@
 .artLayer[data-art='memory'] { --y: 42%; background-image: url(/site/assets/colony/join/memory.webp); }
 .artLayer[data-art='name'] { --y: 49%; background-image: url(/site/assets/colony/join/name.webp); }
 .artLayer[data-art='review'] { --y: 48%; background-image: url(/site/assets/colony/join/email.webp); }
-.artLayer[data-art='done'] { --y: 53%; background-image: url(/site/assets/colony/join/done.webp); }
+.artLayer[data-art='done'] { --y: 70%; background-image: url(/site/assets/colony/join/done.webp); }
 /* the paintings are daylight only; a visitor who picked dark gets them a little dimmer */
 :global(:root[data-theme='dark']) .artLayer { filter: brightness(.8) saturate(.92); }
 @keyframes jnFade { from { opacity: 0; } }
@@ -191,13 +191,20 @@
   .step, .artLayer, .progressFill, .badge { animation: none; transition: none; }
 }
 
-/* wide: the painting on the left, turning with each step; the questions on the right */
+/* wide: the painting on the left, turning with each step; the questions on the right. The question's longest line ("Which Mac would
+   you") fits the column from 960px up, so it never leaves a word on a line of its own */
 @media (min-width: 960px) {
   .page { grid-template-columns: minmax(0, 46fr) minmax(0, 54fr); grid-template-rows: auto 1fr; background: var(--jn-paper); }
   .bar { grid-column: 2; grid-row: 1; background: var(--jn-paper); }
   .art { position: sticky; top: 0; grid-column: 1; grid-row: 1 / 3; height: calc(100dvh - 24px); margin: 12px; border-radius: 18px; }
   .main { grid-column: 2; grid-row: 2; align-items: center; padding: 24px clamp(24px, 6vw, 96px) 88px; background: var(--jn-paper); }
   .options.big { grid-template-columns: repeat(2, 1fr); }
+  .question { font-size: clamp(34px, 4.2vw, 48px); }
+}
+
+/* tablets: the painting and the questions share one centred column under the bar, the painting as wide as the questions */
+@media (min-width: 641px) and (max-width: 959px) {
+  .art { width: min(640px, 100% - 40px); height: clamp(180px, 26vh, 260px); margin: 0 auto; }
 }
 
 /* phones */
@@ -206,6 +213,7 @@
   .logo img { height: 24px; }
   .count { min-width: 0; }
   .main { padding: 28px 16px 88px; }
+  .question { font-size: clamp(29px, 9.4vw, 34px); }   /* "Which Mac would you" on one line down to 320px */
   .options.big { grid-template-columns: repeat(2, 1fr); }
   .big .option { min-height: 56px; }
   .options.chips { grid-template-columns: repeat(3, 1fr); }
@@ -214,4 +222,9 @@
   .next li > div, .group > div { flex-basis: 100%; }
   .group .button { flex: 1 1 100%; }
   .go .button { flex: 1 1 100%; }
+}
+/* the smallest phones: the options' names keep to one line, with no key number over them */
+@media (max-width: 359px) {
+  .big .option { padding-inline: 14px; }
+  .options .key { display: none; }
 }
