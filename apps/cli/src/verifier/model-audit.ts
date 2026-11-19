@@ -563,14 +563,20 @@ export async function prepareModelAudits(input: {
         accepted.splice(index, 1)
       }
     }
-    // One row per seller and service: the one a confirmation decision sends for the report waiting now, otherwise the
-    // first offered (the latest result of the epoch, as before).
+    // One row per seller and service. An alternative row (another report's own result) exists only to answer the report
+    // waiting now: it stands only when the confirmation decision sends it, and is never promoted because the seller's
+    // latest row was removed (as already on chain, say). Among rows a decision sends, one whose evidence names the
+    // report wins over an untagged first look; otherwise the latest row stands, as before.
     {
+      const rank = (entry: (typeof accepted)[number]): number => (
+        entry.confirmation && entry.evidence.confirming ? 3 : entry.confirmation ? 2 : entry.alternate ? 0 : 1
+      )
       const kept = new Map<string, number>()
       for (const [index, entry] of accepted.entries()) {
+        if (rank(entry) === 0) continue
         const key = `${entry.agentId}:${serviceHash(entry.result.service)}`
         const earlier = kept.get(key)
-        if (earlier === undefined || (entry.confirmation && !accepted[earlier]!.confirmation)) kept.set(key, index)
+        if (earlier === undefined || rank(entry) > rank(accepted[earlier]!)) kept.set(key, index)
       }
       for (let index = accepted.length - 1; index >= 0; index -= 1) {
         const entry = accepted[index]!
@@ -578,7 +584,7 @@ export async function prepareModelAudits(input: {
         const { result } = entry
         allExcluded.push({
           model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId,
-          reason: entry.alternate ? 'another result of this seller is submitted for this service' : `duplicate audited service ${result.service}`,
+          reason: entry.alternate ? 'another report\'s result of this seller, not sent for the report waiting now' : 'the result made for the report waiting now is sent in its place',
         })
         accepted.splice(index, 1)
       }

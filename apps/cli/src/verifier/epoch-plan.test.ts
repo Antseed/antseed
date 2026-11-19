@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import type { AuditCheckId } from './flagging-checks.js'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import {
   AUDITOR_FAILURE_ATTEMPTS,
@@ -370,6 +371,26 @@ test('confirmation attempts are kept per report: each report has its own result,
   const firstLooks = ordinary.get(epochCellKey('m', 'a'))!
   assert.equal(firstLooks.attempts, 2)
   assert.equal(firstLooks.confirmationReport, undefined)
+})
+
+test('a report\'s attempts end only on the seller\'s side: the auditor\'s own failures neither finish nor count', () => {
+  const service = result('a', 'SAME').service
+  const failure = (reason: typeof sellerDown | typeof buyerRefused) => ({
+    peerId: 'a', agentId: null, service, status: 'FAILED' as const, reason: reason.summary, outcomeReason: reason, confirming: ['kbf'] as AuditCheckId[], confirmingReportedAt: 100,
+  })
+  const cellAfter = (reasons: Array<typeof sellerDown | typeof buyerRefused>) => {
+    const runs = reasons.map((reason, index) => run(`f${index}`, `2026-10-28T1${index}:00:00.000Z`, [{ model: 'm', results: [], failures: [failure(reason)] }]))
+    return splitEpochRuns(EPOCH, runs).reports.get(reportCellKey('m', 'a', reportKey(service, 100, ['kbf'])))!
+  }
+  // Three failures of the auditor's own (a buyer routing policy, even a permanent one): still open, none counted.
+  const ours = cellAfter([buyerRefused, buyerRefused, buyerRefused])
+  assert.deepEqual([ours.attempts, ours.action], [0, 'retry'])
+  // Two of the seller's, then two of ours: two counted, one attempt left.
+  const mixed = cellAfter([sellerDown, sellerDown, buyerRefused, buyerRefused])
+  assert.deepEqual([mixed.attempts, mixed.action], [2, 'retry'])
+  // Three of the seller's: finished.
+  const theirs = cellAfter([sellerDown, sellerDown, sellerDown])
+  assert.deepEqual([theirs.attempts, theirs.action], [CONFIRMATION_ATTEMPTS, 'done'])
 })
 
 test('a confirmation whose close-call extension failed is retried; a decided or non-confirming one is done', () => {

@@ -86,6 +86,8 @@ export interface FixtureAudit {
   signer?: Wallet
   /** The run flagged the result as a confirmation of another auditor's DIFF. */
   confirmsDiff?: boolean
+  /** Sets a second row of the same seller and model apart (its own audit and evidence file). */
+  auditSalt?: string
   /**
    * The seller signs input tokens from another tokenizer: the tokenizer pre-check finds a mismatch and the
    * audit is DIFF beside its questions. `verdict` must be DIFF.
@@ -284,7 +286,7 @@ export async function writeSignedAuditRun(input: {
         createdAt: timestamps.startedAt,
         createdByRunId: input.runId,
       })
-      const auditId = canonicalHashBytes32({ fixture: input.runId, model, peerId })
+      const auditId = canonicalHashBytes32({ fixture: input.runId, model, peerId, ...(audit.auditSalt ? { salt: audit.auditSalt } : {}) })
       if (audit.closeCall) {
         results.push(await closeCallResult({
           audit, closeCall: audit.closeCall, reference, auditor: input.auditor, runId: input.runId, epoch: input.epoch,
@@ -296,7 +298,8 @@ export async function writeSignedAuditRun(input: {
       const first = await writeFixtureEvidence({
         audit, reference, auditor: input.auditor, runId: input.runId, completedAt: timestamps.completedAt,
         displayName: `${model}-${index + 1}`, peerId, verdictWanted: audit.verdict, auditId,
-        directory: modelAuditSellersDirectory(input.evidenceDir, input.epoch, model, input.runId),
+        // A second row of one seller comes from another run in real use: its own directory.
+        directory: modelAuditSellersDirectory(input.evidenceDir, input.epoch, model, audit.auditSalt ? `${input.runId}-${audit.auditSalt}` : input.runId),
       })
       const { evidence, written, exchanges, matchVector, cost, auditVerdict } = first
       results.push({

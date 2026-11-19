@@ -31,8 +31,10 @@ export interface OverviewCell {
   correctRate: number | null
   answered: number | null
   asked: number | null
-  /** The DIFF is from the tokenizer pre-check: the seller was asked no question. In plain words, with the counts. */
+  /** The tokenizer pre-check found a mismatch: in plain words, with the counts. The questions still ran beside it. */
   tokenizerMismatch?: string
+  /** The questions' own verdict, apart from the audit's (a DIFF of another test can stand beside questions that say SAME). */
+  questionsStatus?: string
   /** Extra questions after a close-call first check; absent on cells from before close calls were extended. */
   extension?: { probeCount: number; extraSets: number; firstPValue: number | null; pooledPValue: number | null; verdict: string } | null
   /** Plain-language reason for grey and yellow cells. */
@@ -132,6 +134,7 @@ export async function buildEpochOverview(
           answered: result.parsedProbeCount,
           asked: result.probeCount,
           ...(result.tokenizerPrecheck?.outcome === 'mismatch' ? { tokenizerMismatch: describeTokenizerCounts(result.tokenizerPrecheck) } : {}),
+          ...(result.questionsStatus ? { questionsStatus: result.questionsStatus } : {}),
           extension: result.extension
             ? {
               probeCount: extensionSets(result).reduce((sum, set) => sum + set.probeCount, 0),
@@ -241,10 +244,11 @@ function percent(rate: number | null): string {
 
 function cellDetail(cell: OverviewCell): string[] {
   const lines: string[] = []
-  if (cell.tokenizerMismatch) {
-    lines.push(`Tokenizer pre-check: ${cell.tokenizerMismatch}`)
-  } else if (cell.state !== 'skipped' || cell.answered !== null) {
-    lines.push(`1st check: ${percent(cell.correctRate)} match (${cell.answered ?? 0} of ${cell.asked ?? 0} answered)`)
+  if (cell.tokenizerMismatch) lines.push(`Tokenizer pre-check: ${cell.tokenizerMismatch}`)
+  // Every test runs: the questions' score is shown beside a pre-check mismatch too, with their own verdict.
+  if (cell.answered || (!cell.tokenizerMismatch && (cell.state !== 'skipped' || cell.answered !== null))) {
+    lines.push(`1st check: ${percent(cell.correctRate)} match (${cell.answered ?? 0} of ${cell.asked ?? 0} answered)`
+      + (cell.questionsStatus && cell.questionsStatus !== cell.state.toUpperCase() ? `; questions ${cell.questionsStatus}` : ''))
   }
   if (cell.extension) {
     const p = (value: number | null): string => value === null ? '?' : value.toFixed(3)

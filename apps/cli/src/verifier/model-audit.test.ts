@@ -57,6 +57,7 @@ async function withRun(
     alreadyOnChain?: Parameters<typeof prepareModelAudits>[0]['alreadyOnChain']
     diffHold?: Parameters<typeof prepareModelAudits>[0]['diffHold']
     auditWindow?: Parameters<typeof prepareModelAudits>[0]['auditWindow']
+    sameCheck?: Parameters<typeof prepareModelAudits>[0]['sameCheck']
   } = {},
 ): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-model-audit-'))
@@ -77,6 +78,7 @@ async function withRun(
       ...(options.alreadyOnChain ? { alreadyOnChain: options.alreadyOnChain } : {}),
       ...(options.diffHold ? { diffHold: options.diffHold } : {}),
       ...(options.auditWindow ? { auditWindow: options.auditWindow } : {}),
+      ...(options.sameCheck ? { sameCheck: options.sameCheck } : {}),
     })
     await body({ evidenceDir, prepared })
   } finally {
@@ -287,6 +289,34 @@ test('parts are cut from the results left to send', async () => {
   }, {
     maxResultsPerSubmission: 2,
     alreadyOnChain: async (_model, candidates) => candidates.map((candidate) => candidate.agentId === 2n),
+  })
+})
+
+test('two rows of one seller: the latest stands, another report\'s row only when the decision sends it, and a sibling is never promoted', async () => {
+  // Seller 1 has two rows on model-a: the latest (SAME) and another report's own (DIFF), as the epoch submission offers.
+  const rows = [audit('1', sellers[0]!, 'model-a', 'SAME'), { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), auditSalt: 'report-a' }, audit('2', sellers[1]!, 'model-a')]
+  const sent = (prepared: Fixture['prepared']) => prepared.audits.flatMap((entry) => entry.results.map((result) => `${result.agentId}:${result.verdict}`))
+  // No report waiting: the latest row stands, the other is left out.
+  await withRun(rows, async ({ prepared }) => {
+    assert.deepEqual(sent(prepared), [`1:${VERIFIER_VERDICT.SAME}`, `2:${VERIFIER_VERDICT.SAME}`])
+    assert.ok(prepared.excluded.some((entry) => /another report's result of this seller/.test(entry.reason)))
+  }, { sameCheck: async (_model, candidates) => candidates.map(() => null) })
+  // The latest row is already on chain: nothing of seller 1 is sent, its sibling is not promoted.
+  await withRun(rows, async ({ prepared }) => {
+    assert.deepEqual(sent(prepared), [`2:${VERIFIER_VERDICT.SAME}`])
+  }, {
+    alreadyOnChain: async (_model, candidates) => candidates.map((candidate) => candidate.agentId === 1n && candidate.verdict === VERIFIER_VERDICT.SAME),
+    sameCheck: async (_model, candidates) => candidates.map(() => null),
+  })
+  // The other row answers the report waiting now (the decision sends it): it is sent in place of the latest.
+  const confirmation = { auditor: '0x00', evidenceUri: 'ipfs://x', evidenceHash: '0x00', reportedAt: 1, firstChecks: ['kbf'], ownChecks: ['kbf'], sameCheck: 'kbf' } as never
+  await withRun(rows, async ({ prepared }) => {
+    assert.deepEqual(sent(prepared), [`1:${VERIFIER_VERDICT.DIFF}`, `2:${VERIFIER_VERDICT.SAME}`])
+    assert.ok(prepared.excluded.some((entry) => /sent in its place/.test(entry.reason)))
+  }, {
+    sameCheck: async (_model, candidates) => candidates.map((candidate) => (
+      candidate.agentId === 1n && candidate.verdict === VERIFIER_VERDICT.DIFF ? { kind: 'send' as const, confirmation } : null
+    )),
   })
 })
 

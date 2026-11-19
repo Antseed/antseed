@@ -375,6 +375,9 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
       // falls through
     case 'failed':
       if (cell.blame === 'auditor') {
+        // A report's attempts end only on the seller's side: the auditor's own failures (a reference route down, a
+        // buyer routing policy) neither finish it nor count, so the report stays open while the seller has attempts.
+        if (cell.confirmationReport !== undefined) return cell.attempts < CONFIRMATION_ATTEMPTS ? 'retry' : 'done'
         return !cell.permanent && cell.auditorAttempts < AUDITOR_FAILURE_ATTEMPTS ? 'retry' : 'done'
       }
       // A confirmation, or any attempt on a report (a failure names its report, not `confirmsDiff`), gets the

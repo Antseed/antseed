@@ -61,7 +61,7 @@ import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelSe
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { alreadyJudgedByOther, otherOpinions, type OtherOpinion } from '../../../verifier/third-opinion.js'
 import { attachFirstFlags, isFreshConfirmation } from '../../../verifier/same-check.js'
-import { flaggedSummaryChecks, localConfirmationDecision } from '../../../verifier/flagging-checks.js'
+import { describeAuditCheck, flaggedSummaryChecks, localConfirmationDecision } from '../../../verifier/flagging-checks.js'
 import { fetchIpfsText } from '@antseed/model-verifier'
 import { DIFF_HOLD_EPOCHS, diffHolds, type DiffHolds } from '../../../verifier/diff-hold.js'
 import { auditorRemovedMessage, createAuditorApprovalGate } from '../../../verifier/auditor-approval.js'
@@ -1171,7 +1171,9 @@ export async function runVerifierRound(
           const cell = epochCellFor(model, peer)
           // A report whose attempts are used up without a result to send (failures, runtime skips) is finished: nothing
           // is sent for it, and the seller is not audited for it again.
-          if (cell?.confirmationReport !== undefined && cell.action === 'done' && !cell.result) return undefined
+          // Only the seller's own attempts finish it: the auditor's failures never do.
+          if (cell?.confirmationReport !== undefined && cell.action === 'done' && !cell.result
+            && cell.attempts >= CONFIRMATION_ATTEMPTS) return undefined
           const completedAt = cell?.result
             ? epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
             : undefined
@@ -1194,6 +1196,8 @@ export async function runVerifierRound(
         const confirmationRecheckDueAt = (model: string, peer: PeerInfo): number | null => {
           const cell = epochCellFor(model, peer)
           if (!cell || !heldForConfirmationRecheck(cell)) return null
+          // From the cell's last attempt (a later failure included), not from the run of its older result.
+          if (cell.lastAttemptAt !== null) return cell.lastAttemptAt + CONFIRMATION_RECHECK_SPACING_SECONDS
           const completedAt = epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
           return completedAt ? Date.parse(completedAt) / 1_000 + CONFIRMATION_RECHECK_SPACING_SECONDS : null
         }
@@ -1221,11 +1225,13 @@ export async function runVerifierRound(
           : null
         const discoveredResumeCandidates = requestedResumeManifest
           ? await loadResumeCandidates(requestedResumeManifest, models)
+          // The interrupted run is newer than every finished one: its checkpoints go last, so for the same seller and
+          // report they win over an older finished retry (a later entry replaces an earlier one, also once rekeyed).
           : new Map<string, ResumeCandidate>([
+            ...(epochState ? await loadEpochRetryCandidates(epochState, models) : new Map<string, ResumeCandidate>()),
             ...(interruptedRunId
               ? await loadCheckpointResumeCandidates(evidenceDir, interruptedRunId, epoch, models)
               : new Map<string, ResumeCandidate>()),
-            ...(epochState ? await loadEpochRetryCandidates(epochState, models) : new Map<string, ResumeCandidate>()),
           ])
         // Every candidate under the report it was made for (a checkpoint's or a retry file's own identity).
         const keyedResumeCandidates = new Map([...discoveredResumeCandidates.values()].map((candidate) => [
@@ -2070,16 +2076,18 @@ export async function runVerifierRound(
                 })
                 runProgress!.recordVerdict(model, result.status, result.outcomeReason)
                 if (!runProgress!.interactive) {
-                  console.log(chalk.green(
-                    `${result.status} ${target.peer.peerId.slice(0, 12)}… `
-                    + (result.tokenizerPrecheck?.outcome === 'mismatch'
-                      ? `(tokenizer pre-check: ${describeTokenizerCounts(result.tokenizerPrecheck)}; `
-                      : '')
-                    + (result.outputCap?.outcome === 'flag' ? `(cap check: ${describeOutputCapSummary(result.outputCap)}; ` : '')
-                    + (result.outputEcho?.outcome === 'flag' ? `(echo check: ${result.outputEcho.reason}; ` : '')
-                    + `(questions ${result.questionsStatus ?? result.status}, ${result.parsedProbeCount}/${result.probeCount} scoreable, `
-                    + `$${result.cost.estimatedCostUsd.toFixed(6)})`,
-                  ))
+                  // Every test that flagged, each with what it saw, then the questions' own verdict and reason, in one bracket.
+                  const flagged = result.status === 'DIFF' ? flaggedSummaryChecks(result) : []
+                  const questionsReason = result.questionsOutcomeReason?.code
+                  const parts = [
+                    ...(flagged.length > 0 ? [`flagged by ${flagged.map(describeAuditCheck).join(', ')}`] : []),
+                    ...(result.tokenizerPrecheck?.outcome === 'mismatch' ? [`tokenizer pre-check: ${describeTokenizerCounts(result.tokenizerPrecheck)}`] : []),
+                    ...(result.outputCap?.outcome === 'flag' ? [`cap check: ${describeOutputCapSummary(result.outputCap)}`] : []),
+                    ...(result.outputEcho?.outcome === 'flag' ? [`echo check: ${result.outputEcho.reason}`] : []),
+                    `questions ${result.questionsStatus ?? result.status}${questionsReason ? ` (${questionsReason})` : ''}, ${result.parsedProbeCount}/${result.probeCount} scoreable`,
+                    `$${result.cost.estimatedCostUsd.toFixed(6)}`,
+                  ]
+                  console.log(chalk.green(`${result.status} ${target.peer.peerId.slice(0, 12)}… (${parts.join('; ')})`))
                 }
                 return { result, failure: null, skipped: null }
               } catch (error) {

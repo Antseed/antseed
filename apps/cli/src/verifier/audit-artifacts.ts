@@ -129,8 +129,9 @@ interface SellerAuditReportResult {
   outputCap?: OutputCapSummary
   outputEcho?: { rule: string; outcome: string; reason: string; growth?: string; fixedAmount?: string }
   flips?: { outcome: string; model?: string; probe?: true }
-  /** The questions' own verdict, apart from the audit's. */
+  /** The questions' own verdict and reason, apart from the audit's. */
   questionsStatus?: string
+  questionsOutcomeReason?: VerificationOutcomeReasonV1 | null
 }
 
 interface SellerAuditReportFailure {
@@ -436,8 +437,9 @@ function sellerResultReason(
   result: SellerAuditReportResult,
 ): string {
   const questions = questionsReportReason(result)
-  const flagged = result.status === 'DIFF' ? flaggedSummaryChecks(result).filter((check) => check !== 'kbf') : []
-  if (flagged.length === 0) return questions
+  // Every test that flagged, the questions too when they did (named in the list, their own result after it).
+  const flagged = result.status === 'DIFF' ? flaggedSummaryChecks(result) : []
+  if (flagged.length === 0 || (flagged.length === 1 && flagged[0] === 'kbf')) return questions
   const tests = flagged.map((check) => {
     if (check === 'tokens' && result.tokenizerPrecheck) return `tokenizer pre-check (${result.tokenizerPrecheck.rule}): ${describeTokenizerCounts(result.tokenizerPrecheck)}`
     if (check === 'output-cap' && result.outputCap) return `cap check (${result.outputCap.rule}): ${describeOutputCapSummary(result.outputCap)}: the reply limit was ignored`
@@ -448,11 +450,14 @@ function sellerResultReason(
   return [`flagged by ${tests.join('; and ')}`, `questions ${asked}${questions === '—' ? '' : `: ${questions}`}`].join('; ')
 }
 
-/** The questions' own part of a result's reason: its close call, or its outcome reason. */
+/**
+ * The questions' own part of a result's reason: its close call, or the questions' own outcome reason (never the
+ * audit's, which another test may have set).
+ */
 function questionsReportReason(result: SellerAuditReportResult): string {
   if (!result.extension) {
     if (result.extensionPending) return `close call waiting for extra questions: ${result.extensionPending.reason}`
-    return reportReason(result.outcomeReason)
+    return reportReason('questionsOutcomeReason' in result ? result.questionsOutcomeReason : result.outcomeReason)
   }
   const parts = [`close call (p=${result.extension.firstLook.pValue?.toFixed(3) ?? '?'})`]
   for (const [index, set] of [result.extension, result.extension2].entries()) {
