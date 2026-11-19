@@ -6,6 +6,28 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+## 2026-11-20 — CLI 0.1.254, Node 0.2.187
+
+### Packages
+
+- `@antseed/cli@0.1.254`
+- `@antseed/node@0.2.187`
+- `@antseed/provider-core@0.2.69`
+- `@antseed/provider-alibaba-video@0.1.12`
+- `@antseed/provider-anthropic@0.1.63`
+- `@antseed/provider-claude-code@0.1.63`
+- `@antseed/provider-claude-oauth@0.1.69`
+- `@antseed/provider-fal-image@0.1.8`
+- `@antseed/provider-fal-video@0.1.24`
+- `@antseed/provider-local-llm@0.1.63`
+- `@antseed/provider-openai@0.2.62`
+- `@antseed/provider-openai-responses@0.1.56`
+- `@antseed/provider-typesafe@0.1.15`
+- `@antseed/provider-venice-video@0.1.25`
+- `@antseed/payments@0.1.114`
+- `@antseed/ants@0.1.72`
+- `@antseed/gateway-console@0.1.37`
+
 ### Changed
 
 - Website: the light paper is removed from the docs, the sidebar, the footer and `llms.txt`. `/lightpaper` and `/docs/lightpaper` redirect to the protocol overview, and links in the blog and docs point there. The desktop app's chat assistant links to the protocol overview instead.
