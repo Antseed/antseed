@@ -1,4 +1,6 @@
 .head .sub { max-width: 440px; text-wrap: balance; }
+.offer { display: grid; gap: 12px; justify-items: start; max-width: 480px; }
+.offer h3 { margin: 0; }
 
 @media (max-width: 899px) {
   .section .panel { height: 480px; }

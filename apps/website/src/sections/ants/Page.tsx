@@ -1,6 +1,7 @@
 import type {JSX} from 'react';
 import {SitePage} from '../../components';
 import {Token} from './Token';
+import {LiquidInference} from './LiquidInference';
 import {PointSection} from './PointSection';
 import {POINTS} from './points';
 
@@ -12,6 +13,7 @@ export default function Page(): JSX.Element {
       description="Inference is the currency. ANTS makes it liquid.">
       <Token />
       {POINTS.map((p) => <PointSection key={p.id} point={p} />)}
+      <LiquidInference />
     </SitePage>
   );
 }
