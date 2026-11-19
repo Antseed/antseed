@@ -463,6 +463,12 @@ test('a stored FLIPS record is bounded and holds real numbers: a slot with a nul
   assert.equal(isFlipsRecord(record), true)
   const nullCost = { ...record, pairs: record.pairs.map((pair, index) => (index === 0 ? { ...pair, seller: [{ request: { ...pair.seller[0]!.request, attemptCosts: [null] } }, ...pair.seller.slice(1)] } : pair)) }
   assert.equal(isFlipsRecord(nullCost), false)
+  // The reference's time, on the auditor's clock, for a report of its age: written on every pair, optional to read.
+  assert.ok(record.pairs.every((pair) => pair.reference.askedAt && pair.reference.askedAt.first <= pair.reference.askedAt.last))
+  const withoutStamp = { ...record, pairs: record.pairs.map((pair) => ({ ...pair, reference: { words: pair.reference.words, replies: pair.reference.replies } })) }
+  assert.equal(isFlipsRecord(withoutStamp), true, 'a record written before the stamp is still a record')
+  const backwards = { ...record, pairs: record.pairs.map((pair) => ({ ...pair, reference: { ...pair.reference, askedAt: { first: 2, last: 1 } } })) }
+  assert.equal(isFlipsRecord(backwards), false, 'a stamp, when there, is well formed')
   assert.equal(withoutOrphans({ flips: nullCost as never }).flips, undefined)
   assert.equal(isFlipsRecord({ ...record, pairs: Array.from({ length: 5 }, () => record.pairs[0]) }), false, 'more pairs than any rule asks')
   // Counts that would sum past any number, or a number canonical JSON cannot hold, make no record.
