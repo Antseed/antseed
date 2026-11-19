@@ -1114,6 +1114,28 @@ test('a confirmation close call carried pending through later runs is one attemp
   assert.equal(cell.action, 'done')
 }))
 
+test('a confirmation never resumes a set made for another report or a first look: it takes a new set, the old reservation voided', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const peer = 'aa'.repeat(20)
+  scenario.snapshots = [snapshot([{ ...seller(peer, ['model-a']), onChainAgentId: 5 } as PeerInfo])]
+  // Run 1, a first look: the seller's connection breaks; its UNDETERMINED would be resumed later this epoch.
+  scenario.firstResult = (model, peerId) => ({
+    ...closeCallResult(model, peerId), status: 'UNDETERMINED', responseAuthVerified: false,
+    outcomeReason: { code: 'transport_error', summary: 'connection reset', retryable: true, source: 'transport', affectedBatchCount: 1, totalBatchCount: 10, nextAction: 'retry later' },
+  })
+  await scenario.run({ peer })
+  scenario.log.length = 0
+  // Run 2: a DIFF now waits for this auditor to confirm. The first look's set was asked of the seller already.
+  const realNow = Date.now
+  Date.now = () => realNow() + (SELLER_RETRY_SPACING_SECONDS + 60) * 1_000
+  scenario.confirmations = [{ model: 'model-a', agentId: '5' }]
+  scenario.confirmationsWaitOnDiff = true
+  scenario.reservation = () => ({ reference: { referenceId: 'first-reference:first-audit-model-a-aaaaaaaa.json', queryProfile: FIXTURE_QUERY_PROFILE, probes: [{ id: 'p1' }] }, retired: false })
+  await scenario.run({ peer, confirm: true })
+  const audits = scenario.log.filter((line) => line.startsWith('audit '))
+  assert.ok(audits.length > 0 && audits.every((line) => !line.endsWith(' resume')), scenario.log.join('\n'))
+  assert.deepEqual(scenario.voided, [`audit-model-a-${peer}-1`])
+}))
+
 test('a retry whose set a submit published after the plan is not resumed: a new audit on the current set, the old reservation voided', LANE_TIMEOUT, () => withScenario(async (scenario) => {
   const peer = 'aa'.repeat(20)
   scenario.snapshots = [snapshot([seller(peer, ['model-a'])])]

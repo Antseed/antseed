@@ -627,6 +627,9 @@ export interface ResumeCandidate {
   confirming?: ConfirmationIdentity
 }
 
+/** Why a resume's reservation is voided when the confirmation it would serve is for another report. */
+const OTHER_REPORT_VOID_REASON = 'a confirmation of another report takes a new question set; this set was asked of the seller already'
+
 /** Whether an evidence file is the audit of this seller and service, as its summary says. */
 function sameAuditTarget(evidence: ProxyAuditEvidenceV1, result: { peerId: string; service: string }): boolean {
   const target = evidence.target as ProxyAuditEvidenceV1['target'] | undefined
@@ -1913,17 +1916,30 @@ export async function runVerifierRound(
                 const carriedFor = (records: StoredCheckRecords, source: ConfirmationIdentity | null | undefined): StoredCheckRecords => (
                   resumeMaterialFor({ exchanges: [], records, confirming: source ?? null }, confirmingIdentity, freshForReport).records
                 )
-                const loaded = target.resumeCandidate ? await loadModelAuditReservation({
+                // A confirmation resumes an earlier attempt's set only when that attempt confirmed this same report.
+                // Another report's set (or a first look's) was asked of the seller already, and none of its answers is
+                // reused here, so this confirmation takes a new set and the old reservation is voided.
+                const resumable = target.resumeCandidate && (!confirmingIdentity
+                  || (target.resumeCandidate.confirming !== undefined && sameConfirmation(target.resumeCandidate.confirming, confirmingIdentity)))
+                  ? target.resumeCandidate
+                  : undefined
+                if (target.resumeCandidate && !resumable) {
+                  await voidModelAuditReference({
+                    banksDir, model, sellerPeerId: target.peer.peerId, auditId: target.resumeCandidate.reservationAuditId,
+                    reason: OTHER_REPORT_VOID_REASON,
+                  })
+                }
+                const loaded = resumable ? await loadModelAuditReservation({
                   banksDir,
                   model,
                   sellerPeerId: target.peer.peerId,
-                  auditId: target.resumeCandidate.reservationAuditId,
+                  auditId: resumable.reservationAuditId,
                   config: config.verifier,
                 }) : null
                 // A submit may have published its set since the plan: then a new audit on the current set,
                 // without the answers already given, so no question of a public set is asked.
-                if (target.resumeCandidate && loaded?.retired) await voidRetiredReservation(banksDir, target.resumeCandidate)
-                if (target.resumeCandidate && loaded && !loaded.retired) {
+                if (resumable && loaded?.retired) await voidRetiredReservation(banksDir, resumable)
+                if (resumable && target.resumeCandidate && loaded && !loaded.retired) {
                   validateResumeCandidate(target.resumeCandidate, loaded.reference, target.service, epoch)
                   reservationAuditId = target.resumeCandidate.reservationAuditId
                   reference = loaded.reference
