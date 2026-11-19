@@ -14,6 +14,7 @@ import {
   adjudicateQuestions,
   prepareModelAudits,
   sentAuditTimes,
+  auditFinishedAt,
   preparedFromEvidence,
   readModelAuditEvidence,
   readModelAuditLedger,
@@ -1014,4 +1015,18 @@ test('the planner and submit read the same finish time for the audit behind an o
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('a result\'s finish time is read from its verified evidence; a missing extra set or a changed file gives none, so the planner reopens its report', async () => {
+  await withRun([audit('1', sellers[0]!, 'model-a')], async ({ evidenceDir }) => {
+    const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as { results: Array<{ evidencePath: string; evidenceHash: string }> }
+    const row = summary.results[0]!
+    const evidence = JSON.parse(await readFile(row.evidencePath, 'utf8')) as { createdAt: string }
+    assert.equal(await auditFinishedAt(row), Date.parse(evidence.createdAt) / 1_000)
+    // An extra set the summary names but whose file is gone.
+    assert.equal(await auditFinishedAt({ ...row, extension: { evidencePath: join(evidenceDir, 'gone.json'), evidenceHash: row.evidenceHash } }), null)
+    // The file is there but is not the one its summary names.
+    assert.equal(await auditFinishedAt({ ...row, evidenceHash: '0x' + '00'.repeat(32) }), null)
+  })
 })

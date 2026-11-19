@@ -799,19 +799,20 @@ function auditedAt(entry: {
 
 /**
  * When the audit behind a summary row finished (seconds): its latest evidence file's time, as `auditedAt` reads it for
- * submit. Null when a file cannot be read or has no time.
+ * submit, each file read and verified against its hash as the submit preparation reads it. Null when any file of the
+ * row (an extra set included) is missing, unreadable or not the one its summary names: submit would refuse the row.
  */
 export async function auditFinishedAt(result: {
   evidencePath: string
-  extension?: { evidencePath: string } | null
-  extension2?: { evidencePath: string } | null
+  evidenceHash: string
+  extension?: { evidencePath: string; evidenceHash: string } | null
+  extension2?: { evidencePath: string; evidenceHash: string } | null
 }): Promise<number | null> {
-  const paths = [result.evidencePath, result.extension?.evidencePath, result.extension2?.evidencePath]
-    .filter((path): path is string => typeof path === 'string')
+  const sets = [result, result.extension, result.extension2].filter((set) => set != null)
   const times: number[] = []
-  for (const path of paths) {
+  for (const set of sets) {
     try {
-      const time = Date.parse((JSON.parse(await readFile(path, 'utf8')) as { createdAt?: unknown }).createdAt as string)
+      const time = Date.parse((await verifyProxyAuditEvidenceFile(set.evidencePath, set.evidenceHash)).createdAt)
       if (!Number.isFinite(time)) return null
       times.push(time)
     } catch {

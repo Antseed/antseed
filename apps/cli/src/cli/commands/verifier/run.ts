@@ -1164,8 +1164,8 @@ export async function runVerifierRound(
         const epochState: EpochState | null = options.fresh || requestedResumeManifest
           ? null
           : await loadEpochState(evidenceDir, epoch)
-        // When each confirmation result's audit finished: the planner orders it against this auditor's own report as
-        // submit does.
+        // When each confirmation result's audit finished, from its verified evidence: the planner orders it against
+        // this auditor's own report as submit does, and a result without readable evidence answers nothing.
         const reportCellFinishedAt = new Map<EpochCell, number>()
         for (const cell of epochState?.reportCells?.values() ?? []) {
           if (!cell.result) continue
@@ -1197,11 +1197,10 @@ export async function runVerifierRound(
           // Only the seller's own attempts finish it: the auditor's failures never do.
           if (cell?.confirmationReport !== undefined && cell.action === 'done' && !cell.result
             && cell.attempts >= CONFIRMATION_ATTEMPTS) return undefined
-          // When its audit finished, as submit reads it (its latest evidence file), else its run's end.
-          const runCompletedAt = cell?.result
-            ? epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
-            : undefined
-          const completedAt = cell?.result ? reportCellFinishedAt.get(cell) ?? (runCompletedAt ? Date.parse(runCompletedAt) / 1_000 : undefined) : undefined
+          // When its audit finished, read from its verified evidence as submit reads it. A result whose evidence cannot
+          // be read or verified (a missing extra set, say) answers nothing: submit would refuse it, so the report is
+          // audited again.
+          const completedAt = cell?.result ? reportCellFinishedAt.get(cell) : undefined
           // Only a result made for this report answers it: one that names no report (a first look, or a summary from
           // before reports were named) answers none, and the seller is audited for it.
           const local = cell?.result && completedAt && cell.confirmationReport !== undefined
