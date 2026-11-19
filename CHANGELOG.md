@@ -8,7 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
-- Website: antseed.com has a new design. The homepage, `/network/`, `/providers/` and `/ecosystem/` are redesigned. There are two new pages: `/ants/` (the token page, which replaces `/ants-token/`; the old URL redirects) and `/colony/`, whose waitlist sign-up at `/colony/join/` asks one question at a time, then hands off to a Google Form that confirms the visitor's email and takes one sign-up per account. The other marketing pages, `/brand/` and the integration guides are rebuilt in the same design. The docs and the blog share the new navigation, footer, fonts and colours. Dark mode is opt-in. The header links to gateway setup, GitHub and X. The network diagram uses watercolour layers. Network figures and live model prices (text, image, video and voice) now come from Antscan.
+- Website: antseed.com has a new design. The homepage, `/network/`, `/providers/` and `/ecosystem/` are redesigned. There are two new pages: `/ants/` (the token page, which replaces `/ants-token/`; the old URL redirects) and `/colony/`, whose waitlist sign-up at `/colony/join/` asks one question at a time (people without a Mac can join too), then hands off to a Google Form that confirms the visitor's email and takes one sign-up per account. Its Telegram buttons lead to the Local AI Colony group. The other marketing pages, `/brand/` and the integration guides are rebuilt in the same design. The docs and the blog share the new navigation, footer, fonts and colours. Dark mode is opt-in. The header links to gateway setup, GitHub and X. The network diagram uses watercolour layers. Network figures and live model prices (text, image, video and voice) now come from Antscan.
 
 ### Fixed
 
