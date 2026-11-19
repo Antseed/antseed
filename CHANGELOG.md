@@ -12,6 +12,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Website: link previews on X, Telegram, WhatsApp and LinkedIn show the new share image with the site's approved description. The share images are now JPEGs under 250 KB, since WhatsApp leaves out a preview image that is too large, and blog posts without their own image share the new one instead of the old logo card. The `/ants/` preview says ANTS, without the dollar sign.
 - Sellers and buyers (`@antseed/node`, `@antseed/provider-core`, CLI): a video download refused because all of the seller's download slots are taken now reaches the buyer as what it is, a 429 `video_download_busy` with `Retry-After: 5`, which the buyer proxy passes on to the client. Before, the seller reported it as `upstream_rate_limited` ("rate limited on this seller right now") with no `Retry-After`, so buyers took a short wait for an upstream limit and gave up on a video that was ready.
 
 ## 2026-11-18 — CLI 0.1.253, Node 0.2.186, Desktop 0.2.89

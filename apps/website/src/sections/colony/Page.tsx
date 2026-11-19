@@ -14,7 +14,7 @@ import styles from './Page.module.css';
 const TITLE = 'Join the first Mac Colony';
 const DESCRIPTION = 'Colony joins Macs into one AI provider on Antseed. Join the waitlist for the first Mac Colony. Any Apple silicon Mac can sign up.';
 /** The waitlist's share card, so a link to the page looks like the card people post. */
-const OG_IMAGE = 'https://antseed.com/site/assets/colony/og-waitlist.png';
+const OG_IMAGE = 'https://antseed.com/site/assets/colony/og-waitlist.jpg';
 
 /** /colony/: the waitlist for the first Mac Colony. Sign-ups happen on /colony/join/. */
 export default function Page(): JSX.Element {

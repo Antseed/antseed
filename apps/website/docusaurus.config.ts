@@ -240,19 +240,20 @@ const config: Config = {
     },
     metadata: [
       {name: 'google-site-verification', content: '09pzs5Q9kHdpQSNSBpr0vNh9SMq-T8lzhBgH5Zgm6ug'},
-      {name: 'description', content: 'The open intelligence network. Run your agents on your terms and save on every AI model — no usage limits, no middleman, always anonymous.'},
-      {property: 'og:title', content: 'Antseed — The open intelligence network'},
-      {property: 'og:description', content: 'The open intelligence network. Antseed lets you run your agents on your terms and save on every AI model — no usage limits, no middleman, always anonymous.'},
+      {name: 'description', content: 'Antseed is the open intelligence network. Anyone can provide AI directly to buyers. Providers compete for every request, and you choose who serves you.'},
+      {property: 'og:title', content: 'Antseed | The open intelligence network'},
+      {property: 'og:description', content: 'Antseed is the open intelligence network. Anyone can provide AI directly to buyers. Providers compete for every request, and you choose who serves you.'},
       {property: 'og:type', content: 'website'},
       {property: 'og:site_name', content: 'Antseed'},
       {name: 'twitter:card', content: 'summary_large_image'},
       {name: 'twitter:site', content: '@antseed'},
-      {name: 'twitter:image', content: 'https://antseed.com/og-image-network.png'},
-      {property: 'og:image', content: 'https://antseed.com/og-image-network.png'},
-      {property: 'og:image:type', content: 'image/png'},
+      // A JPEG under 250 KB, since WhatsApp leaves out a preview image that is too large.
+      // No og:image:type: blog posts swap in their own PNG or JPEG, and one fixed type would be wrong for some.
+      {name: 'twitter:image', content: 'https://antseed.com/og-image-network.jpg'},
+      {property: 'og:image', content: 'https://antseed.com/og-image-network.jpg'},
       {property: 'og:image:width', content: '1200'},
       {property: 'og:image:height', content: '630'},
-      {property: 'og:image:alt', content: 'Antseed — the open intelligence network'},
+      {property: 'og:image:alt', content: 'Antseed, the open intelligence network'},
     ],
     colorMode: {
       defaultMode: 'light',
