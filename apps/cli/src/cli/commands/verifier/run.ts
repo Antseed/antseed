@@ -143,7 +143,7 @@ import { OUTPUT_ECHO_RULE, createOutputEchoScreen, outputEchoPrompt } from '../.
 import { createFlipsScreen, flipsSeed, type FlipsProbe, type FlipsUnavailable } from '../../../verifier/flips.js'
 import { FLIPS_RULE, flipsCounts, isValidFlipsPair } from '../../../verifier/flips-score.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
-import { closeCallRuleForExtensions, earliestSetTime, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
+import { auditDecision, closeCallRuleForExtensions, earliestSetTime, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
 import { decidedRecords, resumeMaterialFor, sameConfirmation, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
 import {
   confirmationTargetsByModel,
@@ -2211,7 +2211,7 @@ export async function runVerifierRound(
                 firstAuditId: result.auditId, extensionAuditId: latest.auditId,
                 extensionAuditIds: extensionSets(result).map((set) => set.auditId),
                 firstPValue: latest.firstLook.pValue, pooledPValue: latest.pooled.pValueBinomial,
-                verdict: latest.pooled.extendNext ? 'PENDING' : result.status, at: new Date().toISOString(),
+                verdict: auditDecision(result).pending ? 'PENDING' : result.status, at: new Date().toISOString(),
               })
             }
           }

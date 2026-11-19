@@ -39,7 +39,7 @@ import {
   type EpochQuestionSetV1,
   type EpochSetCalibrationV1,
 } from './probe-bank.js'
-import { closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
+import { auditDecision, closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { AUDIT_CHECK_IDS, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
@@ -1078,6 +1078,11 @@ export function validateAuditMatchesSummary(
   )
   if (result.closeCallClosed && !audit.flaggedBy.some((check) => check !== 'kbf')) throw new Error('a close call closed without a flag of another test')
   const pending = questions.pending && audit.undecidedConfirmation === null
+  // The summary and its evidence decide alike: whether its answers are verified, and whether it waits for an extra set.
+  // A summary that says ResponseAuth failed beside verified evidence would be final to the sender and pending here.
+  const firstVerified = evidence.exchanges.every((exchange) => exchange.status !== 'succeeded' || exchange.responseAuth.status === 'verified')
+  if (result.responseAuthVerified !== undefined && result.responseAuthVerified !== firstVerified) throw new Error('the summary\'s ResponseAuth state is not its evidence\'s')
+  if (auditDecision(result).pending !== pending) throw new Error('the summary and its evidence disagree on whether the close call waits for an extra set')
   if (!pending && audit.verdict !== result.status) throw new Error('verdict mismatch')
   if ((audit.undecidedConfirmation !== null) !== (result.outcomeReason?.code === 'confirmation_undecided')) {
     throw new Error('the undecided confirmation is not the one its tests give')
@@ -1227,8 +1232,10 @@ export function retiredRecheckResult(result: ModelAuditSummaryV1['results'][numb
  * is one auditor's report, and the contract records it only once another auditor confirms it.
  */
 export function finalAuditVerdict(result: ModelAuditSummaryV1['results'][number]): ModelAuditVerdict | null {
-  // The audit's verdict over every test (`settleAuditVerdict`), once the questions are decided; submit recomputes it.
-  return stageOneVerdict(result) === null ? null : result.status
+  // The one decision the run, the extension round, the planner and submit share (`auditDecision`), never the stored
+  // status: null while a close call waits, else the audit's verdict over every test. Submit recomputes it again.
+  const decision = auditDecision(result)
+  return decision.pending ? null : decision.audit.verdict
 }
 
 /** The questions' own verdict of a result, as the attribution reads it. */

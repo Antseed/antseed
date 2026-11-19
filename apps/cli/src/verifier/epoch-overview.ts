@@ -8,7 +8,7 @@ import {
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
 import { finalAuditVerdict } from './model-audit.js'
-import { extensionSets, latestExtension } from './close-call.js'
+import { auditDecision, extensionSets, latestExtension } from './close-call.js'
 import { explainInconclusive, explainSkipReason, type PlainReason } from './plain-reason.js'
 import { describeAuditCheck, flaggedSummaryChecks } from './flagging-checks.js'
 import { disputeKey } from './pending-confirmations.js'
@@ -141,7 +141,8 @@ export async function buildEpochOverview(
               extraSets: extensionSets(result).length,
               firstPValue: result.extension.firstLook.pValue,
               pooledPValue: latestExtension(result)!.pooled.pValueBinomial,
-              verdict: latestExtension(result)!.pooled.extendNext ? 'still close' : latestExtension(result)!.pooled.verdict,
+              // Pending by the one shared decision, not by the stored continuation flag.
+              verdict: auditDecision(result).pending ? 'still close' : latestExtension(result)!.pooled.verdict,
             }
             : null,
         }

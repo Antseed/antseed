@@ -10,7 +10,7 @@ import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, encodeHttpResponse, type PeerId
 import { VERIFIER_VERDICT, isSafeProbe } from '@antseed/node/payments'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
 import { needsExtension } from './close-call.js'
-import { validateAuditMatchesSummary } from './model-audit.js'
+import { finalAuditVerdict, validateAuditMatchesSummary } from './model-audit.js'
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 import { verifyModelTarget, type ModelVerificationResumeInput, type ModelVerificationSkip, type ModelVerificationTargetResult } from './model-run.js'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
@@ -1302,6 +1302,10 @@ test('a seller whose signed input tokens are not the model\'s is DIFF, and its q
   assert.deepEqual(passedChecks(evidence, result.questionsStatus!), ['kbf'])
   assert.equal(needsExtension({ ...result, decisionRule: 'kbf-extension-v2' }), false)
   assert.doesNotThrow(() => validateAuditMatchesSummary(evidence, result))
+  // One decision all the way: a summary whose ResponseAuth state is not its evidence's is refused, and the verdict
+  // submitted is the decision's, never a stored status.
+  assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, responseAuthVerified: false }), /ResponseAuth state is not its evidence's/)
+  assert.equal(finalAuditVerdict({ ...result, status: 'SAME' } as never), 'DIFF')
 })
 
 test('the seller\'s clock runs only while a pre-check request to it is out: the reference and the crowd are the auditor\'s time', async () => {
