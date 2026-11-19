@@ -1012,6 +1012,7 @@ test('the planner and submit read the same finish time for the audit behind an o
     const fromLedger = async (value: { transactionHash?: string }) => sent.get(value.transactionHash?.toLowerCase() ?? '')?.['1:0x01'] ?? null
     assert.equal(await ownReportFinishedAt(own, fromLedger, reader), 500)
     assert.equal(await ownReportFinishedAt({ ...own, transactionHash: '0xBB' }, fromLedger, reader), 900, 'unknown to every ledger: the block time')
+    assert.equal(await ownReportFinishedAt(own, async () => 0, reader), 900, 'an unknown time in a ledger is no time: the block time')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -1050,4 +1051,58 @@ test('the preparation records every row\'s decision with its identity: what it s
     owners: { 3: auditor.address },
     alreadyOnChain: async (_model, candidates) => candidates.map((candidate) => candidate.agentId === 1n),
   })
+})
+
+test('a malformed row, a held confirmation and a row with a date that is not valid: the preparation goes on, and each is recorded for what it is', async () => {
+  let datelessRow: { evidencePath: string; evidenceHash: string } | null = null
+  await withRun([audit('1', sellers[0]!, 'model-a'), audit('2', sellers[1]!, 'model-a')], async ({ prepared }) => {
+    // The valid row is still prepared: one malformed row never strands the others.
+    assert.deepEqual(prepared.audits.flatMap((entry) => entry.results.map((result) => result.agentId)), [1n])
+    const byPeer = new Map(prepared.decisions.map((row) => [row.peerId, row]))
+    const malformed = byPeer.get('ab'.repeat(20))!
+    assert.deepEqual([malformed.decision, malformed.reasonCode, malformed.serviceHash], ['excluded', 'failed', null])
+    // A confirmation held to be audited again is a hold for its report, with the report's key.
+    const held = byPeer.get('cd'.repeat(20))!
+    assert.deepEqual([held.decision, held.reasonCode, held.reportKey], ['held', 'confirmation-reaudit', 'model-a|100|kbf'])
+    // A date that is not valid is damaged evidence: left out at prepare, and the planner has no time for it either.
+    const dateless = prepared.decisions.find((row) => row.agentId === '2')!
+    assert.deepEqual([dateless.decision, dateless.reasonCode], ['excluded', 'invalid-evidence-date'])
+    assert.equal(await auditFinishedAt(datelessRow!), null)
+  }, {
+    tamper: async (evidenceDir) => {
+      const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+      const path = manifest.models[0]!.summaryPath
+      const summary = JSON.parse(await readFile(path, 'utf8')) as { results: Array<{ agentId: string; evidencePath: string; evidenceHash: string }>; failures: unknown[] }
+      summary.failures.push({ peerId: 'ab'.repeat(20), agentId: null, status: 'FAILED', reason: 'a row with no service' })
+      summary.failures.push({
+        peerId: 'cd'.repeat(20), agentId: '9', service: 'model-a', status: 'FAILED', reason: 'held: audited again',
+        confirming: ['kbf'], confirmingReportedAt: 100, confirmationHeld: true,
+      })
+      // Seller 2's evidence written again with a date that is not valid, under its new hash.
+      const row = summary.results.find((entry) => entry.agentId === '2')!
+      const evidence = JSON.parse(await readFile(row.evidencePath, 'utf8')) as Record<string, unknown>
+      evidence.createdAt = 12_345
+      await writeFile(row.evidencePath, canonicalJsonStringify(evidence))
+      row.evidenceHash = canonicalHashBytes32(evidence)
+      datelessRow = { evidencePath: row.evidencePath, evidenceHash: row.evidenceHash }
+      await writeFile(path, JSON.stringify(summary))
+    },
+  })
+})
+
+test('a dry run marks its prepared file as incomplete first, and writes codes only when it completes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-dry-run-prepared-'))
+  try {
+    const { dryRunPreparedPath, markDryRunPreparing, writeDryRunPrepared } = await import('./epoch-submission-record.js')
+    await writeDryRunPrepared(directory, '7', { runIds: ['old-run'], decisions: [], alreadyOnChain: [] }, new Date('2026-11-01T00:00:00Z'))
+    await markDryRunPreparing(directory, '7', ['run-1'], new Date('2026-11-19T00:00:00Z'))
+    const marked = JSON.parse(await readFile(dryRunPreparedPath(directory, '7'), 'utf8')) as Record<string, unknown>
+    assert.deepEqual([marked.state, marked.runIds, marked.writtenAt, marked.rows], ['incomplete', ['run-1'], '2026-11-19T00:00:00.000Z', []])
+    await writeDryRunPrepared(directory, '7', { runIds: ['run-1'], decisions: [], alreadyOnChain: [{ model: 'model-a', count: 1 }] })
+    const written = JSON.parse(await readFile(dryRunPreparedPath(directory, '7'), 'utf8')) as Record<string, unknown>
+    assert.equal(written.state, 'complete')
+    assert.deepEqual(Object.keys(written).sort(), ['alreadyOnChain', 'epoch', 'format', 'rows', 'runIds', 'state', 'version', 'writtenAt'], 'no free text in the file')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })

@@ -21,7 +21,9 @@ export async function ownReportFinishedAt(
   fromLedger: (own: OwnReport) => Promise<number | null>,
   reader: Pick<SubmissionDeltaReader, 'blockTimestamp'>,
 ): Promise<number> {
-  return (await fromLedger(own)) ?? reader.blockTimestamp(own.blockNumber)
+  // Only a real time: an unknown one (0 or not a number) is no time, and the block time stands in.
+  const time = await fromLedger(own)
+  return typeof time === 'number' && Number.isFinite(time) && time > 0 ? time : reader.blockTimestamp(own.blockNumber)
 }
 
 export interface SubmissionCandidate {

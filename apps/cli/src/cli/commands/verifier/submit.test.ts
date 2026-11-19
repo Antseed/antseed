@@ -173,13 +173,19 @@ test('right before a send, a result another auditor judged meanwhile, or whose c
     'a failed read holds the send back',
   )  // A result this auditor has reported since the preparation (an earlier attempt under another key, mined meanwhile)
   // is not sent a second time.
-  assert.equal(await recheckAuditBeforeSend({ audit, auditor: ME, readEvents: async () => [], readMyConfirmations: none, alreadyOnChain: () => (async (_model: string, candidates: readonly unknown[]) => candidates.map(() => false)) as never }), null)
+  const { resultTimeKey } = await import('../../../verifier/model-audit.js')
+  const timed = { ...audit, auditedAt: { [resultTimeKey(7n, service)]: 1_800_000_000 } }
+  assert.equal(await recheckAuditBeforeSend({ audit: timed, auditor: ME, readEvents: async () => [], readMyConfirmations: none, alreadyOnChain: () => (async (_model: string, candidates: readonly unknown[]) => candidates.map(() => false)) as never }), null)
   assert.match(
-    await recheckAuditBeforeSend({ audit, auditor: ME, readEvents: async () => [], readMyConfirmations: none, alreadyOnChain: () => (async (_model: string, candidates: readonly unknown[]) => candidates.map(() => true)) as never }) ?? '',
+    await recheckAuditBeforeSend({ audit: timed, auditor: ME, readEvents: async () => [], readMyConfirmations: none, alreadyOnChain: () => (async (_model: string, candidates: readonly unknown[]) => candidates.map(() => true)) as never }) ?? '',
     /1 result\(s\) this auditor has reported since it was prepared/,
   )
+  // A row whose audit time is not known is held, never ordered as the oldest; it is prepared again.
+  assert.match(
+    await recheckAuditBeforeSend({ audit, auditor: ME, readEvents: async () => [], readMyConfirmations: none, alreadyOnChain: () => (async (_model: string, candidates: readonly unknown[]) => candidates.map(() => false)) as never }) ?? '',
+    /1 result\(s\) without a known audit time/,
+  )
   // Each row is judged with its own stored audit time, as the preparation judged it (never 0).
-  const { resultTimeKey } = await import('../../../verifier/model-audit.js')
   const seen: number[] = []
   await recheckAuditBeforeSend({
     audit: { ...audit, auditedAt: { [resultTimeKey(7n, service)]: 1_800_000_123 } }, auditor: ME, readEvents: async () => [], readMyConfirmations: none,

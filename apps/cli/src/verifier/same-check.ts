@@ -71,8 +71,13 @@ export function isFreshConfirmation(earliestRequestAt: number | null | undefined
  */
 export type SameCheckDecision =
   | { kind: 'send'; confirmation: SameCheckConfirmationV1 }
-  | { kind: 'exclude'; reason: string; confirmation?: SameCheckConfirmationV1 }
+  | { kind: 'exclude'; reason: string; code: SameCheckExcludeCode; confirmation?: SameCheckConfirmationV1 }
   | { kind: 'hold'; reason: string }
+
+/** Why a confirmation is not sent, as a fixed code (the dry run's prepared file carries it). */
+export type SameCheckExcludeCode =
+  | 'diff-names-no-check' | 'confirms-another-report' | 'confirmation-undecided' | 'confirmation-not-fresh'
+  | 'same-check-not-diff' | 'other-test-only' | 'repeated-test-open'
 
 /** A candidate as `prepareModelAudits` hands it over: the checks that flagged and passed in its own audit. */
 export type SameCheckCandidate = SubmissionCandidate & {
@@ -118,7 +123,7 @@ export function sameCheckFilter(input: {
   const readFirst = firstFlagReader(input.reader)
   return async (modelHash, candidates) => Promise.all(candidates.map(async (candidate): Promise<SameCheckDecision | null> => {
     if (candidate.verdict === VERIFIER_VERDICT.DIFF && candidate.flaggedBy.length === 0) {
-      return { kind: 'exclude', reason: 'a DIFF that names no check that flagged it is not valid evidence, so it is not sent' }
+      return { kind: 'exclude', code: 'diff-names-no-check', reason: 'a DIFF that names no check that flagged it is not valid evidence, so it is not sent' }
     }
     const reports = waiting.get(opinionKey(candidate.agentId, candidate.serviceHash, modelHash)) ?? []
     if (reports.length === 0) return null
@@ -148,7 +153,7 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
       reportedAt: Math.max(...firsts.map((first) => first.reportedAt)),
     }
     if (!sameConfirmation(candidate.confirming, live)) {
-      return { kind: 'exclude', reason: 'this audit confirms another report than the DIFF waiting now; it is not sent, and the seller is audited again' }
+      return { kind: 'exclude', code: 'confirms-another-report', reason: 'this audit confirms another report than the DIFF waiting now; it is not sent, and the seller is audited again' }
     }
   }
   const decisions = firsts.map((first): SameCheckDecision => {
@@ -157,6 +162,7 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
     if (candidate.verdict === VERIFIER_VERDICT.UNDETERMINED) {
       return {
         kind: 'exclude',
+        code: 'confirmation-undecided',
         reason: ownChecks.length > 0
           ? `another check (${describeChecks(ownChecks)}) flagged and ${describeChecks(first.checks)}, which flagged the waiting DIFF, did not decide; nothing is sent`
           : `${describeChecks(first.checks)}, which flagged the waiting DIFF, did not decide in this audit; nothing is sent, so the seller keeps its record`,
@@ -175,6 +181,7 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
     if (!isFreshConfirmation(candidate.auditedAt, first.reportedAt)) {
       return {
         kind: 'exclude',
+        code: 'confirmation-not-fresh',
         reason: `this audit was made ${candidate.auditedAt < first.reportedAt ? 'before' : 'less than an hour after'} the waiting DIFF it would answer; `
           + 'a confirmation needs fresh material, so it is not sent',
       }
@@ -183,11 +190,12 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
     if (sameCheck) {
       return candidate.verdict === VERIFIER_VERDICT.DIFF
         ? { kind: 'send', confirmation: record(sameCheck) }
-        : { kind: 'exclude', reason: `${describeAuditCheck(sameCheck)} flagged in both audits but this result is not a DIFF`, confirmation: record(sameCheck) }
+        : { kind: 'exclude', code: 'same-check-not-diff', reason: `${describeAuditCheck(sameCheck)} flagged in both audits but this result is not a DIFF`, confirmation: record(sameCheck) }
     }
     if (ownChecks.length > 0) {
       return {
         kind: 'exclude',
+        code: 'other-test-only',
         confirmation: record(null),
         reason: `the waiting DIFF was flagged by ${describeChecks(first.checks)} and this audit by ${describeChecks(ownChecks)}; `
           + 'a DIFF is confirmed only by the same check, so nothing is sent and the seller keeps its record',
@@ -199,6 +207,7 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
     if (candidate.verdict === VERIFIER_VERDICT.SAME && passedCheck && open.length === 0) return { kind: 'send', confirmation: record(null, passedCheck) }
     return {
       kind: 'exclude',
+      code: 'repeated-test-open',
       confirmation: record(null),
       reason: `the waiting DIFF was flagged by ${describeChecks(first.checks)}, and ${describeChecks(open.length > 0 ? open : first.checks)} neither flagged nor passed in this audit; `
         + 'nothing is sent, so a check that did not decide clears nothing',

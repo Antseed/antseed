@@ -710,6 +710,10 @@ export async function writeEpochSubmissionManifest(
           reason: `held: UNDETERMINED (${cell.reason ?? 'audit failed'}) on a DIFF waiting for this auditor's confirmation; `
             + `audited again before it is submitted (attempt ${cell.attempts} of ${CONFIRMATION_ATTEMPTS})`,
           ...(result.outcomeReason ? { outcomeReason: result.outcomeReason } : {}),
+          // Still the report's: the hold keeps the report it answers.
+          ...(result.confirming ? { confirming: result.confirming } : {}),
+          ...(result.confirmingReportedAt !== undefined ? { confirmingReportedAt: result.confirmingReportedAt } : {}),
+          confirmationHeld: true,
         })
       } else if (cell.result && cell.state === 'undetermined' && cell.blame === 'auditor') {
         // The auditor's own failure says nothing about the seller's model: never submitted.

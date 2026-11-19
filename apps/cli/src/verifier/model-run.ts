@@ -459,6 +459,8 @@ export interface ModelVerificationFailure {
   /** A failed confirmation: the report it was for (`confirmationReportKey`), so the attempt counts for that report. */
   confirming?: AuditCheckId[]
   confirmingReportedAt?: number
+  /** Set by the epoch submission on a confirmation held to be audited again: a hold for its report, not a failure. */
+  confirmationHeld?: true
 }
 
 export interface ModelVerificationSkip {

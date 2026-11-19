@@ -137,7 +137,8 @@ export interface PreparedRowDecisionV1 {
   peerId: string
   agentId: string | null
   service: string
-  serviceHash: string
+  /** Null when the row names no service (a malformed row is recorded, never a reason to stop). */
+  serviceHash: string | null
   auditId: string | null
   /** The report the row answers (`confirmationReportKey`), null for a first look. */
   reportKey: string | null
@@ -394,10 +395,14 @@ export async function prepareModelAudits(input: {
     decision: PreparedRowDecisionV1['decision'],
     reasonCode: string | null,
   ): void => {
+    // A record for the dry run only: whatever a malformed row holds, recording it never stops the preparation.
+    const safely = <T>(read: () => T, fallback: T): T => { try { return read() } catch { return fallback } }
+    const text = (value: unknown): string | null => (typeof value === 'string' ? value : null)
     decisions.push({
-      model, peerId: row.peerId, agentId: row.agentId, service: row.service, serviceHash: serviceHash(row.service),
-      auditId: row.auditId ?? null, reportKey: confirmationReportKey(row), evidenceHash: row.evidenceHash ?? null,
-      verdict: row.status ?? null,
+      model, peerId: text(row.peerId) ?? '', agentId: text(row.agentId), service: text(row.service) ?? '',
+      serviceHash: safely(() => (typeof row.service === 'string' ? serviceHash(row.service) : null), null),
+      auditId: text(row.auditId), reportKey: safely(() => confirmationReportKey(row), null), evidenceHash: text(row.evidenceHash),
+      verdict: text(row.status),
       decision: decision === 'excluded' && reasonCode !== null && PREPARED_HOLD_CODES.includes(reasonCode) ? 'held' : decision,
       reasonCode,
     })
@@ -409,7 +414,8 @@ export async function prepareModelAudits(input: {
     const summary = await readModelSummary(modelManifest.summaryPath, input.manifest.runId, model)
     const window = await input.auditWindow?.(model) ?? null
     const excluded: ExcludedSellerAuditV1[] = []
-    for (const entry of summary.failures) decide(model, entry, 'excluded', 'failed')
+    // A confirmation held to be audited again (`heldForConfirmationRecheck`) is a hold for its report, not a failure.
+    for (const entry of summary.failures) decide(model, entry, entry.confirmationHeld ? 'held' : 'excluded', entry.confirmationHeld ? 'confirmation-reaudit' : 'failed')
     for (const entry of summary.skipped) decide(model, entry, 'excluded', 'skipped')
     for (const entry of [...summary.failures, ...summary.skipped]) {
       excluded.push({
@@ -464,6 +470,11 @@ export async function prepareModelAudits(input: {
         validateAuditMatchesSummary(evidence, result, extensionEvidence, extension2Evidence, { epoch: input.manifest.epoch, auditor })
       } catch (error) {
         exclude(`invalid audit evidence: ${asError(error).message}`, 'invalid-evidence')
+        continue
+      }
+      // A date that is not valid is damaged evidence: its time orders nothing, and a confirmer could not read it.
+      if (latestEvidenceTime([evidence, extensionEvidence, extension2Evidence]) === null) {
+        exclude('invalid audit evidence: an evidence file\'s date is not valid', 'invalid-evidence-date')
         continue
       }
       if (window?.state === 'open') {
@@ -669,7 +680,7 @@ export async function prepareModelAudits(input: {
         continue
       }
       if (decision.kind === 'hold') heldBack.push(`${model} ${entry.result.agentId ?? entry.result.peerId}: ${decision.reason}`)
-      drop(index, decision.reason, decision.kind === 'hold' ? 'confirmation-hold' : 'confirmation-excluded')
+      drop(index, decision.reason, decision.kind === 'hold' ? 'confirmation-hold' : decision.code)
     }
     for (const entry of accepted) decide(model, entry.result, 'send', null)
     if (accepted.length === 0) continue
@@ -843,17 +854,25 @@ function auditedAt(entry: {
   extensionEvidence: ProxyAuditEvidenceV1 | null
   extension2Evidence: ProxyAuditEvidenceV1 | null
 }): number {
-  return latestEvidenceTime([entry.evidence, entry.extensionEvidence, entry.extension2Evidence])
+  // Rows with a date that is not valid are left out before this (`invalid-evidence-date`).
+  return latestEvidenceTime([entry.evidence, entry.extensionEvidence, entry.extension2Evidence]) ?? 0
 }
 
 /**
- * The one rule for when a row's audit finished (seconds), for submit and the planner alike: the latest valid
- * `createdAt` of its evidence files; a file whose date is not valid gives none, and a row with no valid date is 0
- * (older than any report).
+ * The one rule for when a row's audit finished (seconds), for submit and the planner alike: the latest `createdAt` of
+ * its evidence files. A file whose date is missing or not valid makes the row's time unknown (null): submit leaves the
+ * row out as damaged evidence and the planner audits its report again; an unknown time is never ordered as 0.
  */
-function latestEvidenceTime(evidences: ReadonlyArray<Pick<ProxyAuditEvidenceV1, 'createdAt'> | null>): number {
-  const times = evidences.flatMap((evidence) => evidence ? [Date.parse(evidence.createdAt)] : []).filter(Number.isFinite)
-  return times.length === 0 ? 0 : Math.max(...times) / 1_000
+function latestEvidenceTime(evidences: ReadonlyArray<Pick<ProxyAuditEvidenceV1, 'createdAt'> | null>): number | null {
+  const times: number[] = []
+  for (const evidence of evidences) {
+    if (!evidence) continue
+    const time = typeof evidence.createdAt === 'string' ? Date.parse(evidence.createdAt) : Number.NaN
+    // A date that is not valid is damaged evidence: the row has no finish time at all.
+    if (!Number.isFinite(time)) return null
+    times.push(time)
+  }
+  return times.length === 0 ? null : Math.max(...times) / 1_000
 }
 
 /**
@@ -901,7 +920,10 @@ export async function sentAuditTimes(
         models?: Record<string, Partial<ModelAuditLedgerEntryV1>>
       }
       for (const entry of Object.values(ledger.models ?? {})) {
-        if (typeof entry.transactionHash === 'string' && entry.auditedAt) byTransaction.set(entry.transactionHash.toLowerCase(), entry.auditedAt)
+        if (typeof entry.transactionHash !== 'string' || !entry.auditedAt || typeof entry.auditedAt !== 'object') continue
+        // Only real times: an unknown one (0, or not a number) is no time, and the report's block time stands in.
+        const times = Object.fromEntries(Object.entries(entry.auditedAt).filter(([, time]) => typeof time === 'number' && Number.isFinite(time) && time > 0))
+        byTransaction.set(entry.transactionHash.toLowerCase(), times)
       }
     } catch {
       // No ledger for this chain and contract in this run.

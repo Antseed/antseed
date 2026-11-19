@@ -54,7 +54,7 @@ import { verifierVerdict } from '@antseed/node/payments'
 import { approvedAuditorsAt, loadAuditorSetEvents, revokedSinceEpochStart } from '../../../verifier/auditor-set.js'
 import { configuredVerifierModels } from '../../../verifier/model-config.js'
 import {
-  markUnsentReported, recordSubmitOutcome, unsentEpochRuns, unsentEpochRunsMessage, writeDryRunPrepared,
+  markDryRunPreparing, markUnsentReported, recordSubmitOutcome, unsentEpochRuns, unsentEpochRunsMessage, writeDryRunPrepared,
 } from '../../../verifier/epoch-submission-record.js'
 
 interface SubmitOptions {
@@ -321,6 +321,8 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         sameCheck: (events) => sameCheckFilter({ events, auditor: address, revoked, reader: flagReader }),
         alreadyOnChain: (events) => alreadyOnChainFilterFor(events),
       })
+      // A dry run marks its file as incomplete first, so a failure below never leaves an older one looking current.
+      if (options.dryRun) await markDryRunPreparing(evidenceDir, manifest.epoch, sourceRunIds).catch(() => undefined)
       const { audits: prepared, excluded, decisions, alreadyOnChain, heldBack } = await prepareModelAudits({
         evidenceDir,
         banksDir,
@@ -416,7 +418,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         // What the preparation decided, row by row, for a dry-run report. Best effort: a failed write warns and the dry
         // run is otherwise unchanged.
         try {
-          await writeDryRunPrepared(evidenceDir, manifest.epoch, { runIds: sourceRunIds, decisions, heldBack, alreadyOnChain })
+          await writeDryRunPrepared(evidenceDir, manifest.epoch, { runIds: sourceRunIds, decisions, alreadyOnChain })
         } catch (error) {
           console.warn(chalk.yellow(`Could not write what this dry run prepared: ${asError(error).message}`))
         }
@@ -582,11 +584,15 @@ export async function recheckAuditBeforeSend(input: {
     })
     const reasons = await filter(input.audit.modelHash, input.audit.results.map((result) => ({ ...result, auditedAt: 0 })))
     const blocked = reasons.filter((reason): reason is string => reason !== null)
+    // A row whose audit time is not known is never ordered as the oldest: it is prepared again, where its time is read.
+    const timeOf = (result: { agentId: bigint; serviceHash: string }) => input.audit.auditedAt?.[resultTimeKey(result.agentId, result.serviceHash)]
+    const untimed = input.audit.results.filter((result) => { const time = timeOf(result); return !(typeof time === 'number' && Number.isFinite(time) && time > 0) }).length
+    if (blocked.length === 0 && untimed > 0 && input.alreadyOnChain) blocked.push(`${untimed} result(s) without a known audit time`)
     if (blocked.length === 0 && input.alreadyOnChain) {
       // Each row with its own audit time, as the preparation judged it: a repeated verdict is sent when its audit is
       // newer than this auditor's report (`submission-delta.ts`).
       const reported = await input.alreadyOnChain(events)(input.audit.modelHash, input.audit.results.map((result) => ({
-        ...result, auditedAt: input.audit.auditedAt?.[resultTimeKey(result.agentId, result.serviceHash)] ?? 0,
+        ...result, auditedAt: timeOf(result)!,
       })))
       const count = reported.filter((entry) => entry === true).length
       if (count > 0) blocked.push(`${count} result(s) this auditor has reported since it was prepared`)

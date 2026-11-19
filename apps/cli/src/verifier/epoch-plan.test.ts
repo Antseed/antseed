@@ -461,7 +461,7 @@ test('the submission leaves out a held confirmation UNDETERMINED and says why', 
   const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-held-'))
   try {
     const runs = [run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
-      result('a', 'UNDETERMINED', { outcomeReason: sellerDown, confirmsDiff: true }),
+      result('a', 'UNDETERMINED', { outcomeReason: sellerDown, confirmsDiff: true, confirming: ['kbf'], confirmingReportedAt: 100 }),
       result('b', 'UNDETERMINED', { outcomeReason: sellerDown }),
     ] }])]
     const state = { epoch: EPOCH, manifests: runs.map((entry) => entry.manifest), cells: mergeEpochRuns(EPOCH, runs) }
@@ -475,6 +475,8 @@ test('the submission leaves out a held confirmation UNDETERMINED and says why', 
     assert.deepEqual(summary.results.map((entry) => entry.peerId), ['b'])
     assert.deepEqual(summary.failures.map((entry) => entry.peerId), ['a'])
     assert.match(summary.failures[0]!.reason, /^held: UNDETERMINED .*\(attempt 1 of 3\)$/)
+    // A hold for its report, not a failure: it keeps the report it answers.
+    assert.deepEqual([summary.failures[0]!.confirmationHeld, summary.failures[0]!.confirming, summary.failures[0]!.confirmingReportedAt], [true, ['kbf'], 100])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
