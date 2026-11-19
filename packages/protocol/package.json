@@ -88,6 +88,10 @@
     "./model-identity": {
       "import": "./dist/model-identity.js",
       "types": "./dist/model-identity.d.ts"
+    },
+    "./free-tier-terms": {
+      "import": "./dist/free-tier-terms.js",
+      "types": "./dist/free-tier-terms.d.ts"
     }
   },
   "scripts": {

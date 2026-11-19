@@ -42,7 +42,8 @@ export const PAYMENTS_NONCES = {
 
 /**
  * The full layout's other contracts, by deployer nonce, after Deploy.s.sol: DeployLocalFull.s.sol run() (24-56),
- * M001 Cutover.s.sol (57-58), DeployFreeUsage.s.sol (59-60), M003 Deploy.s.sol (61-65), wireVerification() (66-67).
+ * M001 Cutover.s.sol (57-58), DeployFreeUsage.s.sol (59-60), M003 Deploy.s.sol (61-65), wireVerification() (66-67),
+ * M004 Deploy.s.sol (68).
  * Keys ending in Address are chain-config fields; the others reach scenarios through tb.contracts only.
  */
 export const FULL_NONCES = {
@@ -63,9 +64,10 @@ export const FULL_NONCES = {
   verificationResultsAddress: 61,
   verificationContractAddress: 62,
   verificationPointsPolicy: 63,
+  freeTierTermsAddress: 68,
 };
 /** Deployer nonce once each layout is deployed: the next deploy step must start exactly here. */
-export const LAYOUT_END_NONCE = { payments: 24, full: 68 };
+export const LAYOUT_END_NONCE = { payments: 24, full: 69 };
 
 const WEEK = 604_800;
 /**
@@ -312,7 +314,13 @@ export async function deployLocalStack({ repo, rpcUrl, env = process.env, layout
         EMISSIONS_GATE: chain.emissionsGateAddress, POINTS_POLICY_REGISTRY: chain.pointsPolicyRegistryAddress,
         VERIFICATION_RESULTS: chain.verificationResultsAddress, VERIFICATION_POINTS_POLICY: extra.verificationPointsPolicy,
       }, ['--sig', 'wireVerification()']);
-      await expectNonce(LAYOUT_END_NONCE.full, 'wireVerification()');
+      await expectNonce(FULL_NONCES.freeTierTermsAddress, 'wireVerification()');
+      await script('M004 Deploy.s.sol', 'script/migrations/M004FreeTierPromises/Deploy.s.sol', {
+        ...common, EXPECTED_CHAIN_ID: String(LOCAL_CHAIN_ID), EXPECTED_IDENTITY_REGISTRY: chain.identityRegistryAddress,
+        USAGE_ACCOUNTING: chain.usageAccountingAddress, EMISSIONS_GATE: chain.emissionsGateAddress,
+        FREE_TIER_DEPLOYER: LOCAL_DEPLOYER, FREE_TIER_DEPLOYMENT_NONCE: String(FULL_NONCES.freeTierTermsAddress),
+      });
+      await expectNonce(LAYOUT_END_NONCE.full, 'M004 Deploy.s.sol');
     }
     await verifyLocalLayout(provider, layout);
     return { layout, timings, contracts: { ...chain, ...extra } };

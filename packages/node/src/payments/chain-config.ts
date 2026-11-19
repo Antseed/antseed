@@ -90,6 +90,11 @@ export interface ChainConfig {
   verificationResultsAddress?: string;
   /** Block when the KBF audits contract was deployed. Floor for verifier event scans. */
   verificationDeployBlock?: number;
+  /**
+   * `AntseedFreeTierTerms` (M004): the staked free-tier promise board. Absent until M004 is deployed and
+   * recorded; without it every seller has no promise.
+   */
+  freeTierTermsAddress?: string;
   /** AntseedDepositRelay contract for gasless USDC sweeps from buyer hot wallets. */
   depositRelayAddress?: string;
   /** Where sellers swap USDC for ETH to refuel gas; absent on chains without a deep pool. */
@@ -156,7 +161,7 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
     depositRelayAddress: '0x8A791620dd6260079BF849Dc5567aDC3F2FdC318',
     // The rest of the production stack, as the worktree testbench's `--chain local` lays it out by default
     // (e2e/testbench/lib/local-deploy.mjs: script/DeployLocalFull.s.sol, M001 Cutover.s.sol, DeployFreeUsage.s.sol,
-    // M003 Deploy.s.sol). After the cutover the registry's staking/emissions are SellerRegistry/UsageAccounting.
+    // M003 Deploy.s.sol, M004 Deploy.s.sol). After the cutover the registry's staking/emissions are SellerRegistry/UsageAccounting.
     // ANTS sits at Base's address because AntseedEmissionsGate hardcodes it. A chain with only Deploy.s.sol on it
     // has no code at these addresses; the node then resolves the legacy stack (payments/contract-stack.ts).
     antsTokenAddress: '0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263',
@@ -173,6 +178,8 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
     freeUsageContractAddress: '0xFD471836031dc5108809D173A067e8486B9047A3',
     verificationResultsAddress: '0x1429859428C0aBc9C2C47C8Ee9FBaf82cFA0F20f',
     verificationContractAddress: '0xB0D4afd8879eD9F52b28595d31B441D079B2Ca07',
+    // M004 Deploy.s.sol, deployer nonce 68, after DeployLocalFull.s.sol wireVerification().
+    freeTierTermsAddress: '0x04C89607413713Ec9775E14b954286519d836FEf',
   },
 };
 
@@ -246,6 +253,7 @@ export function resolveChainConfig(overrides?: {
   pointsPolicyRegistryAddress?: string;
   verificationPointsPolicyAddress?: string;
   depositRelayAddress?: string;
+  freeTierTermsAddress?: string;
 }): ChainConfig {
   const base = getChainConfig(overrides?.chainId);
   // If the caller overrode the primary rpcUrl without providing their own
@@ -259,11 +267,22 @@ export function resolveChainConfig(overrides?: {
   // `kbf.results()` instead of reading verdicts from an unrelated default deployment.
   const kbfOverridden = !!overrides?.verificationContractAddress
     && overrides.verificationContractAddress.toLowerCase() !== base.verificationContractAddress?.toLowerCase();
-  const { verificationResultsAddress: defaultResultsAddress, ...baseWithoutResults } = base;
+  const { verificationResultsAddress: defaultResultsAddress, freeTierTermsAddress: defaultBoard, ...baseWithoutResults } = base;
   const inheritedResults = kbfOverridden || !defaultResultsAddress ? {} : { verificationResultsAddress: defaultResultsAddress };
+  // The free-tier board is bound to the registry, identity registry and gate it was deployed with (and through
+  // them to the seller registry and usage accounting): another one of those gets no default board.
+  const replaces = (value: string | undefined, current: string | undefined) =>
+    !!value && value.toLowerCase() !== current?.toLowerCase();
+  const boardStackOverridden = replaces(overrides?.registryContractAddress, base.registryContractAddress)
+    || replaces(overrides?.identityRegistryAddress, base.identityRegistryAddress)
+    || replaces(overrides?.emissionsGateAddress, base.emissionsGateAddress)
+    || replaces(overrides?.sellerRegistryAddress, base.sellerRegistryAddress)
+    || replaces(overrides?.usageAccountingAddress, base.usageAccountingAddress);
+  const board = overrides?.freeTierTermsAddress ?? (boardStackOverridden ? undefined : defaultBoard);
   return {
     ...baseWithoutResults,
     ...inheritedResults,
+    ...(board ? { freeTierTermsAddress: board } : {}),
     ...(overrides?.rpcUrl ? { rpcUrl: overrides.rpcUrl } : {}),
     ...(resolvedFallbacks !== undefined ? { fallbackRpcUrls: resolvedFallbacks } : {}),
     ...(overrides?.depositsContractAddress ? { depositsContractAddress: overrides.depositsContractAddress } : {}),
