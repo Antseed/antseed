@@ -5,6 +5,7 @@ import {useSiteTheme} from '../../../../lib/useSiteTheme';
 import {useStill} from '../../../../lib/useStill';
 import {isDarkTheme} from '../../../../lib/theme';
 import {PHONE_PAINTINGS} from '../../../../lib/paintings';
+import {afterHeroPainted} from '../../../../lib/heroPainted';
 import {ASSETS} from '../data';
 import {Clouds} from './Clouds';
 import {usePaintingArrival} from './usePaintingArrival';
@@ -33,13 +34,9 @@ function useThemeFade(ref: RefObject<HTMLElement | null>, theme: string, still: 
   }, [ref, theme, still]);
 }
 
-/** Once the page has loaded, both themes' stills are fetched into the cache (off screen), ready for a flip. */
+/** Once the hero is painted, both themes' stills are fetched into the cache (off screen), ready for a flip. */
 function useWarmStills(): void {
-  useEffect(() => {
-    const warm = () => (phone() ? [ASSETS.posterPhone, ASSETS.nightPhone] : [ASSETS.poster, ASSETS.night]).forEach((src) => { new Image().src = src; });
-    if (document.readyState === 'complete') warm(); else window.addEventListener('load', warm, {once: true});
-    return () => window.removeEventListener('load', warm);
-  }, []);
+  useEffect(() => afterHeroPainted(() => (phone() ? [ASSETS.posterPhone, ASSETS.nightPhone] : [ASSETS.poster, ASSETS.night]).forEach((src) => { new Image().src = src; })), []);
 }
 
 const STILLS = {
