@@ -3,11 +3,12 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
+import { decidedChecks, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
+import { storedRequestsOf, validateStoredChecks } from './audit-checks.js'
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, encodeHttpResponse, type PeerId, type PeerInfo, type StoredResponseAuth } from '@antseed/node'
 import { isSafeProbe } from '@antseed/node/payments'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
-import { needsExtension } from './close-call.js'
+import { askedNoQuestion, needsExtension } from './close-call.js'
 import { validateAuditMatchesSummary } from './model-audit.js'
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 import { verifyModelTarget, type ModelVerificationResumeInput, type ModelVerificationSkip, type ModelVerificationTargetResult } from './model-run.js'
@@ -1571,4 +1572,20 @@ test('check pipeline: the cap and echo references and checks are the auditor\'s 
   assert.equal(result.status, 'SAME')
   assert.equal(result.outcomeReason, null)
   assert.ok(questionRequests.length > 0)
+})
+
+test('a saved seller file that stores a check slot as null reads as having no such record, for every reader', async () => {
+  // Another auditor's software may write `"outputCap": null`; the readers before the list of checks took it as absent.
+  const { result, evidence } = await audit({ usage: MODEL_TOKENIZER })
+  const saved = JSON.parse(JSON.stringify({ ...evidence, outputCap: null, outputEcho: null })) as ProxyAuditEvidenceV1
+  assert.equal(saved.outputCap, null)
+  assert.deepEqual(flaggingChecks(saved, 'SAME'), flaggingChecks(evidence, 'SAME'))
+  assert.deepEqual(passedChecks(saved, 'SAME'), ['tokens', 'kbf'])
+  assert.doesNotThrow(() => validateStoredChecks(saved, 'confirmer'))
+  assert.doesNotThrow(() => validateAuditMatchesSummary(saved, result))
+  const summary = { ...result, outputCap: null, outputEcho: null } as never
+  assert.deepEqual(decidedChecks(summary), ['tokens', 'kbf'])
+  assert.equal(askedNoQuestion(summary), false)
+  assert.doesNotThrow(() => validateAuditMatchesSummary(saved, summary))
+  assert.deepEqual(storedRequestsOf(saved).length, storedRequestsOf(evidence).length)
 })

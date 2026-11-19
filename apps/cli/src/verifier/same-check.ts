@@ -404,7 +404,7 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
       if (result['verdict'] !== 'DIFF') throw new Error(`its evidence gives agent ${agentId} ${String(result['verdict'])}, not DIFF`)
       const first = await sellerEvidence(result['audit'], agentId, serviceHash, result['referenceId'])
       // Every flag is recomputed from the stored records, as `verifier submit` checks its own.
-      validateStoredChecks(first)
+      validateStoredChecks(first, 'confirmer')
       const checks = flaggingChecks(first, await questionsVerdict(result, first, (audit, referenceId) => sellerEvidence(audit, agentId, serviceHash, referenceId)))
       if (checks.length === 0) throw new Error(`its evidence for agent ${agentId} shows no check that flagged`)
       return checks

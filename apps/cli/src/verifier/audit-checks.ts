@@ -81,6 +81,8 @@ export interface StoredAuditContext {
   auditedPeerId: string
   /** The other records of the same evidence file: the echo check reads the pre-check's outcome. */
   records: StoredCheckRecords
+  /** Who reads the record: submit its own audit, or a confirmer the first auditor's (the texts say whose). */
+  reader: 'submit' | 'confirmer'
 }
 
 export type StoredCheckRecords = { readonly [Slot in CheckSlot]?: CheckRecords[Slot] }
@@ -96,7 +98,7 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   validate(record: CheckRecords[Slot], context: StoredAuditContext): void
   /** The finding a flag of this record would end the audit with, before the questions; null when it flags nothing that ends it. */
   endingFinding(record: CheckRecords[Slot]): AuditCheckId | null
-  /** Every request the record stores, with its signer, in the order asked. */
+  /** Every request the record stores, with its signer, grouped by kind (the readers take a set or a minimum, not an order). */
   requests(record: CheckRecords[Slot]): StoredRequest[]
   /** Every request the check paid for, in the order its cost is summed. */
   paid(record: CheckRecords[Slot]): PaidRequest[]
@@ -191,7 +193,9 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
     validateOutputEcho(record, context.auditedPeerId)
     // Its pre-check anchor is this audit's own pre-check, not a stored claim.
     if (record.precheckMatch !== (context.records.tokenizerPrecheck?.outcome === 'match')) {
-      throw new Error('the echo check\'s pre-check match is not this audit\'s pre-check')
+      throw new Error(context.reader === 'confirmer'
+        ? 'its echo check\'s pre-check match is not its pre-check'
+        : 'the echo check\'s pre-check match is not this audit\'s pre-check')
     }
   },
   // The record's overall flag ends the audit, attributed to the finding that flagged.
@@ -242,7 +246,7 @@ export function readingsOfEvidence(
   for (const check of RECORD_CHECKS) {
     const record = evidence[check.slot]
     for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
-      readings.push({ check: finding.id, subject: finding.subject, outcome: record === undefined ? 'not-run' : finding.ofRecord(record) })
+      readings.push({ check: finding.id, subject: finding.subject, outcome: record == null ? 'not-run' : finding.ofRecord(record) })
     }
   }
   readings.push(questionsReading(evidence.exchanges.length > 0, kbfVerdict))
@@ -260,7 +264,7 @@ export function readingsOfSummary(
   for (const check of RECORD_CHECKS) {
     const summary = result[check.slot]
     for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
-      readings.push({ check: finding.id, subject: finding.subject, outcome: summary === undefined ? 'not-run' : finding.ofSummary(summary) })
+      readings.push({ check: finding.id, subject: finding.subject, outcome: summary == null ? 'not-run' : finding.ofSummary(summary) })
     }
   }
   const status = result.status === 'SAME' || result.status === 'DIFF' ? result.status : null
@@ -279,7 +283,7 @@ export function endedBeforeQuestions(
 ): boolean {
   return (result.parsedProbeCount ?? 0) === 0 && RECORD_CHECKS.some((check) => {
     const summary = result[check.slot]
-    return summary !== undefined && check.endedAuditInSummary(summary)
+    return summary != null && check.endedAuditInSummary(summary)
   })
 }
 
@@ -293,7 +297,10 @@ export function checkLabel(check: AuditCheckId): string {
   throw new Error(`unknown audit check ${check}`)
 }
 
-/** Each check with its record in these records (undefined when it holds none), in run order. */
+/**
+ * Each check with its record in these records, in run order. A slot that is absent or stored as null holds no record
+ * (`== null` throughout, as the readers before this list did with `?.`): a file of other software may write null.
+ */
 function recordsOf(records: StoredCheckRecords): Array<{ check: RecordCheck<CheckSlot>; record: CheckRecords[CheckSlot] | undefined }> {
   return RECORD_CHECKS.map((check) => ({ check: check as unknown as RecordCheck<CheckSlot>, record: records[check.slot] }))
 }
@@ -302,10 +309,13 @@ function recordsOf(records: StoredCheckRecords): Array<{ check: RecordCheck<Chec
  * Every stored check record of one seller's evidence recomputed from the bytes it stores, with the rules that cross
  * records. For any reader of stored evidence: submit's own, and a confirmer reading the first auditor's.
  */
-export function validateStoredChecks(evidence: StoredCheckRecords & { target: { peerId: string } }): void {
-  const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence }
+export function validateStoredChecks(
+  evidence: StoredCheckRecords & { target: { peerId: string } },
+  reader: StoredAuditContext['reader'] = 'submit',
+): void {
+  const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence, reader }
   for (const { check, record } of recordsOf(evidence)) {
-    if (record !== undefined) check.validate(record, context)
+    if (record != null) check.validate(record, context)
   }
 }
 
@@ -324,16 +334,16 @@ export function validateCheckRecordsAgainstSummary(
   result: { readonly [Slot in CheckSlot]?: unknown } & { extension?: unknown; extension2?: unknown },
   continuedPast: (check: AuditCheckId) => boolean,
 ): void {
-  const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence }
+  const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence, reader: 'submit' }
   const ended: Array<RecordCheck<CheckSlot>> = []
   for (const { check, record } of recordsOf(evidence)) {
-    if (record !== undefined) {
+    if (record != null) {
       if (ended.length > 0) throw new Error(check.texts.ranAfterDiff)
       check.validate(record, context)
     }
-    const stored = record === undefined ? null : check.summarize(record)
+    const stored = record == null ? null : check.summarize(record)
     if (canonicalJsonStringify(stored) !== canonicalJsonStringify(result[check.slot] ?? null)) throw new Error(check.texts.summaryMismatch)
-    const finding = record === undefined ? null : check.endingFinding(record)
+    const finding = record == null ? null : check.endingFinding(record)
     if (finding === null || continuedPast(finding)) continue
     if (evidence.result.verdict !== 'DIFF' || evidence.exchanges.length > 0) throw new Error(check.texts.endsWithDiff)
     ended.push(check)
@@ -348,5 +358,5 @@ export function validateCheckRecordsAgainstSummary(
 
 /** Every request the check records of one seller's evidence store, with their signers, in run order. */
 export function storedRequestsOf(records: StoredCheckRecords): StoredRequest[] {
-  return recordsOf(records).flatMap(({ check, record }) => (record === undefined ? [] : check.requests(record)))
+  return recordsOf(records).flatMap(({ check, record }) => (record == null ? [] : check.requests(record)))
 }
