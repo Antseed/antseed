@@ -4,12 +4,20 @@ import { ownLatestReports, reportKey, type OwnReport } from './pending-confirmat
 import { normalized } from './utils.js'
 
 /** One seller result `verifier submit` could send for a model. */
+/**
+ * Per candidate: true when this auditor already reported it (left out as on chain), 'superseded' when it is an older
+ * audit than this auditor's own standing report with another verdict (left out, and said so), false to send.
+ */
+export type AlreadyOnChain = boolean | 'superseded'
+
 export interface SubmissionCandidate {
   agentId: bigint
   serviceHash: string
   verdict: VerifierVerdict
   /** Unix seconds the audit behind this result was made (its latest evidence file). */
   auditedAt: number
+  /** Its earliest request on this auditor's clock (`earliestAuditorTime`), the clock the planner compares with. */
+  firstRequestAt?: number | null
   /** Set by `verifier run` on a result that answers a DIFF waiting for this auditor's confirmation. */
   confirmsDiff?: boolean
 }
@@ -59,13 +67,25 @@ export async function resultsAlreadyOnChain(input: {
   /** This auditor's latest reports this epoch (`ownLatestReports`). */
   own: ReadonlyMap<string, OwnReport>
   reader: SubmissionDeltaReader
-}): Promise<boolean[]> {
+  /** The time of the audit behind this auditor's own report (seconds), when its ledger knows it. */
+  reportedAuditTime?: (own: OwnReport, candidate: SubmissionCandidate) => Promise<number | null>
+}): Promise<AlreadyOnChain[]> {
   return mapConcurrently(input.candidates, READ_CONCURRENCY, async (candidate) => {
     const own = input.own.get(reportKey(candidate.agentId, candidate.serviceHash, input.modelHash))
     if (!own) return false
-    // A vote that replaces this auditor's own standing report with another verdict must be newer than that report: an
-    // older audit (an earlier run submitted by hand, say) never overwrites a newer verdict of the same auditor.
-    if (own.verdict !== candidate.verdict) return candidate.auditedAt <= await input.reader.blockTimestamp(own.blockNumber)
+    // A vote that replaces this auditor's own standing report with another verdict must come from a newer audit than
+    // the one behind that report (its own time where the ledger knows it, else the report's block time): an older audit
+    // (an earlier run submitted by hand, say) never overwrites a newer verdict of the same auditor.
+    if (own.verdict !== candidate.verdict) {
+      // On the planner's clock: the earliest request of each audit, on this auditor's clock, against the audit behind
+      // the report as this auditor's ledger records it. Where the ledger does not know that audit (a report sent from
+      // another data dir), the report's block time stands in: a correction whose requests began before that block is
+      // then held, which gives up sending a correction made before the earlier report was mined.
+      const reported = await input.reportedAuditTime?.(own, candidate)
+      const mine = candidate.firstRequestAt ?? candidate.auditedAt
+      if (reported != null) return mine > reported ? false : 'superseded'
+      return mine > await input.reader.blockTimestamp(own.blockNumber) ? false : 'superseded'
+    }
     const [round, status] = await Promise.all([
       input.reader.reportRound(candidate.agentId, candidate.serviceHash),
       input.reader.serviceStatusByHash(candidate.agentId, candidate.serviceHash),
@@ -89,7 +109,8 @@ export function alreadyOnChainFilter(input: {
   reader: Pick<SubmissionDeltaReader, 'reportRound' | 'serviceStatusByHash' | 'blockTimestamp'>
   /** Every `AuditorSet` change since the contract's deployment, in block order; read once, when needed. */
   auditorSetEvents(): Promise<readonly AuditorSetEvent[]>
-}): (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<boolean[]> {
+  reportedAuditTime?: (own: OwnReport, candidate: SubmissionCandidate) => Promise<number | null>
+}): (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<AlreadyOnChain[]> {
   const own = ownLatestReports(input.events, input.auditor)
   let revocations: Promise<Array<{ blockNumber: number; logIndex: number }>> | null = null
   const timestamps = new Map<number, Promise<number>>()
@@ -111,7 +132,9 @@ export function alreadyOnChainFilter(input: {
       )).length
     },
   }
-  return (modelHash, candidates) => resultsAlreadyOnChain({ candidates, modelHash, epoch: input.epoch, own, reader })
+  return (modelHash, candidates) => resultsAlreadyOnChain({
+    candidates, modelHash, epoch: input.epoch, own, reader, ...(input.reportedAuditTime ? { reportedAuditTime: input.reportedAuditTime } : {}),
+  })
 }
 
 /** Where the contract counted an auditor revocation: an approved auditor set to unapproved. */

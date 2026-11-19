@@ -196,15 +196,18 @@ test('a retry reuses an earlier attempt\'s evidence only for the same results, m
   const directory = await mkdtemp(join(tmpdir(), 'antseed-submit-reuse-'))
   try {
     const row = { agentId: '7', serviceHash: '0x' + 'ab'.repeat(32), verdict: 'SAME' }
+    // A real reference, validated on reuse as everywhere (its content id recomputed).
+    const { referenceFixture } = await import('../../../verifier/model-audit-fixtures.test-support.js')
+    const kbf = referenceFixture('model-a', 10)
     const document = (extra: Record<string, unknown> = {}) => ({
       version: 1, kind: 'antseed-verifier-model-audit-evidence', model: 'model-a', modelHash: '0x' + 'cd'.repeat(32), epoch: '7',
-      results: [row], references: [{ referenceId: 'ref-1', queryProfileHash: '0x00', probeCount: 10, path: 'references/ref-1.json' }], ...extra,
+      results: [row], references: [{ referenceId: kbf.referenceId, queryProfileHash: '0x00', probeCount: kbf.probes.length, path: 'references/ref-1.json' }], ...extra,
     })
     const earlier = document()
     const earlierPath = join(directory, 'earlier', 'evidence.json')
     await mkdir(join(directory, 'earlier', 'references'), { recursive: true })
     await writeFile(earlierPath, canonicalJsonStringify(earlier))
-    await writeFile(join(directory, 'earlier', 'references', 'ref-1.json'), JSON.stringify({ referenceId: 'ref-1', probes: Array.from({ length: 10 }, (_, index) => ({ id: `p${index}` })) }))
+    await writeFile(join(directory, 'earlier', 'references', 'ref-1.json'), JSON.stringify(kbf))
     const fresh = (results = [row], extra: Record<string, unknown> = {}) => {
       const evidence = document({ results, generatedAt: 'now', ...extra })
       return {
@@ -218,7 +221,13 @@ test('a retry reuses an earlier attempt\'s evidence only for the same results, m
     // The same results: the earlier evidence is sent, with the reference file it names.
     const [reused] = await reuseLedgerEvidence([fresh()], ledgerWith('pending'))
     assert.equal((reused as { evidenceHash: string }).evidenceHash, canonicalHashBytes32(earlier))
-    assert.deepEqual((reused as { references: Array<{ reference: { referenceId: string } }> }).references.map((entry) => entry.reference.referenceId), ['ref-1'])
+    assert.deepEqual((reused as { references: Array<{ reference: { referenceId: string } }> }).references.map((entry) => entry.reference.referenceId), [kbf.referenceId])
+    // A damaged reference file that keeps its id: its content id no longer matches, so no reuse.
+    await writeFile(join(directory, 'earlier', 'references', 'ref-1.json'), JSON.stringify({ ...kbf, probes: kbf.probes.map((probe, index) => (index === 0 ? { ...probe, id: 'changed' } : probe)) }))
+    const damagedFresh = fresh()
+    const [notDamaged] = await reuseLedgerEvidence([damagedFresh], ledgerWith('pending'))
+    assert.equal(notDamaged, damagedFresh)
+    await writeFile(join(directory, 'earlier', 'references', 'ref-1.json'), JSON.stringify(kbf))
     // Other results, another epoch or model: what was prepared now.
     for (const other of [fresh([{ ...row, verdict: 'DIFF' }]), fresh([row], { epoch: '8' }), fresh([row], { modelHash: '0x' + 'ef'.repeat(32) })]) {
       const [kept] = await reuseLedgerEvidence([other], ledgerWith('pending'))

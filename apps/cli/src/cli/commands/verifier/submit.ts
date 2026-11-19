@@ -47,7 +47,7 @@ import {
 import { alreadyOnChainFilter, revocationPositions } from '../../../verifier/submission-delta.js'
 import { opinionKey, thirdOpinionFilter } from '../../../verifier/third-opinion.js'
 import { sameCheckFilter, type PublishedFlagReader } from '../../../verifier/same-check.js'
-import { canonicalJsonStringify } from '@antseed/fingerprints'
+import { canonicalJsonStringify, validateKbfReferenceV1 } from '@antseed/fingerprints'
 import { fetchIpfsText } from '@antseed/model-verifier'
 import { verifierVerdict } from '@antseed/node/payments'
 import { approvedAuditorsAt, loadAuditorSetEvents, revokedSinceEpochStart } from '../../../verifier/auditor-set.js'
@@ -303,6 +303,12 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           },
         },
         auditorSetEvents,
+        // The audit behind this auditor's own report, by its transaction in the ledger: its own time, not the block's.
+        reportedAuditTime: async (own, candidate) => {
+          if (!own.transactionHash) return null
+          const entry = Object.values(ledger.models).find((value) => value.transactionHash && normalized(value.transactionHash) === normalized(own.transactionHash!))
+          return entry?.firstRequestAt?.[resultTimeKey(candidate.agentId, candidate.serviceHash)] ?? null
+        },
       })
       const recheckBeforeSend = (audit: PreparedModelAudit): Promise<string | null> => recheckAuditBeforeSend({
         audit, auditor: address, readEvents: readEpochEvents, readMyConfirmations, revoked,
@@ -655,7 +661,7 @@ async function epochSubmissionManifest(
  * too, so the check never fails open.
  */
 export async function recheckAuditBeforeSend(input: {
-  audit: Pick<PreparedModelAudit, 'modelHash' | 'results'> & Partial<Pick<PreparedModelAudit, 'auditedAt'>> & { evidence: Pick<PreparedModelAudit['evidence'], 'results'> }
+  audit: Pick<PreparedModelAudit, 'modelHash' | 'results'> & Partial<Pick<PreparedModelAudit, 'auditedAt' | 'firstRequestAt'>> & { evidence: Pick<PreparedModelAudit['evidence'], 'results'> }
   auditor: string
   readEvents: () => Promise<readonly ServiceAuditedEvent[]>
   readMyConfirmations: (events: readonly ServiceAuditedEvent[]) => Promise<ReadonlySet<string>>
@@ -680,9 +686,12 @@ export async function recheckAuditBeforeSend(input: {
       // newer than this auditor's report (`submission-delta.ts`).
       const reported = await input.alreadyOnChain(events)(input.audit.modelHash, input.audit.results.map((result) => ({
         ...result, auditedAt: input.audit.auditedAt?.[resultTimeKey(result.agentId, result.serviceHash)] ?? 0,
+        firstRequestAt: input.audit.firstRequestAt?.[resultTimeKey(result.agentId, result.serviceHash)] ?? null,
       })))
-      const count = reported.filter(Boolean).length
+      const count = reported.filter((entry) => entry === true).length
       if (count > 0) blocked.push(`${count} result(s) this auditor has reported since it was prepared`)
+      const superseded = reported.filter((entry) => entry === 'superseded').length
+      if (superseded > 0) blocked.push(`${superseded} result(s) held: older than your own report with another verdict, which stands; a newer audit of this seller can change it`)
     }
     if (blocked.length === 0 && input.sameCheck) {
       const changed = await sameCheckChanged(input.audit.modelHash, input.audit.evidence.results, input.sameCheck(events))
@@ -906,8 +915,11 @@ export async function reuseLedgerEvidence(
       for (const entry of evidence.references) {
         if (entry.path === null) continue
         const path = resolve(dirname(previous.evidencePath), entry.path)
-        const reference = JSON.parse(await readFile(path, 'utf8')) as PreparedModelAudit['references'][number]['reference']
-        if (reference.referenceId !== entry.referenceId || reference.probes?.length !== entry.probeCount) {
+        // Validated as a reference is everywhere, its content id recomputed: a damaged file that keeps its id fails.
+        const reference = validateKbfReferenceV1(JSON.parse(await readFile(path, 'utf8')), {
+          minimumStatisticalPower: Number.EPSILON, minimumCalibrationPower: Number.EPSILON,
+        })
+        if (reference.referenceId !== entry.referenceId || reference.probes.length !== entry.probeCount) {
           throw new Error(`${entry.path} is not the reference the earlier document names`)
         }
         references.push({ path, reference })
@@ -925,6 +937,7 @@ export async function reuseLedgerEvidence(
         ...reused, references,
         // The same results as prepared now, so the same audit times.
         ...(audit.auditedAt ? { auditedAt: audit.auditedAt } : {}),
+        ...(audit.firstRequestAt ? { firstRequestAt: audit.firstRequestAt } : {}),
       })
     } catch {
       audits.push(audit)
@@ -962,6 +975,9 @@ function ledgerEntry(
     resultCount: audit.results.length,
     evidenceUri,
     ...(publication ? { publication } : {}),
+    // Each row's audit time: a later submit compares a newer vote with the audit behind this one.
+    ...(audit.auditedAt ? { auditedAt: audit.auditedAt } : {}),
+    ...(audit.firstRequestAt ? { firstRequestAt: audit.firstRequestAt } : {}),
     status: 'pending',
     transactionHash: null,
     blockNumber: null,

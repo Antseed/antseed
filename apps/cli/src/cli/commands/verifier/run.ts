@@ -2211,7 +2211,7 @@ export async function runVerifierRound(
                 firstAuditId: result.auditId, extensionAuditId: latest.auditId,
                 extensionAuditIds: extensionSets(result).map((set) => set.auditId),
                 firstPValue: latest.firstLook.pValue, pooledPValue: latest.pooled.pValueBinomial,
-                verdict: auditDecision(result).pending ? 'PENDING' : result.status, at: new Date().toISOString(),
+                verdict: auditDecision(result).pending ? 'PENDING' : auditDecision(result).audit.verdict, at: new Date().toISOString(),
               })
             }
           }
@@ -2851,7 +2851,8 @@ export async function loadResumeCandidates(
       throw new Error(`resume model summary is incompatible: ${model.summaryPath}`)
     }
     for (const result of summary.results) {
-      if (result.status !== 'UNDETERMINED' || result.extension) continue
+      // The one shared decision, never the stored status.
+      if (auditDecision(result).pending || auditDecision(result).audit.verdict !== 'UNDETERMINED' || result.extension) continue
       const evidence = await verifyProxyAuditEvidenceFile(result.evidencePath, result.evidenceHash)
       candidates.set(resumeKey(model.model, result.peerId), {
         model: model.model,
@@ -2915,7 +2916,7 @@ async function carriedTestsOf(
   const requested = new Set(models.map((model) => model.toLowerCase()))
   const carried = new Map<string, CarriedTests>()
   for (const { model: rowModel, result } of rows) {
-    if (result.status !== 'UNDETERMINED' || !result.extension) continue
+    if (auditDecision(result).pending || auditDecision(result).audit.verdict !== 'UNDETERMINED' || !result.extension) continue
     if (!requested.has(rowModel.toLowerCase())) continue
     const model = models.find((value) => value.toLowerCase() === rowModel.toLowerCase())!
     try {
@@ -2943,7 +2944,7 @@ export async function loadEpochRetryCandidates(
   // Each report's cell and the first looks' apart: a retry resumes the attempt of the report it is for.
   const cells = state.reportCells || state.ordinaryCells ? [...state.ordinaryCells?.values() ?? [], ...state.reportCells?.values() ?? []] : [...state.cells.values()]
   for (const cell of cells) {
-    if (cell.action !== 'retry' || !cell.result || cell.result.status !== 'UNDETERMINED'
+    if (cell.action !== 'retry' || !cell.result || auditDecision(cell.result).pending || auditDecision(cell.result).audit.verdict !== 'UNDETERMINED'
       || cell.result.extension) continue
     if (!requested.has(cell.model.toLowerCase())) continue
     const model = models.find((value) => value.toLowerCase() === cell.model.toLowerCase())!

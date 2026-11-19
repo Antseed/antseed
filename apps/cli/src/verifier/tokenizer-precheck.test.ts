@@ -10,7 +10,7 @@ import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, encodeHttpResponse, type PeerId
 import { VERIFIER_VERDICT, isSafeProbe } from '@antseed/node/payments'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
 import { needsExtension } from './close-call.js'
-import { finalAuditVerdict, validateAuditMatchesSummary } from './model-audit.js'
+import { adjudicateQuestions, finalAuditVerdict, validateAuditMatchesSummary } from './model-audit.js'
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 import { verifyModelTarget, type ModelVerificationResumeInput, type ModelVerificationSkip, type ModelVerificationTargetResult } from './model-run.js'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
@@ -1591,6 +1591,30 @@ test('check pipeline: a flag stands when the seller is skipped afterwards; with 
   assert.equal(clean.skipped!.status, 'SKIPPED')
 })
 
+test('a seller skipped late, after a flag, leaves its questions unfinished: both readers accept the stored UNDETERMINED, and only when the skip is stored', async () => {
+  // A retry reuses every answered batch but the first, which is asked again and refused: the seller is skipped there with
+  // the others answered (their numbers alone would decide). The pre-check flagged.
+  const first = await audit({ usage: OTHER_TOKENIZER })
+  const late = await audit({
+    usage: OTHER_TOKENIZER, refuseQuestions: true,
+    resume: {
+      parentAuditId: first.result.auditId, reservationAuditId: first.result.auditId, parentEvidenceHash: first.result.evidenceHash,
+      exchanges: first.evidence.exchanges.filter((exchange) => exchange.batchIndex !== 0), records: {},
+    },
+  })
+  assert.equal(late.result.status, 'DIFF', 'the flag stands')
+  assert.equal(late.evidence.result.verdict, 'UNDETERMINED')
+  assert.ok(late.evidence.result.unfinished, 'the evidence names where the questions stopped')
+  assert.ok(late.evidence.result.parsedProbeCount * 2 >= late.evidence.reference.probes.length, 'enough answers that the numbers alone would decide')
+  // Submit's validator and the confirmer's adjudicator both accept it.
+  assert.doesNotThrow(() => validateAuditMatchesSummary(late.evidence, late.result))
+  assert.equal(adjudicateQuestions({ evidence: late.evidence, extraSets: [], decisionRule: late.result.decisionRule, closed: false }).verdict, 'UNDETERMINED')
+  // A mark the evidence cannot back (it names a batch that succeeded) is ignored: the numbers decide, and the label is refused.
+  const succeeded = late.evidence.exchanges.find((exchange) => exchange.status === 'succeeded')!
+  const unbacked = { ...late.evidence, result: { ...late.evidence.result, unfinished: { ...late.evidence.result.unfinished!, batchIndex: succeeded.batchIndex } } }
+  assert.throws(() => adjudicateQuestions({ evidence: unbacked, extraSets: [], decisionRule: late.result.decisionRule, closed: false }), /first look says UNDETERMINED, but its stored answers give/)
+})
+
 test('check pipeline: an extra set of a close call asks questions only', async () => {
   const { calls, result, evidence, questionRequests } = await pipeline({ usage: OTHER_TOKENIZER, extension: true, cap: capRecord('flag'), echo: echoRecord('flag') })
   assert.deepEqual(calls, ['questions'])
@@ -1775,7 +1799,8 @@ test('a confirmation resumed from a real checkpoint or retry file reuses only ba
     const summaryPath = join(directory, 'summary.json')
     const summary = {
       version: 1, kind: 'antseed-verifier-model-summary', runId: 'run-1', epoch: '7', model: MODEL, startedAt: '2026-11-19T00:00:00.000Z', completedAt: '2026-11-19T00:00:00.000Z',
-      results: [{ ...first.result, status: 'UNDETERMINED', evidencePath, evidenceHash: canonicalHashBytes32(evidence) }], failures: [], skipped: [], cost: emptyAuditCostSummary(),
+      // A retry row is undecided by the shared decision: no flag in its summary, its questions undecided.
+      results: [{ ...first.result, tokenizerPrecheck: undefined, status: 'UNDETERMINED', questionsStatus: 'UNDETERMINED', evidencePath, evidenceHash: canonicalHashBytes32(evidence) }], failures: [], skipped: [], cost: emptyAuditCostSummary(),
     }
     await writeFile(summaryPath, JSON.stringify(summary))
     const manifest = {

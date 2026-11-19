@@ -90,6 +90,8 @@ export interface OwnReport {
   round: number
   blockNumber: number
   logIndex: number
+  /** The transaction it was sent in: the ledger finds the audit behind it by this. */
+  transactionHash?: string
 }
 
 /** `auditor`'s latest report this epoch on each service and model, in any report round, keyed by `reportKey`. */
@@ -102,7 +104,7 @@ export function ownLatestReports(events: readonly ServiceAuditedEvent[], auditor
     const current = reports.get(key)
     if (current && (current.blockNumber > event.blockNumber
       || (current.blockNumber === event.blockNumber && current.logIndex > event.logIndex))) continue
-    reports.set(key, { verdict: event.verdict, round: event.round, blockNumber: event.blockNumber, logIndex: event.logIndex })
+    reports.set(key, { verdict: event.verdict, round: event.round, blockNumber: event.blockNumber, logIndex: event.logIndex, transactionHash: event.transactionHash })
   }
   return reports
 }

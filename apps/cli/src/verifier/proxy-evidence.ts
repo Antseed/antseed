@@ -258,6 +258,11 @@ export interface ProxyAuditEvidenceV1 {
     verdict: Exclude<FingerprintVerdict, 'UNKNOWN'>
     verdictReason: string | null
     outcomeReason?: VerificationOutcomeReasonV1 | null
+    /**
+     * The questions were not finished: the seller was skipped at this batch (another test may still have flagged).
+     * A reader takes it only when that batch is stored and did not succeed; the questions are then undecided.
+     */
+    unfinished?: { batchIndex: number; reason: string }
     cost: AuditCostSummaryV1
     cumulativeCost?: AuditCostSummaryV1
   }

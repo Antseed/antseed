@@ -72,7 +72,7 @@ test('a changed verdict is sent when its audit is newer than this auditor\'s own
   assert.deepEqual(await filter([candidate(VERIFIER_VERDICT.SAME, timeOf(10) + 1)]), [false])
   assert.deepEqual(reads, [], 'nothing but the report\'s time is read for a result that is new anyway')
   // An older audit (an earlier run submitted by hand) never replaces this auditor's newer DIFF with a SAME.
-  assert.deepEqual(await filter([candidate(VERIFIER_VERDICT.SAME, timeOf(10) - 1)]), [true])
+  assert.deepEqual(await filter([candidate(VERIFIER_VERDICT.SAME, timeOf(10) - 1)]), ['superseded'], 'held as older, never counted as on chain')
 })
 
 test('the latest report decides: a verdict changed back is sent again', async () => {

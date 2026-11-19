@@ -45,7 +45,7 @@ import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { AUDIT_CHECK_IDS, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
 import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
-import type { SubmissionCandidate } from './submission-delta.js'
+import type { AlreadyOnChain, SubmissionCandidate } from './submission-delta.js'
 import { ALL_TESTS_FORMAT, RECORD_CHECKS, auditVerdictReason, earliestAuditorTime, readingsOfEvidence, readingsOfSummary, validateCheckRecordsAgainstSummary, verdictOf, type ReportOfAudit } from './audit-checks.js'
 import { asError, normalized } from './utils.js'
 
@@ -219,6 +219,8 @@ export interface PreparedModelAudit {
    * send judges each row by it, as the preparation did.
    */
   auditedAt?: Record<string, number>
+  /** Each result's earliest request on the auditor's clock, by `resultTimeKey` (the planner's clock). */
+  firstRequestAt?: Record<string, number>
   /** Raw reference exchange files: where they are read from and where they go next to the evidence. */
   referenceEvidence: Array<{ sourcePath: string; path: string }>
 }
@@ -234,6 +236,10 @@ export interface ModelAuditLedgerEntryV1 {
   resultCount: number
   evidenceUri: string
   publication?: AuditPublicationV1
+  /** Each result's audit time (`resultTimeKey`), as prepared: the audit behind this entry's report. */
+  auditedAt?: Record<string, number>
+  /** Each result's earliest request on the auditor's clock (`resultTimeKey`): what a newer vote is compared with. */
+  firstRequestAt?: Record<string, number>
   status: ModelAuditSubmissionStatus
   transactionHash: string | null
   blockNumber: number | null
@@ -301,7 +307,7 @@ export async function prepareModelAudits(input: {
    * per candidate. They are left out before the evidence is built, so the evidence lists exactly the
    * results sent; a model with nothing left is not prepared at all.
    */
-  alreadyOnChain?: (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<boolean[]>
+  alreadyOnChain?: (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<AlreadyOnChain[]>
   /**
    * Never a third opinion (`third-opinion.ts`): one reason or null per candidate; a result with a
    * reason is left out of the submission and listed among the excluded sellers with that reason.
@@ -512,6 +518,7 @@ export async function prepareModelAudits(input: {
       serviceHash: serviceHash(entry.result.service),
       verdict: verifierVerdict(entry.result.status),
       auditedAt: auditedAt(entry),
+      firstRequestAt: earliestAuditorTime([entry.evidence, entry.extensionEvidence, entry.extension2Evidence]),
       confirmsDiff: entry.result.confirmsDiff === true,
     }))
     const drop = (index: number, reason: string): void => {
@@ -574,10 +581,12 @@ export async function prepareModelAudits(input: {
     if (accepted.length === 0) continue
     if (input.alreadyOnChain) {
       const onChain = await input.alreadyOnChain(modelHash(referenceModel), candidatesOf())
-      const count = onChain.filter(Boolean).length
-      if (count > 0) {
-        alreadyOnChain.push({ model, count })
-        for (let index = accepted.length - 1; index >= 0; index -= 1) if (onChain[index]) accepted.splice(index, 1)
+      const count = onChain.filter((entry) => entry === true).length
+      if (count > 0) alreadyOnChain.push({ model, count })
+      for (let index = accepted.length - 1; index >= 0; index -= 1) {
+        if (onChain[index] === true) accepted.splice(index, 1)
+        // Not on chain, and not sent: this auditor's own newer report with another verdict stands.
+        else if (onChain[index] === 'superseded') drop(index, 'held: older than your own report with another verdict, which stands; a newer audit of this seller can change it')
       }
       if (accepted.length === 0) continue
     }
@@ -764,6 +773,10 @@ export async function prepareModelAudits(input: {
           ...(result.extension2 ? [result.extension2.evidencePath] : []),
         ]),
         auditedAt: Object.fromEntries(slice.map((entry) => [resultTimeKey(entry.agentId, serviceHash(entry.result.service)), auditedAt(entry)])),
+        firstRequestAt: Object.fromEntries(slice.map((entry) => [
+          resultTimeKey(entry.agentId, serviceHash(entry.result.service)),
+          earliestAuditorTime([entry.evidence, entry.extensionEvidence, entry.extension2Evidence]) ?? 0,
+        ])),
       })
     }
   }
@@ -1102,6 +1115,11 @@ interface ExtraSetRecord {
  * decides it. Stats are null when the reference cannot give a baseline.
  */
 function recomputedFirstLook(evidence: ProxyAuditEvidenceV1): { verdict: ModelAuditVerdict; stats: FingerprintStats | null } {
+  // An unfinished question set (the seller skipped at a batch) is undecided, as the run decides it, when the batch it
+  // names is stored and did not succeed: a mark the evidence cannot back is ignored, and the numbers decide.
+  const unfinished = evidence.result.unfinished
+  const skippedAt = unfinished ? evidence.exchanges.find((exchange) => exchange.batchIndex === unfinished.batchIndex) : undefined
+  const backedSkip = skippedAt !== undefined && skippedAt.status !== 'succeeded'
   const matches = new Map<string, 0 | 1 | null>()
   for (const exchange of evidence.exchanges) {
     for (const [index, probeId] of exchange.probeIds.entries()) matches.set(probeId, exchange.matches[index] ?? null)
@@ -1119,7 +1137,7 @@ function recomputedFirstLook(evidence: ProxyAuditEvidenceV1): { verdict: ModelAu
   })
   const authenticated = evidence.exchanges.every((exchange) => exchange.status !== 'succeeded' || exchange.responseAuth.status === 'verified')
   const stats: FingerprintStats = { ...computed.stats, selfCoverage: baseline.coverage }
-  return { verdict: authenticated && computed.verdict !== 'UNKNOWN' ? computed.verdict : 'UNDETERMINED', stats }
+  return { verdict: authenticated && !backedSkip && computed.verdict !== 'UNKNOWN' ? computed.verdict : 'UNDETERMINED', stats }
 }
 
 /**

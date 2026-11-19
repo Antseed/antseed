@@ -486,7 +486,11 @@ test('a retry after an extra set carries the settled tests of its seller file, c
       audits: [{ agentId: '1', seller, model: 'model-a', service: 'model-a', verdict: 'SAME', reference: referenceFixture('model-a', 20), outputCap: capPass }],
     })
     const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
-    const result = { ...summary.results[0]!, status: 'UNDETERMINED' as const, extension: { rule: 'kbf-extension-v2' } as never }
+    // As a run writes an undecided close call after its extra set: the questions' own verdict and the pooled look say so.
+    const result = {
+      ...summary.results[0]!, status: 'UNDETERMINED' as const, questionsStatus: 'UNDETERMINED' as const,
+      extension: { rule: 'kbf-extension-v2', pooled: { verdict: 'UNDETERMINED' } } as never,
+    }
     const cell = (row: typeof result) => ({ action: 'retry', model: 'model-a', result: row })
     const state = (row: typeof result) => ({ cells: new Map([['k', cell(row)]]) }) as never
     const carried = await loadEpochCarriedTests(state(result), ['model-a'])

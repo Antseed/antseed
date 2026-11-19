@@ -1172,6 +1172,8 @@ export async function verifyModelTarget(input: {
       verdict: questionsVerdict,
       verdictReason: questionsReason,
       outcomeReason: questionsOutcome,
+      // The questions were not finished: the seller was skipped at this batch (stored above, not succeeded).
+      ...(skip ? { unfinished: { batchIndex: skip.exchange.batchIndex, reason: skip.reason } } : {}),
       cost,
       cumulativeCost,
     },
