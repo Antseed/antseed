@@ -13,6 +13,7 @@ This project uses selective package publishing. Each release entry lists the pub
 ### Fixed
 
 - Website: the homepage loads much faster. Google Tag Manager now loads off the critical path (on the first interaction, or when the browser goes idle), and the marketing-title fonts show in a fallback and swap in rather than blocking the first paint.
+- Website: the homepage price board's title says "700+ models", the same count as the network figures and the rest of the site. It used to show a live count rounded to the hundred, which disagreed with the figures.
 - Sellers and buyers (`@antseed/node`, `@antseed/provider-core`, CLI): a video download refused because all of the seller's download slots are taken now reaches the buyer as what it is, a 429 `video_download_busy` with `Retry-After: 5`, which the buyer proxy passes on to the client. Before, the seller reported it as `upstream_rate_limited` ("rate limited on this seller right now") with no `Retry-After`, so buyers took a short wait for an upstream limit and gave up on a video that was ready.
 
 ## 2026-11-18 — CLI 0.1.253, Node 0.2.186, Desktop 0.2.89
