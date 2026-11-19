@@ -4,7 +4,7 @@ import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import { epochDirectory } from './audit-artifacts.js'
 import { epochRunManifests } from './epoch-overview.js'
 import { epochSubmissionRunId } from './epoch-plan.js'
-import { modelAuditsDirectory } from './model-audit.js'
+import { modelAuditsDirectory, type PreparedRowDecisionV1 } from './model-audit.js'
 
 /**
  * What `verifier submit` last left unsent in an epoch, so the next epoch can say when results of this
@@ -129,4 +129,32 @@ async function mergedSubmissionComplete(evidenceDir: string, epoch: string, runI
     if (entries.length > 0 && entries.every((entry) => entry.status === 'submitted')) return true
   }
   return false
+}
+
+/** The format of what a submit dry run prepared (`writeDryRunPrepared`). */
+export const DRY_RUN_PREPARED_FORMAT = 'antseed-verifier-dry-run-prepared' as const
+
+/** Where a submit dry run leaves what it prepared, beside the epoch's submission record. */
+export function dryRunPreparedPath(evidenceDir: string, epoch: string): string {
+  return join(epochDirectory(evidenceDir, epoch), 'submission', 'dry-run-prepared.json')
+}
+
+/**
+ * What `verifier submit --dry-run` prepared, row by row, with the identity the real preparation uses and its decision
+ * (sent, held, superseded, excluded with a reason code, already on chain), for a dry-run report to read instead of the
+ * printed lines. Written by the dry run only, never by a real submit, and never published: it holds no key, RPC URL
+ * or password-derived value, only what the preparation decided.
+ */
+export async function writeDryRunPrepared(evidenceDir: string, epoch: string, input: {
+  runIds: readonly string[]
+  decisions: readonly PreparedRowDecisionV1[]
+  heldBack: readonly string[]
+  alreadyOnChain: ReadonlyArray<{ model: string; count: number }>
+}, now = new Date()): Promise<string> {
+  const path = dryRunPreparedPath(evidenceDir, epoch)
+  await writeJsonAtomic(path, {
+    format: DRY_RUN_PREPARED_FORMAT, version: 1, epoch, writtenAt: now.toISOString(),
+    runIds: [...input.runIds], rows: [...input.decisions], heldBack: [...input.heldBack], alreadyOnChain: [...input.alreadyOnChain],
+  })
+  return path
 }

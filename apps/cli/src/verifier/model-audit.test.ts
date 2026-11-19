@@ -1030,3 +1030,24 @@ test('a result\'s finish time is read from its verified evidence; a missing extr
     assert.equal(await auditFinishedAt({ ...row, evidenceHash: '0x' + '00'.repeat(32) }), null)
   })
 })
+
+test('the preparation records every row\'s decision with its identity: what it sends, what is on chain, and what it leaves out and why', async () => {
+  await withRun([
+    audit('1', sellers[0]!, 'model-a'),
+    audit('2', sellers[1]!, 'model-a', 'DIFF'),
+    audit('3', sellers[2]!, 'model-a'),
+  ], async ({ prepared }) => {
+    const rows = prepared.decisions.map((row) => `${row.agentId} ${row.decision}${row.reasonCode ? ` ${row.reasonCode}` : ''}`).sort()
+    assert.deepEqual(rows, ['1 already-on-chain already-on-chain', '2 send', '3 excluded self-audit'])
+    // The sends are exactly the audits' results, and every exclusion has its row.
+    const sent = prepared.decisions.filter((row) => row.decision === 'send')
+    assert.deepEqual(sent.map((row) => `${row.agentId}:${row.serviceHash}`), prepared.audits.flatMap((entry) => entry.results.map((result) => `${result.agentId}:${result.serviceHash}`)))
+    for (const exclusion of prepared.excluded) {
+      assert.ok(prepared.decisions.some((row) => row.auditId === exclusion.auditId && row.decision !== 'send'), exclusion.reason)
+    }
+    assert.ok(prepared.decisions.every((row) => row.serviceHash === serviceHash('model-a') && row.auditId && row.evidenceHash && row.reportKey === null))
+  }, {
+    owners: { 3: auditor.address },
+    alreadyOnChain: async (_model, candidates) => candidates.map((candidate) => candidate.agentId === 1n),
+  })
+})

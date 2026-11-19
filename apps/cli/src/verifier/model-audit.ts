@@ -46,6 +46,7 @@ import { AUDIT_CHECK_IDS, flaggingChecks, passedChecks, type AuditCheckId } from
 import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
 import type { AlreadyOnChain, SubmissionCandidate } from './submission-delta.js'
+import { confirmationReportKey } from './epoch-plan.js'
 import { ALL_TESTS_FORMAT, RECORD_CHECKS, auditVerdictReason, earliestAuditorTime, readingsOfEvidence, readingsOfSummary, validateCheckRecordsAgainstSummary, verdictOf, type ReportOfAudit } from './audit-checks.js'
 import { asError, normalized } from './utils.js'
 
@@ -129,6 +130,26 @@ export interface ExcludedSellerAuditV1 {
   auditId: string | null
   reason: string
 }
+
+/** One row's decision in a submit preparation (`PreparedModelAudits.decisions`). */
+export interface PreparedRowDecisionV1 {
+  model: string
+  peerId: string
+  agentId: string | null
+  service: string
+  serviceHash: string
+  auditId: string | null
+  /** The report the row answers (`confirmationReportKey`), null for a first look. */
+  reportKey: string | null
+  evidenceHash: string | null
+  verdict: string | null
+  decision: 'send' | 'held' | 'superseded' | 'excluded' | 'already-on-chain'
+  /** Why it is not sent, as a fixed code; null for a send. */
+  reasonCode: string | null
+}
+
+/** The reason codes a preparation gives a row it does not send, and which of them hold it for a later submit. */
+export const PREPARED_HOLD_CODES: readonly string[] = Object.freeze(['window-open', 'confirmation-reaudit', 'close-call-waiting', 'confirmation-hold'])
 
 /** Public evidence for one `submitModelAudit` call: every seller audited as one model in one run. */
 export interface ModelAuditEvidenceV1 {
@@ -331,6 +352,12 @@ export async function prepareModelAudits(input: {
 }): Promise<{
   audits: PreparedModelAudit[]
   excluded: Array<ExcludedSellerAuditV1 & { model: string }>
+  /**
+   * What the preparation decided for every row it read, with the row's identity (never published): sent, held for a
+   * later submit, held as older than the auditor's own report, left out, or already on chain. `submit --dry-run`
+   * writes it (`writeDryRunPrepared`).
+   */
+  decisions: PreparedRowDecisionV1[]
   /** Per model, results left out because the auditor already has them on-chain (models with none are omitted). */
   alreadyOnChain: Array<{ model: string; count: number }>
   /**
@@ -360,6 +387,21 @@ export async function prepareModelAudits(input: {
   const audits: PreparedModelAudit[] = []
   const allExcluded: Array<ExcludedSellerAuditV1 & { model: string }> = []
   const heldBack: string[] = []
+  const decisions: PreparedRowDecisionV1[] = []
+  const decide = (
+    model: string,
+    row: { peerId: string; agentId: string | null; service: string; auditId?: string | null; evidenceHash?: string | null; status?: string; confirming?: readonly string[]; confirmingReportedAt?: number; confirmsDiff?: boolean },
+    decision: PreparedRowDecisionV1['decision'],
+    reasonCode: string | null,
+  ): void => {
+    decisions.push({
+      model, peerId: row.peerId, agentId: row.agentId, service: row.service, serviceHash: serviceHash(row.service),
+      auditId: row.auditId ?? null, reportKey: confirmationReportKey(row), evidenceHash: row.evidenceHash ?? null,
+      verdict: row.status ?? null,
+      decision: decision === 'excluded' && reasonCode !== null && PREPARED_HOLD_CODES.includes(reasonCode) ? 'held' : decision,
+      reasonCode,
+    })
+  }
   const alreadyOnChain: Array<{ model: string; count: number }> = []
   for (const model of input.manifest.modelOrder) {
     const modelManifest = input.manifest.models.find((entry) => normalized(entry.model) === normalized(model))
@@ -367,6 +409,8 @@ export async function prepareModelAudits(input: {
     const summary = await readModelSummary(modelManifest.summaryPath, input.manifest.runId, model)
     const window = await input.auditWindow?.(model) ?? null
     const excluded: ExcludedSellerAuditV1[] = []
+    for (const entry of summary.failures) decide(model, entry, 'excluded', 'failed')
+    for (const entry of summary.skipped) decide(model, entry, 'excluded', 'skipped')
     for (const entry of [...summary.failures, ...summary.skipped]) {
       excluded.push({
         peerId: entry.peerId,
@@ -392,17 +436,18 @@ export async function prepareModelAudits(input: {
     const seen = new Set<string>()
     let referenceModel: string | null = null
     for (let result of summary.results) {
-      const exclude = (reason: string): void => {
+      const exclude = (reason: string, code: string): void => {
         excluded.push({ peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason })
+        decide(model, result, 'excluded', code)
       }
       const agentId = parseAgentId(result.agentId)
       if (agentId === null) {
-        exclude('missing or invalid seller agent ID')
+        exclude('missing or invalid seller agent ID', 'invalid-agent-id')
         continue
       }
       if (retiredRecheckResult(result)) {
         exclude('made by the retired DIFF self-recheck (CLI 0.2.70 and older), whose combined verdict the evidence '
-          + 'no longer carries; a later run this epoch audits the seller again')
+          + 'no longer carries; a later run this epoch audits the seller again', 'retired-self-recheck')
         continue
       }
       let evidence: ProxyAuditEvidenceV1
@@ -418,7 +463,7 @@ export async function prepareModelAudits(input: {
         }
         validateAuditMatchesSummary(evidence, result, extensionEvidence, extension2Evidence, { epoch: input.manifest.epoch, auditor })
       } catch (error) {
-        exclude(`invalid audit evidence: ${asError(error).message}`)
+        exclude(`invalid audit evidence: ${asError(error).message}`, 'invalid-evidence')
         continue
       }
       if (window?.state === 'open') {
@@ -426,12 +471,12 @@ export async function prepareModelAudits(input: {
         // the window's other sellers are still being asked them.
         exclude(result.confirmsDiff
           ? 'a confirmation on a model whose audit window is still open: it is submitted when the window closes, so the window\'s questions stay unpublished while its sellers are asked'
-          : 'its audit window is still open: the model\'s results are submitted together once every seller of the window is finished')
+          : 'its audit window is still open: the model\'s results are submitted together once every seller of the window is finished', 'window-open')
         heldBack.push(`${model} ${result.agentId ?? result.peerId}: its audit window is still open`)
         continue
       }
       if (window && !result.confirmsDiff && !windowIncludesSeller(window, result.peerId)) {
-        exclude('not in this epoch\'s audit window (it came online after the window opened); audited next epoch')
+        exclude('not in this epoch\'s audit window (it came online after the window opened); audited next epoch', 'outside-window')
         continue
       }
       // A closed window asks no more extra questions: its open close calls are audited but undecided. A
@@ -455,7 +500,7 @@ export async function prepareModelAudits(input: {
       if (finalVerdict === null && await questionSetRetired(input, model, evidence.reference.referenceId)) {
         if (result.confirmsDiff && !isExtraQuestionsPublished(result.outcomeReason)) {
           exclude('a confirmation whose extra questions were published before they could be asked: the seller is audited '
-            + 'again on new questions, up to its attempt limit, before anything is submitted')
+            + 'again on new questions, up to its attempt limit, before anything is submitted', 'confirmation-reaudit')
           heldBack.push(`${model} ${result.agentId ?? result.peerId}: confirmation audited again on new questions`)
           continue
         }
@@ -467,17 +512,17 @@ export async function prepareModelAudits(input: {
         if (result.extensionPending) heldBack.push(`${model} ${result.agentId ?? result.peerId}: close call waiting for its extra questions`)
         exclude(result.extensionPending
           ? `close call waiting for its extra questions (${result.extensionPending.reason}); a later run this epoch asks them, so it is not submitted yet`
-          : 'close call without its extra questions, so it is not submitted')
+          : 'close call without its extra questions, so it is not submitted', result.extensionPending ? 'close-call-waiting' : 'close-call-unfinished')
         continue
       }
       if (result.outcomeReason?.code === 'confirmation_undecided') {
-        exclude('a confirmation whose check to repeat did not decide: it is never sent, whatever the chain shows now')
+        exclude('a confirmation whose check to repeat did not decide: it is never sent, whatever the chain shows now', 'confirmation-undecided')
         continue
       }
       if (finalVerdict === 'UNDETERMINED' && failureBlame(result.outcomeReason) === 'auditor') {
         // The auditor's own failure says nothing about the seller's model, also when a run is
         // submitted directly (`--run-id`) rather than through the merged epoch.
-        exclude(`UNDETERMINED caused by this auditor (${result.outcomeReason?.summary ?? 'audit failed'}), so it is not submitted`)
+        exclude(`UNDETERMINED caused by this auditor (${result.outcomeReason?.summary ?? 'audit failed'}), so it is not submitted`, 'auditor-caused-undetermined')
         continue
       }
       // The questions' own verdict travels apart from the audit's: the attribution reads it (a cap DIFF beside the
@@ -485,7 +530,7 @@ export async function prepareModelAudits(input: {
       result = { ...result, status: finalVerdict, questionsStatus: stageOneVerdict(result) ?? 'UNDETERMINED' }
       if (referenceModel === null) referenceModel = evidence.reference.referenceModel
       else if (normalized(referenceModel) !== normalized(evidence.reference.referenceModel)) {
-        exclude(`audited against ${evidence.reference.referenceModel}, not ${referenceModel}`)
+        exclude(`audited against ${evidence.reference.referenceModel}, not ${referenceModel}`, 'wrong-reference-model')
         continue
       }
       // Another report's own result, marked so where the epoch submission offers it (never by its position): it goes
@@ -496,11 +541,11 @@ export async function prepareModelAudits(input: {
       try {
         owner = await ownerOf(agentId)
       } catch (error) {
-        exclude(`unknown seller agent ${agentId}: ${asError(error).message}`)
+        exclude(`unknown seller agent ${agentId}: ${asError(error).message}`, 'unknown-agent')
         continue
       }
       if (normalized(owner) === normalized(auditor)) {
-        exclude(`self-audit: the auditor owns seller agent ${agentId}`)
+        exclude(`self-audit: the auditor owns seller agent ${agentId}`, 'self-audit')
         continue
       }
       seen.add(duplicateKey)
@@ -516,9 +561,10 @@ export async function prepareModelAudits(input: {
       auditedAt: auditedAt(entry),
       confirmsDiff: entry.result.confirmsDiff === true,
     }))
-    const drop = (index: number, reason: string): void => {
+    const drop = (index: number, reason: string, code: string): void => {
       const { result } = accepted[index]!
       allExcluded.push({ model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason })
+      decide(model, result, code === 'superseded' ? 'superseded' : 'excluded', code)
       accepted.splice(index, 1)
     }
     // The confirmation decision of every row first: the choice of one row per seller depends on it.
@@ -559,7 +605,8 @@ export async function prepareModelAudits(input: {
         const winner = accepted[kept.get(`${entry.agentId}:${serviceHash(entry.result.service)}`) ?? -1]
         drop(index, entry.alternate
           ? 'another report\'s result of this seller, not sent for the report waiting now'
-          : winner && sends(winner) ? 'the result made for the report waiting now is sent in its place' : `duplicate audited service ${entry.result.service}`)
+          : winner && sends(winner) ? 'the result made for the report waiting now is sent in its place' : `duplicate audited service ${entry.result.service}`,
+        entry.alternate ? 'other-report-row' : winner && sends(winner) ? 'report-row-sent-instead' : 'duplicate-service')
       }
     }
     // After the choice, so the SAME kept per seller is the same one whether or not it is already on-chain (another of
@@ -567,7 +614,9 @@ export async function prepareModelAudits(input: {
     {
       const before = accepted.length
       const sameExcluded: typeof excluded = []
+      const keptRows = new Map(accepted.map((entry) => [entry.result.auditId, entry.result]))
       keepOneSamePerSeller(accepted, sameExcluded)
+      for (const entry of sameExcluded) decide(model, keptRows.get(entry.auditId ?? '') ?? entry, 'excluded', 'one-same-per-seller')
       // As before: these are listed in the published evidence too.
       excluded.push(...sameExcluded)
       allExcluded.push(...sameExcluded.map((entry) => ({ ...entry, model })))
@@ -579,23 +628,26 @@ export async function prepareModelAudits(input: {
       const count = onChain.filter((entry) => entry === true).length
       if (count > 0) alreadyOnChain.push({ model, count })
       for (let index = accepted.length - 1; index >= 0; index -= 1) {
-        if (onChain[index] === true) accepted.splice(index, 1)
+        if (onChain[index] === true) {
+          decide(model, accepted[index]!.result, 'already-on-chain', 'already-on-chain')
+          accepted.splice(index, 1)
+        }
         // Not on chain, and not sent: this auditor's own newer report with another verdict stands.
         else if (onChain[index] === 'superseded') {
           // Outstanding too, on every path (nothing else to send included): the seller needs a newer audit.
           const { result } = accepted[index]!
           heldBack.push(`${model} ${result.agentId ?? result.peerId}: held: older than your own report with another verdict; a newer audit of this seller is needed to change it`)
-          drop(index, 'held: older than your own report with another verdict, which stands; a newer audit of this seller can change it')
+          drop(index, 'held: older than your own report with another verdict, which stands; a newer audit of this seller can change it', 'superseded')
         }
       }
       if (accepted.length === 0) continue
     }
-    for (const excludes of [input.diffHold, input.thirdOpinion]) {
+    for (const [excludes, code] of [[input.diffHold, 'diff-hold'], [input.thirdOpinion, 'third-opinion']] as const) {
       if (!excludes) continue
       const reasons = await excludes(modelHash(referenceModel), candidatesOf())
       for (let index = accepted.length - 1; index >= 0; index -= 1) {
         const reason = reasons[index]
-        if (reason) drop(index, reason)
+        if (reason) drop(index, reason, code)
       }
       if (accepted.length === 0) break
     }
@@ -603,7 +655,7 @@ export async function prepareModelAudits(input: {
     // the published evidence (`same-check.ts`).
     if (input.unpublishedDiffs) {
       for (let index = accepted.length - 1; index >= 0; index -= 1) {
-        if (accepted[index]!.result.status === 'DIFF') drop(index, input.unpublishedDiffs)
+        if (accepted[index]!.result.status === 'DIFF') drop(index, input.unpublishedDiffs, 'unpublished-diff')
       }
     }
     // The decisions, applied to the rows left: a send carries its confirmation; nothing else is sent, and only a hold is
@@ -617,8 +669,9 @@ export async function prepareModelAudits(input: {
         continue
       }
       if (decision.kind === 'hold') heldBack.push(`${model} ${entry.result.agentId ?? entry.result.peerId}: ${decision.reason}`)
-      drop(index, decision.reason)
+      drop(index, decision.reason, decision.kind === 'hold' ? 'confirmation-hold' : 'confirmation-excluded')
     }
+    for (const entry of accepted) decide(model, entry.result, 'send', null)
     if (accepted.length === 0) continue
     accepted.sort((left, right) => compareResults(
       left.agentId, serviceHash(left.result.service), right.agentId, serviceHash(right.result.service),
@@ -776,7 +829,7 @@ export async function prepareModelAudits(input: {
       })
     }
   }
-  return { audits, excluded: allExcluded, alreadyOnChain, heldBack }
+  return { audits, excluded: allExcluded, decisions, alreadyOnChain, heldBack }
 }
 
 /** Unix seconds of the latest evidence file behind a result: its last extra set when it has one. */
@@ -790,17 +843,24 @@ function auditedAt(entry: {
   extensionEvidence: ProxyAuditEvidenceV1 | null
   extension2Evidence: ProxyAuditEvidenceV1 | null
 }): number {
-  const times = [entry.evidence, entry.extensionEvidence, entry.extension2Evidence]
-    .flatMap((evidence) => evidence ? [Date.parse(evidence.createdAt)] : [])
-    .filter(Number.isFinite)
-  if (times.length === 0) return 0
-  return Math.max(...times) / 1_000
+  return latestEvidenceTime([entry.evidence, entry.extensionEvidence, entry.extension2Evidence])
 }
 
 /**
- * When the audit behind a summary row finished (seconds): its latest evidence file's time, as `auditedAt` reads it for
- * submit, each file read and verified against its hash as the submit preparation reads it. Null when any file of the
- * row (an extra set included) is missing, unreadable or not the one its summary names: submit would refuse the row.
+ * The one rule for when a row's audit finished (seconds), for submit and the planner alike: the latest valid
+ * `createdAt` of its evidence files; a file whose date is not valid gives none, and a row with no valid date is 0
+ * (older than any report).
+ */
+function latestEvidenceTime(evidences: ReadonlyArray<Pick<ProxyAuditEvidenceV1, 'createdAt'> | null>): number {
+  const times = evidences.flatMap((evidence) => evidence ? [Date.parse(evidence.createdAt)] : []).filter(Number.isFinite)
+  return times.length === 0 ? 0 : Math.max(...times) / 1_000
+}
+
+/**
+ * When the audit behind a summary row finished (seconds), by submit's rule (`latestEvidenceTime`), each file read and
+ * verified against its hash as the submit preparation reads it. Null when any file of the row (an extra set included)
+ * is missing, unreadable or not the one its summary names: submit would refuse the row. A file whose date is not valid
+ * gives no time, as in submit.
  */
 export async function auditFinishedAt(result: {
   evidencePath: string
@@ -809,17 +869,15 @@ export async function auditFinishedAt(result: {
   extension2?: { evidencePath: string; evidenceHash: string } | null
 }): Promise<number | null> {
   const sets = [result, result.extension, result.extension2].filter((set) => set != null)
-  const times: number[] = []
+  const evidences: ProxyAuditEvidenceV1[] = []
   for (const set of sets) {
     try {
-      const time = Date.parse((await verifyProxyAuditEvidenceFile(set.evidencePath, set.evidenceHash)).createdAt)
-      if (!Number.isFinite(time)) return null
-      times.push(time)
+      evidences.push(await verifyProxyAuditEvidenceFile(set.evidencePath, set.evidenceHash))
     } catch {
       return null
     }
   }
-  return times.length > 0 ? Math.max(...times) / 1_000 : null
+  return latestEvidenceTime(evidences)
 }
 
 /**

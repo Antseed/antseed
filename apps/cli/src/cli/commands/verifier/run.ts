@@ -1172,6 +1172,9 @@ export async function runVerifierRound(
           const finished = await auditFinishedAt(cell.result)
           if (finished !== null) reportCellFinishedAt.set(cell, finished)
         }
+        const unusableReportResult = (cell: EpochCell): boolean => (
+          cell.confirmationReport !== undefined && cell.result !== null && !reportCellFinishedAt.has(cell)
+        )
         // A cell whose confirmation attempts were for another report than the one waiting now is no history of this
         // one: its attempts, cooldown and result neither answer nor hold back the live report.
         // A seller with a report waiting for this auditor is planned by that report's own cell (its result, attempts and
@@ -1195,7 +1198,9 @@ export async function runVerifierRound(
           // A report whose attempts are used up without a result to send (failures, runtime skips) is finished: nothing
           // is sent for it, and the seller is not audited for it again.
           // Only the seller's own attempts finish it: the auditor's failures never do.
-          if (cell?.confirmationReport !== undefined && cell.action === 'done' && !cell.result
+          // A result whose evidence cannot be read is kept for diagnosis but is no usable result: the seller's later
+          // failures and skips count toward this stop as for a cell with no result.
+          if (cell?.confirmationReport !== undefined && cell.action === 'done' && (!cell.result || unusableReportResult(cell))
             && cell.attempts >= CONFIRMATION_ATTEMPTS) return undefined
           // When its audit finished, read from its verified evidence as submit reads it. A result whose evidence cannot
           // be read or verified (a missing extra set, say) answers nothing: submit would refuse it, so the report is
@@ -1203,7 +1208,7 @@ export async function runVerifierRound(
           const completedAt = cell?.result ? reportCellFinishedAt.get(cell) : undefined
           // Only a result made for this report answers it: one that names no report (a first look, or a summary from
           // before reports were named) answers none, and the seller is audited for it.
-          const local = cell?.result && completedAt && cell.confirmationReport !== undefined
+          const local = cell?.result && completedAt !== undefined && cell.confirmationReport !== undefined
             ? {
               service: cell.result.service,
               completedAt,
@@ -1219,7 +1224,8 @@ export async function runVerifierRound(
         // the seller has none: attempts are spaced, so one seller outage does not use them all up.
         const confirmationRecheckDueAt = (model: string, peer: PeerInfo): number | null => {
           const cell = epochCellFor(model, peer)
-          if (!cell || !heldForConfirmationRecheck(cell)) return null
+          // A report's result without usable evidence is audited again with the same spacing as an undecided one.
+          if (!cell || (!heldForConfirmationRecheck(cell) && !(unusableReportResult(cell) && cell.attempts < CONFIRMATION_ATTEMPTS))) return null
           // From the cell's last attempt (a later failure included), not from the run of its older result.
           if (cell.lastAttemptAt !== null) return cell.lastAttemptAt + CONFIRMATION_RECHECK_SPACING_SECONDS
           const completedAt = epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt

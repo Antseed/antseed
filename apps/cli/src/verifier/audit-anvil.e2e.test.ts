@@ -3,6 +3,8 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:chil
 import { once } from 'node:events'
 import { createServer as createHttpServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { dryRunPreparedPath } from './epoch-submission-record.js'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -147,6 +149,22 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     assert.match(dryRun.output, /Dry run complete/)
     assert.match(dryRun.output, /self-audit/)
     assert.equal((await client.queryModelAudits()).length, 0)
+    // The dry run leaves what it prepared, row by row, with the identity and decision the real preparation uses.
+    const preparedPath = dryRunPreparedPath(approved.evidenceDir, EPOCH)
+    const prepared = JSON.parse(await readFile(preparedPath, 'utf8')) as {
+      format: string; version: number; epoch: string
+      rows: Array<{ model: string; agentId: string | null; serviceHash: string; decision: string; reasonCode: string | null; verdict: string | null; auditId: string | null; evidenceHash: string | null }>
+    }
+    assert.equal(prepared.format, 'antseed-verifier-dry-run-prepared')
+    assert.equal(prepared.version, 1)
+    assert.equal(prepared.epoch, EPOCH)
+    const decided = prepared.rows.map((row) => `${row.model} ${row.agentId} ${row.decision}${row.reasonCode ? ` ${row.reasonCode}` : ''}${row.verdict ? ` ${row.verdict}` : ''}`).sort()
+    assert.deepEqual(decided, [
+      'model-a 1 send SAME', 'model-a 2 send DIFF', 'model-b 1 send SAME', 'model-b 2 send UNDETERMINED', 'model-b 3 excluded self-audit SAME',
+    ])
+    assert.ok(prepared.rows.every((row) => row.serviceHash === serviceHash(row.model) && row.auditId && row.evidenceHash))
+    // A real submit never writes it: the dry run's file is set aside, and the submits below leave none.
+    await rm(preparedPath)
 
     const refused = submit(unapproved, ['--yes'])
     assert.equal(refused.status, 1, refused.output)
@@ -164,6 +182,7 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     const repeat = submit(approved, ['--yes'])
     assert.equal(repeat.status, 0, repeat.output)
     assert.match(repeat.output, /Nothing to submit/)
+    assert.equal(existsSync(preparedPath), false, 'a real submit writes no dry-run file')
 
     const onChain = await client.queryModelAudits()
     assert.equal(onChain.length, 2)

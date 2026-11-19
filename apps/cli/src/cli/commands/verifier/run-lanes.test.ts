@@ -1393,6 +1393,19 @@ test('reports A, B, A: each report keeps its own result, attempts and spacing; f
     assert.equal((await run({ report: A, at: step })).length > 0, true, 'B\'s result does not answer A')
     assert.deepEqual(await run({ report: A, at: 2 * step }), [], 'A\'s own decided result answers A')
   })
+  // A's decided result whose evidence cannot be read answers nothing: A is audited again (spaced), the seller's later
+  // failures count toward A's limit as if there were no result, and then A is finished.
+  await scenarioWith(async ({ scenario, run, attempts }) => {
+    scenario.firstResult = (model: string, peerId: string) => ({ ...decided(model, peerId), evidencePath: join(tmpdir(), `gone-${model}-${peerId.slice(0, 8)}.json`) })
+    await run({ report: A, at: 0 })
+    assert.equal(await attempts(A), 1)
+    assert.deepEqual(await run({ report: A, at: 30 }), [], 'not again before its spacing')
+    scenario.audit = async () => { throw new Error('connection reset by the seller') }
+    assert.equal((await run({ report: A, at: step })).length > 0, true, 'reopened: the unreadable result answers nothing')
+    assert.equal((await run({ report: A, at: 2 * step })).length > 0, true)
+    assert.equal(await attempts(A), CONFIRMATION_ATTEMPTS, 'the later failures count on A')
+    assert.deepEqual(await run({ report: A, at: 3 * step }), [], 'A is finished: the seller is not audited for it again')
+  })
   // A finished first look answers no report, and two failed first looks leave A at zero.
   await scenarioWith(async ({ scenario, run, attempts }) => {
     scenario.firstResult = decided

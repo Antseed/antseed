@@ -54,7 +54,7 @@ import { verifierVerdict } from '@antseed/node/payments'
 import { approvedAuditorsAt, loadAuditorSetEvents, revokedSinceEpochStart } from '../../../verifier/auditor-set.js'
 import { configuredVerifierModels } from '../../../verifier/model-config.js'
 import {
-  markUnsentReported, recordSubmitOutcome, unsentEpochRuns, unsentEpochRunsMessage,
+  markUnsentReported, recordSubmitOutcome, unsentEpochRuns, unsentEpochRunsMessage, writeDryRunPrepared,
 } from '../../../verifier/epoch-submission-record.js'
 
 interface SubmitOptions {
@@ -321,7 +321,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         sameCheck: (events) => sameCheckFilter({ events, auditor: address, revoked, reader: flagReader }),
         alreadyOnChain: (events) => alreadyOnChainFilterFor(events),
       })
-      const { audits: prepared, excluded, alreadyOnChain, heldBack } = await prepareModelAudits({
+      const { audits: prepared, excluded, decisions, alreadyOnChain, heldBack } = await prepareModelAudits({
         evidenceDir,
         banksDir,
         manifest,
@@ -413,6 +413,13 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       ))
       const toSubmit = pending.filter((entry) => !entry.alreadySubmitted)
       if (options.dryRun) {
+        // What the preparation decided, row by row, for a dry-run report. Best effort: a failed write warns and the dry
+        // run is otherwise unchanged.
+        try {
+          await writeDryRunPrepared(evidenceDir, manifest.epoch, { runIds: sourceRunIds, decisions, heldBack, alreadyOnChain })
+        } catch (error) {
+          console.warn(chalk.yellow(`Could not write what this dry run prepared: ${asError(error).message}`))
+        }
         console.log(chalk.dim('Dry run complete; nothing was published or sent.'))
         return
       }
