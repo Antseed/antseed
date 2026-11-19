@@ -1997,6 +1997,13 @@ test('x402 top-up accepts a smart-account payer whose contract approves the sign
     forged.payload.authorization.from = Wallet.createRandom().address
     assert.equal(await reasonFor(encodeHeaderJson(forged)), 'invalid_exact_evm_payload_signature')
 
+    // A signature that is not hex is refused without asking the chain.
+    const garbled = decodeHeaderJson<PaymentPayload>(await signPayment(smartAccount, required))!
+    garbled.payload.signature = 'not-a-signature'
+    checked.length = 0
+    assert.equal(await reasonFor(encodeHeaderJson(garbled)), 'invalid_exact_evm_payload_signature')
+    assert.deepEqual(checked, [])
+
     // The chain cannot be read: refused before the facilitator, not called a bad signature.
     chainDown = true
     assert.equal(await reasonFor(await signPayment(smartAccount, required)), 'unexpected_verify_error')

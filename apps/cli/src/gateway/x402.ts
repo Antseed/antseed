@@ -1,4 +1,4 @@
-import { Contract, TypedDataEncoder, getAddress, isError, recoverAddress, type ContractRunner } from 'ethers'
+import { Contract, TypedDataEncoder, getAddress, isError, isHexString, recoverAddress, type ContractRunner } from 'ethers'
 
 /**
  * x402 v2 over HTTP, `exact` scheme with EIP-3009 USDC transfers: the
@@ -173,7 +173,7 @@ export async function checkPaymentPayload(
     return 'invalid_exact_evm_payload_signature'
   }
   if (recoversTo(digest, signature, authorization.from)) return null
-  if (!checkContractSignature) return 'invalid_exact_evm_payload_signature'
+  if (!checkContractSignature || !isHexString(signature)) return 'invalid_exact_evm_payload_signature'
   return await checkContractSignature(authorization.from, digest, signature) ? null : 'invalid_exact_evm_payload_signature'
 }
 
