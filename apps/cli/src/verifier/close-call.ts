@@ -152,3 +152,13 @@ export function pooledCloseCallVerdict(
     rule,
   })
 }
+
+/**
+ * The earliest request, on the auditor's clock in seconds, over every set an audit's evidence holds: its first set and
+ * each extra set pooled with it. Null when any of them has no time: then it is no fresh material.
+ */
+export function earliestSetTime(result: { firstRequestAt?: number | null; extension?: { firstRequestAt?: number | null } | null; extension2?: { firstRequestAt?: number | null } | null }): number | null {
+  const times = [result.firstRequestAt, ...[result.extension, result.extension2].filter((set) => set != null).map((set) => set!.firstRequestAt)]
+  if (times.some((time) => typeof time !== 'number')) return null
+  return Math.min(...(times as number[]))
+}

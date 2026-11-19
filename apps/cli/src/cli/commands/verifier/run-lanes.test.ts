@@ -1228,13 +1228,15 @@ test('a waiting extra set answers a report only for a confirmation of that repor
   const peer = 'aa'.repeat(20)
   const now = Math.floor(Date.now() / 1_000)
   // [the first set's earliest request, a report waits, its time in the second run, what the second run asks]
-  const cases: Array<[string, number | null, boolean, number, string[]]> = [
+  const cases: Array<[string, number | null, boolean, number, string[], number?]> = [
     ['fresh, same report', now, true, now - 7_200, ['audit model-a aa extension']],
     ['stale for the report', now - 7_200, true, now - 7_200, ['audit model-a aa', 'audit model-a aa extension']],
     ['no time', null, true, now - 7_200, ['audit model-a aa', 'audit model-a aa extension']],
     ['another report now', now, true, now - 3_600 * 3, ['audit model-a aa', 'audit model-a aa extension']],
+    // The first set is fresh, but an extra set already pooled with it is from before the cutoff.
+    ['stale second set', now, true, now - 7_200, ['audit model-a aa', 'audit model-a aa extension'], now - 7_200],
   ]
-  for (const [label, firstRequestAt, waits, laterReportedAt, expected] of cases) {
+  for (const [label, firstRequestAt, waits, laterReportedAt, expected, pooledAt] of cases) {
     await withScenario(async (scenario) => {
       scenario.snapshots = [snapshot([{ ...seller(peer, ['model-a']), onChainAgentId: 5 } as PeerInfo])]
       scenario.confirmations = waits ? [{ model: 'model-a', agentId: '5' }] : []
@@ -1242,7 +1244,16 @@ test('a waiting extra set answers a report only for a confirmation of that repor
       scenario.firstReportedAt = now - 7_200
       scenario.firstResult = (model, peerId) => {
         const { firstRequestAt: _time, ...rest } = closeCallResult(model, peerId)
-        return firstRequestAt === null ? rest : { ...rest, firstRequestAt }
+        // A first extra set already pooled, still a close call, so a second extra set is waited for.
+        const pooled = pooledAt === undefined ? {} : {
+          extension: {
+            rule: 'kbf-extension-v2', auditId: 'pooled-set', status: 'UNDETERMINED', referenceId: 'ref-2', probeCount: 100, parsedProbeCount: 100,
+            correctProbeCount: 78, responseAuthVerified: true, stats: rest['stats'], cost: emptyAuditCostSummary(), evidencePath: '/x', evidenceHash: '0x01',
+            firstLook: { status: 'UNDETERMINED', pValue: 0.04 }, firstRequestAt: pooledAt,
+            pooled: { selfHamming: 60, selfTotal: 600, targetHamming: 44, targetTotal: 200, pValueBinomial: 0.04, verdict: 'UNDETERMINED', verdictReason: null, extendNext: true },
+          },
+        }
+        return firstRequestAt === null ? { ...rest, ...pooled } : { ...rest, ...pooled, firstRequestAt }
       }
       await scenario.run({ peer, confirm: true })
       scenario.log.length = 0

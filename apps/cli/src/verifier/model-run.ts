@@ -419,6 +419,8 @@ export interface ModelVerificationTargetResult {
 export interface ModelVerificationExtensionV1 {
   rule: 'kbf-extension-v1' | 'kbf-extension-v2'
   auditId: string
+  /** The extra set's own earliest request (`earliestAuditorTime`, seconds); absent on sets pooled before it was kept. */
+  firstRequestAt?: number | null
   /** The extension set's own single-set verdict (never used on its own). */
   status: 'SAME' | 'DIFF' | 'UNDETERMINED'
   referenceId: string
@@ -447,6 +449,9 @@ export interface ModelVerificationFailure {
   status: 'FAILED'
   reason: string
   outcomeReason?: VerificationOutcomeReasonV1
+  /** A failed confirmation: the report it was for (`confirmationReportKey`), so the attempt counts for that report. */
+  confirming?: AuditCheckId[]
+  confirmingReportedAt?: number
 }
 
 export interface ModelVerificationSkip {
@@ -465,6 +470,9 @@ export interface ModelVerificationSkip {
   /** Set when a tokenizer pre-check ran before the seller was skipped: the requests it sent and what they cost. */
   requestCount?: number
   cost?: AuditCostSummaryV1
+  /** A skipped confirmation: the report it was for, so the attempt counts for that report. */
+  confirming?: AuditCheckId[]
+  confirmingReportedAt?: number
 }
 
 export interface VerificationTargetPolicy {
@@ -1088,6 +1096,7 @@ export async function verifyModelTarget(input: {
       evidencePath: written.path,
       evidenceHash: written.evidenceHash,
       ...(ranCosts.length > 0 ? { requestCount: testRequestCount(ran), cost: addAuditCostSummaries(...ranCosts) } : {}),
+      ...(confirmingIdentity ? { confirming: [...confirmingIdentity.checks], ...(confirmingIdentity.reportedAt !== undefined ? { confirmingReportedAt: confirmingIdentity.reportedAt } : {}) } : {}),
     }
   }
 

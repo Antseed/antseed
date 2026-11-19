@@ -190,6 +190,8 @@ export function combineExtension(
     cost: extension.cost,
     evidencePath: extension.evidencePath,
     evidenceHash: extension.evidenceHash,
+    // Its own earliest request: a confirmation is fresh only by the earliest over every set it pools.
+    ...(extension.firstRequestAt !== undefined ? { firstRequestAt: extension.firstRequestAt } : {}),
     firstLook: earlier[0]?.firstLook ?? { status: first.questionsStatus ?? first.status, pValue: first.stats.pValueBinomial },
     pooled: { ...pooled.stats, verdict, verdictReason: pooled.verdictReason, ...(extendNext ? { extendNext: true } : {}) },
   }

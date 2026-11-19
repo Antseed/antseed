@@ -17,7 +17,7 @@ import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import type { FlipsScreen, FlipsV1 } from './flips.js'
 import { decidedRecords, earliestAuditorTime, readingsOfEvidence, resumeMaterialFor, verdictOf } from './audit-checks.js'
 import { modelAuditsDirectory } from './audit-artifacts.js'
-import { CONFIRMATION_MIN_DELAY_SECONDS, isFreshConfirmation } from './same-check.js'
+import { CONFIRMATION_MIN_DELAY_SECONDS, decide, isFreshConfirmation } from './same-check.js'
 import { loadCheckpointResumeCandidates, loadResumeCandidates } from '../cli/commands/verifier/run.js'
 import { canonicalHashBytes32 } from '@antseed/fingerprints'
 import { emptyAuditCostSummary } from './proxy-evidence.js'
@@ -1784,6 +1784,13 @@ test('a confirmation resumed from a real checkpoint or retry file reuses only ba
       assert.equal(resumed.result.firstRequestAt, earliestAuditorTime([resumed.evidence]))
       assert.ok(isFreshConfirmation(resumed.result.firstRequestAt, reportedAt))
       assert.doesNotThrow(() => validateAuditMatchesSummary(resumed.evidence, resumed.result as never))
+      // And submit's own decision on it: fresh, for the report its evidence names, its DIFF is sent.
+      const decision = decide({
+        agentId: 1n, serviceHash: '0x00', verdict: 2, auditedAt: earliestAuditorTime([resumed.evidence])!,
+        flaggedBy: ['kbf'], passedBy: [], confirming: resumed.evidence.confirming!,
+      } as never, [{ auditor: '0x00', evidenceUri: 'ipfs://x', evidenceHash: '0x00', reportedAt, checks: ['kbf'] }])
+      assert.notEqual(decision.kind === 'exclude' ? decision.reason : '', 'stale', 'never refused as stale')
+      assert.doesNotMatch(decision.kind === 'exclude' ? decision.reason : '', /fresh material|another report/)
       // Outside a confirmation nothing is filtered; --resume-run, with no live report, uses the candidate's own.
       assert.equal(resumeMaterialFor(candidate, null, fresh).exchanges.length, all.length)
       assert.deepEqual(resumeMaterialFor(candidate, candidate.confirming!, fresh).exchanges.map((exchange) => exchange.batchIndex), kept)

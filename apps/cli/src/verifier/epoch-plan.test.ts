@@ -353,6 +353,17 @@ test('confirmation attempts are counted per report: an older report\'s used-up a
   assert.equal(newer.attempts, 1)
   assert.equal(newer.action, 'retry')
   assert.equal(newer.confirmationReport, reportKey(confirming(200).service, 200, ['kbf']))
+  // Back to the first report: its count carries on, it does not restart.
+  const back = mergeEpochRuns(EPOCH, [...runs, run('r3', '2026-10-28T23:00:00.000Z', [{ model: 'm', results: [confirming(200)] }]),
+    run('r4', '2026-10-28T23:30:00.000Z', [{ model: 'm', results: [confirming(100)] }])]).get(epochCellKey('m', 'a'))!
+  assert.equal(back.attempts, CONFIRMATION_ATTEMPTS + 1)
+  assert.equal(back.action, 'done')
+  // A failure of a confirmation counts on its own report, not on the one before it.
+  const failed = mergeEpochRuns(EPOCH, [...runs, run('r3', '2026-10-28T23:00:00.000Z', [{
+    model: 'm', results: [], failures: [{ peerId: 'a', agentId: null, service: confirming(100).service, status: 'FAILED', reason: 'connection reset', outcomeReason: sellerDown, confirming: ['kbf'], confirmingReportedAt: 300 }],
+  }])]).get(epochCellKey('m', 'a'))!
+  assert.equal(failed.attempts, 1)
+  assert.equal(failed.confirmationReport, reportKey(confirming(100).service, 300, ['kbf']))
 })
 
 test('a confirmation whose close-call extension failed is retried; a decided or non-confirming one is done', () => {

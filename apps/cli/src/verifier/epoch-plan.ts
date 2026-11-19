@@ -364,6 +364,8 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     /** Audit IDs of the results already counted, so a confirmation's close call carried on counts once. */
     countedAuditIds: Set<string>
     confirmationReport: string | null
+    /** Each report's own attempt count and when its last one was counted: a report seen again keeps its count. */
+    byReport: Map<string, { attempts: number; countedAt: number | null }>
   }
   const acc = new Map<string, Acc>()
   const get = (model: string, peerId: string, runId: string): Acc => {
@@ -373,11 +375,23 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       entry = {
         model, peerId, runId, attempts: 0, auditorAttempts: 0, countedAt: null, lastAttemptAt: null,
         result: null, resultRunId: null,
-        pending: null, failure: null, skip: null, last: 'skip', countedAuditIds: new Set(), confirmationReport: null,
+        pending: null, failure: null, skip: null, last: 'skip', countedAuditIds: new Set(), confirmationReport: null, byReport: new Map(),
       }
       acc.set(key, entry)
     }
     return entry
+  }
+  // Each confirmation counts on its report's own count: moving to another report keeps this one's, and coming back to
+  // a report carries on its count. An older report's used-up attempts never hold back a newer one.
+  const switchReport = (entry: Acc, report: string | null): void => {
+    if (report === null || report === entry.confirmationReport) return
+    if (entry.confirmationReport !== null) entry.byReport.set(entry.confirmationReport, { attempts: entry.attempts, countedAt: entry.countedAt })
+    const known = entry.byReport.get(report)
+    if (entry.confirmationReport !== null || known) {
+      entry.attempts = known?.attempts ?? 0
+      entry.countedAt = known?.countedAt ?? null
+    }
+    entry.confirmationReport = report
   }
   for (const { manifest, summaries } of runs) {
     const finishedAt = Number.isFinite(Date.parse(manifest.completedAt)) ? Date.parse(manifest.completedAt) / 1_000 : null
@@ -394,14 +408,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       if (summary.epoch !== epoch || summary.runId !== manifest.runId) continue
       for (const result of summary.results ?? []) {
         const entry = get(summary.model, result.peerId, manifest.runId)
-        // A confirmation of another report than the attempts so far starts its own count: an exhausted attempt on an
-        // older report never answers, or holds back, a newer one.
-        const report = confirmationReportKey(result)
-        if (report !== null && entry.confirmationReport !== null && report !== entry.confirmationReport) {
-          entry.attempts = 0
-          entry.countedAt = null
-        }
-        if (report !== null) entry.confirmationReport = report
+        switchReport(entry, confirmationReportKey(result))
         // A confirmation's close call carried on to a later run is written into that run's summary again,
         // with the same audit ID: it is the same audit still waiting for its extra questions, not another
         // attempt (confirmation attempts are unspaced, so counting it again would use up their limit).
@@ -426,6 +433,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       for (const failure of summary.failures ?? []) {
         if (failure.peerId.startsWith('model:')) continue
         const entry = get(summary.model, failure.peerId, manifest.runId)
+        switchReport(entry, confirmationReportKey(failure))
         if (failureBlame(failure.outcomeReason, failure.reason) === 'auditor') {
           entry.auditorAttempts += 1
           entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
@@ -435,6 +443,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       }
       for (const skip of summary.skipped ?? []) {
         const entry = get(summary.model, skip.peerId, manifest.runId)
+        switchReport(entry, confirmationReportKey(skip))
         if (skip.source === 'runtime') {
           if (failureBlame(skip.outcomeReason, skip.reason) === 'auditor') {
             entry.auditorAttempts += 1

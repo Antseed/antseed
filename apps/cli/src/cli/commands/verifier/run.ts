@@ -142,7 +142,7 @@ import { OUTPUT_ECHO_RULE, createOutputEchoScreen, outputEchoPrompt } from '../.
 import { createFlipsScreen, flipsSeed, type FlipsProbe, type FlipsUnavailable } from '../../../verifier/flips.js'
 import { FLIPS_RULE, flipsCounts, isValidFlipsPair } from '../../../verifier/flips-score.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
-import { closeCallRuleForExtensions, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
+import { closeCallRuleForExtensions, earliestSetTime, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
 import { decidedRecords, resumeMaterialFor, sameConfirmation, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
 import {
   confirmationTargetsByModel,
@@ -1151,7 +1151,9 @@ export async function runVerifierRound(
           const completedAt = cell?.result
             ? epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
             : undefined
-          const local = cell?.result && completedAt
+          // Only a result made for this report answers it: one that names no report (a first look, or a summary from
+          // before reports were named) answers none, and the seller is audited for it.
+          const local = cell?.result && completedAt && cell.confirmationReport !== undefined
             ? {
               service: cell.result.service,
               completedAt: Date.parse(completedAt) / 1_000,
@@ -1366,9 +1368,11 @@ export async function runVerifierRound(
             const waitingIdentity: ConfirmationIdentity | null = waitingExtension?.result.confirming
               ? { checks: waitingExtension.result.confirming, ...(waitingExtension.result.confirmingReportedAt !== undefined ? { reportedAt: waitingExtension.result.confirmingReportedAt } : {}) }
               : null
+            // Fresh by the earliest request of every set the evidence will hold, the first and each extra set already
+            // pooled, as submit reads it; a set with no time is not fresh.
             const pendingExtension = waitingExtension && liveIdentity && (
               !waitingIdentity || !sameConfirmation(waitingIdentity, liveIdentity)
-              || !isFreshConfirmation(waitingExtension.result.firstRequestAt, liveIdentity.reportedAt!)
+              || !isFreshConfirmation(earliestSetTime(waitingExtension.result), liveIdentity.reportedAt!)
             ) ? undefined : waitingExtension
             const carriedTests = carriedTestsByKey.get(resumeKey(model, peer.peerId))
             if (!confirmationKey && peer.onChainAgentId != null) {
@@ -1885,21 +1889,21 @@ export async function runVerifierRound(
               if (!runProgress!.interactive) {
                 console.log(chalk.dim(`Verifying ${model} on ${target.peer.peerId.slice(0, 12)}… (${target.service})`))
               }
+              // A confirmation of a waiting DIFF runs the check that flagged it to its end.
+              const confirming = confirmationFor(model, target.peer)
+              const confirmingChecks = confirming?.firstChecks && normalized(confirming.service) === normalized(target.service)
+                ? confirming.firstChecks
+                : null
+              // The report this audit confirms: the live one, or, where none waits for it now (--resume-run reads no
+              // waiting reports), the one its earlier attempt confirmed, so its stage and its material stay that report's.
+              const confirmingIdentity: ConfirmationIdentity | null = confirmingChecks
+                ? { checks: confirmingChecks, ...(confirming?.firstReportedAt !== undefined ? { reportedAt: confirming.firstReportedAt } : {}) }
+                : target.resumeCandidate?.confirming ?? null
               try {
                 let reservationAuditId: string
                 let reference
                 let auditId: string
                 let resume: ModelVerificationResumeInput | undefined
-                // A confirmation of a waiting DIFF runs the check that flagged it to its end.
-                const confirming = confirmationFor(model, target.peer)
-                const confirmingChecks = confirming?.firstChecks && normalized(confirming.service) === normalized(target.service)
-                  ? confirming.firstChecks
-                  : null
-                // The report this audit confirms: the live one, or, where none waits for it now (--resume-run reads no
-                // waiting reports), the one its earlier attempt confirmed, so its stage and its material stay that report's.
-                const confirmingIdentity: ConfirmationIdentity | null = confirmingChecks
-                  ? { checks: confirmingChecks, ...(confirming?.firstReportedAt !== undefined ? { reportedAt: confirming.firstReportedAt } : {}) }
-                  : target.resumeCandidate?.confirming ?? null
                 // Seconds, as submit reads them; with no report time nothing is fresh.
                 const freshForReport = (at: number | null): boolean => (
                   confirmingIdentity?.reportedAt !== undefined && isFreshConfirmation(at, confirmingIdentity.reportedAt)
@@ -2034,6 +2038,8 @@ export async function runVerifierRound(
                   status: 'FAILED',
                   reason,
                   outcomeReason,
+                  // A failed confirmation is an attempt on the report it was for.
+                  ...(confirmingIdentity ? { confirming: [...confirmingIdentity.checks], ...(confirmingIdentity.reportedAt !== undefined ? { confirmingReportedAt: confirmingIdentity.reportedAt } : {}) } : {}),
                 }
                 runProgress!.recordFailure(model, outcomeReason)
                 if (!runProgress!.interactive) {
