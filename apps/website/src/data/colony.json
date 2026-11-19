@@ -1,4 +1,16 @@
 {
-  "formUrl": null,
-  "communityUrl": null
+  "telegramUrl": "https://t.me/antseed_anthill",
+  "downloadUrl": null,
+  "waitlist": {
+    "spotUrl": "https://script.google.com/macros/s/AKfycbwGTZvVeWN_kDTnmyHcErCPlMZY3yJTQLOr8hvRlaK2LGdANN9yi6werd0BvaqYzAbm/exec",
+    "action": "https://docs.google.com/forms/d/e/1FAIpQLSfk_uAdoUOZ0zYXNJcQSWd9lKOyejBss4gMHpEDWqm1mBcWZw/formResponse",
+    "fields": {
+      "email": "entry.434797029",
+      "name": "entry.268380302",
+      "mac": "entry.1537550547",
+      "chip": "entry.204274935",
+      "memory": "entry.127123782",
+      "source": "entry.42365565"
+    }
+  }
 }

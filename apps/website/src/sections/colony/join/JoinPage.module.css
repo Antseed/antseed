@@ -1,0 +1,208 @@
+/* The Colony waitlist, one question at a time: the step's painting on the left (a strip above the questions under 960px), the questions
+   on the right. The site's tokens, Geist and Geist Pixel. */
+.page {
+  --jn-ink: var(--site-text);
+  --jn-grey: var(--site-text-muted);
+  --jn-body: var(--site-text-body);
+  --jn-muted: var(--site-text-small);
+  --jn-green: var(--site-accent);
+  --jn-fill: var(--site-fill);
+  --jn-fill-hover: var(--site-fill-hover);
+  --jn-paper: var(--site-bg);
+  --jn-card: #fff;
+  --jn-tile: var(--site-tile);
+  --jn-tile-hover: var(--site-tile-hover);
+  --jn-line: rgba(64, 76, 66, .14);
+  --jn-pick: rgba(200, 245, 60, .22);
+  --jn-art: #f6f3ea;
+  --jn-error: #b4462f;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: radial-gradient(circle at 4px 4px, var(--site-dot) .85px, #0000 1.25px) 50% 0 / 8px 8px, var(--jn-paper);
+  font: 400 16px/1.5 var(--site-font);
+  color: var(--jn-ink);
+  -webkit-font-smoothing: antialiased;
+}
+:global(:root[data-theme='dark']) .page {
+  --jn-card: #181d1b;
+  --jn-line: rgba(255, 255, 255, .12);
+  --jn-pick: rgba(200, 245, 60, .12);
+  --jn-art: #39403d;
+  --jn-error: #f08a6c;
+}
+.page :where(p, h1, ol, figure) { margin: 0; padding: 0; }
+.page :where(button) { font: inherit; color: inherit; }
+.page :where(a) { color: inherit; text-decoration: none; }
+.hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* the bar: logo, progress, step count, close */
+.bar { position: relative; z-index: 3; display: flex; align-items: center; gap: 20px; height: 68px; padding: 0 24px; }
+.logo img { display: block; width: auto; height: 28px; }
+:global(:root[data-theme='dark']) .logo img { filter: invert(.93); }
+.progress { flex: 1; max-width: 520px; height: 6px; margin: 0 auto; overflow: hidden; border-radius: 3px; background: var(--jn-tile-hover); }
+.progressFill { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--jn-fill); transition: width .35s cubic-bezier(.3, .7, .2, 1); }
+.count { min-width: 52px; font: 500 13px/1 var(--site-font-mono); color: var(--jn-muted); text-align: right; }
+.close { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--jn-line); border-radius: 9px; background: var(--jn-tile); }
+.close:hover { background: var(--jn-tile-hover); }
+.close svg { width: 14px; height: 14px; fill: none; stroke: var(--jn-ink); stroke-width: 1.6; stroke-linecap: round; }
+
+/* the painting: each step names one, faded in over the last (painted on Antseed, 18 Nov); --y keeps the ant's face in the phone strip */
+.art { position: relative; height: clamp(140px, 22vh, 260px); margin: 0 12px; overflow: hidden; border-radius: 14px; background: var(--jn-art); }
+.artLayer { position: absolute; inset: 0; background: center var(--y, 50%) / cover no-repeat; animation: jnFade .45s both; }
+.artLayer[data-art='mac'] { --y: 53%; background-image: url(/site/assets/colony/join/mac.webp); }
+.artLayer[data-art='chip'] { --y: 54%; background-image: url(/site/assets/colony/join/chip.webp); }
+.artLayer[data-art='memory'] { --y: 42%; background-image: url(/site/assets/colony/join/memory.webp); }
+.artLayer[data-art='name'] { --y: 49%; background-image: url(/site/assets/colony/join/name.webp); }
+.artLayer[data-art='email'] { --y: 48%; background-image: url(/site/assets/colony/join/email.webp); }
+.artLayer[data-art='done'] { --y: 53%; background-image: url(/site/assets/colony/join/done.webp); }
+/* the paintings are daylight only; a visitor who picked dark gets them a little dimmer */
+:global(:root[data-theme='dark']) .artLayer { filter: brightness(.8) saturate(.92); }
+@keyframes jnFade { from { opacity: 0; } }
+
+/* the questions */
+.main { position: relative; z-index: 2; display: flex; justify-content: center; padding: 40px 20px 72px; }
+.card { position: relative; width: min(100%, 640px); }
+.step { animation: jnIn .4s cubic-bezier(.3, .7, .2, 1) both; }
+.step.fromAbove { animation-name: jnInBack; }
+@keyframes jnIn { from { opacity: 0; transform: translateY(14px); } }
+@keyframes jnInBack { from { opacity: 0; transform: translateY(-14px); } }
+.back { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 18px; padding: 6px 10px 6px 6px; border: 0; border-radius: 8px; background: none; color: var(--jn-muted); font-size: 14px; cursor: pointer; }
+.back:hover { background: var(--jn-tile-hover); color: var(--jn-ink); }
+.eyebrow { margin-bottom: 12px; font: 400 18px/1.4 var(--site-font-pixel); font-variation-settings: 'ELSH' 20; color: var(--jn-green); }
+.eyebrow.small { margin: 36px 0 12px; font-size: 16px; }
+.eyebrow.hi { margin-bottom: 10px; }
+.question { font: 400 clamp(34px, 5vw, 48px)/1 var(--site-font-pixel); font-variation-settings: 'ELSH' 40; letter-spacing: -1.5px; color: var(--jn-ink); }
+.question span { color: var(--jn-grey); }
+.question b { font-weight: 400; color: var(--jn-green); }
+.question.up b { display: inline-block; animation: jnUp .7s cubic-bezier(.3, 1.4, .5, 1); }
+@keyframes jnUp { 0% { transform: translateY(18px); opacity: .2; } 100% { transform: none; opacity: 1; } }
+.help { max-width: 52ch; margin-top: 14px; font-size: 17px; line-height: 1.55; color: var(--jn-body); }
+
+/* the options: big cards (the Mac), chips (its chip, its memory) */
+.options { display: grid; gap: 10px; margin-top: 28px; }
+.options.big { grid-template-columns: repeat(3, 1fr); }
+.options.chips { grid-template-columns: repeat(4, 1fr); }
+.option {
+  position: relative;
+  border: 1px solid var(--jn-line);
+  border-radius: 12px;
+  background: var(--jn-card);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .6), 0 1px 2px rgba(20, 30, 20, .04);
+  cursor: pointer;
+  transition: background .15s, border-color .15s, transform .1s;
+}
+.option:hover { border-color: color-mix(in srgb, var(--jn-fill) 40%, var(--jn-line)); background: var(--jn-tile-hover); }
+.option:active { transform: scale(.985); }
+.options .option[aria-checked='true'] { border-color: var(--jn-fill); background: var(--jn-pick); box-shadow: inset 0 0 0 1px var(--jn-fill); }
+.big .option { display: flex; align-items: center; min-height: 64px; padding: 14px 18px; text-align: left; }
+.big .option b { font-size: 16px; font-weight: 500; }
+.chips .option { height: 52px; font: 500 16px/1 var(--site-font-mono); }
+/* the number each option answers to on a keyboard */
+.key { position: absolute; top: 8px; right: 9px; font: 500 11px/1 var(--site-font-mono); color: var(--jn-muted); opacity: .7; }
+.chips .key { top: 6px; right: 7px; }
+@media (hover: none) { .options .key { display: none; } }
+
+/* continue, skip */
+.go { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 28px; }
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 24px;
+  border: 0;
+  border-radius: var(--site-radius-control);
+  background: var(--jn-fill);
+  box-shadow: 0 3.5px .5px 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -2px 1px 0 #3b5e17;
+  color: #fff;
+  font: 500 16px/20px var(--site-font);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .15s, opacity .15s;
+}
+.page .button { color: #fff; }
+:global(:root[data-theme='dark']) .button { box-shadow: inset 0 -2px 1px 0 #3b5e17; }
+.button:not(.ghost):hover { background: var(--jn-fill-hover); }
+.button:disabled { opacity: .4; cursor: default; }
+.button.sm { height: 38px; padding: 0 16px; font-size: 14px; }
+.button.ghost { border: 1px solid var(--jn-line); background: var(--jn-tile); box-shadow: 0 1.5px 0 0 rgba(255, 255, 255, .6), inset 0 -1px 2px 0 rgba(48, 56, 44, .2); }
+.page .button.ghost { color: var(--jn-ink); }
+:global(:root[data-theme='dark']) .button.ghost { box-shadow: inset 0 -1px 1px 0 rgba(0, 0, 0, .2); }
+.button.ghost:hover { background: var(--jn-tile-hover); }
+.skip { padding: 8px 4px; border: 0; background: none; color: var(--jn-muted); font-size: 15px; text-decoration: underline; text-decoration-color: var(--jn-line); text-underline-offset: 3px; cursor: pointer; }
+.page .skip { text-decoration: underline; text-decoration-color: var(--jn-line); }
+.skip:hover { color: var(--jn-ink); }
+.page .skip:hover { text-decoration-color: currentColor; }
+.option:focus-visible, .button:focus-visible, .skip:focus-visible, .field input:focus-visible { outline: 2px solid var(--jn-fill); outline-offset: 2px; }
+
+/* the name and the email */
+.summary { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 22px; }
+.summary button { padding: 6px 10px; border: 1px solid var(--jn-line); border-radius: 999px; background: var(--jn-tile); color: var(--jn-ink); font: 500 13px/1 var(--site-font-mono); cursor: pointer; }
+.summary button:hover { background: var(--jn-tile-hover); }
+.field { display: block; margin-top: 18px; }
+.field input {
+  width: 100%;
+  height: 60px;
+  padding: 0 18px;
+  border: 1px solid var(--jn-line);
+  border-radius: 12px;
+  outline: none;
+  background: var(--jn-card);
+  color: var(--jn-ink);
+  font: 400 20px/1 var(--site-font);
+  transition: border-color .15s, box-shadow .15s;
+}
+.field input:focus { border-color: var(--jn-fill); box-shadow: 0 0 0 3px var(--jn-pick); }
+.field input::placeholder { color: var(--jn-grey); }
+.error { min-height: 22px; margin-top: 8px; font-size: 14px; color: var(--jn-error); }
+
+/* done: the badge, their place, their card, the steps that move them up */
+.badge { display: grid; place-items: center; width: 56px; height: 56px; margin-bottom: 22px; border-radius: 16px; background: var(--site-lime); box-shadow: 0 0 0 6px rgba(200, 245, 60, .25); animation: jnPop .5s cubic-bezier(.3, 1.6, .5, 1) .1s both; }
+.badge svg { width: 28px; height: 28px; fill: none; stroke: #0a1a12; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+@keyframes jnPop { from { transform: scale(.4); opacity: 0; } }
+.done:focus { outline: none; }
+.cardImage { margin-top: 28px; }
+.cardImage img, .cardWait { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; border: 1px solid var(--jn-line); border-radius: 14px; background: var(--jn-art); box-shadow: 0 10px 30px rgba(20, 51, 30, .12); }
+.cardImage .go { margin-top: 14px; }
+.hint { margin-top: 10px; font-size: 14px; color: var(--jn-muted); }
+.next { display: grid; gap: 8px; list-style: none; }
+.next li { display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 16px; border: 1px solid var(--jn-line); border-radius: 12px; background: var(--jn-card); }
+.next li > div { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.next b { font-size: 15px; font-weight: 500; }
+.next span { font-size: 14px; color: var(--jn-muted); }
+.next li.ticked { border-color: color-mix(in srgb, var(--jn-fill) 50%, var(--jn-line)); background: var(--jn-pick); }
+.next li.ticked b::after { content: '  ✓'; color: var(--jn-green); }
+.next li.ticked span { color: var(--jn-ink); }
+.link { display: block; margin-top: 6px; padding: 0; border: 0; background: none; color: var(--jn-ink); font: 500 13px/1.3 var(--site-font-mono); overflow-wrap: anywhere; user-select: all; }
+.next .soon { flex: none; padding: 8px 10px; border: 1px dashed var(--jn-line); border-radius: 8px; color: var(--jn-muted); font: 500 12px/1 var(--site-font-mono); }
+
+@media (prefers-reduced-motion: reduce) {
+  .step, .artLayer, .progressFill, .badge, .question.up b { animation: none; transition: none; }
+}
+
+/* wide: the painting on the left, turning with each step; the questions on the right */
+@media (min-width: 960px) {
+  .page { grid-template-columns: minmax(0, 46fr) minmax(0, 54fr); grid-template-rows: auto 1fr; background: var(--jn-paper); }
+  .bar { grid-column: 2; grid-row: 1; background: var(--jn-paper); }
+  .art { position: sticky; top: 0; grid-column: 1; grid-row: 1 / 3; height: calc(100dvh - 24px); margin: 12px; border-radius: 18px; }
+  .main { grid-column: 2; grid-row: 2; align-items: center; padding: 24px clamp(24px, 6vw, 96px) 88px; background: var(--jn-paper); }
+  .options.big { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* phones */
+@media (max-width: 640px) {
+  .bar { gap: 12px; height: 60px; padding: 0 16px; }
+  .logo img { height: 24px; }
+  .count { min-width: 0; }
+  .main { padding: 28px 16px 88px; }
+  .options.big { grid-template-columns: repeat(2, 1fr); }
+  .big .option { min-height: 56px; }
+  .options.chips { grid-template-columns: repeat(3, 1fr); }
+  .help { font-size: 16px; }
+  .next li { flex-wrap: wrap; }
+  .next li > div { flex-basis: 100%; }
+  .go .button { flex: 1 1 100%; }
+}

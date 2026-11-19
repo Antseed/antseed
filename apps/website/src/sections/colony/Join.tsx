@@ -1,32 +1,38 @@
 import type {JSX} from 'react';
-import {Section, SectionHead, Wash} from '../../components';
-import MacFitForm from './MacFitForm';
+import {Actions, Button, Section, SectionHead, Wash} from '../../components';
+import {TELEGRAM_URL} from './config';
+import {useJoinHref} from './useColony';
 import styles from './Join.module.css';
 
-/** The closing sign-up: the line on the painting's sky, then where your Mac fits. */
+/** The waitlist, before the FAQ: the closing line, its two buttons, then the painting. Sign-ups happen on /colony/join/ (one question
+ *  at a time, with a place in line), so there is one list; the Anthill button shows once config.ts has its link. */
 export default function Join(): JSX.Element {
+  const join = useJoinHref();
   return (
     <Section cmp="colony/join" id="join" labelledBy="join-title" className={styles.join} railClassName={styles.rail}>
       <div className={styles.scene}>
         <SectionHead
           center
-          eyebrow="Sign up"
+          eyebrow="Waitlist"
           eyebrowClassName={styles.eyebrow}
           title={['Your Mac has a place', 'in the Colony.']}
           id="join-title"
-          sub="Tell us which Mac you have, its chip and its memory. We’ll reach out with an invite to the early group."
+          sub="Leave your email and tell us which Mac you have. We’ll email you when there’s a spot for it."
           subClassName={styles.sub}
-          className={styles.head}
-        />
+          className={styles.head}>
+          <Actions fill reveal className={styles.cta}>
+            <Button href={join} size="page">Join the waitlist</Button>
+            {TELEGRAM_URL && <Button href={TELEGRAM_URL} variant="ghost" size="page">Join the Anthill on Telegram</Button>}
+          </Actions>
+        </SectionHead>
         <Wash
           unveil
           className={styles.painting}
-          day="/site/assets/colony/join-day.webp"
-          night="/site/assets/colony/join-night.webp"
-          label="By night, three ants stand behind their Mac Studios on a plank while a fourth carries its Mac Studio to the empty space at the end."
+          day="/site/assets/colony/join-mixed-day.webp"
+          night="/site/assets/colony/join-mixed-night.webp"
+          label="Three ants stand behind their Macs on a plank while a fourth carries its own laptop to the empty space at the end."
         />
       </div>
-      <MacFitForm />
     </Section>
   );
 }

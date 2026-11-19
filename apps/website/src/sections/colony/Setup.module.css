@@ -1,0 +1,50 @@
+/* Head and the line about the download on the left, the three numbered steps on the right; one column under 900px */
+.setup .rail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 48px 64px;
+  padding: 120px var(--site-pad);
+}
+.text { display: flex; flex-direction: column; align-items: flex-start; gap: 32px; }
+.text .sub { max-width: 480px; }
+.foot { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.note { font: 400 14px/20px var(--site-font); color: var(--site-text-small); }
+
+.steps { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.step {
+  composes: dots from '../../components/dots.module.css';
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+  padding: 24px 0;
+}
+.step + .step { --dots-top: 2px; }
+.number {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--site-fill);
+  color: #fff;
+  font: 400 16px/1 var(--site-font-pixel);
+}
+.copy { padding-top: 4px; font: 400 16px/24px var(--site-font); color: var(--site-text-body); text-wrap: pretty; }
+.copy b { font-weight: 500; color: var(--site-text); }
+
+@media (min-width: 1200px) {
+  .setup .rail { gap: 48px 96px; padding: 124px 96px; }
+  .copy { font-size: 17px; line-height: 26px; padding-top: 3px; }
+}
+@media (max-width: 899px) {
+  .setup .rail { grid-template-columns: minmax(0, 1fr); padding-block: 88px; }
+  .text { display: contents; }
+  .foot { order: 1; }
+}
+@media (max-width: 760px) {
+  .setup .rail { gap: 24px; padding-block: 72px; }
+  .setup .head { --head-gap: 16px; }
+  .step { gap: 16px; padding: 20px 0; }
+}
