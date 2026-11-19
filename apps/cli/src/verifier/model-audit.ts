@@ -106,6 +106,11 @@ export interface ModelAuditSellerResultV1 {
    * there passed here.
    */
   confirmation?: SameCheckConfirmationV1
+  /**
+   * The report this audit confirms, as its evidence names it (`ProxyAuditEvidenceV1.confirming`): read again right
+   * before sending, so a confirmation of FLIPS keeps its stage and an untagged first look stays one.
+   */
+  confirming?: { checks: AuditCheckId[]; reportedAt?: number }
 }
 
 export interface ModelAuditExtensionV1 {
@@ -797,6 +802,7 @@ export async function prepareModelAudits(input: {
         ...(result.closeCallClosed ? { questionsClosed: true as const } : {}),
         auditedAt: earliestAuditorTime([evidence, extensionEvidence, extension2Evidence]) ?? 0,
         ...(confirmation ? { confirmation } : {}),
+        ...(evidence.confirming ? { confirming: { checks: [...evidence.confirming.checks], ...(evidence.confirming.reportedAt !== undefined ? { reportedAt: evidence.confirming.reportedAt } : {}) } } : {}),
       }))
       const evidence: ModelAuditEvidenceV1 = {
         version: 1,

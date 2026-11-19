@@ -77,7 +77,7 @@ export type SameCheckDecision =
 /** Why a confirmation is not sent, as a fixed code (the dry run's prepared file carries it). */
 export type SameCheckExcludeCode =
   | 'diff-names-no-check' | 'confirms-another-report' | 'confirmation-undecided' | 'confirmation-not-fresh'
-  | 'same-check-not-diff' | 'other-test-only' | 'repeated-test-open'
+  | 'same-check-not-diff' | 'other-test-only' | 'repeated-test-open' | 'flips-not-confirmation'
 
 /** A candidate as `prepareModelAudits` hands it over: the checks that flagged and passed in its own audit. */
 export type SameCheckCandidate = SubmissionCandidate & {
@@ -144,6 +144,13 @@ export function sameCheckFilter(input: {
 /** The decision for one candidate against every first flag it answers (more than one fails closed: each must agree). */
 export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag[]): SameCheckDecision {
   const ownChecks = [...candidate.flaggedBy]
+  // FLIPS answers a waiting FLIPS flag only from a confirmation of FLIPS: its confirm stage (fresh pairs from the other
+  // pool, 40 replies, the confirmation bar). A first look's FLIPS (20 replies, the first bar) neither confirms nor clears
+  // it; the seller is audited again as a confirmation.
+  const confirmsFlips = candidate.confirming?.checks.includes('flips') === true
+  const answering = (checks: readonly AuditCheckId[]) => (confirmsFlips ? [...checks] : checks.filter((check) => check !== 'flips'))
+  const answeringOwn = answering(ownChecks)
+  const answeringPassed = answering(candidate.passedBy)
   // A confirmation answers the report it was made for: the tests it repeats and the report's time are the live ones,
   // as the run read them (every first flag's tests, the latest report's time). Material made for another report is
   // never credited to this one.
@@ -186,11 +193,21 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
           + 'a confirmation needs fresh material, so it is not sent',
       }
     }
-    const sameCheck = AUDIT_CHECK_IDS.find((check) => first.checks.includes(check) && ownChecks.includes(check)) ?? null
+    const sameCheck = AUDIT_CHECK_IDS.find((check) => first.checks.includes(check) && answeringOwn.includes(check)) ?? null
     if (sameCheck) {
       return candidate.verdict === VERIFIER_VERDICT.DIFF
         ? { kind: 'send', confirmation: record(sameCheck) }
         : { kind: 'exclude', code: 'same-check-not-diff', reason: `${describeAuditCheck(sameCheck)} flagged in both audits but this result is not a DIFF`, confirmation: record(sameCheck) }
+    }
+    // A first look whose FLIPS flagged or passed where the waiting DIFF's FLIPS flagged: it answers nothing.
+    if (!confirmsFlips && first.checks.includes('flips') && (ownChecks.includes('flips') || candidate.passedBy.includes('flips'))) {
+      return {
+        kind: 'exclude',
+        code: 'flips-not-confirmation',
+        confirmation: record(null),
+        reason: 'the waiting DIFF was flagged by the randomness check, which only a confirmation of it (fresh pairs, 40 replies) '
+          + 'answers; this first look is not sent, and the seller is audited again as a confirmation',
+      }
     }
     if (ownChecks.length > 0) {
       return {
@@ -202,8 +219,8 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
       }
     }
     // A SAME clears the waiting DIFF only when every check that flagged it passed here: one left open clears nothing.
-    const passedCheck = AUDIT_CHECK_IDS.find((check) => first.checks.includes(check) && candidate.passedBy.includes(check))
-    const open = first.checks.filter((check) => !candidate.passedBy.includes(check))
+    const passedCheck = AUDIT_CHECK_IDS.find((check) => first.checks.includes(check) && answeringPassed.includes(check))
+    const open = first.checks.filter((check) => !answeringPassed.includes(check))
     if (candidate.verdict === VERIFIER_VERDICT.SAME && passedCheck && open.length === 0) return { kind: 'send', confirmation: record(null, passedCheck) }
     return {
       kind: 'exclude',

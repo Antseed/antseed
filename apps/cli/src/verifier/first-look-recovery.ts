@@ -15,13 +15,17 @@ export async function recoveringFirstLooks(state: Pick<EpochState, 'ordinaryCell
     // Given up (its seller no longer offers the model, `decideRetryGiveUps`): no longer waited for.
     if (!cell.result || cell.action !== 'done' || cell.confirmationReport !== undefined || cell.givenUp) continue
     if (cell.attempts >= SELLER_FAILURE_ATTEMPTS || cell.auditorAttempts >= AUDITOR_FAILURE_ATTEMPTS) continue
-    // Passed over: a completed run of the model, not limited to some sellers, that started once the seller was due
-    // again (after its retry spacing) and still did not audit it.
+    // Passed over: a completed run of the model, not limited to some sellers and no `--resume-run` repair (which audits
+    // only another run's undetermined sellers), that started once the seller was due again (after its retry spacing)
+    // and still did not audit it.
     const lastAttemptAt = cell.lastAttemptAt
     const passedOver = lastAttemptAt !== null && (state?.manifests ?? []).some((manifest) => manifest.runId !== cell.runId
-      && manifest.state !== 'running' && manifest.selection === undefined
+      && manifest.state !== 'running' && manifest.selection === undefined && manifest.repairOf === undefined
       && Date.parse(manifest.startedAt) / 1_000 >= lastAttemptAt + SELLER_RETRY_SPACING_SECONDS
-      && manifest.modelOrder.some((model) => model.toLowerCase() === cell.model.toLowerCase()))
+      // The model ran to its summary in that run: one only planned (a failed build, a run stopped first) passed nobody.
+      && manifest.models.some((entry) => entry.model.toLowerCase() === cell.model.toLowerCase())
+      // A run that audited the model only for its confirmations never considered its other sellers.
+      && !(manifest.confirmationOnly ?? []).some((model) => model.toLowerCase() === cell.model.toLowerCase()))
     if (passedOver) continue
     if (await auditFinishedAt(cell.result) === null) recovering.set(epochCellKey(cell.model, cell.peerId), cell)
   }

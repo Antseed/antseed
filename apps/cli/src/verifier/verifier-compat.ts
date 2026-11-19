@@ -20,7 +20,7 @@ import {
   type KbfProbe,
   type MatchVector,
 } from '@antseed/fingerprints'
-import { encodeHttpResponse } from '@antseed/node'
+import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { PROBE_GUARD_RANGES, isSafeProbe, modelHash, signedResponseInputUsage, verifierVerdict } from '@antseed/node/payments'
 import pkg from '../../package.json' with { type: 'json' }
 import type { VerifierCLIConfig } from '../config/types.js'
@@ -65,10 +65,11 @@ import {
 import { SIGNED_REQUEST_TRIES } from './signed-seller-request.js'
 import { ECHO_CROWD_TIME_LIMIT_MS, OUTPUT_ECHO_RULE, echoCrowdObjection, judgeEchoRound, judgeOutputEcho, outputEchoPrompt } from './output-echo.js'
 import { AUDIT_CHECK_IDS, type AuditCheckId } from './flagging-checks.js'
-import { ALL_TESTS_FORMAT, decidedRecords, sameConfirmation, verdictOf, type CheckOutcome, type ConfirmationIdentity } from './audit-checks.js'
-import { FLIPS_REQUESTS, FLIPS_RULE, flipsCounts, judgeFlipsCheck } from './flips-score.js'
-import { FLIPS_REASK_BUDGET, FLIPS_REASONING_SHARE, FLIPS_REPLY_MAX_CHARS, FLIPS_REFERENCE_TIME_LIMIT_MS, FLIPS_SLOTS_AT_ONCE, FLIPS_TIME_LIMIT_MS, FLIPS_WORDS, drawFlipsPairs, flipsPool, flipsSeed } from './flips.js'
+import { ALL_TESTS_FORMAT, FLIPS_CHECK, confirmationCannotDecideOnRetry, decidedRecords, sameConfirmation, verdictOf, type CheckOutcome, type ConfirmationIdentity } from './audit-checks.js'
+import { FLIPS_REQUESTS, FLIPS_RULE, flipsCounts, flipsRequestBody, judgeFlipsCheck } from './flips-score.js'
+import { FLIPS_REASK_BUDGET, FLIPS_REASONING_SHARE, FLIPS_REPLY_MAX_CHARS, FLIPS_REFERENCE_TIME_LIMIT_MS, FLIPS_SLOTS_AT_ONCE, FLIPS_TIME_LIMIT_MS, FLIPS_WORDS, drawFlipsPairs, flipsPool, flipsSeed, judgeFlips, flipsReferenceDecision, FLIPS_AUDITOR_FAILURE, type FlipsV1 } from './flips.js'
 import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
+import { failureBlame } from './failure-blame.js'
 import {
   DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
   DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT,
@@ -129,6 +130,72 @@ export function verifierRuleOverrides(config: VerifierCLIConfig | undefined): st
   return pinned.flatMap(([name, value, expected]) => (
     value === undefined || value === expected ? [] : [`verifier.${name} is ${value}; these rules use ${expected}`]
   ))
+}
+
+/** The judge's branches, each one edit of a plain sample check (`sampleFlipsRecord`). */
+type FlipsSampleEdit = (pair: { seller: Array<{ content: string; finishReason: string }>; reference: Array<{ content: string; finishReason: string }> }, index: number) => void
+const SAMPLE_FLIPS_CHECKS: ReadonlyArray<readonly [string, FlipsSampleEdit]> = [
+  ['plain', () => undefined],
+  ['placeholders cut at the limit', (pair) => { for (const reply of pair.seller) Object.assign(reply, { content: '[No answer]', finishReason: 'length' }) }],
+  ['seller replies without a sequence', (pair, index) => { if (index === 0) for (const reply of pair.seller.slice(0, 3)) reply.content = 'no.' }],
+  ['reference replies without a sequence', (pair, index) => { if (index === 0) for (const reply of pair.reference.slice(0, 9)) reply.content = 'no.' }],
+  ['repeated seller replies', (pair, index) => { if (index === 1) for (const reply of pair.seller.slice(1, 6)) reply.content = pair.seller[0]!.content }],
+  ['an over-long reference reply', (pair, index) => { if (index === 0) pair.reference[0]!.content = 'amber '.repeat(1_100) }],
+]
+
+/** A first-stage FLIPS check of fixed replies, the seller's signed, edited by one sample, to judge under this build. */
+function sampleFlipsRecord(edit: FlipsSampleEdit): Pick<FlipsV1, 'draw' | 'service' | 'referenceOneProvider' | 'pairs'> {
+  const model = 'claude-opus-5.5'
+  const draw = { auditor: '0x00', model, epoch: '1', seed: '00', stage: 'first' as const }
+  // A fixed pseudo-random sequence per reply (xorshift32 from its seed): no two replies of a side repeat.
+  const sequence = (seed: number, pair: readonly [string, string]) => {
+    let state = (seed + 1) * 2_654_435_761 >>> 0
+    return Array.from({ length: 64 }, () => {
+      state ^= state << 13; state >>>= 0
+      state ^= state >>> 17
+      state ^= state << 5; state >>>= 0
+      return pair[state & 1]
+    }).join(' ')
+  }
+  const encoder = new TextEncoder()
+  return {
+    draw, service: model, referenceOneProvider: true,
+    pairs: drawFlipsPairs(draw).map((words, pairIndex) => {
+      const replies = {
+        seller: Array.from({ length: FLIPS_RULE.repliesPerPair.first }, (_, index) => ({ content: sequence(index * 3 + 7 + pairIndex, words), finishReason: 'stop' })),
+        reference: Array.from({ length: FLIPS_RULE.referenceRepliesPerPair }, (_, index) => ({ content: sequence(index + pairIndex * 50, words), finishReason: 'stop' })),
+      }
+      edit(replies, pairIndex)
+      const body = flipsRequestBody(model, model, words)
+      return {
+        words,
+        reference: {
+          words,
+          replies: replies.reference.map((reply) => ({ ...reply, provider: 'host', reasoning: false, thinkBlock: false, failure: null, request: JSON.stringify(body) })),
+        },
+        seller: replies.seller.map((reply, slot) => {
+          const id = `sample-${pairIndex}-${slot}`
+          const answer = { id, object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: reply.content }, finish_reason: reply.finishReason }], usage: { prompt_tokens: 60, completion_tokens: 130 } }
+          return {
+            request: {
+              requestIds: [id], statusCode: 200, failureReason: null,
+              attemptCosts: [{ inputTokens: 60, outputTokens: 130, totalTokens: 190, estimatedCostUsd: 0 }],
+              responseAuth: {
+                requestId: id, status: 'verified', failureReason: null,
+                record: { requestId: id, sellerPeerId: 'sample', advertisedService: model },
+                signedPreimages: {
+                  encoding: 'antseed-http-codec-v1', signatureEncoding: 'antseed-response-auth-signing-v1',
+                  requestBase64: Buffer.from(encodeHttpRequest({ requestId: id, method: 'POST', path: '/v1/chat/completions', headers: {}, body: encoder.encode(JSON.stringify(body)) })).toString('base64'),
+                  responseBase64: Buffer.from(encodeHttpResponse({ requestId: id, statusCode: 200, headers: {}, body: encoder.encode(JSON.stringify(answer)) })).toString('base64'),
+                  responseAuthSigningBase64: 'AA==', requestHash: `0x${'44'.repeat(32)}`, responseHash: `0x${'55'.repeat(32)}`,
+                },
+              },
+            } as never,
+          }
+        }),
+      }
+    }),
+  }
 }
 
 const SAMPLE_AUDITORS = [
@@ -351,6 +418,36 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
         return [judged.outcome, judged.score === null ? null : Number(judged.score.toFixed(9)), judged.p === null ? null : Number(judged.p.toExponential(6))]
       })(),
       counts: ['minimax-m3', 'claude-opus-5.5', 'unmeasured-model'].map((model) => flipsCounts(model)),
+      // Counting by a record's own rule: a flips-v1 summary never counts under this build, a flips-v2 one does.
+      countsByRule: ['flips-v1', FLIPS_RULE.id, 'flips-unknown'].map((rule) => FLIPS_CHECK.summaryCounts!({ rule, model: 'claude-opus-5.5', outcome: 'flag' })),
+      // One judged record through each branch of the judge: placeholders cut at the limit, replies without a sequence on
+      // either side, repeated replies, and an over-long reference reply left out.
+      // A waiting FLIPS flag is answered only by a confirmation of FLIPS: a first look's FLIPS flag or pass answers nothing.
+      stageBound: [true, false].flatMap((confirms) => (['flag', 'pass'] as const).map((outcome) => {
+        const decision = decide({
+          agentId: 1n, serviceHash: '0x00', verdict: verifierVerdict(outcome === 'flag' ? 'DIFF' : 'SAME'), auditedAt: 10_000,
+          flaggedBy: outcome === 'flag' ? ['flips'] : [], passedBy: outcome === 'pass' ? ['flips', 'kbf'] : ['kbf'],
+          ...(confirms ? { confirming: { checks: ['flips'], reportedAt: 1 } } : {}),
+        }, [{ auditor: '0x00', evidenceUri: 'ipfs://x', evidenceHash: '0x00', reportedAt: 1, checks: ['flips'] }])
+        return [confirms, outcome, decision.kind, decision.kind === 'exclude' ? decision.code : null]
+      })),
+      // A confirmation finished at once: only for a counting FLIPS of this rule scored between its bars.
+      oneAttemptStop: [{ rule: FLIPS_RULE.id }, { rule: FLIPS_RULE.id, probe: true }, { rule: 'flips-v1' }, { rule: FLIPS_RULE.id, p: null }].map((summary) => (
+        confirmationCannotDecideOnRetry({
+          status: 'UNDETERMINED', questionsStatus: 'SAME', parsedProbeCount: 1, confirming: ['flips'],
+          flips: { model: 'claude-opus-5.5', stage: 'confirm', outcome: 'inconclusive', counted: true, p: 0.02, score: 4, reason: 'x', ...summary } as never,
+        }))),
+      // A FLIPS that cannot run is the auditor's failure; on the auditor's last attempt it is no result instead.
+      auditorFailure: [FLIPS_AUDITOR_FAILURE, failureBlame(null, `${FLIPS_AUDITOR_FAILURE}: x`)],
+      // What a stage's reference means for an audit, decided once per run before anything paid: run, not started, or run
+      // with FLIPS at no result on the auditor's last attempt (never for a report only FLIPS flagged).
+      referenceDecision: [false, true].flatMap((whole) => [false, true].flatMap((counts) => [false, true].flatMap((probing) => [false, true].flatMap((lastAuditorAttempt) => (
+        [[], ['flips'], ['kbf', 'flips']].map((confirming) => flipsReferenceDecision({ whole, counts, probing, lastAuditorAttempt, confirming }))))))),
+      judged: SAMPLE_FLIPS_CHECKS.map(([name, edit]) => {
+        const judged = judgeFlips(sampleFlipsRecord(edit))
+        return [name, judged.outcome, judged.p === null ? null : Number(judged.p.toExponential(6)), judged.noSequence?.code ?? null,
+          judged.repeats?.code ?? null, judged.profileMismatch?.code ?? null]
+      }),
     },
     // A close call beside a cap flag, waiting and then closed: while it waits the questions give neither pass nor flag;
     // closed, its questions are undecided and the cap flag makes the audit a DIFF.

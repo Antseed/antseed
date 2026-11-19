@@ -16,16 +16,17 @@ import type { ResponseAuthReader } from './response-auth-reader.js'
 import { asError } from './utils.js'
 
 /**
- * The tokenizer pre-check: a cheap screen `verifier run` puts before a seller's KBF questions.
+ * The tokenizer pre-check: a cheap screen `verifier run` runs before a seller's KBF questions.
  *
  * A round sends a message A, then A followed by B, to the seller and to the model's reference endpoint. The
  * difference in input tokens is B's length in the tokenizer that ran; the chat template and any hidden system
  * prompt are in both requests and cancel out. A seller whose signed difference is off the reference's in every
  * round, the same way when asked again, is not counting with the model's tokenizer: it serves another model, or
- * signs usage that is not the model's. That is a DIFF, and its questions are not asked.
+ * signs usage that is not the model's. That is a flag, and the audit's verdict is a DIFF; the questions and the other
+ * tests still run beside it (rule `all-tests-v1`), so the evidence holds every test's result.
  *
  * The check only ever adds a DIFF. A match proves little (models of one family share a tokenizer, and a seller
- * can compute the model's count itself), so a seller that matches is asked the KBF questions as before. Anything
+ * can compute the model's count itself), so a match is a pass and decides nothing on its own. Anything
  * unclear decides nothing either: a failed request, no signed usage, a count that changes between two asks of the
  * same text (hidden input that varies), a count that is off while the response reports cached input (upstream
  * caches move with every request, and gateways differ in whether a count includes them), a pair whose second

@@ -1,7 +1,7 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { auditedServiceNames } from './audited-models.js'
 import { describeFlipsFlag, flipsPaidRequests, isFlipsRecord, isProbeDraw, summarizeFlips, validateFlips, type FlipsV1 } from './flips.js'
-import { FLIPS_RULE, flipsCounts, type FlipsRule } from './flips-score.js'
+import { FLIPS_RULE, flipsCounts, flipsRuleById, type FlipsRule } from './flips-score.js'
 import { describeOutputCapFlag, outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1 } from './output-cap.js'
 import { describeOutputEchoFlag, outputEchoPaidRequests, summarizeOutputEcho, validateOutputEcho, type EchoSellerAskV1, type OutputEchoV1 } from './output-echo.js'
 import type { PaidRequest, ProxyAuditEvidenceExchangeV1 } from './proxy-evidence.js'
@@ -156,6 +156,8 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   wellFormed?(record: unknown): boolean
   /** Whether a scheduled retry carries this record; by default when a finding flagged or passed (`decidedRecords`). */
   carriedByRetry?(record: CheckRecords[Slot]): boolean
+  /** `carriedByRetry` read from the record's summary in a result, for a check with that hook. */
+  summaryCarriedByRetry?(summary: unknown): boolean
   /** The texts of a stored record that breaks the run's rules. */
   texts: {
     /** The check, as an error names it. */
@@ -256,18 +258,23 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
 }
 
 /**
- * Whether a stored FLIPS counts, under the rule of this build or the FLIPS rule given (`ReadingRules`), from its model:
- * never from the stored flag alone. Chosen dry-run pairs and a malformed draw never count.
+ * Whether a stored FLIPS counts, under the rule it was judged by (its `rule` id) or the FLIPS rule given
+ * (`ReadingRules`), from its model: never from the stored flag alone, and never under a later build's rule, so a record
+ * judged while FLIPS was recorded only stays so. A rule this CLI does not know, chosen dry-run pairs and a malformed
+ * draw never count.
  */
 const flipsCountsFor = (record: FlipsV1, rules?: ReadingRules): boolean => {
-  if (!isFlipsRecord(record)) return false
-  return !isProbeDraw(record.draw) && flipsCounts(record.draw.model, rules?.flips ?? FLIPS_RULE)
+  if (!isFlipsRecord(record) || isProbeDraw(record.draw)) return false
+  const rule = rules?.flips ?? flipsRuleById(record.rule)
+  return rule !== undefined && flipsCounts(record.draw.model, rule)
 }
 
-/** Whether a FLIPS summary can affect a verdict: the rule's for its model, never a probe's. */
-const flipsSummaryCounts = (summary: { model?: unknown; probe?: unknown }): boolean => (
-  typeof summary.model === 'string' && summary.probe === undefined && flipsCounts(summary.model, FLIPS_RULE)
-)
+/** Whether a FLIPS summary can affect a verdict: its own rule's for its model, never a probe's or an unknown rule's. */
+const flipsSummaryCounts = (summary: { model?: unknown; probe?: unknown; rule?: unknown }): boolean => {
+  if (typeof summary.model !== 'string' || summary.probe !== undefined || typeof summary.rule !== 'string') return false
+  const rule = flipsRuleById(summary.rule)
+  return rule !== undefined && flipsCounts(summary.model, rule)
+}
 
 export const FLIPS_CHECK: RecordCheck<'flips'> = {
   slot: 'flips',
@@ -297,15 +304,42 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
   paid: flipsPaidRequests,
   describeFlag: describeFlipsFlag,
   counts: (record) => flipsCountsFor(record),
-  summaryCounts: (summary) => typeof summary === 'object' && summary !== null && flipsSummaryCounts(summary as { model?: unknown; probe?: unknown }),
+  summaryCounts: (summary) => typeof summary === 'object' && summary !== null && flipsSummaryCounts(summary as { model?: unknown; probe?: unknown; rule?: unknown }),
   wellFormed: isFlipsRecord,
   // A scored FLIPS is carried whatever its outcome: a p between the bar and the pass is a result, and FLIPS is never
   // drawn twice for one audit chain. A check with no score is asked again.
   carriedByRetry: (record) => record.p !== null,
+  // Only a counting result of this build's rule: a probe's score, a recorded-only or another rule's never finishes a
+  // confirmation, since a production ask could still decide it.
+  summaryCarriedByRetry: (summary) => typeof summary === 'object' && summary !== null && typeof (summary as { p?: unknown }).p === 'number'
+    && (summary as { rule?: unknown }).rule === FLIPS_RULE.id && flipsSummaryCounts(summary as { model?: unknown; probe?: unknown; rule?: unknown }),
   texts: {
     name: 'the randomness check',
     summaryMismatch: 'the summary\'s randomness check is not the one in its evidence',
   },
+}
+
+/**
+ * Whether an undecided confirmation would stay undecided however often it is asked again: every test it repeats that
+ * neither flagged nor passed keeps its record on a retry (`carriedByRetry`), as a FLIPS scored between its bars does,
+ * since FLIPS is never drawn twice for one audit chain. Such a confirmation is finished at once instead of paying for
+ * its other tests up to the confirmation limit. False when a test it repeats would be asked again (the questions, or a
+ * test with no result).
+ */
+export function confirmationCannotDecideOnRetry(
+  result: { readonly [Slot in CheckSlot]?: CheckSummaryOutcomes | null } & { status: string; questionsStatus?: string; parsedProbeCount?: number; confirming?: readonly AuditCheckId[] | null },
+): boolean {
+  const confirming = result.confirming ?? []
+  if (confirming.length === 0) return false
+  const readings = readingsOfSummary(result)
+  const decided = checksWith(readings, 'flag', 'pass')
+  const open = confirming.filter((check) => !decided.includes(check))
+  if (open.length === 0) return false
+  return open.every((id) => {
+    const check = RECORD_CHECKS.find((entry) => (entry.findings as readonly CheckFinding<CheckSlot>[]).some((finding) => finding.id === id))
+    const summary = check ? result[check.slot] : null
+    return check?.summaryCarriedByRetry !== undefined && summary != null && check.summaryCarriedByRetry(summary)
+  })
 }
 
 /** The checks with a record, in run order and attribution order. Never reorder: the order is in the rules hash. */

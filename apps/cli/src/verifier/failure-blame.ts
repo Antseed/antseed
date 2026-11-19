@@ -28,6 +28,8 @@ const AUDITOR_TEXT = [
   // honest slow sellers that were still answering, and the total limit that replaced it.
   /seller audit deadline exceeded after \d+ms/i,
   /seller audit reached its time limit/i,
+  // FLIPS could not run (its reference, its time limit) where it counts: the auditor's own failure (`flips.ts`).
+  /randomness check could not run on the auditor's side/i,
 ]
 
 const SELLER_CODES = new Set([

@@ -14,7 +14,7 @@ import { adjudicateQuestions, finalAuditVerdict, validateAuditMatchesSummary } f
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 import { verifyModelTarget, type ModelVerificationResumeInput, type ModelVerificationSkip, type ModelVerificationTargetResult } from './model-run.js'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
-import type { FlipsScreen, FlipsV1 } from './flips.js'
+import { FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE, flipsReferenceDecision, type FlipsScreen, type FlipsV1 } from './flips.js'
 import { decidedRecords, earliestAuditorTime, readingsOfEvidence, resumeMaterialFor, verdictOf } from './audit-checks.js'
 import { modelAuditsDirectory } from './audit-artifacts.js'
 import { CONFIRMATION_MIN_DELAY_SECONDS, decide, isFreshConfirmation } from './same-check.js'
@@ -1185,6 +1185,7 @@ async function audit(options: {
   resume?: ModelVerificationResumeInput
   /** The seller refuses its first question batch in a way that skips it: its upstream key is gone. */
   refuseQuestions?: boolean
+  lastAuditorAttempt?: boolean
   /** Every question batch fails with a server error: the seller fails its questions. */
   failQuestions?: boolean
   onReference?: () => void
@@ -1269,6 +1270,7 @@ async function audit(options: {
       reference: referenceFixture(MODEL, PROBE_COUNT),
       ...(options.extension ? { extension: true } : {}),
       ...(options.resume ? { resume: options.resume } : {}),
+      ...(options.lastAuditorAttempt ? { lastAuditorAttempt: true } : {}),
       ...(options.confirming ? { confirming: { checks: options.confirming, ...(options.confirmingReportedAt !== undefined ? { reportedAt: options.confirmingReportedAt } : {}) } } : {}),
     })
     if (options.refuseQuestions && result.status === 'SKIPPED') return { skipped: result, result: null as never, evidence: null as never, questionRequests, precheckRequests: target.contents, backerRequests: backer.contents }
@@ -1748,6 +1750,49 @@ test('check pipeline: a diagnostic FLIPS stops nothing: a failed checkpoint writ
   const damaged = await audit({ usage: MODEL_TOKENIZER, flips: probing, resume: resume({ rule: 'flips-v1' } as never) })
   assert.deepEqual(asked, ['flips', 'flips', 'flips'])
   assert.equal(damaged.evidence.flips?.draw.probe, true)
+})
+
+test('check pipeline: a carried FLIPS of another rule is asked again; a failed FLIPS reference fails the next seller before any paid request', async () => {
+  const flipsRecord = (rule: string): FlipsV1 => ({
+    rule, draw: { auditor: '0x00', model: MODEL, epoch: '1', seed: '00', stage: 'first' }, service: SERVICE,
+    referenceUpstream: null, referenceOneProvider: true, pairs: [], reasks: 0, outcome: 'pass', counted: false, score: 1, scoreMax: null, p: 0.4, reason: 'pass',
+  })
+  const asked: string[] = []
+  const screen = { ruleId: 'flips-v2', check: async () => { asked.push('flips'); return flipsRecord('flips-v2') } }
+  const first = await audit({ usage: MODEL_TOKENIZER })
+  const resume = (flips: FlipsV1) => ({
+    parentAuditId: first.result.auditId, reservationAuditId: first.result.auditId, parentEvidenceHash: first.result.evidenceHash,
+    exchanges: first.evidence.exchanges, records: { tokenizerPrecheck: first.evidence.tokenizerPrecheck!, flips },
+  })
+  // A record an earlier build judged under flips-v1 (recorded only) is asked again under this build's rule.
+  const again = await audit({ usage: MODEL_TOKENIZER, flips: screen, resume: resume(flipsRecord('flips-v1')) })
+  assert.deepEqual(asked, ['flips'])
+  assert.equal(again.evidence.flips?.rule, 'flips-v2')
+  // A record of this build's rule is carried.
+  await audit({ usage: MODEL_TOKENIZER, flips: screen, resume: resume(flipsRecord('flips-v2')) })
+  assert.deepEqual(asked, ['flips'])
+
+  // The FLIPS reference of this stage is not whole this run, where FLIPS counts: the audit is not started (the auditor's
+  // attempt), before the pre-check, the questions or any other paid request.
+  let questions = 0
+  const failed = {
+    ruleId: 'flips-v2',
+    referenceDecision: async (_stage: unknown, _service: unknown, _settings: unknown, attempt: { lastAuditorAttempt: boolean; confirming: readonly string[] }) => (
+      flipsReferenceDecision({ whole: false, counts: true, probing: false, ...attempt })),
+    check: async () => { asked.push('failed'); return null },
+  }
+  await assert.rejects(audit({ usage: MODEL_TOKENIZER, flips: failed, onQuestion: () => { questions += 1 } }), (error: Error) => error.message === `${FLIPS_AUDITOR_FAILURE}: ${FLIPS_WAITING_FOR_REFERENCE}`)
+  assert.equal(questions, 0)
+  assert.deepEqual(asked, ['flips'], 'FLIPS was not asked either')
+  // On the auditor's last attempt the audit runs: FLIPS has no result there and the other tests stand.
+  const last = await audit({ usage: MODEL_TOKENIZER, flips: failed, lastAuditorAttempt: true })
+  assert.equal(last.result.status, 'SAME')
+  assert.equal(last.evidence.flips, undefined)
+  // A confirmation of a report only FLIPS flagged is not started even then: without FLIPS it could not decide.
+  await assert.rejects(audit({ usage: MODEL_TOKENIZER, flips: failed, lastAuditorAttempt: true, confirming: ['flips'], confirmingReportedAt: 1 }), (error: Error) => error.message.startsWith(FLIPS_AUDITOR_FAILURE))
+  // One that also repeats the questions runs on the last attempt: the questions can still confirm the report.
+  const both = await audit({ usage: MODEL_TOKENIZER, flips: failed, lastAuditorAttempt: true, confirming: ['kbf', 'flips'], confirmingReportedAt: 1 })
+  assert.equal(both.evidence.flips, undefined)
 })
 
 test('check pipeline: a carried FLIPS is kept only for its own stage', async () => {

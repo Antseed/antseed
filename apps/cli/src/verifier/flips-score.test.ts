@@ -5,6 +5,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import {
   FLIPS_RULE,
+  FLIPS_RULE_V1,
   FLIPS_STATISTICS,
   flipsCalibrationFor,
   flipsPrompt,
@@ -46,10 +47,19 @@ const FIXTURES = [join(here, 'fixtures'), join(here, 'fixtures', 'flips'), join(
 const fixtures: Fixture[] = FIXTURES ? readdirSync(FIXTURES).filter((f) => f.endsWith('.json')).sort().map((f) => JSON.parse(readFileSync(join(FIXTURES, f), 'utf8')) as Fixture) : []
 
 test('the rule is frozen and known by its id', () => {
-  assert.equal(FLIPS_RULE.id, 'flips-v1')
-  assert.equal(flipsRuleById('flips-v1'), FLIPS_RULE)
+  assert.equal(FLIPS_RULE.id, 'flips-v2')
+  assert.equal(flipsRuleById('flips-v2'), FLIPS_RULE)
+  assert.equal(flipsRuleById('flips-v1'), FLIPS_RULE_V1, 'a used rule stays known, so its records are judged as they were')
   assert.equal(flipsRuleById('flips-v0'), undefined)
-  assert.ok(Object.isFrozen(FLIPS_RULE))
+  assert.ok(Object.isFrozen(FLIPS_RULE) && Object.isFrozen(FLIPS_RULE_V1))
+  // flips-v2 is flips-v1 with counting and replies without a sequence left out; nothing else changed.
+  const { id: _v2, counts: countsV2, noSequence, repeats, asksRequired, ...restV2 } = FLIPS_RULE
+  const { id: _v1, counts: countsV1, noSequence: noneV1, repeats: repeatsV1, asksRequired: asksV1, ...restV1 } = FLIPS_RULE_V1
+  assert.deepEqual([asksV1, asksRequired], [undefined, true])
+  assert.deepEqual(restV2, restV1)
+  assert.deepEqual([countsV1, countsV2], [{ default: false, never: ['minimax-m3'] }, { default: true, never: ['minimax-m3'] }])
+  assert.deepEqual([noneV1, noSequence], [undefined, { below: 8, maxShare: 0.2 }])
+  assert.deepEqual([repeatsV1, repeats], [undefined, { sellerShare: 0.5, referenceShare: 0.25, minReplies: 4 }])
   assert.ok(Object.isFrozen(FLIPS_RULE.calibrations))
   assert.equal(FLIPS_STATISTICS.length, 27)
   assert.equal(FLIPS_RULE.example.length, 16)

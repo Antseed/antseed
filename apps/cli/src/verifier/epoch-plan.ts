@@ -7,6 +7,7 @@ import {
   type ModelAuditSummaryV1,
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
+import { confirmationCannotDecideOnRetry } from './audit-checks.js'
 import { epochRunManifests } from './epoch-overview.js'
 import { latestExtension } from './close-call.js'
 import { finalAuditVerdict, retiredRecheckResult } from './model-audit.js'
@@ -391,6 +392,9 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
       // A close call whose extra questions failed is final too, unless a waiting DIFF depends on it:
       // a confirmation's failure is retried like one in its first set.
       if (cell.result.extension && !cell.result.confirmsDiff) return 'done'
+      // A confirmation that a retry cannot decide (its open tests are carried as they are) is finished now.
+      if ((cell.result.confirmsDiff || cell.confirmationReport !== undefined) && cell.result.outcomeReason?.code === 'confirmation_undecided'
+        && confirmationCannotDecideOnRetry(cell.result)) return 'done'
       // falls through
     case 'failed':
       if (cell.blame === 'auditor') {

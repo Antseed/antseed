@@ -1203,6 +1203,9 @@ export async function runVerifierRound(
         }
         const isDone = (model: string, peer: PeerInfo): boolean => {
           const cell = epochCellFor(model, peer)
+          // A report's unusable result whose attempts are used up is done whatever its action: one blamed on the auditor
+          // stays 'retry' in the plan, where only the seller's attempts finish a report.
+          if (cell?.confirmationReport !== undefined && unusableReportResult(cell) && reportAttemptsUsed(cell)) return true
           return cell?.action === 'done' && !unusableFirstLook(cell)
         }
         // A seller this epoch already finished is audited again when a confirmation assigned to this
@@ -1217,7 +1220,9 @@ export async function runVerifierRound(
           // Only the seller's own attempts finish it: the auditor's failures never do.
           // A result whose evidence cannot be read is kept for diagnosis but is no usable result: the seller's later
           // failures and skips count toward this stop as for a cell with no result.
-          if (cell?.confirmationReport !== undefined && cell.action === 'done' && (!cell.result || unusableReportResult(cell))
+          // An unusable result is capped whatever its action: one blamed on the auditor stays 'retry' in the plan (only the
+          // seller's attempts finish a report there), so its own cap of auditor attempts is applied here.
+          if (cell?.confirmationReport !== undefined && ((cell.action === 'done' && !cell.result) || unusableReportResult(cell))
             && reportAttemptsUsed(cell)) return undefined
           // When its audit finished, read from its verified evidence as submit reads it. A result whose evidence cannot
           // be read or verified (a missing extra set, say) answers nothing: submit would refuse it, so the report is
@@ -1509,6 +1514,8 @@ export async function runVerifierRound(
                 resumeCandidate: resumable ? resumeCandidate : undefined,
                 pendingExtension: carried ? pendingExtension : undefined,
                 carriedTests: carriedTests && carriedTests.service.toLowerCase() === eligibility.service.toLowerCase() ? carriedTests : undefined,
+                // The auditor's last attempt at this seller: a FLIPS that cannot run is then no result, never a failure.
+                lastAuditorAttempt: (epochCellFor(model, peer)?.auditorAttempts ?? 0) >= AUDITOR_FAILURE_ATTEMPTS - 1,
               }]
             }
             if (eligibility.code !== 'model_not_advertised') {
@@ -2072,6 +2079,7 @@ export async function runVerifierRound(
                   resume,
                   checkpointIdentity: { runId, epoch, model },
                   ...(confirmingIdentity ? { confirming: confirmingIdentity } : {}),
+                  ...(target.lastAuditorAttempt ? { lastAuditorAttempt: true } : {}),
                   // A fresh audit (no resume) carries the settled tests of the attempt it retries.
                   ...(!resume && target.carriedTests
                     ? { carried: carriedFor(target.carriedTests.records, target.carriedTests.confirming) }
@@ -2556,6 +2564,8 @@ export async function runVerifierRound(
             completedAt,
             summaryPath: epochSummaryPath,
             selection: selectedPeerId ? { peerIds: [selectedPeerId] } : undefined,
+            ...(resumeSourceRunId !== null ? { repairOf: resumeSourceRunId } : {}),
+            ...(confirmationOnly.size > 0 ? { confirmationOnly: [...confirmationOnly.keys()] } : {}),
             modelOrder: models.map((entry) => entry.model),
             models,
             failureCount: status!.failures,

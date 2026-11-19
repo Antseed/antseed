@@ -19,6 +19,8 @@ import {
   isKbfTokenLimitFinishReason,
   kbfResponseFinishReason,
   reportedReasoningTokens,
+  billedOutputTokensOf,
+  reasoningShownInReply,
   stripKbfThinkBlocks,
   verifyKbf,
   type FingerprintStats,
@@ -37,7 +39,7 @@ import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-se
 import { auditedServiceNames } from './audited-models.js'
 import { ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from './audit-checks.js'
 import { settleAuditVerdict } from './close-call.js'
-import { flipsCost, flipsRequestCount, isFlipsRecord, isProbeDraw, summarizeFlips, type FlipsScreen, type FlipsSummary, type FlipsV1 } from './flips.js'
+import { FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE, flipsCost, flipsRequestCount, isFlipsRecord, isProbeDraw, summarizeFlips, type FlipsScreen, type FlipsSummary, type FlipsV1 } from './flips.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { kbfAuditBatches } from './kbf-batching.js'
@@ -271,7 +273,7 @@ export interface ProxyVerificationContext {
    */
   outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
   /** The randomness check of this model's sellers (`flips.ts`); absent when it does not run. */
-  flips?: Pick<FlipsScreen<KbfReferenceV1>, 'check'> & Partial<Pick<FlipsScreen<KbfReferenceV1>, 'probing' | 'probeSettings' | 'warm'>>
+  flips?: Pick<FlipsScreen<KbfReferenceV1>, 'check'> & Partial<Pick<FlipsScreen<KbfReferenceV1>, 'probing' | 'probeSettings' | 'warm' | 'ruleId' | 'referenceDecision'>>
 }
 
 /** What a seller's batch requests carry: its thinking suppression, token budget and timeout. */
@@ -733,6 +735,11 @@ export async function verifyModelTarget(input: {
    * other check does not end it, so the checks that must confirm always run to their end.
    */
   confirming?: ConfirmationIdentity
+  /**
+   * This is the auditor's last attempt at the seller: a FLIPS reference that is not whole does not stop the audit, which
+   * runs with FLIPS at no result (`flipsReferenceDecision`), so the tests that decided stand.
+   */
+  lastAuditorAttempt?: boolean
 }): Promise<ModelVerificationTargetResult | ModelVerificationSkip> {
   const confirmingIdentity = input.confirming
     ? { checks: [...input.confirming.checks], ...(input.confirming.reportedAt !== undefined ? { reportedAt: input.confirming.reportedAt } : {}) }
@@ -815,6 +822,36 @@ export async function verifyModelTarget(input: {
   const runsTests = !input.extension
   // A carried test judged against an earlier test that is asked now is asked again with it (`withoutOrphans`).
   const carried: StoredCheckRecords = withoutOrphans(input.resume?.records ?? input.carried ?? {})
+  // FLIPS's stage, and its reference asked while the questions run: FLIPS then adds only the seller's own time.
+  const flipsStage = input.confirming?.checks.includes('flips') ? 'confirm' as const : 'first' as const
+  // A carried record is kept only for its own stage: a first look's FLIPS never stands for a confirmation of FLIPS, or
+  // the other way round. A requested probe is always run: a carried record that is no probe's, or a probe of other
+  // settings, is asked again and not kept.
+  const flipsToAsk = runsTests && input.context.flips !== undefined
+    // A record of another rule than this build's (an earlier build's, recorded only) is asked again under this one.
+    && (carried.flips == null || carried.flips.draw.stage !== flipsStage
+      || (input.context.flips.ruleId !== undefined && carried.flips.rule !== input.context.flips.ruleId)
+      // A probe's record is a diagnostic: without a probe on, the production FLIPS is asked.
+      || (input.context.flips.probing !== true && isProbeDraw(carried.flips.draw))
+      || (input.context.flips.probing === true
+        && (!isProbeDraw(carried.flips.draw) || carried.flips.probeSettings !== input.context.flips.probeSettings)))
+  // Without a screen too: a carried record of another stage is not this audit's, so it is not kept.
+  let flips: FlipsV1 | null = flipsToAsk || carried.flips?.draw.stage !== flipsStage ? null : carried.flips ?? null
+  // The stage's FLIPS reference is decided before the seller is asked anything paid, once per model, stage and run:
+  // where FLIPS counts and it is not whole, the audit is not started (the auditor's attempt, nothing paid), except on the
+  // auditor's last attempt, which runs with FLIPS at no result (never for a report only FLIPS flagged).
+  if (flipsToAsk) {
+    const screen = input.context.flips!
+    if (screen.referenceDecision) {
+      const decision = await screen.referenceDecision(flipsStage, input.service, input.reference, {
+        lastAuditorAttempt: input.lastAuditorAttempt === true,
+        confirming: input.confirming?.checks ?? [],
+      })
+      if (decision === 'not-started') throw new Error(`${FLIPS_AUDITOR_FAILURE}: ${FLIPS_WAITING_FOR_REFERENCE}`)
+    } else {
+      screen.warm?.(input.service, input.reference, flipsStage)
+    }
+  }
   const sellerTarget = {
     peerId: input.target.peerId,
     service: input.service,
@@ -845,18 +882,6 @@ export async function verifyModelTarget(input: {
   }
   let outputCap: OutputCapV1 | null = carried.outputCap ?? null
   let outputEcho: OutputEchoV1 | null = carried.outputEcho ?? null
-  // FLIPS's stage, and its reference asked while the questions run: FLIPS then adds only the seller's own time.
-  const flipsStage = input.confirming?.checks.includes('flips') ? 'confirm' as const : 'first' as const
-  // A carried record is kept only for its own stage: a first look's FLIPS never stands for a confirmation of FLIPS, or
-  // the other way round. A requested probe is always run: a carried record that is no probe's, or a probe of other
-  // settings, is asked again and not kept.
-  const flipsToAsk = runsTests && input.context.flips !== undefined
-    && (carried.flips == null || carried.flips.draw.stage !== flipsStage
-      || (input.context.flips.probing === true
-        && (!isProbeDraw(carried.flips.draw) || carried.flips.probeSettings !== input.context.flips.probeSettings)))
-  // Without a screen too: a carried record of another stage is not this audit's, so it is not kept.
-  let flips: FlipsV1 | null = flipsToAsk || carried.flips?.draw.stage !== flipsStage ? null : carried.flips ?? null
-  if (flipsToAsk) input.context.flips!.warm?.(input.service, input.reference, flipsStage)
   /** The tests this attempt ran itself: a carried record was paid for by the attempt that ran it. */
   const freshRecords = (): StoredCheckRecords => ({
     ...(precheck && precheck !== carried.tokenizerPrecheck ? { tokenizerPrecheck: precheck } : {}),
@@ -1657,11 +1682,15 @@ async function discoverSellerThinking(
         if (cost) record.attemptCosts.push(cost)
         if (response.ok) {
           outages = 0
+          const billed = billedOutputTokensOf(responseText(responseBody))
           return {
             ok: true,
             content: extractCompletionText(responseBody),
             reasoningTokens: reportedReasoningTokens(responseText(responseBody)),
             truncated: isKbfTokenLimitFinishReason(kbfResponseFinishReason(responseText(responseBody))),
+            // Recorded only: reasoning a host shows while itemising none, and what the reply bills.
+            reasoningShown: reasoningShownInReply(responseText(responseBody)),
+            ...(billed !== undefined ? { billedOutputTokens: billed } : {}),
           }
         }
         const text = responseText(responseBody)

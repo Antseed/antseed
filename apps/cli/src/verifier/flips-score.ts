@@ -82,15 +82,33 @@ export interface FlipsRule {
    * are kept for the report, and the verdict reads it as having no result.
    */
   counts: { default: boolean; never: readonly string[] }
+  /**
+   * Replies that hold no sequence (`flips-v2` on; a rule without it scores them as short replies). A reply with fewer
+   * symbols of its pair than `below` holds none: it is left out of the sample on both sides, and a pair where more
+   * than `maxShare` of one side's replies hold none has no result. A reply cut at the token limit that holds none spent
+   * its budget reasoning (a host's placeholder text, say), so it shows reasoning for the profile. The check's size,
+   * which picks the calibration, stays the scheduled one.
+   */
+  noSequence?: { below: number; maxShare: number }
+  /**
+   * Repeated replies (`flips-v2` on): a seller that returns one stored answer to several identical requests gives no
+   * sample of the model. A pair has no result when the seller has at least `minReplies` replies with a sequence and at
+   * least `sellerShare` of them repeat another one exactly, while under `referenceShare` of the reference's do (a
+   * reference repeats a sequence in up to a quarter of its replies on its own).
+   */
+  repeats?: { sellerShare: number; referenceShare: number; minReplies: number }
+  /** Every seller slot stores its asks (`FlipsSellerSlotV1.asks`), so its trail is checked (`flips-v2` on). */
+  asksRequired?: true
 }
 
 /**
- * The rule new audits use. A used rule is never edited: stored evidence names its rule by id.
+ * The first rule, recorded only everywhere. A used rule is never edited: stored evidence names its rule by id, and a
+ * record counts only as its own rule says (`audit-checks.ts`).
  *
  * Calibrations: fitted on the eval's honest checks of each size
  * (ln score, Student-t, location = mean, scale = sd · sqrt(1 + 1/n), df = n − 1).
  */
-export const FLIPS_RULE: FlipsRule = Object.freeze({
+export const FLIPS_RULE_V1: FlipsRule = Object.freeze({
   id: 'flips-v1',
   symbols: 64,
   example: Object.freeze([0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0] as const),
@@ -114,6 +132,20 @@ export const FLIPS_RULE: FlipsRule = Object.freeze({
   bar: Object.freeze({ first: 0.005, confirm: 0.001 }),
   passAbove: 0.1,
   counts: Object.freeze({ default: false, never: Object.freeze(['minimax-m3']) }),
+})
+
+/**
+ * The rule new audits use: `flips-v1` with FLIPS counting (never for MiniMax M3, nor for a model the eval never
+ * measured), replies that hold no sequence left out (`noSequence`: a host's placeholder text, say, is no answer to
+ * score) and repeated replies giving no result (`repeats`). Bars, pass and calibrations are v1's.
+ */
+export const FLIPS_RULE: FlipsRule = Object.freeze({
+  ...FLIPS_RULE_V1,
+  id: 'flips-v2',
+  counts: Object.freeze({ default: true, never: Object.freeze(['minimax-m3']) }),
+  noSequence: Object.freeze({ below: 8, maxShare: 0.2 }),
+  repeats: Object.freeze({ sellerShare: 0.5, referenceShare: 0.25, minReplies: 4 }),
+  asksRequired: true,
 })
 
 /**
@@ -184,7 +216,7 @@ export function flipsCounts(model: string, rule: FlipsRule = FLIPS_RULE): boolea
   return rule.counts.default && !rule.counts.never.includes(model.toLowerCase()) && flipsRequestFor(model).measured
 }
 
-const RULES: ReadonlyMap<string, FlipsRule> = new Map([[FLIPS_RULE.id, FLIPS_RULE]])
+const RULES: ReadonlyMap<string, FlipsRule> = new Map([FLIPS_RULE_V1, FLIPS_RULE].map((rule) => [rule.id, rule]))
 
 /** The rule stored evidence was judged by; undefined for an id this CLI does not know. */
 export function flipsRuleById(id: string): FlipsRule | undefined {
@@ -246,6 +278,15 @@ export function parseFlipsReply(content: string, pair: FlipsPair): FlipsParsedRe
 export interface FlipsReplyV1 {
   content: string | null
   finishReason: string | null
+}
+
+/**
+ * Whether a reply holds no sequence under the rule (`noSequence`): fewer symbols of its pair than the rule's line.
+ * Always false under a rule without it.
+ */
+export function holdsNoSequence(reply: FlipsReplyV1, pair: FlipsPair, rule: FlipsRule = FLIPS_RULE): boolean {
+  if (!rule.noSequence) return false
+  return reply.content === null || parseFlipsReply(reply.content, pair).symbols.length < rule.noSequence.below
 }
 
 /** Empty, content-filtered or failed. Counts towards the inconclusive rule. */
@@ -449,8 +490,13 @@ export interface FlipsJudgementV1 {
  * the statistics. Empty and content-filtered replies that did return stay in the statistics (an empty reply is
  * a short one), as in the eval.
  */
-export function judgeFlipsCheck(pairs: readonly FlipsPairSampleV1[], rule: FlipsRule = FLIPS_RULE): FlipsJudgementV1 {
-  const replies = pairs.reduce((s, p) => s + p.seller.length, 0)
+export function judgeFlipsCheck(
+  pairs: readonly FlipsPairSampleV1[],
+  rule: FlipsRule = FLIPS_RULE,
+  /** The check's size when replies were left out of `pairs` (`noSequence`): the scheduled seller replies. */
+  scheduledReplies?: number,
+): FlipsJudgementV1 {
+  const replies = scheduledReplies ?? pairs.reduce((s, p) => s + p.seller.length, 0)
   const reasons: string[] = []
   if (pairs.length !== rule.pairsPerCheck) reasons.push(`${pairs.length} word pairs, the rule needs ${rule.pairsPerCheck}`)
   for (const { pair, reference, seller } of pairs) {

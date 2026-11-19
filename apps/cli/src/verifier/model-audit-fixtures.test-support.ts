@@ -2,7 +2,7 @@
 import { ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, storedRequestsOf, verdictOf } from './audit-checks.js'
 import { outputCapCost, summarizeOutputCap, type OutputCapV1 } from './output-cap.js'
 import { outputEchoCost, summarizeOutputEcho, type OutputEchoV1 } from './output-echo.js'
-import { summarizeFlips, type FlipsV1 } from './flips.js'
+import { flipsCost, summarizeFlips, type FlipsV1 } from './flips.js'
 import type { AuditCheckId } from './audit-checks.js'
 import { createHash } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -817,6 +817,7 @@ async function writeFixtureEvidence(input: {
     ...(precheckMatch ? [tokenizerPrecheckCost(precheckMatch)] : []),
     ...(audit.outputCap ? [outputCapCost(audit.outputCap)] : []),
     ...(audit.outputEcho ? [outputEchoCost(audit.outputEcho)] : []),
+    ...(audit.flips ? [flipsCost(audit.flips)] : []),
   ]
   const cost = addAuditCostSummaries(summarizeAuditExchangeCosts(exchanges), ...testCost)
   const evidence: ProxyAuditEvidenceV1 = {

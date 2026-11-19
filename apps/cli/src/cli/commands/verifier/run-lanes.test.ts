@@ -60,9 +60,10 @@ const { readVerifierStatus } = await import('../../../verifier/audit-artifacts.j
 const { emptyAuditCostSummary } = await import('../../../verifier/proxy-evidence.js')
 const { auditWindowSellersLeft, readAuditWindow } = await import('../../../verifier/audit-window.js')
 const {
-  CONFIRMATION_ATTEMPTS, CONFIRMATION_RECHECK_SPACING_SECONDS, SELLER_RETRY_SPACING_SECONDS, epochCellKey, loadEpochState, readRetryGiveUps,
+  AUDITOR_FAILURE_ATTEMPTS, CONFIRMATION_ATTEMPTS, CONFIRMATION_RECHECK_SPACING_SECONDS, SELLER_RETRY_SPACING_SECONDS, epochCellKey, loadEpochState, readRetryGiveUps,
   reportCellKey, reportKey,
 } = await import('../../../verifier/epoch-plan.js')
+const { FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE } = await import('../../../verifier/flips.js')
 
 setAuditedModelsForTesting({
   'model-a': { upstreamModel: 'vendor/model-a', contrastModels: [] },
@@ -106,6 +107,8 @@ interface Scenario {
   snapshots: Array<ReturnType<typeof snapshot>>
   build: (model: string) => Promise<void>
   audit: (model: string, peerId: string, context: { proxy: unknown }) => Promise<void>
+  /** For each audit, whether the run marked it the auditor's last attempt at the seller (`lastAuditorAttempt`). */
+  lastAuditorAttempts: boolean[]
   /** What a seller's first audit returns; a SKIPPED result when unset. */
   firstResult?: (model: string, peerId: string) => Record<string, unknown>
   /** Audit IDs whose question reservation was voided. */
@@ -133,6 +136,8 @@ interface Scenario {
   confirmationsWaitOnDiff?: boolean
   /** The chain time of the waiting report (0 by default: long enough ago to be confirmed). */
   firstReportedAt?: number
+  /** The tests the waiting report names; the questions when unset. */
+  firstChecks?: string[]
   /** Run the auditor's assigned models (no `--all`); the auditor is approved before the epoch starts. */
   assigned: boolean
   /** A KBF audits contract is configured even without confirmations. */
@@ -156,6 +161,7 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
     snapshots: [snapshot([seller('aa'.repeat(20), ['model-a', 'model-b'])])],
     build: async () => undefined,
     audit: async () => undefined,
+    lastAuditorAttempts: [],
     questionSets: new Set(['model-a', 'model-b']),
     brokenModels: new Set(),
     confirmations: [],
@@ -211,7 +217,7 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
       for (const agents of targets.values()) {
         for (const target of agents.values()) {
           if (!target.waiting.some((tally) => tally.verdict === 'DIFF')) continue
-          target.firstChecks = ['kbf']
+          target.firstChecks = scenario.firstChecks ?? ['kbf']
           target.firstReportedAt = scenario.firstReportedAt ?? 0
         }
       }
@@ -264,7 +270,9 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
     verifyModelTarget: async (input: {
       target: { peerId: string }; service: string; context: { proxy: unknown }; extension?: boolean; resume?: unknown; auditId: string
       confirming?: { checks: readonly string[]; reportedAt?: number }
+      lastAuditorAttempt?: boolean
     }) => {
+      scenario.lastAuditorAttempts.push(input.lastAuditorAttempt === true)
       const label = `${input.service} ${input.target.peerId.slice(0, 2)}${input.extension ? ' extension' : ''}${input.resume ? ' resume' : ''}`
       scenario.log.push(`audit ${label}`)
       await scenario.audit(input.service, input.target.peerId, input.context)
@@ -1319,6 +1327,91 @@ test('a waiting extra set answers a report only for a confirmation of that repor
  * Reports A, B, A for one seller: each report is planned by its own cell (result, attempts and spacing), first looks
  * apart. One scenario per point, each a few runs with the clock moved on between them.
  */
+test('a FLIPS that cannot run is the auditor\'s failure: retried on the auditor\'s attempts, and on the last one no result, so the seller ends SAME', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const peer = 'aa'.repeat(20)
+  scenario.snapshots = [snapshot([seller(peer, ['model-a'])])]
+  const same = (model: string, peerId: string) => {
+    const verdict = computeKbfVerdict({ selfHamming: 30, selfTotal: 300, minCoverage: 0.5, minDiffCoverage: 0.8, targetMatchVector: Array.from({ length: 100 }, () => 1) })
+    return { ...closeCallResult(model, peerId), status: verdict.verdict, stats: { ...verdict.stats, selfCoverage: 1 }, correctProbeCount: 100, incorrectProbeCount: 0, correctRate: 1 }
+  }
+  scenario.firstResult = same
+  // The FLIPS reference is down on every attempt: where FLIPS counts the audit fails with the auditor's text, unless the
+  // run marked it the auditor's last attempt, where FLIPS has no result and the questions' SAME stands.
+  scenario.audit = async () => {
+    if (!scenario.lastAuditorAttempts.at(-1)) throw new Error(`${FLIPS_AUDITOR_FAILURE}: reference down`)
+  }
+  const realNow = Date.now
+  const step = SELLER_RETRY_SPACING_SECONDS + 60
+  const cell = async () => (await loadEpochState(scenario.evidenceDir, EPOCH)).ordinaryCells?.get(epochCellKey('model-a', peer))
+  for (const index of [0, 1, 2]) {
+    Date.now = () => realNow() + index * step * 1_000
+    try {
+      await scenario.run()
+    } finally {
+      Date.now = realNow
+    }
+    if (index < 2) {
+      const failed = await cell()
+      // Blamed on the auditor: never one of the seller's attempts.
+      assert.deepEqual([failed?.state, failed?.blame, failed?.attempts, failed?.auditorAttempts, failed?.action], ['failed', 'auditor', 0, index + 1, 'retry'])
+    }
+  }
+  assert.deepEqual(scenario.lastAuditorAttempts, [false, false, true])
+  const done = await cell()
+  assert.deepEqual([done?.state, done?.action], ['same', 'done'], 'the seller ends SAME')
+}))
+
+test('a confirmation of FLIPS whose reference is not whole is not started: the auditor\'s attempt, never done, holding no window; it runs without FLIPS on the last attempt only when the report names another test', LANE_TIMEOUT, async () => {
+  const peer = 'aa'.repeat(20)
+  const ordinary = 'bb'.repeat(20)
+  const now = Math.floor(Date.now() / 1_000)
+  const step = Math.max(CONFIRMATION_RECHECK_SPACING_SECONDS, SELLER_RETRY_SPACING_SECONDS) + 60
+  const same = (model: string, peerId: string) => {
+    const verdict = computeKbfVerdict({ selfHamming: 30, selfTotal: 300, minCoverage: 0.5, minDiffCoverage: 0.8, targetMatchVector: Array.from({ length: 100 }, () => 1) })
+    return { ...closeCallResult(model, peerId), status: verdict.verdict, stats: { ...verdict.stats, selfCoverage: 1 }, correctProbeCount: 100, incorrectProbeCount: 0, correctRate: 1 }
+  }
+  type Cell = Awaited<ReturnType<typeof loadEpochState>>['ordinaryCells'] extends Map<string, infer C> | undefined ? C | undefined : never
+  const scenarioFor = async (checks: string[]): Promise<Cell[]> => {
+   const runs: Cell[] = []
+   await withScenario(async (scenario) => {
+    scenario.snapshots = [snapshot([{ ...seller(peer, ['model-a']), onChainAgentId: 5 } as PeerInfo, seller(ordinary, ['model-a'])])]
+    scenario.firstResult = same
+    scenario.confirmations = [{ model: 'model-a', agentId: '5' }]
+    scenario.confirmationsWaitOnDiff = true
+    scenario.firstReportedAt = now - 7_200
+    scenario.firstChecks = checks
+    // As verifyModelTarget does with a confirm-stage reference that is not whole (`flipsReferenceDecision`): the
+    // confirmation is not started; on the auditor's last attempt it runs only when the report names another test.
+    const onlyFlips = checks.every((check) => check === 'flips')
+    scenario.audit = async (_model, peerId) => {
+      if (peerId === peer && (onlyFlips || !scenario.lastAuditorAttempts.at(-1))) throw new Error(`${FLIPS_AUDITOR_FAILURE}: ${FLIPS_WAITING_FOR_REFERENCE}`)
+    }
+    const realNow = Date.now
+    const cell = async () => (await loadEpochState(scenario.evidenceDir, EPOCH)).reportCells?.get(reportCellKey('model-a', peer, reportKey('model-a', now - 7_200, checks)))
+    for (const index of [0, 1, 2, 3]) {
+      Date.now = () => realNow() + index * step * 1_000
+      try {
+        await scenario.run({ confirm: true })
+      } finally {
+        Date.now = realNow
+      }
+      runs.push(await cell())
+    }
+    // The ordinary seller's first look closed the model's window in the first run: the confirmation held nothing.
+    assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'closed')
+   })
+   return runs
+  }
+  // A report only FLIPS flagged: not started in every run, counted on the auditor's side only, never done.
+  const onlyFlips = await scenarioFor(['flips'])
+  assert.deepEqual(onlyFlips.map((cell) => [cell?.attempts, cell?.blame, cell?.action]), [[0, 'auditor', 'retry'], [0, 'auditor', 'retry'], [0, 'auditor', 'retry'], [0, 'auditor', 'retry']])
+  assert.match(onlyFlips.at(-1)?.reason ?? '', /waiting for its reference/)
+  // A report that names the questions too: on the auditor's third attempt it runs without FLIPS, and its result stands.
+  const both = await scenarioFor(['kbf', 'flips'])
+  assert.deepEqual(both.slice(0, 2).map((cell) => [cell?.attempts, cell?.blame, cell?.action]), [[0, 'auditor', 'retry'], [0, 'auditor', 'retry']])
+  assert.notEqual(both[2]?.state, 'failed', 'the last attempt ran')
+})
+
 test('reports A, B, A: each report keeps its own result, attempts and spacing; first looks answer none', LANE_TIMEOUT, async () => {
   const peer = 'aa'.repeat(20)
   const now = Math.floor(Date.now() / 1_000)
@@ -1416,6 +1509,19 @@ test('reports A, B, A: each report keeps its own result, attempts and spacing; f
     assert.equal((await run({ report: A, at: 2 * step })).length > 0, true)
     assert.equal(await attempts(A), CONFIRMATION_ATTEMPTS, 'the later failures count on A')
     assert.deepEqual(await run({ report: A, at: 3 * step }), [], 'A is finished: the seller is not audited for it again')
+  })
+  // A's UNDETERMINED of the auditor's own making whose evidence cannot be read: the plan keeps it 'retry' (only the
+  // seller's attempts finish a report), so the auditor's own cap ends it: three auditor attempts, then not again.
+  await scenarioWith(async ({ scenario, run }) => {
+    scenario.firstResult = (model: string, peerId: string) => ({
+      ...closeCallResult(model, peerId), status: 'UNDETERMINED', responseAuthVerified: false,
+      outcomeReason: { code: 'policy_rejected', summary: 'the seller is outside your buyer routing policy', retryable: true, source: 'verifier', affectedBatchCount: 1, totalBatchCount: 10, nextAction: 'retry later' },
+      evidencePath: join(tmpdir(), `gone-auditor-${model}-${peerId.slice(0, 8)}.json`),
+    })
+    for (const index of [0, 1, 2]) assert.equal((await run({ report: A, at: index * step })).length > 0, true, `auditor attempt ${index + 1}`)
+    const cell = (await loadEpochState(scenario.evidenceDir, EPOCH)).reportCells?.get(reportCellKey('model-a', peer, reportKey('model-a', A, ['kbf'])))
+    assert.deepEqual([cell?.attempts, cell?.auditorAttempts, cell?.action], [0, AUDITOR_FAILURE_ATTEMPTS, 'retry'])
+    assert.deepEqual(await run({ report: A, at: 3 * step }), [], 'capped by the auditor\'s attempts, whatever the action')
   })
   // A finished first look answers no report, and two failed first looks leave A at zero.
   await scenarioWith(async ({ scenario, run, attempts }) => {

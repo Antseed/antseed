@@ -38,6 +38,8 @@ export interface SignedSellerRequestInput {
   signal?: AbortSignal
   /** The seller's audit clock: it runs only while this request is out. */
   clock?: TokenizerPrecheckClock
+  /** Called each time a try leaves for the seller, after any wait for a slot of the limiter. */
+  onSend?: () => void
 }
 
 /** Times one request is sent before it counts as failed, as for the pre-check. */
@@ -61,6 +63,7 @@ export async function askSellerSigned(input: SignedSellerRequestInput, body: Rec
     let answered = false
     try {
       const { response, text } = await input.limiter.run(async () => {
+        input.onSend?.()
         const live = input.clock?.start()
         out = input.clock !== undefined
         const signals = [AbortSignal.timeout(timeoutMs), ...(live ? [live] : []), ...(input.signal ? [input.signal] : [])]

@@ -130,7 +130,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
     .option('--no-publish-ipfs', 'do not publish the audit evidence to IPFS (by default each model audit\'s public evidence is pinned to Pinata and its ipfs:// URI recorded; needs PINATA_JWT)')
     .option('--dry-run', 'preview the audits without publishing or broadcasting')
     .option('--publish-only', 'write and publish each model audit\'s evidence and record it in the ledger, without sending transactions')
-    .option('--auditor <address>', 'with --publish-only: auditor address the evidence is written for, so no signer is needed')
+    .option('--auditor <address>', 'with --publish-only or --dry-run: auditor address the evidence is written or previewed for, so no signer is needed')
     .option('--yes', 'submit without an interactive confirmation prompt')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override')
     .option('--keystore <path>', 'sign with this encrypted JSON keystore (e.g. a Foundry keystore) instead of verifier.keystore or the data-dir identity; the password is asked on the terminal')
@@ -185,7 +185,8 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         return
       }
       if (options.publishOnly && options.publishIpfs === false) throw new Error('--publish-only cannot be combined with --no-publish-ipfs')
-      if (options.auditor && !options.publishOnly) throw new Error('--auditor is only valid with --publish-only')
+      // A dry run sends nothing and signs nothing, so it may preview for an address without its signer.
+      if (options.auditor && !options.publishOnly && !options.dryRun) throw new Error('--auditor is only valid with --publish-only or --dry-run')
       const { wallet, address } = options.auditor
         ? { wallet: null, address: getAddress(options.auditor) }
         : options.publishOnly
@@ -635,6 +636,9 @@ export async function sameCheckChanged(
     auditedAt: result.auditedAt ?? 0,
     flaggedBy: result.flaggedBy ?? [],
     passedBy: result.passedBy ?? [],
+    // The report the audit confirms, as prepared from its evidence: without it a confirmation of FLIPS would read as
+    // a first look and be held.
+    ...(result.confirming ? { confirming: result.confirming } : {}),
   })))
   for (const [index, decision] of decisions.entries()) {
     const result = results[index]!

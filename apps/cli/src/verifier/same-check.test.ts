@@ -149,6 +149,68 @@ test('a SAME clears a waiting DIFF of two checks only when both passed here', ()
   assert.equal(decide(candidate(2n, VERIFIER_VERDICT.DIFF, ['output-cap'], []), [two]).kind, 'send')
 })
 
+test('a DIFF that only FLIPS flagged, through the confirmer\'s audit under flips-v2: each FLIPS outcome and what is sent', async () => {
+  const { settleAuditVerdict } = await import('./close-call.js')
+  const { checksWith, readingsOfSummary } = await import('./audit-checks.js')
+  const waiting: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['flips'] }
+  const flips = (outcome: 'flag' | 'pass' | 'inconclusive', p: number | null) => ({
+    rule: 'flips-v2', model: 'claude-opus-5.5', stage: 'confirm', outcome, counted: true, p, score: p === null ? null : 4, reason: 'x',
+  })
+  // The confirmer's audit: the questions pass unless said otherwise, FLIPS as given; its verdict over every test, then
+  // what the same-check decision does with it.
+  const confirm = (summary: ReturnType<typeof flips>, extra: Record<string, unknown> = {}) => {
+    const settled = settleAuditVerdict({
+      status: 'SAME', questionsStatus: 'SAME', parsedProbeCount: 40, confirming: ['flips'], flips: summary, ...extra,
+    } as never) as unknown as Parameters<typeof readingsOfSummary>[0] & { status: string }
+    const readings = readingsOfSummary(settled)
+    const decision = decide({
+      ...candidate(2n, VERIFIER_VERDICT[settled.status as 'SAME' | 'DIFF' | 'UNDETERMINED'], checksWith(readings, 'flag'), checksWith(readings, 'pass')),
+      confirming: { checks: ['flips'], reportedAt: REPORTED_AT },
+    }, [waiting])
+    return [settled.status, decision.kind, decision.kind === 'exclude' ? decision.code : decision.kind === 'send' ? decision.confirmation.sameCheck ?? decision.confirmation.passedCheck : null]
+  }
+  // Flags at the confirmation bar: a same-check DIFF, sent; with the first report it is recorded (2 of 2).
+  assert.deepEqual(confirm(flips('flag', 0.0005)), ['DIFF', 'send', 'flips'])
+  // Passes above 10% and every other test passes: a SAME, sent; it clears the waiting DIFF.
+  assert.deepEqual(confirm(flips('pass', 0.4)), ['SAME', 'send', 'flips'])
+  // Passes, but the questions flag: another test's DIFF, never sent; the seller keeps its earlier verdict.
+  assert.deepEqual(confirm(flips('pass', 0.4), { questionsStatus: 'DIFF', status: 'DIFF' }), ['DIFF', 'exclude', 'other-test-only'])
+  // Between the bars: undecided, never sent (and finished at once, `confirmationCannotDecideOnRetry`).
+  assert.deepEqual(confirm(flips('inconclusive', 0.02)), ['UNDETERMINED', 'exclude', 'confirmation-undecided'])
+  // No result (an unusable reference, a profile mismatch, replies without a sequence): undecided, never sent, asked again.
+  assert.deepEqual(confirm(flips('inconclusive', null)), ['UNDETERMINED', 'exclude', 'confirmation-undecided'])
+  // A first look (not a confirmation of FLIPS) whose first-stage FLIPS flags or passes answers nothing: only the
+  // confirmation stage (fresh pairs, 40 replies, the confirmation bar) confirms or clears a FLIPS flag.
+  const firstLook = (flaggedBy: AuditCheckId[], passedBy: AuditCheckId[], verdict: VerifierVerdict, checks: AuditCheckId[] = ['flips']) => {
+    const decision = decide(candidate(2n, verdict, flaggedBy, passedBy), [{ ...waiting, checks }])
+    return [decision.kind, decision.kind === 'exclude' ? decision.code : decision.kind === 'send' ? decision.confirmation.sameCheck : null]
+  }
+  assert.deepEqual(firstLook(['flips'], ['kbf'], VERIFIER_VERDICT.DIFF), ['exclude', 'flips-not-confirmation'])
+  assert.deepEqual(firstLook([], ['flips', 'kbf'], VERIFIER_VERDICT.SAME), ['exclude', 'flips-not-confirmation'])
+  // Another test the waiting DIFF also names still confirms from a first look, as before.
+  assert.deepEqual(firstLook(['kbf', 'flips'], [], VERIFIER_VERDICT.DIFF, ['kbf', 'flips']), ['send', 'kbf'])
+})
+
+test('the final reread before sending keeps a FLIPS confirmation\'s identity: a confirmation is sent as prepared, an untagged first look and a changed report are held', async () => {
+  const waiting: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['flips'] }
+  const auditedAt = REPORTED_AT + CONFIRMATION_MIN_DELAY_SECONDS
+  const filter = (firsts: FirstFlag[]) => async (_model: string, candidates: readonly SameCheckCandidate[]) => candidates.map((candidate) => decide(candidate, firsts))
+  // As prepared: a confirmation of FLIPS whose confirm-stage FLIPS flagged, with the decision it stores.
+  const confirming = { checks: ['flips'] as AuditCheckId[], reportedAt: REPORTED_AT }
+  const prepared = decide({ ...candidate(2n, VERIFIER_VERDICT.DIFF, ['flips'], ['kbf'], auditedAt), confirming }, [waiting])
+  assert.equal(prepared.kind, 'send')
+  const result = {
+    agentId: '2', serviceHash: serviceHash(MODEL), verdict: 'DIFF', auditedAt, flaggedBy: ['flips'], passedBy: ['kbf'],
+    confirmation: prepared.kind === 'send' ? prepared.confirmation : undefined, confirming,
+  } as unknown as Parameters<typeof sameCheckChanged>[1][number]
+  assert.equal(await sameCheckChanged('0xmodel', [result], filter([waiting])), null, 'sent as prepared')
+  // The same row without its identity reads as a first look: held.
+  const { confirming: _dropped, ...untagged } = result as unknown as Record<string, unknown>
+  assert.match(await sameCheckChanged('0xmodel', [untagged as never], filter([waiting])) ?? '', /only a confirmation of it/)
+  // The waiting report changed since: held, and built again.
+  assert.match(await sameCheckChanged('0xmodel', [result], filter([{ ...waiting, reportedAt: REPORTED_AT + 60 }])) ?? '', /confirms another report/)
+})
+
 test('a confirmation is credited only to the report it was made for: the same tests and the same report time', () => {
   const two: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['output-cap', 'kbf'] }
   const confirming = (identity: { checks: AuditCheckId[]; reportedAt?: number }) => ({ ...candidate(2n, VERIFIER_VERDICT.DIFF, ['output-cap'], []), confirming: identity })

@@ -5,12 +5,15 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
+import { failureBlame } from './failure-blame.js'
 import { FLIPS_CHECK, readingsOfEvidence, validateCheckRecordsAgainstSummary, verdictOf, withoutOrphans, type AuditCheckId } from './audit-checks.js'
-import { FLIPS_RULE, flipsCounts, flipsRequestBody, isValidFlipsPair, type FlipsPair, type FlipsRule } from './flips-score.js'
+import { FLIPS_RULE, FLIPS_RULE_V1, flipsCounts, flipsRequestBody, isValidFlipsPair, type FlipsPair, type FlipsRule } from './flips-score.js'
 import {
   FLIPS_WORDS,
   drawFlipsPairs,
   FLIPS_ROUTE_NOT_SUPPORTED,
+  FLIPS_AUDITOR_FAILURE,
+  FLIPS_WAITING_FOR_REFERENCE,
   FLIPS_REASK_BUDGET,
   createFlipsScreen,
   finishReasonOf,
@@ -66,10 +69,10 @@ const fixturesDir = [join(here, 'fixtures', 'flips'), join(here, '..', '..', 'sr
 const fixture = (name: string): Fixture => JSON.parse(readFileSync(join(fixturesDir, `${name}.json`), 'utf8')) as Fixture
 
 /** A stored check made of a saved eval check, under a rule sized to it. */
-function recordOf(saved: Fixture, stage: 'first' | 'confirm' = 'first', edit: (pair: FlipsReferencePairV1, index: number) => void = () => undefined) {
+function recordOf(saved: Fixture, stage: 'first' | 'confirm' = 'first', edit: (pair: FlipsReferencePairV1, index: number) => void = () => undefined, base: FlipsRule = FLIPS_RULE) {
   const perPair = saved.pairs[0]!.seller.length
   const rule: FlipsRule = {
-    ...FLIPS_RULE,
+    ...base,
     repliesPerPair: stage === 'first' ? { first: perPair, confirm: 20 } : { first: 10, confirm: perPair },
     referenceRepliesPerPair: saved.pairs[0]!.reference.length,
   }
@@ -87,7 +90,7 @@ function recordOf(saved: Fixture, stage: 'first' | 'confirm' = 'first', edit: (p
     return {
       words: pair.pair,
       reference,
-      seller: pair.seller.map((reply, slot) => ({ request: signed(body, chat(reply.content, reply.finishReason ?? 'stop'), `${pairIndex}-${slot}`) })),
+      seller: pair.seller.map((reply, slot) => ({ request: signed(body, { id: `chatcmpl-${pairIndex}-${slot}`, ...chat(reply.content, reply.finishReason ?? 'stop') }, `${pairIndex}-${slot}`) })),
     }
   })
   return { record: { draw, service: MODEL, referenceOneProvider: true, pairs }, rule }
@@ -120,30 +123,162 @@ test('the request is the eval\'s for the model, the same for the seller and the 
   assert.deepEqual([opus['max_tokens'], opus['temperature'], opus['reasoning']], [220, undefined, { effort: 'minimal' }], 'no temperature for Claude')
   const grok = flipsRequestBody('grok-4.7', 'svc', ['amber', 'basin'])
   assert.deepEqual([grok['max_tokens'], grok['temperature']], [900, 1], 'a model that still thinks gets 900')
-  assert.equal(flipsCounts('claude-opus-5.5'), false, 'recorded only everywhere until the dry run signs it off')
-  const counting = { ...FLIPS_RULE, counts: { default: true, never: ['minimax-m3'] } }
-  assert.equal(flipsCounts('claude-opus-5.5', counting), true)
-  assert.equal(flipsCounts('minimax-m3', counting), false, 'never for MiniMax M3')
-  assert.equal(flipsCounts('a-model-the-eval-never-measured', counting), false)
+  assert.equal(flipsCounts('claude-opus-5.5', FLIPS_RULE_V1), false, 'flips-v1 is recorded only everywhere')
+  assert.equal(flipsCounts('claude-opus-5.5'), true, 'flips-v2 counts')
+  assert.equal(flipsCounts('minimax-m3'), false, 'never for MiniMax M3')
+  assert.equal(flipsCounts('a-model-the-eval-never-measured'), false)
 })
 
-test('a saved swap flags at the first bar, recorded only until FLIPS counts; the verdict can be judged both ways', () => {
-  const { record, rule } = recordOf(fixture('swap-caught-near-threshold'))
-  const judged = judgeFlips(record, rule)
+test('a saved swap flags at the first bar: recorded only under flips-v1, a DIFF under flips-v2, never for MiniMax M3', () => {
+  // flips-v1: recorded only; the verdict ignores it, and a reading under a counting rule shows what it would be.
+  const v1 = recordOf(fixture('swap-caught-near-threshold'), 'first', undefined, FLIPS_RULE_V1)
+  const judgedV1 = judgeFlips(v1.record, v1.rule)
+  assert.equal(judgedV1.outcome, 'flag')
+  assert.ok(judgedV1.p! <= FLIPS_RULE_V1.bar.first)
+  assert.equal(judgedV1.counted, false)
+  const storedV1 = { ...v1.record, rule: v1.rule.id, referenceUpstream: null, reasks: 0, ...judgedV1 } as FlipsV1
+  const readingsV1 = readingsOfEvidence({ flips: storedV1, exchanges: [{}] }, 'SAME')
+  assert.deepEqual(readingsV1.filter((reading) => reading.check === 'flips').map((reading) => [reading.outcome, reading.recordedOnly]), [['inconclusive', 'flag']])
+  assert.equal(verdictOf(readingsV1, 'SAME').verdict, 'SAME', 'recorded only: the audit verdict ignores it')
+  const counting = { flips: { ...FLIPS_RULE_V1, counts: { default: true, never: ['minimax-m3'] } } }
+  assert.equal(verdictOf(readingsOfEvidence({ flips: storedV1, exchanges: [{}] }, 'SAME', counting), 'SAME').verdict, 'DIFF')
+  // flips-v2: the same replies flag and count.
+  const v2 = recordOf(fixture('swap-caught-near-threshold'))
+  const judged = judgeFlips(v2.record, v2.rule)
   assert.equal(judged.outcome, 'flag')
-  assert.ok(judged.p! <= FLIPS_RULE.bar.first)
-  assert.equal(judged.counted, false)
-  const stored = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judged } as FlipsV1
-  const readings = readingsOfEvidence({ flips: stored, exchanges: [{}] }, 'SAME')
-  const flips = readings.find((reading) => reading.check === 'flips')!
-  assert.deepEqual([flips.outcome, flips.recordedOnly], ['inconclusive', 'flag'])
-  assert.equal(verdictOf(readings, 'SAME').verdict, 'SAME', 'recorded only: the audit verdict ignores it')
-  // What it would be if FLIPS counted: the same record read under a counting rule, which still never counts MiniMax M3.
-  const counting = { flips: { ...FLIPS_RULE, counts: { default: true, never: ['minimax-m3'] } } }
-  assert.deepEqual(verdictOf(readingsOfEvidence({ flips: stored, exchanges: [{}] }, 'SAME', counting), 'SAME'),
+  assert.equal(judged.counted, true)
+  const stored = { ...v2.record, rule: v2.rule.id, referenceUpstream: null, reasks: 0, ...judged } as FlipsV1
+  assert.deepEqual(verdictOf(readingsOfEvidence({ flips: stored, exchanges: [{}] }, 'SAME'), 'SAME'),
     { verdict: 'DIFF', flaggedBy: ['flips'], passedBy: ['kbf'], undecidedConfirmation: null })
   const m3 = { ...stored, draw: { ...stored.draw, model: 'minimax-m3' } }
-  assert.equal(verdictOf(readingsOfEvidence({ flips: m3, exchanges: [{}] }, 'SAME', counting), 'SAME').verdict, 'SAME', 'MiniMax M3 never counts')
+  assert.equal(verdictOf(readingsOfEvidence({ flips: m3, exchanges: [{}] }, 'SAME'), 'SAME').verdict, 'SAME', 'MiniMax M3 never counts')
+})
+
+test('a stored FLIPS counts only under the rule it was judged by, never under this build\'s; a rule this CLI does not know never counts', () => {
+  const { record, rule } = recordOf(fixture('swap-caught-near-threshold'))
+  const flagged = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judgeFlips(record, rule) } as FlipsV1
+  assert.equal(flagged.outcome, 'flag')
+  const read = (stored: FlipsV1, rules?: Parameters<typeof readingsOfEvidence>[2]) => {
+    const readings = readingsOfEvidence({ flips: stored, exchanges: [{}] }, 'SAME', rules)
+    const flips = readings.find((reading) => reading.check === 'flips')!
+    return { outcome: flips.outcome, recordedOnly: flips.recordedOnly ?? null, verdict: verdictOf(readings, 'SAME').verdict }
+  }
+  // A flips-v1 record under this build, whose rule counts: recorded only, as it was judged.
+  assert.equal(flipsCounts(flagged.draw.model), true, 'this build\'s rule counts the model')
+  const v1 = { ...flagged, rule: FLIPS_RULE_V1.id }
+  assert.deepEqual(read(v1), { outcome: 'inconclusive', recordedOnly: 'flag', verdict: 'SAME' })
+  assert.equal(FLIPS_CHECK.summaryCounts!({ ...summarizeFlips(v1) }), false, 'nor does its summary')
+  assert.deepEqual(read(flagged), { outcome: 'flag', recordedOnly: null, verdict: 'DIFF' }, 'a flips-v2 record counts')
+  assert.equal(FLIPS_CHECK.summaryCounts!({ ...summarizeFlips(flagged) }), true)
+  // A rule id this CLI does not know: recorded only, whatever this build's rule says.
+  const unknown = { ...flagged, rule: 'flips-v999' }
+  assert.deepEqual(read(unknown), { outcome: 'inconclusive', recordedOnly: 'flag', verdict: 'SAME' })
+  assert.equal(FLIPS_CHECK.summaryCounts!({ ...summarizeFlips(unknown) }), false, 'nor does its summary')
+  assert.equal(FLIPS_CHECK.summaryCounts!({ model: flagged.draw.model, outcome: 'flag' }), false, 'a summary that names no rule never counts')
+  // The rule a reading is asked under (the eval replay, the dry-run report) still applies on purpose.
+  const counting = { flips: { ...FLIPS_RULE, counts: { default: true, never: ['minimax-m3'] } } }
+  assert.equal(read(unknown, counting).verdict, 'DIFF')
+})
+
+test('flips-v2: a host placeholder cut at the token limit shows reasoning, and replies without a sequence are left out up to a share', () => {
+  const PLACEHOLDER = '[No answer: the model spent its entire max_tokens budget on reasoning]'
+  const edited = (name: string, change: (saved: Fixture) => void): Fixture => {
+    const saved = structuredClone(fixture(name))
+    change(saved)
+    return saved
+  }
+  // Every seller reply is the host's placeholder, cut at the limit: under flips-v1 it was scored as short replies; under
+  // flips-v2 the seller reasons where the reference does not, so there is no result, never a score.
+  const placeholders = edited('honest-wrapper', (saved) => {
+    for (const pair of saved.pairs) pair.seller = pair.seller.map(() => ({ content: PLACEHOLDER, finishReason: 'length' }))
+  })
+  const v1 = recordOf(placeholders, 'first', undefined, FLIPS_RULE_V1)
+  assert.equal(judgeFlips(v1.record, v1.rule).outcome, 'flag', 'flips-v1 scores the placeholders as answers')
+  const v2 = recordOf(placeholders)
+  const judged = judgeFlips(v2.record, v2.rule)
+  assert.deepEqual([judged.outcome, judged.p, judged.profileMismatch?.code], ['inconclusive', null, 'seller-reasons'])
+  assert.equal(judged.profileMismatch?.sellerReasoningTokens, 0, 'no reasoning itemised: the cut reply alone shows it')
+  // The same text that stopped on its own is no sign of reasoning: left out as a reply with no sequence instead.
+  const stopped = edited('honest-wrapper', (saved) => {
+    for (const pair of saved.pairs) pair.seller = pair.seller.map(() => ({ content: PLACEHOLDER, finishReason: 'stop' }))
+  })
+  const stoppedRecord = recordOf(stopped)
+  assert.match(judgeFlips(stoppedRecord.record, stoppedRecord.rule).reason, /seller replies hold no sequence/)
+
+  // Up to 20% of a pair's seller replies without a sequence are left out and the rest scored, at the scheduled size;
+  // one more and the pair has no result.
+  const honest = recordOf(fixture('honest-wrapper'))
+  const scored = judgeFlips(honest.record, honest.rule)
+  assert.notEqual(scored.p, null)
+  const perPair = fixture('honest-wrapper').pairs[0]!.seller.length
+  const allowed = Math.floor(perPair * FLIPS_RULE.noSequence!.maxShare)
+  const without = (count: number) => edited('honest-wrapper', (saved) => {
+    for (let index = 0; index < count; index += 1) saved.pairs[0]!.seller[index] = { content: 'I would rather not.', finishReason: 'stop' }
+  })
+  const within = recordOf(without(allowed))
+  const withinJudged = judgeFlips(within.record, within.rule)
+  assert.notEqual(withinJudged.p, null, 'within the share: scored on the replies left')
+  const over = recordOf(without(allowed + 1))
+  const overJudged = judgeFlips(over.record, over.rule)
+  assert.deepEqual([overJudged.outcome, overJudged.p], ['inconclusive', null])
+  assert.match(overJudged.reason, new RegExp(`${allowed + 1} of ${perPair} seller replies hold no sequence`))
+  // A fixed code the report counts per seller, kept on the record and recomputed by its validation.
+  assert.deepEqual(overJudged.noSequence, { code: 'seller-no-sequence', words: fixture('honest-wrapper').pairs[0]!.pair, without: allowed + 1, replies: perPair })
+  assert.equal(scored.noSequence, undefined)
+  // flips-v1 still scores them as short replies.
+  const overV1 = recordOf(without(allowed + 1), 'first', undefined, FLIPS_RULE_V1)
+  assert.notEqual(judgeFlips(overV1.record, overV1.rule).p, null)
+
+  // The reference too: a pair with more than the share of its replies without a sequence is no reference.
+  const referenceCount = fixture('honest-wrapper').pairs[0]!.reference.length
+  const referenceOver = Math.floor(referenceCount * FLIPS_RULE.noSequence!.maxShare) + 1
+  const badReference = recordOf(fixture('honest-wrapper'), 'first', (pair, index) => {
+    if (index === 0) for (let reply = 0; reply < referenceOver; reply += 1) pair.replies[reply]!.content = 'no.'
+  })
+  const badJudged = judgeFlips(badReference.record, badReference.rule)
+  assert.match(badJudged.reason, new RegExp(`${referenceOver} of ${referenceCount} reference replies hold no sequence`))
+  assert.equal(badJudged.noSequence?.code, 'reference-no-sequence')
+})
+
+test('flips-v2: one reference reply over the length limit costs that reply only; flips-v1 voids the reference', () => {
+  const long = (pair: FlipsReferencePairV1, index: number) => { if (index === 0) pair.replies[3]!.content = 'amber '.repeat(1_100) }
+  const v1 = recordOf(fixture('swap-caught-near-threshold'), 'first', long, FLIPS_RULE_V1)
+  assert.match(judgeFlips(v1.record, v1.rule).reason, /a reference reply is longer than/)
+  const v2 = recordOf(fixture('swap-caught-near-threshold'), 'first', long)
+  const judged = judgeFlips(v2.record, v2.rule)
+  assert.equal(judged.outcome, 'flag', 'scored on the other replies')
+  assert.equal(flipsReferenceProblem({ draw: v2.record.draw, service: v2.record.service, referenceOneProvider: true, pairs: v2.record.pairs.map((pair) => pair.reference) }, v2.rule), null)
+})
+
+test('flips-v2: a seller that returns one stored answer to identical requests gives no result, with the response ids kept', () => {
+  const honest = fixture('honest-wrapper')
+  const replayed = (count: number) => {
+    const saved = structuredClone(honest)
+    for (let index = 1; index <= count; index += 1) saved.pairs[1]!.seller[index] = { ...saved.pairs[1]!.seller[0]! }
+    return saved
+  }
+  // The second pair: neither side repeats a reply on its own (the first pair's reference repeats 45% of its replies).
+  const perPair = honest.pairs[1]!.seller.length
+  // Half the pair's replies repeat another one exactly, while the reference does not: no result, a finding of its own.
+  const half = Math.ceil(perPair * FLIPS_RULE.repeats!.sellerShare)
+  const repeated = recordOf(replayed(half))
+  const judged = judgeFlips(repeated.record, repeated.rule)
+  assert.deepEqual([judged.outcome, judged.p, judged.repeats?.code, judged.repeats?.repeated, judged.repeats?.replies], ['inconclusive', null, 'seller-repeats', half, perPair])
+  assert.match(judged.reason, new RegExp(`${half} of ${perPair} seller replies repeat another reply exactly`))
+  // Each signed reply's response id is kept, once each (a host replaying one answer sends one id).
+  assert.deepEqual(judged.repeats!.responseIds, Array.from({ length: perPair }, (_, slot) => `chatcmpl-1-${slot}`))
+  // One fewer repeat: scored as before.
+  const fewer = recordOf(replayed(half - 1))
+  assert.notEqual(judgeFlips(fewer.record, fewer.rule).p, null)
+  assert.equal(judgeFlips(fewer.record, fewer.rule).repeats, undefined)
+  // A reference that repeats as much on its own: the seller's repeats are no finding.
+  const alike = recordOf(replayed(half), 'first', (pair, index) => {
+    if (index === 1) for (let reply = 1; reply < pair.replies.length / 2; reply += 1) pair.replies[reply]!.content = pair.replies[0]!.content
+  })
+  assert.equal(judgeFlips(alike.record, alike.rule).repeats, undefined)
+  // flips-v1 scores them.
+  const v1 = recordOf(replayed(half), 'first', undefined, FLIPS_RULE_V1)
+  assert.notEqual(judgeFlips(v1.record, v1.rule).p, null)
 })
 
 test('an honest saved check does not flag; between the bar and the pass it decides nothing', () => {
@@ -212,14 +347,15 @@ test('no result for a partial sample, a mixed reference, a changed request, a se
 })
 
 /** A seller behind the buyer proxy that answers FLIPS requests; `fail` decides which calls get no reply at all. */
-function fakeSeller(answer: (call: number) => string, fail: (call: number) => boolean = () => false) {
+function fakeSeller(answer: (call: number, pair: FlipsPair) => string, fail: (call: number) => boolean = () => false) {
   const signedBytes = new Map<string, { request: Uint8Array; response: Uint8Array }>()
   let calls = 0
   const fetchFn: typeof fetch = async (_url, init) => {
     const call = ++calls
     const requestId = new Headers(init?.headers).get('x-antseed-request-id')!
     if (fail(call)) return Response.json({ error: { message: 'upstream unavailable' } }, { status: 503, headers: { 'x-antseed-request-id': requestId } })
-    const reply = chat(answer(call))
+    const asked = JSON.parse(new TextDecoder().decode(init!.body as Uint8Array)) as { messages: Array<{ content: string }> }
+    const reply = chat(answer(call, asked.messages[0]!.content.match(/\{(\w+), (\w+)\}/)!.slice(1) as unknown as FlipsPair))
     signedBytes.set(requestId, {
       request: encodeHttpRequest({ requestId, method: 'POST', path: '/v1/chat/completions', headers: {}, body: init!.body as Uint8Array }),
       response: encodeHttpResponse({ requestId, statusCode: 200, headers: {}, body: bytes(reply) }),
@@ -246,6 +382,8 @@ function fakeSeller(answer: (call: number) => string, fail: (call: number) => bo
 }
 
 /** Random-looking symbols of a pair, from a seed: what a model writes when asked. */
+/** A seller that is no random source at all: the pair's words in turn, in the pair it was asked. */
+const alternating = (pair: FlipsPair): string => Array.from({ length: 64 }, (_, index) => pair[index % 2]).join(' ')
 const symbols = (pair: FlipsPair, seed: number): string => Array.from({ length: 64 }, (_, index) => pair[((seed * 7 + index * index * 3 + index) % 5) % 2]).join(' ')
 
 async function stored(seller: ReturnType<typeof fakeSeller>) {
@@ -287,7 +425,17 @@ test('a run asks every scheduled slot, asks again only a slot with no reply, and
   assert.throws(() => validateFlips({ ...record, reasks: FLIPS_REASK_BUDGET + 1 }), /re-asks more slots than its budget/)
   assert.throws(() => validateFlips(edited((slots) => { slots.find((slot) => slot.asks!.length > 1)!.asks![0]!.answered = true })), /asked again after a reply/)
   assert.throws(() => validateFlips(edited((slots) => { slots[3]!.asks![0]!.requestIds = ['other'] })), /asks are not its requests/)
-  assert.throws(() => validateFlips(edited((slots) => { slots[4]!.asks = [] })), /does not start with its scheduled ask/)
+  // flips-v2 requires every slot's asks: an empty or a dropped trail is refused, never skipped (round-1010 F1).
+  assert.throws(() => validateFlips(edited((slots) => { slots[4]!.asks = [] })), /does not store its asks/)
+  assert.throws(() => validateFlips(edited((slots) => { for (const slot of slots) delete slot.asks })), /does not store its asks/)
+  // The signed reply is the last ask's own, not one of an earlier ask of the slot (round-1010 F2).
+  assert.throws(() => validateFlips(edited((slots) => {
+    const slot = slots.find((entry) => entry.asks!.length > 1)!
+    const [scheduled, again] = slot.asks!
+    // The trail's ids moved: the reply's own id now sits in the earlier, unanswered ask.
+    slot.asks = [{ ...scheduled!, requestIds: [...again!.requestIds] }, { ...again!, requestIds: [...scheduled!.requestIds] }]
+    slot.request = { ...slot.request, requestIds: [...again!.requestIds, ...scheduled!.requestIds] }
+  })), /signed reply is not its last ask's|asks are not its requests/)
   assert.throws(() => validateFlips({ ...record, p: 0.5, outcome: 'pass' }), /does not follow from its replies/)
   assert.throws(() => validateFlips({ ...record, draw: { ...record.draw, seed: 'ef'.repeat(32) } }), /not the ones its draw gives/)
   // An empty reply is an answer: it counts as the rule says and is never asked again.
@@ -342,7 +490,7 @@ function screenOf(options: {
   seller: ReturnType<typeof fakeSeller>
   rule?: FlipsRule
   probe?: Parameters<typeof createFlipsScreen>[0]['probe']
-  askReference?: (call: number) => void | Promise<never>
+  askReference?: (call: number) => void | Promise<unknown>
   provider?: (index: number) => string | null
   timeLimitMs?: number
 }) {
@@ -383,7 +531,7 @@ test('a probe marks every record it asks, and a follow-up of a first flag draws 
   // Every scored check flags under this bar, so each one is followed up.
   const flagging: FlipsRule = { ...FLIPS_RULE, bar: { first: 1, confirm: 0.001 } }
   const chosen = flipsPool('confirm').slice(0, 2)
-  const followed = await screenOf({ seller: fakeSeller((call) => symbols(['amber', 'basin'], call + 7)), rule: flagging, probe: { pairs: chosen, followUpFirstFlags: true } }).screen.check(SELLER, null, { stage: 'first' })
+  const followed = await screenOf({ seller: fakeSeller((_call, pair) => alternating(pair)), rule: flagging, probe: { pairs: chosen, followUpFirstFlags: true } }).screen.check(SELLER, null, { stage: 'first' })
   assert.equal(followed!.outcome, 'flag')
   const followUp = followed!.followUp!
   assert.equal(followUp.draw.stage, 'confirm')
@@ -394,7 +542,7 @@ test('a probe marks every record it asks, and a follow-up of a first flag draws 
   assert.equal(flipsRequestCount(followed!), FLIPS_RULE.repliesPerPair.first * 2 + FLIPS_RULE.repliesPerPair.confirm * 2, 'the follow-up is in the cost')
   assert.doesNotThrow(() => validateFlips(followed!))
   // The follow-up's reference fails: the first flag stands, with why.
-  const failed = screenOf({ seller: fakeSeller((call) => symbols(['amber', 'basin'], call + 7)), rule: flagging, probe: { followUpFirstFlags: true }, askReference: (call) => { if (call === 2) throw new Error('reference down') } })
+  const failed = screenOf({ seller: fakeSeller((_call, pair) => alternating(pair)), rule: flagging, probe: { followUpFirstFlags: true }, askReference: (call) => { if (call === 2) throw new Error('reference down') } })
   const kept = await failed.screen.check(SELLER, null, { stage: 'first' })
   assert.equal(kept!.outcome, 'flag')
   assert.equal(kept!.followUp, undefined)
@@ -405,11 +553,31 @@ test('a probe marks every record it asks, and a follow-up of a first flag draws 
 test('a FLIPS that cannot run says why, once per model and stage, and costs the seller nothing', async () => {
   // The reference fails: every seller gets no record, and the reason is reported once.
   const seller = fakeSeller((call) => symbols(['amber', 'basin'], call))
-  const down = screenOf({ seller, askReference: () => { throw new Error('reference down') } })
+  const down = screenOf({ seller, rule: FLIPS_RULE_V1, askReference: () => { throw new Error('reference down') } })
   assert.equal(await down.screen.check(SELLER, null, { stage: 'first' }), null)
   assert.equal(await down.screen.check({ ...SELLER, peerId: 'cd'.repeat(20) }, null, { stage: 'first' }), null)
   assert.deepEqual(down.events, [{ stage: 'first', code: 'reference-failed', detail: 'reference down' }])
   assert.equal(seller.calls(), 0)
+  // Where FLIPS counts, the reference is decided once per stage and run, before any seller pays: not whole, a seller's
+  // audit is not started (the auditor's attempt), except on the auditor's last attempt, which runs without FLIPS, and
+  // never for a confirmation of a report only FLIPS flagged. The check itself never throws.
+  let referenceAsks = 0
+  const counted = screenOf({ seller, askReference: () => { referenceAsks += 1; throw new Error('reference down') } })
+  const decide = (lastAuditorAttempt: boolean, confirming: string[] = []) => counted.screen.referenceDecision!('first', MODEL, null, { lastAuditorAttempt, confirming })
+  assert.deepEqual(await Promise.all([decide(false), decide(false), decide(true), decide(true, ['flips']), decide(true, ['kbf', 'flips'])]),
+    ['not-started', 'not-started', 'without-flips', 'not-started', 'without-flips'])
+  assert.equal(referenceAsks, 1, 'one decision per stage and run: every seller gets the same answer')
+  assert.equal(await counted.screen.check(SELLER, null, { stage: 'first' }), null)
+  assert.equal(failureBlame(null, `${FLIPS_AUDITOR_FAILURE}: ${FLIPS_WAITING_FOR_REFERENCE}`), 'auditor', 'never one of the seller\'s attempts')
+  assert.equal(seller.calls(), 0)
+  // A slow reference that ends whole within its time: every seller waits for the same decision and runs, none fails.
+  let slowAsks = 0
+  const slow = screenOf({ seller, askReference: async () => { slowAsks += 1; await new Promise((resolve) => setTimeout(resolve, 50)) } })
+  assert.deepEqual(await Promise.all([1, 2, 3].map(() => slow.screen.referenceDecision!('first', MODEL, null, { lastAuditorAttempt: false, confirming: [] }))), ['ready', 'ready', 'ready'])
+  assert.equal(slowAsks, 1)
+  // Recorded only (flips-v1): never waited for, never stops an audit.
+  const recorded = screenOf({ seller, rule: FLIPS_RULE_V1, askReference: () => { throw new Error('reference down') } })
+  assert.equal(await recorded.screen.referenceDecision!('first', MODEL, null, { lastAuditorAttempt: false, confirming: [] }), 'ready')
   // The reference answers from two providers: unusable, checked before the seller is asked.
   const mixed = screenOf({ seller, provider: (index) => (index === 5 ? 'other-host' : 'host') })
   const record = await mixed.screen.check(SELLER, null, { stage: 'first' })
@@ -420,6 +588,59 @@ test('a FLIPS that cannot run says why, once per model and stage, and costs the 
   // Unnamed answers on a route not proven to serve one provider are no one provider's.
   const unproven = flipsReferenceProblem({ draw: record!.draw, service: MODEL, referenceOneProvider: false, pairs: record!.pairs.map((pair) => ({ ...pair.reference, replies: pair.reference.replies.map((reply) => ({ ...reply, provider: null })) })) })
   assert.match(unproven!, /one proven provider/)
+})
+
+test('a reference request with no reply is an outage, the auditor\'s failure, never an unusable sample that lets SAME out', async () => {
+  const pairs = drawFlipsPairs({ auditor: '0xA1', model: MODEL, epoch: '32', seed: 'aa', stage: 'first' })
+  const answered = (body: Record<string, unknown>, index: number) => {
+    const pair = ((body['messages'] as Array<{ content: string }>)[0]!.content.match(/\{(\w+), (\w+)\}/)!.slice(1)) as unknown as FlipsPair
+    return { requestBody: bytes(body), response: { statusCode: 200, body: bytes(chat(symbols(pair, index + 900))) }, provider: 'host', failure: null }
+  }
+  // `fail` picks the first ask's holes; a hole stays a hole when its request is asked again.
+  const prepare = (fail: (index: number) => boolean) => {
+    let call = 0
+    return prepareFlipsReference({
+      model: MODEL, service: MODEL, stage: 'first', pairs,
+      ask: async (bodies) => {
+        call += 1
+        return {
+          upstream: null, oneProvider: true,
+          results: bodies.map((body, index) => ((call === 1 ? fail(index) : true) ? { requestBody: bytes(body), response: null, provider: null, failure: 'connect ETIMEDOUT' } : answered(body, index))),
+        }
+      },
+    })
+  }
+  // A hole is asked again once: closed, the reference is whole and scored as before.
+  let calls = 0
+  const flaky = await prepareFlipsReference({
+    model: MODEL, service: MODEL, stage: 'first', pairs,
+    ask: async (bodies) => {
+      calls += 1
+      return { upstream: null, oneProvider: true, results: bodies.map((body, index) => (calls === 1 && index === 5 ? { requestBody: bytes(body), response: null, provider: null, failure: 'connect ETIMEDOUT' } : answered(body, index))) }
+    },
+  })
+  assert.equal(calls, 2)
+  assert.equal(flaky.pairs.flatMap((pair) => pair.replies).filter((reply) => reply.content === null).length, 0)
+  assert.equal(flaky.asked?.tries, 81, 'the re-ask is counted')
+  // Still not whole after the re-ask: the reference fails, and where FLIPS counts no seller of the stage is started.
+  await assert.rejects(prepare((index) => index === 5), /the reference answered 79 of its 80 requests after asking the rest again \(connect ETIMEDOUT\)/)
+  await assert.rejects(prepare(() => true), /answered 0 of its 80/)
+  // Every request answered: a sample, usable or not, as before.
+  assert.equal((await prepare(() => false)).pairs.length, 2)
+})
+
+test('a seller whose FLIPS replies run out its time causes no auditor failure: FLIPS has no result and the other tests stand', async () => {
+  // A seller that answers slower than FLIPS's own time limit; the reference answers at once. FLIPS counts for the model.
+  const seller = fakeSeller((call, pair) => symbols(pair, call))
+  const answer = seller.fetchFn
+  seller.fetchFn = async (url, init) => {
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    return answer(url, init)
+  }
+  const { screen } = screenOf({ seller, timeLimitMs: 60 })
+  const record = await screen.check(SELLER, null, { stage: 'first' })
+  // Never the auditor's failure, which would fail the audit and be retried on the auditor's attempts.
+  assert.ok(record === null || (record.outcome === 'inconclusive' && record.p === null))
 })
 
 test('a carried record without the shape of a FLIPS record is dropped; a FLIPS summary with no record holds up nothing while it cannot count', () => {
@@ -434,7 +655,7 @@ test('a carried record without the shape of a FLIPS record is dropped; a FLIPS s
 test('FLIPS\'s time bounds the wait for its reference, an unusable reference is reported once it is ready, and a record keeps what the dry run reads', async () => {
   // The reference never answers: the seller's FLIPS ends at its time limit with no record, and says so.
   const seller = fakeSeller((call) => symbols(['amber', 'basin'], call))
-  const hung = screenOf({ seller, timeLimitMs: 30, askReference: () => new Promise<never>(() => undefined) })
+  const hung = screenOf({ seller, rule: FLIPS_RULE_V1, timeLimitMs: 30, askReference: () => new Promise<never>(() => undefined) })
   const began = Date.now()
   assert.equal(await hung.screen.check(SELLER, null, { stage: 'first' }), null)
   assert.ok(Date.now() - began < 2_000)

@@ -72,6 +72,10 @@ export interface VerifierRunManifestV1 {
   selection?: {
     peerIds: string[]
   }
+  /** The run a `--resume-run` repairs: it audits only that run's undetermined sellers, so it is no full pass. */
+  repairOf?: string
+  /** Models this run audited only for the sellers awaiting a confirmation: no full pass of their other sellers. */
+  confirmationOnly?: string[]
   modelOrder: string[]
   models: EpochAuditSummaryV1['models']
   failureCount: number

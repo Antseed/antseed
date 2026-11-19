@@ -105,17 +105,20 @@ export function windowIncludesSeller(window: Pick<AuditWindowV1, 'sellers'>, pee
  */
 export function auditWindowSellersLeft(
   window: AuditWindowV1,
-  state: Pick<EpochState, 'cells' | 'manifests'>,
+  state: Pick<EpochState, 'cells' | 'manifests'> & Partial<Pick<EpochState, 'ordinaryCells'>>,
   /** Cells (`epochCellKey`) that read done but are still to be audited again: a first look submit would refuse. */
   recovering?: ReadonlySet<string>,
 ): string[] {
+  // A window waits for first looks only: a confirmation's attempts (a report's own cell) never hold it, so a confirmation
+  // that is not started, or retried, does not keep the model's other sellers from closing their window.
+  const cells = state.ordinaryCells ?? state.cells
   const completedRun = state.manifests.some((manifest) => (
     // The opening run started before its window: a model's build comes first.
     (manifest.runId === window.openedByRunId || Date.parse(manifest.startedAt) >= Date.parse(window.openedAt) - 1_000)
     && manifest.modelOrder.some((model) => normalized(model) === normalized(window.model))
   ))
   return window.sellers.filter((peerId) => {
-    const cell = state.cells.get(epochCellKey(window.model, peerId))
+    const cell = cells.get(epochCellKey(window.model, peerId))
     if (!cell) return !completedRun
     return cell.action === 'retry' || cell.action === 'extend' || (recovering?.has(epochCellKey(window.model, peerId)) ?? false)
   })
@@ -128,7 +131,7 @@ export function auditWindowSellersLeft(
 export async function closeFinishedAuditWindows(input: {
   evidenceDir: string
   epoch: string
-  state: Pick<EpochState, 'cells' | 'manifests'>
+  state: Pick<EpochState, 'cells' | 'manifests'> & Partial<Pick<EpochState, 'ordinaryCells'>>
   secondsLeftInEpoch: number
   now?: () => number
   /** First looks still to be recovered (`auditWindowSellersLeft`): their window stays open. */
