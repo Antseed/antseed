@@ -170,7 +170,59 @@ test('right before a send, a result another auditor judged meanwhile, or whose c
     await recheckAuditBeforeSend({ audit, auditor: ME, readEvents: async () => { throw new Error('rpc down') }, readMyConfirmations: none }) ?? '',
     /could not re-read this epoch's reports right before sending \(rpc down\)/,
     'a failed read holds the send back',
+  )  // A result this auditor has reported since the preparation (an earlier attempt under another key, mined meanwhile)
+  // is not sent a second time.
+  assert.equal(await recheckAuditBeforeSend({ audit, auditor: ME, readEvents: async () => [], readMyConfirmations: none, alreadyOnChain: () => (async (_model: string, candidates: readonly unknown[]) => candidates.map(() => false)) as never }), null)
+  assert.match(
+    await recheckAuditBeforeSend({ audit, auditor: ME, readEvents: async () => [], readMyConfirmations: none, alreadyOnChain: () => (async (_model: string, candidates: readonly unknown[]) => candidates.map(() => true)) as never }) ?? '',
+    /1 result\(s\) this auditor has reported since it was prepared/,
   )
+})
+
+test('a retry reuses an earlier attempt\'s evidence only for the same results, model and epoch, with its reference files; an unreadable one is never a stop', async () => {
+  const { reuseLedgerEvidence } = await import('./submit.js')
+  const { canonicalHashBytes32, canonicalJsonStringify } = await import('@antseed/fingerprints')
+  const { mkdtemp, mkdir, rm, writeFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-submit-reuse-'))
+  try {
+    const row = { agentId: '7', serviceHash: '0x' + 'ab'.repeat(32), verdict: 'SAME' }
+    const document = (extra: Record<string, unknown> = {}) => ({
+      version: 1, kind: 'antseed-verifier-model-audit-evidence', model: 'model-a', modelHash: '0x' + 'cd'.repeat(32), epoch: '7',
+      results: [row], references: [{ referenceId: 'ref-1', queryProfileHash: '0x00', probeCount: 10, path: 'references/ref-1.json' }], ...extra,
+    })
+    const earlier = document()
+    const earlierPath = join(directory, 'earlier', 'evidence.json')
+    await mkdir(join(directory, 'earlier', 'references'), { recursive: true })
+    await writeFile(earlierPath, canonicalJsonStringify(earlier))
+    await writeFile(join(directory, 'earlier', 'references', 'ref-1.json'), JSON.stringify({ referenceId: 'ref-1' }))
+    const fresh = (results = [row], extra: Record<string, unknown> = {}) => {
+      const evidence = document({ results, generatedAt: 'now', ...extra })
+      return {
+        key: 'model-a', model: 'model-a', modelHash: evidence.modelHash, expectedEpoch: 7n, evidence, evidenceHash: canonicalHashBytes32(evidence),
+        evidencePath: join(directory, 'fresh.json'), results: [], references: [], auditEvidencePaths: [], referenceEvidence: [],
+      } as never
+    }
+    const ledgerWith = (status: string, evidenceHash = canonicalHashBytes32(earlier), evidencePath = earlierPath) => ({
+      version: 1, models: { 'model-a': { status, evidenceHash, evidencePath } },
+    }) as never
+    // The same results: the earlier evidence is sent, with the reference file it names.
+    const [reused] = await reuseLedgerEvidence([fresh()], ledgerWith('pending'))
+    assert.equal((reused as { evidenceHash: string }).evidenceHash, canonicalHashBytes32(earlier))
+    assert.deepEqual((reused as { references: Array<{ reference: unknown }> }).references.map((entry) => entry.reference), [{ referenceId: 'ref-1' }])
+    // Other results, another epoch or model: what was prepared now.
+    for (const other of [fresh([{ ...row, verdict: 'DIFF' }]), fresh([row], { epoch: '8' }), fresh([row], { modelHash: '0x' + 'ef'.repeat(32) })]) {
+      const [kept] = await reuseLedgerEvidence([other], ledgerWith('pending'))
+      assert.equal((kept as { evidenceHash: string }).evidenceHash, (other as { evidenceHash: string }).evidenceHash)
+    }
+    // An unreadable earlier file, even of a pending entry, is no stop: what was prepared now goes on.
+    const prepared = fresh()
+    const [fallback] = await reuseLedgerEvidence([prepared], ledgerWith('pending', canonicalHashBytes32(earlier), join(directory, 'missing.json')))
+    assert.equal(fallback, prepared)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('one submit per data dir: a second one gets no lock until the first releases it', async () => {
