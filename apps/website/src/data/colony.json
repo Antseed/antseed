@@ -1,0 +1,14 @@
+{
+  "telegramUrl": "https://t.me/antseed_anthill",
+  "downloadUrl": null,
+  "waitlist": {
+    "formUrl": "https://docs.google.com/forms/d/e/1FAIpQLSc8Wk9Btd3Y2x21a8eTbnKgppDp8XGGW7ExAnYyY32infwYJA/viewform",
+    "fields": {
+      "mac": "entry.1416877996",
+      "chip": "entry.1614357108",
+      "memory": "entry.283662621",
+      "name": "entry.14383638",
+      "source": "entry.1834250030"
+    }
+  }
+}

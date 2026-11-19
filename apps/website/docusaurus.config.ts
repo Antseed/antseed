@@ -1,8 +1,11 @@
 import type {Config, Plugin, PluginConfig, PluginModule} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
+import {MOTION_GATE_SCRIPT} from './src/lib/motionGate';
+import {PIXEL_FONT_FACE, PIXEL_FONT_URL} from './src/lib/pixelFont';
 import integrationsPagesPlugin from './plugins/integrations-pages';
 import docsSearchPlugin from './plugins/docs-search';
-import prismTheme from './src/lib/prismTheme';
+import antscanSnapshotPlugin from './plugins/antscan-snapshot';
+import {prismLight, prismDark} from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
 
@@ -26,8 +29,11 @@ const statsProxyPlugin: PluginModule = () => ({
   },
 });
 
-/** Google Tag Manager container for antseed.com. */
-const GTM_CONTAINER_ID = process.env.GTM_CONTAINER_ID ?? 'GTM-NHCLBQQK';
+/** A preview deployment (SITE_PREVIEW=1, e.g. new.antseed.com): kept out of search engines and analytics. */
+const IS_PREVIEW = process.env.SITE_PREVIEW === '1';
+
+/** Google Tag Manager container for antseed.com; none on previews. */
+const GTM_CONTAINER_ID = IS_PREVIEW ? undefined : (process.env.GTM_CONTAINER_ID ?? 'GTM-NHCLBQQK');
 
 /**
  * Typed explicitly: an inline array literal widens to `string | object`, which
@@ -39,8 +45,9 @@ const gtmPlugin: PluginConfig[] = GTM_CONTAINER_ID
 
 const config: Config = {
   title: 'Antseed',
-  tagline: 'Run your agents on your terms. No gatekeepers.',
-  favicon: 'logo.svg',
+  noIndex: IS_PREVIEW,
+  tagline: 'The open intelligence network',
+  favicon: 'site/assets/home/icons/ant-mark.svg',
   url: 'https://antseed.com',
   baseUrl: '/',
   // The host 308-redirects /path to /path/, so without this Docusaurus emitted
@@ -92,7 +99,7 @@ const config: Config = {
           ignorePatterns: ['/tags/**', '/blog/tags/**', '/blog/archive', '/blog/authors'],
         },
         theme: {
-          customCss: './src/css/custom.css',
+          customCss: ['./src/styles/custom.css', './src/styles/tokens.css'],
         },
       } satisfies Preset.Options,
     ],
@@ -114,6 +121,8 @@ const config: Config = {
       {
         redirects: [
           {from: '/lightpaper', to: '/docs/lightpaper'},
+          // The $ANTS page moved with the site redesign (a 301 in static/_redirects too).
+          {from: '/ants-token', to: '/ants'},
           // Docs restructure: the apps, CLI and older posts link to these.
           {from: '/docs/guides/gateway-console', to: '/docs/gateway'},
           {from: '/docs/guides/gateway-server', to: '/docs/gateway/server'},
@@ -149,21 +158,15 @@ const config: Config = {
     integrationsPagesPlugin,
     // Docs search index for src/theme/SearchBar (the ⌘K modal).
     docsSearchPlugin,
-  ],
-
-  // General Sans — the design's display/body face (Geist stays for app-chrome/mono).
-  stylesheets: [
-    {
-      href: 'https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap',
-      type: 'text/css',
-    },
+    antscanSnapshotPlugin,
   ],
 
   headTags: [
-    // The General Sans stylesheet comes from api.fontshare.com and its font
-    // files from cdn.fontshare.com: open both connections up front.
-    {tagName: 'link', attributes: {rel: 'preconnect', href: 'https://api.fontshare.com'}},
-    {tagName: 'link', attributes: {rel: 'preconnect', href: 'https://cdn.fontshare.com', crossorigin: 'anonymous'}},
+    // Enables the hidden-until-revealed states before the first paint (src/lib/motionGate.ts), so pages never flash then hide.
+    {tagName: 'script', attributes: {}, innerHTML: MOTION_GATE_SCRIPT},
+    // Geist Pixel (the marketing titles): asked for while the head is read, and its face declared with the same URL (src/lib/pixelFont.ts).
+    {tagName: 'link', attributes: {rel: 'preload', as: 'font', type: 'font/woff2', crossorigin: 'anonymous', href: PIXEL_FONT_URL}},
+    {tagName: 'style', attributes: {}, innerHTML: PIXEL_FONT_FACE},
     // Second Search Console owner. A site can carry several verification tags,
     // one per Google account, and removing one un-verifies that account — so
     // this is additive, not a replacement for the token in themeConfig.metadata.
@@ -230,112 +233,49 @@ const config: Config = {
       id: 'antseed-points-launch',
       content:
         '<a class="funding-announcement" href="https://antseedpoints.com" target="_blank" rel="noopener noreferrer"><strong>Antseed Points are live: get rewarded for using AI.</strong><span>Visit antseedpoints.com <span aria-hidden="true">↗</span></span></a>',
-      backgroundColor: '#001E12',
-      textColor: '#FFFFFF',
+      // The dark band (--site-surface-dark), the same in both themes.
+      backgroundColor: '#181d1b',
+      textColor: '#eceee9',
       isCloseable: true,
     },
     metadata: [
       {name: 'google-site-verification', content: '09pzs5Q9kHdpQSNSBpr0vNh9SMq-T8lzhBgH5Zgm6ug'},
-      {name: 'description', content: 'Run your agents on your terms. Save on every AI model. No usage limits, no middleman, always anonymous.'},
-      {property: 'og:title', content: 'Run your agents on your terms'},
-      {property: 'og:description', content: 'Antseed lets you run your agents on your terms. Save on every AI model. No usage limits, no middleman, always anonymous.'},
+      {name: 'description', content: 'The open intelligence network. Run your agents on your terms and save on every AI model — no usage limits, no middleman, always anonymous.'},
+      {property: 'og:title', content: 'Antseed — The open intelligence network'},
+      {property: 'og:description', content: 'The open intelligence network. Antseed lets you run your agents on your terms and save on every AI model — no usage limits, no middleman, always anonymous.'},
       {property: 'og:type', content: 'website'},
       {property: 'og:site_name', content: 'Antseed'},
       {name: 'twitter:card', content: 'summary_large_image'},
       {name: 'twitter:site', content: '@antseed'},
-      {name: 'twitter:image', content: 'https://antseed.com/og-image-open-market.png'},
-      {property: 'og:image', content: 'https://antseed.com/og-image-open-market.png'},
+      {name: 'twitter:image', content: 'https://antseed.com/og-image-network.png'},
+      {property: 'og:image', content: 'https://antseed.com/og-image-network.png'},
       {property: 'og:image:type', content: 'image/png'},
       {property: 'og:image:width', content: '1200'},
       {property: 'og:image:height', content: '630'},
-      {property: 'og:image:alt', content: 'Antseed, run your agents on your terms'},
+      {property: 'og:image:alt', content: 'Antseed — the open intelligence network'},
     ],
     colorMode: {
       defaultMode: 'light',
-      disableSwitch: true,
+      disableSwitch: false,
       respectPrefersColorScheme: false,
     },
     navbar: {
+      // The site nav is a swizzled component (src/theme/Navbar, links in src/theme/Navbar/links.ts) that renders the design's markup
+      // itself. These items only feed Docusaurus' mobile sidebar logic (it needs a non-empty list for its "Back to main menu"); keep
+      // them in step with links.ts.
       title: '',
-      logo: {
-        alt: 'Antseed',
-        src: 'logo-light.svg',
-        srcDark: 'logo-dark.svg',
-        width: 104,
-        height: 36,
-      },
       items: [
-        {to: '/network', label: 'Network', position: 'left'},
-        {
-          // "Use it for" — audience pages. Rich rows (icon, title, one-line
-          // description) via html items; styled in custom.css (.usecase).
-          type: 'dropdown',
-          label: 'Use it for',
-          position: 'left',
-          className: 'header-usecases',
-          items: [
-            {
-              type: 'html',
-              value:
-                '<a class="usecase" href="/agents"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="14" height="10" rx="3"/><path d="M10 6V3.5"/><circle cx="10" cy="2.5" r="1"/><circle cx="7.5" cy="11" r="1" fill="currentColor" stroke="none"/><circle cx="12.5" cy="11" r="1" fill="currentColor" stroke="none"/></svg></span><span class="usecase__body"><span class="usecase__title">For agents</span><span class="usecase__desc">Hermes, OpenClaw, Codex, your own</span></span></a>',
-            },
-            {
-              type: 'html',
-              value:
-                '<a class="usecase" href="/coding"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="15" height="12" rx="3"/><path d="M6 9l2.5 2L6 13"/><path d="M10.5 13h3.5"/></svg></span><span class="usecase__body"><span class="usecase__title">For coding apps</span><span class="usecase__desc">Claude Code, Codex, OpenCode</span></span></a>',
-            },
-            {
-              type: 'html',
-              value:
-                '<a class="usecase" href="/apps"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="11" y="3" width="6" height="6" rx="1.5"/><rect x="3" y="11" width="6" height="6" rx="1.5"/><path d="M14 11v6M11 14h6"/></svg></span><span class="usecase__body"><span class="usecase__title">For AI apps</span><span class="usecase__desc">Lower AI costs for your app</span></span></a>',
-            },
-            {
-              type: 'html',
-              value:
-                '<a class="usecase" href="/privacy"><span class="usecase__icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2.5l6 2.5v4.5c0 3.6-2.6 6.3-6 7.5-3.4-1.2-6-3.9-6-7.5V5l6-2.5z"/><path d="M7.5 10l1.8 1.8L12.8 8"/></svg></span><span class="usecase__body"><span class="usecase__title">For privacy</span><span class="usecase__desc">No sign-up, runs on your machine</span></span></a>',
-            },
-          ],
-        },
-        {to: '/providers', label: 'Providers', position: 'left'},
-        {to: '/ecosystem', label: 'Ecosystem', position: 'left'},
-        {
-          href: 'https://antseedstats.com/network',
-          label: 'Live prices',
-          position: 'left',
-          target: '_blank',
-          rel: 'noopener noreferrer',
-          className: 'header-pricing-link',
-        },
-        {type: 'search', position: 'right'},
-        {
-          type: 'docSidebar',
-          sidebarId: 'docs',
-          label: 'Docs',
-          position: 'right',
-          className: 'header-docs-link',
-        },
-        {to: '/blog', label: 'Blog', position: 'right', className: 'header-blog-link'},
-        {
-          href: 'https://github.com/antseed',
-          'aria-label': 'GitHub',
-          position: 'right',
-          className: 'header-github-link',
-        },
-        {
-          // Custom item (src/theme/NavbarItem/DownloadNavbarItem.tsx): links
-          // straight to the installer for the visitor's OS/arch, falling back
-          // to the releases page when detection fails.
-          type: 'custom-download',
-          label: 'Desktop app',
-          position: 'right',
-          className: 'header-download-link',
-        },
-        {to: '/docs/quickstart', label: 'Set up gateway', position: 'right', className: 'header-gateway-link'},
+        {to: '/network/', label: 'Network', position: 'left'},
+        {to: '/providers/', label: 'Own provider', position: 'left'},
+        {to: '/colony/', label: 'Join a Colony', position: 'left'},
+        {to: '/ecosystem/', label: 'Ecosystem', position: 'left'},
+        {href: 'https://antseedstats.com/network', label: 'Live prices', position: 'left'},
+        {to: '/docs/', label: 'Docs', position: 'right'},
       ],
     },
     prism: {
-      theme: prismTheme,
-      darkTheme: prismTheme,
+      theme: prismLight,
+      darkTheme: prismDark,
       additionalLanguages: ['bash', 'json', 'typescript'],
     },
   } satisfies Preset.ThemeConfig,

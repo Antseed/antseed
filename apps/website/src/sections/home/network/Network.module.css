@@ -1,0 +1,25 @@
+/* At least one screen: the head, then the board and its points, which hold together in a 1440 × 900 screen. */
+.rail {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100svh - 4px);
+  padding-top: 72px;
+}
+.head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 20px;
+  padding-inline: var(--site-pad);
+}
+.network .head .sub { max-width: 760px; margin-top: 0; text-wrap: pretty; }
+
+.board { flex: none; width: 100%; margin-top: 40px; }
+/* three steps, then the way onwards in a column of its own */
+.network .points { grid-template-columns: repeat(3, 1fr) auto; }
+.network .point { padding: 48px 32px; }
+
+@media (max-width: 760px) {
+  .network .points { grid-template-columns: 1fr; }
+  .network .point:last-child { place-items: start; }
+}

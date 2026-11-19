@@ -1,0 +1,44 @@
+/* the reset in :where() has no specificity, so the minifier can't let it override the rules after it */
+:where(.button) { all: unset; }
+.button {
+  box-sizing: border-box;
+  display: block;
+  max-width: 300px;
+  cursor: pointer;
+  text-align: center;
+  text-wrap: balance;
+  font: 400 16px/24px var(--site-font);
+  color: var(--site-text-body);
+  transition: color .15s;
+}
+.button b { font-weight: 500; color: var(--site-text); transition: color .15s; }
+.button:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 6px; border-radius: 4px; }
+
+/* the steps not on show step well back, as an inactive tab */
+.ready { --off: #b6bbb7; }
+:global(:root[data-theme='dark']) .ready { --off: #4e5651; }
+.ready .button:not([aria-current]), .ready .button:not([aria-current]) b { color: var(--off); }
+@media (hover: hover) { .ready .button:not([aria-current]):hover b { color: var(--site-text); } }
+
+/* the step's progress: a thin track along the top of its cell, filled in green as it plays */
+.bar {
+  position: absolute;
+  z-index: 1;
+  inset: 0 0 auto;
+  height: 2px;
+  background: rgba(10, 26, 18, .09) linear-gradient(var(--fill), var(--fill)) no-repeat;
+  background-size: calc(var(--progress, 0) * 100%) 100%;
+  --fill: #5f8a12;
+}
+:global(:root[data-theme='dark']) .bar { background-color: rgba(236, 243, 238, .12); --fill: #b9ee2a; }
+
+/* tablets and phones: each step's whole cell is its button */
+@media (max-width: 1199px) {
+  .button { max-width: none; }
+  .button::after { content: ''; position: absolute; inset: 0; }
+}
+/* a phone: the steps leave the row to the board's own control; the way onwards stays under the board, the rail's content line in */
+@media (max-width: 760px) {
+  .steps > .step { display: none; }
+  .steps > .step + .extra { display: block; padding: 24px 20px 0; --dots-top: 0px; --dots-left: 0px; }
+}

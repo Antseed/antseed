@@ -1,0 +1,97 @@
+/* The install block: 600px wide on a 4px rhythm: 12 inside, the tabs (36), 12, the row (48), 12, the line under it (20). A warm glass
+   over the meadow by day, the gateway terminal's smoked green at night. */
+.install { --cmd: #0a1a12; --foot: rgba(10, 26, 18, .62); --tab: #f7f8f5; --tab-off: #6b7068; --focus: #789f00;
+  position: relative; isolation: isolate; margin-top: 16px; width: 600px; max-width: 100%; padding: 12px; border-radius: 12px;
+  box-shadow: inset 0 0 0 .5px #c3c3c3, inset 0 0 0 1px rgba(255, 255, 255, .75);
+  background: rgba(255, 253, 219, .33); backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); }
+/* a second stroke, added over the first, lighter toward the left edge */
+.install::before { content: ''; position: absolute; inset: 0; padding: .5px; border-radius: inherit; pointer-events: none; mix-blend-mode: plus-lighter;
+  background: radial-gradient(100% 100% at 0% 50%, #171e02, rgba(130, 146, 81, 0));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+:global(:root[data-theme='dark']) .install { --cmd: #eceee9; --foot: rgba(236, 238, 233, .62); --tab-off: #b3bdb6; --focus: #98c463;
+  background: rgba(14, 33, 23, .64);
+  box-shadow: inset 0 0 0 .5px rgba(150, 200, 145, .42), inset 0 .5px 0 0 rgba(190, 228, 170, .16), 0 12px 32px 0 rgba(8, 26, 14, .26);
+  backdrop-filter: blur(10px) saturate(1.3); -webkit-backdrop-filter: blur(10px) saturate(1.3); }
+.install :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* the tab bar and the white thumb slid under the chosen tab (useTabThumb sets --thumb-x and --thumb-w) */
+.tabs { position: relative; display: flex; width: max-content; height: 36px; padding: 4px; border-radius: 8px; background: var(--tab);
+  box-shadow: inset 0 0 0 .5px rgba(0, 0, 0, .1), inset 0 0 0 1px #e4dfd2; font: 500 13px/28px var(--site-font-ui); }
+/* the reset in :where() has no specificity, so the minifier can't let it override the rules after it */
+:where(.tabs button) { all: unset; }
+.tabs button { position: relative; display: grid; place-items: center; height: 28px; padding: 0 12px; border-radius: 6px; color: var(--tab-off);
+  cursor: pointer; transition: color .35s; white-space: nowrap; }
+.tabs button[aria-selected='true'] { color: var(--cmd); }
+.tabs::before { content: ''; position: absolute; top: 4px; left: 0; width: var(--thumb-w, 0); height: 28px; border-radius: 6px; background: #fff;
+  box-shadow: 0 0 0 1px #e4dfd2, 0 1px 2px rgba(4, 23, 15, .08); transform: translateX(var(--thumb-x, 0)); }
+.tabs.ready::before { transition: transform .35s cubic-bezier(.65, 0, .35, 1), width .35s cubic-bezier(.65, 0, .35, 1); }
+@media (prefers-reduced-motion: reduce) { .tabs.ready::before, .tabs button { transition: none; } }
+:global(:root[data-theme='dark']) .tabs { background: rgba(0, 0, 0, .24); box-shadow: inset 0 0 0 1px rgba(236, 238, 233, .06); }
+:global(:root[data-theme='dark']) .tabs::before { background: rgba(190, 228, 170, .16); box-shadow: 0 0 0 1px rgba(190, 228, 170, .26); }
+
+/* the panels stacked in one cell, so the block keeps its height */
+.panels { display: grid; grid-template-columns: minmax(0, 1fr); }
+.panel { grid-area: 1 / 1; }
+.panel[inert] { opacity: 0; visibility: hidden; }
+
+.row { display: flex; align-items: center; gap: 12px; height: 48px; margin-top: 12px; padding: 0 6px 0 16px; border-radius: 8px;
+  background: rgba(10, 26, 18, .1); font: 400 13px/13px var(--site-font-mono); }
+:global(:root[data-theme='dark']) .row { background: rgba(190, 228, 170, .1); }
+.prompt { font-style: normal; color: #789f00; }
+:global(:root[data-theme='dark']) .prompt { color: #98c463; }
+/* narrower than the command, it is cut with an ellipsis; the copy button copies it whole */
+.command { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #000; font: inherit;
+  padding: 0; border: 0; border-radius: 0; background: none; }
+:global(:root[data-theme='dark']) .command { color: var(--cmd); }
+:where(.copy) { all: unset; }
+.copy { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 6px; background: rgba(255, 255, 255, .08); cursor: pointer; }
+.copy img { display: block; filter: brightness(0) opacity(.62); }   /* a white icon, darkened on the light row */
+:global(:root[data-theme='dark']) .copy img { filter: none; }
+
+.foot { margin: 0; padding: 12px 4px 0; font: 400 12.5px/20px var(--site-font-ui); color: var(--foot); }
+:where(.foot a, .foot button) { all: unset; }
+.foot a, .foot button { font-weight: 500; color: var(--cmd); white-space: nowrap; cursor: pointer; }
+.foot a:hover { color: var(--cmd); text-decoration: none; }
+
+.row.appRow { font: 500 14px/1 var(--site-font-ui); color: var(--cmd); }
+.appName { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.get { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px 0 12px; border-radius: 6px; background: var(--site-fill); color: #fafafa;
+  box-shadow: 0 3.5px .5px 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -2px 1px 0 #3b5e17;
+  font: 500 13px/1 var(--site-font-ui); text-decoration: none; white-space: nowrap; transition: background .15s; }
+.get:hover { background: #456b1f; color: #fafafa; text-decoration: none; }
+:global(:root[data-theme='dark']) .get:hover { background: var(--site-fill-hover); }
+.get svg { width: 14px; height: 14px; fill: currentColor; }
+.short { display: none; }
+@media (max-width: 640px) { .long { display: none; } .short { display: inline; } }
+
+/* the dialog of every build */
+.versions { --cmd: #0a1a12; --foot: rgba(10, 26, 18, .62);
+  width: min(360px, calc(100vw - 32px)); padding: 16px; border: 0; border-radius: 12px; background: #fff; color: var(--cmd);
+  box-shadow: 0 0 0 1px #e4dfd2, 0 20px 48px rgba(4, 23, 15, .16); font: 400 13px/18px var(--site-font-ui); text-align: left; }
+.versions::backdrop { background: rgba(10, 26, 18, .18); }
+:global(:root[data-theme='dark']) .versions { --cmd: #eceee9; --foot: rgba(236, 238, 233, .62);
+  background: var(--site-surface); box-shadow: 0 0 0 1px rgba(236, 238, 233, .1), 0 20px 48px rgba(0, 0, 0, .5); }
+:global(:root[data-theme='dark']) .versions::backdrop { background: rgba(0, 0, 0, .5); }
+.versionsHead { display: flex; align-items: center; justify-content: space-between; margin: 0 0 8px 10px; font-size: 15px; font-weight: 500; }
+:where(.close) { all: unset; }
+.close { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 6px; color: #6b7068; font-size: 20px; cursor: pointer; }
+:global(:root[data-theme='dark']) .close { color: #9ba49e; }
+.build { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; color: inherit; text-decoration: none; }
+.build:hover { background: #f7f8f5; color: inherit; text-decoration: none; }
+:global(:root[data-theme='dark']) .build:hover { background: rgba(236, 238, 233, .06); }
+.build svg { width: 18px; height: 18px; fill: currentColor; }
+.build b { display: block; font-weight: 500; }
+.build small { display: block; font-size: 12px; color: var(--foot); }
+.build i { font-style: normal; font-size: 12px; color: #789f00; }
+:global(:root[data-theme='dark']) .build i { color: #98c463; }
+.older { display: block; margin-top: 12px; text-align: center; color: var(--foot); text-decoration: none; font-size: 12.5px; }
+
+/* a touch screen: the tabs, the download button and All versions keep their look, each in a 44px tall touch area */
+@media (max-width: 1079px) {
+  .tabs button::after, .get::after, .foot button::after { content: ''; position: absolute; inset: -10px 0; }
+  .tabs button::after { inset: -8px 0; }
+  .get::after { inset: -4px 0; }
+  .get, .foot button { position: relative; }
+}
+/* no downloads on a phone: the block is left out, nothing in its place */
+@media (max-width: 760px) { .install { display: none; } }
