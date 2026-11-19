@@ -13,7 +13,7 @@ import styles from './InstallPanel.module.css';
 type TabId = 'app' | 'gateway';
 const TABS: {id: TabId; label: string}[] = [
   {id: 'app', label: 'Desktop app'},
-  {id: 'gateway', label: 'Set up AI gateway'},
+  {id: 'gateway', label: 'Set Up Gateway'},
 ];
 const KEY_STEP: Record<string, (i: number, n: number) => number> = {
   ArrowRight: (i) => i + 1, ArrowLeft: (i) => i - 1, Home: () => 0, End: (_, n) => n - 1,

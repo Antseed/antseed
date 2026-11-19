@@ -4,8 +4,8 @@ import {CHAPTERS} from './chapters';
 import {useFilmChapters} from './useFilmChapters';
 import styles from './GatewayFilm.module.css';
 
-const POSTER = '/site/assets/home/gateway-demo/gateway-film-poster.jpg';
-const FILM = '/site/assets/home/gateway-demo/gateway-film.mp4';
+const POSTER = '/site/assets/home/gateway-demo/gateway-api-first-poster.jpg';
+const FILM = '/site/assets/home/gateway-demo/gateway-api-first.mp4';
 const LOAD_MARGIN = '1200px';
 
 /** The Gateway console on film, in a browser window, with chapter buttons under it that jump and light as it plays. */
@@ -24,7 +24,7 @@ export function GatewayFilm(): JSX.Element {
         <span className={styles.address}>localhost:8379/console</span>
       </div>
       <video ref={videoRef} className={styles.video} muted playsInline loop preload="none" poster={near ? POSTER : undefined}
-        aria-label="The Antseed Gateway console in use: a question answered by a provider on the network, the list of models and providers, an API key created with a daily and monthly budget, then usage and routing rules">
+        aria-label="Create an API key and set its budget, browse models and providers, review usage and routing, then ask a question in chat.">
         {near && <source src={FILM} type="video/mp4" />}
       </video>
       <div className={styles.chapters} role="group" aria-label="Chapters">

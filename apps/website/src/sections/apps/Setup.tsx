@@ -11,7 +11,7 @@ const PLACES: readonly LinkRow[] = [
 /** Where the gateway runs: on your computer while you build, or on a server. */
 export default function Setup(): JSX.Element {
   return (
-    <HeadBeside cmp="apps/setup" id="run" titleId="run-title" title="Set up your gateway" sub="Start on your computer or deploy on a server.">
+    <HeadBeside cmp="apps/setup" id="run" titleId="run-title" title="Set Up Gateway" sub="Start on your computer or deploy on a server.">
       <LinkRows rows={PLACES} />
     </HeadBeside>
   );

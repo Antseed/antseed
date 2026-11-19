@@ -40,8 +40,8 @@ export default function Privacy(): JSX.Element {
           <div className={clsx(styles.rail, styles.top)}>
             <header ref={head} className={styles.head}>
               <EyebrowLink to="/docs/security/" className={styles.eyebrow}>Privacy and trust</EyebrowLink>
-              <Heading reveal id={TITLE_ID} title={['Privacy', 'and trust.']} className={styles.title} />
-              <Sub reveal className={styles.sub}>Choose the privacy you need, and verify what you get.</Sub>
+              <Heading reveal id={TITLE_ID} title={['The privacy', 'you choose.']} className={styles.title} />
+              <Sub reveal className={styles.sub}>Protect your identity, verify the model, and choose who handles your prompt.</Sub>
             </header>
           </div>
           <div className={clsx(styles.rail, styles.body)}>

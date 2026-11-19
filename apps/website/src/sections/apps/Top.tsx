@@ -13,7 +13,7 @@ export default function Top(): JSX.Element {
       title={['Lower AI costs', 'for your app']}
       sub="Access 700+ AI models, with prices below the official APIs. Choose providers, set budgets, and track usage from one console."
       actions={<>
-        <Button href="/docs/quickstart/">Set up AI gateway&nbsp;→</Button>
+        <Button href="/docs/quickstart/">Set Up Gateway&nbsp;→</Button>
         <Button href="/docs/gateway/" variant="ghost">Read the docs</Button>
       </>}
       note="No signup required"

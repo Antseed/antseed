@@ -22,6 +22,18 @@ export type PrivacyPoint = {
 
 export const PRIVACY_POINTS: readonly PrivacyPoint[] = [
   {
+    id: 'tee',
+    name: 'Anonymous by default',
+    line: 'No account or email required. Choose a verified TEE for full prompt privacy.',
+    painting: PAINTINGS.pond,
+    window: {
+      title: ['Anonymous by default.', 'Full prompt privacy with a TEE.'],
+      screen: {kind: 'enclave'},
+      body: 'A provider sees a peer ID, not your name. By default it can read your prompt. With a verified trusted execution environment (TEE), even the server operator can’t read it.',
+      link: {href: '/docs/verify-tee/', label: 'Verify a TEE →'},
+    },
+  },
+  {
     id: 'direct',
     name: 'Direct, P2P by design',
     line: 'A direct connection removes the intermediary.',
@@ -44,18 +56,6 @@ export const PRIVACY_POINTS: readonly PrivacyPoint[] = [
       result: 'Same questions. Compare the answer patterns.',
       body: 'Models remember obscure facts differently, including their mistakes. Auditors ask fresh questions and compare the error rate with a trusted reference.',
       link: {href: '/docs/verify/overview/', label: 'How model audits work →'},
-    },
-  },
-  {
-    id: 'tee',
-    name: 'Private inside a TEE',
-    line: 'Verified secure hardware protects the data inside it, even from the server operator.',
-    painting: PAINTINGS.pond,
-    window: {
-      title: ['Private where', 'the model runs.'],
-      screen: {kind: 'enclave'},
-      body: 'Check the hardware attestation before sending sensitive data. Encryption protects the connection; the TEE protects data during processing.',
-      link: {href: '/docs/verify-tee/', label: 'Verify a TEE →'},
     },
   },
   {
