@@ -115,7 +115,10 @@ export default function JoinPage(): JSX.Element {
 
   // the last step opens the Google Form, prefilled; Google takes the verified email and holds one sign-up per account
   const handoff = () => {
+    // every step the Mac needs must be answered: a Mac changed on the summary clears its chip and memory
     if (!answers.mac) { go('mac', {back: true}); return; }
+    if (path.includes('chip') && !chipsFor(answers.mac).includes(answers.chip)) { go('chip', {back: true}); return; }
+    if (path.includes('memory') && !memsFor(answers.mac, answers.chip).includes(answers.memory)) { go('memory', {back: true}); return; }
     if (!answers.name) { go('name', {back: true}); return; }
     const url = prefillUrl(WAITLIST, answers, source.current);
     if (!url) { setFormError('Sign-ups open soon.'); return; }

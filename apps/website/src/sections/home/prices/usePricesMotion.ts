@@ -30,7 +30,8 @@ export function usePricesMotion(flow: RefObject<HTMLElement | null>): PricesMoti
     read();
     phone.addEventListener('change', read);
     reduced.addEventListener('change', read);
-    return () => { phone.removeEventListener('change', read); reduced.removeEventListener('change', read); };
+    addEventListener('resize', read);   // ordinary window growth, not just a media-query flip, relengths the lanes
+    return () => { phone.removeEventListener('change', read); reduced.removeEventListener('change', read); removeEventListener('resize', read); };
   }, [flow]);
 
   return {carried: near && !env.reduced, moving: onScreen && visible && !env.still, still: env.still, phone: env.phone, width: env.width};

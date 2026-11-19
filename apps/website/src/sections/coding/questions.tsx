@@ -8,7 +8,7 @@ export const QUESTIONS: readonly FaqItem[] = [
   },
   {
     question: 'Is it the same model I get on the plan?',
-    answer: <>The live board lists what providers serve, including frontier models, each at the provider’s own price. Every response is signed by the provider and matched against the model’s fingerprint; providers who serve something else lose reputation and stop getting routed. <a href="/docs/verify-tee/">How verification works →</a></>,
+    answer: <>The live board lists what providers serve, including frontier models, each at the provider’s own price. Responses are signed by the provider, and providers are checked against the model’s fingerprint; those who serve something else lose reputation and stop getting routed. <a href="/docs/verify-tee/">How verification works →</a></>,
   },
   {
     question: 'Does Cursor work?',
