@@ -1003,10 +1003,13 @@ test('the planner and submit read the same finish time for the audit behind an o
     const ledgerOf = (models: Record<string, unknown>) => JSON.stringify({ models })
     await mkdir(join(directory, 'submissions', 'run-1'), { recursive: true })
     await mkdir(join(directory, 'submissions', 'run-2'), { recursive: true })
-    await writeFile(join(directory, 'submissions', 'run-1', `ledger-8453-${contract.toLowerCase()}.json`), ledgerOf({ a: { transactionHash: '0xAA', auditedAt: { '1:0x01': 500 } } }))
+    await mkdir(join(directory, 'submissions', 'run-3'), { recursive: true })
+    // One ledger's unknown time (0) never masks another ledger's valid time for the same transaction and row.
+    await writeFile(join(directory, 'submissions', 'run-1', `ledger-8453-${contract.toLowerCase()}.json`), ledgerOf({ a: { transactionHash: '0xAA', auditedAt: { '1:0x01': 0 } } }))
     await writeFile(join(directory, 'submissions', 'run-2', `ledger-8453-${contract.toLowerCase()}.json`), '{ damaged')
+    await writeFile(join(directory, 'submissions', 'run-3', `ledger-8453-${contract.toLowerCase()}.json`), ledgerOf({ a: { transactionHash: '0xaa', auditedAt: { '1:0x01': 500, '2:0x02': 700 } } }))
     const sent = await sentAuditTimes(directory, 8453n, contract)
-    assert.deepEqual(sent.get('0xaa'), { '1:0x01': 500 })
+    assert.deepEqual(sent.get('0xaa'), { '1:0x01': 500, '2:0x02': 700 })
     const own = { verdict: VERIFIER_VERDICT.UNDETERMINED, round: 0, blockNumber: 9, logIndex: 0, transactionHash: '0xAA' }
     const reader = { blockTimestamp: async () => 900 }
     const fromLedger = async (value: { transactionHash?: string }) => sent.get(value.transactionHash?.toLowerCase() ?? '')?.['1:0x01'] ?? null

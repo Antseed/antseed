@@ -136,10 +136,11 @@ export interface FlipsReferencePairV1 {
   words: FlipsPair
   replies: FlipsReferenceReplyV1[]
   /**
-   * When the reference was asked for these replies, on the auditor's clock (ms): its first request and its last
-   * answer. For a report of the reference's age; no judgement reads it. Absent on records written before it.
+   * The bounds of the one reference call that asked every pair of this model and stage, on the auditor's clock (ms):
+   * its first request and its last answer (the same on every pair). For a report of the reference's age; no judgement
+   * reads it. Absent on records written before it, or when the clock gave no valid bounds.
    */
-  askedAt?: { first: number; last: number }
+  referenceBatch?: { startedAt: number; finishedAt: number }
 }
 
 /** The reference of one model, stage and run. */
@@ -270,10 +271,6 @@ export function isFlipsRecord(value: unknown, depth = 0): value is FlipsV1 {
       && Number.isSafeInteger(entry.sentAt) && typeof entry.answered === 'boolean'
       && Array.isArray(entry.requestIds) && entry.requestIds.every((id: unknown) => typeof id === 'string')
       && Array.isArray(entry.attemptCosts) && entry.attemptCosts.every(finite)))
-  // Optional (records written before it have none); well formed when present.
-  const askedAtOk = (askedAt: unknown): boolean => askedAt === undefined || (typeof askedAt === 'object' && askedAt !== null
-    && Number.isSafeInteger((askedAt as { first?: unknown }).first) && Number.isSafeInteger((askedAt as { last?: unknown }).last)
-    && (askedAt as { first: number }).first >= 0 && (askedAt as { first: number }).first <= (askedAt as { last: number }).last)
   const replyOk = (reply: unknown): boolean => {
     const stored = reply as Partial<FlipsReferenceReplyV1> | null
     return typeof stored === 'object' && stored !== null
@@ -290,7 +287,6 @@ export function isFlipsRecord(value: unknown, depth = 0): value is FlipsV1 {
       typeof pair === 'object' && pair !== null && Array.isArray(pair.words) && pair.words.length === 2 && pair.words.every((word) => typeof word === 'string')
       && Array.isArray(pair.seller) && pair.seller.length <= FLIPS_MAX_STORED.sellerSlots && pair.seller.every(slotOk)
       && Array.isArray(pair.reference?.replies) && pair.reference.replies.length <= FLIPS_MAX_STORED.referenceReplies && pair.reference.replies.every(replyOk)
-      && askedAtOk(pair.reference.askedAt)
     ))
     && countsOk(counts) && countsOk(mismatch)
     && (record.followUp === undefined || isFlipsRecord(record.followUp, depth + 1))
@@ -633,7 +629,9 @@ export async function prepareFlipsReference(input: {
       const results = asked.results.slice(pairIndex * rule.referenceRepliesPerPair, (pairIndex + 1) * rule.referenceRepliesPerPair)
       return {
         words: pair,
-        askedAt: { first: startedAt, last: finishedAt },
+        // The smaller as the start: a clock that steps back during the call never makes the bounds invalid.
+        ...(Number.isSafeInteger(startedAt) && Number.isSafeInteger(finishedAt) && startedAt >= 0 && finishedAt >= 0
+          ? { referenceBatch: { startedAt: Math.min(startedAt, finishedAt), finishedAt: Math.max(startedAt, finishedAt) } } : {}),
         replies: results.map((result) => {
           const answer = readFlipsAnswer(result.requestBody, result.response)
           return {

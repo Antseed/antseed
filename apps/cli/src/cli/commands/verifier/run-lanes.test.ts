@@ -1393,6 +1393,17 @@ test('reports A, B, A: each report keeps its own result, attempts and spacing; f
     assert.equal((await run({ report: A, at: step })).length > 0, true, 'B\'s result does not answer A')
     assert.deepEqual(await run({ report: A, at: 2 * step }), [], 'A\'s own decided result answers A')
   })
+  // A first look whose evidence cannot be read is audited again within the ordinary attempts, then left done: its
+  // result could never be sent.
+  await scenarioWith(async ({ scenario, run }) => {
+    scenario.firstResult = (model: string, peerId: string) => ({ ...decided(model, peerId), evidencePath: join(tmpdir(), `gone-first-${model}-${peerId.slice(0, 8)}.json`) })
+    assert.equal((await run({ report: null, at: 0 })).length > 0, true)
+    assert.deepEqual(await run({ report: null, at: 30 }), [], 'not before the retry spacing')
+    // Audited again, now with evidence that reads: the seller is done.
+    scenario.firstResult = decided
+    assert.equal((await run({ report: null, at: step })).length > 0, true, 'audited again: its evidence cannot be read')
+    assert.deepEqual(await run({ report: null, at: 2 * step }), [], 'a readable result: done')
+  })
   // A's decided result whose evidence cannot be read answers nothing: A is audited again (spaced), the seller's later
   // failures count toward A's limit as if there were no result, and then A is finished.
   await scenarioWith(async ({ scenario, run, attempts }) => {

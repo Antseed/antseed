@@ -163,11 +163,18 @@ export async function writeDryRunPrepared(evidenceDir: string, epoch: string, in
  * Before a dry run prepares: the file is replaced by a marker that says it is not complete, so an older file never
  * passes for this dry run's. When the marker cannot be written, the older file is removed.
  */
-export async function markDryRunPreparing(evidenceDir: string, epoch: string, runIds: readonly string[], now = new Date()): Promise<void> {
+export async function markDryRunPreparing(evidenceDir: string, epoch: string, runIds: readonly string[], now = new Date()): Promise<boolean> {
   const path = dryRunPreparedPath(evidenceDir, epoch)
   try {
     await writeJsonAtomic(path, { format: DRY_RUN_PREPARED_FORMAT, version: 1, state: 'incomplete', epoch, writtenAt: now.toISOString(), runIds: [...runIds], rows: [] })
+    return true
   } catch {
-    await rm(path, { force: true })
+    try {
+      await rm(path, { force: true })
+      return true
+    } catch {
+      // Neither marked nor removed: an older file is still there; the caller says so.
+      return false
+    }
   }
 }

@@ -110,6 +110,8 @@ import { openResponseAuthReader } from '../../../verifier/response-auth-reader.j
 import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import {
   CONFIRMATION_ATTEMPTS,
+  SELLER_FAILURE_ATTEMPTS,
+  SELLER_RETRY_SPACING_SECONDS,
   CONFIRMATION_RECHECK_SPACING_SECONDS,
   sellerRetryWaitUntil,
   countPlan,
@@ -1175,6 +1177,21 @@ export async function runVerifierRound(
         const unusableReportResult = (cell: EpochCell): boolean => (
           cell.confirmationReport !== undefined && cell.result !== null && !reportCellFinishedAt.has(cell)
         )
+        // A first look whose evidence cannot be read or has no valid date: submit leaves it out, so its SAME or DIFF
+        // would go unsent all epoch. It is audited again within the ordinary attempts.
+        const firstLookFinishedAt = new Map<EpochCell, number>()
+        for (const cell of epochState?.ordinaryCells?.values() ?? []) {
+          if (!cell.result) continue
+          const finished = await auditFinishedAt(cell.result)
+          if (finished !== null) firstLookFinishedAt.set(cell, finished)
+        }
+        // With the ordinary retry spacing: a re-audit minutes later counts as the same attempt.
+        const planNow = await clock()
+        const unusableFirstLook = (cell: EpochCell): boolean => (
+          cell.confirmationReport === undefined && cell.result !== null && cell.action === 'done' && !firstLookFinishedAt.has(cell)
+          && cell.attempts < SELLER_FAILURE_ATTEMPTS
+          && (cell.lastAttemptAt === null || cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS <= planNow)
+        )
         // A cell whose confirmation attempts were for another report than the one waiting now is no history of this
         // one: its attempts, cooldown and result neither answer nor hold back the live report.
         // A seller with a report waiting for this auditor is planned by that report's own cell (its result, attempts and
@@ -1187,7 +1204,10 @@ export async function runVerifierRound(
           }
           return (epochState?.ordinaryCells ?? epochState?.cells)?.get(epochCellKey(model, peer.peerId))
         }
-        const isDone = (model: string, peer: PeerInfo): boolean => epochCellFor(model, peer)?.action === 'done'
+        const isDone = (model: string, peer: PeerInfo): boolean => {
+          const cell = epochCellFor(model, peer)
+          return cell?.action === 'done' && !unusableFirstLook(cell)
+        }
         // A seller this epoch already finished is audited again when a confirmation assigned to this
         // auditor is still open for it: its finished result is for another service, or it was
         // submitted in a report round the contract no longer counts.

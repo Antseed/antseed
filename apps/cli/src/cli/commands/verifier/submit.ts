@@ -54,7 +54,7 @@ import { verifierVerdict } from '@antseed/node/payments'
 import { approvedAuditorsAt, loadAuditorSetEvents, revokedSinceEpochStart } from '../../../verifier/auditor-set.js'
 import { configuredVerifierModels } from '../../../verifier/model-config.js'
 import {
-  markDryRunPreparing, markUnsentReported, recordSubmitOutcome, unsentEpochRuns, unsentEpochRunsMessage, writeDryRunPrepared,
+  dryRunPreparedPath, markDryRunPreparing, markUnsentReported, recordSubmitOutcome, unsentEpochRuns, unsentEpochRunsMessage, writeDryRunPrepared,
 } from '../../../verifier/epoch-submission-record.js'
 
 interface SubmitOptions {
@@ -313,7 +313,11 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           if (!own.transactionHash) return null
           const key = resultTimeKey(candidate.agentId, candidate.serviceHash)
           const here = Object.values(ledger.models).find((value) => value.transactionHash && normalized(value.transactionHash) === normalized(own.transactionHash!))
-          return here?.auditedAt?.[key] ?? (await sentTimes()).get(own.transactionHash.toLowerCase())?.[key] ?? null
+          const valid = (time: unknown): time is number => typeof time === 'number' && Number.isFinite(time) && time > 0
+          const local = here?.auditedAt?.[key]
+          if (valid(local)) return local
+          const other = (await sentTimes()).get(own.transactionHash.toLowerCase())?.[key]
+          return valid(other) ? other : null
         },
       })
       const recheckBeforeSend = (audit: PreparedModelAudit): Promise<string | null> => recheckAuditBeforeSend({
@@ -322,7 +326,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         alreadyOnChain: (events) => alreadyOnChainFilterFor(events),
       })
       // A dry run marks its file as incomplete first, so a failure below never leaves an older one looking current.
-      if (options.dryRun) await markDryRunPreparing(evidenceDir, manifest.epoch, sourceRunIds).catch(() => undefined)
+      if (options.dryRun && !await markDryRunPreparing(evidenceDir, manifest.epoch, sourceRunIds).catch(() => false)) {
+        console.warn(chalk.yellow(`An older ${dryRunPreparedPath(evidenceDir, manifest.epoch)} could not be marked or removed; it is not this dry run's.`))
+      }
       const { audits: prepared, excluded, decisions, alreadyOnChain, heldBack } = await prepareModelAudits({
         evidenceDir,
         banksDir,

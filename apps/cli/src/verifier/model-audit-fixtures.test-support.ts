@@ -2,6 +2,8 @@
 import { ALL_TESTS_FORMAT, readingsOfEvidence, storedRequestsOf, verdictOf } from './audit-checks.js'
 import { outputCapCost, summarizeOutputCap, type OutputCapV1 } from './output-cap.js'
 import { outputEchoCost, summarizeOutputEcho, type OutputEchoV1 } from './output-echo.js'
+import { summarizeFlips, type FlipsV1 } from './flips.js'
+import type { AuditCheckId } from './audit-checks.js'
 import { createHash } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -104,6 +106,10 @@ export interface FixtureAudit {
   outputCap?: OutputCapV1
   /** An echo check record (`output-echo.ts`), the same way. */
   outputEcho?: OutputEchoV1
+  /** A FLIPS record (`flips.ts`), stored beside the questions as a run stores it. */
+  flips?: FlipsV1
+  /** The audit confirms another auditor's report: the tests it repeats and the report's chain time. */
+  confirming?: { checks: AuditCheckId[]; reportedAt: number }
   reference?: KbfReferenceV1
   /**
    * A close-call first audit (`kbf-extension-v1`): `firstWrong` wrong answers on the first set, then
@@ -253,6 +259,9 @@ export async function writeSignedAuditRun(input: {
   auditor: Wallet
   audits: FixtureAudit[]
   epochSource?: VerifierRunManifestV1['epochSource']
+  /** Failures and skips of the run, per model, as its summary lists them. */
+  failures?: Record<string, ModelAuditSummaryV1['failures']>
+  skipped?: Record<string, ModelAuditSummaryV1['skipped']>
   /**
    * When the run's audits were made (default 2026-10-07T00:02:00Z, two minutes into the fixture epoch). A
    * confirmation must be made at least an hour after the report it answers (`same-check.ts`).
@@ -314,6 +323,7 @@ export async function writeSignedAuditRun(input: {
         questionsOutcomeReason: null,
         ...(audit.confirmsDiff ? { confirmsDiff: true } : {}),
         ...(audit.offeredAsAlternate ? { offeredAsAlternate: true } : {}),
+        ...(audit.confirming ? { confirming: [...audit.confirming.checks], confirmingReportedAt: audit.confirming.reportedAt } : {}),
         outcomeReason: null,
         auditId,
         parsedProbeCount: evidence.result.parsedProbeCount,
@@ -331,8 +341,11 @@ export async function writeSignedAuditRun(input: {
         ...(evidence.tokenizerPrecheck ? { tokenizerPrecheck: summarizeTokenizerPrecheck(evidence.tokenizerPrecheck) } : {}),
         ...(evidence.outputCap ? { outputCap: summarizeOutputCap(evidence.outputCap) } : {}),
         ...(evidence.outputEcho ? { outputEcho: summarizeOutputEcho(evidence.outputEcho) } : {}),
+        ...(evidence.flips ? { flips: summarizeFlips(evidence.flips) } : {}),
       })
     }
+    const failures = input.failures?.[model] ?? []
+    const skipped = input.skipped?.[model] ?? []
     const summaryPath = await writeModelAuditSummary(input.evidenceDir, input.epoch, model, {
       version: 1,
       kind: 'antseed-verifier-model-summary',
@@ -342,16 +355,16 @@ export async function writeSignedAuditRun(input: {
       startedAt: timestamps.startedAt,
       completedAt: timestamps.completedAt,
       results,
-      failures: [],
-      skipped: [],
+      failures,
+      skipped,
       cost: emptyAuditCostSummary(),
     })
     summaryModels.push({
       model,
       summaryPath,
       resultCount: results.length,
-      failureCount: 0,
-      skippedCount: 0,
+      failureCount: failures.length,
+      skippedCount: skipped.length,
       cost: emptyAuditCostSummary(),
     })
   }
@@ -825,6 +838,8 @@ async function writeFixtureEvidence(input: {
     ...(precheckMatch ? { tokenizerPrecheck: precheckMatch } : {}),
     ...(audit.outputCap ? { outputCap: audit.outputCap } : {}),
     ...(audit.outputEcho ? { outputEcho: audit.outputEcho } : {}),
+    ...(audit.flips ? { flips: audit.flips } : {}),
+    ...(audit.confirming ? { confirming: { checks: [...audit.confirming.checks], reportedAt: audit.confirming.reportedAt } } : {}),
     tests: ALL_TESTS_FORMAT,
     exchanges,
     result: {
@@ -841,7 +856,7 @@ async function writeFixtureEvidence(input: {
     },
   }
   // The audit's verdict over every test (`verdictOf`), as a run settles it.
-  const auditVerdict = verdictOf(readingsOfEvidence(evidence, verdict), verdict).verdict
+  const auditVerdict = verdictOf(readingsOfEvidence(evidence, verdict), verdict, audit.confirming?.checks ?? null).verdict
   if (input.wrongCount === undefined && (verdict !== questionsWanted || auditVerdict !== audit.verdict)) {
     throw new Error(`fixture produced questions ${verdict} and audit ${auditVerdict}, expected ${questionsWanted} and ${audit.verdict}`)
   }

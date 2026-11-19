@@ -921,9 +921,14 @@ export async function sentAuditTimes(
       }
       for (const entry of Object.values(ledger.models ?? {})) {
         if (typeof entry.transactionHash !== 'string' || !entry.auditedAt || typeof entry.auditedAt !== 'object') continue
-        // Only real times: an unknown one (0, or not a number) is no time, and the report's block time stands in.
-        const times = Object.fromEntries(Object.entries(entry.auditedAt).filter(([, time]) => typeof time === 'number' && Number.isFinite(time) && time > 0))
-        byTransaction.set(entry.transactionHash.toLowerCase(), times)
+        // Only real times: an unknown one (0, or not a number) is no time. Every ledger that knows the transaction adds
+        // its valid times, so one ledger's unknown never masks another's.
+        const key = entry.transactionHash.toLowerCase()
+        const times = byTransaction.get(key) ?? {}
+        for (const [row, time] of Object.entries(entry.auditedAt)) {
+          if (typeof time === 'number' && Number.isFinite(time) && time > 0 && !(row in times)) times[row] = time
+        }
+        byTransaction.set(key, times)
       }
     } catch {
       // No ledger for this chain and contract in this run.
