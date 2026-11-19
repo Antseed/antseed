@@ -1,4 +1,4 @@
-import { getAddress, verifyTypedData } from 'ethers'
+import { Contract, TypedDataEncoder, getAddress, isError, recoverAddress, type ContractRunner } from 'ethers'
 
 /**
  * x402 v2 over HTTP, `exact` scheme with EIP-3009 USDC transfers: the
@@ -100,6 +100,28 @@ const TRANSFER_WITH_AUTHORIZATION_TYPES = {
   ],
 }
 
+/**
+ * Asks the contract at `account` whether it approves `signature` over
+ * `digest` (ERC-1271). Throws when the chain cannot be read.
+ */
+export type ContractSignatureCheck = (account: string, digest: string, signature: string) => Promise<boolean>
+
+const ERC1271_MAGIC_VALUE = '0x1626ba7e'
+const ERC1271_ABI = ['function isValidSignature(bytes32 hash, bytes signature) view returns (bytes4)']
+
+/** ERC-1271 through `runner`. A revert, or an address without code, is a refusal. */
+export function erc1271SignatureCheck(runner: ContractRunner): ContractSignatureCheck {
+  return async (account, digest, signature) => {
+    try {
+      const result = await new Contract(account, ERC1271_ABI, runner).getFunction('isValidSignature')(digest, signature) as string
+      return result.toLowerCase() === ERC1271_MAGIC_VALUE
+    } catch (error) {
+      if (isError(error, 'CALL_EXCEPTION') || isError(error, 'BAD_DATA')) return false
+      throw error
+    }
+  }
+}
+
 function sameAddress(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase()
 }
@@ -109,13 +131,19 @@ function sameAddress(a: string, b: string): boolean {
  * exactly what was asked, to the key's wallet, inside its validity window,
  * and is signed by the payer it names. Balance and nonce use are left to the
  * facilitator's on-chain simulation. Returns an x402 error reason, or null.
+ *
+ * The signature is accepted as USDC accepts it: an ECDSA signature by the
+ * payer, or, through `checkContractSignature`, one the contract at the payer's
+ * address approves (ERC-1271: smart accounts and EIP-7702 wallets). That check
+ * throws when the chain cannot be read.
  */
-export function checkPaymentPayload(
+export async function checkPaymentPayload(
   payment: PaymentPayload,
   required: PaymentRequirements,
   asset: X402Asset,
   nowSeconds: number,
-): string | null {
+  checkContractSignature?: ContractSignatureCheck,
+): Promise<string | null> {
   if (payment.x402Version !== X402_VERSION) return 'invalid_x402_version'
   const accepted = payment.accepted
   if (!accepted || accepted.scheme !== 'exact') return 'unsupported_scheme'
@@ -134,18 +162,27 @@ export function checkPaymentPayload(
   if (Number(authorization.validAfter) > nowSeconds) return 'invalid_exact_evm_payload_authorization_valid_after'
   // Leave the facilitator enough time to land the transaction.
   if (Number(authorization.validBefore) < nowSeconds + 6) return 'invalid_exact_evm_payload_authorization_valid_before'
-  let signer: string
+  let digest: string
   try {
-    signer = verifyTypedData(
+    digest = TypedDataEncoder.hash(
       { name: asset.name, version: asset.version, chainId: asset.chainId, verifyingContract: asset.address },
       TRANSFER_WITH_AUTHORIZATION_TYPES,
       authorization,
-      signature,
     )
   } catch {
     return 'invalid_exact_evm_payload_signature'
   }
-  return sameAddress(signer, authorization.from) ? null : 'invalid_exact_evm_payload_signature'
+  if (recoversTo(digest, signature, authorization.from)) return null
+  if (!checkContractSignature) return 'invalid_exact_evm_payload_signature'
+  return await checkContractSignature(authorization.from, digest, signature) ? null : 'invalid_exact_evm_payload_signature'
+}
+
+function recoversTo(digest: string, signature: string, address: string): boolean {
+  try {
+    return sameAddress(recoverAddress(digest, signature), address)
+  } catch {
+    return false
+  }
 }
 
 export interface FacilitatorOptions {
