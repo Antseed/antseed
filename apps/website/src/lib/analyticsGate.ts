@@ -1,8 +1,9 @@
 // Imported by docusaurus.config.ts (Node), so this file must not import anything.
 
 /**
- * Loads Google Tag Manager off the critical path: on the first real interaction (pointer, key, touch, scroll, move), or when the
- * browser next goes idle (at most 2s in, so a quick bounce is still counted), whichever comes first. GA4 and any ad/social pixels
+ * Loads Google Tag Manager off the critical path: on the first real interaction (pointer, key, touch, scroll, move), or 2s after the
+ * page has loaded, whichever comes first. Waiting for `load` keeps its scripts from competing with the hero for a slow phone's
+ * bandwidth (an idle callback could fire before the hero painted); 2s after it, a quick bounce is still counted. GA4 and any ad/social pixels
  * are tags *inside* the container, so
  * this one gate defers all of them without changing what is tracked. `dataLayer` is created immediately, so events the site pushes
  * before GTM arrives queue and are processed once it loads. Injected verbatim through `headTags`.
@@ -14,5 +15,6 @@ export const deferredGtmScript = (containerId: string): string =>
   `var ev=['pointerdown','keydown','touchstart','scroll','mousemove'];` +
   `function once(){ev.forEach(function(e){w.removeEventListener(e,once)});load();}` +
   `ev.forEach(function(e){w.addEventListener(e,once,{passive:true})});` +
-  `if('requestIdleCallback'in w){w.requestIdleCallback(load,{timeout:2000})}else{setTimeout(load,2000)}` +
+  `function later(){setTimeout(load,2000)}` +
+  `if(d.readyState==='complete'){later()}else{w.addEventListener('load',later)}` +
   `})(window,document,${JSON.stringify(containerId)});`;

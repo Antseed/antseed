@@ -1,5 +1,6 @@
 import type {CSSProperties, JSX} from 'react';
 import clsx from 'clsx';
+import {usePageLoaded} from '../../../../lib/usePageLoaded';
 import styles from './Painting.module.css';
 
 /** Five painted clouds drifting across the sky, each at its own pace. Values are shares of the 16:9 stage, so they stay on the painted
@@ -20,9 +21,10 @@ const vars = (c: Cloud) => ({
 }) as CSSProperties;
 
 export function Clouds({paused}: {paused: boolean}): JSX.Element {
+  const loaded = usePageLoaded();   // they drift in once the page has loaded, never ahead of the painting
   return (
-    <div className={clsx(styles.clouds, paused && styles.paused)} aria-hidden="true">
-      {CLOUDS.map((c) => <img key={c.id} className={styles.cloud} style={vars(c)} src={`/site/assets/hero/clouds/cloud-${c.id}.webp`} alt="" decoding="async" fetchPriority="low" />)}
+    <div className={clsx(styles.clouds, loaded && styles.cloudsIn, paused && styles.paused)} aria-hidden="true">
+      {loaded && CLOUDS.map((c) => <img key={c.id} className={styles.cloud} style={vars(c)} src={`/site/assets/hero/clouds/cloud-${c.id}.webp`} alt="" decoding="async" fetchPriority="low" />)}
     </div>
   );
 }
