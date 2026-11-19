@@ -1,5 +1,6 @@
 import {useRef, type JSX} from 'react';
 import clsx from 'clsx';
+import {usePageLoaded} from '../../../lib/usePageLoaded';
 import {useSiteTheme} from '../../../lib/useSiteTheme';
 import {APP_HEIGHT, APP_WIDTH, CAPTURES, PROMPT, SIGNATURE, captureSrc} from './script';
 import {useDesktopLoop} from './useDesktopLoop';
@@ -11,6 +12,7 @@ export function DesktopApp({className}: {className?: string}): JSX.Element {
   const frameRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<HTMLDivElement>(null);
   const dark = useSiteTheme() === 'dark';
+  const loaded = usePageLoaded();   // the captures wait for the page, so they never race the first screen
   useScaleToWidth(frameRef, appRef, APP_WIDTH);
   useDesktopLoop(frameRef);
 
@@ -20,7 +22,7 @@ export function DesktopApp({className}: {className?: string}): JSX.Element {
       <div ref={appRef} className={styles.app} aria-hidden="true">
         {CAPTURES.map(({id, file}) => (
           <img key={id} className={clsx(styles.capture, styles[id])} data-part={id === 'anon' ? undefined : id}
-            src={captureSrc(file, dark)} alt="" loading="lazy" decoding="async"
+            src={loaded ? captureSrc(file, dark) : undefined} alt="" loading="lazy" decoding="async"
             {...(id === 'anon' ? {width: APP_WIDTH, height: APP_HEIGHT} : {})} />
         ))}
         <p className={styles.typed} data-part="typed"><span data-part="typedText" /><i className={styles.caret} /></p>

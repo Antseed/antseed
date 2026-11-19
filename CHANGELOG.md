@@ -13,6 +13,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Website: the homepage shows its first screen sooner, most of all on phones. Images further down the page (the network diagram's paintings, the desktop app's screens, the price board's ants) and the hero's clouds no longer download alongside the hero painting, phones get a smaller cut of the hero painting, and Google Tag Manager waits until the page has loaded.
+- Website: on iPhones, iPads and Safari, the homepage's incognito ant no longer sits in a blue box.
 - Website: the homepage loads much faster. Google Tag Manager now loads off the critical path (on the first interaction, or when the browser goes idle), and the marketing-title fonts show in a fallback and swap in rather than blocking the first paint.
 - Website: the homepage price board's title says "700+ models", the same count as the network figures and the rest of the site. It used to show a live count rounded to the hundred, which disagreed with the figures.
 - Sellers and buyers (`@antseed/node`, `@antseed/provider-core`, CLI): a video download refused because all of the seller's download slots are taken now reaches the buyer as what it is, a 429 `video_download_busy` with `Retry-After: 5`, which the buyer proxy passes on to the client. Before, the seller reported it as `upstream_rate_limited` ("rate limited on this seller right now") with no `Retry-After`, so buyers took a short wait for an upstream limit and gave up on a video that was ready.

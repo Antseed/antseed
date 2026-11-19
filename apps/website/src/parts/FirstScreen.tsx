@@ -2,7 +2,7 @@ import type {CSSProperties, JSX, ReactNode} from 'react';
 import clsx from 'clsx';
 import Head from '@docusaurus/Head';
 import {Actions, Section, SectionHead, Wash, type SecondLine, type Title} from '../components';
-import {PHONE_PAINTINGS, WIDE_PAINTINGS, type Painting} from '../lib/paintings';
+import {paintingPreloads, type Painting} from '../lib/paintings';
 import styles from './FirstScreen.module.css';
 
 export type FirstScreenPainting = Painting & {
@@ -125,18 +125,6 @@ function screenVars({minHeight, textWidth, gaps, tabletRatio, railStack, focus}:
   return Object.fromEntries(Object.entries(entries).filter(([, v]) => v !== undefined)) as CSSProperties;
 }
 
-const LIGHT = '(prefers-color-scheme: light)';
-const DARK = '(prefers-color-scheme: dark)';
-
-/** The painting the first paint will show, asked for at once: per system theme, and per screen when it has phone cuts. */
-function preloads({day, night, dayPhone, nightPhone}: Painting): {href: string; media: string}[] {
-  if (!dayPhone || !nightPhone) return [{href: day, media: LIGHT}, {href: night, media: DARK}];
-  return [
-    {href: day, media: `${LIGHT} and ${WIDE_PAINTINGS}`}, {href: night, media: `${DARK} and ${WIDE_PAINTINGS}`},
-    {href: dayPhone, media: `${LIGHT} and ${PHONE_PAINTINGS}`}, {href: nightPhone, media: `${DARK} and ${PHONE_PAINTINGS}`},
-  ];
-}
-
 /**
  * A page's first screen across the whole width: the offer (an h1) on the left, starting on the rail's text edge, the painting filling
  * the right half (inset 16px with round corners from 1200px). Short enough that the band under it still shows above the fold; exactly
@@ -182,7 +170,7 @@ export function FirstScreen({
       )}
       style={screenVars({minHeight, textWidth, gaps, tabletRatio, railStack, focus: painting.focus})}>
       <Head>
-        {preloads(painting).map(({href, media}) => <link key={href} rel="preload" as="image" href={href} fetchPriority="high" media={media} />)}
+        {paintingPreloads(painting).map(({href, media}) => <link key={href} rel="preload" as="image" href={href} fetchPriority="high" media={media} />)}
       </Head>
       <div className={clsx(styles.grid, !onRail && styles.onPage, fit && styles.fit)}>
         <div className={styles.text}>
