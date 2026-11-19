@@ -1,7 +1,9 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
+import { auditedServiceNames } from './audited-models.js'
 import { outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1 } from './output-cap.js'
 import { outputEchoPaidRequests, summarizeOutputEcho, validateOutputEcho, type EchoSellerAskV1, type OutputEchoV1 } from './output-echo.js'
 import type { PaidRequest, ProxyAuditEvidenceExchangeV1 } from './proxy-evidence.js'
+import { matchesEnrolledService } from './response-auth-reader.js'
 import {
   summarizeTokenizerPrecheck,
   tokenizerPrecheckPaidRequests,
@@ -75,6 +77,14 @@ export interface StoredRequest {
   responseAuth: ProxyAuditEvidenceExchangeV1['responseAuth'] | null
 }
 
+/** The seller an audit is about, and the names its model is sold under. */
+export interface SellerBinding {
+  peerId: string
+  service: string
+  /** The model's other service names. Evidence does not store them: they are the audited model's (`audited-models.ts`). */
+  serviceAliases: readonly string[]
+}
+
 /** What validating one stored record may read besides the record. */
 export interface StoredAuditContext {
   /** The seller the evidence is about (`target.peerId`). */
@@ -104,6 +114,8 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   paid(record: CheckRecords[Slot]): PaidRequest[]
   /** The texts of a stored record that breaks the run's rules. */
   texts: {
+    /** The check, as an error names it. */
+    name: string
     summaryMismatch: string
     /** It ran although an earlier check's flag had ended the audit. Unused for the first check. */
     ranAfterDiff: string
@@ -145,6 +157,7 @@ export const TOKENS_CHECK: RecordCheck<'tokenizerPrecheck'> = {
   ],
   paid: tokenizerPrecheckPaidRequests,
   texts: {
+    name: 'the tokenizer pre-check',
     summaryMismatch: 'the summary\'s tokenizer pre-check is not the one in its evidence',
     ranAfterDiff: 'a tokenizer pre-check after a DIFF that ended the audit',
     endsWithDiff: 'a tokenizer pre-check mismatch is a DIFF with no question asked',
@@ -167,6 +180,7 @@ export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
   requests: (record) => record.asks.map((ask) => stored('audited', ask.request)),
   paid: outputCapPaidRequests,
   texts: {
+    name: 'the cap check',
     summaryMismatch: 'the summary\'s cap check is not the one in its evidence',
     ranAfterDiff: 'a cap check after a tokenizer pre-check DIFF',
     endsWithDiff: 'a cap check flag is a DIFF with no question asked',
@@ -208,6 +222,7 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
   ],
   paid: outputEchoPaidRequests,
   texts: {
+    name: 'the echo check',
     summaryMismatch: 'the summary\'s echo check is not the one in its evidence',
     ranAfterDiff: 'an echo check after a DIFF that ended the audit',
     endsWithDiff: 'an echo check flag is a DIFF with no question asked',
@@ -310,12 +325,59 @@ function recordsOf(records: StoredCheckRecords): Array<{ check: RecordCheck<Chec
  * records. For any reader of stored evidence: submit's own, and a confirmer reading the first auditor's.
  */
 export function validateStoredChecks(
-  evidence: StoredCheckRecords & { target: { peerId: string } },
+  evidence: StoredCheckRecords & StoredAuditTarget,
   reader: StoredAuditContext['reader'] = 'submit',
 ): void {
   const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence, reader }
+  const seller = sellerBindingOf(evidence)
   for (const { check, record } of recordsOf(evidence)) {
-    if (record != null) check.validate(record, context)
+    if (record == null) continue
+    check.validate(record, context)
+    assertBoundToSeller(check.requests(record), seller, check.texts.name)
+  }
+}
+
+/** What a seller's evidence says about whom it audited. */
+export interface StoredAuditTarget {
+  target: { peerId: string; service: string }
+  reference: { referenceModel: string }
+}
+
+/** The seller a stored audit is about, with its model's service names. */
+export function sellerBindingOf(evidence: StoredAuditTarget): SellerBinding {
+  return {
+    peerId: evidence.target.peerId,
+    service: evidence.target.service,
+    serviceAliases: typeof evidence.reference?.referenceModel === 'string' ? auditedServiceNames(evidence.reference.referenceModel) : [],
+  }
+}
+
+const peerKey = (peerId: string): string => peerId.toLowerCase().replace(/^0x/, '')
+
+/**
+ * Every verified reply a check stored is the one asked of the seller it is stored for: signed by that seller (the
+ * audited one, or the backer or crowd seller named beside it), for a request this record sent (the signed request ID
+ * is the one beside it and among the record's tries), and for the service it was asked as (the audited service, or
+ * the one stored with a backer; the model's other names count as the same). A reply that is not verified is left to
+ * the check, which does not count it.
+ */
+export function assertBoundToSeller(requests: readonly StoredRequest[], seller: SellerBinding, what: string): void {
+  for (const request of requests) {
+    const auth = request.responseAuth
+    if (auth?.status !== 'verified') continue
+    const record = auth.record
+    if (!record) throw new Error(`${what}: a verified reply has no signed record`)
+    const peerId = request.signer === 'audited' ? seller.peerId : request.signer.peerId
+    if (typeof record.sellerPeerId !== 'string' || peerKey(record.sellerPeerId) !== peerKey(peerId)) {
+      throw new Error(`${what}: a reply is not signed by the seller it is stored for`)
+    }
+    if (record.requestId !== auth.requestId || !request.requestIds.includes(record.requestId)) {
+      throw new Error(`${what}: a signed reply answers another request than the one stored with it`)
+    }
+    const service = request.signer === 'audited' ? seller.service : request.signer.service ?? seller.service
+    if (typeof record.advertisedService !== 'string' || !matchesEnrolledService(service, record.advertisedService, seller.serviceAliases)) {
+      throw new Error(`${what}: a reply is signed for another service than the one asked`)
+    }
   }
 }
 
@@ -326,8 +388,7 @@ export function validateStoredChecks(
  * no extra set follows it. In run order, so the first broken rule is the one named.
  */
 export function validateCheckRecordsAgainstSummary(
-  evidence: StoredCheckRecords & {
-    target: { peerId: string }
+  evidence: StoredCheckRecords & StoredAuditTarget & {
     exchanges: readonly unknown[]
     result: { verdict: string; parsedProbeCount: number }
   },
@@ -335,11 +396,13 @@ export function validateCheckRecordsAgainstSummary(
   continuedPast: (check: AuditCheckId) => boolean,
 ): void {
   const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence, reader: 'submit' }
+  const seller = sellerBindingOf(evidence)
   const ended: Array<RecordCheck<CheckSlot>> = []
   for (const { check, record } of recordsOf(evidence)) {
     if (record != null) {
       if (ended.length > 0) throw new Error(check.texts.ranAfterDiff)
       check.validate(record, context)
+      assertBoundToSeller(check.requests(record), seller, check.texts.name)
     }
     const stored = record == null ? null : check.summarize(record)
     if (canonicalJsonStringify(stored) !== canonicalJsonStringify(result[check.slot] ?? null)) throw new Error(check.texts.summaryMismatch)

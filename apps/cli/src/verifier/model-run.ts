@@ -34,7 +34,7 @@ import {
   type TokenPricingUsdPerMillion,
 } from '@antseed/node'
 import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
-import { auditedModels, findAuditedModelKey } from './audited-models.js'
+import { auditedServiceNames } from './audited-models.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { kbfAuditBatches } from './kbf-batching.js'
@@ -650,8 +650,7 @@ function isValidOffer(offer: TokenPricingUsdPerMillion | undefined): offer is To
 
 /** Every name the audited model currently goes by (empty for a model that is not audited). */
 function currentServiceNames(model: string): string[] {
-  const key = findAuditedModelKey(model)
-  return key ? [key, ...(auditedModels()[key]!.serviceAliases ?? [])] : []
+  return auditedServiceNames(model)
 }
 
 function isFiniteNonNegative(value: number | undefined): value is number {

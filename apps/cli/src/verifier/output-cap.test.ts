@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { Wallet } from 'ethers'
 import { VERIFIER_VERDICT } from '@antseed/node/payments'
 import { prepareModelAudits } from './model-audit.js'
-import { FIXTURE_CONFIG, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
+import { FIXTURE_CONFIG, peerIdOf, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
 import test from 'node:test'
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { transformRequest } from '@antseed/api-adapter'
@@ -220,12 +220,13 @@ function fakeSeller(answer: (cap: number, call: number) => { text: string; bille
     return Response.json(reply, { headers: { 'x-antseed-request-id': requestId } })
   }
   const responseAuthReader = {
-    async waitForVerified(input: { requestId: string }) {
+    async waitForVerified(input: { requestId: string; sellerPeerId: string; advertisedService: string }) {
       const bytesOf = signed.get(input.requestId)!
       return {
         requestId: input.requestId,
         status: 'verified' as const,
-        responseAuth: null,
+        // What a seller signs: who, for which request, for which service.
+        responseAuth: { requestId: input.requestId, sellerPeerId: input.sellerPeerId, advertisedService: input.advertisedService },
         signedPreimages: {
           encoding: 'antseed-http-codec-v1' as const,
           signatureEncoding: 'antseed-response-auth-signing-v1' as const,
@@ -255,10 +256,10 @@ const wordReference: TokenizerReferenceAsk = async (contents) => ({
   results: contents.map((content) => ({ inputTokens: 10 + content.trim().split(/\s+/).length, cachedInput: false, provider: 'maker', failure: null })),
 })
 
-const runOn = async (seller: ReturnType<typeof fakeSeller>, ask: TokenizerReferenceAsk = wordReference) => {
+const runOn = async (seller: ReturnType<typeof fakeSeller>, ask: TokenizerReferenceAsk = wordReference, peerId = PEER) => {
   const reference = await prepareOutputCapReference({ askReply: keptReply, ask })
   return runOutputCap({
-    proxyBaseUrl: 'http://127.0.0.1:1', peerId: PEER, service: SERVICE,
+    proxyBaseUrl: 'http://127.0.0.1:1', peerId, service: SERVICE,
     responseAuthReader: seller.responseAuthReader, limiter: new ConcurrencyLimiter(1), fetchFn: seller.fetchFn,
     reference, ask, thinking: null,
   })
@@ -337,15 +338,18 @@ test('the screen measures the reference once for every seller of the model', asy
 })
 
 test('a cap record of every outcome, written to its evidence file, passes the check submit makes', async () => {
+  // Each record is made for the seller the fixture writes it under, so its replies are signed by that seller.
+  const wallets = Array.from({ length: 4 }, () => new Wallet(Wallet.createRandom().privateKey))
+  const peerOf = (index: number) => peerIdOf(wallets[index]!)
   const records = {
-    pass: await runOn(fakeSeller((cap) => ({ text: words(Math.floor(cap / 3)), billed: cap }))),
-    flag: await runOn(fakeSeller(() => ({ text: words(120), billed: 900 }))),
+    pass: await runOn(fakeSeller((cap) => ({ text: words(Math.floor(cap / 3)), billed: cap })), wordReference, peerOf(0)),
+    flag: await runOn(fakeSeller(() => ({ text: words(120), billed: 900 })), wordReference, peerOf(1)),
     // Billed far over the limit, on two lines the reference cannot measure: unexplained.
-    inconclusive: await runOn(fakeSeller(() => ({ text: `${words(40)}\n${words(40)}`, billed: 900 }))),
+    inconclusive: await runOn(fakeSeller(() => ({ text: `${words(40)}\n${words(40)}`, billed: 900 })), wordReference, peerOf(2)),
   }
   // A dry pass's record: an answer within the limit, measured too.
   const measuredWithin = await runOutputCap({
-    proxyBaseUrl: 'http://127.0.0.1:1', peerId: PEER, service: SERVICE, ...(() => { const seller = fakeSeller((cap) => ({ text: words(Math.floor(cap / 3)), billed: cap })); return { responseAuthReader: seller.responseAuthReader, fetchFn: seller.fetchFn } })(),
+    proxyBaseUrl: 'http://127.0.0.1:1', peerId: peerOf(3), service: SERVICE, ...(() => { const seller = fakeSeller((cap) => ({ text: words(Math.floor(cap / 3)), billed: cap })); return { responseAuthReader: seller.responseAuthReader, fetchFn: seller.fetchFn } })(),
     limiter: new ConcurrencyLimiter(1), reference: await prepareOutputCapReference({ askReply: keptReply, ask: wordReference }), ask: wordReference, thinking: null, measureWithin: true,
   })
   assert.notEqual(measuredWithin.asks[0]!.measurement, null)
@@ -355,8 +359,9 @@ test('a cap record of every outcome, written to its evidence file, passes the ch
     const evidenceDir = join(directory, 'evidence')
     const banksDir = join(directory, 'banks')
     const auditor = new Wallet(Wallet.createRandom().privateKey)
+    // Stored under the seller and the service its replies were signed by and for.
     const seller = (agentId: string, verdict: FixtureAudit['verdict'], outputCap: OutputCapV1): FixtureAudit => ({
-      agentId, seller: new Wallet(Wallet.createRandom().privateKey), model: 'model-a', service: 'model-a', verdict, outputCap,
+      agentId, seller: wallets[Number(agentId) - 1]!, model: 'model-a', service: SERVICE, verdict, outputCap,
     })
     const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor, audits: [
       seller('1', 'SAME', records.pass), seller('2', 'DIFF', records.flag), seller('3', 'SAME', records.inconclusive), seller('4', 'SAME', measuredWithin),
@@ -368,6 +373,29 @@ test('a cap record of every outcome, written to its evidence file, passes the ch
     assert.deepEqual(prepared.excluded, [])
     assert.deepEqual(prepared.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[1n, VERIFIER_VERDICT.SAME], [2n, VERIFIER_VERDICT.DIFF], [3n, VERIFIER_VERDICT.SAME], [4n, VERIFIER_VERDICT.SAME]])
     assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.flaggedBy), [[], ['output-cap'], [], []])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a cap record stored under another seller than the one that signed it is refused at submit', async () => {
+  const [signer, other] = [0, 1].map(() => new Wallet(Wallet.createRandom().privateKey))
+  const record = await runOn(fakeSeller(() => ({ text: words(120), billed: 900 })), wordReference, peerIdOf(signer!))
+  assert.equal(record.outcome, 'flag')
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-output-cap-'))
+  try {
+    const evidenceDir = join(directory, 'evidence')
+    const banksDir = join(directory, 'banks')
+    const auditor = new Wallet(Wallet.createRandom().privateKey)
+    const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor, audits: [
+      { agentId: '1', seller: other!, model: 'model-a', service: SERVICE, verdict: 'DIFF', outputCap: record },
+    ] })
+    const prepared = await prepareModelAudits({
+      evidenceDir, banksDir, manifest, auditor: auditor.address,
+      resolveAgentOwner: async () => new Wallet(Wallet.createRandom().privateKey).address, config: FIXTURE_CONFIG,
+    })
+    assert.equal(prepared.audits.length, 0)
+    assert.match(prepared.excluded[0]!.reason, /invalid audit evidence: the cap check: a reply is not signed by the seller it is stored for/)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

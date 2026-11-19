@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { askedNoQuestion } from './close-call.js'
-import { RECORD_CHECKS, storedRequestsOf, TOKENS_CHECK } from './audit-checks.js'
+import { assertBoundToSeller, RECORD_CHECKS, storedRequestsOf, TOKENS_CHECK } from './audit-checks.js'
 import { costOfRequests, requestCountOf } from './proxy-evidence.js'
 import {
   AUDIT_CHECK_IDS,
@@ -228,4 +228,34 @@ test('every check\'s paid requests give its cost and request count, in the order
   ])
   assert.deepEqual(tokenizerPrecheckCost(precheck), costOfRequests(TOKENS_CHECK.paid(precheck)))
   assert.equal(tokenizerPrecheckRequestCount(precheck), requestCountOf(TOKENS_CHECK.paid(precheck)))
+})
+
+test('every verified reply a check stores is bound to its seller, its request and its service', () => {
+  const seller = { peerId: 'aa'.repeat(20), service: 'model-a', serviceAliases: ['model-a', 'vendor/model-a'] }
+  const reply = (input: { requestId?: string; signedId?: string; peer?: string; service?: string; status?: string; record?: boolean } = {}) => {
+    const requestId = input.requestId ?? 'r2'
+    return {
+      signer: 'audited' as const,
+      requestIds: ['r1', 'r2'],
+      responseAuth: {
+        requestId, status: input.status ?? 'verified', signedPreimages: null, failureReason: null,
+        record: input.record === false ? null : { requestId: input.signedId ?? requestId, sellerPeerId: input.peer ?? `0x${seller.peerId.toUpperCase()}`, advertisedService: input.service ?? 'model-a' },
+      } as never,
+    }
+  }
+  const bind = (requests: unknown[]) => () => assertBoundToSeller(requests as never, seller, 'the cap check')
+  assert.doesNotThrow(bind([reply()]), 'peer ids compare without case or 0x')
+  assert.doesNotThrow(bind([reply({ service: 'vendor/model-a' })]), 'another name of the model is the same service')
+  assert.throws(bind([reply({ peer: 'bb'.repeat(20) })]), /^Error: the cap check: a reply is not signed by the seller it is stored for$/)
+  assert.throws(bind([reply({ signedId: 'r9' })]), /a signed reply answers another request than the one stored with it/)
+  assert.throws(bind([reply({ requestId: 'r9' })]), /a signed reply answers another request than the one stored with it/, 'not one of the record\'s tries')
+  assert.throws(bind([reply({ service: 'model-b' })]), /a reply is signed for another service than the one asked/)
+  assert.throws(bind([reply({ record: false })]), /a verified reply has no signed record/)
+  assert.doesNotThrow(bind([reply({ status: 'invalid', peer: 'bb'.repeat(20) })]), 'a reply that is not verified is left to the check')
+  // Another seller's reply: its own peer, and the service stored with it when there is one.
+  const other = (service?: string, signed = 'model-a') => ({ ...reply({ peer: 'cc'.repeat(20), service: signed }), signer: { peerId: 'cc'.repeat(20), ...(service ? { service } : {}) } })
+  assert.doesNotThrow(bind([other()]))
+  assert.doesNotThrow(bind([other('model-a-fast', 'model-a-fast')]), 'a backer asked under its own service name')
+  assert.throws(bind([other('model-a-fast', 'model-a')]), /signed for another service/)
+  assert.throws(bind([{ ...other(), signer: { peerId: 'dd'.repeat(20) } }]), /not signed by the seller it is stored for/)
 })

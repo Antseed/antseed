@@ -65,9 +65,9 @@ async function measuredReference(count = MODEL_TOKENIZER): Promise<TokenizerPrec
   return measureTokenizerReference({ ask: referenceAsk(count), probes: PROBES })
 }
 
-/** The part of a ResponseAuth the pre-check keeps and checks: who signed it, for which request. */
-function signedRecord(input: { requestId: string; sellerPeerId: string }) {
-  return { requestId: input.requestId, sellerPeerId: input.sellerPeerId } as unknown as StoredResponseAuth
+/** The part of a ResponseAuth the checks keep and check: who signed it, for which request and which service. */
+function signedRecord(input: { requestId: string; sellerPeerId: string; advertisedService: string }) {
+  return { requestId: input.requestId, sellerPeerId: input.sellerPeerId, advertisedService: input.advertisedService } as unknown as StoredResponseAuth
 }
 
 /**

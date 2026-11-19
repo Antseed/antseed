@@ -159,6 +159,12 @@ export function setAuditedModelsForTesting(models: Readonly<Record<string, Audit
  * exact name (any case) wins; otherwise the name is matched by canonical model key the way buyers
  * route, so `anthropic/claude-opus-5.5` or `claude-opus-5-5-latest` finds `claude-opus-5.5`.
  */
+/** The names an audited model is sold under: its key and its aliases; empty for a model not in the list. */
+export function auditedServiceNames(model: string): string[] {
+  const key = findAuditedModelKey(model)
+  return key ? [key, ...(auditedModels()[key]!.serviceAliases ?? [])] : []
+}
+
 export function findAuditedModelKey(service: string): string | undefined {
   const wanted = service.trim().toLowerCase()
   const entries = Object.entries(auditedModels())

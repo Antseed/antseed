@@ -258,10 +258,11 @@ function fakeNetwork(billing: Record<string, (text: string) => number>) {
     return Response.json(reply, { headers: { 'x-antseed-request-id': requestId } })
   }
   const responseAuthReader = {
-    async waitForVerified(input: { requestId: string; sellerPeerId: string }) {
+    async waitForVerified(input: { requestId: string; sellerPeerId: string; advertisedService: string }) {
       const bytes = signed.get(input.requestId)!
       return {
-        requestId: input.requestId, status: 'verified' as const, responseAuth: { sellerPeerId: input.sellerPeerId }, failureReason: null,
+        requestId: input.requestId, status: 'verified' as const, failureReason: null,
+        responseAuth: { requestId: input.requestId, sellerPeerId: input.sellerPeerId, advertisedService: input.advertisedService },
         signedPreimages: {
           encoding: 'antseed-http-codec-v1' as const, signatureEncoding: 'antseed-response-auth-signing-v1' as const,
           requestBase64: Buffer.from(bytes.request).toString('base64'), responseBase64: Buffer.from(bytes.response).toString('base64'),
@@ -392,7 +393,8 @@ test('an echo record of every outcome, written to its evidence file, passes the 
     const banksDir = join(directory, 'banks')
     const auditor = new Wallet(Wallet.createRandom().privateKey)
     const audits: FixtureAudit[] = [...Object.values(records), stopped].map((record, index) => ({
-      agentId: String(index + 1), seller: wallets[index]!, model: 'model-a', service: 'model-a',
+      // Stored under the service its replies were signed for.
+      agentId: String(index + 1), seller: wallets[index]!, model: 'model-a', service: SERVICE,
       verdict: record.outcome === 'flag' ? 'DIFF' : 'SAME', outputEcho: record, ...(record.precheckMatch ? { tokenizerMatch: true } : {}),
     }))
     const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor, audits })
