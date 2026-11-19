@@ -1103,7 +1103,7 @@ export async function verifyModelTarget(input: {
       auditId: resolvedAuditId,
       evidencePath: written.path,
       evidenceHash: written.evidenceHash,
-      ...(ranCosts.length > 0 ? { requestCount: testRequestCount(ran), cost: addAuditCostSummaries(...ranCosts) } : {}),
+      ...(ranCosts.length > 0 ? { requestCount: testRequestCount(freshRecords()), cost: addAuditCostSummaries(...ranCosts) } : {}),
       ...(confirmingIdentity ? { confirming: [...confirmingIdentity.checks], ...(confirmingIdentity.reportedAt !== undefined ? { confirmingReportedAt: confirmingIdentity.reportedAt } : {}) } : {}),
     }
   }

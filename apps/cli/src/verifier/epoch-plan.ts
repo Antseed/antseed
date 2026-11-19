@@ -93,7 +93,49 @@ export interface EpochCell {
 export interface EpochState {
   epoch: string
   manifests: VerifierRunManifestV1[]
+  /** Each seller's latest state over everything this epoch: for the overview and the printed plan. */
   cells: Map<string, EpochCell>
+  /** First looks only (no report named): what plans a seller with no report waiting for this auditor. */
+  ordinaryCells?: Map<string, EpochCell>
+  /**
+   * One cell per seller and report it was confirmed for (`reportCellKey`): its result, attempts and spacing together,
+   * a report starting at zero. What plans a confirmation of that report; another report's never answers or holds it.
+   */
+  reportCells?: Map<string, EpochCell>
+}
+
+/** The key of one seller's cell for one report (`confirmationReportKey`). */
+export function reportCellKey(model: string, peerId: string, report: string): string {
+  return `${epochCellKey(model, peerId)}\u0000${report}`
+}
+
+/**
+ * The epoch's runs split by the report each entry was made for: first looks apart, and each report's results,
+ * failures and skips merged on their own (`mergeEpochRuns`), so each has its own result, attempts and spacing.
+ */
+export function splitEpochRuns(epoch: string, runs: readonly RunSummaries[]): { ordinary: Map<string, EpochCell>; reports: Map<string, EpochCell> } {
+  const keyOf = (entry: { service?: string; confirming?: readonly string[]; confirmingReportedAt?: number }): string | null => (
+    typeof entry.service === 'string' ? confirmationReportKey(entry as { service: string }) : null
+  )
+  const only = (pick: (key: string | null) => boolean): RunSummaries[] => runs.map(({ manifest, summaries }) => ({
+    manifest,
+    summaries: summaries.map((summary) => ({
+      ...summary,
+      results: (summary.results ?? []).filter((entry) => pick(keyOf(entry))),
+      failures: (summary.failures ?? []).filter((entry) => pick(keyOf(entry))),
+      skipped: (summary.skipped ?? []).filter((entry) => pick(keyOf(entry))),
+    })),
+  }))
+  const keys = new Set(runs.flatMap(({ summaries }) => summaries.flatMap((summary) => (
+    [...summary.results ?? [], ...summary.failures ?? [], ...summary.skipped ?? []].map(keyOf).filter((key): key is string => key !== null)
+  ))))
+  const reports = new Map<string, EpochCell>()
+  for (const report of keys) {
+    for (const [key, cell] of mergeEpochRuns(epoch, only((entry) => entry === report))) {
+      reports.set(`${key}\u0000${report}`, { ...cell, confirmationReport: report })
+    }
+  }
+  return { ordinary: mergeEpochRuns(epoch, only((entry) => entry === null)), reports }
 }
 
 export function epochCellKey(model: string, peerId: string): string {
@@ -207,24 +249,34 @@ export async function writeRetryGiveUps(evidenceDir: string, epoch: string, entr
  * questions were published is not done: it becomes an undecided confirmation attempt, so it is held and
  * the seller audited again from the start, up to `CONFIRMATION_ATTEMPTS` (`heldForConfirmationRecheck`).
  */
-export function applyRetryGiveUps(cells: Map<string, EpochCell>, entries: readonly RetryGiveUpV1[]): void {
+export function applyRetryGiveUps(
+  cells: Map<string, EpochCell>,
+  entries: readonly RetryGiveUpV1[],
+  /** The seller key of a cell key (report cells hold the report after it). */
+  sellerOf: (key: string) => string = (key) => key,
+): void {
   for (const entry of entries) {
-    const key = epochCellKey(entry.model, entry.peerId)
-    const cell = cells.get(key)
-    if (!cell || cell.action === 'done' || cell.action === 'audit') continue
-    if (cell.runId !== entry.runId || cell.lastAttemptAt !== entry.lastAttemptAt) continue
-    if (entry.extraQuestionsPublished && entry.confirmsDiff && cell.state === 'pending_extension' && cell.pending) {
-      // Its first look's own status stays (submit checks it against the evidence); the reason marks it undecided.
-      const result: ModelVerificationTargetResult = { ...cell.pending, outcomeReason: EXTRA_QUESTIONS_PUBLISHED }
-      const attempt: Omit<EpochCell, 'action'> = {
-        ...cell, state: 'undetermined', result, blame: failureBlame(result.outcomeReason), permanent: false,
-        reason: EXTRA_QUESTIONS_PUBLISHED.summary, extraQuestionsPublished: entry,
-      }
-      cells.set(key, { ...attempt, action: epochCellAction(attempt) })
-      continue
+    for (const key of [...cells.keys()].filter((candidate) => sellerOf(candidate) === epochCellKey(entry.model, entry.peerId))) {
+      applyRetryGiveUp(cells, key, entry)
     }
-    cells.set(key, { ...cell, action: 'done', givenUp: entry })
   }
+}
+
+function applyRetryGiveUp(cells: Map<string, EpochCell>, key: string, entry: RetryGiveUpV1): void {
+  const cell = cells.get(key)
+  if (!cell || cell.action === 'done' || cell.action === 'audit') return
+  if (cell.runId !== entry.runId || cell.lastAttemptAt !== entry.lastAttemptAt) return
+  if (entry.extraQuestionsPublished && entry.confirmsDiff && cell.state === 'pending_extension' && cell.pending) {
+    // Its first look's own status stays (submit checks it against the evidence); the reason marks it undecided.
+    const result: ModelVerificationTargetResult = { ...cell.pending, outcomeReason: EXTRA_QUESTIONS_PUBLISHED }
+    const attempt: Omit<EpochCell, 'action'> = {
+      ...cell, state: 'undetermined', result, blame: failureBlame(result.outcomeReason), permanent: false,
+      reason: EXTRA_QUESTIONS_PUBLISHED.summary, extraQuestionsPublished: entry,
+    }
+    cells.set(key, { ...attempt, action: epochCellAction(attempt) })
+    return
+  }
+  cells.set(key, { ...cell, action: 'done', givenUp: entry })
 }
 
 /**
@@ -364,8 +416,6 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     /** Audit IDs of the results already counted, so a confirmation's close call carried on counts once. */
     countedAuditIds: Set<string>
     confirmationReport: string | null
-    /** Each report's own attempt count and when its last one was counted: a report seen again keeps its count. */
-    byReport: Map<string, { attempts: number; countedAt: number | null }>
   }
   const acc = new Map<string, Acc>()
   const get = (model: string, peerId: string, runId: string): Acc => {
@@ -375,23 +425,15 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       entry = {
         model, peerId, runId, attempts: 0, auditorAttempts: 0, countedAt: null, lastAttemptAt: null,
         result: null, resultRunId: null,
-        pending: null, failure: null, skip: null, last: 'skip', countedAuditIds: new Set(), confirmationReport: null, byReport: new Map(),
+        pending: null, failure: null, skip: null, last: 'skip', countedAuditIds: new Set(), confirmationReport: null,
       }
       acc.set(key, entry)
     }
     return entry
   }
-  // Each confirmation counts on its report's own count: moving to another report keeps this one's, and coming back to
-  // a report carries on its count. An older report's used-up attempts never hold back a newer one.
+  // The report the cell's latest keyed entry was for (a merge of one report's entries has only that one).
   const switchReport = (entry: Acc, report: string | null): void => {
-    if (report === null || report === entry.confirmationReport) return
-    if (entry.confirmationReport !== null) entry.byReport.set(entry.confirmationReport, { attempts: entry.attempts, countedAt: entry.countedAt })
-    const known = entry.byReport.get(report)
-    if (entry.confirmationReport !== null || known) {
-      entry.attempts = known?.attempts ?? 0
-      entry.countedAt = known?.countedAt ?? null
-    }
-    entry.confirmationReport = report
+    if (report !== null) entry.confirmationReport = report
   }
   for (const { manifest, summaries } of runs) {
     const finishedAt = Number.isFinite(Date.parse(manifest.completedAt)) ? Date.parse(manifest.completedAt) / 1_000 : null
@@ -522,8 +564,13 @@ export async function loadEpochState(evidenceDir: string, epoch: string): Promis
     runs.push({ manifest, summaries })
   }
   const cells = mergeEpochRuns(epoch, runs)
-  applyRetryGiveUps(cells, await readRetryGiveUps(evidenceDir, epoch))
-  return { epoch, manifests, cells }
+  const { ordinary, reports } = splitEpochRuns(epoch, runs)
+  const giveUps = await readRetryGiveUps(evidenceDir, epoch)
+  // A give-up names the seller and its last attempt: it applies to whichever cell holds that attempt.
+  applyRetryGiveUps(cells, giveUps)
+  applyRetryGiveUps(ordinary, giveUps)
+  applyRetryGiveUps(reports, giveUps, (key) => key.split('\u0000').slice(0, 2).join('\u0000'))
+  return { epoch, manifests, cells, ordinaryCells: ordinary, reportCells: reports }
 }
 
 export interface EpochPlanCounts {

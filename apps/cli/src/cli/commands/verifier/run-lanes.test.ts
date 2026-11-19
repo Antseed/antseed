@@ -109,6 +109,10 @@ interface Scenario {
   firstResult?: (model: string, peerId: string) => Record<string, unknown>
   /** Audit IDs whose question reservation was voided. */
   voided: string[]
+  /** Reservations and voids in the order they were made ('reserve <auditId> <referenceId>', 'void <auditId>'). */
+  reservationLog: string[]
+  /** A new reservation fails (the bank cannot reserve). */
+  reserveFails?: boolean
   /** Extra-set reservations written, as `<model> <seller>`. */
   extensionReservations: string[]
   /** The first audit's reference each extra-set reservation was asked for. */
@@ -160,6 +164,7 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
     approved: async () => true,
     approvalReads: 0,
     voided: [],
+    reservationLog: [],
     extensionReservations: [],
     extensionFirstReferenceIds: [],
     retiredReferenceIds: new Set(),
@@ -286,10 +291,16 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
       }
     },
     // Every reservation gets its own audit ID, as the real one (it includes the time it was made).
-    reserveModelAuditReference: (input: { model: string; sellerPeerId: string }) => ({
-      auditId: `audit-${input.model}-${input.sellerPeerId}-${++reservationsMade}`, reference: { referenceId: `reference-${input.model}` },
-    }),
-    voidModelAuditReference: (input: { auditId: string }) => { scenario.voided.push(input.auditId) },
+    reserveModelAuditReference: (input: { model: string; sellerPeerId: string }) => {
+      if (scenario.reserveFails) throw new Error('the bank cannot reserve')
+      const reserved = { auditId: `audit-${input.model}-${input.sellerPeerId}-${++reservationsMade}`, reference: { referenceId: `reference-${input.model}` } }
+      scenario.reservationLog.push(`reserve ${reserved.auditId} ${reserved.reference.referenceId}`)
+      return reserved
+    },
+    voidModelAuditReference: (input: { auditId: string }) => {
+      scenario.voided.push(input.auditId)
+      scenario.reservationLog.push(`void ${input.auditId}`)
+    },
     openResponseAuthReader: () => ({ close: () => undefined }),
     // A first audit's evidence names the reference it was asked, here one per evidence file.
     verifyProxyAuditEvidenceFile: (path: string) => {
@@ -1114,7 +1125,7 @@ test('a confirmation close call carried pending through later runs is one attemp
   assert.equal(cell.action, 'done')
 }))
 
-test('a confirmation never resumes a set made for another report or a first look: it takes a new set, the old reservation voided', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+test('a confirmation never resumes an attempt for another report or a first look: a new reservation on the same set, the old one voided after it', LANE_TIMEOUT, () => withScenario(async (scenario) => {
   const peer = 'aa'.repeat(20)
   scenario.snapshots = [snapshot([{ ...seller(peer, ['model-a']), onChainAgentId: 5 } as PeerInfo])]
   // Run 1, a first look: the seller's connection breaks; its UNDETERMINED would be resumed later this epoch.
@@ -1130,10 +1141,19 @@ test('a confirmation never resumes a set made for another report or a first look
   scenario.confirmations = [{ model: 'model-a', agentId: '5' }]
   scenario.confirmationsWaitOnDiff = true
   scenario.reservation = () => ({ reference: { referenceId: 'first-reference:first-audit-model-a-aaaaaaaa.json', queryProfile: FIXTURE_QUERY_PROFILE, probes: [{ id: 'p1' }] }, retired: false })
+  scenario.reservationLog.length = 0
+  // A failed replacement leaves the earlier attempt as it was: nothing is voided.
+  scenario.reserveFails = true
+  await scenario.run({ peer, confirm: true })
+  assert.deepEqual(scenario.voided, [])
+  scenario.reserveFails = false
+  scenario.log.length = 0
   await scenario.run({ peer, confirm: true })
   const audits = scenario.log.filter((line) => line.startsWith('audit '))
   assert.ok(audits.length > 0 && audits.every((line) => !line.endsWith(' resume')), scenario.log.join('\n'))
-  assert.deepEqual(scenario.voided, [`audit-model-a-${peer}-1`])
+  // What happens: a new audit is reserved first, on the epoch's one shared set (the same questions, asked again in
+  // full), and only then is the earlier attempt's reservation voided.
+  assert.deepEqual(scenario.reservationLog, [`reserve audit-model-a-${peer}-2 reference-model-a`, `void audit-model-a-${peer}-1`])
 }))
 
 test('a retry whose set a submit published after the plan is not resumed: a new audit on the current set, the old reservation voided', LANE_TIMEOUT, () => withScenario(async (scenario) => {

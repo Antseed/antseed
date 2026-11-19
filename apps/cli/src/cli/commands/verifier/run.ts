@@ -117,6 +117,7 @@ import {
   writeRetryGiveUps,
   type RetryGiveUpV1,
   epochCellKey,
+  reportCellKey,
   reportKey as liveReportKey,
   heldForConfirmationRecheck,
   epochModelRows,
@@ -628,7 +629,7 @@ export interface ResumeCandidate {
 }
 
 /** Why a resume's reservation is voided when the confirmation it would serve is for another report. */
-const OTHER_REPORT_VOID_REASON = 'a confirmation of another report takes a new question set; this set was asked of the seller already'
+const OTHER_REPORT_VOID_REASON = 'a confirmation of another report closes this attempt: a new audit is reserved, and the seller is asked the questions again with none of these answers reused'
 
 /** Whether an evidence file is the audit of this seller and service, as its summary says. */
 function sameAuditTarget(evidence: ProxyAuditEvidenceV1, result: { peerId: string; service: string }): boolean {
@@ -1136,12 +1137,15 @@ export async function runVerifierRound(
           : await loadEpochState(evidenceDir, epoch)
         // A cell whose confirmation attempts were for another report than the one waiting now is no history of this
         // one: its attempts, cooldown and result neither answer nor hold back the live report.
+        // A seller with a report waiting for this auditor is planned by that report's own cell (its result, attempts and
+        // spacing, starting at zero); any other seller by its first looks. Another report's cell never answers or holds it.
         const epochCellFor = (model: string, peer: { peerId: string; onChainAgentId?: number | bigint | string | null }): EpochCell | undefined => {
-          const cell = epochState?.cells.get(epochCellKey(model, peer.peerId))
-          if (!cell?.confirmationReport) return cell
           const live = confirmationFor(model, peer)
-          if (!live?.firstChecks) return cell
-          return liveReportKey(live.service, live.firstReportedAt, live.firstChecks) === cell.confirmationReport ? cell : undefined
+          if (live?.firstChecks) {
+            const report = liveReportKey(live.service, live.firstReportedAt, live.firstChecks)
+            return epochState?.reportCells?.get(reportCellKey(model, peer.peerId, report))
+          }
+          return (epochState?.ordinaryCells ?? epochState?.cells)?.get(epochCellKey(model, peer.peerId))
         }
         const isDone = (model: string, peer: PeerInfo): boolean => epochCellFor(model, peer)?.action === 'done'
         // A seller this epoch already finished is audited again when a confirmation assigned to this
@@ -1160,7 +1164,8 @@ export async function runVerifierRound(
             ? {
               service: cell.result.service,
               completedAt: Date.parse(completedAt) / 1_000,
-              firstRequestAt: cell.result.firstRequestAt ?? null,
+              // Fresh by every set the result pools, as submit reads it.
+              firstRequestAt: earliestSetTime(cell.result),
               decided: localConfirmationDecision(cell.result, cell.action === 'done'),
               flagged: flaggedSummaryChecks(cell.result),
             }
@@ -1916,19 +1921,15 @@ export async function runVerifierRound(
                 const carriedFor = (records: StoredCheckRecords, source: ConfirmationIdentity | null | undefined): StoredCheckRecords => (
                   resumeMaterialFor({ exchanges: [], records, confirming: source ?? null }, confirmingIdentity, freshForReport).records
                 )
-                // A confirmation resumes an earlier attempt's set only when that attempt confirmed this same report.
-                // Another report's set (or a first look's) was asked of the seller already, and none of its answers is
-                // reused here, so this confirmation takes a new set and the old reservation is voided.
+                // A confirmation resumes an earlier attempt only when that attempt confirmed this same report. Otherwise
+                // the earlier attempt (another report's, or a first look's) is closed: a new audit with a new reservation,
+                // none of its answers reused. A reservation is an entry on the epoch's one shared set, so the seller is
+                // asked the same questions again in full; a disjoint set would need newly calibrated questions.
                 const resumable = target.resumeCandidate && (!confirmingIdentity
                   || (target.resumeCandidate.confirming !== undefined && sameConfirmation(target.resumeCandidate.confirming, confirmingIdentity)))
                   ? target.resumeCandidate
                   : undefined
-                if (target.resumeCandidate && !resumable) {
-                  await voidModelAuditReference({
-                    banksDir, model, sellerPeerId: target.peer.peerId, auditId: target.resumeCandidate.reservationAuditId,
-                    reason: OTHER_REPORT_VOID_REASON,
-                  })
-                }
+                const closedAttempt = target.resumeCandidate && !resumable ? target.resumeCandidate : undefined
                 const loaded = resumable ? await loadModelAuditReservation({
                   banksDir,
                   model,
@@ -1970,6 +1971,14 @@ export async function runVerifierRound(
                   reservationAuditId = reserved.auditId
                   reference = reserved.reference
                   auditId = reserved.auditId
+                  // The closed attempt's reservation is voided only once its replacement is reserved: a failed
+                  // replacement leaves the earlier attempt usable.
+                  if (closedAttempt) {
+                    await voidModelAuditReference({
+                      banksDir, model, sellerPeerId: target.peer.peerId, auditId: closedAttempt.reservationAuditId,
+                      reason: OTHER_REPORT_VOID_REASON,
+                    })
+                  }
                 }
                 referenceSources.set(reference.referenceId, reference)
                 const verified = await verifyModelTarget({

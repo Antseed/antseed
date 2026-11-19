@@ -7,7 +7,7 @@ import test from 'node:test'
 import { decidedChecks, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
 import { storedRequestsOf, validateStoredChecks } from './audit-checks.js'
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, encodeHttpResponse, type PeerId, type PeerInfo, type StoredResponseAuth } from '@antseed/node'
-import { isSafeProbe } from '@antseed/node/payments'
+import { VERIFIER_VERDICT, isSafeProbe } from '@antseed/node/payments'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
 import { needsExtension } from './close-call.js'
 import { validateAuditMatchesSummary } from './model-audit.js'
@@ -1377,6 +1377,7 @@ test('a seller skipped at its first question still reports what its pre-check se
   const carriedSkip = carried.skipped as ModelVerificationSkip
   assert.equal(carriedSkip.status, 'SKIPPED')
   assert.equal(carriedSkip.cost?.pricedExchangeCount ?? 0, 0)
+  assert.equal(carriedSkip.requestCount ?? 0, 0, 'nor any request of it')
 })
 
 test('a resume carries the pre-check its earlier attempt finished; a resume whose parent has none runs it', async () => {
@@ -1730,10 +1731,11 @@ test('check pipeline: a carried FLIPS is kept only for its own stage', async () 
 test('a confirmation resumed from a real checkpoint or retry file reuses only batches of the same report from its cutoff on, and passes submit', async () => {
   const reportedAt = Math.floor(Date.now() / 1_000) - 7_200
   const cutoff = reportedAt + CONFIRMATION_MIN_DELAY_SECONDS
-  const identity = { checks: ['kbf'] as AuditCheckId[], reportedAt }
+  // The waiting DIFF was flagged by the token count, and this seller's count is not the model's: the confirmation flags.
+  const identity = { checks: ['tokens'] as AuditCheckId[], reportedAt }
   let checkpoint: Record<string, unknown> | null = null
   const first = await audit({
-    usage: MODEL_TOKENIZER, confirming: ['kbf'], confirmingReportedAt: reportedAt,
+    usage: OTHER_TOKENIZER, confirming: ['tokens'], confirmingReportedAt: reportedAt,
     writeCheckpoint: async (_path, value) => { checkpoint = structuredClone(value) as Record<string, unknown> },
   })
   assert.ok(first.evidence.exchanges.length >= 4)
@@ -1788,7 +1790,7 @@ test('a confirmation resumed from a real checkpoint or retry file reuses only ba
       // Before the cutoff and without a time: asked again. Exactly at the cutoff and after: reused.
       assert.deepEqual(kept, all.filter((index) => index !== all[0] && index !== all[2]))
       const resumed = await audit({
-        usage: MODEL_TOKENIZER, confirming: ['kbf'], confirmingReportedAt: reportedAt,
+        usage: OTHER_TOKENIZER, confirming: ['tokens'], confirmingReportedAt: reportedAt,
         resume: { parentAuditId: candidate.auditId, reservationAuditId: candidate.reservationAuditId, parentEvidenceHash: candidate.evidenceHash, exchanges: material.exchanges, records: material.records },
       })
       assert.equal(resumed.questionRequests.length, 2, 'the two batches not reused are asked again')
@@ -1796,13 +1798,16 @@ test('a confirmation resumed from a real checkpoint or retry file reuses only ba
       assert.equal(resumed.result.firstRequestAt, earliestAuditorTime([resumed.evidence]))
       assert.ok(isFreshConfirmation(resumed.result.firstRequestAt, reportedAt))
       assert.doesNotThrow(() => validateAuditMatchesSummary(resumed.evidence, resumed.result as never))
-      // And submit's own decision on it: fresh, for the report its evidence names, its DIFF is sent.
+      // And submit's own decision on it, with the flags recomputed from the resumed evidence: the same test flagged
+      // again, fresh, for the report the evidence names, so its DIFF is sent.
+      assert.equal(resumed.result.status, 'DIFF')
+      const flaggedBy = flaggingChecks(resumed.evidence, resumed.result.questionsStatus!)
+      assert.ok(flaggedBy.includes('tokens'))
       const decision = decide({
-        agentId: 1n, serviceHash: '0x00', verdict: 2, auditedAt: earliestAuditorTime([resumed.evidence])!,
-        flaggedBy: ['kbf'], passedBy: [], confirming: resumed.evidence.confirming!,
-      } as never, [{ auditor: '0x00', evidenceUri: 'ipfs://x', evidenceHash: '0x00', reportedAt, checks: ['kbf'] }])
-      assert.notEqual(decision.kind === 'exclude' ? decision.reason : '', 'stale', 'never refused as stale')
-      assert.doesNotMatch(decision.kind === 'exclude' ? decision.reason : '', /fresh material|another report/)
+        agentId: 1n, serviceHash: '0x00', verdict: VERIFIER_VERDICT.DIFF, auditedAt: earliestAuditorTime([resumed.evidence])!,
+        flaggedBy, passedBy: passedChecks(resumed.evidence, resumed.result.questionsStatus!), confirming: resumed.evidence.confirming!,
+      }, [{ auditor: '0x00', evidenceUri: 'ipfs://x', evidenceHash: '0x00', reportedAt, checks: ['tokens'] }])
+      assert.equal(decision.kind, 'send')
       // Outside a confirmation nothing is filtered; --resume-run, with no live report, uses the candidate's own.
       assert.equal(resumeMaterialFor(candidate, null, fresh).exchanges.length, all.length)
       assert.deepEqual(resumeMaterialFor(candidate, candidate.confirming!, fresh).exchanges.map((exchange) => exchange.batchIndex), kept)

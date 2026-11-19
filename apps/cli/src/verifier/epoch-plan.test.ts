@@ -18,7 +18,9 @@ import {
   epochModelRows,
   failureBlame,
   mergeEpochRuns,
+  reportCellKey,
   reportKey,
+  splitEpochRuns,
   type EpochCell,
   type RetryGiveUpV1,
   writeEpochSubmissionManifest,
@@ -340,30 +342,34 @@ test('a confirmation\'s UNDETERMINED from a failure is held and retried up to CO
   assert.equal(heldForConfirmationRecheck(tie), false)
 })
 
-test('confirmation attempts are counted per report: an older report\'s used-up attempts never hold back a newer one', () => {
-  const confirming = (reportedAt: number) => result('a', 'UNDETERMINED', {
-    outcomeReason: sellerDown, confirmsDiff: true, confirming: ['kbf'], confirmingReportedAt: reportedAt,
+test('confirmation attempts are kept per report: each report has its own result, attempts and spacing, first looks apart', () => {
+  const confirming = (reportedAt: number, extra: Partial<ModelVerificationTargetResult> = {}) => result('a', 'UNDETERMINED', {
+    outcomeReason: sellerDown, confirmsDiff: true, confirming: ['kbf'], confirmingReportedAt: reportedAt, ...extra,
   } as Partial<ModelVerificationTargetResult>)
-  const runs = [0, 1, 2].map((index) => run(`r${index}`, `2026-10-28T2${index}:00:00.000Z`, [{ model: 'm', results: [confirming(100)] }]))
-  const exhausted = mergeEpochRuns(EPOCH, runs).get(epochCellKey('m', 'a'))!
-  assert.equal(exhausted.attempts, CONFIRMATION_ATTEMPTS)
-  assert.equal(exhausted.confirmationReport, reportKey(confirming(100).service, 100, ['kbf']))
-  // A newer report: its first attempt counts as its first, not the fourth.
-  const newer = mergeEpochRuns(EPOCH, [...runs, run('r3', '2026-10-28T23:00:00.000Z', [{ model: 'm', results: [confirming(200)] }])]).get(epochCellKey('m', 'a'))!
-  assert.equal(newer.attempts, 1)
-  assert.equal(newer.action, 'retry')
-  assert.equal(newer.confirmationReport, reportKey(confirming(200).service, 200, ['kbf']))
-  // Back to the first report: its count carries on, it does not restart.
-  const back = mergeEpochRuns(EPOCH, [...runs, run('r3', '2026-10-28T23:00:00.000Z', [{ model: 'm', results: [confirming(200)] }]),
-    run('r4', '2026-10-28T23:30:00.000Z', [{ model: 'm', results: [confirming(100)] }])]).get(epochCellKey('m', 'a'))!
-  assert.equal(back.attempts, CONFIRMATION_ATTEMPTS + 1)
-  assert.equal(back.action, 'done')
-  // A failure of a confirmation counts on its own report, not on the one before it.
-  const failed = mergeEpochRuns(EPOCH, [...runs, run('r3', '2026-10-28T23:00:00.000Z', [{
-    model: 'm', results: [], failures: [{ peerId: 'a', agentId: null, service: confirming(100).service, status: 'FAILED', reason: 'connection reset', outcomeReason: sellerDown, confirming: ['kbf'], confirmingReportedAt: 300 }],
-  }])]).get(epochCellKey('m', 'a'))!
-  assert.equal(failed.attempts, 1)
-  assert.equal(failed.confirmationReport, reportKey(confirming(100).service, 300, ['kbf']))
+  const service = confirming(100).service
+  const at = (hour: string) => `2026-10-28T${hour}:00.000Z`
+  const runs = [
+    // Two first looks, then three attempts on report 100, and a result and a failure on report 200.
+    run('f0', at('10:00'), [{ model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })] }]),
+    run('f1', at('14:00'), [{ model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })] }]),
+    ...[0, 1, 2].map((index) => run(`a${index}`, at(`2${index}:00`), [{ model: 'm', results: [confirming(100)] }])),
+    run('b0', at('23:00'), [{ model: 'm', results: [confirming(200)] }]),
+    run('b1', at('23:30'), [{ model: 'm', results: [], failures: [{ peerId: 'a', agentId: null, service, status: 'FAILED', reason: 'connection reset', outcomeReason: sellerDown, confirming: ['kbf'], confirmingReportedAt: 200 }] }]),
+  ]
+  const { ordinary, reports } = splitEpochRuns(EPOCH, runs)
+  const cellOf = (report: number) => reports.get(reportCellKey('m', 'a', reportKey(service, report, ['kbf'])))!
+  // Report 100: its own three attempts, used up, its own result; first looks never counted on it.
+  assert.equal(cellOf(100).attempts, CONFIRMATION_ATTEMPTS)
+  assert.equal(cellOf(100).action, 'done')
+  assert.equal(cellOf(100).result?.confirmingReportedAt, 100)
+  // Report 200 started at zero: one result and one failure of its own, and report 100's result never answers it.
+  assert.equal(cellOf(200).attempts, 2)
+  assert.equal(cellOf(200).confirmationReport, reportKey(service, 200, ['kbf']))
+  assert.equal(cellOf(200).result?.confirmingReportedAt, 200)
+  // First looks are their own bucket: two attempts, no report.
+  const firstLooks = ordinary.get(epochCellKey('m', 'a'))!
+  assert.equal(firstLooks.attempts, 2)
+  assert.equal(firstLooks.confirmationReport, undefined)
 })
 
 test('a confirmation whose close-call extension failed is retried; a decided or non-confirming one is done', () => {
