@@ -231,7 +231,7 @@ export default function JoinPage(): JSX.Element {
                 <p className={clsx(styles.eyebrow, styles.small)}>While you wait</p>
                 <ol className={styles.next}>
                   <li>
-                    <div><b>Join the community on Telegram</b><span>Our local AI group. Setups, models and the first Mac Colony, with the team.</span></div>
+                    <div><b>Join Local AI Colony on Telegram</b><span>Our local AI group. Setups, models and the first Mac Colony, with the team.</span></div>
                     {TELEGRAM_URL
                       ? <a className={clsx(styles.button, styles.sm)} href={TELEGRAM_URL} target="_blank" rel="noopener noreferrer">Join</a>
                       : <span className={styles.soon}>Opens on launch day</span>}
