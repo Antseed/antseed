@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { getAddress } from 'ethers'
 import {
@@ -219,8 +219,6 @@ export interface PreparedModelAudit {
    * send judges each row by it, as the preparation did.
    */
   auditedAt?: Record<string, number>
-  /** Each result's earliest request on the auditor's clock, by `resultTimeKey` (the planner's clock). */
-  firstRequestAt?: Record<string, number>
   /** Raw reference exchange files: where they are read from and where they go next to the evidence. */
   referenceEvidence: Array<{ sourcePath: string; path: string }>
 }
@@ -238,8 +236,6 @@ export interface ModelAuditLedgerEntryV1 {
   publication?: AuditPublicationV1
   /** Each result's audit time (`resultTimeKey`), as prepared: the audit behind this entry's report. */
   auditedAt?: Record<string, number>
-  /** Each result's earliest request on the auditor's clock (`resultTimeKey`): what a newer vote is compared with. */
-  firstRequestAt?: Record<string, number>
   status: ModelAuditSubmissionStatus
   transactionHash: string | null
   blockNumber: number | null
@@ -518,7 +514,6 @@ export async function prepareModelAudits(input: {
       serviceHash: serviceHash(entry.result.service),
       verdict: verifierVerdict(entry.result.status),
       auditedAt: auditedAt(entry),
-      firstRequestAt: earliestAuditorTime([entry.evidence, entry.extensionEvidence, entry.extension2Evidence]),
       confirmsDiff: entry.result.confirmsDiff === true,
     }))
     const drop = (index: number, reason: string): void => {
@@ -586,7 +581,12 @@ export async function prepareModelAudits(input: {
       for (let index = accepted.length - 1; index >= 0; index -= 1) {
         if (onChain[index] === true) accepted.splice(index, 1)
         // Not on chain, and not sent: this auditor's own newer report with another verdict stands.
-        else if (onChain[index] === 'superseded') drop(index, 'held: older than your own report with another verdict, which stands; a newer audit of this seller can change it')
+        else if (onChain[index] === 'superseded') {
+          // Outstanding too, on every path (nothing else to send included): the seller needs a newer audit.
+          const { result } = accepted[index]!
+          heldBack.push(`${model} ${result.agentId ?? result.peerId}: held: older than your own report with another verdict; a newer audit of this seller is needed to change it`)
+          drop(index, 'held: older than your own report with another verdict, which stands; a newer audit of this seller can change it')
+        }
       }
       if (accepted.length === 0) continue
     }
@@ -773,10 +773,6 @@ export async function prepareModelAudits(input: {
           ...(result.extension2 ? [result.extension2.evidencePath] : []),
         ]),
         auditedAt: Object.fromEntries(slice.map((entry) => [resultTimeKey(entry.agentId, serviceHash(entry.result.service)), auditedAt(entry)])),
-        firstRequestAt: Object.fromEntries(slice.map((entry) => [
-          resultTimeKey(entry.agentId, serviceHash(entry.result.service)),
-          earliestAuditorTime([entry.evidence, entry.extensionEvidence, entry.extension2Evidence]) ?? 0,
-        ])),
       })
     }
   }
@@ -799,6 +795,60 @@ function auditedAt(entry: {
     .filter(Number.isFinite)
   if (times.length === 0) return 0
   return Math.max(...times) / 1_000
+}
+
+/**
+ * When the audit behind a summary row finished (seconds): its latest evidence file's time, as `auditedAt` reads it for
+ * submit. Null when a file cannot be read or has no time.
+ */
+export async function auditFinishedAt(result: {
+  evidencePath: string
+  extension?: { evidencePath: string } | null
+  extension2?: { evidencePath: string } | null
+}): Promise<number | null> {
+  const paths = [result.evidencePath, result.extension?.evidencePath, result.extension2?.evidencePath]
+    .filter((path): path is string => typeof path === 'string')
+  const times: number[] = []
+  for (const path of paths) {
+    try {
+      const time = Date.parse((JSON.parse(await readFile(path, 'utf8')) as { createdAt?: unknown }).createdAt as string)
+      if (!Number.isFinite(time)) return null
+      times.push(time)
+    } catch {
+      return null
+    }
+  }
+  return times.length > 0 ? Math.max(...times) / 1_000 : null
+}
+
+/**
+ * When each result this auditor sent finished, by transaction: every run's submit ledger in `evidenceDir` for this
+ * chain and contract (`auditedAt`, by `resultTimeKey`). An unreadable ledger is passed over.
+ */
+export async function sentAuditTimes(
+  evidenceDir: string, chainId: bigint | string, contract: string,
+): Promise<Map<string, Record<string, number>>> {
+  const byTransaction = new Map<string, Record<string, number>>()
+  const root = join(evidenceDir, 'submissions')
+  let runs: string[]
+  try {
+    runs = await readdir(root)
+  } catch {
+    return byTransaction
+  }
+  for (const run of runs) {
+    try {
+      const ledger = JSON.parse(await readFile(join(root, run, `ledger-${String(chainId)}-${contract.toLowerCase()}.json`), 'utf8')) as {
+        models?: Record<string, Partial<ModelAuditLedgerEntryV1>>
+      }
+      for (const entry of Object.values(ledger.models ?? {})) {
+        if (typeof entry.transactionHash === 'string' && entry.auditedAt) byTransaction.set(entry.transactionHash.toLowerCase(), entry.auditedAt)
+      }
+    } catch {
+      // No ledger for this chain and contract in this run.
+    }
+  }
+  return byTransaction
 }
 
 /**
@@ -1115,11 +1165,14 @@ interface ExtraSetRecord {
  * decides it. Stats are null when the reference cannot give a baseline.
  */
 function recomputedFirstLook(evidence: ProxyAuditEvidenceV1): { verdict: ModelAuditVerdict; stats: FingerprintStats | null } {
-  // An unfinished question set (the seller skipped at a batch) is undecided, as the run decides it, when the batch it
-  // names is stored and did not succeed: a mark the evidence cannot back is ignored, and the numbers decide.
+  // An unfinished question set (the seller skipped at a batch) is undecided, as the run decides it, only when the
+  // batch it names is stored as the run stores a skip: failed, with no scored answer, and the failure's own summary as
+  // the mark's reason. A mark the evidence cannot back is ignored, and the numbers decide.
   const unfinished = evidence.result.unfinished
   const skippedAt = unfinished ? evidence.exchanges.find((exchange) => exchange.batchIndex === unfinished.batchIndex) : undefined
-  const backedSkip = skippedAt !== undefined && skippedAt.status !== 'succeeded'
+  const backedSkip = skippedAt !== undefined && skippedAt.status === 'failed'
+    && skippedAt.matches.every((match) => match === null)
+    && typeof skippedAt.outcomeReason?.summary === 'string' && skippedAt.outcomeReason.summary === unfinished!.reason
   const matches = new Map<string, 0 | 1 | null>()
   for (const exchange of evidence.exchanges) {
     for (const [index, probeId] of exchange.probeIds.entries()) matches.set(probeId, exchange.matches[index] ?? null)

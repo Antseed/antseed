@@ -160,6 +160,9 @@ import {
   waitingReportBlocks,
   type ConfirmationTarget,
 } from '../../../verifier/pending-confirmations.js'
+import { auditFinishedAt, resultTimeKey, sentAuditTimes } from '../../../verifier/model-audit.js'
+import { ownReportFinishedAt } from '../../../verifier/submission-delta.js'
+import { getAddress } from 'ethers'
 import { loadPendingExtensions, pendingExtensionKey, type PendingExtension } from '../../../verifier/pending-extensions.js'
 import { VerifierRunProgress } from './run-progress.js'
 import { failureOutcomeReason } from '../../../verifier/outcome-reason.js'
@@ -542,22 +545,34 @@ export async function loadRunConfirmations(input: {
       log: (line) => console.log(chalk.yellow(line)),
     })
     // When this auditor reported on a seller in a round the contract no longer counts, a local
-    // result only answers the confirmation if it is newer than that report.
+    // result only answers the confirmation if its audit finished after the audit behind that report: the ordering
+    // submit uses (`ownReportFinishedAt`), so a correction counted as done here is one submit sends.
     const ownReports = ownLatestReports(events, auditor.address)
     // Results submitted together share a block, so each block is read once.
     const timestamps = new Map(blockTimestamps)
+    const blockTimestamp = async (block: number): Promise<number> => {
+      let timestamp = timestamps.get(block)
+      if (timestamp === undefined) {
+        const header = await client.provider.getBlock(block)
+        if (!header) throw new Error(`block ${block} of an earlier report is unavailable`)
+        timestamp = header.timestamp
+        timestamps.set(block, timestamp)
+      }
+      return timestamp
+    }
+    let sent: Map<string, Record<string, number>> | null = null
     for (const [model, agents] of targets) {
       for (const target of agents.values()) {
-        const block = ownReports.get(reportKey(target.agentId, serviceHash(target.service), modelHash(model)))?.blockNumber
-        if (block === undefined) continue
-        let timestamp = timestamps.get(block)
-        if (timestamp === undefined) {
-          const header = await client.provider.getBlock(block)
-          if (!header) throw new Error(`block ${block} of an earlier report is unavailable`)
-          timestamp = header.timestamp
-          timestamps.set(block, timestamp)
-        }
-        target.ownReportedAt = timestamp
+        const own = ownReports.get(reportKey(target.agentId, serviceHash(target.service), modelHash(model)))
+        if (!own) continue
+        sent ??= await sentAuditTimes(
+          input.config.verifier?.evidenceDir ?? join(input.dataDir, 'verifier', 'evidence'),
+          (await client.provider.getNetwork()).chainId, getAddress(client.contractAddress),
+        )
+        const key = resultTimeKey(target.agentId, serviceHash(target.service))
+        target.ownReportedAt = await ownReportFinishedAt(
+          own, async (value) => (value.transactionHash ? sent!.get(value.transactionHash.toLowerCase())?.[key] ?? null : null), { blockTimestamp },
+        )
       }
     }
     return targets
@@ -1149,6 +1164,14 @@ export async function runVerifierRound(
         const epochState: EpochState | null = options.fresh || requestedResumeManifest
           ? null
           : await loadEpochState(evidenceDir, epoch)
+        // When each confirmation result's audit finished: the planner orders it against this auditor's own report as
+        // submit does.
+        const reportCellFinishedAt = new Map<EpochCell, number>()
+        for (const cell of epochState?.reportCells?.values() ?? []) {
+          if (!cell.result) continue
+          const finished = await auditFinishedAt(cell.result)
+          if (finished !== null) reportCellFinishedAt.set(cell, finished)
+        }
         // A cell whose confirmation attempts were for another report than the one waiting now is no history of this
         // one: its attempts, cooldown and result neither answer nor hold back the live report.
         // A seller with a report waiting for this auditor is planned by that report's own cell (its result, attempts and
@@ -1174,15 +1197,17 @@ export async function runVerifierRound(
           // Only the seller's own attempts finish it: the auditor's failures never do.
           if (cell?.confirmationReport !== undefined && cell.action === 'done' && !cell.result
             && cell.attempts >= CONFIRMATION_ATTEMPTS) return undefined
-          const completedAt = cell?.result
+          // When its audit finished, as submit reads it (its latest evidence file), else its run's end.
+          const runCompletedAt = cell?.result
             ? epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
             : undefined
+          const completedAt = cell?.result ? reportCellFinishedAt.get(cell) ?? (runCompletedAt ? Date.parse(runCompletedAt) / 1_000 : undefined) : undefined
           // Only a result made for this report answers it: one that names no report (a first look, or a summary from
           // before reports were named) answers none, and the seller is audited for it.
           const local = cell?.result && completedAt && cell.confirmationReport !== undefined
             ? {
               service: cell.result.service,
-              completedAt: Date.parse(completedAt) / 1_000,
+              completedAt,
               // Fresh by every set the result pools, as submit reads it.
               firstRequestAt: earliestSetTime(cell.result),
               decided: localConfirmationDecision(cell.result, cell.action === 'done'),
@@ -2063,13 +2088,16 @@ export async function runVerifierRound(
                   }
                   return { result: null, failure: null, skipped: result }
                 }
+                // The one shared decision, never the stored status: a close call waiting for its extra set is PENDING.
+                const decision = auditDecision(result)
+                const shownVerdict = decision.pending ? 'PENDING' : decision.audit.verdict
                 await appendEvent({
                   type: 'audit-completed', runId, epoch, model, peerId: result.peerId,
-                  auditId: result.auditId, verdict: result.status, cost: result.cost,
+                  auditId: result.auditId, verdict: shownVerdict, cost: result.cost,
                   outcomeReason: result.outcomeReason,
                   // Every test that flagged, and the questions' own verdict and reason, apart from the audit's.
-                  flaggedBy: result.status === 'DIFF' ? flaggedSummaryChecks(result) : [],
-                  questionsVerdict: result.questionsStatus ?? null,
+                  flaggedBy: shownVerdict === 'DIFF' ? flaggedSummaryChecks(result) : [],
+                  questionsVerdict: decision.questionsStatus,
                   questionsOutcomeReason: result.questionsOutcomeReason ?? null,
                   at: new Date().toISOString(),
                 })
@@ -2078,20 +2106,20 @@ export async function runVerifierRound(
                   value.cost = addAuditCostSummaries(value.cost, result.cost)
                   incrementReasonCount(value.reasonCounts, result.outcomeReason)
                 })
-                runProgress!.recordVerdict(model, result.status, result.outcomeReason)
+                runProgress!.recordVerdict(model, decision.audit.verdict, result.outcomeReason)
                 if (!runProgress!.interactive) {
                   // Every test that flagged, each with what it saw, then the questions' own verdict and reason, in one bracket.
-                  const flagged = result.status === 'DIFF' ? flaggedSummaryChecks(result) : []
+                  const flagged = shownVerdict === 'DIFF' ? flaggedSummaryChecks(result) : []
                   const questionsReason = result.questionsOutcomeReason?.code
                   const parts = [
                     ...(flagged.length > 0 ? [`flagged by ${flagged.map(describeAuditCheck).join(', ')}`] : []),
                     ...(result.tokenizerPrecheck?.outcome === 'mismatch' ? [`tokenizer pre-check: ${describeTokenizerCounts(result.tokenizerPrecheck)}`] : []),
                     ...(result.outputCap?.outcome === 'flag' ? [`cap check: ${describeOutputCapSummary(result.outputCap)}`] : []),
                     ...(result.outputEcho?.outcome === 'flag' ? [`echo check: ${result.outputEcho.reason}`] : []),
-                    `questions ${result.questionsStatus ?? result.status}${questionsReason ? ` (${questionsReason})` : ''}, ${result.parsedProbeCount}/${result.probeCount} scoreable`,
+                    `questions ${decision.questionsStatus}${questionsReason ? ` (${questionsReason})` : ''}, ${result.parsedProbeCount}/${result.probeCount} scoreable`,
                     `$${result.cost.estimatedCostUsd.toFixed(6)}`,
                   ]
-                  console.log(chalk.green(`${result.status} ${target.peer.peerId.slice(0, 12)}… (${parts.join('; ')})`))
+                  console.log(chalk.green(`${shownVerdict} ${target.peer.peerId.slice(0, 12)}… (${parts.join('; ')})`))
                 }
                 return { result, failure: null, skipped: null }
               } catch (error) {

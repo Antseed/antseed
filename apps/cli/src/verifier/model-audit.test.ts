@@ -13,6 +13,7 @@ import {
   modelAuditUpstreams,
   adjudicateQuestions,
   prepareModelAudits,
+  sentAuditTimes,
   preparedFromEvidence,
   readModelAuditEvidence,
   readModelAuditLedger,
@@ -36,6 +37,7 @@ import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { pooledCloseCallVerdict } from './close-call.js'
 import { EPOCH_QUESTION_SET_METHOD, retireEpochQuestionSet } from './probe-bank.js'
 import { EXTRA_QUESTIONS_PUBLISHED } from './outcome-reason.js'
+import { alreadyOnChainFilter, ownReportFinishedAt, type SubmissionCandidate } from './submission-delta.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const auditor = randomWallet()
@@ -935,6 +937,80 @@ test('a close call asked on a set a submit has since published is submitted UNDE
     await writeFile(summaryPath, JSON.stringify(summary))
     const lastAttempt = await prepare(confirmation)
     assert.deepEqual(lastAttempt.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[3n, VERIFIER_VERDICT.UNDETERMINED]])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('an UNDETERMINED first look already sent does not hold back the resumed retry that finished later: its DIFF goes out', async () => {
+  // This auditor sent seller 1's first look as UNDETERMINED (its retry was planned); the retry resumed that attempt,
+  // keeping its batches (so the same earliest request), and ended DIFF. It finished after the reported audit, even
+  // before that report's block: it is sent. An audit that finished before the reported one is held, and said so.
+  const ownReport = {
+    agentId: 1n, serviceHash: serviceHash('model-a'), auditor: auditor.address, modelHash: modelHash('model-a'),
+    verdict: VERIFIER_VERDICT.UNDETERMINED, round: 0, reports: 1, required: 1, blockNumber: 10, logIndex: 1, transactionHash: '0xsent',
+  }
+  const filterWith = (reportedFinish: (retryFinished: number) => number) => async (model: string, candidates: readonly SubmissionCandidate[]) => {
+    const retryFinished = candidates[0]!.auditedAt
+    const filter = alreadyOnChainFilter({
+      events: [ownReport], auditor: auditor.address, epoch: 7n,
+      reader: {
+        reportRound: async () => 0,
+        serviceStatusByHash: async () => ({ modelHash: modelHash('model-a'), verdict: VERIFIER_VERDICT.UNDETERMINED, epoch: 7n }),
+        // The report was mined an hour after the retry finished.
+        blockTimestamp: async () => retryFinished + 3_600,
+      },
+      auditorSetEvents: async () => [],
+      reportedAuditTime: async (own) => (own.transactionHash === '0xsent' ? reportedFinish(retryFinished) : null),
+    })
+    return filter(model, candidates)
+  }
+  await withRun([audit('1', sellers[0]!, 'model-a', 'DIFF')], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits.flatMap((entry) => entry.results.map((result) => result.verdict)), [VERIFIER_VERDICT.DIFF])
+    assert.deepEqual(prepared.alreadyOnChain, [])
+    assert.deepEqual(prepared.heldBack, [])
+  }, { alreadyOnChain: filterWith((retryFinished) => retryFinished - 600) })
+  // The reported audit finished after this one: held, outstanding, and never counted as on chain.
+  await withRun([audit('1', sellers[0]!, 'model-a', 'DIFF')], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits, [])
+    assert.deepEqual(prepared.alreadyOnChain, [])
+    assert.ok(prepared.excluded.some((entry) => /held: older than your own report/.test(entry.reason)))
+    assert.ok(prepared.heldBack.some((line) => /a newer audit of this seller is needed/.test(line)))
+  }, { alreadyOnChain: filterWith((retryFinished) => retryFinished + 600) })
+  // No ledger knows the report: its block time stands in, and the retry that finished before it is held.
+  await withRun([audit('1', sellers[0]!, 'model-a', 'DIFF')], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits, [])
+  }, { alreadyOnChain: async (model, candidates) => {
+    const filter = alreadyOnChainFilter({
+      events: [{ ...ownReport, transactionHash: '0xelsewhere' }], auditor: auditor.address, epoch: 7n,
+      reader: {
+        reportRound: async () => 0,
+        serviceStatusByHash: async () => ({ modelHash: modelHash('model-a'), verdict: VERIFIER_VERDICT.UNDETERMINED, epoch: 7n }),
+        blockTimestamp: async () => candidates[0]!.auditedAt + 3_600,
+      },
+      auditorSetEvents: async () => [],
+      reportedAuditTime: async () => null,
+    })
+    return filter(model, candidates)
+  } })
+})
+
+test('the planner and submit read the same finish time for the audit behind an own report: any run\'s ledger, else the block', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-sent-times-'))
+  try {
+    const contract = '0x' + 'Ab'.repeat(20)
+    const ledgerOf = (models: Record<string, unknown>) => JSON.stringify({ models })
+    await mkdir(join(directory, 'submissions', 'run-1'), { recursive: true })
+    await mkdir(join(directory, 'submissions', 'run-2'), { recursive: true })
+    await writeFile(join(directory, 'submissions', 'run-1', `ledger-8453-${contract.toLowerCase()}.json`), ledgerOf({ a: { transactionHash: '0xAA', auditedAt: { '1:0x01': 500 } } }))
+    await writeFile(join(directory, 'submissions', 'run-2', `ledger-8453-${contract.toLowerCase()}.json`), '{ damaged')
+    const sent = await sentAuditTimes(directory, 8453n, contract)
+    assert.deepEqual(sent.get('0xaa'), { '1:0x01': 500 })
+    const own = { verdict: VERIFIER_VERDICT.UNDETERMINED, round: 0, blockNumber: 9, logIndex: 0, transactionHash: '0xAA' }
+    const reader = { blockTimestamp: async () => 900 }
+    const fromLedger = async (value: { transactionHash?: string }) => sent.get(value.transactionHash?.toLowerCase() ?? '')?.['1:0x01'] ?? null
+    assert.equal(await ownReportFinishedAt(own, fromLedger, reader), 500)
+    assert.equal(await ownReportFinishedAt({ ...own, transactionHash: '0xBB' }, fromLedger, reader), 900, 'unknown to every ledger: the block time')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

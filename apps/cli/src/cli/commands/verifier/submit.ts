@@ -23,6 +23,7 @@ import {
   preparedFromEvidence,
   readModelAuditEvidence,
   resultTimeKey,
+  sentAuditTimes,
   writeModelAuditEvidence,
   writeModelAuditLedger,
   type AuditPublicationV1,
@@ -289,6 +290,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         },
       }
       // What this auditor already reported, on the events given: the preparation and the last read before a send use it.
+      // The finish times of what this auditor sent from any run here, read once when an older vote needs them.
+      let sentTimesRead: Promise<Map<string, Record<string, number>>> | null = null
+      const sentTimes = () => (sentTimesRead ??= sentAuditTimes(evidenceDir, network.chainId, contract))
       const alreadyOnChainFilterFor = (events: readonly ServiceAuditedEvent[]) => alreadyOnChainFilter({
         events,
         auditor: address,
@@ -303,11 +307,13 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           },
         },
         auditorSetEvents,
-        // The audit behind this auditor's own report, by its transaction in the ledger: its own time, not the block's.
+        // When the audit behind this auditor's own report finished, by its transaction in this run's ledger or another
+        // run's: the planner's ordering too.
         reportedAuditTime: async (own, candidate) => {
           if (!own.transactionHash) return null
-          const entry = Object.values(ledger.models).find((value) => value.transactionHash && normalized(value.transactionHash) === normalized(own.transactionHash!))
-          return entry?.firstRequestAt?.[resultTimeKey(candidate.agentId, candidate.serviceHash)] ?? null
+          const key = resultTimeKey(candidate.agentId, candidate.serviceHash)
+          const here = Object.values(ledger.models).find((value) => value.transactionHash && normalized(value.transactionHash) === normalized(own.transactionHash!))
+          return here?.auditedAt?.[key] ?? (await sentTimes()).get(own.transactionHash.toLowerCase())?.[key] ?? null
         },
       })
       const recheckBeforeSend = (audit: PreparedModelAudit): Promise<string | null> => recheckAuditBeforeSend({
@@ -661,7 +667,7 @@ async function epochSubmissionManifest(
  * too, so the check never fails open.
  */
 export async function recheckAuditBeforeSend(input: {
-  audit: Pick<PreparedModelAudit, 'modelHash' | 'results'> & Partial<Pick<PreparedModelAudit, 'auditedAt' | 'firstRequestAt'>> & { evidence: Pick<PreparedModelAudit['evidence'], 'results'> }
+  audit: Pick<PreparedModelAudit, 'modelHash' | 'results'> & Partial<Pick<PreparedModelAudit, 'auditedAt'>> & { evidence: Pick<PreparedModelAudit['evidence'], 'results'> }
   auditor: string
   readEvents: () => Promise<readonly ServiceAuditedEvent[]>
   readMyConfirmations: (events: readonly ServiceAuditedEvent[]) => Promise<ReadonlySet<string>>
@@ -686,7 +692,6 @@ export async function recheckAuditBeforeSend(input: {
       // newer than this auditor's report (`submission-delta.ts`).
       const reported = await input.alreadyOnChain(events)(input.audit.modelHash, input.audit.results.map((result) => ({
         ...result, auditedAt: input.audit.auditedAt?.[resultTimeKey(result.agentId, result.serviceHash)] ?? 0,
-        firstRequestAt: input.audit.firstRequestAt?.[resultTimeKey(result.agentId, result.serviceHash)] ?? null,
       })))
       const count = reported.filter((entry) => entry === true).length
       if (count > 0) blocked.push(`${count} result(s) this auditor has reported since it was prepared`)
@@ -937,7 +942,6 @@ export async function reuseLedgerEvidence(
         ...reused, references,
         // The same results as prepared now, so the same audit times.
         ...(audit.auditedAt ? { auditedAt: audit.auditedAt } : {}),
-        ...(audit.firstRequestAt ? { firstRequestAt: audit.firstRequestAt } : {}),
       })
     } catch {
       audits.push(audit)
@@ -977,7 +981,6 @@ function ledgerEntry(
     ...(publication ? { publication } : {}),
     // Each row's audit time: a later submit compares a newer vote with the audit behind this one.
     ...(audit.auditedAt ? { auditedAt: audit.auditedAt } : {}),
-    ...(audit.firstRequestAt ? { firstRequestAt: audit.firstRequestAt } : {}),
     status: 'pending',
     transactionHash: null,
     blockNumber: null,

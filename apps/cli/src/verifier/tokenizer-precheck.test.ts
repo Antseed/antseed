@@ -1609,10 +1609,28 @@ test('a seller skipped late, after a flag, leaves its questions unfinished: both
   // Submit's validator and the confirmer's adjudicator both accept it.
   assert.doesNotThrow(() => validateAuditMatchesSummary(late.evidence, late.result))
   assert.equal(adjudicateQuestions({ evidence: late.evidence, extraSets: [], decisionRule: late.result.decisionRule, closed: false }).verdict, 'UNDETERMINED')
-  // A mark the evidence cannot back (it names a batch that succeeded) is ignored: the numbers decide, and the label is refused.
+  // A mark the evidence cannot back is ignored by both readers: the numbers decide, and the stored label is refused.
+  const skipped = late.evidence.exchanges.find((exchange) => exchange.batchIndex === late.evidence.result.unfinished!.batchIndex)!
+  assert.equal(skipped.status, 'failed')
+  assert.equal(late.evidence.result.unfinished!.reason, skipped.outcomeReason!.summary, 'the mark carries the failure the run stored')
   const succeeded = late.evidence.exchanges.find((exchange) => exchange.status === 'succeeded')!
-  const unbacked = { ...late.evidence, result: { ...late.evidence.result, unfinished: { ...late.evidence.result.unfinished!, batchIndex: succeeded.batchIndex } } }
-  assert.throws(() => adjudicateQuestions({ evidence: unbacked, extraSets: [], decisionRule: late.result.decisionRule, closed: false }), /first look says UNDETERMINED, but its stored answers give/)
+  const withMark = (unfinished: { batchIndex: number; reason: string }, exchanges = late.evidence.exchanges) => ({
+    ...late.evidence, exchanges, result: { ...late.evidence.result, unfinished },
+  })
+  const unbacked = [
+    // It names a batch that succeeded.
+    withMark({ ...late.evidence.result.unfinished!, batchIndex: succeeded.batchIndex }),
+    // Its reason is not the stored failure's.
+    withMark({ ...late.evidence.result.unfinished!, reason: 'some other reason' }),
+    // The batch it names is labelled failed but kept scored answers.
+    withMark(late.evidence.result.unfinished!, late.evidence.exchanges.map((exchange) => (
+      exchange === skipped ? { ...exchange, matches: exchange.matches.map(() => 1 as const) } : exchange
+    ))),
+  ]
+  for (const evidence of unbacked) {
+    assert.throws(() => adjudicateQuestions({ evidence, extraSets: [], decisionRule: late.result.decisionRule, closed: false }), /first look says UNDETERMINED, but its stored answers give/)
+    assert.throws(() => validateAuditMatchesSummary(evidence, late.result))
+  }
 })
 
 test('check pipeline: an extra set of a close call asks questions only', async () => {
