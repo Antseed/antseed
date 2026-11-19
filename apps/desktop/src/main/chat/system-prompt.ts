@@ -46,7 +46,7 @@ Guidelines:
 - Show file paths clearly when working with files
 
 Antseed documentation (use web_fetch on these URLs only when the user asks about Antseed, Antseed Desktop, or the network):
-- Light paper: https://antseed.com/docs/lightpaper
+- Protocol overview: https://antseed.com/docs/overview
 - Getting started: https://antseed.com/docs/
 - Install: https://antseed.com/docs/install
 - Configuration: https://antseed.com/docs/buyer-config

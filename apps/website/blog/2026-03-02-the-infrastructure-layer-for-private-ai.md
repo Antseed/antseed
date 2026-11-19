@@ -81,6 +81,6 @@ That's not a niche. That's the next layer of the internet.
 
 Venice built the vision. The rails are next.
 
-[Read the Antseed lightpaper](/docs/lightpaper)
+[How the Antseed protocol works](/docs/overview)
 
 [Get started in one command](/docs/install)

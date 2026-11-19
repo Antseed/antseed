@@ -22,7 +22,6 @@ export const FOOTER_COLUMNS: readonly FooterColumn[] = [
     {label: 'Blog', to: '/blog/'},
     {label: 'Brand', to: '/brand/'},
     {label: 'Docs', to: '/docs/'},
-    {label: 'Light Paper', to: '/docs/lightpaper/'},
     {label: 'GitHub\u00a0↗', to: 'https://github.com/antseed', external: true},
   ]},
   {title: 'Legal', links: [
