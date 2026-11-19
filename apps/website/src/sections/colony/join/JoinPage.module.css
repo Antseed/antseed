@@ -163,6 +163,7 @@
 @keyframes jnPop { from { transform: scale(.4); opacity: 0; } }
 .done:focus { outline: none; }
 .hint { margin-top: 10px; font-size: 14px; color: var(--jn-muted); }
+.textLink { padding: 0; border: 0; background: none; color: var(--jn-green); font: inherit; text-decoration: underline; cursor: pointer; }
 .next { display: grid; gap: 8px; list-style: none; }
 .next li { display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 16px; border: 1px solid var(--jn-line); border-radius: 12px; background: var(--jn-card); }
 .next li > div { display: grid; flex: 1; gap: 2px; min-width: 0; }

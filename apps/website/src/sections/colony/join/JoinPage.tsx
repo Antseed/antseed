@@ -55,8 +55,7 @@ export default function JoinPage(): JSX.Element {
     const onPop = (e: PopStateEvent) => {
       const to: Step = isStep(e.state?.colonyStep) ? e.state.colonyStep : 'mac';
       const {step: from, answers: a} = latest.current;
-      if (from === 'done' && to !== 'done') { go('done'); return; }   // no going back into a finished sign-up
-      const path = stepsFor(a);
+      const path = stepsFor(a);   // Back walks the steps, and off the flow past the first one (the sign-up finished on Google)
       go(to, {push: false, back: path.indexOf(to) < path.indexOf(from)});
     };
     addEventListener('popstate', onPop);
@@ -222,7 +221,8 @@ export default function JoinPage(): JSX.Element {
                 {answers.name && <p className={clsx(styles.eyebrow, styles.hi)}>Thanks, {answers.name}</p>}
                 <h1 className={styles.question}>Finish in the<br /> <span>Google tab.</span></h1>
                 <p className={styles.help}>We opened a short Google form in a new tab. Sign in there to confirm your email and lock your spot — we’ll email you when there’s room for your Mac.</p>
-                {joinUrl && <p className={styles.hint}>Tab didn’t open? <a href={joinUrl} target="_blank" rel="noopener noreferrer">Open the form</a>.</p>}
+                {/* a button, not an <a href>: the prefilled URL carries the name and Mac, which the global outbound-click capture would log */}
+                {joinUrl && <p className={styles.hint}>Tab didn’t open? <button type="button" className={styles.textLink} onClick={() => open(joinUrl, '_blank', 'noopener')}>Open the form</button>.</p>}
                 <p className={clsx(styles.eyebrow, styles.small)}>While you wait</p>
                 <ol className={styles.next}>
                   <li>

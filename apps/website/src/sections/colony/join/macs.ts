@@ -51,11 +51,3 @@ export function settle(a: Answers): Answers {
   const mems = memsFor(a.mac, chip);
   return {...a, chip, memory: mems.length === 1 ? mems[0] : a.memory};
 }
-
-/** The memory picked, in GB; the smallest the answers allow if none is picked yet. */
-export function memoryGb(a: Answers): number | null {
-  const picked = parseInt(a.memory, 10);
-  if (Number.isFinite(picked)) return picked;
-  const sizes = memsFor(a.mac, a.chip).map((m) => parseInt(m, 10));
-  return sizes.length ? Math.min(...sizes) : null;
-}

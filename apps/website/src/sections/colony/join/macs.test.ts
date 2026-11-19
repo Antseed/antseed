@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {MACS, chipsFor, memoryGb, memsFor, settle, stepsFor, type Answers} from './macs.ts';
+import {MACS, chipsFor, memsFor, settle, stepsFor, type Answers} from './macs.ts';
 
 const none: Answers = {mac: '', chip: '', memory: '', name: ''};
 
@@ -41,10 +41,4 @@ test('settle picks the only option and keeps the rest', () => {
   assert.deepEqual(settle({...none, mac: 'MacBook Neo'}), {...none, mac: 'MacBook Neo', chip: 'A18 Pro', memory: '8 GB'});
   assert.equal(settle({...none, mac: 'Mac Pro'}).chip, 'M2 Ultra');
   assert.equal(settle({...none, mac: 'Mac Studio'}).chip, '');
-});
-
-test('memoryGb reads the size picked, else the smallest the Mac allows', () => {
-  assert.equal(memoryGb({...none, mac: 'Mac Studio', chip: 'M3 Ultra', memory: '256 GB'}), 256);
-  assert.equal(memoryGb({...none, mac: 'Mac Studio', chip: 'M3 Ultra'}), 96);
-  assert.equal(memoryGb(none), null);
 });
