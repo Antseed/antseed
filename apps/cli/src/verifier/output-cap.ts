@@ -414,7 +414,7 @@ export function describeOutputCapFlag(record: OutputCapV1): string {
     const measured = measuredTokens(ask.measurement, record.rule)
     return `billed ${ask.reading?.billedOutputTokens ?? '?'} output tokens on a limit of ${ask.cap}, and the answer alone measures ${measured ?? '?'}`
   })
-  return `cap check (${record.rule.id}): ${parts.join('; asked again, ')}: the reply limit was ignored; its questions were not asked`
+  return `cap check (${record.rule.id}): ${parts.join('; asked again, ')}: the reply limit was ignored`
 }
 
 const ONES = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve',

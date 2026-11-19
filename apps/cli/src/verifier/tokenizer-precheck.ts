@@ -929,8 +929,8 @@ export function summarizeTokenizerPrecheck(record: TokenizerPrecheckV1): Tokeniz
 /** A pre-check DIFF in plain words, for the run log, the model report and the overview. */
 export function describeTokenizerCounts(summary: { sellerTokens?: readonly number[]; modelTokens?: readonly number[] }): string {
   return summary.sellerTokens?.length && summary.modelTokens?.length
-    ? `signed ${summary.sellerTokens.join('/')} input tokens where the model counts ${summary.modelTokens.join('/')}; no question asked`
-    : 'its signed input tokens are not the model\'s; no question asked'
+    ? `signed ${summary.sellerTokens.join('/')} input tokens where the model counts ${summary.modelTokens.join('/')}`
+    : 'its signed input tokens are not the model\'s'
 }
 
 /** One line for the verdict reason and the run log: what the seller signed in each round next to what the model counts. */
@@ -939,7 +939,7 @@ export function describeTokenizerMismatch(record: TokenizerPrecheckV1): string {
   const reference = record.rounds.map((round) => round.reference.delta ?? '?').join('/')
   return `tokenizer pre-check (${record.rule.id}): the seller signed ${seller} input tokens, each ${record.rule.sellerAsks} times over, `
     + `for text the model counts as ${reference}: off by more than ${record.rule.toleranceTokens} in every round`
-    + `${record.crowd ? `, while ${record.crowd.agree} of the model's other sellers signed the model's count` : ''}; its questions were not asked`
+    + `${record.crowd ? `, while ${record.crowd.agree} of the model's other sellers signed the model's count` : ''}`
 }
 
 /**

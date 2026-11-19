@@ -1,7 +1,7 @@
 // Test support: builds complete verifier runs with genuinely signed seller exchanges.
-import { storedRequestsOf } from './audit-checks.js'
-import { describeOutputCapFlag, summarizeOutputCap, type OutputCapV1 } from './output-cap.js'
-import { describeOutputEchoFlag, summarizeOutputEcho, type OutputEchoV1 } from './output-echo.js'
+import { ALL_TESTS_FORMAT, readingsOfEvidence, storedRequestsOf, verdictOf } from './audit-checks.js'
+import { outputCapCost, summarizeOutputCap, type OutputCapV1 } from './output-cap.js'
+import { outputEchoCost, summarizeOutputEcho, type OutputEchoV1 } from './output-echo.js'
 import { createHash } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -52,7 +52,6 @@ import {
 } from './probe-bank.js'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
 import {
-  describeTokenizerMismatch,
   measureTokenizerReference,
   runTokenizerPrecheck,
   summarizeTokenizerPrecheck,
@@ -63,6 +62,7 @@ import {
   type TokenizerPrecheckV1,
 } from './tokenizer-precheck.js'
 import {
+  addAuditCostSummaries,
   emptyAuditCostSummary,
   summarizeAuditExchangeCosts,
   writeProxyAuditEvidence,
@@ -78,15 +78,17 @@ export interface FixtureAudit {
   model: string
   service: string
   routedService?: string
-  /** UNDETERMINED answers like SAME, then is recorded as lacking verified ResponseAuth. */
+  /** The audit's verdict over every test. UNDETERMINED answers like SAME, then is recorded as lacking verified ResponseAuth. */
   verdict: 'SAME' | 'DIFF' | 'UNDETERMINED'
+  /** The questions' own verdict; by default SAME beside a flag of another test, else `verdict`. */
+  questionsVerdict?: 'SAME' | 'DIFF' | 'UNDETERMINED'
   /** Seller key that actually signs ResponseAuth (defaults to `seller`). */
   signer?: Wallet
   /** The run flagged the result as a confirmation of another auditor's DIFF. */
   confirmsDiff?: boolean
   /**
    * The seller signs input tokens from another tokenizer: the tokenizer pre-check finds a mismatch and the
-   * audit is DIFF with no question asked. `verdict` must be DIFF.
+   * audit is DIFF beside its questions. `verdict` must be DIFF.
    */
   tokenizerMismatch?: boolean
   /** The tokenizer pre-check ran and matched: the seller counts input like the model. The audit asks its questions. */
@@ -296,13 +298,15 @@ export async function writeSignedAuditRun(input: {
         displayName: `${model}-${index + 1}`, peerId, verdictWanted: audit.verdict, auditId,
         directory: modelAuditSellersDirectory(input.evidenceDir, input.epoch, model, input.runId),
       })
-      const { evidence, written, exchanges, matchVector, cost } = first
+      const { evidence, written, exchanges, matchVector, cost, auditVerdict } = first
       results.push({
         peerId,
         displayName: evidence.target.displayName,
         agentId: audit.agentId,
         service: audit.service,
-        status: audit.verdict,
+        status: auditVerdict,
+        questionsStatus: evidence.result.verdict,
+        questionsOutcomeReason: null,
         ...(audit.confirmsDiff ? { confirmsDiff: true } : {}),
         outcomeReason: null,
         auditId,
@@ -316,13 +320,11 @@ export async function writeSignedAuditRun(input: {
         cumulativeCost: cost,
         evidencePath: written.path,
         evidenceHash: written.evidenceHash,
-        ...(evidence.tokenizerPrecheck ? {
-          stats: evidence.result.stats,
-          responseAuthVerified: true,
-          tokenizerPrecheck: summarizeTokenizerPrecheck(evidence.tokenizerPrecheck),
-        } : {}),
-        ...(evidence.outputCap ? { stats: evidence.result.stats, responseAuthVerified: true, outputCap: summarizeOutputCap(evidence.outputCap) } : {}),
-        ...(evidence.outputEcho ? { stats: evidence.result.stats, responseAuthVerified: true, outputEcho: summarizeOutputEcho(evidence.outputEcho) } : {}),
+        stats: evidence.result.stats,
+        responseAuthVerified: true,
+        ...(evidence.tokenizerPrecheck ? { tokenizerPrecheck: summarizeTokenizerPrecheck(evidence.tokenizerPrecheck) } : {}),
+        ...(evidence.outputCap ? { outputCap: summarizeOutputCap(evidence.outputCap) } : {}),
+        ...(evidence.outputEcho ? { outputEcho: summarizeOutputEcho(evidence.outputEcho) } : {}),
       })
     }
     const summaryPath = await writeModelAuditSummary(input.evidenceDir, input.epoch, model, {
@@ -762,11 +764,13 @@ async function writeFixtureEvidence(input: {
   const precheckMatch = audit.tokenizerMatch
     ? await signedTokenizerMatch({ audit, auditor: input.auditor, runId: input.runId, peerId })
     : null
-  const preQuestionFlag = audit.outputCap?.outcome === 'flag' ? describeOutputCapFlag(audit.outputCap)
-    : audit.outputEcho?.outcome === 'flag' ? describeOutputEchoFlag(audit.outputEcho) : null
-  const exchanges = tokenizerPrecheck || preQuestionFlag
-    ? []
-    : signedExchanges({ ...audit, reference, auditor: input.auditor, runId: input.runId, wrongProbeIds, sentAt: Date.parse(timestamps.completedAt) })
+  // Every test runs and none ends the audit: the questions are asked beside a flag, and answer as
+  // `questionsVerdict` says (by default SAME beside a flag, else as the audit's verdict).
+  const flagged = Boolean(tokenizerPrecheck) || audit.outputCap?.outcome === 'flag' || audit.outputEcho?.outcome === 'flag'
+  const questionsWanted = audit.questionsVerdict ?? (flagged ? 'SAME' : audit.verdict)
+  const exchanges = signedExchanges({
+    ...audit, verdict: questionsWanted, reference, auditor: input.auditor, runId: input.runId, wrongProbeIds, sentAt: Date.parse(timestamps.completedAt),
+  })
   const answersById = new Map<string, number | null>()
   const matchesById = new Map<string, 0 | 1 | null>()
   for (const exchange of exchanges) {
@@ -779,16 +783,19 @@ async function writeFixtureEvidence(input: {
   const matchVector = reference.probes.map((probe) => matchesById.get(probe.id) ?? null)
   const fragment = verifyKbf(reference, { answers, matchVector }, KBF_AUDIT_VERIFY_OPTIONS)
   if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'UNKNOWN fixture verdict')
-  const undetermined = audit.verdict === 'UNDETERMINED' && input.wrongCount === undefined
-  const verdict = tokenizerPrecheck || preQuestionFlag ? 'DIFF' as const : undetermined ? 'UNDETERMINED' as const : fragment.verdict
-  const verdictReason = tokenizerPrecheck
-    ? describeTokenizerMismatch(tokenizerPrecheck)
-    : preQuestionFlag
-      ? preQuestionFlag
-    : undetermined
-      ? 'one or more successful proxy batches lacked valid verified ResponseAuth'
-      : fragment.verdictReason
-  const cost = tokenizerPrecheck ? tokenizerPrecheckCost(tokenizerPrecheck) : summarizeAuditExchangeCosts(exchanges)
+  const undetermined = questionsWanted === 'UNDETERMINED' && input.wrongCount === undefined
+  // The questions' own verdict: the evidence's `result` (`ALL_TESTS_FORMAT`).
+  const verdict = undetermined ? 'UNDETERMINED' as const : fragment.verdict
+  const verdictReason = undetermined
+    ? 'one or more successful proxy batches lacked valid verified ResponseAuth'
+    : fragment.verdictReason
+  const testCost = [
+    ...(tokenizerPrecheck ? [tokenizerPrecheckCost(tokenizerPrecheck)] : []),
+    ...(precheckMatch ? [tokenizerPrecheckCost(precheckMatch)] : []),
+    ...(audit.outputCap ? [outputCapCost(audit.outputCap)] : []),
+    ...(audit.outputEcho ? [outputEchoCost(audit.outputEcho)] : []),
+  ]
+  const cost = addAuditCostSummaries(summarizeAuditExchangeCosts(exchanges), ...testCost)
   const evidence: ProxyAuditEvidenceV1 = {
     version: 1,
     kind: 'antseed-buyer-proxy-kbf-audit',
@@ -810,6 +817,7 @@ async function writeFixtureEvidence(input: {
     ...(precheckMatch ? { tokenizerPrecheck: precheckMatch } : {}),
     ...(audit.outputCap ? { outputCap: audit.outputCap } : {}),
     ...(audit.outputEcho ? { outputEcho: audit.outputEcho } : {}),
+    tests: ALL_TESTS_FORMAT,
     exchanges,
     result: {
       selectedProbeCount: reference.probes.length,
@@ -824,12 +832,14 @@ async function writeFixtureEvidence(input: {
       cumulativeCost: cost,
     },
   }
-  if (input.wrongCount === undefined && verdict !== audit.verdict) {
-    throw new Error(`fixture produced ${fragment.verdict}, expected ${audit.verdict}`)
+  // The audit's verdict over every test (`verdictOf`), as a run settles it.
+  const auditVerdict = verdictOf(readingsOfEvidence(evidence, verdict), verdict).verdict
+  if (input.wrongCount === undefined && (verdict !== questionsWanted || auditVerdict !== audit.verdict)) {
+    throw new Error(`fixture produced questions ${verdict} and audit ${auditVerdict}, expected ${questionsWanted} and ${audit.verdict}`)
   }
   stampBuyerTimes(evidence, Date.parse(timestamps.completedAt))
   const written = await writeProxyAuditEvidence(input.directory, input.auditId, evidence)
-  return { evidence, written, exchanges, matchVector, cost }
+  return { evidence, written, exchanges, matchVector, cost, auditVerdict }
 }
 
 /**

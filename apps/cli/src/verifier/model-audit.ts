@@ -37,14 +37,14 @@ import {
   type EpochQuestionSetV1,
   type EpochSetCalibrationV1,
 } from './probe-bank.js'
-import { closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
+import { closeCallRule, needsExtension, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { AUDIT_CHECK_IDS, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
 import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
 import type { SubmissionCandidate } from './submission-delta.js'
-import { earliestAuditorTime, validateCheckRecordsAgainstSummary } from './audit-checks.js'
+import { ALL_TESTS_FORMAT, auditVerdictReason, earliestAuditorTime, readingsOfEvidence, validateCheckRecordsAgainstSummary, verdictOf } from './audit-checks.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
@@ -82,6 +82,8 @@ export interface ModelAuditSellerResultV1 {
    * `extension2.pooled.verdict`, computed from all three sets' stats.
    */
   extension2?: ModelAuditExtensionV1
+  /** The questions' own verdict, after any close call; `verdict` is the audit's over every test (`verdictOf`). */
+  questionsVerdict?: ModelAuditVerdict
   /** The checks that flagged the seller in this audit (`flaggingChecks`). */
   flaggedBy?: AuditCheckId[]
   /** The checks that ran to a pass in this audit (`passedChecks`). */
@@ -450,7 +452,9 @@ export async function prepareModelAudits(input: {
         exclude(`UNDETERMINED caused by this auditor (${result.outcomeReason?.summary ?? 'audit failed'}), so it is not submitted`)
         continue
       }
-      if (finalVerdict !== result.status) result = { ...result, status: finalVerdict }
+      // The questions' own verdict travels apart from the audit's: the attribution reads it (a cap DIFF beside the
+      // questions' SAME never reads as a questions DIFF). A close call that cannot be finished is undecided.
+      result = { ...result, status: finalVerdict, questionsStatus: stageOneVerdict(result) ?? 'UNDETERMINED' }
       if (referenceModel === null) referenceModel = evidence.reference.referenceModel
       else if (normalized(referenceModel) !== normalized(evidence.reference.referenceModel)) {
         exclude(`audited against ${evidence.reference.referenceModel}, not ${referenceModel}`)
@@ -522,8 +526,8 @@ export async function prepareModelAudits(input: {
     if (input.sameCheck && accepted.length > 0) {
       const decisions = await input.sameCheck(modelHash(referenceModel), candidatesOf().map((candidate, index) => ({
         ...candidate,
-        flaggedBy: flaggingChecks(accepted[index]!.evidence, accepted[index]!.result.status),
-        passedBy: passedChecks(accepted[index]!.evidence, accepted[index]!.result.status),
+        flaggedBy: flaggingChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
+        passedBy: passedChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
         // Freshness is the earliest request used, on the auditor's clock, over the first set and its extra sets (0: none).
         auditedAt: earliestAuditorTime([accepted[index]!.evidence, accepted[index]!.extensionEvidence, accepted[index]!.extension2Evidence]) ?? 0,
       })))
@@ -630,7 +634,10 @@ export async function prepareModelAudits(input: {
         service: result.service,
         serviceHash: serviceHash(result.service),
         verdict: result.status,
-        verdictReason: evidence.result.verdictReason,
+        // The audit's reason: what each test that flagged found, or the questions' own reason.
+        verdictReason: auditVerdictReason(evidence, verdictOf(
+          readingsOfEvidence(evidence, questionsVerdictOf(result)), questionsVerdictOf(result), evidence.confirming?.checks,
+        ), evidence.result.verdictReason),
         outcomeReason: evidence.result.outcomeReason ?? result.outcomeReason ?? null,
         referenceId: evidence.reference.referenceId,
         stats: evidence.result.stats,
@@ -646,8 +653,9 @@ export async function prepareModelAudits(input: {
         ...(result.extension2 && extension2Evidence
           ? { extension2: submittedExtension(result.extension2, extension2Evidence, evidence, evidenceDirectory) }
           : {}),
-        flaggedBy: flaggingChecks(evidence, result.status),
-        passedBy: passedChecks(evidence, result.status),
+        flaggedBy: flaggingChecks(evidence, questionsVerdictOf(result)),
+        passedBy: passedChecks(evidence, questionsVerdictOf(result)),
+        questionsVerdict: questionsVerdictOf(result),
         auditedAt: earliestAuditorTime([evidence, extensionEvidence, extension2Evidence]) ?? 0,
         ...(confirmation ? { confirmation } : {}),
       }))
@@ -956,16 +964,17 @@ export function validateAuditMatchesSummary(
   if (result.stats && canonicalHashBytes32(result.stats) !== canonicalHashBytes32(evidence.result.stats)) {
     throw new Error('first check statistics do not match its evidence')
   }
-  // In a confirmation of another check's DIFF, a flag of a check not being confirmed did not end the audit:
-  // the questions were asked after it and decide (`model-run.ts`, `confirming`).
+  // Every seller file names its format: every test ran, and `result` is the questions' own (`ALL_TESTS_FORMAT`).
+  for (const checked of [evidence, extensionEvidence, extension2Evidence]) {
+    if (checked && checked.tests !== ALL_TESTS_FORMAT) throw new Error('the evidence does not name the all-tests format')
+  }
+  // A confirmation names the tests it repeats; every test ran in it, as in a first look.
   if (evidence.confirming && (!Array.isArray(evidence.confirming.checks) || evidence.confirming.checks.length === 0
     || evidence.confirming.checks.some((check) => !AUDIT_CHECK_IDS.includes(check)))) {
     throw new Error('a confirmation names no known check it confirms')
   }
-  const continuedPast = (check: AuditCheckId): boolean => evidence.confirming !== undefined && !evidence.confirming.checks.includes(check)
-  // Each check's record follows from the signed responses it stores and is the summary's (the close-call decision
-  // reads the summary's); a flag that ended the audit is a DIFF with no question asked (`audit-checks.ts`).
-  validateCheckRecordsAgainstSummary(evidence, result, continuedPast)
+  // Each test's record follows from the signed responses it stores, is bound to the seller, and is the summary's.
+  validateCheckRecordsAgainstSummary(evidence, result)
   // The stage-1 verdict, recomputed from the evidence: the first check's own verdict, or after a
   // close call the pooled verdict of the first check and its extra sets.
   let stageOne: ModelAuditVerdict = evidence.result.verdict
@@ -1024,7 +1033,25 @@ export function validateAuditMatchesSummary(
       stageOne = lookVerdict
     }
   }
-  if (stageOne !== result.status) throw new Error('verdict mismatch')
+  // A flagged audit whose close call could not be finished in its run: its questions are undecided.
+  if (result.closeCallClosed) {
+    if (extraSets.length > 0 && !(extraSets.at(-1)!.record.pooled.extendNext === true)) throw new Error('a closed close call that was decided')
+    stageOne = 'UNDETERMINED'
+  }
+  const questionsPending = needsExtension(result)
+  if ((result.questionsStatus ?? result.status) !== stageOne && !questionsPending) throw new Error('questions verdict mismatch')
+  // The audit's verdict, recomputed from the questions and every test record (`verdictOf`, rule `all-tests-v1`).
+  const audit = verdictOf(
+    readingsOfEvidence(evidence, stageOne === 'UNDETERMINED' ? null : stageOne),
+    stageOne,
+    evidence.confirming?.checks,
+    { questionsPending },
+  )
+  if (result.closeCallClosed && !audit.flaggedBy.some((check) => check !== 'kbf')) throw new Error('a close call closed without a flag of another test')
+  if (!questionsPending && audit.verdict !== result.status) throw new Error('verdict mismatch')
+  if ((audit.undecidedConfirmation !== null) !== (result.outcomeReason?.code === 'confirmation_undecided')) {
+    throw new Error('the undecided confirmation is not the one its tests give')
+  }
 }
 
 /**
@@ -1043,7 +1070,13 @@ export function retiredRecheckResult(result: ModelAuditSummaryV1['results'][numb
  * is one auditor's report, and the contract records it only once another auditor confirms it.
  */
 export function finalAuditVerdict(result: ModelAuditSummaryV1['results'][number]): ModelAuditVerdict | null {
-  return stageOneVerdict(result)
+  // The audit's verdict over every test (`settleAuditVerdict`), once the questions are decided; submit recomputes it.
+  return stageOneVerdict(result) === null ? null : result.status
+}
+
+/** The questions' own verdict of a result, as the attribution reads it. */
+function questionsVerdictOf(result: Pick<ModelAuditSummaryV1['results'][number], 'status' | 'questionsStatus'>): ModelAuditVerdict {
+  return result.questionsStatus ?? result.status
 }
 
 async function readModelSummary(path: string, runId: string, model: string): Promise<ModelAuditSummaryV1> {

@@ -137,7 +137,8 @@ import { TOKENIZER_PRECHECK_RULE, createTokenizerPrecheckScreen, describeTokeniz
 import { createOutputCapScreen, describeOutputCapSummary } from '../../../verifier/output-cap.js'
 import { OUTPUT_ECHO_RULE, createOutputEchoScreen, outputEchoPrompt } from '../../../verifier/output-echo.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
-import { askedNoQuestion, closeCallRuleForExtensions, extensionSets, latestExtension } from '../../../verifier/close-call.js'
+import { closeCallRuleForExtensions, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
+import type { StoredCheckRecords } from '../../../verifier/audit-checks.js'
 import {
   confirmationTargetsByModel,
   describeTallies,
@@ -615,6 +616,17 @@ export interface ResumeCandidate {
   queryProfileHash: string
   probeIds: string[]
   exchanges: ProxyAuditEvidenceV1['exchanges']
+  /** The test records the earlier attempt finished, carried into the resume (each test runs once per audit chain). */
+  records?: StoredCheckRecords
+}
+
+/** The test records an evidence file holds: what a resume or a retry of its audit carries. */
+function evidenceRecords(evidence: ProxyAuditEvidenceV1): StoredCheckRecords {
+  return {
+    ...(evidence.tokenizerPrecheck ? { tokenizerPrecheck: evidence.tokenizerPrecheck } : {}),
+    ...(evidence.outputCap ? { outputCap: evidence.outputCap } : {}),
+    ...(evidence.outputEcho ? { outputEcho: evidence.outputEcho } : {}),
+  }
 }
 
 export function normalizeVerifierPeerId(value: string): string {
@@ -1695,6 +1707,7 @@ export async function runVerifierRound(
                     reservationAuditId: target.resumeCandidate.reservationAuditId,
                     parentEvidenceHash: target.resumeCandidate.evidenceHash,
                     exchanges: target.resumeCandidate.exchanges,
+                    records: target.resumeCandidate.records,
                   }
                 } else {
                   const reserved = await reserveModelAuditReference({
@@ -1726,10 +1739,11 @@ export async function runVerifierRound(
                   checkpointIdentity: { runId, epoch, model },
                   ...(confirmingChecks ? { confirming: { checks: confirmingChecks } } : {}),
                 })
-                // New first audits are decided by the close-call rule unless it is turned off. A DIFF from
-                // the tokenizer pre-check or the cap check asked no question, so no close-call rule decides it.
-                const result = verified.status !== 'SKIPPED' && closeCallRule && !askedNoQuestion(verified)
-                  ? { ...verified, decisionRule: closeCallRule.id }
+                // New first audits are decided by the close-call rule unless it is turned off; every audit asks its
+                // questions, so the rule always applies. The audit's verdict is settled again with it: a close call
+                // of a confirmation that repeats the questions waits for its extra set.
+                const result = verified.status !== 'SKIPPED' && closeCallRule
+                  ? settleAuditVerdict({ ...verified, decisionRule: closeCallRule.id })
                   : verified
                 if (result.status === 'SKIPPED') {
                   await voidModelAuditReference({
@@ -1771,13 +1785,12 @@ export async function runVerifierRound(
                 if (!runProgress!.interactive) {
                   console.log(chalk.green(
                     `${result.status} ${target.peer.peerId.slice(0, 12)}… `
-                    + (result.tokenizerPrecheck?.outcome === 'mismatch' && askedNoQuestion(result)
-                      ? `(tokenizer pre-check: ${describeTokenizerCounts(result.tokenizerPrecheck)}, `
-                      : result.outputCap?.outcome === 'flag' && askedNoQuestion(result)
-                        ? `(cap check: ${describeOutputCapSummary(result.outputCap)}, `
-                        : result.outputEcho?.outcome === 'flag' && askedNoQuestion(result)
-                          ? `(echo check: ${result.outputEcho.reason}, `
-                      : `(${result.parsedProbeCount}/${result.probeCount} scoreable, `)
+                    + (result.tokenizerPrecheck?.outcome === 'mismatch'
+                      ? `(tokenizer pre-check: ${describeTokenizerCounts(result.tokenizerPrecheck)}; `
+                      : '')
+                    + (result.outputCap?.outcome === 'flag' ? `(cap check: ${describeOutputCapSummary(result.outputCap)}; ` : '')
+                    + (result.outputEcho?.outcome === 'flag' ? `(echo check: ${result.outputEcho.reason}; ` : '')
+                    + `(questions ${result.questionsStatus ?? result.status}, ${result.parsedProbeCount}/${result.probeCount} scoreable, `
                     + `$${result.cost.estimatedCostUsd.toFixed(6)})`,
                   ))
                 }
@@ -2553,6 +2566,7 @@ export async function loadResumeCandidates(
         queryProfileHash: evidence.reference.queryProfileHash,
         probeIds: evidence.reference.probes.map((probe) => probe.id),
         exchanges: evidence.exchanges,
+        records: evidenceRecords(evidence),
       })
     }
   }
@@ -2593,6 +2607,7 @@ export async function loadEpochRetryCandidates(
       queryProfileHash: evidence.reference.queryProfileHash,
       probeIds: evidence.reference.probes.map((probe) => probe.id),
       exchanges: evidence.exchanges,
+      records: evidenceRecords(evidence),
     })
   }
   return candidates
@@ -2696,6 +2711,7 @@ export async function loadCheckpointResumeCandidates(
         queryProfileHash: checkpoint.queryProfileHash,
         probeIds: checkpoint.probeIds,
         exchanges: checkpoint.exchanges,
+        records: checkpoint.records,
       })
     }
   }

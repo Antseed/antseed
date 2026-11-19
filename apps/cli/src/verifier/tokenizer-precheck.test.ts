@@ -8,7 +8,7 @@ import { storedRequestsOf, validateStoredChecks } from './audit-checks.js'
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, encodeHttpResponse, type PeerId, type PeerInfo, type StoredResponseAuth } from '@antseed/node'
 import { isSafeProbe } from '@antseed/node/payments'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
-import { askedNoQuestion, needsExtension } from './close-call.js'
+import { needsExtension } from './close-call.js'
 import { validateAuditMatchesSummary } from './model-audit.js'
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 import { verifyModelTarget, type ModelVerificationResumeInput, type ModelVerificationSkip, type ModelVerificationTargetResult } from './model-run.js'
@@ -425,7 +425,7 @@ test('a seller counting with another tokenizer is a mismatch after every round i
   assert.match(describeTokenizerMismatch(record), new RegExp(
     `the seller signed ${record.rounds.map((round) => round.seller[0]!.delta).join('/')} input tokens, each 2 times over, `
     + `for text the model counts as ${record.rounds.map((round) => round.reference.delta).join('/')}: off by more than 2 in every round, `
-    + 'while 1 of the model\'s other sellers signed the model\'s count; its questions were not asked$',
+    + 'while 1 of the model\'s other sellers signed the model\'s count$',
   ))
   assert.equal(record.crowd!.corroborated, true)
   assert.doesNotThrow(() => validateTokenizerPrecheck(record))
@@ -1184,6 +1184,8 @@ async function audit(options: {
   backerDelayMs?: number
   /** The audit confirms another auditor's DIFF that these checks flagged. */
   confirming?: AuditCheckId[]
+  /** Called on every question batch the seller is asked (to see the order of the tests). */
+  onQuestion?: () => void
   /** Cap and echo screens (stand-ins in `check pipeline` tests below). */
   outputCap?: Pick<OutputCapScreen<KbfReferenceV1>, 'ready' | 'check'>
   outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
@@ -1204,6 +1206,7 @@ async function audit(options: {
     const values = [...prompt.matchAll(/test value (\d+) is ___/g)].map((match) => Number(match[1]))
     if (values.length === 0) return precheckFetch(url, init)
     questionRequests.push(prompt)
+    options.onQuestion?.()
     if (options.refuseQuestions) return Response.json({ error: { message: 'The API key was deleted' } }, { status: 401 })
     return Response.json({ choices: [{ message: { content: values.map((value, index) => `(${index + 1}) ${value}`).join('\n') } }] }, {
       headers: { 'x-antseed-request-id': new Headers(init?.headers).get('x-antseed-request-id')! },
@@ -1246,7 +1249,7 @@ async function audit(options: {
       ...(options.resume ? { resume: options.resume } : {}),
       ...(options.confirming ? { confirming: { checks: options.confirming } } : {}),
     })
-    if (options.refuseQuestions) return { skipped: result, result: null as never, evidence: null as never, questionRequests, precheckRequests: target.contents, backerRequests: backer.contents }
+    if (options.refuseQuestions && result.status === 'SKIPPED') return { skipped: result, result: null as never, evidence: null as never, questionRequests, precheckRequests: target.contents, backerRequests: backer.contents }
     assert.notEqual(result.status, 'SKIPPED')
     const audited = result as ModelVerificationTargetResult
     const evidence = JSON.parse(await readFile(audited.evidencePath, 'utf8')) as ProxyAuditEvidenceV1
@@ -1256,24 +1259,25 @@ async function audit(options: {
   }
 }
 
-test('a seller whose signed input tokens are not the model\'s is DIFF and is asked no question', async () => {
+test('a seller whose signed input tokens are not the model\'s is DIFF, and its questions are still asked and kept apart', async () => {
   const { result, evidence, questionRequests, precheckRequests, backerRequests } = await audit({ usage: OTHER_TOKENIZER })
   assert.equal(result.status, 'DIFF')
-  assert.equal(questionRequests.length, 0)
+  // Every test runs: the questions are asked beside the mismatch, and their own verdict is stored apart.
+  assert.ok(questionRequests.length > 0)
+  assert.equal(result.questionsStatus, 'SAME')
+  assert.equal(evidence.result.verdict, 'SAME', 'the evidence\'s result is the questions\' own')
+  assert.equal(evidence.tests, 'all-tests-v1')
   assert.equal(precheckRequests.length, 12)
   // The model's other seller was asked the first round's pair, and signs the reference's count.
   assert.equal(backerRequests.length, 2)
   assert.equal(result.tokenizerPrecheck!.outcome, 'mismatch')
-  // Its twelve requests and the two to the other seller are counted and paid for with this audit.
-  assert.deepEqual([result.parsedProbeCount, result.probeCount, result.correctRate, result.requestCount], [0, PROBE_COUNT, null, 14])
+  // Its twelve requests and the two to the other seller are counted and paid for with this audit, beside the batches.
+  assert.equal(result.requestCount, questionRequests.length + 14)
   assert.equal(result.cost.pricedExchangeCount, 14)
-  assert.equal(evidence.result.verdict, 'DIFF')
-  assert.match(evidence.result.verdictReason!, /^tokenizer pre-check \(tokenizer-precheck-v1\): the seller signed .* its questions were not asked$/)
-  assert.deepEqual(evidence.exchanges, [])
-  assert.deepEqual(evidence.result.matchVector, new Array(PROBE_COUNT).fill(null))
   assert.equal(evidence.tokenizerPrecheck!.outcome, 'mismatch')
-  assert.equal(evidence.reference.probes.length, PROBE_COUNT)
-  // The DIFF travels like any other: no close call to extend, and submission accepts its evidence.
+  // The pre-check is the one that flagged; the questions passed and are never named as flagging.
+  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['tokens'])
+  assert.deepEqual(passedChecks(evidence, result.questionsStatus!), ['kbf'])
   assert.equal(needsExtension({ ...result, decisionRule: 'kbf-extension-v2' }), false)
   assert.doesNotThrow(() => validateAuditMatchesSummary(evidence, result))
 })
@@ -1341,22 +1345,24 @@ test('a seller skipped at its first question still reports what its pre-check se
   assert.ok(skip.cost!.estimatedCostUsd > 0)
 })
 
-test('an audit that resumes with answered batches is past the pre-check; one that resumes with none runs it', async () => {
+test('a resume carries the pre-check its earlier attempt finished; a resume whose parent has none runs it', async () => {
   const first = await audit({ usage: MODEL_TOKENIZER })
-  const resume = (exchanges: ProxyAuditEvidenceV1['exchanges']): ModelVerificationResumeInput => ({
-    parentAuditId: first.result.auditId, reservationAuditId: first.result.auditId, parentEvidenceHash: first.result.evidenceHash, exchanges,
+  const resume = (exchanges: ProxyAuditEvidenceV1['exchanges'], records = {}): ModelVerificationResumeInput => ({
+    parentAuditId: first.result.auditId, reservationAuditId: first.result.auditId, parentEvidenceHash: first.result.evidenceHash, exchanges, records,
   })
-  const answered = await audit({ usage: OTHER_TOKENIZER, resume: resume(first.evidence.exchanges.slice(0, 1)) })
+  // Each test runs once in an audit's chain of attempts: the carried match stands, and the seller is not asked again.
+  const answered = await audit({ usage: OTHER_TOKENIZER, resume: resume(first.evidence.exchanges.slice(0, 1), { tokenizerPrecheck: first.evidence.tokenizerPrecheck }) })
   assert.equal(answered.precheckRequests.length, 0)
   assert.equal(answered.backerRequests.length, 0)
-  assert.equal(answered.result.tokenizerPrecheck, undefined)
+  assert.equal(answered.result.tokenizerPrecheck!.outcome, 'match')
   assert.equal(answered.result.status, 'SAME')
   assert.equal(answered.questionRequests.length, first.questionRequests.length - 1)
+  assert.equal(answered.result.requestCount, answered.questionRequests.length + 1, 'the carried pre-check was paid for by its own attempt')
 
   const unanswered = await audit({ usage: OTHER_TOKENIZER, resume: resume([]) })
   assert.equal(unanswered.result.status, 'DIFF')
   assert.equal(unanswered.precheckRequests.length, 12)
-  assert.equal(unanswered.questionRequests.length, 0)
+  assert.ok(unanswered.questionRequests.length > 0)
 })
 
 test('a pre-check that decides nothing leaves the seller to its questions', async () => {
@@ -1381,7 +1387,7 @@ test('an extra set of a close call, and an audit without the pre-check, go strai
   assert.equal(off.precheckRequests.length, 0)
 })
 
-test('submission refuses a DIFF that neither its questions nor a pre-check mismatch carries', async () => {
+test('submission refuses a verdict its tests and questions do not give', async () => {
   const { result, evidence } = await audit({ usage: OTHER_TOKENIZER })
   const edit = (change: (copy: ProxyAuditEvidenceV1) => void): ProxyAuditEvidenceV1 => {
     const copy = structuredClone(evidence)
@@ -1389,52 +1395,59 @@ test('submission refuses a DIFF that neither its questions nor a pre-check misma
     return copy
   }
   const { tokenizerPrecheck: _precheck, ...bare } = result
-  assert.throws(() => validateAuditMatchesSummary(edit((copy) => { delete copy.tokenizerPrecheck }), bare), /DIFF without a scoreable answer or a tokenizer pre-check mismatch/)
+  // Without the mismatch nothing flagged: the questions' SAME is the verdict, not the stored DIFF.
+  assert.throws(() => validateAuditMatchesSummary(edit((copy) => { delete copy.tokenizerPrecheck }), bare), /^Error: verdict mismatch$/)
   assert.throws(() => validateAuditMatchesSummary(edit((copy) => { delete copy.tokenizerPrecheck }), result), /summary's tokenizer pre-check is not the one in its evidence/)
   // The counts the report prints are the evidence's.
   assert.deepEqual(result.tokenizerPrecheck!.sellerTokens, evidence.tokenizerPrecheck!.rounds.map((round) => round.seller[0]!.delta))
   assert.deepEqual(result.tokenizerPrecheck!.modelTokens, evidence.tokenizerPrecheck!.rounds.map((round) => round.reference.delta))
   assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, tokenizerPrecheck: { ...result.tokenizerPrecheck!, modelTokens: [1, 2, 3] } }), /summary's tokenizer pre-check is not the one in its evidence/)
   assert.throws(() => validateAuditMatchesSummary(edit((copy) => { copy.tokenizerPrecheck!.rounds[0]!.seller[0]!.delta! += 9 }), result), /difference does not follow/)
-  assert.throws(() => validateAuditMatchesSummary(edit((copy) => { copy.result.verdict = 'SAME' }), result), /a tokenizer pre-check mismatch is a DIFF/)
-  assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, status: 'SAME' }), /verdict mismatch/)
+  // The questions' own verdict is the evidence's, and the audit's is recomputed: neither can be claimed.
+  assert.throws(() => validateAuditMatchesSummary(edit((copy) => { copy.result.verdict = 'DIFF' }), result), /questions verdict mismatch/)
+  assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, status: 'SAME' }), /^Error: verdict mismatch$/)
+  assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, questionsStatus: 'DIFF' }), /questions verdict mismatch/)
+  // A file that does not name its format is not read: nothing reads an audit DIFF as a questions DIFF.
+  assert.throws(() => validateAuditMatchesSummary(edit((copy) => { delete copy.tests }), result), /does not name the all-tests format/)
 })
 
-test('a confirmation of a DIFF the questions flagged asks the questions even when the pre-check flags first', async () => {
-  // The first auditor's questions flagged the seller. Here the pre-check finds a mismatch first: it is recorded,
-  // and the audit goes on to the questions, the check this confirmation must run to its end.
+test('a confirmation of a questions DIFF in which the pre-check flags is a DIFF of the pre-check, its questions\' SAME apart', async () => {
+  // The first auditor's questions flagged the seller. Here the pre-check finds a mismatch and the questions pass:
+  // any flag is a DIFF, attributed to the pre-check alone, so the same-check rule sends nothing for it.
   const { result, evidence, questionRequests } = await audit({ usage: OTHER_TOKENIZER, confirming: ['kbf'] })
   assert.equal(result.tokenizerPrecheck!.outcome, 'mismatch')
   assert.ok(questionRequests.length > 0)
-  assert.equal(result.status, 'SAME', 'the questions decide: these answers are the model\'s')
+  assert.equal(result.status, 'DIFF')
+  assert.equal(result.questionsStatus, 'SAME', 'the questions decide their own verdict: these answers are the model\'s')
   assert.deepEqual(evidence.confirming, { checks: ['kbf'] })
   assert.doesNotThrow(() => validateAuditMatchesSummary(evidence, result))
-  // At submit it names the pre-check as what flagged and the questions as passed: another check, so nothing is sent.
-  assert.deepEqual(flaggingChecks(evidence, result.status), ['tokens'])
-  assert.deepEqual(passedChecks(evidence, result.status), ['kbf'])
-  // Without the confirmation the same evidence is not valid: a mismatch beside questions.
+  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['tokens'])
+  assert.deepEqual(passedChecks(evidence, result.questionsStatus!), ['kbf'])
+  // The same audit outside a confirmation is the same verdict: no test is special any more.
   const { confirming: _confirming, ...plain } = evidence
-  assert.throws(() => validateAuditMatchesSummary(plain, result), /a tokenizer pre-check mismatch is a DIFF with no question asked/)
-  // A confirmation of a pre-check DIFF ends at the mismatch, as a first audit does.
+  const { confirming: _checks, ...firstLook } = result
+  assert.doesNotThrow(() => validateAuditMatchesSummary(plain, firstLook))
+  // A confirmation of a pre-check DIFF asks its questions too, and repeats the pre-check's flag.
   const tokens = await audit({ usage: OTHER_TOKENIZER, confirming: ['tokens'] })
   assert.equal(tokens.result.status, 'DIFF')
-  assert.equal(tokens.questionRequests.length, 0)
-  assert.deepEqual(flaggingChecks(tokens.evidence, tokens.result.status), ['tokens'])
+  assert.ok(tokens.questionRequests.length > 0)
+  assert.deepEqual(flaggingChecks(tokens.evidence, tokens.result.questionsStatus!), ['tokens'])
 })
 
 test('a confirmation of a pre-check DIFF whose pre-check did not run is an undecided attempt, never a SAME', async () => {
-  // A resumed or unscreened audit runs no pre-check: the check to repeat did not decide, so the questions' SAME is
-  // not this confirmation's answer. It is UNDETERMINED with a reason the epoch plan audits again, and submit sends nothing.
+  // The check to repeat did not decide, so the questions' SAME is not this confirmation's answer. It is UNDETERMINED
+  // with a reason the epoch plan audits again, and submit sends nothing. Its questions were asked like any audit's.
   const { result, evidence, questionRequests } = await audit({ usage: MODEL_TOKENIZER, precheck: false, confirming: ['tokens'] })
-  assert.equal(questionRequests.length, 0, 'its questions could not decide it, so they are not asked')
+  assert.ok(questionRequests.length > 0)
   assert.equal(result.status, 'UNDETERMINED')
+  assert.equal(result.questionsStatus, 'SAME')
   assert.equal(result.outcomeReason?.code, 'confirmation_undecided')
   assert.equal(needsExtension({ ...result, decisionRule: 'kbf-extension-v2' }), false)
   assert.doesNotThrow(() => validateAuditMatchesSummary(evidence, result))
 })
 
-// The check pipeline: the cap and echo checks as stand-in screens, so the order, the stop rules, the confirmation rule
-// and the seller's clock of `verifyModelTarget` are pinned for all three pre-question checks (the pre-check is real).
+// The check pipeline: the cap and echo checks as stand-in screens, so the order, the verdict over every test, the
+// confirmation rule and the seller's clock of `verifyModelTarget` are pinned (the pre-check is real).
 
 const STAND_IN_COST = { inputTokens: 10, outputTokens: 5, totalTokens: 15, estimatedCostUsd: 0.001 }
 const standInRequest = (id: string) => ({ requestIds: [id], statusCode: 200, attemptCosts: [STAND_IN_COST], responseAuth: null, failureReason: null })
@@ -1471,104 +1484,107 @@ function standInScreens(input: { cap?: OutputCapV1 | null; echo?: OutputEchoV1 |
   return { calls, screens: { outputCap, outputEcho } }
 }
 
-test('check pipeline: a cap flag ends the audit before the echo check and the questions, and is paid for with it', async () => {
-  const { calls, screens } = standInScreens({ cap: capRecord('flag'), echo: echoRecord('pass') })
-  const { result, evidence, questionRequests } = await audit({ usage: MODEL_TOKENIZER, ...screens })
-  assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'cap.check'])
-  assert.equal(questionRequests.length, 0)
-  assert.equal(result.status, 'DIFF')
-  assert.match(evidence.result.verdictReason!, /^cap check \(output-cap-v1\): billed 90 output tokens on a limit of 20/)
-  assert.equal(evidence.outputCap!.outcome, 'flag')
-  assert.equal(evidence.outputEcho, undefined)
-  assert.equal(result.outputCap!.outcome, 'flag')
-  assert.equal(result.outputEcho, undefined)
-  assert.deepEqual(flaggingChecks(evidence, 'DIFF'), ['output-cap'])
-  assert.deepEqual(passedChecks(evidence, 'DIFF'), ['tokens'])
-  // The pre-check's two requests and the cap check's one.
-  assert.equal(result.requestCount, 3)
-  assert.equal(result.cost.pricedExchangeCount, 3)
-  assert.equal(needsExtension({ ...result, decisionRule: 'kbf-extension-v2' }), false)
-})
+/** Runs one audit with stand-in cap and echo screens, and the order in which the tests reached the seller. */
+async function pipeline(options: Parameters<typeof audit>[0] & { cap?: OutputCapV1 | null; echo?: OutputEchoV1 | null; readyDelayMs?: number; checkDelayMs?: number }) {
+  const { calls, screens } = standInScreens(options)
+  const ran = await audit({
+    ...options,
+    ...screens,
+    onQuestion: () => { if (!calls.includes('questions')) calls.push('questions') },
+  })
+  return { ...ran, calls }
+}
 
-test('check pipeline: an echo flag ends the audit before the questions; the echo check is told the pre-check matched', async () => {
-  const { calls, screens } = standInScreens({ cap: capRecord('pass'), echo: echoRecord('flag') })
-  const { result, evidence, questionRequests } = await audit({ usage: MODEL_TOKENIZER, ...screens })
-  assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'cap.check', 'echo.check precheckMatch=true'])
-  assert.equal(questionRequests.length, 0)
+test('check pipeline: every test runs after any flag, the questions before the cap and echo checks', async () => {
+  const { calls, result, evidence, questionRequests } = await pipeline({ usage: MODEL_TOKENIZER, cap: capRecord('flag'), echo: echoRecord('pass') })
+  // The references are measured first, on the auditor's time; the questions keep their place before the other tests.
+  assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'questions', 'cap.check', 'echo.check precheckMatch=true'])
+  assert.ok(questionRequests.length > 0)
   assert.equal(result.status, 'DIFF')
-  assert.match(evidence.result.verdictReason!, /^echo check \(output-echo-v1\): echo flag; its questions were not asked$/)
-  assert.deepEqual(flaggingChecks(evidence, 'DIFF'), ['output-echo'])
-  assert.deepEqual(passedChecks(evidence, 'DIFF'), ['tokens', 'output-cap'])
-  assert.equal(result.requestCount, 2 + 1 + 2)
+  assert.equal(result.questionsStatus, 'SAME')
+  assert.equal(evidence.result.verdict, 'SAME', 'the evidence\'s result is the questions\' own')
+  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['output-cap'])
+  assert.deepEqual(passedChecks(evidence, result.questionsStatus!), ['tokens', 'output-echo', 'kbf'])
+  // Every request is paid for with the audit: the batches, the pre-check's two, the cap check's one, the echo's two.
+  assert.equal(result.requestCount, questionRequests.length + 2 + 1 + 2)
   assert.equal(result.cost.pricedExchangeCount, 5)
 })
 
-test('check pipeline: checks that pass leave the seller to its questions, with every record and cost in the audit', async () => {
-  const { calls, screens } = standInScreens({ cap: capRecord('pass'), echo: echoRecord('pass') })
-  const { result, evidence, questionRequests } = await audit({ usage: MODEL_TOKENIZER, ...screens })
-  assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'cap.check', 'echo.check precheckMatch=true'])
-  assert.ok(questionRequests.length > 0)
-  assert.equal(result.status, 'SAME')
-  assert.deepEqual(passedChecks(evidence, 'SAME'), ['tokens', 'output-cap', 'output-echo', 'kbf'])
-  assert.equal(result.requestCount, questionRequests.length + 2 + 1 + 2)
-  // The mock questions carry no price: the priced ones are the pre-check's, the cap check's and the echo check's.
-  assert.equal(result.cost.pricedExchangeCount, 2 + 1 + 2)
-})
-
-test('check pipeline: a fixed amount that flags while the echo record does not ends nothing', async () => {
-  const { screens } = standInScreens({ echo: echoRecord('pass', { growth: 'pass', fixedAmount: 'flag' }) })
-  const { result, questionRequests } = await audit({ usage: MODEL_TOKENIZER, ...screens })
-  assert.ok(questionRequests.length > 0)
-  assert.equal(result.status, 'SAME')
-})
-
-test('check pipeline: a pre-check mismatch ends the audit before the cap and echo checks ask the seller', async () => {
-  const { calls, screens } = standInScreens({ cap: capRecord('flag'), echo: echoRecord('flag') })
-  const { result, evidence } = await audit({ usage: OTHER_TOKENIZER, ...screens })
-  assert.deepEqual(calls, ['cap.ready', 'echo.ready'], 'their references are measured, the seller is not asked')
+test('check pipeline: an echo flag is a DIFF beside the questions; the echo check is told the pre-check matched', async () => {
+  const { calls, result, evidence } = await pipeline({ usage: MODEL_TOKENIZER, cap: capRecord('pass'), echo: echoRecord('flag') })
+  assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'questions', 'cap.check', 'echo.check precheckMatch=true'])
   assert.equal(result.status, 'DIFF')
-  assert.equal(evidence.outputCap, undefined)
-  assert.deepEqual(flaggingChecks(evidence, 'DIFF'), ['tokens'])
+  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['output-echo'])
+  assert.deepEqual(passedChecks(evidence, result.questionsStatus!), ['tokens', 'output-cap', 'kbf'])
 })
 
-test('check pipeline: an extra set of a close call runs no pre-question check', async () => {
-  const { calls, screens } = standInScreens({ cap: capRecord('flag'), echo: echoRecord('flag') })
-  const { result, evidence, questionRequests } = await audit({ usage: OTHER_TOKENIZER, extension: true, ...screens })
-  assert.deepEqual(calls, [])
+test('check pipeline: tests that pass, or have no result, leave the verdict to the questions', async () => {
+  const passing = await pipeline({ usage: MODEL_TOKENIZER, cap: capRecord('pass'), echo: echoRecord('pass') })
+  assert.equal(passing.result.status, 'SAME')
+  assert.deepEqual(passedChecks(passing.evidence, 'SAME'), ['tokens', 'output-cap', 'output-echo', 'kbf'])
+  // An undecided test never blocks SAME.
+  const undecided = await pipeline({ usage: () => 0, cap: capRecord('inconclusive'), echo: null })
+  assert.equal(undecided.result.status, 'SAME')
+  assert.deepEqual(undecided.result.tokenizerPrecheck, { rule: 'tokenizer-precheck-v1', outcome: 'inconclusive' })
+})
+
+test('check pipeline: a counted fixed amount flags as its own finding', async () => {
+  const { result, evidence } = await pipeline({ usage: MODEL_TOKENIZER, echo: echoRecord('flag', { flag: 'offset', growth: 'pass', fixedAmount: 'flag' }) })
+  assert.equal(result.status, 'DIFF')
+  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['output-offset'])
+})
+
+test('check pipeline: a pre-check mismatch ends nothing: the questions, the cap check and the echo check all run', async () => {
+  const { calls, result, evidence } = await pipeline({ usage: OTHER_TOKENIZER, cap: capRecord('flag'), echo: echoRecord('flag') })
+  assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'questions', 'cap.check', 'echo.check precheckMatch=false'])
+  assert.equal(result.status, 'DIFF')
+  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['tokens', 'output-cap', 'output-echo'])
+})
+
+test('check pipeline: a flag stands when the seller is skipped afterwards; with no flag the skip is a skip', async () => {
+  const flagged = await pipeline({ usage: OTHER_TOKENIZER, cap: capRecord('pass'), echo: echoRecord('pass'), refuseQuestions: true })
+  assert.equal(flagged.result.status, 'DIFF', 'a seller that goes silent after a flag does not erase it')
+  assert.equal(flagged.result.questionsStatus, 'UNDETERMINED')
+  assert.match(flagged.evidence.result.verdictReason!, /the questions were not finished: the seller was skipped/)
+  assert.deepEqual(flagged.calls, ['cap.ready', 'echo.ready', 'questions'], 'nothing more is asked of a skipped seller')
+  assert.deepEqual(flaggingChecks(flagged.evidence, 'UNDETERMINED'), ['tokens'])
+  const clean = await audit({ usage: MODEL_TOKENIZER, refuseQuestions: true })
+  assert.equal(clean.skipped!.status, 'SKIPPED')
+})
+
+test('check pipeline: an extra set of a close call asks questions only', async () => {
+  const { calls, result, evidence, questionRequests } = await pipeline({ usage: OTHER_TOKENIZER, extension: true, cap: capRecord('flag'), echo: echoRecord('flag') })
+  assert.deepEqual(calls, ['questions'])
   assert.ok(questionRequests.length > 0)
   assert.equal(evidence.tokenizerPrecheck, undefined)
   assert.equal(result.status, 'SAME')
 })
 
-test('check pipeline: a confirmation of the questions\' DIFF goes past a cap flag and an echo flag to its questions', async () => {
-  const { calls, screens } = standInScreens({ cap: capRecord('flag'), echo: echoRecord('flag') })
-  const { result, evidence, questionRequests } = await audit({ usage: MODEL_TOKENIZER, confirming: ['kbf'], ...screens })
-  assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'cap.check', 'echo.check precheckMatch=true'])
-  assert.ok(questionRequests.length > 0)
-  assert.equal(result.status, 'SAME')
-  assert.deepEqual(flaggingChecks(evidence, 'SAME'), ['output-cap', 'output-echo'])
+test('check pipeline: a confirmation of the questions\' DIFF runs every test; the flags of others make it a DIFF of theirs', async () => {
+  const { calls, result, evidence } = await pipeline({ usage: MODEL_TOKENIZER, confirming: ['kbf'], cap: capRecord('flag'), echo: echoRecord('flag') })
+  assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'questions', 'cap.check', 'echo.check precheckMatch=true'])
+  assert.equal(result.status, 'DIFF')
+  assert.equal(result.questionsStatus, 'SAME')
+  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['output-cap', 'output-echo'])
 })
 
-test('check pipeline: a confirmation of a cap DIFF whose cap check did not decide is an undecided attempt with no question', async () => {
-  const { screens } = standInScreens({ cap: capRecord('inconclusive'), echo: echoRecord('pass') })
-  const { result, questionRequests } = await audit({ usage: MODEL_TOKENIZER, confirming: ['output-cap'], ...screens })
-  assert.equal(questionRequests.length, 0)
+test('check pipeline: a confirmation of a cap DIFF whose cap check did not decide is an undecided attempt, whatever else flagged', async () => {
+  const { result, questionRequests } = await pipeline({ usage: MODEL_TOKENIZER, confirming: ['output-cap'], cap: capRecord('inconclusive'), echo: echoRecord('flag') })
+  assert.ok(questionRequests.length > 0)
   assert.equal(result.status, 'UNDETERMINED')
   assert.equal(result.outcomeReason?.code, 'confirmation_undecided')
+  assert.equal(result.questionsStatus, 'SAME')
 })
 
-test('check pipeline: a confirmation of a cap DIFF ends on its own cap flag', async () => {
-  const { calls, screens } = standInScreens({ cap: capRecord('flag'), echo: echoRecord('pass') })
-  const { result, questionRequests } = await audit({ usage: MODEL_TOKENIZER, confirming: ['output-cap'], ...screens })
-  assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'cap.check'])
-  assert.equal(questionRequests.length, 0)
+test('check pipeline: a confirmation of a cap DIFF repeats its flag', async () => {
+  const { calls, result } = await pipeline({ usage: MODEL_TOKENIZER, confirming: ['output-cap'], cap: capRecord('flag'), echo: echoRecord('pass') })
+  assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'questions', 'cap.check', 'echo.check precheckMatch=true'])
   assert.equal(result.status, 'DIFF')
 })
 
 test('check pipeline: the cap and echo references and checks are the auditor\'s time, not the seller\'s', async () => {
   // Both references and both checks take longer than the seller's idle limit without a request to it being out.
-  const { screens } = standInScreens({ cap: capRecord('pass'), echo: echoRecord('pass'), readyDelayMs: 150, checkDelayMs: 150 })
-  const { result, questionRequests } = await audit({ usage: MODEL_TOKENIZER, auditTimeoutMs: 100, ...screens })
+  const { result, questionRequests } = await pipeline({ usage: MODEL_TOKENIZER, auditTimeoutMs: 100, cap: capRecord('pass'), echo: echoRecord('pass'), readyDelayMs: 150, checkDelayMs: 150 })
   assert.equal(result.status, 'SAME')
   assert.equal(result.outcomeReason, null)
   assert.ok(questionRequests.length > 0)
@@ -1585,7 +1601,6 @@ test('a saved seller file that stores a check slot as null reads as having no su
   assert.doesNotThrow(() => validateAuditMatchesSummary(saved, result))
   const summary = { ...result, outputCap: null, outputEcho: null } as never
   assert.deepEqual(decidedChecks(summary), ['tokens', 'kbf'])
-  assert.equal(askedNoQuestion(summary), false)
   assert.doesNotThrow(() => validateAuditMatchesSummary(saved, summary))
   assert.deepEqual(storedRequestsOf(saved).length, storedRequestsOf(evidence).length)
 })

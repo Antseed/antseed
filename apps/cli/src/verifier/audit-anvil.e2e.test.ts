@@ -391,7 +391,7 @@ test('a tokenizer pre-check DIFF is one auditor\'s report until another auditor\
     }
 
     // Seller 1 serves the model. Seller 2 signs input tokens counted by another tokenizer: each auditor's
-    // pre-check finds it and asks it no question. An audited model, since only those have confirmers.
+    // pre-check finds it, beside its questions. An audited model, since only those have confirmers.
     // Seller 3 is flagged by A's questions and by B's pre-check: two findings, each seen once, so no DIFF.
     const model = 'claude-opus-5.5'
     const sellers = [randomWallet(), randomWallet(), randomWallet()]
@@ -449,11 +449,11 @@ test('a tokenizer pre-check DIFF is one auditor\'s report until another auditor\
     }
     const diff = evidence.results.find((result) => result.agentId === '2')!
     assert.equal(diff.verdict, 'DIFF')
-    assert.match(diff.verdictReason!, /^tokenizer pre-check \(tokenizer-precheck-v1\): the seller signed .* off by more than 2 in every round, while 2 of the model's other sellers signed the model's count; its questions were not asked$/)
+    assert.match(diff.verdictReason!, /^tokenizer pre-check \(tokenizer-precheck-v1\): the seller signed .* off by more than 2 in every round, while 2 of the model's other sellers signed the model's count$/)
     const sellerEvidence = JSON.parse(await readFile(
       resolve(dirname(modelAuditEvidencePath(a.evidenceDir, 'a-audit', model)), diff.audit.evidencePath), 'utf8',
     )) as { exchanges: unknown[]; tokenizerPrecheck: { outcome: string; rounds: Array<{ seller: Array<{ delta: number }>; reference: { delta: number } }> } }
-    assert.deepEqual(sellerEvidence.exchanges, [])
+    assert.ok(sellerEvidence.exchanges.length > 0, 'every test runs: its questions were asked beside the mismatch')
     assert.equal(sellerEvidence.tokenizerPrecheck.outcome, 'mismatch')
     assert.equal(sellerEvidence.tokenizerPrecheck.rounds.length, 3)
     for (const round of sellerEvidence.tokenizerPrecheck.rounds) {

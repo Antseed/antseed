@@ -45,7 +45,7 @@ test('epoch overview merges runs in submit order; a DIFF counts as found', async
         result('p3', '3', 'UNDETERMINED', { outcomeReason: { code: 'malformed_output', summary: 'x' } }),
         result('p4', '4', 'DIFF'),
         result('p5', '5', 'UNDETERMINED', { outcomeReason: { code: 'deadline_exceeded', summary: 'x' }, parsedProbeCount: 17 }),
-        // A DIFF from the tokenizer pre-check: no question was asked.
+        // A DIFF from the tokenizer pre-check.
         result('p7', '7', 'DIFF', {
           parsedProbeCount: 0, correctProbeCount: 0, incorrectProbeCount: 0, correctRate: null,
           tokenizerPrecheck: { rule: 'tokenizer-precheck-v1', outcome: 'mismatch', sellerTokens: [193, 176, 176], modelTokens: [141, 130, 145] },
@@ -79,7 +79,7 @@ test('epoch overview merges runs in submit order; a DIFF counts as found', async
     assert.match(cell('5').reason!.detail, /answered 17 of 100 questions/)
     // A pre-check DIFF says what the seller signed next to what the model counts, not a share of answers.
     assert.equal(cell('7').state, 'diff')
-    assert.equal(cell('7').tokenizerMismatch, 'signed 193/176/176 input tokens where the model counts 141/130/145; no question asked')
+    assert.equal(cell('7').tokenizerMismatch, 'signed 193/176/176 input tokens where the model counts 141/130/145')
     assert.equal(cell('6').state, 'skipped')
     assert.match(cell('6').reason!.detail, /\$17 in \/ \$85 out .* \$10 in \/ \$50 out for model-a/)
 
@@ -87,7 +87,7 @@ test('epoch overview merges runs in submit order; a DIFF counts as found', async
     assert.equal(path, epochOverviewPath(dir, '9'))
     const html = await readFile(path!, 'utf8')
     assert.match(html, /KBF audits · epoch 9/)
-    assert.match(html, /Tokenizer pre-check: signed 193\/176\/176 input tokens where the model counts 141\/130\/145; no question asked/)
+    assert.match(html, /Tokenizer pre-check: signed 193\/176\/176 input tokens where the model counts 141\/130\/145/)
     assert.match(html, /Inconclusive: answers couldn&#39;t be read/)
     assert.match(html, /Not audited: the auditor won&#39;t pay this price/)
     // A single auditor's DIFF is one report, not a confirmed result.

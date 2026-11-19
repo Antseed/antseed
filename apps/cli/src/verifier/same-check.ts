@@ -6,7 +6,7 @@ import type { ConfirmationTarget } from './pending-confirmations.js'
 import { pooledCloseCallVerdict } from './close-call.js'
 import { AUDIT_CHECK_IDS, describeAuditCheck, flaggingChecks, type AuditCheckId } from './flagging-checks.js'
 import { sanitizeOutcomeSummary } from './outcome-reason.js'
-import { validateStoredChecks } from './audit-checks.js'
+import { ALL_TESTS_FORMAT, validateStoredChecks } from './audit-checks.js'
 import { proxyAuditEvidenceHash, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import type { SubmissionCandidate } from './submission-delta.js'
 import { opinionKey } from './third-opinion.js'
@@ -412,6 +412,7 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
       if (result['verdict'] !== 'DIFF') throw new Error(`its evidence gives agent ${agentId} ${String(result['verdict'])}, not DIFF`)
       const first = await sellerEvidence(result['audit'], agentId, serviceHash, result['referenceId'])
       // Every flag is recomputed from the stored records, as `verifier submit` checks its own.
+      if (first.tests !== ALL_TESTS_FORMAT) throw new Error('its evidence does not name the all-tests format')
       validateStoredChecks(first, 'confirmer')
       const checks = flaggingChecks(first, await questionsVerdict(result, first, (audit, referenceId) => sellerEvidence(audit, agentId, serviceHash, referenceId)))
       if (checks.length === 0) throw new Error(`its evidence for agent ${agentId} shows no check that flagged`)
@@ -425,6 +426,21 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
  * of the first set and its extra sets, recomputed from their evidence files (each hash-checked).
  */
 async function questionsVerdict(
+  result: Record<string, unknown>,
+  first: ProxyAuditEvidenceV1,
+  load: (audit: unknown, referenceId: unknown) => Promise<ProxyAuditEvidenceV1>,
+): Promise<'SAME' | 'DIFF' | 'UNDETERMINED' | null> {
+  // The questions' own verdict, recomputed from the seller files; the published `questionsVerdict` must agree, or say
+  // UNDETERMINED (a close call that could not be finished beside another test's flag). It can only take the
+  // questions' attribution away, never add one.
+  const recomputed = await recomputedQuestionsVerdict(result, first, load)
+  const published = verdictOf(result['questionsVerdict'])
+  if (published === null) throw new Error('its result does not give the questions\' own verdict')
+  if (published !== recomputed && published !== 'UNDETERMINED') throw new Error('its questions\' verdict does not follow from its evidence')
+  return published
+}
+
+async function recomputedQuestionsVerdict(
   result: Record<string, unknown>,
   first: ProxyAuditEvidenceV1,
   load: (audit: unknown, referenceId: unknown) => Promise<ProxyAuditEvidenceV1>,

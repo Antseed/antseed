@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { askedNoQuestion } from './close-call.js'
-import { assertBoundToSeller, earliestAuditorTime, RECORD_CHECKS, storedRequestsOf, TOKENS_CHECK } from './audit-checks.js'
+import { assertBoundToSeller, earliestAuditorTime, RECORD_CHECKS, storedRequestsOf, TOKENS_CHECK, verdictOf } from './audit-checks.js'
 import { isFreshConfirmation } from './same-check.js'
 import { costOfRequests, requestCountOf } from './proxy-evidence.js'
 import {
@@ -103,15 +102,25 @@ test('decided is read from the summary, every combination: the questions count o
   }
 })
 
-test('a DIFF ended before the questions only by a flag that ends the audit, and only with no answer scored', () => {
-  assert.equal(askedNoQuestion({ tokenizerPrecheck: { outcome: 'mismatch' } as never }), true)
-  assert.equal(askedNoQuestion({ outputCap: { outcome: 'flag' } as never, parsedProbeCount: 0 }), true)
-  assert.equal(askedNoQuestion({ outputEcho: { outcome: 'flag' } as never }), true)
-  assert.equal(askedNoQuestion({ outputCap: { outcome: 'flag' } as never, parsedProbeCount: 2 }), false, 'a confirmation went on to its questions')
-  assert.equal(askedNoQuestion({ tokenizerPrecheck: { outcome: 'match' } as never, outputCap: { outcome: 'pass' } as never }), false)
-  // The echo record's overall outcome decides, not a finding on its own: a fixed amount that does not count yet ends nothing.
-  assert.equal(askedNoQuestion({ outputEcho: { outcome: 'pass', growth: 'pass', fixedAmount: 'flag' } as never }), false)
-  assert.equal(askedNoQuestion({}), false)
+test('the audit\'s verdict: any flag is a DIFF, otherwise the questions\' own; a test with no result blocks nothing', () => {
+  const reading = (check: AuditCheckId, outcome: 'flag' | 'pass' | 'inconclusive' | 'not-run') => ({ check, subject: 'model' as const, outcome })
+  const verdict = (readings: ReturnType<typeof reading>[], questions: 'SAME' | 'DIFF' | 'UNDETERMINED', confirming?: AuditCheckId[], pending = false) => {
+    const result = verdictOf(readings, questions, confirming, { questionsPending: pending })
+    return [result.verdict, result.flaggedBy, result.undecidedConfirmation]
+  }
+  // A cap flag beside the questions' SAME: a DIFF attributed to the cap check, never to the questions.
+  assert.deepEqual(verdict([reading('output-cap', 'flag'), reading('kbf', 'pass')], 'SAME'), ['DIFF', ['output-cap'], null])
+  assert.deepEqual(verdict([reading('tokens', 'flag'), reading('output-echo', 'flag'), reading('kbf', 'flag')], 'DIFF'), ['DIFF', ['tokens', 'output-echo', 'kbf'], null])
+  // No flag: the questions decide, and a test with no result never blocks SAME.
+  assert.deepEqual(verdict([reading('tokens', 'inconclusive'), reading('output-cap', 'not-run'), reading('kbf', 'pass')], 'SAME'), ['SAME', [], null])
+  assert.deepEqual(verdict([reading('tokens', 'pass'), reading('kbf', 'inconclusive')], 'UNDETERMINED'), ['UNDETERMINED', [], null])
+  // A confirmation in which no test it repeats decided is undecided, whatever another test says.
+  assert.deepEqual(verdict([reading('output-cap', 'inconclusive'), reading('output-echo', 'flag'), reading('kbf', 'pass')], 'SAME', ['output-cap']),
+    ['UNDETERMINED', ['output-echo'], ['output-cap']])
+  assert.deepEqual(verdict([reading('output-cap', 'pass'), reading('kbf', 'pass')], 'SAME', ['output-cap']), ['SAME', [], null], 'a pass of the repeated test decides')
+  // A confirmation of the questions whose close call still waits for its extra set is not undecided yet.
+  assert.deepEqual(verdict([reading('output-cap', 'flag'), reading('kbf', 'inconclusive')], 'UNDETERMINED', ['kbf'], true), ['DIFF', ['output-cap'], null])
+  assert.deepEqual(verdict([reading('output-cap', 'flag'), reading('kbf', 'inconclusive')], 'UNDETERMINED', ['kbf'], false), ['UNDETERMINED', ['output-cap'], ['kbf']])
 })
 
 test('a local result answers a confirmation with the checks it decided, or as an undecided confirmation', () => {

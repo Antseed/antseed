@@ -170,6 +170,26 @@ test('a close call stays pending when its extra questions cannot run, and is ext
   assert.ok(since)
 })
 
+test('a flagged close call never waits across runs: without its extra set its questions are undecided and its DIFF goes out', async () => {
+  // A close call beside a cap flag whose extra questions cannot run in this run.
+  const flagged = { ...audit('d', 22), outputCap: { rule: 'output-cap-v1', outcome: 'flag' as const, reason: 'over', asks: [] } }
+  const { outcome, logs } = await run({ results: [flagged], exhausted: new Set([flagged.peerId]) })
+  const [result] = outcome.results as [ModelVerificationTargetResult]
+  assert.equal(outcome.stats.pending, 0)
+  assert.equal(result.extensionPending, undefined)
+  assert.match(result.closeCallClosed!.reason, /NO_EPOCH_QUESTION_SET/)
+  assert.equal(result.questionsStatus, 'UNDETERMINED')
+  assert.equal(result.status, 'DIFF')
+  assert.equal(finalAuditVerdict(result), 'DIFF', 'submitted now, with the cap check\'s flag')
+  assert.ok(logs.some((line) => line.includes('the DIFF goes out now')))
+  // Extended in its run, it is pooled like any close call, and the cap flag still makes it a DIFF.
+  const extended = await run({ results: [flagged], extensionWrong: { [flagged.peerId]: 10 } })
+  const [pooled] = extended.outcome.results as [ModelVerificationTargetResult]
+  assert.ok(pooled.extension)
+  assert.equal(pooled.status, 'DIFF')
+  assert.equal(pooled.questionsStatus, pooled.extension.pooled.verdict)
+})
+
 test('a close call whose epoch set has no extra set stays waiting; nothing builds new questions for it', async () => {
   const grey = audit('a', 22)
   const { outcome } = await run({ results: [grey], exhausted: new Set([grey.peerId]) })

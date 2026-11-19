@@ -930,7 +930,7 @@ export function summarizeOutputEcho(record: OutputEchoV1): OutputEchoSummary {
 }
 
 export function describeOutputEchoFlag(record: Pick<OutputEchoV1, 'rule' | 'reason'>): string {
-  return `echo check (${record.rule.id}): ${record.reason}; its questions were not asked`
+  return `echo check (${record.rule.id}): ${record.reason}`
 }
 
 /** The longest the model's other sellers are waited for, as for the pre-check's crowd. */

@@ -1,4 +1,5 @@
-import { endedBeforeQuestions } from './audit-checks.js'
+import { readingsOfSummary, verdictOf } from './audit-checks.js'
+import { confirmationUndecidedReason } from './outcome-reason.js'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
   KBF_EXTENSION_RULE,
@@ -54,22 +55,12 @@ export function latestExtension(
  * True when this close call still needs another extra set: its first audit is in the grey zone and
  * has none yet, or its latest pooled look is still a close call and the rule allows one more.
  */
-/**
- * A DIFF that ended before the questions: a pre-check mismatch or a cap check flag, with no question asked. In a
- * confirmation of another check's DIFF such a flag does not end the audit, and its questions decide as usual.
- */
-export function askedNoQuestion(
-  result: Pick<ModelVerificationTargetResult, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho'> & { parsedProbeCount?: number },
-): boolean {
-  return endedBeforeQuestions(result)
-}
-
 export function needsExtension(result: Pick<ModelVerificationTargetResult,
-  'decisionRule' | 'stats' | 'responseAuthVerified' | 'extension' | 'extension2' | 'outcomeReason' | 'tokenizerPrecheck' | 'outputCap' | 'outputEcho'> & { parsedProbeCount?: number }): boolean {
+  'decisionRule' | 'stats' | 'responseAuthVerified' | 'extension' | 'extension2' | 'outcomeReason' | 'closeCallClosed'> & { parsedProbeCount?: number }): boolean {
   const rule = closeCallRule(result)
   if (!rule || !result.stats) return false
-  // A DIFF from the tokenizer pre-check or the cap check asked no question: there is no close call to extend.
-  if (askedNoQuestion(result)) return false
+  // A flagged audit whose extra set could not be asked in its run: its questions read as undecided.
+  if (result.closeCallClosed) return false
   // A set whose ResponseAuth failed, or a seller that refuses the request profile (temperature), is
   // UNDETERMINED whatever its p-value; extra questions do not fix that.
   if (result.responseAuthVerified === false || result.outcomeReason?.code === 'request_profile_incompatible') return false
@@ -87,11 +78,46 @@ export function needsExtension(result: Pick<ModelVerificationTargetResult,
  * The audit's verdict: the pooled verdict after a close call, else the first audit's own verdict.
  * Null while a close call waits for extra questions.
  */
+/** The questions' own verdict, after any close call; null while a close call waits for an extra set. */
 export function stageOneVerdict(result: ModelVerificationTargetResult): 'SAME' | 'DIFF' | 'UNDETERMINED' | null {
-  if (needsExtension(result)) return null
+  const questions = questionsView(result)
+  if (needsExtension(questions)) return null
+  if (result.closeCallClosed) return 'UNDETERMINED'
   const latest = latestExtension(result)
   if (latest) return latest.pooled.verdict
-  return result.status
+  return questions.status
+}
+
+/** A result as the questions alone see it: their own verdict and outcome reason. */
+function questionsView(result: ModelVerificationTargetResult): ModelVerificationTargetResult {
+  return {
+    ...result,
+    status: result.questionsStatus ?? result.status,
+    outcomeReason: result.questionsOutcomeReason !== undefined ? result.questionsOutcomeReason : (result.outcomeReason ?? null),
+  }
+}
+
+/**
+ * Sets an audit's verdict over every test from the questions' own verdict and the test records (`verdictOf`, rule
+ * `all-tests-v1`). Only the questions' fields and the records are read, so it gives the same answer whenever it is
+ * called again: after the close-call rule is attached (`run.ts`), and after an extra set is pooled. While a close call
+ * waits, `status` holds the verdict so far and a confirmation of the questions waits with it.
+ */
+export function settleAuditVerdict<T extends ModelVerificationTargetResult>(result: T): T {
+  const questions = questionsView(result)
+  const pending = needsExtension(questions)
+  const latest = latestExtension(result)
+  const questionsStatus = result.closeCallClosed ? 'UNDETERMINED' as const
+    : !pending && latest ? latest.pooled.verdict : questions.status
+  const audit = verdictOf(readingsOfSummary({ ...result, questionsStatus }), questionsStatus, result.confirming, { questionsPending: pending })
+  const questionsOutcome = questions.outcomeReason ?? null
+  return {
+    ...result,
+    status: audit.verdict,
+    questionsStatus,
+    questionsOutcomeReason: questionsOutcome,
+    outcomeReason: audit.undecidedConfirmation ? confirmationUndecidedReason(audit.undecidedConfirmation, 0) : questionsOutcome,
+  }
 }
 
 export function pooledCloseCallVerdict(

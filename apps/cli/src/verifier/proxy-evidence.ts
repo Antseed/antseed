@@ -232,6 +232,11 @@ export interface ProxyAuditEvidenceV1 {
    * may then sit beside the questions.
    */
   confirming?: { checks: AuditCheckId[] }
+  /**
+   * The evidence format: `all-tests-v1`, every test runs and none ends the audit; `result` is the questions' own,
+   * and the audit's verdict is derived from it and the test records (`audit-checks.ts` `verdictOf`).
+   */
+  tests?: 'all-tests-v1'
   exchanges: ProxyAuditEvidenceExchangeV1[]
   resume?: {
     parentAuditId: string

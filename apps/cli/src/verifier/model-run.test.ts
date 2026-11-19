@@ -1612,3 +1612,27 @@ test('answers inside a <think> block are ignored, as the reference code strips t
   assert.equal(run.result.status, 'SAME')
   assert.equal(run.result.parsedProbeCount, 40)
 })
+
+test('a version 1 checkpoint restarts its audit clean; a version 2 checkpoint carries its finished test records', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-checkpoint-version-'))
+  try {
+    await mkdir(join(directory, '.checkpoints'), { recursive: true })
+    const base = {
+      kind: 'antseed-verifier-audit-checkpoint', parentAuditId: null, runId: 'run-1', epoch: '7', model: 'model-a',
+      targetPeerId: 'aa'.repeat(20), service: 'model-a', referenceId: 'sha256:a', queryProfileHash: '0x00', probeIds: ['p1'],
+      exchanges: [], updatedAt: '2026-11-19T00:00:00.000Z',
+    }
+    // Written before every test ran in one audit: it holds no test records, so its audit is not resumed.
+    await writeFile(join(directory, '.checkpoints', 'old.json'), JSON.stringify({ ...base, version: 1, auditId: 'old' }))
+    const records = { outputCap: { rule: { id: 'output-cap-v1' }, outcome: 'pass', reason: 'within', asks: [] } }
+    await writeFile(join(directory, '.checkpoints', 'new.json'), JSON.stringify({ ...base, version: 2, auditId: 'new', records }))
+    const checkpoints = await readModelAuditCheckpoints(directory)
+    assert.deepEqual(checkpoints.map((entry) => entry.checkpoint.auditId), ['new'])
+    assert.deepEqual(checkpoints[0]!.checkpoint.records, records)
+    // A version 2 checkpoint without its records is not one this CLI wrote.
+    await writeFile(join(directory, '.checkpoints', 'bad.json'), JSON.stringify({ ...base, version: 2, auditId: 'bad' }))
+    await assert.rejects(readModelAuditCheckpoints(directory), /invalid verifier audit checkpoint/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

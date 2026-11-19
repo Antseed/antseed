@@ -384,7 +384,7 @@ test('a DIFF is submitted as found, for another auditor to confirm', async () =>
   })
 })
 
-test('a tokenizer pre-check DIFF is submitted with its reason and its evidence, next to sellers judged on their questions', async () => {
+test('a tokenizer pre-check DIFF is submitted with its reason and its evidence, beside its own questions\' verdict', async () => {
   await withRun([
     { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), tokenizerMismatch: true },
     audit('2', sellers[1]!, 'model-a'),
@@ -397,7 +397,10 @@ test('a tokenizer pre-check DIFF is submitted with its reason and its evidence, 
     assert.deepEqual(prepared.excluded, [])
     const [diff, same] = entry.evidence.results as [ModelAuditSellerResultV1, ModelAuditSellerResultV1]
     assert.match(diff.verdictReason!, /^tokenizer pre-check \(tokenizer-precheck-v1\): the seller signed \d+\/\d+\/\d+ input tokens/)
-    assert.equal(diff.stats.targetTotal, 0, 'no question was asked')
+    // Its questions were asked beside the mismatch and passed: the questions' own verdict is published apart.
+    assert.ok((diff.stats.targetTotal ?? 0) > 0)
+    assert.equal(diff.questionsVerdict, 'SAME')
+    assert.deepEqual([diff.flaggedBy, diff.passedBy], [['tokens'], ['kbf']])
     assert.equal(same.verdictReason, null)
     // The seller's evidence file, with the signed responses the DIFF rests on, is published with the audit.
     assert.equal(entry.auditEvidencePaths.length, 2)
@@ -405,7 +408,7 @@ test('a tokenizer pre-check DIFF is submitted with its reason and its evidence, 
       exchanges: unknown[]
       tokenizerPrecheck: { outcome: string; rounds: Array<{ seller: Array<{ base: { responseAuth: { status: string } } }> }> }
     }
-    assert.deepEqual(published.exchanges, [])
+    assert.ok(published.exchanges.length > 0)
     assert.equal(published.tokenizerPrecheck.outcome, 'mismatch')
     assert.deepEqual(
       published.tokenizerPrecheck.rounds.map((round) => round.seller.map((ask) => ask.base.responseAuth.status)),
@@ -559,6 +562,7 @@ test('kbf-extension-v2 close calls get a second extra set and are re-verified fr
 test('a second extra set is rejected when the first pooled look was already decided, or reuses probes', () => {
   const evidence = (verdict: 'SAME' | 'DIFF' | 'UNDETERMINED', referenceId: string, probeIds: string[], wrong: number, total = 20) => ({
     target: { peerId: 'aa', service: 'm', agentId: '1' },
+    tests: 'all-tests-v1',
     reference: { referenceId, probes: probeIds.map((id) => ({ id })) },
     result: {
       verdict,
@@ -714,6 +718,7 @@ test('tampered pooled statistics or a reused extension probe are rejected', asyn
 test('a close call is checked against the close-call rule', () => {
   const first = {
     target: { peerId: 'aa', service: 'm', agentId: '1' },
+    tests: 'all-tests-v1',
     reference: { referenceId: 'sha256:a', probes: [{ id: 'p1' }] },
     exchanges: [],
     result: { verdict: 'SAME', stats: { pValueBinomial: 0.5, targetCoverage: 1, selfHamming: 0, selfTotal: 10, targetHamming: 0, targetTotal: 10, selfCoverage: 1, p0Cp99: 0.3 } },

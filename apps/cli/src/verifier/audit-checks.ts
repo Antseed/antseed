@@ -1,10 +1,11 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { auditedServiceNames } from './audited-models.js'
-import { outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1 } from './output-cap.js'
-import { outputEchoPaidRequests, summarizeOutputEcho, validateOutputEcho, type EchoSellerAskV1, type OutputEchoV1 } from './output-echo.js'
+import { describeOutputCapFlag, outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1 } from './output-cap.js'
+import { describeOutputEchoFlag, outputEchoPaidRequests, summarizeOutputEcho, validateOutputEcho, type EchoSellerAskV1, type OutputEchoV1 } from './output-echo.js'
 import type { PaidRequest, ProxyAuditEvidenceExchangeV1 } from './proxy-evidence.js'
 import { matchesEnrolledService } from './response-auth-reader.js'
 import {
+  describeTokenizerMismatch,
   summarizeTokenizerPrecheck,
   tokenizerPrecheckPaidRequests,
   validateTokenizerPrecheck,
@@ -106,27 +107,18 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   summarize(record: CheckRecords[Slot]): unknown
   /** Recomputes the record from the bytes it stores, with the rules that cross records. Throws. */
   validate(record: CheckRecords[Slot], context: StoredAuditContext): void
-  /** The finding a flag of this record would end the audit with, before the questions; null when it flags nothing that ends it. */
-  endingFinding(record: CheckRecords[Slot]): AuditCheckId | null
   /** Every request the record stores, with its signer, grouped by kind (the readers take a set or a minimum, not an order). */
   requests(record: CheckRecords[Slot]): StoredRequest[]
   /** Every request the check paid for, in the order its cost is summed. */
   paid(record: CheckRecords[Slot]): PaidRequest[]
+  /** What a flag of this record found, in plain words, as the audit's verdict reason gives it. */
+  describeFlag(record: CheckRecords[Slot]): string
   /** The texts of a stored record that breaks the run's rules. */
   texts: {
     /** The check, as an error names it. */
     name: string
     summaryMismatch: string
-    /** It ran although an earlier check's flag had ended the audit. Unused for the first check. */
-    ranAfterDiff: string
-    endsWithDiff: string
-    extraSetAfterDiff: string
   }
-  /**
-   * Whether a summary shows that this check ended the audit with a DIFF before the questions. It is the record's own
-   * overall outcome, not any one finding: a finding that does not count yet (the echo check's fixed amount) ends nothing.
-   */
-  endedAuditInSummary(summary: CheckSummaryOutcomes): boolean
 }
 
 const stored = (
@@ -144,11 +136,9 @@ export const TOKENS_CHECK: RecordCheck<'tokenizerPrecheck'> = {
     ofRecord: (record) => outcome(record.outcome, 'mismatch', 'match'),
     ofSummary: (summary) => outcome(summary.outcome, 'mismatch', 'match'),
   }],
-  endedAuditInSummary: (summary) => summary.outcome === 'mismatch',
   summarize: summarizeTokenizerPrecheck,
   // A pre-check must follow from the signed responses it stores.
   validate: (record, context) => validateTokenizerPrecheck(record, context.auditedPeerId),
-  endingFinding: (record) => (record.outcome === 'mismatch' ? 'tokens' : null),
   requests: (record) => [
     ...record.rounds.flatMap((round) => round.seller.flatMap((ask) => [ask.base, ...(ask.probed ? [ask.probed] : [])]))
       .map((request) => stored('audited', request)),
@@ -156,12 +146,10 @@ export const TOKENS_CHECK: RecordCheck<'tokenizerPrecheck'> = {
       .map((request) => stored({ peerId: backer.peerId, service: backer.service }, request))),
   ],
   paid: tokenizerPrecheckPaidRequests,
+  describeFlag: describeTokenizerMismatch,
   texts: {
     name: 'the tokenizer pre-check',
     summaryMismatch: 'the summary\'s tokenizer pre-check is not the one in its evidence',
-    ranAfterDiff: 'a tokenizer pre-check after a DIFF that ended the audit',
-    endsWithDiff: 'a tokenizer pre-check mismatch is a DIFF with no question asked',
-    extraSetAfterDiff: 'extra set after a tokenizer pre-check DIFF',
   },
 }
 
@@ -172,19 +160,15 @@ export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
     ofRecord: (record) => outcome(record.outcome, 'flag', 'pass'),
     ofSummary: (summary) => outcome(summary.outcome, 'flag', 'pass'),
   }],
-  endedAuditInSummary: (summary) => summary.outcome === 'flag',
   summarize: summarizeOutputCap,
   // Recomputed from the bytes the seller signed.
   validate: (record) => validateOutputCap(record),
-  endingFinding: (record) => (record.outcome === 'flag' ? 'output-cap' : null),
   requests: (record) => record.asks.map((ask) => stored('audited', ask.request)),
   paid: outputCapPaidRequests,
+  describeFlag: describeOutputCapFlag,
   texts: {
     name: 'the cap check',
     summaryMismatch: 'the summary\'s cap check is not the one in its evidence',
-    ranAfterDiff: 'a cap check after a tokenizer pre-check DIFF',
-    endsWithDiff: 'a cap check flag is a DIFF with no question asked',
-    extraSetAfterDiff: 'extra set after a cap check DIFF',
   },
 }
 
@@ -200,7 +184,6 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
     ofRecord: (record) => outcome(record.fixedAmount?.outcome, 'flag', 'pass'),
     ofSummary: (summary) => outcome(summary.fixedAmount, 'flag', 'pass'),
   }],
-  endedAuditInSummary: (summary) => summary.outcome === 'flag',
   summarize: summarizeOutputEcho,
   validate(record, context) {
     // Recomputed from the bytes the seller and its crowd signed.
@@ -213,7 +196,6 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
     }
   },
   // The record's overall flag ends the audit, attributed to the finding that flagged.
-  endingFinding: (record) => (record.outcome !== 'flag' ? null : record.flag === 'offset' ? 'output-offset' : 'output-echo'),
   requests: (record) => [
     ...record.rounds.flatMap((round): EchoSellerAskV1[] => [...round.short, ...round.long, ...(round.repeats ? [round.repeats.short, round.repeats.long] : [])])
       .map((ask) => stored('audited', ask.request)),
@@ -221,12 +203,10 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
     ...(record.crowd?.votes ?? []).flatMap((vote) => [vote.short, vote.long].map((ask) => stored({ peerId: vote.peerId }, ask.request))),
   ],
   paid: outputEchoPaidRequests,
+  describeFlag: describeOutputEchoFlag,
   texts: {
     name: 'the echo check',
     summaryMismatch: 'the summary\'s echo check is not the one in its evidence',
-    ranAfterDiff: 'an echo check after a DIFF that ended the audit',
-    endsWithDiff: 'an echo check flag is a DIFF with no question asked',
-    extraSetAfterDiff: 'extra set after an echo check DIFF',
   },
 }
 
@@ -273,7 +253,7 @@ export function readingsOfEvidence(
  * form of "a batch was sent", which agrees with it on valid evidence and is kept apart from it on purpose.
  */
 export function readingsOfSummary(
-  result: { readonly [Slot in CheckSlot]?: CheckSummaryOutcomes } & { status: string; parsedProbeCount?: number },
+  result: { readonly [Slot in CheckSlot]?: CheckSummaryOutcomes | null } & { status: string; questionsStatus?: string; parsedProbeCount?: number },
 ): CheckReading[] {
   const readings: CheckReading[] = []
   for (const check of RECORD_CHECKS) {
@@ -282,7 +262,9 @@ export function readingsOfSummary(
       readings.push({ check: finding.id, subject: finding.subject, outcome: summary == null ? 'not-run' : finding.ofSummary(summary) })
     }
   }
-  const status = result.status === 'SAME' || result.status === 'DIFF' ? result.status : null
+  // The questions' own verdict: an audit's `status` is DIFF when another test flagged, whatever the questions said.
+  const questions = result.questionsStatus ?? result.status
+  const status = questions === 'SAME' || questions === 'DIFF' ? questions : null
   readings.push(questionsReading((result.parsedProbeCount ?? 0) > 0, status))
   return readings
 }
@@ -290,16 +272,6 @@ export function readingsOfSummary(
 /** The checks of these readings with one of these outcomes, in attribution order. */
 export function checksWith(readings: readonly CheckReading[], ...outcomes: CheckOutcome[]): AuditCheckId[] {
   return readings.filter((reading) => outcomes.includes(reading.outcome)).map((reading) => reading.check)
-}
-
-/** Whether a summary shows a DIFF that a check ended before any question was asked (an answer scored). */
-export function endedBeforeQuestions(
-  result: { readonly [Slot in CheckSlot]?: CheckSummaryOutcomes } & { parsedProbeCount?: number },
-): boolean {
-  return (result.parsedProbeCount ?? 0) === 0 && RECORD_CHECKS.some((check) => {
-    const summary = result[check.slot]
-    return summary != null && check.endedAuditInSummary(summary)
-  })
 }
 
 /** A plain name for people, as in a verdict reason. */
@@ -382,40 +354,23 @@ export function assertBoundToSeller(requests: readonly StoredRequest[], seller: 
 }
 
 /**
- * The check records of the first set of a seller's evidence against its audit's summary, as submit reads them: each
- * record valid, its summary the summary's, and the stop rule kept. A flag that ends the audit (one not passed over in a
- * confirmation of another check, `continuedPast`) is a DIFF with no question asked, no later check ran after it, and
- * no extra set follows it. In run order, so the first broken rule is the one named.
+ * The test records of the first set of a seller's evidence against its audit's summary, as submit reads them: each
+ * record valid and bound to the seller, and its summary the summary's. Every test runs in every audit, so no stop rule
+ * is checked; the verdict over them is recomputed by the caller (`verdictOf`).
  */
 export function validateCheckRecordsAgainstSummary(
-  evidence: StoredCheckRecords & StoredAuditTarget & {
-    exchanges: readonly unknown[]
-    result: { verdict: string; parsedProbeCount: number }
-  },
-  result: { readonly [Slot in CheckSlot]?: unknown } & { extension?: unknown; extension2?: unknown },
-  continuedPast: (check: AuditCheckId) => boolean,
+  evidence: StoredCheckRecords & StoredAuditTarget,
+  result: { readonly [Slot in CheckSlot]?: unknown },
 ): void {
   const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence, reader: 'submit' }
   const seller = sellerBindingOf(evidence)
-  const ended: Array<RecordCheck<CheckSlot>> = []
   for (const { check, record } of recordsOf(evidence)) {
     if (record != null) {
-      if (ended.length > 0) throw new Error(check.texts.ranAfterDiff)
       check.validate(record, context)
       assertBoundToSeller(check.requests(record), seller, check.texts.name)
     }
     const stored = record == null ? null : check.summarize(record)
     if (canonicalJsonStringify(stored) !== canonicalJsonStringify(result[check.slot] ?? null)) throw new Error(check.texts.summaryMismatch)
-    const finding = record == null ? null : check.endingFinding(record)
-    if (finding === null || continuedPast(finding)) continue
-    if (evidence.result.verdict !== 'DIFF' || evidence.exchanges.length > 0) throw new Error(check.texts.endsWithDiff)
-    ended.push(check)
-  }
-  if (ended.length === 0 && evidence.result.verdict === 'DIFF' && evidence.result.parsedProbeCount === 0) {
-    throw new Error('DIFF without a scoreable answer or a tokenizer pre-check mismatch, and no cap check flag')
-  }
-  for (const check of ended) {
-    if (result.extension || result.extension2) throw new Error(check.texts.extraSetAfterDiff)
   }
 }
 
@@ -449,4 +404,74 @@ export function earliestAuditorTime(
   }
   const known = times.filter((time) => Number.isFinite(time) && time > 0)
   return known.length === 0 ? null : Math.floor(Math.min(...known) / 1_000)
+}
+
+/**
+ * The format of a seller's evidence in which every test runs and none ends the audit: `result` is the questions' own,
+ * and the audit's verdict is `verdictOf` over the test records and the questions. Required on every evidence file.
+ */
+export const ALL_TESTS_FORMAT = 'all-tests-v1' as const
+
+/** A verdict as the questions, and an audit, give it. */
+export type AuditVerdictValue = 'SAME' | 'DIFF' | 'UNDETERMINED'
+
+/** One audit's verdict over every test it ran (`verdictOf`). */
+export interface AuditVerdict {
+  verdict: AuditVerdictValue
+  /** Every test that flagged, in id order; the questions only when they say DIFF themselves. */
+  flaggedBy: AuditCheckId[]
+  /** Every test that passed, in id order. */
+  passedBy: AuditCheckId[]
+  /** Set on a confirmation in which none of the tests it repeats decided: the tests it repeats. */
+  undecidedConfirmation: AuditCheckId[] | null
+}
+
+/**
+ * The audit's verdict from every test it ran, rule `all-tests-v1` (Alex, 19 November):
+ *
+ * - A confirmation in which none of the tests it repeats (`confirming`) flagged or passed is UNDETERMINED,
+ *   whatever the other tests say: it is never sent, and it counts as an attempt for the report it answers.
+ * - Otherwise any test that flagged makes it DIFF, attributed to every test that flagged.
+ * - Otherwise it is the questions' own verdict, SAME or UNDETERMINED, exactly as the questions decide alone. A test
+ *   that did not decide (inconclusive, did not apply, could not run) never blocks SAME.
+ *
+ * `readings` hold the questions' own finding (`readingsOfEvidence`, `readingsOfSummary`), so `kbf` flags only on the
+ * questions' own DIFF. `questions` is their verdict after any close call.
+ */
+export function verdictOf(
+  readings: readonly CheckReading[],
+  questions: AuditVerdictValue,
+  confirming?: readonly AuditCheckId[] | null,
+  options: {
+    /**
+     * The questions are a close call still waiting for an extra set: a confirmation that repeats them is not
+     * undecided yet, it waits for that set (`needsExtension`).
+     */
+    questionsPending?: boolean
+  } = {},
+): AuditVerdict {
+  const flaggedBy = checksWith(readings, 'flag')
+  const passedBy = checksWith(readings, 'pass')
+  const waitsForQuestions = options.questionsPending === true && (confirming?.includes('kbf') ?? false)
+  if (confirming && confirming.length > 0 && !waitsForQuestions
+    && !confirming.some((check) => flaggedBy.includes(check) || passedBy.includes(check))) {
+    return { verdict: 'UNDETERMINED', flaggedBy, passedBy, undecidedConfirmation: [...confirming] }
+  }
+  if (flaggedBy.length > 0) return { verdict: 'DIFF', flaggedBy, passedBy, undecidedConfirmation: null }
+  return { verdict: questions, flaggedBy, passedBy, undecidedConfirmation: null }
+}
+
+/**
+ * The audit's verdict reason: what each test that flagged found (the questions with their own reason), the tests an
+ * undecided confirmation repeats, or the questions' own reason when nothing flagged.
+ */
+export function auditVerdictReason(records: StoredCheckRecords, audit: AuditVerdict, questionsReason: string | null): string | null {
+  if (audit.undecidedConfirmation) return `the test this confirmation must repeat (${audit.undecidedConfirmation.join(', ')}) did not decide`
+  if (audit.verdict !== 'DIFF') return questionsReason
+  const reasons: string[] = []
+  for (const { check, record } of recordsOf(records)) {
+    if (record != null && check.findings.some((finding) => audit.flaggedBy.includes(finding.id))) reasons.push(check.describeFlag(record))
+  }
+  if (audit.flaggedBy.includes('kbf') && questionsReason) reasons.push(questionsReason)
+  return reasons.length > 0 ? reasons.join('; ') : questionsReason
 }
