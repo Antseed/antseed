@@ -1,7 +1,7 @@
 import config from '../../data/colony.json';
 
 /* What the Colony page and its waitlist read before and after launch, from src/data/colony.json:
-     telegramUrl  the Anthill, the local AI Telegram group; its link shows the "Join the Anthill" buttons and the "while you wait" step
+     telegramUrl  Local AI Colony, the local AI Telegram group; its link shows the "Join the community" buttons and the "while you wait" step
      downloadUrl  the Colony app once it is public; shows "Download for Mac" under "Invited? Set up your Mac"
      waitlist     where /colony/join/ sends a sign-up: formUrl is the Google Form (it collects the verified Google-account email and
                   allows one response per account), and fields maps each answer to that form's prefilled entry id */

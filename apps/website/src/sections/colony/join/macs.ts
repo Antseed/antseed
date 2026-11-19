@@ -23,6 +23,9 @@ export const MACS: Readonly<Record<string, Readonly<Record<string, readonly numb
   'Mac Pro': {'M2 Ultra': [64, 128, 192]},
 };
 
+/** The answer for someone without a Mac yet: no chip or memory steps, and the list keeps them for when there's a way to take part. */
+export const NO_MAC = 'No Mac';
+
 export type Answers = {mac: string; chip: string; memory: string; name: string};
 export type Step = 'mac' | 'chip' | 'memory' | 'name' | 'review' | 'done';
 
@@ -38,6 +41,7 @@ export function memsFor(mac: string, chip: string): string[] {
 
 /** The steps this Mac needs: no chip step for a Mac with one chip, no memory step for a chip with one size. */
 export function stepsFor(a: Answers): Step[] {
+  if (a.mac === NO_MAC) return ['mac', 'name', 'review', 'done'];
   const steps: Step[] = ['mac'];
   if (!a.mac || chipsFor(a.mac).length > 1) steps.push('chip');
   if (!a.mac || memsFor(a.mac, a.chip).length > 1) steps.push('memory');

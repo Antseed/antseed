@@ -7,7 +7,7 @@ type Fact = {term: string; detail: string};
 
 const FACTS: readonly Fact[] = [
   {term: 'Who can join', detail: 'Any Mac with Apple silicon. Sign up, and we’ll invite Macs from the waitlist in small groups as the Colony grows.'},
-  {term: 'How it starts', detail: 'Early members set up their Mac with the Antseed team and help shape what comes next. It starts in the Anthill, our local AI group on Telegram.'},
+  {term: 'How it starts', detail: 'Early members set up their Mac with the Antseed team and help shape what comes next. It starts in our local AI group on Telegram.'},
   {term: 'What it runs', detail: 'One strong open model, served by every Mac in the Colony.'},
 ];
 

@@ -3,7 +3,7 @@ import clsx from 'clsx';
 import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
 import {TELEGRAM_URL, WAITLIST} from '../config';
-import {MACS, chipsFor, memsFor, settle, stepsFor, type Answers, type Step} from './macs';
+import {MACS, NO_MAC, chipsFor, memsFor, settle, stepsFor, type Answers, type Step} from './macs';
 import {prefillUrl, sourceOf} from './waitlist';
 import styles from './JoinPage.module.css';
 
@@ -17,8 +17,8 @@ const QUESTIONS: Record<Exclude<Step, 'done'>, Question> = {
   mac: {eyebrow: 'Colony waitlist', title: ['Which Mac would you', 'bring to the Colony?'], help: 'Pick the Mac you’d add. Have more than one? You can sign up the next one after.'},
   chip: {eyebrow: 'Chip', title: ['Which chip', 'is inside?'], help: 'On your Mac, click the Apple logo in the top-left corner of the screen and choose About This Mac. Your chip is next to Chip, for example Apple M2 Pro.'},
   memory: {eyebrow: 'Memory', title: ['How much memory', 'does it have?'], help: 'On your Mac, click the Apple logo in the top-left corner of the screen and choose About This Mac. The size is next to Memory, for example 16 GB.'},
-  name: {eyebrow: 'Your name', title: ['What should we', 'call you?'], help: 'Your first name is enough. It goes on your waitlist card.'},
-  review: {eyebrow: 'Last step', title: ['Confirm and', 'lock your spot.'], help: 'We’ll open a short Google form in a new tab. Sign in once to confirm your email — one email per Mac, nothing else.'},
+  name: {eyebrow: 'Your name', title: ['What should we', 'call you?'], help: 'Your first name is enough.'},
+  review: {eyebrow: 'Last step', title: ['Confirm and', 'lock your spot.'], help: 'We’ll open a short Google form in a new tab. Sign in with Google to confirm your email, then submit. One email when there’s a spot for your Mac. Nothing else.'},
 };
 
 const EMPTY: Answers = {mac: '', chip: '', memory: '', name: ''};
@@ -135,10 +135,15 @@ export default function JoinPage(): JSX.Element {
     go('mac');
   };
 
-  const options = (key: 'mac' | 'chip' | 'memory') => key === 'mac' ? Object.keys(MACS)
+  const options = (key: 'mac' | 'chip' | 'memory') => key === 'mac' ? [...Object.keys(MACS), NO_MAC]
     : key === 'chip' ? chipsFor(answers.mac) : memsFor(answers.mac, answers.chip);
 
   const question = !done ? QUESTIONS[step] : null;
+  const noMac = answers.mac === NO_MAC;
+  // without a Mac there is no spot to wait for: the list keeps them for when there's a way to take part
+  const help = step === 'review' && noMac ? 'We’ll open a short Google form in a new tab. Sign in with Google to confirm your email, then submit. One email when there’s a way for you to take part. Nothing else.'
+    : question?.help;
+  const title = step === 'review' && noMac ? ['Confirm and', 'join the list.'] : question?.title;
   const progress = {width: `${done ? 100 : (at / questions) * 100 + 4}%`} as CSSProperties;
 
   return (
@@ -177,16 +182,16 @@ export default function JoinPage(): JSX.Element {
             {question && step !== 'done' && (
               <section key={step} ref={stepEl} className={clsx(styles.step, backwards && styles.fromAbove)} data-step={step} tabIndex={step === 'review' ? -1 : undefined}>
                 <p className={styles.eyebrow}>{question.eyebrow}</p>
-                <h1 className={styles.question}>{question.title[0]}<br /> <span>{question.title[1]}</span></h1>
-                <p className={styles.help}>{question.help}</p>
+                <h1 className={styles.question}>{title?.[0]}<br /> <span>{title?.[1]}</span></h1>
+                <p className={styles.help}>{help}</p>
 
                 {(step === 'mac' || step === 'chip' || step === 'memory') && (() => {
                   const values = options(step);
                   return (
                     <div className={clsx(styles.options, step === 'mac' ? styles.big : styles.chips, values.length <= 3 && styles.few)} role="radiogroup" aria-label={question.eyebrow === 'Colony waitlist' ? 'Your Mac' : question.eyebrow}>
                       {values.map((v, n) => (
-                        <button key={v} type="button" role="radio" aria-checked={answers[step] === v} className={styles.option} onClick={() => pick(step, v)}>
-                          {step === 'mac' ? <b>{v}</b> : v}
+                        <button key={v} type="button" role="radio" aria-checked={answers[step] === v} className={clsx(styles.option, v === NO_MAC && styles.none)} onClick={() => pick(step, v)}>
+                          {v === NO_MAC ? <span><b>I don’t have a Mac</b><small>I’m into local AI and want to follow along</small></span> : step === 'mac' ? <b>{v}</b> : v}
                           {n < 9 && <kbd className={styles.key}>{n + 1}</kbd>}
                         </button>
                       ))}
@@ -220,13 +225,13 @@ export default function JoinPage(): JSX.Element {
                 <div className={styles.badge} aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg></div>
                 {answers.name && <p className={clsx(styles.eyebrow, styles.hi)}>Thanks, {answers.name}</p>}
                 <h1 className={styles.question}>Finish in the<br /> <span>Google tab.</span></h1>
-                <p className={styles.help}>We opened a short Google form in a new tab. Sign in there to confirm your email and lock your spot — we’ll email you when there’s room for your Mac.</p>
+                <p className={styles.help}>We opened a short Google form in a new tab. Sign in there and submit it to {noMac ? 'finish' : 'lock your spot'}. We’ll email you when there’s {noMac ? 'a way for you to take part' : 'room for your Mac'}.</p>
                 {/* a button, not an <a href>: the prefilled URL carries the name and Mac, which the global outbound-click capture would log */}
                 {joinUrl && <p className={styles.hint}>Tab didn’t open? <button type="button" className={styles.textLink} onClick={() => open(joinUrl, '_blank', 'noopener')}>Open the form</button>.</p>}
                 <p className={clsx(styles.eyebrow, styles.small)}>While you wait</p>
                 <ol className={styles.next}>
                   <li>
-                    <div><b>Join the Anthill on Telegram</b><span>Our local AI group. Setups, models and the first Mac Colony, with the team.</span></div>
+                    <div><b>Join the community on Telegram</b><span>Our local AI group. Setups, models and the first Mac Colony, with the team.</span></div>
                     {TELEGRAM_URL
                       ? <a className={clsx(styles.button, styles.sm)} href={TELEGRAM_URL} target="_blank" rel="noopener noreferrer">Join</a>
                       : <span className={styles.soon}>Opens on launch day</span>}
@@ -242,7 +247,7 @@ export default function JoinPage(): JSX.Element {
                 </ol>
                 <div className={styles.go}>
                   <Link className={styles.skip} to="/colony/">Back to Colony</Link>
-                  <button type="button" className={styles.skip} onClick={again}>Sign up another Mac</button>
+                  {!noMac && <button type="button" className={styles.skip} onClick={again}>Sign up another Mac</button>}
                 </div>
               </section>
             )}
