@@ -1,4 +1,4 @@
-import type {Config, Plugin, PluginModule} from '@docusaurus/types';
+import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import {MOTION_GATE_SCRIPT} from './src/lib/motionGate';
 import {PIXEL_FONT_FACE, PIXEL_FONT_URL} from './src/lib/pixelFont';
@@ -9,26 +9,6 @@ import antscanSnapshotPlugin from './plugins/antscan-snapshot';
 import {prismLight, prismDark} from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
-
-const statsProxyPlugin: PluginModule = () => ({
-  name: 'stats-proxy',
-  configureWebpack() {
-    // Docusaurus merges `config.devServer` during `docusaurus start`, but the
-    // exported webpack config type does not include that field.
-    return {
-      devServer: {
-        proxy: [
-          {
-            context: ['/stats-api'],
-            target: 'http://localhost:3001',
-            pathRewrite: {'^/stats-api': ''},
-            changeOrigin: true,
-          },
-        ],
-      },
-    } as unknown as ReturnType<NonNullable<Plugin['configureWebpack']>>;
-  },
-});
 
 /** A preview deployment (SITE_PREVIEW=1, e.g. new.antseed.com): kept out of search engines and analytics. */
 const IS_PREVIEW = process.env.SITE_PREVIEW === '1';
@@ -137,7 +117,6 @@ const config: Config = {
         ],
       },
     ],
-    statsProxyPlugin,
     integrationsPagesPlugin,
     // Docs search index for src/theme/SearchBar (the ⌘K modal).
     docsSearchPlugin,

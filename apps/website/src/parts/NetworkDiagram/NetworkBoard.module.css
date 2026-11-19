@@ -23,9 +23,6 @@
   max-height: calc(100svh - 184px);
 }
 .swatches { position: absolute; pointer-events: none; }
-.nightPrint { display: none; }
-:global(:root[data-theme='dark']) .nightPrint { display: inline; }
-:global(:root[data-theme='dark']) .dayPrint { display: none; }
 .stage::before {
   content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
   background: url('/site/assets/paintings/pond-day.webp') center bottom / cover no-repeat;
