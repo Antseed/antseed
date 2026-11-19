@@ -8,7 +8,7 @@ import styles from './HowItWorks.module.css';
 type Step = {lead: string; text: string};
 
 const STEPS: readonly Step[] = [
-  {lead: 'Your Mac joins.', text: 'Antseed Colony is a menu bar app. Your Mac joins a Colony and downloads the model it runs.'},
+  {lead: 'Your Mac joins.', text: 'Antseed Colony is a Mac app. Your Mac joins a Colony and downloads the model it runs.'},
   {lead: 'The Colony works as one provider.', text: 'Each request goes to a Mac in the Colony that can answer it, and faster, steadier Macs get more of the work.'},
   {lead: 'Payments settle onchain.', text: 'Every payment a buyer signs names what it has paid your Mac, and the Colony’s contract splits each settlement between its Macs.'},
   {lead: 'You claim.', text: 'The app shows what your Mac has earned. Claim it to your own wallet when you like.'},
@@ -34,9 +34,9 @@ export default function HowItWorks(): JSX.Element {
       <Wash
         unveil
         className={styles.painting}
-        day="/site/assets/colony/many-day.webp"
-        night="/site/assets/colony/many-night.webp"
-        label="A dozen Mac Studios stand together on a grassy hill, cabled to one another. Ants tend them, and two carry one more Mac Studio up to join the cluster."
+        day="/site/assets/colony/many-mixed-day.webp"
+        night="/site/assets/colony/many-mixed-night.webp"
+        label="Laptops, Mac minis and Mac Studios stand together on a grassy hill, cabled to one another. Ants tend them, and two carry one more laptop up to join them."
       />
       <div ref={row} className={clsx(styles.steps, pending && styles.pending)}>
         <PointsRow className={styles.row}>

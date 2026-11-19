@@ -2,7 +2,6 @@ import {useRef, type JSX} from 'react';
 import {Eyebrow, Heading, Section, Wash} from '../../components';
 import {PrivacyDots} from '../../parts/PrivacyDots/PrivacyDots';
 import {AttestationScene, EnclaveScene, EncryptedScene} from './PrivacyScenes';
-import {TEE_ANSWER_ID} from './questions';
 import {PAINTINGS, type Painting} from '../../lib/paintings';
 import styles from './Privacy.module.css';
 
@@ -17,13 +16,7 @@ const POINTS: readonly Point[] = [
   {lead: 'Apple-verified Macs', text: 'Pools that run an MDM can show buyers Apple’s own attestation that a Mac has System Integrity Protection on.', painting: atNight(PAINTINGS.ferns), Scene: AttestationScene},
 ];
 
-/** The link lands on the TEE answer, opened. */
-function openTeeAnswer(): void {
-  const answer = document.getElementById(TEE_ANSWER_ID);
-  if (answer instanceof HTMLDetailsElement) answer.open = true;
-}
-
-/** Private by design: the night band, its dot field, three illustrated points and the TEE caveat. */
+/** Private by design: the night band, its dot field, and three illustrated points. */
 export default function Privacy(): JSX.Element {
   const head = useRef<HTMLDivElement>(null);
   return (
@@ -42,7 +35,6 @@ export default function Privacy(): JSX.Element {
             </article>
           ))}
         </div>
-        <a className={styles.limits} href={`#${TEE_ANSWER_ID}`} onClick={openTeeAnswer} data-rv="">Is this a TEE? Read the limits&nbsp;›</a>
       </div>
     </Section>
   );

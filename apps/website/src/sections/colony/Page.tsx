@@ -4,6 +4,7 @@ import Top from './Top';
 import Colonies from './ColoniesSection';
 import HowItWorks from './HowItWorks';
 import FirstColony from './FirstColony';
+import Setup from './Setup';
 import Privacy from './Privacy';
 import Join from './Join';
 import {Faq} from '../../parts/Faq';
@@ -11,14 +12,23 @@ import {QUESTIONS} from './questions';
 import styles from './Page.module.css';
 
 const TITLE = 'Join the first Mac Colony';
-const DESCRIPTION = 'Colony joins Macs into one AI provider on Antseed. Sign up for early access to the first Mac Colony, starting with Mac Studios.';
+const DESCRIPTION = 'Colony joins Macs into one AI provider on Antseed. Join the waitlist for the first Mac Colony. Any Apple silicon Mac can sign up.';
+/** The waitlist's share card, so a link to the page looks like the card people post. */
+const OG_IMAGE = 'https://antseed.com/site/assets/colony/og-waitlist.png';
 
-/** /colony/: early access to the first Mac Colony. */
+/** /colony/: the waitlist for the first Mac Colony. Sign-ups happen on /colony/join/. */
 export default function Page(): JSX.Element {
   return (
     <SitePage
       title={TITLE}
       description={DESCRIPTION}
+      head={<>
+        <meta property="og:image" content={OG_IMAGE} />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="675" />
+        <meta property="og:image:alt" content="Join the waitlist for the first Mac Colony on Antseed" />
+        <meta name="twitter:image" content={OG_IMAGE} />
+      </>}
       className={styles.page}>
       <Top />
       <Intro
@@ -33,6 +43,7 @@ export default function Page(): JSX.Element {
       <Colonies />
       <HowItWorks />
       <FirstColony />
+      <Setup />
       <Privacy />
       <Join />
       <Faq cmp="colony/faq" items={QUESTIONS} widePadding={124} phoneGap={32} />
