@@ -271,7 +271,7 @@ export interface ProxyVerificationContext {
    */
   outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
   /** The randomness check of this model's sellers (`flips.ts`); absent when it does not run. */
-  flips?: Pick<FlipsScreen<KbfReferenceV1>, 'check'> & Partial<Pick<FlipsScreen<KbfReferenceV1>, 'probing' | 'warm'>>
+  flips?: Pick<FlipsScreen<KbfReferenceV1>, 'check'> & Partial<Pick<FlipsScreen<KbfReferenceV1>, 'probing' | 'probeSettings' | 'warm'>>
 }
 
 /** What a seller's batch requests carry: its thinking suppression, token budget and timeout. */
@@ -823,9 +823,11 @@ export async function verifyModelTarget(input: {
   let outputEcho: OutputEchoV1 | null = carried.outputEcho ?? null
   // FLIPS's stage, and its reference asked while the questions run: FLIPS then adds only the seller's own time.
   const flipsStage = input.confirming?.checks.includes('flips') ? 'confirm' as const : 'first' as const
-  // A requested probe is asked even where a record that is no probe's was carried, and that record is not kept.
+  // A requested probe is always run: a carried record that is no probe's, or a probe of other settings, is asked again
+  // and not kept.
   const flipsToAsk = runsTests && input.context.flips !== undefined
-    && (carried.flips == null || (input.context.flips.probing === true && !isProbeDraw(carried.flips.draw)))
+    && (carried.flips == null || (input.context.flips.probing === true
+      && (!isProbeDraw(carried.flips.draw) || carried.flips.probeSettings !== input.context.flips.probeSettings)))
   let flips: FlipsV1 | null = flipsToAsk ? null : carried.flips ?? null
   if (flipsToAsk) input.context.flips!.warm?.(input.service, input.reference, flipsStage)
   /** The tests finished so far, as the checkpoint and the evidence store them. */

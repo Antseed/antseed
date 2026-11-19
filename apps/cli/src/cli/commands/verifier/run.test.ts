@@ -515,10 +515,10 @@ test('the FLIPS key is made once, atomically, readable by its owner only; a key 
     const files = await readdir(dirname(path))
     assert.equal(files.filter((name) => name.endsWith('.tmp')).length, 0, 'no partial file is left')
     await chmod(path, 0o644)
-    await assert.rejects(flipsMasterFor(dir, '7'), /readable by others/)
+    await assert.rejects(flipsMasterFor(dir, '7'), /flips-master\.key is readable by others .*chmod 600/)
     await chmod(path, 0o600)
     await writeFile(path, '')
-    await assert.rejects(flipsMasterFor(dir, '7'), /unreadable/, 'an empty key is never taken for a new one')
+    await assert.rejects(flipsMasterFor(dir, '7'), /flips-master\.key is unreadable: rename it/, 'an empty key is never taken for a new one')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -541,6 +541,7 @@ test('a FLIPS probe value that cannot be read is no probe, with the reason, and 
   assert.match(parseFlipsProbe('[]').problem!, /not an object/)
   assert.match(parseFlipsProbe('{"pairs":[["amber","amber"],["dune","ember"]]}').problem!, /pairs must be/)
   assert.match(parseFlipsProbe('{"stage":"third"}').problem!, /stage must be/)
+  assert.match(parseFlipsProbe('{"pairs":[[{"toString":null},"basin"],["dune","ember"]]}').problem!, /pairs must be/, 'a word is a string, never an object')
   assert.deepEqual(parseFlipsProbe('{"stage":"confirm","followUpFirstFlags":true}'), { probe: { stage: 'confirm', followUpFirstFlags: true }, problem: null })
   assert.deepEqual(parseFlipsProbe('{"pairs":[["amber","basin"],["dune","ember"]]}').probe, { pairs: [['amber', 'basin'], ['dune', 'ember']] })
 })

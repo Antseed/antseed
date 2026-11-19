@@ -76,6 +76,9 @@ export interface FlipsDrawV1 {
   excluding?: FlipsPair[]
 }
 
+/** A route that names no provider and is not proven to serve one: FLIPS cannot score on it at all. */
+export const FLIPS_ROUTE_NOT_SUPPORTED = 'not supported on this route: the reference route names no provider and is not proven to serve one, so its replies do not come from one proven provider'
+
 /** Whether a draw was made by a dry-run probe: such a check never counts, whatever the rule. */
 export function isProbeDraw(draw: Pick<FlipsDrawV1, 'pairs' | 'probe'>): boolean {
   return draw.probe === true || draw.pairs !== undefined
@@ -137,6 +140,8 @@ export interface FlipsReferenceV1 {
   /** The route serves one provider (pinned), so unnamed answers are one provider's. */
   oneProvider: boolean
   pairs: FlipsReferencePairV1[]
+  /** How the reference was asked: requests sent counting tries, rate-limit answers among them, and seconds taken. */
+  asked?: { tries: number; rateLimited: number; seconds: number }
 }
 
 /** One scheduled slot of the seller: its signed request, or null when it never got a reply within the budget. */
@@ -175,6 +180,12 @@ export interface FlipsV1 {
   followUp?: FlipsV1
   /** Dry run only: why the follow-up of a first flag has no record; the first flag stands. */
   followUpFailed?: string
+  /** When the seller's FLIPS started and ended, by the auditor's clock (ms): what it added to the audit. */
+  timing?: { startedAt: number; finishedAt: number }
+  /** How many replies on each side show reasoning, and their reasoning tokens: also where both sides reason. */
+  reasoningCounts?: Omit<FlipsProfileMismatch, 'code' | 'diagnosticScoreIgnoringProfile'>
+  /** A probe's settings (canonical JSON): a carried probe is reused only for the same settings. */
+  probeSettings?: string
   /**
    * No result because the seller's reasoning profile is not the reference's: it reasons where the reference does not,
    * does not where the reference does, or does in some replies only. With the counts of both sides.
@@ -184,6 +195,11 @@ export interface FlipsV1 {
 
 export interface FlipsProfileMismatch {
   code: 'seller-reasons' | 'seller-does-not-reason' | 'seller-mixed'
+  /**
+   * Dry run only: what the sample would have scored had the profiles matched, for deciding the profile rule. Never an
+   * outcome: no verdict, what-if view or confirmation reads it. Null when the sample could not be scored either.
+   */
+  diagnosticScoreIgnoringProfile?: { score: number; scoreMax: number | null; p: number } | null
   sellerReasoningReplies: number
   sellerReplies: number
   sellerReasoningTokens: number
@@ -211,14 +227,28 @@ export function isFlipsRecord(value: unknown): value is FlipsV1 {
   if (typeof value !== 'object' || value === null) return false
   const record = value as Partial<FlipsV1>
   const draw = record.draw as Partial<FlipsDrawV1> | undefined
+  const finite = (cost: unknown): boolean => typeof cost === 'object' && cost !== null
+    && ['inputTokens', 'outputTokens', 'totalTokens', 'estimatedCostUsd'].every((key) => Number.isFinite((cost as Record<string, unknown>)[key]))
+  // Bounded: a stored record is never larger than the rule asks, with every try's cost a real number.
+  const slotOk = (slot: unknown): boolean => {
+    const request = (slot as FlipsSellerSlotV1 | null)?.request
+    return typeof request === 'object' && request !== null
+      && Array.isArray(request.requestIds) && request.requestIds.length <= 2 * (FLIPS_REASK_BUDGET + 1) && request.requestIds.every((id) => typeof id === 'string')
+      && Array.isArray(request.attemptCosts) && request.attemptCosts.length <= 2 * (FLIPS_REASK_BUDGET + 1) && request.attemptCosts.every(finite)
+  }
   return typeof record.rule === 'string' && typeof record.service === 'string' && typeof record.outcome === 'string'
-    && typeof draw === 'object' && draw !== null && typeof draw.model === 'string' && (draw.stage === 'first' || draw.stage === 'confirm')
-    && Array.isArray(record.pairs) && record.pairs.every((pair) => (
-      typeof pair === 'object' && pair !== null && Array.isArray(pair.seller) && Array.isArray(pair.reference?.replies)
-      && pair.seller.every((slot) => Array.isArray(slot?.request?.requestIds) && Array.isArray(slot.request.attemptCosts))
+    && typeof draw === 'object' && draw !== null && typeof draw.model === 'string' && typeof draw.epoch === 'string'
+    && typeof draw.auditor === 'string' && typeof draw.seed === 'string' && (draw.stage === 'first' || draw.stage === 'confirm')
+    && Array.isArray(record.pairs) && record.pairs.length <= FLIPS_MAX_STORED.pairs && record.pairs.every((pair) => (
+      typeof pair === 'object' && pair !== null && Array.isArray(pair.words) && pair.words.length === 2 && pair.words.every((word) => typeof word === 'string')
+      && Array.isArray(pair.seller) && pair.seller.length <= FLIPS_MAX_STORED.sellerSlots && pair.seller.every(slotOk)
+      && Array.isArray(pair.reference?.replies) && pair.reference.replies.length <= FLIPS_MAX_STORED.referenceReplies
     ))
-    && (record.followUp === undefined || isFlipsRecord(record.followUp))
+    && (record.followUp === undefined || (isFlipsRecord(record.followUp) && record.followUp.followUp === undefined))
 }
+
+/** The most a stored FLIPS record holds: any more is no record of this build. */
+const FLIPS_MAX_STORED = Object.freeze({ pairs: 4, sellerSlots: 64, referenceReplies: 64 })
 
 export interface FlipsSummary {
   rule: string
@@ -325,6 +355,7 @@ export function flipsReferenceProblem(
     if (pair.replies.some((reply) => requestShape(parseJson(reply.request)) !== expected)) return `${label}: the reference was not asked the sellers' request`
   }
   const providers = new Set(reference.pairs.flatMap((pair) => pair.replies.map((reply) => reply.provider)))
+  if (!reference.referenceOneProvider && providers.size === 1 && providers.has(null)) return FLIPS_ROUTE_NOT_SUPPORTED
   if (providers.size > 1 || (!reference.referenceOneProvider && providers.has(null))) return 'the reference\'s replies do not come from one proven provider'
   // One reasoning profile across both pairs: reasons in at least 90% of the replies, or in at most 10%.
   const replies = reference.pairs.flatMap((pair) => pair.replies)
@@ -339,7 +370,7 @@ export function flipsReferenceProblem(
 export function judgeFlips(
   record: Pick<FlipsV1, 'draw' | 'service' | 'referenceOneProvider' | 'pairs'>,
   rule: FlipsRule = FLIPS_RULE,
-): Pick<FlipsV1, 'outcome' | 'counted' | 'score' | 'scoreMax' | 'p' | 'reason' | 'profileMismatch'> {
+): Pick<FlipsV1, 'outcome' | 'counted' | 'score' | 'scoreMax' | 'p' | 'reason' | 'profileMismatch' | 'reasoningCounts'> {
   // A dry run's probe is a diagnostic: it never counts.
   const counted = flipsCounts(record.draw.model, rule) && !isProbeDraw(record.draw)
   const none = (reason: string) => ({ outcome: 'inconclusive' as const, counted, score: null, scoreMax: null, p: null, reason })
@@ -372,31 +403,40 @@ export function judgeFlips(
   const sellerReasoning = sellerAnswers.filter((answer) => answer.reasoning).length
   const referenceProfile = reasoningProfile(referenceReasoning, referenceReplies.length)
   const sellerProfile = reasoningProfile(sellerReasoning, sellerAnswers.length)
-  if (sellerProfile !== referenceProfile) {
-    const code = sellerProfile === 'mixed' ? 'seller-mixed' as const : sellerProfile === 'reasons' ? 'seller-reasons' as const : 'seller-does-not-reason' as const
-    const mismatch: FlipsProfileMismatch = {
-      code,
-      sellerReasoningReplies: sellerReasoning,
-      sellerReplies: sellerAnswers.length,
-      sellerReasoningTokens: sellerAnswers.reduce((total, answer) => total + answer.reasoningTokens, 0),
-      referenceReasoningReplies: referenceReasoning,
-      referenceReplies: referenceReplies.length,
-      referenceReasoningTokens: referenceReplies.reduce((total, reply) => total + (reply.reasoningTokens ?? 0), 0),
-    }
-    const what = code === 'seller-reasons' ? 'the seller reasons where the reference does not'
-      : code === 'seller-does-not-reason' ? 'the seller does not reason where the reference does' : 'the seller reasons in some replies and not in others'
-    return {
-      ...none(`${what} (${mismatch.sellerReasoningReplies} of ${mismatch.sellerReplies} replies, ${mismatch.sellerReasoningTokens} reasoning tokens, against ${mismatch.referenceReasoningReplies} of ${mismatch.referenceReplies}, ${mismatch.referenceReasoningTokens}), so its request profile has no reference`),
-      profileMismatch: mismatch,
-    }
+  const reasoningCounts = {
+    sellerReasoningReplies: sellerReasoning,
+    sellerReplies: sellerAnswers.length,
+    sellerReasoningTokens: sellerAnswers.reduce((total, answer) => total + answer.reasoningTokens, 0),
+    referenceReasoningReplies: referenceReasoning,
+    referenceReplies: referenceReplies.length,
+    referenceReasoningTokens: referenceReplies.reduce((total, reply) => total + (reply.reasoningTokens ?? 0), 0),
   }
   const samples = read.map(({ pair, answers }) => ({
     pair: pair.words,
     reference: pair.reference.replies.map((reply) => ({ content: reply.content, finishReason: reply.finishReason })),
     seller: answers.map((answer) => answer.reply),
   }))
+  if (sellerProfile !== referenceProfile) {
+    const code = sellerProfile === 'mixed' ? 'seller-mixed' as const : sellerProfile === 'reasons' ? 'seller-reasons' as const : 'seller-does-not-reason' as const
+    // The profile is the only reason left: the score it would have had is kept beside it for the dry run, apart from
+    // the outcome fields.
+    const ignoring = judgeFlipsCheck(samples, rule)
+    const mismatch: FlipsProfileMismatch = {
+      code, ...reasoningCounts,
+      diagnosticScoreIgnoringProfile: ignoring.outcome === 'scored' && ignoring.score !== null && ignoring.p !== null
+        ? { score: ignoring.score, scoreMax: ignoring.scoreMax, p: ignoring.p }
+        : null,
+    }
+    const what = code === 'seller-reasons' ? 'the seller reasons where the reference does not'
+      : code === 'seller-does-not-reason' ? 'the seller does not reason where the reference does' : 'the seller reasons in some replies and not in others'
+    return {
+      ...none(`${what} (${mismatch.sellerReasoningReplies} of ${mismatch.sellerReplies} replies, ${mismatch.sellerReasoningTokens} reasoning tokens, against ${mismatch.referenceReasoningReplies} of ${mismatch.referenceReplies}, ${mismatch.referenceReasoningTokens}), so its request profile has no reference`),
+      profileMismatch: mismatch,
+      reasoningCounts,
+    }
+  }
   const judged = judgeFlipsCheck(samples, rule)
-  if (judged.outcome !== 'scored' || judged.p === null || judged.score === null) return none(judged.reasons.join('; ') || 'no score')
+  if (judged.outcome !== 'scored' || judged.p === null || judged.score === null) return { ...none(judged.reasons.join('; ') || 'no score'), reasoningCounts }
   const p = judged.p
   const outcome: FlipsOutcome = p <= rule.bar[stage] ? 'flag' : p > rule.passAbove ? 'pass' : 'inconclusive'
   const reason = outcome === 'flag'
@@ -404,7 +444,7 @@ export function judgeFlips(
     : outcome === 'pass'
       ? `scored ${judged.score.toFixed(2)} (p ${p.toFixed(3)}), above ${rule.passAbove}`
       : `scored ${judged.score.toFixed(2)} (p ${p.toFixed(4)}), between the bar and the pass`
-  return { outcome, counted, score: judged.score, scoreMax: judged.scoreMax, p, reason }
+  return { outcome, counted, score: judged.score, scoreMax: judged.scoreMax, p, reason, reasoningCounts }
 }
 
 export function summarizeFlips(record: FlipsV1): FlipsSummary {
@@ -489,18 +529,29 @@ export async function prepareFlipsReference(input: {
       response: { statusCode: number; body: Uint8Array } | null
       provider: string | null
       failure: string | null
+      /** Requests sent for this reply, and how many of them were answered with a rate limit. */
+      tries?: number
+      rateLimited?: number
     }>
   }>
   rule?: FlipsRule
+  now?: () => number
 }): Promise<FlipsReferenceV1> {
   const rule = input.rule ?? FLIPS_RULE
+  const now = input.now ?? Date.now
   const bodies = input.pairs.flatMap((pair) => Array.from({ length: rule.referenceRepliesPerPair }, () => flipsRequestBody(input.model, input.service, pair, rule)))
+  const startedAt = now()
   const asked = await input.ask(bodies)
   const decoder = new TextDecoder()
   return {
     stage: input.stage,
     upstream: asked.upstream,
     oneProvider: asked.oneProvider,
+    asked: {
+      tries: asked.results.reduce((total, result) => total + (result.tries ?? 1), 0),
+      rateLimited: asked.results.reduce((total, result) => total + (result.rateLimited ?? 0), 0),
+      seconds: Math.round((now() - startedAt) / 100) / 10,
+    },
     pairs: input.pairs.map((pair, pairIndex) => {
       const results = asked.results.slice(pairIndex * rule.referenceRepliesPerPair, (pairIndex + 1) * rule.referenceRepliesPerPair)
       return {
@@ -581,7 +632,7 @@ export interface FlipsProbe {
 /** Why a model and stage has no FLIPS result this run: logged once and stored by the caller. */
 export interface FlipsUnavailable {
   stage: FlipsStage | 'follow-up'
-  code: 'reference-failed' | 'reference-unusable' | 'check-failed' | 'follow-up-failed'
+  code: 'reference-failed' | 'reference-unusable' | 'route-not-supported' | 'check-failed' | 'follow-up-failed'
   detail: string
 }
 
@@ -589,6 +640,8 @@ export interface FlipsUnavailable {
 export interface FlipsScreen<Settings> {
   /** A dry-run probe is on: a carried record that is not a probe's is asked again. */
   probing: boolean
+  /** The probe's settings (canonical JSON), null without one: a carried probe of other settings is asked again. */
+  probeSettings: string | null
   /** Asks the reference of a stage now, while the questions run; its failure is reported, never thrown. */
   warm: (service: string, settings: Settings, stage: FlipsStage) => void
   check: (
@@ -624,7 +677,9 @@ export function createFlipsScreen<Settings>(input: {
   const rule = input.rule ?? FLIPS_RULE
   const probe = input.probe
   const probing = probe !== undefined
+  const probeSettings = probe ? canonicalJsonStringify(probe) : null
   const references = new Map<DrawKind, Promise<FlipsReferenceV1>>()
+  const failedReferences = new Set<DrawKind>()
   const reported = new Set<string>()
   const unavailable = (event: FlipsUnavailable): void => {
     const key = `${event.stage}|${event.code}|${event.detail}`
@@ -665,17 +720,30 @@ export function createFlipsScreen<Settings>(input: {
         } catch {
           // Storing the reference beside the audits is best effort.
         }
+        // Checked as soon as it is ready, so an unusable reference is reported even when no seller reaches FLIPS.
+        const problem = flipsReferenceProblem({ draw, service, referenceOneProvider: prepared.oneProvider, pairs: prepared.pairs }, rule)
+        if (problem) unavailable({ stage: kind, code: problem === FLIPS_ROUTE_NOT_SUPPORTED ? 'route-not-supported' : 'reference-unusable', detail: problem })
         return prepared
       })
-      reference.catch((error: unknown) => unavailable({ stage: kind, code: 'reference-failed', detail: errorText(error) }))
+      reference.catch((error: unknown) => {
+        failedReferences.add(kind)
+        unavailable({ stage: kind, code: 'reference-failed', detail: errorText(error) })
+      })
       references.set(kind, reference)
     }
     return reference
   }
-  // At most this many of one seller's slots are out at once, within FLIPS's own limit.
-  const sellerLimiter = (): SignedSellerRequestInput['limiter'] => {
+  // At most this many of one seller's slots are out at once, within FLIPS's own limit. Every wait for a slot ends at
+  // FLIPS's time limit: a task that gets its slot after it never starts.
+  const sellerLimiter = (signal: AbortSignal): SignedSellerRequestInput['limiter'] => {
     const own = new ConcurrencyLimiter(FLIPS_SLOTS_AT_ONCE)
-    return { run: (task) => own.run(() => input.limiter.run(task)) } as SignedSellerRequestInput['limiter']
+    const started = <T>(task: () => Promise<T>) => () => {
+      if (signal.aborted) return Promise.reject(new Error('the randomness check\'s time is up'))
+      return task()
+    }
+    return {
+      run: <T>(task: () => Promise<T>) => untilAborted(own.run(started(() => input.limiter.run(started(task)))), signal),
+    } as SignedSellerRequestInput['limiter']
   }
   const one = async (
     kind: DrawKind,
@@ -685,14 +753,15 @@ export function createFlipsScreen<Settings>(input: {
     signal: AbortSignal,
   ): Promise<FlipsV1> => {
     const draw = drawOf(kind)
-    const prepared = await referenceFor(kind, seller.service, settings)
+    // The wait for the reference is in FLIPS's time too (a follow-up's is asked only now).
+    const prepared = await untilAborted(referenceFor(kind, seller.service, settings), signal)
     const problem = flipsReferenceProblem({ draw, service: seller.service, referenceOneProvider: prepared.oneProvider, pairs: prepared.pairs }, rule)
     const stored = {
       rule: rule.id, draw, service: seller.service, referenceUpstream: prepared.upstream, referenceOneProvider: prepared.oneProvider,
     }
     if (problem) {
       // The reference is checked before the seller is asked: an unusable one costs the seller nothing.
-      unavailable({ stage: kind, code: 'reference-unusable', detail: problem })
+      unavailable({ stage: kind, code: problem === FLIPS_ROUTE_NOT_SUPPORTED ? 'route-not-supported' : 'reference-unusable', detail: problem })
       const pairs = prepared.pairs.map((reference) => ({ words: reference.words, reference, seller: [] }))
       return { ...stored, pairs, reasks: 0, ...judgeFlips({ ...stored, pairs }, rule), reason: problem }
     }
@@ -700,7 +769,7 @@ export function createFlipsScreen<Settings>(input: {
       seller: {
         proxyBaseUrl: input.proxyBaseUrl,
         responseAuthReader: input.responseAuthReader,
-        limiter: sellerLimiter(),
+        limiter: sellerLimiter(signal),
         peerId: seller.peerId,
         service: seller.service,
         serviceAliases: seller.serviceAliases ?? [],
@@ -716,6 +785,7 @@ export function createFlipsScreen<Settings>(input: {
   }
   return {
     probing,
+    probeSettings,
     warm(service, settings, stage) {
       try {
         referenceFor(probe?.stage ?? stage, service, settings).catch(() => undefined)
@@ -728,29 +798,47 @@ export function createFlipsScreen<Settings>(input: {
       // FLIPS has its own time, the follow-up included: when it runs out, the earlier tests stand and FLIPS has no result.
       const timeLimit = AbortSignal.timeout(input.timeLimitMs ?? FLIPS_TIME_LIMIT_MS)
       const signal = options.signal ? AbortSignal.any([options.signal, timeLimit]) : timeLimit
+      const startedAt = Date.now()
+      const stamped = (record: FlipsV1): FlipsV1 => ({
+        ...record, timing: { startedAt, finishedAt: Date.now() }, ...(probeSettings ? { probeSettings } : {}),
+      })
       let record: FlipsV1
       try {
         record = await one(stage, seller, settings, options, signal)
       } catch (error) {
         // While FLIPS does not count, a failure of it is no diagnostic, never an aborted audit; it is reported.
         if (flipsCounts(input.model, rule) && !probing) throw error
-        // A failed reference is reported once by itself; any other failure here.
-        const referenceFailed = references.has(stage) && !(await references.get(stage)!.then(() => true, () => false))
-        if (!referenceFailed) unavailable({ stage, code: 'check-failed', detail: errorText(error) })
+        // A failed reference is reported once by itself; any other failure here (a reference still out at the time
+        // limit included), never by waiting for it.
+        await Promise.resolve()
+        if (!failedReferences.has(stage)) unavailable({ stage, code: 'check-failed', detail: errorText(error) })
         return null
       }
       // Dry run: a first flag is followed at once by a confirmation-size sample on fresh pairs, read by hand.
       if (probe?.followUpFirstFlags && stage === 'first' && record.outcome === 'flag') {
         try {
-          return { ...record, followUp: await one('follow-up', seller, settings, options, signal) }
+          return stamped({ ...record, followUp: await one('follow-up', seller, settings, options, signal) })
         } catch (error) {
           unavailable({ stage: 'follow-up', code: 'follow-up-failed', detail: errorText(error) })
-          return { ...record, followUpFailed: errorText(error) }
+          return stamped({ ...record, followUpFailed: errorText(error) })
         }
       }
-      return record
+      return stamped(record)
     },
   }
+}
+
+/** Waits for `promise`, or rejects once `signal` aborts. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error('the randomness check\'s time is up'))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error('the randomness check\'s time is up'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value) },
+      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error) },
+    )
+  })
 }
 
 function errorText(error: unknown): string {

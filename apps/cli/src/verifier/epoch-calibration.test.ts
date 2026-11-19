@@ -20,7 +20,7 @@ import type { VerifierCLIConfig } from '../config/types.js'
 import { setAuditedModelsForTesting } from './audited-models.js'
 import { calibrateEpochQuestionSet, ensureEpochQuestionSet } from './ensure-auditable-reference.js'
 import { kbfAuditBatches } from './kbf-batching.js'
-import { askReferenceInputTokens, calibrateReferenceSets } from './model-reference.js'
+import { askReferenceInputTokens, askReferenceReplies, calibrateReferenceSets } from './model-reference.js'
 import {
   appendModelReferenceToBank,
   epochBankPath,
@@ -640,3 +640,25 @@ test('calibration refuses another endpoint than the bank was enrolled on, and as
   assert.ok(sent.length > 0)
   for (const { body } of sent) assert.deepEqual(body.provider, { order: ['provider-a'], allow_fallbacks: false })
 }))
+
+test('a reference answer without usage is asked again for the cap and echo checks, and read at once only on the plain FLIPS route', async () => {
+  const tries = new Map<string, number>()
+  const fetchFn = (async (_url: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+    const content = body.messages[0]!.content
+    const attempt = (tries.get(content) ?? 0) + 1
+    tries.set(content, attempt)
+    const answer = { provider: 'Provider-A', choices: [{ message: { content: 'Sure.' }, finish_reason: 'stop' }] }
+    return Response.json(attempt === 1 ? answer : { ...answer, usage: { prompt_tokens: 20, completion_tokens: 2 } })
+  }) as typeof fetch
+  const configured = { ...config, referenceRetryBaseDelayMs: 1, models: { 'model-a': { ...config.models!['model-a'], contrastModels: ['contrast-a'] } } }
+  const cap = await askReferenceReplies({ model: 'model-a', settings: bankedReference(), contents: ['cap'], maxTokens: 64, fetchFn, config: configured })
+  assert.equal(tries.get('cap'), 2, 'the cap reference needs the count, so it asks again')
+  assert.match(new TextDecoder().decode(cap.results[0]!.response!.body), /"usage"/)
+  const plain = await askReferenceReplies({
+    model: 'model-a', settings: bankedReference(), contents: [], bodies: [{ messages: [{ role: 'user', content: 'flips' }], max_tokens: 64 }],
+    plainRoute: true, maxTokens: 0, fetchFn, config: configured,
+  })
+  assert.equal(tries.get('flips'), 1, 'FLIPS reads the answer\'s bytes, not its billing')
+  assert.doesNotMatch(new TextDecoder().decode(plain.results[0]!.response!.body), /"usage"/)
+})

@@ -103,6 +103,10 @@ export function readAnswerText(responseBody: Uint8Array): {
     }
   }
   if (!read) return null
+  // A completed Responses reply with no message has no text: it is no reply, not an empty one.
+  if (read.shape === 'responses' && !(answer['output'] as unknown[]).some((item) => isRecord(item) && item['type'] === 'message')) {
+    return { text: null, filtered: false, reasoningMarker: read.reasoningMarker || reasoningTokens > 0, reasoningTokens, shape: 'responses' }
+  }
   const filtered = read.shape === 'messages' ? answer['stop_reason'] === 'refusal'
     : read.shape === 'chat' ? choice?.['finish_reason'] === 'content_filter'
       : isRecord(answer['incomplete_details']) && answer['incomplete_details']['reason'] === 'content_filter'

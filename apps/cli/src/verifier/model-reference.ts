@@ -1052,6 +1052,9 @@ export async function askReferenceReplies(input: {
     response: { statusCode: number; body: Uint8Array } | null
     provider: string | null
     failure: string | null
+    /** Requests sent for this reply, and how many were answered with a rate limit. */
+    tries: number
+    rateLimited: number
   }>
 }> {
   const endpoint = input.config?.referenceEndpoint
@@ -1075,6 +1078,7 @@ export async function askReferenceReplies(input: {
   const ask = async (content: string, given?: Record<string, unknown>) => {
     const body = given ?? { messages: [{ role: 'user', content }], max_tokens: Math.max(input.maxTokens, route.minMaxTokens ?? 0), stream: false }
     const read = (exchange: ReferenceRawExchange) => ({
+      rateLimited: false,
       requestBody: encoder.encode(exchange.requestBody),
       askedBody: encoder.encode(exchange.routedBody ?? exchange.requestBody),
       response: { statusCode: exchange.status, body: encoder.encode(exchange.responseBody) },
@@ -1089,11 +1093,15 @@ export async function askReferenceReplies(input: {
         return postChatCompletion(route, body, timeoutMs, fetchFn, input.signal)
       }), input.signal, timeUp)).exchange)
     } catch (error) {
-      // An empty answer, or one without usage, is still an answer: its bytes are read, never its billing.
       if (error instanceof EmptyReferenceResponseError && error.exchange) return read(error.exchange)
-      if (error instanceof ReferenceUsageMissingError) return read(error.exchange)
+      // On the plain route (FLIPS) an answer without usage is still an answer: its bytes are read, never its billing.
+      // The cap and echo checks need the count, so for them it is a failed request, asked again.
+      if (input.plainRoute && error instanceof ReferenceUsageMissingError) return read(error.exchange)
       const asked = encoder.encode(JSON.stringify(applyReferenceRouteToBody(route, body)))
-      return { requestBody: asked, askedBody: asked, response: null, provider: null, failure: asError(error).message.slice(0, 300) }
+      return {
+        rateLimited: error instanceof ReferenceEndpointError && error.status === 429,
+        requestBody: asked, askedBody: asked, response: null, provider: null, failure: asError(error).message.slice(0, 300),
+      }
     }
   }
   const asks: Array<{ content: string; body?: Record<string, unknown> }> = input.bodies
@@ -1101,12 +1109,17 @@ export async function askReferenceReplies(input: {
     : input.contents.map((content) => ({ content }))
   const results = await Promise.all(asks.map(async ({ content, body }) => {
     let result = await ask(content, body)
+    let tries = 1
+    let rateLimited = result.rateLimited ? 1 : 0
     for (let retry = 1; retry < REFERENCE_INPUT_TOKENS_TRIES && result.response === null && !input.signal?.aborted; retry += 1) {
       await untilAborted(sleep(retryBaseDelayMs * 3 * retry), input.signal, 'aborted').catch(() => undefined)
       if (input.signal?.aborted) break
       result = await ask(content, body)
+      tries += 1
+      if (result.rateLimited) rateLimited += 1
     }
-    return result
+    const { rateLimited: _last, ...kept } = result
+    return { ...kept, tries, rateLimited }
   }))
   return {
     upstream: referenceUpstreamProvenance(endpoint, route),

@@ -1670,15 +1670,17 @@ test('check pipeline: a diagnostic FLIPS stops nothing: a failed checkpoint writ
     parentAuditId: first.result.auditId, reservationAuditId: first.result.auditId, parentEvidenceHash: first.result.evidenceHash,
     exchanges: first.evidence.exchanges, records: { tokenizerPrecheck: first.evidence.tokenizerPrecheck!, flips },
   })
-  const probing = { probing: true, warm: () => undefined, check: async () => { asked.push('flips'); return flipsRecord(true) } }
+  const probing = { probing: true, probeSettings: 'A', warm: () => undefined, check: async () => { asked.push('flips'); return { ...flipsRecord(true), probeSettings: 'A' } } }
   const reasked = await audit({ usage: MODEL_TOKENIZER, flips: probing, resume: resume(flipsRecord(false)) })
   assert.deepEqual(asked, ['flips'])
   assert.equal(reasked.evidence.flips?.draw.probe, true)
-  await audit({ usage: MODEL_TOKENIZER, flips: probing, resume: resume(flipsRecord(true)) })
-  assert.deepEqual(asked, ['flips'], 'a probe\'s record is carried')
+  await audit({ usage: MODEL_TOKENIZER, flips: probing, resume: resume({ ...flipsRecord(true), probeSettings: 'A' }) })
+  assert.deepEqual(asked, ['flips'], 'a probe\'s record of the same settings is carried')
+  await audit({ usage: MODEL_TOKENIZER, flips: probing, resume: resume({ ...flipsRecord(true), probeSettings: 'B' }) })
+  assert.deepEqual(asked, ['flips', 'flips'], 'a probe of other settings is asked again')
   // A carried record without its shape is dropped and asked again, never read.
   const damaged = await audit({ usage: MODEL_TOKENIZER, flips: probing, resume: resume({ rule: 'flips-v1' } as never) })
-  assert.deepEqual(asked, ['flips', 'flips'])
+  assert.deepEqual(asked, ['flips', 'flips', 'flips'])
   assert.equal(damaged.evidence.flips?.draw.probe, true)
 })
 

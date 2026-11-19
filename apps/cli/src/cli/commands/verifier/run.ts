@@ -139,7 +139,7 @@ import { TOKENIZER_PRECHECK_RULE, createTokenizerPrecheckScreen, describeTokeniz
 import { createOutputCapScreen, describeOutputCapSummary } from '../../../verifier/output-cap.js'
 import { OUTPUT_ECHO_RULE, createOutputEchoScreen, outputEchoPrompt } from '../../../verifier/output-echo.js'
 import { createFlipsScreen, flipsSeed, type FlipsProbe, type FlipsUnavailable } from '../../../verifier/flips.js'
-import { FLIPS_RULE, isValidFlipsPair } from '../../../verifier/flips-score.js'
+import { FLIPS_RULE, flipsCounts, isValidFlipsPair } from '../../../verifier/flips-score.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { closeCallRuleForExtensions, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
 import { carriedIntoConfirmation, decidedRecords, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
@@ -657,9 +657,13 @@ export async function flipsMasterFor(evidenceDir: string, epoch: string): Promis
       throw error
     })
     if (!info) return null
-    if ((info.mode & 0o077) !== 0) throw new Error(`the FLIPS key for epoch ${epoch} is readable by others (mode ${(info.mode & 0o777).toString(8)})`)
+    if ((info.mode & 0o077) !== 0) {
+      throw new Error(`the FLIPS key ${path} is readable by others (mode ${(info.mode & 0o777).toString(8)}): restrict it to its owner (chmod 600) and run again`)
+    }
     const text = (await readFile(path, 'utf8')).trim()
-    if (!/^[0-9a-f]{64}$/.test(text)) throw new Error(`the FLIPS key for epoch ${epoch} is unreadable`)
+    if (!/^[0-9a-f]{64}$/.test(text)) {
+      throw new Error(`the FLIPS key ${path} is unreadable: rename it to start a new key for epoch ${epoch}; checks already published keep their own seeds`)
+    }
     return text
   }
   const stored = await readKey()
@@ -697,10 +701,11 @@ export function parseFlipsProbe(raw: string | undefined): { probe: FlipsProbe | 
   let pairs: Array<[string, string]> | undefined
   if (value.pairs !== undefined) {
     if (!Array.isArray(value.pairs) || value.pairs.length !== FLIPS_RULE.pairsPerCheck
-      || !value.pairs.every((pair) => Array.isArray(pair) && pair.length === 2 && isValidFlipsPair([String(pair[0]), String(pair[1])]))) {
+      || !value.pairs.every((pair) => Array.isArray(pair) && pair.length === 2 && typeof pair[0] === 'string' && typeof pair[1] === 'string'
+        && pair[0].length <= 40 && pair[1].length <= 40 && isValidFlipsPair([pair[0], pair[1]]))) {
       return { probe: null, problem: `ANTSEED_VERIFIER_FLIPS_PROBE pairs must be ${FLIPS_RULE.pairsPerCheck} pairs of two different words` }
     }
-    pairs = (value.pairs as unknown[][]).map((pair) => [String(pair[0]), String(pair[1])])
+    pairs = (value.pairs as string[][]).map((pair) => [pair[0]!, pair[1]!])
   }
   if (value.stage !== undefined && value.stage !== 'first' && value.stage !== 'confirm') return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE stage must be first or confirm' }
   if (value.followUpFirstFlags !== undefined && typeof value.followUpFirstFlags !== 'boolean') return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE followUpFirstFlags must be true or false' }
@@ -1768,15 +1773,18 @@ export async function runVerifierRound(
           const flipsUnavailable = flipsOn ? flipsStatusRecorder(
             join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'flips-status.json'),
             model,
-            { ...(flipsProbe ? { probe: flipsProbe } : {}), ...(flipsKeyFailed ? { keyFailed: flipsKeyFailed } : {}) },
+            { ...(flipsProbe && !flipsCounts(model, FLIPS_RULE) ? { probe: flipsProbe } : {}), ...(flipsKeyFailed ? { keyFailed: flipsKeyFailed } : {}) },
             (line) => runProgress ? runProgress.above(() => console.warn(chalk.yellow(line))) : console.warn(chalk.yellow(line)),
           ) : null
+          // A probe is a dry-run diagnostic: where FLIPS counts for this model it is refused, never run.
+          const modelProbe = flipsProbe && flipsCounts(model, FLIPS_RULE) ? null : flipsProbe
+          if (flipsProbe && !modelProbe) console.warn(chalk.yellow(`FLIPS: probe refused for ${model}: FLIPS counts for it`))
           const flips = flipsMaster === null ? null : createFlipsScreen<KbfReferenceV1>({
             model,
             auditor: flipsAuditor,
             epoch,
             seedFor: (stage) => flipsSeed(flipsMaster, { model, epoch, runId: flipsRunId, stage }),
-            ...(flipsProbe ? { probe: flipsProbe } : {}),
+            ...(modelProbe ? { probe: modelProbe } : {}),
             onReady: (reference) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, `flips-${reference.stage}`, reference),
             ...(flipsUnavailable ? { onUnavailable: flipsUnavailable } : {}),
             proxyBaseUrl: laneProxy.baseUrl,
