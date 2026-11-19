@@ -17,6 +17,9 @@
   animation: drift var(--cloud-duration) linear var(--cloud-delay) infinite; will-change: transform; }
 .paused .cloud { animation-play-state: paused; }
 @keyframes drift { to { transform: translate3d(var(--cloud-travel), 0, 0); } }
+/* the clouds come in after the page has loaded (Clouds.tsx), fading up rather than popping in; on the layer, so a paused drift can't hold it */
+.cloudsIn { animation: cloudsIn .8s ease-out; }
+@keyframes cloudsIn { from { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .cloud { animation-play-state: paused; } }
 
 /* the night: the meadow painted at night over the whole painting. --night-share is 0 by day and 1 at night; it fades only while the
