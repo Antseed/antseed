@@ -84,7 +84,8 @@ const config: Config = {
       '@docusaurus/plugin-client-redirects',
       {
         redirects: [
-          {from: '/lightpaper', to: '/docs/lightpaper'},
+          // The light paper was removed; its old URLs land on the protocol overview.
+          {from: ['/lightpaper', '/docs/lightpaper'], to: '/docs/overview'},
           // The $ANTS page moved with the site redesign (a 301 in static/_redirects too).
           {from: '/ants-token', to: '/ants'},
           // Docs restructure: the apps, CLI and older posts link to these.
