@@ -1,5 +1,4 @@
-/** What the waitlist card shows: their first name, their Mac and, when known, their waitlist number. */
-export type CardInfo = {name: string; mac: string; number?: number};
+import type {CardFacts} from './cardFacts';
 
 const W = 1200;
 const PIXEL = '"Geist Pixel", "Geist Variable", sans-serif';
@@ -8,9 +7,10 @@ const MONO = '"Geist Mono Variable", monospace';
 
 const load = (src: string) => new Promise<HTMLImageElement>((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = src; });
 
-/** The waitlist card, 1200 by 675 so it fits an X post: the dotted page on the left with their name, the painting on the right.
- *  630 high, it is the link preview a shared post shows (scripts/colony-share-cards.mjs). */
-export async function drawCard({name, mac, number}: CardInfo, {height: H = 675, type = 'image/png'}: {height?: number; type?: string} = {}): Promise<Blob | null> {
+const H = 675;
+
+/** The waitlist card as a PNG, 1200 by 675 so it fits an X post: the dotted page on the left with their name, the painting on the right. */
+export async function drawCard({name, mac, number}: CardFacts): Promise<Blob | null> {
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const g = c.getContext('2d');
@@ -38,5 +38,5 @@ export async function drawCard({name, mac, number}: CardInfo, {height: H = 675, 
   g.fillStyle = '#929292'; g.fillText(tail, 58, 400);
   if (detail) { g.font = `500 24px ${SANS}`; g.fillStyle = '#56656f'; g.fillText(detail, 64, 460); }
   g.fillStyle = '#4f7a24'; g.font = `500 22px ${MONO}`; g.fillText('antseed.com/colony', 64, H - 64);
-  return new Promise((ok) => c.toBlob(ok, type, .86));
+  return new Promise((ok) => c.toBlob(ok, 'image/png'));
 }
