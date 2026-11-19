@@ -483,99 +483,13 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
 
       // What to run to send what this submit left: the same command, for the same run when one was named.
       const submitAgain = options.runId ? `antseed verifier submit --run-id ${options.runId}` : 'antseed verifier submit'
-      let submitted = 0
-      let recovered = 0
-      /** Models whose remaining results go out only with another submit. */
-      let rerun = 0
-      let failed = 0
-      let notMined = 0
-      let deferred = 0
-      let held = 0
-      /** What this submit did not send, for the record the next epoch reads (`recordSubmitOutcome`). */
-      const unsent: string[] = []
-      for (const { audit, previous } of toSubmit) {
-        if (notMined > 0) {
-          // The nonce after an unmined transaction would not mine before it either.
-          deferred += 1
-          failed += 1
-          unsent.push(`${audit.key}: not sent after an unmined transaction`)
-          continue
-        }
-        let publication = reusablePublication(previous, audit.evidenceHash)
-        try {
-          const earlier = earlierAttemptToCheck(previous, audit)
-          if (earlier) {
-            // An earlier attempt under this key sent other evidence, or may have: no transaction is pending now
-            // (`pendingTransactionCount`), so it is either mined or gone. Mined, its results are on-chain and this
-            // preparation may repeat them: record it, and the next submit prepares the model again without them.
-            const sent = await findSubmission(verifierClient, { modelHash: audit.modelHash, evidenceHash: earlier }, address, auditorSetEvents)
-            if (sent && previous) {
-              ledger.models[audit.key] = {
-                ...previous, status: 'submitted', error: null,
-                transactionHash: sent.transactionHash, blockNumber: sent.blockNumber,
-              }
-              await writeModelAuditLedger(ledgerPath, ledger)
-              recovered += 1
-              rerun += 1
-              unsent.push(`${audit.key}: not sent: an earlier attempt's evidence is on-chain; the next submit prepares it again`)
-              // Its other results are not lost, but they go out only with the next submit: say so, and exit 1, so a
-              // submit run by hand is run again (on the last submit of an epoch they are otherwise lost).
-              console.warn(chalk.yellow(`${audit.key}: an earlier attempt's evidence is on-chain and the ledger is updated; `
-                + `the results it did not hold are not sent yet. Run \`${submitAgain}\` again to send them.`))
-              continue
-            }
-          }
-          await writeModelAuditEvidence(audit)
-          if (publishIpfs && !publication) publication = await publish(evidenceDir, banksDir, manifest, audit, pinataJwt!, readEpoch)
-          // Only a URI of exactly this evidence: an earlier attempt's names other evidence when its hash differs.
-          const evidenceUri = publication?.uri
-            ?? (previous && normalized(previous.evidenceHash) === normalized(audit.evidenceHash) ? previous.evidenceUri : '')
-          // A DIFF is sent only with a publication of exactly this evidence: a confirmer reads which check flagged from
-          // it (same-check.ts).
-          if (audit.results.some((result) => result.verdict === verifierVerdict('DIFF')) && !publication) {
-            // Its ledger entry goes, so the next submit prepares the model again and its other results are not stuck.
-            delete ledger.models[audit.key]
-            await writeModelAuditLedger(ledgerPath, ledger)
-            held += 1
-            unsent.push(`${audit.key}: not sent: its DIFF has no publication of this evidence`)
-            console.warn(chalk.yellow(`${audit.key}: not sent: a DIFF goes out only with its evidence published to IPFS, and this evidence is not. `
-              + 'Submit again with publication on; the DIFF is otherwise lost this epoch.'))
-            continue
-          }
-          const entry = ledgerEntry(audit, evidenceUri, publication)
-          ledger.models[audit.key] = entry
-          await writeModelAuditLedger(ledgerPath, ledger)
-
-          const event = await findSubmission(verifierClient, audit, address, auditorSetEvents)
-          if (event) {
-            ledger.models[audit.key] = {
-              ...entry,
-              status: 'submitted',
-              transactionHash: event.transactionHash,
-              blockNumber: event.blockNumber,
-              evidenceUri: event.evidenceUri || evidenceUri,
-            }
-            await writeModelAuditLedger(ledgerPath, ledger)
-            recovered += 1
-            console.log(chalk.dim(`${audit.key}: already recorded on-chain; ledger updated`))
-            continue
-          }
-
-          const changed = await recheckBeforeSend(audit)
-          if (changed) {
-            // Its ledger entry goes, so the next submit builds the audit again from the results that may
-            // still be sent.
-            delete ledger.models[audit.key]
-            await writeModelAuditLedger(ledgerPath, ledger)
-            held += 1
-            // Its other rows are still unsent: say what to run, and exit non-zero so a submit run by hand is run again.
-            rerun += 1
-            unsent.push(`${audit.key}: held for a new check (${changed})`)
-            console.warn(chalk.yellow(`${audit.key}: not sent: ${changed}. Its other results are prepared again by \`${submitAgain}\` `
-              + '(or the next watch tick).'))
-            continue
-          }
-
+      const tally = await sendModelAudits(toSubmit, ledger, {
+        findSubmission: (audit) => findSubmission(verifierClient, audit, address, auditorSetEvents),
+        writeEvidence: (audit) => writeModelAuditEvidence(audit),
+        publish: publishIpfs ? (audit) => publish(evidenceDir, banksDir, manifest, audit, pinataJwt!, readEpoch) : null,
+        writeLedger: (value) => writeModelAuditLedger(ledgerPath, value),
+        recheckBeforeSend,
+        submit: async (audit, evidenceUri) => {
           const transactionHash = await verifierClient.submitModelAudit(wallet, {
             expectedEpoch: audit.expectedEpoch,
             modelHash: audit.modelHash,
@@ -584,40 +498,14 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
             results: audit.results,
           })
           const receipt = await verifierClient.provider.getTransactionReceipt(transactionHash)
-          ledger.models[audit.key] = {
-            ...entry,
-            status: 'submitted',
-            transactionHash,
-            blockNumber: receipt?.blockNumber ?? null,
-            lastAttemptAt: new Date().toISOString(),
-          }
-          await writeModelAuditLedger(ledgerPath, ledger)
-          submitted += 1
-          console.log(chalk.green(`${audit.key}: submitted ${audit.results.length} seller result(s) (${transactionHash})`))
-        } catch (error) {
-          if (error instanceof RunInProgressError) {
-            // Held, not failed: nothing was published or sent, and the ledger is as it was.
-            heldForRun += 1
-            unsent.push(`${audit.key}: held while a verifier run is in progress`)
-            console.warn(chalk.yellow(`${audit.key}: ${error.message}`))
-            continue
-          }
-          const message = asError(error).message
-          const unmined = error instanceof ReceiptWaitTimeoutError ? error : null
-          ledger.models[audit.key] = {
-            ...(ledger.models[audit.key] ?? ledgerEntry(audit, publication?.uri ?? '', publication)),
-            status: 'failed',
-            error: message,
-            ...(unmined ? { transactionHash: unmined.hashes.at(-1) ?? null } : {}),
-            lastAttemptAt: new Date().toISOString(),
-          }
-          await writeModelAuditLedger(ledgerPath, ledger)
-          failed += 1
-          if (unmined) notMined += 1
-          unsent.push(`${audit.key}: ${unmined ? 'sent but not mined' : `failed (${message.slice(0, 160)})`}`)
-          console.warn(chalk.yellow(`${audit.key}: ${describeSubmissionFailure(error)}`))
-        }
-      }
+          return { transactionHash, blockNumber: receipt?.blockNumber ?? null }
+        },
+        warn: (line) => console.warn(chalk.yellow(line)),
+        log: (line) => console.log(line.includes('already recorded on-chain') ? chalk.dim(line) : chalk.green(line)),
+        submitAgain,
+      })
+      const { submitted, recovered, rerun, failed, deferred, held, unsent } = tally
+      heldForRun += tally.heldForRun
       if (deferred > 0) {
         console.warn(chalk.yellow(`${deferred} model(s) were not sent after the unmined transaction; the next submit or watch tick sends them.`))
       }
@@ -1127,4 +1015,169 @@ async function confirmSubmission(count: number): Promise<void> {
   } finally {
     prompt.close()
   }
+}
+
+/** What one submit's send loop needs from outside: the chain, the files and the publisher, so it can be tested apart. */
+export interface SendLoopDeps {
+  /** The auditor's `ModelAudited` event for this evidence, if any (`findSubmission`). */
+  findSubmission: (audit: { modelHash: string; evidenceHash: string }) => Promise<{ transactionHash: string; blockNumber: number; evidenceUri?: string } | null>
+  writeEvidence: (audit: PreparedModelAudit) => Promise<void>
+  /** Publishes the evidence (IPFS); null when publication is off. */
+  publish: ((audit: PreparedModelAudit) => Promise<AuditPublicationV1>) | null
+  writeLedger: (ledger: ModelAuditLedgerV1) => Promise<void>
+  /** The last read before a send (`recheckAuditBeforeSend`): a reason not to send now, or null. */
+  recheckBeforeSend: (audit: PreparedModelAudit) => Promise<string | null>
+  /** Sends the audit and reads its receipt. */
+  submit: (audit: PreparedModelAudit, evidenceUri: string) => Promise<{ transactionHash: string; blockNumber: number | null }>
+  warn: (line: string) => void
+  log: (line: string) => void
+  /** The command to run to send what this submit left. */
+  submitAgain: string
+}
+
+/** What a send loop did, for the summary and the record the next epoch reads. */
+export interface SendLoopTally {
+  submitted: number
+  recovered: number
+  /** Models whose remaining results go out only with another submit. */
+  rerun: number
+  failed: number
+  notMined: number
+  deferred: number
+  held: number
+  heldForRun: number
+  /** What this submit did not send (`recordSubmitOutcome`). */
+  unsent: string[]
+}
+
+/**
+ * Sends each prepared model audit in turn, keeping the ledger: an earlier attempt that may have been sent is looked up
+ * on chain first, a DIFF goes out only with its publication, an audit already recorded is not sent again, and the last
+ * read before a send can hold it. After an unmined transaction nothing more is sent. Never throws for one model.
+ */
+export async function sendModelAudits(
+  items: ReadonlyArray<{ audit: PreparedModelAudit; previous: ModelAuditLedgerEntryV1 | null }>,
+  ledger: ModelAuditLedgerV1,
+  deps: SendLoopDeps,
+): Promise<SendLoopTally> {
+  const tally: SendLoopTally = { submitted: 0, recovered: 0, rerun: 0, failed: 0, notMined: 0, deferred: 0, held: 0, heldForRun: 0, unsent: [] }
+  for (const { audit, previous } of items) {
+    if (tally.notMined > 0) {
+      // The nonce after an unmined transaction would not mine before it either.
+      tally.deferred += 1
+      tally.failed += 1
+      tally.unsent.push(`${audit.key}: not sent after an unmined transaction`)
+      continue
+    }
+    let publication = reusablePublication(previous, audit.evidenceHash)
+    try {
+      const earlier = earlierAttemptToCheck(previous, audit)
+      if (earlier) {
+        // An earlier attempt under this key sent other evidence, or may have: no transaction is pending now
+        // (`pendingTransactionCount`), so it is either mined or gone. Mined, its results are on-chain and this
+        // preparation may repeat them: record it, and the next submit prepares the model again without them.
+        const sent = await deps.findSubmission({ modelHash: audit.modelHash, evidenceHash: earlier })
+        if (sent && previous) {
+          ledger.models[audit.key] = {
+            ...previous, status: 'submitted', error: null,
+            transactionHash: sent.transactionHash, blockNumber: sent.blockNumber,
+          }
+          await deps.writeLedger(ledger)
+          tally.recovered += 1
+          tally.rerun += 1
+          tally.unsent.push(`${audit.key}: not sent: an earlier attempt's evidence is on-chain; the next submit prepares it again`)
+          // Its other results are not lost, but they go out only with the next submit: say so, and exit 1, so a
+          // submit run by hand is run again (on the last submit of an epoch they are otherwise lost).
+          deps.warn((`${audit.key}: an earlier attempt's evidence is on-chain and the ledger is updated; `
+            + `the results it did not hold are not sent yet. Run \`${deps.submitAgain}\` again to send them.`))
+          continue
+        }
+      }
+      await deps.writeEvidence(audit)
+      if (deps.publish && !publication) publication = await deps.publish(audit)
+      // Only a URI of exactly this evidence: an earlier attempt's names other evidence when its hash differs.
+      const evidenceUri = publication?.uri
+        ?? (previous && normalized(previous.evidenceHash) === normalized(audit.evidenceHash) ? previous.evidenceUri : '')
+      // A DIFF is sent only with a publication of exactly this evidence: a confirmer reads which check flagged from
+      // it (same-check.ts).
+      if (audit.results.some((result) => result.verdict === verifierVerdict('DIFF')) && !publication) {
+        // Its ledger entry goes, so the next submit prepares the model again and its other results are not stuck.
+        delete ledger.models[audit.key]
+        await deps.writeLedger(ledger)
+        tally.held += 1
+        tally.unsent.push(`${audit.key}: not sent: its DIFF has no publication of this evidence`)
+        deps.warn((`${audit.key}: not sent: a DIFF goes out only with its evidence published to IPFS, and this evidence is not. `
+          + 'Submit again with publication on; the DIFF is otherwise lost this epoch.'))
+        continue
+      }
+      const entry = ledgerEntry(audit, evidenceUri, publication)
+      ledger.models[audit.key] = entry
+      await deps.writeLedger(ledger)
+
+      const event = await deps.findSubmission(audit)
+      if (event) {
+        ledger.models[audit.key] = {
+          ...entry,
+          status: 'submitted',
+          transactionHash: event.transactionHash,
+          blockNumber: event.blockNumber,
+          evidenceUri: event.evidenceUri || evidenceUri,
+        }
+        await deps.writeLedger(ledger)
+        tally.recovered += 1
+        deps.log((`${audit.key}: already recorded on-chain; ledger updated`))
+        continue
+      }
+
+      const changed = await deps.recheckBeforeSend(audit)
+      if (changed) {
+        // Its ledger entry goes, so the next submit builds the audit again from the results that may
+        // still be sent.
+        delete ledger.models[audit.key]
+        await deps.writeLedger(ledger)
+        tally.held += 1
+        // Its other rows are still unsent: say what to run, and exit non-zero so a submit run by hand is run again.
+        tally.rerun += 1
+        tally.unsent.push(`${audit.key}: held for a new check (${changed})`)
+        deps.warn((`${audit.key}: not sent: ${changed}. Its other results are prepared again by \`${deps.submitAgain}\` `
+          + '(or the next watch tick).'))
+        continue
+      }
+
+      const { transactionHash, blockNumber } = await deps.submit(audit, evidenceUri)
+      ledger.models[audit.key] = {
+        ...entry,
+        status: 'submitted',
+        transactionHash,
+        blockNumber,
+        lastAttemptAt: new Date().toISOString(),
+      }
+      await deps.writeLedger(ledger)
+      tally.submitted += 1
+      deps.log((`${audit.key}: submitted ${audit.results.length} seller result(s) (${transactionHash})`))
+    } catch (error) {
+      if (error instanceof RunInProgressError) {
+        // Held, not failed: nothing was published or sent, and the ledger is as it was.
+        tally.heldForRun += 1
+        tally.unsent.push(`${audit.key}: held while a verifier run is in progress`)
+        deps.warn((`${audit.key}: ${error.message}`))
+        continue
+      }
+      const message = asError(error).message
+      const unmined = error instanceof ReceiptWaitTimeoutError ? error : null
+      ledger.models[audit.key] = {
+        ...(ledger.models[audit.key] ?? ledgerEntry(audit, publication?.uri ?? '', publication)),
+        status: 'failed',
+        error: message,
+        ...(unmined ? { transactionHash: unmined.hashes.at(-1) ?? null } : {}),
+        lastAttemptAt: new Date().toISOString(),
+      }
+      await deps.writeLedger(ledger)
+      tally.failed += 1
+      if (unmined) tally.notMined += 1
+      tally.unsent.push(`${audit.key}: ${unmined ? 'sent but not mined' : `failed (${message.slice(0, 160)})`}`)
+      deps.warn((`${audit.key}: ${describeSubmissionFailure(error)}`))
+    }
+  }
+  return tally
 }

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { ModelAuditLedgerEntryV1, PreparedModelAudit } from '../../../verifier/model-audit.js'
+import { verifierVerdict } from '@antseed/node/payments'
+import type { AuditPublicationV1, ModelAuditLedgerEntryV1, ModelAuditLedgerV1, PreparedModelAudit } from '../../../verifier/model-audit.js'
 import { modelAuditEvidencePath } from '../../../verifier/model-audit.js'
-import { earlierAttemptToCheck, sameSellerResults, standingSubmissions, withLedgerKey } from './submit.js'
+import { earlierAttemptToCheck, sameSellerResults, sendModelAudits, standingSubmissions, withLedgerKey, type SendLoopDeps } from './submit.js'
 
 const audit = (evidenceHash: string): PreparedModelAudit => ({
   key: 'model-a',
@@ -274,4 +275,103 @@ test('one submit per data dir: a second one gets no lock until the first release
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+// The send loop (`sendModelAudits`) with the chain, files and publisher stood in.
+const sendLoop = () => {
+  const ledger = { models: {} as Record<string, ModelAuditLedgerEntryV1> } as ModelAuditLedgerV1
+  const calls = { lookups: [] as string[], evidence: 0, published: [] as string[], sent: [] as Array<{ evidenceHash: string; evidenceUri: string }>, warned: [] as string[] }
+  const looked: Record<string, { transactionHash: string; blockNumber: number } | null | Error> = {}
+  const deps: SendLoopDeps = {
+    findSubmission: async (value) => {
+      calls.lookups.push(value.evidenceHash)
+      const found = looked[value.evidenceHash] ?? null
+      if (found instanceof Error) throw found
+      return found
+    },
+    writeEvidence: async () => { calls.evidence += 1 },
+    publish: async (value) => {
+      calls.published.push(value.evidenceHash)
+      return { evidenceHash: value.evidenceHash, cid: `cid-${value.evidenceHash}`, uri: `ipfs://cid-${value.evidenceHash}` } as AuditPublicationV1
+    },
+    writeLedger: async () => {},
+    recheckBeforeSend: async () => null,
+    submit: async (value, evidenceUri) => {
+      calls.sent.push({ evidenceHash: value.evidenceHash, evidenceUri })
+      return { transactionHash: `0xtx-${value.evidenceHash}`, blockNumber: 42 }
+    },
+    warn: (line) => { calls.warned.push(line) },
+    log: () => {},
+    submitAgain: 'antseed verifier submit --run-id run-1',
+  }
+  return { ledger, calls, looked, deps }
+}
+const sendable = (evidenceHash: string): PreparedModelAudit => ({
+  ...audit(evidenceHash), model: 'model-a', modelHash: '0x' + 'aa'.repeat(32), expectedEpoch: 3n,
+  results: [{ agentId: 7n, serviceHash: '0x' + 'bb'.repeat(32), verdict: verifierVerdict('DIFF') }],
+} as unknown as PreparedModelAudit)
+const earlierAttempt = (status: ModelAuditLedgerEntryV1['status']): ModelAuditLedgerEntryV1 => ({
+  key: 'model-a', model: 'model-a', modelHash: '0x' + 'aa'.repeat(32), evidenceHash: '0x01', evidencePath: '/evidence/earlier.json',
+  resultCount: 1, evidenceUri: 'ipfs://cid-0x01', publication: { evidenceHash: '0x01', cid: 'cid-0x01', uri: 'ipfs://cid-0x01' } as AuditPublicationV1,
+  status, transactionHash: null, blockNumber: null, error: null, lastAttemptAt: '2026-11-19T00:00:00.000Z',
+})
+
+test('send loop: an earlier attempt whose evidence is on chain is recorded, nothing is sent, and the submit asks to be run again', async () => {
+  const { ledger, calls, looked, deps } = sendLoop()
+  const previous = earlierAttempt('pending')
+  ledger.models['model-a'] = previous
+  looked['0x01'] = { transactionHash: '0xearlier', blockNumber: 40 }
+  const tally = await sendModelAudits([{ audit: sendable('0x02'), previous }], ledger, deps)
+  assert.deepEqual(calls.lookups, ['0x01'], 'only the earlier evidence is looked up')
+  assert.equal(calls.sent.length, 0)
+  assert.equal(calls.evidence, 0, 'the fresh evidence is not even written')
+  assert.deepEqual(calls.published, [])
+  assert.equal(ledger.models['model-a']!.status, 'submitted')
+  assert.equal(ledger.models['model-a']!.evidenceHash, '0x01', 'the entry is the earlier attempt, now on chain')
+  assert.equal(ledger.models['model-a']!.transactionHash, '0xearlier')
+  assert.equal(ledger.models['model-a']!.blockNumber, 40)
+  assert.equal(tally.recovered, 1)
+  assert.equal(tally.rerun, 1, 'the rest goes out only with another submit')
+  assert.equal(tally.submitted, 0)
+  assert.equal(tally.unsent.length, 1)
+  assert.match(calls.warned.join('\n'), /antseed verifier submit --run-id run-1/)
+})
+
+test('send loop: an earlier attempt not on chain gives way to the fresh evidence, sent with its own publication', async () => {
+  const { ledger, calls, deps } = sendLoop()
+  const previous = earlierAttempt('failed')
+  ledger.models['model-a'] = previous
+  const tally = await sendModelAudits([{ audit: sendable('0x02'), previous }], ledger, deps)
+  assert.deepEqual(calls.lookups, ['0x01', '0x02'], 'the earlier evidence first, then this evidence')
+  assert.deepEqual(calls.published, ['0x02'], 'the earlier publication names other evidence, so this one is published')
+  assert.deepEqual(calls.sent, [{ evidenceHash: '0x02', evidenceUri: 'ipfs://cid-0x02' }])
+  const entry = ledger.models['model-a']!
+  assert.equal(entry.status, 'submitted')
+  assert.equal(entry.evidenceHash, '0x02')
+  assert.equal(entry.evidenceUri, 'ipfs://cid-0x02')
+  assert.equal(entry.publication?.evidenceHash, '0x02')
+  assert.equal(entry.transactionHash, '0xtx-0x02')
+  assert.equal(entry.blockNumber, 42)
+  assert.equal(tally.submitted, 1)
+  assert.equal(tally.rerun, 0)
+  assert.deepEqual(tally.unsent, [])
+})
+
+test('send loop: when the chain cannot be read for an earlier attempt, nothing is sent and its entry stays to be checked again', async () => {
+  const { ledger, calls, looked, deps } = sendLoop()
+  const previous = earlierAttempt('pending')
+  ledger.models['model-a'] = previous
+  looked['0x01'] = new Error('RPC unavailable')
+  const tally = await sendModelAudits([{ audit: sendable('0x02'), previous }], ledger, deps)
+  assert.equal(calls.sent.length, 0)
+  assert.equal(calls.evidence, 0)
+  assert.deepEqual(calls.published, [])
+  const entry = ledger.models['model-a']!
+  assert.equal(entry.evidenceHash, '0x01', 'still the earlier attempt, so the next submit looks it up again')
+  assert.equal(entry.publication?.evidenceHash, '0x01')
+  assert.equal(entry.status, 'failed')
+  assert.match(entry.error!, /RPC unavailable/)
+  assert.equal(tally.failed, 1)
+  assert.equal(tally.submitted, 0)
+  assert.match(tally.unsent[0]!, /RPC unavailable/)
 })
