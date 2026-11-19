@@ -8,9 +8,11 @@ const LOAD_MARGIN = '600px 0px';
 const FROWN_ODDS = 0.2;
 const BASE = '/site/assets/home/ant-incognito';
 
-// HEVC with alpha in Safari (every iOS browser), VP9 with alpha elsewhere
-const playsHevc = (v: HTMLVideoElement) => navigator.vendor === 'Apple Computer, Inc.' && v.canPlayType('video/mp4; codecs="hvc1"') !== '';
-const sourceFor = (clip: Clip, hevc: boolean) => `${BASE}-${clip}${hevc ? '-hevc.mov' : '.webm'}`;
+// HEVC with alpha in Safari, VP9 with alpha elsewhere
+const sourceFor = (clip: Clip, v: HTMLVideoElement) => {
+  const hevc = navigator.vendor === 'Apple Computer, Inc.' && v.canPlayType('video/mp4; codecs="hvc1"') !== '';
+  return `${BASE}-${clip}${hevc ? '-hevc.mov' : '.webm'}`;
+};
 
 /**
  * The incognito ant on the privacy panel: she idles in a loop; a click plays her laugh once (one time in five a short frown), then she
@@ -23,9 +25,6 @@ export function useIncognitoAnt(button: RefObject<HTMLButtonElement | null>): vo
     if (!btn || isStill()) return;
     const clips = Object.fromEntries([...btn.querySelectorAll<HTMLVideoElement>('video[data-clip]')].map((v) => [v.dataset.clip, v])) as Record<Clip, HTMLVideoElement>;
     const idle = clips.idle;
-    const hevc = playsHevc(idle);
-    // Safari drops an HEVC clip's alpha under a CSS filter, showing the colour stored behind it: the dark theme's tone skips it there
-    btn.toggleAttribute('data-hevc', hevc);
     let seen = false;
     let busy: HTMLVideoElement | null = null;
 
@@ -58,7 +57,7 @@ export function useIncognitoAnt(button: RefObject<HTMLButtonElement | null>): vo
     const load = new IntersectionObserver(([e]) => {
       if (!e.isIntersecting) return;
       load.disconnect();
-      CLIPS.forEach((c) => { clips[c].preload = 'auto'; clips[c].src = sourceFor(c, hevc); });
+      CLIPS.forEach((c) => { clips[c].preload = 'auto'; clips[c].src = sourceFor(c, clips[c]); });
     }, {rootMargin: LOAD_MARGIN});
     // Off screen a reaction pauses where it is; back on screen it plays on (the idle clip finishing first if the reaction hadn't
     // started yet), or falls back to idle if it can't play, so the ant never stays stuck and clicks keep working.
