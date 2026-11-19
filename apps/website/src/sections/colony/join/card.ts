@@ -1,15 +1,16 @@
 /** What the waitlist card shows: their first name, their Mac and, when known, their waitlist number. */
 export type CardInfo = {name: string; mac: string; number?: number};
 
-const W = 1200, H = 675;
+const W = 1200;
 const PIXEL = '"Geist Pixel", "Geist Variable", sans-serif';
 const SANS = '"Geist Variable", sans-serif';
 const MONO = '"Geist Mono Variable", monospace';
 
 const load = (src: string) => new Promise<HTMLImageElement>((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = src; });
 
-/** The waitlist card, 1200 by 675 so it fits an X post: the dotted page on the left with their name, the painting on the right. */
-export async function drawCard({name, mac, number}: CardInfo): Promise<Blob | null> {
+/** The waitlist card, 1200 by 675 so it fits an X post: the dotted page on the left with their name, the painting on the right.
+ *  630 high, it is the link preview a shared post shows (scripts/colony-share-cards.mjs). */
+export async function drawCard({name, mac, number}: CardInfo, {height: H = 675, type = 'image/png'}: {height?: number; type?: string} = {}): Promise<Blob | null> {
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const g = c.getContext('2d');
@@ -28,12 +29,14 @@ export async function drawCard({name, mac, number}: CardInfo): Promise<Blob | nu
   for (let y = 4; y < H; y += 8) for (let x = 4; x < 560; x += 8) { g.beginPath(); g.arc(x, y, .9, 0, 7); g.fill(); }
   if (painting) { g.save(); g.beginPath(); g.roundRect(540, 24, W - 564, H - 48, 20); g.clip(); cover(painting, 540, 24, W - 564, H - 48, .6, 1); g.restore(); }
   if (logo) g.drawImage(logo, 64, 60, 128, 44);
-  // "Ada’s Mac wants in." for a Mac, "Sam wants in." without one, "My Mac wants in." when no name was kept
-  const [lead, tail] = who ? [mac ? `${who}’s Mac` : who, 'wants in.'] : mac ? ['My Mac', 'wants in.'] : ['I’m on', 'the list.'];
+  // "Ada’s Mac wants in." for a Mac, "Sam wants in." without one, "My MacBook Air wants in." when no name was kept
+  const [model, ...rest] = mac.split(' · ');
+  const [lead, tail] = who ? [mac ? `${who}’s Mac` : who, 'wants in.'] : mac ? [`My ${model}`, 'wants in.'] : ['I’m on', 'the list.'];
+  const detail = who ? mac : rest.join(' · ');
   g.fillStyle = '#4f7a24'; pixel(28); g.fillText(number ? `Mac Colony waitlist · #${number.toLocaleString('en-US')}` : 'Mac Colony waitlist', 64, 236);
   g.fillStyle = '#30382c'; fit(lead, 72, 460); g.fillText(lead, 58, 330);
   g.fillStyle = '#929292'; g.fillText(tail, 58, 400);
-  if (mac) { g.font = `500 24px ${SANS}`; g.fillStyle = '#56656f'; g.fillText(mac, 64, 460); }
+  if (detail) { g.font = `500 24px ${SANS}`; g.fillStyle = '#56656f'; g.fillText(detail, 64, 460); }
   g.fillStyle = '#4f7a24'; g.font = `500 22px ${MONO}`; g.fillText('antseed.com/colony', 64, H - 64);
-  return new Promise((ok) => c.toBlob(ok, 'image/png'));
+  return new Promise((ok) => c.toBlob(ok, type, .86));
 }

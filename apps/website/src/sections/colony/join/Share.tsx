@@ -2,7 +2,7 @@ import {useEffect, useRef, useState, type JSX} from 'react';
 import clsx from 'clsx';
 import {TELEGRAM_URL} from '../config';
 import {drawCard} from './card';
-import {shareText, SHARE_URL, type CardFacts} from './cardFacts';
+import {shareText, shareUrl, SHARE_URL, type CardFacts} from './cardFacts';
 import styles from './JoinPage.module.css';
 
 const FILE = 'mac-colony-waitlist.png';
@@ -27,19 +27,21 @@ export function ShareCard({name, mac, number}: CardFacts): JSX.Element {
   useEffect(() => () => { if (shown.current) URL.revokeObjectURL(shown.current); }, []);
 
   const text = shareText(mac);
+  const link = shareUrl(mac);
+  const model = link === SHARE_URL ? '' : mac.split(' · ')[0];
+  const hint = `Your post on X shows ${model ? `a card for your ${model}` : 'the Colony waitlist card'}. Save image keeps this one${name ? ', with your name' : ''}.`;
   const save = () => {
     if (!card) return;
     const a = document.createElement('a');
     a.href = card.url; a.download = FILE; a.click();
   };
+  // a phone shares their own card as the picture; a computer opens X with the words and a link whose preview is the card for their Mac
   const share = async () => {
     const file = card && new File([card.blob], FILE, {type: 'image/png'});
-    // a phone shares the picture itself; a desktop saves it and opens X with the words and the link, ready for the picture
     if (file && navigator.canShare?.({files: [file]}) && matchMedia('(hover: none)').matches) {
-      try { await navigator.share({files: [file], text, url: SHARE_URL}); return; } catch (e) { if ((e as Error).name === 'AbortError') return; }
+      try { await navigator.share({files: [file], text: `${text} ${link}`}); return; } catch (e) { if ((e as Error).name === 'AbortError') return; }
     }
-    save();
-    open(`https://x.com/intent/post?text=${encodeURIComponent(text)}&url=${encodeURIComponent(SHARE_URL)}`, '_blank', 'noopener');
+    open(`https://x.com/intent/post?text=${encodeURIComponent(text)}&url=${encodeURIComponent(link)}`, '_blank', 'noopener');
   };
 
   return (
@@ -49,7 +51,7 @@ export function ShareCard({name, mac, number}: CardFacts): JSX.Element {
         <button type="button" className={styles.button} disabled={!card} onClick={() => void share()}>Share on X <span aria-hidden="true">↗</span></button>
         <button type="button" className={clsx(styles.button, styles.ghost)} disabled={!card} onClick={save}>Save image</button>
       </figcaption>
-      <p className={clsx(styles.hint, styles.deskNote)}>On a computer, the image saves and X opens with your post. Attach the image there.</p>
+      <p className={clsx(styles.hint, styles.deskNote)}>{hint}</p>
     </figure>
   );
 }

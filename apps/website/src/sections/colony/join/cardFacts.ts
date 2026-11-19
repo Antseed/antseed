@@ -9,6 +9,13 @@ export type LinkFacts = {number: number; mac: string; noMac: boolean};
 export const SHARE_URL = 'https://antseed.com/colony/';
 const KEY = 'antseed-colony-card';
 
+/** The link a post carries: /colony/mac/macbook-air/ shows the card for that Mac as the post's picture, on X and anywhere else links
+ *  get a preview (static/colony/mac/), and sends people on to /colony/. /colony/ itself without a Mac. */
+export const shareUrl = (mac: string): string => {
+  const model = mac.split(' · ')[0];
+  return model in MACS ? `${SHARE_URL}mac/${model.toLowerCase().replace(/\s+/g, '-')}/` : SHARE_URL;
+};
+
 /** "MacBook Pro · M3 Max · 36 GB"; nothing for someone without a Mac. */
 export const macLine = (a: Pick<Answers, 'mac' | 'chip' | 'memory'>): string =>
   a.mac === NO_MAC ? '' : [a.mac, a.chip, a.memory].filter(Boolean).join(' · ');

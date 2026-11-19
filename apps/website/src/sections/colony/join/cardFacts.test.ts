@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import {readFileSync, statSync} from 'node:fs';
 import {test} from 'node:test';
-import {macLine, readCard, readLink, shareText} from './cardFacts.ts';
+import {macLine, readCard, readLink, shareText, shareUrl} from './cardFacts.ts';
+import {MACS} from './macs.ts';
 
 test('the card page shows the name and Mac this browser kept from the sign-up', () => {
   assert.deepEqual(readCard('{"name":"Ada","mac":"MacBook Pro · M3 Max · 36 GB"}'), {name: 'Ada', mac: 'MacBook Pro · M3 Max · 36 GB'});
@@ -38,4 +40,24 @@ test('a made-up link can put no words on the card and no odd number', () => {
   assert.equal(readLink('#n=12345678'), null);
   assert.equal(readLink('#n=4.5'), null);
   assert.deepEqual(Object.keys(readLink('#n=9&name=Mallory') ?? {}).sort(), ['mac', 'noMac', 'number']);
+});
+
+test('a post links to the page for its Mac, so the preview shows that Mac’s card', () => {
+  assert.equal(shareUrl('MacBook Pro · M3 Max · 36 GB'), 'https://antseed.com/colony/mac/macbook-pro/');
+  assert.equal(shareUrl('Mac mini'), 'https://antseed.com/colony/mac/mac-mini/');
+  assert.equal(shareUrl(''), 'https://antseed.com/colony/');
+  assert.equal(shareUrl('Free money'), 'https://antseed.com/colony/');
+});
+
+test('every Mac the sign-up offers has its share page and card picture', () => {
+  const site = new URL('../../../../static/', import.meta.url);
+  for (const mac of Object.keys(MACS)) {
+    const path = new URL(shareUrl(mac)).pathname;
+    const page = readFileSync(new URL(`.${path}index.html`, site), 'utf8');
+    const image = page.match(/property="og:image" content="https:\/\/antseed\.com\/([^"]+)"/)?.[1];
+    assert.ok(image, `${path} names its card picture`);
+    assert.match(page, new RegExp(`og:image:alt" content="My ${mac} wants in`), `${path} describes the ${mac} card`);
+    assert.equal(page.match(/name="twitter:image" content="https:\/\/antseed\.com\/([^"]+)"/)?.[1], image);
+    assert.ok(statSync(new URL(image, site)).size < 250_000, `${image} is small enough for every app's preview`);
+  }
 });
