@@ -5,7 +5,7 @@ import {useJoinHref} from './useColony';
 import styles from './Join.module.css';
 
 /** The waitlist, before the FAQ: the closing line, its two buttons, then the painting. Sign-ups happen on /colony/join/ (one question
- *  at a time, with a place in line), so there is one list; the Anthill button shows once config.ts has its link. */
+ *  at a time, then the Google Form), so there is one list; the Telegram button shows once config.ts has its link. */
 export default function Join(): JSX.Element {
   const join = useJoinHref();
   return (
@@ -22,7 +22,7 @@ export default function Join(): JSX.Element {
           className={styles.head}>
           <Actions fill reveal className={styles.cta}>
             <Button href={join} size="page">Join the waitlist</Button>
-            {TELEGRAM_URL && <Button href={TELEGRAM_URL} variant="ghost" size="page">Join the Anthill on Telegram</Button>}
+            {TELEGRAM_URL && <Button href={TELEGRAM_URL} variant="ghost" size="page">Join Local AI Colony on Telegram</Button>}
           </Actions>
         </SectionHead>
         <Wash

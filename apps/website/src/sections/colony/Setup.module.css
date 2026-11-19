@@ -1,4 +1,4 @@
-/* Head and the line about the download on the left, the three numbered steps on the right; one column under 900px */
+/* Head and the line about the download on the left, the three numbered steps on the right; one column under 1024px */
 .setup .rail {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -38,7 +38,11 @@
   .setup .rail { gap: 48px 96px; padding: 124px 96px; }
   .copy { font-size: 17px; line-height: 26px; padding-top: 3px; }
 }
-@media (max-width: 899px) {
+/* small laptops: the head's column a little wider, so "Set up your Mac" stays on one line */
+@media (min-width: 1024px) and (max-width: 1199px) {
+  .setup .rail { grid-template-columns: minmax(0, 6fr) minmax(0, 5fr); column-gap: 48px; }
+}
+@media (max-width: 1023px) {
   .setup .rail { grid-template-columns: minmax(0, 1fr); padding-block: 88px; }
   .text { display: contents; }
   .foot { order: 1; }

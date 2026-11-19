@@ -138,7 +138,6 @@ Antseed is for value-added services (TEEs, agents, fine-tunes, managed products)
 
 ## Optional
 
-- [Light paper](https://antseed.com/docs/lightpaper/): Why Antseed exists and how the market works.
 - [Blog](https://antseed.com/blog/): Technical articles.
 - [Network status](https://antseed.com/network/): Live view of peers and models.
 - [GitHub](https://github.com/Antseed/antseed): Source code, skills and the changelog.

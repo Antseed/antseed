@@ -6,7 +6,7 @@ export type ColonyPath = {
   state: string;
   copy: string;
   painting: {day: string; night: string; label: string};
-  /** `signUp`: the waitlist and Anthill buttons; `soon`: a faded button, nothing to click yet. */
+  /** `signUp`: the waitlist and Telegram buttons; `soon`: a faded button, nothing to click yet. */
   action: 'signUp' | 'soon';
 };
 

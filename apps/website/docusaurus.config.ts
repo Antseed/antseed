@@ -6,6 +6,7 @@ import {deferredGtmScript} from './src/lib/analyticsGate';
 import integrationsPagesPlugin from './plugins/integrations-pages';
 import docsSearchPlugin from './plugins/docs-search';
 import antscanSnapshotPlugin from './plugins/antscan-snapshot';
+import colonySharePagesPlugin from './plugins/colony-share-pages';
 import {prismLight, prismDark} from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
@@ -83,7 +84,8 @@ const config: Config = {
       '@docusaurus/plugin-client-redirects',
       {
         redirects: [
-          {from: '/lightpaper', to: '/docs/lightpaper'},
+          // The light paper was removed; its old URLs land on the protocol overview.
+          {from: ['/lightpaper', '/docs/lightpaper'], to: '/docs/overview'},
           // The $ANTS page moved with the site redesign (a 301 in static/_redirects too).
           {from: '/ants-token', to: '/ants'},
           // Docs restructure: the apps, CLI and older posts link to these.
@@ -121,6 +123,7 @@ const config: Config = {
     // Docs search index for src/theme/SearchBar (the ⌘K modal).
     docsSearchPlugin,
     antscanSnapshotPlugin,
+    colonySharePagesPlugin,
   ],
 
   headTags: [
