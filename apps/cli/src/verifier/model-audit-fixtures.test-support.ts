@@ -327,7 +327,7 @@ export async function writeSignedAuditRun(input: {
         evidencePath: written.path,
         evidenceHash: written.evidenceHash,
         stats: evidence.result.stats,
-        responseAuthVerified: true,
+        responseAuthVerified: evidence.exchanges.every((exchange) => exchange.status !== 'succeeded' || exchange.responseAuth.status === 'verified'),
         ...(evidence.tokenizerPrecheck ? { tokenizerPrecheck: summarizeTokenizerPrecheck(evidence.tokenizerPrecheck) } : {}),
         ...(evidence.outputCap ? { outputCap: summarizeOutputCap(evidence.outputCap) } : {}),
         ...(evidence.outputEcho ? { outputEcho: summarizeOutputEcho(evidence.outputEcho) } : {}),
@@ -790,6 +790,8 @@ async function writeFixtureEvidence(input: {
   const fragment = verifyKbf(reference, { answers, matchVector }, KBF_AUDIT_VERIFY_OPTIONS)
   if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'UNKNOWN fixture verdict')
   const undetermined = questionsWanted === 'UNDETERMINED' && input.wrongCount === undefined
+  // As a real run: an UNDETERMINED for want of verified ResponseAuth has a successful batch whose reply is not verified.
+  if (undetermined && exchanges[0]) exchanges[0] = { ...exchanges[0], responseAuth: { ...exchanges[0].responseAuth, status: 'invalid' } as never }
   // The questions' own verdict: the evidence's `result` (`ALL_TESTS_FORMAT`).
   const verdict = undetermined ? 'UNDETERMINED' as const : fragment.verdict
   const verdictReason = undetermined

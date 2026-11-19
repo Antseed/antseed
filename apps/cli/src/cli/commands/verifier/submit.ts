@@ -1,4 +1,5 @@
-import { access, readFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { acquirePidFileLock, LockHeldError, type FileLock } from '../../../verifier/atomic-files.js'
 import { createInterface } from 'node:readline/promises'
@@ -899,16 +900,27 @@ export async function reuseLedgerEvidence(
         audits.push(audit)
         continue
       }
-      // The reused document is uploaded with the reference files it names, read from beside it.
+      // The reused document is uploaded with the reference files it names, read from beside it, each the reference it
+      // is recorded as (its id and its question count).
       const references: PreparedModelAudit['references'] = []
       for (const entry of evidence.references) {
         if (entry.path === null) continue
         const path = resolve(dirname(previous.evidencePath), entry.path)
-        references.push({ path, reference: JSON.parse(await readFile(path, 'utf8')) as PreparedModelAudit['references'][number]['reference'] })
+        const reference = JSON.parse(await readFile(path, 'utf8')) as PreparedModelAudit['references'][number]['reference']
+        if (reference.referenceId !== entry.referenceId || reference.probes?.length !== entry.probeCount) {
+          throw new Error(`${entry.path} is not the reference the earlier document names`)
+        }
+        references.push({ path, reference })
       }
       const reused = preparedFromEvidence(audit.key, previous.evidencePath, evidence, audit.auditEvidencePaths)
-      // The whole bundle, or no reuse: a raw reference exchange file that is gone would fail its packaging on every retry.
-      for (const entry of reused.referenceEvidence) await access(entry.sourcePath)
+      // The whole bundle, or no reuse: each raw reference exchange file read and hashed against the document, or its
+      // packaging would fail on every retry, or publish bytes that disagree with the recorded hash.
+      for (const entry of evidence.referenceEvidence ?? []) {
+        const bytes = await readFile(resolve(dirname(previous.evidencePath), entry.path))
+        if (entry.sha256 && `sha256:${createHash('sha256').update(bytes).digest('hex')}` !== entry.sha256) {
+          throw new Error(`${entry.path} does not match its recorded sha256`)
+        }
+      }
       audits.push({
         ...reused, references,
         // The same results as prepared now, so the same audit times.

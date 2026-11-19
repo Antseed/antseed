@@ -1146,19 +1146,24 @@ export function adjudicateQuestions(input: {
     return left.reference.referenceId === right.reference.referenceId
       || right.reference.probes.some((probe) => ids.has(probe.id))
   }
-  // The first look recomputed from what the evidence stores (each batch's matches and the reference's own errors), with
-  // the run's coverage and auth rules: a look whose numbers say SAME never passes as DIFF because two labels agree.
-  // UNDETERMINED may always stand: an audit can end undecided for reasons the numbers do not show.
-  if (evidence.result.verdict !== 'UNDETERMINED') {
-    const recomputed = recomputedFirstLook(evidence)
-    if (evidence.result.verdict !== recomputed.verdict) {
-      throw new Error(`the questions' first look says ${evidence.result.verdict}, but its stored answers give ${recomputed.verdict}`)
+  // Every set's look recomputed from what its evidence stores (each batch's matches and the reference's own errors),
+  // with the run's coverage and auth rules, exactly as the run decides it. Its label must be that look, UNDETERMINED
+  // included: a decisive look is never relabelled (hidden from both readers, or withheld), and a look whose numbers say
+  // SAME never passes as DIFF. The zone test and the pooled verdict read only these recomputed statistics.
+  const lookOf = (set: ProxyAuditEvidenceV1, which: string) => {
+    const recomputed = recomputedFirstLook(set)
+    if (set.result.verdict !== recomputed.verdict) {
+      throw new Error(`the questions' ${which} says ${set.result.verdict}, but its stored answers give ${recomputed.verdict}`)
     }
+    return recomputed
   }
+  const firstLook = lookOf(evidence, 'first look')
+  const looks = extraSets.map(({ evidence: set }, index) => lookOf(set, index === 0 ? 'extra set' : 'second extra set'))
   // As `needsExtension`: a set whose ResponseAuth failed, or a seller that refuses the request profile, is not extended.
   const firstLookExtends = rule !== undefined && !unverified(evidence)
     && evidence.result.outcomeReason?.code !== 'request_profile_incompatible'
-    && classifyKbfFirstLook(evidence.result.stats, { minCoverage: KBF_VERIFY_OPTIONS.minCoverage, rule }) === 'extend'
+    && firstLook.stats !== null
+    && classifyKbfFirstLook(firstLook.stats, { minCoverage: KBF_VERIFY_OPTIONS.minCoverage, rule }) === 'extend'
   let verdict: ModelAuditVerdict = evidence.result.verdict
   let latestExtends = firstLookExtends
   // Both readers (submit and the confirmer) hold an extra set to the same form: tagged with the all-tests format, and no
@@ -1181,9 +1186,10 @@ export function adjudicateQuestions(input: {
       const label = index === 0 ? 'extension' : 'second extension'
       if (seen.some((earlier) => sharesProbes(earlier, setEvidence))) throw new Error(`${label} reused probes from an earlier set`)
       seen.push(setEvidence)
+      if (looks.slice(0, index + 1).some((look) => look.stats === null)) throw new Error(`${label}: its statistics cannot be recomputed`)
       const pooled = pooledCloseCallVerdict(
-        { stats: evidence.result.stats, probeCount: evidence.reference.probes.length },
-        extraSets.slice(0, index + 1).map(({ evidence: e }) => ({ stats: e.result.stats, probeCount: e.reference.probes.length })),
+        { stats: firstLook.stats!, probeCount: evidence.reference.probes.length },
+        extraSets.slice(0, index + 1).map(({ evidence: e }, at) => ({ stats: looks[at]!.stats!, probeCount: e.reference.probes.length })),
         rule,
       )
       if (pooled.verdict === 'UNKNOWN') throw new Error(`pooled verdict is UNKNOWN: ${pooled.verdictReason}`)

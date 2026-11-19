@@ -259,6 +259,23 @@ test('first evidence that is not published, altered, about another seller or not
     const relinkedFiles = new Map(files)
     relinkedFiles.set(index.evidencePath, canonicalJsonStringify(relinked))
     assert.match(await decideWith(reader(relinkedFiles, canonicalHashBytes32(relinked))), /linked for agent 2 is about another seller or service/)
+    // A first look relabelled in a hash-valid publication: agent 3's questions DIFF stored as SAME, every hash rewritten
+    // to match. The confirmer recomputes the look from the stored answers and refuses it.
+    const relabelPath = resolve(evidence.results.find((result) => result.agentId === '3')!.audit.evidencePath)
+    const sellerFile = JSON.parse(files.get(relabelPath)!) as { result: { verdict: string } }
+    sellerFile.result.verdict = 'SAME'
+    const relabelled = structuredClone(evidence)
+    relabelled.results.find((result) => result.agentId === '3')!.audit.evidenceHash = canonicalHashBytes32(sellerFile)
+    const relabelledFiles = new Map(files)
+    relabelledFiles.set(relabelPath, canonicalJsonStringify(sellerFile))
+    relabelledFiles.set(index.evidencePath, canonicalJsonStringify(relabelled))
+    const relabelReason = await (async () => {
+      const [decision] = await sameCheckFilter({ events: [report(3n, VERIFIER_VERDICT.DIFF)], auditor: second.address, reader: reader(relabelledFiles, canonicalHashBytes32(relabelled)) })(
+        audit.modelHash, [candidate(3n, VERIFIER_VERDICT.DIFF, ['kbf'])],
+      )
+      return decision?.kind === 'hold' ? decision.reason : `not held: ${decision?.kind}`
+    })()
+    assert.match(relabelReason, /the questions' first look says SAME, but its stored answers give DIFF/)
     // A path that leaves the publication.
     const escaping = new Map(files)
     escaping.set('publication.json', JSON.stringify({ ...index, evidencePath: `../../${index.evidencePath}` }))

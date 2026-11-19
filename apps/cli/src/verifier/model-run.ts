@@ -357,6 +357,8 @@ export interface ModelVerificationTargetResult {
    * only when the confirmation decision sends it for the report waiting now.
    */
   offeredAsAlternate?: true
+  /** An undecided confirmation's cause when it was the auditor's own (`outcomeReason` says `confirmation_undecided`). */
+  undecidedCause?: VerificationOutcomeReasonV1 | null
   /**
    * A close call whose extra set will not be asked: in the run, beside a flag of another test (a flagged result never
    * waits across runs); at submit, when its window closed or its extra questions were published. Its questions are

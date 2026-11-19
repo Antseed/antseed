@@ -353,6 +353,11 @@ export function heldForConfirmationRecheck(cell: Pick<EpochCell, 'state' | 'acti
     && cell.attempts < CONFIRMATION_ATTEMPTS
 }
 
+/** The reason a result's attempt is blamed by: an undecided confirmation's own cause when it kept one, else its outcome. */
+function blameReasonOf(result: ModelVerificationTargetResult): ModelVerificationTargetResult['outcomeReason'] {
+  return result.undecidedCause ?? result.outcomeReason ?? null
+}
+
 export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellAction {
   switch (cell.state) {
     case 'same':
@@ -465,7 +470,8 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
         // with the same audit ID: it is the same audit still waiting for its extra questions, not another
         // attempt (confirmation attempts are unspaced, so counting it again would use up their limit).
         const carriedOn = result.confirmsDiff === true && finalAuditVerdict(result) === null && entry.countedAuditIds.has(result.auditId)
-        if (result.outcomeReason && failureBlame(result.outcomeReason) === 'auditor') {
+        // Blamed by its cause: an undecided confirmation of the auditor's own making counts on the auditor's side.
+        if (blameReasonOf(result) && failureBlame(blameReasonOf(result)) === 'auditor') {
           entry.auditorAttempts += 1
           entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
         } else if (carriedOn) {
@@ -528,10 +534,11 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       const verdict = finalAuditVerdict(entry.result)!
       const state = verdict === 'SAME' ? 'same' : verdict === 'DIFF' ? 'diff' : 'undetermined'
       const reason = entry.result.outcomeReason ?? null
+      const cause = blameReasonOf(entry.result)
       cell = {
         ...base, runId: entry.resultRunId!, state, result: entry.result,
-        blame: state === 'undetermined' ? failureBlame(reason) : null,
-        permanent: state === 'undetermined' && permanentAuditorFailure(reason),
+        blame: state === 'undetermined' ? failureBlame(cause) : null,
+        permanent: state === 'undetermined' && permanentAuditorFailure(cause),
         reason: reason?.summary ?? null,
       }
     } else if (entry.failure && (entry.last === 'failure' || !entry.skip)) {

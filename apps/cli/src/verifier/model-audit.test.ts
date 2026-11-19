@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { Wallet } from 'ethers'
-import { KBF_EXTENSION_RULE_V1, KBF_EXTENSION_RULE_V2, canonicalHashBytes32, canonicalJsonStringify } from '@antseed/fingerprints'
+import { KBF_AUDIT_VERIFY_OPTIONS, KBF_EXTENSION_RULE_V1, KBF_EXTENSION_RULE_V2, canonicalHashBytes32, canonicalJsonStringify, computeKbfVerdict, type FingerprintStats } from '@antseed/fingerprints'
 import { VERIFIER_VERDICT, modelHash, serviceHash, sortServiceResults } from '@antseed/node/payments'
 import { DIFF_HOLD_EPOCHS, diffHolds } from './diff-hold.js'
 import {
@@ -346,6 +346,32 @@ test('two rows of one seller: the latest stands, another report\'s row only when
   })
 })
 
+test('submit recomputes each first look from its stored answers: a relabelled look and a DIFF with nothing scored are refused', async () => {
+  // Rewrites seller 1's file and its hash in the summary, as a hand-edited evidence file would be.
+  const relabel = (change: (evidence: { result: { verdict: string; parsedProbeCount: number }; exchanges: unknown[] }) => void) => async (evidenceDir: string) => {
+    const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+    const summaryPath = manifest.models[0]!.summaryPath
+    const summary = JSON.parse(await readFile(summaryPath, 'utf8')) as { results: Array<{ agentId: string; evidencePath: string; evidenceHash: string; status: string; questionsStatus?: string }> }
+    const target = summary.results.find((result) => result.agentId === '1')!
+    const evidence = JSON.parse(await readFile(target.evidencePath, 'utf8')) as Parameters<typeof change>[0]
+    change(evidence)
+    await writeFile(target.evidencePath, canonicalJsonStringify(evidence))
+    target.evidenceHash = canonicalHashBytes32(evidence)
+    target.status = evidence.result.verdict
+    target.questionsStatus = evidence.result.verdict
+    await writeFile(summaryPath, JSON.stringify(summary))
+  }
+  const rows = [audit('1', sellers[0]!, 'model-a'), audit('2', sellers[1]!, 'model-a')]
+  // A decisive SAME relabelled UNDETERMINED (withheld): refused.
+  await withRun(rows, async ({ prepared }) => {
+    assert.match(prepared.excluded.find((entry) => entry.agentId === '1')!.reason, /the questions' first look says UNDETERMINED, but its stored answers give SAME/)
+  }, { tamper: relabel((evidence) => { evidence.result.verdict = 'UNDETERMINED' }) })
+  // A questions DIFF with nothing scored: refused.
+  await withRun(rows, async ({ prepared }) => {
+    assert.match(prepared.excluded.find((entry) => entry.agentId === '1')!.reason, /the questions' first look says DIFF, but its stored answers give UNDETERMINED/)
+  }, { tamper: relabel((evidence) => { evidence.result.verdict = 'DIFF'; evidence.exchanges = []; evidence.result.parsedProbeCount = 0 }) })
+})
+
 test('rejects runs without a numeric on-chain epoch', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-model-audit-'))
   try {
@@ -618,20 +644,12 @@ test('kbf-extension-v2 close calls get a second extra set and are re-verified fr
 })
 
 test('a second extra set is rejected when the first pooled look was already decided, or reuses probes', () => {
-  const evidence = (verdict: 'SAME' | 'DIFF' | 'UNDETERMINED', referenceId: string, probeIds: string[], wrong: number, total = 20) => ({
-    target: { peerId: 'aa', service: 'm', agentId: '1' },
-    tests: 'all-tests-v1',
-    reference: { referenceId, probes: probeIds.map((id) => ({ id })) },
-    result: {
-      verdict,
-      stats: { selfHamming: 0, selfTotal: total, selfCoverage: 1, targetHamming: wrong, targetTotal: total, targetCoverage: 1, p0Cp99: null, pValueBinomial: null },
-    },
-    exchanges: [],
-  }) as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
+  // Each set stores its answers; its label and numbers are the look those give (7 of 20 wrong is a close call, p ~0.098).
+  const evidence = (_label: string, referenceId: string, probeIds: string[], wrong: number) => answeredEvidence(referenceId, probeIds, wrong) as unknown as {
+    result: { verdict: 'SAME' | 'DIFF' | 'UNDETERMINED'; stats: FingerprintStats }
+  } & Parameters<typeof validateAuditMatchesSummary>[0]
   const ids = (prefix: string) => Array.from({ length: 20 }, (_, index) => `${prefix}${index}`)
-  // Its answers are not stored here, so its first look is undecided by its label (the label is recomputed from answers).
-  const first = evidence('UNDETERMINED', 'sha256:first', ids('a'), 7)
-  first.result.stats.pValueBinomial = 0.098
+  const first = evidence('close call', 'sha256:first', ids('a'), 7)
   const pooledOf = (sets: Array<ReturnType<typeof evidence>>, rule = KBF_EXTENSION_RULE_V2) => pooledCloseCallVerdict(
     { stats: first.result.stats, probeCount: 20 },
     sets.map((set) => ({ stats: set.result.stats, probeCount: 20 })),
@@ -782,25 +800,42 @@ test('tampered pooled statistics or a reused extension probe are rejected', asyn
   })
 })
 
-test('a close call is checked against the close-call rule', () => {
-  const first = {
+
+/**
+ * A seller file whose questions are stored as answers: `wrong` of its probes answered wrong, a clean self-test, and its
+ * label and statistics the look those answers give, as a run writes them (readers recompute both).
+ */
+function answeredEvidence(referenceId: string, probeIds: readonly string[], wrong: number, extra: Record<string, unknown> = {}) {
+  const matches = probeIds.map((_, index) => (index < wrong ? 0 : 1) as 0 | 1)
+  const computed = computeKbfVerdict({
+    selfHamming: 0, selfTotal: probeIds.length, targetMatchVector: matches,
+    minCoverage: KBF_AUDIT_VERIFY_OPTIONS.minCoverage, minDiffCoverage: KBF_AUDIT_VERIFY_OPTIONS.minDiffCoverage,
+  })
+  return {
     target: { peerId: 'aa', service: 'm', agentId: '1' },
     tests: 'all-tests-v1',
-    reference: { referenceId: 'sha256:a', probes: [{ id: 'p1' }] },
-    exchanges: [],
-    // No answers are stored, so its first look is undecided whatever its numbers (the label is recomputed).
-    result: { verdict: 'UNDETERMINED', stats: { pValueBinomial: 0.5, targetCoverage: 1, selfHamming: 0, selfTotal: 10, targetHamming: 0, targetTotal: 10, selfCoverage: 1, p0Cp99: 0.3 } },
+    reference: {
+      referenceId, probes: probeIds.map((id) => ({ id })),
+      selfTest: { outcomes: probeIds.map((id) => ({ probeId: id, answers: [1], matches: [1] })) },
+    },
+    exchanges: [{
+      batchIndex: 0, status: 'succeeded', probeIds: [...probeIds], answers: probeIds.map(() => 1), matches,
+      responseAuth: { status: 'verified' },
+    }],
+    result: { verdict: computed.verdict, stats: { ...computed.stats, selfCoverage: 1 } },
+    ...extra,
   } as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
-  const extensionEvidence = {
-    ...first,
-    reference: { referenceId: 'sha256:b', probes: [{ id: 'p2' }] },
-    result: { ...(first as unknown as { result: object }).result, verdict: 'SAME' },
-  } as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
+}
+
+test('a close call is checked against the close-call rule', () => {
+  const ids = Array.from({ length: 10 }, (_, index) => `p${index}`)
+  // Every answer right: a clear SAME, so it must not have been extended.
+  const first = answeredEvidence('sha256:a', ids, 0)
+  const extensionEvidence = answeredEvidence('sha256:b', ids.map((id) => `x${id}`), 0)
   const result = {
     peerId: 'aa', service: 'm', agentId: '1', status: 'SAME', decisionRule: 'kbf-extension-v1',
     extension: { rule: 'kbf-extension-v1', status: 'SAME', pooled: { verdict: 'SAME' } },
   } as unknown as Parameters<typeof validateAuditMatchesSummary>[1]
-  // p = 0.5 is a clear SAME: it must not have been extended.
   assert.throws(() => validateAuditMatchesSummary(first, result, extensionEvidence), /not a close call/)
 })
 

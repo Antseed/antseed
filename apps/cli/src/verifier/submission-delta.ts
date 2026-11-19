@@ -49,6 +49,8 @@ const READ_CONCURRENCY = 8
  *      change, so it is sent only when the audit behind it is newer than the report (a fresh look,
  *      e.g. confirming a report made in the new round). Re-sending the old audit would carry the old
  *      support over by hand.
+ * 4. Another verdict than this auditor's own standing report: sent only when its audit is newer than that report, so an
+ *    older audit never replaces a newer verdict of the same auditor (also when an older run is submitted by hand).
  */
 export async function resultsAlreadyOnChain(input: {
   candidates: readonly SubmissionCandidate[]
@@ -60,7 +62,10 @@ export async function resultsAlreadyOnChain(input: {
 }): Promise<boolean[]> {
   return mapConcurrently(input.candidates, READ_CONCURRENCY, async (candidate) => {
     const own = input.own.get(reportKey(candidate.agentId, candidate.serviceHash, input.modelHash))
-    if (!own || own.verdict !== candidate.verdict) return false
+    if (!own) return false
+    // A vote that replaces this auditor's own standing report with another verdict must be newer than that report: an
+    // older audit (an earlier run submitted by hand, say) never overwrites a newer verdict of the same auditor.
+    if (own.verdict !== candidate.verdict) return candidate.auditedAt <= await input.reader.blockTimestamp(own.blockNumber)
     const [round, status] = await Promise.all([
       input.reader.reportRound(candidate.agentId, candidate.serviceHash),
       input.reader.serviceStatusByHash(candidate.agentId, candidate.serviceHash),

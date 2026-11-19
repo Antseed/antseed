@@ -129,17 +129,20 @@ function questionsView(result: ModelVerificationTargetResult): ModelVerification
  */
 export function settleAuditVerdict<T extends ModelVerificationTargetResult>(result: T): T {
   const { questionsStatus, questionsOutcome, audit } = auditDecision(result)
+  const { undecidedCause: _previous, ...rest } = result
+  // Two fields: the decision (an undecided confirmation always says so, as submit checks) and its cause when the cause
+  // was this auditor's own, so that attempt counts on the auditor's side, never toward the seller's three.
+  const auditorCause = audit.undecidedConfirmation && failureBlame(questionsOutcome) === 'auditor' ? questionsOutcome : null
   return {
-    ...result,
+    ...rest,
     status: audit.verdict,
     questionsStatus,
     questionsOutcomeReason: questionsOutcome,
-    // An undecided confirmation says so, unless the cause was this auditor's own: then that cause stays, so the
-    // attempt counts on the auditor's side and never toward the seller's three.
-    outcomeReason: audit.undecidedConfirmation && failureBlame(questionsOutcome) !== 'auditor'
+    outcomeReason: audit.undecidedConfirmation
       ? confirmationUndecidedReason(audit.undecidedConfirmation, questionsOutcome?.totalBatchCount ?? 0)
       : questionsOutcome,
-  }
+    ...(auditorCause ? { undecidedCause: auditorCause } : {}),
+  } as T
 }
 
 export function pooledCloseCallVerdict(

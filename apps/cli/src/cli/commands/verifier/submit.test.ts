@@ -204,7 +204,7 @@ test('a retry reuses an earlier attempt\'s evidence only for the same results, m
     const earlierPath = join(directory, 'earlier', 'evidence.json')
     await mkdir(join(directory, 'earlier', 'references'), { recursive: true })
     await writeFile(earlierPath, canonicalJsonStringify(earlier))
-    await writeFile(join(directory, 'earlier', 'references', 'ref-1.json'), JSON.stringify({ referenceId: 'ref-1' }))
+    await writeFile(join(directory, 'earlier', 'references', 'ref-1.json'), JSON.stringify({ referenceId: 'ref-1', probes: Array.from({ length: 10 }, (_, index) => ({ id: `p${index}` })) }))
     const fresh = (results = [row], extra: Record<string, unknown> = {}) => {
       const evidence = document({ results, generatedAt: 'now', ...extra })
       return {
@@ -218,7 +218,7 @@ test('a retry reuses an earlier attempt\'s evidence only for the same results, m
     // The same results: the earlier evidence is sent, with the reference file it names.
     const [reused] = await reuseLedgerEvidence([fresh()], ledgerWith('pending'))
     assert.equal((reused as { evidenceHash: string }).evidenceHash, canonicalHashBytes32(earlier))
-    assert.deepEqual((reused as { references: Array<{ reference: unknown }> }).references.map((entry) => entry.reference), [{ referenceId: 'ref-1' }])
+    assert.deepEqual((reused as { references: Array<{ reference: { referenceId: string } }> }).references.map((entry) => entry.reference.referenceId), ['ref-1'])
     // Other results, another epoch or model: what was prepared now.
     for (const other of [fresh([{ ...row, verdict: 'DIFF' }]), fresh([row], { epoch: '8' }), fresh([row], { modelHash: '0x' + 'ef'.repeat(32) })]) {
       const [kept] = await reuseLedgerEvidence([other], ledgerWith('pending'))
@@ -235,6 +235,14 @@ test('a retry reuses an earlier attempt\'s evidence only for the same results, m
     const freshAgain = fresh([row], { referenceEvidence: [{ path: 'references/exchanges-gone.jsonl' }] })
     const [notReused] = await reuseLedgerEvidence([freshAgain], ledgerWith('pending', canonicalHashBytes32(incomplete), incompletePath))
     assert.equal(notReused, freshAgain)
+    // A raw exchange file that is there but not the recorded bytes: no reuse either.
+    await writeFile(join(directory, 'earlier', 'references', 'exchanges.jsonl'), 'other bytes')
+    const corrupt = document({ referenceEvidence: [{ path: 'references/exchanges.jsonl', sha256: `sha256:${'00'.repeat(32)}` }] })
+    const corruptPath = join(directory, 'earlier', 'corrupt.json')
+    await writeFile(corruptPath, canonicalJsonStringify(corrupt))
+    const freshThird = fresh([row], { referenceEvidence: [{ path: 'references/exchanges.jsonl', sha256: `sha256:${'00'.repeat(32)}` }] })
+    const [notCorrupt] = await reuseLedgerEvidence([freshThird], ledgerWith('pending', canonicalHashBytes32(corrupt), corruptPath))
+    assert.equal(notCorrupt, freshThird)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
