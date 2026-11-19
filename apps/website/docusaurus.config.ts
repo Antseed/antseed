@@ -6,6 +6,7 @@ import {deferredGtmScript} from './src/lib/analyticsGate';
 import integrationsPagesPlugin from './plugins/integrations-pages';
 import docsSearchPlugin from './plugins/docs-search';
 import antscanSnapshotPlugin from './plugins/antscan-snapshot';
+import colonySharePagesPlugin from './plugins/colony-share-pages';
 import {prismLight, prismDark} from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
@@ -121,6 +122,7 @@ const config: Config = {
     // Docs search index for src/theme/SearchBar (the ⌘K modal).
     docsSearchPlugin,
     antscanSnapshotPlugin,
+    colonySharePagesPlugin,
   ],
 
   headTags: [

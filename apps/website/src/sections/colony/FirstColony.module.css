@@ -16,7 +16,17 @@
   .head .sub { line-height: 28px; }
   .fact { padding: 10px 0; }
 }
-@media (max-width: 899px) { .first .painting { height: 420px; } }
+/* 900–1023px: one column, as under 900px; side by side the title's grey line would break and the anthill shrink to a sliver */
+@media (min-width: 900px) and (max-width: 1023px) {
+  .first .rail { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .first .text { order: -1; gap: 28px; padding: 72px var(--site-pad) 56px; }
+}
+@media (max-width: 1023px) { .first .painting { height: 420px; } }
+/* 1024–1279px: the text column a little wider, so "its first members." stays on one line */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .first .rail { grid-template-columns: minmax(0, 4fr) minmax(0, 5fr); }
+  .first .text { padding-inline: 64px 48px; }
+}
 /* phones: eyebrow, title and sub, then the painting across the rail, the facts and the button (the text column opened so the painting
    comes in under the head) */
 @media (max-width: 760px) {

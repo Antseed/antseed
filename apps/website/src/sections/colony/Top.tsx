@@ -1,6 +1,7 @@
 import type {JSX} from 'react';
 import {Button} from '../../components';
 import {FirstScreen} from '../../parts/FirstScreen';
+import {TELEGRAM_URL} from './config';
 import {useJoinHref} from './useColony';
 
 /** The march of Macs, the offer beside it. */
@@ -16,6 +17,7 @@ export default function Top(): JSX.Element {
       subWidth={324}
       actions={<>
         <Button href={join} size="page">Join the waitlist</Button>
+        {TELEGRAM_URL && <Button href={TELEGRAM_URL} variant="ghost" size="page">Join Local AI Colony on Telegram</Button>}
         <Button href="#how" variant="ghost" size="page">How it works</Button>
       </>}
       fillActions

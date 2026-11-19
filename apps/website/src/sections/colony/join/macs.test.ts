@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {MACS, chipsFor, memsFor, settle, stepsFor, type Answers} from './macs.ts';
+import {MACS, NO_MAC, chipsFor, memsFor, settle, stepsFor, type Answers} from './macs.ts';
 
 const none: Answers = {mac: '', chip: '', memory: '', name: ''};
 
@@ -41,4 +41,9 @@ test('settle picks the only option and keeps the rest', () => {
   assert.deepEqual(settle({...none, mac: 'MacBook Neo'}), {...none, mac: 'MacBook Neo', chip: 'A18 Pro', memory: '8 GB'});
   assert.equal(settle({...none, mac: 'Mac Pro'}).chip, 'M2 Ultra');
   assert.equal(settle({...none, mac: 'Mac Studio'}).chip, '');
+});
+
+test('someone without a Mac skips the chip and memory steps and has nothing to settle', () => {
+  assert.deepEqual(stepsFor(settle({...none, mac: NO_MAC})), ['mac', 'name', 'review', 'done']);
+  assert.deepEqual(settle({...none, mac: NO_MAC}), {...none, mac: NO_MAC});
 });
