@@ -44,7 +44,7 @@ import { AUDIT_CHECK_IDS, flaggingChecks, passedChecks, type AuditCheckId } from
 import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
 import type { SubmissionCandidate } from './submission-delta.js'
-import { ALL_TESTS_FORMAT, auditVerdictReason, earliestAuditorTime, readingsOfEvidence, readingsOfSummary, validateCheckRecordsAgainstSummary, verdictOf, type ReportOfAudit } from './audit-checks.js'
+import { ALL_TESTS_FORMAT, RECORD_CHECKS, auditVerdictReason, earliestAuditorTime, readingsOfEvidence, readingsOfSummary, validateCheckRecordsAgainstSummary, verdictOf, type ReportOfAudit } from './audit-checks.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
@@ -1066,6 +1066,12 @@ export function adjudicateQuestions(input: {
     && classifyKbfFirstLook(evidence.result.stats, { minCoverage: KBF_VERIFY_OPTIONS.minCoverage, rule }) === 'extend'
   let verdict: ModelAuditVerdict = evidence.result.verdict
   let latestExtends = firstLookExtends
+  // Both readers (submit and the confirmer) hold an extra set to the same form: tagged with the all-tests format, and no
+  // test record on it, since tests run on the first set only.
+  for (const { evidence: set } of extraSets) {
+    if (set.tests !== ALL_TESTS_FORMAT) throw new Error('an extra set does not name the all-tests format')
+    if (RECORD_CHECKS.some((check) => set[check.slot] != null)) throw new Error('an extra set stores a test record; tests run on the first set only')
+  }
   if (extraSets.length > 0) {
     if (!rule || extraSets.some(({ record }) => record.rule !== rule.id)) throw new Error('extension without the close-call rule')
     if (extraSets.length > rule.maxExtensions) throw new Error(`${rule.id} allows at most ${rule.maxExtensions} extra set(s)`)

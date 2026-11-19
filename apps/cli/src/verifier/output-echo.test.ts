@@ -6,6 +6,7 @@ import { Wallet } from 'ethers'
 import { prepareModelAudits } from './model-audit.js'
 import { FIXTURE_CONFIG, peerIdOf, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
 import test from 'node:test'
+import { OUTPUT_ECHO_CHECK, assertBoundToSeller, sellerBindingOf } from './audit-checks.js'
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { isSafeProbe } from '@antseed/node/payments'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
@@ -330,6 +331,18 @@ test('a seller that bills a quarter more output is flagged once three other sell
   ownVote.crowd!.votes[0]!.peerId = PEERS[0]!
   assert.throws(() => validateOutputEcho(ownVote, PEERS[0]), /audited seller's, or a second vote/)
   assert.throws(() => validateOutputEcho(record, PEERS[1]), /not signed by it/, 'replies are bound to the seller that signed them')
+  // A voter admitted under its own spelling of the model (by the canonical key, as discovery admits it) binds at submit
+  // and in the confirmer's read: both bind with `sellerBindingOf` and `assertBoundToSeller`. Another model does not.
+  const binding = sellerBindingOf({ target: { peerId: PEERS[0]!, service: SERVICE }, reference: { referenceModel: SERVICE } })
+  const respelled = (signed: string) => {
+    const copy = structuredClone(record)
+    for (const ask of [copy.crowd!.votes[1]!.short, copy.crowd!.votes[1]!.long]) {
+      ;(ask.request.responseAuth as { record: { advertisedService: string } }).record.advertisedService = signed
+    }
+    return () => assertBoundToSeller(OUTPUT_ECHO_CHECK.requests(copy), binding, 'the echo check')
+  }
+  assert.doesNotThrow(respelled('vendor/test_model'), 'a spelling outside the built-in list, same model')
+  assert.throws(respelled('other-model'), /a reply is signed for another service than the one asked/)
   // The same seller with its pre-check not a match decides nothing.
   const unknown = (await screenFor(network).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: false }))!
   assert.equal(unknown.outcome, 'inconclusive')

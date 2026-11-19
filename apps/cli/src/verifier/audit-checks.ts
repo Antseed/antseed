@@ -6,6 +6,7 @@ import { describeOutputCapFlag, outputCapPaidRequests, summarizeOutputCap, valid
 import { describeOutputEchoFlag, outputEchoPaidRequests, summarizeOutputEcho, validateOutputEcho, type EchoSellerAskV1, type OutputEchoV1 } from './output-echo.js'
 import type { PaidRequest, ProxyAuditEvidenceExchangeV1 } from './proxy-evidence.js'
 import { matchesEnrolledService } from './response-auth-reader.js'
+import { sameModelService } from './service-discovery.js'
 import {
   describeTokenizerMismatch,
   summarizeTokenizerPrecheck,
@@ -106,6 +107,8 @@ export interface SellerBinding {
   service: string
   /** The model's other service names. Evidence does not store them: they are the audited model's (`audited-models.ts`). */
   serviceAliases: readonly string[]
+  /** The audited model (the evidence's `referenceModel`): a reply signed for any spelling of it, as sellers are admitted, binds. */
+  model?: string
 }
 
 /** What validating one stored record may read besides the record. */
@@ -491,7 +494,14 @@ export function sellerBindingOf(evidence: StoredAuditTarget): SellerBinding {
     peerId: evidence.target.peerId,
     service: evidence.target.service,
     serviceAliases: typeof evidence.reference?.referenceModel === 'string' ? auditedServiceNames(evidence.reference.referenceModel) : [],
+    ...(typeof evidence.reference?.referenceModel === 'string' ? { model: evidence.reference.referenceModel } : {}),
   }
+}
+
+/** A signed service that is the audited model: its own name or a built-in name of it, by `sameModelService`. */
+function serviceOfModel(signed: string, seller: SellerBinding): boolean {
+  if (!seller.model) return false
+  return [seller.model, ...seller.serviceAliases].some((name) => sameModelService(signed, name))
 }
 
 const peerKey = (peerId: string): string => peerId.toLowerCase().replace(/^0x/, '')
@@ -516,8 +526,12 @@ export function assertBoundToSeller(requests: readonly StoredRequest[], seller: 
     if (record.requestId !== auth.requestId || !request.requestIds.includes(record.requestId)) {
       throw new Error(`${what}: a signed reply answers another request than the one stored with it`)
     }
+    // One rule for the audited seller, a backer and a crowd vote alike: the service asked, or any spelling of the
+    // audited model by the rule sellers are admitted with (`sameModelService`), so a voter asked under its own spelling
+    // binds although the evidence stores no service for it.
     const service = request.signer === 'audited' ? seller.service : request.signer.service ?? seller.service
-    if (typeof record.advertisedService !== 'string' || !matchesEnrolledService(service, record.advertisedService, seller.serviceAliases)) {
+    const signed = record.advertisedService
+    if (typeof signed !== 'string' || !(matchesEnrolledService(service, signed, seller.serviceAliases) || serviceOfModel(signed, seller))) {
       throw new Error(`${what}: a reply is signed for another service than the one asked`)
     }
   }

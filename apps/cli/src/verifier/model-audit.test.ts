@@ -745,6 +745,21 @@ test('a close call is checked against the close-call rule', () => {
   assert.throws(() => validateAuditMatchesSummary(first, result, extensionEvidence), /not a close call/)
 })
 
+test('both readers refuse an extra set that stores a test record or names no format', () => {
+  const first = {
+    target: { peerId: 'aa', service: 'm', agentId: '1' },
+    tests: 'all-tests-v1',
+    reference: { referenceId: 'sha256:a', probes: [{ id: 'p1' }] },
+    exchanges: [],
+    result: { verdict: 'SAME', stats: { pValueBinomial: 0.5, targetCoverage: 1, selfHamming: 0, selfTotal: 10, targetHamming: 0, targetTotal: 10, selfCoverage: 1, p0Cp99: 0.3 } },
+  } as unknown as Parameters<typeof adjudicateQuestions>[0]['evidence']
+  const set = (extra: Record<string, unknown>) => [{ record: { rule: 'kbf-extension-v2', pooled: { verdict: 'SAME' } } as never, evidence: { ...first, reference: { referenceId: 'sha256:b', probes: [{ id: 'p2' }] }, ...extra } as never }]
+  // `adjudicateQuestions` is what submit and the confirmer's read both call on extra sets.
+  assert.throws(() => adjudicateQuestions({ evidence: first, extraSets: set({ outputCap: { outcome: 'flag' } }), decisionRule: 'kbf-extension-v2', closed: false }), /stores a test record/)
+  assert.throws(() => adjudicateQuestions({ evidence: first, extraSets: set({ tests: undefined }), decisionRule: 'kbf-extension-v2', closed: false }), /does not name the all-tests format/)
+  assert.throws(() => adjudicateQuestions({ evidence: first, extraSets: set({}), decisionRule: 'kbf-extension-v2', closed: false }), /not a close call|extension/, 'past the form, the close-call rule still applies')
+})
+
 test('evidence prepared again after its question set is retired is byte-identical, questionSelection included', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-model-audit-retired-set-'))
   try {
