@@ -1,5 +1,5 @@
 /* The pill's face, self-hosted (latin subset) */
-@font-face { font-family: 'Hero Figtree'; src: url(./figtree-latin-400.woff2) format('woff2'); font-weight: 400; font-display: block; }
+@font-face { font-family: 'Hero Figtree'; src: url(./figtree-latin-400.woff2) format('woff2'); font-weight: 400; font-display: swap; }
 
 /* the text block: its top at 17.2% of the first screen (nav included), never closer than 24px to the nav */
 .content { position: relative; z-index: 2; flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center; gap: 10px;

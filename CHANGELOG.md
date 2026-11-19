@@ -8,11 +8,14 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- The network stats service (`@antseed/network-stats`, `network.antseed.com/stats`) is retired. Read cached peers and prices from Antscan instead: `GET https://antscan.co/api/marketplace?limit=5000` (public JSON, CORS `*`); `PRICING.md`, the routing docs and `llms.txt` now show it. `@antseed/node`'s chain config drops `networkStatsUrl`, and the payments portal's `/api/config` no longer returns it.
 - Website: antseed.com has a new design. The homepage, `/network/`, `/providers/` and `/ecosystem/` are redesigned. There are two new pages: `/ants/` (the token page, which replaces `/ants-token/`; the old URL redirects) and `/colony/`, whose waitlist sign-up at `/colony/join/` asks one question at a time, then hands off to a Google Form that confirms the visitor's email and takes one sign-up per account. The other marketing pages, `/brand/` and the integration guides are rebuilt in the same design. The docs and the blog share the new navigation, footer, fonts and colours. Dark mode is opt-in. The header links to gateway setup, GitHub and X. The network diagram uses watercolour layers. Network figures and live model prices (text, image, video and voice) now come from Antscan.
 
 ### Fixed
 
 - Website: link previews on X, Telegram, WhatsApp and LinkedIn show the new share image with the site's approved description. The share images are now JPEGs under 250 KB, since WhatsApp leaves out a preview image that is too large, and blog posts without their own image share the new one instead of the old logo card. The `/ants/` preview says ANTS, without the dollar sign.
+- Website: the homepage loads much faster. Google Tag Manager now loads off the critical path (on the first interaction, or when the browser goes idle), and the marketing-title fonts show in a fallback and swap in rather than blocking the first paint.
+- Website: the homepage price board's title says "700+ models", the same count as the network figures and the rest of the site. It used to show a live count rounded to the hundred, which disagreed with the figures.
 - Sellers and buyers (`@antseed/node`, `@antseed/provider-core`, CLI): a video download refused because all of the seller's download slots are taken now reaches the buyer as what it is, a 429 `video_download_busy` with `Retry-After: 5`, which the buyer proxy passes on to the client. Before, the seller reported it as `upstream_rate_limited` ("rate limited on this seller right now") with no `Retry-After`, so buyers took a short wait for an upstream limit and gave up on a video that was ready.
 
 ## 2026-11-18 — CLI 0.1.253, Node 0.2.186, Desktop 0.2.89
