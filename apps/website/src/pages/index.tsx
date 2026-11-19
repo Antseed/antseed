@@ -15,7 +15,7 @@ export default function Home(): JSX.Element {
     <SitePage
       title="Antseed | The open intelligence network"
       fullTitle
-      description="The open intelligence network. Give your agents, apps, and team 700+ AI models at lower prices, with built-in privacy and full control."
+      description="Antseed is the open intelligence network. Anyone can provide AI directly to buyers. Providers compete for every request, and you choose who serves you."
       hero={<Hero />}>
       <Prices />
       <Products>
