@@ -13,6 +13,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Website: link previews on X, Telegram, WhatsApp and LinkedIn show the new share image with the site's approved description. The share images are now JPEGs under 250 KB, since WhatsApp leaves out a preview image that is too large, and blog posts without their own image share the new one instead of the old logo card. The `/ants/` preview says ANTS, without the dollar sign.
 - Website: the homepage shows its first screen sooner, most of all on phones. Images further down the page (the network diagram's paintings, the desktop app's screens, the price board's ants) and the hero's clouds no longer download alongside the hero painting, phones get a smaller cut of the hero painting, and Google Tag Manager waits until the page has loaded.
 - Website: on iPhones, iPads and Safari, the homepage's incognito ant no longer sits in a blue box.
 - Website: the homepage loads much faster. Google Tag Manager now loads off the critical path (on the first interaction, or when the browser goes idle), and the marketing-title fonts show in a fallback and swap in rather than blocking the first paint.

@@ -11,7 +11,7 @@ import styles from './JoinPage.module.css';
 
 const TITLE = 'Join the Mac Colony waitlist · Antseed';
 const DESCRIPTION = 'A few quick questions about your Mac and you’re on the waitlist for the first Mac Colony.';
-const OG_IMAGE = 'https://antseed.com/site/assets/colony/og-waitlist.png';
+const OG_IMAGE = 'https://antseed.com/site/assets/colony/og-waitlist.jpg';
 const STEPS: readonly Step[] = ['mac', 'chip', 'memory', 'name', 'review', 'done'];
 
 type Question = {eyebrow: string; title: [string, string]; help: string};
