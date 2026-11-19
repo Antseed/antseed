@@ -7,8 +7,9 @@ type NightOptions = {src: string; onClass: string; playing: boolean};
 export function useNightLoop(ref: RefObject<HTMLVideoElement | null>, {src, onClass, playing}: NightOptions): void {
   useEffect(() => {
     const v = ref.current;
-    if (!v || isStill()) return;
-    if (!playing) { if (!v.paused) v.pause(); return; }
+    if (!v) return;
+    // pause whenever it should not play, including reduced motion turned on mid-play (isStill becomes true)
+    if (!playing || isStill()) { if (!v.paused) v.pause(); return; }
     if (!v.src) {
       v.muted = true;
       v.addEventListener('playing', () => v.classList.add(onClass), {once: true});

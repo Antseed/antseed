@@ -13,9 +13,9 @@ import Faq from '../sections/home/Faq';
 export default function Home(): JSX.Element {
   return (
     <SitePage
-      title="Antseed | The Open Market for AI Inference"
+      title="Antseed | The open intelligence network"
       fullTitle
-      description="Give your agents, apps, and team access to 700+ AI models at lower prices, with built-in privacy and full control."
+      description="The open intelligence network. Give your agents, apps, and team 700+ AI models at lower prices, with built-in privacy and full control."
       hero={<Hero />}>
       <Prices />
       <Products>

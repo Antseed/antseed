@@ -19,7 +19,10 @@ export const OLDER_BUILDS = 'https://github.com/AntSeed/antseed/releases';
 export type Figure = {label: string; value: string};
 
 const billions = (n: number) => `${(n / 1e9).toFixed(1)}B`;
-export const formatFigure = (n: number): string => (n >= 1e9 ? billions(n) : n.toLocaleString('en-US'));
+// trailing .0 trimmed, so a trillion reads "1T" and grows to "1.2T"
+const trillions = (n: number) => `${+(n / 1e12).toFixed(1)}T`;
+export const formatFigure = (n: number): string =>
+  n >= 1e12 ? trillions(n) : n >= 1e9 ? billions(n) : n.toLocaleString('en-US');
 
 export const ASSETS = {
   poster: '/site/assets/hero/meadow-day.webp',
