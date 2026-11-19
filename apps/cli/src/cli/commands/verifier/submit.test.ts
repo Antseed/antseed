@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { ModelAuditLedgerEntryV1, PreparedModelAudit } from '../../../verifier/model-audit.js'
 import { modelAuditEvidencePath } from '../../../verifier/model-audit.js'
-import { earlierAttemptToCheck, standingSubmissions, withLedgerKey } from './submit.js'
+import { earlierAttemptToCheck, sameSellerResults, standingSubmissions, withLedgerKey } from './submit.js'
 
 const audit = (evidenceHash: string): PreparedModelAudit => ({
   key: 'model-a',
@@ -22,7 +22,7 @@ test('a model audit keeps its ledger key unless that key was already submitted w
   )
   assert.equal(
     withLedgerKey(audit('0x02'), { models: { 'model-a': entry('0x01', 'failed') } }, '/evidence', 'run-1').key,
-    'model-a', 'a retry keeps the key of an attempt that was not recorded as submitted',
+    'model-a', 'a retry re-sends the earlier evidence under its key',
   )
   const next = withLedgerKey(audit('0x03'), {
     models: { 'model-a': entry('0x01', 'submitted'), 'model-a~2': entry('0x02', 'submitted') },
@@ -39,6 +39,19 @@ test('a retry sends what was prepared now and checks the chain for an earlier at
   assert.equal(earlierAttemptToCheck(entry('0x01', 'pending'), audit('0x02')), '0x01')
   assert.equal(earlierAttemptToCheck(entry('0x01', 'failed'), audit('0x02')), '0x01', 'a failed attempt may have been sent too')
   assert.equal(earlierAttemptToCheck(entry('0xAB', 'pending'), audit('0xab')), null, 'hashes compare without case')
+})
+
+test('earlier evidence replaces a fresh preparation only with exactly the same seller results', () => {
+  const result = (agentId: string, extra: Record<string, unknown> = {}) => ({
+    agentId, serviceHash: `0x${agentId}`, verdict: 'DIFF', audit: { evidenceHash: `0xe${agentId}` }, flaggedBy: ['kbf'], ...extra,
+  }) as never
+  assert.equal(sameSellerResults([result('1'), result('2')], [result('2'), result('1')]), true, 'order does not matter')
+  // An unsent attempt for {A} must not replace a fresh {A, B}: B would drop out of what is sent.
+  assert.equal(sameSellerResults([result('1')], [result('1'), result('2')]), false)
+  assert.equal(sameSellerResults([result('1'), result('2')], [result('1')]), false)
+  assert.equal(sameSellerResults([result('1')], [result('1', { passedBy: ['tokens'] })]), false, 'every field counts')
+  assert.equal(sameSellerResults([result('1')], [result('1', { auditedAt: 7 })]), false, 'the audit time counts')
+  assert.equal(sameSellerResults([result('1'), result('1')], [result('1'), result('2')]), false, 'a result twice is not two')
 })
 
 test('a submission made before the latest auditor revocation no longer stands', () => {
