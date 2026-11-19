@@ -16,8 +16,6 @@ import {
   modelAuditEvidencePath,
   modelAuditLedgerPath,
   prepareModelAudits,
-  preparedFromEvidence,
-  readModelAuditEvidence,
   readModelAuditLedger,
   modelAuditUpstreams,
   writeModelAuditEvidence,
@@ -330,9 +328,8 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
             + 'so a DIFF sent with --no-publish-ipfs could never be confirmed',
         }),
       })
-      const audits = await reuseLedgerEvidence(
-        prepared.map((audit) => withLedgerKey(audit, ledger, evidenceDir, manifest.runId)), ledger,
-      )
+      // What was prepared now is what is sent: never an earlier attempt's evidence in its place (`earlierAttemptToCheck`).
+      const audits = prepared.map((audit) => withLedgerKey(audit, ledger, evidenceDir, manifest.runId))
       const submittedEvidence = await submittedEvidenceHashes(verifierClient, address, auditorSetEvents)
       const credited = await verifierClient.auditCredits(address, window.epoch)
       let auditorCreditsLeft = limits.perAuditor > credited.auditor ? limits.perAuditor - credited.auditor : 0n
@@ -473,11 +470,31 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         }
         let publication = reusablePublication(previous, audit.evidenceHash)
         try {
+          const earlier = earlierAttemptToCheck(previous, audit)
+          if (earlier) {
+            // An earlier attempt under this key sent other evidence, or may have: no transaction is pending now
+            // (`pendingTransactionCount`), so it is either mined or gone. Mined, its results are on-chain and this
+            // preparation may repeat them: record it, and the next submit prepares the model again without them.
+            const sent = await findSubmission(verifierClient, { modelHash: audit.modelHash, evidenceHash: earlier }, address, auditorSetEvents)
+            if (sent && previous) {
+              ledger.models[audit.key] = {
+                ...previous, status: 'submitted', error: null,
+                transactionHash: sent.transactionHash, blockNumber: sent.blockNumber,
+              }
+              await writeModelAuditLedger(ledgerPath, ledger)
+              recovered += 1
+              unsent.push(`${audit.key}: not sent: an earlier attempt's evidence is on-chain; the next submit prepares it again`)
+              console.log(chalk.dim(`${audit.key}: an earlier attempt's evidence is on-chain; ledger updated, and the rest is prepared again on the next submit`))
+              continue
+            }
+          }
           await writeModelAuditEvidence(audit)
           if (publishIpfs && !publication) publication = await publish(evidenceDir, banksDir, manifest, audit, pinataJwt!, readEpoch)
-          const evidenceUri = publication?.uri ?? previous?.evidenceUri ?? ''
+          // Only a URI of exactly this evidence: an earlier attempt's names other evidence when its hash differs.
+          const evidenceUri = publication?.uri
+            ?? (previous && normalized(previous.evidenceHash) === normalized(audit.evidenceHash) ? previous.evidenceUri : '')
           // A DIFF is sent only with a publication of exactly this evidence: a confirmer reads which check flagged from
-          // it (same-check.ts). This holds for the payload sent, also one rebuilt from an earlier attempt's ledger.
+          // it (same-check.ts).
           if (audit.results.some((result) => result.verdict === verifierVerdict('DIFF')) && !publication) {
             // Its ledger entry goes, so the next submit prepares the model again and its other results are not stuck.
             delete ledger.models[audit.key]
@@ -510,7 +527,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           const changed = await recheckBeforeSend(audit)
           if (changed) {
             // Its ledger entry goes, so the next submit builds the audit again from the results that may
-            // still be sent instead of re-sending this evidence (`reuseLedgerEvidence`).
+            // still be sent.
             delete ledger.models[audit.key]
             await writeModelAuditLedger(ledgerPath, ledger)
             held += 1
@@ -776,7 +793,7 @@ export function standingSubmissions<T extends { blockNumber: number; logIndex: n
  * on the chain, so the same epoch submission can send a model more than once (e.g. after an auditor
  * revocation). A key whose audit is already submitted with other evidence is kept as it is, and the
  * next audit gets `<key>~2`, `<key>~3`, ...; an unfinished attempt keeps its key, so the retry
- * re-sends its evidence (`reuseLedgerEvidence`).
+ * finds it and checks whether it was mined before sending (`earlierAttemptToCheck`).
  */
 export function withLedgerKey(
   audit: PreparedModelAudit,
@@ -794,37 +811,19 @@ export function withLedgerKey(
   return { ...audit, key, evidencePath: modelAuditEvidencePath(evidenceDir, runId, key) }
 }
 
-/** Keeps evidence an earlier attempt wrote, so a retry submits the same evidence hash. */
-async function reuseLedgerEvidence(
-  prepared: PreparedModelAudit[],
-  ledger: ModelAuditLedgerV1,
-): Promise<PreparedModelAudit[]> {
-  const audits: PreparedModelAudit[] = []
-  for (const audit of prepared) {
-    const previous = ledger.models[audit.key]
-    if (!previous || normalized(previous.evidenceHash) === normalized(audit.evidenceHash)) {
-      audits.push(audit)
-      continue
-    }
-    try {
-      const evidence = await readModelAuditEvidence(previous.evidencePath, previous.evidenceHash)
-      // Never send from the ledger what fresh validation would not: the earlier evidence is reused only when each of
-      // its results is one this preparation gives too, with the same verdict, seller evidence and attribution.
-      const fresh = new Map(audit.evidence.results.map((result) => [`${result.agentId}:${normalized(result.serviceHash)}`, result]))
-      const same = evidence.results.every((result) => {
-        const now = fresh.get(`${result.agentId}:${normalized(result.serviceHash)}`)
-        return now !== undefined && now.verdict === result.verdict && normalized(now.audit.evidenceHash) === normalized(result.audit.evidenceHash)
-          && canonicalJsonStringify([now.flaggedBy ?? null, now.confirmation ?? null]) === canonicalJsonStringify([result.flaggedBy ?? null, result.confirmation ?? null])
-      })
-      audits.push(same ? preparedFromEvidence(audit.key, previous.evidencePath, evidence, audit.auditEvidencePaths) : audit)
-    } catch (error) {
-      if (previous.status !== 'failed') {
-        throw new Error(`${audit.key}: earlier evidence ${previous.evidencePath} is unreadable: ${asError(error).message}`)
-      }
-      audits.push(audit)
-    }
-  }
-  return audits
+/**
+ * The evidence hash of an earlier attempt under this audit's key that may have been sent and is not this evidence,
+ * or null. A submit that stopped after sending, or whose wait for the receipt ran out or failed, leaves its entry
+ * pending or failed, and its transaction may have been mined since. Before the fresh audit is sent, a chain read
+ * must show that hash is not there (`findSubmission`). The earlier evidence itself is never sent in place of what
+ * was prepared now: it may lack a seller found since, or differ in any other field.
+ */
+export function earlierAttemptToCheck(
+  previous: Pick<ModelAuditLedgerEntryV1, 'status' | 'evidenceHash'> | null,
+  audit: Pick<PreparedModelAudit, 'evidenceHash'>,
+): string | null {
+  if (!previous || previous.status === 'submitted') return null
+  return normalized(previous.evidenceHash) === normalized(audit.evidenceHash) ? null : previous.evidenceHash
 }
 
 function ledgerEntry(
@@ -852,7 +851,7 @@ function ledgerEntry(
 /** A standing submission of this exact evidence (see `submittedEvidenceHashes`), e.g. one a crashed attempt sent. */
 async function findSubmission(
   client: VerifierClient,
-  audit: PreparedModelAudit,
+  audit: Pick<PreparedModelAudit, 'modelHash' | 'evidenceHash'>,
   auditor: string,
   auditorSetEvents: () => Promise<readonly AuditorSetEvent[]>,
 ) {

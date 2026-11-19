@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { ModelAuditLedgerEntryV1, PreparedModelAudit } from '../../../verifier/model-audit.js'
 import { modelAuditEvidencePath } from '../../../verifier/model-audit.js'
-import { standingSubmissions, withLedgerKey } from './submit.js'
+import { earlierAttemptToCheck, standingSubmissions, withLedgerKey } from './submit.js'
 
 const audit = (evidenceHash: string): PreparedModelAudit => ({
   key: 'model-a',
@@ -22,13 +22,23 @@ test('a model audit keeps its ledger key unless that key was already submitted w
   )
   assert.equal(
     withLedgerKey(audit('0x02'), { models: { 'model-a': entry('0x01', 'failed') } }, '/evidence', 'run-1').key,
-    'model-a', 'a retry re-sends the earlier evidence under its key',
+    'model-a', 'a retry keeps the key of an attempt that was not recorded as submitted',
   )
   const next = withLedgerKey(audit('0x03'), {
     models: { 'model-a': entry('0x01', 'submitted'), 'model-a~2': entry('0x02', 'submitted') },
   }, '/evidence', 'run-1')
   assert.equal(next.key, 'model-a~3', 'a later delta of the same epoch submission gets its own key')
   assert.equal(next.evidencePath, modelAuditEvidencePath('/evidence', 'run-1', 'model-a~3'))
+})
+
+test('a retry sends what was prepared now and checks the chain for an earlier attempt\'s other evidence first', () => {
+  assert.equal(earlierAttemptToCheck(null, audit('0x02')), null, 'no earlier attempt: nothing to check')
+  assert.equal(earlierAttemptToCheck(entry('0x01', 'submitted'), audit('0x02')), null, 'a submitted attempt has its own key')
+  assert.equal(earlierAttemptToCheck(entry('0x02', 'pending'), audit('0x02')), null, 'the same evidence is found by its own hash')
+  // A pending attempt for {A} and a fresh preparation {A, B}: the fresh one is sent once {A} is known not to be on-chain.
+  assert.equal(earlierAttemptToCheck(entry('0x01', 'pending'), audit('0x02')), '0x01')
+  assert.equal(earlierAttemptToCheck(entry('0x01', 'failed'), audit('0x02')), '0x01', 'a failed attempt may have been sent too')
+  assert.equal(earlierAttemptToCheck(entry('0xAB', 'pending'), audit('0xab')), null, 'hashes compare without case')
 })
 
 test('a submission made before the latest auditor revocation no longer stands', () => {
