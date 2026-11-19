@@ -1,0 +1,54 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { COMBINE_RULE, combineChecks, type CombinedCheckInput } from './combine.js'
+
+const tokens = (outcome: CombinedCheckInput['outcome']): CombinedCheckInput => ({ check: 'tokens', subject: 'model', outcome, p: null, separatesSiblings: false })
+const kbf = (p: number | null, outcome: CombinedCheckInput['outcome'] = 'pass'): CombinedCheckInput => ({ check: 'kbf', subject: 'model', outcome, p, separatesSiblings: true })
+const flips = (p: number | null, outcome: CombinedCheckInput['outcome'] = 'pass'): CombinedCheckInput => ({ check: 'flips', subject: 'model', outcome, p, separatesSiblings: true })
+const cap = (outcome: CombinedCheckInput['outcome']): CombinedCheckInput => ({ check: 'output-cap', subject: 'billing', outcome, p: null, separatesSiblings: false })
+const echo = (outcome: CombinedCheckInput['outcome']): CombinedCheckInput => ({ check: 'output-echo', subject: 'billing', outcome, p: null, separatesSiblings: false })
+
+test('the rule is 1% on p times the number of checks that have a p', () => {
+  assert.deepEqual(COMBINE_RULE, { id: 'combine-v1', alpha: 0.01 })
+})
+
+test('alone, the questions flag at p at most 1%; with FLIPS beside them, at p at most 0.5%', () => {
+  assert.equal(combineChecks([tokens('pass'), kbf(0.02)]).verdict, 'SAME', 'today\'s 5% DIFF is not one under the rule')
+  assert.deepEqual(combineChecks([tokens('pass'), kbf(0.01)]).flaggedBy, ['kbf'])
+  const both = combineChecks([tokens('pass'), kbf(0.005), flips(0.3)])
+  assert.deepEqual([both.verdict, both.flaggedBy, both.k], ['DIFF', ['kbf'], 2])
+  assert.equal(combineChecks([tokens('pass'), kbf(0.006), flips(0.3)]).verdict, 'SAME', '0.006 × 2 is above 1%')
+  // An inconclusive FLIPS has no p and does not count: the questions are judged at 1% alone.
+  assert.equal(combineChecks([tokens('pass'), kbf(0.008), flips(null, 'inconclusive')]).k, 1)
+})
+
+test('a deterministic flag is a DIFF and does not count in the multiplier', () => {
+  const judged = combineChecks([tokens('flag'), kbf(0.4)])
+  assert.deepEqual([judged.verdict, judged.flaggedBy, judged.k], ['DIFF', ['tokens'], 1])
+  assert.deepEqual(combineChecks([tokens('pass'), cap('flag'), kbf(0.4)]).flaggedBy, ['output-cap'], 'a billing flag is a DIFF too')
+})
+
+test('SAME needs every model check that ran to pass', () => {
+  assert.equal(combineChecks([tokens('inconclusive'), kbf(0.4)]).verdict, 'UNDETERMINED', 'an inconclusive pre-check blocks SAME')
+  assert.equal(combineChecks([tokens('pass'), kbf(null, 'inconclusive')]).verdict, 'UNDETERMINED')
+  assert.equal(combineChecks([tokens('not-run'), kbf(0.4)]).verdict, 'SAME', 'a check that does not apply is ignored')
+  assert.equal(combineChecks([tokens('pass'), kbf(0.4), flips(null, 'inconclusive')]).verdict, 'UNDETERMINED')
+})
+
+test('a billing check never blocks SAME: its pass, inconclusive and absence decide nothing', () => {
+  for (const outcome of ['pass', 'inconclusive', 'not-run'] as const) {
+    assert.equal(combineChecks([tokens('pass'), cap(outcome), echo(outcome), kbf(0.4)]).verdict, 'SAME', outcome)
+  }
+})
+
+test('without a passing check that tells siblings apart, there is no SAME', () => {
+  assert.equal(combineChecks([tokens('pass'), kbf(null, 'not-run')]).verdict, 'UNDETERMINED')
+  assert.equal(combineChecks([tokens('pass')]).reason, 'no passing check tells sibling models apart')
+})
+
+test('a malformed result is refused, not judged', () => {
+  assert.throws(() => combineChecks([kbf(1.5)]), /outside 0 to 1/)
+  assert.throws(() => combineChecks([kbf(Number.NaN)]), /outside 0 to 1/)
+  assert.throws(() => combineChecks([kbf(0.2, 'inconclusive')]), /has a p but did not decide/)
+  assert.throws(() => combineChecks([kbf(0.2), kbf(0.3)]), /appears twice/)
+})

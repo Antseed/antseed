@@ -429,8 +429,10 @@ export interface AuditVerdict {
 /**
  * The audit's verdict from every test it ran, rule `all-tests-v1` (Alex, 19 November):
  *
- * - A confirmation in which none of the tests it repeats (`confirming`) flagged or passed is UNDETERMINED,
- *   whatever the other tests say: it is never sent, and it counts as an attempt for the report it answers.
+ * - A confirmation (`confirming`, the tests it repeats) in which no repeated test flagged and at least one did not
+ *   decide is UNDETERMINED, whatever the other tests say: it is never sent, it counts as an attempt for the report it
+ *   answers, and its retry asks only the tests still open. A repeated test that flags again makes it a DIFF at once; a
+ *   SAME needs every repeated test decided.
  * - Otherwise any test that flagged makes it DIFF, attributed to every test that flagged.
  * - Otherwise it is the questions' own verdict, SAME or UNDETERMINED, exactly as the questions decide alone. A test
  *   that did not decide (inconclusive, did not apply, could not run) never blocks SAME.
@@ -452,10 +454,13 @@ export function verdictOf(
 ): AuditVerdict {
   const flaggedBy = checksWith(readings, 'flag')
   const passedBy = checksWith(readings, 'pass')
-  const waitsForQuestions = options.questionsPending === true && (confirming?.includes('kbf') ?? false)
-  if (confirming && confirming.length > 0 && !waitsForQuestions
-    && !confirming.some((check) => flaggedBy.includes(check) || passedBy.includes(check))) {
-    return { verdict: 'UNDETERMINED', flaggedBy, passedBy, undecidedConfirmation: [...confirming] }
+  if (confirming && confirming.length > 0 && !confirming.some((check) => flaggedBy.includes(check))) {
+    // The questions still waiting for an extra set are not undecided yet: the confirmation waits with them.
+    const open = confirming.filter((check) => !passedBy.includes(check)
+      && !(check === 'kbf' && options.questionsPending === true))
+    const waits = options.questionsPending === true && confirming.includes('kbf') && !passedBy.includes('kbf')
+    if (open.length > 0) return { verdict: 'UNDETERMINED', flaggedBy, passedBy, undecidedConfirmation: open }
+    if (waits) return { verdict: 'UNDETERMINED', flaggedBy, passedBy, undecidedConfirmation: null }
   }
   if (flaggedBy.length > 0) return { verdict: 'DIFF', flaggedBy, passedBy, undecidedConfirmation: null }
   return { verdict: questions, flaggedBy, passedBy, undecidedConfirmation: null }
@@ -474,4 +479,21 @@ export function auditVerdictReason(records: StoredCheckRecords, audit: AuditVerd
   }
   if (audit.flaggedBy.includes('kbf') && questionsReason) reasons.push(questionsReason)
   return reasons.length > 0 ? reasons.join('; ') : questionsReason
+}
+
+/**
+ * The test records a scheduled retry carries: only those that decided (flagged or passed, or judged when recorded
+ * only), so a test with no result is asked again. A resume of an interrupted attempt carries every finished record.
+ */
+export function decidedRecords(records: StoredCheckRecords): StoredCheckRecords {
+  const kept: { [Slot in CheckSlot]?: CheckRecords[Slot] } = {}
+  for (const { check, record } of recordsOf(records)) {
+    if (record == null) continue
+    const decided = (check.findings as readonly CheckFinding<CheckSlot>[]).some((finding) => {
+      const outcome = finding.ofRecord(record)
+      return outcome === 'flag' || outcome === 'pass'
+    })
+    if (decided) (kept as Record<string, unknown>)[check.slot] = record
+  }
+  return kept
 }

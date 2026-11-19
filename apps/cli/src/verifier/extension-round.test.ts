@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { computeKbfVerdict, type FingerprintStats, type KbfReferenceV1 } from '@antseed/fingerprints'
-import { needsExtension, stageOneVerdict } from './close-call.js'
+import { auditDecision, needsExtension, settleAuditVerdict, stageOneVerdict } from './close-call.js'
 import { combineExtension, runExtensionRounds } from './extension-round.js'
 import { finalAuditVerdict } from './model-audit.js'
 import type { ModelVerificationSkip, ModelVerificationTargetResult } from './model-run.js'
@@ -188,6 +188,21 @@ test('a flagged close call never waits across runs: without its extra set its qu
   assert.ok(pooled.extension)
   assert.equal(pooled.status, 'DIFF')
   assert.equal(pooled.questionsStatus, pooled.extension.pooled.verdict)
+})
+
+test('an undecided confirmation is final for its attempt, also when its questions are a close call', async () => {
+  // A confirmation of a cap DIFF whose cap check had no result, beside a close call of its questions.
+  const undecided = settleAuditVerdict({
+    ...audit('f', 22), confirming: ['output-cap'],
+    outputCap: { rule: 'output-cap-v1', outcome: 'inconclusive' as const, reason: 'no reading', asks: [] },
+  } as ModelVerificationTargetResult)
+  assert.equal(undecided.status, 'UNDETERMINED')
+  assert.equal(undecided.outcomeReason?.code, 'confirmation_undecided')
+  assert.equal(auditDecision(undecided).pending, false, 'not filed as a waiting close call')
+  assert.notEqual(finalAuditVerdict(undecided), null)
+  const { outcome } = await run({ results: [undecided] })
+  assert.equal(outcome.stats.extended, 0, 'its questions are not extended')
+  assert.equal(outcome.stats.pending, 0)
 })
 
 test('a close call whose epoch set has no extra set stays waiting; nothing builds new questions for it', async () => {

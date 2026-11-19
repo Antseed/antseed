@@ -1,0 +1,90 @@
+/**
+ * How the checks of one seller audit combine into one verdict, rule `combine-v1`.
+ *
+ * - A check with a p-value (the questions, FLIPS) flags when its p times the number of checks that have a p is at
+ *   most `alpha`: with several statistical checks, an honest seller gets several chances to be unlucky, and the
+ *   product keeps the total chance at the level the evals measured. A check whose p is not known (inconclusive)
+ *   is not counted.
+ * - A deterministic check (the token-count pre-check, the cap check, the echo check) flags as it found, and is not
+ *   counted in that number.
+ * - Any flag is a DIFF, attributed to the checks that flagged (for the same-check confirmation).
+ * - Without a flag, SAME needs every model check that ran to pass, and at least one passing check that tells
+ *   sibling models apart. A model check that ran and did not decide makes the seller UNDETERMINED. A check that did
+ *   not run (it does not apply to the model this epoch) is ignored.
+ * - A billing check (cap, echo) only ever adds a flag: its pass, its inconclusive and its absence never decide.
+ *
+ * Open with Alex: the 1% and the product rule are the default until he confirms them.
+ */
+
+/** What a check judges: which model answers, or how the seller bills. */
+export type CheckSubject = 'model' | 'billing'
+
+export interface CombineRule {
+  id: 'combine-v1'
+  /** A check with a p flags when p × (checks with a p) ≤ alpha. */
+  alpha: number
+}
+
+export const COMBINE_RULE: CombineRule = Object.freeze({ id: 'combine-v1', alpha: 0.01 })
+
+/** One check's result as the combination reads it. */
+export interface CombinedCheckInput {
+  /** The check's name, as in `flaggingChecks` (`tokens`, `kbf`, `output-cap`, …) or a newer one (`flips`). */
+  check: string
+  subject: CheckSubject
+  /**
+   * `flag` and `pass` as the check found them; `inconclusive` when it ran and did not decide; `not-run` when it
+   * does not apply to the model this epoch or was not asked.
+   */
+  outcome: 'flag' | 'pass' | 'inconclusive' | 'not-run'
+  /** The check's p-value against "this is the model"; null for a deterministic check and for one that did not decide. */
+  p: number | null
+  /** A pass of this check tells sibling models apart (the questions, FLIPS); the token count does not. */
+  separatesSiblings: boolean
+}
+
+export interface CombinedVerdict {
+  rule: CombineRule
+  verdict: 'SAME' | 'DIFF' | 'UNDETERMINED'
+  /** The checks that flagged, in input order; empty unless DIFF. */
+  flaggedBy: string[]
+  /** Checks with a p, the multiplier. */
+  k: number
+  /** Each check's outcome after the combination (a check with a p is re-judged at p × k ≤ alpha). */
+  checks: Array<{ check: string; subject: CheckSubject; outcome: CombinedCheckInput['outcome']; p: number | null; adjusted: number | null }>
+  reason: string
+}
+
+/** Combines one seller's check results. Throws on a result that is not well formed: a p outside 0 to 1 decides nothing. */
+export function combineChecks(results: readonly CombinedCheckInput[], rule: CombineRule = COMBINE_RULE): CombinedVerdict {
+  const seen = new Set<string>()
+  for (const result of results) {
+    if (seen.has(result.check)) throw new Error(`check ${result.check} appears twice`)
+    seen.add(result.check)
+    if (result.p !== null && !(Number.isFinite(result.p) && result.p >= 0 && result.p <= 1)) throw new Error(`check ${result.check} has a p outside 0 to 1`)
+    if (result.p !== null && (result.outcome === 'inconclusive' || result.outcome === 'not-run')) {
+      throw new Error(`check ${result.check} has a p but did not decide`)
+    }
+  }
+  const k = results.filter((result) => result.p !== null).length
+  const checks = results.map((result) => {
+    if (result.p === null) return { check: result.check, subject: result.subject, outcome: result.outcome, p: null, adjusted: null }
+    const adjusted = Math.min(1, result.p * k)
+    return { check: result.check, subject: result.subject, outcome: adjusted <= rule.alpha ? 'flag' as const : 'pass' as const, p: result.p, adjusted }
+  })
+  const flaggedBy = checks.filter((check) => check.outcome === 'flag').map((check) => check.check)
+  const base = { rule, k, checks }
+  if (flaggedBy.length > 0) {
+    return { ...base, verdict: 'DIFF', flaggedBy, reason: `flagged by ${flaggedBy.join(', ')}${k > 1 ? ` (p × ${k} at most ${rule.alpha})` : ''}` }
+  }
+  const model = checks.filter((check, index) => check.subject === 'model' && results[index]!.outcome !== 'not-run')
+  const undecided = model.filter((check) => check.outcome !== 'pass')
+  if (undecided.length > 0) {
+    return { ...base, verdict: 'UNDETERMINED', flaggedBy: [], reason: `${undecided.map((check) => check.check).join(', ')} ran and did not decide` }
+  }
+  const separating = checks.some((check, index) => check.outcome === 'pass' && check.subject === 'model' && results[index]!.separatesSiblings)
+  if (!separating) {
+    return { ...base, verdict: 'UNDETERMINED', flaggedBy: [], reason: 'no passing check tells sibling models apart' }
+  }
+  return { ...base, verdict: 'SAME', flaggedBy: [], reason: 'every model check that ran passed' }
+}

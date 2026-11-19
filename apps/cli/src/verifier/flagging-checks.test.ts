@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { assertBoundToSeller, earliestAuditorTime, RECORD_CHECKS, storedRequestsOf, TOKENS_CHECK, verdictOf } from './audit-checks.js'
+import { assertBoundToSeller, decidedRecords, earliestAuditorTime, RECORD_CHECKS, storedRequestsOf, TOKENS_CHECK, verdictOf } from './audit-checks.js'
 import { isFreshConfirmation } from './same-check.js'
 import { costOfRequests, requestCountOf } from './proxy-evidence.js'
 import {
@@ -118,8 +118,8 @@ test('the audit\'s verdict: any flag is a DIFF, otherwise the questions\' own; a
   assert.deepEqual(verdict([reading('output-cap', 'inconclusive'), reading('output-echo', 'flag'), reading('kbf', 'pass')], 'SAME', ['output-cap']),
     ['UNDETERMINED', ['output-echo'], ['output-cap']])
   assert.deepEqual(verdict([reading('output-cap', 'pass'), reading('kbf', 'pass')], 'SAME', ['output-cap']), ['SAME', [], null], 'a pass of the repeated test decides')
-  // A confirmation of the questions whose close call still waits for its extra set is not undecided yet.
-  assert.deepEqual(verdict([reading('output-cap', 'flag'), reading('kbf', 'inconclusive')], 'UNDETERMINED', ['kbf'], true), ['DIFF', ['output-cap'], null])
+  // A confirmation of the questions whose close call still waits for its extra set is not undecided yet: it waits.
+  assert.deepEqual(verdict([reading('output-cap', 'flag'), reading('kbf', 'inconclusive')], 'UNDETERMINED', ['kbf'], true), ['UNDETERMINED', ['output-cap'], null])
   assert.deepEqual(verdict([reading('output-cap', 'flag'), reading('kbf', 'inconclusive')], 'UNDETERMINED', ['kbf'], false), ['UNDETERMINED', ['output-cap'], ['kbf']])
 })
 
@@ -294,4 +294,31 @@ test('an audit\'s time for "fresh" is its earliest request on the auditor\'s clo
   assert.equal(isFreshConfirmation(null, REPORTED), false)
   assert.equal(isFreshConfirmation(REPORTED + 3_600, REPORTED), true, 'an hour after the report is fresh')
   assert.equal(isFreshConfirmation(REPORTED + 3_599, REPORTED), false)
+})
+
+test('a confirmation of two flags: a DIFF when one flags again, a SAME only when both passed, undecided otherwise', () => {
+  const reading = (check: AuditCheckId, outcome: 'flag' | 'pass' | 'inconclusive' | 'not-run') => ({ check, subject: 'model' as const, outcome })
+  const both: AuditCheckId[] = ['output-cap', 'kbf']
+  const judge = (cap: 'flag' | 'pass' | 'inconclusive', kbf: 'flag' | 'pass' | 'inconclusive') => {
+    const result = verdictOf([reading('output-cap', cap), reading('kbf', kbf)], kbf === 'flag' ? 'DIFF' : kbf === 'pass' ? 'SAME' : 'UNDETERMINED', both)
+    return [result.verdict, result.undecidedConfirmation]
+  }
+  // The cap check has no result here and the questions pass: before, that SAME went out and the cap flag had one try.
+  assert.deepEqual(judge('inconclusive', 'pass'), ['UNDETERMINED', ['output-cap']])
+  assert.deepEqual(judge('inconclusive', 'flag'), ['DIFF', null], 'one repeated test flagging again is enough for a DIFF')
+  assert.deepEqual(judge('flag', 'inconclusive'), ['DIFF', null])
+  assert.deepEqual(judge('pass', 'pass'), ['SAME', null])
+  assert.deepEqual(judge('pass', 'inconclusive'), ['UNDETERMINED', ['kbf']])
+})
+
+test('a retry carries only the tests that decided; a test with no result is asked again', () => {
+  const records = {
+    tokenizerPrecheck: { outcome: 'match' } as never,
+    outputCap: { outcome: 'inconclusive' } as never,
+    outputEcho: { outcome: 'inconclusive', growth: { outcome: 'inconclusive' }, fixedAmount: { outcome: 'inconclusive' } } as never,
+  }
+  assert.deepEqual(Object.keys(decidedRecords(records)), ['tokenizerPrecheck'])
+  const passed = { ...records, outputEcho: { outcome: 'pass', growth: { outcome: 'pass' }, fixedAmount: { outcome: 'inconclusive' } } as never }
+  assert.deepEqual(Object.keys(decidedRecords(passed)), ['tokenizerPrecheck', 'outputEcho'])
+  assert.deepEqual(decidedRecords({}), {})
 })

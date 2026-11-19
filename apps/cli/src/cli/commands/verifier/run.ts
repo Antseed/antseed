@@ -59,7 +59,7 @@ import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelSe
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { alreadyJudgedByOther, otherOpinions, type OtherOpinion } from '../../../verifier/third-opinion.js'
 import { attachFirstFlags } from '../../../verifier/same-check.js'
-import { localConfirmationDecision } from '../../../verifier/flagging-checks.js'
+import { flaggedSummaryChecks, localConfirmationDecision } from '../../../verifier/flagging-checks.js'
 import { fetchIpfsText } from '@antseed/model-verifier'
 import { DIFF_HOLD_EPOCHS, diffHolds, type DiffHolds } from '../../../verifier/diff-hold.js'
 import { auditorRemovedMessage, createAuditorApprovalGate } from '../../../verifier/auditor-approval.js'
@@ -138,7 +138,7 @@ import { createOutputCapScreen, describeOutputCapSummary } from '../../../verifi
 import { OUTPUT_ECHO_RULE, createOutputEchoScreen, outputEchoPrompt } from '../../../verifier/output-echo.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { closeCallRuleForExtensions, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
-import type { StoredCheckRecords } from '../../../verifier/audit-checks.js'
+import { decidedRecords, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
 import {
   confirmationTargetsByModel,
   describeTallies,
@@ -1039,6 +1039,7 @@ export async function runVerifierRound(
               completedAt: Date.parse(completedAt) / 1_000,
               firstRequestAt: cell.result.firstRequestAt ?? null,
               decided: localConfirmationDecision(cell.result, cell.action === 'done'),
+              flagged: flaggedSummaryChecks(cell.result),
             }
             : null
           return localResultAnswersConfirmation(confirmation, local) ? undefined : confirmation
@@ -2566,7 +2567,7 @@ export async function loadResumeCandidates(
         queryProfileHash: evidence.reference.queryProfileHash,
         probeIds: evidence.reference.probes.map((probe) => probe.id),
         exchanges: evidence.exchanges,
-        records: evidenceRecords(evidence),
+        records: decidedRecords(evidenceRecords(evidence)),
       })
     }
   }
@@ -2607,7 +2608,7 @@ export async function loadEpochRetryCandidates(
       queryProfileHash: evidence.reference.queryProfileHash,
       probeIds: evidence.reference.probes.map((probe) => probe.id),
       exchanges: evidence.exchanges,
-      records: evidenceRecords(evidence),
+      records: decidedRecords(evidenceRecords(evidence)),
     })
   }
   return candidates

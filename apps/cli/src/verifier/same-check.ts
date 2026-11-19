@@ -1,12 +1,12 @@
 import { posix } from 'node:path'
 import { getAddress } from 'ethers'
-import { canonicalHashBytes32, kbfExtensionRuleById } from '@antseed/fingerprints'
+import { canonicalHashBytes32 } from '@antseed/fingerprints'
 import { VERIFIER_VERDICT, modelHash, serviceHash as hashService, type ModelAuditedEvent, type ServiceAuditedEvent } from '@antseed/node/payments'
 import type { ConfirmationTarget } from './pending-confirmations.js'
-import { pooledCloseCallVerdict } from './close-call.js'
 import { AUDIT_CHECK_IDS, describeAuditCheck, flaggingChecks, type AuditCheckId } from './flagging-checks.js'
 import { sanitizeOutcomeSummary } from './outcome-reason.js'
 import { ALL_TESTS_FORMAT, validateStoredChecks } from './audit-checks.js'
+import { adjudicateQuestions } from './model-audit.js'
 import { proxyAuditEvidenceHash, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import type { SubmissionCandidate } from './submission-delta.js'
 import { opinionKey } from './third-opinion.js'
@@ -179,12 +179,14 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
           + 'a DIFF is confirmed only by the same check, so nothing is sent and the seller keeps its record',
       }
     }
+    // A SAME clears the waiting DIFF only when every check that flagged it passed here: one left open clears nothing.
     const passedCheck = AUDIT_CHECK_IDS.find((check) => first.checks.includes(check) && candidate.passedBy.includes(check))
-    if (candidate.verdict === VERIFIER_VERDICT.SAME && passedCheck) return { kind: 'send', confirmation: record(null, passedCheck) }
+    const open = first.checks.filter((check) => !candidate.passedBy.includes(check))
+    if (candidate.verdict === VERIFIER_VERDICT.SAME && passedCheck && open.length === 0) return { kind: 'send', confirmation: record(null, passedCheck) }
     return {
       kind: 'exclude',
       confirmation: record(null),
-      reason: `the waiting DIFF was flagged by ${describeChecks(first.checks)}, which neither flagged nor passed in this audit; `
+      reason: `the waiting DIFF was flagged by ${describeChecks(first.checks)}, and ${describeChecks(open.length > 0 ? open : first.checks)} neither flagged nor passed in this audit; `
         + 'nothing is sent, so a check that did not decide clears nothing',
     }
   })
@@ -430,36 +432,25 @@ async function questionsVerdict(
   first: ProxyAuditEvidenceV1,
   load: (audit: unknown, referenceId: unknown) => Promise<ProxyAuditEvidenceV1>,
 ): Promise<'SAME' | 'DIFF' | 'UNDETERMINED' | null> {
-  // The questions' own verdict, recomputed from the seller files; the published `questionsVerdict` must agree, or say
-  // UNDETERMINED (a close call that could not be finished beside another test's flag). It can only take the
-  // questions' attribution away, never add one.
-  const recomputed = await recomputedQuestionsVerdict(result, first, load)
-  const published = verdictOf(result['questionsVerdict'])
-  if (published === null) throw new Error('its result does not give the questions\' own verdict')
-  if (published !== recomputed && published !== 'UNDETERMINED') throw new Error('its questions\' verdict does not follow from its evidence')
-  return published
-}
-
-async function recomputedQuestionsVerdict(
-  result: Record<string, unknown>,
-  first: ProxyAuditEvidenceV1,
-  load: (audit: unknown, referenceId: unknown) => Promise<ProxyAuditEvidenceV1>,
-): Promise<'SAME' | 'DIFF' | 'UNDETERMINED' | null> {
-  const sets: Array<{ rule: unknown; evidence: ProxyAuditEvidenceV1 }> = []
+  // The questions' own verdict, decided from the seller files by the adjudicator submit uses; the published label must
+  // be exactly that, and the published closure is accepted only for a real close call.
+  const extraSets: Array<{ record: Parameters<typeof adjudicateQuestions>[0]['extraSets'][number]['record']; evidence: ProxyAuditEvidenceV1 }> = []
   for (const name of ['extension', 'extension2']) {
     const extension = result[name]
     if (!isRecord(extension)) break
-    sets.push({ rule: extension['rule'], evidence: await load(extension['audit'], extension['referenceId']) })
+    if (typeof extension['rule'] !== 'string' || !isRecord(extension['pooled'])) throw new Error('its close call names no extension rule or pooled look')
+    extraSets.push({
+      record: { rule: extension['rule'], pooled: extension['pooled'] as never },
+      evidence: await load(extension['audit'], extension['referenceId']),
+    })
   }
-  if (sets.length === 0) return verdictOf(first.result.verdict)
-  const rule = typeof sets[0]!.rule === 'string' ? kbfExtensionRuleById(sets[0]!.rule) : undefined
-  if (!rule || sets.some((set) => set.rule !== rule.id)) throw new Error('its close call names no known extension rule')
-  const pooled = pooledCloseCallVerdict(
-    { stats: first.result.stats, probeCount: first.reference.probes.length },
-    sets.map((set) => ({ stats: set.evidence.result.stats, probeCount: set.evidence.reference.probes.length })),
-    rule,
-  )
-  return pooled.verdict === 'UNKNOWN' ? null : verdictOf(pooled.verdict)
+  const rule = typeof result['decisionRule'] === 'string' ? result['decisionRule'] : extraSets[0]?.record.rule
+  const adjudicated = adjudicateQuestions({ evidence: first, extraSets, decisionRule: rule, closed: result['questionsClosed'] === true })
+  if (adjudicated.pending) throw new Error('its questions are a close call still waiting for an extra set')
+  const published = verdictOf(result['questionsVerdict'])
+  if (published === null) throw new Error('its result does not give the questions\' own verdict')
+  if (published !== adjudicated.verdict) throw new Error('its questions\' verdict does not follow from its evidence')
+  return adjudicated.verdict
 }
 
 function verdictOf(value: unknown): 'SAME' | 'DIFF' | 'UNDETERMINED' | null {

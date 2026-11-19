@@ -37,14 +37,14 @@ import {
   type EpochQuestionSetV1,
   type EpochSetCalibrationV1,
 } from './probe-bank.js'
-import { closeCallRule, needsExtension, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
+import { closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { AUDIT_CHECK_IDS, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
 import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
 import type { SubmissionCandidate } from './submission-delta.js'
-import { ALL_TESTS_FORMAT, auditVerdictReason, earliestAuditorTime, readingsOfEvidence, validateCheckRecordsAgainstSummary, verdictOf } from './audit-checks.js'
+import { ALL_TESTS_FORMAT, auditVerdictReason, earliestAuditorTime, readingsOfEvidence, readingsOfSummary, validateCheckRecordsAgainstSummary, verdictOf } from './audit-checks.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
@@ -84,6 +84,10 @@ export interface ModelAuditSellerResultV1 {
   extension2?: ModelAuditExtensionV1
   /** The questions' own verdict, after any close call; `verdict` is the audit's over every test (`verdictOf`). */
   questionsVerdict?: ModelAuditVerdict
+  /** The close-call rule the questions were decided by; absent under the single-look rule. */
+  decisionRule?: CloseCallRuleId
+  /** A flagged audit whose close call could not be finished in its run: its questions are undecided. */
+  questionsClosed?: true
   /** The checks that flagged the seller in this audit (`flaggingChecks`). */
   flaggedBy?: AuditCheckId[]
   /** The checks that ran to a pass in this audit (`passedChecks`). */
@@ -419,8 +423,13 @@ export async function prepareModelAudits(input: {
       }
       // A closed window asks no more extra questions: its open close calls are audited but undecided. A
       // confirmation is not part of the window and still gets its extra questions, so it waits for them.
+      // A close call that can no longer be finished reads its questions as undecided; the audit's verdict then still
+      // counts every other test, so a flag is never sent as UNDETERMINED.
+      const unfinished = (): ModelAuditVerdict => verdictOf(
+        readingsOfSummary({ ...result, questionsStatus: 'UNDETERMINED' }), 'UNDETERMINED', result.confirming,
+      ).verdict
       let finalVerdict = finalAuditVerdict(result)
-        ?? (window?.state === 'closed' && !result.confirmsDiff ? 'UNDETERMINED' : null)
+        ?? (window?.state === 'closed' && !result.confirmsDiff ? unfinished() : null)
       // So is a close call whose first audit was made on a set a submit has published since: its extra
       // questions are public and are never asked (`decideRetryGiveUps`). A confirmation's is an undecided
       // attempt instead: the seller is audited again on new questions, and only the merged epoch's last
@@ -432,7 +441,7 @@ export async function prepareModelAudits(input: {
           heldBack.push(`${model} ${result.agentId ?? result.peerId}: confirmation audited again on new questions`)
           continue
         }
-        finalVerdict = 'UNDETERMINED'
+        finalVerdict = unfinished()
         result = { ...result, outcomeReason: result.outcomeReason ?? EXTRA_QUESTIONS_PUBLISHED }
       }
       if (finalVerdict === null) {
@@ -656,6 +665,8 @@ export async function prepareModelAudits(input: {
         flaggedBy: flaggingChecks(evidence, questionsVerdictOf(result)),
         passedBy: passedChecks(evidence, questionsVerdictOf(result)),
         questionsVerdict: questionsVerdictOf(result),
+        ...(result.decisionRule ? { decisionRule: result.decisionRule } : {}),
+        ...(result.closeCallClosed ? { questionsClosed: true as const } : {}),
         auditedAt: earliestAuditorTime([evidence, extensionEvidence, extension2Evidence]) ?? 0,
         ...(confirmation ? { confirmation } : {}),
       }))
@@ -955,11 +966,6 @@ export function validateAuditMatchesSummary(
     if (normalized(checked.target.service) !== normalized(result.service)) throw new Error('service mismatch')
     if ((checked.target.agentId ?? null) !== (result.agentId ?? null)) throw new Error('seller agent ID mismatch')
   }
-  const sharesProbes = (left: ProxyAuditEvidenceV1, right: ProxyAuditEvidenceV1): boolean => {
-    const ids = new Set(left.reference.probes.map((probe) => probe.id))
-    return left.reference.referenceId === right.reference.referenceId
-      || right.reference.probes.some((probe) => ids.has(probe.id))
-  }
   // The close-call decision reads the summary's stats; they must be the first check's evidence stats.
   if (result.stats && canonicalHashBytes32(result.stats) !== canonicalHashBytes32(evidence.result.stats)) {
     throw new Error('first check statistics do not match its evidence')
@@ -975,11 +981,8 @@ export function validateAuditMatchesSummary(
   }
   // Each test's record follows from the signed responses it stores, is bound to the seller, and is the summary's.
   validateCheckRecordsAgainstSummary(evidence, result)
-  // The stage-1 verdict, recomputed from the evidence: the first check's own verdict, or after a
-  // close call the pooled verdict of the first check and its extra sets.
-  let stageOne: ModelAuditVerdict = evidence.result.verdict
-  const extraSets: Array<{ record: NonNullable<typeof result.extension>; evidence: ProxyAuditEvidenceV1 }> = []
   if (result.extension2 && !result.extension) throw new Error('second extra set without a first one')
+  const extraSets: Array<{ record: NonNullable<typeof result.extension>; evidence: ProxyAuditEvidenceV1 }> = []
   if (result.extension) {
     if (!extensionEvidence) throw new Error('extension evidence missing')
     extraSets.push({ record: result.extension, evidence: extensionEvidence })
@@ -988,26 +991,82 @@ export function validateAuditMatchesSummary(
     if (!extension2Evidence) throw new Error('second extension evidence missing')
     extraSets.push({ record: result.extension2, evidence: extension2Evidence })
   }
+  for (const [index, { record, evidence: setEvidence }] of extraSets.entries()) {
+    if (record.status !== setEvidence.result.verdict) throw new Error(`${index === 0 ? 'extension' : 'second extension'} verdict mismatch`)
+  }
+  // The questions' verdict, recomputed from the evidence by the adjudicator a confirmer uses too.
+  const questions = adjudicateQuestions({
+    evidence,
+    extraSets,
+    decisionRule: result.decisionRule,
+    closed: result.closeCallClosed !== undefined,
+  })
+  const stageOne = questions.verdict
+  if ((result.questionsStatus ?? result.status) !== stageOne && !questions.pending) throw new Error('questions verdict mismatch')
+  // The audit's verdict, recomputed from the questions and every test record (`verdictOf`, rule `all-tests-v1`).
+  const looked = questions.pending ? 'UNDETERMINED' as const : stageOne
+  const audit = verdictOf(
+    readingsOfEvidence(evidence, looked === 'UNDETERMINED' ? null : looked),
+    looked,
+    evidence.confirming?.checks,
+    { questionsPending: questions.pending },
+  )
+  if (result.closeCallClosed && !audit.flaggedBy.some((check) => check !== 'kbf')) throw new Error('a close call closed without a flag of another test')
+  const pending = questions.pending && audit.undecidedConfirmation === null
+  if (!pending && audit.verdict !== result.status) throw new Error('verdict mismatch')
+  if ((audit.undecidedConfirmation !== null) !== (result.outcomeReason?.code === 'confirmation_undecided')) {
+    throw new Error('the undecided confirmation is not the one its tests give')
+  }
+}
+
+/** What an extra set of a close call records about its pooled look, in a summary and in a published result alike. */
+interface ExtraSetRecord {
+  rule: string
+  pooled: Omit<FingerprintStats, 'selfCoverage'> & { verdict: ModelAuditVerdict; extendNext?: boolean }
+}
+
+/**
+ * The questions' own verdict, from a seller's evidence files: the first set's look, or after a close call the pooled
+ * look of the first set and its extra sets, each checked (the rule, the close-call zone, verified ResponseAuth, no
+ * probe asked twice, the pooled statistics and the continuation). `closed`: a flagged audit whose close call could not
+ * be finished, accepted only when the latest look really was a close call; its questions are undecided. A questions
+ * DIFF needs scored answers. `pending`: the latest look is still a close call waiting for an extra set. Submit and the
+ * confirmer's read of published evidence both decide the questions' finding here, never from a stored label. Throws.
+ */
+export function adjudicateQuestions(input: {
+  evidence: ProxyAuditEvidenceV1
+  extraSets: ReadonlyArray<{ record: ExtraSetRecord; evidence: ProxyAuditEvidenceV1 }>
+  decisionRule: string | undefined
+  closed: boolean
+}): { verdict: ModelAuditVerdict; pending: boolean } {
+  const { evidence, extraSets } = input
+  const rule = input.decisionRule === undefined ? undefined : kbfExtensionRuleById(input.decisionRule) ?? undefined
+  const unverified = (checked: ProxyAuditEvidenceV1): boolean => checked.exchanges.some((exchange) => (
+    exchange.status === 'succeeded' && exchange.responseAuth.status !== 'verified'
+  ))
+  const sharesProbes = (left: ProxyAuditEvidenceV1, right: ProxyAuditEvidenceV1): boolean => {
+    const ids = new Set(left.reference.probes.map((probe) => probe.id))
+    return left.reference.referenceId === right.reference.referenceId
+      || right.reference.probes.some((probe) => ids.has(probe.id))
+  }
+  // As `needsExtension`: a set whose ResponseAuth failed, or a seller that refuses the request profile, is not extended.
+  const firstLookExtends = rule !== undefined && !unverified(evidence)
+    && evidence.result.outcomeReason?.code !== 'request_profile_incompatible'
+    && classifyKbfFirstLook(evidence.result.stats, { minCoverage: KBF_VERIFY_OPTIONS.minCoverage, rule }) === 'extend'
+  let verdict: ModelAuditVerdict = evidence.result.verdict
+  let latestExtends = firstLookExtends
   if (extraSets.length > 0) {
-    const rule = kbfExtensionRuleById(result.decisionRule)
-    if (!rule || extraSets.some(({ record }) => record.rule !== rule.id)) {
-      throw new Error('extension without the close-call rule')
-    }
+    if (!rule || extraSets.some(({ record }) => record.rule !== rule.id)) throw new Error('extension without the close-call rule')
     if (extraSets.length > rule.maxExtensions) throw new Error(`${rule.id} allows at most ${rule.maxExtensions} extra set(s)`)
-    if (classifyKbfFirstLook(evidence.result.stats, { minCoverage: KBF_VERIFY_OPTIONS.minCoverage, rule }) !== 'extend') {
-      throw new Error('extension of a first check that was not a close call')
+    if (!firstLookExtends) {
+      throw new Error(unverified(evidence) ? 'extension of a first check without verified ResponseAuth' : 'extension of a first check that was not a close call')
     }
-    const unverified = (checked: ProxyAuditEvidenceV1): boolean => checked.exchanges.some((exchange) => (
-      exchange.status === 'succeeded' && exchange.responseAuth.status !== 'verified'
-    ))
-    if (unverified(evidence)) throw new Error('extension of a first check without verified ResponseAuth')
     const sameNumber = (left: number | null, right: number | null): boolean => (
       left === right || (left !== null && right !== null && Math.abs(left - right) <= 1e-12 * Math.max(1, Math.abs(left)))
     )
     const seen: ProxyAuditEvidenceV1[] = [evidence]
     for (const [index, { record, evidence: setEvidence }] of extraSets.entries()) {
       const label = index === 0 ? 'extension' : 'second extension'
-      if (record.status !== setEvidence.result.verdict) throw new Error(`${label} verdict mismatch`)
       if (seen.some((earlier) => sharesProbes(earlier, setEvidence))) throw new Error(`${label} reused probes from an earlier set`)
       seen.push(setEvidence)
       const pooled = pooledCloseCallVerdict(
@@ -1027,31 +1086,22 @@ export function validateAuditMatchesSummary(
       if ((recordedPooled.extendNext === true) !== extendNext) throw new Error(`close-call continuation mismatch (${label})`)
       const lookVerdict: ModelAuditVerdict = authFailed ? 'UNDETERMINED' : pooled.verdict
       if (recordedPooled.verdict !== lookVerdict) throw new Error('pooled verdict mismatch')
-      const last = index === extraSets.length - 1
       // Only the last set's look may be undecided, and then the close call is still waiting.
-      if (!last && !extendNext) throw new Error(`extra set after a decided look (${label})`)
-      stageOne = lookVerdict
+      if (index < extraSets.length - 1 && !extendNext) throw new Error(`extra set after a decided look (${label})`)
+      verdict = lookVerdict
+      latestExtends = extendNext && extraSets.length < rule.maxExtensions
     }
   }
-  // A flagged audit whose close call could not be finished in its run: its questions are undecided.
-  if (result.closeCallClosed) {
-    if (extraSets.length > 0 && !(extraSets.at(-1)!.record.pooled.extendNext === true)) throw new Error('a closed close call that was decided')
-    stageOne = 'UNDETERMINED'
+  if (input.closed) {
+    // Only a real close call can be closed: the latest look still extends.
+    if (!latestExtends) throw new Error('a closed close call whose latest look was not a close call')
+    return { verdict: 'UNDETERMINED', pending: false }
   }
-  const questionsPending = needsExtension(result)
-  if ((result.questionsStatus ?? result.status) !== stageOne && !questionsPending) throw new Error('questions verdict mismatch')
-  // The audit's verdict, recomputed from the questions and every test record (`verdictOf`, rule `all-tests-v1`).
-  const audit = verdictOf(
-    readingsOfEvidence(evidence, stageOne === 'UNDETERMINED' ? null : stageOne),
-    stageOne,
-    evidence.confirming?.checks,
-    { questionsPending },
-  )
-  if (result.closeCallClosed && !audit.flaggedBy.some((check) => check !== 'kbf')) throw new Error('a close call closed without a flag of another test')
-  if (!questionsPending && audit.verdict !== result.status) throw new Error('verdict mismatch')
-  if ((audit.undecidedConfirmation !== null) !== (result.outcomeReason?.code === 'confirmation_undecided')) {
-    throw new Error('the undecided confirmation is not the one its tests give')
+  // The questions flag only on scored answers.
+  if (verdict === 'DIFF' && extraSets.length === 0 && evidence.result.parsedProbeCount === 0) {
+    throw new Error('a questions DIFF with no scored answer')
   }
+  return { verdict, pending: latestExtends }
 }
 
 /**

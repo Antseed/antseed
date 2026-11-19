@@ -869,6 +869,8 @@ export async function verifyModelTarget(input: {
   }
   /** The seller was skipped while its questions were asked (it refused them, its key is gone, ...). */
   let skip: VerificationSkipSignal | null = null
+  /** The questions ended in a seller failure (its first batch failed): no other test is started in this attempt. */
+  let sellerFailed = false
   try {
     // A pre-check finished before the questions is kept, so an interrupted audit does not ask it again.
     if (precheck && !carried.tokenizerPrecheck) await persistCheckpoint()
@@ -909,6 +911,7 @@ export async function verifyModelTarget(input: {
     for (const exchange of executed) exchangeByBatch.set(exchange.batchIndex, exchange)
   } catch (error) {
     if (error instanceof VerificationTerminalTransientSignal) {
+      sellerFailed = true
       exchangeByBatch.set(error.exchange.batchIndex, error.exchange)
       for (const { probes, batchIndex } of pending) {
         if (!exchangeByBatch.has(batchIndex)) {
@@ -941,8 +944,10 @@ export async function verifyModelTarget(input: {
     return writeSkip(skip)
   }
   // The other output tests, after the questions, unless the seller was skipped (a flag stands through a skip: the
-  // audit is a DIFF with its questions unfinished, and nothing more is asked of the seller).
-  if (runsTests && !skip) {
+  // audit is a DIFF with its questions unfinished, and nothing more is asked of the seller), or the questions ended in
+  // a seller failure or on the time limit: a test started then could only find nothing, and a retry asks it again.
+  const timeIsUp = deadline.controller.signal.aborted
+  if (runsTests && !skip && !sellerFailed && !timeIsUp) {
     try {
       const capScreen = input.context.outputCap
       if (outputCap === null && capScreen) {

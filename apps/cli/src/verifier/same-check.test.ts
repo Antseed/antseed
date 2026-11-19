@@ -137,6 +137,17 @@ test('the checks that flagged and passed are read from the evidence alone', () =
   assert.deepEqual(passedChecks({ tokenizerPrecheck: { outcome: 'inconclusive' } as never, exchanges: [{} as never] }, 'UNDETERMINED'), [])
 })
 
+test('a SAME clears a waiting DIFF of two checks only when both passed here', () => {
+  const two: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['output-cap', 'kbf'] }
+  // The cap check has no result here and the questions pass: one check left open clears nothing.
+  const open = decide(candidate(2n, VERIFIER_VERDICT.SAME, [], ['kbf']), [two])
+  assert.equal(open.kind, 'exclude')
+  assert.match(open.kind === 'exclude' ? open.reason : '', /the cap check neither flagged nor passed/)
+  assert.equal(decide(candidate(2n, VERIFIER_VERDICT.SAME, [], ['output-cap', 'kbf']), [two]).kind, 'send')
+  // One of them flagging again is the same-check DIFF, whatever the other did.
+  assert.equal(decide(candidate(2n, VERIFIER_VERDICT.DIFF, ['output-cap'], []), [two]).kind, 'send')
+})
+
 test('a result answering a waiting DIFF is sent only when the same check flagged, or a check that flagged passed', () => {
   const tokens: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['tokens'] }
   const confirm = decide(candidate(2n, VERIFIER_VERDICT.DIFF, ['tokens']), [tokens])

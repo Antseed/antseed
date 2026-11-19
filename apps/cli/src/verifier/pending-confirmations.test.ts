@@ -530,3 +530,12 @@ test('a questions confirmation that ended UNDETERMINED after its attempts answer
   const { confirmsDiff: _confirmsDiff, ...firstLook } = undetermined
   assert.equal(localResultAnswersConfirmation(target, { ...later, decided: localConfirmationDecision(firstLook, true) }), false)
 })
+
+test('a local confirmation of two flags answers when one flags again or both decided, not when one is left open', () => {
+  const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['output-cap' as const, 'kbf' as const], firstReportedAt: 10_000 }
+  const later = { service: 'served-a', completedAt: 20_000, firstRequestAt: 20_000 }
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: ['kbf'], flagged: [] }), false, 'the cap check is left open: retried')
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: ['output-cap', 'kbf'], flagged: ['output-cap'] }), true)
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: ['kbf'], flagged: ['kbf'] }), true, 'the questions flagged again')
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: ['output-cap', 'kbf'], flagged: [] }), true, 'both passed')
+})

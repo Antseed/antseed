@@ -1176,6 +1176,8 @@ async function audit(options: {
   resume?: ModelVerificationResumeInput
   /** The seller refuses its first question batch in a way that skips it: its upstream key is gone. */
   refuseQuestions?: boolean
+  /** Every question batch fails with a server error: the seller fails its questions. */
+  failQuestions?: boolean
   onReference?: () => void
   /** How long the reference measurement takes, and the seller's idle limit. */
   referenceDelayMs?: number
@@ -1208,6 +1210,7 @@ async function audit(options: {
     questionRequests.push(prompt)
     options.onQuestion?.()
     if (options.refuseQuestions) return Response.json({ error: { message: 'The API key was deleted' } }, { status: 401 })
+    if (options.failQuestions) return Response.json({ error: { message: 'upstream unavailable' } }, { status: 503 })
     return Response.json({ choices: [{ message: { content: values.map((value, index) => `(${index + 1}) ${value}`).join('\n') } }] }, {
       headers: { 'x-antseed-request-id': new Headers(init?.headers).get('x-antseed-request-id')! },
     })
@@ -1588,6 +1591,20 @@ test('check pipeline: the cap and echo references and checks are the auditor\'s 
   assert.equal(result.status, 'SAME')
   assert.equal(result.outcomeReason, null)
   assert.ok(questionRequests.length > 0)
+})
+
+test('check pipeline: questions that end in a seller failure start no other test, so a retry asks them', async () => {
+  const { calls, result, evidence } = await pipeline({ usage: MODEL_TOKENIZER, failQuestions: true, cap: capRecord('pass'), echo: echoRecord('pass') })
+  assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'questions'])
+  assert.equal(result.status, 'UNDETERMINED')
+  assert.equal(evidence.outputCap, undefined)
+  assert.equal(evidence.outputEcho, undefined)
+  // The questions' finding is decided from the evidence: a questions DIFF with nothing scored is refused at submit.
+  const zero = structuredClone(evidence)
+  zero.result.verdict = 'DIFF'
+  assert.throws(() => validateAuditMatchesSummary(zero, { ...result, status: 'DIFF', questionsStatus: 'DIFF' }), /a questions DIFF with no scored answer/)
+  // A close call can be closed only when its look was one.
+  assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, decisionRule: 'kbf-extension-v2', closeCallClosed: { reason: 'x' } }), /latest look was not a close call/)
 })
 
 test('a saved seller file that stores a check slot as null reads as having no such record, for every reader', async () => {

@@ -34,6 +34,11 @@ export function passedChecks(
   return checksWith(readingsOfEvidence(evidence, kbfVerdict), 'pass')
 }
 
+/** The checks an audit's summary shows flagged, for the planner. */
+export function flaggedSummaryChecks(result: Parameters<typeof decidedChecks>[0]): AuditCheckId[] {
+  return checksWith(readingsOfSummary(result), 'flag')
+}
+
 /** The checks an audit's summary shows decided (flagged or passed), for the planner, which has no evidence at hand. */
 export function decidedChecks(result: {
   status: string

@@ -1,4 +1,4 @@
-import { readingsOfSummary, verdictOf } from './audit-checks.js'
+import { readingsOfSummary, verdictOf, type AuditVerdict } from './audit-checks.js'
 import { confirmationUndecidedReason } from './outcome-reason.js'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
@@ -78,14 +78,37 @@ export function needsExtension(result: Pick<ModelVerificationTargetResult,
  * The audit's verdict: the pooled verdict after a close call, else the first audit's own verdict.
  * Null while a close call waits for extra questions.
  */
-/** The questions' own verdict, after any close call; null while a close call waits for an extra set. */
+/** The questions' own verdict, after any close call; null while the audit waits for a close call's extra set. */
 export function stageOneVerdict(result: ModelVerificationTargetResult): 'SAME' | 'DIFF' | 'UNDETERMINED' | null {
+  const decision = auditDecision(result)
+  return decision.pending ? null : decision.questionsStatus
+}
+
+/**
+ * The one decision the run, the extension round, the planner and submit share: the questions' verdict, the audit's
+ * verdict over every test (`verdictOf`), and whether the audit still waits for a close call's extra set. While it
+ * waits, the questions' first look gives neither pass nor flag. A confirmation in which a repeated test other than
+ * the questions is undecided is final for its attempt, whatever its questions are: it is never pending.
+ */
+export function auditDecision(result: ModelVerificationTargetResult): {
+  questionsStatus: 'SAME' | 'DIFF' | 'UNDETERMINED'
+  questionsOutcome: ModelVerificationTargetResult['outcomeReason']
+  audit: AuditVerdict
+  pending: boolean
+} {
   const questions = questionsView(result)
-  if (needsExtension(questions)) return null
-  if (result.closeCallClosed) return 'UNDETERMINED'
+  const pendingQuestions = needsExtension(questions)
   const latest = latestExtension(result)
-  if (latest) return latest.pooled.verdict
-  return questions.status
+  const questionsStatus = result.closeCallClosed ? 'UNDETERMINED' as const
+    : !pendingQuestions && latest ? latest.pooled.verdict : questions.status
+  const looked = pendingQuestions ? 'UNDETERMINED' as const : questionsStatus
+  const audit = verdictOf(readingsOfSummary({ ...result, questionsStatus: looked }), looked, result.confirming, { questionsPending: pendingQuestions })
+  return {
+    questionsStatus,
+    questionsOutcome: questions.outcomeReason ?? null,
+    audit,
+    pending: pendingQuestions && audit.undecidedConfirmation === null,
+  }
 }
 
 /** A result as the questions alone see it: their own verdict and outcome reason. */
@@ -104,19 +127,15 @@ function questionsView(result: ModelVerificationTargetResult): ModelVerification
  * waits, `status` holds the verdict so far and a confirmation of the questions waits with it.
  */
 export function settleAuditVerdict<T extends ModelVerificationTargetResult>(result: T): T {
-  const questions = questionsView(result)
-  const pending = needsExtension(questions)
-  const latest = latestExtension(result)
-  const questionsStatus = result.closeCallClosed ? 'UNDETERMINED' as const
-    : !pending && latest ? latest.pooled.verdict : questions.status
-  const audit = verdictOf(readingsOfSummary({ ...result, questionsStatus }), questionsStatus, result.confirming, { questionsPending: pending })
-  const questionsOutcome = questions.outcomeReason ?? null
+  const { questionsStatus, questionsOutcome, audit } = auditDecision(result)
   return {
     ...result,
     status: audit.verdict,
     questionsStatus,
     questionsOutcomeReason: questionsOutcome,
-    outcomeReason: audit.undecidedConfirmation ? confirmationUndecidedReason(audit.undecidedConfirmation, 0) : questionsOutcome,
+    outcomeReason: audit.undecidedConfirmation
+      ? confirmationUndecidedReason(audit.undecidedConfirmation, questionsOutcome?.totalBatchCount ?? 0)
+      : questionsOutcome,
   }
 }
 

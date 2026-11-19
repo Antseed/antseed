@@ -390,13 +390,19 @@ export function localResultAnswersConfirmation(
     /** Its earliest request on the auditor's clock (`earliestAuditorTime`); null or absent: not fresh. */
     firstRequestAt?: number | null
     decided?: readonly AuditCheckId[] | 'undecided-confirmation'
+    /** The checks it flagged (`flaggedSummaryChecks`). */
+    flagged?: readonly AuditCheckId[]
   } | null,
 ): boolean {
   if (!local || normalized(local.service) !== normalized(target.service)) return false
-  // It must have decided a check this confirmation repeats; a confirmation that ran and did not decide is retried by
-  // the epoch plan within its attempts instead, so it counts as an answer here.
-  if (target.firstChecks && local.decided !== undefined && local.decided !== 'undecided-confirmation'
-    && !target.firstChecks.some((check) => local.decided!.includes(check))) return false
+  // It answers when a check this confirmation repeats flagged again (its DIFF goes out), or when every check it
+  // repeats decided (its SAME may go out). A confirmation that ran and left one open is retried by the epoch plan
+  // within its attempts instead, so it counts as an answer here.
+  if (target.firstChecks && local.decided !== undefined && local.decided !== 'undecided-confirmation') {
+    const decided = local.decided
+    const flaggedAgain = target.firstChecks.some((check) => local.flagged?.includes(check) ?? false)
+    if (!flaggedAgain && !target.firstChecks.every((check) => decided.includes(check))) return false
+  }
   // A confirmation is fresh material: its earliest request at least an hour after the report it answers, the same
   // test submit makes. An audit that overlapped the cutoff, or reused batches from before it, is not. An undecided
   // confirmation is never sent: it answers by its used-up attempts alone, whatever its time, or a confirmation with
