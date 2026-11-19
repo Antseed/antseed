@@ -44,7 +44,7 @@ export const POINTS: readonly TokenPoint[] = [
     title: ['Stake behind', 'a provider.'],
     sub: 'Only settled, buyer-authorised payments count, weighted by the ANTS staked behind the provider. Rewards follow recognised usage, inside capped ranges.',
     features: [
-      {icon: 'lock', text: 'Locked for the epochs you choose, from the next one'},
+      {icon: 'lock', text: 'Stake ANTS and receive an lANTS NFT that represents your locked position'},
       {icon: 'analytics', text: 'Stakers’ share grows from 2% toward 40% of emissions'},
       {icon: 'check', text: 'Leaving early burns 5 to 50% of the stake, not rewards'},
     ],
