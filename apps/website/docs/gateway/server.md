@@ -80,7 +80,7 @@ The gateway answers chat completions as streamed responses that can stay open fo
   }
   ```
 
-- **Cloudflare**: a *proxied* (orange-cloud) DNS record ends streamed responses at the edge after about 100 seconds, so long generations get cut even when the origin is healthy. Prefer the supported **Cloudflare named tunnel** (`--cloudflare-token`, see [Public tunnels](/docs/tunnels)), or point the DNS record at the server **DNS-only** (grey cloud) so requests reach your own proxy (and TLS) directly.
+- **Cloudflare**: proxied (orange-cloud) records and named tunnels both route traffic through the Cloudflare edge, which applies a read/idle timeout of about 100 seconds: a stream is cut once no bytes have flowed for that long. A continuously flowing stream is fine; the risk is the quiet phase of long generations (reasoning models can emit nothing for a minute or more) — the edge then closes the connection even though the origin is healthy. For dependable long streams, point the DNS record at the server **DNS-only** (grey cloud) so requests reach your own proxy (and TLS) directly and no edge timeout applies; if you keep Cloudflare in front, make sure the gateway streams continuously (a heartbeat or flush while thinking) rather than staying silent.
 - **Health checks**: the gateway serves `/healthz` on its port; point uptime monitors and load-balancer probes at `https://gateway.example.com/healthz`.
 
 ### Console sign-in options
