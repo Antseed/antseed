@@ -69,6 +69,8 @@
 .ant:disabled { cursor: default; }
 .ant:focus-visible { outline: 2px solid #6f9b3a; outline-offset: 4px; }
 :global(:root[data-theme='dark']) .ant { filter: brightness(.84) saturate(.83) contrast(1.12); }
+/* Safari's HEVC clips lose their alpha under a filter (a blue box): there the ant keeps her day tone (useIncognitoAnt.ts) */
+:global(:root[data-theme='dark']) .ant[data-hevc] { filter: none; }
 .clip { display: block; width: 100%; height: auto; }
 .clip:not(.idle) { position: absolute; inset: 0; }
 .clip:not([data-shown]) { opacity: 0; }
