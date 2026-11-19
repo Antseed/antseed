@@ -2,9 +2,9 @@ import type {Waitlist} from '../config';
 import type {Answers} from './macs';
 
 /**
- * The prefilled Google Form URL for a sign-up. The form is the whole sign-up: it collects the verified Google-account email and allows
- * one response per account, so a visitor's answers are carried in as prefilled fields and Google handles the email, the dedup and the
- * sign-in. Null when no form is configured (before launch).
+ * The prefilled Google Form URL for a sign-up. The form is the whole sign-up: it collects the verified Google-account email, one
+ * response per Mac, so a visitor's answers are carried in as prefilled fields and Google handles the email and the sign-in. Null when
+ * no form is configured (before launch).
  */
 export function prefillUrl(w: Waitlist | null, answers: Answers, source: string): string | null {
   if (!w?.formUrl) return null;
