@@ -468,3 +468,35 @@ test('a confirmation the plan cannot audit is reported with its reason, not drop
     [42n, 'grok-4.7 is not audited in this run (see the warnings above)'],
   ])
 })
+
+test('a retry after an extra set carries the settled tests of its seller file, checked against the file itself', async () => {
+  const { writeSignedAuditRun, referenceFixture } = await import('../../../verifier/model-audit-fixtures.test-support.js')
+  const { loadEpochCarriedTests } = await import('./run.js')
+  const { Wallet } = await import('ethers')
+  const { readFile } = await import('node:fs/promises')
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-carried-tests-'))
+  try {
+    const evidenceDir = join(directory, 'evidence')
+    const seller = new Wallet(Wallet.createRandom().privateKey)
+    const capPass = { rule: { id: 'output-cap-v1' }, outcome: 'pass', reason: 'within', asks: [] } as never
+    const manifest = await writeSignedAuditRun({
+      evidenceDir, banksDir: join(directory, 'banks'), runId: 'run-1', epoch: '7', auditor: new Wallet(Wallet.createRandom().privateKey),
+      audits: [{ agentId: '1', seller, model: 'model-a', service: 'model-a', verdict: 'SAME', reference: referenceFixture('model-a', 20), outputCap: capPass }],
+    })
+    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    const result = { ...summary.results[0]!, status: 'UNDETERMINED' as const, extension: { rule: 'kbf-extension-v2' } as never }
+    const cell = (row: typeof result) => ({ action: 'retry', model: 'model-a', result: row })
+    const state = (row: typeof result) => ({ cells: new Map([['k', cell(row)]]) }) as never
+    const carried = await loadEpochCarriedTests(state(result), ['model-a'])
+    const entry = [...carried.values()][0]!
+    assert.deepEqual(Object.keys(entry.records), ['outputCap'])
+    assert.deepEqual([entry.service, entry.confirmation], ['model-a', false])
+    // A summary row that names another service than its own file carries nothing.
+    assert.equal((await loadEpochCarriedTests(state({ ...result, service: 'model-b' }), ['model-a'])).size, 0)
+    // Without an extra set the row is a resume candidate instead, not a carry.
+    const { extension: _extension, ...firstLook } = result
+    assert.equal((await loadEpochCarriedTests(state(firstLook as typeof result), ['model-a'])).size, 0)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

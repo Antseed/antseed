@@ -11,6 +11,7 @@ import { DIFF_HOLD_EPOCHS, diffHolds } from './diff-hold.js'
 import {
   modelAuditLedgerPath,
   modelAuditUpstreams,
+  adjudicateQuestions,
   prepareModelAudits,
   preparedFromEvidence,
   readModelAuditEvidence,
@@ -31,6 +32,7 @@ import {
   type FixtureAudit,
 } from './model-audit-fixtures.test-support.js'
 import { readVerifierRunManifest } from './audit-artifacts.js'
+import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { pooledCloseCallVerdict } from './close-call.js'
 import { EPOCH_QUESTION_SET_METHOD, retireEpochQuestionSet } from './probe-bank.js'
 import { EXTRA_QUESTIONS_PUBLISHED } from './outcome-reason.js'
@@ -678,6 +680,14 @@ test('an open audit window submits nothing; a closed one submits its sellers, op
     assert.deepEqual(prepared.excluded.map((exclusion) => [exclusion.agentId, exclusion.reason.split(' (')[0]]), [
       ['3', 'not in this epoch\'s audit window'],
     ])
+    // The open close call is published as closed: a confirmer reads its questions as undecided, not as still waiting.
+    const closed = entry.evidence.results.find((result) => result.agentId === '2')!
+    assert.deepEqual([closed.questionsVerdict, closed.questionsClosed], ['UNDETERMINED', true])
+    const files = await Promise.all(entry.auditEvidencePaths.map(async (path) => JSON.parse(await readFile(path, 'utf8')) as ProxyAuditEvidenceV1))
+    const sellerFile = files.find((file) => file.target?.agentId === '2')!
+    assert.deepEqual(adjudicateQuestions({ evidence: sellerFile, extraSets: [], decisionRule: closed.decisionRule, closed: true }), { verdict: 'UNDETERMINED', pending: false })
+    assert.equal(adjudicateQuestions({ evidence: sellerFile, extraSets: [], decisionRule: closed.decisionRule, closed: false }).pending, true,
+      'without its published closure the same file still waits for an extra set')
   }, { auditWindow: window('closed') })
   // A confirmation's close call is not the window's: it still gets its extra questions after the window
   // closed, so it waits for them instead of going out as UNDETERMINED.
