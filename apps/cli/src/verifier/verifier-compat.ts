@@ -66,8 +66,8 @@ import { SIGNED_REQUEST_TRIES } from './signed-seller-request.js'
 import { ECHO_CROWD_TIME_LIMIT_MS, OUTPUT_ECHO_RULE, echoCrowdObjection, judgeEchoRound, judgeOutputEcho, outputEchoPrompt } from './output-echo.js'
 import { AUDIT_CHECK_IDS, type AuditCheckId } from './flagging-checks.js'
 import { ALL_TESTS_FORMAT, decidedRecords, verdictOf, type CheckOutcome } from './audit-checks.js'
-import { FLIPS_REQUESTS, FLIPS_RULE, flipsCounts } from './flips-score.js'
-import { FLIPS_WORDS, drawFlipsPairs, flipsPool } from './flips.js'
+import { FLIPS_REQUESTS, FLIPS_RULE, flipsCounts, judgeFlipsCheck } from './flips-score.js'
+import { FLIPS_REASK_BUDGET, FLIPS_REFERENCE_TIME_LIMIT_MS, FLIPS_SLOTS_AT_ONCE, FLIPS_TIME_LIMIT_MS, FLIPS_WORDS, drawFlipsPairs, flipsPool, flipsSeed } from './flips.js'
 import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
 import {
   DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
@@ -325,7 +325,20 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       requests: FLIPS_REQUESTS,
       words: FLIPS_WORDS,
       pools: [flipsPool('first'), flipsPool('confirm')],
-      draw: (['first', 'confirm'] as const).map((stage) => drawFlipsPairs({ auditor: '0x00', model: 'sample', epoch: '1', salt: '00', stage })),
+      draw: (['first', 'confirm'] as const).map((stage) => drawFlipsPairs({ auditor: '0x00', model: 'sample', epoch: '1', seed: flipsSeed('00', { model: 'sample', epoch: '1', runId: 'r', stage }), stage })),
+      reaskBudget: FLIPS_REASK_BUDGET,
+      limits: [FLIPS_TIME_LIMIT_MS, FLIPS_SLOTS_AT_ONCE, FLIPS_REFERENCE_TIME_LIMIT_MS],
+      // One scored sample through the scorer: fixed symbol strings on both sides of one pair each.
+      scored: (() => {
+        const seq = (seed: number) => Array.from({ length: 64 }, (_, index) => ((seed * 7 + index * index * 3 + index) % 5) % 2 ? 'basin' : 'amber').join(' ')
+        const pairs = (['first', 'second'] as const).map((_, pairIndex) => ({
+          pair: (pairIndex === 0 ? ['amber', 'basin'] : ['amber', 'basin']) as [string, string],
+          reference: Array.from({ length: 40 }, (_, index) => ({ content: seq(index + pairIndex * 50), finishReason: 'stop' })),
+          seller: Array.from({ length: 10 }, (_, index) => ({ content: seq(index * 3 + 7 + pairIndex), finishReason: 'stop' })),
+        }))
+        const judged = judgeFlipsCheck(pairs)
+        return [judged.outcome, judged.score === null ? null : Number(judged.score.toFixed(9)), judged.p === null ? null : Number(judged.p.toExponential(6))]
+      })(),
       counts: ['minimax-m3', 'claude-opus-5.5', 'unmeasured-model'].map((model) => flipsCounts(model)),
     },
     // A close call beside a cap flag, waiting and then closed: while it waits the questions give neither pass nor flag;

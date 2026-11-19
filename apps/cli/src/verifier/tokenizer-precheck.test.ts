@@ -14,7 +14,8 @@ import { referenceFixture } from './model-audit-fixtures.test-support.js'
 import { verifyModelTarget, type ModelVerificationResumeInput, type ModelVerificationSkip, type ModelVerificationTargetResult } from './model-run.js'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import type { FlipsScreen, FlipsV1 } from './flips.js'
-import { decidedRecords } from './audit-checks.js'
+import { decidedRecords, readingsOfEvidence, verdictOf } from './audit-checks.js'
+import { FLIPS_RULE } from './flips-score.js'
 import { OUTPUT_CAP_RULE, type OutputCapScreen, type OutputCapV1 } from './output-cap.js'
 import { OUTPUT_ECHO_RULE, type OutputEchoScreen, type OutputEchoV1 } from './output-echo.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
@@ -1617,18 +1618,20 @@ test('check pipeline: questions that end in a seller failure start no other test
 test('check pipeline: FLIPS runs last, on the confirmation stage only for a FLIPS flag; a counted flag is a DIFF, a scored one is carried', async () => {
   const stages: string[] = []
   const flipsRecord = (outcome: FlipsV1['outcome'], counted: boolean, p: number | null): FlipsV1 => ({
-    rule: 'flips-v1', draw: { auditor: '0x00', model: MODEL, epoch: '1', salt: '00', stage: 'first' }, service: SERVICE,
+    rule: 'flips-v1', draw: { auditor: '0x00', model: MODEL, epoch: '1', seed: '00', stage: 'first' }, service: SERVICE,
     referenceUpstream: null, referenceOneProvider: true, pairs: [], reasks: 0, outcome, counted, score: p === null ? null : 3, scoreMax: null, p, reason: outcome,
   })
   const screen = (record: FlipsV1) => ({ check: async (_seller: unknown, _settings: unknown, options: { stage: string }) => { stages.push(`flips.check stage=${options.stage}`); return record } })
   const flagged = await pipeline({ usage: MODEL_TOKENIZER, cap: capRecord('pass'), echo: echoRecord('pass'), flips: screen(flipsRecord('flag', true, 0.001)) })
   assert.deepEqual([...flagged.calls, ...stages], ['cap.ready', 'echo.ready', 'questions', 'cap.check', 'echo.check precheckMatch=true', 'flips.check stage=first'])
-  assert.equal(flagged.result.status, 'DIFF')
-  assert.deepEqual(flaggingChecks(flagged.evidence, flagged.result.questionsStatus!), ['flips'])
   assert.equal(flagged.result.flips!.outcome, 'flag')
-  // Recorded only: the same flag leaves the verdict to the questions.
-  const recorded = await pipeline({ usage: MODEL_TOKENIZER, flips: screen(flipsRecord('flag', false, 0.001)) })
-  assert.equal(recorded.result.status, 'SAME')
+  // Whether FLIPS counts is the rule's, never the stored flag's: recorded only as shipped, the verdict is the questions'.
+  assert.equal(flagged.result.status, 'SAME')
+  assert.deepEqual(flaggingChecks(flagged.evidence, flagged.result.questionsStatus!), [])
+  // Under a rule that counts FLIPS for this model, the same record is a DIFF of FLIPS.
+  const counting = { flips: { ...FLIPS_RULE, counts: { default: true, never: ['minimax-m3'] } } }
+  const readings = readingsOfEvidence({ ...flagged.evidence, flips: { ...flagged.evidence.flips!, draw: { ...flagged.evidence.flips!.draw, model: 'claude-opus-5.5' } } }, 'SAME', counting)
+  assert.deepEqual(verdictOf(readings, 'SAME').flaggedBy, ['flips'])
   // A confirmation of a FLIPS flag is the confirmation stage; a confirmation of another test is a first look for FLIPS.
   stages.length = 0
   await pipeline({ usage: MODEL_TOKENIZER, confirming: ['flips'], flips: screen(flipsRecord('pass', true, 0.4)) })

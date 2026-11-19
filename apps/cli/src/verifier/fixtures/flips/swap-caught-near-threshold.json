@@ -10,7 +10,7 @@
   "score": 9.1282,
   "scoreMax": 365.0704,
   "inconclusive": false,
-  "from": "the FLIPS eval checks.jsonl (vscore.mjs), rounded to 4 decimals"
+  "from": "the score the eval gave this check, rounded to 4 decimals"
  },
  "pairs": [
   {

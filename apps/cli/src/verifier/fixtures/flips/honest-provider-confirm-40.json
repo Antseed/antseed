@@ -1,6 +1,6 @@
 {
  "name": "honest-provider-confirm-40",
- "what": "Honest, 40 replies (confirmation size): Grok 4.7 on a second host. The largest conclusive honest score at 40 replies in session 4 except MiniMax M3 on another host.",
+ "what": "Honest, 40 replies (confirmation size): Grok 4.7 on a second host. The largest conclusive honest score at 40 replies in the eval except MiniMax M3 on another host.",
  "claimed": "x-ai/grok-4.7",
  "served": "x-ai/grok-4.7",
  "label": "honest",
@@ -10,7 +10,7 @@
   "score": 7.2326,
   "scoreMax": 15.2378,
   "inconclusive": false,
-  "from": "the FLIPS eval checks.jsonl (vscore.mjs), rounded to 4 decimals"
+  "from": "the score the eval gave this check, rounded to 4 decimals"
  },
  "pairs": [
   {

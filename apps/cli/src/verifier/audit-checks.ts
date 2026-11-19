@@ -1,6 +1,7 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { auditedServiceNames } from './audited-models.js'
 import { describeFlipsFlag, flipsPaidRequests, summarizeFlips, validateFlips, type FlipsV1 } from './flips.js'
+import { FLIPS_RULE, flipsCounts, type FlipsRule } from './flips-score.js'
 import { describeOutputCapFlag, outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1 } from './output-cap.js'
 import { describeOutputEchoFlag, outputEchoPaidRequests, summarizeOutputEcho, validateOutputEcho, type EchoSellerAskV1, type OutputEchoV1 } from './output-echo.js'
 import type { PaidRequest, ProxyAuditEvidenceExchangeV1 } from './proxy-evidence.js'
@@ -61,8 +62,9 @@ export interface CheckSummaryOutcomes {
   outcome?: string
   growth?: string
   fixedAmount?: string
-  /** FLIPS: whether its outcome counts toward the verdict. */
-  counted?: boolean
+  /** FLIPS: the model it was drawn for (whether it counts is the rule's), and whether its pairs were chosen by hand. */
+  model?: string
+  probe?: true
 }
 
 /** One finding of a check. The echo check has two, every other check one. */
@@ -72,11 +74,20 @@ export interface CheckFinding<Slot extends CheckSlot> {
   /** As in a verdict reason: "the cap check". */
   label: string
   /** The finding in a stored record, from the check's own names (a pre-check `mismatch` is a flag). */
-  ofRecord(record: CheckRecords[Slot]): Exclude<CheckOutcome, 'not-run'>
+  ofRecord(record: CheckRecords[Slot], rules?: ReadingRules): Exclude<CheckOutcome, 'not-run'>
   /** The same finding in an audit's summary, for the planner, which has no evidence at hand. */
   ofSummary(summary: CheckSummaryOutcomes): Exclude<CheckOutcome, 'not-run'>
   /** For a finding that can be recorded only: its judged outcome when it is (then `ofRecord` reads `inconclusive`). */
-  recordedOnly?(record: CheckRecords[Slot]): Exclude<CheckOutcome, 'not-run'> | null
+  recordedOnly?(record: CheckRecords[Slot], rules?: ReadingRules): Exclude<CheckOutcome, 'not-run'> | null
+}
+
+/**
+ * The rules a reading is taken under, when not the ones the record was judged by: the eval replay and the dry-run
+ * report read FLIPS under a rule that counts it (`counts.default` true, `counts.never` and unmeasured models still
+ * respected), to show what the verdict would be. An audit and submit never pass any.
+ */
+export interface ReadingRules {
+  flips?: FlipsRule
 }
 
 /**
@@ -126,6 +137,11 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   paid(record: CheckRecords[Slot]): PaidRequest[]
   /** What a flag of this record found, in plain words, as the audit's verdict reason gives it. */
   describeFlag(record: CheckRecords[Slot]): string
+  /**
+   * Whether the record can affect a verdict at all. A record that cannot (FLIPS while it is recorded only) is a
+   * diagnostic: its validation, its binding and its request times stay out of the verdict path.
+   */
+  counts?(record: CheckRecords[Slot]): boolean
   /** Whether a scheduled retry carries this record; by default when a finding flagged or passed (`decidedRecords`). */
   carriedByRetry?(record: CheckRecords[Slot]): boolean
   /** The texts of a stored record that breaks the run's rules. */
@@ -227,14 +243,24 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
   },
 }
 
+/**
+ * Whether a stored FLIPS counts, under the rule of this build or the FLIPS rule given (`ReadingRules`), from its model:
+ * never from the stored flag alone. Chosen dry-run pairs and a malformed draw never count.
+ */
+const flipsCountsFor = (record: FlipsV1, rules?: ReadingRules): boolean => {
+  const model = typeof record.draw?.model === 'string' ? record.draw.model : null
+  return model !== null && record.draw.pairs === undefined && flipsCounts(model, rules?.flips ?? FLIPS_RULE)
+}
+
 export const FLIPS_CHECK: RecordCheck<'flips'> = {
   slot: 'flips',
   findings: [{
     id: 'flips', subject: 'model', label: 'the randomness check',
     // Where FLIPS does not count it is recorded only: no flag and no pass for the verdict.
-    ofRecord: (record) => (record.counted ? outcome(record.outcome, 'flag', 'pass') : 'inconclusive'),
-    ofSummary: (summary) => (summary.counted === true ? outcome(summary.outcome, 'flag', 'pass') : 'inconclusive'),
-    recordedOnly: (record) => (record.counted ? null : outcome(record.outcome, 'flag', 'pass')),
+    ofRecord: (record, rules) => (flipsCountsFor(record, rules) ? outcome(record.outcome, 'flag', 'pass') : 'inconclusive'),
+    ofSummary: (summary) => (typeof summary.model === 'string' && summary.probe === undefined && flipsCounts(summary.model, FLIPS_RULE)
+      ? outcome(summary.outcome, 'flag', 'pass') : 'inconclusive'),
+    recordedOnly: (record, rules) => (flipsCountsFor(record, rules) ? null : outcome(record.outcome, 'flag', 'pass')),
   }],
   summarize: summarizeFlips,
   // Recomputed from the replies the seller signed and the reference replies stored with them.
@@ -242,6 +268,7 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
   requests: (record) => record.pairs.flatMap((pair) => pair.seller.map((slot) => stored('audited', slot.request))),
   paid: flipsPaidRequests,
   describeFlag: describeFlipsFlag,
+  counts: (record) => flipsCountsFor(record),
   // A scored FLIPS is carried whatever its outcome: a p between the bar and the pass is a result, and FLIPS is never
   // drawn twice for one audit chain. A check with no score is asked again.
   carriedByRetry: (record) => record.p !== null,
@@ -277,14 +304,15 @@ const questionsReading = (asked: boolean, verdict: QuestionsVerdict): CheckReadi
 export function readingsOfEvidence(
   evidence: { readonly [Slot in CheckSlot]?: CheckRecords[Slot] } & { exchanges: readonly unknown[] },
   kbfVerdict: QuestionsVerdict,
+  rules?: ReadingRules,
 ): CheckReading[] {
   const readings: CheckReading[] = []
   for (const check of RECORD_CHECKS) {
     const record = evidence[check.slot]
     for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
-      const recorded = record == null ? null : finding.recordedOnly?.(record) ?? null
+      const recorded = record == null ? null : finding.recordedOnly?.(record, rules) ?? null
       readings.push({
-        check: finding.id, subject: finding.subject, outcome: record == null ? 'not-run' : finding.ofRecord(record),
+        check: finding.id, subject: finding.subject, outcome: record == null ? 'not-run' : finding.ofRecord(record, rules),
         ...(recorded ? { recordedOnly: recorded } : {}),
       })
     }
@@ -348,9 +376,18 @@ export function validateStoredChecks(
   const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence, reader }
   const seller = sellerBindingOf(evidence)
   for (const { check, record } of recordsOf(evidence)) {
-    if (record == null) continue
+    if (record == null || !countsTowardVerdict(check, record)) continue
     check.validate(record, context)
     assertBoundToSeller(check.requests(record), seller, check.texts.name)
+  }
+}
+
+/** Whether a record can affect the verdict (`RecordCheck.counts`); a check without that hook always can. */
+function countsTowardVerdict(check: RecordCheck<CheckSlot>, record: CheckRecords[CheckSlot]): boolean {
+  try {
+    return check.counts?.(record) ?? true
+  } catch {
+    return false
   }
 }
 
@@ -410,6 +447,8 @@ export function validateCheckRecordsAgainstSummary(
   const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence, reader: 'submit' }
   const seller = sellerBindingOf(evidence)
   for (const { check, record } of recordsOf(evidence)) {
+    // A diagnostic (a record that cannot affect the verdict) is neither validated nor compared: it can hold up nothing.
+    if (record != null && !countsTowardVerdict(check, record)) continue
     if (record != null) {
       check.validate(record, context)
       assertBoundToSeller(check.requests(record), seller, check.texts.name)
@@ -442,9 +481,13 @@ export function earliestAuditorTime(
     for (const exchange of evidence.exchanges) {
       if (typeof exchange.timing?.startedAt === 'number') times.push(exchange.timing.startedAt)
     }
-    for (const request of storedRequestsOf(evidence)) {
-      const at = request.responseAuth?.record?.receivedAt
-      if (typeof at === 'number') times.push(at)
+    // A diagnostic's requests are no material of the verdict, so their times are not counted either.
+    for (const { check, record } of recordsOf(evidence)) {
+      if (record == null || !countsTowardVerdict(check, record)) continue
+      for (const request of check.requests(record)) {
+        const at = request.responseAuth?.record?.receivedAt
+        if (typeof at === 'number') times.push(at)
+      }
     }
   }
   const known = times.filter((time) => Number.isFinite(time) && time > 0)
@@ -495,18 +538,11 @@ export function verdictOf(
      * undecided yet, it waits for that set (`needsExtension`).
      */
     questionsPending?: boolean
-    /**
-     * Judge a finding that is recorded only by its judged outcome, as if it counted (the eval replay and the dry-run
-     * report print the verdict both ways). Never set in an audit or at submit.
-     */
-    countRecordedOnly?: boolean
   } = {},
 ): AuditVerdict {
-  const read = options.countRecordedOnly
-    ? readings.map((reading) => (reading.recordedOnly ? { ...reading, outcome: reading.recordedOnly } : reading))
-    : readings
-  const flaggedBy = checksWith(read, 'flag')
-  const passedBy = checksWith(read, 'pass')
+  // The verdict as the readings give it; "what if FLIPS counted" is a reading under another rule (`ReadingRules`).
+  const flaggedBy = checksWith(readings, 'flag')
+  const passedBy = checksWith(readings, 'pass')
   if (confirming && confirming.length > 0 && !confirming.some((check) => flaggedBy.includes(check))) {
     // The questions still waiting for an extra set are not undecided yet: the confirmation waits with them.
     const open = confirming.filter((check) => !passedBy.includes(check)

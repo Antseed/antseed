@@ -30,7 +30,7 @@ const stat = (values: number[], name: (typeof FLIPS_STATISTICS)[number]): number
 const reply = (content: string | null, finishReason: string | null = 'stop'): FlipsReplyV1 => ({ content, finishReason })
 const words = (bits: number[], pair: FlipsPair = WOLF_PINE): string => bits.map((b) => pair[b]).join(' ')
 
-/** Saved checks of the FLIPS eval: reference replies, seller replies and the eval's own score (vscore.mjs). */
+/** Saved checks of the FLIPS eval: reference replies, seller replies and the score the eval gave them. */
 interface Fixture {
   name: string
   claimed: string

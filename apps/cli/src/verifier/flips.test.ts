@@ -10,6 +10,8 @@ import { FLIPS_RULE, flipsCounts, flipsRequestBody, isValidFlipsPair, type Flips
 import {
   FLIPS_WORDS,
   drawFlipsPairs,
+  finishReasonOf,
+  flipsSeed,
   flipsPool,
   judgeFlips,
   prepareFlipsReference,
@@ -62,13 +64,15 @@ function recordOf(saved: Fixture, stage: 'first' | 'confirm' = 'first', edit: (p
     repliesPerPair: stage === 'first' ? { first: perPair, confirm: 20 } : { first: 10, confirm: perPair },
     referenceRepliesPerPair: saved.pairs[0]!.reference.length,
   }
-  const draw: FlipsDrawV1 = { auditor: '0x00', model: MODEL, epoch: '7', salt: '00', stage }
+  const draw: FlipsDrawV1 = { auditor: '0x00', model: MODEL, epoch: '7', seed: '00', stage }
   const pairs = saved.pairs.map((pair, pairIndex) => {
     const body = flipsRequestBody(MODEL, MODEL, pair.pair, rule)
     const reference: FlipsReferencePairV1 = {
       words: pair.pair,
-      request: JSON.stringify({ ...body, model: 'vendor/route-model', provider: { only: ['host'] } }),
-      replies: pair.reference.map((reply) => ({ ...reply, provider: 'host', reasoning: false, failure: null })),
+      replies: pair.reference.map((reply) => ({
+        ...reply, provider: 'host', reasoning: false, thinkBlock: false, failure: null,
+        request: JSON.stringify({ ...body, model: 'vendor/route-model', provider: { only: ['host'] } }),
+      })),
     }
     edit(reference, pairIndex)
     return {
@@ -89,13 +93,15 @@ test('the word list is lower case and read back; the two pools share no pair, so
   const key = (pair: FlipsPair) => pair.join('/')
   assert.equal(first.filter((pair) => confirm.some((other) => other.some((word) => pair.includes(word)))).length, 0, 'not even a word in common')
   assert.ok(first.length >= 4 && confirm.length >= 4)
-  // The draw is fixed by the auditor, model, epoch, salt and stage, and changes with the salt.
-  const draw: FlipsDrawV1 = { auditor: '0xA1', model: MODEL, epoch: '32', salt: 'aa'.repeat(32), stage: 'first' }
+  // The draw is fixed by the auditor, model, epoch, seed and stage, and changes with the seed.
+  const draw: FlipsDrawV1 = { auditor: '0xA1', model: MODEL, epoch: '32', seed: 'aa'.repeat(32), stage: 'first' }
   assert.deepEqual(drawFlipsPairs(draw), drawFlipsPairs({ ...draw }))
   assert.equal(drawFlipsPairs(draw).length, FLIPS_RULE.pairsPerCheck)
   assert.equal(new Set(drawFlipsPairs(draw).map(key)).size, FLIPS_RULE.pairsPerCheck)
-  const salts = new Set(Array.from({ length: 12 }, (_, index) => drawFlipsPairs({ ...draw, salt: index.toString(16).padStart(64, '0') }).map(key).join(',')))
-  assert.ok(salts.size > 1, 'another salt draws other pairs')
+  const seeds = new Set(Array.from({ length: 12 }, (_, index) => drawFlipsPairs({ ...draw, seed: index.toString(16).padStart(64, '0') }).map(key).join(',')))
+  assert.ok(seeds.size > 1, 'another seed draws other pairs')
+  // A seed is derived per model audit and stage from a private master: publishing one reveals no other.
+  assert.notEqual(flipsSeed('ab'.repeat(32), { model: MODEL, epoch: '32', runId: 'r1', stage: 'first' }), flipsSeed('ab'.repeat(32), { model: MODEL, epoch: '32', runId: 'r2', stage: 'first' }))
   for (const pair of drawFlipsPairs(draw)) assert.ok(first.some((candidate) => key(candidate) === key(pair)))
   for (const pair of drawFlipsPairs({ ...draw, stage: 'confirm' })) assert.ok(confirm.some((candidate) => key(candidate) === key(pair)))
 })
@@ -123,7 +129,12 @@ test('a saved swap flags at the first bar, recorded only until FLIPS counts; the
   const flips = readings.find((reading) => reading.check === 'flips')!
   assert.deepEqual([flips.outcome, flips.recordedOnly], ['inconclusive', 'flag'])
   assert.equal(verdictOf(readings, 'SAME').verdict, 'SAME', 'recorded only: the audit verdict ignores it')
-  assert.deepEqual(verdictOf(readings, 'SAME', null, { countRecordedOnly: true }), { verdict: 'DIFF', flaggedBy: ['flips'], passedBy: ['kbf'], undecidedConfirmation: null })
+  // What it would be if FLIPS counted: the same record read under a counting rule, which still never counts MiniMax M3.
+  const counting = { flips: { ...FLIPS_RULE, counts: { default: true, never: ['minimax-m3'] } } }
+  assert.deepEqual(verdictOf(readingsOfEvidence({ flips: stored, exchanges: [{}] }, 'SAME', counting), 'SAME'),
+    { verdict: 'DIFF', flaggedBy: ['flips'], passedBy: ['kbf'], undecidedConfirmation: null })
+  const m3 = { ...stored, draw: { ...stored.draw, model: 'minimax-m3' } }
+  assert.equal(verdictOf(readingsOfEvidence({ flips: m3, exchanges: [{}] }, 'SAME', counting), 'SAME').verdict, 'SAME', 'MiniMax M3 never counts')
 })
 
 test('an honest saved check does not flag; between the bar and the pass it decides nothing', () => {
@@ -148,13 +159,24 @@ test('no result for a partial sample, a mixed reference, a changed request, a se
   }
   assert.match(reason(undefined, (record) => { record.pairs[0]!.seller.pop() }), /seller slots, the stage asks/)
   assert.match(reason((pair) => { pair.replies.pop() }), /reference replies, the rule asks/)
-  assert.match(reason((pair, index) => { if (index === 0) pair.replies[3]!.provider = 'other-host' }), /do not come from one provider/)
-  assert.match(reason((pair) => { pair.request = JSON.stringify({ ...JSON.parse(pair.request), max_tokens: 600 }) }), /the reference route changed the request/)
+  assert.match(reason((pair, index) => { if (index === 1) pair.replies[3]!.provider = 'other-host' }), /do not come from one proven provider/, 'across both pairs')
+  assert.match(reason((pair) => { pair.replies[5]!.request = JSON.stringify({ ...JSON.parse(pair.replies[5]!.request), max_tokens: 600 }) }), /was not asked the sellers' request/, 'every slot is compared')
+  assert.match(reason((pair) => { pair.replies[2]!.request = JSON.stringify({ ...JSON.parse(pair.replies[2]!.request), reasoning_effort: 'high' }) }), /was not asked the sellers' request/, 'an override outside the five fields shows')
+  assert.match(reason((pair) => { pair.replies[0]!.content = null }), /a reference reply could not be read/)
+  assert.match(reason((pair) => { pair.replies[1]!.reasoning = true }), /reasons in some replies and not in others/)
+  assert.match(reason(undefined, (record) => {
+    const body = flipsRequestBody(MODEL, MODEL, record.pairs[0]!.words)
+    record.pairs[0]!.seller[1]!.request = signed(body, chat('<think>random</think> amber basin'), 'think-block')
+  }), /writes its reasoning into its text/)
+  assert.match(reason(undefined, (record) => {
+    const body = flipsRequestBody(MODEL, MODEL, record.pairs[0]!.words)
+    record.pairs[0]!.seller[1]!.request = signed(body, { object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: null }, finish_reason: 'stop' }] }, 'null-text')
+  }), /a signed answer has no readable text/)
   assert.match(reason(undefined, (record) => {
     const slot = record.pairs[0]!.seller[0]!
     const body = flipsRequestBody(MODEL, MODEL, record.pairs[0]!.words)
     slot.request = signed(body, chat('amber basin', 'stop', 40), 'thinks')
-  }), /reasons where the reference does not/)
+  }), /reasons where the reference does not \(40 reasoning tokens/)
   assert.match(reason(undefined, (record) => { record.pairs[1]!.seller[2]!.request = { ...record.pairs[1]!.seller[2]!.request, responseAuth: null } }), /a scheduled slot has no reply/)
 })
 
@@ -196,7 +218,7 @@ function fakeSeller(answer: (call: number) => string, fail: (call: number) => bo
 const symbols = (pair: FlipsPair, seed: number): string => Array.from({ length: 64 }, (_, index) => pair[((seed * 7 + index * index * 3 + index) % 5) % 2]).join(' ')
 
 async function stored(seller: ReturnType<typeof fakeSeller>) {
-  const draw: FlipsDrawV1 = { auditor: '0xA1', model: MODEL, epoch: '32', salt: 'cd'.repeat(32), stage: 'first' }
+  const draw: FlipsDrawV1 = { auditor: '0xA1', model: MODEL, epoch: '32', seed: 'cd'.repeat(32), stage: 'first' }
   let referenceCall = 0
   const reference = await prepareFlipsReference({
     model: MODEL, service: MODEL, stage: 'first', pairs: drawFlipsPairs(draw),
@@ -224,10 +246,20 @@ test('a run asks every scheduled slot, asks again only a slot with no reply, and
   for (const pair of record.pairs) assert.equal(pair.seller.length, FLIPS_RULE.repliesPerPair.first)
   assert.doesNotThrow(() => validateFlips(record))
   assert.throws(() => validateFlips({ ...record, p: 0.5, outcome: 'pass' }), /does not follow from its replies/)
-  assert.throws(() => validateFlips({ ...record, draw: { ...record.draw, salt: 'ef'.repeat(32) } }), /not the ones its draw gives/)
+  assert.throws(() => validateFlips({ ...record, draw: { ...record.draw, seed: 'ef'.repeat(32) } }), /not the ones its draw gives/)
   // An empty reply is an answer: it counts as the rule says and is never asked again.
   const empty = fakeSeller((call) => (call === 1 ? '' : symbols(['amber', 'basin'], call)))
   const withEmpty = await stored(empty)
   assert.equal(withEmpty.reasks, 0)
   assert.equal(empty.calls(), FLIPS_RULE.repliesPerPair.first * FLIPS_RULE.pairsPerCheck)
+})
+
+test('the finish reason is read in each API\'s own terms', () => {
+  assert.equal(finishReasonOf({ choices: [{ finish_reason: 'length' }] }), 'length')
+  assert.equal(finishReasonOf({ stop_reason: 'max_tokens' }), 'length')
+  assert.equal(finishReasonOf({ stop_reason: 'end_turn' }), 'stop')
+  assert.equal(finishReasonOf({ stop_reason: 'refusal' }), 'content_filter')
+  assert.equal(finishReasonOf({ status: 'completed' }), 'stop')
+  assert.equal(finishReasonOf({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } }), 'length')
+  assert.equal(finishReasonOf(null), null)
 })

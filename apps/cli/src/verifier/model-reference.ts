@@ -1022,6 +1022,11 @@ export async function askReferenceReplies(input: {
    * its pin and its own overrides, and each result's `requestBody` is what was sent.
    */
   bodies?: readonly Record<string, unknown>[]
+  /**
+   * Send `bodies` as they are: the route keeps only its model, transport and provider pin, none of the bank's
+   * overrides, omissions, prefill or token floor (FLIPS: the eval's request, exactly).
+   */
+  plainRoute?: boolean
   maxTokens: number
   config: VerifierCLIConfig | undefined
   catalog?: VerifierModelCatalog | null
@@ -1040,12 +1045,15 @@ export async function askReferenceReplies(input: {
   if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
   const catalog = input.catalog ?? null
   const modelConfig = resolveVerifierModelConfig(input.config, input.model, catalog)
-  const { route } = bankReferenceRoute({
+  const { route: bankRoute } = bankReferenceRoute({
     endpoint, modelConfig, settings: input.settings, config: input.config, catalog, buyerProxyPort: input.buyerProxyPort,
   })
-  if (input.settings.provenance && input.settings.provenance.sourceId !== referenceSourceId(endpoint, route)) {
-    throw new Error(`the echo check would ask ${referenceSourceId(endpoint, route)}, but this bank was enrolled on ${input.settings.provenance.sourceId}`)
+  if (input.settings.provenance && input.settings.provenance.sourceId !== referenceSourceId(endpoint, bankRoute)) {
+    throw new Error(`the echo check would ask ${referenceSourceId(endpoint, bankRoute)}, but this bank was enrolled on ${input.settings.provenance.sourceId}`)
   }
+  const route: ReferenceRequestRoute = input.plainRoute
+    ? { ...bankRoute, requestOverrides: {}, requestOmissions: [], assistantPrefill: undefined, minMaxTokens: undefined }
+    : bankRoute
   const limiter = input.requestLimiter ?? createReferenceRequestLimiter(input.config)
   const fetchFn = input.fetchFn ?? fetch
   const timeoutMs = input.timeoutMs ?? input.settings.queryProfile.requestTimeoutMs

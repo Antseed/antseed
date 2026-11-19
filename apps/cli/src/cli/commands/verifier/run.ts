@@ -4,7 +4,7 @@ import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import { verifierRuleOverrides } from '../../../verifier/verifier-compat.js'
 import type { Command } from 'commander'
 import { randomBytes } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { canonicalHashBytes32, queryProfileHash, type KbfReferenceV1 } from '@antseed/fingerprints'
 import { modelHash, serviceHash } from '@antseed/node/payments'
@@ -138,7 +138,7 @@ import { askReferenceInputTokens, askReferenceReplies, createReferenceRequestLim
 import { TOKENIZER_PRECHECK_RULE, createTokenizerPrecheckScreen, describeTokenizerCounts, measureTokenizerReference } from '../../../verifier/tokenizer-precheck.js'
 import { createOutputCapScreen, describeOutputCapSummary } from '../../../verifier/output-cap.js'
 import { OUTPUT_ECHO_RULE, createOutputEchoScreen, outputEchoPrompt } from '../../../verifier/output-echo.js'
-import { createFlipsScreen } from '../../../verifier/flips.js'
+import { createFlipsScreen, flipsSeed, type FlipsProbe } from '../../../verifier/flips.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { closeCallRuleForExtensions, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
 import { carriedIntoConfirmation, decidedRecords, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
@@ -642,16 +642,39 @@ function evidenceRecords(evidence: ProxyAuditEvidenceV1): StoredCheckRecords {
 }
 
 /**
- * The salt of this auditor's FLIPS pairs for the epoch: 32 random bytes kept in the epoch's evidence directory, made
- * once. Nobody else can derive it before the evidence is published, so no seller can compute the pairs in advance.
+ * The auditor's private FLIPS master for the epoch: 32 random bytes in the epoch's evidence directory, readable by the
+ * owner only, made once before any lane. Only the seed derived from it for one model audit and stage (`flipsSeed`) is
+ * stored and published, so a publication reveals no other audit's pairs.
  */
-async function flipsSaltFor(evidenceDir: string, epoch: string): Promise<string> {
-  const path = join(epochDirectory(evidenceDir, epoch), 'flips-salt.json')
-  const stored = await readFile(path, 'utf8').then((text) => JSON.parse(text) as { salt?: unknown }, () => null)
-  if (typeof stored?.salt === 'string' && /^[0-9a-f]{64}$/.test(stored.salt)) return stored.salt
-  const salt = randomBytes(32).toString('hex')
-  await writeJsonAtomic(path, { version: 1, kind: 'antseed-verifier-flips-salt', epoch, salt }, true)
-  return salt
+async function flipsMasterFor(evidenceDir: string, epoch: string): Promise<string> {
+  const path = join(epochDirectory(evidenceDir, epoch), 'flips-master.key')
+  const stored = await readFile(path, 'utf8').then((text) => text.trim(), () => null)
+  if (stored && /^[0-9a-f]{64}$/.test(stored)) return stored
+  const master = randomBytes(32).toString('hex')
+  await mkdir(dirname(path), { recursive: true })
+  // `wx`: a concurrent run that made it first wins, and its master is read back.
+  await writeFile(path, `${master}\n`, { mode: 0o600, flag: 'wx' }).catch(async (error: NodeJS.ErrnoException) => {
+    if (error.code !== 'EEXIST') throw error
+  })
+  const written = (await readFile(path, 'utf8')).trim()
+  if (!/^[0-9a-f]{64}$/.test(written)) throw new Error('the FLIPS master for the epoch is unreadable')
+  return written
+}
+
+/**
+ * Dry run only (`ANTSEED_VERIFIER_FLIPS_PROBE`, JSON): chosen word pairs, a stage for every check, and a fresh-pairs
+ * follow-up after each first flag. A probed check is a diagnostic and never counts.
+ */
+function flipsProbeFromEnv(): FlipsProbe | null {
+  const raw = process.env['ANTSEED_VERIFIER_FLIPS_PROBE']
+  if (!raw) return null
+  const parsed = JSON.parse(raw) as FlipsProbe
+  const pairs = parsed.pairs?.map((pair) => [String(pair[0]), String(pair[1])] as [string, string])
+  return {
+    ...(pairs ? { pairs } : {}),
+    ...(parsed.stage === 'first' || parsed.stage === 'confirm' ? { stage: parsed.stage } : {}),
+    ...(parsed.followUpFirstFlags === true ? { followUpFirstFlags: true } : {}),
+  }
 }
 
 export function normalizeVerifierPeerId(value: string): string {
@@ -1222,6 +1245,16 @@ export async function runVerifierRound(
           buyerProxy: proxy.baseUrl,
           startedAt: startedAtMs,
         })
+        // FLIPS: the auditor's private master for the epoch, made once before any lane (`flipsMasterFor`), and its
+        // address for the draw. While FLIPS does not count, a failure here means no FLIPS this run, never a failed run.
+        const flipsMaster = config.verifier?.flips === false ? null : await flipsMasterFor(evidenceDir, epoch).catch(() => null)
+        let flipsAuditor = ''
+        try {
+          flipsAuditor = (await resolveAuditorAddress({ config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor })).address
+        } catch {
+          // The draw keeps its pairs unforeseeable through the seed; the address only sets auditors apart.
+        }
+        const flipsProbe = flipsProbeFromEnv()
         // Confirmations assigned to this auditor: which got a target (or are already answered by a
         // result this epoch), and why each of the seller's other peers did not.
         const auditedConfirmations = new Set<string>()
@@ -1660,30 +1693,25 @@ export async function runVerifierRound(
             }),
           })
           // The randomness check of this model's sellers (`createFlipsScreen`): its reference is asked once per stage
-          // and run with the sellers' own body; its pairs are drawn from this auditor's salt for the epoch.
-          // The auditor in the FLIPS draw; the salt keeps the pairs unforeseeable, the address only sets them apart.
-          const flipsAuditor = async (): Promise<string> => {
-            try {
-              return (await resolveAuditorAddress({ config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor })).address
-            } catch {
-              return ''
-            }
-          }
-          const flips = config.verifier?.flips === false ? null : createFlipsScreen<KbfReferenceV1>({
+          // and run, on a plain route with the sellers' own body; its pairs come from this model audit's seed.
+          const flips = flipsMaster === null ? null : createFlipsScreen<KbfReferenceV1>({
             model,
-            auditor: await flipsAuditor(),
+            auditor: flipsAuditor,
             epoch,
-            salt: await flipsSaltFor(evidenceDir, epoch),
+            seedFor: (stage) => flipsSeed(flipsMaster, { model, epoch, runId, stage }),
+            ...(flipsProbe ? { probe: flipsProbe } : {}),
             onReady: (reference) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, `flips-${reference.stage}`, reference),
             proxyBaseUrl: laneProxy.baseUrl,
             responseAuthReader: responseAuthReader!,
             limiter: batchLimiter,
             requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
-            ask: (settings) => async (bodies) => askReferenceReplies({
+            ask: (settings) => async (bodies, signal) => askReferenceReplies({
               model,
               settings,
               contents: [],
               bodies,
+              plainRoute: true,
+              signal,
               maxTokens: 0,
               config: config.verifier,
               catalog: await loadConfiguredVerifierModelCatalog(config.verifier),

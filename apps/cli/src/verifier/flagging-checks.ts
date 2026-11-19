@@ -46,7 +46,7 @@ export function decidedChecks(result: {
   tokenizerPrecheck?: { outcome: string }
   outputCap?: { outcome: string }
   outputEcho?: { growth?: string; fixedAmount?: string }
-  flips?: { outcome: string; counted?: boolean }
+  flips?: { outcome: string; model?: string; probe?: true }
 }): AuditCheckId[] {
   return checksWith(readingsOfSummary(result), 'flag', 'pass')
 }

@@ -87,7 +87,7 @@ export interface FlipsRule {
 /**
  * The rule new audits use. A used rule is never edited: stored evidence names its rule by id.
  *
- * Calibrations: fitted by `scripts/fit-calibration.ts` on the honest checks listed in `calibration.json`
+ * Calibrations: fitted on the eval's honest checks of each size
  * (ln score, Student-t, location = mean, scale = sd · sqrt(1 + 1/n), df = n − 1).
  */
 export const FLIPS_RULE: FlipsRule = Object.freeze({
@@ -117,7 +117,7 @@ export const FLIPS_RULE: FlipsRule = Object.freeze({
 })
 
 /**
- * How each audited model is asked, exactly as the eval asked it (its `settings.json` and `bodyFor`): the seller and the
+ * How each audited model, and each model the eval measured that may become one, is asked, exactly as the eval asked it (its `settings.json` and `bodyFor`): the seller and the
  * reference get the same body, because the calibration never saw temperature or the thinking parameter vary between
  * them. `reasoning` is the lowest setting the model accepted with no reasoning tokens; `maxTokens` is 220, or 900 for a
  * model that still thinks; Claude and GPT models were sent no temperature, every other model temperature 1. A model
@@ -137,6 +137,7 @@ const request = (reasoning: Readonly<Record<string, unknown>>, maxTokens: number
 
 export const FLIPS_REQUESTS: Readonly<Record<string, FlipsRequestSettings>> = Object.freeze({
   'claude-fable-5.1': request(MINIMAL, 220, false),
+  'claude-fable-5.2': request(MINIMAL, 220, false),
   'claude-opus-5.5': request(MINIMAL, 220, false),
   'claude-sonnet-5.5': request(MINIMAL, 220, false),
   'deepseek-v4-pro': request(OFF, 220, true),
@@ -371,9 +372,9 @@ export function flipsStatistics(content: string, pair: FlipsPair, rule: FlipsRul
  * out); `zeroVarianceT2` when both are constant at different values.
  */
 export function welchT2(reference: readonly number[], seller: readonly number[], rule: FlipsRule = FLIPS_RULE): number | null {
-  // FIX (holistic replay; Sol finding 1, Fable finding 2): a column whose values are all equal has exactly that
-  // mean and variance 0. Summing first left a rounding error in the mean (e.g. 40 x 32/63), so two equal
-  // constants gave a tiny difference over a tiny variance: a large t² where the term must be left out.
+  // A column whose values are all equal has exactly that mean and variance 0. Summing first would leave a rounding
+  // error in the mean (e.g. 40 x 32/63), so two equal constants would give a tiny difference over a tiny variance: a
+  // large t² where the term must be left out.
   const constant = (a: readonly number[]): boolean => a.every((v) => v === a[0])
   const mean = (a: readonly number[]): number => (constant(a) ? (a[0] as number) : a.reduce((s, v) => s + v, 0) / a.length)
   const variance = (a: readonly number[], m: number): number => (constant(a) ? 0 : a.reduce((s, v) => s + (v - m) ** 2, 0) / Math.max(1, a.length - 1))
