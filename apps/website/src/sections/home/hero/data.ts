@@ -27,6 +27,9 @@ export const formatFigure = (n: number): string =>
 export const ASSETS = {
   poster: '/site/assets/hero/meadow-day.webp',
   night: '/site/assets/hero/meadow-night.webp',
+  /** Centre cuts of the two stills for phones (PHONE_PAINTINGS), the part their tall card shows, at less than half the bytes. */
+  posterPhone: '/site/assets/hero/meadow-day-phone.webp',
+  nightPhone: '/site/assets/hero/meadow-night-phone.webp',
   nightLoop: '/site/assets/hero/meadow-night-loop.mp4',
   dayLoop: '/site/assets/hero/meadow-day-loop',
   seedDay: '/site/assets/hero/seed-day.webp',

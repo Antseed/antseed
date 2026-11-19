@@ -28,3 +28,15 @@ export const PAINTINGS = {
 } satisfies Record<string, Painting>;
 
 export type PaintingName = keyof typeof PAINTINGS;
+
+const LIGHT = '(prefers-color-scheme: light)';
+const DARK = '(prefers-color-scheme: dark)';
+
+/** The painting the first paint will show, asked for at once: per system theme, and per screen when it has phone cuts. */
+export function paintingPreloads({day, night, dayPhone, nightPhone}: Painting): {href: string; media: string}[] {
+  if (!dayPhone || !nightPhone) return [{href: day, media: LIGHT}, {href: night, media: DARK}];
+  return [
+    {href: day, media: `${LIGHT} and ${WIDE_PAINTINGS}`}, {href: night, media: `${DARK} and ${WIDE_PAINTINGS}`},
+    {href: dayPhone, media: `${LIGHT} and ${PHONE_PAINTINGS}`}, {href: nightPhone, media: `${DARK} and ${PHONE_PAINTINGS}`},
+  ];
+}
