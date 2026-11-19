@@ -117,7 +117,7 @@ export const FLIPS_RULE: FlipsRule = Object.freeze({
 })
 
 /**
- * How each audited model, and each model the eval measured that may become one, is asked, exactly as the eval asked it (its `settings.json` and `bodyFor`): the seller and the
+ * How each audited model, and each model the eval measured that may become one, is asked, exactly as the eval asked it: the seller and the
  * reference get the same body, because the calibration never saw temperature or the thinking parameter vary between
  * them. `reasoning` is the lowest setting the model accepted with no reasoning tokens; `maxTokens` is 220, or 900 for a
  * model that still thinks; Claude and GPT models were sent no temperature, every other model temperature 1. A model

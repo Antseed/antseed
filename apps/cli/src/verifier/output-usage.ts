@@ -71,6 +71,44 @@ export function readOutput(requestBody: Uint8Array, response: { statusCode: numb
   }
 }
 
+/**
+ * The text of one answer as the randomness check reads it, independent of billing: an answer without usage is still
+ * read. Tells "empty or filtered" from "no content": Chat `content: null` is empty only when the reply was filtered,
+ * and a Responses message of refusal parts only is a filtered reply. `text` is null when the answer has no readable
+ * text; `filtered` when it was refused.
+ */
+export function readAnswerText(responseBody: Uint8Array): {
+  text: string | null
+  filtered: boolean
+  reasoningMarker: boolean
+  reasoningTokens: number
+  shape: OutputReadingV1['shape']
+} | null {
+  const answer = parseObject(responseBody)
+  if (!answer) return null
+  const read = readAnswer(answer)
+  const counted = itemisedReasoning(answer['usage'])
+  const reasoningTokens = counted !== null && Number.isInteger(counted) && counted > 0 ? counted : 0
+  const choice = Array.isArray(answer['choices']) && isRecord(answer['choices'][0]) ? answer['choices'][0] : null
+  if (read && read.shape === 'chat' && choice && isRecord(choice['message']) && choice['message']['content'] === null) {
+    const filtered = choice['finish_reason'] === 'content_filter'
+    return { text: filtered ? '' : null, filtered, reasoningMarker: read.reasoningMarker || reasoningTokens > 0, reasoningTokens, shape: 'chat' }
+  }
+  if (answer['object'] === 'response' && Array.isArray(answer['output']) && answer['error'] == null) {
+    const messages = (answer['output'] as unknown[]).filter((item): item is Record<string, unknown> => isRecord(item) && item['type'] === 'message')
+    const parts = messages.length === 1 && Array.isArray(messages[0]!['content']) ? messages[0]!['content'] as unknown[] : null
+    if (parts && parts.length > 0 && parts.every((part) => isRecord(part) && part['type'] === 'refusal')) {
+      const reasoningMarker = (answer['output'] as unknown[]).some((item) => isRecord(item) && item['type'] === 'reasoning') || reasoningTokens > 0
+      return { text: '', filtered: true, reasoningMarker, reasoningTokens, shape: 'responses' }
+    }
+  }
+  if (!read) return null
+  const filtered = read.shape === 'messages' ? answer['stop_reason'] === 'refusal'
+    : read.shape === 'chat' ? choice?.['finish_reason'] === 'content_filter'
+      : isRecord(answer['incomplete_details']) && answer['incomplete_details']['reason'] === 'content_filter'
+  return { text: read.text, filtered, reasoningMarker: read.reasoningMarker || reasoningTokens > 0, reasoningTokens, shape: read.shape }
+}
+
 function readAnswer(answer: Record<string, unknown>): { text: string | null; finished: boolean; reasoningMarker: boolean; shape: OutputReadingV1['shape'] } | null {
   const choices = answer['choices']
   const hasError = answer['error'] !== undefined && answer['error'] !== null

@@ -1,6 +1,6 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { auditedServiceNames } from './audited-models.js'
-import { describeFlipsFlag, flipsPaidRequests, summarizeFlips, validateFlips, type FlipsV1 } from './flips.js'
+import { describeFlipsFlag, flipsPaidRequests, isFlipsRecord, isProbeDraw, summarizeFlips, validateFlips, type FlipsV1 } from './flips.js'
 import { FLIPS_RULE, flipsCounts, type FlipsRule } from './flips-score.js'
 import { describeOutputCapFlag, outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1 } from './output-cap.js'
 import { describeOutputEchoFlag, outputEchoPaidRequests, summarizeOutputEcho, validateOutputEcho, type EchoSellerAskV1, type OutputEchoV1 } from './output-echo.js'
@@ -116,6 +116,8 @@ export interface StoredAuditContext {
   records: StoredCheckRecords
   /** Who reads the record: submit its own audit, or a confirmer the first auditor's (the texts say whose). */
   reader: 'submit' | 'confirmer'
+  /** The audit around the record: the tests it confirms, and the model its reference is of. */
+  audit?: { confirming?: readonly AuditCheckId[]; referenceModel?: string }
 }
 
 export type StoredCheckRecords = { readonly [Slot in CheckSlot]?: CheckRecords[Slot] }
@@ -142,6 +144,10 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
    * diagnostic: its validation, its binding and its request times stay out of the verdict path.
    */
   counts?(record: CheckRecords[Slot]): boolean
+  /** Whether a summary of it in a published result can affect a verdict; a check with `counts` only. */
+  summaryCounts?(summary: unknown): boolean
+  /** Whether a stored value has the record's shape: a carried or checkpointed record that does not is dropped. */
+  wellFormed?(record: unknown): boolean
   /** Whether a scheduled retry carries this record; by default when a finding flagged or passed (`decidedRecords`). */
   carriedByRetry?(record: CheckRecords[Slot]): boolean
   /** The texts of a stored record that breaks the run's rules. */
@@ -248,9 +254,14 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
  * never from the stored flag alone. Chosen dry-run pairs and a malformed draw never count.
  */
 const flipsCountsFor = (record: FlipsV1, rules?: ReadingRules): boolean => {
-  const model = typeof record.draw?.model === 'string' ? record.draw.model : null
-  return model !== null && record.draw.pairs === undefined && flipsCounts(model, rules?.flips ?? FLIPS_RULE)
+  if (!isFlipsRecord(record)) return false
+  return !isProbeDraw(record.draw) && flipsCounts(record.draw.model, rules?.flips ?? FLIPS_RULE)
 }
+
+/** Whether a FLIPS summary can affect a verdict: the rule's for its model, never a probe's. */
+const flipsSummaryCounts = (summary: { model?: unknown; probe?: unknown }): boolean => (
+  typeof summary.model === 'string' && summary.probe === undefined && flipsCounts(summary.model, FLIPS_RULE)
+)
 
 export const FLIPS_CHECK: RecordCheck<'flips'> = {
   slot: 'flips',
@@ -258,17 +269,25 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
     id: 'flips', subject: 'model', label: 'the randomness check',
     // Where FLIPS does not count it is recorded only: no flag and no pass for the verdict.
     ofRecord: (record, rules) => (flipsCountsFor(record, rules) ? outcome(record.outcome, 'flag', 'pass') : 'inconclusive'),
-    ofSummary: (summary) => (typeof summary.model === 'string' && summary.probe === undefined && flipsCounts(summary.model, FLIPS_RULE)
-      ? outcome(summary.outcome, 'flag', 'pass') : 'inconclusive'),
+    ofSummary: (summary) => (flipsSummaryCounts(summary) ? outcome(summary.outcome, 'flag', 'pass') : 'inconclusive'),
     recordedOnly: (record, rules) => (flipsCountsFor(record, rules) ? null : outcome(record.outcome, 'flag', 'pass')),
   }],
   summarize: summarizeFlips,
   // Recomputed from the replies the seller signed and the reference replies stored with them.
-  validate: (record) => validateFlips(record),
+  validate(record, context) {
+    validateFlips(record)
+    // The draw is this audit's: the confirmation stage exactly when it confirms FLIPS, and the audit's own model.
+    const confirms = context.audit?.confirming?.includes('flips') ?? false
+    if ((record.draw.stage === 'confirm') !== confirms) throw new Error('the randomness check\'s stage is not the one its audit calls for')
+    const model = context.audit?.referenceModel
+    if (model !== undefined && model.toLowerCase() !== record.draw.model.toLowerCase()) throw new Error('the randomness check was drawn for another model')
+  },
   requests: (record) => record.pairs.flatMap((pair) => pair.seller.map((slot) => stored('audited', slot.request))),
   paid: flipsPaidRequests,
   describeFlag: describeFlipsFlag,
   counts: (record) => flipsCountsFor(record),
+  summaryCounts: (summary) => typeof summary === 'object' && summary !== null && flipsSummaryCounts(summary as { model?: unknown; probe?: unknown }),
+  wellFormed: isFlipsRecord,
   // A scored FLIPS is carried whatever its outcome: a p between the bar and the pass is a result, and FLIPS is never
   // drawn twice for one audit chain. A check with no score is asked again.
   carriedByRetry: (record) => record.p !== null,
@@ -373,7 +392,10 @@ export function validateStoredChecks(
   evidence: StoredCheckRecords & StoredAuditTarget,
   reader: StoredAuditContext['reader'] = 'submit',
 ): void {
-  const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence, reader }
+  const context: StoredAuditContext = {
+    auditedPeerId: evidence.target.peerId, records: evidence, reader,
+    audit: { ...(evidence.confirming ? { confirming: evidence.confirming.checks } : {}), referenceModel: evidence.reference.referenceModel },
+  }
   const seller = sellerBindingOf(evidence)
   for (const { check, record } of recordsOf(evidence)) {
     if (record == null || !countsTowardVerdict(check, record)) continue
@@ -395,6 +417,8 @@ function countsTowardVerdict(check: RecordCheck<CheckSlot>, record: CheckRecords
 export interface StoredAuditTarget {
   target: { peerId: string; service: string }
   reference: { referenceModel: string }
+  /** The tests the audit confirms, when it answers another auditor's DIFF. */
+  confirming?: { checks: readonly AuditCheckId[] }
 }
 
 /** The seller a stored audit is about, with its model's service names. */
@@ -444,11 +468,26 @@ export function validateCheckRecordsAgainstSummary(
   evidence: StoredCheckRecords & StoredAuditTarget,
   result: { readonly [Slot in CheckSlot]?: unknown },
 ): void {
-  const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence, reader: 'submit' }
+  const context: StoredAuditContext = {
+    auditedPeerId: evidence.target.peerId, records: evidence, reader: 'submit',
+    audit: { ...(evidence.confirming ? { confirming: evidence.confirming.checks } : {}), referenceModel: evidence.reference.referenceModel },
+  }
   const seller = sellerBindingOf(evidence)
   for (const { check, record } of recordsOf(evidence)) {
-    // A diagnostic (a record that cannot affect the verdict) is neither validated nor compared: it can hold up nothing.
-    if (record != null && !countsTowardVerdict(check, record)) continue
+    // A diagnostic (a record or a summary that cannot affect the verdict) is neither validated nor compared: it can
+    // hold up nothing, also when one side is missing.
+    if (check.counts !== undefined) {
+      const recordCounts = record != null && countsTowardVerdict(check, record)
+      const summary = result[check.slot]
+      const summaryCounts = summary != null && (() => {
+        try {
+          return check.summaryCounts?.(summary) ?? true
+        } catch {
+          return false
+        }
+      })()
+      if (!recordCounts && !summaryCounts) continue
+    }
     if (record != null) {
       check.validate(record, context)
       assertBoundToSeller(check.requests(record), seller, check.texts.name)
@@ -597,6 +636,11 @@ export function withoutOrphans(records: StoredCheckRecords): StoredCheckRecords 
   const kept: { [Slot in CheckSlot]?: CheckRecords[Slot] } = { ...records }
   for (const { check, record } of recordsOf(records)) {
     if (record == null) continue
+    // A record without its shape (a diagnostic from another build, a damaged checkpoint) is dropped, never read.
+    if (check.wellFormed && !check.wellFormed(record)) {
+      delete (kept as Record<string, unknown>)[check.slot]
+      continue
+    }
     if ((check.readsEarlier ?? []).some((slot) => kept[slot] == null)) delete (kept as Record<string, unknown>)[check.slot]
   }
   return kept

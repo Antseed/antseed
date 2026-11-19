@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { writeJsonAtomic } from './atomic-files.js'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1194,7 +1195,9 @@ async function audit(options: {
   /** Cap and echo screens (stand-ins in `check pipeline` tests below). */
   outputCap?: Pick<OutputCapScreen<KbfReferenceV1>, 'ready' | 'check'>
   outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
-  flips?: Pick<FlipsScreen<KbfReferenceV1>, 'check'>
+  flips?: Pick<FlipsScreen<KbfReferenceV1>, 'check'> & Partial<Pick<FlipsScreen<KbfReferenceV1>, 'probing' | 'warm'>>
+  /** Writes each checkpoint (a stand-in that fails shows what a failed write stops). */
+  writeCheckpoint?: (path: string, value: unknown) => Promise<void>
   /** Thinking discovery already done for sellers in this run. */
   sellerThinking?: Map<string, Promise<unknown>>
 }) {
@@ -1237,6 +1240,7 @@ async function audit(options: {
         ...(options.outputCap ? { outputCap: options.outputCap } : {}),
         ...(options.outputEcho ? { outputEcho: options.outputEcho } : {}),
         ...(options.flips ? { flips: options.flips } : {}),
+        ...(options.writeCheckpoint ? { writeCheckpoint: options.writeCheckpoint } : {}),
         ...(options.sellerThinking ? { sellerThinking: options.sellerThinking as never } : {}),
         ...(options.precheck === false ? {} : {
           tokenizerPrecheck: createTokenizerPrecheckScreen({
@@ -1640,6 +1644,42 @@ test('check pipeline: FLIPS runs last, on the confirmation stage only for a FLIP
   // A retry keeps a scored FLIPS whatever its outcome, so it is never drawn twice; a FLIPS with no score is asked again.
   assert.ok(decidedRecords({ flips: flipsRecord('inconclusive', true, 0.02) }).flips)
   assert.equal(decidedRecords({ flips: flipsRecord('inconclusive', true, null) }).flips, undefined)
+})
+
+test('check pipeline: a diagnostic FLIPS stops nothing: a failed checkpoint write made only for it, and a requested probe asks again over a carried record', async () => {
+  const flipsRecord = (probe: boolean): FlipsV1 => ({
+    rule: 'flips-v1', draw: { auditor: '0x00', model: MODEL, epoch: '1', seed: '00', stage: 'first', ...(probe ? { probe: true as const } : {}) }, service: SERVICE,
+    referenceUpstream: null, referenceOneProvider: true, pairs: [], reasks: 0, outcome: 'pass', counted: false, score: 1, scoreMax: null, p: 0.4, reason: 'pass',
+  })
+  // Every checkpoint write before FLIPS succeeds; the one made for FLIPS fails: the audit still finishes.
+  let flipsDone = false
+  const writeCheckpoint = async (path: string, value: unknown) => {
+    if (flipsDone) throw new Error('disk full')
+    await writeJsonAtomic(path, value)
+  }
+  const failing = await pipeline({
+    usage: MODEL_TOKENIZER, cap: capRecord('pass'), echo: echoRecord('pass'), writeCheckpoint,
+    flips: { check: async () => { flipsDone = true; return flipsRecord(false) } },
+  })
+  assert.equal(failing.result.status, 'SAME')
+  assert.equal(failing.result.flips?.outcome, 'pass')
+  // A carried record that is not a probe's is asked again when a probe is on; a probe's is carried.
+  const asked: string[] = []
+  const first = await audit({ usage: MODEL_TOKENIZER })
+  const resume = (flips: FlipsV1) => ({
+    parentAuditId: first.result.auditId, reservationAuditId: first.result.auditId, parentEvidenceHash: first.result.evidenceHash,
+    exchanges: first.evidence.exchanges, records: { tokenizerPrecheck: first.evidence.tokenizerPrecheck!, flips },
+  })
+  const probing = { probing: true, warm: () => undefined, check: async () => { asked.push('flips'); return flipsRecord(true) } }
+  const reasked = await audit({ usage: MODEL_TOKENIZER, flips: probing, resume: resume(flipsRecord(false)) })
+  assert.deepEqual(asked, ['flips'])
+  assert.equal(reasked.evidence.flips?.draw.probe, true)
+  await audit({ usage: MODEL_TOKENIZER, flips: probing, resume: resume(flipsRecord(true)) })
+  assert.deepEqual(asked, ['flips'], 'a probe\'s record is carried')
+  // A carried record without its shape is dropped and asked again, never read.
+  const damaged = await audit({ usage: MODEL_TOKENIZER, flips: probing, resume: resume({ rule: 'flips-v1' } as never) })
+  assert.deepEqual(asked, ['flips', 'flips'])
+  assert.equal(damaged.evidence.flips?.draw.probe, true)
 })
 
 test('a retry with every batch answered asks its tests with the seller\'s own thinking setting', async () => {

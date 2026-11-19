@@ -1039,7 +1039,20 @@ export async function askReferenceReplies(input: {
   upstream: ReferenceUpstreamProvenanceV1
   /** The route serves one provider: a pinned peer, a provider pin of one, or an endpoint that is not a router. */
   oneProvider: boolean
-  results: Array<{ requestBody: Uint8Array; response: { statusCode: number; body: Uint8Array } | null; provider: string | null; failure: string | null }>
+  /**
+   * The route is proven to serve one provider: a pinned Antseed peer, or OpenRouter pinned to one provider. Any other
+   * endpoint may be a router, so its unnamed answers are no one provider's (FLIPS).
+   */
+  provenOneProvider: boolean
+  results: Array<{
+    /** What was sent on the wire. */
+    requestBody: Uint8Array
+    /** What was asked: the body as the route made it, before a protocol's own rewrite. */
+    askedBody: Uint8Array
+    response: { statusCode: number; body: Uint8Array } | null
+    provider: string | null
+    failure: string | null
+  }>
 }> {
   const endpoint = input.config?.referenceEndpoint
   if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
@@ -1063,18 +1076,24 @@ export async function askReferenceReplies(input: {
     const body = given ?? { messages: [{ role: 'user', content }], max_tokens: Math.max(input.maxTokens, route.minMaxTokens ?? 0), stream: false }
     const read = (exchange: ReferenceRawExchange) => ({
       requestBody: encoder.encode(exchange.requestBody),
+      askedBody: encoder.encode(exchange.routedBody ?? exchange.requestBody),
       response: { statusCode: exchange.status, body: encoder.encode(exchange.responseBody) },
       provider: answeringProvider(exchange.responseBody),
       failure: null,
     })
+    const timeUp = 'the reference\'s time is up'
     try {
-      return read((await limiter.run(route.model, async () => {
-        if (input.signal?.aborted) throw new Error('the echo check\'s time for the reference is up')
+      // The wait for a slot (a cooldown can be long) ends at the abort too, not only the request.
+      return read((await untilAborted(limiter.run(route.model, async () => {
+        if (input.signal?.aborted) throw new Error(timeUp)
         return postChatCompletion(route, body, timeoutMs, fetchFn, input.signal)
-      })).exchange)
+      }), input.signal, timeUp)).exchange)
     } catch (error) {
+      // An empty answer, or one without usage, is still an answer: its bytes are read, never its billing.
       if (error instanceof EmptyReferenceResponseError && error.exchange) return read(error.exchange)
-      return { requestBody: encoder.encode(JSON.stringify(body)), response: null, provider: null, failure: asError(error).message.slice(0, 300) }
+      if (error instanceof ReferenceUsageMissingError) return read(error.exchange)
+      const asked = encoder.encode(JSON.stringify(applyReferenceRouteToBody(route, body)))
+      return { requestBody: asked, askedBody: asked, response: null, provider: null, failure: asError(error).message.slice(0, 300) }
     }
   }
   const asks: Array<{ content: string; body?: Record<string, unknown> }> = input.bodies
@@ -1083,13 +1102,25 @@ export async function askReferenceReplies(input: {
   const results = await Promise.all(asks.map(async ({ content, body }) => {
     let result = await ask(content, body)
     for (let retry = 1; retry < REFERENCE_INPUT_TOKENS_TRIES && result.response === null && !input.signal?.aborted; retry += 1) {
-      await sleep(retryBaseDelayMs * 3 * retry)
+      await untilAborted(sleep(retryBaseDelayMs * 3 * retry), input.signal, 'aborted').catch(() => undefined)
       if (input.signal?.aborted) break
       result = await ask(content, body)
     }
     return result
   }))
-  return { upstream: referenceUpstreamProvenance(endpoint, route), oneProvider: routeServesOneProvider(route), results }
+  return {
+    upstream: referenceUpstreamProvenance(endpoint, route),
+    oneProvider: routeServesOneProvider(route),
+    provenOneProvider: routeProvenOneProvider(route),
+    results,
+  }
+}
+
+/** A pinned Antseed peer, or OpenRouter pinned to one provider: any other endpoint may itself be a router. */
+function routeProvenOneProvider(route: ReferenceRequestRoute): boolean {
+  if (route.type === 'antseed') return true
+  const openRouter = route.upstream?.type === 'openrouter' || /openrouter\.ai/i.test(route.baseUrl)
+  return openRouter && (route.providerRouting?.order.length ?? 0) === 1
 }
 
 /** The provider an OpenRouter-style answer names; null when it names none. */
@@ -2506,6 +2537,8 @@ interface ReferenceRawExchange {
   url: string
   protocol: ReferenceUpstreamProtocol
   requestBody: string
+  /** The body as the route made it, before a protocol's own rewrite (Anthropic Messages): what was asked. */
+  routedBody?: string
   status: number
   responseBody: string
 }
@@ -2584,6 +2617,7 @@ async function postChatCompletion(
       url,
       protocol: anthropic ? 'anthropic-messages' : 'openai-chat-completions',
       requestBody,
+      routedBody: JSON.stringify(routedBody),
       status: response.status,
       responseBody,
     }
@@ -2617,7 +2651,7 @@ async function postChatCompletion(
       )
     }
     if (parsed.inputTokens === null || parsed.outputTokens === null) {
-      throw new Error(`reference endpoint omitted token usage for ${route.model}`)
+      throw new ReferenceUsageMissingError(route.model, exchange)
     }
     return {
       content: parsed.content,
@@ -2782,6 +2816,27 @@ function isContentFilterRefusal(error: unknown): boolean {
  * Asked again it often answers, so it's retried; once the retries are spent the batch goes
  * unanswered, as in the KBF reference code (`query_api` returns None), instead of ending the build.
  */
+/** An answer without token usage: no count for billing, but its bytes stay readable (`askReferenceReplies`). */
+class ReferenceUsageMissingError extends Error {
+  constructor(model: string, readonly exchange: ReferenceRawExchange) {
+    super(`reference endpoint omitted token usage for ${model}`)
+  }
+}
+
+/** Waits for `promise`, or rejects once `signal` aborts: a queued task never holds its caller past the abort. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined, message: string): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(new Error(message))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error(message))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value) },
+      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error) },
+    )
+  })
+}
+
 export class ReferenceTimeoutError extends Error {
   constructor(readonly timeoutMs: number) {
     super(`reference request timed out after ${timeoutMs}ms`)

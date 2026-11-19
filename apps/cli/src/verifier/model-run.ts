@@ -37,7 +37,7 @@ import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-se
 import { auditedServiceNames } from './audited-models.js'
 import { ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, withoutOrphans, type StoredCheckRecords } from './audit-checks.js'
 import { settleAuditVerdict } from './close-call.js'
-import { flipsCost, flipsRequestCount, summarizeFlips, type FlipsScreen, type FlipsSummary, type FlipsV1 } from './flips.js'
+import { flipsCost, flipsRequestCount, isProbeDraw, summarizeFlips, type FlipsScreen, type FlipsSummary, type FlipsV1 } from './flips.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { kbfAuditBatches } from './kbf-batching.js'
@@ -271,7 +271,7 @@ export interface ProxyVerificationContext {
    */
   outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
   /** The randomness check of this model's sellers (`flips.ts`); absent when it does not run. */
-  flips?: Pick<FlipsScreen<KbfReferenceV1>, 'check'>
+  flips?: Pick<FlipsScreen<KbfReferenceV1>, 'check'> & Partial<Pick<FlipsScreen<KbfReferenceV1>, 'probing' | 'warm'>>
 }
 
 /** What a seller's batch requests carry: its thinking suppression, token budget and timeout. */
@@ -821,7 +821,13 @@ export async function verifyModelTarget(input: {
   }
   let outputCap: OutputCapV1 | null = carried.outputCap ?? null
   let outputEcho: OutputEchoV1 | null = carried.outputEcho ?? null
-  let flips: FlipsV1 | null = carried.flips ?? null
+  // FLIPS's stage, and its reference asked while the questions run: FLIPS then adds only the seller's own time.
+  const flipsStage = input.confirming?.checks.includes('flips') ? 'confirm' as const : 'first' as const
+  // A requested probe is asked even where a record that is no probe's was carried, and that record is not kept.
+  const flipsToAsk = runsTests && input.context.flips !== undefined
+    && (carried.flips == null || (input.context.flips.probing === true && !isProbeDraw(carried.flips.draw)))
+  let flips: FlipsV1 | null = flipsToAsk ? null : carried.flips ?? null
+  if (flipsToAsk) input.context.flips!.warm?.(input.service, input.reference, flipsStage)
   /** The tests finished so far, as the checkpoint and the evidence store them. */
   const records = (): StoredCheckRecords => ({
     ...(precheck ? { tokenizerPrecheck: precheck } : {}),
@@ -847,7 +853,8 @@ export async function verifyModelTarget(input: {
   const discoveryCost = discovery?.fresh ? summarizeDiscoveryCosts(discovery.record.attempts) : null
   let checkpointTail = Promise.resolve()
   let checkpointFailure: Error | null = null
-  const persistCheckpoint = async (): Promise<void> => {
+  /** `bestEffort`: a write made only for a diagnostic (FLIPS) never stops the audit when it fails. */
+  const persistCheckpoint = async (options: { bestEffort?: boolean } = {}): Promise<void> => {
     const snapshot = [...exchangeByBatch.values()].sort((left, right) => left.batchIndex - right.batchIndex)
     const checkpoint: ModelAuditCheckpointV1 = {
       version: 2,
@@ -875,6 +882,7 @@ export async function verifyModelTarget(input: {
           await (input.context.writeCheckpoint ?? writeJsonAtomic)(path, checkpoint)
           return
         } catch (error) {
+          if (attempt === 1 && options.bestEffort) return
           if (attempt === 1) {
             checkpointFailure = new Error(`audit stopped: checkpoint could not be persisted at ${path}; resume from the last durable checkpoint`, { cause: error })
             deadline.controller.abort()
@@ -989,13 +997,16 @@ export async function verifyModelTarget(input: {
       }
       // FLIPS last: its stage is `confirm` only when this audit confirms another auditor's FLIPS flag.
       const flipsScreen = input.context.flips
-      if (flips === null && flipsScreen && timeLeft()) {
-        flips = await flipsScreen.check(sellerTarget, input.reference, {
-          stage: input.confirming?.checks.includes('flips') ? 'confirm' : 'first',
+      if (flipsToAsk && flipsScreen && timeLeft()) {
+        const asked = await flipsScreen.check(sellerTarget, input.reference, {
+          stage: flipsStage,
           clock: clock(),
           signal: deadline.controller.signal,
         })
-        if (flips) await persistCheckpoint()
+        if (asked) {
+          flips = asked
+          await persistCheckpoint({ bestEffort: true })
+        }
       }
     } catch (error) {
       deadline.close()
@@ -1099,7 +1110,7 @@ export async function verifyModelTarget(input: {
     ...(precheck && !carried.tokenizerPrecheck ? { tokenizerPrecheck: precheck } : {}),
     ...(outputCap && !carried.outputCap ? { outputCap } : {}),
     ...(outputEcho && !carried.outputEcho ? { outputEcho } : {}),
-    ...(flips && !carried.flips ? { flips } : {}),
+    ...(flips && flips !== carried.flips ? { flips } : {}),
   }
   const extraCosts = [...testCosts(fresh), discoveryCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
   const withExtras = (summary: AuditCostSummaryV1) => addAuditCostSummaries(summary, ...extraCosts)

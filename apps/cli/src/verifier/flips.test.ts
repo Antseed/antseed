@@ -5,15 +5,22 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
-import { readingsOfEvidence, verdictOf } from './audit-checks.js'
+import { FLIPS_CHECK, readingsOfEvidence, validateCheckRecordsAgainstSummary, verdictOf, withoutOrphans, type AuditCheckId } from './audit-checks.js'
 import { FLIPS_RULE, flipsCounts, flipsRequestBody, isValidFlipsPair, type FlipsPair, type FlipsRule } from './flips-score.js'
 import {
   FLIPS_WORDS,
   drawFlipsPairs,
+  createFlipsScreen,
   finishReasonOf,
+  flipsReferenceProblem,
+  flipsRequestCount,
   flipsSeed,
   flipsPool,
+  isFlipsRecord,
   judgeFlips,
+  readFlipsAnswer,
+  summarizeFlips,
+  type FlipsUnavailable,
   prepareFlipsReference,
   runFlips,
   validateFlips,
@@ -163,7 +170,9 @@ test('no result for a partial sample, a mixed reference, a changed request, a se
   assert.match(reason((pair) => { pair.replies[5]!.request = JSON.stringify({ ...JSON.parse(pair.replies[5]!.request), max_tokens: 600 }) }), /was not asked the sellers' request/, 'every slot is compared')
   assert.match(reason((pair) => { pair.replies[2]!.request = JSON.stringify({ ...JSON.parse(pair.replies[2]!.request), reasoning_effort: 'high' }) }), /was not asked the sellers' request/, 'an override outside the five fields shows')
   assert.match(reason((pair) => { pair.replies[0]!.content = null }), /a reference reply could not be read/)
-  assert.match(reason((pair) => { pair.replies[1]!.reasoning = true }), /reasons in some replies and not in others/)
+  // The reasoning profile is a share over both pairs: neither at most 10% nor at least 90% is no profile.
+  assert.match(reason((pair) => { for (const reply of pair.replies.slice(0, Math.ceil(pair.replies.length / 4))) reply.reasoning = true }), /the reference reasons in \d+ of \d+ replies: neither/)
+  assert.match(reason((pair, index) => { if (index === 0) for (const reply of pair.replies) reply.reasoning = true }), /the reference reasons in \d+ of \d+ replies: neither/, 'one pair reasons, the other does not')
   assert.match(reason(undefined, (record) => {
     const body = flipsRequestBody(MODEL, MODEL, record.pairs[0]!.words)
     record.pairs[0]!.seller[1]!.request = signed(body, chat('<think>random</think> amber basin'), 'think-block')
@@ -172,11 +181,26 @@ test('no result for a partial sample, a mixed reference, a changed request, a se
     const body = flipsRequestBody(MODEL, MODEL, record.pairs[0]!.words)
     record.pairs[0]!.seller[1]!.request = signed(body, { object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: null }, finish_reason: 'stop' }] }, 'null-text')
   }), /a signed answer has no readable text/)
+  // The seller's profile is read the same way, in both directions, with the counts of both sides.
+  const sellerReasons = (share: number) => (record: ReturnType<typeof recordOf>['record']) => {
+    record.pairs.forEach((pair, pairIndex) => pair.seller.forEach((slot, index) => {
+      if (index >= Math.round(pair.seller.length * share)) return
+      const reply = saved.pairs[pairIndex]!.seller[index]!
+      slot.request = signed(flipsRequestBody(MODEL, MODEL, pair.words), chat(reply.content, reply.finishReason ?? 'stop', 40), `thinks-${pairIndex}-${index}`)
+    }))
+  }
+  assert.match(reason(undefined, sellerReasons(1)), /the seller reasons where the reference does not \(\d+ of \d+ replies, \d+ reasoning tokens, against 0 of/)
+  assert.match(reason(undefined, sellerReasons(0.5)), /the seller reasons in some replies and not in others/)
+  assert.match(reason((pair) => { for (const reply of pair.replies) reply.reasoning = true }), /the seller does not reason where the reference does/)
+  const { record: reasoning, rule: reasoningRule } = recordOf(saved, 'first')
+  sellerReasons(1)(reasoning)
+  assert.deepEqual(judgeFlips(reasoning, reasoningRule).profileMismatch?.code, 'seller-reasons')
+  // One reasoning reply in a whole profile is still that profile: it scores.
+  const { record: oneOff, rule: oneOffRule } = recordOf(saved, 'first', (pair, index) => { if (index === 0) pair.replies[0]!.reasoning = true })
+  assert.notEqual(judgeFlips(oneOff, oneOffRule).p, null)
   assert.match(reason(undefined, (record) => {
-    const slot = record.pairs[0]!.seller[0]!
-    const body = flipsRequestBody(MODEL, MODEL, record.pairs[0]!.words)
-    slot.request = signed(body, chat('amber basin', 'stop', 40), 'thinks')
-  }), /reasons where the reference does not \(40 reasoning tokens/)
+    record.pairs[0]!.seller[2]!.request = signed(flipsRequestBody(MODEL, MODEL, record.pairs[0]!.words), chat(`${record.pairs[0]!.words[0]} `.repeat(1300)), 'long')
+  }), /longer than 6000 characters/)
   assert.match(reason(undefined, (record) => { record.pairs[1]!.seller[2]!.request = { ...record.pairs[1]!.seller[2]!.request, responseAuth: null } }), /a scheduled slot has no reply/)
 })
 
@@ -262,4 +286,117 @@ test('the finish reason is read in each API\'s own terms', () => {
   assert.equal(finishReasonOf({ status: 'completed' }), 'stop')
   assert.equal(finishReasonOf({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } }), 'length')
   assert.equal(finishReasonOf(null), null)
+})
+
+test('a stored FLIPS is the audit\'s own: the confirmation stage exactly when it confirms FLIPS, and the audit\'s model', async () => {
+  const record = await stored(fakeSeller((call) => symbols(['amber', 'basin'], call + 300)))
+  const context = (audit: { confirming?: AuditCheckId[]; referenceModel?: string }) => ({ auditedPeerId: PEER, records: {}, reader: 'submit' as const, audit })
+  assert.doesNotThrow(() => FLIPS_CHECK.validate(record, context({ referenceModel: MODEL })))
+  assert.throws(() => FLIPS_CHECK.validate(record, context({ confirming: ['flips'], referenceModel: MODEL })), /stage is not the one its audit calls for/)
+  assert.doesNotThrow(() => FLIPS_CHECK.validate(record, context({ confirming: ['output-cap'], referenceModel: MODEL })), 'a confirmation of another test is a first look for FLIPS')
+  assert.throws(() => FLIPS_CHECK.validate(record, context({ referenceModel: 'gpt-6-astra' })), /drawn for another model/)
+})
+
+test('an answer is read from its own bytes: without usage, empty only when filtered, a structured refusal is a filtered reply', () => {
+  const read = (answer: unknown) => readFlipsAnswer(new Uint8Array(), { statusCode: 200, body: bytes(answer) })
+  const { usage: _usage, ...noUsage } = chat('amber basin')
+  assert.equal(read(noUsage).reply.content, 'amber basin', 'billing is not reading')
+  assert.deepEqual(read(chat(null, 'content_filter')).reply, { content: '', finishReason: 'content_filter' })
+  assert.equal(read(chat(null, 'stop')).reply.content, null, 'no content is not an empty reply')
+  const refusal = { object: 'response', status: 'completed', output: [{ type: 'message', content: [{ type: 'refusal', refusal: 'no' }] }] }
+  assert.deepEqual(read(refusal).reply, { content: '', finishReason: 'content_filter' })
+  assert.equal(read(chat('<think>x</think> amber')).thinkBlock, true)
+  assert.equal(read(chat('amber', 'stop', 12)).reasoningTokens, 12)
+})
+
+/** A FLIPS screen over stand-in reference and seller endpoints; `askReference` sees every reference call. */
+function screenOf(options: {
+  seller: ReturnType<typeof fakeSeller>
+  rule?: FlipsRule
+  probe?: Parameters<typeof createFlipsScreen>[0]['probe']
+  askReference?: (call: number) => void
+  provider?: (index: number) => string | null
+}) {
+  const events: FlipsUnavailable[] = []
+  let referenceCalls = 0
+  let replyIndex = 0
+  const screen = createFlipsScreen<null>({
+    model: MODEL, auditor: '0xA1', epoch: '32', seedFor: (stage) => flipsSeed('ab'.repeat(32), { model: MODEL, epoch: '32', runId: 'r', stage }),
+    proxyBaseUrl: 'http://127.0.0.1:1', responseAuthReader: options.seller.responseAuthReader as never, limiter: new ConcurrencyLimiter(8),
+    fetchFn: options.seller.fetchFn, ...(options.rule ? { rule: options.rule } : {}), ...(options.probe ? { probe: options.probe } : {}),
+    onUnavailable: (event) => events.push(event),
+    ask: () => async (bodies) => {
+      options.askReference?.(++referenceCalls)
+      return {
+        upstream: { kind: 'test' }, oneProvider: true,
+        results: bodies.map((body) => {
+          const pair = ((body['messages'] as Array<{ content: string }>)[0]!.content.match(/\{(\w+), (\w+)\}/)!.slice(1)) as unknown as FlipsPair
+          const index = replyIndex++
+          return { requestBody: bytes(body), response: { statusCode: 200, body: bytes(chat(symbols(pair, index + 900))) }, provider: options.provider?.(index) ?? null, failure: null }
+        }),
+      }
+    },
+  })
+  return { screen, events }
+}
+
+const SELLER = { peerId: PEER, service: MODEL }
+
+test('a probe marks every record it asks, and a follow-up of a first flag draws fresh pairs, is paid for, and keeps the flag when it fails', async () => {
+  // A stage-only probe is still a probe: it never counts, even under a rule that counts FLIPS for this model.
+  const counting: FlipsRule = { ...FLIPS_RULE, counts: { default: true, never: [] } }
+  const staged = await screenOf({ seller: fakeSeller((call) => symbols(['amber', 'basin'], call)), rule: counting, probe: { stage: 'first' } }).screen.check(SELLER, null, { stage: 'first' })
+  assert.equal(staged!.draw.probe, true)
+  assert.equal(staged!.counted, false)
+  assert.equal(summarizeFlips(staged!).probe, true)
+  assert.equal(FLIPS_CHECK.findings[0]!.ofRecord(staged!, { flips: counting }), 'inconclusive')
+  // Every scored check flags under this bar, so each one is followed up.
+  const flagging: FlipsRule = { ...FLIPS_RULE, bar: { first: 1, confirm: 0.001 } }
+  const chosen = flipsPool('confirm').slice(0, 2)
+  const followed = await screenOf({ seller: fakeSeller((call) => symbols(['amber', 'basin'], call + 7)), rule: flagging, probe: { pairs: chosen, followUpFirstFlags: true } }).screen.check(SELLER, null, { stage: 'first' })
+  assert.equal(followed!.outcome, 'flag')
+  const followUp = followed!.followUp!
+  assert.equal(followUp.draw.stage, 'confirm')
+  assert.equal(followUp.draw.probe, true)
+  const key = (pair: readonly string[]) => [...pair].sort().join('/')
+  assert.deepEqual(followed!.pairs.map((pair) => key(pair.words)), chosen.map(key))
+  assert.equal(followUp.pairs.filter((pair) => chosen.some((other) => key(other) === key(pair.words))).length, 0, 'chosen pairs are not asked again')
+  assert.equal(flipsRequestCount(followed!), FLIPS_RULE.repliesPerPair.first * 2 + FLIPS_RULE.repliesPerPair.confirm * 2, 'the follow-up is in the cost')
+  assert.doesNotThrow(() => validateFlips(followed!))
+  // The follow-up's reference fails: the first flag stands, with why.
+  const failed = screenOf({ seller: fakeSeller((call) => symbols(['amber', 'basin'], call + 7)), rule: flagging, probe: { followUpFirstFlags: true }, askReference: (call) => { if (call === 2) throw new Error('reference down') } })
+  const kept = await failed.screen.check(SELLER, null, { stage: 'first' })
+  assert.equal(kept!.outcome, 'flag')
+  assert.equal(kept!.followUp, undefined)
+  assert.match(kept!.followUpFailed!, /reference down/)
+  assert.deepEqual(failed.events.map((event) => `${event.stage} ${event.code}`), ['follow-up reference-failed', 'follow-up follow-up-failed'])
+})
+
+test('a FLIPS that cannot run says why, once per model and stage, and costs the seller nothing', async () => {
+  // The reference fails: every seller gets no record, and the reason is reported once.
+  const seller = fakeSeller((call) => symbols(['amber', 'basin'], call))
+  const down = screenOf({ seller, askReference: () => { throw new Error('reference down') } })
+  assert.equal(await down.screen.check(SELLER, null, { stage: 'first' }), null)
+  assert.equal(await down.screen.check({ ...SELLER, peerId: 'cd'.repeat(20) }, null, { stage: 'first' }), null)
+  assert.deepEqual(down.events, [{ stage: 'first', code: 'reference-failed', detail: 'reference down' }])
+  assert.equal(seller.calls(), 0)
+  // The reference answers from two providers: unusable, checked before the seller is asked.
+  const mixed = screenOf({ seller, provider: (index) => (index === 5 ? 'other-host' : 'host') })
+  const record = await mixed.screen.check(SELLER, null, { stage: 'first' })
+  assert.equal(record!.outcome, 'inconclusive')
+  assert.match(record!.reason, /one proven provider/)
+  assert.equal(seller.calls(), 0)
+  assert.deepEqual(mixed.events.map((event) => event.code), ['reference-unusable'])
+  // Unnamed answers on a route not proven to serve one provider are no one provider's.
+  const unproven = flipsReferenceProblem({ draw: record!.draw, service: MODEL, referenceOneProvider: false, pairs: record!.pairs.map((pair) => ({ ...pair.reference, replies: pair.reference.replies.map((reply) => ({ ...reply, provider: null })) })) })
+  assert.match(unproven!, /one proven provider/)
+})
+
+test('a carried record without the shape of a FLIPS record is dropped; a FLIPS summary with no record holds up nothing while it cannot count', () => {
+  assert.equal(isFlipsRecord({ rule: 'flips-v1' }), false)
+  assert.deepEqual(withoutOrphans({ flips: { rule: 'flips-v1', draw: null } as never }), {})
+  const evidence = { target: { peerId: PEER, service: MODEL }, reference: { referenceModel: MODEL } }
+  const summary = { rule: 'flips-v1', model: MODEL, stage: 'first', outcome: 'flag', counted: false, p: 0.001, score: 3, reason: 'x' }
+  assert.doesNotThrow(() => validateCheckRecordsAgainstSummary(evidence as never, { flips: summary }))
+  assert.doesNotThrow(() => validateCheckRecordsAgainstSummary(evidence as never, { flips: { ...summary, model: 'minimax-m3' } }))
 })

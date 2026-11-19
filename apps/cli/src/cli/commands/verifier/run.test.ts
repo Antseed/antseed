@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
@@ -28,6 +28,8 @@ import {
   validateAssignedModeOptions,
   confirmationPlanKey,
   unauditedConfirmations,
+  flipsMasterFor,
+  parseFlipsProbe,
   type ResumeCandidate,
 } from './run.js'
 
@@ -499,4 +501,46 @@ test('a retry after an extra set carries the settled tests of its seller file, c
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('the FLIPS key is made once, atomically, readable by its owner only; a key others can read is refused', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-flips-key-'))
+  try {
+    const keys = await Promise.all(Array.from({ length: 6 }, () => flipsMasterFor(dir, '7')))
+    assert.equal(new Set(keys).size, 1, 'concurrent runs share one key')
+    assert.match(keys[0]!, /^[0-9a-f]{64}$/)
+    assert.equal(await flipsMasterFor(dir, '7'), keys[0])
+    const keyAt = await findKey(dir)
+    const path = join(dir, ...keyAt)
+    const files = await readdir(dirname(path))
+    assert.equal(files.filter((name) => name.endsWith('.tmp')).length, 0, 'no partial file is left')
+    await chmod(path, 0o644)
+    await assert.rejects(flipsMasterFor(dir, '7'), /readable by others/)
+    await chmod(path, 0o600)
+    await writeFile(path, '')
+    await assert.rejects(flipsMasterFor(dir, '7'), /unreadable/, 'an empty key is never taken for a new one')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+async function findKey(root: string, at: string[] = []): Promise<string[]> {
+  for (const entry of await readdir(join(root, ...at), { withFileTypes: true })) {
+    if (entry.isFile() && entry.name === 'flips-master.key') return [...at, entry.name]
+    if (entry.isDirectory()) {
+      const found = await findKey(root, [...at, entry.name]).catch(() => [])
+      if (found.length) return found
+    }
+  }
+  return []
+}
+
+test('a FLIPS probe value that cannot be read is no probe, with the reason, and never stops the run', () => {
+  assert.deepEqual(parseFlipsProbe(undefined), { probe: null, problem: null })
+  assert.match(parseFlipsProbe('{nope').problem!, /not JSON/)
+  assert.match(parseFlipsProbe('[]').problem!, /not an object/)
+  assert.match(parseFlipsProbe('{"pairs":[["amber","amber"],["dune","ember"]]}').problem!, /pairs must be/)
+  assert.match(parseFlipsProbe('{"stage":"third"}').problem!, /stage must be/)
+  assert.deepEqual(parseFlipsProbe('{"stage":"confirm","followUpFirstFlags":true}'), { probe: { stage: 'confirm', followUpFirstFlags: true }, problem: null })
+  assert.deepEqual(parseFlipsProbe('{"pairs":[["amber","basin"],["dune","ember"]]}').probe, { pairs: [['amber', 'basin'], ['dune', 'ember']] })
 })

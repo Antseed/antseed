@@ -4,7 +4,7 @@ import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import { verifierRuleOverrides } from '../../../verifier/verifier-compat.js'
 import type { Command } from 'commander'
 import { randomBytes } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { link, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { canonicalHashBytes32, queryProfileHash, type KbfReferenceV1 } from '@antseed/fingerprints'
 import { modelHash, serviceHash } from '@antseed/node/payments'
@@ -138,7 +138,8 @@ import { askReferenceInputTokens, askReferenceReplies, createReferenceRequestLim
 import { TOKENIZER_PRECHECK_RULE, createTokenizerPrecheckScreen, describeTokenizerCounts, measureTokenizerReference } from '../../../verifier/tokenizer-precheck.js'
 import { createOutputCapScreen, describeOutputCapSummary } from '../../../verifier/output-cap.js'
 import { OUTPUT_ECHO_RULE, createOutputEchoScreen, outputEchoPrompt } from '../../../verifier/output-echo.js'
-import { createFlipsScreen, flipsSeed, type FlipsProbe } from '../../../verifier/flips.js'
+import { createFlipsScreen, flipsSeed, type FlipsProbe, type FlipsUnavailable } from '../../../verifier/flips.js'
+import { FLIPS_RULE, isValidFlipsPair } from '../../../verifier/flips-score.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { closeCallRuleForExtensions, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
 import { carriedIntoConfirmation, decidedRecords, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
@@ -644,36 +645,92 @@ function evidenceRecords(evidence: ProxyAuditEvidenceV1): StoredCheckRecords {
 /**
  * The auditor's private FLIPS master for the epoch: 32 random bytes in the epoch's evidence directory, readable by the
  * owner only, made once before any lane. Only the seed derived from it for one model audit and stage (`flipsSeed`) is
- * stored and published, so a publication reveals no other audit's pairs.
+ * stored and published, so a publication reveals no other audit's pairs. Made atomically: written in full to a file of
+ * its own, then linked into place, so a crash leaves no empty key and a concurrent run's key wins. Throws when the key
+ * is unreadable or readable by others.
  */
-async function flipsMasterFor(evidenceDir: string, epoch: string): Promise<string> {
+export async function flipsMasterFor(evidenceDir: string, epoch: string): Promise<string> {
   const path = join(epochDirectory(evidenceDir, epoch), 'flips-master.key')
-  const stored = await readFile(path, 'utf8').then((text) => text.trim(), () => null)
-  if (stored && /^[0-9a-f]{64}$/.test(stored)) return stored
-  const master = randomBytes(32).toString('hex')
+  const readKey = async (): Promise<string | null> => {
+    const info = await stat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    })
+    if (!info) return null
+    if ((info.mode & 0o077) !== 0) throw new Error(`the FLIPS key for epoch ${epoch} is readable by others (mode ${(info.mode & 0o777).toString(8)})`)
+    const text = (await readFile(path, 'utf8')).trim()
+    if (!/^[0-9a-f]{64}$/.test(text)) throw new Error(`the FLIPS key for epoch ${epoch} is unreadable`)
+    return text
+  }
+  const stored = await readKey()
+  if (stored) return stored
   await mkdir(dirname(path), { recursive: true })
-  // `wx`: a concurrent run that made it first wins, and its master is read back.
-  await writeFile(path, `${master}\n`, { mode: 0o600, flag: 'wx' }).catch(async (error: NodeJS.ErrnoException) => {
-    if (error.code !== 'EEXIST') throw error
-  })
-  const written = (await readFile(path, 'utf8')).trim()
-  if (!/^[0-9a-f]{64}$/.test(written)) throw new Error('the FLIPS master for the epoch is unreadable')
-  return written
+  const temporary = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
+  await writeFile(temporary, `${randomBytes(32).toString('hex')}\n`, { mode: 0o600, flag: 'wx' })
+  try {
+    await link(temporary, path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EEXIST') throw error
+    })
+  } finally {
+    await unlink(temporary).catch(() => undefined)
+  }
+  const made = await readKey()
+  if (!made) throw new Error(`the FLIPS key for epoch ${epoch} could not be made`)
+  return made
 }
 
 /**
  * Dry run only (`ANTSEED_VERIFIER_FLIPS_PROBE`, JSON): chosen word pairs, a stage for every check, and a fresh-pairs
- * follow-up after each first flag. A probed check is a diagnostic and never counts.
+ * follow-up after each first flag. A probed check is a diagnostic and never counts. A value that cannot be read is no
+ * probe, with the reason: it never stops the run.
  */
-function flipsProbeFromEnv(): FlipsProbe | null {
-  const raw = process.env['ANTSEED_VERIFIER_FLIPS_PROBE']
-  if (!raw) return null
-  const parsed = JSON.parse(raw) as FlipsProbe
-  const pairs = parsed.pairs?.map((pair) => [String(pair[0]), String(pair[1])] as [string, string])
+export function parseFlipsProbe(raw: string | undefined): { probe: FlipsProbe | null; problem: string | null } {
+  if (!raw) return { probe: null, problem: null }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE is not JSON' }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE is not an object' }
+  const value = parsed as { pairs?: unknown; stage?: unknown; followUpFirstFlags?: unknown }
+  let pairs: Array<[string, string]> | undefined
+  if (value.pairs !== undefined) {
+    if (!Array.isArray(value.pairs) || value.pairs.length !== FLIPS_RULE.pairsPerCheck
+      || !value.pairs.every((pair) => Array.isArray(pair) && pair.length === 2 && isValidFlipsPair([String(pair[0]), String(pair[1])]))) {
+      return { probe: null, problem: `ANTSEED_VERIFIER_FLIPS_PROBE pairs must be ${FLIPS_RULE.pairsPerCheck} pairs of two different words` }
+    }
+    pairs = (value.pairs as unknown[][]).map((pair) => [String(pair[0]), String(pair[1])])
+  }
+  if (value.stage !== undefined && value.stage !== 'first' && value.stage !== 'confirm') return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE stage must be first or confirm' }
+  if (value.followUpFirstFlags !== undefined && typeof value.followUpFirstFlags !== 'boolean') return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE followUpFirstFlags must be true or false' }
   return {
-    ...(pairs ? { pairs } : {}),
-    ...(parsed.stage === 'first' || parsed.stage === 'confirm' ? { stage: parsed.stage } : {}),
-    ...(parsed.followUpFirstFlags === true ? { followUpFirstFlags: true } : {}),
+    probe: {
+      ...(pairs ? { pairs } : {}),
+      ...(value.stage === 'first' || value.stage === 'confirm' ? { stage: value.stage } : {}),
+      ...(value.followUpFirstFlags === true ? { followUpFirstFlags: true } : {}),
+    },
+    problem: null,
+  }
+}
+
+/**
+ * The FLIPS status of one model in one run, beside its audits: every stage with no result and why (the reference
+ * failed or is unusable, a check failed, the key failed), and the probe when one is on. Best effort, never published.
+ */
+function flipsStatusRecorder(path: string, model: string, base: { probe?: FlipsProbe; keyFailed?: string }, warn: (line: string) => void) {
+  const status: { version: 1; kind: 'antseed-verifier-flips-status'; model: string; probe?: FlipsProbe; keyFailed?: string; unavailable: FlipsUnavailable[] } = {
+    version: 1, kind: 'antseed-verifier-flips-status', model, ...base, unavailable: [],
+  }
+  let tail = Promise.resolve()
+  const write = (): void => {
+    tail = tail.then(() => writeJsonAtomic(path, status, true)).catch(() => undefined)
+  }
+  write()
+  return (event: FlipsUnavailable): void => {
+    status.unavailable.push(event)
+    warn(`FLIPS ${model} ${event.stage}: no result (${event.code}): ${event.detail}`)
+    write()
   }
 }
 
@@ -1247,14 +1304,28 @@ export async function runVerifierRound(
         })
         // FLIPS: the auditor's private master for the epoch, made once before any lane (`flipsMasterFor`), and its
         // address for the draw. While FLIPS does not count, a failure here means no FLIPS this run, never a failed run.
-        const flipsMaster = config.verifier?.flips === false ? null : await flipsMasterFor(evidenceDir, epoch).catch(() => null)
+        const flipsOn = config.verifier?.flips !== false
+        let flipsKeyFailed: string | null = null
+        const flipsMaster = !flipsOn ? null : await flipsMasterFor(evidenceDir, epoch).catch((error: unknown) => {
+          flipsKeyFailed = asError(error).message
+          console.warn(chalk.yellow(`FLIPS: no randomness check this run: ${flipsKeyFailed}`))
+          return null
+        })
+        // A resumed run keeps the seeds of the run it resumes, so an unfinished FLIPS is drawn as before.
+        const flipsRunId = requestedResumeManifest?.runId ?? runId
+        // FLIPS's own limiters: its reference and seller requests never queue with the questions'.
+        const flipsReferenceLimiter = createReferenceRequestLimiter(config.verifier)
+        const flipsSellerLimiter = new ConcurrencyLimiter(config.verifier?.auditMaxConcurrentBatches ?? 24)
         let flipsAuditor = ''
         try {
           flipsAuditor = (await resolveAuditorAddress({ config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor })).address
         } catch {
           // The draw keeps its pairs unforeseeable through the seed; the address only sets auditors apart.
         }
-        const flipsProbe = flipsProbeFromEnv()
+        const parsedProbe = flipsOn ? parseFlipsProbe(process.env['ANTSEED_VERIFIER_FLIPS_PROBE']) : { probe: null, problem: null }
+        if (parsedProbe.problem) console.warn(chalk.yellow(`FLIPS: probe ignored: ${parsedProbe.problem}`))
+        const flipsProbe = parsedProbe.probe
+        if (flipsProbe) console.warn(chalk.yellow(`FLIPS: dry-run probe on (${JSON.stringify(flipsProbe)}): every FLIPS record is a diagnostic`))
         // Confirmations assigned to this auditor: which got a target (or are already answered by a
         // result this epoch), and why each of the seller's other peers did not.
         const auditedConfirmations = new Set<string>()
@@ -1694,30 +1765,41 @@ export async function runVerifierRound(
           })
           // The randomness check of this model's sellers (`createFlipsScreen`): its reference is asked once per stage
           // and run, on a plain route with the sellers' own body; its pairs come from this model audit's seed.
+          const flipsUnavailable = flipsOn ? flipsStatusRecorder(
+            join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'flips-status.json'),
+            model,
+            { ...(flipsProbe ? { probe: flipsProbe } : {}), ...(flipsKeyFailed ? { keyFailed: flipsKeyFailed } : {}) },
+            (line) => runProgress ? runProgress.above(() => console.warn(chalk.yellow(line))) : console.warn(chalk.yellow(line)),
+          ) : null
           const flips = flipsMaster === null ? null : createFlipsScreen<KbfReferenceV1>({
             model,
             auditor: flipsAuditor,
             epoch,
-            seedFor: (stage) => flipsSeed(flipsMaster, { model, epoch, runId, stage }),
+            seedFor: (stage) => flipsSeed(flipsMaster, { model, epoch, runId: flipsRunId, stage }),
             ...(flipsProbe ? { probe: flipsProbe } : {}),
             onReady: (reference) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, `flips-${reference.stage}`, reference),
+            ...(flipsUnavailable ? { onUnavailable: flipsUnavailable } : {}),
             proxyBaseUrl: laneProxy.baseUrl,
             responseAuthReader: responseAuthReader!,
-            limiter: batchLimiter,
+            limiter: flipsSellerLimiter,
             requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
-            ask: (settings) => async (bodies, signal) => askReferenceReplies({
-              model,
-              settings,
-              contents: [],
-              bodies,
-              plainRoute: true,
-              signal,
-              maxTokens: 0,
-              config: config.verifier,
-              catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
-              buyerProxyPort: config.buyer.proxyPort,
-              requestLimiter: precheckReferenceLimiter,
-            }),
+            // Only a route proven to serve one provider (a pinned peer, or OpenRouter pinned to one) vouches for unnamed answers.
+            ask: (settings) => async (bodies, signal) => {
+              const asked = await askReferenceReplies({
+                model,
+                settings,
+                contents: [],
+                bodies,
+                plainRoute: true,
+                signal,
+                maxTokens: 0,
+                config: config.verifier,
+                catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
+                buyerProxyPort: config.buyer.proxyPort,
+                requestLimiter: flipsReferenceLimiter,
+              })
+              return { ...asked, oneProvider: asked.provenOneProvider }
+            },
           })
           // First audits and extra sets share timeouts and concurrency; only where evidence goes differs.
           const verificationContext = (peer: PeerInfo, auditEvidenceDir: string): ProxyVerificationContext => ({

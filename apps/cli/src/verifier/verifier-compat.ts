@@ -67,7 +67,7 @@ import { ECHO_CROWD_TIME_LIMIT_MS, OUTPUT_ECHO_RULE, echoCrowdObjection, judgeEc
 import { AUDIT_CHECK_IDS, type AuditCheckId } from './flagging-checks.js'
 import { ALL_TESTS_FORMAT, decidedRecords, verdictOf, type CheckOutcome } from './audit-checks.js'
 import { FLIPS_REQUESTS, FLIPS_RULE, flipsCounts, judgeFlipsCheck } from './flips-score.js'
-import { FLIPS_REASK_BUDGET, FLIPS_REFERENCE_TIME_LIMIT_MS, FLIPS_SLOTS_AT_ONCE, FLIPS_TIME_LIMIT_MS, FLIPS_WORDS, drawFlipsPairs, flipsPool, flipsSeed } from './flips.js'
+import { FLIPS_REASK_BUDGET, FLIPS_REASONING_SHARE, FLIPS_REPLY_MAX_CHARS, FLIPS_REFERENCE_TIME_LIMIT_MS, FLIPS_SLOTS_AT_ONCE, FLIPS_TIME_LIMIT_MS, FLIPS_WORDS, drawFlipsPairs, flipsPool, flipsSeed } from './flips.js'
 import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
 import {
   DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
@@ -327,6 +327,10 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       pools: [flipsPool('first'), flipsPool('confirm')],
       draw: (['first', 'confirm'] as const).map((stage) => drawFlipsPairs({ auditor: '0x00', model: 'sample', epoch: '1', seed: flipsSeed('00', { model: 'sample', epoch: '1', runId: 'r', stage }), stage })),
       reaskBudget: FLIPS_REASK_BUDGET,
+      reasoningShare: FLIPS_REASONING_SHARE,
+      replyMaxChars: FLIPS_REPLY_MAX_CHARS,
+      // A follow-up draw leaves out its first check's pairs.
+      followUpDraw: drawFlipsPairs({ auditor: '0x00', model: 'sample', epoch: '1', seed: '00', stage: 'confirm', probe: true, excluding: flipsPool('confirm').slice(0, 2) }),
       limits: [FLIPS_TIME_LIMIT_MS, FLIPS_SLOTS_AT_ONCE, FLIPS_REFERENCE_TIME_LIMIT_MS],
       // One scored sample through the scorer: fixed symbol strings on both sides of one pair each.
       scored: (() => {
