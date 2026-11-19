@@ -29,9 +29,13 @@ export async function drawCard({name, mac, number}: CardFacts): Promise<Blob | n
   for (let y = 4; y < H; y += 8) for (let x = 4; x < 560; x += 8) { g.beginPath(); g.arc(x, y, .9, 0, 7); g.fill(); }
   if (painting) { g.save(); g.beginPath(); g.roundRect(540, 24, W - 564, H - 48, 20); g.clip(); cover(painting, 540, 24, W - 564, H - 48, .6, 1); g.restore(); }
   if (logo) g.drawImage(logo, 64, 60, 128, 44);
-  // "Ada’s Mac wants in." for a Mac, "Sam wants in." without one, "My MacBook Air wants in." when no name was kept
   const [model, ...rest] = mac.split(' · ');
-  const [lead, tail] = who ? [mac ? `${who}’s Mac` : who, 'wants in.'] : mac ? [`My ${model}`, 'wants in.'] : ['I’m on', 'the list.'];
+  let lead: string;
+  let tail = 'wants in.';
+  if (who && mac) lead = `${who}’s Mac`;        // "Ada’s Mac wants in."
+  else if (who) lead = who;                     // no Mac: "Sam wants in."
+  else if (mac) lead = `My ${model}`;           // no name kept: "My MacBook Air wants in."
+  else { lead = 'I’m on'; tail = 'the list.'; }
   const detail = who ? mac : rest.join(' · ');
   g.fillStyle = '#4f7a24'; pixel(28); g.fillText(number ? `Mac Colony waitlist · #${number.toLocaleString('en-US')}` : 'Mac Colony waitlist', 64, 236);
   g.fillStyle = '#30382c'; fit(lead, 72, 460); g.fillText(lead, 58, 330);
