@@ -56,7 +56,7 @@ function cliNetwork({ role, bootstrapNodes, payments }) {
 }
 
 function cliCrypto(chain, payments) {
-  return { ...chain, rpcUrl: payments.rpcUrl, networkStatsUrl: '', explorerApiUrl: '' };
+  return { ...chain, rpcUrl: payments.rpcUrl, explorerApiUrl: '' };
 }
 
 /**
