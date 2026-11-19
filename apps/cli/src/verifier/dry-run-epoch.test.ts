@@ -9,11 +9,15 @@ import { FIXTURE_CONFIG, peerIdOf, referenceFixture, writeSignedAuditRun, type F
 import { PEERS, SERVICE, echoReference, echoScreenFor, fakeCapSeller, fakeEchoNetwork, runCapOn, tokens, wordReference } from './output-checks.test-support.js'
 import { numberWords } from './output-cap.js'
 import { loadEpochState, writeEpochSubmissionManifest } from './epoch-plan.js'
+import { auditWindowSellersLeft, closeFinishedAuditWindows, openAuditWindow, readAuditWindow } from './audit-window.js'
+import { recoveringFirstLooks } from '../cli/commands/verifier/run.js'
 import { dryRunPreparedPath, writeDryRunPrepared } from './epoch-submission-record.js'
 import type { FlipsV1 } from './flips.js'
 import type { SameCheckDecision } from './same-check.js'
 
 const MODEL = 'claude-opus-5.5'
+/** A second model whose audit window holds one seller: its first look's DIFF is damaged, then recovered in the window. */
+const WINDOWED = 'claude-sonnet-5.5'
 const EPOCH = '7'
 const words = (count: number): string => Array.from({ length: count }, (_value, index) => numberWords(301 + index)).join(', ')
 
@@ -31,6 +35,8 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
     const banksDir = join(directory, 'banks')
     const auditor = new Wallet(Wallet.createRandom().privateKey)
     const wallets = Array.from({ length: 15 }, () => new Wallet(Wallet.createRandom().privateKey))
+    // The second model's window opens before its first look, for its one seller.
+    await openAuditWindow({ evidenceDir, epoch: EPOCH, model: WINDOWED, runId: 'run-1', sellers: [peerIdOf(wallets[14]!)], now: () => Date.parse('2026-10-07T00:01:00.000Z') })
     const peer = (agent: number) => peerIdOf(wallets[agent - 1]!)
     // A cap flag and an echo flag with seller bytes behind them: the preparation recomputes both and sends them.
     const capFlag = await runCapOn(fakeCapSeller(() => ({ text: words(120), billed: 900 })), wordReference, peer(2))
@@ -62,6 +68,7 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
       { ...at(8, 'SAME'), reference: closeReference, closeCall: { firstWrong: 7 } },
       { ...at(9, 'SAME'), reference: closeReference, closeCall: { firstWrong: 7, extensionWrong: 1 } },
       at(10, 'SAME'),
+      { ...at(15, 'DIFF'), model: WINDOWED },
     ]
     const outage = { version: 1, code: 'transport_error', summary: 'connection reset', retryable: true, source: 'transport', affectedBatchCount: 1, totalBatchCount: 1, nextAction: 'retry later' }
     await writeSignedAuditRun({
@@ -69,16 +76,38 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
       failures: { [MODEL]: [{ peerId: peer(11), agentId: '11', service: SERVICE, status: 'FAILED', reason: 'connection reset', outcomeReason: outage as never }] },
       skipped: { [MODEL]: [{ peerId: peer(12), agentId: '12', service: SERVICE, status: 'SKIPPED', code: 'upstream_credentials_invalid', reason: 'the seller\'s upstream key is gone', source: 'runtime', evidencePath: null } as never] },
     })
-    // Later: the failed seller's retry, and two confirmations of another auditor's reports, an hour after them.
+    // The windowed seller's evidence file is damaged after it was written: submit would refuse its DIFF.
+    const firstRun = await (async () => {
+      const state = await loadEpochState(evidenceDir, EPOCH)
+      return [...state.ordinaryCells!.values()].find((cell) => cell.model === WINDOWED)!
+    })()
+    await writeFile(firstRun.result!.evidencePath, 'damaged')
+    {
+      const state = await loadEpochState(evidenceDir, EPOCH)
+      const window = (await readAuditWindow(evidenceDir, EPOCH, WINDOWED))!
+      const recovering = new Set((await recoveringFirstLooks(state)).keys())
+      // Its cell reads done, but it is still to be recovered: the window stays open for it.
+      assert.deepEqual(auditWindowSellersLeft(window, state), [], 'without the recovery the window would close on a DIFF that cannot be sent')
+      assert.deepEqual(auditWindowSellersLeft(window, state, recovering), [peer(15)])
+      await closeFinishedAuditWindows({ evidenceDir, epoch: EPOCH, state, secondsLeftInEpoch: 86_400, recovering })
+      assert.equal((await readAuditWindow(evidenceDir, EPOCH, WINDOWED))?.state, 'open')
+    }
+    // Later: the failed seller's retry, the windowed seller's recovery, and two confirmations of another auditor's
+    // reports, an hour after them.
     const reportedAt = Date.parse('2026-10-07T00:30:00.000Z') / 1_000
     await writeSignedAuditRun({
       evidenceDir, banksDir, runId: 'run-2', epoch: EPOCH, auditor, completedAt: '2026-10-07T02:30:00.000Z', audits: [
         at(11, 'SAME'),
+        { ...at(15, 'DIFF'), model: WINDOWED },
         at(13, 'DIFF', { confirming: { checks: ['kbf'], reportedAt } }),
         at(14, 'SAME', { confirming: { checks: ['kbf'], reportedAt } }),
       ],
     })
     const state = await loadEpochState(evidenceDir, EPOCH)
+    // Recovered in its window: nothing is left, and the window closes.
+    assert.equal((await recoveringFirstLooks(state)).size, 0)
+    await closeFinishedAuditWindows({ evidenceDir, epoch: EPOCH, state, secondsLeftInEpoch: 86_400, recovering: new Set((await recoveringFirstLooks(state)).keys()) })
+    assert.equal((await readAuditWindow(evidenceDir, EPOCH, WINDOWED))?.state, 'closed')
     const manifest = await writeEpochSubmissionManifest(evidenceDir, state)
     const confirmation = { auditor: '0x' + '0b'.repeat(20), evidenceUri: 'ipfs://example', evidenceHash: '0x' + '00'.repeat(32), reportedAt, firstChecks: ['kbf'], ownChecks: ['kbf'], sameCheck: 'kbf' }
     const prepared = await prepareModelAudits({
@@ -96,7 +125,7 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
     assert.deepEqual(decided, {
       1: 'send SAME', 2: 'send DIFF', 3: 'send DIFF', 4: 'send DIFF', 5: 'send DIFF', 6: 'send SAME', 7: 'send SAME',
       8: 'held close-call-waiting', 9: 'send SAME', 10: 'excluded self-audit', 11: 'send SAME', 12: 'excluded skipped',
-      13: 'send DIFF', 14: 'excluded repeated-test-open',
+      13: 'send DIFF', 14: 'excluded repeated-test-open', 15: 'send DIFF',
     })
     // The cap and the echo flag are sent with the test that flagged them.
     const flaggedBy = Object.fromEntries(prepared.audits.flatMap((entry) => entry.evidence.results.map((result) => [result.agentId, result.flaggedBy])))
@@ -105,7 +134,7 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
     if (keep) {
       // What the tree holds, for the report's check: the epoch, the model and each agent's seller.
       await writeFile(join(keep, 'known-epoch.json'), JSON.stringify({
-        epoch: EPOCH, model: MODEL, evidenceDir: join(keep, 'evidence'), preparedPath: dryRunPreparedPath(join(keep, 'evidence'), EPOCH),
+        epoch: EPOCH, model: MODEL, windowedModel: WINDOWED, evidenceDir: join(keep, 'evidence'), preparedPath: dryRunPreparedPath(join(keep, 'evidence'), EPOCH),
         sellers: Object.fromEntries(wallets.map((wallet, index) => [String(index + 1), peerIdOf(wallet)])),
       }, null, 1))
     }

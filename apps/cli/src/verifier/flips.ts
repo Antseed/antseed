@@ -629,9 +629,9 @@ export async function prepareFlipsReference(input: {
       const results = asked.results.slice(pairIndex * rule.referenceRepliesPerPair, (pairIndex + 1) * rule.referenceRepliesPerPair)
       return {
         words: pair,
-        // The smaller as the start: a clock that steps back during the call never makes the bounds invalid.
-        ...(Number.isSafeInteger(startedAt) && Number.isSafeInteger(finishedAt) && startedAt >= 0 && finishedAt >= 0
-          ? { referenceBatch: { startedAt: Math.min(startedAt, finishedAt), finishedAt: Math.max(startedAt, finishedAt) } } : {}),
+        // Only valid bounds: a clock that stepped back during the call gives none, and the stamp is left out.
+        ...(Number.isSafeInteger(startedAt) && Number.isSafeInteger(finishedAt) && startedAt >= 0 && finishedAt >= startedAt
+          ? { referenceBatch: { startedAt, finishedAt } } : {}),
         replies: results.map((result) => {
           const answer = readFlipsAnswer(result.requestBody, result.response)
           return {

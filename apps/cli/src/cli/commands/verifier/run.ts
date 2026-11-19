@@ -110,6 +110,7 @@ import { openResponseAuthReader } from '../../../verifier/response-auth-reader.j
 import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import {
   CONFIRMATION_ATTEMPTS,
+  AUDITOR_FAILURE_ATTEMPTS,
   SELLER_FAILURE_ATTEMPTS,
   SELLER_RETRY_SPACING_SECONDS,
   CONFIRMATION_RECHECK_SPACING_SECONDS,
@@ -453,6 +454,21 @@ export function unauditedConfirmations(input: {
     }
   }
   return unaudited
+}
+
+/**
+ * First looks whose result submit would refuse (its evidence cannot be read or has no valid date) and that still have
+ * attempts left, the seller's and the auditor's: by `epochCellKey`. They are audited again, and their window stays
+ * open, so a SAME or DIFF is not left unsent all epoch.
+ */
+export async function recoveringFirstLooks(state: Pick<EpochState, 'ordinaryCells'> | null): Promise<Map<string, EpochCell>> {
+  const recovering = new Map<string, EpochCell>()
+  for (const cell of state?.ordinaryCells?.values() ?? []) {
+    if (!cell.result || cell.action !== 'done' || cell.confirmationReport !== undefined) continue
+    if (cell.attempts >= SELLER_FAILURE_ATTEMPTS || cell.auditorAttempts >= AUDITOR_FAILURE_ATTEMPTS) continue
+    if (await auditFinishedAt(cell.result) === null) recovering.set(epochCellKey(cell.model, cell.peerId), cell)
+  }
+  return recovering
 }
 
 export async function loadRunConfirmations(input: {
@@ -1148,10 +1164,12 @@ export async function runVerifierRound(
             },
           })
         }
+        const stateBeforeClose = await loadEpochState(evidenceDir, epoch)
         await closeFinishedAuditWindows({
           evidenceDir, epoch,
-          state: await loadEpochState(evidenceDir, epoch),
+          state: stateBeforeClose,
           secondsLeftInEpoch: epochWindow.endsAt - await clock(),
+          recovering: new Set((await recoveringFirstLooks(stateBeforeClose)).keys()),
         })
         for (const model of models) {
           if (!confirmationOnly.has(model)) auditWindows.set(model, await readAuditWindow(evidenceDir, epoch, model))
@@ -1174,23 +1192,18 @@ export async function runVerifierRound(
           const finished = await auditFinishedAt(cell.result)
           if (finished !== null) reportCellFinishedAt.set(cell, finished)
         }
+        // Bounded by the auditor's attempts too: a cause of the auditor's own making does not recur every spacing.
         const unusableReportResult = (cell: EpochCell): boolean => (
           cell.confirmationReport !== undefined && cell.result !== null && !reportCellFinishedAt.has(cell)
+          && cell.auditorAttempts < AUDITOR_FAILURE_ATTEMPTS
         )
         // A first look whose evidence cannot be read or has no valid date: submit leaves it out, so its SAME or DIFF
         // would go unsent all epoch. It is audited again within the ordinary attempts.
-        const firstLookFinishedAt = new Map<EpochCell, number>()
-        for (const cell of epochState?.ordinaryCells?.values() ?? []) {
-          if (!cell.result) continue
-          const finished = await auditFinishedAt(cell.result)
-          if (finished !== null) firstLookFinishedAt.set(cell, finished)
-        }
+        const recovering = new Set((await recoveringFirstLooks(epochState)).values())
         // With the ordinary retry spacing: a re-audit minutes later counts as the same attempt.
         const planNow = await clock()
         const unusableFirstLook = (cell: EpochCell): boolean => (
-          cell.confirmationReport === undefined && cell.result !== null && cell.action === 'done' && !firstLookFinishedAt.has(cell)
-          && cell.attempts < SELLER_FAILURE_ATTEMPTS
-          && (cell.lastAttemptAt === null || cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS <= planNow)
+          recovering.has(cell) && (cell.lastAttemptAt === null || cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS <= planNow)
         )
         // A cell whose confirmation attempts were for another report than the one waiting now is no history of this
         // one: its attempts, cooldown and result neither answer nor hold back the live report.
@@ -2661,6 +2674,7 @@ export async function runVerifierRound(
         printEpochTable(epoch, finalState, models)
         for (const window of await closeFinishedAuditWindows({
           evidenceDir, epoch, state: finalState, secondsLeftInEpoch: epochWindow.endsAt - await clock(),
+          recovering: new Set((await recoveringFirstLooks(finalState)).keys()),
         })) {
           console.log(chalk.green(`${window.model}: audit window closed (${window.closeReason}); \`antseed verifier submit\` sends its results`))
         }

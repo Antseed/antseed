@@ -103,7 +103,12 @@ export function windowIncludesSeller(window: Pick<AuditWindowV1, 'sellers'>, pee
  * or no result yet while no run of the window has completed (its first run was interrupted). A
  * seller still without a result after a completed run was not reachable again, and is done.
  */
-export function auditWindowSellersLeft(window: AuditWindowV1, state: Pick<EpochState, 'cells' | 'manifests'>): string[] {
+export function auditWindowSellersLeft(
+  window: AuditWindowV1,
+  state: Pick<EpochState, 'cells' | 'manifests'>,
+  /** Cells (`epochCellKey`) that read done but are still to be audited again: a first look submit would refuse. */
+  recovering?: ReadonlySet<string>,
+): string[] {
   const completedRun = state.manifests.some((manifest) => (
     // The opening run started before its window: a model's build comes first.
     (manifest.runId === window.openedByRunId || Date.parse(manifest.startedAt) >= Date.parse(window.openedAt) - 1_000)
@@ -112,7 +117,7 @@ export function auditWindowSellersLeft(window: AuditWindowV1, state: Pick<EpochS
   return window.sellers.filter((peerId) => {
     const cell = state.cells.get(epochCellKey(window.model, peerId))
     if (!cell) return !completedRun
-    return cell.action === 'retry' || cell.action === 'extend'
+    return cell.action === 'retry' || cell.action === 'extend' || (recovering?.has(epochCellKey(window.model, peerId)) ?? false)
   })
 }
 
@@ -126,11 +131,13 @@ export async function closeFinishedAuditWindows(input: {
   state: Pick<EpochState, 'cells' | 'manifests'>
   secondsLeftInEpoch: number
   now?: () => number
+  /** First looks still to be recovered (`auditWindowSellersLeft`): their window stays open. */
+  recovering?: ReadonlySet<string>
 }): Promise<AuditWindowV1[]> {
   const closed: AuditWindowV1[] = []
   for (const window of await listAuditWindows(input.evidenceDir, input.epoch)) {
     if (window.state !== 'open') continue
-    const left = auditWindowSellersLeft(window, input.state)
+    const left = auditWindowSellersLeft(window, input.state, input.recovering)
     const givenUp = window.sellers.filter((peerId) => input.state.cells.get(epochCellKey(window.model, peerId))?.givenUp)
     const reason = left.length === 0
       ? 'every seller of the window is finished'

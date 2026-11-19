@@ -1434,3 +1434,35 @@ test('reports A, B, A: each report keeps its own result, attempts and spacing; f
     assert.equal(await attempts(A), 1, 'A starts at zero: the first looks\' failures are theirs')
   })
 })
+
+test('in an ordinary window, a first look with a DIFF whose evidence cannot be read keeps the window open, is audited again after the spacing, and its new result closes it', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const peer = 'aa'.repeat(20)
+  scenario.snapshots = [snapshot([seller(peer, ['model-a'])])]
+  const verdict = computeKbfVerdict({ selfHamming: 30, selfTotal: 300, minCoverage: 0.5, minDiffCoverage: 0.8, targetMatchVector: Array.from({ length: 100 }, (_, index) => (index < 60 ? 0 : 1)) })
+  assert.equal(verdict.verdict, 'DIFF')
+  const diff = (model: string, peerId: string) => ({
+    ...closeCallResult(model, peerId), status: 'DIFF', questionsStatus: 'DIFF', stats: { ...verdict.stats, selfCoverage: 1 },
+    correctProbeCount: 40, incorrectProbeCount: 60, correctRate: 0.4,
+  })
+  const realNow = Date.now
+  const runAt = async (at: number) => {
+    scenario.log.length = 0
+    Date.now = () => realNow() + at * 1_000
+    try {
+      await scenario.run()
+    } finally {
+      Date.now = realNow
+    }
+    return scenario.log.filter((line) => line.startsWith('audit '))
+  }
+  // The first look's DIFF is on file, but its evidence cannot be read: submit would refuse it.
+  scenario.firstResult = (model: string, peerId: string) => ({ ...diff(model, peerId), evidencePath: join(tmpdir(), `gone-window-${model}-${peerId.slice(0, 8)}.json`) })
+  assert.equal((await runAt(0)).length > 0, true)
+  assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'open', 'the window waits for the seller to be audited again')
+  assert.deepEqual(await runAt(30), [], 'not before the retry spacing')
+  // After the spacing it is audited again in its window, now with readable evidence, and the window closes.
+  scenario.firstResult = diff
+  const step = SELLER_RETRY_SPACING_SECONDS + 60
+  assert.equal((await runAt(step)).length > 0, true, 'audited again in its window')
+  assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'closed')
+}))
