@@ -35,9 +35,9 @@ import {
 } from '@antseed/node'
 import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
 import { auditedServiceNames } from './audited-models.js'
-import { ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, withoutOrphans, type StoredCheckRecords } from './audit-checks.js'
+import { ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from './audit-checks.js'
 import { settleAuditVerdict } from './close-call.js'
-import { flipsCost, flipsRequestCount, isProbeDraw, summarizeFlips, type FlipsScreen, type FlipsSummary, type FlipsV1 } from './flips.js'
+import { flipsCost, flipsRequestCount, isFlipsRecord, isProbeDraw, summarizeFlips, type FlipsScreen, type FlipsSummary, type FlipsV1 } from './flips.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { kbfAuditBatches } from './kbf-batching.js'
@@ -313,6 +313,8 @@ export interface ModelAuditCheckpointV1 {
   reservationAuditId?: string
   /** Set on checkpoints of a close-call extension set, which a resume never repairs as a first check. */
   extension?: true
+  /** The report a confirmation answers: a resume keeps to it. */
+  confirming?: ConfirmationIdentity
   runId: string
   epoch: string
   model: string
@@ -711,9 +713,12 @@ export async function verifyModelTarget(input: {
    * The audit answers another auditor's waiting DIFF, flagged by these checks (`same-check.ts`): a flag by any
    * other check does not end it, so the checks that must confirm always run to their end.
    */
-  confirming?: { checks: readonly AuditCheckId[] }
+  confirming?: ConfirmationIdentity
 }): Promise<ModelVerificationTargetResult | ModelVerificationSkip> {
-  const confirmingEvidence = input.confirming ? { confirming: { checks: [...input.confirming.checks] } } : {}
+  const confirmingIdentity = input.confirming
+    ? { checks: [...input.confirming.checks], ...(input.confirming.reportedAt !== undefined ? { reportedAt: input.confirming.reportedAt } : {}) }
+    : null
+  const confirmingEvidence = confirmingIdentity ? { confirming: confirmingIdentity } : {}
   const batches = kbfAuditBatches(input.reference.probes)
   const deadline = new LazyAuditDeadline(
     input.context.auditTimeoutMs,
@@ -823,11 +828,13 @@ export async function verifyModelTarget(input: {
   let outputEcho: OutputEchoV1 | null = carried.outputEcho ?? null
   // FLIPS's stage, and its reference asked while the questions run: FLIPS then adds only the seller's own time.
   const flipsStage = input.confirming?.checks.includes('flips') ? 'confirm' as const : 'first' as const
-  // A requested probe is always run: a carried record that is no probe's, or a probe of other settings, is asked again
-  // and not kept.
+  // A carried record is kept only for its own stage: a first look's FLIPS never stands for a confirmation of FLIPS, or
+  // the other way round. A requested probe is always run: a carried record that is no probe's, or a probe of other
+  // settings, is asked again and not kept.
   const flipsToAsk = runsTests && input.context.flips !== undefined
-    && (carried.flips == null || (input.context.flips.probing === true
-      && (!isProbeDraw(carried.flips.draw) || carried.flips.probeSettings !== input.context.flips.probeSettings)))
+    && (carried.flips == null || carried.flips.draw.stage !== flipsStage
+      || (input.context.flips.probing === true
+        && (!isProbeDraw(carried.flips.draw) || carried.flips.probeSettings !== input.context.flips.probeSettings)))
   let flips: FlipsV1 | null = flipsToAsk ? null : carried.flips ?? null
   if (flipsToAsk) input.context.flips!.warm?.(input.service, input.reference, flipsStage)
   /** The tests finished so far, as the checkpoint and the evidence store them. */
@@ -865,6 +872,7 @@ export async function verifyModelTarget(input: {
       parentAuditId: input.resume?.parentAuditId ?? null,
       reservationAuditId: input.resume?.reservationAuditId ?? auditId,
       ...(input.extension ? { extension: true as const } : {}),
+      ...(confirmingIdentity ? { confirming: confirmingIdentity } : {}),
       runId: input.checkpointIdentity?.runId ?? '',
       epoch: input.checkpointIdentity?.epoch ?? '',
       model: input.checkpointIdentity?.model ?? input.reference.referenceModel,
@@ -1005,7 +1013,8 @@ export async function verifyModelTarget(input: {
           clock: clock(),
           signal: deadline.controller.signal,
         })
-        if (asked) {
+        // Only a record every required write can hold: an unwritable diagnostic is dropped, never a failed audit.
+        if (asked && isFlipsRecord(asked)) {
           flips = asked
           await persistCheckpoint({ bestEffort: true })
         }

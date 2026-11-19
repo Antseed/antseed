@@ -415,7 +415,7 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
       const first = await sellerEvidence(result['audit'], agentId, serviceHash, result['referenceId'])
       // Every flag is recomputed from the stored records, as `verifier submit` checks its own.
       if (first.tests !== ALL_TESTS_FORMAT) throw new Error('its evidence does not name the all-tests format')
-      validateStoredChecks(first, 'confirmer')
+      validateStoredChecks(first, 'confirmer', { epoch: event.epoch.toString(), auditor: getAddress(event.auditor) })
       const checks = flaggingChecks(first, await questionsVerdict(result, first, (audit, referenceId) => sellerEvidence(audit, agentId, serviceHash, referenceId)))
       if (checks.length === 0) throw new Error(`its evidence for agent ${agentId} shows no check that flagged`)
       return checks

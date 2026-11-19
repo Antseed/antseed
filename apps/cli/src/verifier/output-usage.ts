@@ -88,30 +88,38 @@ export function readAnswerText(responseBody: Uint8Array): {
   if (!answer) return null
   const read = readAnswer(answer)
   const counted = itemisedReasoning(answer['usage'])
-  const reasoningTokens = counted !== null && Number.isInteger(counted) && counted > 0 ? counted : 0
+  // A count is a whole number within what one reply can hold; a larger one shows reasoning but counts no tokens, so no
+  // sum over replies can overflow.
+  const plausible = counted !== null && Number.isSafeInteger(counted) && counted > 0 && counted <= MAX_REASONING_TOKENS_PER_REPLY
+  const reasoningTokens = plausible ? counted : 0
+  const oversized = counted !== null && counted > 0 && !plausible
   const choice = Array.isArray(answer['choices']) && isRecord(answer['choices'][0]) ? answer['choices'][0] : null
   if (read && read.shape === 'chat' && choice && isRecord(choice['message']) && choice['message']['content'] === null) {
     const filtered = choice['finish_reason'] === 'content_filter'
-    return { text: filtered ? '' : null, filtered, reasoningMarker: read.reasoningMarker || reasoningTokens > 0, reasoningTokens, shape: 'chat' }
+    return { text: filtered ? '' : null, filtered, reasoningMarker: read.reasoningMarker || reasoningTokens > 0 || oversized, reasoningTokens, shape: 'chat' }
   }
   if (answer['object'] === 'response' && Array.isArray(answer['output']) && answer['error'] == null) {
     const messages = (answer['output'] as unknown[]).filter((item): item is Record<string, unknown> => isRecord(item) && item['type'] === 'message')
     const parts = messages.length === 1 && Array.isArray(messages[0]!['content']) ? messages[0]!['content'] as unknown[] : null
     if (parts && parts.length > 0 && parts.every((part) => isRecord(part) && part['type'] === 'refusal')) {
-      const reasoningMarker = (answer['output'] as unknown[]).some((item) => isRecord(item) && item['type'] === 'reasoning') || reasoningTokens > 0
+      const reasoningMarker = (answer['output'] as unknown[]).some((item) => isRecord(item) && item['type'] === 'reasoning') || reasoningTokens > 0 || oversized
       return { text: '', filtered: true, reasoningMarker, reasoningTokens, shape: 'responses' }
     }
   }
   if (!read) return null
-  // A completed Responses reply with no message has no text: it is no reply, not an empty one.
+  // A Responses reply with no message has no text: no reply, not an empty one; unless it says it was filtered.
   if (read.shape === 'responses' && !(answer['output'] as unknown[]).some((item) => isRecord(item) && item['type'] === 'message')) {
-    return { text: null, filtered: false, reasoningMarker: read.reasoningMarker || reasoningTokens > 0, reasoningTokens, shape: 'responses' }
+    const filtered = isRecord(answer['incomplete_details']) && answer['incomplete_details']['reason'] === 'content_filter'
+    return { text: filtered ? '' : null, filtered, reasoningMarker: read.reasoningMarker || reasoningTokens > 0 || oversized, reasoningTokens, shape: 'responses' }
   }
   const filtered = read.shape === 'messages' ? answer['stop_reason'] === 'refusal'
     : read.shape === 'chat' ? choice?.['finish_reason'] === 'content_filter'
       : isRecord(answer['incomplete_details']) && answer['incomplete_details']['reason'] === 'content_filter'
-  return { text: read.text, filtered, reasoningMarker: read.reasoningMarker || reasoningTokens > 0, reasoningTokens, shape: read.shape }
+  return { text: read.text, filtered, reasoningMarker: read.reasoningMarker || reasoningTokens > 0 || oversized, reasoningTokens, shape: read.shape }
 }
+
+/** The most reasoning tokens one reply is taken to itemise: far above any reply limit an audit sets. */
+const MAX_REASONING_TOKENS_PER_REPLY = 1_000_000
 
 function readAnswer(answer: Record<string, unknown>): { text: string | null; finished: boolean; reasoningMarker: boolean; shape: OutputReadingV1['shape'] } | null {
   const choices = answer['choices']

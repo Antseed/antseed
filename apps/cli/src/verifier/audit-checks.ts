@@ -116,8 +116,11 @@ export interface StoredAuditContext {
   records: StoredCheckRecords
   /** Who reads the record: submit its own audit, or a confirmer the first auditor's (the texts say whose). */
   reader: 'submit' | 'confirmer'
-  /** The audit around the record: the tests it confirms, and the model its reference is of. */
-  audit?: { confirming?: readonly AuditCheckId[]; referenceModel?: string }
+  /**
+   * The audit around the record: the tests it confirms and the model its reference is of (from the evidence), and the
+   * epoch and auditor of the report that publishes it (from the caller, which knows them).
+   */
+  audit?: { confirming?: readonly AuditCheckId[]; referenceModel?: string; epoch?: string; auditor?: string }
 }
 
 export type StoredCheckRecords = { readonly [Slot in CheckSlot]?: CheckRecords[Slot] }
@@ -281,6 +284,11 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
     if ((record.draw.stage === 'confirm') !== confirms) throw new Error('the randomness check\'s stage is not the one its audit calls for')
     const model = context.audit?.referenceModel
     if (model !== undefined && model.toLowerCase() !== record.draw.model.toLowerCase()) throw new Error('the randomness check was drawn for another model')
+    // Its pairs are the reporting auditor's for the report's epoch: a draw of another epoch or auditor is not this audit's.
+    const epoch = context.audit?.epoch
+    if (epoch !== undefined && epoch !== record.draw.epoch) throw new Error('the randomness check was drawn for another epoch')
+    const auditor = context.audit?.auditor
+    if (auditor !== undefined && auditor.toLowerCase() !== record.draw.auditor.toLowerCase()) throw new Error('the randomness check was drawn for another auditor')
   },
   requests: (record) => record.pairs.flatMap((pair) => pair.seller.map((slot) => stored('audited', slot.request))),
   paid: flipsPaidRequests,
@@ -391,16 +399,47 @@ function recordsOf(records: StoredCheckRecords): Array<{ check: RecordCheck<Chec
 export function validateStoredChecks(
   evidence: StoredCheckRecords & StoredAuditTarget,
   reader: StoredAuditContext['reader'] = 'submit',
+  report: ReportOfAudit = {},
 ): void {
-  const context: StoredAuditContext = {
-    auditedPeerId: evidence.target.peerId, records: evidence, reader,
-    audit: { ...(evidence.confirming ? { confirming: evidence.confirming.checks } : {}), referenceModel: evidence.reference.referenceModel },
-  }
+  const context = storedAuditContext(evidence, reader, report)
   const seller = sellerBindingOf(evidence)
   for (const { check, record } of recordsOf(evidence)) {
     if (record == null || !countsTowardVerdict(check, record)) continue
     check.validate(record, context)
     assertBoundToSeller(check.requests(record), seller, check.texts.name)
+  }
+}
+
+/**
+ * Which report a confirmation answers: the tests it repeats and the chain time of the report (the latest, when several
+ * reports of the seller wait). Stored in its evidence and checkpoints, so a carry or a resume keeps to that report.
+ */
+export interface ConfirmationIdentity {
+  checks: readonly AuditCheckId[]
+  reportedAt?: number
+}
+
+/** Whether two confirmations answer the same report with the same tests; one without a report time matches none. */
+export function sameConfirmation(left: ConfirmationIdentity, right: ConfirmationIdentity): boolean {
+  const key = (checks: readonly AuditCheckId[]) => [...new Set(checks)].sort().join(',')
+  return left.reportedAt !== undefined && left.reportedAt === right.reportedAt && key(left.checks) === key(right.checks)
+}
+
+/** The epoch and auditor of the report a stored audit is published in, as its reader knows them. */
+export interface ReportOfAudit {
+  epoch?: string
+  auditor?: string
+}
+
+function storedAuditContext(evidence: StoredCheckRecords & StoredAuditTarget, reader: StoredAuditContext['reader'], report: ReportOfAudit): StoredAuditContext {
+  return {
+    auditedPeerId: evidence.target.peerId, records: evidence, reader,
+    audit: {
+      ...(evidence.confirming ? { confirming: evidence.confirming.checks } : {}),
+      referenceModel: evidence.reference.referenceModel,
+      ...(report.epoch !== undefined ? { epoch: report.epoch } : {}),
+      ...(report.auditor !== undefined ? { auditor: report.auditor } : {}),
+    },
   }
 }
 
@@ -418,7 +457,7 @@ export interface StoredAuditTarget {
   target: { peerId: string; service: string }
   reference: { referenceModel: string }
   /** The tests the audit confirms, when it answers another auditor's DIFF. */
-  confirming?: { checks: readonly AuditCheckId[] }
+  confirming?: ConfirmationIdentity
 }
 
 /** The seller a stored audit is about, with its model's service names. */
@@ -467,11 +506,9 @@ export function assertBoundToSeller(requests: readonly StoredRequest[], seller: 
 export function validateCheckRecordsAgainstSummary(
   evidence: StoredCheckRecords & StoredAuditTarget,
   result: { readonly [Slot in CheckSlot]?: unknown },
+  report: ReportOfAudit = {},
 ): void {
-  const context: StoredAuditContext = {
-    auditedPeerId: evidence.target.peerId, records: evidence, reader: 'submit',
-    audit: { ...(evidence.confirming ? { confirming: evidence.confirming.checks } : {}), referenceModel: evidence.reference.referenceModel },
-  }
+  const context = storedAuditContext(evidence, 'submit', report)
   const seller = sellerBindingOf(evidence)
   for (const { check, record } of recordsOf(evidence)) {
     // A diagnostic (a record or a summary that cannot affect the verdict) is neither validated nor compared: it can
@@ -654,10 +691,12 @@ export function withoutOrphans(records: StoredCheckRecords): StoredCheckRecords 
  */
 export function carriedIntoConfirmation(
   records: StoredCheckRecords,
-  source: { confirmation: boolean },
+  source: { confirming: ConfirmationIdentity | null | undefined },
+  target: ConfirmationIdentity,
   fresh: (earliestRequestAt: number | null) => boolean,
 ): StoredCheckRecords {
-  if (!source.confirmation) return {}
+  // Only from a confirmation of the same report, repeating the same tests: a record of another round is not this one's.
+  if (!source.confirming || !sameConfirmation(source.confirming, target)) return {}
   const kept: { [Slot in CheckSlot]?: CheckRecords[Slot] } = {}
   for (const { check, record } of recordsOf(records)) {
     if (record == null) continue

@@ -334,10 +334,15 @@ test('a confirmation carries only records of an earlier confirmation that are fr
   const cutoff = 10_000 + 3_600
   const fresh = (time: number | null) => time !== null && time >= cutoff
   const records = { tokenizerPrecheck: precheck(9_000_000), outputCap: cap(20_000_000), outputEcho: echo(20_000_000) }
-  assert.deepEqual(carriedIntoConfirmation(records, { confirmation: false }, fresh), {}, 'never a first look\'s records')
+  const report = { checks: ['output-cap'] as const, reportedAt: 10_000 }
+  assert.deepEqual(carriedIntoConfirmation(records, { confirming: null }, report, fresh), {}, 'never a first look\'s records')
+  // Only a confirmation of the same report, repeating the same tests: another round's records are asked again.
+  assert.deepEqual(carriedIntoConfirmation(records, { confirming: { ...report, reportedAt: 9_000 } }, report, fresh), {}, 'another report')
+  assert.deepEqual(carriedIntoConfirmation(records, { confirming: { ...report, checks: ['kbf'] } }, report, fresh), {}, 'other repeated tests')
+  assert.deepEqual(carriedIntoConfirmation(records, { confirming: { checks: report.checks } }, report, fresh), {}, 'no report named')
   // The pre-check is older than the report's cutoff: asked again, and the echo judged against it with it.
-  assert.deepEqual(Object.keys(carriedIntoConfirmation(records, { confirmation: true }, fresh)), ['outputCap'])
-  assert.deepEqual(Object.keys(carriedIntoConfirmation({ ...records, tokenizerPrecheck: precheck(20_000_000) }, { confirmation: true }, fresh)).sort(),
+  assert.deepEqual(Object.keys(carriedIntoConfirmation(records, { confirming: report }, report, fresh)), ['outputCap'])
+  assert.deepEqual(Object.keys(carriedIntoConfirmation({ ...records, tokenizerPrecheck: precheck(20_000_000) }, { confirming: report }, report, fresh)).sort(),
     ['outputCap', 'outputEcho', 'tokenizerPrecheck'])
   // An absent pre-check is asked now, so the echo judged without it is asked again too.
   assert.deepEqual(Object.keys(withoutOrphans({ outputEcho: echo(20_000_000), outputCap: cap(20_000_000) })), ['outputCap'])

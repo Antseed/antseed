@@ -236,7 +236,7 @@ export interface ProxyAuditEvidenceV1 {
    * their end here. A flag by another check did not end this audit, so a pre-check mismatch or a cap check flag
    * may then sit beside the questions.
    */
-  confirming?: { checks: AuditCheckId[] }
+  confirming?: { checks: AuditCheckId[]; /** The chain time of the report it answers. */ reportedAt?: number }
   /**
    * The evidence format: `all-tests-v1`, every test runs and none ends the audit; `result` is the questions' own,
    * and the audit's verdict is derived from it and the test records (`audit-checks.ts` `verdictOf`).

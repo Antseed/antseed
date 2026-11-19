@@ -20,7 +20,7 @@ import type { VerifierCLIConfig } from '../config/types.js'
 import { setAuditedModelsForTesting } from './audited-models.js'
 import { calibrateEpochQuestionSet, ensureEpochQuestionSet } from './ensure-auditable-reference.js'
 import { kbfAuditBatches } from './kbf-batching.js'
-import { askReferenceInputTokens, askReferenceReplies, calibrateReferenceSets } from './model-reference.js'
+import { askReferenceInputTokens, askReferenceReplies, calibrateReferenceSets, createReferenceRequestLimiter } from './model-reference.js'
 import {
   appendModelReferenceToBank,
   epochBankPath,
@@ -661,4 +661,20 @@ test('a reference answer without usage is asked again for the cap and echo check
   })
   assert.equal(tries.get('flips'), 1, 'FLIPS reads the answer\'s bytes, not its billing')
   assert.doesNotMatch(new TextDecoder().decode(plain.results[0]!.response!.body), /"usage"/)
+})
+
+test('a reference job cancelled while it waits for its slot leaves the queue and never runs', async () => {
+  const limiter = createReferenceRequestLimiter({ referenceMaxConcurrentRequests: 1, referenceMaxConcurrentRequestsPerModel: 1 } as never)
+  let release!: () => void
+  const running = limiter.run('model-a', () => new Promise<void>((resolve) => { release = resolve }))
+  const stop = new AbortController()
+  let ran = false
+  const waiting = limiter.run('model-a', async () => { ran = true }, stop.signal)
+  stop.abort()
+  await assert.rejects(waiting, /cancelled while it waited for a slot/)
+  release()
+  await running
+  // The next job gets the slot at once: the cancelled one held none.
+  await limiter.run('model-a', async () => undefined)
+  assert.equal(ran, false)
 })

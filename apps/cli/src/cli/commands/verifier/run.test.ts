@@ -492,7 +492,7 @@ test('a retry after an extra set carries the settled tests of its seller file, c
     const carried = await loadEpochCarriedTests(state(result), ['model-a'])
     const entry = [...carried.values()][0]!
     assert.deepEqual(Object.keys(entry.records), ['outputCap'])
-    assert.deepEqual([entry.service, entry.confirmation], ['model-a', false])
+    assert.deepEqual([entry.service, entry.confirming], ['model-a', null])
     // A summary row that names another service than its own file carries nothing.
     assert.equal((await loadEpochCarriedTests(state({ ...result, service: 'model-b' }), ['model-a'])).size, 0)
     // Without an extra set the row is a resume candidate instead, not a carry.

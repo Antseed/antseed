@@ -15,6 +15,7 @@ import { ConcurrencyLimiter } from './audit-concurrency.js'
 import { readAnswerText } from './output-usage.js'
 import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from './proxy-evidence.js'
 import {
+  SIGNED_REQUEST_TRIES,
   askSellerSigned,
   signedExchange,
   type SignedSellerRequestInput,
@@ -223,32 +224,52 @@ function reasoningProfile(reasoning: number, replies: number): 'plain' | 'reason
 export const FLIPS_REPLY_MAX_CHARS = 6_000
 
 /** Whether a stored value has the shape of a FLIPS record: a carried or checkpointed one that does not is dropped. */
-export function isFlipsRecord(value: unknown): value is FlipsV1 {
+export function isFlipsRecord(value: unknown, depth = 0): value is FlipsV1 {
   if (typeof value !== 'object' || value === null) return false
   const record = value as Partial<FlipsV1>
+  // A follow-up has no follow-up of its own: the depth is checked before descending, so no stored record nests deep.
+  if (record.followUp !== undefined && depth > 0) return false
   const draw = record.draw as Partial<FlipsDrawV1> | undefined
+  const bounded = (number: unknown, most: number): boolean => typeof number === 'number' && Number.isFinite(number) && number >= 0 && number <= most
   const finite = (cost: unknown): boolean => typeof cost === 'object' && cost !== null
-    && ['inputTokens', 'outputTokens', 'totalTokens', 'estimatedCostUsd'].every((key) => Number.isFinite((cost as Record<string, unknown>)[key]))
-  // Bounded: a stored record is never larger than the rule asks, with every try's cost a real number.
+    && ['inputTokens', 'outputTokens', 'totalTokens'].every((key) => bounded((cost as Record<string, unknown>)[key], FLIPS_MAX_STORED.tokens))
+    && bounded((cost as Record<string, unknown>)['estimatedCostUsd'], FLIPS_MAX_STORED.costUsd)
+  // Bounded: a stored record is never larger than the rule asks, with every try's cost a real, bounded number.
   const slotOk = (slot: unknown): boolean => {
     const request = (slot as FlipsSellerSlotV1 | null)?.request
     return typeof request === 'object' && request !== null
-      && Array.isArray(request.requestIds) && request.requestIds.length <= 2 * (FLIPS_REASK_BUDGET + 1) && request.requestIds.every((id) => typeof id === 'string')
-      && Array.isArray(request.attemptCosts) && request.attemptCosts.length <= 2 * (FLIPS_REASK_BUDGET + 1) && request.attemptCosts.every(finite)
+      && Array.isArray(request.requestIds) && request.requestIds.length <= FLIPS_MAX_STORED.triesPerSlot && request.requestIds.every((id) => typeof id === 'string')
+      && Array.isArray(request.attemptCosts) && request.attemptCosts.length <= FLIPS_MAX_STORED.triesPerSlot && request.attemptCosts.every(finite)
   }
-  return typeof record.rule === 'string' && typeof record.service === 'string' && typeof record.outcome === 'string'
+  const replyOk = (reply: unknown): boolean => {
+    const stored = reply as Partial<FlipsReferenceReplyV1> | null
+    return typeof stored === 'object' && stored !== null
+      && (stored.reasoningTokens === undefined || bounded(stored.reasoningTokens, FLIPS_MAX_STORED.tokens))
+  }
+  const counts = record.reasoningCounts as Record<string, unknown> | undefined
+  const mismatch = record.profileMismatch as Record<string, unknown> | undefined
+  const countsOk = (numbers: Record<string, unknown> | undefined): boolean => numbers === undefined || (typeof numbers === 'object' && numbers !== null
+    && Object.entries(numbers).every(([key, number]) => key === 'code' || key === 'diagnosticScoreIgnoringProfile' || bounded(number, FLIPS_MAX_STORED.totalTokens)))
+  const shapeOk = typeof record.rule === 'string' && typeof record.service === 'string' && typeof record.outcome === 'string'
     && typeof draw === 'object' && draw !== null && typeof draw.model === 'string' && typeof draw.epoch === 'string'
     && typeof draw.auditor === 'string' && typeof draw.seed === 'string' && (draw.stage === 'first' || draw.stage === 'confirm')
     && Array.isArray(record.pairs) && record.pairs.length <= FLIPS_MAX_STORED.pairs && record.pairs.every((pair) => (
       typeof pair === 'object' && pair !== null && Array.isArray(pair.words) && pair.words.length === 2 && pair.words.every((word) => typeof word === 'string')
       && Array.isArray(pair.seller) && pair.seller.length <= FLIPS_MAX_STORED.sellerSlots && pair.seller.every(slotOk)
-      && Array.isArray(pair.reference?.replies) && pair.reference.replies.length <= FLIPS_MAX_STORED.referenceReplies
+      && Array.isArray(pair.reference?.replies) && pair.reference.replies.length <= FLIPS_MAX_STORED.referenceReplies && pair.reference.replies.every(replyOk)
     ))
-    && (record.followUp === undefined || (isFlipsRecord(record.followUp) && record.followUp.followUp === undefined))
+    && countsOk(counts) && countsOk(mismatch)
+    && (record.followUp === undefined || isFlipsRecord(record.followUp, depth + 1))
+  if (!shapeOk || depth > 0) return shapeOk
+  // The record goes into files whose hash must not fail: it must be canonical JSON, every number finite.
+  try {
+    canonicalJsonStringify(record)
+    return true
+  } catch {
+    return false
+  }
 }
 
-/** The most a stored FLIPS record holds: any more is no record of this build. */
-const FLIPS_MAX_STORED = Object.freeze({ pairs: 4, sellerSlots: 64, referenceReplies: 64 })
 
 export interface FlipsSummary {
   rule: string
@@ -570,6 +591,18 @@ export async function prepareFlipsReference(input: {
 
 /** Slots asked again in one check, at most: only slots that got no reply at all. */
 export const FLIPS_REASK_BUDGET = 4
+
+/** The most a stored FLIPS record holds: any more is no record of this build. */
+const FLIPS_MAX_STORED = Object.freeze({
+  pairs: 4,
+  sellerSlots: 64,
+  referenceReplies: 64,
+  /** A slot's first request and every re-ask (all may fall on one slot), each with its signed request's tries. */
+  triesPerSlot: SIGNED_REQUEST_TRIES * (FLIPS_REASK_BUDGET + 1),
+  tokens: 10_000_000,
+  totalTokens: 1_000_000_000,
+  costUsd: 1_000,
+})
 
 /** One seller's FLIPS on a prepared reference. Never rejects. */
 export async function runFlips(input: {

@@ -1684,6 +1684,27 @@ test('check pipeline: a diagnostic FLIPS stops nothing: a failed checkpoint writ
   assert.equal(damaged.evidence.flips?.draw.probe, true)
 })
 
+test('check pipeline: a carried FLIPS is kept only for its own stage', async () => {
+  const flipsRecord = (stage: 'first' | 'confirm'): FlipsV1 => ({
+    rule: 'flips-v1', draw: { auditor: '0x00', model: MODEL, epoch: '1', seed: '00', stage }, service: SERVICE,
+    referenceUpstream: null, referenceOneProvider: true, pairs: [], reasks: 0, outcome: 'pass', counted: false, score: 1, scoreMax: null, p: 0.4, reason: 'pass',
+  })
+  const asked: string[] = []
+  const screen = { check: async (_seller: unknown, _settings: unknown, options: { stage: 'first' | 'confirm' }) => { asked.push(options.stage); return flipsRecord(options.stage) } }
+  const first = await audit({ usage: MODEL_TOKENIZER })
+  const resume = (flips: FlipsV1) => ({
+    parentAuditId: first.result.auditId, reservationAuditId: first.result.auditId, parentEvidenceHash: first.result.evidenceHash,
+    exchanges: first.evidence.exchanges, records: { tokenizerPrecheck: first.evidence.tokenizerPrecheck!, flips },
+  })
+  // A first look's FLIPS never stands for a confirmation of FLIPS: it is drawn again on the confirmation stage.
+  const confirmed = await audit({ usage: MODEL_TOKENIZER, confirming: ['flips'], flips: screen, resume: resume(flipsRecord('first')) })
+  assert.deepEqual(asked, ['confirm'])
+  assert.equal(confirmed.evidence.flips?.draw.stage, 'confirm')
+  // Its own stage is carried.
+  await audit({ usage: MODEL_TOKENIZER, confirming: ['flips'], flips: screen, resume: resume(flipsRecord('confirm')) })
+  assert.deepEqual(asked, ['confirm'])
+})
+
 test('a retry with every batch answered asks its tests with the seller\'s own thinking setting', async () => {
   const first = await audit({ usage: MODEL_TOKENIZER })
   const thinking: unknown[] = []

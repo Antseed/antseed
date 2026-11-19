@@ -65,7 +65,7 @@ import {
 import { SIGNED_REQUEST_TRIES } from './signed-seller-request.js'
 import { ECHO_CROWD_TIME_LIMIT_MS, OUTPUT_ECHO_RULE, echoCrowdObjection, judgeEchoRound, judgeOutputEcho, outputEchoPrompt } from './output-echo.js'
 import { AUDIT_CHECK_IDS, type AuditCheckId } from './flagging-checks.js'
-import { ALL_TESTS_FORMAT, decidedRecords, verdictOf, type CheckOutcome } from './audit-checks.js'
+import { ALL_TESTS_FORMAT, decidedRecords, sameConfirmation, verdictOf, type CheckOutcome, type ConfirmationIdentity } from './audit-checks.js'
 import { FLIPS_REQUESTS, FLIPS_RULE, flipsCounts, judgeFlipsCheck } from './flips-score.js'
 import { FLIPS_REASK_BUDGET, FLIPS_REASONING_SHARE, FLIPS_REPLY_MAX_CHARS, FLIPS_REFERENCE_TIME_LIMIT_MS, FLIPS_SLOTS_AT_ONCE, FLIPS_TIME_LIMIT_MS, FLIPS_WORDS, drawFlipsPairs, flipsPool, flipsSeed } from './flips.js'
 import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
@@ -318,6 +318,8 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
     // What a scheduled retry carries (`decidedRecords`): only tests that decided, and a test judged against an earlier
     // one only with it.
     carry: SAMPLE_CARRIES.map((records) => Object.keys(decidedRecords(records as never)).sort()),
+    // Into a confirmation only records of a confirmation of the same report and tests are carried (`sameConfirmation`).
+    confirmationCarry: SAMPLE_CONFIRMATION_IDENTITIES.map(([left, right]) => sameConfirmation(left, right)),
     // The randomness check (FLIPS): its rule (bars, pass, sizes, calibration, which models count), the eval's request of
     // each model, the word list and its two pools, and what a fixed draw gives.
     flips: {
@@ -493,6 +495,13 @@ const SAMPLE_ECHO_CROWDS: ReadonlyArray<readonly [number, ReadonlyArray<number |
 
 /** First auditor's checks, the checks that flagged and passed here, and the verdict here. */
 /** Fixed test records for what a retry carries. */
+const SAMPLE_CONFIRMATION_IDENTITIES: ReadonlyArray<readonly [ConfirmationIdentity, ConfirmationIdentity]> = [
+  [{ checks: ['output-cap', 'kbf'], reportedAt: 100 }, { checks: ['kbf', 'output-cap'], reportedAt: 100 }],
+  [{ checks: ['output-cap'], reportedAt: 100 }, { checks: ['output-cap'], reportedAt: 101 }],
+  [{ checks: ['output-cap'], reportedAt: 100 }, { checks: ['output-cap', 'flips'], reportedAt: 100 }],
+  [{ checks: ['output-cap'] }, { checks: ['output-cap'] }],
+]
+
 const SAMPLE_CARRIES = [
   { tokenizerPrecheck: { outcome: 'match' }, outputCap: { outcome: 'inconclusive' } },
   { tokenizerPrecheck: { outcome: 'inconclusive' }, outputEcho: { outcome: 'pass', growth: { outcome: 'pass' }, fixedAmount: { outcome: 'pass' } } },

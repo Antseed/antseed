@@ -44,7 +44,7 @@ import { AUDIT_CHECK_IDS, flaggingChecks, passedChecks, type AuditCheckId } from
 import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
 import type { SubmissionCandidate } from './submission-delta.js'
-import { ALL_TESTS_FORMAT, auditVerdictReason, earliestAuditorTime, readingsOfEvidence, readingsOfSummary, validateCheckRecordsAgainstSummary, verdictOf } from './audit-checks.js'
+import { ALL_TESTS_FORMAT, auditVerdictReason, earliestAuditorTime, readingsOfEvidence, readingsOfSummary, validateCheckRecordsAgainstSummary, verdictOf, type ReportOfAudit } from './audit-checks.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
@@ -403,7 +403,7 @@ export async function prepareModelAudits(input: {
         if (result.extension2) {
           extension2Evidence = await verifyProxyAuditEvidenceFile(result.extension2.evidencePath, result.extension2.evidenceHash)
         }
-        validateAuditMatchesSummary(evidence, result, extensionEvidence, extension2Evidence)
+        validateAuditMatchesSummary(evidence, result, extensionEvidence, extension2Evidence, { epoch: input.manifest.epoch, auditor })
       } catch (error) {
         exclude(`invalid audit evidence: ${asError(error).message}`)
         continue
@@ -965,6 +965,7 @@ export function validateAuditMatchesSummary(
   result: ModelAuditSummaryV1['results'][number],
   extensionEvidence: ProxyAuditEvidenceV1 | null = null,
   extension2Evidence: ProxyAuditEvidenceV1 | null = null,
+  report: ReportOfAudit = {},
 ): void {
   for (const checked of [evidence, extensionEvidence, extension2Evidence]) {
     if (!checked) continue
@@ -985,8 +986,11 @@ export function validateAuditMatchesSummary(
     || evidence.confirming.checks.some((check) => !AUDIT_CHECK_IDS.includes(check)))) {
     throw new Error('a confirmation names no known check it confirms')
   }
+  if (evidence.confirming?.reportedAt !== undefined && !Number.isSafeInteger(evidence.confirming.reportedAt)) {
+    throw new Error('a confirmation names its report at no valid time')
+  }
   // Each test's record follows from the signed responses it stores, is bound to the seller, and is the summary's.
-  validateCheckRecordsAgainstSummary(evidence, result)
+  validateCheckRecordsAgainstSummary(evidence, result, report)
   if (result.extension2 && !result.extension) throw new Error('second extra set without a first one')
   const extraSets: Array<{ record: NonNullable<typeof result.extension>; evidence: ProxyAuditEvidenceV1 }> = []
   if (result.extension) {

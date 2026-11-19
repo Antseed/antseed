@@ -142,7 +142,7 @@ import { createFlipsScreen, flipsSeed, type FlipsProbe, type FlipsUnavailable } 
 import { FLIPS_RULE, flipsCounts, isValidFlipsPair } from '../../../verifier/flips-score.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { closeCallRuleForExtensions, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
-import { carriedIntoConfirmation, decidedRecords, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
+import { carriedIntoConfirmation, decidedRecords, type ConfirmationIdentity, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
 import {
   confirmationTargetsByModel,
   describeTallies,
@@ -622,8 +622,8 @@ export interface ResumeCandidate {
   exchanges: ProxyAuditEvidenceV1['exchanges']
   /** The test records the earlier attempt finished, carried into the resume (each test runs once per audit chain). */
   records?: StoredCheckRecords
-  /** The earlier attempt was itself a confirmation: only then may a confirmation carry its records. */
-  confirmation?: boolean
+  /** The report the earlier attempt confirmed, if it was a confirmation: only a confirmation of it may carry its records. */
+  confirming?: ConfirmationIdentity
 }
 
 /** Whether an evidence file is the audit of this seller and service, as its summary says. */
@@ -1345,7 +1345,15 @@ export async function runVerifierRound(
               if (confirmationKey) confirmationSkipReasons.set(confirmationKey, [...confirmationSkipReasons.get(confirmationKey) ?? [], reason])
             }
             const resumeCandidate = resumeCandidates.get(resumeKey(model, peer.peerId))
-            const pendingExtension = pendingExtensions.get(pendingExtensionKey(model, peer.peerId))
+            // A close call waiting for its extra set is finished with it, unless this seller now has a report to confirm
+            // and the close call's first check is older than that report allows: then it is audited fresh, so a flag
+            // of it is not refused as stale at submit.
+            const waitingExtension = pendingExtensions.get(pendingExtensionKey(model, peer.peerId))
+            const reportedAt = confirmationKey ? confirmationFor(model, peer)?.firstReportedAt : undefined
+            const pendingExtension = waitingExtension && reportedAt !== undefined
+              && !isFreshConfirmation(waitingExtension.result.firstRequestAt, reportedAt)
+              ? undefined
+              : waitingExtension
             const carriedTests = carriedTestsByKey.get(resumeKey(model, peer.peerId))
             if (!confirmationKey && peer.onChainAgentId != null) {
               const judged = alreadyJudgedByOther(othersOpinions, peer.onChainAgentId, targetServicesFor(model, peer, resumeCandidate?.service), model)
@@ -1871,10 +1879,19 @@ export async function runVerifierRound(
                 const confirmingChecks = confirming?.firstChecks && normalized(confirming.service) === normalized(target.service)
                   ? confirming.firstChecks
                   : null
-                // Into a confirmation only records of an earlier confirmation attempt, fresh for this report, are carried.
-                const carriedFor = (records: StoredCheckRecords, sourceConfirmation: boolean): StoredCheckRecords => (
-                  confirmingChecks && confirming?.firstReportedAt !== undefined
-                    ? carriedIntoConfirmation(records, { confirmation: sourceConfirmation }, (at) => isFreshConfirmation(at, confirming.firstReportedAt!))
+                // The report this audit confirms. --resume-run reads no waiting reports, so a resumed confirmation keeps
+                // the one its earlier attempt confirmed: its stage and its carried tests stay that report's.
+                const confirmingIdentity: ConfirmationIdentity | null = confirmingChecks
+                  ? { checks: confirmingChecks, ...(confirming?.firstReportedAt !== undefined ? { reportedAt: confirming.firstReportedAt } : {}) }
+                  : options.resumeRun && target.resumeCandidate?.confirming ? target.resumeCandidate.confirming : null
+                const freshForReport = (at: number | null | undefined): boolean => (
+                  confirmingIdentity?.reportedAt === undefined || isFreshConfirmation(at, confirmingIdentity.reportedAt)
+                )
+                // Into a confirmation only records of an earlier confirmation of the same report and tests, fresh for
+                // it, are carried; reused question batches keep to the same cutoff.
+                const carriedFor = (records: StoredCheckRecords, source: ConfirmationIdentity | null | undefined): StoredCheckRecords => (
+                  confirmingIdentity
+                    ? carriedIntoConfirmation(records, { confirming: source }, confirmingIdentity, freshForReport)
                     : records
                 )
                 const loaded = target.resumeCandidate ? await loadModelAuditReservation({
@@ -1901,8 +1918,10 @@ export async function runVerifierRound(
                     parentAuditId: target.resumeCandidate.auditId,
                     reservationAuditId: target.resumeCandidate.reservationAuditId,
                     parentEvidenceHash: target.resumeCandidate.evidenceHash,
-                    exchanges: target.resumeCandidate.exchanges,
-                    records: carriedFor(target.resumeCandidate.records ?? {}, target.resumeCandidate.confirmation === true),
+                    exchanges: confirmingIdentity
+                      ? target.resumeCandidate.exchanges.filter((exchange) => freshForReport(exchange.timing?.startedAt))
+                      : target.resumeCandidate.exchanges,
+                    records: carriedFor(target.resumeCandidate.records ?? {}, target.resumeCandidate.confirming),
                   }
                 } else {
                   const reserved = await reserveModelAuditReference({
@@ -1927,12 +1946,12 @@ export async function runVerifierRound(
                   auditId,
                   resume,
                   checkpointIdentity: { runId, epoch, model },
-                  ...(confirmingChecks ? { confirming: { checks: confirmingChecks } } : {}),
+                  ...(confirmingIdentity ? { confirming: confirmingIdentity } : {}),
                   // A fresh audit (no resume) carries the settled tests of the attempt it retries.
                   ...(!resume && target.carriedTests
-                    ? { carried: carriedFor(target.carriedTests.records, target.carriedTests.confirmation) }
+                    ? { carried: carriedFor(target.carriedTests.records, target.carriedTests.confirming) }
                     : !resume && target.resumeCandidate?.records
-                      ? { carried: carriedFor(target.resumeCandidate.records, target.resumeCandidate.confirmation === true) }
+                      ? { carried: carriedFor(target.resumeCandidate.records, target.resumeCandidate.confirming) }
                       : {}),
                 })
                 // New first audits are decided by the close-call rule unless it is turned off; every audit asks its
@@ -2763,7 +2782,7 @@ export async function loadResumeCandidates(
         probeIds: evidence.reference.probes.map((probe) => probe.id),
         exchanges: evidence.exchanges,
         records: sameAuditTarget(evidence, result) ? decidedRecords(evidenceRecords(evidence)) : {},
-        confirmation: evidence.confirming !== undefined,
+        ...(evidence.confirming ? { confirming: evidence.confirming } : {}),
       })
     }
   }
@@ -2778,8 +2797,8 @@ export async function loadResumeCandidates(
 export interface CarriedTests {
   service: string
   records: StoredCheckRecords
-  /** The attempt they come from was a confirmation. */
-  confirmation: boolean
+  /** The report the attempt they come from confirmed; null for a first look. */
+  confirming: ConfirmationIdentity | null
 }
 
 /**
@@ -2818,7 +2837,7 @@ async function carriedTestsOf(
       if (!sameAuditTarget(evidence, result)) continue
       const records = decidedRecords(evidenceRecords(evidence))
       if (Object.keys(records).length > 0) {
-        carried.set(resumeKey(model, result.peerId), { service: result.service, records, confirmation: evidence.confirming !== undefined })
+        carried.set(resumeKey(model, result.peerId), { service: result.service, records, confirming: evidence.confirming ?? null })
       }
     } catch {
       continue
@@ -2858,7 +2877,7 @@ export async function loadEpochRetryCandidates(
       probeIds: evidence.reference.probes.map((probe) => probe.id),
       exchanges: evidence.exchanges,
       records: sameAuditTarget(evidence, result) ? decidedRecords(evidenceRecords(evidence)) : {},
-      confirmation: evidence.confirming !== undefined,
+      ...(evidence.confirming ? { confirming: evidence.confirming } : {}),
     })
   }
   return candidates

@@ -296,11 +296,16 @@ test('the finish reason is read in each API\'s own terms', () => {
 
 test('a stored FLIPS is the audit\'s own: the confirmation stage exactly when it confirms FLIPS, and the audit\'s model', async () => {
   const record = await stored(fakeSeller((call) => symbols(['amber', 'basin'], call + 300)))
-  const context = (audit: { confirming?: AuditCheckId[]; referenceModel?: string }) => ({ auditedPeerId: PEER, records: {}, reader: 'submit' as const, audit })
+  const context = (audit: { confirming?: AuditCheckId[]; referenceModel?: string; epoch?: string; auditor?: string }) => ({ auditedPeerId: PEER, records: {}, reader: 'submit' as const, audit })
   assert.doesNotThrow(() => FLIPS_CHECK.validate(record, context({ referenceModel: MODEL })))
   assert.throws(() => FLIPS_CHECK.validate(record, context({ confirming: ['flips'], referenceModel: MODEL })), /stage is not the one its audit calls for/)
   assert.doesNotThrow(() => FLIPS_CHECK.validate(record, context({ confirming: ['output-cap'], referenceModel: MODEL })), 'a confirmation of another test is a first look for FLIPS')
   assert.throws(() => FLIPS_CHECK.validate(record, context({ referenceModel: 'gpt-6-astra' })), /drawn for another model/)
+  // The report's epoch and auditor are the draw's: a record of another epoch or auditor is not this audit's.
+  const reported = (audit: { epoch?: string; auditor?: string }) => context({ referenceModel: MODEL, ...audit })
+  assert.doesNotThrow(() => FLIPS_CHECK.validate(record, reported({ epoch: '32', auditor: '0xa1' })))
+  assert.throws(() => FLIPS_CHECK.validate(record, reported({ epoch: '33' })), /drawn for another epoch/)
+  assert.throws(() => FLIPS_CHECK.validate(record, reported({ auditor: '0xB2' })), /drawn for another auditor/)
 })
 
 test('an answer is read from its own bytes: without usage, empty only when filtered, a structured refusal is a filtered reply', () => {
@@ -314,6 +319,9 @@ test('an answer is read from its own bytes: without usage, empty only when filte
   assert.equal(read(chat('<think>x</think> amber')).thinkBlock, true)
   assert.equal(read(chat('amber', 'stop', 12)).reasoningTokens, 12)
   assert.equal(read({ object: 'response', status: 'completed', output: [{ type: 'reasoning', summary: [] }] }).reply.content, null, 'a completed reply with no message is no reply')
+  assert.deepEqual(read({ object: 'response', status: 'incomplete', incomplete_details: { reason: 'content_filter' }, output: [] }).reply, { content: '', finishReason: 'content_filter' }, 'explicit filtering stays a filtered reply')
+  const huge = read({ ...chat('amber'), usage: { prompt_tokens: 1, completion_tokens: 1, completion_tokens_details: { reasoning_tokens: 1e300 } } })
+  assert.deepEqual([huge.reasoning, huge.reasoningTokens], [true, 0], 'an implausible count shows reasoning and counts no tokens')
 })
 
 /** A FLIPS screen over stand-in reference and seller endpoints; `askReference` sees every reference call. */
@@ -444,4 +452,12 @@ test('a stored FLIPS record is bounded and holds real numbers: a slot with a nul
   assert.equal(isFlipsRecord(nullCost), false)
   assert.equal(withoutOrphans({ flips: nullCost as never }).flips, undefined)
   assert.equal(isFlipsRecord({ ...record, pairs: Array.from({ length: 5 }, () => record.pairs[0]) }), false, 'more pairs than any rule asks')
+  // Counts that would sum past any number, or a number canonical JSON cannot hold, make no record.
+  assert.equal(isFlipsRecord({ ...record, reasoningCounts: { ...record.reasoningCounts!, sellerReasoningTokens: Number.MAX_VALUE } }), false)
+  assert.equal(isFlipsRecord({ ...record, score: Number.POSITIVE_INFINITY }), false)
+  // A deeply nested record is refused at its second level, without descending.
+  let nested: Record<string, unknown> = { ...record }
+  for (let level = 0; level < 20_000; level += 1) nested = { ...record, followUp: nested }
+  assert.equal(isFlipsRecord(nested), false)
+  assert.equal(isFlipsRecord({ ...record, followUp: { ...record, draw: { ...record.draw, probe: true } } }), true)
 })

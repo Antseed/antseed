@@ -201,7 +201,8 @@ export interface ReferenceBuildCostV1 {
 }
 
 export interface ReferenceRequestLimiter {
-  run: <T>(model: string, execute: () => Promise<T>) => Promise<T>
+  /** `signal`: a job still waiting for its slot when it aborts leaves the queue and rejects; it never takes a slot. */
+  run: <T>(model: string, execute: () => Promise<T>, signal?: AbortSignal) => Promise<T>
   recordSuccess: (model: string) => void
 }
 
@@ -1091,7 +1092,7 @@ export async function askReferenceReplies(input: {
       return read((await untilAborted(limiter.run(route.model, async () => {
         if (input.signal?.aborted) throw new Error(timeUp)
         return postChatCompletion(route, body, timeoutMs, fetchFn, input.signal)
-      }), input.signal, timeUp)).exchange)
+      }, input.signal), input.signal, timeUp)).exchange)
     } catch (error) {
       if (error instanceof EmptyReferenceResponseError && error.exchange) return read(error.exchange)
       // On the plain route (FLIPS) an answer without usage is still an answer: its bytes are read, never its billing.
@@ -2283,6 +2284,7 @@ class AdaptiveRequestLimiter implements ReferenceRequestLimiter {
   private readonly minimumIntervalMsByModel = new Map<string, number>()
   private readonly nextAllowedAtByModel = new Map<string, number>()
   private readonly waiters: Array<{ model: string; resolve: () => void }> = []
+  private static readonly cancelled = 'the request was cancelled while it waited for a slot'
   private wakeTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(
@@ -2298,8 +2300,8 @@ class AdaptiveRequestLimiter implements ReferenceRequestLimiter {
     this.limit = maximum
   }
 
-  async run<T>(model: string, execute: () => Promise<T>): Promise<T> {
-    await this.acquire(model)
+  async run<T>(model: string, execute: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    await this.acquire(model, signal)
     try {
       return await execute()
     } catch (error) {
@@ -2337,13 +2339,32 @@ class AdaptiveRequestLimiter implements ReferenceRequestLimiter {
     }
   }
 
-  private async acquire(model: string): Promise<void> {
+  private async acquire(model: string, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw new Error(AdaptiveRequestLimiter.cancelled)
     if (this.canRun(model)) {
       this.reserve(model)
       return
     }
-    await new Promise<void>((resolve) => {
-      this.waiters.push({ model, resolve })
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        // A cancelled job leaves the queue: it takes no paced slot later, and an empty queue keeps no timer.
+        const index = this.waiters.indexOf(waiter)
+        if (index >= 0) this.waiters.splice(index, 1)
+        if (this.waiters.length === 0 && this.wakeTimer !== null) {
+          clearTimeout(this.wakeTimer)
+          this.wakeTimer = null
+        }
+        reject(new Error(AdaptiveRequestLimiter.cancelled))
+      }
+      const waiter = {
+        model,
+        resolve: () => {
+          signal?.removeEventListener('abort', onAbort)
+          resolve()
+        },
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      this.waiters.push(waiter)
       this.scheduleDrain()
     })
   }
