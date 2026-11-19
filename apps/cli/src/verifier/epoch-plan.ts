@@ -38,6 +38,20 @@ export type EpochCellState =
   | 'same' | 'diff' | 'undetermined' | 'pending_extension' | 'failed' | 'skipped'
 export type EpochCellAction = 'done' | 'retry' | 'extend' | 'audit'
 
+/**
+ * The report a confirmation answers, as one key: the service, the report's chain time and the tests it repeats. Null for
+ * a result that confirms nothing.
+ */
+export function confirmationReportKey(result: { service: string; confirmsDiff?: boolean; confirming?: readonly string[]; confirmingReportedAt?: number }): string | null {
+  if (!result.confirming) return null
+  return reportKey(result.service, result.confirmingReportedAt, result.confirming)
+}
+
+/** The same key for a live report waiting for this auditor. */
+export function reportKey(service: string, reportedAt: number | undefined, checks: readonly string[]): string {
+  return [service.trim().toLowerCase(), reportedAt ?? '-', [...new Set(checks)].sort().join(',')].join('|')
+}
+
 export interface EpochCell {
   model: string
   peerId: string
@@ -64,6 +78,11 @@ export interface EpochCell {
   givenUp?: RetryGiveUpV1
   /** A `pending_extension` cell's close call, waiting for its extra questions. */
   pending?: ModelVerificationTargetResult
+  /**
+   * The report the cell's confirmation attempts are for (`confirmationReportKey`): its attempts, its cooldown and its
+   * result answer that report only, never a newer one.
+   */
+  confirmationReport?: string
   /**
    * Set on a confirmation's close call whose extra questions were published (`RetryGiveUpV1` with
    * `confirmsDiff`): the cell is then an undecided confirmation attempt, audited again like a failed one.
@@ -344,6 +363,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     last: 'result' | 'pending' | 'failure' | 'skip'
     /** Audit IDs of the results already counted, so a confirmation's close call carried on counts once. */
     countedAuditIds: Set<string>
+    confirmationReport: string | null
   }
   const acc = new Map<string, Acc>()
   const get = (model: string, peerId: string, runId: string): Acc => {
@@ -353,7 +373,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       entry = {
         model, peerId, runId, attempts: 0, auditorAttempts: 0, countedAt: null, lastAttemptAt: null,
         result: null, resultRunId: null,
-        pending: null, failure: null, skip: null, last: 'skip', countedAuditIds: new Set(),
+        pending: null, failure: null, skip: null, last: 'skip', countedAuditIds: new Set(), confirmationReport: null,
       }
       acc.set(key, entry)
     }
@@ -374,6 +394,14 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       if (summary.epoch !== epoch || summary.runId !== manifest.runId) continue
       for (const result of summary.results ?? []) {
         const entry = get(summary.model, result.peerId, manifest.runId)
+        // A confirmation of another report than the attempts so far starts its own count: an exhausted attempt on an
+        // older report never answers, or holds back, a newer one.
+        const report = confirmationReportKey(result)
+        if (report !== null && entry.confirmationReport !== null && report !== entry.confirmationReport) {
+          entry.attempts = 0
+          entry.countedAt = null
+        }
+        if (report !== null) entry.confirmationReport = report
         // A confirmation's close call carried on to a later run is written into that run's summary again,
         // with the same audit ID: it is the same audit still waiting for its extra questions, not another
         // attempt (confirmation attempts are unspaced, so counting it again would use up their limit).
@@ -425,6 +453,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     const base = {
       model: entry.model, peerId: entry.peerId, attempts: entry.attempts, auditorAttempts: entry.auditorAttempts,
       permanent: false, lastAttemptAt: entry.lastAttemptAt, skipCode: null,
+      ...(entry.confirmationReport !== null ? { confirmationReport: entry.confirmationReport } : {}),
     }
     if (entry.pending) {
       // A close call newer than any submittable result: its extra questions decide the cell.

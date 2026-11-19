@@ -350,6 +350,8 @@ export interface ModelVerificationTargetResult {
   questionsOutcomeReason?: VerificationOutcomeReasonV1 | null
   /** The tests this audit repeats for another auditor's waiting DIFF (`confirming`); absent on a first look. */
   confirming?: AuditCheckId[]
+  /** The chain time of the report it confirms: with `confirming`, which report this is. */
+  confirmingReportedAt?: number
   /**
    * A close call whose extra set will not be asked: in the run, beside a flag of another test (a flagged result never
    * waits across runs); at submit, when its window closed or its extra questions were published. Its questions are
@@ -835,7 +837,8 @@ export async function verifyModelTarget(input: {
     && (carried.flips == null || carried.flips.draw.stage !== flipsStage
       || (input.context.flips.probing === true
         && (!isProbeDraw(carried.flips.draw) || carried.flips.probeSettings !== input.context.flips.probeSettings)))
-  let flips: FlipsV1 | null = flipsToAsk ? null : carried.flips ?? null
+  // Without a screen too: a carried record of another stage is not this audit's, so it is not kept.
+  let flips: FlipsV1 | null = flipsToAsk || carried.flips?.draw.stage !== flipsStage ? null : carried.flips ?? null
   if (flipsToAsk) input.context.flips!.warm?.(input.service, input.reference, flipsStage)
   /** The tests finished so far, as the checkpoint and the evidence store them. */
   const records = (): StoredCheckRecords => ({
@@ -1172,6 +1175,7 @@ export async function verifyModelTarget(input: {
     outcomeReason: questionsOutcome,
     questionsOutcomeReason: questionsOutcome,
     ...(input.confirming ? { confirming: [...input.confirming.checks] } : {}),
+    ...(input.confirming?.reportedAt !== undefined ? { confirmingReportedAt: input.confirming.reportedAt } : {}),
     auditId: resolvedAuditId,
     parsedProbeCount,
     probeCount: input.reference.probes.length,

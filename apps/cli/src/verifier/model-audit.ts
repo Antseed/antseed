@@ -545,6 +545,7 @@ export async function prepareModelAudits(input: {
         passedBy: passedChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
         // Freshness is the earliest request used, on the auditor's clock, over the first set and its extra sets (0: none).
         auditedAt: earliestAuditorTime([accepted[index]!.evidence, accepted[index]!.extensionEvidence, accepted[index]!.extension2Evidence]) ?? 0,
+        ...(accepted[index]!.evidence.confirming ? { confirming: accepted[index]!.evidence.confirming } : {}),
       })))
       for (let index = accepted.length - 1; index >= 0; index -= 1) {
         const decision = decisions[index]

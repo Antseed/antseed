@@ -117,6 +117,7 @@ import {
   writeRetryGiveUps,
   type RetryGiveUpV1,
   epochCellKey,
+  reportKey as liveReportKey,
   heldForConfirmationRecheck,
   epochModelRows,
   loadEpochState,
@@ -142,7 +143,7 @@ import { createFlipsScreen, flipsSeed, type FlipsProbe, type FlipsUnavailable } 
 import { FLIPS_RULE, flipsCounts, isValidFlipsPair } from '../../../verifier/flips-score.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { closeCallRuleForExtensions, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
-import { carriedIntoConfirmation, decidedRecords, type ConfirmationIdentity, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
+import { decidedRecords, resumeMaterialFor, sameConfirmation, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
 import {
   confirmationTargetsByModel,
   describeTallies,
@@ -1130,16 +1131,23 @@ export async function runVerifierRound(
         const epochState: EpochState | null = options.fresh || requestedResumeManifest
           ? null
           : await loadEpochState(evidenceDir, epoch)
-        const epochCellFor = (model: string, peerId: string): EpochCell | undefined =>
-          epochState?.cells.get(epochCellKey(model, peerId))
-        const isDone = (model: string, peerId: string): boolean => epochCellFor(model, peerId)?.action === 'done'
+        // A cell whose confirmation attempts were for another report than the one waiting now is no history of this
+        // one: its attempts, cooldown and result neither answer nor hold back the live report.
+        const epochCellFor = (model: string, peer: { peerId: string; onChainAgentId?: number | bigint | string | null }): EpochCell | undefined => {
+          const cell = epochState?.cells.get(epochCellKey(model, peer.peerId))
+          if (!cell?.confirmationReport) return cell
+          const live = confirmationFor(model, peer)
+          if (!live?.firstChecks) return cell
+          return liveReportKey(live.service, live.firstReportedAt, live.firstChecks) === cell.confirmationReport ? cell : undefined
+        }
+        const isDone = (model: string, peer: PeerInfo): boolean => epochCellFor(model, peer)?.action === 'done'
         // A seller this epoch already finished is audited again when a confirmation assigned to this
         // auditor is still open for it: its finished result is for another service, or it was
         // submitted in a report round the contract no longer counts.
         const openConfirmationFor = (model: string, peer: PeerInfo): ConfirmationTarget | undefined => {
           const confirmation = confirmationFor(model, peer)
           if (!confirmation) return undefined
-          const cell = epochCellFor(model, peer.peerId)
+          const cell = epochCellFor(model, peer)
           const completedAt = cell?.result
             ? epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
             : undefined
@@ -1157,13 +1165,13 @@ export async function runVerifierRound(
         // When a confirmation's UNDETERMINED held for another audit may be audited again, or null when
         // the seller has none: attempts are spaced, so one seller outage does not use them all up.
         const confirmationRecheckDueAt = (model: string, peer: PeerInfo): number | null => {
-          const cell = epochCellFor(model, peer.peerId)
+          const cell = epochCellFor(model, peer)
           if (!cell || !heldForConfirmationRecheck(cell)) return null
           const completedAt = epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
           return completedAt ? Date.parse(completedAt) / 1_000 + CONFIRMATION_RECHECK_SPACING_SECONDS : null
         }
         const finished = (model: string, peer: PeerInfo): boolean => (
-          isDone(model, peer.peerId) && openConfirmationFor(model, peer) === undefined
+          isDone(model, peer) && openConfirmationFor(model, peer) === undefined
         )
         // The service names a seller is audited under. A confirmation is only answered by a report on
         // the service it waits on: confirmation-only work and the re-audit of a finished seller try
@@ -1173,7 +1181,7 @@ export async function runVerifierRound(
           if (resumeService) return [resumeService.toLowerCase(), ...configured]
           const confirmation = openConfirmationFor(model, peer)
           if (!confirmation) return configured
-          if (confirmationOnly.has(model) || isDone(model, peer.peerId)) return [confirmation.service]
+          if (confirmationOnly.has(model) || isDone(model, peer)) return [confirmation.service]
           return [confirmation.service, ...configured]
         }
         // A run that stopped before writing its manifest left checkpoints; their exchanges are reused
@@ -1349,11 +1357,19 @@ export async function runVerifierRound(
             // and the close call's first check is older than that report allows: then it is audited fresh, so a flag
             // of it is not refused as stale at submit.
             const waitingExtension = pendingExtensions.get(pendingExtensionKey(model, peer.peerId))
-            const reportedAt = confirmationKey ? confirmationFor(model, peer)?.firstReportedAt : undefined
-            const pendingExtension = waitingExtension && reportedAt !== undefined
-              && !isFreshConfirmation(waitingExtension.result.firstRequestAt, reportedAt)
-              ? undefined
-              : waitingExtension
+            const live = confirmationKey ? confirmationFor(model, peer) : undefined
+            // For a report waiting now, a close call's extra set is asked only for a confirmation of that same report and
+            // tests whose first check is fresh for it; another report's, a first look's or a stale one starts a new audit.
+            const liveIdentity: ConfirmationIdentity | null = live?.firstChecks
+              ? { checks: live.firstChecks, ...(live.firstReportedAt !== undefined ? { reportedAt: live.firstReportedAt } : {}) }
+              : null
+            const waitingIdentity: ConfirmationIdentity | null = waitingExtension?.result.confirming
+              ? { checks: waitingExtension.result.confirming, ...(waitingExtension.result.confirmingReportedAt !== undefined ? { reportedAt: waitingExtension.result.confirmingReportedAt } : {}) }
+              : null
+            const pendingExtension = waitingExtension && liveIdentity && (
+              !waitingIdentity || !sameConfirmation(waitingIdentity, liveIdentity)
+              || !isFreshConfirmation(waitingExtension.result.firstRequestAt, liveIdentity.reportedAt!)
+            ) ? undefined : waitingExtension
             const carriedTests = carriedTestsByKey.get(resumeKey(model, peer.peerId))
             if (!confirmationKey && peer.onChainAgentId != null) {
               const judged = alreadyJudgedByOther(othersOpinions, peer.onChainAgentId, targetServicesFor(model, peer, resumeCandidate?.service), model)
@@ -1368,13 +1384,13 @@ export async function runVerifierRound(
             if (recheckDueAt !== null && recheckDueAt > Date.now() / 1_000) {
               // A confirmation's held UNDETERMINED: audited again only once its spacing has passed.
               doneCount += 1
-              notAudited(`its UNDETERMINED (attempt ${epochCellFor(model, peer.peerId)!.attempts} of ${CONFIRMATION_ATTEMPTS}) `
+              notAudited(`its UNDETERMINED (attempt ${epochCellFor(model, peer)!.attempts} of ${CONFIRMATION_ATTEMPTS}) `
                 + `is audited again from ${new Date(recheckDueAt * 1_000).toISOString()}`)
               return []
             }
             // A seller's one retry waits instead of failing again in the same outage, also
             // when it resumes automatically from this epoch's retry cell. Only --resume-run skips it.
-            const retryDueAt = sellerRetryWaitUntil(epochCellFor(model, peer.peerId), Date.now() / 1_000, resumeOnly)
+            const retryDueAt = sellerRetryWaitUntil(epochCellFor(model, peer), Date.now() / 1_000, resumeOnly)
             if (retryDueAt !== null) {
               doneCount += 1
               notAudited(`its failed audit is retried from ${new Date(retryDueAt * 1_000).toISOString()}`)
@@ -1879,20 +1895,19 @@ export async function runVerifierRound(
                 const confirmingChecks = confirming?.firstChecks && normalized(confirming.service) === normalized(target.service)
                   ? confirming.firstChecks
                   : null
-                // The report this audit confirms. --resume-run reads no waiting reports, so a resumed confirmation keeps
-                // the one its earlier attempt confirmed: its stage and its carried tests stay that report's.
+                // The report this audit confirms: the live one, or, where none waits for it now (--resume-run reads no
+                // waiting reports), the one its earlier attempt confirmed, so its stage and its material stay that report's.
                 const confirmingIdentity: ConfirmationIdentity | null = confirmingChecks
                   ? { checks: confirmingChecks, ...(confirming?.firstReportedAt !== undefined ? { reportedAt: confirming.firstReportedAt } : {}) }
-                  : options.resumeRun && target.resumeCandidate?.confirming ? target.resumeCandidate.confirming : null
-                const freshForReport = (at: number | null | undefined): boolean => (
-                  confirmingIdentity?.reportedAt === undefined || isFreshConfirmation(at, confirmingIdentity.reportedAt)
+                  : target.resumeCandidate?.confirming ?? null
+                // Seconds, as submit reads them; with no report time nothing is fresh.
+                const freshForReport = (at: number | null): boolean => (
+                  confirmingIdentity?.reportedAt !== undefined && isFreshConfirmation(at, confirmingIdentity.reportedAt)
                 )
-                // Into a confirmation only records of an earlier confirmation of the same report and tests, fresh for
-                // it, are carried; reused question batches keep to the same cutoff.
+                // Into a confirmation only material of an earlier confirmation of the same report and tests, fresh for
+                // it: its test records and its question batches alike (`resumeMaterialFor`).
                 const carriedFor = (records: StoredCheckRecords, source: ConfirmationIdentity | null | undefined): StoredCheckRecords => (
-                  confirmingIdentity
-                    ? carriedIntoConfirmation(records, { confirming: source }, confirmingIdentity, freshForReport)
-                    : records
+                  resumeMaterialFor({ exchanges: [], records, confirming: source ?? null }, confirmingIdentity, freshForReport).records
                 )
                 const loaded = target.resumeCandidate ? await loadModelAuditReservation({
                   banksDir,
@@ -1914,14 +1929,13 @@ export async function runVerifierRound(
                     parentAuditId: target.resumeCandidate.auditId,
                     startedAt,
                   })
+                  const material = resumeMaterialFor(target.resumeCandidate, confirmingIdentity, freshForReport)
                   resume = {
                     parentAuditId: target.resumeCandidate.auditId,
                     reservationAuditId: target.resumeCandidate.reservationAuditId,
                     parentEvidenceHash: target.resumeCandidate.evidenceHash,
-                    exchanges: confirmingIdentity
-                      ? target.resumeCandidate.exchanges.filter((exchange) => freshForReport(exchange.timing?.startedAt))
-                      : target.resumeCandidate.exchanges,
-                    records: carriedFor(target.resumeCandidate.records ?? {}, target.resumeCandidate.confirming),
+                    exchanges: material.exchanges,
+                    records: material.records,
                   }
                 } else {
                   const reserved = await reserveModelAuditReference({
@@ -2966,7 +2980,20 @@ export async function loadCheckpointResumeCandidates(
         || checkpoint.epoch !== epoch
         || checkpoint.model.toLowerCase() !== model.toLowerCase()
         || checkpoint.extension) continue
-      const evidenceHash = canonicalHashBytes32(checkpoint)
+      // A damaged diagnostic in the file (a number canonical JSON cannot hold) is dropped before hashing, never a
+      // stopped resume; a checkpoint that still cannot be hashed is not resumed.
+      let evidenceHash: string
+      let records = checkpoint.records
+      try {
+        evidenceHash = canonicalHashBytes32(checkpoint)
+      } catch {
+        records = withoutOrphans(checkpoint.records ?? {})
+        try {
+          evidenceHash = canonicalHashBytes32({ ...checkpoint, records })
+        } catch {
+          continue
+        }
+      }
       candidates.set(resumeKey(model, checkpoint.targetPeerId), {
         model,
         peerId: checkpoint.targetPeerId,
@@ -2981,7 +3008,8 @@ export async function loadCheckpointResumeCandidates(
         queryProfileHash: checkpoint.queryProfileHash,
         probeIds: checkpoint.probeIds,
         exchanges: checkpoint.exchanges,
-        records: checkpoint.records,
+        records,
+        ...(checkpoint.confirming ? { confirming: checkpoint.confirming } : {}),
       })
     }
   }

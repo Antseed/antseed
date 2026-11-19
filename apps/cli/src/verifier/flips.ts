@@ -832,9 +832,13 @@ export function createFlipsScreen<Settings>(input: {
       const timeLimit = AbortSignal.timeout(input.timeLimitMs ?? FLIPS_TIME_LIMIT_MS)
       const signal = options.signal ? AbortSignal.any([options.signal, timeLimit]) : timeLimit
       const startedAt = Date.now()
-      const stamped = (record: FlipsV1): FlipsV1 => ({
-        ...record, timing: { startedAt, finishedAt: Date.now() }, ...(probeSettings ? { probeSettings } : {}),
-      })
+      // A record no required write could hold (an unbounded number, say) is dropped here, and says so.
+      const stamped = (record: FlipsV1): FlipsV1 | null => {
+        const finished = { ...record, timing: { startedAt, finishedAt: Date.now() }, ...(probeSettings ? { probeSettings } : {}) }
+        if (isFlipsRecord(finished)) return finished
+        unavailable({ stage, code: 'check-failed', detail: 'the record is outside the bounds any stored record keeps, so it is not stored' })
+        return null
+      }
       let record: FlipsV1
       try {
         record = await one(stage, seller, settings, options, signal)

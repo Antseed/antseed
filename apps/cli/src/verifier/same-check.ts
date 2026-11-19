@@ -5,7 +5,7 @@ import { VERIFIER_VERDICT, modelHash, serviceHash as hashService, type ModelAudi
 import type { ConfirmationTarget } from './pending-confirmations.js'
 import { AUDIT_CHECK_IDS, describeAuditCheck, flaggingChecks, type AuditCheckId } from './flagging-checks.js'
 import { sanitizeOutcomeSummary } from './outcome-reason.js'
-import { ALL_TESTS_FORMAT, validateStoredChecks } from './audit-checks.js'
+import { ALL_TESTS_FORMAT, sameConfirmation, validateStoredChecks } from './audit-checks.js'
 import { adjudicateQuestions } from './model-audit.js'
 import { proxyAuditEvidenceHash, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import type { SubmissionCandidate } from './submission-delta.js'
@@ -78,6 +78,8 @@ export type SameCheckDecision =
 export type SameCheckCandidate = SubmissionCandidate & {
   flaggedBy: readonly AuditCheckId[]
   passedBy: readonly AuditCheckId[]
+  /** The report the audit's evidence says it confirms (`ProxyAuditEvidenceV1.confirming`); absent on a first look. */
+  confirming?: { checks: readonly AuditCheckId[]; reportedAt?: number }
 }
 
 export interface PublishedFlagReader {
@@ -137,6 +139,18 @@ export function sameCheckFilter(input: {
 /** The decision for one candidate against every first flag it answers (more than one fails closed: each must agree). */
 export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag[]): SameCheckDecision {
   const ownChecks = [...candidate.flaggedBy]
+  // A confirmation answers the report it was made for: the tests it repeats and the report's time are the live ones,
+  // as the run read them (every first flag's tests, the latest report's time). Material made for another report is
+  // never credited to this one.
+  if (candidate.confirming && firsts.length > 0) {
+    const live = {
+      checks: AUDIT_CHECK_IDS.filter((check) => firsts.some((first) => first.checks.includes(check))),
+      reportedAt: Math.max(...firsts.map((first) => first.reportedAt)),
+    }
+    if (!sameConfirmation(candidate.confirming, live)) {
+      return { kind: 'exclude', reason: 'this audit confirms another report than the DIFF waiting now; it is not sent, and the seller is audited again' }
+    }
+  }
   const decisions = firsts.map((first): SameCheckDecision => {
     // An UNDETERMINED answering a waiting DIFF is never sent: one report records it, and it would replace the
     // seller's live SAME. The run audits the seller again within its confirmation attempts (`model-run.ts`).

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { writeJsonAtomic } from './atomic-files.js'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -15,7 +15,12 @@ import { referenceFixture } from './model-audit-fixtures.test-support.js'
 import { verifyModelTarget, type ModelVerificationResumeInput, type ModelVerificationSkip, type ModelVerificationTargetResult } from './model-run.js'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import type { FlipsScreen, FlipsV1 } from './flips.js'
-import { decidedRecords, readingsOfEvidence, verdictOf } from './audit-checks.js'
+import { decidedRecords, earliestAuditorTime, readingsOfEvidence, resumeMaterialFor, verdictOf } from './audit-checks.js'
+import { modelAuditsDirectory } from './audit-artifacts.js'
+import { CONFIRMATION_MIN_DELAY_SECONDS, isFreshConfirmation } from './same-check.js'
+import { loadCheckpointResumeCandidates, loadResumeCandidates } from '../cli/commands/verifier/run.js'
+import { canonicalHashBytes32 } from '@antseed/fingerprints'
+import { emptyAuditCostSummary } from './proxy-evidence.js'
 import { FLIPS_RULE } from './flips-score.js'
 import { OUTPUT_CAP_RULE, type OutputCapScreen, type OutputCapV1 } from './output-cap.js'
 import { OUTPUT_ECHO_RULE, type OutputEchoScreen, type OutputEchoV1 } from './output-echo.js'
@@ -1190,6 +1195,8 @@ async function audit(options: {
   backerDelayMs?: number
   /** The audit confirms another auditor's DIFF that these checks flagged. */
   confirming?: AuditCheckId[]
+  /** The chain time of the report the confirmation answers. */
+  confirmingReportedAt?: number
   /** Called on every question batch the seller is asked (to see the order of the tests). */
   onQuestion?: () => void
   /** Cap and echo screens (stand-ins in `check pipeline` tests below). */
@@ -1262,7 +1269,7 @@ async function audit(options: {
       reference: referenceFixture(MODEL, PROBE_COUNT),
       ...(options.extension ? { extension: true } : {}),
       ...(options.resume ? { resume: options.resume } : {}),
-      ...(options.confirming ? { confirming: { checks: options.confirming } } : {}),
+      ...(options.confirming ? { confirming: { checks: options.confirming, ...(options.confirmingReportedAt !== undefined ? { reportedAt: options.confirmingReportedAt } : {}) } } : {}),
     })
     if (options.refuseQuestions && result.status === 'SKIPPED') return { skipped: result, result: null as never, evidence: null as never, questionRequests, precheckRequests: target.contents, backerRequests: backer.contents }
     assert.notEqual(result.status, 'SKIPPED')
@@ -1703,6 +1710,90 @@ test('check pipeline: a carried FLIPS is kept only for its own stage', async () 
   // Its own stage is carried.
   await audit({ usage: MODEL_TOKENIZER, confirming: ['flips'], flips: screen, resume: resume(flipsRecord('confirm')) })
   assert.deepEqual(asked, ['confirm'])
+  // Without a screen too, another stage's record is not kept.
+  const unscreened = await audit({ usage: MODEL_TOKENIZER, confirming: ['flips'], resume: resume(flipsRecord('first')) })
+  assert.equal(unscreened.evidence.flips, undefined)
+})
+
+test('a confirmation resumed from a real checkpoint or retry file reuses only batches of the same report from its cutoff on, and passes submit', async () => {
+  const reportedAt = Math.floor(Date.now() / 1_000) - 7_200
+  const cutoff = reportedAt + CONFIRMATION_MIN_DELAY_SECONDS
+  const identity = { checks: ['kbf'] as AuditCheckId[], reportedAt }
+  let checkpoint: Record<string, unknown> | null = null
+  const first = await audit({
+    usage: MODEL_TOKENIZER, confirming: ['kbf'], confirmingReportedAt: reportedAt,
+    writeCheckpoint: async (_path, value) => { checkpoint = structuredClone(value) as Record<string, unknown> },
+  })
+  assert.ok(first.evidence.exchanges.length >= 4)
+  assert.deepEqual(first.evidence.confirming, identity)
+  // In milliseconds, as the audit writes them: a batch a second before the cutoff, one exactly at it, one with no send
+  // time; the rest after it.
+  const timed = (exchanges: ProxyAuditEvidenceV1['exchanges']) => exchanges.map((exchange, index) => (
+    index === 0 ? { ...exchange, timing: { ...exchange.timing, startedAt: (cutoff - 1) * 1_000 } }
+      : index === 1 ? { ...exchange, timing: { ...exchange.timing, startedAt: cutoff * 1_000 } }
+        : index === 2 ? (({ timing: _timing, ...rest }) => rest)(exchange) as typeof exchange
+          : exchange
+  ))
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-confirmation-resume-'))
+  try {
+    // The checkpoint, in its own place, read by the loader a run uses.
+    const stored = { ...checkpoint!, runId: 'run-1', epoch: '7', model: MODEL, exchanges: timed(first.evidence.exchanges) }
+    const checkpoints = join(modelAuditsDirectory(directory, '7', MODEL, 'run-1'), '.checkpoints')
+    await mkdir(checkpoints, { recursive: true })
+    await writeFile(join(checkpoints, 'audit.json'), JSON.stringify(stored))
+    const fromCheckpoint = [...(await loadCheckpointResumeCandidates(directory, 'run-1', '7', [MODEL])).values()][0]!
+    assert.deepEqual(fromCheckpoint.confirming, identity, 'the checkpoint keeps the report it confirms')
+    // A damaged FLIPS in the file (a number canonical JSON cannot hold) is dropped; the resume itself goes on.
+    const damaged = JSON.stringify({ ...stored, records: { ...((stored as Record<string, unknown>)['records'] as object), flips: { rule: 'flips-v1', score: 'HUGE' } } }).replace('"HUGE"', '1e400')
+    await writeFile(join(checkpoints, 'audit.json'), damaged)
+    const kept = [...(await loadCheckpointResumeCandidates(directory, 'run-1', '7', [MODEL])).values()][0]
+    assert.ok(kept, 'the checkpoint is still resumed')
+    assert.equal(kept!.records?.flips, undefined)
+    await writeFile(join(checkpoints, 'audit.json'), JSON.stringify(stored))
+    // The retry file: the seller evidence and the summary row that points at it, read by the retry loader.
+    const evidence = { ...first.evidence, exchanges: timed(first.evidence.exchanges) }
+    const evidencePath = join(directory, 'seller.json')
+    await writeFile(evidencePath, JSON.stringify(evidence))
+    const summaryPath = join(directory, 'summary.json')
+    const summary = {
+      version: 1, kind: 'antseed-verifier-model-summary', runId: 'run-1', epoch: '7', model: MODEL, startedAt: '2026-11-19T00:00:00.000Z', completedAt: '2026-11-19T00:00:00.000Z',
+      results: [{ ...first.result, status: 'UNDETERMINED', evidencePath, evidenceHash: canonicalHashBytes32(evidence) }], failures: [], skipped: [], cost: emptyAuditCostSummary(),
+    }
+    await writeFile(summaryPath, JSON.stringify(summary))
+    const manifest = {
+      version: 1, kind: 'antseed-verifier-run-manifest', runId: 'run-1', state: 'completed', epoch: '7', epochSource: 'utc-day',
+      epochStartedAt: '2026-11-19T00:00:00.000Z', epochEndsAt: '2026-11-20T00:00:00.000Z', startedAt: summary.startedAt, completedAt: summary.completedAt,
+      summaryPath: join(directory, 'epoch.json'), modelOrder: [MODEL],
+      models: [{ model: MODEL, summaryPath, resultCount: 1, failureCount: 0, skippedCount: 0, cost: emptyAuditCostSummary() }], failureCount: 0,
+    }
+    const fromRetry = [...(await loadResumeCandidates(manifest as never, [MODEL])).values()][0]!
+    assert.deepEqual(fromRetry.confirming, identity, 'the retry file keeps the report it confirms')
+    const fresh = (at: number | null) => isFreshConfirmation(at, reportedAt)
+    for (const candidate of [fromCheckpoint, fromRetry]) {
+      const material = resumeMaterialFor(candidate, identity, fresh)
+      const kept = material.exchanges.map((exchange) => exchange.batchIndex)
+      const all = first.evidence.exchanges.map((exchange) => exchange.batchIndex)
+      // Before the cutoff and without a time: asked again. Exactly at the cutoff and after: reused.
+      assert.deepEqual(kept, all.filter((index) => index !== all[0] && index !== all[2]))
+      const resumed = await audit({
+        usage: MODEL_TOKENIZER, confirming: ['kbf'], confirmingReportedAt: reportedAt,
+        resume: { parentAuditId: candidate.auditId, reservationAuditId: candidate.reservationAuditId, parentEvidenceHash: candidate.evidenceHash, exchanges: material.exchanges, records: material.records },
+      })
+      assert.equal(resumed.questionRequests.length, 2, 'the two batches not reused are asked again')
+      // What submit checks: the confirmation's earliest request is fresh for its report, and the evidence is the summary's.
+      assert.equal(resumed.result.firstRequestAt, earliestAuditorTime([resumed.evidence]))
+      assert.ok(isFreshConfirmation(resumed.result.firstRequestAt, reportedAt))
+      assert.doesNotThrow(() => validateAuditMatchesSummary(resumed.evidence, resumed.result as never))
+      // Outside a confirmation nothing is filtered; --resume-run, with no live report, uses the candidate's own.
+      assert.equal(resumeMaterialFor(candidate, null, fresh).exchanges.length, all.length)
+      assert.deepEqual(resumeMaterialFor(candidate, candidate.confirming!, fresh).exchanges.map((exchange) => exchange.batchIndex), kept)
+      // Material of another report, or of a report with no known time, is never reused.
+      assert.deepEqual(resumeMaterialFor(candidate, { ...identity, reportedAt: reportedAt + 1 }, fresh), { exchanges: [], records: {} })
+      assert.deepEqual(resumeMaterialFor(candidate, { checks: identity.checks }, () => true), { exchanges: [], records: {} })
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('a retry with every batch answered asks its tests with the seller\'s own thinking setting', async () => {

@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import type { AuditCheckId } from './flagging-checks.js'
 import { Wallet } from 'ethers'
 import { canonicalHashBytes32, canonicalJsonStringify } from '@antseed/fingerprints'
 import { VERIFIER_VERDICT, serviceHash, type ModelAuditedEvent, type ServiceAuditedEvent, type VerifierVerdict } from '@antseed/node/payments'
@@ -145,6 +146,19 @@ test('a SAME clears a waiting DIFF of two checks only when both passed here', ()
   assert.match(open.kind === 'exclude' ? open.reason : '', /the cap check neither flagged nor passed/)
   assert.equal(decide(candidate(2n, VERIFIER_VERDICT.SAME, [], ['output-cap', 'kbf']), [two]).kind, 'send')
   // One of them flagging again is the same-check DIFF, whatever the other did.
+  assert.equal(decide(candidate(2n, VERIFIER_VERDICT.DIFF, ['output-cap'], []), [two]).kind, 'send')
+})
+
+test('a confirmation is credited only to the report it was made for: the same tests and the same report time', () => {
+  const two: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['output-cap', 'kbf'] }
+  const confirming = (identity: { checks: AuditCheckId[]; reportedAt?: number }) => ({ ...candidate(2n, VERIFIER_VERDICT.DIFF, ['output-cap'], []), confirming: identity })
+  assert.equal(decide(confirming({ checks: ['kbf', 'output-cap'], reportedAt: REPORTED_AT }), [two]).kind, 'send')
+  for (const other of [{ checks: ['output-cap', 'kbf'] as AuditCheckId[], reportedAt: REPORTED_AT - 1 }, { checks: ['output-cap'] as AuditCheckId[], reportedAt: REPORTED_AT }, { checks: ['output-cap', 'kbf'] as AuditCheckId[] }]) {
+    const decision = decide(confirming(other), [two])
+    assert.equal(decision.kind, 'exclude')
+    assert.match(decision.kind === 'exclude' ? decision.reason : '', /confirms another report/)
+  }
+  // A first look answering a waiting DIFF names no report: it is judged as before.
   assert.equal(decide(candidate(2n, VERIFIER_VERDICT.DIFF, ['output-cap'], []), [two]).kind, 'send')
 })
 

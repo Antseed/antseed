@@ -425,6 +425,31 @@ export function sameConfirmation(left: ConfirmationIdentity, right: Confirmation
   return left.reportedAt !== undefined && left.reportedAt === right.reportedAt && key(left.checks) === key(right.checks)
 }
 
+/** An auditor time in milliseconds (batch `timing.startedAt`, `receivedAt`) as the seconds the cutoffs are in. */
+export function auditorSeconds(milliseconds: number): number {
+  return Math.floor(milliseconds / 1_000)
+}
+
+/**
+ * What an audit that resumes an earlier attempt may reuse: everything for a first look; in a confirmation, only
+ * material of a confirmation of the same report and tests (`sameConfirmation`), each question batch and test record
+ * fresh for it (`fresh`, in seconds, as submit reads it). A batch without a send time, any material of another report,
+ * or any material at all when the report's time is unknown, is asked again.
+ */
+export function resumeMaterialFor<Exchange extends { timing?: { startedAt?: number } }>(
+  source: { exchanges: readonly Exchange[]; records?: StoredCheckRecords; confirming?: ConfirmationIdentity | null },
+  identity: ConfirmationIdentity | null,
+  fresh: (earliestRequestAt: number | null) => boolean,
+): { exchanges: Exchange[]; records: StoredCheckRecords } {
+  if (!identity) return { exchanges: [...source.exchanges], records: source.records ?? {} }
+  if (!source.confirming || !sameConfirmation(source.confirming, identity)) return { exchanges: [], records: {} }
+  return {
+    // Each batch is read as submit reads the audit: its own earliest auditor time, in submit's units.
+    exchanges: source.exchanges.filter((exchange) => fresh(earliestAuditorTime([{ exchanges: [exchange] }]))),
+    records: carriedIntoConfirmation(source.records ?? {}, { confirming: source.confirming }, identity, fresh),
+  }
+}
+
 /** The epoch and auditor of the report a stored audit is published in, as its reader knows them. */
 export interface ReportOfAudit {
   epoch?: string
@@ -567,7 +592,7 @@ export function earliestAuditorTime(
     }
   }
   const known = times.filter((time) => Number.isFinite(time) && time > 0)
-  return known.length === 0 ? null : Math.floor(Math.min(...known) / 1_000)
+  return known.length === 0 ? null : auditorSeconds(Math.min(...known))
 }
 
 /**

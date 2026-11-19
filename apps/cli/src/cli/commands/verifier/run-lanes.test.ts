@@ -126,6 +126,8 @@ interface Scenario {
   confirmations: Array<{ model: string; agentId: string }>
   /** The waiting reports are a DIFF, so the run marks its results `confirmsDiff`. */
   confirmationsWaitOnDiff?: boolean
+  /** The chain time of the waiting report (0 by default: long enough ago to be confirmed). */
+  firstReportedAt?: number
   /** Run the auditor's assigned models (no `--all`); the auditor is approved before the epoch starts. */
   assigned: boolean
   /** A KBF audits contract is configured even without confirmations. */
@@ -204,7 +206,7 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
         for (const target of agents.values()) {
           if (!target.waiting.some((tally) => tally.verdict === 'DIFF')) continue
           target.firstChecks = ['kbf']
-          target.firstReportedAt = 0
+          target.firstReportedAt = scenario.firstReportedAt ?? 0
         }
       }
     },
@@ -255,12 +257,17 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
     },
     verifyModelTarget: async (input: {
       target: { peerId: string }; service: string; context: { proxy: unknown }; extension?: boolean; resume?: unknown; auditId: string
+      confirming?: { checks: readonly string[]; reportedAt?: number }
     }) => {
       const label = `${input.service} ${input.target.peerId.slice(0, 2)}${input.extension ? ' extension' : ''}${input.resume ? ' resume' : ''}`
       scenario.log.push(`audit ${label}`)
       await scenario.audit(input.service, input.target.peerId, input.context)
       scenario.log.push(`audited ${label}`)
-      if (!input.extension && scenario.firstResult) return { ...scenario.firstResult(input.service, input.target.peerId), auditId: input.auditId }
+      // As `verifyModelTarget` does: a confirmation's result names the report it confirms.
+      const confirmingFields = input.confirming
+        ? { confirming: [...input.confirming.checks], ...(input.confirming.reportedAt !== undefined ? { confirmingReportedAt: input.confirming.reportedAt } : {}) }
+        : {}
+      if (!input.extension && scenario.firstResult) return { ...scenario.firstResult(input.service, input.target.peerId), ...confirmingFields, auditId: input.auditId }
       return {
         status: 'SKIPPED', peerId: input.target.peerId, displayName: null, agentId: null, service: input.service,
         code: 'policy_rejected', reason: 'refused', outcomeReason: OUTCOME_REASON, source: 'runtime',
@@ -1216,3 +1223,41 @@ test('--fresh does not reopen a closed window: its questions may be public, and 
   assert.ok(!scenario.log.some((line) => line.startsWith('audit model-a')), scenario.log.join('\n'))
   assert.ok(printed.some((line) => /model-a: --fresh does not audit it again: its audit window closed earlier this epoch/.test(line)), printed.join('\n'))
 }))
+
+test('a waiting extra set answers a report only for a confirmation of that report fresh for it; otherwise a new audit', LANE_TIMEOUT, async () => {
+  const peer = 'aa'.repeat(20)
+  const now = Math.floor(Date.now() / 1_000)
+  // [the first set's earliest request, a report waits, its time in the second run, what the second run asks]
+  const cases: Array<[string, number | null, boolean, number, string[]]> = [
+    ['fresh, same report', now, true, now - 7_200, ['audit model-a aa extension']],
+    ['stale for the report', now - 7_200, true, now - 7_200, ['audit model-a aa', 'audit model-a aa extension']],
+    ['no time', null, true, now - 7_200, ['audit model-a aa', 'audit model-a aa extension']],
+    ['another report now', now, true, now - 3_600 * 3, ['audit model-a aa', 'audit model-a aa extension']],
+  ]
+  for (const [label, firstRequestAt, waits, laterReportedAt, expected] of cases) {
+    await withScenario(async (scenario) => {
+      scenario.snapshots = [snapshot([{ ...seller(peer, ['model-a']), onChainAgentId: 5 } as PeerInfo])]
+      scenario.confirmations = waits ? [{ model: 'model-a', agentId: '5' }] : []
+      scenario.confirmationsWaitOnDiff = waits
+      scenario.firstReportedAt = now - 7_200
+      scenario.firstResult = (model, peerId) => {
+        const { firstRequestAt: _time, ...rest } = closeCallResult(model, peerId)
+        return firstRequestAt === null ? rest : { ...rest, firstRequestAt }
+      }
+      await scenario.run({ peer, confirm: true })
+      scenario.log.length = 0
+      scenario.firstReportedAt = laterReportedAt
+      await scenario.run({ peer, confirm: true })
+      assert.deepEqual(scenario.log.filter((line) => line.startsWith('audit ')), expected, label)
+    })
+  }
+  // With no report waiting, a first look's close call keeps its extra set whatever its time.
+  await withScenario(async (scenario) => {
+    scenario.snapshots = [snapshot([seller(peer, ['model-a'])])]
+    scenario.firstResult = (model, peerId) => ({ ...closeCallResult(model, peerId), firstRequestAt: now - 86_400 })
+    await scenario.run()
+    scenario.log.length = 0
+    await scenario.run()
+    assert.deepEqual(scenario.log.filter((line) => line.startsWith('audit ')), ['audit model-a aa extension'])
+  })
+})

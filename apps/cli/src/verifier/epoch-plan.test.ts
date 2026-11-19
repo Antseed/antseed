@@ -18,6 +18,7 @@ import {
   epochModelRows,
   failureBlame,
   mergeEpochRuns,
+  reportKey,
   type EpochCell,
   type RetryGiveUpV1,
   writeEpochSubmissionManifest,
@@ -337,6 +338,21 @@ test('a confirmation\'s UNDETERMINED from a failure is held and retried up to CO
   const tie = cell(attempts(1, result('a', 'UNDETERMINED', { confirmsDiff: true })), 'a')
   assert.equal(tie.action, 'done')
   assert.equal(heldForConfirmationRecheck(tie), false)
+})
+
+test('confirmation attempts are counted per report: an older report\'s used-up attempts never hold back a newer one', () => {
+  const confirming = (reportedAt: number) => result('a', 'UNDETERMINED', {
+    outcomeReason: sellerDown, confirmsDiff: true, confirming: ['kbf'], confirmingReportedAt: reportedAt,
+  } as Partial<ModelVerificationTargetResult>)
+  const runs = [0, 1, 2].map((index) => run(`r${index}`, `2026-10-28T2${index}:00:00.000Z`, [{ model: 'm', results: [confirming(100)] }]))
+  const exhausted = mergeEpochRuns(EPOCH, runs).get(epochCellKey('m', 'a'))!
+  assert.equal(exhausted.attempts, CONFIRMATION_ATTEMPTS)
+  assert.equal(exhausted.confirmationReport, reportKey(confirming(100).service, 100, ['kbf']))
+  // A newer report: its first attempt counts as its first, not the fourth.
+  const newer = mergeEpochRuns(EPOCH, [...runs, run('r3', '2026-10-28T23:00:00.000Z', [{ model: 'm', results: [confirming(200)] }])]).get(epochCellKey('m', 'a'))!
+  assert.equal(newer.attempts, 1)
+  assert.equal(newer.action, 'retry')
+  assert.equal(newer.confirmationReport, reportKey(confirming(200).service, 200, ['kbf']))
 })
 
 test('a confirmation whose close-call extension failed is retried; a decided or non-confirming one is done', () => {
