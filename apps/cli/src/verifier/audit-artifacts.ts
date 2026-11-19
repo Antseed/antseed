@@ -1,3 +1,4 @@
+import { describeAuditCheck, flaggedSummaryChecks } from './flagging-checks.js'
 import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, sep } from 'node:path'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
@@ -126,7 +127,10 @@ interface SellerAuditReportResult {
   extensionPending?: { reason: string }
   tokenizerPrecheck?: { rule: string; outcome: string; sellerTokens?: number[]; modelTokens?: number[] }
   outputCap?: OutputCapSummary
-  outputEcho?: { rule: string; outcome: string; reason: string }
+  outputEcho?: { rule: string; outcome: string; reason: string; growth?: string; fixedAmount?: string }
+  flips?: { outcome: string; model?: string; probe?: true }
+  /** The questions' own verdict, apart from the audit's. */
+  questionsStatus?: string
 }
 
 interface SellerAuditReportFailure {
@@ -423,19 +427,29 @@ export async function renderModelAuditReports(
   })
 }
 
-/** A result's report reason: its close call (first look, each extra set, what it waits for) or its outcome reason. */
+/**
+ * A result's report reason. A DIFF names every test that flagged it, as the verdict reads them (`flaggedSummaryChecks`),
+ * then the questions' own result; otherwise the questions' close call (first look, each extra set, what it waits for)
+ * or the outcome reason.
+ */
 function sellerResultReason(
   result: SellerAuditReportResult,
 ): string {
-  // Only a flag that ended the audit before its questions is the reason; in a confirmation that went on past it,
-  // the questions decide.
-  if (result.tokenizerPrecheck?.outcome === 'mismatch' && result.parsedProbeCount === 0 && result.status === 'DIFF') {
-    return `tokenizer pre-check (${result.tokenizerPrecheck.rule}): ${describeTokenizerCounts(result.tokenizerPrecheck)}`
-  }
-  if (result.outputCap?.outcome === 'flag' && result.parsedProbeCount === 0 && result.status === 'DIFF') {
-    return `cap check (${result.outputCap.rule}): ${describeOutputCapSummary(result.outputCap)}: the reply limit was ignored`
-  }
-  if (result.outputEcho?.outcome === 'flag' && result.parsedProbeCount === 0 && result.status === 'DIFF') return `echo check (${result.outputEcho.rule}): ${result.outputEcho.reason}`
+  const questions = questionsReportReason(result)
+  const flagged = result.status === 'DIFF' ? flaggedSummaryChecks(result).filter((check) => check !== 'kbf') : []
+  if (flagged.length === 0) return questions
+  const tests = flagged.map((check) => {
+    if (check === 'tokens' && result.tokenizerPrecheck) return `tokenizer pre-check (${result.tokenizerPrecheck.rule}): ${describeTokenizerCounts(result.tokenizerPrecheck)}`
+    if (check === 'output-cap' && result.outputCap) return `cap check (${result.outputCap.rule}): ${describeOutputCapSummary(result.outputCap)}: the reply limit was ignored`
+    if (check === 'output-echo' && result.outputEcho) return `echo check (${result.outputEcho.rule}): ${result.outputEcho.reason}`
+    return describeAuditCheck(check)
+  })
+  const asked = result.questionsStatus ?? (result.parsedProbeCount === 0 ? 'not asked' : result.status)
+  return [`flagged by ${tests.join('; and ')}`, `questions ${asked}${questions === '—' ? '' : `: ${questions}`}`].join('; ')
+}
+
+/** The questions' own part of a result's reason: its close call, or its outcome reason. */
+function questionsReportReason(result: SellerAuditReportResult): string {
   if (!result.extension) {
     if (result.extensionPending) return `close call waiting for extra questions: ${result.extensionPending.reason}`
     return reportReason(result.outcomeReason)

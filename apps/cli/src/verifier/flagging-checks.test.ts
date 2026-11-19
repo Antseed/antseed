@@ -277,6 +277,9 @@ test('an audit\'s time for "fresh" is its earliest request on the auditor\'s clo
     responseAuth: { requestId: 'r', status: 'verified', record: { requestId: 'r', receivedAt, responseStartedAt } },
   })
   const capOnly = (receivedAt: number | undefined, responseStartedAt: number) => ({ exchanges: [], outputCap: { asks: [{ request: reply(receivedAt, responseStartedAt) }] } as never })
+  // A reply that is not verified gives no time, whatever its local record says.
+  const unverified = { exchanges: [], outputCap: { asks: [{ request: { ...reply(1_000, 1_000), responseAuth: { requestId: 'r', status: 'invalid', record: { requestId: 'r', receivedAt: 1_000 } } } }] } as never }
+  assert.equal(earliestAuditorTime([unverified]), null)
   const afterCutoff = (REPORTED + 3_600) * 1_000
   // A seller that back-dates its signed start time before the report does not make the audit stale.
   const backDated = capOnly(afterCutoff + 5_000, (REPORTED - 86_400) * 1_000)

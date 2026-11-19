@@ -600,7 +600,9 @@ export function earliestAuditorTime(
     for (const { check, record } of recordsOf(evidence)) {
       if (record == null || !countsTowardVerdict(check, record)) continue
       for (const request of check.requests(record)) {
-        const at = request.responseAuth?.record?.receivedAt
+        // Only a verified reply gives a time: the reader keeps its local record for an invalid one too.
+        if (request.responseAuth?.status !== 'verified') continue
+        const at = request.responseAuth.record?.receivedAt
         if (typeof at === 'number') times.push(at)
       }
     }

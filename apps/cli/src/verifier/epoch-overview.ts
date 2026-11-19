@@ -10,6 +10,7 @@ import {
 import { finalAuditVerdict } from './model-audit.js'
 import { extensionSets, latestExtension } from './close-call.js'
 import { explainInconclusive, explainSkipReason, type PlainReason } from './plain-reason.js'
+import { describeAuditCheck, flaggedSummaryChecks } from './flagging-checks.js'
 import { disputeKey } from './pending-confirmations.js'
 import { describeTokenizerCounts } from './tokenizer-precheck.js'
 import { normalized } from './utils.js'
@@ -163,7 +164,10 @@ export async function buildEpochOverview(
               answered: result.parsedProbeCount,
               asked: result.probeCount,
             })
-            : null,
+            : state === 'diff'
+              // Every test that flagged it, not only the questions.
+              ? { headline: 'Flagged', detail: `Flagged by ${flaggedSummaryChecks(result).map(describeAuditCheck).join(', ') || 'no test the summary shows'}.` }
+              : null,
           audits: (previous?.audits ?? 0) + 1,
         })
       }
