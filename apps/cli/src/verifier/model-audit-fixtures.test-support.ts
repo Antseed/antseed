@@ -88,6 +88,8 @@ export interface FixtureAudit {
   confirmsDiff?: boolean
   /** Sets a second row of the same seller and model apart (its own audit and evidence file). */
   auditSalt?: string
+  /** The row is another report's own result, as the epoch submission marks it. */
+  offeredAsAlternate?: true
   /**
    * The seller signs input tokens from another tokenizer: the tokenizer pre-check finds a mismatch and the
    * audit is DIFF beside its questions. `verdict` must be DIFF.
@@ -311,6 +313,7 @@ export async function writeSignedAuditRun(input: {
         questionsStatus: evidence.result.verdict,
         questionsOutcomeReason: null,
         ...(audit.confirmsDiff ? { confirmsDiff: true } : {}),
+        ...(audit.offeredAsAlternate ? { offeredAsAlternate: true } : {}),
         outcomeReason: null,
         auditId,
         parsedProbeCount: evidence.result.parsedProbeCount,

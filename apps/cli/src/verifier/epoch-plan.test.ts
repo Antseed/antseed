@@ -19,6 +19,7 @@ import {
   epochModelRows,
   failureBlame,
   mergeEpochRuns,
+  CONFIRMATION_RECHECK_SPACING_SECONDS,
   reportCellKey,
   reportKey,
   splitEpochRuns,
@@ -391,6 +392,21 @@ test('a report\'s attempts end only on the seller\'s side: the auditor\'s own fa
   // Three of the seller's: finished.
   const theirs = cellAfter([sellerDown, sellerDown, sellerDown])
   assert.deepEqual([theirs.attempts, theirs.action], [CONFIRMATION_ATTEMPTS, 'done'])
+})
+
+test('an undecided confirmation keeps an auditor-caused cause, and a report\'s auditor-side failure waits before it is tried again', async () => {
+  const { settleAuditVerdict } = await import('./close-call.js')
+  const { failureBlame } = await import('./failure-blame.js')
+  const undecided = (reason: typeof sellerDown | typeof buyerRefused) => settleAuditVerdict(result('a', 'UNDETERMINED', {
+    confirming: ['kbf'], questionsStatus: 'UNDETERMINED', questionsOutcomeReason: reason, outcomeReason: reason,
+  } as Partial<ModelVerificationTargetResult>))
+  // The seller's failure: the confirmation is undecided, and that attempt counts on the seller's side.
+  assert.equal(undecided(sellerDown).outcomeReason?.code, 'confirmation_undecided')
+  // Our own failure: its cause stays, so it never counts toward the seller's three.
+  assert.equal(failureBlame(undecided(buyerRefused).outcomeReason), 'auditor')
+  const cell = { state: 'failed' as const, action: 'retry' as const, blame: 'auditor' as const, result: null, attempts: 0, lastAttemptAt: 1_000 }
+  assert.equal(sellerRetryDueAt({ ...cell, confirmationReport: 'report' }), 1_000 + CONFIRMATION_RECHECK_SPACING_SECONDS)
+  assert.equal(sellerRetryDueAt(cell), null, 'outside a report, as before')
 })
 
 test('a confirmation whose close-call extension failed is retried; a decided or non-confirming one is done', () => {

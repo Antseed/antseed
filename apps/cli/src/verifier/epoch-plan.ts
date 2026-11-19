@@ -174,8 +174,11 @@ export const CONFIRMATION_RECHECK_SPACING_SECONDS = 10 * 60
  * When a seller or unclear failure may be audited again (seconds), or null when the cell is not
  * such a retry. Confirmation re-checks are spaced by `CONFIRMATION_RECHECK_SPACING_SECONDS` instead.
  */
-export function sellerRetryDueAt(cell: Pick<EpochCell, 'state' | 'action' | 'blame' | 'result' | 'attempts' | 'lastAttemptAt'>): number | null {
-  if (cell.action !== 'retry' || cell.blame === 'auditor' || cell.lastAttemptAt === null) return null
+export function sellerRetryDueAt(cell: Pick<EpochCell, 'state' | 'action' | 'blame' | 'result' | 'attempts' | 'lastAttemptAt'> & Partial<Pick<EpochCell, 'confirmationReport'>>): number | null {
+  if (cell.action !== 'retry' || cell.lastAttemptAt === null) return null
+  // A report's attempt that failed on the auditor's side waits a confirmation's spacing before it is tried again, so
+  // it is not tried on every tick; any other failure on the auditor's side is retried at once, as before.
+  if (cell.blame === 'auditor') return cell.confirmationReport !== undefined ? cell.lastAttemptAt + CONFIRMATION_RECHECK_SPACING_SECONDS : null
   if (cell.state !== 'failed' && cell.state !== 'undetermined') return null
   if (cell.result?.confirmsDiff) return null
   return cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS
@@ -732,7 +735,7 @@ export async function writeEpochSubmissionManifest(
       if (normalized(cell.model) !== normalized(model) || !cell.result || finalAuditVerdict(cell.result) === null) continue
       if (cell.state !== 'same' && cell.state !== 'diff') continue
       if (results.some((result) => result.auditId === cell.result!.auditId)) continue
-      results.push(cell.result)
+      results.push({ ...cell.result, offeredAsAlternate: true })
     }
     for (const failure of runSummaries.flatMap((summary) => summary.failures)) {
       if (failure.peerId.startsWith('model:') && results.length === 0) failures.push(failure)

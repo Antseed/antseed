@@ -177,6 +177,14 @@ test('right before a send, a result another auditor judged meanwhile, or whose c
     await recheckAuditBeforeSend({ audit, auditor: ME, readEvents: async () => [], readMyConfirmations: none, alreadyOnChain: () => (async (_model: string, candidates: readonly unknown[]) => candidates.map(() => true)) as never }) ?? '',
     /1 result\(s\) this auditor has reported since it was prepared/,
   )
+  // Each row is judged with its own stored audit time, as the preparation judged it (never 0).
+  const { resultTimeKey } = await import('../../../verifier/model-audit.js')
+  const seen: number[] = []
+  await recheckAuditBeforeSend({
+    audit: { ...audit, auditedAt: { [resultTimeKey(7n, service)]: 1_800_000_123 } }, auditor: ME, readEvents: async () => [], readMyConfirmations: none,
+    alreadyOnChain: () => (async (_model: string, candidates: ReadonlyArray<{ auditedAt: number }>) => { seen.push(...candidates.map((candidate) => candidate.auditedAt)); return candidates.map(() => false) }) as never,
+  })
+  assert.deepEqual(seen, [1_800_000_123])
 })
 
 test('a retry reuses an earlier attempt\'s evidence only for the same results, model and epoch, with its reference files; an unreadable one is never a stop', async () => {
@@ -220,6 +228,13 @@ test('a retry reuses an earlier attempt\'s evidence only for the same results, m
     const prepared = fresh()
     const [fallback] = await reuseLedgerEvidence([prepared], ledgerWith('pending', canonicalHashBytes32(earlier), join(directory, 'missing.json')))
     assert.equal(fallback, prepared)
+    // A raw reference exchange file the earlier document names is gone: the whole bundle is not there, so no reuse.
+    const incomplete = document({ referenceEvidence: [{ path: 'references/exchanges-gone.jsonl' }] })
+    const incompletePath = join(directory, 'earlier', 'incomplete.json')
+    await writeFile(incompletePath, canonicalJsonStringify(incomplete))
+    const freshAgain = fresh([row], { referenceEvidence: [{ path: 'references/exchanges-gone.jsonl' }] })
+    const [notReused] = await reuseLedgerEvidence([freshAgain], ledgerWith('pending', canonicalHashBytes32(incomplete), incompletePath))
+    assert.equal(notReused, freshAgain)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

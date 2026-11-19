@@ -294,7 +294,7 @@ test('parts are cut from the results left to send', async () => {
 
 test('two rows of one seller: the latest stands, another report\'s row only when the decision sends it, and a sibling is never promoted', async () => {
   // Seller 1 has two rows on model-a: the latest (SAME) and another report's own (DIFF), as the epoch submission offers.
-  const rows = [audit('1', sellers[0]!, 'model-a', 'SAME'), { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), auditSalt: 'report-a' }, audit('2', sellers[1]!, 'model-a')]
+  const rows = [audit('1', sellers[0]!, 'model-a', 'SAME'), { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), auditSalt: 'report-a', offeredAsAlternate: true as const }, audit('2', sellers[1]!, 'model-a')]
   const sent = (prepared: Fixture['prepared']) => prepared.audits.flatMap((entry) => entry.results.map((result) => `${result.agentId}:${result.verdict}`))
   // No report waiting: the latest row stands, the other is left out.
   await withRun(rows, async ({ prepared }) => {
@@ -317,6 +317,32 @@ test('two rows of one seller: the latest stands, another report\'s row only when
     sameCheck: async (_model, candidates) => candidates.map((candidate) => (
       candidate.agentId === 1n && candidate.verdict === VERIFIER_VERDICT.DIFF ? { kind: 'send' as const, confirmation } : null
     )),
+  })
+  // The winning confirmation is already on chain: nothing of seller 1 is sent, the latest row is not promoted.
+  await withRun(rows, async ({ prepared }) => {
+    assert.deepEqual(sent(prepared), [`2:${VERIFIER_VERDICT.SAME}`])
+  }, {
+    alreadyOnChain: async (_model, candidates) => candidates.map((candidate) => candidate.agentId === 1n && candidate.verdict === VERIFIER_VERDICT.DIFF),
+    sameCheck: async (_model, candidates) => candidates.map((candidate) => (
+      candidate.agentId === 1n && candidate.verdict === VERIFIER_VERDICT.DIFF ? { kind: 'send' as const, confirmation } : null
+    )),
+  })
+  // The latest row is refused (its evidence file is damaged): the alternate is still the alternate, so with no report
+  // waiting the seller gets nothing, never the older row in its place.
+  await withRun(rows, async ({ prepared }) => {
+    assert.deepEqual(sent(prepared), [`2:${VERIFIER_VERDICT.SAME}`])
+    assert.ok(prepared.excluded.some((entry) => /another report's result of this seller/.test(entry.reason)))
+  }, {
+    sameCheck: async (_model, candidates) => candidates.map(() => null),
+    tamper: async (evidenceDir) => {
+      const { readdir } = await import('node:fs/promises')
+      const files = (await readdir(evidenceDir, { recursive: true })).filter((name) => name.endsWith('evidence.json') && name.includes('/run-1/'))
+      for (const name of files) {
+        const path = join(evidenceDir, name)
+        const text = await readFile(path, 'utf8')
+        if (text.includes(peerIdOf(sellers[0]!).replace(/^0x/, '')) || text.includes(peerIdOf(sellers[0]!))) await writeFile(path, `${text} `)
+      }
+    },
   })
 })
 

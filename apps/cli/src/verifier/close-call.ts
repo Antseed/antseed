@@ -1,5 +1,6 @@
 import { readingsOfSummary, verdictOf, type AuditVerdict } from './audit-checks.js'
 import { confirmationUndecidedReason } from './outcome-reason.js'
+import { failureBlame } from './failure-blame.js'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
   KBF_EXTENSION_RULE,
@@ -133,7 +134,9 @@ export function settleAuditVerdict<T extends ModelVerificationTargetResult>(resu
     status: audit.verdict,
     questionsStatus,
     questionsOutcomeReason: questionsOutcome,
-    outcomeReason: audit.undecidedConfirmation
+    // An undecided confirmation says so, unless the cause was this auditor's own: then that cause stays, so the
+    // attempt counts on the auditor's side and never toward the seller's three.
+    outcomeReason: audit.undecidedConfirmation && failureBlame(questionsOutcome) !== 'auditor'
       ? confirmationUndecidedReason(audit.undecidedConfirmation, questionsOutcome?.totalBatchCount ?? 0)
       : questionsOutcome,
   }

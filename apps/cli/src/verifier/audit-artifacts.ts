@@ -439,7 +439,7 @@ function sellerResultReason(
   const questions = questionsReportReason(result)
   // Every test that flagged, the questions too when they did (named in the list, their own result after it).
   const flagged = result.status === 'DIFF' ? flaggedSummaryChecks(result) : []
-  if (flagged.length === 0 || (flagged.length === 1 && flagged[0] === 'kbf')) return questions
+  if (flagged.length === 0) return questions
   const tests = flagged.map((check) => {
     if (check === 'tokens' && result.tokenizerPrecheck) return `tokenizer pre-check (${result.tokenizerPrecheck.rule}): ${describeTokenizerCounts(result.tokenizerPrecheck)}`
     if (check === 'output-cap' && result.outputCap) return `cap check (${result.outputCap.rule}): ${describeOutputCapSummary(result.outputCap)}: the reply limit was ignored`

@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { access, readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { acquirePidFileLock, LockHeldError, type FileLock } from '../../../verifier/atomic-files.js'
 import { createInterface } from 'node:readline/promises'
@@ -21,6 +21,7 @@ import {
   modelAuditUpstreams,
   preparedFromEvidence,
   readModelAuditEvidence,
+  resultTimeKey,
   writeModelAuditEvidence,
   writeModelAuditLedger,
   type AuditPublicationV1,
@@ -420,8 +421,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           // An earlier attempt under this key that may have been sent keeps its entry: only a submit, which reads the
           // chain for it first (`earlierAttemptToCheck`), may replace it.
           if (earlierAttemptToCheck(previous, audit)) {
-            console.warn(chalk.yellow(`${audit.key}: not published: an earlier attempt with other evidence may have been sent; `
-              + 'run `antseed verifier submit` first, which checks it on-chain.'))
+            console.warn(chalk.yellow(`${audit.key}: not published: an earlier attempt with other evidence may have been sent. `
+              + 'Run `antseed verifier submit` first, which checks it on-chain; --publish-only skips this model until a submit has '
+              + 'finished it and exited 0.'))
             continue
           }
           try {
@@ -466,6 +468,8 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         return
       }
 
+      // What to run to send what this submit left: the same command, for the same run when one was named.
+      const submitAgain = options.runId ? `antseed verifier submit --run-id ${options.runId}` : 'antseed verifier submit'
       let submitted = 0
       let recovered = 0
       /** Models whose remaining results go out only with another submit. */
@@ -504,7 +508,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
               // Its other results are not lost, but they go out only with the next submit: say so, and exit 1, so a
               // submit run by hand is run again (on the last submit of an epoch they are otherwise lost).
               console.warn(chalk.yellow(`${audit.key}: an earlier attempt's evidence is on-chain and the ledger is updated; `
-                + 'the results it did not hold are not sent yet. Run `antseed verifier submit` again to send them.'))
+                + `the results it did not hold are not sent yet. Run \`${submitAgain}\` again to send them.`))
               continue
             }
           }
@@ -551,8 +555,11 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
             delete ledger.models[audit.key]
             await writeModelAuditLedger(ledgerPath, ledger)
             held += 1
+            // Its other rows are still unsent: say what to run, and exit non-zero so a submit run by hand is run again.
+            rerun += 1
             unsent.push(`${audit.key}: held for a new check (${changed})`)
-            console.warn(chalk.yellow(`${audit.key}: not sent: ${changed}. The next submit or watch tick prepares it again.`))
+            console.warn(chalk.yellow(`${audit.key}: not sent: ${changed}. Its other results are prepared again by \`${submitAgain}\` `
+              + '(or the next watch tick).'))
             continue
           }
 
@@ -613,7 +620,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       console.log(`  Seller results left out as already on-chain: ${alreadyOnChain.reduce((total, entry) => total + entry.count, 0)}`)
       console.log(`  Credits this epoch: ${after.auditor} of ${after.total} total`)
       console.log(chalk.dim(`Ledger: ${ledgerPath}`))
-      if (rerun > 0) console.warn(chalk.yellow(`${rerun} model(s) have results left to send: run \`antseed verifier submit\` again.`))
+      if (rerun > 0) console.warn(chalk.yellow(`${rerun} model(s) have results left to send: run \`${submitAgain}\` again.`))
       if (failed > 0 || rerun > 0) process.exitCode = 1
     })
 }
@@ -647,7 +654,7 @@ async function epochSubmissionManifest(
  * too, so the check never fails open.
  */
 export async function recheckAuditBeforeSend(input: {
-  audit: Pick<PreparedModelAudit, 'modelHash' | 'results'> & { evidence: Pick<PreparedModelAudit['evidence'], 'results'> }
+  audit: Pick<PreparedModelAudit, 'modelHash' | 'results'> & Partial<Pick<PreparedModelAudit, 'auditedAt'>> & { evidence: Pick<PreparedModelAudit['evidence'], 'results'> }
   auditor: string
   readEvents: () => Promise<readonly ServiceAuditedEvent[]>
   readMyConfirmations: (events: readonly ServiceAuditedEvent[]) => Promise<ReadonlySet<string>>
@@ -668,12 +675,10 @@ export async function recheckAuditBeforeSend(input: {
     const reasons = await filter(input.audit.modelHash, input.audit.results.map((result) => ({ ...result, auditedAt: 0 })))
     const blocked = reasons.filter((reason): reason is string => reason !== null)
     if (blocked.length === 0 && input.alreadyOnChain) {
-      // A confirmation may be reported again in a later round: its evidence row says whether it is one.
-      const confirms = (result: { agentId: bigint; serviceHash: string }) => input.audit.evidence.results.some((row) => (
-        BigInt(row.agentId) === result.agentId && normalized(row.serviceHash) === normalized(result.serviceHash) && row.confirmation !== undefined
-      ))
+      // Each row with its own audit time, as the preparation judged it: a repeated verdict is sent when its audit is
+      // newer than this auditor's report (`submission-delta.ts`).
       const reported = await input.alreadyOnChain(events)(input.audit.modelHash, input.audit.results.map((result) => ({
-        ...result, auditedAt: 0, confirmsDiff: confirms(result),
+        ...result, auditedAt: input.audit.auditedAt?.[resultTimeKey(result.agentId, result.serviceHash)] ?? 0,
       })))
       const count = reported.filter(Boolean).length
       if (count > 0) blocked.push(`${count} result(s) this auditor has reported since it was prepared`)
@@ -901,7 +906,14 @@ export async function reuseLedgerEvidence(
         const path = resolve(dirname(previous.evidencePath), entry.path)
         references.push({ path, reference: JSON.parse(await readFile(path, 'utf8')) as PreparedModelAudit['references'][number]['reference'] })
       }
-      audits.push({ ...preparedFromEvidence(audit.key, previous.evidencePath, evidence, audit.auditEvidencePaths), references })
+      const reused = preparedFromEvidence(audit.key, previous.evidencePath, evidence, audit.auditEvidencePaths)
+      // The whole bundle, or no reuse: a raw reference exchange file that is gone would fail its packaging on every retry.
+      for (const entry of reused.referenceEvidence) await access(entry.sourcePath)
+      audits.push({
+        ...reused, references,
+        // The same results as prepared now, so the same audit times.
+        ...(audit.auditedAt ? { auditedAt: audit.auditedAt } : {}),
+      })
     } catch {
       audits.push(audit)
     }

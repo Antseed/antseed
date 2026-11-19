@@ -2067,6 +2067,10 @@ export async function runVerifierRound(
                   type: 'audit-completed', runId, epoch, model, peerId: result.peerId,
                   auditId: result.auditId, verdict: result.status, cost: result.cost,
                   outcomeReason: result.outcomeReason,
+                  // Every test that flagged, and the questions' own verdict and reason, apart from the audit's.
+                  flaggedBy: result.status === 'DIFF' ? flaggedSummaryChecks(result) : [],
+                  questionsVerdict: result.questionsStatus ?? null,
+                  questionsOutcomeReason: result.questionsOutcomeReason ?? null,
                   at: new Date().toISOString(),
                 })
                 await updateStatus((value) => {

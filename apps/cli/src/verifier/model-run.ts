@@ -353,6 +353,11 @@ export interface ModelVerificationTargetResult {
   /** The chain time of the report it confirms: with `confirming`, which report this is. */
   confirmingReportedAt?: number
   /**
+   * Set by the epoch submission on another report's own result it offers beside the seller's latest: submit sends it
+   * only when the confirmation decision sends it for the report waiting now.
+   */
+  offeredAsAlternate?: true
+  /**
    * A close call whose extra set will not be asked: in the run, beside a flag of another test (a flagged result never
    * waits across runs); at submit, when its window closed or its extra questions were published. Its questions are
    * undecided, and the closure is published (`questionsClosed`).

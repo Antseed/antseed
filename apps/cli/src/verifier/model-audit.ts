@@ -214,6 +214,11 @@ export interface PreparedModelAudit {
   results: ServiceResultInput[]
   references: Array<{ path: string; reference: KbfReferenceV1 }>
   auditEvidencePaths: string[]
+  /**
+   * When each result's audit was made (its latest evidence file, seconds), by `resultTimeKey`: the last read before a
+   * send judges each row by it, as the preparation did.
+   */
+  auditedAt?: Record<string, number>
   /** Raw reference exchange files: where they are read from and where they go next to the evidence. */
   referenceEvidence: Array<{ sourcePath: string; path: string }>
 }
@@ -377,8 +382,10 @@ export async function prepareModelAudits(input: {
       extensionEvidence: ProxyAuditEvidenceV1 | null
       extension2Evidence: ProxyAuditEvidenceV1 | null
       confirmation?: SameCheckConfirmationV1
-      /** A second row of the same seller and service (another report's own result). */
+      /** Another report's own result, as the submission offers it beside the seller's latest. */
       alternate?: true
+      /** The confirmation decision on this row (`sameCheck`), applied once one row per seller is chosen. */
+      decision?: SameCheckDecision
     }> = []
     const seen = new Set<string>()
     let referenceModel: string | null = null
@@ -479,10 +486,10 @@ export async function prepareModelAudits(input: {
         exclude(`audited against ${evidence.reference.referenceModel}, not ${referenceModel}`)
         continue
       }
-      // A second row of one seller and service is an alternative (another report's own result, offered by the epoch
-      // submission): it goes through every check, and after the confirmation decision one row is kept.
+      // Another report's own result, marked so where the epoch submission offers it (never by its position): it goes
+      // through the checks, and one row per seller is chosen with the confirmation decision.
       const duplicateKey = `${agentId}:${serviceHash(result.service)}`
-      const alternate = seen.has(duplicateKey)
+      const alternate = result.offeredAsAlternate === true
       let owner: string
       try {
         owner = await ownerOf(agentId)
@@ -498,11 +505,8 @@ export async function prepareModelAudits(input: {
       accepted.push({ agentId, result, evidence, extensionEvidence, extension2Evidence, ...(alternate ? { alternate: true as const } : {}) })
     }
 
-    keepOneSamePerSeller(accepted, excluded)
     allExcluded.push(...excluded.map((entry) => ({ ...entry, model })))
     if (accepted.length === 0 || referenceModel === null) continue
-    // After keepOneSamePerSeller, so the SAME kept per seller is the same one whether or not it is
-    // already on-chain (another of its services is never sent in its place).
     const candidatesOf = (): SubmissionCandidate[] => accepted.map((entry) => ({
       agentId: entry.agentId,
       serviceHash: serviceHash(entry.result.service),
@@ -510,6 +514,64 @@ export async function prepareModelAudits(input: {
       auditedAt: auditedAt(entry),
       confirmsDiff: entry.result.confirmsDiff === true,
     }))
+    const drop = (index: number, reason: string): void => {
+      const { result } = accepted[index]!
+      allExcluded.push({ model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason })
+      accepted.splice(index, 1)
+    }
+    // The confirmation decision of every row first: the choice of one row per seller depends on it.
+    if (input.sameCheck) {
+      const decisions = await input.sameCheck(modelHash(referenceModel), candidatesOf().map((candidate, index) => ({
+        ...candidate,
+        flaggedBy: flaggingChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
+        passedBy: passedChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
+        // Freshness is the earliest request used, on the auditor's clock, over the first set and its extra sets (0: none).
+        auditedAt: earliestAuditorTime([accepted[index]!.evidence, accepted[index]!.extensionEvidence, accepted[index]!.extension2Evidence]) ?? 0,
+        ...(accepted[index]!.evidence.confirming ? { confirming: accepted[index]!.evidence.confirming } : {}),
+      })))
+      for (const [index, entry] of accepted.entries()) {
+        const decision = decisions[index]
+        if (decision) entry.decision = decision
+      }
+    }
+    // One row per seller and service, chosen before anything else removes rows, so no row is promoted because another
+    // was removed (as already on chain, say). The submission marks which row is the seller's latest and which is
+    // another report's own (`alternate`): an alternate stands only when the decision sends it for the report waiting
+    // now, and a sent row whose evidence names the report wins over an untagged first look. Otherwise the latest row
+    // stands; when it was refused (its evidence unreadable), the seller gets nothing.
+    {
+      const sends = (entry: (typeof accepted)[number]) => entry.decision?.kind === 'send'
+      const rank = (entry: (typeof accepted)[number]): number => (
+        sends(entry) && entry.evidence.confirming ? 3 : sends(entry) ? 2 : entry.alternate ? 0 : 1
+      )
+      const kept = new Map<string, number>()
+      for (const [index, entry] of accepted.entries()) {
+        if (rank(entry) === 0) continue
+        const key = `${entry.agentId}:${serviceHash(entry.result.service)}`
+        const earlier = kept.get(key)
+        if (earlier === undefined || rank(entry) > rank(accepted[earlier]!)) kept.set(key, index)
+      }
+      for (let index = accepted.length - 1; index >= 0; index -= 1) {
+        const entry = accepted[index]!
+        if (kept.get(`${entry.agentId}:${serviceHash(entry.result.service)}`) === index) continue
+        const winner = accepted[kept.get(`${entry.agentId}:${serviceHash(entry.result.service)}`) ?? -1]
+        drop(index, entry.alternate
+          ? 'another report\'s result of this seller, not sent for the report waiting now'
+          : winner && sends(winner) ? 'the result made for the report waiting now is sent in its place' : `duplicate audited service ${entry.result.service}`)
+      }
+    }
+    // After the choice, so the SAME kept per seller is the same one whether or not it is already on-chain (another of
+    // its services is never sent in its place).
+    {
+      const before = accepted.length
+      const sameExcluded: typeof excluded = []
+      keepOneSamePerSeller(accepted, sameExcluded)
+      // As before: these are listed in the published evidence too.
+      excluded.push(...sameExcluded)
+      allExcluded.push(...sameExcluded.map((entry) => ({ ...entry, model })))
+      if (accepted.length !== before && accepted.length === 0) continue
+    }
+    if (accepted.length === 0) continue
     if (input.alreadyOnChain) {
       const onChain = await input.alreadyOnChain(modelHash(referenceModel), candidatesOf())
       const count = onChain.filter(Boolean).length
@@ -524,10 +586,7 @@ export async function prepareModelAudits(input: {
       const reasons = await excludes(modelHash(referenceModel), candidatesOf())
       for (let index = accepted.length - 1; index >= 0; index -= 1) {
         const reason = reasons[index]
-        if (!reason) continue
-        const { result } = accepted[index]!
-        allExcluded.push({ model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason })
-        accepted.splice(index, 1)
+        if (reason) drop(index, reason)
       }
       if (accepted.length === 0) break
     }
@@ -535,61 +594,21 @@ export async function prepareModelAudits(input: {
     // the published evidence (`same-check.ts`).
     if (input.unpublishedDiffs) {
       for (let index = accepted.length - 1; index >= 0; index -= 1) {
-        const { result } = accepted[index]!
-        if (result.status !== 'DIFF') continue
-        allExcluded.push({ model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason: input.unpublishedDiffs })
-        accepted.splice(index, 1)
+        if (accepted[index]!.result.status === 'DIFF') drop(index, input.unpublishedDiffs)
       }
     }
-    if (input.sameCheck && accepted.length > 0) {
-      const decisions = await input.sameCheck(modelHash(referenceModel), candidatesOf().map((candidate, index) => ({
-        ...candidate,
-        flaggedBy: flaggingChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
-        passedBy: passedChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
-        // Freshness is the earliest request used, on the auditor's clock, over the first set and its extra sets (0: none).
-        auditedAt: earliestAuditorTime([accepted[index]!.evidence, accepted[index]!.extensionEvidence, accepted[index]!.extension2Evidence]) ?? 0,
-        ...(accepted[index]!.evidence.confirming ? { confirming: accepted[index]!.evidence.confirming } : {}),
-      })))
-      for (let index = accepted.length - 1; index >= 0; index -= 1) {
-        const decision = decisions[index]
-        if (!decision) continue
-        const entry = accepted[index]!
-        if (decision.kind === 'send') {
-          entry.confirmation = decision.confirmation
-          continue
-        }
-        // Nothing is sent: the seller keeps its record. Only a hold is tried again by the next submit.
-        const { result } = entry
-        allExcluded.push({ model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason: decision.reason })
-        if (decision.kind === 'hold') heldBack.push(`${model} ${result.agentId ?? result.peerId}: ${decision.reason}`)
-        accepted.splice(index, 1)
+    // The decisions, applied to the rows left: a send carries its confirmation; nothing else is sent, and only a hold is
+    // tried again by the next submit.
+    for (let index = accepted.length - 1; index >= 0; index -= 1) {
+      const entry = accepted[index]!
+      const decision = entry.decision
+      if (!decision) continue
+      if (decision.kind === 'send') {
+        entry.confirmation = decision.confirmation
+        continue
       }
-    }
-    // One row per seller and service. An alternative row (another report's own result) exists only to answer the report
-    // waiting now: it stands only when the confirmation decision sends it, and is never promoted because the seller's
-    // latest row was removed (as already on chain, say). Among rows a decision sends, one whose evidence names the
-    // report wins over an untagged first look; otherwise the latest row stands, as before.
-    {
-      const rank = (entry: (typeof accepted)[number]): number => (
-        entry.confirmation && entry.evidence.confirming ? 3 : entry.confirmation ? 2 : entry.alternate ? 0 : 1
-      )
-      const kept = new Map<string, number>()
-      for (const [index, entry] of accepted.entries()) {
-        if (rank(entry) === 0) continue
-        const key = `${entry.agentId}:${serviceHash(entry.result.service)}`
-        const earlier = kept.get(key)
-        if (earlier === undefined || rank(entry) > rank(accepted[earlier]!)) kept.set(key, index)
-      }
-      for (let index = accepted.length - 1; index >= 0; index -= 1) {
-        const entry = accepted[index]!
-        if (kept.get(`${entry.agentId}:${serviceHash(entry.result.service)}`) === index) continue
-        const { result } = entry
-        allExcluded.push({
-          model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId,
-          reason: entry.alternate ? 'another report\'s result of this seller, not sent for the report waiting now' : 'the result made for the report waiting now is sent in its place',
-        })
-        accepted.splice(index, 1)
-      }
+      if (decision.kind === 'hold') heldBack.push(`${model} ${entry.result.agentId ?? entry.result.peerId}: ${decision.reason}`)
+      drop(index, decision.reason)
     }
     if (accepted.length === 0) continue
     accepted.sort((left, right) => compareResults(
@@ -744,6 +763,7 @@ export async function prepareModelAudits(input: {
           ...(result.extension ? [result.extension.evidencePath] : []),
           ...(result.extension2 ? [result.extension2.evidencePath] : []),
         ]),
+        auditedAt: Object.fromEntries(slice.map((entry) => [resultTimeKey(entry.agentId, serviceHash(entry.result.service)), auditedAt(entry)])),
       })
     }
   }
@@ -751,6 +771,11 @@ export async function prepareModelAudits(input: {
 }
 
 /** Unix seconds of the latest evidence file behind a result: its last extra set when it has one. */
+/** The key of a result's audit time on a prepared audit (`PreparedModelAudit.auditedAt`). */
+export function resultTimeKey(agentId: bigint | string, serviceHash: string): string {
+  return `${agentId.toString()}:${serviceHash.toLowerCase()}`
+}
+
 function auditedAt(entry: {
   evidence: ProxyAuditEvidenceV1
   extensionEvidence: ProxyAuditEvidenceV1 | null
