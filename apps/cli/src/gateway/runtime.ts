@@ -14,7 +14,7 @@ import { SpendFeedPoller } from './spend-feed.js'
 import { GatewayStore, gatewayDir } from './store.js'
 import { StreamResumeStore } from './stream-resume.js'
 import { join } from 'node:path'
-import { X402Facilitator, type X402Asset } from './x402.js'
+import { X402Facilitator, erc1271SignatureCheck, type X402Asset } from './x402.js'
 import { GatewayTelemetry } from '../telemetry/gateway.js'
 import { cdpAuthorization, type CdpCredentials } from './cdp-auth.js'
 
@@ -84,17 +84,20 @@ export interface GatewayRuntime {
   stop: () => Promise<void>
 }
 
-/**
- * The USDC the buyer's chain uses, with the EIP-712 domain its
- * `transferWithAuthorization` signatures are checked against.
- */
-function usdcAsset(config: Awaited<ReturnType<typeof loadConfig>>): () => Promise<X402Asset> {
+function paymentChain(config: Awaited<ReturnType<typeof loadConfig>>): ReturnType<typeof resolveChainConfig> {
   const crypto = config.payments?.crypto
-  const chain = resolveChainConfig({
+  return resolveChainConfig({
     chainId: crypto?.chainId,
     rpcUrl: resolveBaseRpcUrlOverride() ?? crypto?.rpcUrl,
     usdcContractAddress: crypto?.usdcContractAddress,
   })
+}
+
+/**
+ * The USDC the buyer's chain uses, with the EIP-712 domain its
+ * `transferWithAuthorization` signatures are checked against.
+ */
+function usdcAsset(chain: ReturnType<typeof resolveChainConfig>): () => Promise<X402Asset> {
   let asset: Promise<X402Asset> | null = null
   return () => {
     // Read once per process through the shared provider (which fails over between endpoints).
@@ -172,9 +175,11 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     },
     onLog: options.onLog,
   })
+  const chain = paymentChain(config)
   const topup: GatewayTopupOptions | null = options.topup
     ? {
-      asset: usdcAsset(config),
+      asset: usdcAsset(chain),
+      checkContractSignature: erc1271SignatureCheck(sharedChainProvider(chain)),
       facilitator: new X402Facilitator({ url: options.topup.facilitatorUrl, ...facilitatorAuth(options.topup) }),
       minUsdc: parseUsdToUsdc(options.topup.minUsd ?? DEFAULT_TOPUP_MIN_USD),
       maxUsdc: parseUsdToUsdc(options.topup.maxUsd ?? DEFAULT_TOPUP_MAX_USD),
