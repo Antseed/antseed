@@ -31,10 +31,10 @@ test('chips are the ones Apple put in that Mac', () => {
 });
 
 test('a Mac with one chip skips the chip step, a chip with one size skips the memory step', () => {
-  assert.deepEqual(stepsFor(none), ['mac', 'chip', 'memory', 'name', 'email', 'done']);
-  assert.deepEqual(stepsFor(settle({...none, mac: 'MacBook Neo'})), ['mac', 'name', 'email', 'done']);
-  assert.deepEqual(stepsFor(settle({...none, mac: 'Mac Pro'})), ['mac', 'memory', 'name', 'email', 'done']);
-  assert.deepEqual(stepsFor({...none, mac: 'Mac Studio'}), ['mac', 'chip', 'memory', 'name', 'email', 'done']);
+  assert.deepEqual(stepsFor(none), ['mac', 'chip', 'memory', 'name', 'review', 'done']);
+  assert.deepEqual(stepsFor(settle({...none, mac: 'MacBook Neo'})), ['mac', 'name', 'review', 'done']);
+  assert.deepEqual(stepsFor(settle({...none, mac: 'Mac Pro'})), ['mac', 'memory', 'name', 'review', 'done']);
+  assert.deepEqual(stepsFor({...none, mac: 'Mac Studio'}), ['mac', 'chip', 'memory', 'name', 'review', 'done']);
 });
 
 test('settle picks the only option and keeps the rest', () => {

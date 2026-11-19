@@ -24,7 +24,7 @@ export const MACS: Readonly<Record<string, Readonly<Record<string, readonly numb
 };
 
 export type Answers = {mac: string; chip: string; memory: string; name: string};
-export type Step = 'mac' | 'chip' | 'memory' | 'name' | 'email' | 'done';
+export type Step = 'mac' | 'chip' | 'memory' | 'name' | 'review' | 'done';
 
 /** The chips Apple put in that Mac. */
 export const chipsFor = (mac: string): string[] => Object.keys(MACS[mac] ?? {});
@@ -41,7 +41,7 @@ export function stepsFor(a: Answers): Step[] {
   const steps: Step[] = ['mac'];
   if (!a.mac || chipsFor(a.mac).length > 1) steps.push('chip');
   if (!a.mac || memsFor(a.mac, a.chip).length > 1) steps.push('memory');
-  return [...steps, 'name', 'email', 'done'];
+  return [...steps, 'name', 'review', 'done'];
 }
 
 /** The answers with the only option picked wherever there is just one (the MacBook Neo's chip and memory). */

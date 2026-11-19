@@ -1,13 +1,13 @@
 import config from '../../data/colony.json';
 
 /* What the Colony page and its waitlist read before and after launch, from src/data/colony.json:
-     telegramUrl  the Anthill, the local AI Telegram group; its link shows the "Join the Anthill" buttons and the move-up step
+     telegramUrl  the Anthill, the local AI Telegram group; its link shows the "Join the Anthill" buttons and the "while you wait" step
      downloadUrl  the Colony app once it is public; shows "Download for Mac" under "Invited? Set up your Mac"
-     waitlist     where /colony/join/ sends a sign-up: spotUrl (the script on the waitlist sheet, which answers with the place in line)
-                  and, as the backup, the Google Form's formResponse address with the entry id of each field */
+     waitlist     where /colony/join/ sends a sign-up: formUrl is the Google Form (it collects the verified Google-account email and
+                  allows one response per account), and fields maps each answer to that form's prefilled entry id */
 
-export type WaitlistField = 'email' | 'name' | 'mac' | 'chip' | 'memory' | 'source';
-export type Waitlist = {spotUrl: string | null; action: string | null; fields: Partial<Record<WaitlistField, string>>};
+export type WaitlistField = 'name' | 'mac' | 'chip' | 'memory' | 'source';
+export type Waitlist = {formUrl: string | null; fields: Partial<Record<WaitlistField, string>>};
 
 export const httpsUrl = (value: unknown): string | null => {
   if (typeof value !== 'string') return null;
@@ -19,7 +19,7 @@ export const httpsUrl = (value: unknown): string | null => {
   }
 };
 
-const raw = config as {telegramUrl?: unknown; downloadUrl?: unknown; waitlist?: {spotUrl?: unknown; action?: unknown; fields?: unknown} | null};
+const raw = config as {telegramUrl?: unknown; downloadUrl?: unknown; waitlist?: {formUrl?: unknown; fields?: unknown} | null};
 
 export const TELEGRAM_URL = httpsUrl(raw.telegramUrl);
 export const DOWNLOAD_URL = httpsUrl(raw.downloadUrl);
@@ -27,8 +27,7 @@ export const DOWNLOAD_URL = httpsUrl(raw.downloadUrl);
 const fields = (raw.waitlist?.fields && typeof raw.waitlist.fields === 'object' ? raw.waitlist.fields : {}) as Record<string, unknown>;
 export const WAITLIST: Waitlist | null = raw.waitlist
   ? {
-      spotUrl: httpsUrl(raw.waitlist.spotUrl),
-      action: httpsUrl(raw.waitlist.action),
+      formUrl: httpsUrl(raw.waitlist.formUrl),
       fields: Object.fromEntries(Object.entries(fields).filter(([, id]) => typeof id === 'string' && /^entry\.\d+$/.test(id))) as Waitlist['fields'],
     }
   : null;
