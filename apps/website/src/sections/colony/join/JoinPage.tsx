@@ -2,9 +2,11 @@ import {useCallback, useEffect, useRef, useState, type CSSProperties, type FormE
 import clsx from 'clsx';
 import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
-import {TELEGRAM_URL, WAITLIST} from '../config';
+import {WAITLIST} from '../config';
 import {MACS, NO_MAC, chipsFor, memsFor, settle, stepsFor, type Answers, type Step} from './macs';
 import {prefillUrl, sourceOf} from './waitlist';
+import {macLine, rememberCard} from './cardFacts';
+import {NextSteps, ShareCard} from './Share';
 import styles from './JoinPage.module.css';
 
 const TITLE = 'Join the Mac Colony waitlist · Antseed';
@@ -18,14 +20,14 @@ const QUESTIONS: Record<Exclude<Step, 'done'>, Question> = {
   chip: {eyebrow: 'Chip', title: ['Which chip', 'is inside?'], help: 'On your Mac, click the Apple logo in the top-left corner of the screen and choose About This Mac. Your chip is next to Chip, for example Apple M2 Pro.'},
   memory: {eyebrow: 'Memory', title: ['How much memory', 'does it have?'], help: 'On your Mac, click the Apple logo in the top-left corner of the screen and choose About This Mac. The size is next to Memory, for example 16 GB.'},
   name: {eyebrow: 'Your name', title: ['What should we', 'call you?'], help: 'Your first name is enough.'},
-  review: {eyebrow: 'Last step', title: ['Confirm and', 'lock your spot.'], help: 'We’ll open a short Google form in a new tab. Sign in with Google to confirm your email, then submit. One email when there’s a spot for your Mac. Nothing else.'},
+  review: {eyebrow: 'Last step', title: ['Confirm and', 'lock your spot.'], help: 'We’ll open a short Google form in a new tab. Sign in with Google to confirm your email, then submit. We’ll email you when there’s a spot for your Mac.'},
 };
 
 const EMPTY: Answers = {mac: '', chip: '', memory: '', name: ''};
 const isStep = (v: unknown): v is Step => typeof v === 'string' && (STEPS as readonly string[]).includes(v);
 
 /** /colony/join/: the Colony waitlist, one question at a time. The Mac, its chip and its memory offer only what Apple shipped (macs.ts),
- *  then the first name; the last step hands off to the Google Form, which collects the verified email and allows one sign-up per account. */
+ *  then the first name; the last step hands off to the Google Form, which collects the verified email, one response per Mac. */
 export default function JoinPage(): JSX.Element {
   const [answers, setAnswers] = useState<Answers>(EMPTY);
   const [step, setStep] = useState<Step>('mac');
@@ -113,7 +115,7 @@ export default function JoinPage(): JSX.Element {
     go(nextOf(next, 'name'));
   };
 
-  // the last step opens the Google Form, prefilled; Google takes the verified email and holds one sign-up per account
+  // the last step opens the Google Form, prefilled; Google takes the verified email
   const handoff = () => {
     // every step the Mac needs must be answered: a Mac changed on the summary clears its chip and memory
     if (!answers.mac) { go('mac', {back: true}); return; }
@@ -123,6 +125,7 @@ export default function JoinPage(): JSX.Element {
     const url = prefillUrl(WAITLIST, answers, source.current);
     if (!url) { setFormError('Sign-ups open soon.'); return; }
     setFormError('');
+    rememberCard({name: answers.name, mac: macLine(answers)});   // for the card on /colony/joined/, where Google's thank-you note leads
     open(url, '_blank', 'noopener');
     go('done');
   };
@@ -144,7 +147,7 @@ export default function JoinPage(): JSX.Element {
   const question = !done ? QUESTIONS[step] : null;
   const noMac = answers.mac === NO_MAC;
   // without a Mac there is no spot to wait for: the list keeps them for when there's a way to take part
-  const help = step === 'review' && noMac ? 'We’ll open a short Google form in a new tab. Sign in with Google to confirm your email, then submit. One email when there’s a way for you to take part. Nothing else.'
+  const help = step === 'review' && noMac ? 'We’ll open a short Google form in a new tab. Sign in with Google to confirm your email, then submit. We’ll email you when there’s a way for you to take part.'
     : question?.help;
   const title = step === 'review' && noMac ? ['Confirm and', 'join the list.'] : question?.title;
   const progress = {width: `${done ? 100 : (at / questions) * 100 + 4}%`} as CSSProperties;
@@ -228,26 +231,12 @@ export default function JoinPage(): JSX.Element {
                 <div className={styles.badge} aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg></div>
                 {answers.name && <p className={clsx(styles.eyebrow, styles.hi)}>Thanks, {answers.name}</p>}
                 <h1 className={styles.question}>Finish in the<br /> <span>Google tab.</span></h1>
-                <p className={styles.help}>We opened a short Google form in a new tab. Sign in there and submit it to {noMac ? 'finish' : 'lock your spot'}. We’ll email you when there’s {noMac ? 'a way for you to take part' : 'room for your Mac'}.</p>
+                <p className={styles.help}>We opened a short Google form in a new tab. Sign in there and submit it to {noMac ? 'finish' : 'lock your spot'}.</p>
                 {/* a button, not an <a href>: the prefilled URL carries the name and Mac, which the global outbound-click capture would log */}
                 {joinUrl && <p className={styles.hint}>Tab didn’t open? <button type="button" className={styles.textLink} onClick={() => open(joinUrl, '_blank', 'noopener')}>Open the form</button>.</p>}
-                <p className={clsx(styles.eyebrow, styles.small)}>While you wait</p>
-                <ol className={styles.next}>
-                  <li>
-                    <div><b>Join Local AI Colony on Telegram</b><span>Our local AI group. Setups, models and the first Mac Colony, with the team.</span></div>
-                    {TELEGRAM_URL
-                      ? <a className={clsx(styles.button, styles.sm)} href={TELEGRAM_URL} target="_blank" rel="noopener noreferrer">Join</a>
-                      : <span className={styles.soon}>Opens on launch day</span>}
-                  </li>
-                  <li>
-                    <div><b>Follow @AntSeed on X</b><span>News lands there first.</span></div>
-                    <a className={clsx(styles.button, styles.sm, styles.ghost)} href="https://x.com/intent/follow?screen_name=AntSeed" target="_blank" rel="noopener noreferrer">Follow</a>
-                  </li>
-                  <li>
-                    <div><b>Star Antseed on GitHub</b><span>Everything we build is open.</span></div>
-                    <a className={clsx(styles.button, styles.sm, styles.ghost)} href="https://github.com/Antseed/antseed" target="_blank" rel="noopener noreferrer">Star</a>
-                  </li>
-                </ol>
+                <p className={clsx(styles.eyebrow, styles.small)}>Your card</p>
+                <ShareCard name={answers.name} mac={macLine(answers)} />
+                <NextSteps />
                 <div className={styles.go}>
                   <Link className={styles.skip} to="/colony/">Back to Colony</Link>
                   {!noMac && <button type="button" className={styles.skip} onClick={again}>Sign up another Mac</button>}
