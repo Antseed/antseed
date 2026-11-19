@@ -1439,9 +1439,9 @@ test('submission refuses a verdict its tests and questions do not give', async (
   assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, tokenizerPrecheck: { ...result.tokenizerPrecheck!, modelTokens: [1, 2, 3] } }), /summary's tokenizer pre-check is not the one in its evidence/)
   assert.throws(() => validateAuditMatchesSummary(edit((copy) => { copy.tokenizerPrecheck!.rounds[0]!.seller[0]!.delta! += 9 }), result), /difference does not follow/)
   // The questions' own verdict is the evidence's, and the audit's is recomputed: neither can be claimed.
-  assert.throws(() => validateAuditMatchesSummary(edit((copy) => { copy.result.verdict = 'DIFF' }), result), /questions verdict mismatch/)
+  assert.throws(() => validateAuditMatchesSummary(edit((copy) => { copy.result.verdict = 'DIFF' }), result), /questions verdict mismatch|first look says \w+, but its stored answers give/)
   assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, status: 'SAME' }), /^Error: verdict mismatch$/)
-  assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, questionsStatus: 'DIFF' }), /questions verdict mismatch/)
+  assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, questionsStatus: 'DIFF' }), /questions verdict mismatch|first look says \w+, but its stored answers give/)
   // A file that does not name its format is not read: nothing reads an audit DIFF as a questions DIFF.
   assert.throws(() => validateAuditMatchesSummary(edit((copy) => { delete copy.tests }), result), /does not name the all-tests format/)
 })
@@ -1634,7 +1634,7 @@ test('check pipeline: questions that end in a seller failure start no other test
   // The questions' finding is decided from the evidence: a questions DIFF with nothing scored is refused at submit.
   const zero = structuredClone(evidence)
   zero.result.verdict = 'DIFF'
-  assert.throws(() => validateAuditMatchesSummary(zero, { ...result, status: 'DIFF', questionsStatus: 'DIFF' }), /a questions DIFF with no scored answer/)
+  assert.throws(() => validateAuditMatchesSummary(zero, { ...result, status: 'DIFF', questionsStatus: 'DIFF' }), /a questions DIFF with no scored answer|first look says DIFF, but its stored answers give UNDETERMINED/)
   // A close call can be closed only when its look was one.
   assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, decisionRule: 'kbf-extension-v2', closeCallClosed: { reason: 'x' } }), /latest look was not a close call/)
 })

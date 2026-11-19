@@ -4,6 +4,8 @@ import { getAddress } from 'ethers'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
   classifyKbfFirstLook,
+  computeKbfVerdict,
+  kbfAuditBaseline,
   canonicalHashBytes32,
   kbfExtensionRuleById,
   canonicalJsonStringify,
@@ -1064,6 +1066,33 @@ interface ExtraSetRecord {
 }
 
 /**
+ * The first look of a seller's evidence recomputed from what it stores: each question's match from the batch that
+ * asked it, the reference's own error baseline over those questions (`kbfAuditBaseline`), the run's coverage rules
+ * (`KBF_AUDIT_VERIFY_OPTIONS`), and UNDETERMINED when a successful batch lacks verified ResponseAuth, as the run
+ * decides it. Stats are null when the reference cannot give a baseline.
+ */
+function recomputedFirstLook(evidence: ProxyAuditEvidenceV1): { verdict: ModelAuditVerdict; stats: FingerprintStats | null } {
+  const matches = new Map<string, 0 | 1 | null>()
+  for (const exchange of evidence.exchanges) {
+    for (const [index, probeId] of exchange.probeIds.entries()) matches.set(probeId, exchange.matches[index] ?? null)
+  }
+  const matchVector = evidence.reference.probes.map((probe) => matches.get(probe.id) ?? null)
+  let baseline: ReturnType<typeof kbfAuditBaseline>
+  try {
+    baseline = kbfAuditBaseline(evidence.reference as unknown as KbfReferenceV1, evidence.reference.probes.map((probe) => probe.id))
+  } catch {
+    return { verdict: 'UNDETERMINED', stats: null }
+  }
+  const computed = computeKbfVerdict({
+    selfHamming: baseline.hamming, selfTotal: baseline.total, targetMatchVector: matchVector,
+    minCoverage: KBF_AUDIT_VERIFY_OPTIONS.minCoverage, minDiffCoverage: KBF_AUDIT_VERIFY_OPTIONS.minDiffCoverage,
+  })
+  const authenticated = evidence.exchanges.every((exchange) => exchange.status !== 'succeeded' || exchange.responseAuth.status === 'verified')
+  const stats: FingerprintStats = { ...computed.stats, selfCoverage: baseline.coverage }
+  return { verdict: authenticated && computed.verdict !== 'UNKNOWN' ? computed.verdict : 'UNDETERMINED', stats }
+}
+
+/**
  * The questions' own verdict, from a seller's evidence files: the first set's look, or after a close call the pooled
  * look of the first set and its extra sets, each checked (the rule, the close-call zone, verified ResponseAuth, no
  * probe asked twice, the pooled statistics and the continuation). `closed`: a flagged audit whose close call could not
@@ -1086,6 +1115,15 @@ export function adjudicateQuestions(input: {
     const ids = new Set(left.reference.probes.map((probe) => probe.id))
     return left.reference.referenceId === right.reference.referenceId
       || right.reference.probes.some((probe) => ids.has(probe.id))
+  }
+  // The first look recomputed from what the evidence stores (each batch's matches and the reference's own errors), with
+  // the run's coverage and auth rules: a look whose numbers say SAME never passes as DIFF because two labels agree.
+  // UNDETERMINED may always stand: an audit can end undecided for reasons the numbers do not show.
+  if (evidence.result.verdict !== 'UNDETERMINED') {
+    const recomputed = recomputedFirstLook(evidence)
+    if (evidence.result.verdict !== recomputed.verdict) {
+      throw new Error(`the questions' first look says ${evidence.result.verdict}, but its stored answers give ${recomputed.verdict}`)
+    }
   }
   // As `needsExtension`: a set whose ResponseAuth failed, or a seller that refuses the request profile, is not extended.
   const firstLookExtends = rule !== undefined && !unverified(evidence)

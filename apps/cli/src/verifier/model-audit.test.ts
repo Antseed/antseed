@@ -603,7 +603,8 @@ test('a second extra set is rejected when the first pooled look was already deci
     exchanges: [],
   }) as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
   const ids = (prefix: string) => Array.from({ length: 20 }, (_, index) => `${prefix}${index}`)
-  const first = evidence('SAME', 'sha256:first', ids('a'), 7)
+  // Its answers are not stored here, so its first look is undecided by its label (the label is recomputed from answers).
+  const first = evidence('UNDETERMINED', 'sha256:first', ids('a'), 7)
   first.result.stats.pValueBinomial = 0.098
   const pooledOf = (sets: Array<ReturnType<typeof evidence>>, rule = KBF_EXTENSION_RULE_V2) => pooledCloseCallVerdict(
     { stats: first.result.stats, probeCount: 20 },
@@ -761,11 +762,13 @@ test('a close call is checked against the close-call rule', () => {
     tests: 'all-tests-v1',
     reference: { referenceId: 'sha256:a', probes: [{ id: 'p1' }] },
     exchanges: [],
-    result: { verdict: 'SAME', stats: { pValueBinomial: 0.5, targetCoverage: 1, selfHamming: 0, selfTotal: 10, targetHamming: 0, targetTotal: 10, selfCoverage: 1, p0Cp99: 0.3 } },
+    // No answers are stored, so its first look is undecided whatever its numbers (the label is recomputed).
+    result: { verdict: 'UNDETERMINED', stats: { pValueBinomial: 0.5, targetCoverage: 1, selfHamming: 0, selfTotal: 10, targetHamming: 0, targetTotal: 10, selfCoverage: 1, p0Cp99: 0.3 } },
   } as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
   const extensionEvidence = {
     ...first,
     reference: { referenceId: 'sha256:b', probes: [{ id: 'p2' }] },
+    result: { ...(first as unknown as { result: object }).result, verdict: 'SAME' },
   } as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
   const result = {
     peerId: 'aa', service: 'm', agentId: '1', status: 'SAME', decisionRule: 'kbf-extension-v1',
@@ -781,7 +784,7 @@ test('both readers refuse an extra set that stores a test record or names no for
     tests: 'all-tests-v1',
     reference: { referenceId: 'sha256:a', probes: [{ id: 'p1' }] },
     exchanges: [],
-    result: { verdict: 'SAME', stats: { pValueBinomial: 0.5, targetCoverage: 1, selfHamming: 0, selfTotal: 10, targetHamming: 0, targetTotal: 10, selfCoverage: 1, p0Cp99: 0.3 } },
+    result: { verdict: 'UNDETERMINED', stats: { pValueBinomial: 0.5, targetCoverage: 1, selfHamming: 0, selfTotal: 10, targetHamming: 0, targetTotal: 10, selfCoverage: 1, p0Cp99: 0.3 } },
   } as unknown as Parameters<typeof adjudicateQuestions>[0]['evidence']
   const set = (extra: Record<string, unknown>) => [{ record: { rule: 'kbf-extension-v2', pooled: { verdict: 'SAME' } } as never, evidence: { ...first, reference: { referenceId: 'sha256:b', probes: [{ id: 'p2' }] }, ...extra } as never }]
   // `adjudicateQuestions` is what submit and the confirmer's read both call on extra sets.
