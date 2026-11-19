@@ -173,7 +173,7 @@ export async function checkPaymentPayload(
     return 'invalid_exact_evm_payload_signature'
   }
   if (recoversTo(digest, signature, authorization.from)) return null
-  if (!checkContractSignature || !isHexString(signature)) return 'invalid_exact_evm_payload_signature'
+  if (!checkContractSignature || !isHexString(signature, true)) return 'invalid_exact_evm_payload_signature'
   return await checkContractSignature(authorization.from, digest, signature) ? null : 'invalid_exact_evm_payload_signature'
 }
 

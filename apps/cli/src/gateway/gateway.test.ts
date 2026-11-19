@@ -2004,6 +2004,11 @@ test('x402 top-up accepts a smart-account payer whose contract approves the sign
     assert.equal(await reasonFor(encodeHeaderJson(garbled)), 'invalid_exact_evm_payload_signature')
     assert.deepEqual(checked, [])
 
+    // Hex of odd length is not bytes either, so the ERC-1271 call could not encode it.
+    garbled.payload.signature = '0xabc'
+    assert.equal(await reasonFor(encodeHeaderJson(garbled)), 'invalid_exact_evm_payload_signature')
+    assert.deepEqual(checked, [])
+
     // The chain cannot be read: refused before the facilitator, not called a bad signature.
     chainDown = true
     assert.equal(await reasonFor(await signPayment(smartAccount, required)), 'unexpected_verify_error')
