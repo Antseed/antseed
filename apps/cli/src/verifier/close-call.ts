@@ -1,3 +1,4 @@
+import { endedBeforeQuestions } from './audit-checks.js'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
   KBF_EXTENSION_RULE,
@@ -60,8 +61,7 @@ export function latestExtension(
 export function askedNoQuestion(
   result: Pick<ModelVerificationTargetResult, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho'> & { parsedProbeCount?: number },
 ): boolean {
-  return (result.tokenizerPrecheck?.outcome === 'mismatch' || result.outputCap?.outcome === 'flag' || result.outputEcho?.outcome === 'flag')
-    && (result.parsedProbeCount ?? 0) === 0
+  return endedBeforeQuestions(result)
 }
 
 export function needsExtension(result: Pick<ModelVerificationTargetResult,
