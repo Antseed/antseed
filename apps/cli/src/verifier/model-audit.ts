@@ -44,9 +44,7 @@ import { AUDIT_CHECK_IDS, flaggingChecks, passedChecks, type AuditCheckId } from
 import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
 import type { SubmissionCandidate } from './submission-delta.js'
-import { summarizeTokenizerPrecheck, validateTokenizerPrecheck } from './tokenizer-precheck.js'
-import { summarizeOutputCap, validateOutputCap } from './output-cap.js'
-import { summarizeOutputEcho, validateOutputEcho } from './output-echo.js'
+import { validateCheckRecordsAgainstSummary } from './audit-checks.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
@@ -955,14 +953,6 @@ export function validateAuditMatchesSummary(
   if (result.stats && canonicalHashBytes32(result.stats) !== canonicalHashBytes32(evidence.result.stats)) {
     throw new Error('first check statistics do not match its evidence')
   }
-  // A pre-check must follow from the signed responses it stores. Its mismatch is a DIFF with no question
-  // asked, and only that: a DIFF without a scoreable answer has nothing else to rest on.
-  if (evidence.tokenizerPrecheck) validateTokenizerPrecheck(evidence.tokenizerPrecheck, evidence.target.peerId)
-  // The summary's pre-check is the evidence's: the close-call decision reads the summary's.
-  const stored = evidence.tokenizerPrecheck ? summarizeTokenizerPrecheck(evidence.tokenizerPrecheck) : null
-  if (canonicalJsonStringify(stored) !== canonicalJsonStringify(result.tokenizerPrecheck ?? null)) {
-    throw new Error('the summary\'s tokenizer pre-check is not the one in its evidence')
-  }
   // In a confirmation of another check's DIFF, a flag of a check not being confirmed did not end the audit:
   // the questions were asked after it and decide (`model-run.ts`, `confirming`).
   if (evidence.confirming && (!Array.isArray(evidence.confirming.checks) || evidence.confirming.checks.length === 0
@@ -970,49 +960,9 @@ export function validateAuditMatchesSummary(
     throw new Error('a confirmation names no known check it confirms')
   }
   const continuedPast = (check: AuditCheckId): boolean => evidence.confirming !== undefined && !evidence.confirming.checks.includes(check)
-  const precheckDiff = evidence.tokenizerPrecheck?.outcome === 'mismatch' && !continuedPast('tokens')
-  if (precheckDiff && (evidence.result.verdict !== 'DIFF' || evidence.exchanges.length > 0)) {
-    throw new Error('a tokenizer pre-check mismatch is a DIFF with no question asked')
-  }
-  // The cap check runs after the pre-check, so never after its mismatch; it is recomputed from the bytes the seller
-  // signed, and its flag, like the pre-check's mismatch, is a DIFF with no question asked.
-  if (evidence.outputCap) {
-    if (precheckDiff) throw new Error('a cap check after a tokenizer pre-check DIFF')
-    validateOutputCap(evidence.outputCap)
-  }
-  const storedCap = evidence.outputCap ? summarizeOutputCap(evidence.outputCap) : null
-  if (canonicalJsonStringify(storedCap) !== canonicalJsonStringify(result.outputCap ?? null)) {
-    throw new Error('the summary\'s cap check is not the one in its evidence')
-  }
-  const capDiff = evidence.outputCap?.outcome === 'flag' && !continuedPast('output-cap')
-  if (capDiff && (evidence.result.verdict !== 'DIFF' || evidence.exchanges.length > 0)) {
-    throw new Error('a cap check flag is a DIFF with no question asked')
-  }
-  // The echo check runs after the cap check, so never after a cap flag that ended the audit; it is recomputed from
-  // the bytes the seller and its crowd signed.
-  if (evidence.outputEcho) {
-    if (precheckDiff || capDiff) throw new Error('an echo check after a DIFF that ended the audit')
-    validateOutputEcho(evidence.outputEcho, evidence.target.peerId)
-    // Its pre-check anchor is this audit's own pre-check, not a stored claim.
-    if (evidence.outputEcho.precheckMatch !== (evidence.tokenizerPrecheck?.outcome === 'match')) {
-      throw new Error('the echo check\'s pre-check match is not this audit\'s pre-check')
-    }
-  }
-  const storedEcho = evidence.outputEcho ? summarizeOutputEcho(evidence.outputEcho) : null
-  if (canonicalJsonStringify(storedEcho) !== canonicalJsonStringify(result.outputEcho ?? null)) {
-    throw new Error('the summary\'s echo check is not the one in its evidence')
-  }
-  const echoCheck: AuditCheckId = evidence.outputEcho?.flag === 'offset' ? 'output-offset' : 'output-echo'
-  const echoDiff = evidence.outputEcho?.outcome === 'flag' && !continuedPast(echoCheck)
-  if (echoDiff && (evidence.result.verdict !== 'DIFF' || evidence.exchanges.length > 0)) {
-    throw new Error('an echo check flag is a DIFF with no question asked')
-  }
-  if (!precheckDiff && !capDiff && !echoDiff && evidence.result.verdict === 'DIFF' && evidence.result.parsedProbeCount === 0) {
-    throw new Error('DIFF without a scoreable answer or a tokenizer pre-check mismatch, and no cap check flag')
-  }
-  if (precheckDiff && (result.extension || result.extension2)) throw new Error('extra set after a tokenizer pre-check DIFF')
-  if (capDiff && (result.extension || result.extension2)) throw new Error('extra set after a cap check DIFF')
-  if (echoDiff && (result.extension || result.extension2)) throw new Error('extra set after an echo check DIFF')
+  // Each check's record follows from the signed responses it stores and is the summary's (the close-call decision
+  // reads the summary's); a flag that ended the audit is a DIFF with no question asked (`audit-checks.ts`).
+  validateCheckRecordsAgainstSummary(evidence, result, continuedPast)
   // The stage-1 verdict, recomputed from the evidence: the first check's own verdict, or after a
   // close call the pooled verdict of the first check and its extra sets.
   let stageOne: ModelAuditVerdict = evidence.result.verdict

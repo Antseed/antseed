@@ -6,12 +6,10 @@ import type { ConfirmationTarget } from './pending-confirmations.js'
 import { pooledCloseCallVerdict } from './close-call.js'
 import { AUDIT_CHECK_IDS, describeAuditCheck, flaggingChecks, type AuditCheckId } from './flagging-checks.js'
 import { sanitizeOutcomeSummary } from './outcome-reason.js'
-import { validateOutputCap } from './output-cap.js'
-import { validateOutputEcho } from './output-echo.js'
+import { validateStoredChecks } from './audit-checks.js'
 import { proxyAuditEvidenceHash, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import type { SubmissionCandidate } from './submission-delta.js'
 import { opinionKey } from './third-opinion.js'
-import { validateTokenizerPrecheck } from './tokenizer-precheck.js'
 import { normalized } from './utils.js'
 
 /**
@@ -406,12 +404,7 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
       if (result['verdict'] !== 'DIFF') throw new Error(`its evidence gives agent ${agentId} ${String(result['verdict'])}, not DIFF`)
       const first = await sellerEvidence(result['audit'], agentId, serviceHash, result['referenceId'])
       // Every flag is recomputed from the stored records, as `verifier submit` checks its own.
-      if (first.tokenizerPrecheck) validateTokenizerPrecheck(first.tokenizerPrecheck, first.target.peerId)
-      if (first.outputCap) validateOutputCap(first.outputCap)
-      if (first.outputEcho) {
-        validateOutputEcho(first.outputEcho, first.target.peerId)
-        if (first.outputEcho.precheckMatch !== (first.tokenizerPrecheck?.outcome === 'match')) throw new Error('its echo check\'s pre-check match is not its pre-check')
-      }
+      validateStoredChecks(first)
       const checks = flaggingChecks(first, await questionsVerdict(result, first, (audit, referenceId) => sellerEvidence(audit, agentId, serviceHash, referenceId)))
       if (checks.length === 0) throw new Error(`its evidence for agent ${agentId} shows no check that flagged`)
       return checks

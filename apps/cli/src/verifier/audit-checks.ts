@@ -1,6 +1,7 @@
-import type { OutputCapV1 } from './output-cap.js'
-import type { OutputEchoV1 } from './output-echo.js'
-import type { TokenizerPrecheckV1 } from './tokenizer-precheck.js'
+import { canonicalJsonStringify } from '@antseed/fingerprints'
+import { summarizeOutputCap, validateOutputCap, type OutputCapV1 } from './output-cap.js'
+import { summarizeOutputEcho, validateOutputEcho, type OutputEchoV1 } from './output-echo.js'
+import { summarizeTokenizerPrecheck, validateTokenizerPrecheck, type TokenizerPrecheckV1 } from './tokenizer-precheck.js'
 
 /**
  * The checks of a seller audit, behind one description each, so that every rule that reads them (which flagged, which
@@ -57,11 +58,35 @@ export interface CheckFinding<Slot extends CheckSlot> {
   ofSummary(summary: CheckSummaryOutcomes): Exclude<CheckOutcome, 'not-run'>
 }
 
+/** What validating one stored record may read besides the record. */
+export interface StoredAuditContext {
+  /** The seller the evidence is about (`target.peerId`). */
+  auditedPeerId: string
+  /** The other records of the same evidence file: the echo check reads the pre-check's outcome. */
+  records: StoredCheckRecords
+}
+
+export type StoredCheckRecords = { readonly [Slot in CheckSlot]?: CheckRecords[Slot] }
+
 /** A check whose result is one field of the seller's evidence: everything but the questions. */
 export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   slot: Slot
   /** In attribution order. */
   findings: readonly CheckFinding<Slot>[]
+  /** The record as an audit's summary carries it; submit compares the two. */
+  summarize(record: CheckRecords[Slot]): unknown
+  /** Recomputes the record from the bytes it stores, with the rules that cross records. Throws. */
+  validate(record: CheckRecords[Slot], context: StoredAuditContext): void
+  /** The finding a flag of this record would end the audit with, before the questions; null when it flags nothing that ends it. */
+  endingFinding(record: CheckRecords[Slot]): AuditCheckId | null
+  /** The texts of a stored record that breaks the run's rules. */
+  texts: {
+    summaryMismatch: string
+    /** It ran although an earlier check's flag had ended the audit. Unused for the first check. */
+    ranAfterDiff: string
+    endsWithDiff: string
+    extraSetAfterDiff: string
+  }
   /**
    * Whether a summary shows that this check ended the audit with a DIFF before the questions. It is the record's own
    * overall outcome, not any one finding: a finding that does not count yet (the echo check's fixed amount) ends nothing.
@@ -80,6 +105,16 @@ export const TOKENS_CHECK: RecordCheck<'tokenizerPrecheck'> = {
     ofSummary: (summary) => outcome(summary.outcome, 'mismatch', 'match'),
   }],
   endedAuditInSummary: (summary) => summary.outcome === 'mismatch',
+  summarize: summarizeTokenizerPrecheck,
+  // A pre-check must follow from the signed responses it stores.
+  validate: (record, context) => validateTokenizerPrecheck(record, context.auditedPeerId),
+  endingFinding: (record) => (record.outcome === 'mismatch' ? 'tokens' : null),
+  texts: {
+    summaryMismatch: 'the summary\'s tokenizer pre-check is not the one in its evidence',
+    ranAfterDiff: 'a tokenizer pre-check after a DIFF that ended the audit',
+    endsWithDiff: 'a tokenizer pre-check mismatch is a DIFF with no question asked',
+    extraSetAfterDiff: 'extra set after a tokenizer pre-check DIFF',
+  },
 }
 
 export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
@@ -90,6 +125,16 @@ export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
     ofSummary: (summary) => outcome(summary.outcome, 'flag', 'pass'),
   }],
   endedAuditInSummary: (summary) => summary.outcome === 'flag',
+  summarize: summarizeOutputCap,
+  // Recomputed from the bytes the seller signed.
+  validate: (record) => validateOutputCap(record),
+  endingFinding: (record) => (record.outcome === 'flag' ? 'output-cap' : null),
+  texts: {
+    summaryMismatch: 'the summary\'s cap check is not the one in its evidence',
+    ranAfterDiff: 'a cap check after a tokenizer pre-check DIFF',
+    endsWithDiff: 'a cap check flag is a DIFF with no question asked',
+    extraSetAfterDiff: 'extra set after a cap check DIFF',
+  },
 }
 
 export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
@@ -105,6 +150,23 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
     ofSummary: (summary) => outcome(summary.fixedAmount, 'flag', 'pass'),
   }],
   endedAuditInSummary: (summary) => summary.outcome === 'flag',
+  summarize: summarizeOutputEcho,
+  validate(record, context) {
+    // Recomputed from the bytes the seller and its crowd signed.
+    validateOutputEcho(record, context.auditedPeerId)
+    // Its pre-check anchor is this audit's own pre-check, not a stored claim.
+    if (record.precheckMatch !== (context.records.tokenizerPrecheck?.outcome === 'match')) {
+      throw new Error('the echo check\'s pre-check match is not this audit\'s pre-check')
+    }
+  },
+  // The record's overall flag ends the audit, attributed to the finding that flagged.
+  endingFinding: (record) => (record.outcome !== 'flag' ? null : record.flag === 'offset' ? 'output-offset' : 'output-echo'),
+  texts: {
+    summaryMismatch: 'the summary\'s echo check is not the one in its evidence',
+    ranAfterDiff: 'an echo check after a DIFF that ended the audit',
+    endsWithDiff: 'an echo check flag is a DIFF with no question asked',
+    extraSetAfterDiff: 'extra set after an echo check DIFF',
+  },
 }
 
 /** The checks with a record, in run order and attribution order. Never reorder: the order is in the rules hash. */
@@ -187,4 +249,57 @@ export function checkLabel(check: AuditCheckId): string {
     if (finding) return finding.label
   }
   throw new Error(`unknown audit check ${check}`)
+}
+
+/** Each check with its record in these records (undefined when it holds none), in run order. */
+function recordsOf(records: StoredCheckRecords): Array<{ check: RecordCheck<CheckSlot>; record: CheckRecords[CheckSlot] | undefined }> {
+  return RECORD_CHECKS.map((check) => ({ check: check as unknown as RecordCheck<CheckSlot>, record: records[check.slot] }))
+}
+
+/**
+ * Every stored check record of one seller's evidence recomputed from the bytes it stores, with the rules that cross
+ * records. For any reader of stored evidence: submit's own, and a confirmer reading the first auditor's.
+ */
+export function validateStoredChecks(evidence: StoredCheckRecords & { target: { peerId: string } }): void {
+  const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence }
+  for (const { check, record } of recordsOf(evidence)) {
+    if (record !== undefined) check.validate(record, context)
+  }
+}
+
+/**
+ * The check records of the first set of a seller's evidence against its audit's summary, as submit reads them: each
+ * record valid, its summary the summary's, and the stop rule kept. A flag that ends the audit (one not passed over in a
+ * confirmation of another check, `continuedPast`) is a DIFF with no question asked, no later check ran after it, and
+ * no extra set follows it. In run order, so the first broken rule is the one named.
+ */
+export function validateCheckRecordsAgainstSummary(
+  evidence: StoredCheckRecords & {
+    target: { peerId: string }
+    exchanges: readonly unknown[]
+    result: { verdict: string; parsedProbeCount: number }
+  },
+  result: { readonly [Slot in CheckSlot]?: unknown } & { extension?: unknown; extension2?: unknown },
+  continuedPast: (check: AuditCheckId) => boolean,
+): void {
+  const context: StoredAuditContext = { auditedPeerId: evidence.target.peerId, records: evidence }
+  const ended: Array<RecordCheck<CheckSlot>> = []
+  for (const { check, record } of recordsOf(evidence)) {
+    if (record !== undefined) {
+      if (ended.length > 0) throw new Error(check.texts.ranAfterDiff)
+      check.validate(record, context)
+    }
+    const stored = record === undefined ? null : check.summarize(record)
+    if (canonicalJsonStringify(stored) !== canonicalJsonStringify(result[check.slot] ?? null)) throw new Error(check.texts.summaryMismatch)
+    const finding = record === undefined ? null : check.endingFinding(record)
+    if (finding === null || continuedPast(finding)) continue
+    if (evidence.result.verdict !== 'DIFF' || evidence.exchanges.length > 0) throw new Error(check.texts.endsWithDiff)
+    ended.push(check)
+  }
+  if (ended.length === 0 && evidence.result.verdict === 'DIFF' && evidence.result.parsedProbeCount === 0) {
+    throw new Error('DIFF without a scoreable answer or a tokenizer pre-check mismatch, and no cap check flag')
+  }
+  for (const check of ended) {
+    if (result.extension || result.extension2) throw new Error(check.texts.extraSetAfterDiff)
+  }
 }
