@@ -222,6 +222,8 @@ export interface RetryGiveUpV1 {
    * submitted as UNDETERMINED; with it, it counts as an undecided confirmation attempt (`applyRetryGiveUps`).
    */
   extraQuestionsPublished?: true
+  /** A first look's recovery given up (`recoveringFirstLooks`): its seller no longer offers the model. */
+  recovery?: true
   /** The close call answered a DIFF waiting for this auditor's confirmation. */
   confirmsDiff?: true
 }
@@ -267,6 +269,11 @@ export function applyRetryGiveUps(
 
 function applyRetryGiveUp(cells: Map<string, EpochCell>, key: string, entry: RetryGiveUpV1): void {
   const cell = cells.get(key)
+  // A first look's recovery given up: the cell keeps its result and is done; it is no longer waited for.
+  if (cell && entry.recovery && cell.action === 'done' && cell.runId === entry.runId && cell.lastAttemptAt === entry.lastAttemptAt) {
+    cells.set(key, { ...cell, givenUp: entry })
+    return
+  }
   if (!cell || cell.action === 'done' || cell.action === 'audit') return
   if (cell.runId !== entry.runId || cell.lastAttemptAt !== entry.lastAttemptAt) return
   if (entry.extraQuestionsPublished && entry.confirmsDiff && cell.state === 'pending_extension' && cell.pending) {
@@ -297,6 +304,8 @@ export function decideRetryGiveUps(input: {
   offersModel: ((cell: EpochCell) => boolean) | null
   windowClosed: (cell: EpochCell) => boolean
   extraQuestionsPublished?: (cell: EpochCell) => boolean
+  /** A first look still to be recovered (`recoveringFirstLooks`): given up like a retry when its seller is gone. */
+  recovering?: (cell: EpochCell) => boolean
 }): { entries: RetryGiveUpV1[]; added: RetryGiveUpV1[]; restored: RetryGiveUpV1[] } {
   const entries: RetryGiveUpV1[] = []
   const added: RetryGiveUpV1[] = []
@@ -327,7 +336,8 @@ export function decideRetryGiveUps(input: {
       continue
     }
     if (!input.offersModel) continue
-    if (cell.action !== 'retry' && cell.action !== 'extend') continue
+    const recovery = cell.action === 'done' && input.recovering?.(cell) === true
+    if (cell.action !== 'retry' && cell.action !== 'extend' && !recovery) continue
     if (cell.lastAttemptAt === null) continue
     if (input.nowSeconds < cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS) continue
     if (input.offersModel(cell)) continue
@@ -339,7 +349,8 @@ export function decideRetryGiveUps(input: {
       lastAttemptAt: cell.lastAttemptAt,
       attempts: cell.attempts,
       givenUpAt: new Date(input.nowSeconds * 1_000).toISOString(),
-      reason: `its ${cell.action === 'extend' ? 'extra questions were' : 'retry was'} due and the buyer's peers show it no longer offers ${cell.model}`,
+      reason: `its ${cell.action === 'extend' ? 'extra questions were' : recovery ? 'new audit (its result cannot be sent) was' : 'retry was'} due and the buyer's peers show it no longer offers ${cell.model}`,
+      ...(recovery ? { recovery: true as const } : {}),
     }
     entries.push(entry)
     added.push(entry)

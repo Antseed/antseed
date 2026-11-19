@@ -5,7 +5,8 @@ import { acquirePidFileLock, LockHeldError, type FileLock } from '../../../verif
 import { createInterface } from 'node:readline/promises'
 import chalk from 'chalk'
 import pkg from '../../../../package.json' with { type: 'json' }
-import { closeFinishedAuditWindows, readAuditWindow } from '../../../verifier/audit-window.js'
+import { readAuditWindow } from '../../../verifier/audit-window.js'
+import { closeFinishedWindowsRecovering } from '../../../verifier/first-look-recovery.js'
 import { chainNow } from '../../../verifier/chain-clock.js'
 import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import Table from 'cli-table3'
@@ -209,7 +210,8 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       validateRunEpoch(manifest, window)
       // Windows whose sellers are all finished (or that the end of the epoch closes) are submitted now.
       if (!options.dryRun) {
-        for (const closed of await closeFinishedAuditWindows({
+        // The same close as \`verifier run\`: a first look still to be recovered keeps its window open.
+        for (const closed of await closeFinishedWindowsRecovering({
           evidenceDir, epoch: manifest.epoch, state: await loadEpochState(evidenceDir, manifest.epoch),
           secondsLeftInEpoch: window.endsAt - await chainNow(verifierClient.provider),
         })) console.log(chalk.green(`${closed.model}: audit window closed (${closed.closeReason})`))

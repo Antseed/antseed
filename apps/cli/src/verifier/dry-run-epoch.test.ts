@@ -10,7 +10,7 @@ import { PEERS, SERVICE, echoReference, echoScreenFor, fakeCapSeller, fakeEchoNe
 import { numberWords } from './output-cap.js'
 import { loadEpochState, writeEpochSubmissionManifest } from './epoch-plan.js'
 import { auditWindowSellersLeft, closeFinishedAuditWindows, openAuditWindow, readAuditWindow } from './audit-window.js'
-import { recoveringFirstLooks } from '../cli/commands/verifier/run.js'
+import { closeFinishedWindowsRecovering, recoveringFirstLooks } from './first-look-recovery.js'
 import { dryRunPreparedPath, writeDryRunPrepared } from './epoch-submission-record.js'
 import type { FlipsV1 } from './flips.js'
 import type { SameCheckDecision } from './same-check.js'
@@ -91,6 +91,9 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
       assert.deepEqual(auditWindowSellersLeft(window, state, recovering), [peer(15)])
       await closeFinishedAuditWindows({ evidenceDir, epoch: EPOCH, state, secondsLeftInEpoch: 86_400, recovering })
       assert.equal((await readAuditWindow(evidenceDir, EPOCH, WINDOWED))?.state, 'open')
+      // A submit in the spacing makes the same close (run, submit, run): the window stays open for the recovery.
+      await closeFinishedWindowsRecovering({ evidenceDir, epoch: EPOCH, state, secondsLeftInEpoch: 86_400 })
+      assert.equal((await readAuditWindow(evidenceDir, EPOCH, WINDOWED))?.state, 'open', 'a submit between the runs does not close it')
     }
     // Later: the failed seller's retry, the windowed seller's recovery, and two confirmations of another auditor's
     // reports, an hour after them.

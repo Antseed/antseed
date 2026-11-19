@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import nodeModule from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -1465,4 +1465,42 @@ test('in an ordinary window, a first look with a DIFF whose evidence cannot be r
   const step = SELLER_RETRY_SPACING_SECONDS + 60
   assert.equal((await runAt(step)).length > 0, true, 'audited again in its window')
   assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'closed')
+}))
+
+test('a first look still to be recovered stops holding its window once a completed run did not plan its seller', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const peer = 'aa'.repeat(20)
+  const other = 'bb'.repeat(20)
+  scenario.snapshots = [snapshot([seller(peer, ['model-a']), seller(other, ['model-a'])])]
+  const verdict = computeKbfVerdict({ selfHamming: 30, selfTotal: 300, minCoverage: 0.5, minDiffCoverage: 0.8, targetMatchVector: Array.from({ length: 100 }, (_, index) => (index < 60 ? 0 : 1)) })
+  const diff = (model: string, peerId: string) => ({
+    ...closeCallResult(model, peerId), status: 'DIFF', questionsStatus: 'DIFF', stats: { ...verdict.stats, selfCoverage: 1 },
+    correctProbeCount: 40, incorrectProbeCount: 60, correctRate: 0.4,
+    // The seller's evidence cannot be read; the other seller's can.
+    ...(peerId === peer ? { evidencePath: join(tmpdir(), `gone-left-${model}-${peerId.slice(0, 8)}.json`) } : {}),
+  })
+  scenario.firstResult = diff
+  const realNow = Date.now
+  const runAt = async (at: number) => {
+    Date.now = () => realNow() + at * 1_000
+    try {
+      await scenario.run()
+    } finally {
+      Date.now = realNow
+    }
+  }
+  await runAt(0)
+  assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'open', 'held for the recovery')
+  // A run's own times are the wall clock's: the first run is moved back by the spacing, so the next one is after it.
+  const step = SELLER_RETRY_SPACING_SECONDS + 60
+  for (const manifest of await runManifests(scenario)) {
+    const path = join(scenario.evidenceDir, 'runs', `${manifest.runId}.json`)
+    const back = (time: string) => new Date(Date.parse(time) - step * 1_000).toISOString()
+    await writeFile(path, JSON.stringify({ ...manifest, startedAt: back(manifest.startedAt), completedAt: back(manifest.completedAt) }))
+  }
+  // The seller stops offering the model: the buyer's fresh peer list, read once it is due again, no longer has it.
+  scenario.snapshots = [snapshot([{ ...seller(other, ['model-a']), lastSeen: Date.now() + step * 1_000 }])]
+  await runAt(step)
+  // From then on it is no longer waited for: the next close (this run's end, or the next run's start) closes the window.
+  if ((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state !== 'closed') await runAt(step + 60)
+  assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'closed', 'never held until the end of the epoch')
 }))
