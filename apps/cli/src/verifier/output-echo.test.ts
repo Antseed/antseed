@@ -5,11 +5,10 @@ import { join } from 'node:path'
 import { Wallet } from 'ethers'
 import { prepareModelAudits } from './model-audit.js'
 import { FIXTURE_CONFIG, peerIdOf, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
+import { echoReference, echoScreenFor as screenFor, fakeEchoNetwork as fakeNetwork } from './output-checks.test-support.js'
 import test from 'node:test'
 import { OUTPUT_ECHO_CHECK, assertBoundToSeller, sellerBindingOf } from './audit-checks.js'
-import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { isSafeProbe } from '@antseed/node/payments'
-import { ConcurrencyLimiter } from './audit-concurrency.js'
 import type { OutputReadingV1 } from './output-usage.js'
 import { readOutput } from './output-usage.js'
 import {
@@ -18,12 +17,10 @@ import {
   OUTPUT_ECHO_RULE,
   steadyShares,
   stoppedEcho,
-  createOutputEchoScreen,
   echoCrowdVote,
   prepareOutputEchoReference,
   describeOutputEchoFlag,
   echoCrowdObjection,
-  outputEchoPrompt,
   outputEchoRequestCount,
   validateOutputEcho,
   type EchoReferenceAsk,
@@ -234,71 +231,6 @@ const PEERS = ['aa', 'bb', 'cc', 'dd'].map((letter) => letter.repeat(32))
 const SERVICE = 'test-model'
 /** The model's tokenizer in these tests: one token per three characters. */
 const tokens = (text: string): number => Math.ceil(text.length / 3)
-
-/** Sellers that echo each text and sign `billed(text)` output tokens; every request is captured per peer. */
-function fakeNetwork(billing: Record<string, (text: string) => number>) {
-  const signed = new Map<string, { request: Uint8Array; response: Uint8Array }>()
-  const asked = new Map<string, number>()
-  const fetchFn: typeof fetch = async (_url, init) => {
-    const headers = new Headers(init?.headers)
-    const requestId = headers.get('x-antseed-request-id')!
-    const peer = headers.get('x-antseed-pin-peer')!
-    asked.set(peer, (asked.get(peer) ?? 0) + 1)
-    const raw = init!.body as Uint8Array
-    const body = JSON.parse(new TextDecoder().decode(raw)) as { messages: Array<{ content: string }> }
-    const text = body.messages[0]!.content.split('\n\n').slice(1).join('\n\n')
-    const reply = {
-      object: 'chat.completion',
-      choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 40, completion_tokens: billing[peer]!(text) },
-    }
-    signed.set(requestId, {
-      request: encodeHttpRequest({ requestId, method: 'POST', path: '/v1/chat/completions', headers: {}, body: raw }),
-      response: encodeHttpResponse({ requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(reply)) }),
-    })
-    return Response.json(reply, { headers: { 'x-antseed-request-id': requestId } })
-  }
-  const responseAuthReader = {
-    async waitForVerified(input: { requestId: string; sellerPeerId: string; advertisedService: string }) {
-      const bytes = signed.get(input.requestId)!
-      return {
-        requestId: input.requestId, status: 'verified' as const, failureReason: null,
-        responseAuth: { requestId: input.requestId, sellerPeerId: input.sellerPeerId, advertisedService: input.advertisedService },
-        signedPreimages: {
-          encoding: 'antseed-http-codec-v1' as const, signatureEncoding: 'antseed-response-auth-signing-v1' as const,
-          requestBase64: Buffer.from(bytes.request).toString('base64'), responseBase64: Buffer.from(bytes.response).toString('base64'),
-          responseAuthSigningBase64: 'AA==', requestHash: `0x${'44'.repeat(32)}`, responseHash: `0x${'55'.repeat(32)}`,
-        },
-      }
-    },
-    close() {},
-  } as unknown as Parameters<typeof createOutputEchoScreen>[0]['responseAuthReader']
-  return { fetchFn, responseAuthReader, asked }
-}
-
-/** The reference echoes every text exactly and counts it with the model's tokenizer. */
-const echoReference: EchoReferenceAsk = async (texts) => ({
-  upstream: { kind: 'test' },
-  results: texts.map((text) => ({
-    requestBody: new TextEncoder().encode(JSON.stringify({ messages: [{ role: 'user', content: outputEchoPrompt(text) }], max_tokens: 1024 })),
-    response: {
-      statusCode: 200,
-      body: new TextEncoder().encode(JSON.stringify({
-        object: 'chat.completion', provider: 'maker',
-        choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
-        usage: { prompt_tokens: 40, completion_tokens: tokens(text) },
-      })),
-    },
-    provider: 'maker',
-    failure: null,
-  })),
-})
-
-const screenFor = (network: ReturnType<typeof fakeNetwork>, ask: EchoReferenceAsk = echoReference, peers: readonly string[] = PEERS) => createOutputEchoScreen<null>({
-  sellers: peers.map((peerId) => ({ peerId, service: SERVICE })),
-  proxyBaseUrl: 'http://127.0.0.1:1', responseAuthReader: network.responseAuthReader, limiter: new ConcurrencyLimiter(4),
-  fetchFn: network.fetchFn, ask: () => ask,
-})
 
 const honestBilling = (text: string): number => tokens(text)
 

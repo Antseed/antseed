@@ -6,8 +6,8 @@ import { Wallet } from 'ethers'
 import { VERIFIER_VERDICT } from '@antseed/node/payments'
 import { prepareModelAudits } from './model-audit.js'
 import { FIXTURE_CONFIG, peerIdOf, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
+import { fakeCapSeller as fakeSeller, keptReply, runCapOn as runOn, wordReference } from './output-checks.test-support.js'
 import test from 'node:test'
-import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import { transformRequest } from '@antseed/api-adapter'
 import { outputEchoRequestBody } from './output-echo.js'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
@@ -196,74 +196,6 @@ export type { OutputReadingV1 }
 
 const SERVICE = 'test-model'
 const PEER = 'ab'.repeat(32)
-
-/** A seller that answers `answer(cap, call)` with what it signs; every request is captured. */
-function fakeSeller(answer: (cap: number, call: number) => { text: string; billed: number; reasoning?: number }) {
-  const bodies: Array<Record<string, unknown>> = []
-  const signed = new Map<string, { request: Uint8Array; response: Uint8Array }>()
-  const fetchFn: typeof fetch = async (_url, init) => {
-    const headers = new Headers(init?.headers)
-    const requestId = headers.get('x-antseed-request-id')!
-    const raw = init!.body as Uint8Array
-    const body = JSON.parse(new TextDecoder().decode(raw)) as Record<string, unknown>
-    const call = bodies.push(body)
-    const { text, billed, reasoning } = answer(body['max_tokens'] as number, call)
-    const reply = {
-      object: 'chat.completion',
-      choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'length' }],
-      usage: { prompt_tokens: 30, completion_tokens: billed, ...(reasoning !== undefined ? { completion_tokens_details: { reasoning_tokens: reasoning } } : {}) },
-    }
-    signed.set(requestId, {
-      request: encodeHttpRequest({ requestId, method: 'POST', path: '/v1/chat/completions', headers: {}, body: raw }),
-      response: encodeHttpResponse({ requestId, statusCode: 200, headers: {}, body: bytes(reply) }),
-    })
-    return Response.json(reply, { headers: { 'x-antseed-request-id': requestId } })
-  }
-  const responseAuthReader = {
-    async waitForVerified(input: { requestId: string; sellerPeerId: string; advertisedService: string }) {
-      const bytesOf = signed.get(input.requestId)!
-      return {
-        requestId: input.requestId,
-        status: 'verified' as const,
-        // What a seller signs: who, for which request, for which service.
-        responseAuth: { requestId: input.requestId, sellerPeerId: input.sellerPeerId, advertisedService: input.advertisedService },
-        signedPreimages: {
-          encoding: 'antseed-http-codec-v1' as const,
-          signatureEncoding: 'antseed-response-auth-signing-v1' as const,
-          requestBase64: Buffer.from(bytesOf.request).toString('base64'),
-          responseBase64: Buffer.from(bytesOf.response).toString('base64'),
-          responseAuthSigningBase64: 'AA==',
-          requestHash: `0x${'44'.repeat(32)}`,
-          responseHash: `0x${'55'.repeat(32)}`,
-        },
-        failureReason: null,
-      }
-    },
-    close() {},
-  } as unknown as Parameters<typeof runOutputCap>[0]['responseAuthReader']
-  return { fetchFn, responseAuthReader, bodies }
-}
-
-/** The model's own host keeps the limit: it answers `cap` words and bills `cap`. */
-const keptReply: CapReferenceReply = async (prompt, cap) => ({
-  requestBody: bytes({ messages: [{ role: 'user', content: prompt }], max_tokens: cap }),
-  response: { statusCode: 200, body: bytes({ choices: [{ message: { content: Array.from({ length: cap }, () => 'one').join(' ') }, finish_reason: 'length' }], usage: { prompt_tokens: 20, completion_tokens: cap } }) },
-})
-
-/** A reference that counts one token per word, from one provider, never cached: A + B minus A is B's word count. */
-const wordReference: TokenizerReferenceAsk = async (contents) => ({
-  upstream: { kind: 'test' },
-  results: contents.map((content) => ({ inputTokens: 10 + content.trim().split(/\s+/).length, cachedInput: false, provider: 'maker', failure: null })),
-})
-
-const runOn = async (seller: ReturnType<typeof fakeSeller>, ask: TokenizerReferenceAsk = wordReference, peerId = PEER) => {
-  const reference = await prepareOutputCapReference({ askReply: keptReply, ask })
-  return runOutputCap({
-    proxyBaseUrl: 'http://127.0.0.1:1', peerId, service: SERVICE,
-    responseAuthReader: seller.responseAuthReader, limiter: new ConcurrencyLimiter(1), fetchFn: seller.fetchFn,
-    reference, ask, thinking: null,
-  })
-}
 
 test('an honest seller stops at the limit: one request, pass, and the record rechecks at submit', async () => {
   const seller = fakeSeller((cap) => ({ text: words(Math.floor(cap / 3)), billed: cap }))

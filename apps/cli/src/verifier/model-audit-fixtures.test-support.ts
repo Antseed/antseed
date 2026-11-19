@@ -1,5 +1,5 @@
 // Test support: builds complete verifier runs with genuinely signed seller exchanges.
-import { ALL_TESTS_FORMAT, readingsOfEvidence, storedRequestsOf, verdictOf } from './audit-checks.js'
+import { ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, storedRequestsOf, verdictOf } from './audit-checks.js'
 import { outputCapCost, summarizeOutputCap, type OutputCapV1 } from './output-cap.js'
 import { outputEchoCost, summarizeOutputEcho, type OutputEchoV1 } from './output-echo.js'
 import { summarizeFlips, type FlipsV1 } from './flips.js'
@@ -324,6 +324,8 @@ export async function writeSignedAuditRun(input: {
         ...(audit.confirmsDiff ? { confirmsDiff: true } : {}),
         ...(audit.offeredAsAlternate ? { offeredAsAlternate: true } : {}),
         ...(audit.confirming ? { confirming: [...audit.confirming.checks], confirmingReportedAt: audit.confirming.reportedAt } : {}),
+        // As a real summary: its earliest request on the auditor's clock.
+        ...(audit.confirming ? { firstRequestAt: earliestAuditorTime([evidence]) } : {}),
         outcomeReason: null,
         auditId,
         parsedProbeCount: evidence.result.parsedProbeCount,
