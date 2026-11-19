@@ -109,6 +109,7 @@ export { VIDEO_JOB_HOLD_CODES, type VideoJobHoldCode } from '@antseed/protocol/m
 export { adaptPeerFaultErrorResponse, describeFreeTierLimit, FREE_TIER_EXHAUSTED_ERROR_ID, isFreeTierExhaustedResponse, nextFreeTierStakeTier, readFreeTierLimit, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED } from '@antseed/buyer-core';
 export type { FreeTierLimit, FreeTierLimitStakeTier } from '@antseed/buyer-core';
 export { reconcileStoredChannels, type ChannelReconcileResult, type LivePaymentSessions } from '@antseed/buyer-core';
+export { usageForBilling } from '@antseed/buyer-core';
 
 // Submodule re-exports (commonly used)
 export {
