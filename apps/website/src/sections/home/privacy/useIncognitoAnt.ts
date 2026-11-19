@@ -8,10 +8,11 @@ const LOAD_MARGIN = '600px 0px';
 const FROWN_ODDS = 0.2;
 const BASE = '/site/assets/home/ant-incognito';
 
-// HEVC with alpha in Safari, VP9 with alpha elsewhere
+// HEVC with alpha in Safari, VP9 with alpha elsewhere. The HEVC clips are premultiplied (black behind transparent pixels): Safari
+// blends them as premultiplied, so any colour stored behind the alpha shows through as a box.
 const sourceFor = (clip: Clip, v: HTMLVideoElement) => {
   const hevc = navigator.vendor === 'Apple Computer, Inc.' && v.canPlayType('video/mp4; codecs="hvc1"') !== '';
-  return `${BASE}-${clip}${hevc ? '-hevc.mov' : '.webm'}`;
+  return `${BASE}-${clip}${hevc ? '-hevc-pm.mov' : '.webm'}`;
 };
 
 /**
