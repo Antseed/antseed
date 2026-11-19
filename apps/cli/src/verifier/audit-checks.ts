@@ -1,5 +1,6 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { auditedServiceNames } from './audited-models.js'
+import { describeFlipsFlag, flipsPaidRequests, summarizeFlips, validateFlips, type FlipsV1 } from './flips.js'
 import { describeOutputCapFlag, outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1 } from './output-cap.js'
 import { describeOutputEchoFlag, outputEchoPaidRequests, summarizeOutputEcho, validateOutputEcho, type EchoSellerAskV1, type OutputEchoV1 } from './output-echo.js'
 import type { PaidRequest, ProxyAuditEvidenceExchangeV1 } from './proxy-evidence.js'
@@ -23,7 +24,7 @@ import {
  * The checks of a seller audit that can end in DIFF, by the name a DIFF is attributed to. A DIFF is recorded on chain
  * only when a second auditor's check of the same name flags the seller too, on its own fresh material (`same-check.ts`).
  */
-export type AuditCheckId = 'tokens' | 'output-cap' | 'output-echo' | 'output-offset' | 'kbf'
+export type AuditCheckId = 'tokens' | 'output-cap' | 'output-echo' | 'output-offset' | 'flips' | 'kbf'
 
 /** What a check judges: which model answers, or how the seller bills. */
 export type CheckSubject = 'model' | 'billing'
@@ -36,6 +37,11 @@ export interface CheckReading {
   check: AuditCheckId
   subject: CheckSubject
   outcome: CheckOutcome
+  /**
+   * Set on a finding that is recorded only (FLIPS where it does not count): its judged outcome. `outcome` is then
+   * `inconclusive`; `verdictOf` reads the judged one only when told to count recorded findings.
+   */
+  recordedOnly?: Exclude<CheckOutcome, 'not-run'>
 }
 
 /** The evidence fields that hold a check's record. The names are the stored ones and never change. */
@@ -43,6 +49,7 @@ export interface CheckRecords {
   tokenizerPrecheck: TokenizerPrecheckV1
   outputCap: OutputCapV1
   outputEcho: OutputEchoV1
+  flips: FlipsV1
 }
 export type CheckSlot = keyof CheckRecords
 
@@ -54,6 +61,8 @@ export interface CheckSummaryOutcomes {
   outcome?: string
   growth?: string
   fixedAmount?: string
+  /** FLIPS: whether its outcome counts toward the verdict. */
+  counted?: boolean
 }
 
 /** One finding of a check. The echo check has two, every other check one. */
@@ -66,6 +75,8 @@ export interface CheckFinding<Slot extends CheckSlot> {
   ofRecord(record: CheckRecords[Slot]): Exclude<CheckOutcome, 'not-run'>
   /** The same finding in an audit's summary, for the planner, which has no evidence at hand. */
   ofSummary(summary: CheckSummaryOutcomes): Exclude<CheckOutcome, 'not-run'>
+  /** For a finding that can be recorded only: its judged outcome when it is (then `ofRecord` reads `inconclusive`). */
+  recordedOnly?(record: CheckRecords[Slot]): Exclude<CheckOutcome, 'not-run'> | null
 }
 
 /**
@@ -115,6 +126,8 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   paid(record: CheckRecords[Slot]): PaidRequest[]
   /** What a flag of this record found, in plain words, as the audit's verdict reason gives it. */
   describeFlag(record: CheckRecords[Slot]): string
+  /** Whether a scheduled retry carries this record; by default when a finding flagged or passed (`decidedRecords`). */
+  carriedByRetry?(record: CheckRecords[Slot]): boolean
   /** The texts of a stored record that breaks the run's rules. */
   texts: {
     /** The check, as an error names it. */
@@ -214,8 +227,32 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
   },
 }
 
+export const FLIPS_CHECK: RecordCheck<'flips'> = {
+  slot: 'flips',
+  findings: [{
+    id: 'flips', subject: 'model', label: 'the randomness check',
+    // Where FLIPS does not count it is recorded only: no flag and no pass for the verdict.
+    ofRecord: (record) => (record.counted ? outcome(record.outcome, 'flag', 'pass') : 'inconclusive'),
+    ofSummary: (summary) => (summary.counted === true ? outcome(summary.outcome, 'flag', 'pass') : 'inconclusive'),
+    recordedOnly: (record) => (record.counted ? null : outcome(record.outcome, 'flag', 'pass')),
+  }],
+  summarize: summarizeFlips,
+  // Recomputed from the replies the seller signed and the reference replies stored with them.
+  validate: (record) => validateFlips(record),
+  requests: (record) => record.pairs.flatMap((pair) => pair.seller.map((slot) => stored('audited', slot.request))),
+  paid: flipsPaidRequests,
+  describeFlag: describeFlipsFlag,
+  // A scored FLIPS is carried whatever its outcome: a p between the bar and the pass is a result, and FLIPS is never
+  // drawn twice for one audit chain. A check with no score is asked again.
+  carriedByRetry: (record) => record.p !== null,
+  texts: {
+    name: 'the randomness check',
+    summaryMismatch: 'the summary\'s randomness check is not the one in its evidence',
+  },
+}
+
 /** The checks with a record, in run order and attribution order. Never reorder: the order is in the rules hash. */
-export const RECORD_CHECKS = Object.freeze([TOKENS_CHECK, OUTPUT_CAP_CHECK, OUTPUT_ECHO_CHECK] as const)
+export const RECORD_CHECKS = Object.freeze([TOKENS_CHECK, OUTPUT_CAP_CHECK, OUTPUT_ECHO_CHECK, FLIPS_CHECK] as const)
 
 /** The questions have no record field: they are the evidence file itself. A description only. */
 export const QUESTIONS_CHECK = Object.freeze({ id: 'kbf' as const, subject: 'model' as const, label: 'the questions' })
@@ -245,7 +282,11 @@ export function readingsOfEvidence(
   for (const check of RECORD_CHECKS) {
     const record = evidence[check.slot]
     for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
-      readings.push({ check: finding.id, subject: finding.subject, outcome: record == null ? 'not-run' : finding.ofRecord(record) })
+      const recorded = record == null ? null : finding.recordedOnly?.(record) ?? null
+      readings.push({
+        check: finding.id, subject: finding.subject, outcome: record == null ? 'not-run' : finding.ofRecord(record),
+        ...(recorded ? { recordedOnly: recorded } : {}),
+      })
     }
   }
   readings.push(questionsReading(evidence.exchanges.length > 0, kbfVerdict))
@@ -454,10 +495,18 @@ export function verdictOf(
      * undecided yet, it waits for that set (`needsExtension`).
      */
     questionsPending?: boolean
+    /**
+     * Judge a finding that is recorded only by its judged outcome, as if it counted (the eval replay and the dry-run
+     * report print the verdict both ways). Never set in an audit or at submit.
+     */
+    countRecordedOnly?: boolean
   } = {},
 ): AuditVerdict {
-  const flaggedBy = checksWith(readings, 'flag')
-  const passedBy = checksWith(readings, 'pass')
+  const read = options.countRecordedOnly
+    ? readings.map((reading) => (reading.recordedOnly ? { ...reading, outcome: reading.recordedOnly } : reading))
+    : readings
+  const flaggedBy = checksWith(read, 'flag')
+  const passedBy = checksWith(read, 'pass')
   if (confirming && confirming.length > 0 && !confirming.some((check) => flaggedBy.includes(check))) {
     // The questions still waiting for an extra set are not undecided yet: the confirmation waits with them.
     const open = confirming.filter((check) => !passedBy.includes(check)
@@ -488,23 +537,51 @@ export function auditVerdictReason(records: StoredCheckRecords, audit: AuditVerd
 /**
  * The test records a scheduled retry carries: only those that decided (flagged or passed, or judged when recorded
  * only), so a test with no result is asked again. A test judged against an earlier test's record (`readsEarlier`) is
- * carried only with that record: when the earlier test is asked again, so is it. A resume of an interrupted attempt
- * carries every finished record.
+ * carried only with that record: when the earlier test is asked again, so is it, also when the earlier test did not
+ * run at all (`withoutOrphans`). A resume of an interrupted attempt carries every finished record, with the same rule.
  */
 export function decidedRecords(records: StoredCheckRecords): StoredCheckRecords {
   const kept: { [Slot in CheckSlot]?: CheckRecords[Slot] } = {}
   for (const { check, record } of recordsOf(records)) {
     if (record == null) continue
-    const decided = (check.findings as readonly CheckFinding<CheckSlot>[]).some((finding) => {
-      const outcome = finding.ofRecord(record)
+    const decided = check.carriedByRetry?.(record) ?? (check.findings as readonly CheckFinding<CheckSlot>[]).some((finding) => {
+      const outcome = finding.recordedOnly?.(record) ?? finding.ofRecord(record)
       return outcome === 'flag' || outcome === 'pass'
     })
     if (decided) (kept as Record<string, unknown>)[check.slot] = record
   }
-  for (const { check, record } of recordsOf(kept)) {
+  return withoutOrphans(kept)
+}
+
+/**
+ * These records without any that would be judged against an earlier test's record that is not among them
+ * (`readsEarlier`): that earlier test is asked now, absent or undecided before, so the dependant is asked again with it.
+ */
+export function withoutOrphans(records: StoredCheckRecords): StoredCheckRecords {
+  const kept: { [Slot in CheckSlot]?: CheckRecords[Slot] } = { ...records }
+  for (const { check, record } of recordsOf(records)) {
     if (record == null) continue
-    const without = (check.readsEarlier ?? []).some((slot) => records[slot] != null && kept[slot] == null)
-    if (without) delete (kept as Record<string, unknown>)[check.slot]
+    if ((check.readsEarlier ?? []).some((slot) => kept[slot] == null)) delete (kept as Record<string, unknown>)[check.slot]
   }
   return kept
+}
+
+/**
+ * The carried records a confirmation may keep: only from an attempt that was itself a confirmation, and only a record
+ * whose every request is fresh for the report it answers (`fresh`, the time test of `same-check.ts` on the record's
+ * earliest auditor time). A record from a first look, or one older than the report's cutoff, is asked again, with the
+ * tests judged against it (`withoutOrphans`): old material would make the whole confirmation stale at submit.
+ */
+export function carriedIntoConfirmation(
+  records: StoredCheckRecords,
+  source: { confirmation: boolean },
+  fresh: (earliestRequestAt: number | null) => boolean,
+): StoredCheckRecords {
+  if (!source.confirmation) return {}
+  const kept: { [Slot in CheckSlot]?: CheckRecords[Slot] } = {}
+  for (const { check, record } of recordsOf(records)) {
+    if (record == null) continue
+    if (fresh(earliestAuditorTime([{ [check.slot]: record, exchanges: [] }]))) (kept as Record<string, unknown>)[check.slot] = record
+  }
+  return withoutOrphans(kept)
 }

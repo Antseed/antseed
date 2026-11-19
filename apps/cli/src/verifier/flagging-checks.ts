@@ -16,7 +16,7 @@ export { AUDIT_CHECK_IDS, type AuditCheckId } from './audit-checks.js'
  * Empty when nothing flagged. In the order of `AUDIT_CHECK_IDS` (`audit-checks.ts`).
  */
 export function flaggingChecks(
-  evidence: Pick<ProxyAuditEvidenceV1, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho' | 'exchanges'>,
+  evidence: Pick<ProxyAuditEvidenceV1, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho' | 'flips' | 'exchanges'>,
   kbfVerdict: 'SAME' | 'DIFF' | 'UNDETERMINED' | null,
 ): AuditCheckId[] {
   return checksWith(readingsOfEvidence(evidence, kbfVerdict), 'flag')
@@ -28,7 +28,7 @@ export function flaggingChecks(
  * Each finding of the echo check passes on its own: a seller that only failed to be a candidate has not passed.
  */
 export function passedChecks(
-  evidence: Pick<ProxyAuditEvidenceV1, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho' | 'exchanges'>,
+  evidence: Pick<ProxyAuditEvidenceV1, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho' | 'flips' | 'exchanges'>,
   kbfVerdict: 'SAME' | 'DIFF' | 'UNDETERMINED' | null,
 ): AuditCheckId[] {
   return checksWith(readingsOfEvidence(evidence, kbfVerdict), 'pass')
@@ -46,6 +46,7 @@ export function decidedChecks(result: {
   tokenizerPrecheck?: { outcome: string }
   outputCap?: { outcome: string }
   outputEcho?: { growth?: string; fixedAmount?: string }
+  flips?: { outcome: string; counted?: boolean }
 }): AuditCheckId[] {
   return checksWith(readingsOfSummary(result), 'flag', 'pass')
 }

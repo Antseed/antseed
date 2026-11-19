@@ -1017,6 +1017,11 @@ export async function askReferenceReplies(input: {
   settings: KbfReferenceV1
   /** The full user message of each request. */
   contents: readonly string[]
+  /**
+   * The whole body of each request instead (FLIPS: the same body its sellers get); the route still sets the model,
+   * its pin and its own overrides, and each result's `requestBody` is what was sent.
+   */
+  bodies?: readonly Record<string, unknown>[]
   maxTokens: number
   config: VerifierCLIConfig | undefined
   catalog?: VerifierModelCatalog | null
@@ -1046,8 +1051,8 @@ export async function askReferenceReplies(input: {
   const timeoutMs = input.timeoutMs ?? input.settings.queryProfile.requestTimeoutMs
   const retryBaseDelayMs = input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS
   const encoder = new TextEncoder()
-  const ask = async (content: string) => {
-    const body = { messages: [{ role: 'user', content }], max_tokens: Math.max(input.maxTokens, route.minMaxTokens ?? 0), stream: false }
+  const ask = async (content: string, given?: Record<string, unknown>) => {
+    const body = given ?? { messages: [{ role: 'user', content }], max_tokens: Math.max(input.maxTokens, route.minMaxTokens ?? 0), stream: false }
     const read = (exchange: ReferenceRawExchange) => ({
       requestBody: encoder.encode(exchange.requestBody),
       response: { statusCode: exchange.status, body: encoder.encode(exchange.responseBody) },
@@ -1064,12 +1069,15 @@ export async function askReferenceReplies(input: {
       return { requestBody: encoder.encode(JSON.stringify(body)), response: null, provider: null, failure: asError(error).message.slice(0, 300) }
     }
   }
-  const results = await Promise.all(input.contents.map(async (content) => {
-    let result = await ask(content)
+  const asks: Array<{ content: string; body?: Record<string, unknown> }> = input.bodies
+    ? input.bodies.map((body) => ({ content: '', body }))
+    : input.contents.map((content) => ({ content }))
+  const results = await Promise.all(asks.map(async ({ content, body }) => {
+    let result = await ask(content, body)
     for (let retry = 1; retry < REFERENCE_INPUT_TOKENS_TRIES && result.response === null && !input.signal?.aborted; retry += 1) {
       await sleep(retryBaseDelayMs * 3 * retry)
       if (input.signal?.aborted) break
-      result = await ask(content)
+      result = await ask(content, body)
     }
     return result
   }))

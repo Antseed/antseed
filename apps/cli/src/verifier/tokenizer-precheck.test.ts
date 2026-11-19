@@ -13,6 +13,8 @@ import { validateAuditMatchesSummary } from './model-audit.js'
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 import { verifyModelTarget, type ModelVerificationResumeInput, type ModelVerificationSkip, type ModelVerificationTargetResult } from './model-run.js'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
+import type { FlipsScreen, FlipsV1 } from './flips.js'
+import { decidedRecords } from './audit-checks.js'
 import { OUTPUT_CAP_RULE, type OutputCapScreen, type OutputCapV1 } from './output-cap.js'
 import { OUTPUT_ECHO_RULE, type OutputEchoScreen, type OutputEchoV1 } from './output-echo.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
@@ -1191,6 +1193,9 @@ async function audit(options: {
   /** Cap and echo screens (stand-ins in `check pipeline` tests below). */
   outputCap?: Pick<OutputCapScreen<KbfReferenceV1>, 'ready' | 'check'>
   outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
+  flips?: Pick<FlipsScreen<KbfReferenceV1>, 'check'>
+  /** Thinking discovery already done for sellers in this run. */
+  sellerThinking?: Map<string, Promise<unknown>>
 }) {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-tokenizer-precheck-'))
   const target = seller({ usage: options.usage })
@@ -1230,6 +1235,8 @@ async function audit(options: {
         sleepFn: async () => undefined,
         ...(options.outputCap ? { outputCap: options.outputCap } : {}),
         ...(options.outputEcho ? { outputEcho: options.outputEcho } : {}),
+        ...(options.flips ? { flips: options.flips } : {}),
+        ...(options.sellerThinking ? { sellerThinking: options.sellerThinking as never } : {}),
         ...(options.precheck === false ? {} : {
           tokenizerPrecheck: createTokenizerPrecheckScreen({
             sellers: [{ peerId: PEER_ID, service: SERVICE }, ...(options.backer === false ? [] : [{ peerId: BACKER_ID, service: SERVICE }])],
@@ -1605,6 +1612,70 @@ test('check pipeline: questions that end in a seller failure start no other test
   assert.throws(() => validateAuditMatchesSummary(zero, { ...result, status: 'DIFF', questionsStatus: 'DIFF' }), /a questions DIFF with no scored answer/)
   // A close call can be closed only when its look was one.
   assert.throws(() => validateAuditMatchesSummary(evidence, { ...result, decisionRule: 'kbf-extension-v2', closeCallClosed: { reason: 'x' } }), /latest look was not a close call/)
+})
+
+test('check pipeline: FLIPS runs last, on the confirmation stage only for a FLIPS flag; a counted flag is a DIFF, a scored one is carried', async () => {
+  const stages: string[] = []
+  const flipsRecord = (outcome: FlipsV1['outcome'], counted: boolean, p: number | null): FlipsV1 => ({
+    rule: 'flips-v1', draw: { auditor: '0x00', model: MODEL, epoch: '1', salt: '00', stage: 'first' }, service: SERVICE,
+    referenceUpstream: null, referenceOneProvider: true, pairs: [], reasks: 0, outcome, counted, score: p === null ? null : 3, scoreMax: null, p, reason: outcome,
+  })
+  const screen = (record: FlipsV1) => ({ check: async (_seller: unknown, _settings: unknown, options: { stage: string }) => { stages.push(`flips.check stage=${options.stage}`); return record } })
+  const flagged = await pipeline({ usage: MODEL_TOKENIZER, cap: capRecord('pass'), echo: echoRecord('pass'), flips: screen(flipsRecord('flag', true, 0.001)) })
+  assert.deepEqual([...flagged.calls, ...stages], ['cap.ready', 'echo.ready', 'questions', 'cap.check', 'echo.check precheckMatch=true', 'flips.check stage=first'])
+  assert.equal(flagged.result.status, 'DIFF')
+  assert.deepEqual(flaggingChecks(flagged.evidence, flagged.result.questionsStatus!), ['flips'])
+  assert.equal(flagged.result.flips!.outcome, 'flag')
+  // Recorded only: the same flag leaves the verdict to the questions.
+  const recorded = await pipeline({ usage: MODEL_TOKENIZER, flips: screen(flipsRecord('flag', false, 0.001)) })
+  assert.equal(recorded.result.status, 'SAME')
+  // A confirmation of a FLIPS flag is the confirmation stage; a confirmation of another test is a first look for FLIPS.
+  stages.length = 0
+  await pipeline({ usage: MODEL_TOKENIZER, confirming: ['flips'], flips: screen(flipsRecord('pass', true, 0.4)) })
+  await pipeline({ usage: MODEL_TOKENIZER, confirming: ['kbf'], flips: screen(flipsRecord('pass', true, 0.4)) })
+  assert.deepEqual(stages, ['flips.check stage=confirm', 'flips.check stage=first'])
+  // A retry keeps a scored FLIPS whatever its outcome, so it is never drawn twice; a FLIPS with no score is asked again.
+  assert.ok(decidedRecords({ flips: flipsRecord('inconclusive', true, 0.02) }).flips)
+  assert.equal(decidedRecords({ flips: flipsRecord('inconclusive', true, null) }).flips, undefined)
+})
+
+test('a retry with every batch answered asks its tests with the seller\'s own thinking setting', async () => {
+  const first = await audit({ usage: MODEL_TOKENIZER })
+  const thinking: unknown[] = []
+  const outputCap = {
+    ready: async () => ({}) as never,
+    check: async (_seller: unknown, _settings: unknown, setting: unknown) => { thinking.push(setting); return capRecord('pass') },
+  }
+  const key = `${PEER_ID.replace(/^0x/i, '').toLowerCase()}\u0000${SERVICE}`
+  const discovered = { method: 'kbf-reference-code-2026-09-30', strategy: 'enable-thinking-false', maxTokens: 800, attempts: [] }
+  const retried = await audit({
+    usage: MODEL_TOKENIZER, outputCap, sellerThinking: new Map([[key, Promise.resolve(discovered)]]),
+    resume: {
+      parentAuditId: first.result.auditId, reservationAuditId: first.result.auditId, parentEvidenceHash: first.result.evidenceHash,
+      exchanges: first.evidence.exchanges, records: { tokenizerPrecheck: first.evidence.tokenizerPrecheck! },
+    },
+  })
+  assert.equal(retried.questionRequests.length, 0, 'every batch was answered')
+  assert.equal(thinking.length, 1)
+  assert.equal((thinking[0] as { strategy?: string } | null)?.strategy, 'enable-thinking-false', 'not the default setting')
+})
+
+test('check pipeline: the time is checked before each test: time running out in the cap check starts no echo check', async () => {
+  const calls: string[] = []
+  const outputCap = {
+    ready: async () => ({}) as never,
+    check: async (_seller: unknown, _settings: unknown, _thinking: unknown, clock: { start: () => AbortSignal; finish: (answered: boolean) => void }) => {
+      calls.push('cap.check')
+      clock.start()
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      clock.finish(false)
+      return capRecord('inconclusive')
+    },
+  } as never
+  const outputEcho = { ready: async () => ({}) as never, check: async () => { calls.push('echo.check'); return echoRecord('pass') } }
+  const { result } = await audit({ usage: MODEL_TOKENIZER, auditTimeoutMs: 100, outputCap, outputEcho })
+  assert.deepEqual(calls, ['cap.check'])
+  assert.equal(result.outputEcho, undefined)
 })
 
 test('a saved seller file that stores a check slot as null reads as having no such record, for every reader', async () => {

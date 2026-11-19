@@ -36,7 +36,7 @@ import {
 } from './epoch-plan.js'
 import { CALIBRATION_MINIMUM_COVERAGE, EPOCH_QUESTION_SET_METHOD } from './probe-bank.js'
 import { AUDITED_MODELS, type AuditedModel } from './audited-models.js'
-import { CLOSE_CALL_RULE_ID, closeCallRuleForExtensions, needsExtension, pooledCloseCallVerdict } from './close-call.js'
+import { CLOSE_CALL_RULE_ID, auditDecision, closeCallRuleForExtensions, needsExtension, pooledCloseCallVerdict } from './close-call.js'
 import { CANONICAL_KBF_DOMAINS } from './canonical-kbf-domains.js'
 import { DIFF_HOLD_EPOCHS, diffHoldReason, diffHoldResultReason } from './diff-hold.js'
 import { DEFAULT_LAYOUT_FILTER_PASSES, REFERENCE_SIZING_ALGORITHM_VERSION } from './model-reference.js'
@@ -66,6 +66,8 @@ import { SIGNED_REQUEST_TRIES } from './signed-seller-request.js'
 import { ECHO_CROWD_TIME_LIMIT_MS, OUTPUT_ECHO_RULE, echoCrowdObjection, judgeEchoRound, judgeOutputEcho, outputEchoPrompt } from './output-echo.js'
 import { AUDIT_CHECK_IDS, type AuditCheckId } from './flagging-checks.js'
 import { ALL_TESTS_FORMAT, decidedRecords, verdictOf, type CheckOutcome } from './audit-checks.js'
+import { FLIPS_REQUESTS, FLIPS_RULE, flipsCounts } from './flips-score.js'
+import { FLIPS_WORDS, drawFlipsPairs, flipsPool } from './flips.js'
 import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
 import {
   DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
@@ -116,6 +118,7 @@ export function verifierRuleOverrides(config: VerifierCLIConfig | undefined): st
     ['diffHoldEpochs', config?.diffHoldEpochs, DIFF_HOLD_EPOCHS],
     ['tokenizerPrecheck', config?.tokenizerPrecheck, true],
     ['outputChecks', config?.outputChecks, true],
+    ['flips', config?.flips, true],
     ['referenceSelfTestRuns', config?.referenceSelfTestRuns, KBF_DEFAULT_SELF_TEST_RUNS],
     ['referenceLayoutFilterPasses', config?.referenceLayoutFilterPasses, DEFAULT_LAYOUT_FILTER_PASSES],
     ['referenceMinimumProbeCount', config?.referenceMinimumProbeCount, DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT],
@@ -315,6 +318,30 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
     // What a scheduled retry carries (`decidedRecords`): only tests that decided, and a test judged against an earlier
     // one only with it.
     carry: SAMPLE_CARRIES.map((records) => Object.keys(decidedRecords(records as never)).sort()),
+    // The randomness check (FLIPS): its rule (bars, pass, sizes, calibration, which models count), the eval's request of
+    // each model, the word list and its two pools, and what a fixed draw gives.
+    flips: {
+      rule: FLIPS_RULE,
+      requests: FLIPS_REQUESTS,
+      words: FLIPS_WORDS,
+      pools: [flipsPool('first'), flipsPool('confirm')],
+      draw: (['first', 'confirm'] as const).map((stage) => drawFlipsPairs({ auditor: '0x00', model: 'sample', epoch: '1', salt: '00', stage })),
+      counts: ['minimax-m3', 'claude-opus-5.5', 'unmeasured-model'].map((model) => flipsCounts(model)),
+    },
+    // A close call beside a cap flag, waiting and then closed: while it waits the questions give neither pass nor flag;
+    // closed, its questions are undecided and the cap flag makes the audit a DIFF.
+    closedCloseCall: [false, true].map((closed) => {
+      const look = computeKbfVerdict({
+        selfHamming: 30, selfTotal: 300, minCoverage: 0.5, minDiffCoverage: 0.8,
+        targetMatchVector: Array.from({ length: 100 }, (_, index) => (index < 22 ? 0 : 1)),
+      })
+      const decision = auditDecision({
+        status: look.verdict, questionsStatus: look.verdict, parsedProbeCount: 100, probeCount: 100, decisionRule: 'kbf-extension-v2',
+        stats: { ...look.stats, selfCoverage: 1 }, responseAuthVerified: true, outcomeReason: null,
+        outputCap: { outcome: 'flag' }, ...(closed ? { closeCallClosed: { reason: 'sample' } } : {}),
+      } as never)
+      return [decision.pending, decision.questionsStatus, decision.audit.verdict]
+    }),
     verdict: {
       format: ALL_TESTS_FORMAT,
       decisions: SAMPLE_VERDICTS.map(([outcomes, questions, confirming, pending]) => {

@@ -219,6 +219,11 @@ export const VerifierConfigSchema = strictObject({
    */
   outputChecks: z.boolean().optional(),
   /**
+   * The randomness check (FLIPS, `flips.ts`), last in every audit. On by default; recorded only for every model until
+   * its rule counts it. Every auditor must use the same value.
+   */
+  flips: z.boolean().optional(),
+  /**
    * Retired: a first DIFF is no longer rechecked by the same auditor but confirmed by another one.
    * Accepted and ignored so configs written for earlier releases still load.
    */

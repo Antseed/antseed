@@ -35,8 +35,9 @@ import {
 } from '@antseed/node'
 import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
 import { auditedServiceNames } from './audited-models.js'
-import { ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, type StoredCheckRecords } from './audit-checks.js'
+import { ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, withoutOrphans, type StoredCheckRecords } from './audit-checks.js'
 import { settleAuditVerdict } from './close-call.js'
+import { flipsCost, flipsRequestCount, summarizeFlips, type FlipsScreen, type FlipsSummary, type FlipsV1 } from './flips.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { kbfAuditBatches } from './kbf-batching.js'
@@ -269,6 +270,8 @@ export interface ProxyVerificationContext {
    * output the model did not write, held against the model's other sellers, is DIFF and is asked no question.
    */
   outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
+  /** The randomness check of this model's sellers (`flips.ts`); absent when it does not run. */
+  flips?: Pick<FlipsScreen<KbfReferenceV1>, 'check'>
 }
 
 /** What a seller's batch requests carry: its thinking suppression, token budget and timeout. */
@@ -346,8 +349,9 @@ export interface ModelVerificationTargetResult {
   /** The tests this audit repeats for another auditor's waiting DIFF (`confirming`); absent on a first look. */
   confirming?: AuditCheckId[]
   /**
-   * A close call whose extra set will not be asked: the audit has a flag of another test, so its DIFF goes out in
-   * this run with the questions undecided (a flagged result never waits across runs).
+   * A close call whose extra set will not be asked: in the run, beside a flag of another test (a flagged result never
+   * waits across runs); at submit, when its window closed or its extra questions were published. Its questions are
+   * undecided, and the closure is published (`questionsClosed`).
    */
   closeCallClosed?: { reason: string }
   /**
@@ -389,6 +393,8 @@ export interface ModelVerificationTargetResult {
   outputCap?: OutputCapSummary
   /** The echo check this audit ran before its questions; absent when none ran. On a `flag` the status is DIFF. */
   outputEcho?: OutputEchoSummary
+  /** The randomness check (FLIPS) this audit ran last before its verdict; absent when none ran. */
+  flips?: FlipsSummary
   /**
    * Extra set of never-seen probes asked after a close-call first audit; `status` above is then the
    * verdict on both sets pooled.
@@ -783,7 +789,8 @@ export async function verifyModelTarget(input: {
   // Each test runs once in an audit's chain of attempts: a resume or a retry carries what an earlier attempt found
   // (`resume.records`) and does not ask it again.
   const runsTests = !input.extension
-  const carried: StoredCheckRecords = input.resume?.records ?? input.carried ?? {}
+  // A carried test judged against an earlier test that is asked now is asked again with it (`withoutOrphans`).
+  const carried: StoredCheckRecords = withoutOrphans(input.resume?.records ?? input.carried ?? {})
   const sellerTarget = {
     peerId: input.target.peerId,
     service: input.service,
@@ -814,11 +821,13 @@ export async function verifyModelTarget(input: {
   }
   let outputCap: OutputCapV1 | null = carried.outputCap ?? null
   let outputEcho: OutputEchoV1 | null = carried.outputEcho ?? null
+  let flips: FlipsV1 | null = carried.flips ?? null
   /** The tests finished so far, as the checkpoint and the evidence store them. */
   const records = (): StoredCheckRecords => ({
     ...(precheck ? { tokenizerPrecheck: precheck } : {}),
     ...(outputCap ? { outputCap } : {}),
     ...(outputEcho ? { outputEcho } : {}),
+    ...(flips ? { flips } : {}),
   })
   // Discovery runs whenever the seller is still to be asked something with its own thinking setting: a question batch,
   // or a test a retry asks again after every batch was answered.
@@ -978,6 +987,16 @@ export async function verifyModelTarget(input: {
         })
         if (outputEcho) await persistCheckpoint()
       }
+      // FLIPS last: its stage is `confirm` only when this audit confirms another auditor's FLIPS flag.
+      const flipsScreen = input.context.flips
+      if (flips === null && flipsScreen && timeLeft()) {
+        flips = await flipsScreen.check(sellerTarget, input.reference, {
+          stage: input.confirming?.checks.includes('flips') ? 'confirm' : 'first',
+          clock: clock(),
+          signal: deadline.controller.signal,
+        })
+        if (flips) await persistCheckpoint()
+      }
     } catch (error) {
       deadline.close()
       throw error
@@ -1080,6 +1099,7 @@ export async function verifyModelTarget(input: {
     ...(precheck && !carried.tokenizerPrecheck ? { tokenizerPrecheck: precheck } : {}),
     ...(outputCap && !carried.outputCap ? { outputCap } : {}),
     ...(outputEcho && !carried.outputEcho ? { outputEcho } : {}),
+    ...(flips && !carried.flips ? { flips } : {}),
   }
   const extraCosts = [...testCosts(fresh), discoveryCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
   const withExtras = (summary: AuditCostSummaryV1) => addAuditCostSummaries(summary, ...extraCosts)
@@ -1148,6 +1168,7 @@ export async function verifyModelTarget(input: {
     ...(precheck ? { tokenizerPrecheck: summarizeTokenizerPrecheck(precheck) } : {}),
     ...(outputCap ? { outputCap: summarizeOutputCap(outputCap) } : {}),
     ...(outputEcho ? { outputEcho: summarizeOutputEcho(outputEcho) } : {}),
+    ...(flips ? { flips: summarizeFlips(flips) } : {}),
   })
 }
 
@@ -1157,6 +1178,7 @@ function testCosts(records: StoredCheckRecords): AuditCostSummaryV1[] {
     ...(records.tokenizerPrecheck ? [tokenizerPrecheckCost(records.tokenizerPrecheck)] : []),
     ...(records.outputCap ? [outputCapCost(records.outputCap)] : []),
     ...(records.outputEcho ? [outputEchoCost(records.outputEcho)] : []),
+    ...(records.flips ? [flipsCost(records.flips)] : []),
   ]
 }
 
@@ -1165,6 +1187,7 @@ function testRequestCount(records: StoredCheckRecords): number {
   return (records.tokenizerPrecheck ? tokenizerPrecheckRequestCount(records.tokenizerPrecheck) : 0)
     + (records.outputCap ? outputCapRequestCount(records.outputCap) : 0)
     + (records.outputEcho ? outputEchoRequestCount(records.outputEcho) : 0)
+    + (records.flips ? flipsRequestCount(records.flips) : 0)
 }
 
 export async function readModelAuditCheckpoints(

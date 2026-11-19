@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { assertBoundToSeller, decidedRecords, earliestAuditorTime, RECORD_CHECKS, storedRequestsOf, TOKENS_CHECK, verdictOf } from './audit-checks.js'
+import { assertBoundToSeller, carriedIntoConfirmation, decidedRecords, withoutOrphans, earliestAuditorTime, RECORD_CHECKS, storedRequestsOf, TOKENS_CHECK, verdictOf } from './audit-checks.js'
 import { isFreshConfirmation } from './same-check.js'
 import { costOfRequests, requestCountOf } from './proxy-evidence.js'
 import {
@@ -31,9 +31,9 @@ const echoRecord = (growth: Outcome3, fixedAmount: Outcome3) => ({
 }) as never
 
 test('the check ids and their order are fixed: the order is the attribution order and is in the rules hash', () => {
-  assert.deepEqual([...AUDIT_CHECK_IDS], ['tokens', 'output-cap', 'output-echo', 'output-offset', 'kbf'])
+  assert.deepEqual([...AUDIT_CHECK_IDS], ['tokens', 'output-cap', 'output-echo', 'output-offset', 'flips', 'kbf'])
   assert.deepEqual(AUDIT_CHECK_IDS.map(describeAuditCheck), [
-    'the token-count pre-check', 'the cap check', 'the echo check', 'the echo check\'s fixed amount', 'the questions',
+    'the token-count pre-check', 'the cap check', 'the echo check', 'the echo check\'s fixed amount', 'the randomness check', 'the questions',
   ])
 })
 
@@ -324,4 +324,21 @@ test('a retry carries only the tests that decided; a test with no result is aske
   // An echo judged against an undecided pre-check is asked again with it: the two stay one pair at submit.
   const anchored = { ...passed, tokenizerPrecheck: { outcome: 'inconclusive' } as never }
   assert.deepEqual(Object.keys(decidedRecords(anchored)), [])
+})
+
+test('a confirmation carries only records of an earlier confirmation that are fresh for its report, with their dependants', () => {
+  const at = (ms: number) => ({ requestIds: ['r'], attemptCosts: [], responseAuth: { requestId: 'r', status: 'verified', record: { requestId: 'r', receivedAt: ms } } })
+  const cap = (ms: number) => ({ outcome: 'pass', asks: [{ request: at(ms) }] }) as never
+  const precheck = (ms: number) => ({ outcome: 'match', rounds: [{ seller: [{ base: at(ms), probed: null }] }] }) as never
+  const echo = (ms: number) => ({ outcome: 'pass', growth: { outcome: 'pass' }, fixedAmount: { outcome: 'pass' }, rounds: [{ short: [{ request: at(ms) }], long: [], repeats: undefined }] }) as never
+  const cutoff = 10_000 + 3_600
+  const fresh = (time: number | null) => time !== null && time >= cutoff
+  const records = { tokenizerPrecheck: precheck(9_000_000), outputCap: cap(20_000_000), outputEcho: echo(20_000_000) }
+  assert.deepEqual(carriedIntoConfirmation(records, { confirmation: false }, fresh), {}, 'never a first look\'s records')
+  // The pre-check is older than the report's cutoff: asked again, and the echo judged against it with it.
+  assert.deepEqual(Object.keys(carriedIntoConfirmation(records, { confirmation: true }, fresh)), ['outputCap'])
+  assert.deepEqual(Object.keys(carriedIntoConfirmation({ ...records, tokenizerPrecheck: precheck(20_000_000) }, { confirmation: true }, fresh)).sort(),
+    ['outputCap', 'outputEcho', 'tokenizerPrecheck'])
+  // An absent pre-check is asked now, so the echo judged without it is asked again too.
+  assert.deepEqual(Object.keys(withoutOrphans({ outputEcho: echo(20_000_000), outputCap: cap(20_000_000) })), ['outputCap'])
 })

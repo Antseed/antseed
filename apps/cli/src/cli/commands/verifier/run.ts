@@ -3,6 +3,7 @@ import pkg from '../../../../package.json' with { type: 'json' }
 import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import { verifierRuleOverrides } from '../../../verifier/verifier-compat.js'
 import type { Command } from 'commander'
+import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { canonicalHashBytes32, queryProfileHash, type KbfReferenceV1 } from '@antseed/fingerprints'
@@ -13,6 +14,7 @@ import { loadConfig } from '../../../config/loader.js'
 import type { VerifierCLIConfig } from '../../../config/types.js'
 import {
   appendVerifierEvent,
+  epochDirectory,
   modelAuditsDirectory,
   modelAuditReportPath,
   modelAuditExtensionsDirectory,
@@ -58,7 +60,7 @@ import { findAdvertisedService } from '../../../verifier/service-discovery.js'
 import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { alreadyJudgedByOther, otherOpinions, type OtherOpinion } from '../../../verifier/third-opinion.js'
-import { attachFirstFlags } from '../../../verifier/same-check.js'
+import { attachFirstFlags, isFreshConfirmation } from '../../../verifier/same-check.js'
 import { flaggedSummaryChecks, localConfirmationDecision } from '../../../verifier/flagging-checks.js'
 import { fetchIpfsText } from '@antseed/model-verifier'
 import { DIFF_HOLD_EPOCHS, diffHolds, type DiffHolds } from '../../../verifier/diff-hold.js'
@@ -136,9 +138,10 @@ import { askReferenceInputTokens, askReferenceReplies, createReferenceRequestLim
 import { TOKENIZER_PRECHECK_RULE, createTokenizerPrecheckScreen, describeTokenizerCounts, measureTokenizerReference } from '../../../verifier/tokenizer-precheck.js'
 import { createOutputCapScreen, describeOutputCapSummary } from '../../../verifier/output-cap.js'
 import { OUTPUT_ECHO_RULE, createOutputEchoScreen, outputEchoPrompt } from '../../../verifier/output-echo.js'
+import { createFlipsScreen } from '../../../verifier/flips.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { closeCallRuleForExtensions, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
-import { decidedRecords, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
+import { carriedIntoConfirmation, decidedRecords, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
 import {
   confirmationTargetsByModel,
   describeTallies,
@@ -565,7 +568,7 @@ export async function loadRunConfirmations(input: {
  * Writes what a model's cap or echo reference decided this run (whether the check applies, why, and the reference's
  * own numbers) beside the model's audits, for the run's report and a dry pass. Never fails the run.
  */
-async function writeOutputCheckReference(directory: string, model: string, check: 'output-cap' | 'output-echo', record: unknown): Promise<void> {
+async function writeOutputCheckReference(directory: string, model: string, check: 'output-cap' | 'output-echo' | 'flips-first' | 'flips-confirm', record: unknown): Promise<void> {
   try {
     await writeJsonAtomic(join(directory, `${check}-reference.json`), { version: 1, kind: 'antseed-verifier-output-check-reference', model, check, record }, true)
   } catch {
@@ -618,6 +621,14 @@ export interface ResumeCandidate {
   exchanges: ProxyAuditEvidenceV1['exchanges']
   /** The test records the earlier attempt finished, carried into the resume (each test runs once per audit chain). */
   records?: StoredCheckRecords
+  /** The earlier attempt was itself a confirmation: only then may a confirmation carry its records. */
+  confirmation?: boolean
+}
+
+/** Whether an evidence file is the audit of this seller and service, as its summary says. */
+function sameAuditTarget(evidence: ProxyAuditEvidenceV1, result: { peerId: string; service: string }): boolean {
+  const target = evidence.target as ProxyAuditEvidenceV1['target'] | undefined
+  return target !== undefined && normalized(target.peerId) === normalized(result.peerId) && normalized(target.service) === normalized(result.service)
 }
 
 /** The test records an evidence file holds: what a resume or a retry of its audit carries. */
@@ -626,7 +637,21 @@ function evidenceRecords(evidence: ProxyAuditEvidenceV1): StoredCheckRecords {
     ...(evidence.tokenizerPrecheck ? { tokenizerPrecheck: evidence.tokenizerPrecheck } : {}),
     ...(evidence.outputCap ? { outputCap: evidence.outputCap } : {}),
     ...(evidence.outputEcho ? { outputEcho: evidence.outputEcho } : {}),
+    ...(evidence.flips ? { flips: evidence.flips } : {}),
   }
+}
+
+/**
+ * The salt of this auditor's FLIPS pairs for the epoch: 32 random bytes kept in the epoch's evidence directory, made
+ * once. Nobody else can derive it before the evidence is published, so no seller can compute the pairs in advance.
+ */
+async function flipsSaltFor(evidenceDir: string, epoch: string): Promise<string> {
+  const path = join(epochDirectory(evidenceDir, epoch), 'flips-salt.json')
+  const stored = await readFile(path, 'utf8').then((text) => JSON.parse(text) as { salt?: unknown }, () => null)
+  if (typeof stored?.salt === 'string' && /^[0-9a-f]{64}$/.test(stored.salt)) return stored.salt
+  const salt = randomBytes(32).toString('hex')
+  await writeJsonAtomic(path, { version: 1, kind: 'antseed-verifier-flips-salt', epoch, salt }, true)
+  return salt
 }
 
 export function normalizeVerifierPeerId(value: string): string {
@@ -1095,7 +1120,9 @@ export async function runVerifierRound(
         const resumeSourceRunId = requestedResumeManifest?.runId ?? null
         // Settled tests of retried audits whose questions are not resumed (a close call with an extra set): a fresh
         // audit carries them instead of asking them again.
-        const carriedTestsByKey = epochState && !requestedResumeManifest ? await loadEpochCarriedTests(epochState, models) : new Map<string, CarriedTests>()
+        const carriedTestsByKey = requestedResumeManifest
+          ? await loadManifestCarriedTests(requestedResumeManifest, models)
+          : epochState ? await loadEpochCarriedTests(epochState, models) : new Map<string, CarriedTests>()
         // Only an explicit --resume-run limits the run to repairs.
         const resumeOnly = resumeSourceRunId !== null
         // Close calls whose extra questions could not be asked in earlier runs this epoch: finished
@@ -1254,7 +1281,7 @@ export async function runVerifierRound(
                 service: eligibility.service,
                 resumeCandidate: resumable ? resumeCandidate : undefined,
                 pendingExtension: carried ? pendingExtension : undefined,
-                carriedTests: carriedTests && carriedTests.service.toLowerCase() === eligibility.service.toLowerCase() ? carriedTests.records : undefined,
+                carriedTests: carriedTests && carriedTests.service.toLowerCase() === eligibility.service.toLowerCase() ? carriedTests : undefined,
               }]
             }
             if (eligibility.code !== 'model_not_advertised') {
@@ -1632,6 +1659,38 @@ export async function runVerifierRound(
               requestLimiter: precheckReferenceLimiter,
             }),
           })
+          // The randomness check of this model's sellers (`createFlipsScreen`): its reference is asked once per stage
+          // and run with the sellers' own body; its pairs are drawn from this auditor's salt for the epoch.
+          // The auditor in the FLIPS draw; the salt keeps the pairs unforeseeable, the address only sets them apart.
+          const flipsAuditor = async (): Promise<string> => {
+            try {
+              return (await resolveAuditorAddress({ config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor })).address
+            } catch {
+              return ''
+            }
+          }
+          const flips = config.verifier?.flips === false ? null : createFlipsScreen<KbfReferenceV1>({
+            model,
+            auditor: await flipsAuditor(),
+            epoch,
+            salt: await flipsSaltFor(evidenceDir, epoch),
+            onReady: (reference) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, `flips-${reference.stage}`, reference),
+            proxyBaseUrl: laneProxy.baseUrl,
+            responseAuthReader: responseAuthReader!,
+            limiter: batchLimiter,
+            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
+            ask: (settings) => async (bodies) => askReferenceReplies({
+              model,
+              settings,
+              contents: [],
+              bodies,
+              maxTokens: 0,
+              config: config.verifier,
+              catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
+              buyerProxyPort: config.buyer.proxyPort,
+              requestLimiter: precheckReferenceLimiter,
+            }),
+          })
           // First audits and extra sets share timeouts and concurrency; only where evidence goes differs.
           const verificationContext = (peer: PeerInfo, auditEvidenceDir: string): ProxyVerificationContext => ({
             proxy: laneProxy,
@@ -1651,6 +1710,7 @@ export async function runVerifierRound(
             ...(tokenizerPrecheck ? { tokenizerPrecheck } : {}),
             ...(outputCap ? { outputCap } : {}),
             ...(outputEcho ? { outputEcho } : {}),
+            ...(flips ? { flips } : {}),
           })
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
             if (await stopIfAuditorRemoved()) {
@@ -1688,6 +1748,17 @@ export async function runVerifierRound(
                 let reference
                 let auditId: string
                 let resume: ModelVerificationResumeInput | undefined
+                // A confirmation of a waiting DIFF runs the check that flagged it to its end.
+                const confirming = confirmationFor(model, target.peer)
+                const confirmingChecks = confirming?.firstChecks && normalized(confirming.service) === normalized(target.service)
+                  ? confirming.firstChecks
+                  : null
+                // Into a confirmation only records of an earlier confirmation attempt, fresh for this report, are carried.
+                const carriedFor = (records: StoredCheckRecords, sourceConfirmation: boolean): StoredCheckRecords => (
+                  confirmingChecks && confirming?.firstReportedAt !== undefined
+                    ? carriedIntoConfirmation(records, { confirmation: sourceConfirmation }, (at) => isFreshConfirmation(at, confirming.firstReportedAt!))
+                    : records
+                )
                 const loaded = target.resumeCandidate ? await loadModelAuditReservation({
                   banksDir,
                   model,
@@ -1713,7 +1784,7 @@ export async function runVerifierRound(
                     reservationAuditId: target.resumeCandidate.reservationAuditId,
                     parentEvidenceHash: target.resumeCandidate.evidenceHash,
                     exchanges: target.resumeCandidate.exchanges,
-                    records: target.resumeCandidate.records,
+                    records: carriedFor(target.resumeCandidate.records ?? {}, target.resumeCandidate.confirmation === true),
                   }
                 } else {
                   const reserved = await reserveModelAuditReference({
@@ -1730,11 +1801,6 @@ export async function runVerifierRound(
                   auditId = reserved.auditId
                 }
                 referenceSources.set(reference.referenceId, reference)
-                // A confirmation of a waiting DIFF runs the check that flagged it to its end.
-                const confirming = confirmationFor(model, target.peer)
-                const confirmingChecks = confirming?.firstChecks && normalized(confirming.service) === normalized(target.service)
-                  ? confirming.firstChecks
-                  : null
                 const verified = await verifyModelTarget({
                   context: verificationContext(target.peer, modelAuditSellersDirectory(evidenceDir, epoch, model, runId)),
                   target: target.peer,
@@ -1745,8 +1811,11 @@ export async function runVerifierRound(
                   checkpointIdentity: { runId, epoch, model },
                   ...(confirmingChecks ? { confirming: { checks: confirmingChecks } } : {}),
                   // A fresh audit (no resume) carries the settled tests of the attempt it retries.
-                  ...(!resume && (target.carriedTests ?? target.resumeCandidate?.records)
-                    ? { carried: (target.carriedTests ?? target.resumeCandidate!.records)! } : {}),
+                  ...(!resume && target.carriedTests
+                    ? { carried: carriedFor(target.carriedTests.records, target.carriedTests.confirmation) }
+                    : !resume && target.resumeCandidate?.records
+                      ? { carried: carriedFor(target.resumeCandidate.records, target.resumeCandidate.confirmation === true) }
+                      : {}),
                 })
                 // New first audits are decided by the close-call rule unless it is turned off; every audit asks its
                 // questions, so the rule always applies. The audit's verdict is settled again with it: a close call
@@ -2575,7 +2644,8 @@ export async function loadResumeCandidates(
         queryProfileHash: evidence.reference.queryProfileHash,
         probeIds: evidence.reference.probes.map((probe) => probe.id),
         exchanges: evidence.exchanges,
-        records: decidedRecords(evidenceRecords(evidence)),
+        records: sameAuditTarget(evidence, result) ? decidedRecords(evidenceRecords(evidence)) : {},
+        confirmation: evidence.confirming !== undefined,
       })
     }
   }
@@ -2590,6 +2660,8 @@ export async function loadResumeCandidates(
 export interface CarriedTests {
   service: string
   records: StoredCheckRecords
+  /** The attempt they come from was a confirmation. */
+  confirmation: boolean
 }
 
 /**
@@ -2597,16 +2669,39 @@ export interface CarriedTests {
  * only the tests that decided (`decidedRecords`), for a fresh audit to carry.
  */
 export async function loadEpochCarriedTests(state: EpochState, models: string[]): Promise<Map<string, CarriedTests>> {
+  return carriedTestsOf([...state.cells.values()]
+    .filter((cell) => cell.action === 'retry' && cell.result)
+    .map((cell) => ({ model: cell.model, result: cell.result! })), models)
+}
+
+/** The same for `--resume-run`: its rows with an extra set, whose questions are not resumed either. */
+export async function loadManifestCarriedTests(manifest: VerifierRunManifestV1, models: string[]): Promise<Map<string, CarriedTests>> {
+  const rows: Array<{ model: string; result: ModelVerificationTargetResult }> = []
+  for (const model of manifest.models) {
+    const summary = JSON.parse(await readFile(model.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    for (const result of summary.results) rows.push({ model: model.model, result })
+  }
+  return carriedTestsOf(rows, models)
+}
+
+async function carriedTestsOf(
+  rows: ReadonlyArray<{ model: string; result: ModelVerificationTargetResult }>,
+  models: string[],
+): Promise<Map<string, CarriedTests>> {
   const requested = new Set(models.map((model) => model.toLowerCase()))
   const carried = new Map<string, CarriedTests>()
-  for (const cell of state.cells.values()) {
-    if (cell.action !== 'retry' || !cell.result || cell.result.status !== 'UNDETERMINED' || !cell.result.extension) continue
-    if (!requested.has(cell.model.toLowerCase())) continue
-    const model = models.find((value) => value.toLowerCase() === cell.model.toLowerCase())!
+  for (const { model: rowModel, result } of rows) {
+    if (result.status !== 'UNDETERMINED' || !result.extension) continue
+    if (!requested.has(rowModel.toLowerCase())) continue
+    const model = models.find((value) => value.toLowerCase() === rowModel.toLowerCase())!
     try {
-      const evidence = await verifyProxyAuditEvidenceFile(cell.result.evidencePath, cell.result.evidenceHash)
+      const evidence = await verifyProxyAuditEvidenceFile(result.evidencePath, result.evidenceHash)
+      // The seller and the service are the evidence's own, not only the summary's.
+      if (!sameAuditTarget(evidence, result)) continue
       const records = decidedRecords(evidenceRecords(evidence))
-      if (Object.keys(records).length > 0) carried.set(resumeKey(model, cell.result.peerId), { service: cell.result.service, records })
+      if (Object.keys(records).length > 0) {
+        carried.set(resumeKey(model, result.peerId), { service: result.service, records, confirmation: evidence.confirming !== undefined })
+      }
     } catch {
       continue
     }
@@ -2644,7 +2739,8 @@ export async function loadEpochRetryCandidates(
       queryProfileHash: evidence.reference.queryProfileHash,
       probeIds: evidence.reference.probes.map((probe) => probe.id),
       exchanges: evidence.exchanges,
-      records: decidedRecords(evidenceRecords(evidence)),
+      records: sameAuditTarget(evidence, result) ? decidedRecords(evidenceRecords(evidence)) : {},
+      confirmation: evidence.confirming !== undefined,
     })
   }
   return candidates
