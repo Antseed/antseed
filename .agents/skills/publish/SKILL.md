@@ -193,6 +193,6 @@ plugins/*    provider-anthropic, provider-claude-code, provider-claude-oauth,
              provider-typesafe, provider-venice-video, provider-fal-video,
              provider-fal-image, provider-alibaba-video, provider-irp-router,
              provider-free-model-router, router-local
-apps/*       @antseed/cli, @antseed/network-stats, @antseed/payments
+apps/*       @antseed/cli, @antseed/payments
              @antseed/ants, @antseed/relay, @antseed/gateway-console
 ```

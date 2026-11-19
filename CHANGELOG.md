@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- The network stats service (`@antseed/network-stats`, `network.antseed.com/stats`) is retired. Read cached peers and prices from Antscan instead: `GET https://antscan.co/api/marketplace?limit=5000` (public JSON, CORS `*`); `PRICING.md`, the routing docs and `llms.txt` now show it. `@antseed/node`'s chain config drops `networkStatsUrl`, and the payments portal's `/api/config` no longer returns it.
 - Website: antseed.com has a new design. The homepage, `/network/`, `/providers/` and `/ecosystem/` are redesigned. There are two new pages: `/ants/` (the token page, which replaces `/ants-token/`; the old URL redirects) and `/colony/`, whose waitlist sign-up at `/colony/join/` asks one question at a time, then hands off to a Google Form that confirms the visitor's email and takes one sign-up per account. The other marketing pages, `/brand/` and the integration guides are rebuilt in the same design. The docs and the blog share the new navigation, footer, fonts and colours. Dark mode is opt-in. The header links to gateway setup, GitHub and X. The network diagram uses watercolour layers. Network figures and live model prices (text, image, video and voice) now come from Antscan.
 
 ### Fixed
