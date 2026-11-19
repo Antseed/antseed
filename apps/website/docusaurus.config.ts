@@ -1,7 +1,8 @@
-import type {Config, Plugin, PluginConfig, PluginModule} from '@docusaurus/types';
+import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import {MOTION_GATE_SCRIPT} from './src/lib/motionGate';
 import {PIXEL_FONT_FACE, PIXEL_FONT_URL} from './src/lib/pixelFont';
+import {deferredGtmScript} from './src/lib/analyticsGate';
 import integrationsPagesPlugin from './plugins/integrations-pages';
 import docsSearchPlugin from './plugins/docs-search';
 import antscanSnapshotPlugin from './plugins/antscan-snapshot';
@@ -9,39 +10,11 @@ import {prismLight, prismDark} from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
 
-const statsProxyPlugin: PluginModule = () => ({
-  name: 'stats-proxy',
-  configureWebpack() {
-    // Docusaurus merges `config.devServer` during `docusaurus start`, but the
-    // exported webpack config type does not include that field.
-    return {
-      devServer: {
-        proxy: [
-          {
-            context: ['/stats-api'],
-            target: 'http://localhost:3001',
-            pathRewrite: {'^/stats-api': ''},
-            changeOrigin: true,
-          },
-        ],
-      },
-    } as unknown as ReturnType<NonNullable<Plugin['configureWebpack']>>;
-  },
-});
-
 /** A preview deployment (SITE_PREVIEW=1, e.g. new.antseed.com): kept out of search engines and analytics. */
 const IS_PREVIEW = process.env.SITE_PREVIEW === '1';
 
 /** Google Tag Manager container for antseed.com; none on previews. */
 const GTM_CONTAINER_ID = IS_PREVIEW ? undefined : (process.env.GTM_CONTAINER_ID ?? 'GTM-NHCLBQQK');
-
-/**
- * Typed explicitly: an inline array literal widens to `string | object`, which
- * does not satisfy PluginConfig's [name, options] tuple.
- */
-const gtmPlugin: PluginConfig[] = GTM_CONTAINER_ID
-  ? [['@docusaurus/plugin-google-tag-manager', {containerId: GTM_CONTAINER_ID}]]
-  : [];
 
 const config: Config = {
   title: 'Antseed',
@@ -106,16 +79,6 @@ const config: Config = {
   ],
 
   plugins: [
-    // Google Tag Manager. GA4 is configured as a tag *inside* GTM rather than
-    // loaded separately, so there is one script on the page and no risk of
-    // double-counting pageviews. Adding Ads/LinkedIn/Meta pixels later is a
-    // GTM change, not a code change.
-    //
-    // A GTM container id is public — it ships in the page source — so it lives
-    // here rather than in deploy config, and the site works without anyone
-    // setting an env var. GTM_CONTAINER_ID still overrides it for staging or a
-    // throwaway test container. Set it to an empty string to disable GTM.
-    ...gtmPlugin,
     [
       '@docusaurus/plugin-client-redirects',
       {
@@ -154,7 +117,6 @@ const config: Config = {
         ],
       },
     ],
-    statsProxyPlugin,
     integrationsPagesPlugin,
     // Docs search index for src/theme/SearchBar (the ⌘K modal).
     docsSearchPlugin,
@@ -164,6 +126,9 @@ const config: Config = {
   headTags: [
     // Enables the hidden-until-revealed states before the first paint (src/lib/motionGate.ts), so pages never flash then hide.
     {tagName: 'script', attributes: {}, innerHTML: MOTION_GATE_SCRIPT},
+    // Google Tag Manager, loaded off the critical path (src/lib/analyticsGate.ts). GA4 and any pixels are tags inside the
+    // container (id is public, ships in the page). It still disables on a preview build, and GTM_CONTAINER_ID overrides the id.
+    ...(GTM_CONTAINER_ID ? [{tagName: 'script', attributes: {}, innerHTML: deferredGtmScript(GTM_CONTAINER_ID)}] : []),
     // Geist Pixel (the marketing titles): asked for while the head is read, and its face declared with the same URL (src/lib/pixelFont.ts).
     {tagName: 'link', attributes: {rel: 'preload', as: 'font', type: 'font/woff2', crossorigin: 'anonymous', href: PIXEL_FONT_URL}},
     {tagName: 'style', attributes: {}, innerHTML: PIXEL_FONT_FACE},
