@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe } from '@antseed/node/payments'
 import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from './output-usage.js'
-import type { AuditCostSummaryV1, ProxyAuditExchangeCostV1 } from './proxy-evidence.js'
+import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest, type ProxyAuditExchangeCostV1 } from './proxy-evidence.js'
 import {
   askSellerSigned,
   signedExchange,
@@ -396,7 +396,12 @@ export function validateOutputCap(record: OutputCapV1): void {
 }
 
 export function outputCapRequestCount(record: OutputCapV1): number {
-  return record.asks.reduce((total, ask) => total + ask.request.requestIds.length, 0)
+  return requestCountOf(outputCapPaidRequests(record))
+}
+
+/** Every request the cap check paid for, in order. */
+export function outputCapPaidRequests(record: OutputCapV1): PaidRequest[] {
+  return record.asks.map((ask) => ({ requestCount: ask.request.requestIds.length, attemptCosts: ask.request.attemptCosts }))
 }
 
 export function outputCapCosts(record: OutputCapV1): ProxyAuditExchangeCostV1[] {
@@ -457,16 +462,7 @@ export function describeOutputCapSummary(summary: OutputCapSummary): string {
 
 /** What the cap check's requests cost. They are paid for like question batches. */
 export function outputCapCost(record: OutputCapV1): AuditCostSummaryV1 {
-  const requests = record.asks.map((ask) => ask.request)
-  const priced = requests.flatMap((request) => request.attemptCosts)
-  return {
-    inputTokens: priced.reduce((total, cost) => total + cost.inputTokens, 0),
-    outputTokens: priced.reduce((total, cost) => total + cost.outputTokens, 0),
-    totalTokens: priced.reduce((total, cost) => total + cost.totalTokens, 0),
-    estimatedCostUsd: priced.reduce((total, cost) => total + cost.estimatedCostUsd, 0),
-    pricedExchangeCount: requests.filter((request) => request.attemptCosts.length > 0).length,
-    missingCostExchangeCount: requests.filter((request) => request.attemptCosts.length === 0).length,
-  }
+  return costOfRequests(outputCapPaidRequests(record))
 }
 
 /** The cap check of one model's sellers in one run: the reference test once, then each seller. */

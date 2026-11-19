@@ -1,7 +1,7 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe } from '@antseed/node/payments'
 import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from './output-usage.js'
-import type { AuditCostSummaryV1 } from './proxy-evidence.js'
+import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from './proxy-evidence.js'
 import {
   askSellerSigned,
   signedExchange,
@@ -891,21 +891,17 @@ function sentRequests(record: OutputEchoV1): SignedSellerRequestV1[] {
 }
 
 export function outputEchoRequestCount(record: OutputEchoV1): number {
-  return sentRequests(record).reduce((total, request) => total + request.requestIds.length, 0)
+  return requestCountOf(outputEchoPaidRequests(record))
+}
+
+/** Every request the echo check paid for, in order: the seller's, then the crowd votes it sent itself. */
+export function outputEchoPaidRequests(record: OutputEchoV1): PaidRequest[] {
+  return sentRequests(record).map((request) => ({ requestCount: request.requestIds.length, attemptCosts: request.attemptCosts }))
 }
 
 /** What the echo check's requests cost, the crowd votes it sent included. They are paid for like question batches. */
 export function outputEchoCost(record: OutputEchoV1): AuditCostSummaryV1 {
-  const requests = sentRequests(record)
-  const priced = requests.flatMap((request) => request.attemptCosts)
-  return {
-    inputTokens: priced.reduce((total, cost) => total + cost.inputTokens, 0),
-    outputTokens: priced.reduce((total, cost) => total + cost.outputTokens, 0),
-    totalTokens: priced.reduce((total, cost) => total + cost.totalTokens, 0),
-    estimatedCostUsd: priced.reduce((total, cost) => total + cost.estimatedCostUsd, 0),
-    pricedExchangeCount: requests.filter((request) => request.attemptCosts.length > 0).length,
-    missingCostExchangeCount: requests.filter((request) => request.attemptCosts.length === 0).length,
-  }
+  return costOfRequests(outputEchoPaidRequests(record))
 }
 
 /** The echo check as an audit's summary carries it. */

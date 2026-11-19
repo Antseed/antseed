@@ -4,8 +4,11 @@ import { isSafeProbe, signedResponseInputUsage } from '@antseed/node/payments'
 import type { AuditTaskLimiter } from './audit-concurrency.js'
 import { sanitizeOutcomeSummary } from './outcome-reason.js'
 import {
+  costOfRequests,
   parseProxyAuditExchangeCost,
+  requestCountOf,
   type AuditCostSummaryV1,
+  type PaidRequest,
   type ProxyAuditEvidenceExchangeV1,
   type ProxyAuditExchangeCostV1,
 } from './proxy-evidence.js'
@@ -878,8 +881,15 @@ function sellerRequests(record: TokenizerPrecheckV1): TokenizerSellerRequestV1[]
 
 /** The requests the pre-check sent, counting retries: to the seller, and to the model's other sellers for the crowd. */
 export function tokenizerPrecheckRequestCount(record: TokenizerPrecheckV1): number {
-  return sellerRequests(record).reduce((total, request) => total + request.requestIds.length, 0)
-    + crowdRequests(record).reduce((total, request) => total + request.requestCount, 0)
+  return requestCountOf(tokenizerPrecheckPaidRequests(record))
+}
+
+/** Every request the pre-check paid for, in order: the seller's, then those to the model's other sellers. */
+export function tokenizerPrecheckPaidRequests(record: TokenizerPrecheckV1): PaidRequest[] {
+  return [
+    ...sellerRequests(record).map((request) => ({ requestCount: request.requestIds.length, attemptCosts: request.attemptCosts })),
+    ...crowdRequests(record),
+  ]
 }
 
 /** The requests sent to the model's other sellers for this check, whether or not their tally was kept. */
@@ -889,16 +899,7 @@ function crowdRequests(record: TokenizerPrecheckV1): TokenizerCrowdV1['requests'
 
 /** What the pre-check's requests cost, the crowd's included. They are paid for like question batches. */
 export function tokenizerPrecheckCost(record: TokenizerPrecheckV1): AuditCostSummaryV1 {
-  const requests: Array<{ attemptCosts: ProxyAuditExchangeCostV1[] }> = [...sellerRequests(record), ...crowdRequests(record)]
-  const priced = requests.flatMap((request) => request.attemptCosts)
-  return {
-    inputTokens: priced.reduce((total, cost) => total + cost.inputTokens, 0),
-    outputTokens: priced.reduce((total, cost) => total + cost.outputTokens, 0),
-    totalTokens: priced.reduce((total, cost) => total + cost.totalTokens, 0),
-    estimatedCostUsd: priced.reduce((total, cost) => total + cost.estimatedCostUsd, 0),
-    pricedExchangeCount: requests.filter((request) => request.attemptCosts.length > 0).length,
-    missingCostExchangeCount: requests.filter((request) => request.attemptCosts.length === 0).length,
-  }
+  return costOfRequests(tokenizerPrecheckPaidRequests(record))
 }
 
 /**

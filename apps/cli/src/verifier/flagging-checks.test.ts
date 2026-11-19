@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { askedNoQuestion } from './close-call.js'
+import { RECORD_CHECKS, storedRequestsOf, TOKENS_CHECK } from './audit-checks.js'
+import { costOfRequests, requestCountOf } from './proxy-evidence.js'
 import {
   AUDIT_CHECK_IDS,
   decidedChecks,
@@ -187,4 +189,43 @@ test('the echo check\'s summary, cost and request count are pinned, with the cro
     estimatedCostUsd: 0.001 + 0.004 + 0.004 + 0.001 + 0.003 + 0.001 + 0.003,
     pricedExchangeCount: 7, missingCostExchangeCount: 1,
   })
+})
+
+test('each check lists every request its record stores with whose signature it must carry, in the order asked', () => {
+  const auth = (id: string) => ({ requestId: id, status: 'verified', record: null, signedPreimages: null, failureReason: null }) as never
+  const signed = (id: string) => ({ requestIds: [id], attemptCosts: [], responseAuth: auth(id) })
+  const precheck = {
+    outcome: 'match',
+    rounds: [{ seller: [{ base: signed('p1'), probed: signed('p2') }] }, { seller: [{ base: signed('p3'), probed: null }] }],
+    crowd: { requests: [], backers: [{ peerId: 'bb', service: 'svc', ask: { base: signed('b1'), probed: signed('b2') } }] },
+  } as never
+  const cap = { asks: [{ request: signed('c1') }, { request: signed('c2') }] } as never
+  const echo = {
+    rounds: [{ short: [{ request: signed('s1') }], long: [{ request: signed('l1') }], repeats: { short: { request: signed('s2') }, long: { request: signed('l2') } } }],
+    crowd: { votes: [{ peerId: 'cc', sentHere: false, short: { request: signed('v1') }, long: { request: signed('v2') } }] },
+  } as never
+  const listed = storedRequestsOf({ tokenizerPrecheck: precheck, outputCap: cap, outputEcho: echo })
+  assert.deepEqual(listed.map((request) => [request.requestIds[0], request.signer]), [
+    ['p1', 'audited'], ['p2', 'audited'], ['p3', 'audited'],
+    ['b1', { peerId: 'bb', service: 'svc' }], ['b2', { peerId: 'bb', service: 'svc' }],
+    ['c1', 'audited'], ['c2', 'audited'],
+    ['s1', 'audited'], ['l1', 'audited'], ['s2', 'audited'], ['l2', 'audited'],
+    ['v1', { peerId: 'cc' }], ['v2', { peerId: 'cc' }],
+  ])
+  assert.equal(listed[0]!.responseAuth, (precheck as { rounds: Array<{ seller: Array<{ base: { responseAuth: unknown } }> }> }).rounds[0]!.seller[0]!.base.responseAuth)
+  assert.deepEqual(storedRequestsOf({}), [])
+})
+
+test('every check\'s paid requests give its cost and request count, in the order they were summed', () => {
+  const cost = (usd: number) => ({ inputTokens: 1, outputTokens: 2, totalTokens: 3, estimatedCostUsd: usd })
+  const precheck = {
+    rounds: [{ seller: [{ base: { requestIds: ['a', 'b'], attemptCosts: [cost(0.1), cost(0.2)] }, probed: null }] }],
+    crowdRequests: [{ requestCount: 1, attemptCosts: [cost(0.3)] }],
+  } as never
+  for (const check of RECORD_CHECKS) assert.equal(typeof check.paid, 'function')
+  assert.deepEqual(TOKENS_CHECK.paid(precheck), [
+    { requestCount: 2, attemptCosts: [cost(0.1), cost(0.2)] }, { requestCount: 1, attemptCosts: [cost(0.3)] },
+  ])
+  assert.deepEqual(tokenizerPrecheckCost(precheck), costOfRequests(TOKENS_CHECK.paid(precheck)))
+  assert.equal(tokenizerPrecheckRequestCount(precheck), requestCountOf(TOKENS_CHECK.paid(precheck)))
 })

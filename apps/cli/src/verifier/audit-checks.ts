@@ -1,7 +1,14 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
-import { summarizeOutputCap, validateOutputCap, type OutputCapV1 } from './output-cap.js'
-import { summarizeOutputEcho, validateOutputEcho, type OutputEchoV1 } from './output-echo.js'
-import { summarizeTokenizerPrecheck, validateTokenizerPrecheck, type TokenizerPrecheckV1 } from './tokenizer-precheck.js'
+import { outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1 } from './output-cap.js'
+import { outputEchoPaidRequests, summarizeOutputEcho, validateOutputEcho, type EchoSellerAskV1, type OutputEchoV1 } from './output-echo.js'
+import type { PaidRequest, ProxyAuditEvidenceExchangeV1 } from './proxy-evidence.js'
+import {
+  summarizeTokenizerPrecheck,
+  tokenizerPrecheckPaidRequests,
+  validateTokenizerPrecheck,
+  type TokenizerSellerRequestV1,
+  type TokenizerPrecheckV1,
+} from './tokenizer-precheck.js'
 
 /**
  * The checks of a seller audit, behind one description each, so that every rule that reads them (which flagged, which
@@ -58,6 +65,16 @@ export interface CheckFinding<Slot extends CheckSlot> {
   ofSummary(summary: CheckSummaryOutcomes): Exclude<CheckOutcome, 'not-run'>
 }
 
+/**
+ * One request a check stored, with whose signature its answer must carry: the audited seller's, or another seller's
+ * of the model (a crowd vote, a backer of the reference), with the service it was asked as when the record names one.
+ */
+export interface StoredRequest {
+  signer: 'audited' | { peerId: string; service?: string }
+  requestIds: readonly string[]
+  responseAuth: ProxyAuditEvidenceExchangeV1['responseAuth'] | null
+}
+
 /** What validating one stored record may read besides the record. */
 export interface StoredAuditContext {
   /** The seller the evidence is about (`target.peerId`). */
@@ -79,6 +96,10 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   validate(record: CheckRecords[Slot], context: StoredAuditContext): void
   /** The finding a flag of this record would end the audit with, before the questions; null when it flags nothing that ends it. */
   endingFinding(record: CheckRecords[Slot]): AuditCheckId | null
+  /** Every request the record stores, with its signer, in the order asked. */
+  requests(record: CheckRecords[Slot]): StoredRequest[]
+  /** Every request the check paid for, in the order its cost is summed. */
+  paid(record: CheckRecords[Slot]): PaidRequest[]
   /** The texts of a stored record that breaks the run's rules. */
   texts: {
     summaryMismatch: string
@@ -93,6 +114,11 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
    */
   endedAuditInSummary(summary: CheckSummaryOutcomes): boolean
 }
+
+const stored = (
+  signer: StoredRequest['signer'],
+  request: Pick<TokenizerSellerRequestV1, 'requestIds' | 'responseAuth'>,
+): StoredRequest => ({ signer, requestIds: request.requestIds, responseAuth: request.responseAuth })
 
 const outcome = (value: string | undefined, flag: string, pass: string): Exclude<CheckOutcome, 'not-run'> =>
   value === flag ? 'flag' : value === pass ? 'pass' : 'inconclusive'
@@ -109,6 +135,13 @@ export const TOKENS_CHECK: RecordCheck<'tokenizerPrecheck'> = {
   // A pre-check must follow from the signed responses it stores.
   validate: (record, context) => validateTokenizerPrecheck(record, context.auditedPeerId),
   endingFinding: (record) => (record.outcome === 'mismatch' ? 'tokens' : null),
+  requests: (record) => [
+    ...record.rounds.flatMap((round) => round.seller.flatMap((ask) => [ask.base, ...(ask.probed ? [ask.probed] : [])]))
+      .map((request) => stored('audited', request)),
+    ...(record.crowd?.backers ?? []).flatMap((backer) => [backer.ask.base, ...(backer.ask.probed ? [backer.ask.probed] : [])]
+      .map((request) => stored({ peerId: backer.peerId, service: backer.service }, request))),
+  ],
+  paid: tokenizerPrecheckPaidRequests,
   texts: {
     summaryMismatch: 'the summary\'s tokenizer pre-check is not the one in its evidence',
     ranAfterDiff: 'a tokenizer pre-check after a DIFF that ended the audit',
@@ -129,6 +162,8 @@ export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
   // Recomputed from the bytes the seller signed.
   validate: (record) => validateOutputCap(record),
   endingFinding: (record) => (record.outcome === 'flag' ? 'output-cap' : null),
+  requests: (record) => record.asks.map((ask) => stored('audited', ask.request)),
+  paid: outputCapPaidRequests,
   texts: {
     summaryMismatch: 'the summary\'s cap check is not the one in its evidence',
     ranAfterDiff: 'a cap check after a tokenizer pre-check DIFF',
@@ -161,6 +196,13 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
   },
   // The record's overall flag ends the audit, attributed to the finding that flagged.
   endingFinding: (record) => (record.outcome !== 'flag' ? null : record.flag === 'offset' ? 'output-offset' : 'output-echo'),
+  requests: (record) => [
+    ...record.rounds.flatMap((round): EchoSellerAskV1[] => [...round.short, ...round.long, ...(round.repeats ? [round.repeats.short, round.repeats.long] : [])])
+      .map((ask) => stored('audited', ask.request)),
+    // Every vote the record stores, also one another audit of the run sent: its answer is material of this check too.
+    ...(record.crowd?.votes ?? []).flatMap((vote) => [vote.short, vote.long].map((ask) => stored({ peerId: vote.peerId }, ask.request))),
+  ],
+  paid: outputEchoPaidRequests,
   texts: {
     summaryMismatch: 'the summary\'s echo check is not the one in its evidence',
     ranAfterDiff: 'an echo check after a DIFF that ended the audit',
@@ -302,4 +344,9 @@ export function validateCheckRecordsAgainstSummary(
   for (const check of ended) {
     if (result.extension || result.extension2) throw new Error(check.texts.extraSetAfterDiff)
   }
+}
+
+/** Every request the check records of one seller's evidence store, with their signers, in run order. */
+export function storedRequestsOf(records: StoredCheckRecords): StoredRequest[] {
+  return recordsOf(records).flatMap(({ check, record }) => (record === undefined ? [] : check.requests(record)))
 }

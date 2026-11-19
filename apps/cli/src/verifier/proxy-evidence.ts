@@ -295,6 +295,30 @@ export function addAuditCostSummaries(...summaries: AuditCostSummaryV1[]): Audit
   }), emptyAuditCostSummary())
 }
 
+/** One paid request, for cost and request counts: its tries (`requestCount`) and what each priced try cost. */
+export interface PaidRequest {
+  requestCount: number
+  attemptCosts: readonly ProxyAuditExchangeCostV1[]
+}
+
+/** What these requests cost, in their order (the float sums follow it). A request with no priced try is missing its cost. */
+export function costOfRequests(requests: readonly PaidRequest[]): AuditCostSummaryV1 {
+  const priced = requests.flatMap((request) => request.attemptCosts)
+  return {
+    inputTokens: priced.reduce((total, cost) => total + cost.inputTokens, 0),
+    outputTokens: priced.reduce((total, cost) => total + cost.outputTokens, 0),
+    totalTokens: priced.reduce((total, cost) => total + cost.totalTokens, 0),
+    estimatedCostUsd: priced.reduce((total, cost) => total + cost.estimatedCostUsd, 0),
+    pricedExchangeCount: requests.filter((request) => request.attemptCosts.length > 0).length,
+    missingCostExchangeCount: requests.filter((request) => request.attemptCosts.length === 0).length,
+  }
+}
+
+/** The requests sent, counting tries. */
+export function requestCountOf(requests: readonly PaidRequest[]): number {
+  return requests.reduce((total, request) => total + request.requestCount, 0)
+}
+
 export function summarizeAuditExchangeCosts(
   exchanges: ProxyAuditEvidenceExchangeV1[],
 ): AuditCostSummaryV1 {
