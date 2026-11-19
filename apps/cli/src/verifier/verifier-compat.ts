@@ -65,7 +65,7 @@ import {
 import { SIGNED_REQUEST_TRIES } from './signed-seller-request.js'
 import { ECHO_CROWD_TIME_LIMIT_MS, OUTPUT_ECHO_RULE, echoCrowdObjection, judgeEchoRound, judgeOutputEcho, outputEchoPrompt } from './output-echo.js'
 import { AUDIT_CHECK_IDS, type AuditCheckId } from './flagging-checks.js'
-import { ALL_TESTS_FORMAT, verdictOf, type CheckOutcome } from './audit-checks.js'
+import { ALL_TESTS_FORMAT, decidedRecords, verdictOf, type CheckOutcome } from './audit-checks.js'
 import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
 import {
   DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
@@ -312,6 +312,9 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
     // The audit's verdict over every test (rule `all-tests-v1`): every test runs and none ends the audit; any flag is a
     // DIFF; otherwise the questions' own verdict; a test with no result never blocks SAME; a confirmation in which no
     // test it repeats decided is undecided. What the rule gives for fixed readings and questions verdicts.
+    // What a scheduled retry carries (`decidedRecords`): only tests that decided, and a test judged against an earlier
+    // one only with it.
+    carry: SAMPLE_CARRIES.map((records) => Object.keys(decidedRecords(records as never)).sort()),
     verdict: {
       format: ALL_TESTS_FORMAT,
       decisions: SAMPLE_VERDICTS.map(([outcomes, questions, confirming, pending]) => {
@@ -445,6 +448,13 @@ const SAMPLE_ECHO_CROWDS: ReadonlyArray<readonly [number, ReadonlyArray<number |
 ]
 
 /** First auditor's checks, the checks that flagged and passed here, and the verdict here. */
+/** Fixed test records for what a retry carries. */
+const SAMPLE_CARRIES = [
+  { tokenizerPrecheck: { outcome: 'match' }, outputCap: { outcome: 'inconclusive' } },
+  { tokenizerPrecheck: { outcome: 'inconclusive' }, outputEcho: { outcome: 'pass', growth: { outcome: 'pass' }, fixedAmount: { outcome: 'pass' } } },
+  { tokenizerPrecheck: { outcome: 'match' }, outputEcho: { outcome: 'pass', growth: { outcome: 'pass' }, fixedAmount: { outcome: 'pass' } } },
+]
+
 /** Fixed readings for the verdict rule: test outcomes, the questions' verdict, the tests confirmed, questions pending. */
 const SAMPLE_VERDICTS: ReadonlyArray<readonly [
   ReadonlyArray<readonly [AuditCheckId, CheckOutcome]>, 'SAME' | 'DIFF' | 'UNDETERMINED', AuditCheckId[] | null, boolean,
@@ -457,10 +467,16 @@ const SAMPLE_VERDICTS: ReadonlyArray<readonly [
   [[['tokens', 'pass'], ['output-cap', 'inconclusive'], ['output-echo', 'flag'], ['kbf', 'pass']], 'SAME', ['output-cap'], false],
   [[['tokens', 'pass'], ['output-cap', 'pass'], ['kbf', 'pass']], 'SAME', ['output-cap'], false],
   [[['output-cap', 'flag'], ['kbf', 'inconclusive']], 'UNDETERMINED', ['kbf'], true],
+  [[['output-cap', 'inconclusive'], ['kbf', 'pass']], 'SAME', ['output-cap', 'kbf'], false],
+  [[['output-cap', 'inconclusive'], ['kbf', 'flag']], 'DIFF', ['output-cap', 'kbf'], false],
   [[['output-cap', 'flag'], ['kbf', 'inconclusive']], 'UNDETERMINED', ['kbf'], false],
 ]
 
 const SAMPLE_CONFIRMATIONS: ReadonlyArray<readonly [AuditCheckId[], AuditCheckId[], AuditCheckId[], 'SAME' | 'DIFF' | 'UNDETERMINED']> = [
+  // Two first flags: one passed here and one left open clears nothing; both passed clears; one flagged again confirms.
+  [['output-cap', 'kbf'], [], ['kbf'], 'SAME'],
+  [['output-cap', 'kbf'], [], ['output-cap', 'kbf'], 'SAME'],
+  [['output-cap', 'kbf'], ['output-cap'], ['kbf'], 'DIFF'],
   [['tokens'], ['tokens'], [], 'DIFF'],
   [['kbf'], ['tokens'], [], 'DIFF'],
   [['kbf'], ['tokens', 'kbf'], [], 'DIFF'],

@@ -321,4 +321,7 @@ test('a retry carries only the tests that decided; a test with no result is aske
   const passed = { ...records, outputEcho: { outcome: 'pass', growth: { outcome: 'pass' }, fixedAmount: { outcome: 'inconclusive' } } as never }
   assert.deepEqual(Object.keys(decidedRecords(passed)), ['tokenizerPrecheck', 'outputEcho'])
   assert.deepEqual(decidedRecords({}), {})
+  // An echo judged against an undecided pre-check is asked again with it: the two stay one pair at submit.
+  const anchored = { ...passed, tokenizerPrecheck: { outcome: 'inconclusive' } as never }
+  assert.deepEqual(Object.keys(decidedRecords(anchored)), [])
 })

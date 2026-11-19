@@ -1,6 +1,6 @@
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import { addAuditCostSummaries, emptyAuditCostSummary, type AuditCostSummaryV1 } from './proxy-evidence.js'
-import { closeCallRule, extensionSets, latestExtension, needsExtension, pooledCloseCallVerdict, settleAuditVerdict } from './close-call.js'
+import { auditDecision, closeCallRule, extensionSets, latestExtension, pooledCloseCallVerdict, settleAuditVerdict } from './close-call.js'
 import { readingsOfSummary } from './audit-checks.js'
 import type {
   ModelVerificationExtensionV1,
@@ -57,7 +57,7 @@ export async function runExtensionRounds(input: {
   // is still a close call. A close call whose set could not run in this run waits for the next run.
   const pendingThisRun = new Set<string>()
   for (let pass = 1; pass <= MAX_EXTENSION_PASSES; pass += 1) {
-    const closeCalls = results.filter((result) => !pendingThisRun.has(result.auditId) && needsExtension(result))
+    const closeCalls = results.filter((result) => !pendingThisRun.has(result.auditId) && auditDecision(result).pending)
     if (closeCalls.length === 0) break
     const finals = await runExtensionPass(input, closeCalls, stats)
     for (const final of finals.values()) if (final.extensionPending) pendingThisRun.add(final.auditId)

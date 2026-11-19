@@ -697,6 +697,11 @@ export async function verifyModelTarget(input: {
   }
   extension?: boolean
   /**
+   * Settled test records of an earlier attempt that this fresh audit carries without resuming its questions (a retry
+   * after a close call's extra set, or after its question set was retired): they are not asked again.
+   */
+  carried?: StoredCheckRecords
+  /**
    * The audit answers another auditor's waiting DIFF, flagged by these checks (`same-check.ts`): a flag by any
    * other check does not end it, so the checks that must confirm always run to their end.
    */
@@ -778,7 +783,7 @@ export async function verifyModelTarget(input: {
   // Each test runs once in an audit's chain of attempts: a resume or a retry carries what an earlier attempt found
   // (`resume.records`) and does not ask it again.
   const runsTests = !input.extension
-  const carried: StoredCheckRecords = input.resume?.records ?? {}
+  const carried: StoredCheckRecords = input.resume?.records ?? input.carried ?? {}
   const sellerTarget = {
     peerId: input.target.peerId,
     service: input.service,
@@ -815,7 +820,11 @@ export async function verifyModelTarget(input: {
     ...(outputCap ? { outputCap } : {}),
     ...(outputEcho ? { outputEcho } : {}),
   })
-  const discovery = pending.length > 0 && input.context.sellerThinking
+  // Discovery runs whenever the seller is still to be asked something with its own thinking setting: a question batch,
+  // or a test a retry asks again after every batch was answered.
+  const testsToAsk = runsTests && ((input.context.outputCap !== undefined && carried.outputCap == null)
+    || (input.context.outputEcho !== undefined && carried.outputEcho == null))
+  const discovery = (pending.length > 0 || testsToAsk) && input.context.sellerThinking
     // The pre-check may have started the audit's clock: an audit that ends here stops it.
     ? await sellerThinkingFor(input.context, input.target, input.service, input.reference, sampling).catch((error: unknown) => {
       deadline.close()
@@ -950,12 +959,14 @@ export async function verifyModelTarget(input: {
   if (runsTests && !skip && !sellerFailed && !timeIsUp) {
     try {
       const capScreen = input.context.outputCap
-      if (outputCap === null && capScreen) {
+      // The time is checked before each test: one that starts after it ran out could only find nothing.
+      const timeLeft = (): boolean => !deadline.controller.signal.aborted
+      if (outputCap === null && capScreen && timeLeft()) {
         outputCap = await capScreen.check(sellerTarget, input.reference, settings.thinking, clock())
         if (outputCap) await persistCheckpoint()
       }
       const echoScreen = input.context.outputEcho
-      if (outputEcho === null && echoScreen) {
+      if (outputEcho === null && echoScreen && timeLeft()) {
         outputEcho = await echoScreen.check(sellerTarget, input.reference, {
           thinking: settings.thinking,
           // The model's other sellers are asked with the reference's thinking setting.

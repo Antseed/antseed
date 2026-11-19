@@ -428,8 +428,13 @@ export async function prepareModelAudits(input: {
       const unfinished = (): ModelAuditVerdict => verdictOf(
         readingsOfSummary({ ...result, questionsStatus: 'UNDETERMINED' }), 'UNDETERMINED', result.confirming,
       ).verdict
+      // The close is published (`questionsClosed`), so a confirmer reads its questions as undecided, not as waiting.
+      const close = (reason: string): void => { result = { ...result, closeCallClosed: result.closeCallClosed ?? { reason } } }
       let finalVerdict = finalAuditVerdict(result)
-        ?? (window?.state === 'closed' && !result.confirmsDiff ? unfinished() : null)
+      if (finalVerdict === null && window?.state === 'closed' && !result.confirmsDiff) {
+        finalVerdict = unfinished()
+        close('its audit window closed before its extra questions were asked')
+      }
       // So is a close call whose first audit was made on a set a submit has published since: its extra
       // questions are public and are never asked (`decideRetryGiveUps`). A confirmation's is an undecided
       // attempt instead: the seller is audited again on new questions, and only the merged epoch's last
@@ -443,6 +448,7 @@ export async function prepareModelAudits(input: {
         }
         finalVerdict = unfinished()
         result = { ...result, outcomeReason: result.outcomeReason ?? EXTRA_QUESTIONS_PUBLISHED }
+        close('its extra questions were published before they could be asked')
       }
       if (finalVerdict === null) {
         if (result.extensionPending) heldBack.push(`${model} ${result.agentId ?? result.peerId}: close call waiting for its extra questions`)

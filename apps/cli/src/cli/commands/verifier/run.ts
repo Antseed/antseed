@@ -1093,6 +1093,9 @@ export async function runVerifierRound(
             candidates: selectedResumeCandidates, banksDir, config: config.verifier, epoch,
           })
         const resumeSourceRunId = requestedResumeManifest?.runId ?? null
+        // Settled tests of retried audits whose questions are not resumed (a close call with an extra set): a fresh
+        // audit carries them instead of asking them again.
+        const carriedTestsByKey = epochState && !requestedResumeManifest ? await loadEpochCarriedTests(epochState, models) : new Map<string, CarriedTests>()
         // Only an explicit --resume-run limits the run to repairs.
         const resumeOnly = resumeSourceRunId !== null
         // Close calls whose extra questions could not be asked in earlier runs this epoch: finished
@@ -1207,6 +1210,7 @@ export async function runVerifierRound(
             }
             const resumeCandidate = resumeCandidates.get(resumeKey(model, peer.peerId))
             const pendingExtension = pendingExtensions.get(pendingExtensionKey(model, peer.peerId))
+            const carriedTests = carriedTestsByKey.get(resumeKey(model, peer.peerId))
             if (!confirmationKey && peer.onChainAgentId != null) {
               const judged = alreadyJudgedByOther(othersOpinions, peer.onChainAgentId, targetServicesFor(model, peer, resumeCandidate?.service), model)
               if (judged) {
@@ -1250,6 +1254,7 @@ export async function runVerifierRound(
                 service: eligibility.service,
                 resumeCandidate: resumable ? resumeCandidate : undefined,
                 pendingExtension: carried ? pendingExtension : undefined,
+                carriedTests: carriedTests && carriedTests.service.toLowerCase() === eligibility.service.toLowerCase() ? carriedTests.records : undefined,
               }]
             }
             if (eligibility.code !== 'model_not_advertised') {
@@ -1739,6 +1744,9 @@ export async function runVerifierRound(
                   resume,
                   checkpointIdentity: { runId, epoch, model },
                   ...(confirmingChecks ? { confirming: { checks: confirmingChecks } } : {}),
+                  // A fresh audit (no resume) carries the settled tests of the attempt it retries.
+                  ...(!resume && (target.carriedTests ?? target.resumeCandidate?.records)
+                    ? { carried: (target.carriedTests ?? target.resumeCandidate!.records)! } : {}),
                 })
                 // New first audits are decided by the close-call rule unless it is turned off; every audit asks its
                 // questions, so the rule always applies. The audit's verdict is settled again with it: a close call
@@ -2578,6 +2586,34 @@ export async function loadResumeCandidates(
  * UNDETERMINED audits from this epoch that the plan retries: the retry keeps the exchanges that
  * already succeeded and only asks the rest again, on the same probes.
  */
+/** The settled tests a fresh audit of a seller carries, and the service they were asked as. */
+export interface CarriedTests {
+  service: string
+  records: StoredCheckRecords
+}
+
+/**
+ * The settled tests of this epoch's retried audits whose questions are not resumed (a close call with an extra set):
+ * only the tests that decided (`decidedRecords`), for a fresh audit to carry.
+ */
+export async function loadEpochCarriedTests(state: EpochState, models: string[]): Promise<Map<string, CarriedTests>> {
+  const requested = new Set(models.map((model) => model.toLowerCase()))
+  const carried = new Map<string, CarriedTests>()
+  for (const cell of state.cells.values()) {
+    if (cell.action !== 'retry' || !cell.result || cell.result.status !== 'UNDETERMINED' || !cell.result.extension) continue
+    if (!requested.has(cell.model.toLowerCase())) continue
+    const model = models.find((value) => value.toLowerCase() === cell.model.toLowerCase())!
+    try {
+      const evidence = await verifyProxyAuditEvidenceFile(cell.result.evidencePath, cell.result.evidenceHash)
+      const records = decidedRecords(evidenceRecords(evidence))
+      if (Object.keys(records).length > 0) carried.set(resumeKey(model, cell.result.peerId), { service: cell.result.service, records })
+    } catch {
+      continue
+    }
+  }
+  return carried
+}
+
 export async function loadEpochRetryCandidates(
   state: EpochState,
   models: string[],

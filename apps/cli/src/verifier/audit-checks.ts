@@ -107,6 +107,8 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   summarize(record: CheckRecords[Slot]): unknown
   /** Recomputes the record from the bytes it stores, with the rules that cross records. Throws. */
   validate(record: CheckRecords[Slot], context: StoredAuditContext): void
+  /** The earlier tests whose records this one is judged against: it is carried into a retry only with them. */
+  readsEarlier?: readonly CheckSlot[]
   /** Every request the record stores, with its signer, grouped by kind (the readers take a set or a minimum, not an order). */
   requests(record: CheckRecords[Slot]): StoredRequest[]
   /** Every request the check paid for, in the order its cost is summed. */
@@ -185,6 +187,8 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
     ofSummary: (summary) => outcome(summary.fixedAmount, 'flag', 'pass'),
   }],
   summarize: summarizeOutputEcho,
+  // Its pre-check anchor (`precheckMatch`) is the pre-check of the same audit.
+  readsEarlier: ['tokenizerPrecheck'],
   validate(record, context) {
     // Recomputed from the bytes the seller and its crowd signed.
     validateOutputEcho(record, context.auditedPeerId)
@@ -483,7 +487,9 @@ export function auditVerdictReason(records: StoredCheckRecords, audit: AuditVerd
 
 /**
  * The test records a scheduled retry carries: only those that decided (flagged or passed, or judged when recorded
- * only), so a test with no result is asked again. A resume of an interrupted attempt carries every finished record.
+ * only), so a test with no result is asked again. A test judged against an earlier test's record (`readsEarlier`) is
+ * carried only with that record: when the earlier test is asked again, so is it. A resume of an interrupted attempt
+ * carries every finished record.
  */
 export function decidedRecords(records: StoredCheckRecords): StoredCheckRecords {
   const kept: { [Slot in CheckSlot]?: CheckRecords[Slot] } = {}
@@ -494,6 +500,11 @@ export function decidedRecords(records: StoredCheckRecords): StoredCheckRecords 
       return outcome === 'flag' || outcome === 'pass'
     })
     if (decided) (kept as Record<string, unknown>)[check.slot] = record
+  }
+  for (const { check, record } of recordsOf(kept)) {
+    if (record == null) continue
+    const without = (check.readsEarlier ?? []).some((slot) => records[slot] != null && kept[slot] == null)
+    if (without) delete (kept as Record<string, unknown>)[check.slot]
   }
   return kept
 }
