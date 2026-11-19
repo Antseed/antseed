@@ -174,6 +174,12 @@
 .help + .cardImage { margin-top: 24px; }
 /* a phone shares the picture itself, so the note about attaching it on X is for computers only */
 @media (hover: none) { .cardImage .deskNote { display: none; } }
+/* Local AI Colony: the one call to action after signing up */
+.group { display: flex; align-items: center; gap: 16px; margin-top: 24px; padding: 18px 18px 18px 20px; border: 1.5px solid var(--jn-fill); border-radius: 14px; background: var(--jn-card); }
+.group > div { display: grid; flex: 1; gap: 4px; min-width: 0; }
+.group b { font-size: 17px; font-weight: 600; }
+.group > div span { font-size: 14.5px; color: var(--jn-muted); }
+.group .button { flex: none; }
 .next { display: grid; gap: 8px; list-style: none; }
 .next li { display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 16px; border: 1px solid var(--jn-line); border-radius: 12px; background: var(--jn-card); }
 .next li > div { display: grid; flex: 1; gap: 2px; min-width: 0; }
@@ -204,7 +210,8 @@
   .big .option { min-height: 56px; }
   .options.chips { grid-template-columns: repeat(3, 1fr); }
   .help { font-size: 16px; }
-  .next li { flex-wrap: wrap; }
-  .next li > div { flex-basis: 100%; }
+  .next li, .group { flex-wrap: wrap; }
+  .next li > div, .group > div { flex-basis: 100%; }
+  .group .button { flex: 1 1 100%; }
   .go .button { flex: 1 1 100%; }
 }

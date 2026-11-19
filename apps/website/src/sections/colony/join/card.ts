@@ -1,5 +1,5 @@
-/** What the waitlist card shows: their first name and their Mac. */
-export type CardInfo = {name: string; mac: string};
+/** What the waitlist card shows: their first name, their Mac and, when known, their waitlist number. */
+export type CardInfo = {name: string; mac: string; number?: number};
 
 const W = 1200, H = 675;
 const PIXEL = '"Geist Pixel", "Geist Variable", sans-serif';
@@ -9,7 +9,7 @@ const MONO = '"Geist Mono Variable", monospace';
 const load = (src: string) => new Promise<HTMLImageElement>((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = src; });
 
 /** The waitlist card, 1200 by 675 so it fits an X post: the dotted page on the left with their name, the painting on the right. */
-export async function drawCard({name, mac}: CardInfo): Promise<Blob | null> {
+export async function drawCard({name, mac, number}: CardInfo): Promise<Blob | null> {
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const g = c.getContext('2d');
@@ -30,7 +30,7 @@ export async function drawCard({name, mac}: CardInfo): Promise<Blob | null> {
   if (logo) g.drawImage(logo, 64, 60, 128, 44);
   // "Ada’s Mac wants in." for a Mac, "Sam wants in." without one, "My Mac wants in." when no name was kept
   const [lead, tail] = who ? [mac ? `${who}’s Mac` : who, 'wants in.'] : mac ? ['My Mac', 'wants in.'] : ['I’m on', 'the list.'];
-  g.fillStyle = '#4f7a24'; pixel(28); g.fillText('Mac Colony waitlist', 64, 236);
+  g.fillStyle = '#4f7a24'; pixel(28); g.fillText(number ? `Mac Colony waitlist · #${number.toLocaleString('en-US')}` : 'Mac Colony waitlist', 64, 236);
   g.fillStyle = '#30382c'; fit(lead, 72, 460); g.fillText(lead, 58, 330);
   g.fillStyle = '#929292'; g.fillText(tail, 58, 400);
   if (mac) { g.font = `500 24px ${SANS}`; g.fillStyle = '#56656f'; g.fillText(mac, 64, 460); }

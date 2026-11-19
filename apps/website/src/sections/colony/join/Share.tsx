@@ -8,14 +8,14 @@ import styles from './JoinPage.module.css';
 const FILE = 'mac-colony-waitlist.png';
 
 /** The waitlist card to share: drawn in the browser from what they told us, with Share on X and Save image. */
-export function ShareCard({name, mac}: CardFacts): JSX.Element {
+export function ShareCard({name, mac, number}: CardFacts): JSX.Element {
   const [card, setCard] = useState<{blob: Blob; url: string} | null>(null);
   const shown = useRef<string | null>(null);
 
   // a new card replaces the old one only once it is drawn, so the picture never blinks
   useEffect(() => {
     let live = true;
-    void drawCard({name, mac}).then((blob) => {
+    void drawCard({name, mac, number}).then((blob) => {
       if (!live || !blob) return;
       const url = URL.createObjectURL(blob);
       if (shown.current) URL.revokeObjectURL(shown.current);
@@ -23,7 +23,7 @@ export function ShareCard({name, mac}: CardFacts): JSX.Element {
       setCard({blob, url});
     });
     return () => { live = false; };
-  }, [name, mac]);
+  }, [name, mac, number]);
   useEffect(() => () => { if (shown.current) URL.revokeObjectURL(shown.current); }, []);
 
   const text = shareText(mac);
@@ -54,18 +54,23 @@ export function ShareCard({name, mac}: CardFacts): JSX.Element {
   );
 }
 
-/** Telegram, X and GitHub, under the card. */
+/** The main call to action once someone has signed up: Local AI Colony, the Telegram group where the first Mac Colony forms. */
+export function JoinGroup(): JSX.Element | null {
+  if (!TELEGRAM_URL) return null;
+  return (
+    <div className={styles.group} data-cta="telegram">
+      <div><b>Join Local AI Colony on Telegram</b><span>Our local AI group. Setups, models and the first Mac Colony, with the team.</span></div>
+      <a className={styles.button} href={TELEGRAM_URL} target="_blank" rel="noopener noreferrer">Join the group <span aria-hidden="true">↗</span></a>
+    </div>
+  );
+}
+
+/** X and GitHub, under the card. */
 export function NextSteps(): JSX.Element {
   return (
     <>
       <p className={clsx(styles.eyebrow, styles.small)}>While you wait</p>
       <ol className={styles.next}>
-        <li>
-          <div><b>Join Local AI Colony on Telegram</b><span>Our local AI group. Setups, models and the first Mac Colony, with the team.</span></div>
-          {TELEGRAM_URL
-            ? <a className={clsx(styles.button, styles.sm)} href={TELEGRAM_URL} target="_blank" rel="noopener noreferrer">Join</a>
-            : <span className={styles.soon}>Opens on launch day</span>}
-        </li>
         <li>
           <div><b>Follow @AntSeed on X</b><span>News lands there first.</span></div>
           <a className={clsx(styles.button, styles.sm, styles.ghost)} href="https://x.com/intent/follow?screen_name=AntSeed" target="_blank" rel="noopener noreferrer">Follow</a>

@@ -1,7 +1,10 @@
 import {MACS, NO_MAC, type Answers} from './macs.ts';
 
-/** What a waitlist card names: the first name and the Mac line. */
-export type CardFacts = {name: string; mac: string};
+/** What a waitlist card names: the first name, the Mac line and, when the welcome email gave it, the waitlist number. */
+export type CardFacts = {name: string; mac: string; number?: number};
+
+/** What the welcome email's card link carries: the waitlist number and the Mac line, never a name or an email. */
+export type LinkFacts = {number: number; mac: string; noMac: boolean};
 
 export const SHARE_URL = 'https://antseed.com/colony/';
 const KEY = 'antseed-colony-card';
@@ -21,6 +24,17 @@ export const shareText = (mac: string): string => {
 const cleanName = (v: string | null | undefined) => (v ?? '').replace(/\s+/g, ' ').trim().slice(0, 40);
 // a Mac line is kept only when it starts with a Mac the sign-up offers, so nothing else can put words on the card
 const cleanMac = (v: string | null | undefined) => { const s = (v ?? '').trim().slice(0, 80); return Object.keys(MACS).some((m) => s === m || s.startsWith(`${m} · `)) ? s : ''; };
+
+/** The welcome email links to /colony/joined/#n=42&mac=MacBook%20Pro%20%C2%B7%20M3%20Max%20%C2%B7%2036%20GB (mac=none without a Mac),
+ *  so the card works on whatever device opens the email. Null unless the number is a whole number from 1; a Mac line that isn't
+ *  one the sign-up offers is dropped, as in readCard. */
+export function readLink(hash: string): LinkFacts | null {
+  const p = new URLSearchParams(hash.replace(/^#/, ''));
+  const n = p.get('n') ?? '';
+  if (!/^[1-9]\d{0,6}$/.test(n)) return null;
+  const raw = p.get('mac') ?? '';
+  return {number: Number(n), mac: raw === 'none' ? '' : cleanMac(raw), noMac: raw === 'none'};
+}
 
 /** The card in what this browser kept, cleaned the same way whoever wrote it. */
 export function readCard(stored: string | null): CardFacts {

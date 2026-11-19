@@ -2,19 +2,29 @@ import {useEffect, useState, type JSX} from 'react';
 import clsx from 'clsx';
 import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
-import {recallCard, type CardFacts} from './cardFacts';
-import {NextSteps, ShareCard} from './Share';
+import {readLink, recallCard, type CardFacts} from './cardFacts';
+import {JoinGroup, NextSteps, ShareCard} from './Share';
 import styles from './JoinPage.module.css';
 
 const TITLE = 'You’re on the Mac Colony waitlist · Antseed';
 const DESCRIPTION = 'Your card for the first Mac Colony waitlist, ready to share.';
 
-/** /colony/joined/: where Google's thank-you note leads. The card uses the first name and Mac this browser kept from the sign-up. */
+/** /colony/joined/: where Google's thank-you note and the welcome email lead. The card uses the first name this browser kept from
+ *  the sign-up. The Mac comes from the welcome email's link when there is one, with the waitlist number, else from the browser. */
 export default function JoinedPage(): JSX.Element {
-  const [facts, setFacts] = useState<CardFacts | null>(null);
+  const [facts, setFacts] = useState<(CardFacts & {noMac: boolean}) | null>(null);
 
-  // the browser's own storage, so it is read after the page renders
-  useEffect(() => { setFacts(recallCard()); }, []);
+  // the browser's own storage and the link's #, so both are read after the page renders, and again if the # changes
+  useEffect(() => {
+    const read = () => {
+      const kept = recallCard();
+      const link = readLink(window.location.hash);
+      setFacts(link ? {name: kept.name, mac: link.mac, number: link.number, noMac: link.noMac} : {...kept, noMac: Boolean(kept.name && !kept.mac)});
+    };
+    read();
+    window.addEventListener('hashchange', read);
+    return () => window.removeEventListener('hashchange', read);
+  }, []);
 
   return (
     <>
@@ -42,15 +52,19 @@ export default function JoinedPage(): JSX.Element {
               <div className={styles.badge} aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg></div>
               {facts?.name && <p className={clsx(styles.eyebrow, styles.hi)}>Welcome, {facts.name}</p>}
               <h1 className={styles.question}>
-                You’re on<br /> <span>the waitlist.</span>
+                {facts?.number ? <>You’re #{facts.number.toLocaleString('en-US')}<br /> <span>on the waitlist.</span></> : <>You’re on<br /> <span>the waitlist.</span></>}
               </h1>
-              <p className={styles.help}>Thanks for signing up for the first Mac Colony. We’ll email you {facts?.mac ? 'when there’s a spot for your Mac' : facts?.name ? 'when there’s a way for you to take part' : 'when there’s a spot for you'}.</p>
-              {facts && <ShareCard name={facts.name} mac={facts.mac} />}
+              <p className={styles.help}>Thanks for signing up for the first Mac Colony. We’ll email you {facts?.noMac ? 'when there’s a way for you to take part' : facts?.mac ? 'when there’s a spot for your Mac' : 'when there’s a spot for you'}.</p>
+              <JoinGroup />
+              {facts && <>
+                <p className={clsx(styles.eyebrow, styles.small)}>Your card</p>
+                <ShareCard name={facts.name} mac={facts.mac} number={facts.number} />
+              </>}
               <NextSteps />
               <div className={styles.go}>
                 <Link className={styles.skip} to="/colony/">Back to Colony</Link>
                 {/* someone who signed up without a Mac has no other Mac to add, as on the sign-up's own last step */}
-                {!(facts?.name && !facts.mac) && <Link className={styles.skip} to="/colony/join/">Sign up another Mac</Link>}
+                {!facts?.noMac && <Link className={styles.skip} to="/colony/join/">Sign up another Mac</Link>}
               </div>
             </section>
           </div>

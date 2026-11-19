@@ -6,7 +6,7 @@ import {WAITLIST} from '../config';
 import {MACS, NO_MAC, chipsFor, memsFor, settle, stepsFor, type Answers, type Step} from './macs';
 import {prefillUrl, sourceOf} from './waitlist';
 import {macLine, rememberCard} from './cardFacts';
-import {NextSteps, ShareCard} from './Share';
+import {JoinGroup, NextSteps, ShareCard} from './Share';
 import styles from './JoinPage.module.css';
 
 const TITLE = 'Join the Mac Colony waitlist · Antseed';
@@ -234,6 +234,7 @@ export default function JoinPage(): JSX.Element {
                 <p className={styles.help}>We opened a short Google form in a new tab. Sign in there and submit it to {noMac ? 'finish' : 'lock your spot'}.</p>
                 {/* a button, not an <a href>: the prefilled URL carries the name and Mac, which the global outbound-click capture would log */}
                 {joinUrl && <p className={styles.hint}>Tab didn’t open? <button type="button" className={styles.textLink} onClick={() => open(joinUrl, '_blank', 'noopener')}>Open the form</button>.</p>}
+                <JoinGroup />
                 <p className={clsx(styles.eyebrow, styles.small)}>Your card</p>
                 <ShareCard name={answers.name} mac={macLine(answers)} />
                 <NextSteps />
