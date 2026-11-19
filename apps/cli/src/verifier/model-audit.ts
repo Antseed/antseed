@@ -44,7 +44,7 @@ import { AUDIT_CHECK_IDS, flaggingChecks, passedChecks, type AuditCheckId } from
 import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
 import type { SubmissionCandidate } from './submission-delta.js'
-import { validateCheckRecordsAgainstSummary } from './audit-checks.js'
+import { earliestAuditorTime, validateCheckRecordsAgainstSummary } from './audit-checks.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
@@ -86,7 +86,10 @@ export interface ModelAuditSellerResultV1 {
   flaggedBy?: AuditCheckId[]
   /** The checks that ran to a pass in this audit (`passedChecks`). */
   passedBy?: AuditCheckId[]
-  /** Unix seconds the audit behind this result was made (its latest evidence file). */
+  /**
+   * Unix seconds of the earliest request the audit behind this result rests on, on the auditor's own clock, over its first
+   * set and extra sets (`earliestAuditorTime`); 0 when none has a time. A confirmation is fresh only from this time on.
+   */
   auditedAt?: number
   /**
    * Set on a result that answers another auditor's waiting DIFF: which checks flagged there and here
@@ -521,8 +524,8 @@ export async function prepareModelAudits(input: {
         ...candidate,
         flaggedBy: flaggingChecks(accepted[index]!.evidence, accepted[index]!.result.status),
         passedBy: passedChecks(accepted[index]!.evidence, accepted[index]!.result.status),
-        // Freshness is the earliest evidence used: a close call's first set counts, not only its last extra set.
-        auditedAt: auditedAt(accepted[index]!, 'earliest'),
+        // Freshness is the earliest request used, on the auditor's clock, over the first set and its extra sets (0: none).
+        auditedAt: earliestAuditorTime([accepted[index]!.evidence, accepted[index]!.extensionEvidence, accepted[index]!.extension2Evidence]) ?? 0,
       })))
       for (let index = accepted.length - 1; index >= 0; index -= 1) {
         const decision = decisions[index]
@@ -645,7 +648,7 @@ export async function prepareModelAudits(input: {
           : {}),
         flaggedBy: flaggingChecks(evidence, result.status),
         passedBy: passedChecks(evidence, result.status),
-        auditedAt: auditedAt({ evidence, extensionEvidence, extension2Evidence }, 'earliest'),
+        auditedAt: earliestAuditorTime([evidence, extensionEvidence, extension2Evidence]) ?? 0,
         ...(confirmation ? { confirmation } : {}),
       }))
       const evidence: ModelAuditEvidenceV1 = {
@@ -697,12 +700,12 @@ function auditedAt(entry: {
   evidence: ProxyAuditEvidenceV1
   extensionEvidence: ProxyAuditEvidenceV1 | null
   extension2Evidence: ProxyAuditEvidenceV1 | null
-}, which: 'latest' | 'earliest' = 'latest'): number {
+}): number {
   const times = [entry.evidence, entry.extensionEvidence, entry.extension2Evidence]
     .flatMap((evidence) => evidence ? [Date.parse(evidence.createdAt)] : [])
     .filter(Number.isFinite)
   if (times.length === 0) return 0
-  return (which === 'latest' ? Math.max(...times) : Math.min(...times)) / 1_000
+  return Math.max(...times) / 1_000
 }
 
 /**

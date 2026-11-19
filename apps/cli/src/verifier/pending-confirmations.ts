@@ -11,7 +11,7 @@ import { auditorRotationForModel } from './audit-assignment.js'
 import { normalized } from './utils.js'
 import { mapConcurrently } from './audit-concurrency.js'
 import type { AuditCheckId } from './flagging-checks.js'
-import { CONFIRMATION_MIN_DELAY_SECONDS } from './same-check.js'
+import { isFreshConfirmation } from './same-check.js'
 
 /** The reads the confirmation helpers need from the KBF audits and results contracts. */
 export interface EpochReportReader {
@@ -384,15 +384,25 @@ export interface ConfirmationTarget {
  */
 export function localResultAnswersConfirmation(
   target: ConfirmationTarget,
-  local: { service: string; completedAt: number; decided?: readonly AuditCheckId[] | 'undecided-confirmation' } | null,
+  local: {
+    service: string
+    completedAt: number
+    /** Its earliest request on the auditor's clock (`earliestAuditorTime`); null or absent: not fresh. */
+    firstRequestAt?: number | null
+    decided?: readonly AuditCheckId[] | 'undecided-confirmation'
+  } | null,
 ): boolean {
   if (!local || normalized(local.service) !== normalized(target.service)) return false
   // It must have decided a check this confirmation repeats; a confirmation that ran and did not decide is retried by
   // the epoch plan within its attempts instead, so it counts as an answer here.
   if (target.firstChecks && local.decided !== undefined && local.decided !== 'undecided-confirmation'
     && !target.firstChecks.some((check) => local.decided!.includes(check))) return false
-  // A confirmation is fresh material: an audit made at least an hour after the report it answers.
-  if (target.firstReportedAt !== undefined && local.completedAt < target.firstReportedAt + CONFIRMATION_MIN_DELAY_SECONDS) return false
+  // A confirmation is fresh material: its earliest request at least an hour after the report it answers, the same
+  // test submit makes. An audit that overlapped the cutoff, or reused batches from before it, is not. An undecided
+  // confirmation is never sent: it answers by its used-up attempts alone, whatever its time, or a confirmation with
+  // no timed request would be audited again in every run.
+  if (target.firstReportedAt !== undefined && local.decided !== 'undecided-confirmation'
+    && !isFreshConfirmation(local.firstRequestAt, target.firstReportedAt)) return false
   return target.ownReportedAt === null || local.completedAt > target.ownReportedAt
 }
 

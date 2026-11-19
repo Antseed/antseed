@@ -35,6 +35,7 @@ import {
 } from '@antseed/node'
 import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
 import { auditedServiceNames } from './audited-models.js'
+import { earliestAuditorTime } from './audit-checks.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { kbfAuditBatches } from './kbf-batching.js'
@@ -324,6 +325,11 @@ export interface ModelVerificationTargetResult {
   service: string
   status: 'SAME' | 'DIFF' | 'UNDETERMINED'
   outcomeReason?: VerificationOutcomeReasonV1 | null
+  /**
+   * Unix seconds of the earliest request of this set on the auditor's own clock (`earliestAuditorTime`); null when none
+   * has a time. The planner reads it for "fresh"; absent on summaries written before it, which are never fresh.
+   */
+  firstRequestAt?: number | null
   /**
    * This audit answered another auditor's DIFF on this service waiting for this auditor's
    * confirmation. An UNDETERMINED from a seller failure is then audited again before it is
@@ -826,6 +832,7 @@ export async function verifyModelTarget(input: {
       cumulativeCost: precheckCost!,
       evidencePath: written.path,
       evidenceHash: written.evidenceHash,
+      firstRequestAt: earliestAuditorTime([evidence]),
       stats: fragment.stats,
       responseAuthVerified: true,
       ...precheckResult,
@@ -969,6 +976,7 @@ export async function verifyModelTarget(input: {
       cumulativeCost: flagCost,
       evidencePath: written.path,
       evidenceHash: written.evidenceHash,
+      firstRequestAt: earliestAuditorTime([evidence]),
       stats: fragment.stats,
       responseAuthVerified: true,
       ...precheckResult,
@@ -1227,6 +1235,7 @@ export async function verifyModelTarget(input: {
     cumulativeCost,
     evidencePath: written.path,
     evidenceHash: written.evidenceHash,
+    firstRequestAt: earliestAuditorTime([evidence]),
     stats: fragment.stats,
     responseAuthVerified: authenticated,
     ...precheckResult,

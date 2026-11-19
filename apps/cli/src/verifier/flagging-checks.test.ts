@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { askedNoQuestion } from './close-call.js'
-import { assertBoundToSeller, RECORD_CHECKS, storedRequestsOf, TOKENS_CHECK } from './audit-checks.js'
+import { assertBoundToSeller, earliestAuditorTime, RECORD_CHECKS, storedRequestsOf, TOKENS_CHECK } from './audit-checks.js'
+import { isFreshConfirmation } from './same-check.js'
 import { costOfRequests, requestCountOf } from './proxy-evidence.js'
 import {
   AUDIT_CHECK_IDS,
@@ -258,4 +259,30 @@ test('every verified reply a check stores is bound to its seller, its request an
   assert.doesNotThrow(bind([other('model-a-fast', 'model-a-fast')]), 'a backer asked under its own service name')
   assert.throws(bind([other('model-a-fast', 'model-a')]), /signed for another service/)
   assert.throws(bind([{ ...other(), signer: { peerId: 'dd'.repeat(20) } }]), /not signed by the seller it is stored for/)
+})
+
+test('an audit\'s time for "fresh" is its earliest request on the auditor\'s clock, never the seller\'s signed time', () => {
+  const REPORTED = 1_800_000_000
+  const reply = (receivedAt: number | undefined, responseStartedAt: number) => ({
+    requestIds: ['r'], attemptCosts: [],
+    responseAuth: { requestId: 'r', status: 'verified', record: { requestId: 'r', receivedAt, responseStartedAt } },
+  })
+  const capOnly = (receivedAt: number | undefined, responseStartedAt: number) => ({ exchanges: [], outputCap: { asks: [{ request: reply(receivedAt, responseStartedAt) }] } as never })
+  const afterCutoff = (REPORTED + 3_600) * 1_000
+  // A seller that back-dates its signed start time before the report does not make the audit stale.
+  const backDated = capOnly(afterCutoff + 5_000, (REPORTED - 86_400) * 1_000)
+  assert.equal(earliestAuditorTime([backDated]), REPORTED + 3_605)
+  assert.equal(isFreshConfirmation(earliestAuditorTime([backDated]), REPORTED), true)
+  // The earliest of every set: question batches by their send time, check replies by when the buyer received them.
+  const questions = { exchanges: [{ timing: { startedAt: afterCutoff + 20_000 } }, { timing: { startedAt: afterCutoff + 9_000 } }] }
+  assert.equal(earliestAuditorTime([questions, capOnly(afterCutoff + 30_000, 0)]), REPORTED + 3_609)
+  // A reused batch from before the cutoff, in the first set or an extra set, makes the audit not fresh.
+  const reused = { exchanges: [{ timing: { startedAt: (REPORTED + 60) * 1_000 } }] }
+  assert.equal(isFreshConfirmation(earliestAuditorTime([questions, null, reused]), REPORTED), false)
+  // A reply with no auditor time gives none; no time at all is never fresh.
+  assert.equal(earliestAuditorTime([capOnly(undefined, afterCutoff)]), null)
+  assert.equal(isFreshConfirmation(earliestAuditorTime([{ exchanges: [] }]), REPORTED), false)
+  assert.equal(isFreshConfirmation(null, REPORTED), false)
+  assert.equal(isFreshConfirmation(REPORTED + 3_600, REPORTED), true, 'an hour after the report is fresh')
+  assert.equal(isFreshConfirmation(REPORTED + 3_599, REPORTED), false)
 })

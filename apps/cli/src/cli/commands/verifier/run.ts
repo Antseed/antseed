@@ -1025,6 +1025,7 @@ export async function runVerifierRound(
             ? {
               service: cell.result.service,
               completedAt: Date.parse(completedAt) / 1_000,
+              firstRequestAt: cell.result.firstRequestAt ?? null,
               decided: localConfirmationDecision(cell.result, cell.action === 'done'),
             }
             : null

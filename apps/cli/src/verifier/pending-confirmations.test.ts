@@ -294,10 +294,18 @@ test('a finished local result answers a confirmation only for the reported servi
 
 test('a local result answers a waiting DIFF only when it was made at least an hour after the first report', () => {
   const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['kbf' as const], firstReportedAt: 10_000 }
-  // Made before the other auditor reported, or within the hour after: not fresh material, so the seller is audited again.
-  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: 9_000 }), false)
-  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: 10_000 + 3_599 }), false)
-  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: 10_000 + 3_600 }), true)
+  // Its earliest request before the other auditor reported, or within the hour after: not fresh material, audited again.
+  const at = (firstRequestAt: number | null | undefined, completedAt = 20_000) => ({ service: 'served-a', completedAt, firstRequestAt })
+  assert.equal(localResultAnswersConfirmation(target, at(9_000)), false)
+  assert.equal(localResultAnswersConfirmation(target, at(10_000 + 3_599)), false)
+  assert.equal(localResultAnswersConfirmation(target, at(10_000 + 3_600)), true)
+  // Finished well after the cutoff, but its first request (or a reused batch) was before it: the time is the earliest request's.
+  assert.equal(localResultAnswersConfirmation(target, at(10_000 + 600, 10_000 + 9_000)), false)
+  // A summary with no request time (written before the field, or with no timed request) is never fresh.
+  assert.equal(localResultAnswersConfirmation(target, at(null)), false)
+  assert.equal(localResultAnswersConfirmation(target, at(undefined)), false)
+  // A confirmation that used up its attempts undecided is never sent: it answers whatever its time, so it is not re-planned.
+  assert.equal(localResultAnswersConfirmation(target, { ...at(null), decided: 'undecided-confirmation' }), true)
 })
 
 // Liveness edge cases: what happens to a DIFF when the auditor who should confirm it does not.
@@ -504,16 +512,16 @@ test('a local result answers a waiting DIFF only when it decided a check that fl
   const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['output-cap' as const], firstReportedAt: 10_000 }
   const later = 10_000 + 7_200
   // A first look whose questions said SAME and whose cap check did not decide: the cap must still be asked.
-  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, decided: ['kbf'] }), false)
-  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, decided: ['kbf', 'output-cap'] }), true)
+  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, firstRequestAt: later, decided: ['kbf'] }), false)
+  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, firstRequestAt: later, decided: ['kbf', 'output-cap'] }), true)
   // A confirmation that ran and did not decide is retried by the epoch plan within its attempts, not here.
-  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, decided: 'undecided-confirmation' }), true)
+  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, firstRequestAt: later, decided: 'undecided-confirmation' }), true)
 })
 
 test('a questions confirmation that ended UNDETERMINED after its attempts answers the target and is not planned again', () => {
   const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['kbf' as const], firstReportedAt: 10_000 }
   const undetermined = { status: 'UNDETERMINED', parsedProbeCount: 40, tokenizerPrecheck: { outcome: 'match' }, outcomeReason: { code: 'deadline_exceeded' }, confirmsDiff: true }
-  const later = { service: 'served-a', completedAt: 10_000 + 7_200 }
+  const later = { service: 'served-a', completedAt: 10_000 + 7_200, firstRequestAt: 10_000 + 7_200 }
   // Still within its attempts: the epoch plan audits it again, so it does not answer yet.
   assert.equal(localResultAnswersConfirmation(target, { ...later, decided: localConfirmationDecision(undetermined, false) }), false)
   // Its attempts are used up (the cell is done): it answers, and the seller is not audited in every run.

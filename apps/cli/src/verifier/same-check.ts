@@ -55,6 +55,14 @@ export interface SameCheckConfirmationV1 {
 export const CONFIRMATION_MIN_DELAY_SECONDS = 60 * 60
 
 /**
+ * The one test of "fresh", for the planner and for submit: the audit's earliest request on the auditor's own clock
+ * (`earliestAuditorTime`) is at least `CONFIRMATION_MIN_DELAY_SECONDS` after the report it answers. No time is not fresh.
+ */
+export function isFreshConfirmation(earliestRequestAt: number | null | undefined, firstReportedAt: number): boolean {
+  return typeof earliestRequestAt === 'number' && earliestRequestAt >= firstReportedAt + CONFIRMATION_MIN_DELAY_SECONDS
+}
+
+/**
  * What to do with one result before it is sent:
  * - `send`: it answers a waiting DIFF and may go out as it is, with this record;
  * - `exclude`: it is never sent (another check flagged, the confirmed check did not decide, it is not fresh,
@@ -150,7 +158,7 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
       sameCheck,
       ...(passedCheck ? { passedCheck } : {}),
     })
-    if (candidate.auditedAt < first.reportedAt + CONFIRMATION_MIN_DELAY_SECONDS) {
+    if (!isFreshConfirmation(candidate.auditedAt, first.reportedAt)) {
       return {
         kind: 'exclude',
         reason: `this audit was made ${candidate.auditedAt < first.reportedAt ? 'before' : 'less than an hour after'} the waiting DIFF it would answer; `

@@ -939,6 +939,8 @@ function closeCallResult(model: string, peerId: string): Record<string, unknown>
     cost: emptyAuditCostSummary(),
     evidencePath: join(tmpdir(), `first-audit-${model}-${peerId.slice(0, 8)}.json`), evidenceHash: `0x${'ab'.repeat(32)}`,
     stats: { ...verdict.stats, selfCoverage: 1 }, responseAuthVerified: true, outcomeReason: null,
+    // As a real summary: its earliest request, here the (faked) time it was audited.
+    firstRequestAt: Math.floor(Date.now() / 1_000),
   }
 }
 

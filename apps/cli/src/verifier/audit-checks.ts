@@ -423,3 +423,30 @@ export function validateCheckRecordsAgainstSummary(
 export function storedRequestsOf(records: StoredCheckRecords): StoredRequest[] {
   return recordsOf(records).flatMap(({ check, record }) => (record == null ? [] : check.requests(record)))
 }
+
+/**
+ * Unix seconds of the earliest request this audit rests on, on the auditor's own clock: when each question batch was
+ * sent (reused batches keep their own times), and for every reply a check stored, when the buyer received it
+ * (`responseAuth.record.receivedAt`, the buyer's local store time, in milliseconds like the batch times). Over the
+ * first set and its extra sets. A check request stores no send time, so its time is its answer's: a request sent just
+ * before a cutoff and answered after it counts as after it. The seller's signed times are never read: a seller could
+ * back-date them to make every audit of it look stale. A request with no auditor time gives none; null when no request
+ * has one, which is never fresh.
+ */
+export function earliestAuditorTime(
+  evidences: ReadonlyArray<(StoredCheckRecords & { exchanges: ReadonlyArray<{ timing?: { startedAt?: number } }> }) | null | undefined>,
+): number | null {
+  const times: number[] = []
+  for (const evidence of evidences) {
+    if (!evidence) continue
+    for (const exchange of evidence.exchanges) {
+      if (typeof exchange.timing?.startedAt === 'number') times.push(exchange.timing.startedAt)
+    }
+    for (const request of storedRequestsOf(evidence)) {
+      const at = request.responseAuth?.record?.receivedAt
+      if (typeof at === 'number') times.push(at)
+    }
+  }
+  const known = times.filter((time) => Number.isFinite(time) && time > 0)
+  return known.length === 0 ? null : Math.floor(Math.min(...known) / 1_000)
+}

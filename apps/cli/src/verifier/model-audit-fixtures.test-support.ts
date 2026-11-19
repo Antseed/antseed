@@ -1,4 +1,5 @@
 // Test support: builds complete verifier runs with genuinely signed seller exchanges.
+import { storedRequestsOf } from './audit-checks.js'
 import { describeOutputCapFlag, summarizeOutputCap, type OutputCapV1 } from './output-cap.js'
 import { describeOutputEchoFlag, summarizeOutputEcho, type OutputEchoV1 } from './output-echo.js'
 import { createHash } from 'node:crypto'
@@ -380,6 +381,8 @@ function signedExchanges(input: FixtureAudit & {
   runId: string
   /** When set, exactly these probes are answered wrong, whatever `verdict` says. */
   wrongProbeIds?: ReadonlySet<string>
+  /** When the batches were sent, in milliseconds (the auditor's clock, which "fresh" reads). */
+  sentAt?: number
 }): ProxyAuditEvidenceExchangeV1[] {
   const batches = createDomainHomogeneousKbfBatches(input.reference.probes, KBF_PROBES_PER_REQUEST, (values) => [...values])
   const peerId = peerIdOf(input.seller)
@@ -454,7 +457,7 @@ function signedExchanges(input: FixtureAudit & {
         bodyBase64: responseBase64,
         hash: canonicalHashBytes32({ statusCode: 200, headers, bodyBase64: responseBase64 }),
       },
-      timing: { startedAt: 1_000, completedAt: 2_000, responseLatencyMs: 1_000 },
+      timing: { startedAt: input.sentAt ?? 1_000, completedAt: (input.sentAt ?? 1_000) + 1_000, responseLatencyMs: 1_000 },
       answers,
       matches: computeMatchVector(answers, probes),
       status: 'succeeded' as const,
@@ -763,7 +766,7 @@ async function writeFixtureEvidence(input: {
     : audit.outputEcho?.outcome === 'flag' ? describeOutputEchoFlag(audit.outputEcho) : null
   const exchanges = tokenizerPrecheck || preQuestionFlag
     ? []
-    : signedExchanges({ ...audit, reference, auditor: input.auditor, runId: input.runId, wrongProbeIds })
+    : signedExchanges({ ...audit, reference, auditor: input.auditor, runId: input.runId, wrongProbeIds, sentAt: Date.parse(timestamps.completedAt) })
   const answersById = new Map<string, number | null>()
   const matchesById = new Map<string, 0 | 1 | null>()
   for (const exchange of exchanges) {
@@ -824,6 +827,22 @@ async function writeFixtureEvidence(input: {
   if (input.wrongCount === undefined && verdict !== audit.verdict) {
     throw new Error(`fixture produced ${fragment.verdict}, expected ${audit.verdict}`)
   }
+  stampBuyerTimes(evidence, Date.parse(timestamps.completedAt))
   const written = await writeProxyAuditEvidence(input.directory, input.auditId, evidence)
   return { evidence, written, exchanges, matchVector, cost }
+}
+
+/**
+ * What the buyer stores beside every signed reply a check keeps: when it received it (`receivedAt`, its own clock),
+ * here the audit's time, so "fresh" reads the fixture's audit time. The records are copied first: a test may write one
+ * record under several sellers.
+ */
+function stampBuyerTimes(evidence: ProxyAuditEvidenceV1, at: number): void {
+  for (const slot of ['tokenizerPrecheck', 'outputCap', 'outputEcho'] as const) {
+    if (evidence[slot]) (evidence as unknown as Record<string, unknown>)[slot] = structuredClone(evidence[slot])
+  }
+  for (const request of storedRequestsOf(evidence)) {
+    const record = request.responseAuth?.record as { receivedAt?: number } | null | undefined
+    if (record) record.receivedAt = at
+  }
 }
