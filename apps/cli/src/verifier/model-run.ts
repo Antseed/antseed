@@ -848,6 +848,13 @@ export async function verifyModelTarget(input: {
   // Without a screen too: a carried record of another stage is not this audit's, so it is not kept.
   let flips: FlipsV1 | null = flipsToAsk || carried.flips?.draw.stage !== flipsStage ? null : carried.flips ?? null
   if (flipsToAsk) input.context.flips!.warm?.(input.service, input.reference, flipsStage)
+  /** The tests this attempt ran itself: a carried record was paid for by the attempt that ran it. */
+  const freshRecords = (): StoredCheckRecords => ({
+    ...(precheck && precheck !== carried.tokenizerPrecheck ? { tokenizerPrecheck: precheck } : {}),
+    ...(outputCap && outputCap !== carried.outputCap ? { outputCap } : {}),
+    ...(outputEcho && outputEcho !== carried.outputEcho ? { outputEcho } : {}),
+    ...(flips && flips !== carried.flips ? { flips } : {}),
+  })
   /** The tests finished so far, as the checkpoint and the evidence store them. */
   const records = (): StoredCheckRecords => ({
     ...(precheck ? { tokenizerPrecheck: precheck } : {}),
@@ -1041,7 +1048,8 @@ export async function verifyModelTarget(input: {
   async function writeSkip(error: VerificationSkipSignal): Promise<ModelVerificationSkip> {
     const completedAt = Date.now()
     const ran = records()
-    const ranCosts = testCosts(ran)
+    // Only what this attempt asked is its cost: a carried test was paid for by the attempt that ran it.
+    const ranCosts = testCosts(freshRecords())
     const evidence: ProxyAuditSkipEvidenceV1 = {
       version: 1,
       kind: 'antseed-buyer-proxy-target-skip',
@@ -1129,12 +1137,7 @@ export async function verifyModelTarget(input: {
   const ran = records()
   // Tests and discovery are paid for like batches, so the audit that sent them counts them; carried tests were paid
   // for by the attempt that ran them.
-  const fresh = {
-    ...(precheck && !carried.tokenizerPrecheck ? { tokenizerPrecheck: precheck } : {}),
-    ...(outputCap && !carried.outputCap ? { outputCap } : {}),
-    ...(outputEcho && !carried.outputEcho ? { outputEcho } : {}),
-    ...(flips && flips !== carried.flips ? { flips } : {}),
-  }
+  const fresh = freshRecords()
   const extraCosts = [...testCosts(fresh), discoveryCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
   const withExtras = (summary: AuditCostSummaryV1) => addAuditCostSummaries(summary, ...extraCosts)
   const cumulativeCost = withExtras(summarizeAuditExchangeCosts(exchanges))

@@ -11,6 +11,7 @@ import {
   FLIPS_WORDS,
   drawFlipsPairs,
   FLIPS_ROUTE_NOT_SUPPORTED,
+  FLIPS_REASK_BUDGET,
   createFlipsScreen,
   finishReasonOf,
   flipsReferenceProblem,
@@ -275,6 +276,18 @@ test('a run asks every scheduled slot, asks again only a slot with no reply, and
   assert.equal(record.reasks, 1)
   for (const pair of record.pairs) assert.equal(pair.seller.length, FLIPS_RULE.repliesPerPair.first)
   assert.doesNotThrow(() => validateFlips(record))
+  // Each slot keeps its asks in order: the scheduled one, then a re-ask only after no reply, with time and cost.
+  const reasked = record.pairs.flatMap((pair) => pair.seller).find((slot) => slot.asks!.length > 1)!
+  assert.deepEqual(reasked.asks!.map((entry) => [entry.reason, entry.answered]), [['scheduled', false], ['no-reply', true]])
+  const edited = (change: (slots: FlipsV1['pairs'][number]['seller']) => void): FlipsV1 => {
+    const copy = structuredClone(record)
+    change(copy.pairs.flatMap((pair) => pair.seller))
+    return copy
+  }
+  assert.throws(() => validateFlips({ ...record, reasks: FLIPS_REASK_BUDGET + 1 }), /re-asks more slots than its budget/)
+  assert.throws(() => validateFlips(edited((slots) => { slots.find((slot) => slot.asks!.length > 1)!.asks![0]!.answered = true })), /asked again after a reply/)
+  assert.throws(() => validateFlips(edited((slots) => { slots[3]!.asks![0]!.requestIds = ['other'] })), /asks are not its requests/)
+  assert.throws(() => validateFlips(edited((slots) => { slots[4]!.asks = [] })), /does not start with its scheduled ask/)
   assert.throws(() => validateFlips({ ...record, p: 0.5, outcome: 'pass' }), /does not follow from its replies/)
   assert.throws(() => validateFlips({ ...record, draw: { ...record.draw, seed: 'ef'.repeat(32) } }), /not the ones its draw gives/)
   // An empty reply is an answer: it counts as the rule says and is never asked again.

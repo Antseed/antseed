@@ -1365,6 +1365,18 @@ test('a seller skipped at its first question still reports what its pre-check se
   assert.equal(skip.requestCount, 2)
   assert.equal(skip.cost!.pricedExchangeCount, 2)
   assert.ok(skip.cost!.estimatedCostUsd > 0)
+  // A pre-check carried from an earlier attempt was paid for there: the skip that carries it reports no cost for it.
+  const first = await audit({ usage: MODEL_TOKENIZER })
+  const carried = await audit({
+    usage: MODEL_TOKENIZER, refuseQuestions: true,
+    resume: {
+      parentAuditId: first.result.auditId, reservationAuditId: first.result.auditId, parentEvidenceHash: first.result.evidenceHash,
+      exchanges: [], records: { tokenizerPrecheck: first.evidence.tokenizerPrecheck! },
+    },
+  })
+  const carriedSkip = carried.skipped as ModelVerificationSkip
+  assert.equal(carriedSkip.status, 'SKIPPED')
+  assert.equal(carriedSkip.cost?.pricedExchangeCount ?? 0, 0)
 })
 
 test('a resume carries the pre-check its earlier attempt finished; a resume whose parent has none runs it', async () => {

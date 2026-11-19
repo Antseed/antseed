@@ -117,6 +117,9 @@ export interface FlipsReferenceReplyV1 {
   finishReason: string | null
   /** The provider the answer names; null when it names none. */
   provider: string | null
+  /** Requests the reference was sent for this reply, and how many of them were answered with a rate limit. */
+  tries?: number
+  rateLimited?: number
   /** The answer shows reasoning: a count, reasoning fields, or a `<think>` block written into its text. */
   reasoning: boolean
   /** Its text holds a `<think>` block: reasoning written into the answer, which would be scored as symbols. */
@@ -148,6 +151,21 @@ export interface FlipsReferenceV1 {
 /** One scheduled slot of the seller: its signed request, or null when it never got a reply within the budget. */
 export interface FlipsSellerSlotV1 {
   request: SignedSellerRequestV1
+  /**
+   * Every ask of the slot in order: the scheduled one, then a re-ask only after an ask with no reply. Each with the
+   * auditor's time it was sent, its request IDs and the costs of its tries; together they are `request`'s.
+   */
+  asks?: FlipsSlotAskV1[]
+}
+
+export interface FlipsSlotAskV1 {
+  reason: 'scheduled' | 'no-reply'
+  /** When the auditor sent it (ms). */
+  sentAt: number
+  requestIds: string[]
+  attemptCosts: SignedSellerRequestV1['attemptCosts']
+  /** It got a verified reply. */
+  answered: boolean
 }
 
 export interface FlipsPairV1 {
@@ -240,7 +258,13 @@ export function isFlipsRecord(value: unknown, depth = 0): value is FlipsV1 {
     return typeof request === 'object' && request !== null
       && Array.isArray(request.requestIds) && request.requestIds.length <= FLIPS_MAX_STORED.triesPerSlot && request.requestIds.every((id) => typeof id === 'string')
       && Array.isArray(request.attemptCosts) && request.attemptCosts.length <= FLIPS_MAX_STORED.triesPerSlot && request.attemptCosts.every(finite)
+      && asksOk((slot as FlipsSellerSlotV1).asks)
   }
+  const asksOk = (asks: unknown): boolean => asks === undefined || (Array.isArray(asks) && asks.length <= FLIPS_REASK_BUDGET + 1
+    && asks.every((entry) => typeof entry === 'object' && entry !== null && (entry.reason === 'scheduled' || entry.reason === 'no-reply')
+      && Number.isSafeInteger(entry.sentAt) && typeof entry.answered === 'boolean'
+      && Array.isArray(entry.requestIds) && entry.requestIds.every((id: unknown) => typeof id === 'string')
+      && Array.isArray(entry.attemptCosts) && entry.attemptCosts.every(finite)))
   const replyOk = (reply: unknown): boolean => {
     const stored = reply as Partial<FlipsReferenceReplyV1> | null
     return typeof stored === 'object' && stored !== null
@@ -520,6 +544,27 @@ export function validateFlips(record: FlipsV1): void {
       }
     }
   }
+  // Re-asks keep to the budget, and, where the asks are stored, each one follows an ask that got no reply.
+  if (!Number.isInteger(record.reasks) || record.reasks < 0 || record.reasks > FLIPS_REASK_BUDGET) throw new Error('a FLIPS check re-asks more slots than its budget')
+  const slots = record.pairs.flatMap((pair) => pair.seller)
+  if (slots.some((slot) => slot.asks !== undefined)) {
+    let reasked = 0
+    for (const slot of slots) {
+      const asks = slot.asks
+      if (!asks || asks.length === 0 || asks[0]!.reason !== 'scheduled') throw new Error('a FLIPS slot does not start with its scheduled ask')
+      for (let index = 1; index < asks.length; index += 1) {
+        if (asks[index]!.reason !== 'no-reply' || asks[index - 1]!.answered) throw new Error('a FLIPS slot was asked again after a reply')
+        if (asks[index]!.sentAt < asks[index - 1]!.sentAt) throw new Error('a FLIPS slot\'s asks are out of order')
+      }
+      reasked += asks.length - 1
+      if (canonicalJsonStringify(asks.flatMap((entry) => entry.requestIds)) !== canonicalJsonStringify(slot.request.requestIds)
+        || canonicalJsonStringify(asks.flatMap((entry) => entry.attemptCosts)) !== canonicalJsonStringify(slot.request.attemptCosts)) {
+        throw new Error('a FLIPS slot\'s asks are not its requests')
+      }
+      if (asks.at(-1)!.answered !== (signedExchange(slot.request) !== null)) throw new Error('a FLIPS slot\'s last ask is not its reply')
+    }
+    if (reasked !== record.reasks) throw new Error('a FLIPS check\'s re-asks are not the ones its slots store')
+  }
   if (record.followUp) {
     validateFlips(record.followUp)
     if (!isProbeDraw(record.followUp.draw)) throw new Error('a FLIPS follow-up is not marked as a probe')
@@ -581,6 +626,7 @@ export async function prepareFlipsReference(input: {
           const answer = readFlipsAnswer(result.requestBody, result.response)
           return {
             ...answer.reply, provider: result.provider, reasoning: answer.reasoning, thinkBlock: answer.thinkBlock, reasoningTokens: answer.reasoningTokens,
+            ...(result.tries !== undefined ? { tries: result.tries } : {}), ...(result.rateLimited !== undefined ? { rateLimited: result.rateLimited } : {}),
             failure: result.failure, request: decoder.decode(result.askedBody ?? result.requestBody),
           }
         }),
@@ -610,6 +656,7 @@ export async function runFlips(input: {
   draw: FlipsDrawV1
   reference: FlipsReferenceV1
   rule?: FlipsRule
+  now?: () => number
 }): Promise<FlipsV1> {
   const rule = input.rule ?? FLIPS_RULE
   const replies = rule.repliesPerPair[input.draw.stage]
@@ -618,23 +665,34 @@ export async function runFlips(input: {
     flipsRequestBody(input.draw.model, input.seller.service, pair, rule),
   )
   const answered = (request: SignedSellerRequestV1): boolean => signedExchange(request) !== null
+  const now = input.now ?? Date.now
+  const asked = async (pair: FlipsPair, reason: FlipsSlotAskV1['reason']) => {
+    const sentAt = now()
+    const request = await ask(pair)
+    const entry: FlipsSlotAskV1 = { reason, sentAt, requestIds: [...request.requestIds], attemptCosts: [...request.attemptCosts], answered: answered(request) }
+    return { request, entry }
+  }
   const pairs: FlipsPairV1[] = await Promise.all(input.reference.pairs.map(async (reference) => ({
     words: reference.words,
     reference,
-    seller: await Promise.all(Array.from({ length: replies }, async () => ({ request: await ask(reference.words) }))),
+    seller: await Promise.all(Array.from({ length: replies }, async () => {
+      const first = await asked(reference.words, 'scheduled')
+      return { request: first.request, asks: [first.entry] }
+    })),
   })))
   let reasks = 0
   for (const pair of pairs) {
     for (const slot of pair.seller) {
       while (!answered(slot.request) && reasks < FLIPS_REASK_BUDGET && !input.seller.signal?.aborted) {
         reasks += 1
-        const again = await ask(pair.words)
-        // The tries of a slot are paid for and counted, so they stay with it.
+        const again = await asked(pair.words, 'no-reply')
+        // The tries of a slot are paid for and counted, so they stay with it, each ask in order.
         slot.request = {
-          ...again,
-          requestIds: [...slot.request.requestIds, ...again.requestIds],
-          attemptCosts: [...slot.request.attemptCosts, ...again.attemptCosts],
+          ...again.request,
+          requestIds: [...slot.request.requestIds, ...again.request.requestIds],
+          attemptCosts: [...slot.request.attemptCosts, ...again.request.attemptCosts],
         }
+        slot.asks = [...slot.asks ?? [], again.entry]
       }
     }
   }
