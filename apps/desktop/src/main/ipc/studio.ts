@@ -11,6 +11,7 @@ import {
   STUDIO_DIR,
   studioProjectDir,
 } from '../studio/store.js';
+import { setStudioPreviewEnabled, STUDIO_PREVIEW_OFF, studioPreviewEnabled } from '../studio/preview.js';
 import { errorResult } from './results.js';
 
 export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
@@ -18,7 +19,23 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
   // Notes about deliveries that could not be applied, shown until the user dismisses them.
   const notices = new Map<string, string[]>();
 
-  ipcMain.handle('studio:edit', async (_event, payload: { id?: unknown; edit?: TrackEdit } | undefined) => {
+  ipcMain.handle('studio:get-enabled', () => ({ ok: true, enabled: studioPreviewEnabled() }));
+
+  ipcMain.handle('studio:set-enabled', (_event, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') return { ok: false, error: 'Expected on or off.' };
+    try {
+      return { ok: true, enabled: setStudioPreviewEnabled(enabled) };
+    } catch (err) {
+      return errorResult(err);
+    }
+  });
+
+  // Every other Studio call refuses while Studio is off.
+  const handle = <T>(channel: string, run: (payload: T | undefined) => Promise<unknown>) => {
+    ipcMain.handle(channel, (_event, payload: T | undefined) => (studioPreviewEnabled() ? run(payload) : { ok: false, error: STUDIO_PREVIEW_OFF }));
+  };
+
+  handle('studio:edit', async (payload: { id?: unknown; edit?: TrackEdit } | undefined) => {
     try {
       const id = typeof payload?.id === 'string' ? payload.id : '';
       const edit = payload?.edit;
@@ -44,7 +61,7 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
     }
   });
 
-  ipcMain.handle('studio:list', async () => {
+  handle('studio:list', async () => {
     try {
       return { ok: true, data: await listStudioProjects() };
     } catch (err) {
@@ -52,7 +69,7 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
     }
   });
 
-  ipcMain.handle('studio:create', async (_event, payload: { name?: unknown } | undefined) => {
+  handle('studio:create', async (payload: { name?: unknown } | undefined) => {
     try {
       return { ok: true, data: await createStudioProject(payload?.name) };
     } catch (err) {
@@ -60,7 +77,7 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
     }
   });
 
-  ipcMain.handle('studio:get', async (_event, payload: { id?: unknown } | undefined) => {
+  handle('studio:get', async (payload: { id?: unknown } | undefined) => {
     try {
       const id = typeof payload?.id === 'string' ? payload.id : '';
       const folder = studioProjectDir(id);
@@ -75,7 +92,7 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
     }
   });
 
-  ipcMain.handle('studio:project-chat', async (_event, payload: { id?: unknown; model?: unknown } | undefined) => {
+  handle('studio:project-chat', async (payload: { id?: unknown; model?: unknown } | undefined) => {
     try {
       const id = typeof payload?.id === 'string' ? payload.id : '';
       const detail = await getStudioProject(id);
@@ -93,7 +110,7 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
     }
   });
 
-  ipcMain.handle('studio:open-folder', async (_event, payload: { id?: unknown } | undefined) => {
+  handle('studio:open-folder', async (payload: { id?: unknown } | undefined) => {
     try {
       const id = typeof payload?.id === 'string' ? payload.id : '';
       const folder = studioProjectDir(id);

@@ -12,6 +12,11 @@ export const GET_CHAT_IMAGE_PATH_TOOL_NAME = 'get_chat_image_path';
 export const GET_CHAT_VIDEO_PATH_TOOL_NAME = 'get_chat_video_path';
 export const BUNDLED_CHAT_SKILL_NAMES = ['antseed-images', 'antseed-videos', 'antseed-decisions', 'antseed-studio'] as const;
 
+/** The bundled skills a chat loads: the Studio skill only while Studio is on in Settings. */
+export function chatSkillNames(studio: boolean): string[] {
+  return BUNDLED_CHAT_SKILL_NAMES.filter((name) => studio || name !== 'antseed-studio');
+}
+
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 1024 * 1024 * 1024;
 
@@ -182,10 +187,11 @@ export function resolveBundledChatSkillPaths(
     process.resourcesPath ? path.join(process.resourcesPath, 'skills') : undefined,
     path.resolve(WORKSPACE_APPS_DIR, '..', 'skills'),
   ],
+  names: readonly string[] = BUNDLED_CHAT_SKILL_NAMES,
 ): string[] {
   for (const root of roots) {
     if (!root) continue;
-    const paths = BUNDLED_CHAT_SKILL_NAMES
+    const paths = names
       .map((name) => path.join(root, name))
       .filter((skillPath) => existsSync(path.join(skillPath, 'SKILL.md')));
     if (paths.length > 0) return paths;

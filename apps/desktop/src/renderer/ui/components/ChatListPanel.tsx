@@ -437,7 +437,8 @@ function ChatSearchModal({
 
 /** The sidebar's Recent section: pinned chats, project folders, other chats and archived ones, with search, pin, archive, rename and delete. */
 export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, highlightActive }: {
-  onOpenConversation: () => void;
+  /** A chat was picked; the shell decides where it opens (a Studio project's chat opens in Studio). */
+  onOpenConversation: (id: string) => void;
   /** The chat on screen was deleted, so there is nothing left to show. */
   onOpenConversationDeleted: () => void;
   /** Only the chat screen is "in" a conversation; Home starts a new one. */
@@ -511,7 +512,7 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
 
   const handleSelectConv = useCallback((id: string) => {
     void actions.openConversation(id);
-    onOpenConversation();
+    onOpenConversation(id);
   }, [actions, onOpenConversation]);
 
   // A pin, archive or delete that fails is undone; say why here, since the

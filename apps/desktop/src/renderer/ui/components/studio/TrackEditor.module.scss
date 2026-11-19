@@ -133,6 +133,15 @@
   background: #000;
 }
 
+/* Film playback: both players fill the frame, the one playing on top. */
+.film > .media {
+  grid-area: 1 / 1;
+}
+
+.filmActive {
+  z-index: 1;
+}
+
 .placeholder {
   color: var(--text-secondary);
   font-size: 13px;
@@ -213,6 +222,74 @@
   padding: 0 0 8px;
   overflow-x: auto;
   list-style: none;
+}
+
+/* A scene: its header over its shots, and a dashed divider at the cut before it. */
+.scene {
+  display: grid;
+  flex: none;
+  gap: 6px;
+  min-width: 0;
+
+  & + & {
+    padding-left: 14px;
+    border-left: 1px dashed var(--border);
+  }
+}
+
+.sceneShots {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sceneHead {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  /* The header never makes the scene wider than its shots. */
+  width: 0;
+  min-width: 100%;
+  padding: 0 0 4px;
+  overflow: hidden;
+  border: 0;
+  border-bottom: 2px solid var(--border);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-bottom-color: var(--text-muted);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent-green);
+    outline-offset: 2px;
+  }
+}
+
+.sceneName {
+  flex: none;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.sceneWorld {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sceneForm {
+  display: grid;
+  gap: 12px;
 }
 
 .shot {
@@ -342,6 +419,43 @@
 .clipEmpty {
   border-style: dashed;
   background: transparent;
+}
+
+/* A made clip shows a frame of itself behind its name. */
+.clipMade {
+  position: relative;
+  overflow: hidden;
+  background: #2a2b2e;
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.1));
+  }
+
+  .clipName,
+  .clipMeta {
+    position: relative;
+    z-index: 1;
+    color: #fff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  }
+}
+
+.clipFrame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+/* Out of date: made from an image since replaced, so the frame is greyed. */
+.clipStale .clipFrame {
+  filter: grayscale(1);
+  opacity: 0.6;
 }
 
 .clipName {
@@ -518,4 +632,58 @@
 .dismiss {
   vertical-align: baseline;
   white-space: nowrap;
+}
+
+/* Out of date: the count and Update all in the toolbar, the reason under the preview, Update on the tile. */
+.outOfDate {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin-left: 6px;
+}
+
+.staleLine {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+}
+
+.clipUpdate {
+  position: absolute;
+  left: 8px;
+  bottom: 5px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #16181d;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    background: #fff;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--brand, currentColor);
+    outline-offset: 1px;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+}
+
+.clipStale {
+  align-content: start;
+  padding-top: 6px;
 }

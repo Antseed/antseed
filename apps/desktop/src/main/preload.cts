@@ -244,6 +244,12 @@ const api = {
   pickDirectory(): Promise<{ ok: boolean; path: string | null }> {
     return ipcRenderer.invoke('desktop:pick-directory');
   },
+  studioGetEnabled(): Promise<{ ok: boolean; enabled: boolean }> {
+    return ipcRenderer.invoke('studio:get-enabled');
+  },
+  studioSetEnabled(enabled: boolean): Promise<{ ok: boolean; enabled?: boolean; error?: string }> {
+    return ipcRenderer.invoke('studio:set-enabled', enabled);
+  },
   studioList(): Promise<{ ok: boolean; data?: StudioProjectSummary[]; error?: string }> {
     return ipcRenderer.invoke('studio:list');
   },

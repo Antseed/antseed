@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseStudioTrack } from '../../../shared/studio-track.js';
-import { clipRequestMessage, formatTimecode, selectionContext } from './track-view';
+import { clipRequestMessage, formatTimecode, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
 
 const track = parseStudioTrack({
   aspectRatio: '16:9',
@@ -43,4 +43,34 @@ describe('studio track view', () => {
     expect(selectionContext(open, { anchor: 'a1', clip: true })?.text).toContain('Cut or Extend not chosen yet; next is Shot 2 (anchor a2, stills/a2.png)');
     expect(formatTimecode(75.25)).toBe('1:15.3');
   });
+
+  it('reads the chip back from a sent message, so the tag stays in the chat', () => {
+    const sent = (anchor: string, clip: boolean, time: number | null = null) => `${selectionContext(track, { anchor, clip }, time)!.text}\nok please do`;
+    expect(splitStudioContext(sent('a1', false))).toEqual({
+      label: 'Shot 1 · Harbor at dusk',
+      context: '[Studio: Shot 1 "Harbor at dusk" (anchor a1) · image stills/a1.png · aspect 16:9]',
+      rest: 'ok please do',
+    });
+    expect(splitStudioContext(sent('a1', true, 3.24))?.label).toBe('Clip 1→2 · at 0:03.2');
+    expect(splitStudioContext(sent('a2', true))?.label).toBe('Clip 2→3 · empty');
+    expect(splitStudioContext(sent('a3', false))?.label).toBe('Shot 3');
+    expect(splitStudioContext('[Studio: Shot 1 (anchor a1) · image stills/a1.png]')?.rest).toBe('');
+    const line = selectionContext(track, { anchor: 'a1', clip: false })!.text;
+    expect(splitStudioContext(`${line}\n${line}\nok please do`)?.rest).toBe('ok please do');
+    expect(splitStudioContext('[Studio is great]\nhi')).toBeNull();
+    expect(splitStudioContext('hello')).toBeNull();
+  });
+});
+
+it('shows a clip request from Update as one chip naming its clips', () => {
+  const one = 'Please make this clip for the track.\n\nClip 1→2 (clip c3)\n- Start frame: uploads/a.png (Shot 1)\n\nQuote one total price first.';
+  expect(splitStudioMessage(one)).toEqual({ label: 'Make Clip 1→2', context: one, rest: '' });
+  const two = 'Please make these 2 clips for the track.\n\nClip 1→2 (clip c3)\n- Length: 5 s\n\nClip 2→3 (clip c5)\n- Length: 5 s\n\nQuote one total price first.';
+  expect(splitStudioMessage(two)?.label).toBe('Make 2 clips · 1→2, 2→3');
+  // Sent with a selection line first, the request still names the chip.
+  expect(splitStudioMessage(`[Studio: Clip 1→2 (clip c3) · empty]\n${one}`)?.label).toBe('Make Clip 1→2');
+  expect(splitStudioMessage('Please make this clip nicer')).toBeNull();
+  // The editor's own request parses back to the clips it names.
+  const asked = clipRequestMessage(track, [track.anchors[0]!.id]);
+  expect(splitStudioMessage(asked)?.label).toMatch(/^Make Clip 1→2$/);
 });

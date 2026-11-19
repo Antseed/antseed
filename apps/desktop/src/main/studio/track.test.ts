@@ -8,6 +8,7 @@ import {
   applyStudioDelivery,
   applyTrackEdit,
   clipState,
+  clipStaleReason,
   clipsTouching,
   undoTo,
   emptyStudioTrack,
@@ -18,6 +19,7 @@ import {
   type StudioTrack,
   type TrackEdit,
 } from '../../shared/studio-track.js';
+import { parseStudioBoard, sumStudioCost } from '../../shared/studio.js';
 import { createStudioProject, getStudioProject } from './store.js';
 import { editStudioTrack, ingestStudioDeliveries } from './track.js';
 
@@ -112,12 +114,26 @@ test('moving an anchor asks again for the boundaries it touched', () => {
   assert.ok(track.anchors[2]!.clip === null || track.anchors[2]!.clip.then === null);
 });
 
-test('a clip made without an end frame is not out of date when its boundary becomes an Extend', () => {
-  const base = parseStudioTrack({ anchors: [{ id: 'a1', image: 'stills/a.png', clip: { id: 'c1' } }, { id: 'a2', image: 'stills/b.png' }] });
+test('a clip made for a Cut is out of date once its boundary becomes an Extend, and fits again as a Cut', () => {
+  const base = parseStudioTrack({ anchors: [{ id: 'a1', image: 'stills/a.png', clip: { id: 'c1', then: 'cut' } }, { id: 'a2', image: 'stills/b.png' }] });
   const delivered = applyStudioDelivery(base, { kind: 'clip', clip: 'c1', file: 'clips/one.mp4', usd: 0.36, model: 'Example' }, 4, 1)!;
   assert.equal(delivered.anchors[0]!.clip!.versions[0]!.to, null);
+  assert.equal(clipState(delivered, 0), 'ready');
+  // It ends freely, so it doesn't land on the next image an Extend needs.
   const extended = applyTrackEdit(delivered, { type: 'then', anchor: 'a1', then: 'extend' }, all);
-  assert.equal(clipState(extended, 0), 'ready');
+  assert.equal(clipState(extended, 0), 'stale');
+  assert.equal(clipStaleReason(extended, 0), 'cut');
+  assert.equal(clipState(applyTrackEdit(extended, { type: 'then', anchor: 'a1', then: 'cut' }, all), 0), 'ready');
+});
+
+test('a clip made for an Extend still fits when its boundary becomes a Cut', () => {
+  const base = parseStudioTrack({ anchors: [{ id: 'a1', image: 'stills/a.png', clip: { id: 'c1', then: 'extend' } }, { id: 'a2', image: 'stills/b.png' }] });
+  const delivered = applyStudioDelivery(base, { kind: 'clip', clip: 'c1', file: 'clips/one.mp4', usd: 0.36, model: 'Example' }, 4, 1)!;
+  assert.equal(delivered.anchors[0]!.clip!.versions[0]!.to, 'stills/b.png');
+  // It plays to its end and the film cuts after it: nothing to remake.
+  const cut = applyTrackEdit(delivered, { type: 'then', anchor: 'a1', then: 'cut' }, all);
+  assert.equal(clipState(cut, 0), 'ready');
+  assert.equal(clipStaleReason(cut, 0), null);
 });
 
 test('asking for a clip needs its Cut or Extend first', () => {
@@ -316,4 +332,12 @@ test('edits the agent delivers apply in order, each one undoable, and a refused 
   track = (await editStudioTrack(dir, { type: 'undo' })).track;
   assert.equal(track.anchors[0]!.clip!.plannedSeconds, 5, 'undo takes back the last edit the agent made');
   assert.equal(track.anchors.length, 2);
+});
+
+test('what was spent counts every line, however many retakes a film has', () => {
+  const lines = (count: number) => Array.from({ length: count }, (_, index) => ({ label: `Clip ${String(index + 1)}`, usd: 0.1 }));
+  assert.equal(sumStudioCost(parseStudioTrack({ ...emptyStudioTrack(), spent: lines(250) }).spent), 25);
+  const board = parseStudioBoard({ spent: lines(70), estimate: { approved: true, lines: lines(70) } });
+  assert.equal(sumStudioCost(board.spent), 7);
+  assert.equal(board.estimate?.totalUsd, 7);
 });

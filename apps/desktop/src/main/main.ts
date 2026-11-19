@@ -41,6 +41,7 @@ import { registerAttachmentScheme, installAttachmentProtocol } from './chat/atta
 import { installStudioProtocol } from './studio/protocol.js';
 import { STUDIO_SCHEME } from '../shared/studio.js';
 import { registerStudioIpc } from './ipc/studio.js';
+import { initStudioPreview } from './studio/preview.js';
 import { disableSandboxIfAppImageCannotSandbox } from './linux-sandbox.js';
 import {
   APP_ICON_PATH,
@@ -364,6 +365,7 @@ const telegramBridge = createTelegramBridge({
 });
 
 registerTelegramIpc({ telegramBridge });
+initStudioPreview(path.join(app.getPath('userData'), 'studio-preview.json'));
 registerStudioIpc({ engine: piChatEngine });
 
 app.whenReady().then(async () => {

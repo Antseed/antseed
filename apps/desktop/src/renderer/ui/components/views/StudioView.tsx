@@ -7,6 +7,7 @@ import type { StudioProjectSummary } from '../../../../shared/studio.js';
 import { formatRelativeTime } from '../../../core/format';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import { studioFileUrl } from '../../../modules/studio/board-view';
+import { openStudioProject, useOpenStudioProject } from '../../../modules/studio/open-project';
 import { studioProjectResource, studioProjectsResource } from '../../../modules/studio/resources';
 import { useActions } from '../../hooks/useActions';
 import { useUiSelector } from '../../hooks/useUiSelector';
@@ -20,12 +21,11 @@ import styles from './StudioView.module.scss';
 
 type Props = { onSelectView?: (view: ViewName) => void };
 
-const studioViewCache: { openProjectId: string | null } = { openProjectId: null };
-
 const AGENT_HINT = 'Tell the agent what the film is about, or select a shot or a clip and say what it should do. It quotes every image and clip before anything is paid for.';
 
 export function StudioView({ onSelectView }: Props) {
-  const [openProjectId, setOpenProjectId] = useRetainedState(studioViewCache, 'openProjectId');
+  const openProjectId = useOpenStudioProject();
+  const setOpenProjectId = openStudioProject;
   return (
     <section className="view view-studio view-pinned-header" role="tabpanel">
       {openProjectId ? (

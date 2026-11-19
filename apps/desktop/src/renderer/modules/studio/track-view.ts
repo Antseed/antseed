@@ -110,3 +110,49 @@ export function selectionContext(track: StudioTrack, selection: TrackSelection, 
   ];
   return { label: `${name} · empty · ${String(clip.plannedSeconds)} s${then}`, text: `[Studio: ${parts.join(' · ')}]` };
 }
+
+/**
+ * A sent message that starts with a Studio selection: its chip label, the
+ * selection line itself and the typed text after it. Sent messages keep only
+ * the line, so the label is read back from it.
+ */
+export function splitStudioContext(message: string): { label: string; context: string; rest: string } | null {
+  const newline = message.indexOf('\n');
+  const context = newline === -1 ? message : message.slice(0, newline);
+  if (!context.startsWith('[Studio: ') || !context.endsWith(']')) return null;
+  const parts = context.slice('[Studio: '.length, -1).split(' · ');
+  const head = /^(.+?)(?: "(.*)")? \((?:anchor|clip) [^)]+\)$/.exec(parts[0] ?? '');
+  if (!head) return null;
+  const [, name, title] = head;
+  const detail = parts.slice(1);
+  const playing = detail.find((part) => part.startsWith('playing '));
+  const at = playing ? / at (\d+:\d{2}\.\d)$/.exec(playing)?.[1] : undefined;
+  const label = [
+    name,
+    title || null,
+    detail.some((part) => part.startsWith('empty')) ? 'empty' : null,
+    at ? `at ${at}` : null,
+  ].filter(Boolean).join(' · ');
+  let rest = newline === -1 ? '' : message.slice(newline + 1);
+  // The same line again (an earlier message pasted with the chip still on): one chip says it.
+  while (rest === context || rest.startsWith(`${context}\n`)) rest = rest.slice(context.length + 1);
+  return { label, context, rest };
+}
+
+/**
+ * A clip request the editor sent (Update, or Replace and get a quote) shows as one chip naming its clips;
+ * the full request, with file names and instructions for the agent, is the chip's tooltip.
+ */
+export function splitClipRequest(message: string): { label: string; context: string; rest: string } | null {
+  if (!/^Please make (?:this clip|these \d+ clips) for the track\.\n/.test(message)) return null;
+  const clips = [...message.matchAll(/^Clip (\S+) \(clip [^)]+\)$/gm)].map((match) => match[1]!);
+  if (clips.length === 0) return null;
+  const label = clips.length === 1 ? `Make Clip ${clips[0]!}` : `Make ${String(clips.length)} clips · ${clips.join(', ')}`;
+  return { label, context: message, rest: '' };
+}
+
+/** The chip for a user message: a clip request, or the selection line it was sent with. */
+export function splitStudioMessage(message: string): { label: string; context: string; rest: string } | null {
+  const selection = splitStudioContext(message);
+  return splitClipRequest(selection ? selection.rest : message) ?? selection;
+}

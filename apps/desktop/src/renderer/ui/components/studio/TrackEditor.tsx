@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ActionMenu, Button, IconButton, Modal, Segmented } from '@antseed/ui';
+import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { ActionMenu, Button, IconButton, Modal, Segmented, TextField } from '@antseed/ui';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { MoreHorizontalIcon, PlayIcon, StopIcon, Undo02Icon } from '@hugeicons/core-free-icons';
 import { sumStudioCost, type StudioProjectDetail } from '../../../../shared/studio.js';
@@ -8,12 +8,15 @@ import {
   clipName,
   clipPlaySeconds,
   clipsTouching,
+  clipStaleReason,
   clipState,
   exportCheck,
   MAX_CLIP_SECONDS,
   MIN_CLIP_SECONDS,
+  sceneRuns,
   STUDIO_ASPECT_RATIOS,
   trackRuntime,
+  type SceneRun,
   type StudioLibraryItem,
   type StudioTrack,
   type TrackAnchor,
@@ -30,6 +33,15 @@ const IMAGE_FILE = /\.(png|jpe?g|webp|gif)$/i;
 const VIDEO_FILE = /\.(mp4|m4v|mov|webm)$/i;
 
 type Selection = TrackSelection | null;
+
+/** How long a clip asked for shows as updating before its Update button comes back. */
+const UPDATE_WAIT_MS = 30 * 60 * 1000;
+
+/** The agent was asked to remake this clip and has not delivered it yet. */
+function clipUpdating(anchor: TrackAnchor): boolean {
+  const asked = anchor.clip?.requestedAt;
+  return asked !== null && asked !== undefined && Date.now() - asked < UPDATE_WAIT_MS;
+}
 
 type Props = {
   detail: StudioProjectDetail & { track: StudioTrack };
@@ -141,7 +153,22 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
     if (added) select({ anchor: added.id, clip: false });
   }
 
+  /** Update asks the project agent to remake out-of-date clips. It quotes in chat first, as for every clip. */
+  async function updateClips(anchorIds: string[]) {
+    if (!canSend || anchorIds.length === 0) return;
+    const asked = await edit({ type: 'request', clips: anchorIds, images: [] });
+    if (!asked) return;
+    onSend(clipRequestMessage(asked, anchorIds));
+    // The selection goes with the reply to the quote, so it names this clip, or nothing for several.
+    const only = anchorIds.length === 1 ? anchorIds[0]! : null;
+    select(only ? { anchor: only, clip: true } : null);
+  }
+
   const check = exportCheck(track);
+  const outOfDate = track.anchors.filter((anchor, index) => anchor.clip && clipState(track, index) === 'stale');
+  const waiting = outOfDate.filter(clipUpdating);
+  const toUpdate = outOfDate.filter((anchor) => !clipUpdating(anchor));
+  const onUpdate = canSend && !busy ? (anchorIds: string[]) => { void updateClips(anchorIds); } : null;
   const runtime = trackRuntime(track);
   const spent = sumStudioCost(track.spent);
   const notices = [...(detail.trackError ? [`${detail.trackError}.`] : []), ...detail.notices];
@@ -153,6 +180,17 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
         <p className={styles.facts}>
           {track.anchors.length > 0 ? formatTimecode(runtime).replace(/\.\d$/, '') : ''}
           {spent > 0 ? <span title="What the agent reported for each delivered file">{track.anchors.length > 0 ? ' · ' : ''}{formatStudioUsd(spent)} spent</span> : null}
+          {toUpdate.length > 0 ? (
+            <span className={styles.outOfDate}>
+              <span className={`${styles.dot} ${styles.dotWarning}`} aria-hidden="true" />
+              {toUpdate.length === 1 ? '1 clip' : `${String(toUpdate.length)} clips`} out of date
+              {toUpdate.length > 1 ? (
+                <Button size="sm" variant="outline" disabled={!onUpdate} title={canSend ? 'Ask the agent to remake them. It quotes first.' : 'The project chat is busy'} onClick={() => onUpdate?.(toUpdate.map((anchor) => anchor.id))}>Update all</Button>
+              ) : null}
+            </span>
+          ) : waiting.length > 0 ? (
+            <span className={styles.outOfDate}>· Updating {waiting.length === 1 ? '1 clip' : `${String(waiting.length)} clips`}: the agent quotes in chat first</span>
+          ) : null}
         </p>
         <div className={styles.actions}>
         <IconButton label={playing ? 'Stop' : 'Play the film'} disabled={!canPlay} onClick={() => setPlaying(!playing)}>
@@ -218,6 +256,9 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
             onUpload={() => { if (selected) void uploadFor(selected.id); }}
             onLibrary={() => setLibraryOpen(true)}
             onDropImage={(file) => { if (selected) replaceImage(selected.id, file); }}
+            stale={selected && selectedIndex >= 0 && clipState(track, selectedIndex) === 'stale' ? staleText(track, selectedIndex) : null}
+            updating={selected ? clipUpdating(selected) : false}
+            onUpdate={onUpdate && selected ? () => onUpdate([selected.id]) : null}
           />
           <Storyboard
             track={track}
@@ -229,6 +270,7 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
             onDropImage={replaceImage}
             onDropVideo={(anchor, file) => { void edit({ type: 'add-version', anchor, file }); }}
             onAddAtEnd={(scene, file) => { void addAtEnd(scene, file); }}
+            onUpdate={onUpdate}
             onUpload={(anchor) => { void uploadFor(anchor); }}
             onLibrary={() => setLibraryOpen(true)}
           />
@@ -273,7 +315,7 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
 
       {confirmExport ? (
         <Modal isOpen onClose={() => setConfirmExport(false)} title="Export with earlier clips?" size="sm">
-          <p className={styles.dialogText}>{check.stale.join(', ')} {check.stale.length === 1 ? 'was' : 'were'} made from an image you have since replaced. The export uses {check.stale.length === 1 ? 'it' : 'them'} as {check.stale.length === 1 ? 'it is' : 'they are'}.</p>
+          <p className={styles.dialogText}>{check.stale.join(', ')} {check.stale.length === 1 ? 'is' : 'are'} out of date: made from an image you have since replaced, or made for a Cut where the film now extends. The export uses {check.stale.length === 1 ? 'it' : 'them'} as {check.stale.length === 1 ? 'it is' : 'they are'}.</p>
           <div className={styles.dialogActions}>
             <Button variant="ghost" onClick={() => setConfirmExport(false)}>Cancel</Button>
             <Button onClick={() => { setConfirmExport(false); void exportFilm(); }}>Export as it is</Button>
@@ -306,7 +348,82 @@ function EmptyStart({ busy, onUpload, onLibrary }: { busy: boolean; onUpload: ()
 
 // ---------- preview ----------
 
-function Preview({ track, selected, selection, playing, busy, url, onStop, onSelect, onTime, onTrim, onResetTrim, onUpload, onLibrary, onDropImage }: {
+/**
+ * Plays clips back to back without a gap: two players take turns, the next
+ * clip loaded and paused on its first frame under the one playing, so the
+ * cut swaps them in the same frame. A trimmed clip ends on the frame where
+ * its trim is, not at the next time update.
+ */
+function FilmPlayer({ run, frame, url, caption, onDone }: {
+  run: TrackAnchor[];
+  frame: CSSProperties;
+  url: (file: string) => string;
+  caption: (anchor: TrackAnchor) => string;
+  onDone: () => void;
+}) {
+  const players = [useRef<HTMLVideoElement>(null), useRef<HTMLVideoElement>(null)] as const;
+  const [index, setIndex] = useState(0);
+  const advanced = useRef(-1);
+  const current = run[index]!;
+  // Player k % 2 holds clip k: the one playing, and the other the clip after it.
+  const clipFor = (player: 0 | 1) => run[index % 2 === player ? index : index + 1] ?? null;
+
+  const advance = (from: number) => {
+    if (advanced.current >= from) return;
+    advanced.current = from;
+    if (from + 1 >= run.length) {
+      onDone();
+      return;
+    }
+    // Started here, on the last frame, not after the next render: the next clip is already loaded.
+    void players[((from + 1) % 2) as 0 | 1].current?.play().catch(() => {});
+    setIndex(from + 1);
+  };
+
+  useEffect(() => {
+    const active = players[(index % 2) as 0 | 1].current;
+    const idle = players[((index + 1) % 2) as 0 | 1].current;
+    idle?.pause();
+    if (idle) idle.currentTime = 0;
+    if (!active) return undefined;
+    if (active.paused) void active.play().catch(() => {});
+    // Checked every frame: a trimmed clip stops where its trim is, and an untrimmed one
+    // hands over on its last frame instead of waiting for the ended event.
+    let frameId = requestAnimationFrame(function check() {
+      const end = current.clip?.end ?? (Number.isFinite(active.duration) ? active.duration : null);
+      if (end !== null && active.currentTime >= end - 1 / 30) advance(index);
+      else frameId = requestAnimationFrame(check);
+    });
+    return () => cancelAnimationFrame(frameId);
+  }, [index]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <figure className={styles.stage}>
+      <div className={`${styles.preview} ${styles.film}`} style={frame}>
+        {([0, 1] as const).map((player) => {
+          const anchor = clipFor(player);
+          const playing = index % 2 === player;
+          return (
+            <video
+              key={player}
+              ref={players[player]}
+              className={`${styles.media} ${playing ? styles.filmActive : ''}`}
+              src={anchor?.clip?.use ? url(anchor.clip.use) : undefined}
+              preload="auto"
+              muted
+              playsInline
+              aria-hidden={!playing}
+              onEnded={() => { if (playing) advance(index); }}
+            />
+          );
+        })}
+      </div>
+      <figcaption className={styles.captionRow}><span className={styles.caption}>{caption(current)}</span></figcaption>
+    </figure>
+  );
+}
+
+function Preview({ track, selected, selection, playing, busy, url, onStop, onSelect, onTime, onTrim, onResetTrim, onUpload, onLibrary, onDropImage, stale, updating, onUpdate }: {
   track: StudioTrack;
   selected: TrackAnchor | null;
   selection: Selection;
@@ -321,10 +438,13 @@ function Preview({ track, selected, selection, playing, busy, url, onStop, onSel
   onUpload: () => void;
   onLibrary: () => void;
   onDropImage: (file: string) => void;
+  /** Why the selected clip is out of date, or null. */
+  stale: string | null;
+  updating: boolean;
+  onUpdate: (() => void) | null;
 }) {
   const video = useRef<HTMLVideoElement>(null);
   const [now, setNow] = useState(0);
-  const [position, setPosition] = useState(0);
   // The time shown belongs to the clip on screen, so it starts again with each one.
   useEffect(() => { setNow(0); }, [selection?.anchor, selection?.clip]);
   const playable = track.anchors.filter((anchor) => anchor.clip?.use);
@@ -332,43 +452,25 @@ function Preview({ track, selected, selection, playing, busy, url, onStop, onSel
   // The frame keeps the film's shape and fits the width, or 62% of the window height for a tall film.
   const frame = { aspectRatio: `${String(w)} / ${String(h)}`, ['--ar' as string]: String(w / h) };
 
-  useEffect(() => {
-    if (!playing) return;
-    const first = track.anchors.findIndex((anchor) => anchor.clip?.use);
-    setPosition(Math.max(0, first));
-  }, [playing]); // eslint-disable-line react-hooks/exhaustive-deps
-
   if (playing) {
-    const anchor = track.anchors[position];
-    const clip = anchor?.clip;
-    const advance = () => {
-      const following = track.anchors[position + 1];
-      const isLast = position + 1 >= track.anchors.length - 1;
-      if (following?.clip?.use) setPosition(position + 1);
-      else if (!following || isLast) onStop();
-      else {
-        // An empty gap: stop there and show it, rather than skip over it.
-        onSelect({ anchor: following.id, clip: true });
-        onStop();
-      }
-    };
-    if (!anchor || !clip?.use) return <div className={styles.preview} style={frame}><span className={styles.placeholder}>Nothing to play yet.</span></div>;
+    // The film plays from the first made clip through every made clip after it, and stops at an empty one.
+    const first = track.anchors.findIndex((anchor) => anchor.clip?.use);
+    const run: TrackAnchor[] = [];
+    for (let at = Math.max(0, first); track.anchors[at]?.clip?.use; at += 1) run.push(track.anchors[at]!);
+    const gap = track.anchors[Math.max(0, first) + run.length];
+    if (run.length === 0) return <div className={styles.preview} style={frame}><span className={styles.placeholder}>Nothing to play yet.</span></div>;
     return (
-      <figure className={styles.stage}>
-        <div className={styles.preview} style={frame}>
-          <video
-            key={`${anchor.id}:${clip.use}`}
-            className={styles.media}
-            src={url(clip.use)}
-            autoPlay
-            muted
-            playsInline
-            onTimeUpdate={(event) => { if (clip.end !== null && event.currentTarget.currentTime >= clip.end) advance(); }}
-            onEnded={advance}
-          />
-        </div>
-        <figcaption className={styles.captionRow}><span className={styles.caption}>{clipName(track, anchor.id)} · {playable.indexOf(anchor) + 1} of {playable.length}</span></figcaption>
-      </figure>
+      <FilmPlayer
+        run={run}
+        frame={frame}
+        url={url}
+        caption={(anchor) => `${clipName(track, anchor.id)} · ${String(playable.indexOf(anchor) + 1)} of ${String(playable.length)}`}
+        onDone={() => {
+          // An empty clip: stop there and show it, rather than skip over it.
+          if (gap?.clip && !gap.clip.use) onSelect({ anchor: gap.id, clip: true });
+          onStop();
+        }}
+      />
     );
   }
 
@@ -447,7 +549,16 @@ function Preview({ track, selected, selection, playing, busy, url, onStop, onSel
         />
       </div>
       <figcaption className={styles.captionRow}>
-        <span className={styles.caption}>{formatTimecode(now)}{end !== null ? ` · ends at ${formatSeconds(end)}` : ''}</span>
+        {/* An out-of-date clip says why in place of the time (the player shows it), so the strip never moves. */}
+        {stale ? (
+          <span className={`${styles.caption} ${styles.staleLine}`}>
+            <span className={`${styles.dot} ${styles.dotWarning}`} aria-hidden="true" />
+            {updating ? 'Updating: the agent quotes in chat first.' : `${stale}.`}
+          </span>
+        ) : (
+          <span className={styles.caption}>{formatTimecode(now)}{end !== null ? ` · ends at ${formatSeconds(end)}` : ''}</span>
+        )}
+        {stale && !updating ? <Button size="sm" variant="outline" disabled={!onUpdate} onClick={() => onUpdate?.()}>Update</Button> : null}
         <Button size="sm" variant="outline" disabled={busy || now < 0.1} onClick={() => { video.current?.pause(); onTrim(video.current?.currentTime ?? now); }}>End clip here</Button>
         {end !== null ? <Button size="sm" variant="link" disabled={busy} onClick={onResetTrim}>Reset end</Button> : null}
       </figcaption>
@@ -461,7 +572,7 @@ function Frame({ file, url, label }: { file: string | null; url: (file: string) 
 
 // ---------- storyboard ----------
 
-function Storyboard({ track, selection, busy, url, onSelect, edit, onDropImage, onDropVideo, onAddAtEnd, onUpload, onLibrary }: {
+function Storyboard({ track, selection, busy, url, onSelect, edit, onDropImage, onDropVideo, onAddAtEnd, onUpload, onLibrary, onUpdate }: {
   track: StudioTrack;
   selection: Selection;
   busy: boolean;
@@ -473,61 +584,116 @@ function Storyboard({ track, selection, busy, url, onSelect, edit, onDropImage, 
   onAddAtEnd: (scene: 'continue' | 'new', file: string | null) => void;
   onUpload: (anchor: string) => void;
   onLibrary: () => void;
+  onUpdate: ((anchors: string[]) => void) | null;
 }) {
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [editingScene, setEditingScene] = useState<SceneRun | null>(null);
   // Every image on the strip has the same box: 92 px wide, or 96 px tall for a tall frame.
   const [w, h] = track.aspectRatio.split(':').map(Number) as [number, number];
   const size = w >= h ? { width: 92, height: Math.round((92 * h) / w) } : { width: Math.round((96 * w) / h), height: 96 };
+  const runs = sceneRuns(track);
+  const addEnd = (
+    <li
+      className={`${styles.shot} ${styles.addEnd}`}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => { event.preventDefault(); const file = dragFile(event); if (file && IMAGE_FILE.test(file)) onAddAtEnd('continue', file); }}
+    >
+      <div className={styles.shotHead} />
+      <div className={styles.shotRow}>
+      <ActionMenu
+        label="Add a shot"
+        align="start"
+        width={220}
+        triggerStyle="plain"
+        className={styles.addButton}
+        trigger={<span aria-hidden="true">+</span>}
+        items={[
+          { label: 'Continue scene', description: 'The last clip lands on the new image', disabled: busy, onSelect: () => onAddAtEnd('continue', null) },
+          { label: 'New scene', description: 'A cut, then the new image', disabled: busy, onSelect: () => onAddAtEnd('new', null) },
+        ]}
+      />
+      </div>
+    </li>
+  );
   return (
     <div className={styles.storyboard}>
+      {/* One group per scene: its name and place over its shots, a divider at each cut. */}
       <ol className={styles.strip} aria-label="Storyboard" style={{ ['--row-h' as string]: `${String(Math.max(size.height, 52))}px` }}>
-        {track.anchors.map((anchor, index) => (
-          <Shot
-            key={anchor.id}
-            track={track}
-            anchor={anchor}
-            index={index}
-            size={size}
-            selection={selection}
-            busy={busy}
-            renaming={renaming === anchor.id}
-            url={url}
-            onSelect={onSelect}
-            onRename={(on) => setRenaming(on ? anchor.id : null)}
-            edit={edit}
-            onDropImage={onDropImage}
-            onDropVideo={onDropVideo}
-            onUpload={onUpload}
-            onLibrary={onLibrary}
-          />
+        {runs.map((run, sceneIndex) => (
+          <li key={run.first} className={styles.scene}>
+            <button
+              type="button"
+              className={styles.sceneHead}
+              title={run.world ? `${run.world} · Edit the scene` : 'Name the scene and say where it is'}
+              disabled={busy}
+              onClick={() => setEditingScene(run)}
+            >
+              <span className={styles.sceneName}>Scene {String(run.number)}{run.name ? ` · ${run.name}` : ''}</span>
+              <span className={styles.sceneWorld}>{run.world || (run.name ? '' : 'Name it and say where it is')}</span>
+            </button>
+            <ol className={styles.sceneShots} aria-label={`Scene ${String(run.number)}`}>
+              {run.anchors.map((id) => {
+                const index = track.anchors.findIndex((anchor) => anchor.id === id);
+                const anchor = track.anchors[index]!;
+                return (
+                  <Shot
+                    key={anchor.id}
+                    track={track}
+                    anchor={anchor}
+                    index={index}
+                    size={size}
+                    selection={selection}
+                    busy={busy}
+                    renaming={renaming === anchor.id}
+                    url={url}
+                    onSelect={onSelect}
+                    onRename={(on) => setRenaming(on ? anchor.id : null)}
+                    edit={edit}
+                    onDropImage={onDropImage}
+                    onDropVideo={onDropVideo}
+                    onUpload={onUpload}
+                    onLibrary={onLibrary}
+                    onUpdate={onUpdate}
+                  />
+                );
+              })}
+              {sceneIndex === runs.length - 1 ? addEnd : null}
+            </ol>
+          </li>
         ))}
-        <li
-          className={`${styles.shot} ${styles.addEnd}`}
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={(event) => { event.preventDefault(); const file = dragFile(event); if (file && IMAGE_FILE.test(file)) onAddAtEnd('continue', file); }}
-        >
-          <div className={styles.shotHead} />
-          <div className={styles.shotRow}>
-          <ActionMenu
-            label="Add a shot"
-            align="start"
-            width={220}
-            triggerStyle="plain"
-            className={styles.addButton}
-            trigger={<span aria-hidden="true">+</span>}
-            items={[
-              { label: 'Continue scene', description: 'The last clip lands on the new image', disabled: busy, onSelect: () => onAddAtEnd('continue', null) },
-              { label: 'New scene', description: 'A cut, then the new image', disabled: busy, onSelect: () => onAddAtEnd('new', null) },
-            ]}
-          />
-          </div>
-        </li>
+        {runs.length === 0 ? addEnd : null}
       </ol>
+      {editingScene ? (
+        <SceneDialog
+          run={editingScene}
+          onCancel={() => setEditingScene(null)}
+          onSave={(name, world) => { setEditingScene(null); void edit({ type: 'scene', anchor: editingScene.first, name, world }); }}
+        />
+      ) : null}
     </div>
   );
 }
 
-function Shot({ track, anchor, index, size, selection, busy, renaming, url, onSelect, onRename, edit, onDropImage, onDropVideo, onUpload, onLibrary }: {
+/** A scene's name and its one line about place, time and light, which the agent starts every prompt in the scene with. */
+function SceneDialog({ run, onCancel, onSave }: { run: SceneRun; onCancel: () => void; onSave: (name: string, world: string) => void }) {
+  const [name, setName] = useState(run.name);
+  const [world, setWorld] = useState(run.world);
+  return (
+    <Modal isOpen onClose={onCancel} title={`Scene ${String(run.number)}`} size="sm">
+      <form className={styles.sceneForm} onSubmit={(event) => { event.preventDefault(); onSave(name, world); }}>
+        <TextField label="Name" value={name} maxLength={120} placeholder="The getaway" autoFocus onChange={(event) => setName(event.currentTarget.value)} />
+        <TextField label="Where and when" value={world} maxLength={400} placeholder="Highway at dusk, red sports car, police lights" onChange={(event) => setWorld(event.currentTarget.value)} />
+        <p className={styles.dialogText}>The agent starts every image and clip prompt in this scene with this line, so its shots look like one place.</p>
+        <div className={styles.dialogActions}>
+          <Button type="button" variant="ghost" onClick={onCancel}>Cancel</Button>
+          <Button type="submit">Save</Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function Shot({ track, anchor, index, size, selection, busy, renaming, url, onSelect, onRename, edit, onDropImage, onDropVideo, onUpload, onLibrary, onUpdate }: {
   track: StudioTrack;
   anchor: TrackAnchor;
   index: number;
@@ -543,6 +709,7 @@ function Shot({ track, anchor, index, size, selection, busy, renaming, url, onSe
   onDropVideo: (anchor: string, file: string) => void;
   onUpload: (anchor: string) => void;
   onLibrary: () => void;
+  onUpdate: ((anchors: string[]) => void) | null;
 }) {
   const next = track.anchors[index + 1];
   const clip = anchor.clip;
@@ -642,7 +809,10 @@ function Shot({ track, anchor, index, size, selection, busy, renaming, url, onSe
             anchor={anchor}
             selected={clipSelected}
             busy={busy}
-            stale={state === 'stale'}
+            stale={state === 'stale' ? staleText(track, index) : null}
+            updating={state === 'stale' && clipUpdating(anchor)}
+            onUpdate={onUpdate ? () => onUpdate([anchor.id]) : null}
+            url={url}
             onSelect={() => onSelect({ anchor: anchor.id, clip: true })}
             onLength={(seconds) => { void edit({ type: 'clip', anchor: anchor.id, plannedSeconds: seconds }); }}
             onDropVideo={(file) => onDropVideo(anchor.id, file)}
@@ -675,12 +845,28 @@ function Shot({ track, anchor, index, size, selection, busy, renaming, url, onSe
 
 const PX_PER_SECOND = 14;
 
-function ClipTile({ track, anchor, selected, busy, stale, onSelect, onLength, onDropVideo }: {
+/** What the tooltip says about an out-of-date clip. */
+function staleText(track: StudioTrack, index: number): string {
+  const next = track.anchors[index + 1];
+  const shot = next ? anchorName(track, next.id) : 'the next shot';
+  switch (clipStaleReason(track, index)) {
+    case 'cut': return `Made for a Cut: it doesn't land on ${shot}'s image`;
+    case 'end': return `Lands on an earlier image of ${shot}`;
+    default: return 'Made from an image you have since replaced';
+  }
+}
+
+function ClipTile({ track, anchor, selected, busy, stale, updating, onUpdate, url, onSelect, onLength, onDropVideo }: {
   track: StudioTrack;
   anchor: TrackAnchor;
   selected: boolean;
   busy: boolean;
-  stale: boolean;
+  /** Why the clip is out of date, or null. */
+  stale: string | null;
+  /** Asked for again and not delivered yet. */
+  updating: boolean;
+  onUpdate: (() => void) | null;
+  url: (file: string) => string;
   onSelect: () => void;
   onLength: (seconds: number) => void;
   onDropVideo: (file: string) => void;
@@ -712,17 +898,35 @@ function ClipTile({ track, anchor, selected, busy, stale, onSelect, onLength, on
     <div className={styles.clipWrap} style={{ width: `${String(width)}px` }}>
       <button
         type="button"
-        className={`${styles.clip} ${empty ? styles.clipEmpty : ''}`}
+        className={`${styles.clip} ${empty ? styles.clipEmpty : styles.clipMade} ${stale ? styles.clipStale : ''}`}
         aria-pressed={selected}
-        aria-label={`${clipName(track, anchor.id)}, ${empty ? `empty, ${String(clip.plannedSeconds)} s planned` : stale ? 'made from an earlier image' : 'ready'}`}
-        title={stale ? 'Made from an image you have since replaced' : undefined}
+        aria-label={`${clipName(track, anchor.id)}, ${empty ? `empty, ${String(clip.plannedSeconds)} s planned` : stale ? `out of date: ${stale}` : 'ready'}`}
+        title={stale ?? undefined}
         onClick={onSelect}
         onDragOver={(event) => event.preventDefault()}
         onDrop={(event) => { const file = dragFile(event); if (file && VIDEO_FILE.test(file)) { event.preventDefault(); onDropVideo(file); } }}
       >
+        {/* A frame of the clip in use: in colour, or greyed while it is made from an image since replaced. */}
+        {clip.use ? <video className={styles.clipFrame} src={`${url(clip.use)}#t=0.5`} preload="metadata" muted playsInline tabIndex={-1} aria-hidden="true" /> : null}
         <span className={styles.clipName}>{clipName(track, anchor.id).replace('Clip ', '')}</span>
-        <span className={styles.clipMeta}>{stale ? <span className={`${styles.dot} ${styles.dotWarning}`} aria-hidden="true" /> : null}{formatSeconds(seconds)}</span>
+        {stale ? (
+          <span className={styles.clipMeta}>{updating ? 'Updating…' : '\u00a0'}</span>
+        ) : (
+          <span className={styles.clipMeta}>{formatSeconds(seconds)}</span>
+        )}
       </button>
+      {stale && !updating ? (
+        <button
+          type="button"
+          className={styles.clipUpdate}
+          disabled={!onUpdate}
+          aria-label={`Update ${clipName(track, anchor.id)}`}
+          title={onUpdate ? 'Ask the agent to remake it from the new images. It quotes first.' : 'The project chat is busy'}
+          onClick={(event) => { event.stopPropagation(); onUpdate?.(); }}
+        >
+          ↻ Update
+        </button>
+      ) : null}
       {empty && selected ? (
         <span
           className={styles.lengthHandle}

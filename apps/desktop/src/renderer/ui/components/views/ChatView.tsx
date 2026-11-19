@@ -633,7 +633,8 @@ export function ChatView({ onSelectView, embedded = false, emptyHint, context = 
     const typed = inputValue.trim();
     if (!typed && attachedFiles.length === 0) return;
     // The selection travels with every message while its chip is shown.
-    const text = context && !imageMode ? `${context.text}\n${typed}` : typed;
+    // Once only, even when the typed text already starts with the selection (pasted from an earlier message).
+    const text = context && !imageMode && !typed.startsWith(context.text) ? `${context.text}\n${typed}` : typed;
     // A send during a privacy switch is held until the switch lands.
     if (noModelAvailable) return;
     // If the current turn is still streaming, park the draft as a pending

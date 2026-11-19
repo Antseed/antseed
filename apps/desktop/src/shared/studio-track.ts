@@ -201,10 +201,11 @@ function parseAnchor(value: unknown): TrackAnchor | null {
   };
 }
 
+/** Every line is kept: the total spent is their sum, so dropping one would hide money paid. */
 function parseCostLines(value: unknown): StudioCostLine[] {
   if (!Array.isArray(value)) return [];
   const lines: StudioCostLine[] = [];
-  for (const entry of value.slice(-200)) {
+  for (const entry of value) {
     const item = record(entry);
     const usd = typeof item?.['usd'] === 'number' && Number.isFinite(item['usd']) && item['usd'] >= 0 && item['usd'] <= 10_000 ? item['usd'] : null;
     const label = text(item?.['label'], 120);
@@ -387,17 +388,29 @@ export function clipName(track: StudioTrack, anchorId: string): string {
 export type ClipState = 'empty' | 'requested' | 'ready' | 'stale';
 
 /** Whether the version in use was made from the images the track has now. */
-export function clipIsStale(track: StudioTrack, index: number): boolean {
+/**
+ * Why the clip in use no longer fits the track, or null when it does:
+ * - `image`: it starts from an image the shot has since replaced;
+ * - `end`: it is an Extend but lands on another image than the next shot's;
+ * - `cut`: it was made for a Cut, with no end frame, and is now an Extend.
+ * A Cut takes any clip: one made for an Extend still plays to its end, and the film cuts after it.
+ */
+export function clipStaleReason(track: StudioTrack, index: number): 'image' | 'end' | 'cut' | null {
   const anchor = track.anchors[index];
   const clip = anchor?.clip;
   const version = clip?.versions.find((entry) => entry.file === clip.use);
-  if (!anchor || !clip || !version || version.from === null) return false;
-  if (version.from !== anchor.image) return true;
+  if (!anchor || !clip || !version || version.from === null) return null;
+  if (version.from !== anchor.image) return 'image';
   const next = track.anchors[index + 1];
-  if (clip.then !== 'extend' || !next) return false;
-  if (next.from?.clip === clip.id) return false;
-  // A version made without an end frame was never meant to land on an image, so it can't be out of date with one.
-  return version.to !== null && version.to !== next.image;
+  if (clip.then !== 'extend' || !next) return null;
+  // The next shot's image is this clip's own frame (a trim that extends): it lands there by definition.
+  if (next.from?.clip === clip.id) return null;
+  if (version.to === null) return 'cut';
+  return version.to !== next.image ? 'end' : null;
+}
+
+export function clipIsStale(track: StudioTrack, index: number): boolean {
+  return clipStaleReason(track, index) !== null;
 }
 
 export function clipState(track: StudioTrack, index: number): ClipState {

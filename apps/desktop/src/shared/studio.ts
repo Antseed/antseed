@@ -66,7 +66,6 @@ export type StudioProjectDetail = {
 };
 
 const MAX_SHOTS = 60;
-const MAX_COST_LINES = 60;
 const MAX_USD = 100_000;
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
@@ -115,10 +114,11 @@ function mediaPath(value: unknown, kind: 'image' | 'video'): string | null {
   return normalized && studioMediaKind(normalized) === kind ? normalized : null;
 }
 
+/** Every line is kept: totals are their sum, so dropping one would hide money paid or quoted. */
 function costLines(value: unknown): StudioCostLine[] {
   if (!Array.isArray(value)) return [];
   const lines: StudioCostLine[] = [];
-  for (const entry of value.slice(0, MAX_COST_LINES)) {
+  for (const entry of value) {
     const item = record(entry);
     const amount = usd(item?.['usd']);
     const label = text(item?.['label'], 120);
