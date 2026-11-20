@@ -32,53 +32,51 @@ jobs:
         with:
           version: 9.15.4
 
+      # The Node version .nvmrc pins, for the cache below (setup-node reads the same file).
+      - &node-version
+        id: nv
+        run: echo "version=$(cat .nvmrc)" >> "$GITHUB_OUTPUT"
+
+      # One cache entry restores everything a job installs: node_modules as a read-only squashfs
+      # image (mounted below, not extracted), the Node build .nvmrc pins (the runner image has
+      # another 24.x, so setup-node would download it) and Foundry. Only Typecheck saves it, after
+      # a fresh install. The key covers every input of the install that the lockfile does not:
+      # package.json fields such as bin, scripts and onlyBuiltDependencies, .npmrc, the patches
+      # and the node postinstall script; and the Node, pnpm and Foundry versions.
+      - &restore-deps
+        id: deps
+        uses: actions/cache/restore@v4
+        with:
+          path: &deps-paths |
+            ~/node_modules.sqfs
+            ${{ runner.tool_cache }}/node/${{ steps.nv.outputs.version }}
+            ~/.foundry/bin
+          key: deps-${{ runner.os }}-${{ runner.arch }}-node-${{ steps.nv.outputs.version }}-pnpm-9.15.4-foundry-1.9.0-${{ hashFiles('pnpm-lock.yaml', '.npmrc', '**/package.json', '!**/node_modules/**', 'patches/**', 'packages/node/scripts/patch-ethers.js') }}
+
+      # On a hit this finds the restored Node in the tool cache instead of downloading it.
       - &setup-node
-        id: node
         uses: actions/setup-node@v4
         with:
           node-version-file: '.nvmrc'
 
-      # The installed node_modules (node-linker=hoisted: real directories, native modules already
-      # built) for this lockfile, Node version and runner, restored whole. On a hit nothing is
-      # installed: an install on top of it would only check it again. Only the Typecheck job saves
-      # it; on a miss every job installs as before. The key covers every input of the install that
-      # the lockfile does not: package.json fields such as bin, scripts and onlyBuiltDependencies,
-      # .npmrc, the patches and the node postinstall script.
-      - &restore-node-modules
-        id: node-modules
-        uses: actions/cache/restore@v4
-        with:
-          path: &node-modules-paths |
-            node_modules
-            apps/*/node_modules
-            packages/*/node_modules
-            plugins/*/node_modules
-            e2e/node_modules
-          key: node-modules-${{ runner.os }}-${{ runner.arch }}-node-${{ steps.node.outputs.node-version }}-pnpm-9.15.4-${{ hashFiles('pnpm-lock.yaml', '.npmrc', '**/package.json', '!**/node_modules/**', 'patches/**', 'packages/node/scripts/patch-ethers.js') }}
+      - &mount-node-modules
+        name: Mount node_modules
+        if: steps.deps.outputs.cache-hit == 'true'
+        run: scripts/ci/node-modules-image.sh mount ~/node_modules.sqfs
 
       - &install
         name: Install dependencies
-        if: steps.node-modules.outputs.cache-hit != 'true'
+        if: steps.deps.outputs.cache-hit != 'true'
         run: pnpm install --frozen-lockfile
 
-      # Build in dependency order so each tier's tests can resolve imports
-      - &build-tier0
-        name: Build tier 0 (node)
-        run: pnpm run build:tier0
-
-      - &build-tier1
-        name: Build tier 1 (provider-core, router-core)
-        run: pnpm run build:tier1
-
-      - &build-tier2
-        name: Build tier 2 (plugins)
-        run: pnpm run build:tier2
-
-      # Only the server (tsc) part of payments and ants: no test here serves their web pages or
-      # the gateway console, and the three vite builds take ~25s. Typecheck builds them in full.
-      - &build-tier3-server
-        name: Build tier 3 (payments and ants servers)
-        run: pnpm run build:tier3:server
+      # Every package the test jobs import, in one pnpm run: it orders them by their declared
+      # workspace dependencies (each package declares every @antseed/* package it imports), so a
+      # package starts as soon as its own dependencies are built, not when a whole tier is. Only
+      # the server (tsc) part of payments and ants: no test here serves their web pages or the
+      # gateway console, and the three vite builds take ~25s. Typecheck builds them in full.
+      - &build-packages
+        name: Build the packages
+        run: pnpm run build:packages
 
       # Every workspace package except the three with their own job below: node, the CLI and e2e.
       # A new package is tested here without any change to this file. Everything is built above,
@@ -97,15 +95,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - *checkout
+      # Everything except desktop's bundled Whisper model and the website's static assets (140 of
+      # the checkout's 184 MB), which only Test (packages), Typecheck and the installer lint read.
+      # Blobless, so only the files checked out are downloaded. A test that needed an excluded
+      # file would fail on its absence, not pass.
+      - &checkout-sparse
+        uses: actions/checkout@v4
+        with:
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/apps/desktop/resources/
+            !/apps/website/static/
       - *setup-pnpm
+      - *node-version
+      - *restore-deps
       - *setup-node
-      - *restore-node-modules
+      - *mount-node-modules
       - *install
-      - *build-tier0
-      - *build-tier1
-      - *build-tier2
-      - *build-tier3-server
+      # Only node and the packages it depends on: its tests import nothing else (a test that did
+      # would fail on the missing build, not pass).
+      - name: Build node and its dependencies
+        run: pnpm --filter '@antseed/node...' run build
 
       - name: Test
         run: pnpm --filter '@antseed/node' run test
@@ -122,15 +134,14 @@ jobs:
         shard: [1, 2]
 
     steps:
-      - *checkout
+      - *checkout-sparse
       - *setup-pnpm
+      - *node-version
+      - *restore-deps
       - *setup-node
-      - *restore-node-modules
+      - *mount-node-modules
       - *install
-      - *build-tier0
-      - *build-tier1
-      - *build-tier2
-      - *build-tier3-server
+      - *build-packages
 
       # The CLI test script builds the CLI itself.
       - name: Test
@@ -143,15 +154,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - *checkout
+      - *checkout-sparse
       - *setup-pnpm
+      - *node-version
+      - *restore-deps
       - *setup-node
-      - *restore-node-modules
+      - *mount-node-modules
       - *install
-      - *build-tier0
-      - *build-tier1
-      - *build-tier2
-      - *build-tier3-server
+      - *build-packages
 
       - &build-cli
         name: Build the CLI
@@ -170,32 +180,38 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - *checkout
+      - *checkout-sparse
       - *setup-pnpm
+      - *node-version
+      - *restore-deps
       - *setup-node
+      - *mount-node-modules
+      - *install
 
-      # Foundry v1.9.0, checked against its release digest. Downloaded through the API: the
-      # installer and github.com release downloads for Foundry can time out (504) for hours.
+      # Foundry v1.9.0, checked against its release digest; restored with the dependencies above,
+      # downloaded only on a miss. Downloaded through the API: the installer and github.com
+      # release downloads for Foundry can time out (504) for hours.
       - &install-foundry
         name: Install Foundry
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          curl -fsSL --retry 5 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
-            -o "$RUNNER_TEMP/foundry.tgz" https://api.github.com/repos/foundry-rs/foundry/releases/assets/703110190
-          echo "8d17599b42e3139f1a9c171be3798c4ed8e743ae17b84cc3435e57bf2a51ae99  $RUNNER_TEMP/foundry.tgz" | sha256sum -c -
-          mkdir -p "$HOME/.foundry/bin" && tar xzf "$RUNNER_TEMP/foundry.tgz" -C "$HOME/.foundry/bin"
+          if [ "${{ steps.deps.outputs.cache-hit }}" != "true" ]; then
+            curl -fsSL --retry 5 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+              -o "$RUNNER_TEMP/foundry.tgz" https://api.github.com/repos/foundry-rs/foundry/releases/assets/703110190
+            echo "8d17599b42e3139f1a9c171be3798c4ed8e743ae17b84cc3435e57bf2a51ae99  $RUNNER_TEMP/foundry.tgz" | sha256sum -c -
+            mkdir -p "$HOME/.foundry/bin" && tar xzf "$RUNNER_TEMP/foundry.tgz" -C "$HOME/.foundry/bin"
+          fi
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
 
-      - *restore-node-modules
-      - *install
-      - *build-tier0
+      - name: Build tier 0 (node)
+        run: pnpm run build:tier0
 
-      # It ignores the pin: forge-std moves to the latest tag and foundry.lock is rewritten, in
-      # this checkout only. Locally, restore both afterwards.
+      # forge-std at the commit the repository pins (the submodule; foundry.lock names the same
+      # commit). `forge install foundry-rs/forge-std` ignored the pin and took the latest tag.
       - &forge-deps
-        name: Install Forge dependencies
-        run: cd packages/contracts && forge install foundry-rs/forge-std
+        name: Check out forge-std
+        run: git submodule update --init --depth 1 packages/contracts/lib/forge-std
 
       # Shared by every job that deploys: contracts compile once per change to them.
       - &contracts-cache
@@ -234,18 +250,17 @@ jobs:
         shards: [9]
 
     steps:
-      - *checkout
+      - *checkout-sparse
       - *setup-pnpm
+      - *node-version
+      - *restore-deps
       - *setup-node
-      - *install-foundry
-      - *restore-node-modules
+      - *mount-node-modules
       - *install
+      - *install-foundry
 
       # The real CLI seller and buyer run here, so build up to the CLI.
-      - *build-tier0
-      - *build-tier1
-      - *build-tier2
-      - *build-tier3-server
+      - *build-packages
       - *build-cli
 
       - *forge-deps
@@ -288,16 +303,15 @@ jobs:
             scenarios: stress-smoke
 
     steps:
-      - *checkout
+      - *checkout-sparse
       - *setup-pnpm
+      - *node-version
+      - *restore-deps
       - *setup-node
-      - *install-foundry
-      - *restore-node-modules
+      - *mount-node-modules
       - *install
-      - *build-tier0
-      - *build-tier1
-      - *build-tier2
-      - *build-tier3-server
+      - *install-foundry
+      - *build-packages
       - *build-cli
       - *forge-deps
       - *contracts-cache
@@ -361,26 +375,36 @@ jobs:
     steps:
       - *checkout
       - *setup-pnpm
+      - *node-version
+      - *restore-deps
       - *setup-node
-      - *restore-node-modules
+      - *mount-node-modules
       - *install
 
-      # The one job that saves node_modules: right after a fresh install, before anything builds
-      # or writes into it. Typecheck is the shortest job, so the upload delays no result.
-      - name: Save node_modules
-        if: steps.node-modules.outputs.cache-hit != 'true'
+      # Foundry goes into the same cache entry as node_modules, so the jobs that deploy restore
+      # it with everything else.
+      - *install-foundry
+
+      # The one job that saves the dependencies: right after a fresh install, before anything
+      # builds or writes into node_modules. Typecheck is the shortest job, so the ~30s of packing
+      # the image and uploading it delays no result. A miss happens only when the key's inputs
+      # change (a lockfile change, a package.json edit, a Node or pnpm bump).
+      - name: Pack node_modules into an image
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: scripts/ci/node-modules-image.sh save ~/node_modules.sqfs
+
+      - name: Save the dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: *node-modules-paths
-          key: ${{ steps.node-modules.outputs.cache-primary-key }}
+          path: *deps-paths
+          key: ${{ steps.deps.outputs.cache-primary-key }}
 
-      - *build-tier0
-      - *build-tier1
-      - *build-tier2
+      - *build-packages
       # The only job that builds the web pages of payments and ants and the gateway console, so
       # a change that breaks a vite build still fails CI.
-      - name: Build tier 3 (payments, ants, gateway console)
-        run: pnpm run build:tier3
+      - name: Build the web pages (payments, ants, gateway console)
+        run: pnpm --filter=@antseed/payments --filter=@antseed/ants run build:web && pnpm --filter=@antseed/gateway-console run build
 
       - name: Typecheck
         run: pnpm run typecheck
