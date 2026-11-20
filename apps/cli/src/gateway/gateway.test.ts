@@ -1182,6 +1182,7 @@ test('gateway settles reported spend per key and answers 402 once a cap is reach
     assert.equal(data.limits.daily.limit_usd, '1.000000')
     assert.equal(data.limits.daily.remaining_usd, '0.000000')
     assert.equal(data.limits.total.limit_usd, null)
+    assert.deepEqual(data.held, { held_usd: '0.000000', requests_usd: '0.000000', video_usd: '0.000000' }, 'nothing in flight, no video')
 
     const stats = store.usageStats(limited.key.id)
     assert.equal(stats.failedRequests, 0)
@@ -1414,10 +1415,98 @@ test('an accepted video whose commitment could not be stored still counts after 
     const restarted = new GatewayAccounting(store, { holdUsdc: 100_000 })
     const job = videoJobKey('venice-video', 'job-1')
     assert.equal(restarted.videoJobOwner(job), key.id, 'its key can still retrieve it')
-    assert.equal(restarted.heldUsdc(key.id), 1_000_000, 'and it still holds the whole room its create was told about')
+    assert.equal(restarted.heldUsdc(key.id), 400_000, 'and it holds the price the buyer reported, not the whole room its create was told about')
     assert.deepEqual(store.listVideoCommitments(Date.now()).map((row) => row.job), [job], 'the reservation became the job')
-    assert.equal(restarted.admit(key).ok, false, 'so other spend cannot take that room')
+    const next = restarted.admit(key)
+    assert.ok(next.ok, 'so the rest of the key\'s room stays usable')
+    restarted.release(next.tag)
+    store.startRequest({ tag: 'late', keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: null, startedAt: 0 })
+    restarted.ingest('boot', [{ seq: 1, tag: 'late', requestId: 'r', buyerIdentity: DEFAULT_BUYER_IDENTITY, sellerPeerId: 's', amountUsdc: '600000', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0', at: Date.now() }])
+    assert.equal(restarted.admit(key).ok, false, 'while other spend still cannot take the job\'s price')
     restarted.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('a recovered video whose price the buyer did not report still holds the whole room its create was told about', async () => {
+  const { store, cleanup } = tempDataDir()
+  // A price the gateway cannot read: the job may cost up to the room, so all of it stays held.
+  const buyer = await pricedVideoBuyer(400_000, 0, 'lots')
+  const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+  const save = store.saveVideoCommitment.bind(store)
+  let failWrites = true
+  store.saveVideoCommitment = (record, replaces) => { if (failWrites && !record.job.startsWith('create\n')) throw new Error('database is locked'); save(record, replaces) }
+  const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
+  try {
+    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: '{"model":"seedance","prompt":"An ant","duration":"8s","job":"job-1"}' })).status, 200)
+    await waitFor(() => gateway.accounting.heldUsdc(key.id) === 1_000_000)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+  }
+  try {
+    failWrites = false
+    const restarted = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    assert.equal(restarted.heldUsdc(key.id), 1_000_000)
+    assert.equal(restarted.admit(key).ok, false)
+    restarted.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('requests a stopped gateway left unfinished never hold spend, and a restart marks them ended', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Chat', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 5_000_000, monthly: null, total: null }, expiresAt: null })
+    const before = new GatewayAccounting(store, { holdUsdc: 300_000 })
+    // Nine requests in flight when the gateway is stopped.
+    for (let i = 0; i < 9; i += 1) {
+      const admission = before.admit(key)
+      assert.ok(admission.ok)
+      store.startRequest({ tag: admission.tag, keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: 'm', startedAt: Date.now() - 1_000 })
+    }
+    assert.equal(before.heldUsdc(key.id), 2_700_000)
+    before.dispose()
+
+    // Their holds lived in the stopped process: the next one starts with none, before or after the cleanup.
+    const after = new GatewayAccounting(store, { holdUsdc: 300_000 })
+    assert.equal(after.heldUsdc(key.id), 0)
+    const unfinished = () => (store.database.prepare('SELECT COUNT(*) AS n FROM gateway_requests WHERE key_id = ? AND finished_at IS NULL').get(key.id) as { n: number }).n
+    assert.equal(unfinished(), 9)
+    const restartedAt = Date.now()
+    store.startRequest({ tag: 'new', keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: 'm', startedAt: restartedAt })
+    assert.equal(store.finishAbandonedRequests(restartedAt), 9, 'only the previous run\'s requests')
+    assert.equal(unfinished(), 1, 'this run\'s request is still in flight')
+    const ended = store.database.prepare("SELECT DISTINCT status, error_code FROM gateway_requests WHERE tag != 'new'").all()
+    assert.deepEqual(ended, [{ status: 499, error_code: 'gateway_restarted' }])
+    assert.equal(after.heldUsdc(key.id), 0)
+    after.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('a 402 says how much of the hold is requests in flight and how much is video jobs', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 900_000, monthly: null, total: null }, expiresAt: null })
+    const accounting = new GatewayAccounting(store, { holdUsdc: 300_000 })
+    const create = accounting.admit(key, undefined, { videoCreate: true })
+    assert.ok(create.ok)
+    accounting.commitVideo(create.tag, videoJobKey('venice-video', 'job-1'), 600_000)
+    accounting.release(create.tag)
+    const running = accounting.admit(key)
+    assert.ok(running.ok)
+    const refused = accounting.admit(key)
+    assert.equal(refused.ok, false)
+    assert.ok(!refused.ok && refused.breach)
+    assert.equal(refused.breach.heldUsdc, 900_000)
+    assert.equal(refused.breach.heldRequestsUsdc, 300_000)
+    assert.equal(refused.breach.heldVideoUsdc, 600_000)
+    assert.deepEqual(accounting.heldBreakdown(key.id), { requestsUsdc: 300_000, videoUsdc: 600_000 })
+    accounting.dispose()
   } finally {
     cleanup()
   }

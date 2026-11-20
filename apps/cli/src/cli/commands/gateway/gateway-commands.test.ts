@@ -151,6 +151,26 @@ describe('gateway key', () => {
     assert.equal(plain.workspaceId, DEFAULT_WORKSPACE_ID)
   })
 
+  test('show says what video jobs hold of a key\'s spend, and nothing it cannot know about requests', async () => {
+    const key = await runJson<{ id: string }>('key', 'create', '--label', 'dave', '--daily-limit', '5')
+    assert.match(await run('key', 'show', key.id), /^Held for video: \$0\.00$/m)
+    withStore((store) => {
+      const record = store.getKey(key.id)!
+      // A request the log shows in flight: its hold, if any, lives in the running gateway (or ended with a stopped one).
+      store.startRequest({ tag: 'running', keyId: key.id, buyerIdentity: record.buyerIdentity, method: 'POST', path: '/v1/chat/completions', model: 'm', startedAt: Date.now() })
+      store.saveVideoCommitment({ job: 'venice-video\njob-1', keyId: key.id, memberId: null, workspaceId: record.workspaceId, amountUsdc: 4_999_769, expiresAt: Date.now() + 60_000, deliveredAt: null })
+      // Expired: no longer counted.
+      store.saveVideoCommitment({ job: 'venice-video\njob-0', keyId: key.id, memberId: null, workspaceId: record.workspaceId, amountUsdc: 1_000_000, expiresAt: Date.now() - 1, deliveredAt: null })
+    })
+    const shown = await run('key', 'show', key.id)
+    assert.match(shown, /^Held for video: \$5\.00 \(1 not yet charged\)$/m)
+    assert.match(shown, /GET \/v1\/key/)
+    const json = await runJson<Record<string, unknown>>('key', 'show', key.id)
+    assert.equal(json['videoHeldUsd'], '4.999769')
+    assert.equal(json['videoJobsHeld'], 1)
+    assert.equal('requestsInFlight' in json, false)
+  })
+
   test('revoking a key ends its console sessions', async () => {
     const key = await runJson<{ id: string }>('key', 'create', '--label', 'carol')
     withStore((store) => new AuthDb(store.database, () => Date.now()).createSession({ kind: 'key', keyId: key.id }, { userAgent: null, ip: '127.0.0.1' }))

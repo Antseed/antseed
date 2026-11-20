@@ -658,7 +658,10 @@ export class GatewayServer {
         return
       }
       const allowance = request.remainingUsdc
-      const price = /^\d{1,15}$/.test(outcome.priceHeader) ? Number(outcome.priceHeader) : null
+      const price = readVideoPrice(outcome.priceHeader)
+      if (price === null && allowance !== null) {
+        this._log(`gateway could not read the price of video job ${outcome.videoJobId}: it holds the whole ${formatUsdc(allowance)} its create was allowed until it is charged or retired`)
+      }
       // A key without caps has no allowance: it records the buyer's price, so caps added later count the job.
       const amount = allowance === null ? price ?? 0 : Math.min(allowance, price ?? allowance)
       accounting.commitVideo(request.tag, videoJobKey(video.protocol, outcome.videoJobId), amount)
@@ -799,7 +802,9 @@ export class GatewayServer {
         const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
         try {
           // First, and apart from the rest: the job ID is what lets its key retrieve it after a restart.
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered, router, servedModel, routeSelection })
+          // With its price: a restart that finds the create's reservation still stored recovers the job at that price.
+          const videoPriceUsdc = videoJobId ? readVideoPrice(videoPriceHeader) : null
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoPriceUsdc, videoDelivered, router, servedModel, routeSelection })
         } catch (error) {
           this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
         }
@@ -1249,6 +1254,7 @@ export class GatewayServer {
       this._options.identityAddress(key.buyerIdentity).catch(() => null),
       this._options.identityBalance?.(key.buyerIdentity, { fresh }).catch(() => null) ?? Promise.resolve(null),
     ])
+    const held = this._options.accounting.heldBreakdown(key.id)
     // The caps admission enforces: the lower of the admins' and the owner's.
     const caps = effectiveKeyLimits(key)
     const limits = Object.fromEntries(BUDGET_PERIODS.map((period) => {
@@ -1290,8 +1296,19 @@ export class GatewayServer {
         output_tokens: usage.outputTokens,
       },
       limits,
+      // What counts against the caps on top of spend: requests in flight, and videos not yet charged.
+      held: {
+        held_usd: usdcToDecimalString(held.requestsUsdc + held.videoUsdc),
+        requests_usd: usdcToDecimalString(held.requestsUsdc),
+        video_usd: usdcToDecimalString(held.videoUsdc),
+      },
     }
   }
+}
+
+/** The buyer's price for an accepted video create (`x-antseed-video-price-usdc`), or null when missing or unreadable. */
+function readVideoPrice(header: string): number | null {
+  return /^\d{1,15}$/.test(header) ? Number(header) : null
 }
 
 /**
@@ -1313,6 +1330,9 @@ export function spendLimitError(breach: LimitBreach) {
       spent_usd: usdcToDecimalString(breach.spentUsdc),
       remaining_usd: usdcToDecimalString(remaining),
       held_usd: usdcToDecimalString(breach.heldUsdc),
+      // What the hold is: requests in flight, and video jobs (creates being priced, accepted jobs not yet charged).
+      ...(breach.heldRequestsUsdc !== undefined ? { held_requests_usd: usdcToDecimalString(breach.heldRequestsUsdc) } : {}),
+      ...(breach.heldVideoUsdc !== undefined ? { held_video_usd: usdcToDecimalString(breach.heldVideoUsdc) } : {}),
       resets_at: breach.resetsAt === null ? null : new Date(breach.resetsAt).toISOString(),
     },
   }
@@ -1326,10 +1346,18 @@ function spendLimitMessage(holder: string, label: string, breach: LimitBreach, r
   const limit = formatUsdc(breach.limitUsdc)
   if (remaining === 0) return `${holder} reached its ${label} spend limit of ${limit}.`
   const held = breach.heldUsdc > 0
-    ? `, and requests still running or not yet charged may use up to ${formatUsdc(breach.heldUsdc)} of it`
+    ? `, and requests still running or not yet charged may use up to ${formatUsdc(breach.heldUsdc)} of it${heldParts(breach)}`
     : ''
   return `${holder} has ${formatUsdc(remaining)} left of its ${label} spend limit of ${limit} (${formatUsdc(breach.spentUsdc)} spent)${held}. `
     + 'The next request could cost more than what is left, so it was not sent. Try again once running requests are charged, or raise the limit.'
+}
+
+/** ` (… for requests in flight, … for video jobs not yet charged)`, naming only the parts that hold something. */
+function heldParts(breach: LimitBreach): string {
+  const parts: string[] = []
+  if (breach.heldRequestsUsdc) parts.push(`${formatUsdc(breach.heldRequestsUsdc)} for requests in flight`)
+  if (breach.heldVideoUsdc) parts.push(`${formatUsdc(breach.heldVideoUsdc)} for video jobs not yet charged`)
+  return parts.length > 0 ? ` (${parts.join(', ')})` : ''
 }
 
 function budgetHolder(level: NonNullable<LimitBreach['level']>): string {

@@ -435,4 +435,11 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE billing_profiles ADD COLUMN notes TEXT;
   `,
+  // The buyer's price for an accepted video create, logged with its job: a create's reservation left by a
+  // gateway that stopped before storing the job's commitment is recovered at this price, not the whole room.
+  // Requests still in flight are found without a scan (a restart finishes those a stopped gateway left).
+  `
+  ALTER TABLE gateway_requests ADD COLUMN video_price_usdc INTEGER;
+  CREATE INDEX gateway_requests_unfinished ON gateway_requests(key_id) WHERE finished_at IS NULL;
+  `,
 ]
