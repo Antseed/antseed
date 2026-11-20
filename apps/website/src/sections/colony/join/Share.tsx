@@ -2,14 +2,27 @@ import {useEffect, useRef, useState, type JSX} from 'react';
 import clsx from 'clsx';
 import {TELEGRAM_URL} from '../config';
 import {drawCard} from './card';
-import {shareText, shareUrl, SHARE_URL, type CardFacts} from './cardFacts';
+import {shareText, shareUrl, type CardFacts} from './cardFacts';
 import styles from './JoinPage.module.css';
 
 const FILE = 'mac-colony-waitlist.png';
 
-/** The waitlist card to share: drawn in the browser from what they told us, with Share on X and Save image. */
+// X's post link can carry words and a link but never a picture, so on a computer the card goes on the clipboard first
+const copyImage = (blob: Blob): Promise<boolean> => {
+  try {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') return Promise.resolve(false);
+    return navigator.clipboard.write([new ClipboardItem({'image/png': blob})]).then(() => true, () => false);
+  } catch {
+    return Promise.resolve(false);
+  }
+};
+
+/** The waitlist card to share, with the waitlist number: drawn in the browser, with Share on X and Save image. Only the welcome
+ *  email's link knows the number, so the sign-up's last step shows CardByEmail instead. */
 export function ShareCard({name, mac, number}: CardFacts): JSX.Element {
   const [card, setCard] = useState<{blob: Blob; url: string} | null>(null);
+  const [copy, setCopy] = useState<'' | 'copied' | 'failed'>('');
+  const [paste, setPaste] = useState('');   // ⌘V or Ctrl+V, known only once the page runs in a browser
   const shown = useRef<string | null>(null);
 
   // a new card replaces the old one only once it is drawn, so the picture never blinks
@@ -25,23 +38,32 @@ export function ShareCard({name, mac, number}: CardFacts): JSX.Element {
     return () => { live = false; };
   }, [name, mac, number]);
   useEffect(() => () => { if (shown.current) URL.revokeObjectURL(shown.current); }, []);
+  // the keys only on a computer: a phone that ends up copying just says to paste
+  useEffect(() => { if (!matchMedia('(hover: none)').matches) setPaste(/Mac/.test(navigator.platform || navigator.userAgent) ? '⌘V' : 'Ctrl+V'); }, []);
 
   const text = shareText(mac);
   const link = shareUrl(mac);
-  const model = link === SHARE_URL ? '' : mac.split(' · ')[0];
-  const hint = `Your post on X shows ${model ? `a card for your ${model}` : 'the Colony waitlist card'}. Save image keeps this one${name ? ', with your name' : ''}.`;
+  const keys = paste ? ` with ${paste}` : '';
+  const note = copy === 'copied' ? `Card copied. Paste it into your X post${keys}.`
+    : copy === 'failed' ? 'Your browser didn’t let us copy the card. Save image, then add it to your post.'
+    : `Share on X copies your card too. Paste it into the post${keys} and the picture is in.`;
   const save = () => {
     if (!card) return;
     const a = document.createElement('a');
     a.href = card.url; a.download = FILE; a.click();
   };
-  // a phone shares their own card as the picture; a computer opens X with the words and a link whose preview is the card for their Mac
+  // a phone shares the card itself through the share sheet. A computer copies the card, then opens X with the words and the link,
+  // so one paste attaches it. The copy is started inside the click and given a moment, then X opens either way
   const share = async () => {
-    const file = card && new File([card.blob], FILE, {type: 'image/png'});
-    if (file && navigator.canShare?.({files: [file]}) && matchMedia('(hover: none)').matches) {
+    if (!card) return;
+    const file = new File([card.blob], FILE, {type: 'image/png'});
+    if (navigator.canShare?.({files: [file]}) && matchMedia('(hover: none)').matches) {
       try { await navigator.share({files: [file], text: `${text} ${link}`}); return; } catch (e) { if ((e as Error).name === 'AbortError') return; }
     }
+    const copied = copyImage(card.blob);
+    const quick = await Promise.race([copied, new Promise<null>((done) => setTimeout(() => done(null), 800))]);
     open(`https://x.com/intent/post?text=${encodeURIComponent(text)}&url=${encodeURIComponent(link)}`, '_blank', 'noopener');
+    setCopy((quick ?? await copied) ? 'copied' : 'failed');
   };
 
   return (
@@ -51,8 +73,23 @@ export function ShareCard({name, mac, number}: CardFacts): JSX.Element {
         <button type="button" className={styles.button} disabled={!card} onClick={() => void share()}>Share on X <span aria-hidden="true">↗</span></button>
         <button type="button" className={clsx(styles.button, styles.ghost)} disabled={!card} onClick={save}>Save image</button>
       </figcaption>
-      <p className={clsx(styles.hint, styles.deskNote)}>{hint}</p>
+      <p className={clsx(styles.hint, copy ? styles.copied : styles.deskNote)} aria-live="polite" data-copy={copy || undefined}>{note}</p>
     </figure>
+  );
+}
+
+/** Where the card would be before the waitlist number exists: the number, and the card with it, come in the welcome email. */
+export function CardByEmail({sent}: {sent?: boolean}): JSX.Element {
+  return (
+    <div className={styles.mailCard} data-cta="card-email">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2.5" /><path d="M3.8 7.2l8.2 6 8.2-6" /></svg>
+      <div>
+        <b>Your card comes with your number</b>
+        <span>{sent
+          ? 'Look for the email from ants@antseed.com. It has your waitlist number and a link to your card, ready to share on X.'
+          : 'Submit the form and ants@antseed.com emails you your waitlist number, with a link to your card to share on X.'}</span>
+      </div>
+    </div>
   );
 }
 

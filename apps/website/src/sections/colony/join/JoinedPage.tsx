@@ -4,14 +4,14 @@ import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
 import {readLink, recallCard, type CardFacts} from './cardFacts';
 import {JoinBar} from './JoinBar';
-import {JoinGroup, NextSteps, ShareCard} from './Share';
+import {CardByEmail, JoinGroup, NextSteps, ShareCard} from './Share';
 import styles from './JoinPage.module.css';
 
 const TITLE = 'You’re on the Mac Colony waitlist · Antseed';
 const DESCRIPTION = 'Your card for the first Mac Colony waitlist, ready to share.';
 
-/** /colony/joined/: where Google's thank-you note and the welcome email lead. The card uses the first name this browser kept from
- *  the sign-up. The Mac comes from the welcome email's link when there is one, with the waitlist number, else from the browser. */
+/** /colony/joined/: where the welcome email's card link leads. The link carries the waitlist number and the Mac line; the card adds
+ *  the first name this browser kept from the sign-up. Without a number (an old link, or before the email) it points to the email. */
 export default function JoinedPage(): JSX.Element {
   const [facts, setFacts] = useState<(CardFacts & {noMac: boolean}) | null>(null);
 
@@ -52,7 +52,8 @@ export default function JoinedPage(): JSX.Element {
               <JoinGroup />
               {facts && <>
                 <p className={clsx(styles.eyebrow, styles.small)}>Your card</p>
-                <ShareCard name={facts.name} mac={facts.mac} number={facts.number} />
+                {/* the card always shows the waitlist number, which only the welcome email's link carries */}
+                {facts.number ? <ShareCard name={facts.name} mac={facts.mac} number={facts.number} /> : <CardByEmail sent />}
               </>}
               <NextSteps />
               <div className={styles.go}>
