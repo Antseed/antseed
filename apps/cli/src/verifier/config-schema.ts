@@ -243,6 +243,16 @@ export const VerifierConfigSchema = strictObject({
    * use the same list (the assignment depends on it); never set it on a production verifier.
    */
   testModels: z.array(z.string().min(1)).min(1).optional(),
+  /**
+   * Testing only: a dry run on a local fork publishes its evidence into `directory` instead of IPFS, and `verifier run`
+   * and `submit` read other auditors' evidence from `gatewayUrl` (a local HTTP server over that directory) instead of
+   * the public gateways (`test-publication.ts`). Refused unless the chain RPC is on this machine; never set it on a
+   * production verifier.
+   */
+  testPublication: z.object({
+    directory: z.string().min(1),
+    gatewayUrl: z.string().url(),
+  }).strict().optional(),
   referenceMaxRequestsPerBuild: positiveIntegerSchema.optional(),
   referenceBatchRetryCount: z.number().int().min(0, 'must be an integer >= 0').optional(),
   referenceRetryBaseDelayMs: positiveIntegerSchema.optional(),

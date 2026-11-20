@@ -221,7 +221,8 @@ export interface ModelAuditReferenceEvidenceV1 {
 }
 
 export interface AuditPublicationV1 {
-  provider: 'pinata'
+  /** `local-test`: a dry run's publication on this machine (`verifier.testPublication`), never on Base. */
+  provider: 'pinata' | 'local-test'
   evidenceHash: string
   cid: string
   uri: string

@@ -35,10 +35,14 @@ import {
 } from '../../../verifier/model-audit.js'
 import { readVerifierRunManifest, type VerifierRunManifestV1 } from '../../../verifier/audit-artifacts.js'
 import { prepareAuditPublication, publishVerificationToPinata } from '../../../verifier/ipfs-publication.js'
+import { publishVerificationToDirectory, testPublicationFor } from '../../../verifier/test-publication.js'
+
+/** Where `submit` publishes a model audit's evidence: Pinata (public IPFS), or this machine for a dry run on a fork. */
+type PublicationTarget = { kind: 'pinata'; jwt: string } | { kind: 'local-test'; directory: string }
 import { retireEpochQuestionSet } from '../../../verifier/probe-bank.js'
 import { asError, normalized } from '../../../verifier/utils.js'
 import { DIFF_HOLD_EPOCHS, diffHolds } from '../../../verifier/diff-hold.js'
-import { createVerifierClient, useVerifierEventCache } from '../../payment-utils.js'
+import { createVerifierClient, requireCryptoConfig, useVerifierEventCache } from '../../payment-utils.js'
 import { resolveAuditorAddress, resolveAuditorSigner } from './auditor-identity.js'
 import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import { heldForConfirmationRecheck, loadEpochState, writeEpochSubmissionManifest } from '../../../verifier/epoch-plan.js'
@@ -195,8 +199,13 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
             config: config.verifier, dataDir: globalOptions.dataDir, keystoreFlag: options.keystore,
           })
       const publishIpfs = options.publishIpfs !== false
-      const pinataJwt = publishIpfs ? process.env['PINATA_JWT']?.trim() : undefined
-      if (publishIpfs && !pinataJwt) {
+      // A dry run on a local fork publishes on this machine instead (`verifier.testPublication`, refused off a local RPC).
+      const testPublication = config.verifier?.testPublication
+        ? testPublicationFor(config.verifier.testPublication, requireCryptoConfig(config, options.rpcUrl ? { rpcUrl: String(options.rpcUrl) } : {}).rpcUrl)
+        : null
+      const pinataJwt = publishIpfs && !testPublication ? process.env['PINATA_JWT']?.trim() : undefined
+      const target: PublicationTarget = testPublication ? { kind: 'local-test', directory: testPublication.directory } : { kind: 'pinata', jwt: pinataJwt ?? '' }
+      if (publishIpfs && !testPublication && !pinataJwt) {
         const message = 'PINATA_JWT is required to publish the audit evidence to IPFS; set it, or pass --no-publish-ipfs to submit without publishing'
         if (!options.dryRun) throw new Error(message)
         console.warn(chalk.yellow(message))
@@ -284,7 +293,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       // Which check flagged in another auditor's waiting DIFF, read from its published evidence (same-check.ts).
       const flagReader: PublishedFlagReader = {
         modelAudits: (filter) => verifierClient.queryModelAudits(filter),
-        fetchText: (cidPath) => fetchIpfsText(cidPath),
+        fetchText: (cidPath) => fetchIpfsText(cidPath, testPublication ? { ipfsGateway: testPublication.gatewayUrl } : {}),
         reportRound: (agentId, service) => verifierClient.reportRound(agentId, service),
         blockTimestamp: async (blockNumber) => {
           const block = await verifierClient.provider.getBlock(blockNumber)
@@ -460,7 +469,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           try {
             await writeModelAuditEvidence(audit)
             const publication = reusablePublication(previous, audit.evidenceHash)
-              ?? await publish(evidenceDir, banksDir, manifest, audit, pinataJwt!, readEpoch)
+              ?? await publish(evidenceDir, banksDir, manifest, audit, target, readEpoch)
             ledger.models[audit.key] = ledgerEntry(audit, publication.uri, publication)
             await writeModelAuditLedger(ledgerPath, ledger)
             published += 1
@@ -504,7 +513,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       const tally = await sendModelAudits(toSubmit, ledger, {
         findSubmission: (audit) => findSubmission(verifierClient, audit, address, auditorSetEvents),
         writeEvidence: (audit) => writeModelAuditEvidence(audit),
-        publish: publishIpfs ? (audit) => publish(evidenceDir, banksDir, manifest, audit, pinataJwt!, readEpoch) : null,
+        publish: publishIpfs ? (audit) => publish(evidenceDir, banksDir, manifest, audit, target, readEpoch) : null,
         writeLedger: (value) => writeModelAuditLedger(ledgerPath, value),
         recheckBeforeSend,
         submit: async (audit, evidenceUri) => {
@@ -925,7 +934,7 @@ async function publish(
   banksDir: string,
   manifest: Pick<VerifierRunManifestV1, 'runId' | 'epoch'>,
   audit: PreparedModelAudit,
-  pinataJwt: string,
+  target: PublicationTarget,
   /** The chain's current epoch, read again right before the retire. */
   readEpoch: () => Promise<bigint>,
 ): Promise<AuditPublicationV1> {
@@ -978,9 +987,11 @@ async function publish(
     if (retired) {
       console.log(chalk.dim(`${audit.key}: its epoch ${manifest.epoch} questions are published with it; a later audit of ${audit.model} this epoch gets new ones`))
     }
-    const published = await publishVerificationToPinata(packaged, pinataJwt)
+    const published = target.kind === 'local-test'
+      ? await publishVerificationToDirectory(packaged, target.directory)
+      : await publishVerificationToPinata(packaged, target.jwt)
     return {
-      provider: 'pinata',
+      provider: published.provider,
       evidenceHash: published.evidenceHash,
       cid: published.cid,
       uri: published.uri,

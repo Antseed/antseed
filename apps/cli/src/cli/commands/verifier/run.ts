@@ -45,8 +45,10 @@ import {
   createVerifierClient,
   loadCryptoContext,
   openChannelStore,
+  requireCryptoConfig,
   useVerifierEventCache,
 } from '../../payment-utils.js'
+import { testPublicationFor } from '../../../verifier/test-publication.js'
 import type { AntseedConfig } from '../../../config/types.js'
 import {
   ConcurrencyLimiter,
@@ -529,6 +531,9 @@ export async function loadRunConfirmations(input: {
     // Which check flagged first is read before the seller is audited, so the confirmation runs that check to its
     // end (`model-run.ts`). A confirmation whose first evidence cannot be read, or that is younger than an hour,
     // is not audited now: its result could not be sent (same-check.ts), and the next run tries again.
+    const testPublication = input.config.verifier?.testPublication
+      ? testPublicationFor(input.config.verifier.testPublication, requireCryptoConfig(input.config).rpcUrl)
+      : null
     await attachFirstFlags(targets, {
       events,
       auditor: auditor.address,
@@ -536,7 +541,8 @@ export async function loadRunConfirmations(input: {
       now: input.now ?? Math.floor(Date.now() / 1_000),
       reader: {
         modelAudits: (filter) => client.queryModelAudits(filter),
-        fetchText: (cidPath) => fetchIpfsText(cidPath),
+        // A dry run on a local fork reads it from this machine (`verifier.testPublication`, refused off a local RPC).
+        fetchText: (cidPath) => fetchIpfsText(cidPath, testPublication ? { ipfsGateway: testPublication.gatewayUrl } : {}),
         reportRound: (agentId, service) => client.reportRound(agentId, service),
         blockTimestamp: async (blockNumber) => {
           const block = await client.provider.getBlock(blockNumber)
