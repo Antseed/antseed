@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { decidedChecks, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
 import { storedRequestsOf, validateStoredChecks } from './audit-checks.js'
-import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, encodeHttpResponse, type PeerId, type PeerInfo, type StoredResponseAuth } from '@antseed/node'
+import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, encodeHttpRequest, encodeHttpResponse, type PeerId, type PeerInfo, type StoredResponseAuth } from '@antseed/node'
 import { VERIFIER_VERDICT, isSafeProbe } from '@antseed/node/payments'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
 import { needsExtension } from './close-call.js'
@@ -79,6 +79,11 @@ async function measuredReference(count = MODEL_TOKENIZER): Promise<TokenizerPrec
   return measureTokenizerReference({ ask: referenceAsk(count), probes: PROBES })
 }
 
+/** The request bytes a seller signs: the body it was sent, as the buyer proxy encodes it. */
+function signedRequestBase64(requestId: string, body: Uint8Array | undefined): string {
+  return Buffer.from(encodeHttpRequest({ requestId, method: 'POST', path: '/v1/chat/completions', headers: {}, body: body ?? new Uint8Array() })).toString('base64')
+}
+
 /** The part of a ResponseAuth the checks keep and check: who signed it, for which request and which service. */
 function signedRecord(input: { requestId: string; sellerPeerId: string; advertisedService: string }) {
   return { requestId: input.requestId, sellerPeerId: input.sellerPeerId, advertisedService: input.advertisedService } as unknown as StoredResponseAuth
@@ -98,9 +103,11 @@ function seller(options: {
 }) {
   const signed = new Map<string, number | null | Record<string, unknown>>()
   const contents: string[] = []
+  const bodies = new Map<string, Uint8Array>()
   const fetchFn: typeof fetch = async (_url, init) => {
     const headers = new Headers(init?.headers)
     const requestId = headers.get('x-antseed-request-id')!
+    bodies.set(requestId, init!.body as Uint8Array)
     assert.equal(headers.get('x-antseed-pin-peer'), options.peerId ?? PEER_ID)
     if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs))
     assert.equal(headers.get('x-antseed-capture-response-auth-preimages'), '1')
@@ -138,7 +145,7 @@ function seller(options: {
         signedPreimages: valid ? {
           encoding: 'antseed-http-codec-v1',
           signatureEncoding: 'antseed-response-auth-signing-v1',
-          requestBase64: 'AA==',
+          requestBase64: signedRequestBase64(input.requestId, bodies.get(input.requestId)),
           responseBase64: Buffer.from(encodeHttpResponse({
             requestId: input.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(body)),
           })).toString('base64'),
@@ -724,6 +731,41 @@ test('a stored pre-check that does not follow from its signed responses is refus
   assert.throws(() => validateTokenizerPrecheck({ ...honest, crowd: record.crowd! }), /stores a crowd for a seller that was not off in every round/)
 })
 
+test('a stored pre-check whose signed exchanges asked other text than its probes is refused', async () => {
+  const record = await precheck(seller({ usage: OTHER_TOKENIZER }))
+  assert.equal(record.outcome, 'mismatch')
+  assert.doesNotThrow(() => validateTokenizerPrecheck(record))
+  // Other probes of the same lengths: a tokenizer that counts by length signs the same differences for them, so only
+  // the text the seller was asked tells these exchanges apart from the probes the record names.
+  const otherProbes = PROBES.map((probe) => ({ a: probe.a.replace(/e/g, 'o'), b: probe.b.replace(/e/g, 'o') }))
+  assert.ok(otherProbes.every((probe, index) => probe.b !== PROBES[index]!.b && isSafeProbe(probe.b)))
+  const otherReference = await measureTokenizerReference({ ask: referenceAsk(), probes: otherProbes })
+  const other = await precheck(seller({ usage: OTHER_TOKENIZER }), otherReference)
+  assert.equal(other.outcome, 'mismatch')
+  assert.deepEqual(other.rounds.map((round) => round.seller.map((ask) => ask.delta)), record.rounds.map((round) => round.seller.map((ask) => ask.delta)))
+  const swapped = (change: (copy: TokenizerPrecheckV1) => void): TokenizerPrecheckV1 => {
+    const copy = structuredClone(record)
+    change(copy)
+    return copy
+  }
+  // A repeated ask of a round that is a signed exchange for another text.
+  assert.throws(() => validateTokenizerPrecheck(swapped((copy) => { copy.rounds[1]!.seller[1] = structuredClone(other.rounds[1]!.seller[1]!) })),
+    /round 2: the seller's signed request is not the round's text/)
+  // The first ask's request with the follow-up, from another text.
+  assert.throws(() => validateTokenizerPrecheck(swapped((copy) => { copy.rounds[0]!.seller[0]!.probed = structuredClone(other.rounds[0]!.seller[0]!.probed) })),
+    /round 1: the seller's signed request is not the round's text/)
+  // A base request relabelled as the request with the follow-up of the same round.
+  assert.throws(() => validateTokenizerPrecheck(swapped((copy) => {
+    const ask = copy.rounds[2]!.seller[0]!
+    ask.base = structuredClone(other.rounds[2]!.seller[0]!.base)
+  })), /round 3: the seller's signed request is not the round's text/)
+  // A backing seller whose signed pair is for another first-round text than this record's.
+  const backer = await backingAsk(otherReference, record.crowd!.backers[0]!.peerId)
+  assert.equal(backer.ask.delta, record.crowd!.backers[0]!.ask.delta)
+  assert.throws(() => validateTokenizerPrecheck(swapped((copy) => { copy.crowd!.backers[0] = backer })),
+    /backing seller 1: its signed request is not the first round's text/)
+})
+
 test('a stored pre-check is asked as the run asks: nothing after the ask that ended it', async () => {
   // An unreadable first ask ends the check; a matching second ask after it is not what the run writes.
   const unreadable = await precheck(seller({ usage: (content, call) => (call <= 2 ? null : MODEL_TOKENIZER(content)) }))
@@ -736,11 +778,11 @@ test('a stored pre-check is asked as the run asks: nothing after the ask that en
   appended.outcome = 'match'
   appended.reason = null
   assert.throws(() => validateTokenizerPrecheck(appended), /round 1: the seller was asked after the check had ended/)
-  // A match ends it too: a later round answered after it does not stand.
+  // A match ends it too: a later round answered after it (signed for that round's own text) does not stand.
+  const secondFirst = await measureTokenizerReference({ ask: referenceAsk(), probes: [PROBES[1]!, PROBES[0]!, PROBES[2]!] })
+  const secondAsked = await precheck(seller({ usage: MODEL_TOKENIZER }), secondFirst)
   const later = structuredClone(matched)
-  later.rounds[1]!.seller = structuredClone(matched.rounds[0]!.seller).map((ask) => ({
-    ...ask, base: { ...ask.base, requestIds: ['other-base'] }, probed: { ...ask.probed!, requestIds: ['other-probed'] },
-  }))
+  later.rounds[1]!.seller = structuredClone(secondAsked.rounds[0]!.seller)
   assert.throws(() => validateTokenizerPrecheck(later), /round 2: the seller was asked after the check had ended/)
 })
 
@@ -856,9 +898,11 @@ function market(
   const peers = Object.keys(sellers)
   const signed = new Map<string, number | null | Record<string, unknown>>()
   const asked = new Map<string, string[]>(peers.map((peer) => [peer, []]))
+  const bodies = new Map<string, Uint8Array>()
   const fetchFn: typeof fetch = async (_url, init) => {
     const headers = new Headers(init?.headers)
     const requestId = headers.get('x-antseed-request-id')!
+    bodies.set(requestId, init!.body as Uint8Array)
     const peer = headers.get('x-antseed-pin-peer')!
     const content = (JSON.parse(new TextDecoder().decode(init!.body as Uint8Array)) as { messages: Array<{ content: string }> }).messages[0]!.content
     asked.get(peer)!.push(content)
@@ -888,7 +932,7 @@ function market(
         signedPreimages: {
           encoding: 'antseed-http-codec-v1',
           signatureEncoding: 'antseed-response-auth-signing-v1',
-          requestBase64: 'AA==',
+          requestBase64: signedRequestBase64(input.requestId, bodies.get(input.requestId)),
           responseBase64: Buffer.from(encodeHttpResponse({
             requestId: input.requestId, statusCode: 200, headers: {},
             body: new TextEncoder().encode(JSON.stringify(usage)),

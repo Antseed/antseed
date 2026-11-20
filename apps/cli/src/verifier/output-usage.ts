@@ -210,6 +210,15 @@ export function requestCarriesPrompt(requestBody: Uint8Array, prompt: string): b
   return userTexts(parseObject(requestBody)).includes(prompt)
 }
 
+/**
+ * Whether the request the seller signed asks `prompt` and nothing else: its one user text, in any API shape the buyer
+ * proxy translates to. The tokenizer pre-check's binding of a signed count to the text it counts.
+ */
+export function requestAsksOnly(requestBody: Uint8Array, prompt: string): boolean {
+  const texts = userTexts(parseObject(requestBody))
+  return texts.length === 1 && texts[0] === prompt
+}
+
 /** The reasoning count in `completion_tokens_details` or `output_tokens_details`; null when neither has one. */
 function itemisedReasoning(usage: unknown): number | null {
   if (!isRecord(usage)) return null

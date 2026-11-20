@@ -13,6 +13,8 @@ import {
   type ProxyAuditExchangeCostV1,
 } from './proxy-evidence.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
+import { requestAsksOnly } from './output-usage.js'
+import { signedExchange } from './signed-seller-request.js'
 import { asError } from './utils.js'
 
 /**
@@ -999,7 +1001,8 @@ export function describeTokenizerMismatch(record: TokenizerPrecheckV1): string {
 
 /**
  * Checks that a stored pre-check follows from what it stores: the rule is one this CLI knows, every count is the
- * one in the bytes the seller signed under a verified ResponseAuth, no request is counted twice, the reference's
+ * one in the bytes the seller signed under a verified ResponseAuth for the round's own text (A, or A + B; for a
+ * backing seller, the first round's), no request is counted twice, the reference's
  * differences are its asks', the seller was asked exactly as the run asks (nothing after the ask that ended the
  * check), the crowd's tallies are its differences' and every backing seller's pair is stored and holds, and the
  * outcome is the rule's. Throws otherwise, so a DIFF is never submitted on a pre-check that does not hold.
@@ -1020,8 +1023,9 @@ export function validateTokenizerPrecheck(record: TokenizerPrecheckV1, auditedPe
     if (reference !== round.reference.delta) throw new Error(`${where}: the reference difference does not follow from its asks`)
     if (round.seller.length > rule.sellerAsks) throw new Error(`${where}: the seller was asked more often than the rule allows`)
     for (const ask of round.seller) {
-      for (const request of [ask.base, ...(ask.probed ? [ask.probed] : [])]) {
+      for (const [request, content] of askedTexts(ask, round)) {
         if (!signedAsStored(request)) throw new Error(`${where}: the seller's input tokens are not the ones in its signed responses`)
+        if (!signedFor(request, content)) throw new Error(`${where}: the seller's signed request is not the round's text`)
       }
       if (sellerDelta(ask.base, ask.probed) !== ask.delta) throw new Error(`${where}: the seller's difference does not follow from its signed responses`)
     }
@@ -1066,11 +1070,28 @@ export function validateTokenizerPrecheck(record: TokenizerPrecheckV1, auditedPe
     const tallied = tokenizerCrowd(crowd.deltas, firstRound, rule, crowd.requests, crowd.backers)
     if (canonicalJsonStringify(tallied) !== canonicalJsonStringify(crowd)) throw new Error('tokenizer pre-check crowd does not follow from its differences')
     if (!crowd.deltas.includes(record.rounds[0]!.seller[0]!.delta)) throw new Error('tokenizer pre-check crowd leaves out the seller\'s own difference')
-    validateTokenizerBackers(crowd, firstRound, rule, new Set(requestIds), auditedPeerId)
+    validateTokenizerBackers(crowd, record.rounds[0]!, firstRound, rule, new Set(requestIds), auditedPeerId)
   }
   // A seller off in every round is a mismatch only when the model's other sellers back the reference.
   const outcome = judgedOutcome === 'mismatch' && tokenizerCrowdObjection(crowd, judged[0]!.referenceDelta, rule) !== null ? 'inconclusive' : judgedOutcome
   if (outcome !== record.outcome) throw new Error(`tokenizer pre-check outcome ${record.outcome} does not follow from its rounds (${outcome})`)
+}
+
+/** An ask's requests with the text each was sent: A for the base request, A + B for the one with the follow-up. */
+function askedTexts(ask: Pick<TokenizerSellerAskV1, 'base' | 'probed'>, probe: TokenizerProbeV1): Array<[TokenizerSellerRequestV1, string]> {
+  return [[ask.base, probe.a], ...(ask.probed ? [[ask.probed, probe.a + probe.b] as [TokenizerSellerRequestV1, string]] : [])]
+}
+
+/**
+ * Whether a request whose signed response gives a count or a cache was sent `content`, read from the request bytes the
+ * seller signed with that response: so a count is the one the seller signed for the text the record compares, never one
+ * it signed for another prompt. A request whose signed response gives neither measures nothing.
+ */
+function signedFor(request: TokenizerSellerRequestV1, content: string): boolean {
+  const usage = signedUsage(request)
+  if (usage.inputTokens === null && !usage.cachedInput) return true
+  const exchange = signedExchange(request)
+  return exchange !== null && requestAsksOnly(exchange.requestBody, content)
 }
 
 /** Whether a stored request's count and cache flag are the ones its kept signed response gives. */
@@ -1084,10 +1105,12 @@ function signedAsStored(request: TokenizerSellerRequestV1): boolean {
 /**
  * The crowd's backing sellers, against its tallies: one stored pair for every seller counted on the reference's
  * count, each from another peer than the audited seller and than each other, signed under a verified ResponseAuth
- * by that peer, read from the kept bytes, without cached input, and within the tolerance of the reference.
+ * by that peer for the first round's exact texts, read from the kept bytes, without cached input, and within the
+ * tolerance of the reference.
  */
 function validateTokenizerBackers(
   crowd: TokenizerCrowdV1,
+  probe: TokenizerProbeV1,
   referenceDelta: number,
   rule: TokenizerPrecheckRule,
   requestIds: Set<string>,
@@ -1108,8 +1131,9 @@ function validateTokenizerBackers(
     const { ask } = backer
     if (!ask?.probed) throw new Error(`${where} has no signed pair`)
     if (cacheBlocks(ask, rule)) throw new Error(`${where}: its response reports cached input`)
-    for (const request of [ask.base, ask.probed]) {
+    for (const [request, content] of askedTexts(ask, probe)) {
       if (!signedAsStored(request)) throw new Error(`${where}: its input tokens are not the ones in its signed responses`)
+      if (!signedFor(request, content)) throw new Error(`${where}: its signed request is not the first round's text`)
       const signer = request.responseAuth?.record?.sellerPeerId
       if (typeof signer !== 'string' || peerKey(signer) !== peerKey(backer.peerId)) throw new Error(`${where}: its responses are not signed by it`)
       for (const id of request.requestIds) {
