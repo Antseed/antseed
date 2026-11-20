@@ -3,9 +3,9 @@ import { AUDITOR_FAILURE_ATTEMPTS, SELLER_FAILURE_ATTEMPTS, SELLER_RETRY_SPACING
 import { auditFinishedAt } from './model-audit.js'
 
 /**
- * First looks whose result submit would refuse (its evidence cannot be read or has no valid date) and that still have
- * attempts left, the seller's and the auditor's: by `epochCellKey`. They are audited again, and their window stays
- * open, so a SAME or DIFF is not left unsent all epoch. A seller that a completed run of the model, started after its
+ * First looks whose result submit would refuse (its evidence cannot be read, has no valid date or was written before
+ * the all-tests format, `auditFinishedAt`) and that still have attempts left, the seller's and the auditor's: by
+ * `epochCellKey`. They are audited again, and their window stays open, so a SAME or DIFF is not left unsent all epoch. A seller that a completed run of the model, started after its
  * last attempt, did not plan (it no longer offers the model, or another auditor judged it) is no longer waited for:
  * its window would otherwise stay open until the end of the epoch, holding the model's other results.
  */

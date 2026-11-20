@@ -889,8 +889,9 @@ function latestEvidenceTime(evidences: ReadonlyArray<Pick<ProxyAuditEvidenceV1, 
 /**
  * When the audit behind a summary row finished (seconds), by submit's rule (`latestEvidenceTime`), each file read and
  * verified against its hash as the submit preparation reads it. Null when any file of the row (an extra set included)
- * is missing, unreadable or not the one its summary names: submit would refuse the row. A file whose date is not valid
- * gives no time, as in submit.
+ * is missing, unreadable, not the one its summary names, or written before the all-tests format (`ALL_TESTS_FORMAT`,
+ * by a CLI from before an upgrade within the epoch): submit would refuse the row, so the planner audits it again and
+ * its audit window waits for it (`recoveringFirstLooks`). A file whose date is not valid gives no time, as in submit.
  */
 export async function auditFinishedAt(result: {
   evidencePath: string
@@ -907,6 +908,7 @@ export async function auditFinishedAt(result: {
       return null
     }
   }
+  if (evidences.some((evidence) => evidence.tests !== ALL_TESTS_FORMAT)) return null
   return latestEvidenceTime(evidences)
 }
 

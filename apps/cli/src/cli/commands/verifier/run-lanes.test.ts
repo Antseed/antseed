@@ -317,8 +317,9 @@ async function withScenario(body: (scenario: Scenario) => Promise<void>): Promis
       return {
         reference: { referenceId: `first-reference:${basename(path)}`, queryProfileHash: FIXTURE_QUERY_PROFILE_HASH, probes: [{ id: 'p1' }] },
         exchanges: [],
-        // As every evidence file: when it was written (the planner orders a confirmation by it).
+        // As every evidence file: when it was written (the planner orders a confirmation by it), in the all-tests format.
         createdAt: new Date().toISOString(),
+        tests: 'all-tests-v1',
       }
     },
     loadModelAuditReservation: (input: { auditId: string }) => {

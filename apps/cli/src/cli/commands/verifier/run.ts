@@ -1187,8 +1187,9 @@ export async function runVerifierRound(
         const reportAttemptsUsed = (cell: EpochCell): boolean => (
           cell.attempts >= CONFIRMATION_ATTEMPTS || (unusableReportResult(cell) && cell.auditorAttempts >= AUDITOR_FAILURE_ATTEMPTS)
         )
-        // A first look whose evidence cannot be read or has no valid date: submit leaves it out, so its SAME or DIFF
-        // would go unsent all epoch. It is audited again within the ordinary attempts.
+        // A first look whose evidence cannot be read, has no valid date or was written before the all-tests format:
+        // submit leaves it out, so its SAME or DIFF would go unsent all epoch. It is audited again within the ordinary
+        // attempts.
         const recovering = new Set((await recoveringFirstLooks(epochState)).values())
         // With the ordinary retry spacing: a re-audit minutes later counts as the same attempt.
         const planNow = await clock()

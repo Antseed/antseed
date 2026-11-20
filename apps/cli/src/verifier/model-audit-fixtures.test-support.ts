@@ -110,6 +110,8 @@ export interface FixtureAudit {
   flips?: FlipsV1
   /** The audit confirms another auditor's report: the tests it repeats and the report's chain time. */
   confirming?: { checks: AuditCheckId[]; reportedAt: number }
+  /** Written as a CLI from before the all-tests format wrote it: the evidence names no `tests` format. */
+  beforeAllTests?: true
   reference?: KbfReferenceV1
   /**
    * A close-call first audit (`kbf-extension-v1`): `firstWrong` wrong answers on the first set, then
@@ -843,7 +845,7 @@ async function writeFixtureEvidence(input: {
     ...(audit.outputEcho ? { outputEcho: audit.outputEcho } : {}),
     ...(audit.flips ? { flips: audit.flips } : {}),
     ...(audit.confirming ? { confirming: { checks: [...audit.confirming.checks], reportedAt: audit.confirming.reportedAt } } : {}),
-    tests: ALL_TESTS_FORMAT,
+    ...(audit.beforeAllTests ? {} : { tests: ALL_TESTS_FORMAT }),
     exchanges,
     result: {
       selectedProbeCount: reference.probes.length,
