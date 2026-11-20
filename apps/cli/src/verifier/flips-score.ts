@@ -178,7 +178,6 @@ const request = (reasoning: Readonly<Record<string, unknown>>, maxTokens: number
   Object.freeze({ reasoning, maxTokens, temperature })
 
 export const FLIPS_REQUESTS: Readonly<Record<string, FlipsRequestSettings>> = Object.freeze({
-  'claude-fable-5.1': request(MINIMAL, 220, false),
   'claude-fable-5.2': request(MINIMAL, 220, false),
   'claude-opus-5.5': request(MINIMAL, 220, false),
   'claude-sonnet-5.5': request(MINIMAL, 220, false),

@@ -107,14 +107,13 @@ test('the audited model list is built in; config only adds settings', () => {
     assert.equal(opus.upstreamModel, 'anthropic/claude-opus-5.5')
     assert.deepEqual(opus.excludedDomains, ['medical'])
     // Older versions replaced by a newer audited model are not audited, and don't match the newer one.
-    for (const older of ['claude-sonnet-5', 'claude-opus-5', 'claude-opus-4-6', 'claude-opus-4.6', 'gpt-5.6-sol', 'grok-4.5']) {
+    for (const older of ['claude-fable-5.1', 'claude-fable-5-1', 'claude-sonnet-5', 'claude-opus-5', 'claude-opus-4-6', 'claude-opus-4.6', 'gpt-5.6-sol', 'grok-4.5']) {
       assert.equal(findVerifierModel(undefined, older), undefined, older)
     }
     assert.equal(findVerifierModel(undefined, 'not-audited'), undefined)
-    // Fable 5.2 and Fable 5.1 are both audited, each under its own name; neither matches the other.
+    // Fable 5.2 is audited under its own spellings; Fable 5.1, its older version, is not.
     for (const [spelling, key] of [
       ['claude-fable-5.2', 'claude-fable-5.2'], ['claude-fable-5-2', 'claude-fable-5.2'], ['anthropic/claude-fable-5.2', 'claude-fable-5.2'], ['fable-5.2', 'claude-fable-5.2'],
-      ['claude-fable-5.1', 'claude-fable-5.1'], ['claude-fable-5-1', 'claude-fable-5.1'],
     ] as const) assert.equal(findVerifierModel(undefined, spelling)?.[0], key, spelling)
     assert.equal(findVerifierModel(undefined, 'claude-fable-5.2')?.[1].upstreamModel, 'anthropic/claude-fable-5.2')
     // Other spellings of a built-in model resolve to it, matched the way buyers route.

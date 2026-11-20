@@ -7,9 +7,8 @@ import { canonicalModelKey } from '@antseed/node/model-identity'
  * optional per-model settings in `verifier.models`.
  *
  * Only the newest version of each model line is audited: older versions that a newer audited
- * model replaces (Claude Sonnet 5, Opus 4.6 and Opus 5, GPT-5.6 Sol, Grok 4.5) are left out, and so
- * are Gemini 3 Flash Preview and DeepSeek V4 Pro 0813. Claude Fable 5.1 is still audited beside
- * Fable 5.2, its newer version.
+ * model replaces (Claude Fable 5.1, Sonnet 5, Opus 4.6 and Opus 5, GPT-5.6 Sol, Grok 4.5) are left
+ * out, and so are Gemini 3 Flash Preview and DeepSeek V4 Pro 0813.
  *
  * The key is the service name sellers advertise and the probe-bank directory name
  * (`<dataDir>/verifier/banks/<key>`), so renaming a key orphans its bank.
@@ -43,12 +42,6 @@ const GOOGLE = ['google-ai-studio'] as const
 const OPENAI = ['openai'] as const
 
 export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.freeze({
-  'claude-fable-5.1': {
-    upstreamModel: 'anthropic/claude-fable-5.1',
-    referenceProvider: ANTHROPIC,
-    serviceAliases: ['claude-fable-5-1', 'fable-5.1', 'fable-5-1', 'anthropic/claude-fable-5.1'],
-    contrastModels: ['anthropic/claude-sonnet-5.5', 'openai/gpt-6.1-sol', 'openai/gpt-6.1-terra'],
-  },
   // Fable 5.1 is not one of Fable 5.2's contrast models: it costs more than Fable 5.2, so no seller gains by serving it.
   'claude-fable-5.2': {
     upstreamModel: 'anthropic/claude-fable-5.2',
