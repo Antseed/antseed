@@ -16,6 +16,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- Verifiers (CLI): Claude Fable 5.2 is an audited model, beside Claude Fable 5.1. Its reference is Anthropic's own endpoint, and its new banks are built to tell it apart from Claude Sonnet 5.5, GPT-6.1 Sol and GPT-6.1 Terra. It applies from the next epoch's bank. The audited model list is part of the audit rules, so the verifier compat number goes to 12.
 - Verifiers (CLI): GPT-6.1 Sol's built-in contrast models now include GPT-6.1 Terra, its cheaper sibling, in place of MiMo v2.6 Pro, so new banks are built to tell the two apart. It applies from the next epoch's bank.
 
 ### Fixed

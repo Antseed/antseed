@@ -111,6 +111,12 @@ test('the audited model list is built in; config only adds settings', () => {
       assert.equal(findVerifierModel(undefined, older), undefined, older)
     }
     assert.equal(findVerifierModel(undefined, 'not-audited'), undefined)
+    // Fable 5.2 and Fable 5.1 are both audited, each under its own name; neither matches the other.
+    for (const [spelling, key] of [
+      ['claude-fable-5.2', 'claude-fable-5.2'], ['claude-fable-5-2', 'claude-fable-5.2'], ['anthropic/claude-fable-5.2', 'claude-fable-5.2'], ['fable-5.2', 'claude-fable-5.2'],
+      ['claude-fable-5.1', 'claude-fable-5.1'], ['claude-fable-5-1', 'claude-fable-5.1'],
+    ] as const) assert.equal(findVerifierModel(undefined, spelling)?.[0], key, spelling)
+    assert.equal(findVerifierModel(undefined, 'claude-fable-5.2')?.[1].upstreamModel, 'anthropic/claude-fable-5.2')
     // Other spellings of a built-in model resolve to it, matched the way buyers route.
     assert.equal(findVerifierModel(undefined, 'anthropic/claude-opus-5-5-latest')?.[0], 'claude-opus-5.5')
     assert.equal(findVerifierModel(undefined, 'openai/GPT-6.1-Sol')?.[0], 'gpt-6.1-sol')
