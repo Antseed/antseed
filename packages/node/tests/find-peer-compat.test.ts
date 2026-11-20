@@ -102,3 +102,23 @@ describe('AntseedNode.findPeer compatibility', () => {
     }
   });
 });
+
+describe('AntseedNode discovery with a seller that moved hosts', () => {
+  it('discoverPeers keeps the newest announcement instead of whichever endpoint resolved first', async () => {
+    const targetId = 'a'.repeat(40);
+    const now = Date.now();
+    const node = new AntseedNode({ role: 'buyer' });
+    (node as any)._peerLookup = {
+      findAll: vi.fn().mockResolvedValue([
+        { metadata: buildMetadata(targetId, now - 10 * 60_000), host: '203.0.113.10', port: 14532 },
+        { metadata: buildMetadata(targetId, now), host: '198.51.100.20', port: 14532 },
+      ]),
+      findAllExhaustive: vi.fn().mockResolvedValue([]),
+    };
+
+    const peers = await node.discoverPeers();
+
+    expect(peers).toHaveLength(1);
+    expect(peers[0]?.publicAddress).toBe('198.51.100.20:14532');
+  });
+});

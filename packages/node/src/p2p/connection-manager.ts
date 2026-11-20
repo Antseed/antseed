@@ -121,6 +121,11 @@ export interface ConnectionManagerOptions {
    * requests never count against it. Default DEFAULT_MAX_INBOUND_CONNECTIONS.
    */
   maxInboundConnections?: number;
+  /**
+   * Inbound sockets accepted from one IP at once. Default DEFAULT_MAX_INBOUND_CONNECTIONS_PER_IP;
+   * raise it for a seller every buyer reaches through one address (a TLS gateway or forwarder).
+   */
+  maxInboundConnectionsPerIp?: number;
 }
 type InitialWireMessage =
   | {
@@ -161,6 +166,16 @@ const TCP_KEEPALIVE_INITIAL_DELAY_MS = 10_000;
  * a channel that stops draining reaches this.
  */
 const MAX_DATA_CHANNEL_BUFFERED_BYTES = 64 * 1024 * 1024;
+/**
+ * Most a TCP socket may hold unsent before a send fails the connection. A whole
+ * upload is queued at once, so this sits well above the largest request body.
+ */
+const MAX_SOCKET_BUFFERED_BYTES = 256 * 1024 * 1024;
+/** Above this much unsent data, `whenWritable` makes a sender wait for the peer to read. */
+export const SEND_HIGH_WATER_BYTES = 1024 * 1024;
+/** A peer that reads nothing for this long while more than the high-water mark waits for it is dropped. */
+export const SEND_STALL_TIMEOUT_MS = 60_000;
+const SEND_DRAIN_POLL_MS = 100;
 export const INBOUND_REFUSED_MESSAGE = "This seller does not accept connections from your location.";
 export const INBOUND_AT_CAPACITY_MESSAGE = "This seller is at its connection limit. Try again later.";
 const LOCAL_CONNECTION_CAPABILITIES = [
@@ -185,6 +200,7 @@ export class PeerConnection extends EventEmitter {
   private _crypto: TransportCrypto | null = null;
   private _remoteAddress: string | null = null;
   private _failureReason: Error | null = null;
+  private _backlog: Promise<void> | null = null;
 
   constructor(config: ConnectionConfig) {
     super();
@@ -260,6 +276,15 @@ export class PeerConnection extends EventEmitter {
   /** True for encrypted TCP framing or a (DTLS) data channel; false for legacy plaintext TCP. */
   get isEncryptedTransport(): boolean {
     return this._crypto !== null || this._dataChannel !== null;
+  }
+
+  /**
+   * Hex session hash of this encrypted TCP connection, the same on both ends. A TEE seller binds
+   * it into its attestation quote so the buyer knows this connection terminates in the TEE.
+   * Null on WebRTC and plaintext connections.
+   */
+  get channelBinding(): string | null {
+    return this._crypto ? this._crypto.channelBinding.toString("hex") : null;
   }
 
   get transportDescription(): "webrtc" | "tcp-encrypted" | "tcp-plaintext" {
@@ -371,10 +396,14 @@ export class PeerConnection extends EventEmitter {
         throw wrapped;
       }
       // false means the message was queued, not sent yet; it is still delivered.
-      if (!ok && this._dataChannel.bufferedAmount() > MAX_DATA_CHANNEL_BUFFERED_BYTES) {
-        const err = new Error(`Failed to send data to ${this.remotePeerId}: data channel is not draining`);
-        this.fail(err);
-        throw err;
+      if (!ok) {
+        const buffered = this._dataChannel.bufferedAmount();
+        if (buffered > MAX_DATA_CHANNEL_BUFFERED_BYTES) {
+          const err = new Error(`Failed to send data to ${this.remotePeerId}: data channel is not draining`);
+          this.fail(err);
+          throw err;
+        }
+        if (buffered > SEND_HIGH_WATER_BYTES) void this._watchBacklog();
       }
       return;
     }
@@ -384,6 +413,12 @@ export class PeerConnection extends EventEmitter {
       // connection so it is evicted from the pool and the next request gets a fresh
       // connection instead of also hitting this error.
       const err = new Error(`Cannot send to ${this.remotePeerId}: no writable transport`);
+      this.fail(err);
+      throw err;
+    }
+
+    if (this._rawSocket.writableLength > MAX_SOCKET_BUFFERED_BYTES) {
+      const err = new Error(`Failed to send data to ${this.remotePeerId}: socket is not draining`);
       this.fail(err);
       throw err;
     }
@@ -398,10 +433,68 @@ export class PeerConnection extends EventEmitter {
         throw wrapped;
       }
       this._rawSocket.write(frame);
-      return;
+    } else {
+      this._rawSocket.write(Buffer.from(data));
     }
+    if (this._rawSocket.writableLength > SEND_HIGH_WATER_BYTES) void this._watchBacklog();
+  }
 
-    this._rawSocket.write(Buffer.from(data));
+  /**
+   * Sends without throwing: false means the message was not sent, and `send` has
+   * already failed the connection. For callers with nothing to undo, such as
+   * keepalive, where a throw would escape a socket or timer callback.
+   */
+  trySend(data: Uint8Array): boolean {
+    try {
+      this.send(data);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Bytes sent that the transport has not yet handed to the network. */
+  get bufferedBytes(): number {
+    if (this._dataChannel) return this._dataChannel.isOpen() ? this._dataChannel.bufferedAmount() : 0;
+    return this._rawSocket?.writableLength ?? 0;
+  }
+
+  /**
+   * For a sender that produces data in a loop: undefined when it may send more,
+   * else a promise that resolves once the peer has read enough of what it was
+   * sent. The promise never rejects; if the connection fails first, the next
+   * `send` throws.
+   */
+  whenWritable(): Promise<void> | undefined {
+    return this.bufferedBytes > SEND_HIGH_WATER_BYTES ? this._watchBacklog() : undefined;
+  }
+
+  /**
+   * Watches unsent data until the peer has read it down to the high-water mark,
+   * and fails a peer that reads nothing for SEND_STALL_TIMEOUT_MS: its data would
+   * otherwise stay in memory for as long as it keeps the connection.
+   */
+  private _watchBacklog(): Promise<void> {
+    this._backlog ??= new Promise<void>((resolve) => {
+      let buffered = this.bufferedBytes;
+      let progressAt = Date.now();
+      const timer = setInterval(() => {
+        const open = this._state === ConnectionState.Open || this._state === ConnectionState.Authenticated;
+        const now = this.bufferedBytes;
+        if (open && now > SEND_HIGH_WATER_BYTES) {
+          // Senders that do not wait keep adding, so only a shrinking backlog shows the peer is reading.
+          if (now < buffered) progressAt = Date.now();
+          buffered = now;
+          if (Date.now() - progressAt < SEND_STALL_TIMEOUT_MS) return;
+          this.fail(new Error(`${this.remotePeerId} stopped reading what it was sent`));
+        }
+        clearInterval(timer);
+        this._backlog = null;
+        resolve();
+      }, SEND_DRAIN_POLL_MS);
+      timer.unref?.();
+    });
+    return this._backlog;
   }
 
   /** Close the connection gracefully. */
@@ -478,7 +571,7 @@ function normalizeCapabilities(value: unknown): string[] {
  * connection per buyer identity per seller, so a gateway with many identities
  * opens many connections from the same address.
  */
-const MAX_INBOUND_CONNECTIONS_PER_IP = 64;
+export const DEFAULT_MAX_INBOUND_CONNECTIONS_PER_IP = 64;
 /**
  * Inbound peer connections a listener holds at once by default. A buyer keeps
  * its connection open between requests, so a busy seller holds one per active buyer.
@@ -506,6 +599,7 @@ export class ConnectionManager extends EventEmitter {
   private _acceptInboundAddress: ((remoteAddress: string) => boolean) | null;
   private _ipConnectionCounts = new Map<string, number>();
   private readonly _maxInboundConnections: number;
+  private readonly _maxInboundConnectionsPerIp: number;
   private _pendingInboundSockets = new Set<Socket>();
   private _inboundPeerSockets = new Set<Socket>();
   private readonly _introReplayGuard = new NonceReplayGuard();
@@ -519,6 +613,7 @@ export class ConnectionManager extends EventEmitter {
     this._requireSecureTransport = options?.requireSecureTransport ?? false;
     this._acceptInboundAddress = options?.acceptInboundAddress ?? null;
     this._maxInboundConnections = options?.maxInboundConnections ?? DEFAULT_MAX_INBOUND_CONNECTIONS;
+    this._maxInboundConnectionsPerIp = options?.maxInboundConnectionsPerIp ?? DEFAULT_MAX_INBOUND_CONNECTIONS_PER_IP;
   }
 
   static async init(iceConfig?: IceConfig, options?: ConnectionManagerOptions): Promise<ConnectionManager> {
@@ -597,7 +692,7 @@ export class ConnectionManager extends EventEmitter {
       const ip = socket.remoteAddress ?? 'unknown';
       const refused = Boolean(this._acceptInboundAddress && socket.remoteAddress && !this._acceptInboundAddress(socket.remoteAddress));
       const current = this._ipConnectionCounts.get(ip) ?? 0;
-      if (current >= MAX_INBOUND_CONNECTIONS_PER_IP) {
+      if (current >= this._maxInboundConnectionsPerIp) {
         socket.destroy();
         return;
       }

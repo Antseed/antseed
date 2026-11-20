@@ -181,6 +181,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
   let usage: TokenUsage = ZERO_USAGE;
   let finishReason: string | null = null;
   let responseStarted = false;
+  // A relay ends every stream with an empty final chunk, after message_stop has already finished the response.
+  let responseDone = false;
   const toolBlockIndexes = new Map<number, number>();
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
 
@@ -274,6 +276,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
         }
 
         if (type === 'message_stop') {
+          if (responseDone) continue;
+          responseDone = true;
           emitStart(emitted);
           emitted.push({
             type: 'response_done',
@@ -286,7 +290,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
         }
       }
 
-      if (chunk.done && emitted.length === 0) {
+      if (chunk.done && !responseDone && emitted.length === 0) {
+        responseDone = true;
         return [{
           type: 'response_done',
           id: responseId,
@@ -489,6 +494,14 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
   let textBlockStarted = false;
   let hadTextBlock = false;
   let openToolIndex: number | null = null;
+  // The open tool block's arguments so far, and the calls that started while
+  // they were still incomplete. Some upstreams interleave parallel calls'
+  // argument chunks; an Anthropic block can't take deltas once stopped, so a
+  // later call waits (start and deltas, in order) until the open one's
+  // arguments are whole JSON, then streams. Calls that arrive one after
+  // another stream as they come.
+  let openToolArguments = '';
+  const heldTools = new Map<number, { start: Extract<CanonicalStreamEvent, { type: 'tool_call_start' }>; deltas: string[] }>();
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
 
@@ -522,6 +535,66 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
     });
   };
 
+  const isWholeJson = (text: string): boolean => {
+    if (text.trim().length === 0) return false;
+    try {
+      JSON.parse(text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const closeOpenTool = (emitted: Array<{ event?: string; data: unknown | string }>): void => {
+    if (openToolIndex === null) return;
+    emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
+    openToolIndex = null;
+    openToolArguments = '';
+  };
+
+  const emitToolDelta = (emitted: Array<{ event?: string; data: unknown | string }>, index: number, partialJson: string): void => {
+    emitted.push({
+      event: 'content_block_delta',
+      data: {
+        type: 'content_block_delta',
+        index: toolBlockIndex(index),
+        delta: { type: 'input_json_delta', partial_json: partialJson },
+      },
+    });
+  };
+
+  const openTool = (emitted: Array<{ event?: string; data: unknown | string }>, event: Extract<CanonicalStreamEvent, { type: 'tool_call_start' }>): void => {
+    emitted.push({
+      event: 'content_block_start',
+      data: {
+        type: 'content_block_start',
+        index: toolBlockIndex(event.index),
+        content_block: {
+          type: 'tool_use',
+          id: event.id || `toolu_${event.index + 1}`,
+          name: event.name || 'tool',
+          input: {},
+        },
+      },
+    });
+    openToolIndex = event.index;
+    openToolArguments = '';
+  };
+
+  /** Streams held calls in order while the open block is done (`all`: every one, at the end of the response). */
+  const releaseHeldTools = (emitted: Array<{ event?: string; data: unknown | string }>, all: boolean): void => {
+    while (heldTools.size > 0 && (all || openToolIndex === null || isWholeJson(openToolArguments))) {
+      const [index, held] = heldTools.entries().next().value!;
+      heldTools.delete(index);
+      closeOpenTool(emitted);
+      openTool(emitted, held.start);
+      for (const delta of held.deltas) {
+        emitToolDelta(emitted, index, delta);
+        openToolArguments += delta;
+      }
+    }
+  };
+
   return {
     render(events, chunk) {
       const emitted: Array<{ event?: string; data: unknown | string }> = [];
@@ -534,10 +607,8 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'text_delta') {
           startMessage(emitted, null);
-          if (openToolIndex !== null) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
-            openToolIndex = null;
-          }
+          releaseHeldTools(emitted, true);
+          closeOpenTool(emitted);
           if (!textBlockStarted) {
             textBlockStarted = true;
             hadTextBlock = true;
@@ -559,45 +630,35 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
             textBlockStarted = false;
           }
-          if (openToolIndex !== null && openToolIndex !== event.index) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
+          if (openToolIndex === event.index || heldTools.has(event.index)) continue;
+          if (openToolIndex !== null && (heldTools.size > 0 || !isWholeJson(openToolArguments))) {
+            heldTools.set(event.index, { start: event, deltas: [] });
+            continue;
           }
-          emitted.push({
-            event: 'content_block_start',
-            data: {
-              type: 'content_block_start',
-              index: toolBlockIndex(event.index),
-              content_block: {
-                type: 'tool_use',
-                id: event.id || `toolu_${event.index + 1}`,
-                name: event.name || 'tool',
-                input: {},
-              },
-            },
-          });
-          openToolIndex = event.index;
+          closeOpenTool(emitted);
+          openTool(emitted, event);
           continue;
         }
 
         if (event.type === 'tool_call_delta') {
           startMessage(emitted, null);
-          emitted.push({
-            event: 'content_block_delta',
-            data: {
-              type: 'content_block_delta',
-              index: toolBlockIndex(event.index),
-              delta: { type: 'input_json_delta', partial_json: event.argumentsDelta },
-            },
-          });
+          const held = heldTools.get(event.index);
+          if (held) {
+            held.deltas.push(event.argumentsDelta);
+            continue;
+          }
+          emitToolDelta(emitted, event.index, event.argumentsDelta);
+          if (event.index === openToolIndex) {
+            openToolArguments += event.argumentsDelta;
+            releaseHeldTools(emitted, false);
+          }
           continue;
         }
 
         if (event.type === 'response_done') {
           startMessage(emitted, null);
-          if (openToolIndex !== null) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
-            openToolIndex = null;
-          }
+          releaseHeldTools(emitted, true);
+          closeOpenTool(emitted);
           if (textBlockStarted) {
             emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
             textBlockStarted = false;
@@ -607,7 +668,14 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             data: {
               type: 'message_delta',
               delta: { stop_reason: mapFinishReasonToAnthropicStopReason(event.finishReason), stop_sequence: null },
-              usage: { output_tokens: event.usage.outputTokens },
+              // Cumulative usage, as Anthropic's message_delta allows. Input
+              // counts are left out when the upstream reported none, so a
+              // client keeps the message_start value instead of a made-up zero.
+              // When they are reported, cache reads are written even at 0, so
+              // a cache count message_start showed can't outlive the final split.
+              usage: reportsInput(event.usage)
+                ? { ...anthropicUsage(event.usage), cache_read_input_tokens: event.usage.cachedInputTokens }
+                : { output_tokens: event.usage.outputTokens },
             },
           });
           emitted.push({ event: 'message_stop', data: { type: 'message_stop' } });
@@ -915,12 +983,20 @@ function objectValue(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** Whether a usage reported any input, fresh or cached (a cache hit can come with a zero prompt count). */
+function reportsInput(usage: TokenUsage): boolean {
+  return usage.inputTokens > 0 || usage.cachedInputTokens > 0;
+}
+
 function mergeUsage(previous: TokenUsage, next: TokenUsage): TokenUsage {
+  // The input counts are one split: take them together from whichever event
+  // reported input, so a stale cached or fresh count can't outlive its total.
+  const input = reportsInput(next) ? next : previous;
   return {
-    inputTokens: next.inputTokens > 0 ? next.inputTokens : previous.inputTokens,
+    inputTokens: input.inputTokens,
     outputTokens: next.outputTokens > 0 ? next.outputTokens : previous.outputTokens,
-    freshInputTokens: next.freshInputTokens > 0 ? next.freshInputTokens : previous.freshInputTokens,
-    cachedInputTokens: next.cachedInputTokens > 0 ? next.cachedInputTokens : previous.cachedInputTokens,
+    freshInputTokens: input.freshInputTokens,
+    cachedInputTokens: input.cachedInputTokens,
   };
 }
 

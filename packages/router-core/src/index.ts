@@ -18,6 +18,7 @@ export {
 export {
   WELL_KNOWN_TOOL_HINTS,
   formatToolHints,
+  toolHintBaseUrl,
   type ToolHint,
 } from './tool-hints.js'
 export { ModelRoutingClient, routingProtocolOfTarget, type ModelRoutingClientApi } from './model-routing-client.js'

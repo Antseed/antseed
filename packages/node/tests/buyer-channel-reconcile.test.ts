@@ -76,8 +76,9 @@ function chatRequest(): SerializedHttpRequest {
 
 const BUDGET = { minBudgetPerRequest: '10000', suggestedAmount: '1000000' };
 
-function needAuth(channel: string, requiredCumulativeAmount: string, lastRequestCost: string): NeedAuthPayload {
-  return { channelId: channel, requiredCumulativeAmount, currentAcceptedCumulative: '0', deposit: '1000000', lastRequestCost, inputTokens: '1000', outputTokens: '1000' };
+/** The seller's cost frame for `requestId`, a response the buyer must have received and priced (`recordDeliveredResponse`). */
+function needAuth(channel: string, requiredCumulativeAmount: string, lastRequestCost: string, requestId = 'paid-request'): NeedAuthPayload {
+  return { channelId: channel, requestId, requiredCumulativeAmount, currentAcceptedCumulative: '0', deposit: '1000000', lastRequestCost, inputTokens: '1000', outputTokens: '1000' };
 }
 
 function externalSpendingAuthHeader(channel: string): string {
@@ -434,6 +435,7 @@ describe('buyer channel reconcile against the chain', () => {
       work: 'a NeedAuth is being signed',
       start: async () => {
         const held = holdSignatures();
+        bpm.recordDeliveredResponse(SELLER, 'paid-request', { costUsdc: 50_000n });
         const handled = fromSeller(MessageType.NeedAuth, codec.encodeNeedAuth(needAuth(CURRENT, '350000', '50000')));
         await held.signing;
         return async () => {
@@ -551,6 +553,7 @@ describe('buyer channel reconcile against the chain', () => {
     chain.set(CURRENT, onChain(buyer.wallet.address, 1));
     startBuyer({ deposits: true });
     const held = holdSignatures();
+    bpm.recordDeliveredResponse(SELLER, 'paid-request', { costUsdc: 50_000n });
     const handled = fromSeller(MessageType.NeedAuth, codec.encodeNeedAuth(needAuth(CURRENT, '350000', '50000')));
     await held.signing;
     chain.set(CURRENT, onChain(buyer.wallet.address, 2, 350_000n));
@@ -569,7 +572,8 @@ describe('buyer channel reconcile against the chain', () => {
     await fromSeller(MessageType.AuthAck, codec.encodeAuthAck({ channelId: fresh }));
     await expect(negotiating).resolves.toEqual({ action: 'retry' });
 
-    await fromSeller(MessageType.NeedAuth, codec.encodeNeedAuth(needAuth(fresh, '18000', '18000')));
+    bpm.recordDeliveredResponse(SELLER, 'next-paid-request', { costUsdc: 18_000n });
+    await fromSeller(MessageType.NeedAuth, codec.encodeNeedAuth(needAuth(fresh, '18000', '18000', 'next-paid-request')));
     expect(spendingAuthsSent().at(-1)).toMatchObject({ channelId: fresh, cumulativeAmount: '18000' });
   });
 

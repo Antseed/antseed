@@ -138,6 +138,42 @@ describe('HttpRelay response-body deadlines', () => {
     });
   });
 
+  it('does not count the time a buyer takes to accept a chunk against the upstream deadline', async () => {
+    let finish: (() => void) | undefined;
+    await withUpstream((req, res) => {
+      req.resume();
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"first":true}\n\n');
+      if (req.url === '/finishes') finish = () => res.end('data: {"second":true}\n\n');
+    }, async (baseUrl, track) => {
+      const run = async (path: string) => {
+        const chunks: SerializedHttpResponseChunk[] = [];
+        let accepted = 0;
+        const relay = new HttpRelay(config(baseUrl), {
+          onResponse: () => undefined,
+          onResponseChunk: (chunk) => {
+            chunks.push(chunk);
+            if (chunk.done || accepted++ > 0) return undefined;
+            // A buyer that takes three deadlines to accept the first chunk.
+            return delay(TIMEOUT_MS * 3).then(() => finish?.());
+          },
+        });
+        const completed = await completesWithin(track(relay.handleRequest(request(path, path))));
+        return { completed, text: chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join('') };
+      };
+
+      const finished = await run('/finishes');
+      expect(finished.completed).toBe(true);
+      expect(finished.text).toContain('"second":true');
+      expect(finished.text).not.toContain('timed out');
+
+      // The deadline starts again once the buyer has the chunk.
+      const stalled = await run('/stall');
+      expect(stalled.completed).toBe(true);
+      expect(stalled.text).toContain(`event: error\ndata: Upstream request timed out after ${TIMEOUT_MS}ms`);
+    });
+  });
+
   it('fails over a stalled buffered body before delivering anything to the buyer', async () => {
     let primaryCalls = 0;
     let fallbackCalls = 0;
@@ -268,6 +304,28 @@ describe('HttpRelay response-body deadlines', () => {
         expect(JSON.parse(new TextDecoder().decode(responses[0]?.body))).toEqual([0, 1, 2, 3, 4]);
       }
       expect(relay.getActiveCount()).toBe(0);
+    });
+  });
+});
+
+describe('HttpRelay redirects', () => {
+  it.each([307, 308])('does not follow a %i, so the buyer request never reaches another destination', async (status) => {
+    let collected = 0;
+    await withUpstream((req, res) => {
+      req.resume();
+      if (req.url === '/collect') {
+        collected++;
+        res.end('{"ok":true}');
+        return;
+      }
+      res.writeHead(status, { location: `http://${req.headers.host}/collect` });
+      res.end();
+    }, async (baseUrl) => {
+      const responses: SerializedHttpResponse[] = [];
+      const relay = new HttpRelay(config(baseUrl), { onResponse: (response) => responses.push(response) });
+      await relay.handleRequest(request('redirected', '/v1/chat/completions'));
+      expect(collected).toBe(0);
+      expect(responses[0]?.statusCode).not.toBe(200);
     });
   });
 });

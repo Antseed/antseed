@@ -235,6 +235,32 @@ test('requests still in flight are not failures; pruning in chunks keeps request
   }
 })
 
+test('a key\'s request count leaves out reads that call no model, before and after pruning', async () => {
+  const { dir, cleanup } = tempDir()
+  const store = new GatewayStore(dir)
+  try {
+    const { key } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+    const base = Date.UTC(2026, 0, 5, 10)
+    // An app polling the model list, then one prompt.
+    for (let index = 0; index < 5; index += 1) {
+      store.startRequest({ tag: `gw_list_${index}`, keyId: key.id, buyerIdentity: 'default', method: 'GET', path: '/v1/models', model: null, startedAt: base + index, endUser: null })
+      store.finishRequest(`gw_list_${index}`, { status: 200, buyerRequestId: null })
+    }
+    assert.equal(store.usageStats(key.id).requests, 0, 'model listings alone are no usage')
+    assert.equal(store.keyUsageSummaries([key.id], 0).get(key.id)?.requests, 0)
+    start(store, 'gw_prompt', key.id, base + 100)
+    store.finishRequest('gw_prompt', { status: 200, buyerRequestId: null })
+    assert.equal(store.usageStats(key.id).requests, 1)
+    assert.equal(store.listRequests({}).length, 6, 'the request log keeps every call')
+    assert.equal(await store.pruneRequests(base + 10_000, 4), 6)
+    assert.equal(store.usageStats(key.id).requests, 1, 'rolled-up listings stay out too')
+    assert.equal(store.keyUsageSummaries([key.id], 0).get(key.id)?.requests, 1)
+  } finally {
+    store.close()
+    cleanup()
+  }
+})
+
 test('a report by end user keeps the largest users and folds the rest into one row', () => {
   const { dir, cleanup } = tempDir()
   const store = new GatewayStore(dir)

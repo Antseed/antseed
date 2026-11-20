@@ -18,8 +18,11 @@ interface AuditorSetCacheV1 {
   events: AuditorSetEvent[]
 }
 
-/** Blocks re-read on every call instead of cached, so a reorg near the head cannot stick. */
-export const AUDITOR_SET_CONFIRMATION_BLOCKS = 64
+/**
+ * Blocks re-read on every call instead of cached, so a reorg near the head, or a node a little behind,
+ * cannot stick: two minutes at Base's 200 ms blocks, as the chain event cache (`REORG_BLOCKS`).
+ */
+export const AUDITOR_SET_CONFIRMATION_BLOCKS = 600
 
 export function auditorSetCachePath(dataDir: string): string {
   return join(dataDir, 'verifier', 'auditor-set.json')
@@ -41,6 +44,15 @@ export function approvedAuditorsAt(events: readonly AuditorSetEvent[], epochStar
     else approved.delete(address.toLowerCase())
   }
   return [...approved.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).map(([, address]) => address)
+}
+
+/**
+ * Auditors approved when the epoch started and revoked since. They stay in the epoch's rotation, so
+ * the assignment doesn't move, but they can no longer submit, so no work is given to them.
+ */
+export function revokedSinceEpochStart(events: readonly AuditorSetEvent[], epochStartedAt: number): Set<string> {
+  const approvedNow = new Set(approvedAuditorsAt(events, Number.MAX_SAFE_INTEGER))
+  return new Set(approvedAuditorsAt(events, epochStartedAt).filter((auditor) => !approvedNow.has(auditor)))
 }
 
 /**

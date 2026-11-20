@@ -11,7 +11,7 @@ import type { JWTPayload, JWTVerifyGetKey } from 'jose'
  *   - NRAS releases (v3 evidence_list rename + detached-EAR token): https://docs.nvidia.com/attestation/technical-docs-nras/latest/nras_releases.html
  *   - NVIDIA EAT claims (Intel Trust Authority mirror): https://docs.trustauthority.intel.com/main/articles/articles/ita/concept-gpu-attestation.html
  *
- * Why generic: NRAS is NVIDIA's own attestation service, not an AntSeed inference provider,
+ * Why generic: NRAS is NVIDIA's own attestation service, not an Antseed inference provider,
  * so the NVIDIA host is a sensible default here (overridable by env). Nothing about any
  * particular provider (hostnames, evidence field names) appears in this module.
  */

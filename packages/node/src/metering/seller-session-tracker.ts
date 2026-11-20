@@ -6,9 +6,10 @@ import type { SerializedHttpRequest } from '../types/http.js';
 import type { MeteringEvent, SessionMetrics, TokenCount } from '../types/metering.js';
 import type { MeteringStorage } from './storage.js';
 import type { ReceiptGenerator } from './receipt-generator.js';
-import { debugLog, debugWarn } from '../utils/debug.js';
+import { debugLog, debugWarn, isContentFreeLogging, upstreamErrorCode } from '../utils/debug.js';
 import { parseResponseUsage } from '../utils/response-usage.js';
 import { computeCostUsdc } from '../payments/pricing.js';
+import { estimatePromptTokens } from '@antseed/buyer-core';
 
 export interface SellerSessionState {
   sessionId: string;
@@ -134,8 +135,13 @@ export class SellerSessionTracker {
     return session;
   }
 
-  estimateTokens(inputBytes: number, outputBytes: number): TokenCount {
-    const inputTokens = Math.max(1, Math.round(inputBytes / 4));
+  /**
+   * Tokens of a request whose upstream reported no usage. The prompt counts its
+   * text plus a flat allowance per attachment: a base64 image counted by its
+   * bytes would be hundreds of thousands of tokens.
+   */
+  estimateTokens(requestBody: Uint8Array, outputBytes: number): TokenCount {
+    const inputTokens = Math.max(1, estimatePromptTokens(requestBody));
     const outputTokens = Math.max(1, Math.round(outputBytes / 4));
     return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, method: 'content-length', confidence: 'low' };
   }
@@ -173,8 +179,12 @@ export class SellerSessionTracker {
         confidence: 'high',
       };
       debugLog(`[SessionTracker] Metering: provider-usage tokens=${totalTokens} (in=${providerUsage.inputTokens} out=${providerUsage.outputTokens})`);
+    } else if (statusCode >= 400 || input.error) {
+      // A failed request is not charged, so it is not priced either.
+      tokens = { inputTokens: 0, outputTokens: 0, totalTokens: 0, method: 'fallback', confidence: 'low' };
+      debugLog(`[SessionTracker] Metering: failed request (status=${statusCode}), no tokens counted`);
     } else {
-      tokens = this.estimateTokens(inputBytes, outputBytes);
+      tokens = this.estimateTokens(request.body, outputBytes);
       debugLog(`[SessionTracker] Metering: estimated tokens=${tokens.totalTokens} from ${inputBytes}+${outputBytes} bytes`);
     }
 
@@ -398,10 +408,14 @@ export class SellerSessionTracker {
 /** Upper bound on a stored request error; enough for an upstream message, never a whole body. */
 const MAX_EVENT_ERROR_CHARS = 300;
 
-/** The message of an error response (`error.message`, `error`, or `message`), else its text, shortened. */
+/**
+ * The message of an error response (`error.message`, `error`, or `message`), else its text,
+ * shortened. In content-free mode only its error code: upstreams quote requests in messages.
+ */
 export function summarizeErrorBody(body: Uint8Array): string | null {
   const text = new TextDecoder().decode(body.subarray(0, 4096)).trim();
   if (!text) return null;
+  if (isContentFreeLogging()) return upstreamErrorCode(text);
   let message = text;
   try {
     const parsed = JSON.parse(text) as { error?: unknown; message?: unknown };

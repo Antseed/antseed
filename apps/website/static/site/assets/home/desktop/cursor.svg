@@ -1,0 +1,16 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="21.09" height="26.87" viewBox="0 0 21.09 26.87" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Cursor" filter="url(#filter0_d_0_6)">
+<path id="Vector" d="M4.595 3.59501V18.895L8.505 15.24L11.14 21.275L13.605 20.17L11.055 14.305H16.495L4.595 3.59501Z" fill="#0B0D0C" stroke-width="1.19" stroke-linejoin="round" stroke="white"/>
+</g>
+<defs>
+<filter id="filter0_d_0_6" x="-1.105" y="-0.679989" width="23.3" height="28.4" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset dy="1"/>
+<feGaussianBlur stdDeviation="2"/>
+<feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"/>
+<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_0_6"/>
+<feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_0_6" result="shape"/>
+</filter>
+</defs>
+</svg>

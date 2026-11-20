@@ -1,11 +1,11 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { unlinkSync } from 'node:fs'
 import { generateDstackQuote } from './dstack.js'
-import { nodeTeeCapability, decodeTeeTdxEvidence, tdxConfigKey, NODE_TEE_CAP_ID } from '../caps/tee-tdx.js'
+import { nodeTeeCapability, decodeTeeTdxEvidence, encodeTeeTdxEvidence, tdxConfigKey, NODE_TEE_CAP_ID } from '../caps/tee-tdx.js'
 import { computeReportData } from '../shared.js'
 
 interface Stub {
@@ -17,10 +17,10 @@ interface Stub {
 
 /**
  * A dstack guest-agent stub over a unix socket, with no mocks. It answers POST /GetQuote by
- * a call to `respond(reportDataHex)`. Return null to emit HTTP 500. This is the exact wire
- * contract generateDstackQuote must speak.
+ * a call to `respond(reportDataHex)` (null emits HTTP 500) and POST /Info with `info` (404 when
+ * absent). This is the exact wire contract generateDstackQuote must speak.
  */
-async function startDstackStub(respond: (reportDataHex: string) => unknown): Promise<Stub> {
+async function startDstackStub(respond: (reportDataHex: string) => unknown, info?: unknown): Promise<Stub> {
   const socketPath = join(tmpdir(), `ds-${randomBytes(6).toString('hex')}.sock`)
   let lastHex: string | undefined
   const server = createServer((req, res) => {
@@ -28,8 +28,13 @@ async function startDstackStub(respond: (reportDataHex: string) => unknown): Pro
     req.on('data', (c) => chunks.push(c as Buffer))
     req.on('end', () => {
       const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { report_data?: string }
-      lastHex = parsed.report_data
+      if (req.method === 'POST' && req.url === '/Info' && info !== undefined) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(info))
+        return
+      }
       if (req.method === 'POST' && req.url === '/GetQuote') {
+        lastHex = parsed.report_data
         const out = respond(parsed.report_data ?? '')
         if (out === null) { res.writeHead(500); res.end('boom'); return }
         res.writeHead(200, { 'content-type': 'application/json' })
@@ -85,6 +90,19 @@ describe('generateDstackQuote', () => {
   })
 })
 
+describe('dstack evidence envelope', () => {
+  it('roundtrips optional raw fields and rejects non-string values', () => {
+    const evidence = encodeTeeTdxEvidence(new Uint8Array([1]), undefined, undefined, { vmConfig: '{"vm":1}', rawEventLog: '[]' })
+    expect(decodeTeeTdxEvidence(evidence)).toMatchObject({ vmConfig: '{"vm":1}', rawEventLog: '[]' })
+    expect(decodeTeeTdxEvidence(encodeTeeTdxEvidence(new Uint8Array([1])))).not.toHaveProperty('vmConfig')
+    expect(decodeTeeTdxEvidence(encodeTeeTdxEvidence(new Uint8Array([1])))).not.toHaveProperty('rawEventLog')
+    for (const field of ['vmConfig', 'rawEventLog']) {
+      const invalid = new TextEncoder().encode(JSON.stringify({ quote: 'AQ==', [field]: {} }))
+      expect(() => decodeTeeTdxEvidence(invalid)).toThrow(`"${field}" is not a string`)
+    }
+  })
+})
+
 describe('node-tee capability — dstack source', () => {
   let stub: Stub | undefined
   afterEach(async () => { await stub?.close(); stub = undefined })
@@ -101,5 +119,62 @@ describe('node-tee capability — dstack source', () => {
     const evidence = await nodeTeeCapability.collect!({ nonce, peerId, config })
     const { quote } = decodeTeeTdxEvidence(evidence)
     expect(Buffer.from(quote).equals(computeReportData(nonce, peerId))).toBe(true)
+  })
+
+  it('binds the connection and ships the app compose and only the RTMR3 events of the agent event log', async () => {
+    const rtmr3Event = { imr: 3, event_type: 0x08000001, digest: '00', event: 'compose-hash', event_payload: 'ab'.repeat(32) }
+    const eventLog = JSON.stringify([{ imr: 0, event_type: 1, digest: '00', event: '', event_payload: '' }, rtmr3Event])
+    const appCompose = '{"runner":"docker-compose"}'
+    const vmConfig = '{"cpus":4}'
+    stub = await startDstackStub((rdHex) => ({ quote: rdHex, event_log: eventLog, vm_config: vmConfig }), { tcb_info: JSON.stringify({ app_compose: appCompose }) })
+    const nonce = new Uint8Array(randomBytes(32))
+    const peerId = 'a'.repeat(40)
+    const binding = 'c'.repeat(64)
+    const config = {
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'source')]: 'dstack',
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'dstack.socket')]: stub.socketPath,
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'channelBinding')]: binding,
+    }
+    const decoded = decodeTeeTdxEvidence(await nodeTeeCapability.collect!({ nonce, peerId, config }))
+    expect(Buffer.from(decoded.quote).equals(computeReportData(nonce, peerId, binding))).toBe(true)
+    expect(decoded.eventLog).toEqual([rtmr3Event])
+    expect(decoded.rawEventLog).toBe(eventLog)
+    expect(decoded.vmConfig).toBe(vmConfig)
+    expect(decoded.appCompose).toBe(appCompose)
+  })
+
+  it("ships the image's build record for the digest its compose runs", async () => {
+    const digest = `sha256:${'3'.repeat(64)}`
+    const appCompose = JSON.stringify({ docker_compose_file: JSON.stringify({ services: { seller: { image: `ghcr.io/antseed/tee-seller@${digest}` } } }) })
+    stub = await startDstackStub((rdHex) => ({ quote: rdHex }), { tcb_info: JSON.stringify({ app_compose: appCompose }) })
+    const record = { mediaType: 'application/vnd.dev.sigstore.bundle.v0.3+json' }
+    const urls: string[] = []
+    // The registry has no record for it, so it comes from GitHub's attestations API.
+    vi.stubGlobal('fetch', async (url: string) => {
+      urls.push(url)
+      return url.startsWith('https://api.github.com/') ? new Response(JSON.stringify({ attestations: [{ bundle: record }] })) : new Response('{}', { status: 404 })
+    })
+    try {
+      const config = {
+        [tdxConfigKey(NODE_TEE_CAP_ID, 'source')]: 'dstack',
+        [tdxConfigKey(NODE_TEE_CAP_ID, 'dstack.socket')]: stub.socketPath,
+      }
+      const decoded = decodeTeeTdxEvidence(await nodeTeeCapability.collect!({ nonce: new Uint8Array(32), peerId: 'a'.repeat(40), config }))
+      expect(decoded.imageBuild).toEqual(record)
+      expect(urls[0]).toMatch(/^https:\/\/ghcr\.io\/token\?scope=repository:antseed\/tee-seller:pull$/)
+      expect(urls.at(-1)).toContain(`/repos/Antseed/antseed/attestations/${digest}?`)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('still returns the quote when the agent has no Info', async () => {
+    stub = await startDstackStub((rdHex) => ({ quote: rdHex }))
+    const config = {
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'source')]: 'dstack',
+      [tdxConfigKey(NODE_TEE_CAP_ID, 'dstack.socket')]: stub.socketPath,
+    }
+    const decoded = decodeTeeTdxEvidence(await nodeTeeCapability.collect!({ nonce: new Uint8Array(32), peerId: 'a'.repeat(40), config }))
+    expect(decoded.appCompose).toBeUndefined()
   })
 })

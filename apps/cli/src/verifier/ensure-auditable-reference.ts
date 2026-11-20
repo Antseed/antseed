@@ -1,21 +1,28 @@
 import { join } from 'node:path'
+import { KBF_CALIBRATION_PASSES } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
 import { acquirePidFileLock } from './atomic-files.js'
 import { findVerifierModel } from './model-config.js'
-import { buildModelReference, type ReferenceRequestLimiter } from './model-reference.js'
+import { buildModelReference, calibrateReferenceSets, type ReferenceRequestLimiter } from './model-reference.js'
 import { loadConfiguredVerifierModelCatalog } from './openrouter-catalog.js'
 import {
   appendModelReferenceToBank,
-  inspectModelProbeBankPower,
-  inspectSellerProbeCapacity,
+  epochQuestionSetPath,
+  epochSetAwaitsGrowth,
+  epochSetCalibrationProblem,
   loadBankEnrollmentReference,
   loadBankProbeIndex,
+  loadEpochQuestionSet,
+  recordEpochQuestionPool,
+  recordEpochSetCalibration,
+  retiredEpochQuestionSetCount,
+  selectEpochQuestionSet,
+  type EpochQuestionSetV1,
+  type EpochSetGrowthV1,
 } from './probe-bank.js'
-import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { safeServiceSlug } from './slug.js'
 
 const dependencies = {
-  inspect: inspectModelProbeBankPower,
   loadSeed: loadBankEnrollmentReference,
   loadIndex: loadBankProbeIndex,
   catalog: loadConfiguredVerifierModelCatalog,
@@ -24,7 +31,7 @@ const dependencies = {
 }
 
 /** Pins a model's contrast models in a cloned config, so enrollment keeps the bank's contrasts. */
-function withContrastModels(config: VerifierCLIConfig, service: string, contrastModels: string[]): void {
+export function withContrastModels(config: VerifierCLIConfig, service: string, contrastModels: string[]): void {
   const models = config.models ?? {}
   const key = Object.keys(models).find((name) => findVerifierModel(config, name)?.[0] === service) ?? service
   config.models = { ...models, [key]: { ...models[key], contrastModels: [...contrastModels] } }
@@ -43,95 +50,31 @@ export function buildRequestLimits(maxRequests: number, configuredTotal: number 
   return { perRun: Math.min(maxRequests, total), total }
 }
 
-export async function ensureAuditableReference(input: {
-  model: string
-  banksDir: string
-  referencesDir: string
-  config: VerifierCLIConfig | undefined
-  maxRequests: number
-  buyerProxyPort?: number
-  /** Shared across models enrolled at the same time, so they respect one concurrency limit. */
-  requestLimiter?: ReferenceRequestLimiter
-  log?: (message: string) => void
-}, operations: typeof dependencies = dependencies): Promise<void> {
-  if (!Number.isSafeInteger(input.maxRequests) || input.maxRequests <= 0) {
-    throw new Error('enrollment requires an explicit positive integer request budget')
-  }
-  const lock = await acquirePidFileLock(join(input.banksDir, safeServiceSlug(input.model), '.enrollment.lock'))
-  try {
-    const status = await operations.inspect(input)
-    if (status.selectedProbeCount !== null) {
-      input.log?.(`bank ready: ${status.selectedProbeCount}/${status.totalProbeCount} probes; no enrollment calls needed`)
-      return
-    }
-    const initialReference = await operations.loadSeed(input.banksDir, input.model)
-    const config = structuredClone(input.config)
-    const entry = findVerifierModel(config, input.model)
-    if (!config?.referenceEndpoint || !entry) {
-      throw new Error(`no reference configuration for ${input.model}`)
-    }
-    if (initialReference) {
-      withContrastModels(config, entry[0], initialReference.contrasts.map((contrast) => contrast.model))
-    }
-    const limits = buildRequestLimits(input.maxRequests, config.referenceMaxRequestsPerBuild)
-    config.referenceMaxRequestsPerBuild = limits.total
-    const sizing = resolveReferenceSizingPolicy(config)
-    input.log?.(
-      `enrollment required: ${status.totalProbeCount} banked; maximum ${sizing.maximumProbeCount} probes, `
-      + `up to ${limits.perRun} physical requests in this run and ${limits.total} for the whole build (including retries and earlier runs)`,
-    )
-    const catalog = await operations.catalog(config)
-    const built = await operations.build({
-      model: input.model,
-      referencesDir: input.referencesDir,
-      config,
-      catalog,
-      buyerProxyPort: input.buyerProxyPort,
-      requestLimiter: input.requestLimiter,
-      initialReference,
-      log: input.log,
-      maxNewRequests: limits.perRun,
-    })
-    const appended = await operations.append({
-      banksDir: input.banksDir, model: input.model, reference: built.reference, cost: built.cost,
-      answeredContrastModelsByProbeId: built.answeredContrastModelsByProbeId,
-      exchanges: built.exchanges,
-    })
-    input.log?.(`enrolled +${appended.addedProbeCount} probes; ${appended.totalProbeCount} banked`)
-    const refreshed = await operations.inspect({ ...input, config })
-    if (refreshed.selectedProbeCount === null) {
-      throw new Error(`bank still fails audit readiness after enrollment; no seller audit started for ${input.model}`)
-    }
-    await built.finalize()
-    input.log?.(`bank ready after enrollment: ${refreshed.selectedProbeCount} probes`)
-  } finally {
-    await lock.release()
-  }
-}
-
 /**
- * Builds a brand-new reference (fresh questions) and appends it to the bank, keeping the bank's
- * contrast models. Used when a seller has seen too much of the bank for an audit or a close call's extra set.
+ * Builds a brand-new reference (fresh questions) and appends it to the epoch's bank. The epoch's first
+ * build takes its settings from the config and built-ins; later builds keep the bank's request
+ * settings and contrast models. Returns the ids of the questions it added.
  */
 export async function enrollFreshProbes(input: {
   model: string
   banksDir: string
   referencesDir: string
+  epoch: string
   config: VerifierCLIConfig | undefined
   maxRequests: number
   buyerProxyPort?: number
   requestLimiter?: ReferenceRequestLimiter
   log?: (message: string) => void
-}, operations: typeof dependencies = dependencies): Promise<{ addedProbeCount: number; costUsdMicros: string }> {
+}, operations: typeof dependencies = dependencies): Promise<{ addedProbeCount: number; addedProbeIds: string[]; costUsdMicros: string }> {
   if (!Number.isSafeInteger(input.maxRequests) || input.maxRequests <= 0) {
     throw new Error('enrollment requires an explicit positive integer request budget')
   }
   const lock = await acquirePidFileLock(join(input.banksDir, safeServiceSlug(input.model), '.enrollment.lock'))
   try {
-    const bank = await operations.loadIndex(input.banksDir, input.model)
-    // The bank's request settings (thinking suppression etc.), so the fresh probes are measured
-    // like the banked ones and the bank accepts them.
-    const settingsReference = bank ? await operations.loadSeed(input.banksDir, input.model) : undefined
+    const bank = await operations.loadIndex(input.banksDir, input.model, input.epoch)
+    // The bank's request settings (provider pin, thinking suppression etc.), so the fresh probes are
+    // measured like the banked ones and the bank accepts them.
+    const settingsReference = bank ? await operations.loadSeed(input.banksDir, input.model, input.epoch) : undefined
     const config = structuredClone(input.config)
     const entry = findVerifierModel(config, input.model)
     if (!config?.referenceEndpoint || !entry) {
@@ -152,12 +95,13 @@ export async function enrollFreshProbes(input: {
       buyerProxyPort: input.buyerProxyPort,
       ...(input.requestLimiter ? { requestLimiter: input.requestLimiter } : {}),
       log: input.log,
+      epoch: input.epoch,
       excludedProbeIds: new Set(bank?.probeIds ?? []),
       ...(settingsReference ? { settingsReference } : {}),
       maxNewRequests: limits.perRun,
     })
     const appended = await operations.append({
-      banksDir: input.banksDir, model: input.model, reference: built.reference, cost: built.cost,
+      banksDir: input.banksDir, model: input.model, epoch: input.epoch, reference: built.reference, cost: built.cost,
       answeredContrastModelsByProbeId: built.answeredContrastModelsByProbeId,
       exchanges: built.exchanges,
     })
@@ -166,68 +110,207 @@ export async function enrollFreshProbes(input: {
       `enrolled +${appended.addedProbeCount} fresh probes; ${appended.totalProbeCount} banked, `
       + `$${(Number(built.cost.totalUsdMicros) / 1_000_000).toFixed(6)}`,
     )
-    return { addedProbeCount: appended.addedProbeCount, costUsdMicros: built.cost.totalUsdMicros }
+    return { addedProbeCount: appended.addedProbeCount, addedProbeIds: appended.addedProbeIds, costUsdMicros: built.cost.totalUsdMicros }
   } finally {
     await lock.release()
   }
 }
 
-/** Fresh-question builds per model and run, at most, when sellers have seen too much of the bank. */
-export const SELLER_CAPACITY_ENROLLMENT_ROUNDS = 3
+/**
+ * Measures this epoch's set on the batches sellers will get, once: the audit set and each extra set
+ * get `KBF_CALIBRATION_PASSES` passes against the pinned reference, and their limit comes from these
+ * trials. A set that has a calibration is returned as it is; one without gets it here, and an
+ * interrupted calibration continues from its checkpoint, so nothing is paid for twice. Throws when
+ * the reference fails the sanity gates: the model is not audited this epoch. Returns a set without a
+ * calibration when its audit set fell under the power on its trials and waits to grow
+ * (`epochSetAwaitsGrowth`); such a set is not calibrated again until it has grown.
+ */
+export async function calibrateEpochQuestionSet(input: {
+  model: string
+  banksDir: string
+  config: VerifierCLIConfig | undefined
+  maxRequests: number
+  epoch: string
+  set: EpochQuestionSetV1
+  buyerProxyPort?: number
+  requestLimiter?: ReferenceRequestLimiter
+  fetchFn?: typeof fetch
+  log?: (message: string) => void
+  now?: () => number
+}, operations: {
+  catalog: typeof loadConfiguredVerifierModelCatalog
+  ask: typeof calibrateReferenceSets
+  record: typeof recordEpochSetCalibration
+} = { catalog: loadConfiguredVerifierModelCatalog, ask: calibrateReferenceSets, record: recordEpochSetCalibration }): Promise<EpochQuestionSetV1> {
+  const stopped = (set: EpochQuestionSetV1): EpochQuestionSetV1 => {
+    const problem = set.calibration ? epochSetCalibrationProblem(set, input.config) : null
+    if (problem) throw new Error(`the ${input.model} question set for epoch ${input.epoch} ${problem}; not audited this epoch`)
+    return set
+  }
+  if (input.set.calibration) return stopped(input.set)
+  if (epochSetAwaitsGrowth(input.set)) return input.set
+  const setPath = epochQuestionSetPath(input.banksDir, input.model, input.epoch)
+  const lock = await acquirePidFileLock(`${setPath}.calibration.lock`)
+  try {
+    const set = await loadEpochQuestionSet(input) ?? input.set
+    if (set.calibration) return stopped(set)
+    if (epochSetAwaitsGrowth(set)) return set
+    const references = [set.reference, ...set.extensions]
+    const config = structuredClone(input.config)
+    const entry = findVerifierModel(config, input.model)
+    if (!config?.referenceEndpoint || !entry) throw new Error(`no reference configuration for ${input.model}`)
+    withContrastModels(config, entry[0], set.reference.contrasts.map((contrast) => contrast.model))
+    const limits = buildRequestLimits(input.maxRequests, config.referenceMaxRequestsPerBuild)
+    input.log?.(`calibrating ${references.length} question set(s) on their own batches (${KBF_CALIBRATION_PASSES} pass(es))`)
+    const asked = await operations.ask({
+      model: input.model,
+      references,
+      passes: KBF_CALIBRATION_PASSES,
+      checkpointPath: `${setPath}.calibration.json`,
+      exchangesPath: `${setPath}.calibration.exchanges.json`,
+      config,
+      catalog: await operations.catalog(config),
+      maxNewRequests: limits.perRun,
+      maxRequests: limits.total,
+      ...(input.buyerProxyPort !== undefined ? { buyerProxyPort: input.buyerProxyPort } : {}),
+      ...(input.requestLimiter ? { requestLimiter: input.requestLimiter } : {}),
+      ...(input.fetchFn ? { fetchFn: input.fetchFn } : {}),
+      ...(input.log ? { log: input.log } : {}),
+      ...(input.now ? { now: input.now } : {}),
+    })
+    const recorded = await operations.record({
+      banksDir: input.banksDir, model: input.model, epoch: input.epoch, config: input.config,
+      calibrations: asked.calibrations, passes: KBF_CALIBRATION_PASSES, exchanges: asked.exchanges, cost: asked.cost,
+      ...(input.now ? { now: input.now } : {}),
+    })
+    await asked.finalize()
+    const growth = epochSetAwaitsGrowth(recorded)
+    if (growth) {
+      input.log?.(
+        `calibration: the audit set ${describeGrowth(growth)}, `
+        + `$${(Number(asked.cost.totalUsdMicros) / 1_000_000).toFixed(6)}`,
+      )
+      return recorded
+    }
+    const { hamming, total, errorRate, enrollmentErrorLimit } = recorded.calibration!
+    input.log?.(
+      `calibration: ${hamming}/${total} missed (${(errorRate * 100).toFixed(1)}%), enrollment limit ${(enrollmentErrorLimit * 100).toFixed(1)}%, `
+      + `$${(Number(asked.cost.totalUsdMicros) / 1_000_000).toFixed(6)}`,
+    )
+    if (errorRate > enrollmentErrorLimit) {
+      input.log?.(
+        `warning: the reference missed more than its enrollment limit; it may have changed since enrollment. `
+        + 'The audit goes on, with its limit from this calibration.',
+      )
+    }
+    return stopped(recorded)
+  } finally {
+    await lock.release()
+  }
+}
+
+/** Fresh-question builds per model and run, at most, to complete an epoch's question set. */
+export const EPOCH_SET_BUILD_ROUNDS = 4
 
 /**
- * Makes sure every seller about to be audited has enough questions it has never been given: one
- * audit set (unless it already has one this epoch). A bank can be ready
- * as a whole while the sellers audited in earlier epochs have seen most of it; for them, fresh
- * questions are built and added to the bank (up to `SELLER_CAPACITY_ENROLLMENT_ROUNDS` builds).
- * Returns the sellers still short afterwards, which will fail with BANK_EXHAUSTED.
+ * Calibrations per model and run, at most: the set's first, and two more after it grew because its audit
+ * set fell under the power on its own calibration. Each growth is sized from the rate it measured, so one
+ * is usually enough; a set still waiting to grow continues in the next run.
  */
-export async function ensureSellerProbeCapacity(input: {
+export const EPOCH_SET_CALIBRATIONS_PER_RUN = 3
+
+/**
+ * This epoch's question set for a model (`epochs/<epoch>/set.json`), built on the spot when there is
+ * none yet: fresh questions are built and added to the epoch's bank (up to `EPOCH_SET_BUILD_ROUNDS`
+ * builds per run, recorded so an interrupted run's builds still count) until they make an audit set and
+ * `extensionCount` extra sets, then calibrated. Only questions built for this epoch can be in it.
+ * When the audit set falls under the power on its calibration, the set grows (with more builds if its
+ * candidates don't reach) and is calibrated again, up to `EPOCH_SET_CALIBRATIONS_PER_RUN` calibrations.
+ * Throws when the builds or calibrations don't get there, or calibration stops the model; it is then
+ * not audited in this run.
+ */
+export async function ensureEpochQuestionSet(input: {
   model: string
   banksDir: string
   referencesDir: string
   config: VerifierCLIConfig | undefined
   maxRequests: number
   epoch: string
-  sellerPeerIds: readonly string[]
+  runId: string
+  extensionCount: number
   buyerProxyPort?: number
   requestLimiter?: ReferenceRequestLimiter
   log?: (message: string) => void
 }, operations: {
-  capacity: typeof inspectSellerProbeCapacity
+  select: typeof selectEpochQuestionSet
   enrollFresh: typeof enrollFreshProbes
-} = { capacity: inspectSellerProbeCapacity, enrollFresh: enrollFreshProbes }): Promise<string[]> {
-  if (input.sellerPeerIds.length === 0) return []
-  const shortSellers = async () => {
-    const capacity = await operations.capacity({
-      banksDir: input.banksDir, model: input.model, epoch: input.epoch,
-      sellerPeerIds: input.sellerPeerIds, config: input.config,
-    })
-    return capacity.sellers.filter((seller) => seller.unseenProbeCount < seller.neededProbeCount)
+  record: typeof recordEpochQuestionPool
+  calibrate: typeof calibrateEpochQuestionSet
+} = {
+  select: selectEpochQuestionSet, enrollFresh: enrollFreshProbes, record: recordEpochQuestionPool,
+  calibrate: calibrateEpochQuestionSet,
+}): Promise<EpochQuestionSetV1> {
+  if (!Number.isSafeInteger(input.maxRequests) || input.maxRequests <= 0) {
+    throw new Error('enrollment requires an explicit positive integer request budget')
   }
-  let short = await shortSellers()
-  for (let round = 1; round <= SELLER_CAPACITY_ENROLLMENT_ROUNDS && short.length > 0; round += 1) {
-    const worst = short.reduce((low, seller) => seller.unseenProbeCount < low.unseenProbeCount ? seller : low)
+  const select = () => operations.select({
+    banksDir: input.banksDir, model: input.model, epoch: input.epoch, runId: input.runId,
+    extensionCount: input.extensionCount, config: input.config,
+  })
+  const ready = async (set: EpochQuestionSetV1): Promise<EpochQuestionSetV1> => {
+    input.log?.(`question set for epoch ${input.epoch} ready: ${describeSet(set)}`)
+    return operations.calibrate({
+      model: input.model, banksDir: input.banksDir, config: input.config, maxRequests: input.maxRequests,
+      epoch: input.epoch, set, buyerProxyPort: input.buyerProxyPort,
+      ...(input.requestLimiter ? { requestLimiter: input.requestLimiter } : {}),
+      ...(input.log ? { log: input.log } : {}),
+    })
+  }
+  let selection = await select()
+  if (selection.status !== 'ready' && await retiredEpochQuestionSetCount(input) > 0) {
+    input.log?.(`a submit published the epoch ${input.epoch} question set, so its sellers are not asked it again; building a new one`)
+  }
+  let builds = 0
+  let calibrations = 0
+  for (;;) {
+    if (selection.status === 'ready') {
+      if (!selection.set.calibration) calibrations += 1
+      const set = await ready(selection.set)
+      const growth = epochSetAwaitsGrowth(set)
+      if (!growth) return set
+      if (calibrations >= EPOCH_SET_CALIBRATIONS_PER_RUN) {
+        throw new Error(`no question set for epoch ${input.epoch}: after ${calibrations} calibration(s) in this run, its audit set `
+          + `${describeGrowth(growth)}; the next run goes on`)
+      }
+      input.log?.(`growing the epoch ${input.epoch} question set: its audit set ${describeGrowth(growth)}`)
+      selection = await select()
+      continue
+    }
+    if (builds >= EPOCH_SET_BUILD_ROUNDS) break
+    builds += 1
     input.log?.(
-      `${short.length} seller(s) have too few unseen questions (lowest: ${worst.unseenProbeCount} of `
-      + `${worst.neededProbeCount} needed); building fresh questions (round ${round}/${SELLER_CAPACITY_ENROLLMENT_ROUNDS})`,
+      `building new questions for the epoch ${input.epoch} question set (build ${builds}/${EPOCH_SET_BUILD_ROUNDS}`
+      + `; ${selection.reason})`,
     )
     const enrolled = await operations.enrollFresh({
-      model: input.model, banksDir: input.banksDir, referencesDir: input.referencesDir, config: input.config,
+      model: input.model, banksDir: input.banksDir, referencesDir: input.referencesDir, epoch: input.epoch, config: input.config,
       maxRequests: input.maxRequests, buyerProxyPort: input.buyerProxyPort,
       ...(input.requestLimiter ? { requestLimiter: input.requestLimiter } : {}),
       ...(input.log ? { log: input.log } : {}),
     })
-    if (enrolled.addedProbeCount === 0) {
-      input.log?.('fresh enrollment added no questions; stopping')
-      break
-    }
-    short = await shortSellers()
+    await operations.record({ banksDir: input.banksDir, model: input.model, epoch: input.epoch, probeIds: enrolled.addedProbeIds })
+    selection = await select()
+    if (selection.status !== 'ready' && enrolled.addedProbeCount === 0) break
   }
-  if (short.length > 0) {
-    input.log?.(`${short.length} seller(s) still short of unseen questions; they will fail with BANK_EXHAUSTED`)
-  } else {
-    input.log?.('every seller has enough unseen questions')
-  }
-  return short.map((seller) => seller.sellerPeerId)
+  throw new Error(`no question set for epoch ${input.epoch}: ${selection.reason}`)
+}
+
+function describeGrowth(growth: EpochSetGrowthV1): string {
+  return `of ${growth.probeCount} questions reached power ${growth.power.toFixed(3)} on its calibration, under the `
+    + `${growth.minimumPower.toFixed(3)} needed; it grows to at least ${growth.requiredProbeCount} questions`
+}
+
+function describeSet(set: EpochQuestionSetV1): string {
+  return `${set.reference.probes.length} questions and ${set.extensions.length} extra set(s) of as many, `
+    + `from ${set.candidateProbeCount} new questions`
 }

@@ -10,7 +10,7 @@ import proverPlugin from './prover.js'
 export default verifierPlugin
 export const prover = proverPlugin
 
-// The AntSeed plugin contract this SDK implements (vendored; self-contained types).
+// The Antseed plugin contract this SDK implements (vendored; self-contained types).
 export type {
   AntseedPluginBase,
   AntseedVerifierPlugin,

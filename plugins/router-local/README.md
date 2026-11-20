@@ -4,9 +4,7 @@ Local router for AI coding tools. Drop-in replacement for `ANTHROPIC_BASE_URL` o
 
 ## Installation
 
-```bash
-antseed plugin add @antseed/router-local
-```
+`local` is the buyer's default router, so `antseed buyer start` installs this plugin when it isn't installed yet.
 
 ## Usage
 
@@ -14,7 +12,8 @@ antseed plugin add @antseed/router-local
 antseed buyer start
 
 # Then configure your tools:
-export ANTHROPIC_BASE_URL=http://localhost:8377
+export ANTHROPIC_BASE_URL=http://localhost:8377   # Anthropic clients, Claude Code
+export OPENAI_BASE_URL=http://localhost:8377/v1   # OpenAI clients
 ```
 
 Works with Claude Code, Aider, Continue.dev, OpenAI Codex, and any tool that supports custom base URLs.

@@ -111,4 +111,19 @@ describe('Seller response auth compatibility', () => {
       .find((message) => message.type === MessageType.VerificationResponseAuth)!;
     expect(decodeResponseAuth(authFrame.payload).requestHash).toBe(hashRequest(request));
   });
+
+  it('signs the body as the buyer sent it, not the body the seller wrote for its provider', async () => {
+    const conn = {
+      send: vi.fn(),
+      hasRemoteCapability: vi.fn((capability: string) => capability === CONNECTION_CAPABILITY_RESPONSE_AUTH_V1),
+    };
+    const request = { ...REQUEST, headers: { 'content-type': 'text/plain' }, body: new TextEncoder().encode(' { "model" : "test-model", "model": "test-model" } ') };
+
+    await serveRequest(conn, { ...request, headers: { ...request.headers } });
+
+    const authFrame = conn.send.mock.calls
+      .map(([frame]) => decodeFrame(frame)!.message)
+      .find((message) => message.type === MessageType.VerificationResponseAuth)!;
+    expect(decodeResponseAuth(authFrame.payload).requestHash).toBe(hashRequest(request));
+  });
 });

@@ -5,6 +5,37 @@ import { ConnectionState, toPeerId } from '@antseed/protocol';
 import type { OneOffChannelPlan } from '@antseed/protocol/messages';
 
 describe('BuyerPaymentNegotiator', () => {
+  describe('payment mux per peer', () => {
+    function negotiatorWithMuxes(): BuyerPaymentNegotiator {
+      const negotiator = Object.create(BuyerPaymentNegotiator.prototype) as BuyerPaymentNegotiator;
+      Object.assign(negotiator as object, { _muxes: new Map() });
+      return negotiator;
+    }
+    const connection = (state: ConnectionState) => {
+      const conn = { state, send: vi.fn(), on: vi.fn(), off: vi.fn() };
+      return conn as unknown as BuyerConnection & { state: ConnectionState; send: ReturnType<typeof vi.fn> };
+    };
+
+    it('sends over the live connection after a reconnect left the old connection\'s mux behind', () => {
+      const negotiator = negotiatorWithMuxes();
+      const peer = toPeerId('ab'.repeat(20));
+      const old = connection(ConnectionState.Open);
+      const first = negotiator.getOrCreatePaymentMux(peer, old);
+      expect(negotiator.getOrCreatePaymentMux(peer, old)).toBe(first);
+
+      // The seller restarts: a new connection registers before the old one's cleanup ran.
+      old.state = ConnectionState.Failed;
+      const fresh = connection(ConnectionState.Open);
+      const replaced = negotiator.getOrCreatePaymentMux(peer, fresh);
+      expect(replaced).not.toBe(first);
+      expect(replaced.sendsOver(fresh)).toBe(true);
+      // Work still finishing on the dead connection does not bring its mux back, nor does a closing one.
+      expect(negotiator.getOrCreatePaymentMux(peer, old)).toBe(replaced);
+      const closing = connection(ConnectionState.Closing);
+      expect(negotiator.getOrCreatePaymentMux(peer, closing)).toBe(replaced);
+    });
+  });
+
   describe('external spending auth header', () => {
     const payload = {
       channelId: `0x${'1'.repeat(64)}`,

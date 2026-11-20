@@ -16,8 +16,8 @@ afterEach(async () => {
   }
 });
 
-async function listen(maxInboundConnections: number): Promise<number> {
-  const manager = new ConnectionManager(undefined, { maxInboundConnections });
+async function listen(maxInboundConnections: number, maxInboundConnectionsPerIp?: number): Promise<number> {
+  const manager = new ConnectionManager(undefined, { maxInboundConnections, ...(maxInboundConnectionsPerIp ? { maxInboundConnectionsPerIp } : {}) });
   managers.push(manager);
   manager.setLocalIdentity(sellerIdentity);
   manager.setMetadataProvider(() => ({ peerId: sellerIdentity.peerId }) as never);
@@ -102,5 +102,13 @@ describe('ConnectionManager inbound connection limits', () => {
     await closed;
 
     expect(await settle(connectBuyer(port, 1))).toBeNull();
+  });
+
+  it('caps sockets from one IP at maxInboundConnectionsPerIp', async () => {
+    const port = await listen(10, 2);
+    expect(await settle(connectBuyer(port, 0))).toBeNull();
+    expect(await settle(connectBuyer(port, 1))).toBeNull();
+    // A third socket from the same address is closed on accept.
+    expect(await settle(connectBuyer(port, 2))).not.toBeNull();
   });
 });

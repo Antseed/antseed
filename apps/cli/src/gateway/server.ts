@@ -2,12 +2,12 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
+import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_HOLD_CODES, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
 import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
-import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
+import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, narrowPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
 import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
@@ -17,7 +17,8 @@ import { BUDGET_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
 import { OtlpExporter, observabilitySettings } from './observability.js'
 import { isEmptyPolicy, resolvePolicy } from './policy-resolver.js'
-import { END_USER_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug } from './request-shaping.js'
+import { END_USER_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug, requestedPolicy } from './request-shaping.js'
+import { keySavings, savingsJson } from './key-savings.js'
 import { ResponseUsageReader } from './response-usage.js'
 import { SPEND_FEED_UNAUTHORIZED_HINT, type SpendFeedState } from './spend-feed.js'
 import {
@@ -29,6 +30,7 @@ import {
   checkPaymentPayload,
   decodeHeaderJson,
   encodeHeaderJson,
+  type ContractSignatureCheck,
   type PaymentPayload,
   type PaymentRequired,
   type PaymentRequirements,
@@ -36,6 +38,17 @@ import {
   type X402Facilitator,
 } from './x402.js'
 import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRouter } from './store.js'
+import { GATEWAY_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
+import { streamFingerprint, type ResumableStream, type StreamResumeStore } from './stream-resume.js'
+import type { RetailPriceMap } from '@antseed/node/retail-prices'
+
+/** Largest 402 body the gateway holds back to check for the buyer's out-of-credits answer (which is well under 1 KiB). */
+const OUT_OF_CREDITS_REWRITE_MAX_BYTES = 16 * 1024
+/** A seller's video job hold lists at most a few dozen short job IDs. */
+const VIDEO_JOB_HOLD_MAX_BYTES = 64 * 1024
+const VIDEO_JOB_HOLD_CODE_SET: ReadonlySet<string> = new Set(Object.values(VIDEO_JOB_HOLD_CODES))
+/** Told to a key held back by video jobs that other keys of its buyer started. */
+const VIDEO_JOBS_HELD_MESSAGE = 'This seller is not starting new videos for this gateway until earlier videos are downloaded and paid for. Try again later, or use another seller.'
 
 /**
  * The gateway's own components (the console chat agent) call `/v1` as a key
@@ -43,6 +56,9 @@ import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRou
  * loopback only. Stripped from everything forwarded to the buyer.
  */
 export const GATEWAY_INTERNAL_KEY_HEADER = 'x-antseed-gateway-key'
+
+/** How long an out-of-credits 402 waits for the buyer's live wallet address before leaving it out. */
+const OUT_OF_CREDITS_ADDRESS_TIMEOUT_MS = 1_000
 
 const HOP_BY_HOP = new Set([
   'connection',
@@ -75,7 +91,7 @@ const MAX_LOGGED_CONTENT_BYTES = 64 * 1024
 const BUYER_RESTART_HOLD_MS = 120_000
 const BUYER_RETRY_INTERVAL_MS = 500
 /** On shutdown, requests in flight get this long to finish before they are closed. */
-const SHUTDOWN_DRAIN_MS = 60_000
+const SHUTDOWN_DRAIN_MS = GATEWAY_SHUTDOWN_DRAIN_MS
 const RETENTION_SWEEP_MS = 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 /** Why a key with caps cannot be served while its buyer's spend feed is not reporting. */
@@ -89,6 +105,8 @@ const SPEECH_PATH = '/v1/audio/speech'
 /** Set by the buyer: `1` when the served service also charges per unit, `0` when it does not. */
 const UNIT_PRICED_HEADER = 'x-antseed-unit-priced'
 const TOPUP_PATH = '/v1/key/topup'
+const KEY_REWARDS_PATH = '/v1/key/rewards'
+const KEY_SAVINGS_PATH = '/v1/key/savings'
 
 /**
  * `paid` routes reach a seller; the others are answered by the buyer for
@@ -97,6 +115,8 @@ const TOPUP_PATH = '/v1/key/topup'
 const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: boolean; local?: boolean }> = [
   { method: 'GET', prefix: KEY_INFO_PATH, paid: false, local: true },
   { method: 'POST', prefix: TOPUP_PATH, paid: false, local: true },
+  { method: 'GET', prefix: KEY_REWARDS_PATH, paid: false, local: true },
+  { method: 'GET', prefix: KEY_SAVINGS_PATH, paid: false, local: true },
   { method: 'GET', prefix: '/v1/models', paid: false },
   { method: 'POST', prefix: '/v1/messages', paid: true },
   { method: 'POST', prefix: '/v1/messages/count_tokens', paid: false },
@@ -104,6 +124,8 @@ const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: bool
   { method: 'POST', prefix: '/v1/responses', paid: true },
   { method: 'POST', prefix: '/v1/images/generations', paid: true },
   { method: 'POST', prefix: '/v1/images/edits', paid: true },
+  // Decision models (SystemOne): JSON with a `model`, answered like any model request.
+  { method: 'POST', prefix: '/v1/systemone', paid: true },
   // Text to speech: JSON in, the audio file streamed back as it is.
   { method: 'POST', prefix: SPEECH_PATH, paid: true },
   // Native video jobs, as the buyer serves them: queue, then poll retrieve until it streams the MP4 (charged on delivery).
@@ -147,6 +169,40 @@ interface ForwardedRequest {
   video: NativeVideoRoute | null
   /** Room left under the key's caps at admission (a video create's reserved allowance); null when nothing is capped. */
   remainingUsdc: number | null
+  /** Identifies a retry of this request (`streamFingerprint`); null when its stream is not kept for one. */
+  resumeKey: string | null
+}
+
+/** A buyer wallet's deposits, as decimal USDC strings. */
+export interface KeyWalletBalance {
+  available: string
+  reserved: string
+  /** Signed to sellers but not settled on-chain yet: still in `reserved`, no longer the buyer's to spend. */
+  pending: string
+  /** USDC in the wallet itself, not yet swept into deposits; null when unread. */
+  wallet: string | null
+  /** The most the wallet may hold in deposits; null when unread. */
+  creditLimit: string | null
+  /** The wallet's AntseedDeposits operator (withdrawals and rewards go there); null when none. */
+  operator: string | null
+  /** The buyer couldn't reach the chain; these are its last known values. */
+  stale: boolean
+}
+
+/** Buyer ANTS rewards for a key's paying wallet, on the gateway's chain. */
+export interface KeyRewards {
+  /** False when the chain has no rewards contracts. */
+  available: boolean
+  pendingAnts: string
+  currentEpoch: number | null
+  transfersEnabled: boolean
+}
+
+/** Retail vs paid for a key's requests with a retail price match, in USD. */
+export interface KeySavings {
+  retailUsd: number
+  paidUsd: number
+  matchedRequests: number
 }
 
 export interface GatewayServerOptions {
@@ -155,6 +211,12 @@ export interface GatewayServerOptions {
   buyerPort: number
   /** Wallet address of a buyer identity, for key holders' usage view. */
   identityAddress: (buyerIdentity: string) => Promise<string | null>
+  /** What the wallet paying for a key holds in deposits; `GET /v1/key` reports it. */
+  identityBalance?: (buyerIdentity: string, options?: { fresh?: boolean }) => Promise<KeyWalletBalance | null>
+  /** Rewards for a wallet address on the gateway's chain; `GET /v1/key/rewards` reports them. */
+  walletRewards?: (address: string) => Promise<KeyRewards | null>
+  /** Retail prices by canonical model key; `GET /v1/key/savings` compares them with what a key paid. Null when unreadable. */
+  retailPrices?: () => Promise<RetailPriceMap | null>
   spendFeedState: () => SpendFeedState
   refreshSpendFeed: () => Promise<void>
   /**
@@ -184,11 +246,19 @@ export interface GatewayServerOptions {
   buyerRestartHoldMs?: number
   /** How long `stop()` lets requests in flight finish before closing them; default SHUTDOWN_DRAIN_MS. */
   shutdownDrainMs?: number
+  /**
+   * Keeps streamed answers whose client dropped, so the client's retry gets
+   * the answer still being generated. Without it a dropped client cancels
+   * its generation.
+   */
+  streamResume?: StreamResumeStore | null
 }
 
 export interface GatewayTopupOptions {
   asset: () => Promise<X402Asset>
   facilitator: X402Facilitator
+  /** Accepts smart-account (ERC-1271) payers; without it only ECDSA signatures are accepted. */
+  checkContractSignature?: ContractSignatureCheck
   minUsdc: number
   maxUsdc: number
 }
@@ -260,7 +330,12 @@ export class GatewayServer {
     this._port = 0
     if (this._retentionTimer) clearInterval(this._retentionTimer)
     this._retentionTimer = null
+    // No retry can reach a stopping gateway: cancel the streams waiting for one. Streams a client is
+    // reading finish through the drain below, like any other request in flight.
+    const streamResume = this._options.streamResume ?? null
+    streamResume?.close()
     if (!server) {
+      streamResume?.disposeAll()
       await this._exporter.stop()
       return
     }
@@ -271,6 +346,7 @@ export class GatewayServer {
     drain.unref?.()
     await closed
     clearTimeout(drain)
+    streamResume?.disposeAll()
     await this._exporter.stop()
   }
 
@@ -287,6 +363,11 @@ export class GatewayServer {
     const method = req.method ?? 'GET'
     const path = req.url ?? '/'
     const pathname = path.split('?')[0]!
+    // Keyless, so a liveness check doesn't read as a failed sign-in in the log.
+    if (method === 'GET' && pathname === '/healthz') {
+      sendJson(res, 200, { status: 'ok' })
+      return
+    }
     if (this._options.console && (pathname === '/console' || pathname.startsWith('/console/'))) {
       if (await this._options.console.handle(req, res)) return
     }
@@ -301,8 +382,11 @@ export class GatewayServer {
     const { key, context } = authenticated
 
     if (route.local) {
+      const fresh = new URLSearchParams(path.split('?')[1] ?? '').get('fresh') === '1'
       if (route.prefix === TOPUP_PATH) await this._topup(req, res, key)
-      else sendJson(res, 200, { data: await this._keyInfo(key) })
+      else if (route.prefix === KEY_REWARDS_PATH) sendJson(res, 200, { data: await this._keyRewards(key) })
+      else if (route.prefix === KEY_SAVINGS_PATH) sendJson(res, 200, { data: await this._keySavings(key) })
+      else sendJson(res, 200, { data: await this._keyInfo(key, fresh) })
       return
     }
 
@@ -342,7 +426,7 @@ export class GatewayServer {
       model = preset.model
     }
 
-    const policy = this._routingPolicy(res, route, key, context, preset, model)
+    const policy = this._routingPolicy(res, route, key, context, preset, model, requestedPolicy(firstHeader(req.headers[ANTSEED_REQUIRE_TEE_HEADER]) || undefined))
     if (!policy.allowed) return
     const video = nativeVideoRoute({ method, path: route.prefix, body })
     const videoJob = video?.action === 'retrieve' && video.resourceId ? videoJobKey(video.protocol, video.resourceId) : undefined
@@ -354,6 +438,18 @@ export class GatewayServer {
     // Read from the buyer now, not from the last poll: a buyer just replaced by an older one must not start the job.
     if (video?.action === 'create' && route.paid && this._options.accounting.hasBudgets(key, context) && !await this._videoBudgetEnforced()) {
       sendError(res, 503, 'api_error', 'buyer_upgrade_required', 'Videos cannot be started on a key with spend limits until the Antseed buyer is updated: this buyer cannot check a video\'s price against the limit before it starts.')
+      return
+    }
+    // A client that lost its connection mid-stream sends the same request again: it gets the answer
+    // already being generated, from the start, instead of a new (and newly paid) generation.
+    const streamResume = this._options.streamResume ?? null
+    const resumeKey = streamResume && route.paid && !video && method === 'POST'
+      ? streamFingerprint(key.id, method, route.path, generationRequirements(req.headers, policy.headers), body)
+      : null
+    const resumed = resumeKey ? streamResume!.claim(resumeKey) : null
+    if (resumed) {
+      this._log(`gateway resumed a dropped stream for its retry: key=${key.id} tag=${resumed.tag}`)
+      resumed.resume(res)
       return
     }
     const admission = this._admit(res, route, key, context, { videoCreate: video?.action === 'create', ...(videoJob ? { videoJob } : {}) })
@@ -375,6 +471,7 @@ export class GatewayServer {
       modelListPolicy: route.prefix === '/v1/models' && policy.policy.allowedModels ? policy.policy : null,
       video,
       remainingUsdc: admission.remainingUsdc,
+      resumeKey,
     }
     try {
       this._options.store.startRequest({
@@ -478,8 +575,11 @@ export class GatewayServer {
     context: KeyContext,
     preset: PresetRecord | null,
     model: string | null,
+    requested: RoutingPolicy | null = null,
   ): { allowed: false } | { allowed: true; headers: Record<string, string>; policy: RoutingPolicy } {
-    const { policy } = resolvePolicy(this._options.store, { key, preset, member: context.member, workspace: context.workspace })
+    const resolved = resolvePolicy(this._options.store, { key, preset, member: context.member, workspace: context.workspace }).policy
+    // The request's own requirements only narrow its key's.
+    const policy = requested ? narrowPolicy(resolved, requested) : resolved
     if ((route.paid || model) && !policyAllowsModel(policy, model)) {
       sendError(res, 403, 'permission_error', 'model_not_allowed', model
         ? `Model "${model}" is not allowed for this API key`
@@ -571,6 +671,71 @@ export class GatewayServer {
   }
 
   /**
+   * A seller's video job hold as `key` may see it: only the jobs it created.
+   * When none of the listed jobs are the key's, it is told the gateway is held
+   * back, with no job. Any other 409, and one that is not a JSON object (it
+   * cannot carry a list), passes on unchanged; null for an empty body.
+   */
+  private _ownVideoJobHold(key: ApiKeyRecord, body: Buffer): Buffer | null {
+    if (body.length === 0) return null
+    const error = jsonObject(parseJsonBody(body, undefined)?.['error'])
+    const code = error?.['code']
+    if (!error || typeof code !== 'string' || !VIDEO_JOB_HOLD_CODE_SET.has(code)) return body
+    const listed = error['jobs']
+    const jobs = Array.isArray(listed)
+      ? listed.flatMap((entry): Array<{ id: string; protocol: string }> => {
+        const job = jsonObject(entry)
+        const id = job?.['id']
+        const protocol = job?.['protocol']
+        if (typeof id !== 'string' || typeof protocol !== 'string' || id.length === 0 || id.length > 256) return []
+        try {
+          return this._ownsVideoJob(key, videoJobKey(protocol, id), id) ? [{ id, protocol }] : []
+        } catch {
+          return []
+        }
+      })
+      : []
+    const message = error['message']
+    const answer = jobs.length > 0 && typeof message === 'string'
+      ? { error: { code, message, jobs } }
+      : { error: { code: 'video_jobs_held', message: VIDEO_JOBS_HELD_MESSAGE, jobs: [] } }
+    return Buffer.from(JSON.stringify(answer))
+  }
+
+  /** The buyer's out-of-credits 402 rewritten for the key's workspace, or null to pass it on unchanged. */
+  private async _workspaceOutOfCredits(key: ApiKeyRecord, body: Buffer): Promise<Buffer | null> {
+    // Any other 402 (a seller's own, say) passes through without a store read or an address lookup.
+    const parsed = parseBuyerOutOfCredits(body)
+    if (!parsed) return null
+    try {
+      const workspace = this._options.store.getWorkspace(key.workspaceId)
+      if (!workspace) return null
+      // Name a transfer address only when the key pays from the workspace's wallet, and only as the
+      // running buyer reports it: the address cached on the workspace is for display and can be stale
+      // (a replaced identity, or one the buyer was handed in its environment). No live answer in time,
+      // no address: the console instructions still apply.
+      const walletAddress = key.buyerIdentity === workspace.buyerIdentity
+        ? await this._liveIdentityAddress(key.buyerIdentity, OUT_OF_CREDITS_ADDRESS_TIMEOUT_MS)
+        : null
+      return renderWorkspaceOutOfCredits(parsed, { name: workspace.name, walletAddress })
+    } catch (error) {
+      this._log(`gateway could not read workspace ${key.workspaceId}: ${errorMessage(error)}`)
+      return null
+    }
+  }
+
+  /** The buyer's live address for an identity, or null when it fails or takes longer than `timeoutMs`. */
+  private async _liveIdentityAddress(buyerIdentity: string, timeoutMs: number): Promise<string | null> {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs) })
+    try {
+      return await Promise.race([this._options.identityAddress(buyerIdentity).catch(() => null), timeout])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  /**
    * Sends an admitted request to the buyer and streams the answer back.
    * Every path must finish the request (and so release or start expiring
    * its hold); an unexpected throw must not leak it.
@@ -612,6 +777,8 @@ export class GatewayServer {
 
       let clientClosed = false
       let finished = false
+      // The answer, when it is kept for a retry of this request (see stream-resume.ts).
+      let resumable: ResumableStream | null = null
       finish =(status: number, buyerRequestId: string | null): void => {
         if (finished) return
         finished = true
@@ -728,12 +895,23 @@ export class GatewayServer {
           responseHeaders.connection = 'close'
           // The request log is keyed by this tag. The buyer's x-antseed-request-id is a different id.
           responseHeaders['x-antseed-gateway-tag'] = tag
+          // A streamed answer is kept while it streams, so a client that drops can take it up again with a retry.
+          if (request.resumeKey !== null && status === 200 && contentType.startsWith('text/event-stream') && !request.modelListPolicy) {
+            resumable = this._options.streamResume?.start(request.resumeKey, tag, status, responseHeaders, upstreamRes, () => {
+              // Nobody came back for it: cancel the generation and log it as a client that left.
+              clientClosed = true
+              closedByClient()
+              upstream.destroy()
+            }) ?? null
+          }
           upstreamRes.once('error', () => {
             finish!(status, buyerRequestId)
             // The buyer's answer broke off: end the client's too, rather than leave it waiting.
-            res.destroy()
+            if (resumable) resumable.fail()
+            else res.destroy()
           })
-          res.once('close', () => finish!(status, buyerRequestId))
+          // A client that dropped while its answer is kept is not finished yet: the answer is still being generated.
+          res.once('close', () => { if (!resumable?.waitingForRetry) finish!(status, buyerRequestId) })
           const modelListPolicy = request.modelListPolicy
           if (modelListPolicy && status === 200) {
             const chunks: Buffer[] = []
@@ -746,7 +924,79 @@ export class GatewayServer {
             })
             return
           }
+          // The buyer's out-of-credits answer names the desktop app and the CLI; here the funds are the workspace's.
+          // Only a small body can be that answer; a larger one streams through unchanged, with backpressure.
+          if (status === 402 && contentType.startsWith('application/json')) {
+            const chunks: Buffer[] = []
+            let buffered = 0
+            let passThrough = false
+            const collect = (chunk: Buffer): void => {
+              chunks.push(chunk)
+              buffered += chunk.length
+              if (buffered <= OUT_OF_CREDITS_REWRITE_MAX_BYTES) return
+              passThrough = true
+              upstreamRes.off('data', collect)
+              res.writeHead(status, responseHeaders)
+              res.write(Buffer.concat(chunks))
+              upstreamRes.pipe(res)
+            }
+            upstreamRes.on('data', collect)
+            upstreamRes.once('end', async () => {
+              if (passThrough) {
+                finish!(status, buyerRequestId)
+                return
+              }
+              const original = Buffer.concat(chunks)
+              const answer = await this._workspaceOutOfCredits(key, original) ?? original
+              delete responseHeaders['transfer-encoding']
+              res.writeHead(status, { ...responseHeaders, 'content-length': String(answer.length) })
+              res.end(answer)
+              finish!(status, buyerRequestId)
+            })
+            return
+          }
+          // A seller holding back a video create lists the buyer's jobs that hold it back. The buyer is shared by
+          // every key of its identity, so the key is shown only the jobs it created.
+          if (status === 409 && request.video?.action === 'create' && contentType.startsWith('application/json')) {
+            const chunks: Buffer[] = []
+            let buffered = 0
+            let passThrough = false
+            const collect = (chunk: Buffer): void => {
+              chunks.push(chunk)
+              buffered += chunk.length
+              if (buffered <= VIDEO_JOB_HOLD_MAX_BYTES) return
+              // Too large to be a hold: nothing is forwarded rather than an unfiltered list.
+              passThrough = true
+              upstreamRes.off('data', collect)
+              upstreamRes.resume()
+            }
+            upstreamRes.on('data', collect)
+            upstreamRes.once('end', () => {
+              const answer = passThrough ? null : this._ownVideoJobHold(key, Buffer.concat(chunks))
+              const body = answer ?? Buffer.from(JSON.stringify({ error: { code: 'video_jobs_held', message: VIDEO_JOBS_HELD_MESSAGE, jobs: [] } }))
+              delete responseHeaders['transfer-encoding']
+              res.writeHead(status, { ...responseHeaders, 'content-length': String(body.length) })
+              res.end(body)
+              finish!(status, buyerRequestId)
+            })
+            return
+          }
           res.writeHead(status, responseHeaders)
+          if (resumable) {
+            const kept = resumable
+            kept.attach(res)
+            upstreamRes.on('data', (chunk: Buffer) => kept.append(chunk))
+            upstreamRes.once('end', () => {
+              finish!(status, buyerRequestId)
+              kept.end()
+            })
+            upstreamRes.once('close', () => {
+              if (upstreamRes.complete) return
+              finish!(status, buyerRequestId)
+              kept.fail()
+            })
+            return
+          }
           upstreamRes.pipe(res)
           upstreamRes.once('end', () => {
             // An interrupted download is not charged: the job stays committed until it is downloaded in full.
@@ -800,9 +1050,13 @@ export class GatewayServer {
         gatewayError = { code: 'client_closed_request', message: 'Client closed the request before the buyer answered' }
         finish!(499, null)
       }
-      // A client that disconnects mid-stream should stop the paid request too.
+      // A client that disconnects mid-stream should stop the paid request too, unless its answer is kept for its retry.
       res.once('close', () => {
         if (res.writableFinished) return
+        if (resumable?.detach(res)) {
+          this._log(`gateway client dropped a stream, kept for its retry: key=${key.id} tag=${tag}`)
+          return
+        }
         clientClosed = true
         if (retryTimer) {
           // Waiting for the buyer, which never saw this request.
@@ -898,7 +1152,13 @@ export class GatewayServer {
       sendError(res, 400, 'invalid_request_error', 'invalid_payload', 'PAYMENT-SIGNATURE is not base64-encoded JSON')
       return
     }
-    const localError = checkPaymentPayload(payment, requirements, asset, Math.floor(Date.now() / 1000))
+    let localError: string | null
+    try {
+      localError = await checkPaymentPayload(payment, requirements, asset, Math.floor(Date.now() / 1000), topup.checkContractSignature)
+    } catch (error) {
+      this._log(`gateway top-up: smart-account signature check failed: key=${key.id}: ${errorMessage(error)}`)
+      localError = 'unexpected_verify_error'
+    }
     if (localError) {
       paymentRequired(localError)
       return
@@ -956,10 +1216,39 @@ export class GatewayServer {
     }
   }
 
-  private async _keyInfo(key: ApiKeyRecord) {
+  /** `GET /v1/key/rewards`: the paying wallet's buyer rewards; null when they can't be read. */
+  private async _keyRewards(key: ApiKeyRecord) {
+    const address = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
+    if (!address || !this._options.walletRewards) return null
+    const rewards = await this._options.walletRewards(address).catch(() => null)
+    if (!rewards) return null
+    return {
+      available: rewards.available,
+      address,
+      pending_ants: rewards.pendingAnts,
+      current_epoch: rewards.currentEpoch,
+      transfers_enabled: rewards.transfersEnabled,
+    }
+  }
+
+  /**
+   * `GET /v1/key/savings`: this key's requests at retail prices vs what it
+   * paid, over the models with a retail price. Null when prices can't be read
+   * or nothing matched.
+   */
+  private async _keySavings(key: ApiKeyRecord) {
+    const prices = this._options.retailPrices ? await this._options.retailPrices().catch(() => null) : null
+    if (!prices) return null
+    return savingsJson(keySavings(this._options.store.usageByModel(key.id), prices))
+  }
+
+  private async _keyInfo(key: ApiKeyRecord, fresh = false) {
     const spent = this._options.store.spendByPeriod({ keyId: key.id })
     const usage = this._options.store.usageStats(key.id)
-    const buyerAddress = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
+    const [buyerAddress, balance] = await Promise.all([
+      this._options.identityAddress(key.buyerIdentity).catch(() => null),
+      this._options.identityBalance?.(key.buyerIdentity, { fresh }).catch(() => null) ?? Promise.resolve(null),
+    ])
     // The caps admission enforces: the lower of the admins' and the owner's.
     const caps = effectiveKeyLimits(key)
     const limits = Object.fromEntries(BUDGET_PERIODS.map((period) => {
@@ -979,6 +1268,19 @@ export class GatewayServer {
       topup_enabled: key.topupEnabled && key.buyerIdentity !== DEFAULT_BUYER_IDENTITY && Boolean(this._options.topup),
       // The wallet that pays sellers for this key's requests.
       buyer_address: buyerAddress,
+      // Its deposits (public on-chain for that address), so an app on this key
+      // can show the balance it spends from. Null when the buyer can't say.
+      balance: balance
+        ? {
+            available_usd: balance.available,
+            reserved_usd: balance.reserved,
+            pending_usd: balance.pending,
+            wallet_usd: balance.wallet,
+            credit_limit_usd: balance.creditLimit,
+            operator: balance.operator,
+            stale: balance.stale,
+          }
+        : null,
       usage: {
         requests: usage.requests,
         spent_usd: usdcToDecimalString(usage.spentUsdc),
@@ -1078,6 +1380,48 @@ function parseJsonBody(body: Buffer, contentType: string | undefined): Record<st
   } catch {
     return null
   }
+}
+
+/** What a gateway key holder is told when the workspace wallet cannot pay a seller. */
+export function workspaceOutOfCreditsMessage(workspace: { name: string; walletAddress: string | null }): string {
+  const send = workspace.walletAddress ? `, or send USDC on Base to the workspace wallet ${workspace.walletAddress}` : ''
+  return `This API key's workspace (${workspace.name}) is out of Antseed credits for this request. `
+    + `A workspace admin can add funds in the gateway console under Wallet & Funding${send}, then retry. `
+    + 'Free sellers need no funds: pin one as <peerId>@<model>.'
+}
+
+/** The buyer's out-of-credits 402, parsed: its JSON root, the error object and which API format it is in. */
+type BuyerOutOfCredits = { root: Record<string, unknown>; error: Record<string, unknown>; anthropic: boolean }
+
+/** Parses `body` as the buyer's 402 for a wallet with too few credits; null for any other body. */
+function parseBuyerOutOfCredits(body: Buffer): BuyerOutOfCredits | null {
+  const root = parseJsonBody(body, undefined)
+  const error = jsonObject(root?.['error'])
+  const message = typeof error?.['message'] === 'string' ? error['message'] : null
+  if (!root || !error || message === null) return null
+  // OpenAI format: code antseed_buyer_fault, param insufficient_deposits.
+  // Anthropic format: type antseed_buyer_fault, the reason in brackets at the end of the message.
+  const openAi = error['code'] === ANTSEED_BUYER_FAULT_ERROR_CODE && error['param'] === 'insufficient_deposits'
+  const anthropic = error['type'] === ANTSEED_BUYER_FAULT_ERROR_CODE && message.endsWith('(insufficient_deposits)')
+  if (!openAi && !anthropic) return null
+  return { root, error, anthropic }
+}
+
+/**
+ * The parsed out-of-credits 402 with its message pointed at the workspace's funding instead of the
+ * desktop app and the CLI. Only the message changes: the status, type, code and param stay as the
+ * buyer sent them.
+ */
+function renderWorkspaceOutOfCredits(parsed: BuyerOutOfCredits, workspace: { name: string; walletAddress: string | null }): Buffer {
+  const text = workspaceOutOfCreditsMessage(workspace)
+  parsed.error['message'] = parsed.anthropic ? `${text} (insufficient_deposits)` : text
+  return Buffer.from(JSON.stringify(parsed.root))
+}
+
+/** The buyer's out-of-credits 402 rewritten for the workspace (see renderWorkspaceOutOfCredits). Null for any other body. */
+export function workspaceOutOfCreditsBody(body: Buffer, workspace: { name: string; walletAddress: string | null }): Buffer | null {
+  const parsed = parseBuyerOutOfCredits(body)
+  return parsed ? renderWorkspaceOutOfCredits(parsed, workspace) : null
 }
 
 function jsonObject(value: unknown): Record<string, unknown> | null {
@@ -1192,6 +1536,7 @@ const STRIPPED_HEADERS = new Set([
   GATEWAY_CONTROL_HEADER,
   GATEWAY_INTERNAL_KEY_HEADER,
   END_USER_HEADER,
+  ANTSEED_REQUIRE_TEE_HEADER,
   // Proxy-internal hooks for the local verifier; a key holder must not choose them.
   'x-antseed-request-id',
   'x-antseed-capture-response-auth-preimages',
@@ -1212,6 +1557,26 @@ function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttp
     headers[name] = value
   }
   return headers
+}
+
+/**
+ * What decides which seller generates a request and how, besides its body: the
+ * effective routing policy sent to the buyer, and the forwarded headers that
+ * pick a seller or shape the answer (`x-antseed-*`, such as a pinned peer or a
+ * TEE requirement, and `anthropic-*`). A retry only takes over a dropped stream
+ * generated under the same ones. Headers a client changes between attempts
+ * (ids, retry counts) are not among them.
+ */
+function generationRequirements(incoming: http.IncomingHttpHeaders, policyHeaders: Record<string, string>): string[] {
+  const requirements: string[] = []
+  const policy = policyHeaders[ROUTING_POLICY_HEADER]
+  if (policy) requirements.push(`policy:${policy}`)
+  for (const [name, value] of Object.entries(forwardedHeaders(incoming))) {
+    const normalized = name.toLowerCase()
+    if (value === undefined || (!normalized.startsWith('x-antseed-') && !normalized.startsWith('anthropic-'))) continue
+    requirements.push(`${normalized}:${Array.isArray(value) ? value.join(',') : String(value)}`)
+  }
+  return requirements
 }
 
 function truncateContent(body: Buffer): string {

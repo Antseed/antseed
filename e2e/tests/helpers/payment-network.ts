@@ -269,6 +269,7 @@ export function usePaymentNetwork(label: string) {
     sellerNode: null as AntseedNode | null,
     buyerNode: null as AntseedNode | null,
     get rpcCallLog() { return rpcCallLog; },
+    get sellerDataDir() { return sellerDataDir; },
     setupRpc,
     setupProxyNetwork,
   };

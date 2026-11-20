@@ -16,6 +16,8 @@ export interface ProviderEvidence {
   ingredients?: Pick<BindingIngredients, 'peerId' | 'e2ePubkey' | 'keysetDigest'>
   /** Provider GPU CC evidence for seller-provider-gpu-cc, when the provider offers it. */
   gpuEvidence?: NvidiaGpuEvidence
+  /** The https origin the quote was fetched from, without following redirects. */
+  origin?: string
 }
 
 /** A provider adapter. It uses the buyer nonce and the process env to fetch the provider's evidence. */

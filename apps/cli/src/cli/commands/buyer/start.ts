@@ -9,6 +9,7 @@ import { getGlobalOptions } from '../types.js'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
+import { networkNodeOptions } from '../../../config/network.js'
 import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
@@ -28,6 +29,7 @@ import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '
 import { buyerSettingOverrides, resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
 import type { BuyerCLIConfig } from '../../../config/types.js'
 import { BuyerTelemetry } from '../../../telemetry/buyer.js'
+import { formatToolHints, toolHintBaseUrl, type ToolHint } from '@antseed/router-core'
 
 const SHUTDOWN_DEADLINE_MS = BUYER_SHUTDOWN_DEADLINE_MS
 
@@ -87,6 +89,20 @@ export function ignoreBrokenPipes(streams: NodeJS.EventEmitter[] = [process.stdo
   }
 }
 
+/**
+ * The "Configure your tools" lines printed once the proxy listens. OpenAI
+ * clients need the base URL with /v1; Anthropic clients use the root.
+ */
+export function buyerToolHintLines(proxyUrl: string, toolHints: ToolHint[]): string[] {
+  if (toolHints.length > 0) {
+    return formatToolHints(toolHints, proxyUrl).map((line) => `  ${line}`)
+  }
+  return [
+    `  export ANTHROPIC_BASE_URL=${toolHintBaseUrl('ANTHROPIC_BASE_URL', proxyUrl)}`,
+    `  export OPENAI_BASE_URL=${toolHintBaseUrl('OPENAI_BASE_URL', proxyUrl)}`,
+  ]
+}
+
 export function resolveBuyerRouterName(options: { router?: string }): string {
   return (options.router as string | undefined) ?? 'local'
 }
@@ -94,11 +110,12 @@ export function resolveBuyerRouterName(options: { router?: string }): string {
 export function buildBuyerBootstrapEntries(
   configuredBootstrapNodes: string[] | undefined,
   localSeederDhtPort?: number,
+  noOfficialBootstrap = false,
 ): string[] {
   const configured = Array.isArray(configuredBootstrapNodes)
     ? configuredBootstrapNodes.filter((entry) => typeof entry === 'string' && entry.trim().length > 0)
     : []
-  const baseEntries = configured.length > 0
+  const baseEntries = configured.length > 0 || noOfficialBootstrap
     ? configured
     : OFFICIAL_BOOTSTRAP_NODES.map((node) => `${node.host}:${node.port}`)
   const entries = [...baseEntries]
@@ -267,7 +284,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       })
 
       let router
-      let toolHints: Array<{ name: string; envVar: string }> = []
+      let toolHints: ToolHint[] = []
       const routerName = resolveBuyerRouterName({ router: options.router as string | undefined })
 
       if (options.instance) {
@@ -315,7 +332,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       }
 
       const seederInfo = await getLocalSeederInfo(globalOpts.dataDir)
-      const allBootstrapEntries = buildBuyerBootstrapEntries(config.network?.bootstrapNodes, seederInfo?.dhtPort)
+      const allBootstrapEntries = buildBuyerBootstrapEntries(config.network?.bootstrapNodes, seederInfo?.dhtPort, config.network?.noOfficialBootstrap)
       const bootstrapNodes = toBootstrapConfig(parseBootstrapList(allBootstrapEntries))
 
       const nodeSpinner = ora('Connecting to P2P network...').start()
@@ -390,6 +407,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           maxPerRequestUsdc: config.payments?.maxPerRequestUsdc ?? '300000',
           maxReserveAmountUsdc: config.payments?.maxReserveAmountUsdc ?? '1000000',
           ...(config.payments?.maxVideoRequestUsdc ? { maxVideoRequestUsdc: config.payments.maxVideoRequestUsdc } : {}),
+          ...(config.payments?.defaultAuthDurationSecs !== undefined ? { defaultAuthDurationSecs: config.payments.defaultAuthDurationSecs } : {}),
           disableMetadataV2Services: effectiveBuyerConfig.disableMetadataV2Services,
         }
       }
@@ -436,6 +454,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         role: 'buyer',
         bootstrapNodes,
         allowPrivateIPs: true,
+        ...networkNodeOptions(config.network),
         dataDir: globalOpts.dataDir,
         configPath: globalOpts.config,
         metadataFetchTimeoutMs: effectiveBuyerConfig.metadataFetchTimeoutMs,
@@ -741,16 +760,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
 
       const proxyUrl = `http://localhost:${proxyPort}`
       console.log('')
-      if (toolHints.length > 0) {
-        console.log(chalk.bold('Configure your tools:'))
-        for (const hint of toolHints) {
-          console.log(`  export ${hint.envVar}=${proxyUrl}   # ${hint.name}`)
-        }
-      } else {
-        console.log(chalk.bold('Configure your CLI tools:'))
-        console.log(`  export ANTHROPIC_BASE_URL=${proxyUrl}`)
-        console.log(`  export OPENAI_BASE_URL=${proxyUrl}`)
-      }
+      console.log(chalk.bold(toolHints.length > 0 ? 'Configure your tools:' : 'Configure your CLI tools:'))
+      for (const line of buyerToolHintLines(proxyUrl, toolHints)) console.log(line)
       console.log('')
       console.log(chalk.dim('Enable debug logs: export ANTSEED_DEBUG=1'))
       console.log(chalk.dim('Filter debug logs: antseed buyer start --log-filter ProxyMux'))

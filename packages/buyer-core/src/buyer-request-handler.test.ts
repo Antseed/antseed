@@ -3,6 +3,7 @@ import { BuyerRequestHandler, selectBillingRoute, stripPeerControlledResponseHea
 import { ConnectionState, toPeerId } from '@antseed/protocol';
 import type { BuyerPeerView, ResponseAuthContext, StoredResponseAuth } from './interfaces.js';
 import { hashRequest } from './response-auth.js';
+import { faultCodeOf } from './errors.js';
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1 } from '@antseed/protocol/messages';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
 
@@ -52,7 +53,7 @@ const PAYMENT_REQUIRED = response(402, {
 });
 const ACCEPTED = response(200, { queue_id: 'new-job' });
 
-function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHeader?: () => string | null) {
+function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHeader?: () => string | null, channelBinding: string | null = null) {
   const queue = [...responses];
   const sendProxyRequest = vi.fn((
     _request: SerializedHttpRequest,
@@ -62,12 +63,14 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
   const negotiator = {
     getOrCreatePaymentMux: vi.fn(() => ({})),
     trackRequestBillingContext: vi.fn(),
+    trackFreeUsageRequestService: vi.fn(),
+    prepareFreeUsageOpen: vi.fn(async () => {}),
     estimateCostFromResponse: vi.fn(),
-    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn(), beginPaidRequest: vi.fn(), endPaidRequest: vi.fn() },
+    bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn(), beginPaidRequest: vi.fn(), endPaidRequest: vi.fn(), trackVideoRetrieve: vi.fn(() => true), videoJobDuration: vi.fn(() => undefined), videoDeliveryUnsaved: vi.fn(() => false), recordVideoDelivered: vi.fn(), recordVideoFailed: vi.fn(), getActiveSession: vi.fn(() => null), getResponseAuthChannelId: vi.fn(() => null) },
     handle402,
     applyExternalSpendingAuth: vi.fn(async () => {}),
   };
-  const connection = { state: ConnectionState.Connected, send: vi.fn(), on: vi.fn(), off: vi.fn() };
+  const connection = { state: ConnectionState.Connected, send: vi.fn(), on: vi.fn(), off: vi.fn(), channelBinding };
   const handler = new BuyerRequestHandler({}, {
     localPeerId: toPeerId('4'.repeat(40)),
     negotiator: negotiator as never,
@@ -81,6 +84,23 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
   });
   return { handler, handle402, sendProxyRequest, negotiator };
 }
+
+describe('BuyerRequestHandler TEE connection binding', () => {
+  it('sends on the connection a TEE attestation was bound to', async () => {
+    const { handler, sendProxyRequest } = makeHandler([response(200, {})], undefined, 'c'.repeat(64));
+    expect((await handler.sendRequest(makePeer(), makeRequest(), undefined, { channelBinding: 'c'.repeat(64) })).statusCode).toBe(200);
+    expect(sendProxyRequest).toHaveBeenCalledOnce();
+  });
+
+  it('refuses before sending when the connection is not the attested one', async () => {
+    for (const binding of ['d'.repeat(64), null]) {
+      const { handler, sendProxyRequest } = makeHandler([response(200, {})], undefined, binding);
+      const err = await handler.sendRequest(makePeer(), makeRequest(), undefined, { channelBinding: 'c'.repeat(64) }).catch((e: unknown) => e);
+      expect(faultCodeOf(err)).toBe('buyer-tee-connection-changed');
+      expect(sendProxyRequest).not.toHaveBeenCalled();
+    }
+  });
+});
 
 describe('BuyerRequestHandler payment negotiation', () => {
   it.each([400, 409, 500, 503])('returns a non-payment response without negotiation (%s)', async (statusCode) => {
@@ -105,6 +125,77 @@ describe('BuyerRequestHandler payment negotiation', () => {
     expect((await handler.sendRequest(makePeer(), makeRequest())).statusCode).toBe(402);
     expect(handle402).toHaveBeenCalledOnce();
     expect(sendProxyRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('prices the response it received before the attempt ends, and prices nothing for a 402 it retries', async () => {
+    const { handler, negotiator } = makeHandler([PAYMENT_REQUIRED, ACCEPTED]);
+    const peer = makePeer();
+    const request = makeRequest();
+    const steps: string[] = [];
+    negotiator.bpm.beginPaidRequest.mockImplementation(() => { steps.push('begin'); });
+    negotiator.bpm.endPaidRequest.mockImplementation((_peer: string, requestId: string) => { steps.push(`end ${requestId}`); });
+    negotiator.estimateCostFromResponse.mockImplementation((_peer: unknown, answer: SerializedHttpResponse) => { steps.push(`price ${answer.statusCode}`); });
+
+    await handler.sendRequest(peer, request);
+    // The seller's NeedAuth for the request is judged against the priced
+    // response, so pricing comes before the attempt is reported as ended.
+    expect(steps).toEqual(['begin', `end ${request.requestId}`, 'begin', 'price 200', `end ${request.requestId}`]);
+  });
+
+  it('bounds what the seller may bill only for an attempt the caller gave up, not one the seller can end itself', async () => {
+    for (const ending of ['caller abort', 'abort with an error', 'timeout', 'closed connection'] as const) {
+      const { negotiator } = makeHandler([]);
+      const estimateCostFromPartialResponse = vi.fn();
+      let reportState: (state: ConnectionState) => void = () => {};
+      const connection = {
+        state: ConnectionState.Connected, send: vi.fn(), off: vi.fn(), channelBinding: null,
+        on: vi.fn((_event: string, listener: (state: ConnectionState) => void) => { reportState = listener; }),
+      };
+      // The seller never answers.
+      const handler = new BuyerRequestHandler({ requestTimeoutMs: ending === 'timeout' ? 20 : 60_000 }, {
+        localPeerId: toPeerId('4'.repeat(40)),
+        negotiator: { ...negotiator, estimateCostFromPartialResponse } as never,
+        verificationStorage: null,
+        verificationSampler: null,
+        getConnection: async () => connection as never,
+        getMux: () => ({ sendProxyRequest: vi.fn(), cancelProxyRequest: vi.fn(), activeRequestCount: () => 1 } as never),
+        getVerificationMux: () => ({}) as never,
+        registerPaymentMux: vi.fn(),
+      });
+      const abort = new AbortController();
+      const request = makeRequest();
+      const pending = handler.sendRequest(makePeer(), request, undefined, { signal: abort.signal });
+      setTimeout(() => {
+        if (ending === 'caller abort') abort.abort();
+        if (ending === 'abort with an error') abort.abort(new Error('no answer within 4s'));
+        if (ending === 'closed connection') reportState(ConnectionState.Closed);
+      }, 5);
+      await expect(pending).rejects.toThrow();
+      expect(estimateCostFromPartialResponse, ending).toHaveBeenCalledTimes(ending === 'caller abort' ? 1 : 0);
+      expect(negotiator.bpm.endPaidRequest, ending).toHaveBeenCalledWith(makePeer().peerId, request.requestId, false);
+    }
+  });
+
+  it('bounds nothing for an attempt the caller gave up before it was sent', async () => {
+    const { negotiator } = makeHandler([]);
+    const estimateCostFromPartialResponse = vi.fn();
+    const sendProxyRequest = vi.fn();
+    const handler = new BuyerRequestHandler({}, {
+      localPeerId: toPeerId('4'.repeat(40)),
+      negotiator: { ...negotiator, estimateCostFromPartialResponse } as never,
+      verificationStorage: null,
+      verificationSampler: null,
+      getConnection: async () => ({ state: ConnectionState.Connected, send: vi.fn(), on: vi.fn(), off: vi.fn(), channelBinding: null }) as never,
+      getMux: () => ({ sendProxyRequest, cancelProxyRequest: vi.fn(), activeRequestCount: () => 1 } as never),
+      getVerificationMux: () => ({}) as never,
+      registerPaymentMux: vi.fn(),
+    });
+    const abort = new AbortController();
+    abort.abort();
+    await expect(handler.sendRequest(makePeer(), makeRequest(), undefined, { signal: abort.signal })).rejects.toThrow(/aborted/);
+    // The seller never saw it, so it has nothing to bill.
+    expect(sendProxyRequest).not.toHaveBeenCalled();
+    expect(estimateCostFromPartialResponse).not.toHaveBeenCalled();
   });
 
   const catchUp = (required: string, accepted: string) => response(402, {
@@ -204,6 +295,87 @@ describe('BuyerRequestHandler free allowance on a priced service', () => {
     const { handler, negotiator } = makeHandler([response(200, { ok: true })]);
     await handler.sendRequest(chatPeer(), chatRequest());
     expect(negotiator.estimateCostFromResponse).toHaveBeenCalledOnce();
+  });
+});
+
+describe('BuyerRequestHandler payment demand on a route chosen as free', () => {
+  const peer = (extra: Partial<BuyerPeerView> = {}): BuyerPeerView => ({
+    peerId: toPeerId('5'.repeat(40)),
+    providers: ['openai'],
+    ...extra,
+  } as BuyerPeerView);
+  const request = (path: string, body: unknown): SerializedHttpRequest => ({
+    requestId: 'route-price-request',
+    method: 'POST',
+    path,
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify(body)),
+  });
+  const chat = () => request('/v1/chat/completions', { model: 'k3', messages: [] });
+  const sellerWantsPayment = response(402, { error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '1000000', inputUsdPerMillion: 3, outputUsdPerMillion: 15 });
+  const ZERO = { inputUsdPerMillion: 0, outputUsdPerMillion: 0 };
+  const PER_IMAGE = { version: 1 as const, components: [{ unit: 'output_images' as const, priceUsd: 0.04 }] };
+
+  it('refuses a payment demand on a route announced as free, without negotiating', async () => {
+    for (const freePeer of [
+      peer({ providerPricing: { openai: { defaults: ZERO } } }),
+      peer({ providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: { k3: ZERO } } } }),
+      peer({ defaultInputUsdPerMillion: 0, defaultOutputUsdPerMillion: 0 }),
+    ]) {
+      const { handler, handle402, sendProxyRequest } = makeHandler([sellerWantsPayment, response(200, { ok: true })]);
+      // A path no standard adapter reshapes, so the buyer's own body comes back as written.
+      const answer = await handler.sendRequest(freePeer, request('/custom/generate', { model: 'k3' }));
+      expect(answer.statusCode).toBe(409);
+      expect(JSON.parse(Buffer.from(answer.body).toString())).toMatchObject({ error: 'payment_negotiation_failed', reason: 'price_mismatch' });
+      // Nothing is negotiated (so nothing is opened or signed) and the request is not sent again.
+      expect(handle402).not.toHaveBeenCalled();
+      expect(sendProxyRequest).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('shapes the refusal like any other peer fault for a model API', async () => {
+    const { handler } = makeHandler([sellerWantsPayment]);
+    const answer = await handler.sendRequest(peer({ providerPricing: { openai: { defaults: ZERO } } }), chat());
+    expect(answer.statusCode).toBe(409);
+    expect(JSON.parse(Buffer.from(answer.body).toString()).error).toMatchObject({
+      type: 'payment_negotiation_failed',
+      antseed_fault: 'peer',
+      peer_status: 409,
+    });
+  });
+
+  it('still negotiates on a paid route: token prices, a cached-input price alone, or a per-image price with zero token prices', async () => {
+    const images = {
+      providerServiceApiProtocols: { openai: { services: { 'image-model': ['openai-images'] } } },
+      providerServiceUnitBillingModels: { openai: { services: { 'image-model': { 'openai-images': PER_IMAGE } } } },
+    } as Partial<BuyerPeerView>;
+    const imageRequest = request('/v1/images/generations', { model: 'image-model', prompt: 'a cube', n: 1 });
+    for (const [paidPeer, paidRequest] of [
+      [peer({ providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } }), chat()],
+      [peer({ providerPricing: { openai: { defaults: { ...ZERO, cachedInputUsdPerMillion: 0.75 } } } }), chat()],
+      [peer({ defaultInputUsdPerMillion: 1, defaultOutputUsdPerMillion: 2 }), chat()],
+      // Zero token prices, paid per image.
+      [peer({ providerPricing: { openai: { defaults: ZERO } }, ...images }), imageRequest],
+      // No token price at all, paid per image.
+      [peer(images), imageRequest],
+    ] as const) {
+      const { handler, handle402, sendProxyRequest } = makeHandler([sellerWantsPayment, response(200, { ok: true })]);
+      expect((await handler.sendRequest(paidPeer, paidRequest)).statusCode).toBe(200);
+      expect(handle402).toHaveBeenCalledOnce();
+      expect(sendProxyRequest).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it('still negotiates a payment demand on a retrieve of a paid video job', async () => {
+    const { handler, handle402, sendProxyRequest } = makeHandler([PAYMENT_REQUIRED, ACCEPTED]);
+    const retrieve: SerializedHttpRequest = {
+      ...makeRequest({ 'x-antseed-service': 'video-model' }),
+      path: '/api/v1/video/retrieve',
+      body: Buffer.from(JSON.stringify({ model: 'video-model', queue_id: 'job' })),
+    };
+    expect((await handler.sendRequest(makePeer(), retrieve)).statusCode).toBe(200);
+    expect(handle402).toHaveBeenCalledOnce();
+    expect(sendProxyRequest).toHaveBeenCalledTimes(2);
   });
 });
 

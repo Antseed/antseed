@@ -5,7 +5,7 @@ import type {
   SerializedHttpResponse,
 } from '@antseed/node';
 import { requestBodyFields } from '@antseed/node';
-import { getHeader, withPinnedUpstreamModel } from '@antseed/provider-core';
+import { getHeader, openAiError, withPinnedUpstreamModel } from '@antseed/provider-core';
 
 const OPENAI_IMAGE_EDIT_PATH = '/v1/images/edits';
 const VENICE_IMAGE_EDIT_PATH = '/v1/image/edit';
@@ -58,26 +58,6 @@ function replaceHeader(
 function textField(form: FormData, name: string): string {
   const value = form.get(name);
   return typeof value === 'string' ? value.trim() : '';
-}
-
-function openAiError(
-  requestId: string,
-  statusCode: number,
-  message: string,
-  param?: string,
-): SerializedHttpResponse {
-  return {
-    requestId,
-    statusCode,
-    headers: { 'content-type': 'application/json' },
-    body: new TextEncoder().encode(JSON.stringify({
-      error: {
-        message,
-        type: statusCode >= 500 ? 'upstream_error' : 'invalid_request_error',
-        ...(param ? { param } : {}),
-      },
-    })),
-  };
 }
 
 function isImageEditRequest(request: SerializedHttpRequest): boolean {

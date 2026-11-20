@@ -1,5 +1,5 @@
 import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, SerializedHttpRequest, ServiceCapabilities, UpstreamAccountStatus } from '@antseed/node';
-import { MAX_SERVICE_NAME_LENGTH, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/node';
+import { MAX_SERVICE_NAME_LENGTH, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, isContentFreeLogging } from '@antseed/node';
 import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
 import {
   parseCsv,
@@ -251,7 +251,8 @@ const plugin: AntseedProviderPlugin = {
             case 'CANCELED': {
               // FAILED lets the seller release the job's one-off payment channel at once.
               const reason = alibabaErrorReason(output as Record<string, unknown>) ?? `Model Studio reports the job ${output.task_status}`;
-              console.warn(`[alibaba-video] ${service} job ${videoRoute.resourceId} failed: ${reason}`);
+              // A moderation reason can describe the buyer's prompt or media.
+              console.warn(`[alibaba-video] ${service} job ${videoRoute.resourceId} failed${isContentFreeLogging() ? '' : `: ${reason}`}`);
               return json(request, 200, { status: 'FAILED', error: reason });
             }
             case 'SUCCEEDED':

@@ -183,6 +183,7 @@ describe('IndexedDbChannelStore', () => {
     const mux = paymentMux();
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 1_000n);
 
+    manager.recordDeliveredResponse(sellerPeerId, 'crash-window-request', { costUsdc: 1_000n });
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
       requiredCumulativeAmount: '2000',

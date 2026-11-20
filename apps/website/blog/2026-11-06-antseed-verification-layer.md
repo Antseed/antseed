@@ -109,8 +109,8 @@ Point the verifier at any OpenAI or Anthropic-compatible endpoint, including a r
 
 ![Check the model behind your API three ways. Ask your agent with the antseed-verify-model skill, run antseed verifier check, or use the model-verifier package on its own.](/img/blog/antseed-verification-layer/check-your-api.webp)
 
-- **Ask your agent.** The [antseed-verify-model skill](https://github.com/AntSeed/antseed/tree/main/skills/antseed-verify-model) asks for an endpoint, has you set its API key, runs the check and explains the result.
+- **Ask your agent.** The [antseed-verify-model skill](https://github.com/Antseed/antseed/tree/main/skills/antseed-verify-model) asks for an endpoint, has you set its API key, runs the check and explains the result.
 - **Use the [command line](https://antseed.com/docs/commands).** `antseed verifier check <model>` finds the latest published audit for that model and runs it.
-- **Run it on its own.** The [model-verifier package](https://github.com/AntSeed/antseed/tree/main/packages/model-verifier) runs the same check without the rest of Antseed.
+- **Run it on its own.** The [model-verifier package](https://github.com/Antseed/antseed/tree/main/packages/model-verifier) runs the same check without the rest of Antseed.
 
 Want to run audits for the Antseed network? [Become a verifier](https://antseed.com/docs/verify/). Once you're approved, you earn a share of ANTS rewards for each model you audit.

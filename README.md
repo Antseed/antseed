@@ -2,7 +2,7 @@
 
 A peer-to-peer AI services network. Providers offer AI services, buyers discover providers via DHT and route requests through encrypted P2P connections.
 
-**Live pricing:** see [PRICING.md](PRICING.md) or `https://network.antseed.com/stats` (public JSON, no auth).
+**Live pricing:** see [PRICING.md](PRICING.md) or `https://antscan.co/api/marketplace?limit=5000` (public JSON, no auth).
 
 ## How It Works
 
@@ -61,8 +61,13 @@ plugins/              Provider and router plugins
   provider-claude-code/     Claude Code keychain provider
   provider-claude-oauth/    Claude OAuth provider
   provider-openai/          OpenAI-compatible provider (OpenAI, Together, OpenRouter)
+  provider-openai-responses/ OpenAI Responses provider via Codex auth (testing only)
   provider-local-llm/       Local LLM provider (Ollama, llama.cpp)
   provider-typesafe/        TypeSafe System One decision-model provider
+  provider-venice-video/    Venice video API provider
+  provider-fal-video/       fal.ai video models provider
+  provider-fal-image/       fal.ai image models provider (OpenAI Images API)
+  provider-alibaba-video/   Alibaba Cloud Model Studio video provider (Wan, HappyHorse)
   provider-irp-router/      IRP routing provider (serves any Inference Routing Protocol router)
   provider-free-model-router/ IRP routing provider that ranks free models among a buyer's candidates
   router-local/             Local router (Claude Code, Aider, Continue.dev)
@@ -82,7 +87,9 @@ docs/protocol/        Protocol specification
 @antseed/node (core SDK)
   ├── provider-core
   │     └── provider-anthropic, provider-claude-code, provider-claude-oauth,
-  │         provider-openai, provider-local-llm, provider-typesafe,
+  │         provider-openai, provider-openai-responses, provider-local-llm,
+  │         provider-typesafe, provider-venice-video, provider-fal-video,
+  │         provider-fal-image, provider-alibaba-video,
   │         provider-irp-router, provider-free-model-router
   ├── router-core
   │     └── router-local
@@ -148,7 +155,7 @@ See [packages/node/README.md](packages/node/README.md) for the `Provider` and `R
 ## Tech Stack
 
 - **Development runtime**: Node.js 24 (pinned in `.nvmrc`), ES modules
-- **Language**: TypeScript 5.x, strict mode
+- **Language**: TypeScript 7.x, strict mode
 - **Package Manager**: pnpm workspaces
 - **Build**: tsc for libraries, Vite for web apps
 - **Test**: vitest

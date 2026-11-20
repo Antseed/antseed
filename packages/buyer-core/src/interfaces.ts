@@ -25,11 +25,19 @@ import type {
 /** Minimum transport surface the muxes need: raw frame bytes out. */
 export interface FrameSender {
   send(data: Uint8Array): void;
+  /**
+   * For a sender that produces data in a loop: undefined when it may send more,
+   * else a promise that resolves once the peer has read enough of what it was
+   * sent. Never rejects. A transport without it never asks a sender to wait.
+   */
+  whenWritable?(): Promise<void> | undefined;
 }
 
 /** Connection surface used by the buyer request/payment machinery. */
 export interface BuyerConnection extends FrameSender {
   readonly state: ConnectionState;
+  /** Session hash of an encrypted TCP connection (see RequestExecutionOptions.channelBinding). */
+  readonly channelBinding?: string | null;
   on(event: 'stateChange', listener: (state: ConnectionState) => void): unknown;
   off(event: 'stateChange', listener: (state: ConnectionState) => void): unknown;
 }

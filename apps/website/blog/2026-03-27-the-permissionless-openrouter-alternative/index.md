@@ -130,4 +130,4 @@ Yes. Providers and buyers can pay and settle in USDC or by card. The protocol ha
 
 ---
 
-[Read the lightpaper](/docs/lightpaper) · [Get started in one command](/docs/install)
+[How the protocol works](/docs/overview) · [Get started in one command](/docs/install)

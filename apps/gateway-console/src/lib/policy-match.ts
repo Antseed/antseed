@@ -57,7 +57,10 @@ export function combinePolicies(...levels: Array<RoutingPolicy | null | undefine
       requireTee: result.requireTee || level.requireTee ? true : undefined,
       maxInputUsdPerMillion: lower(result.maxInputUsdPerMillion, level.maxInputUsdPerMillion),
       maxOutputUsdPerMillion: lower(result.maxOutputUsdPerMillion, level.maxOutputUsdPerMillion),
-      maxCachedInputUsdPerMillion: lower(result.maxCachedInputUsdPerMillion, level.maxCachedInputUsdPerMillion),
+      // A level without a cached-input cap bounds cached input by its input cap.
+      maxCachedInputUsdPerMillion: result.maxCachedInputUsdPerMillion === undefined && level.maxCachedInputUsdPerMillion === undefined
+        ? undefined
+        : lower(result.maxCachedInputUsdPerMillion ?? result.maxInputUsdPerMillion, level.maxCachedInputUsdPerMillion ?? level.maxInputUsdPerMillion),
       maxImageUsdPerImage: lower(result.maxImageUsdPerImage, level.maxImageUsdPerImage),
       preferFreePeers: level.preferFreePeers ?? result.preferFreePeers,
       sort: level.sort ?? result.sort,
@@ -74,7 +77,7 @@ function serviceFits(policy: RoutingPolicy, service: Peer['services'][number]): 
   const over = (price: number | null, cap: number | undefined) => cap !== undefined && price !== null && price > cap
   if (over(service.inputUsdPerMillion, policy.maxInputUsdPerMillion)) return false
   if (over(service.outputUsdPerMillion, policy.maxOutputUsdPerMillion)) return false
-  if (over(service.cachedInputUsdPerMillion, policy.maxCachedInputUsdPerMillion)) return false
+  if (over(service.cachedInputUsdPerMillion, policy.maxCachedInputUsdPerMillion ?? policy.maxInputUsdPerMillion)) return false
   return true
 }
 

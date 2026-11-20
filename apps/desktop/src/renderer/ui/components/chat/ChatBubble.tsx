@@ -14,8 +14,6 @@ import type { ChatMessage, ContentBlock } from './chat-shared';
 import {
   buildChatMetaParts,
   formatToolExecutionLabel,
-  getMyrmecochoryLabel,
-  toToolDisplayName,
 } from './chat-shared';
 
 type ToolRenderItem = {
@@ -956,7 +954,6 @@ type ChatBubbleProps = {
 };
 
 export function ChatBubble({ message, streaming = false, onOpenPreview, conversationId, searchQuery, searchActive }: ChatBubbleProps) {
-  const [metaExpanded, setMetaExpanded] = useState(false);
   const metaParts = useMemo(() => buildChatMetaParts(message), [message]);
   const hasStreamingBlocks = useMemo(
     () =>

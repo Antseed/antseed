@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { AntseedNode } from '../src/node.js';
-import { InboundIdleTracker } from '../src/p2p/inbound-idle-tracker.js';
+import { FREE_SESSION_IDLE_TIMEOUT_MS, InboundIdleTracker } from '../src/p2p/inbound-idle-tracker.js';
 import { encodeFrame } from '../src/p2p/message-protocol.js';
 import { encodeHttpRequest } from '../src/proxy/request-codec.js';
 import { SellerRequestHandler } from '../src/seller-request-handler.js';
@@ -12,7 +12,7 @@ import { MessageType } from '../src/types/protocol.js';
 const BUYER_PEER_ID = 'b'.repeat(40) as PeerId;
 const IDLE_MS = 30 * 60_000;
 
-type FakeConn = EventEmitter & { remotePeerId: PeerId; isInitiator: boolean; state: ConnectionState; send: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> };
+type FakeConn = EventEmitter & { remotePeerId: PeerId; isInitiator: boolean; state: ConnectionState; send: ReturnType<typeof vi.fn>; trySend: (data: Uint8Array) => boolean; close: ReturnType<typeof vi.fn> };
 
 function makeFakeConn(): FakeConn {
   const conn = new EventEmitter() as FakeConn;
@@ -20,12 +20,13 @@ function makeFakeConn(): FakeConn {
   conn.isInitiator = false;
   conn.state = ConnectionState.Open;
   conn.send = vi.fn();
+  conn.trySend = (data) => { conn.send(data); return true; };
   conn.close = vi.fn();
   return conn;
 }
 
 /** A seller node with no network, its idle tracker on a fake clock. */
-function makeSellerNode(options: { paidChannel?: boolean } = {}) {
+function makeSellerNode(options: { paidChannel?: boolean; freeSession?: boolean } = {}) {
   let now = 0;
   const node = new AntseedNode({ role: 'seller' });
   const sessionTracker = { finalizeSession: vi.fn().mockResolvedValue(undefined), getOrCreateSession: vi.fn() };
@@ -41,7 +42,10 @@ function makeSellerNode(options: { paidChannel?: boolean } = {}) {
   (node as any)._channelStore = { getActiveChannelByPeer: () => (options.paidChannel ? { sessionId: 'channel' } : null) };
   (node as any)._inboundIdle = new InboundIdleTracker({
     idleTimeoutMs: IDLE_MS,
-    holdsSession: (peerId: PeerId) => Boolean((node as any)._channelStore.getActiveChannelByPeer(peerId)),
+    sessionHoldMs: (peerId: PeerId) => {
+      if ((node as any)._channelStore.getActiveChannelByPeer(peerId)) return Infinity;
+      return options.freeSession ? FREE_SESSION_IDLE_TIMEOUT_MS : 0;
+    },
     now: () => now,
   });
   return { node, tracker: (node as any)._inboundIdle as InboundIdleTracker, advance: (ms: number) => { now += ms; } };
@@ -91,6 +95,19 @@ describe('seller idle buyer connections', () => {
 
     expect(tracker.sweep()).toEqual([]);
     expect(conn.close).not.toHaveBeenCalled();
+  });
+
+  it('keeps an idle connection with only a free usage session open for two hours', () => {
+    const { node, tracker, advance } = makeSellerNode({ freeSession: true });
+    const conn = makeFakeConn();
+    (node as any)._handleIncomingConnection(conn);
+
+    advance(2 * 60 * 60_000 - 1);
+    expect(tracker.sweep()).toEqual([]);
+
+    advance(1);
+    expect(tracker.sweep()).toEqual([BUYER_PEER_ID]);
+    expect(conn.close).toHaveBeenCalledOnce();
   });
 
   it('stops tracking a connection once it closes', () => {

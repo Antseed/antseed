@@ -587,6 +587,18 @@ describe('upstream credit', () => {
     expect(events.at(-1)!.status).toBe('out_of_credit');
     checker.reportUpstreamResponse(provider, 200, '');
     expect(events.map((event) => event.status)).toEqual(['low_balance', 'out_of_credit', 'funded', 'out_of_credit', 'funded']);
+    expect(events.at(-2)!.detail).toContain('You need positive balance');
+    // Content-free mode keeps the billing message itself, nothing else from the body.
+    vi.stubEnv('ANTSEED_CONTENT_FREE_LOGS', '1');
+    try {
+      checker.reportUpstreamResponse(provider, 402, '{"error":{"message":"Insufficient credits. Top up at example.com","code":"insufficient_credits"},"echo":"tell me a secret"}');
+      expect(events.at(-1)).toMatchObject({ status: 'out_of_credit', detail: 'HTTP 402: Insufficient credits. Top up at example.com' });
+      checker.reportUpstreamResponse(provider, 200, '');
+      checker.reportUpstreamResponse(provider, 402, '{"error":{"message":"Cannot answer: tell me a secret","code":"payment_required"}}');
+      expect(events.at(-1)).toMatchObject({ status: 'out_of_credit', detail: 'HTTP 402: payment_required' });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -893,6 +905,26 @@ describe('ModelHealthChecker live failures on unprobed services', () => {
     await checker.runSweep();
     expect(statusOf(provider, 'video-a')).toBe('failing');
     expect(checkUpstreamAccount).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves a 401 or 403 on a buyer request to the account check when the provider has one', async () => {
+    const checkUpstreamAccount = vi.fn(async (): Promise<UpstreamAccountStatus> => ({ status: 'available', balanceUsd: 20 }));
+    const provider = makeProvider({ services: ['video-a'], serviceApiProtocols: { 'video-a': ['venice-video'] }, checkUpstreamAccount });
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    checker.reportUpstreamResponse(provider, 403, '{"error":{"code":"fal_request_rejected","message":"Forbidden"}}', true, 'video-a');
+    checker.reportUpstreamResponse(provider, 401, '', true, 'video-a');
+    expect(provider.serviceHealth).toBeUndefined();
+    // An out-of-credit 403 is still the account's failure.
+    checker.reportUpstreamResponse(provider, 403, '{"error":"Insufficient credits"}', true, 'video-a');
+    expect(statusOf(provider, 'video-a')).toBe('failing');
+  });
+
+  it('counts a 403 on a buyer request when nothing else checks the key', () => {
+    const { provider } = imageProvider();
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    fail(checker, provider, 1, 403);
+    expect(statusOf(provider, 'image-a')).toBe('failing');
+    expect(checker.getSnapshot()[0]?.reason).toBe('auth');
   });
 
   it('keeps live failures after a failed account check is followed by a passing one', async () => {

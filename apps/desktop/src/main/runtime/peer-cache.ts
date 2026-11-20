@@ -377,22 +377,3 @@ export function getNetworkSnapshot(): DashboardNetworkResult {
   };
 }
 
-/**
- * Mark a peer as recently active and online (e.g. after a chat response).
- */
-export function touchPeer(peerId: string): boolean {
-  const peer = peerCache.get(peerId);
-  if (peer) {
-    const now = Date.now();
-    peer.lastSeen = now;
-    peer.lastReachedAt = now;
-    peer.online = true;
-    return true;
-  }
-  return false;
-}
-
-/** Look up a peer by ID from the in-memory cache. */
-export function lookupPeer(peerId: string): DashboardNetworkPeer | null {
-  return peerCache.get(peerId) ?? null;
-}

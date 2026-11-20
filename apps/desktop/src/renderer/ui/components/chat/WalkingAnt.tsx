@@ -1,13 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
 import styles from './WalkingAnt.module.scss';
-import { THINKING_PHRASES } from './chat-shared';
+import { pickThinkingPhrase } from './thinking-phrases';
 
 type WalkingAntProps = {
-  elapsedMs: number;
+  /** A real step of the request (paying, switching mode); shown instead of a meme. */
   phaseLabel?: string | null;
+  /** When the request started (ms); the timer counts from it, or from when the ant appeared. */
+  startedAt?: number | null;
+  /** Seeds the first meme; tests pass it to get stable markup. */
+  initialPhrase?: string;
 };
 
-function formatElapsed(ms: number): string {
+/** How often the meme changes while no real step is shown. */
+export const PHRASE_EVERY_MS = 5_000;
+/** The timer stays hidden for quick answers. */
+export const SHOW_TIMER_AFTER_MS = 2_000;
+/** Long enough that a working seller has usually started answering. */
+export const SLOW_AFTER_MS = 30_000;
+export const SLOW_MESSAGE = 'Still waiting on this provider. You can stop and try another model.';
+
+export function formatElapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -15,43 +27,62 @@ function formatElapsed(ms: number): string {
   return `${m}:${String(rem).padStart(2, '0')}`;
 }
 
-function pickRandomPhrase(exclude?: string): string {
-  if (THINKING_PHRASES.length <= 1) return THINKING_PHRASES[0];
-  for (let i = 0; i < 6; i += 1) {
-    const pick = THINKING_PHRASES[Math.floor(Math.random() * THINKING_PHRASES.length)];
-    if (pick !== exclude) return pick;
-  }
-  return THINKING_PHRASES[Math.floor(Math.random() * THINKING_PHRASES.length)];
+/** What the ant's line says after `elapsedMs`: a meme or the real step, then the slow note after 30 s. */
+export function antLine({ elapsedMs, phaseLabel, phrase }: { elapsedMs: number; phaseLabel?: string | null; phrase: string }) {
+  const slow = elapsedMs >= SLOW_AFTER_MS;
+  return {
+    slow,
+    shown: slow ? SLOW_MESSAGE : `${phaseLabel ?? phrase}...`,
+    spoken: slow ? SLOW_MESSAGE : `${phaseLabel ?? 'Thinking'}...`,
+    timer: elapsedMs >= SHOW_TIMER_AFTER_MS ? ` · ${formatElapsed(elapsedMs)}` : '',
+  };
 }
 
-export function WalkingAnt({ elapsedMs: initialElapsedMs, phaseLabel }: WalkingAntProps) {
-  const [elapsed, setElapsed] = useState(initialElapsedMs);
-  const [turnPhrase, setTurnPhrase] = useState(() => pickRandomPhrase());
+/** Calls `tick` every second; returns the function that stops it. */
+export function startAntClock(tick: () => void): () => void {
+  const id = setInterval(tick, 1000);
+  return () => clearInterval(id);
+}
+
+type PhraseUpdate = (next: (current: string) => string) => void;
+
+/** Swaps the meme for a different one every `PHRASE_EVERY_MS`; returns the function that stops it. */
+export function startPhraseRotation(setPhrase: PhraseUpdate): () => void {
+  const id = setInterval(() => setPhrase((current) => pickThinkingPhrase(current)), PHRASE_EVERY_MS);
+  return () => clearInterval(id);
+}
+
+/** Leaving a real step (paying, switching mode) brings a fresh meme. */
+export function rerollsOnPhaseExit(prev: string | null | undefined, next: string | null | undefined): boolean {
+  return Boolean(prev) && !next;
+}
+
+/**
+ * A request is on its way and no tokens have arrived yet: a small ant walks
+ * beside a rotating meme, or the request's real step when there is one.
+ * Screen readers hear only the steady "Thinking" or the real step, never the
+ * memes.
+ */
+export function WalkingAnt({ phaseLabel, startedAt, initialPhrase }: WalkingAntProps) {
+  const [mountedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(mountedAt);
+  const [turnPhrase, setTurnPhrase] = useState(() => initialPhrase ?? pickThinkingPhrase());
   const prevPhaseRef = useRef<string | null | undefined>(phaseLabel);
 
-  useEffect(() => {
-    setElapsed(initialElapsedMs);
-    const id = setInterval(() => setElapsed((prev) => prev + 1000), 1000);
-    return () => clearInterval(id);
-  }, [initialElapsedMs]);
+  useEffect(() => startAntClock(() => setNow(Date.now())), []);
+  const elapsed = Math.max(0, now - (startedAt ?? mountedAt));
 
   useEffect(() => {
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phaseLabel;
-    if (prev && !phaseLabel) {
-      setTurnPhrase((current) => pickRandomPhrase(current));
+    if (rerollsOnPhaseExit(prev, phaseLabel)) {
+      setTurnPhrase((current) => pickThinkingPhrase(current));
     }
   }, [phaseLabel]);
 
-  useEffect(() => {
-    if (phaseLabel) return;
-    const id = setInterval(() => {
-      setTurnPhrase((current) => pickRandomPhrase(current));
-    }, 5000);
-    return () => clearInterval(id);
-  }, [phaseLabel]);
+  useEffect(() => (phaseLabel ? undefined : startPhraseRotation(setTurnPhrase)), [phaseLabel]);
 
-  const label = phaseLabel ?? turnPhrase;
+  const line = antLine({ elapsedMs: elapsed, phaseLabel, phrase: turnPhrase });
 
   /*
    * Original path 4 (legs) split into two independent paths:
@@ -76,13 +107,15 @@ export function WalkingAnt({ elapsedMs: initialElapsedMs, phaseLabel }: WalkingA
 
   return (
     <div className={styles.container}>
-      <div className={styles.antWrap}>
+      <span className={styles.srOnly} role="status">{line.spoken}</span>
+      <div className={styles.antWrap} aria-hidden="true">
         <svg
           className={styles.ant}
           viewBox="0 0 1024 1024"
           width="28"
           height="28"
           xmlns="http://www.w3.org/2000/svg"
+          focusable="false"
         >
           <g transform="translate(0,1024) scale(0.1,-0.1)" fill="#1FD87A" stroke="none">
 
@@ -144,9 +177,9 @@ l-36 76 -57 15 c-127 36 -224 43 -349 26z" />
         </svg>
       </div>
 
-      <span className={styles.timer}>
-        {label}...
-        {elapsed >= 2000 ? ` · ${formatElapsed(elapsed)}` : null}
+      <span className={line.slow ? `${styles.timer} ${styles.timerWrap}` : styles.timer} aria-hidden="true">
+        {line.shown}
+        {line.timer}
       </span>
     </div>
   );

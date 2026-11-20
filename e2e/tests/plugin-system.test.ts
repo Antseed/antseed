@@ -168,8 +168,8 @@ describe('Plugin Loader', () => {
       };
 
       const configKeys: PluginConfigKey[] = [
-        { key: 'TEST_KEY_A', description: 'Key A', required: true },
-        { key: 'TEST_KEY_B', description: 'Key B', required: false },
+        { key: 'TEST_KEY_A', label: 'Key A', type: 'string', description: 'Key A', required: true },
+        { key: 'TEST_KEY_B', label: 'Key B', type: 'string', description: 'Key B', required: false },
       ];
 
       const config = buildPluginConfig(configKeys);
@@ -189,8 +189,8 @@ describe('Plugin Loader', () => {
       delete process.env['ABSENT_KEY'];
 
       const configKeys: PluginConfigKey[] = [
-        { key: 'PRESENT_KEY', description: 'Present', required: true },
-        { key: 'ABSENT_KEY', description: 'Absent', required: false },
+        { key: 'PRESENT_KEY', label: 'Present', type: 'string', description: 'Present', required: true },
+        { key: 'ABSENT_KEY', label: 'Absent', type: 'string', description: 'Absent', required: false },
       ];
 
       const config = buildPluginConfig(configKeys);
@@ -259,8 +259,8 @@ describe('@antseed/provider-anthropic plugin shape', () => {
     }
   });
 
-  it('createProvider returns a Provider', () => {
-    const provider = providerPlugin.createProvider({
+  it('createProvider returns a Provider', async () => {
+    const provider = await providerPlugin.createProvider({
       ANTHROPIC_API_KEY: 'test-key',
       ANTSEED_AUTH_TYPE: 'apikey',
     });
@@ -303,8 +303,8 @@ describe('@antseed/router-local plugin shape', () => {
     }
   });
 
-  it('createRouter returns a Router', () => {
-    const router = routerPlugin.createRouter({});
+  it('createRouter returns a Router', async () => {
+    const router = await routerPlugin.createRouter({});
 
     expect(router).toBeDefined();
     expect(typeof router.selectPeer).toBe('function');

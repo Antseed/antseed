@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security or funds at risk
+    url: https://github.com/Antseed/antseed/security/advisories/new
+    about: Report it privately. Never in a public issue, discussion or pull request.

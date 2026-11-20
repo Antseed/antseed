@@ -169,7 +169,7 @@ function gatewayEnv(extraNote?: string): ConfigBlock {
       ANTSEED_API_KEY: GATEWAY_KEY,
     },
     note: [
-      `Your gateway's base URL, ending in \`/v1\`, and an API key from the Keys page of its console. Recommended: a gateway on a server, which every machine can reach. A gateway on this computer is \`${LOCAL_GATEWAY_URL}\`; publish it with a tunnel (\`antseed tunnel start\`, or Agents → Internet-accessible endpoint in the desktop app) for other machines. No gateway yet: see Run Antseed first above.`,
+      `Your gateway's base URL, ending in \`/v1\`, and an API key from the Keys page of its console. Recommended: a gateway on a server, which every machine can reach. A gateway on this computer is \`${LOCAL_GATEWAY_URL}\`; publish it with a tunnel (\`antseed tunnel start\`) for other machines. No gateway yet: see Run Antseed first above.`,
       extraNote,
     ].filter(Boolean).join(' '),
   };
@@ -194,7 +194,7 @@ export const integrations: Integration[] = [
     oneLiner: "Anthropic's official CLI agent - point it at your Antseed gateway, or launch it with `antseed claude`.",
     description: [
       'Claude Code is the official CLI coding agent from Anthropic. It speaks the Anthropic Messages API natively, so it connects to Antseed with two environment variables: <code>ANTHROPIC_BASE_URL</code> for the endpoint and <code>ANTHROPIC_AUTH_TOKEN</code> for the key.',
-      'Using the <a href="/docs/desktop">desktop app (AI VPN)</a> on the same computer? The quickest route is <strong>Connected apps</strong>: connect Claude Code there, then pick the model in the app, per conversation, without touching any config.',
+      'Using <a href="/docs/desktop">Antseed Desktop</a> on the same computer? Its local gateway works here too, with an API key from <strong>Settings</strong>. The app does not connect Claude Code for you, because Claude Code\'s model list only takes Claude-named models, but you can add Antseed\'s skills to it under <strong>Agents &amp; apps</strong>, so it keeps its own model and calls Antseed when you ask.',
       'Otherwise, the recommended endpoint is a gateway: it gives Claude Code its own API key with budgets and usage logs, and it works from any machine. The gateway only accepts the key as <code>Authorization: Bearer</code>, which is what <code>ANTHROPIC_AUTH_TOKEN</code> sends. When Claude Code runs on the same computer as a buyer, <code>antseed claude</code> launches it against the local buyer proxy instead, with no key.',
       'No Anthropic API key or subscription is needed. Antseed pays sellers per request in USDC from your gateway workspace wallet or your buyer deposit.',
       'When Claude Code calls the Messages API, Antseed selects the highest-ranked eligible offer under your Price + Trust preferences. Stable session metadata gives the conversation soft affinity to the seller that actually served it, with failover when needed. Every model on the network (listed by <code>GET /v1/models</code>) is a valid <code>--model</code> value; prefix it with a peer id (<code>&lt;peerId&gt;@&lt;service-id&gt;</code>) only when you want to force a specific seller.',
@@ -306,7 +306,7 @@ export const integrations: Integration[] = [
     links: [
       { label: 'Claude Code docs', href: 'https://docs.anthropic.com/en/docs/claude-code' },
       { label: 'Antseed gateway API', href: '/docs/gateway/api' },
-      { label: 'Antseed skill: join-buyer', href: 'https://github.com/AntSeed/antseed/tree/main/skills/join-buyer' },
+      { label: 'Antseed skill: join-buyer', href: 'https://github.com/Antseed/antseed/tree/main/skills/join-buyer' },
     ],
     agentSummary:
       'Gateway (recommended, works from any machine): set ANTHROPIC_BASE_URL=<gateway root, no /v1> and ANTHROPIC_AUTH_TOKEN=<gateway key> (Bearer; not ANTHROPIC_API_KEY), then run `claude --model <model-id>`. Same computer as a buyer, no gateway: `antseed claude --model <model-id>` (sets ANTHROPIC_BASE_URL=http://localhost:8377 and a placeholder ANTHROPIC_API_KEY).',
@@ -558,7 +558,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
     oneLiner: 'Open-source terminal coding agent with a first-class Antseed extension.',
     description: [
       '<strong>What Pi is.</strong> Pi (<code>@earendil-works/pi-coding-agent</code>, formerly <code>@mariozechner/pi-coding-agent</code>) is a minimal, hackable terminal coding agent by Mario Zechner - the same lineage as <a href="https://github.com/badlogic/pi-mono">pi-mono</a>. It ships with four default tools (<code>read</code>, <code>write</code>, <code>edit</code>, <code>bash</code>) and lets you extend everything else - commands, providers, themes, even the editor UI - through TypeScript <em>extensions</em>, <em>skills</em>, and <em>prompt templates</em>. No fork required.',
-      '<strong>What the Antseed extension does.</strong> <a href="https://github.com/AntSeed/pi-antseed"><code>pi-antseed</code></a> registers your Antseed endpoint as a Pi provider named <code>antseed</code>. It reads <code>GET /v1/models</code> when Pi loads and adds one model per seller and service, as <code>antseed/&lt;service-id&gt;@&lt;peer-prefix&gt;-&lt;seller-name&gt;</code>, ordered by seller reputation. Pick one with Ctrl+L or <code>/model</code>.',
+      '<strong>What the Antseed extension does.</strong> <a href="https://github.com/Antseed/pi-antseed"><code>pi-antseed</code></a> registers your Antseed endpoint as a Pi provider named <code>antseed</code>. It reads <code>GET /v1/models</code> when Pi loads and adds one model per seller and service, as <code>antseed/&lt;service-id&gt;@&lt;peer-prefix&gt;-&lt;seller-name&gt;</code>, ordered by seller reputation. Pick one with Ctrl+L or <code>/model</code>.',
       '<strong>Which endpoint.</strong> The recommended endpoint is a gateway: set <code>ANTSEED_BASE_URL</code> and <code>ANTSEED_API_KEY</code>, and Pi works from any machine with its own budget and usage log. Without them the extension uses the local buyer proxy on <code>http://localhost:8377</code>, which only works on the same computer as the buyer.',
       '<strong>How requests are sent.</strong> Each request goes out in the protocol the chosen seller advertises (OpenAI Responses, Anthropic Messages or OpenAI Chat Completions), with an <code>x-antseed-pin-peer</code> header for that seller, so Pi handles streaming, retries and tool calls natively.',
     ],
@@ -571,9 +571,9 @@ Deposits reserved:           0 USDC → 1 USDC`,
       },
       {
         label: 'Install the Antseed extension into Pi',
-        command: 'pi install git:github.com/AntSeed/pi-antseed',
+        command: 'pi install git:github.com/Antseed/pi-antseed',
         note:
-          'Pi extensions install from a git URL or a local path. `pi -e git:github.com/AntSeed/pi-antseed` runs the extension once without installing; `pi install ./pi-antseed` works from a local clone.',
+          'Pi extensions install from a git URL or a local path. `pi -e git:github.com/Antseed/pi-antseed` runs the extension once without installing; `pi install ./pi-antseed` works from a local clone.',
       },
     ],
     configure: [
@@ -631,7 +631,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
       {
         problem: 'Pi runs on another machine than the buyer',
         fix:
-          'The local buyer proxy on port 8377 only listens on localhost, so a remote Pi cannot reach it. Point Pi at a gateway: a server gateway, a gateway on your network, or a tunnel (`antseed tunnel start`, or Agents → Internet-accessible endpoint in the desktop app). Set `ANTSEED_BASE_URL` to its URL ending in `/v1` and `ANTSEED_API_KEY` to a gateway key. Never expose port 8377 itself.',
+          'The local buyer proxy on port 8377 only listens on localhost, so a remote Pi cannot reach it. Point Pi at a gateway: a server gateway, a gateway on your network, or a tunnel (`antseed tunnel start`). Set `ANTSEED_BASE_URL` to its URL ending in `/v1` and `ANTSEED_API_KEY` to a gateway key. Never expose port 8377 itself.',
       },
       {
         problem: 'An error from the endpoint mid-conversation',
@@ -642,12 +642,12 @@ Deposits reserved:           0 USDC → 1 USDC`,
     links: [
       { label: 'Pi coding agent (npm)', href: 'https://www.npmjs.com/package/@earendil-works/pi-coding-agent' },
       { label: 'Pi source (badlogic/pi-mono)', href: 'https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent' },
-      { label: 'pi-antseed extension', href: 'https://github.com/AntSeed/pi-antseed' },
+      { label: 'pi-antseed extension', href: 'https://github.com/Antseed/pi-antseed' },
       { label: 'Antseed gateway API', href: '/docs/gateway/api' },
       { label: 'Antseed tunnels', href: '/docs/tunnels' },
     ],
     agentSummary:
-      'Install Pi: `npm install -g @earendil-works/pi-coding-agent` (or Pi\'s standalone binary). Install the extension: `pi install git:github.com/AntSeed/pi-antseed`. Gateway (recommended, works from any machine): export ANTSEED_BASE_URL=<gateway URL ending in /v1> and ANTSEED_API_KEY=<gateway key> before launching `pi`. Same computer as a buyer, no gateway: leave both unset (defaults to http://localhost:8377). The extension discovers sellers from GET /v1/models; pick `antseed/<service-id>@<peer-prefix>-<seller-name>` with `/model`; `/reload` refreshes the list.',
+      'Install Pi: `npm install -g @earendil-works/pi-coding-agent` (or Pi\'s standalone binary). Install the extension: `pi install git:github.com/Antseed/pi-antseed`. Gateway (recommended, works from any machine): export ANTSEED_BASE_URL=<gateway URL ending in /v1> and ANTSEED_API_KEY=<gateway key> before launching `pi`. Same computer as a buyer, no gateway: leave both unset (defaults to http://localhost:8377). The extension discovers sellers from GET /v1/models; pick `antseed/<service-id>@<peer-prefix>-<seller-name>` with `/model`; `/reload` refreshes the list.',
   },
 
   /* ---------------- Autonomous agents ---------------- */
@@ -674,11 +674,25 @@ Deposits reserved:           0 USDC → 1 USDC`,
         note:
           'Verify with `openclaw --version`. OpenClaw has a newer Node.js support policy than Antseed, so use a Node version accepted by the current OpenClaw release. The config file lives at `~/.openclaw/openclaw.json` and is created on first launch.',
       },
+      {
+        label: 'Optional: let the setup script do the rest',
+        command: 'skills/openclaw-antseed/scripts/setup.sh --service deepseek-v4-flash',
+        note:
+          'From a checkout of the Antseed repo. With no gateway, it installs the Antseed CLI if needed, runs `antseed gateway service install` (a background service that starts at login and restarts if it stops, on macOS and Linux, no root), creates a key for OpenClaw and saves it in `~/.antseed/openclaw/api-key`, then writes the `antseed` provider into `openclaw.json` with that one model as the default (`antseed/deepseek-v4-flash`). Both files are readable only by you, and running it again reuses the saved key. To use a gateway you already have, set `ANTSEED_BASE_URL` and `ANTSEED_API_KEY` first. Then run `openclaw gateway restart` and check it with `openclaw models list` and `openclaw agent exec "Say hi" --model "antseed/deepseek-v4-flash"`. The Configure and Test steps below are the by-hand route: they read `ANTSEED_BASE_URL` and `ANTSEED_API_KEY` from your shell and use a gateway preset the script doesn\'t create. A new gateway\'s wallet is empty, so add funds (`antseed gateway console-link`, then Wallet & Funding), or create the free-sellers preset below and add it to `openclaw.json` as a model.',
+      },
     ],
     configure: [
       gatewayEnv(
         'Same computer as the buyer, no gateway: use `http://127.0.0.1:8377/v1` and any placeholder key, such as `antseed-p2p`.',
       ),
+      {
+        kind: 'code',
+        title: 'Gateway only: create a preset that prefers free sellers',
+        language: 'bash',
+        snippet: `antseed gateway preset create --slug openclaw --name OpenClaw \\
+  --model deepseek-v4-flash --prefer-free`,
+        note: 'Run it where the gateway runs, or create the preset on the console\'s **Presets** page. OpenClaw then calls it as the model `@preset/openclaw`. With a plain model id, OpenClaw\'s requests can land on a paid seller and get a `402` on an unfunded gateway, even for a model that has a free seller. To never pay, add `--max-input-price 0 --max-output-price 0`: with no free seller available you get a `502` instead of a `402`. Using the local buyer proxy instead? Skip this step: only a gateway resolves presets, and funding the buyer doesn\'t change that. Without funds, run a gateway on the same computer instead (`antseed gateway service install`, which keeps it running in the background at `http://127.0.0.1:8379/v1`, plus a key from `antseed gateway key create --label openclaw`) and follow the gateway steps.',
+      },
       {
         kind: 'file',
         path: '~/.openclaw/openclaw.json  (merge into the existing `models.providers` object)',
@@ -693,19 +707,19 @@ Deposits reserved:           0 USDC → 1 USDC`,
         "api": "openai-completions",
         "models": [
           {
-            "id": "kimi-k2.6",
-            "name": "Kimi K2.6 (via Antseed)",
-            "reasoning": false,
-            "input": ["text"],
-            "contextWindow": 256000,
-            "maxTokens": 8192
-          },
-          {
-            "id": "deepseek-v4-flash",
-            "name": "DeepSeek v4 Flash (via Antseed)",
+            "id": "@preset/openclaw",
+            "name": "DeepSeek v4 Flash, free sellers first (via Antseed)",
             "reasoning": false,
             "input": ["text"],
             "contextWindow": 128000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "kimi-k2.6",
+            "name": "Kimi K2.6 (via Antseed, paid)",
+            "reasoning": false,
+            "input": ["text"],
+            "contextWindow": 256000,
             "maxTokens": 8192
           }
         ]
@@ -713,19 +727,29 @@ Deposits reserved:           0 USDC → 1 USDC`,
     }
   }
 }`,
-        note: 'Keep `authHeader: true`: it sends the key as `Authorization: Bearer`, which the gateway requires. Use `openai-completions` with a base URL ending in `/v1`; this is the setup Antseed runs its own OpenClaw agents on.',
+        note: 'Keep `authHeader: true`: it sends the key as `Authorization: Bearer`, which the gateway requires. Use `openai-completions` with a base URL ending in `/v1`; this is the setup Antseed runs its own OpenClaw agents on. With the local buyer proxy, leave out the `@preset/openclaw` entry: the proxy answers it with an error.',
       },
       {
         kind: 'code',
+        title: 'Gateway: use the preset',
+        language: 'bash',
+        snippet: `openclaw models set "antseed/@preset/openclaw"
+openclaw gateway restart`,
+        note: 'The restart is only for a running OpenClaw gateway service. One-off `openclaw agent exec` runs read the config directly.',
+      },
+      {
+        kind: 'code',
+        title: 'Local buyer proxy: use a model id',
         language: 'bash',
         snippet: `openclaw models set "antseed/kimi-k2.6"
 openclaw gateway restart`,
+        note: 'Without deposits, use a model that has a free seller: the local buyer retries a free seller after a paid one answers `402`. CLI 0.1.234 and earlier pass that `402` on, and OpenClaw then disables the key for about 10 minutes (see Troubleshooting), so on those versions fund the buyer (`antseed buyer deposit`) or use a gateway. A model with no free seller, such as `kimi-k2.6`, always needs a funded buyer.',
       },
     ],
     modelHints: {
       suggested: ['kimi-k2.6', 'deepseek-v4-flash', 'minimax-m2.7', 'gpt-oss-120b'],
       note:
-        'Every `id` under `models[]` must match a model id from `GET /v1/models`. Route to a specific peer with `<peerId>@<service-id>`. With the local buyer proxy and the desktop app, the special id `antseed` follows the model picked in the app; it does not work through a gateway.',
+        'Every `id` under `models[]` must be a model id from `GET /v1/models` or a gateway preset (`@preset/<slug>`). `kimi-k2.6` has no free seller, so it needs a funded gateway. Don\'t pin a seller with `<peerId>@<service-id>`: OpenClaw drops everything from the `@`, so the gateway gets a bare peer id and answers `502 model_not_found`. Pin with a preset instead: `antseed gateway preset create --slug openclaw-pinned --name "OpenClaw pinned" --model deepseek-v4-flash --allow-peer <peerId>`, then use `@preset/openclaw-pinned`. With the local buyer proxy and the desktop app, the special id `antseed` follows the model picked in the app; it does not work through a gateway.',
     },
     test: [
       {
@@ -737,17 +761,18 @@ openclaw gateway restart`,
 "kimi-k2.6"
 "minimax-m2.7"`,
         note:
-          'If a model id you listed in `openclaw.json` doesn\'t appear here, no seller your routing policy allows serves it right now. Remove the entry or pick another model from the list.',
+          'Presets are not listed here. If a model id you listed in `openclaw.json` doesn\'t appear here, no seller your routing policy allows serves it right now. Remove the entry or pick another model from the list.',
       },
       {
         label: 'Check the configured model catalog',
         command: 'openclaw models list',
         note:
-          'Run `openclaw gateway restart` after editing the config. You should see the `antseed` provider and its configured models.',
+          'You should see the `antseed` provider and its configured models.',
       },
       {
         label: 'Run an agent against Antseed',
-        command: 'openclaw agent exec "Summarize the README in this repo" --model antseed/kimi-k2.6',
+        command: 'openclaw agent exec "Summarize the README in this repo" --model "antseed/@preset/openclaw"',
+        note: 'Through the local buyer proxy: `openclaw agent exec "Summarize the README in this repo" --model "antseed/kimi-k2.6"`.',
       },
     ],
     troubleshooting: [
@@ -761,9 +786,18 @@ openclaw gateway restart`,
         fix: 'Set `authHeader: true` on the provider and make sure `ANTSEED_API_KEY` holds a gateway key in the environment OpenClaw starts with.',
       },
       {
+        problem: 'Connection refused at `localhost:8379`',
+        fix: 'The gateway on this computer isn\'t running. `antseed gateway service status` shows whether the service is installed and answering; `antseed gateway service install` starts it again.',
+      },
+      {
         problem: 'OpenClaw lists `antseed/<id>` but every call returns `502 model_not_found`',
         fix:
-          'No seller your routing policy allows currently advertises that model. Check `GET $ANTSEED_BASE_URL/models` with the bearer key and update `models[]`, or pick another model.',
+          'No seller your routing policy allows currently advertises that model. Check `GET $ANTSEED_BASE_URL/models` with the bearer key and update `models[]`, or pick another model. If the error names a 40-character peer id instead of a model, the id was `<peerId>@<service-id>`, which OpenClaw cuts at the `@`; pin with a preset instead (see **Pick a model**).',
+      },
+      {
+        problem: '`returned a billing error`, then `Inline API key for provider "antseed" is temporarily disabled after a provider auth/billing failure`',
+        fix:
+          'The gateway answered `402`: the request was routed to a paid seller and the workspace wallet is empty. OpenClaw then disables the `antseed` key for about 10 minutes for every model, free ones included; `openclaw models status` lists it under **Unavailable auth profiles** with the time left. Wait it out, then use the `@preset/openclaw` preset above, or fund the workspace wallet (console → **Wallet & Funding**).',
       },
       {
         problem: 'Streaming errors on long-running agents',
@@ -778,7 +812,7 @@ openclaw gateway restart`,
       {
         problem: 'OpenClaw runs remotely and cannot reach `127.0.0.1:8377`',
         fix:
-          'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`, or Agents → Internet-accessible endpoint in the desktop app). Put its `/v1` URL in `ANTSEED_BASE_URL`, a gateway key in `ANTSEED_API_KEY`, and keep `authHeader: true`. Do not expose port 8377 directly.',
+          'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`). Put its `/v1` URL in `ANTSEED_BASE_URL`, a gateway key in `ANTSEED_API_KEY`, and keep `authHeader: true`. Do not expose port 8377 directly.',
       },
     ],
     links: [
@@ -786,14 +820,14 @@ openclaw gateway restart`,
       { label: 'OpenClaw model-provider docs', href: 'https://docs.openclaw.ai/concepts/model-providers' },
       {
         label: 'Antseed skill: openclaw-antseed (full walkthrough)',
-        href: 'https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed',
+        href: 'https://github.com/Antseed/antseed/tree/main/skills/openclaw-antseed',
       },
       { label: 'Antseed Agents guide', href: '/docs/agents' },
       { label: 'Antseed gateway API', href: '/docs/gateway/api' },
       { label: 'Antseed tunnels', href: '/docs/tunnels' },
     ],
     agentSummary:
-      'Gateway (recommended): set ANTSEED_BASE_URL=<gateway URL ending in /v1> and ANTSEED_API_KEY=<gateway key>. Same computer as a buyer, no gateway: http://127.0.0.1:8377/v1 with a placeholder key. In models.providers.antseed use baseUrl/apiKey from those variables, api="openai-completions" and authHeader=true (Bearer, required by the gateway), list model ids from GET /v1/models, run `openclaw models set "antseed/<model-id>"`, then `openclaw gateway restart`.',
+      'Gateway (recommended): set ANTSEED_BASE_URL=<gateway URL ending in /v1> and ANTSEED_API_KEY=<gateway key>. No gateway: `skills/openclaw-antseed/scripts/setup.sh --service <model-id>` installs one on this computer as a background service (`antseed gateway service install`), saves a key to ~/.antseed/openclaw/api-key and writes the provider; never run `antseed gateway start` from an agent session, it stops when the session ends. Same computer as a buyer, no gateway: http://127.0.0.1:8377/v1 with a placeholder key. In models.providers.antseed use baseUrl/apiKey from those variables, api="openai-completions" and authHeader=true (Bearer, required by the gateway), list model ids from GET /v1/models, run `openclaw models set "antseed/<model-id>"`, then `openclaw gateway restart` (only needed for a running OpenClaw gateway). On an unfunded gateway, create a preset with `antseed gateway preset create --slug openclaw --name OpenClaw --model deepseek-v4-flash --prefer-free` and use model id `@preset/openclaw`. Presets work only through a gateway, never the local buyer proxy (funded or not): there, use a concrete model id. Unfunded, pick one with a free seller (the buyer retries a free seller after a 402; CLI 0.1.234 and earlier do not, so on those fund the buyer or run `antseed gateway service install` on the same computer and use the preset); a model with no free seller, such as kimi-k2.6, needs a funded buyer. Note: a 402 makes OpenClaw disable the antseed key for about 10 minutes, free models included. Never use `<peerId>@<model>` in OpenClaw (it strips everything from the @, giving 502 model_not_found); pin with a preset made with `--allow-peer <peerId>`.',
   },
   {
     slug: 'hermes',
@@ -808,19 +842,19 @@ openclaw gateway restart`,
     oneLiner: "Nous Research's agent framework - add your Antseed gateway as a provider, or let Hermes set itself up.",
     description: [
       '<strong>What Hermes is.</strong> Hermes Agent is the open-source agent framework from <a href="https://nousresearch.com/">Nous Research</a>. It runs as a long-lived gateway (Telegram, Discord, Slack, …) and reads its model provider from its config.',
-      '<strong>Fastest path: let Hermes do it.</strong> Install the <code>hermes-antseed</code> skill and tell your agent "set yourself up to run on Antseed". It snapshots its config, asks for your gateway URL and key (or checks the local buyer and your balance), tests which models actually answer, adds Antseed next to your current provider, switches only after a passing test, and asks you to send <code>/restart</code>.',
+      '<strong>Fastest path: let Hermes do it.</strong> Install the <code>hermes-antseed</code> skill and tell your agent "set yourself up to run on Antseed". It snapshots its config, uses your gateway or, if you have none, sets one up on this computer as a background service with a key just for Hermes, checks your balance, tests which models actually answer, adds Antseed next to your current provider, switches only after a passing test, and asks you to send <code>/restart</code>.',
       '<strong>Doing it by hand</strong> is the same steps below. Use <code>hermes config set</code> for every change instead of pasting YAML: your <code>config.yaml</code> already has a <code>model:</code> block, and a second one breaks it.',
     ],
     prereqs: [
       'Hermes installed and answering (`hermes -z "hi"` replies).',
-      'An Antseed endpoint. Recommended: a gateway, with its base URL (ending in `/v1`) and an API key from its console, and a funded workspace wallet. It works wherever Hermes runs. Alternative, only when Hermes runs on the same computer: the local buyer proxy (the desktop app, or `antseed buyer start`), funded (`antseed buyer balance` shows Available above 0).',
+      'An Antseed endpoint. Recommended: a gateway, with its base URL (ending in `/v1`) and an API key from its console, and a funded workspace wallet. It works wherever Hermes runs. No gateway yet: the skill (Option A) sets one up on this computer, or see "No gateway yet" in Configure. Alternative, only when Hermes runs on the same computer: the local buyer proxy (the desktop app, or `antseed buyer start`), funded (`antseed buyer balance` shows Available above 0).',
     ],
     install: [
       {
         label: 'Option A: install the skill and let Hermes set itself up',
-        command: 'hermes skills install AntSeed/antseed/skills/hermes-antseed',
+        command: 'hermes skills install Antseed/antseed/skills/hermes-antseed',
         note:
-          'Then message your agent: "Set yourself up to run on Antseed using the hermes-antseed skill." It stops to ask you if the buyer is not running or not funded, and finishes by asking you to send `/restart`. Skip the rest of this page.',
+          'Then message your agent: "Set yourself up to run on Antseed using the hermes-antseed skill." Without a gateway, it installs the Antseed CLI and runs `antseed gateway service install`, then creates a key for itself and saves it in `~/.antseed/hermes/api-key`, a file only you can read. It stops to ask you if the wallet needs funds, and finishes by asking you to send `/restart`. Skip the rest of this page.',
       },
       {
         label: 'Option B (by hand): snapshot your config and note your current model',
@@ -829,21 +863,35 @@ openclaw gateway restart`,
       },
     ],
     configure: [
+      {
+        kind: 'code',
+        title: 'No gateway yet: run one on this computer in the background',
+        language: 'bash',
+        snippet: `npm install -g @antseed/cli@latest --allow-scripts=@antseed/node,better-sqlite3,node-datachannel
+antseed gateway service install
+antseed gateway key create --label hermes`,
+        note: 'Installs the gateway, and the buyer it needs, as a background service that starts at login and restarts if it stops: a launchd agent on macOS, a systemd user service on Linux, no root needed. `--allow-scripts` lets recent npm versions build the CLI\'s native modules. Use `http://localhost:8379/v1` as `ANTSEED_BASE_URL` and the printed key as `ANTSEED_API_KEY`. Check it later with `antseed gateway service status`; remove it with `antseed gateway service uninstall`. On a Linux server, run the `loginctl enable-linger` command it prints to keep it running after you log out. With encrypted wallet keys, set `ANTSEED_PASSPHRASE_FILE` before installing: the service can\'t ask for the passphrase.',
+      },
       gatewayEnv(
         'Same computer as the buyer, no gateway: use `http://127.0.0.1:8377/v1` and the placeholder key `antseed-p2p`; the local proxy checks no key. The commands below read both variables, so they work either way.',
       ),
       {
         kind: 'code',
         language: 'bash',
-        snippet: String.raw`try_model() {
+        snippet: String.raw`# Text models on the network right now (ids are case-sensitive):
+curl -s "$ANTSEED_BASE_URL/models?type=text" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq -r '.data[].id'
+
+try_model() {
   curl -s -m 90 "$ANTSEED_BASE_URL/chat/completions" \
     -H 'Content-Type: application/json' -H "Authorization: Bearer $ANTSEED_API_KEY" \
-    -d "{\"model\":\"$1\",\"stream\":false,\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: ok\"}]}" \
+    -d "{\"model\":\"$1\",\"stream\":false,\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with: ok\"}]}" \
   | grep -q '"choices"' && echo "OK   $1" || echo "FAIL $1"
 }
-for m in kimi-k3 kimi-k2.6 glm-5.1 deepseek-v4-pro minimax-m2.7 deepseek-v4-flash; do try_model "$m"; done`,
+# Candidates, strongest first. Replace with ids from the list above:
+models="kimi-k3 kimi-k2.6 glm-5.1 minimax-m2.7 deepseek-v4-flash"
+for m in $models; do try_model "$m"; done`,
         note:
-          'Pick models that actually answer right now. Listed in `/v1/models` is not the same as servable: a model can be listed while no seller your routing policy allows serves it. A `402` / `insufficient_deposits` means the wallet needs funds: the workspace wallet in the gateway console (Wallet & Funding), or `antseed buyer deposit` for a local buyer. The test is non-streaming on purpose, because Hermes\' helper calls (titles, compression) are non-streaming. Use the first OK as your main model and a cheap OK one (`minimax-m2.7`, `deepseek-v4-flash`) as the helper. Each test costs a fraction of a cent.',
+          'Take ids from the list, not from memory: they change over time. `max_tokens` is 64 so reasoning models have room to answer. Pick models that actually answer right now. Listed in `/v1/models` is not the same as servable: a model can be listed while no seller your routing policy allows serves it. A `402` / `insufficient_deposits` means the wallet needs funds: the workspace wallet in the gateway console (Wallet & Funding), or `antseed buyer deposit` for a local buyer. The test is non-streaming on purpose, because Hermes\' helper calls (titles, compression) are non-streaming. Use the first OK as your main model and a cheap OK one (`minimax-m2.7`, `deepseek-v4-flash`) as the helper. Each test costs a fraction of a cent.',
       },
       {
         kind: 'code',
@@ -900,7 +948,7 @@ hermes -z "Reply with exactly: restored-ok"`,
     modelHints: {
       suggested: ['kimi-k3', 'glm-5.1', 'deepseek-v4-pro', 'minimax-m2.7', 'deepseek-v4-flash'],
       note:
-        'Use a concrete model id that passed the test above. Do not use the id `antseed`: it follows the model picked in the desktop app, so it only works against the local buyer proxy with the app running, never through a gateway.',
+        'Use a concrete model id that passed the test above. Do not use the id `antseed`: it follows the buyer\'s default route (set with `POST /_antseed/route`), so it only works against the local buyer proxy, never through a gateway.',
     },
     test: [
       {
@@ -920,7 +968,7 @@ hermes -z "Reply with exactly: restored-ok"`,
     troubleshooting: [
       {
         problem: '`no_default_route`',
-        fix: 'The model id `antseed` routes to the model picked in the desktop app, and none is picked. Use a concrete id from the model test.',
+        fix: 'The model id `antseed` routes to the buyer\'s default route, and none is set. Use a concrete id from the model test.',
       },
       {
         problem: '`model_not_found … No policy-allowed peer currently serves model`',
@@ -936,7 +984,15 @@ hermes -z "Reply with exactly: restored-ok"`,
       },
       {
         problem: '`401` from the gateway',
-        fix: 'The key is missing, wrong, revoked or expired. Check `hermes config get ANTSEED_API_KEY` against the Keys page in the console, set it again, then `/restart`.',
+        fix: 'The key is missing, wrong, revoked or expired. Check `hermes config get ANTSEED_API_KEY` against the Keys page in the console, set it again, then `/restart`. For a gateway on this computer, `antseed gateway key create --label hermes` makes a new key.',
+      },
+      {
+        problem: '`curl: (7) Failed to connect` to `localhost:8379`',
+        fix: 'The gateway on this computer isn\'t running. `antseed gateway service status` shows whether the service is installed and answering; `antseed gateway service install` starts it again. Don\'t run `antseed gateway start` from Hermes\' terminal tool: it stops when the session ends.',
+      },
+      {
+        problem: '`429` / `free_tier_exhausted`',
+        fix: 'The free sellers for that model are busy. Try another model, or try again in a few minutes.',
       },
       {
         problem: '`Unknown provider \'antseed\'`',
@@ -952,7 +1008,7 @@ hermes -z "Reply with exactly: restored-ok"`,
       },
       {
         problem: 'Hermes runs on a remote host and can\'t reach `127.0.0.1:8377`',
-        fix: 'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`, or Agents → Internet-accessible endpoint in the desktop app), with its `/v1` URL and a gateway key. Do not expose port 8377 directly.',
+        fix: 'The local buyer proxy only listens on localhost. Use a gateway: a server gateway, or a tunnel (`antseed tunnel start`), with its `/v1` URL and a gateway key. Do not expose port 8377 directly.',
       },
     ],
     links: [
@@ -960,15 +1016,15 @@ hermes -z "Reply with exactly: restored-ok"`,
       { label: 'Hermes AI-provider docs', href: 'https://hermes-agent.nousresearch.com/docs/integrations/providers' },
       {
         label: 'Antseed skill: hermes-antseed (the steps above, written for your Hermes agent to follow)',
-        href: 'https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed',
+        href: 'https://github.com/Antseed/antseed/tree/main/skills/hermes-antseed',
       },
       { label: 'Antseed Agents guide', href: '/docs/agents' },
       { label: 'Antseed gateway API', href: '/docs/gateway/api' },
       { label: 'Antseed tunnels', href: '/docs/tunnels' },
     ],
-    agentSkill: 'hermes skills install AntSeed/antseed/skills/hermes-antseed',
+    agentSkill: 'hermes skills install Antseed/antseed/skills/hermes-antseed',
     agentSummary:
-      'Install the hermes-antseed skill and follow it. In short: `hermes backup --quick`; get the endpoint: a gateway (recommended: base URL ending in /v1 + gateway key) or, on the same computer, the local buyer at http://127.0.0.1:8377/v1 with placeholder key antseed-p2p (check `antseed buyer balance` shows Available > 0); export ANTSEED_BASE_URL and ANTSEED_API_KEY; test models with a real non-streaming chat completion; add the provider with `hermes config set providers.antseed.{name,base_url,key_env,api_mode,default_model}` plus `hermes config set ANTSEED_API_KEY "$ANTSEED_API_KEY"`; verify with `hermes -z ... --provider antseed -m <model>`; only then set `model.provider antseed` and `model.default <model>`; never paste YAML, never use model id `antseed` through a gateway or on a CLI-only buyer, never restart your own Hermes gateway: ask the user to send /restart.',
+      'Install the hermes-antseed skill and follow it. In short: `hermes backup --quick`; get the endpoint: a gateway (recommended: base URL ending in /v1 + gateway key; with no gateway, set one up on this computer with `antseed gateway service install` and `antseed gateway key create --label hermes`, base URL http://localhost:8379/v1, and never run `antseed gateway start` in your own terminal tool) or, on the same computer, the local buyer at http://127.0.0.1:8377/v1 with placeholder key antseed-p2p (check `antseed buyer balance` shows Available > 0); export ANTSEED_BASE_URL and ANTSEED_API_KEY; test models with a real non-streaming chat completion; add the provider with `hermes config set providers.antseed.{name,base_url,key_env,api_mode,default_model}` plus `hermes config set ANTSEED_API_KEY "$ANTSEED_API_KEY"`; verify with `hermes -z ... --provider antseed -m <model>`; only then set `model.provider antseed` and `model.default <model>`; never paste YAML, never use model id `antseed` through a gateway or on a CLI-only buyer, never restart your own Hermes gateway: ask the user to send /restart.',
   },
 
   /* ---------------- (Additional frameworks) ---------------- */
@@ -1063,7 +1119,7 @@ ANTSEED_API_KEY=${GATEWAY_KEY}`,
       },
     ],
     modelHints: {
-      suggested: ['kimi-k2.6', 'deepseek-v4-flash', 'gpt-oss-120b', 'qwen3-coder-480b'],
+      suggested: ['kimi-k2.6', 'deepseek-v4-flash', 'gpt-oss-120b', 'glm-5.2'],
       note: 'Each provider JSON file defines exactly one `model`. Studio enumerates these into the validator-creation UI; pick model ids from the network-wide list (`GET /v1/models` on your gateway). To expose more models later, drop in more `antseed_<model>.json` files - no schema edit needed. To lock a file to one specific peer, set `model` to `<peerId>@<service-id>`.',
     },
     test: [
@@ -1139,18 +1195,18 @@ ANTSEED_API_KEY=${GATEWAY_KEY}`,
     status: 'verified',
     seoTitle: 'Vercel AI SDK on any model, OpenAI-compatible',
     headline: 'Use Antseed with the Vercel AI SDK',
-    oneLiner: "Use `@ai-sdk/openai-compatible` to call Antseed from `generateText` / `streamText` / `generateObject`.",
+    oneLiner: "Use `@ai-sdk/openai-compatible` to call Antseed from `generateText` / `streamText`.",
     description: [
-      '<strong>What the AI SDK is.</strong> Vercel\'s <code>ai</code> package is a provider-agnostic TypeScript toolkit for building LLM apps and agents. You pick a <em>provider</em> (a small adapter package), instantiate a model from it, and pass that model into one of the framework\'s primitives: <code>generateText</code>, <code>streamText</code>, <code>generateObject</code>, or <code>streamObject</code>. The AI SDK handles tool-calling, structured output, message history, and streaming for you.',
+      '<strong>What the AI SDK is.</strong> Vercel\'s <code>ai</code> package is a provider-agnostic TypeScript toolkit for building LLM apps and agents. You pick a <em>provider</em> (a small adapter package), instantiate a model from it, and pass that model into one of the framework\'s primitives: <code>generateText</code> or <code>streamText</code>, with an <code>output</code> setting for structured data. The AI SDK handles tool-calling, structured output, message history, and streaming for you.',
       '<strong>How Antseed plugs in.</strong> Your Antseed gateway is OpenAI-Chat-compatible at its <code>/v1</code> URL, so the right adapter is <code>@ai-sdk/openai-compatible</code> (not <code>@ai-sdk/openai</code>). The official OpenAI provider is locked to OpenAI\'s API surface and quietly drops third-party fields; the openai-compatible provider is the one Vercel\'s own docs recommend for proxies, gateways, and any non-OpenAI server that speaks Chat Completions. You pass the gateway URL as <code>baseURL</code> and a gateway key as <code>apiKey</code>, which the SDK sends as <code>Authorization: Bearer</code>. On the same computer as a buyer you can use the local buyer proxy instead (<code>http://localhost:8377/v1</code>, any non-empty key).',
       '<strong>Which model ids work.</strong> The first argument to the provider call is a model id from the Antseed catalog (e.g. <code>deepseek-v4-flash</code>, <code>kimi-k2.6</code>). Any model on the network works - list them with <code>GET /v1/models</code>. To route to a specific peer per call, prefix that peer offer\'s service id: <code>&lt;peerId&gt;@deepseek-v4-flash</code>.',
     ],
-    prereqs: ['Node.js 18 or newer'],
+    prereqs: ['Node.js 22 or newer (`ai` 7 requires it)'],
     install: [
       {
-        label: 'Install the SDK and the openai-compatible provider',
-        command: 'npm install ai @ai-sdk/openai-compatible zod',
-        note: '`zod` is only needed if you call `generateObject` / `streamObject`. Skip it for plain text generation.',
+        label: 'Create an ES module project and install the SDK and the openai-compatible provider',
+        command: 'npm init -y\nnpm pkg set type=module\nnpm install ai @ai-sdk/openai-compatible zod',
+        note: 'The examples below use top-level `await`, which only works in an ES module, so the package needs `"type": "module"`. Without it, `npx tsx` fails with "Top-level await is currently not supported with the "cjs" output format". `zod` is only needed for structured output (`structured.ts`).',
       },
     ],
     configure: [
@@ -1166,6 +1222,7 @@ export const antseed = createOpenAICompatible({
   baseURL: process.env.ANTSEED_BASE_URL!, // gateway URL ending in /v1
   apiKey: process.env.ANTSEED_API_KEY!,   // gateway key, sent as Authorization: Bearer
   includeUsage: true, // surface token counts in streaming responses too
+  supportsStructuredOutputs: true, // send the zod schema as a JSON schema (structured.ts)
 });`,
         note: 'Same computer as a buyer, no gateway: `baseURL: \'http://localhost:8377/v1\'` and any non-empty `apiKey`, such as `\'antseed\'`; the local proxy checks no key.',
       },
@@ -1186,29 +1243,33 @@ for await (const chunk of result.textStream) {
   process.stdout.write(chunk);
 }
 
-console.log('\\nusage:', await result.usage);`,
+const { inputTokens, outputTokens } = await result.usage;
+console.log(\`\\ntokens: \${inputTokens} in, \${outputTokens} out\`);`,
       },
       {
         kind: 'code',
         language: 'typescript',
-        snippet: `// structured.ts - generateObject works the same way
-import { generateObject } from 'ai';
+        snippet: `// structured.ts - a typed object instead of text
+import { generateText, Output } from 'ai';
 import { z } from 'zod';
 import { antseed } from './antseed';
 
-const { object } = await generateObject({
+const { output } = await generateText({
   model: antseed('deepseek-v4-flash'),
-  schema: z.object({
-    title: z.string(),
-    bullets: z.array(z.string()).min(3).max(5),
+  output: Output.object({
+    schema: z.object({
+      title: z.string(),
+      bullets: z.array(z.string()).min(3).max(5),
+    }),
   }),
-  prompt: 'Summarize the Antseed buyer-proxy README as a slide.',
+  prompt: 'Make one slide that explains why the sky is blue.',
 });
-console.log(object);`,
+console.log(output);`,
+        note: '`generateObject` and `streamObject` still work but are deprecated in `ai` 7; `Output.object` replaces them. The schema is only enforced because `antseed.ts` sets `supportsStructuredOutputs: true`.',
       },
     ],
     modelHints: {
-      suggested: ['deepseek-v4-flash', 'kimi-k2.6', 'gpt-oss-120b', 'qwen3-coder-480b'],
+      suggested: ['deepseek-v4-flash', 'kimi-k2.6', 'gpt-oss-120b', 'glm-5.2'],
       note:
         `The string you pass to \`antseed('<id>')\` is forwarded verbatim as \`model\` in the OpenAI Chat request. Run \`${LIST_MODELS_COMMAND}\` to list every model on the network. \`antseed('<peerId>@<id>')\` routes that one call to a specific peer.`,
     },
@@ -1217,12 +1278,23 @@ console.log(object);`,
         label: 'Run a smoke test with `tsx`',
         command: 'npx tsx stream.ts',
         outputLabel: 'Example output',
-        output: `The sky is blue because shorter (blue) wavelengths of sunlight
-scatter much more than longer (red) wavelengths in Earth's atmosphere…
+        output: `The sky appears blue due to a phenomenon called **Rayleigh scattering**…
 
-usage: { promptTokens: 14, completionTokens: 78, totalTokens: 92 }`,
+tokens: 1698 in, 215 out`,
         note:
           'If you see `502 model_not_found`, no seller your routing policy allows currently advertises the id you passed - check `GET /v1/models`. A `401` means `ANTSEED_API_KEY` is missing or not a valid gateway key.',
+      },
+      {
+        label: 'Check structured output',
+        command: 'npx tsx structured.ts',
+        outputLabel: 'Example output',
+        output: `{
+  title: 'Why the Sky Is Blue',
+  bullets: [
+    'Sunlight appears white but contains all colors of the rainbow.',
+    …
+  ]
+}`,
       },
       {
         label: 'Per-request peer override (no session pin needed)',
@@ -1247,9 +1319,9 @@ const result = streamText({
           'You imported from `@ai-sdk/openai` instead of `@ai-sdk/openai-compatible`. Switch the package - the SDK\'s official OpenAI provider is locked to OpenAI\'s service ids and rejects unknown ones.',
       },
       {
-        problem: '`generateObject` returns malformed JSON',
+        problem: '`NoObjectGeneratedError: No object generated: response did not match schema`',
         fix:
-          'The AI SDK is strict about JSON Schema support. Pass `supportsStructuredOutputs: true` to `createOpenAICompatible` only if the routed service supports OpenAI-style structured outputs natively. If unsure, leave it off - the SDK falls back to tool-call-based JSON which works everywhere.',
+          'Without `supportsStructuredOutputs: true` on `createOpenAICompatible`, the provider asks only for JSON (`response_format: json_object`) and never sends your schema, so the model invents its own fields. Set it, as in `antseed.ts` above, to send the schema as `json_schema`. If it still fails, the seller that served the call ignores JSON schemas: pick a model whose offers in `GET /v1/models` list `structuredOutput: true` under `capabilities`, or pin such a seller with `<peerId>@<id>`.',
       },
       {
         problem: '`includeUsage` is set but `result.usage` is undefined',
@@ -1271,7 +1343,7 @@ const result = streamText({
       { label: '`ai` on npm', href: 'https://www.npmjs.com/package/ai' },
     ],
     agentSummary:
-      "createOpenAICompatible({ name: 'antseed', baseURL: process.env.ANTSEED_BASE_URL, apiKey: process.env.ANTSEED_API_KEY }) with a gateway URL ending in /v1 and a gateway key (recommended); on the same computer as a buyer, baseURL 'http://localhost:8377/v1' with apiKey 'antseed'. Then antseed('<model-id>') as the model. Use @ai-sdk/openai-compatible (NOT @ai-sdk/openai). Model ids come from GET /v1/models. Per-request peer override: headers: { 'x-antseed-pin-peer': '<peerId>' }, or model '<peerId>@<model-id>'. Server-side only: never expose the gateway key to a browser.",
+      "createOpenAICompatible({ name: 'antseed', baseURL: process.env.ANTSEED_BASE_URL, apiKey: process.env.ANTSEED_API_KEY }) with a gateway URL ending in /v1 and a gateway key (recommended); on the same computer as a buyer, baseURL 'http://localhost:8377/v1' with apiKey 'antseed'. Then antseed('<model-id>') as the model. Use @ai-sdk/openai-compatible (NOT @ai-sdk/openai). The examples use top-level await: set \"type\": \"module\" in package.json (npm pkg set type=module) or tsx fails. For structured output use generateText with output: Output.object({ schema }) and set supportsStructuredOutputs: true on the provider, or the schema is never sent. Model ids come from GET /v1/models. Per-request peer override: headers: { 'x-antseed-pin-peer': '<peerId>' }, or model '<peerId>@<model-id>'. Server-side only: never expose the gateway key to a browser.",
   },
   {
     slug: 'langchain-python',
@@ -1355,7 +1427,7 @@ print(result["messages"][-1].content)`,
       },
     ],
     modelHints: {
-      suggested: ['deepseek-v4-flash', 'kimi-k2.6', 'gpt-oss-120b', 'qwen3-coder-480b'],
+      suggested: ['deepseek-v4-flash', 'kimi-k2.6', 'gpt-oss-120b', 'glm-5.2'],
       note:
         'Pick services whose `protocols` array includes `openai-chat-completions` (most do natively; the rest are translated automatically by `@antseed/api-adapter`). Tool calling and structured output rely on the service supporting OpenAI-style function-call syntax - confirm with a quick smoke test before building large agents. `model="<peerId>@<service-id>"` routes to a specific peer.',
     },
@@ -1462,7 +1534,7 @@ curl "$ANTSEED_BASE_URL/messages" \\
   -H "Authorization: Bearer $ANTSEED_API_KEY" \\
   -H 'content-type: application/json' \\
   -d '{
-    "model": "kimi-k2.6",
+    "model": "deepseek-v4-flash",
     "max_tokens": 1024,
     "messages": [{"role": "user", "content": "Hello"}]
   }'

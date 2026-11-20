@@ -40,7 +40,7 @@ export type AppsActionReport = {
   displayName?: string
   /** connect only: buyer proxy port written into the config. */
   buyerPort?: number
-  /** disconnect only: false when the config carried nothing AntSeed added. */
+  /** disconnect only: false when the config carried nothing Antseed added. */
   changed?: boolean
   connected?: boolean
   configPath?: string
@@ -91,7 +91,7 @@ export function readDefaultRoutedModel(dataDir: string): string | null {
 
 export function noDefaultRouteWarning(buyerPort: number): string {
   return 'No default route is set on the buyer, so requests for model "antseed" will fail with no_default_route. '
-    + 'Pick a model in the Antseed desktop app, or set one on the running buyer: '
+    + 'Set one on the running buyer: '
     + `curl -X POST http://localhost:${buyerPort}/_antseed/route -H 'content-type: application/json' -d '{"model":"<peerId>@<service>"}'`
 }
 
@@ -110,9 +110,6 @@ export async function connectApp(ctx: AppsContext, name: string, buyerPort?: num
   const port = buyerPort ?? await resolveDefaultBuyerPort(ctx)
   const warnings: string[] = []
   if (!readDefaultRoutedModel(ctx.dataDir)) warnings.push(noDefaultRouteWarning(port))
-  if (profile.configPatch.format === 'claude-desktop') {
-    warnings.push('Claude Desktop is routed through the Antseed desktop app\'s local Claude gateway; it only works while the desktop app is running.')
-  }
   try {
     writeConfigPatch(profile.configPatch, port, ensureStateDir(ctx))
   } catch (err) {

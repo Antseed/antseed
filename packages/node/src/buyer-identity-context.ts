@@ -199,6 +199,11 @@ export class BuyerIdentityContext {
     return conn;
   }
 
+  /** Session hash of this identity's encrypted TCP connection to a seller, else null. */
+  getChannelBinding(peerId: PeerId): string | null {
+    return this._connectionManager.getConnection(peerId)?.channelBinding ?? null;
+  }
+
   /** The live connection to a seller, if this identity has one. */
   liveConnection(peerId: PeerId): PeerConnection | null {
     const conn = this._connectionManager.getConnection(peerId);
@@ -265,7 +270,7 @@ export class BuyerIdentityContext {
       for (const frame of frames) {
         if (frame.type === MessageType.Ping) {
           if (isOpen()) {
-            conn.send(encodeFrame({ type: MessageType.Pong, messageId: frame.messageId, payload: buildPongPayload(frame.payload) }));
+            conn.trySend(encodeFrame({ type: MessageType.Pong, messageId: frame.messageId, payload: buildPongPayload(frame.payload) }));
           }
         } else if (frame.type === MessageType.Pong) {
           this._keepalives.get(peerId)?.handlePong(frame.payload);
@@ -301,7 +306,7 @@ export class BuyerIdentityContext {
 
     const keepalive = new KeepaliveManager({
       sendPing: (payload: Uint8Array) => {
-        if (isOpen()) conn.send(encodeFrame({ type: MessageType.Ping, messageId: 0, payload }));
+        if (isOpen()) conn.trySend(encodeFrame({ type: MessageType.Ping, messageId: 0, payload }));
       },
       onDead: () => {
         if (!isOpen()) return;

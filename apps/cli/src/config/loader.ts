@@ -12,6 +12,7 @@ import type {
   DomainVerificationMethod,
   GithubVerificationConfig,
   SellerFallbackUpstreamConfig,
+  SellerFreeTierCLIConfig,
   SellerProviderConfig,
   SellerServiceConfig,
   TokenPricingUsdPerMillion,
@@ -105,6 +106,9 @@ function normalizeSellerService(value: unknown): SellerServiceConfig | null {
   }
   if (typeof value['imageEditModel'] === 'string' && value['imageEditModel'].trim().length > 0) {
     out.imageEditModel = value['imageEditModel'].trim();
+  }
+  if (value['extraProtocols'] !== undefined) {
+    out.extraProtocols = value['extraProtocols'] as SellerServiceConfig['extraProtocols'];
   }
   const categories = normalizeCategories(value['categories']);
   if (categories) {
@@ -426,6 +430,9 @@ function cloneSellerFreeTier(
     ...(value.windowMs !== undefined ? { windowMs: value.windowMs } : {}),
     ...(value.stakeTiers !== undefined ? { stakeTiers: value.stakeTiers.map((tier) => ({ ...tier })) } : {}),
     ...(value.stakersOnly !== undefined ? { stakersOnly: value.stakersOnly } : {}),
+    ...(value.newBuyerMaxInputTokens !== undefined ? { newBuyerMaxInputTokens: value.newBuyerMaxInputTokens } : {}),
+    ...(value.newBuyerRequests !== undefined ? { newBuyerRequests: value.newBuyerRequests } : {}),
+    ...(value.movedConversations !== undefined ? { movedConversations: value.movedConversations } : {}),
   };
 }
 
@@ -466,6 +473,14 @@ function normalizeFreeTierProgram(value: Record<string, unknown>): NonNullable<A
     ...(value['stakeTiers'] !== undefined ? { stakeTiers: normalizeSellerFreeTierStakeTiers(value['stakeTiers']) } : {}),
     // Kept as given so validation reports a non-boolean instead of reading it as false.
     ...(value['stakersOnly'] !== undefined ? { stakersOnly: value['stakersOnly'] as boolean } : {}),
+    ...(value['newBuyerMaxInputTokens'] !== undefined
+      ? { newBuyerMaxInputTokens: toFiniteOrNaN(value['newBuyerMaxInputTokens']) }
+      : {}),
+    ...(value['newBuyerRequests'] !== undefined ? { newBuyerRequests: toFiniteOrNaN(value['newBuyerRequests']) } : {}),
+    // Kept as given so validation reports an unknown mode instead of dropping it.
+    ...(value['movedConversations'] !== undefined
+      ? { movedConversations: value['movedConversations'] as SellerFreeTierCLIConfig['movedConversations'] }
+      : {}),
   };
 }
 
@@ -492,7 +507,11 @@ function mergeSellerConfig(
       providers: mergeSellerProviders(defaults.providers, undefined),
       publicAddress: defaults.publicAddress,
       ...(typeof defaults.maxUploadBodyBytes === 'number' ? { maxUploadBodyBytes: defaults.maxUploadBodyBytes } : {}),
+      ...(typeof defaults.maxInFlightRequestBytes === 'number' ? { maxInFlightRequestBytes: defaults.maxInFlightRequestBytes } : {}),
+      ...(defaults.blockedBuyers ? { blockedBuyers: [...defaults.blockedBuyers] } : {}),
       ...(typeof defaults.maxInboundConnections === 'number' ? { maxInboundConnections: defaults.maxInboundConnections } : {}),
+      ...(typeof defaults.maxInboundConnectionsPerIp === 'number' ? { maxInboundConnectionsPerIp: defaults.maxInboundConnectionsPerIp } : {}),
+      ...(typeof defaults.announceProviderIds === 'boolean' ? { announceProviderIds: defaults.announceProviderIds } : {}),
       ...(typeof defaults.inboundIdleTimeoutMs === 'number' ? { inboundIdleTimeoutMs: defaults.inboundIdleTimeoutMs } : {}),
       ...(defaults.agentDir ? { agentDir: defaults.agentDir } : {}),
       ...(normalizeVerifications(undefined, defaults.verifications)),
@@ -521,10 +540,31 @@ function mergeSellerConfig(
       : typeof defaults.maxUploadBodyBytes === 'number'
         ? { maxUploadBodyBytes: defaults.maxUploadBodyBytes }
         : {}),
+    ...(typeof value['maxInFlightRequestBytes'] === 'number'
+      ? { maxInFlightRequestBytes: value['maxInFlightRequestBytes'] }
+      : typeof defaults.maxInFlightRequestBytes === 'number'
+        ? { maxInFlightRequestBytes: defaults.maxInFlightRequestBytes }
+        : {}),
+    // Kept as given so validation reports a malformed list instead of dropping it.
+    ...(value['blockedBuyers'] !== undefined
+      ? { blockedBuyers: value['blockedBuyers'] as string[] }
+      : defaults.blockedBuyers
+        ? { blockedBuyers: [...defaults.blockedBuyers] }
+        : {}),
     ...(typeof value['maxInboundConnections'] === 'number'
       ? { maxInboundConnections: value['maxInboundConnections'] }
       : typeof defaults.maxInboundConnections === 'number'
         ? { maxInboundConnections: defaults.maxInboundConnections }
+        : {}),
+    ...(typeof value['maxInboundConnectionsPerIp'] === 'number'
+      ? { maxInboundConnectionsPerIp: value['maxInboundConnectionsPerIp'] }
+      : typeof defaults.maxInboundConnectionsPerIp === 'number'
+        ? { maxInboundConnectionsPerIp: defaults.maxInboundConnectionsPerIp }
+        : {}),
+    ...(typeof value['announceProviderIds'] === 'boolean'
+      ? { announceProviderIds: value['announceProviderIds'] }
+      : typeof defaults.announceProviderIds === 'boolean'
+        ? { announceProviderIds: defaults.announceProviderIds }
         : {}),
     ...(typeof value['inboundIdleTimeoutMs'] === 'number'
       ? { inboundIdleTimeoutMs: value['inboundIdleTimeoutMs'] }

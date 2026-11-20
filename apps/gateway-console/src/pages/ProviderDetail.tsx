@@ -54,7 +54,7 @@ function ProviderMeta({ peer }: { peer: Peer }) {
     <span className="gc-seller__meta">
       <span className="gc-peer-id"><Mono title={peer.peerId}>{shortId(peer.peerId, 6, 4)}</Mono><CopyButton iconOnly value={peer.peerId} label="Copy peer id" /></span>
       <VerificationLinks links={peer.verificationLinks} />
-      <TeeBadge tee={peer.tee} scope={peer.teeScope} />
+      <TeeBadge tee={peer.tee} scope={peer.teeScope} upstreams={peer.teeUpstreams} />
       {isFreePeer(peer, '') && <Badge tone="success">Free</Badge>}
       {peer.washFlagged && <Badge tone="danger">Flagged</Badge>}
       {coolingDown && <Badge tone="warning">Cooling down</Badge>}

@@ -6,8 +6,6 @@
  * message format.
  */
 
-import type { ChatRouteMode } from './peer-selection.js';
-
 export type TextBlock = { type: 'text'; text: string };
 export type FileBlock = {
   type: 'file';
@@ -38,27 +36,24 @@ export type ToolResultBlock = {
 export type ContentBlock = TextBlock | FileBlock | ImageBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock;
 
 export type AiMessageMeta = {
-  peerId?: string;
-  peerAddress?: string;
-  peerProviders?: string[];
-  peerReputation?: number;
-  peerCurrentLoad?: number;
-  peerMaxConcurrency?: number;
   provider?: string;
   service?: string;
-  /** Display name of the seller that served the reply, when known. */
+  /** The seller that answered, as the gateway reported it. */
+  peerId?: string;
   peerName?: string;
-  /** Routing service (`<peerId>@<serviceId>`) that chose the model; absent when the user chose it. */
-  router?: string;
+  /** The model the seller served, as the gateway reported it: under a router, the one it picked. */
+  servedModel?: string;
+  /**
+   * The desktop key's mode when the reply was requested. A chat with a
+   * 'private' reply holds history only TEE sellers have seen.
+   */
+  privacy?: 'anonymous' | 'private';
   requestId?: string;
-  routeRequestId?: string;
   latencyMs?: number;
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
   tokenSource?: 'usage' | 'estimated' | 'unknown';
-  inputUsdPerMillion?: number;
-  outputUsdPerMillion?: number;
   estimatedCostUsd?: number;
   outputImages?: number;
 };
@@ -79,13 +74,6 @@ export type AiConversation = {
   id: string;
   title: string;
   service: string;
-  provider?: string;
-  peerId?: string;
-  peerLabel?: string;
-  routeMode?: ChatRouteMode;
-  /** Seller that produced the latest assistant response. This is display-only;
-   * `peerId` remains the conversation's text route. */
-  lastResponsePeerId?: string;
   messages: AiChatMessage[];
   createdAt: number;
   updatedAt: number;
@@ -97,13 +85,6 @@ export type AiConversationSummary = {
   id: string;
   title: string;
   service: string;
-  provider?: string;
-  peerId?: string;
-  peerLabel?: string;
-  routeMode?: ChatRouteMode;
-  /** Seller that produced the latest assistant response. This is display-only;
-   * `peerId` remains the conversation's text route. */
-  lastResponsePeerId?: string;
   messageCount: number;
   createdAt: number;
   updatedAt: number;
@@ -111,4 +92,10 @@ export type AiConversationSummary = {
   totalTokens: number;
   totalEstimatedCostUsd: number;
   workspacePath?: string;
+  /** When the chat was pinned (ms); absent when it isn't. */
+  pinnedAt?: number;
+  /** When the chat was archived (ms); absent when it isn't. */
+  archivedAt?: number;
+  /** Branch (or short commit) the workspace's git repository is on. */
+  gitBranch?: string;
 };

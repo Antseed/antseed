@@ -22,7 +22,7 @@ const walletTheme = darkTheme(ANTSEED_RAINBOWKIT_DARK);
 const WalletRoot = WagmiProvider as unknown as ComponentType<{ config: ReturnType<typeof getDefaultConfig>; children: ReactNode }>;
 export function WalletProvider({ config, children }: { config: DashboardConfig; children: ReactNode }) {
   const wagmi = useMemo(() => getDefaultConfig({
-    appName: 'AntSeed Staking', projectId: ANTSEED_WALLETCONNECT_PROJECT_ID,
+    appName: 'Antseed Staking', projectId: ANTSEED_WALLETCONNECT_PROJECT_ID,
     chains: [defineChain({ id: config.evmChainId, name: config.chainId, nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
       rpcUrls: { default: { http: [config.walletRpcUrl ?? (config.evmChainId === 8453 ? 'https://mainnet.base.org' : config.evmChainId === 84532 ? 'https://sepolia.base.org' : 'http://127.0.0.1:8545')] } } })],
     transports: { [config.evmChainId]: http() },

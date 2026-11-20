@@ -693,7 +693,9 @@ test('after a fallback, time to first byte is the answering seller\'s, not the f
       router: { allowsPeerForPolicy: () => true, onResult: () => {} },
       sendRequest: async (peer: PeerInfo, req: { requestId: string }) => {
         const fails = peer.peerId === failing.peerId
-        await new Promise((resolve) => setTimeout(resolve, fails ? 20 : 200))
+        // A timer can fire up to a millisecond early by the clock the proxy measures with, so each
+        // seller takes a little longer than the 20 ms and 200 ms the assertions below ask for.
+        await new Promise((resolve) => setTimeout(resolve, fails ? 30 : 210))
         return fails
           ? { requestId: req.requestId, statusCode: 503, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ error: { message: 'overloaded' } })) }
           : { requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(OK_BODY)) }

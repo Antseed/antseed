@@ -1,0 +1,56 @@
+/* The card fills the first screen under the nav, with the page's 16px margin all round; on a phone a portrait */
+.card { position: relative; display: flex; flex-direction: column; align-items: center; overflow: hidden; background: var(--site-bg-hero);
+  height: calc(max(600px, 100svh - 32px) - var(--site-nav-height)); }
+.card.seeding { cursor: none; }
+.card.seeding.overUi, .card.seeding.empty { cursor: auto; }
+
+/* the mascot, and the painting's nearest plants in front of its lower body */
+.puppet { position: absolute; inset: 0; width: 100%; height: 100%; transition: filter 1.2s ease; }
+:global(:root[data-theme='dark']) .puppet { filter: brightness(.84) saturate(.83) contrast(1.12); }   /* in the night's light */
+.fore { position: absolute; inset: 4px 2px 0; width: calc(100% - 4px); height: calc(100% - 4px); pointer-events: none; }
+
+/* the cursor: your request, as a seed, over the mascot and under the text */
+.cursor { position: absolute; z-index: 1; left: 0; top: 0; width: 64px; height: 89px; pointer-events: none; opacity: 0; transition: opacity .15s; }
+.cursor img { width: 100%; height: 100%; transform: rotate(180deg); filter: drop-shadow(0 6px 8px rgba(80, 40, 10, .28)); }
+.seeding .cursor { opacity: 1; }
+.card.empty .cursor { opacity: 0; transition: none; }
+.card.lifting .cursor { transition: none; }
+.fed img { animation: fed .3s ease-out; }
+@keyframes fed { 40% { transform: rotate(180deg) scale(1.08); } }
+
+/* the seed on the ground by the mascot: it drops in and bounces, grows on hover from its base, a click lifts it into the hand */
+/* the reset in :where() has no specificity, so the minifier can't let it override the rules after it */
+:where(.groundSeed) { all: unset; }
+.groundSeed {
+  position: absolute; z-index: 3; left: 0; top: 0; display: none; width: 64px; height: 89px; cursor: pointer;
+  transform-origin: 50% 97%; transition: scale .2s ease-out; }
+.groundSeed.groundOn { display: block; animation: drop .7s cubic-bezier(.3, 0, .4, 1) both; }
+.groundSeed img { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(180deg); filter: drop-shadow(0 3px 3px rgba(60, 30, 10, .25)); }
+.groundSeed::before { content: ''; position: absolute; left: 12%; right: 12%; bottom: -2px; height: 9px; border-radius: 50%; background: rgba(50, 30, 10, .28);
+  filter: blur(2px); transition: opacity .25s; }
+.groundSeed:hover, .groundSeed:focus-visible { scale: 1.08; }
+.groundSeed:focus-visible { outline: 2px solid #789f00; outline-offset: 4px; border-radius: 8px; }
+.groundSeed.groundTaken { pointer-events: none; }
+.groundSeed.groundTaken img { visibility: hidden; }
+.groundSeed.groundTaken::before { opacity: 0; }
+@keyframes drop { 0% { transform: translateY(-140px); opacity: 0; } 12% { opacity: 1; } 60% { transform: none; } 75% { transform: translateY(-12px); } 90%, 100% { transform: none; } }
+
+/* at night the seed glows amber, and on the ground lights a pool round it instead of a shadow */
+:global(:root[data-theme='dark']) .cursor img,
+:global(:root[data-theme='dark']) .groundSeed img {
+  filter: drop-shadow(0 0 6px rgba(255, 200, 100, .85)) drop-shadow(0 0 22px rgba(255, 150, 50, .62)) drop-shadow(0 0 56px rgba(255, 128, 32, .4)); }
+:global(:root[data-theme='dark']) .groundSeed::before { left: -14px; right: -14px; bottom: -4px; height: 20px; filter: none; mix-blend-mode: screen;
+  background: radial-gradient(closest-side, rgba(255, 170, 70, .5), rgba(255, 140, 40, 0)); }
+:global(:root[data-theme='dark']) .groundSeed:focus-visible { outline-color: #98c463; }
+
+@media (prefers-reduced-motion: reduce) {
+  .groundSeed.groundOn { animation: none; }
+  .groundSeed, .groundSeed::before { transition: none; }
+  .fed img { animation: none; }
+}
+
+/* a phone: the card (nav included) a portrait, the title in the sky, the meadow under it */
+@media (max-width: 760px) {
+  .card { height: auto; min-height: calc(clamp(520px, 150vw, 640px) - var(--site-nav-height)); }
+  .puppet, .fore, .groundSeed.groundOn { display: none; }
+}

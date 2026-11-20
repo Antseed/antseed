@@ -6,7 +6,8 @@ import { gatewayConsole, normalizePublicUrl } from '../../../gateway/console.js'
 import { detectExposure, detectHostFacts, unencryptedWalletWarning } from '../../../gateway/exposure.js'
 import { startGatewayRuntime, type GatewayRuntime } from '../../../gateway/runtime.js'
 import { createGatewayUpdates } from '../../../gateway/updates.js'
-import { setupShutdownHandler } from '../../shutdown.js'
+import { requestShutdown, setupShutdownHandler } from '../../shutdown.js'
+import { stopWhenParentExits, stopWhenStdinCloses } from '../../../gateway/stop-on-stdin-close.js'
 import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
@@ -19,6 +20,7 @@ import { registerGatewayMigrateCommands } from './migrate.js'
 import { registerGatewayPeerListCommands } from './peer-list.js'
 import { registerGatewayPresetCommands } from './preset.js'
 import { registerGatewayRoutingCommands } from './routing.js'
+import { registerGatewayServiceCommands } from './service.js'
 import { registerGatewayPeersCommand, registerGatewaySettingsCommands } from './settings.js'
 import { DEFAULT_GATEWAY_PORT, startGatewayBuyer, topupConfig } from './shared.js'
 import { registerGatewayWorkspaceCommands } from './workspace.js'
@@ -72,6 +74,11 @@ export function registerGatewayCommands(program: Command): void {
       // ANTSEED_PASSPHRASE_FILE stops the start before anything runs; the buyer it starts inherits it.
       const passphraseSet = await walletPassphraseForStart(globalOptions.dataDir) !== null
       const buyerPort = options.buyerPort ?? (await loadConfig(globalOptions.config)).buyer.proxyPort
+      // Before anything starts: a parent (Antseed Desktop) that goes away while
+      // the buyer is still starting (that can take a minute) stops what has
+      // started, and its closed pipes can't end the gateway first.
+      stopWhenStdinCloses(process.stdin, requestShutdown)
+      stopWhenParentExits(requestShutdown)
       const buyer = options.buyer ? await startGatewayBuyer(buyerPort, globalOptions, log) : null
       const updates = createGatewayUpdates({ dataDir: globalOptions.dataDir, current: pkg.version, log })
       let runtime: GatewayRuntime
@@ -134,4 +141,5 @@ export function registerGatewayCommands(program: Command): void {
   registerGatewaySettingsCommands(gateway)
   registerGatewayPeersCommand(gateway)
   registerGatewayMigrateCommands(gateway)
+  registerGatewayServiceCommands(gateway)
 }

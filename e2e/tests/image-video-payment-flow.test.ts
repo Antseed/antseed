@@ -99,7 +99,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       const post = (path: string, body: object) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       const created = await fetch(`${base}/api/v1/video/queue`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: createBody });
       expect(created.status).toBe(200);
-      expect((await created.json()).queue_id).toBe('queue-1');
+      expect(((await created.json()) as { queue_id: string }).queue_id).toBe('queue-1');
       expect(network.buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(0n);
       const pending = await post('/api/v1/video/retrieve', { model: 'wan-2.5', queue_id: 'queue-1' });
       expect(pending.status).toBe(200);
@@ -308,7 +308,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       expect(Buffer.byteLength(createBody)).toBeGreaterThan(ANTSEED_UPLOAD_THRESHOLD_BYTES);
       const created = await post('/api/v1/video/queue', createBody);
       expect(created.status).toBe(200);
-      expect((await created.json()).queue_id).toBe('queue-edit-1');
+      expect(((await created.json()) as { queue_id: string }).queue_id).toBe('queue-edit-1');
       // Venice wants the source length as the duration, so it is passed through as sent.
       expect(queued).toEqual([createBody]);
       const download = await post('/api/v1/video/retrieve', JSON.stringify({ model, queue_id: 'queue-edit-1' }));
@@ -409,8 +409,8 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
 
     // Discovery should carry the signed billing model all the way into buyer peer info.
     expect(discoveredSeller.metadata?.version).toBe(METADATA_VERSION);
-    const billingComponent = discoveredSeller
-      .providerServiceUnitBillingModels?.openai?.services['gpt-image-2']?.['openai-images']?.components[0];
+    const billingComponent = Object.values(discoveredSeller.providerServiceUnitBillingModels ?? {})
+      .find((entry) => entry.services['gpt-image-2'])?.services['gpt-image-2']?.['openai-images']?.components[0];
     expect(billingComponent).toMatchObject({
       unit: 'output_images',
       match: { size: '1024x1024' },

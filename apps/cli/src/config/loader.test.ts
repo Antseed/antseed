@@ -124,7 +124,7 @@ test('loadConfig rejects invalid model routing peer ids', async () => {
   );
 });
 
-test('loadConfig keeps imageEditModel only on Venice openai providers', async () => {
+test('loadConfig keeps imageEditModel only on Venice openai and fal-image providers', async () => {
   const sellerWith = (plugin: string, baseUrl?: string) => JSON.stringify({
     seller: {
       providers: {
@@ -144,8 +144,29 @@ test('loadConfig keeps imageEditModel only on Venice openai providers', async ()
     await withTempConfig(sellerWith(plugin, baseUrl), async (configPath) => {
       await assert.rejects(
         () => loadConfig(configPath),
-        /images\.services\.cover-art\.imageEditModel requires the openai plugin with a Venice baseUrl/,
+        /images\.services\.cover-art\.imageEditModel requires the fal-image plugin or the openai plugin with a Venice baseUrl/,
       );
+    });
+  }
+});
+
+test('loadConfig accepts the fal-image README configuration with an edit endpoint', async () => {
+  const pricing = { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.06 }] } };
+  for (const plugin of ['fal-image', '@antseed/provider-fal-image']) {
+    await withTempConfig(JSON.stringify({
+      seller: {
+        providers: {
+          'fal-images': {
+            plugin,
+            apiKeyEnv: 'FAL_API_KEY',
+            services: { 'openai/gpt-image-2': { imageEditModel: 'openai/gpt-image-2/edit', categories: ['image', 'creative'], unitBillingModels: pricing } },
+          },
+        },
+      },
+    }), async (configPath) => {
+      const config = await loadConfig(configPath);
+      const service = config.seller.providers['fal-images']?.services['openai/gpt-image-2'];
+      assert.equal(service?.imageEditModel, 'openai/gpt-image-2/edit');
     });
   }
 });
@@ -993,6 +1014,55 @@ test('loadConfig preserves seller maxUploadBodyBytes setting', async () => {
   );
 });
 
+test('loadConfig preserves seller maxInFlightRequestBytes setting', async () => {
+  await withTempConfig(
+    JSON.stringify({
+      seller: {
+        maxInFlightRequestBytes: 536870912,
+      },
+    }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.equal(config.seller.maxInFlightRequestBytes, 536870912);
+    }
+  );
+});
+
+test('loadConfig preserves seller blockedBuyers and rejects malformed ones', async () => {
+  const blockedBuyers = ['22'.repeat(20), `0x${'AB'.repeat(20)}`];
+  await withTempConfig(
+    JSON.stringify({ seller: { blockedBuyers } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.blockedBuyers, blockedBuyers);
+    }
+  );
+  for (const invalid of ['22'.repeat(20), ['not-a-peer-id'], ['22'.repeat(19)], [42]]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { blockedBuyers: invalid } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /seller\.blockedBuyers must be a list of buyer peer IDs/);
+      }
+    );
+  }
+});
+
+test('loadConfig rejects invalid seller maxInFlightRequestBytes setting', async () => {
+  await withTempConfig(
+    JSON.stringify({
+      seller: {
+        maxInFlightRequestBytes: 123,
+      },
+    }),
+    async (configPath) => {
+      await assert.rejects(
+        async () => loadConfig(configPath),
+        /seller\.maxInFlightRequestBytes/
+      );
+    }
+  );
+});
+
 test('loadConfig rejects invalid seller maxUploadBodyBytes setting', async () => {
   await withTempConfig(
     JSON.stringify({
@@ -1204,7 +1274,15 @@ test('loadConfig rejects invalid seller freeTier stake tiers', async () => {
 
 test('loadConfig preserves a service freeTier program and rejects invalid ones', async () => {
   const provider = (freeTier: unknown, plugin = 'openai') => ({ plugin, services: { 'free-model': { pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, freeTier } } });
-  const program = { maxRequestsPerAddress: 10, windowMs: 3_600_000, stakeTiers: [{ minPower: 520_000, multiplier: 5 }], stakersOnly: true };
+  const program = {
+    maxRequestsPerAddress: 10,
+    windowMs: 3_600_000,
+    stakeTiers: [{ minPower: 520_000, multiplier: 5 }],
+    stakersOnly: true,
+    newBuyerMaxInputTokens: 32_000,
+    newBuyerRequests: 5,
+    movedConversations: 'refuse',
+  };
   await withTempConfig(
     JSON.stringify({ seller: { providers: { openai: provider(program) } } }),
     async (configPath) => {
@@ -1217,6 +1295,10 @@ test('loadConfig preserves a service freeTier program and rejects invalid ones',
     [{ maxRequestsPerAddress: 1, stakersOnly: 'yes' }, /freeTier\.stakersOnly must be a boolean/],
     [{ maxRequestsPerAddress: 1, stakeTiers: [], stakersOnly: true }, /freeTier\.stakersOnly requires at least one stake tier/],
     ['unlimited', /services\.free-model\.freeTier requires/],
+    [{ maxRequestsPerIp: 1, newBuyerMaxInputTokens: 32_000 }, /freeTier\.newBuyerMaxInputTokens requires maxRequestsPerAddress/],
+    [{ maxRequestsPerAddress: 1, newBuyerMaxInputTokens: '32k' }, /freeTier\.newBuyerMaxInputTokens must be a positive safe integer/],
+    [{ maxRequestsPerAddress: 1, newBuyerRequests: 0 }, /freeTier\.newBuyerRequests must be a positive safe integer/],
+    [{ maxRequestsPerAddress: 1, movedConversations: 'block' }, /freeTier\.movedConversations must be one of: refuse, log/],
     [{ maxRequestsPerAddress: Number.MAX_SAFE_INTEGER, maxRequestsPerIp: Number.MAX_SAFE_INTEGER }, /services\.free-model\.freeTier is too large to advertise/],
   ] as const) {
     await withTempConfig(
@@ -1332,4 +1414,27 @@ test('loadConfig reads seller buyerLimits and rejects non-positive ones', async 
       },
     );
   });
+});
+
+test('sellerCachedPriceProblems names each price buyers would skip, and an edit is refused only for one it adds', async () => {
+  const { assertNoNewCachedPriceProblems, sellerCachedPriceProblems } = await import('./validation.js');
+  const providers = {
+    openai: {
+      plugin: 'openai',
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 3 },
+      services: {
+        cheap: { pricing: { inputUsdPerMillion: 0.0001, outputUsdPerMillion: 0.0002, cachedInputUsdPerMillion: 50000 } },
+        fine: { pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 1 } },
+        inherits: {},
+      },
+    },
+  };
+  const problems = sellerCachedPriceProblems(providers);
+  assert.equal(problems.length, 2);
+  assert.match(problems[0]!, /^openai default prices: cached-input price \$3 per 1M tokens is above the input price \$1\. Buyers skip/);
+  assert.match(problems[1]!, /^openai\/cheap: cached-input price \$50000/);
+  assert.doesNotThrow(() => assertNoNewCachedPriceProblems(providers, structuredClone(providers)));
+  const edited = structuredClone(providers);
+  edited.openai.services.fine.pricing.inputUsdPerMillion = 0.5;
+  assert.throws(() => assertNoNewCachedPriceProblems(providers, edited), /openai\/fine: cached-input price \$1 per 1M tokens is above the input price \$0\.5/);
 });

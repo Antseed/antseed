@@ -49,7 +49,7 @@ Antseed is a peer-to-peer protocol for buying and selling AI services directly b
 
 **Direct communication.** Requests travel directly between buyer and seller over authenticated connections, encrypted whenever both peers support encrypted TCP or WebRTC. No intermediary server collects requests.
 
-**Service-based discovery.** Every seller announces the services it offers, with prices, categories, and capabilities, in signed metadata. Buyers match services locally and pick the cheapest seller that passes their minimum trust score. The protocol does not care what happens between request and response.
+**Service-based discovery.** Every seller announces the services it offers, with prices, categories, and capabilities, in signed metadata. Buyers match services locally and pick, among the sellers that pass their minimum trust score, the one with the best mix of price, speed and reliability. The protocol does not care what happens between request and response.
 
 ## Three markets
 

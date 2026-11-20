@@ -1,0 +1,49 @@
+/* The window has no outline: its shadow and frosted glass, tinted as the app's chrome by day, smoked green at night. */
+.window { position: relative; overflow: hidden; aspect-ratio: 1400 / 1095; border-radius: 8px; background: rgba(250, 249, 244, .4);
+  box-shadow: 0 2px 6px rgba(61, 43, 18, .08), 0 28px 64px 0 rgba(61, 43, 18, .2); backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px) saturate(1.2); }
+:global(:root[data-theme='dark']) .window { background-color: rgba(14, 33, 23, .64); backdrop-filter: blur(10px) saturate(1.3); -webkit-backdrop-filter: blur(10px) saturate(1.3);
+  outline: .5px solid rgba(150, 200, 145, .42); outline-offset: -.5px; }
+
+/* laid out at the app's own 1100 × 860 and scaled to the window (useScaleToWidth) */
+.app { position: absolute; left: 0; top: 0; width: 1100px; height: 860px; transform: scale(var(--scale, .5)); transform-origin: 0 0; }
+
+.capture { position: absolute; display: block; opacity: 0; transition: opacity .35s ease; }
+.capture[data-on] { opacity: 1; }
+.anon { inset: 0; width: 1100px; height: 860px; opacity: 1; transition: opacity 0s; }
+.private { inset: 0; width: 1100px; height: 860px; transition-duration: .6s; }
+.menu { left: 425px; top: 400px; width: 355px; height: 440px; transition-duration: .18s; }
+.kimi { left: 310px; top: 786px; width: 705px; height: 50px; }
+.talk { left: 480px; top: 200px; width: 380px; height: 220px; }
+/* the full captures keep the chat card whole and frost the chrome around it at 70%, so the glass and painting come through */
+.anon, .private {
+  -webkit-mask: url(/site/assets/home/desktop/frost-mask.webp) 0 0 / 100% 100% no-repeat;
+  mask: url(/site/assets/home/desktop/frost-mask.webp) 0 0 / 100% 100% no-repeat;
+}
+/* both frosted, the first capture would show through Private's chrome: it steps out once Private has faded in */
+.app:has(.private[data-on]) .anon { opacity: 0; transition-delay: .6s; }
+
+/* drawn in the app's own type and colours */
+.typed { position: absolute; left: 321px; top: 701px; width: 684px; margin: 0; font: 400 16px/24px var(--site-font); color: #16181d; white-space: nowrap; opacity: 0; }
+.typed[data-on] { opacity: 1; }
+.caret { display: inline-block; width: 1.5px; height: 18px; margin-left: 1px; vertical-align: -3px; background: currentColor; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.me, .reply { position: absolute; margin: 0; opacity: 0; transform: translateY(8px); transition: opacity .35s ease, transform .35s ease; font: 400 14.5px/22px var(--site-font); color: #16181d; }
+.me[data-on], .reply[data-on] { opacity: 1; transform: none; }
+.me { right: 110px; top: 132px; max-width: 420px; padding: 10px 16px; border-radius: 16px; background: rgba(22, 24, 29, .06); }
+.reply { left: 318px; top: 200px; width: 560px; padding: 16px 20px; border-radius: 14px; background: rgba(255, 255, 255, .78); border: 1px solid rgba(22, 24, 29, .08);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.reply p { min-height: 66px; margin: 0; }
+.signature { display: block; margin-top: 10px; font: 400 12px/16px var(--site-font); color: #6b6f7a; opacity: 0; transition: opacity .3s; }
+.signature[data-on] { opacity: 1; }
+.signature::before { content: '✓ '; color: var(--site-fill); }
+:global(:root[data-theme='dark']) :is(.typed, .me, .reply) { color: #eef0f7; }
+:global(:root[data-theme='dark']) .me { background: rgba(255, 255, 255, .1); }
+:global(:root[data-theme='dark']) .reply { background: rgba(14, 20, 44, .62); border-color: rgba(255, 255, 255, .16); }
+:global(:root[data-theme='dark']) .signature { color: #9aa1ba; }
+:global(:root[data-theme='dark']) .signature::before { color: #c6f06a; }
+
+.cursor { position: absolute; left: 0; top: 0; width: 21px; height: 27px; opacity: 0; transform: translate(var(--x, 880px), var(--y, 560px)) scale(var(--press, 1));
+  transition: transform .75s cubic-bezier(.45, 0, .2, 1), opacity .3s; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .25)); }
+.cursor[data-on] { opacity: 1; }
+.cursor[data-tap] { transition-duration: .12s; }
+@media (prefers-reduced-motion: reduce) { .caret { animation: none; } }

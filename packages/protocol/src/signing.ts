@@ -1,5 +1,5 @@
 /**
- * Peer message signing: EIP-191 personal_sign with AntSeed domain prefixes to
+ * Peer message signing: EIP-191 personal_sign with Antseed domain prefixes to
  * prevent cross-domain signature replay. Moved from @antseed/node p2p/identity.
  */
 

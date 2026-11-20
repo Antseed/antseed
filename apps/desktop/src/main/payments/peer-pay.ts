@@ -27,11 +27,18 @@ type CheckoutAuthorization = {
   readonly nonce: string;
 };
 
+/**
+ * First line of the signed checkout authorization. The checkout service rebuilds
+ * this exact text to check the signature, so its old brand casing stays: changing
+ * it would break Peer Pay checkout until the service changed too.
+ */
+const CHECKOUT_AUTHORIZATION_HEADING = 'AntSeed Peer Pay Checkout';
+
 export function buildCheckoutAuthorizationMessage(
   authorization: CheckoutAuthorization,
 ): string {
   return [
-    'AntSeed Peer Pay Checkout',
+    CHECKOUT_AUTHORIZATION_HEADING,
     'version: 1',
     'audience: antseed-checkout.pay.zkp2p.xyz',
     'method: POST',

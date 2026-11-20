@@ -55,14 +55,15 @@ export interface RoutingPolicy {
   /** Only sellers whose responses pass a verifier (e.g. TEE attestation). */
   requireVerified?: boolean
   /**
-   * Only sellers advertising the TEE verifier capability. A capability check,
-   * not a verification result, so it works whether or not this buyer runs
-   * verification.
+   * Only sellers whose TEE attestation passes: an approved seller build in
+   * genuine Intel TDX hardware, bound to this buyer's connection. Sellers not
+   * advertising the TEE verifier are left out before any check.
    */
   requireTee?: boolean
   /** Price caps; a seller over any cap is not eligible. */
   maxInputUsdPerMillion?: number
   maxOutputUsdPerMillion?: number
+  /** Cached input price cap; when unset, `maxInputUsdPerMillion` caps cached input too. */
   maxCachedInputUsdPerMillion?: number
   maxImageUsdPerImage?: number
   /** Rank free sellers first among the eligible ones. */
@@ -301,7 +302,10 @@ export function narrowPolicy(parent: RoutingPolicy, child: RoutingPolicy | null 
     requireTee: p.requireTee || c.requireTee ? true : undefined,
     maxInputUsdPerMillion: minOf(p.maxInputUsdPerMillion, c.maxInputUsdPerMillion),
     maxOutputUsdPerMillion: minOf(p.maxOutputUsdPerMillion, c.maxOutputUsdPerMillion),
-    maxCachedInputUsdPerMillion: minOf(p.maxCachedInputUsdPerMillion, c.maxCachedInputUsdPerMillion),
+    // A level without a cached-input cap bounds cached input by its input cap.
+    maxCachedInputUsdPerMillion: p.maxCachedInputUsdPerMillion === undefined && c.maxCachedInputUsdPerMillion === undefined
+      ? undefined
+      : minOf(p.maxCachedInputUsdPerMillion ?? p.maxInputUsdPerMillion, c.maxCachedInputUsdPerMillion ?? c.maxInputUsdPerMillion),
     maxImageUsdPerImage: minOf(p.maxImageUsdPerImage, c.maxImageUsdPerImage),
     preferFreePeers: c.preferFreePeers ?? p.preferFreePeers,
     sort: c.sort ?? p.sort,

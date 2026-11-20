@@ -93,8 +93,8 @@ The import ends every console session; everyone signs in again on the new addres
 To add a passkey on the new address, create a one-time recovery link on the server and open it:
 
 ```bash
-sudo antseed gateway console-link --recover                          # the owner
-sudo antseed gateway console-link --recover --member bob@example.com # another member
+sudo antseed gateway console-link --recover                   # the owner
+sudo antseed gateway console-link --recover --member <member> # another member, by member id or email
 ```
 
 Recovery links are explained on [Sign-in and access](/docs/gateway/sign-in#recover-access).

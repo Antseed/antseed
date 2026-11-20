@@ -1,10 +1,9 @@
 import { randomInt, randomUUID } from 'node:crypto'
 import { readFile, readdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
   KBF_LOW_COVERAGE_RETRIES,
-  KBF_PROBES_PER_REQUEST,
   KBF_PROMPT_VARIANT_IDS,
   KBF_OPTIONAL_SAMPLING_FIELDS,
   buildKbfChatRequestBody,
@@ -38,7 +37,7 @@ import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-se
 import { auditedModels, findAuditedModelKey } from './audited-models.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
-import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
+import { kbfAuditBatches } from './kbf-batching.js'
 import {
   addAuditCostSummaries,
   deriveProxyAuditId,
@@ -100,29 +99,50 @@ function exportedResponseAuthRecord(record: StoredResponseAuth): Omit<StoredResp
 }
 
 /**
- * When a seller audit gives up: after `idleMs` without an answered batch, or `maxMs` after its first
- * request. A slow seller that keeps answering finishes its batches; a fixed total cut off honest
- * reasoning models whose 16 to 23 batches take 30 to 90 seconds each.
+ * When a seller audit gives up: after `idleMs` of waiting on the seller without an answered batch, or
+ * `maxMs` after its first request. A slow seller that keeps answering finishes its batches; a fixed
+ * total cut off honest reasoning models whose 16 to 23 batches take 30 to 90 seconds each.
+ *
+ * The idle clock runs only while a batch request is out to the seller. Time the auditor spends on its
+ * own work between batches (writing the checkpoint, waiting for a slot in the run's shared batch
+ * limiter) is not the seller's silence and does not count against it.
  */
 class LazyAuditDeadline {
   readonly controller = new AbortController()
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private maxTimer: ReturnType<typeof setTimeout> | null = null
   private cause: 'idle' | 'max' | null = null
+  private inFlight = 0
+  private idleLeftMs: number
+  private idleRunningSince = 0
 
-  constructor(readonly idleMs: number, readonly maxMs: number) {}
+  constructor(readonly idleMs: number, readonly maxMs: number) {
+    this.idleLeftMs = idleMs
+  }
 
+  /** A batch request goes out to the seller: the idle clock runs while any request is out. */
   start(): AbortSignal {
-    if (!this.maxTimer && !this.controller.signal.aborted) {
-      this.maxTimer = setTimeout(() => this.abort('max'), this.maxMs)
-      this.resetIdle()
-    }
+    if (this.controller.signal.aborted) return this.controller.signal
+    if (!this.maxTimer) this.maxTimer = setTimeout(() => this.abort('max'), this.maxMs)
+    this.inFlight += 1
+    if (this.inFlight === 1) this.runIdle(this.idleLeftMs)
     return this.controller.signal
   }
 
-  /** A batch was answered: the seller gets another `idleMs` for the next one. */
-  progress(): void {
-    if (this.maxTimer && !this.controller.signal.aborted) this.resetIdle()
+  /**
+   * A batch request came back. An answered batch gives the seller another `idleMs` for the next one;
+   * once no request is out the idle clock pauses until the next one goes out.
+   */
+  finish(answered: boolean): void {
+    if (this.inFlight === 0 || this.controller.signal.aborted) return
+    this.inFlight -= 1
+    if (answered) this.idleLeftMs = this.idleMs
+    else this.idleLeftMs = Math.max(0, this.idleLeftMs - (Date.now() - this.idleRunningSince))
+    if (this.inFlight > 0) this.runIdle(this.idleLeftMs)
+    else if (this.idleTimer) {
+      clearTimeout(this.idleTimer)
+      this.idleTimer = null
+    }
   }
 
   /** Why the audit stopped, for its outcome reason. */
@@ -137,9 +157,10 @@ class LazyAuditDeadline {
     if (this.maxTimer) clearTimeout(this.maxTimer)
   }
 
-  private resetIdle(): void {
+  private runIdle(ms: number): void {
     if (this.idleTimer) clearTimeout(this.idleTimer)
-    this.idleTimer = setTimeout(() => this.abort('idle'), this.idleMs)
+    this.idleRunningSince = Date.now()
+    this.idleTimer = setTimeout(() => this.abort('idle'), ms)
   }
 
   private abort(cause: 'idle' | 'max'): void {
@@ -553,11 +574,7 @@ export async function verifyModelTarget(input: {
   }
   extension?: boolean
 }): Promise<ModelVerificationTargetResult | ModelVerificationSkip> {
-  const batches = createDomainHomogeneousKbfBatches(
-    input.reference.probes,
-    KBF_PROBES_PER_REQUEST,
-    (values) => [...values],
-  )
+  const batches = kbfAuditBatches(input.reference.probes)
   const deadline = new LazyAuditDeadline(
     input.context.auditTimeoutMs,
     Math.max(input.context.auditTimeoutMs, input.context.auditMaxTimeoutMs ?? DEFAULT_AUDIT_MAX_TIMEOUT_MS),
@@ -641,19 +658,25 @@ export async function verifyModelTarget(input: {
       input.context.batchConcurrency,
       async ({ probes, batchIndex }, _pendingIndex, control) => input.context.batchLimiter.run(async () => {
         if (checkpointFailure) throw checkpointFailure
-        const exchange = await executeProxyProbeBatch(
-        { ...input.context, signal: deadline.start(), describeDeadline: () => deadline.describe() },
-        input.target,
-        input.service,
-        input.reference,
-        probes,
-        batchIndex,
-        settings,
-        control.reduceToOne,
-        sampling,
-        )
+        let answered = false
+        let exchange: ProxyAuditEvidenceExchangeV1
+        try {
+          exchange = await executeProxyProbeBatch(
+          { ...input.context, signal: deadline.start(), describeDeadline: () => deadline.describe() },
+          input.target,
+          input.service,
+          input.reference,
+          probes,
+          batchIndex,
+          settings,
+          control.reduceToOne,
+          sampling,
+          )
+          answered = exchange.status === 'succeeded'
+        } finally {
+          deadline.finish(answered)
+        }
         exchangeByBatch.set(batchIndex, exchange)
-        if (exchange.status === 'succeeded') deadline.progress()
         await persistCheckpoint()
         if (batchIndex === 0 && exchange.status === 'failed' && exchange.outcomeReason?.retryable) {
           throw new VerificationTerminalTransientSignal(exchange)
@@ -693,7 +716,7 @@ export async function verifyModelTarget(input: {
       createdAt: new Date(completedAt).toISOString(),
       buyerProxy: {
         baseUrl: input.context.proxy.baseUrl,
-        statePath: input.context.proxy.statePath,
+        statePath: basename(input.context.proxy.statePath),
         pid: input.context.proxy.pid,
       },
       target: {
@@ -778,7 +801,7 @@ export async function verifyModelTarget(input: {
     createdAt: new Date(completedAt).toISOString(),
     buyerProxy: {
       baseUrl: input.context.proxy.baseUrl,
-      statePath: input.context.proxy.statePath,
+      statePath: basename(input.context.proxy.statePath),
       pid: input.context.proxy.pid,
     },
     target: {
@@ -795,6 +818,7 @@ export async function verifyModelTarget(input: {
       statisticalPower: input.reference.statisticalPower,
       statisticalPowerEvidence: input.reference.statisticalPowerEvidence as unknown as Record<string, unknown>,
       selfTest: input.reference.selfTest,
+      ...(input.reference.calibration ? { calibration: input.reference.calibration } : {}),
       probes: input.reference.probes,
     },
     ...sellerThinkingEvidence,

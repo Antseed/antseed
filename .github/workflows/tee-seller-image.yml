@@ -1,0 +1,95 @@
+name: Publish TEE seller image
+
+# Builds deploy/tee-seller/Dockerfile from the CLI, plugins and verifier locked in
+# deploy/tee-seller/package-lock.json and pushes it to ghcr.io/antseed/tee-seller:<cli version>,
+# with a signed build provenance attestation tying the digest to this repository, commit and
+# workflow. After an npm release, refresh the lock (node deploy/tee-seller/update-lock.mjs
+# <version>) in a PR, merge it, then run this on main. Buyers accept the image through that
+# attestation, which the seller sends with its own (packages/antseed-verifier/src/image-provenance.ts):
+# only a run of this workflow on main produces one they accept, so its actions are pinned by commit.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  IMAGE: ghcr.io/antseed/tee-seller
+
+jobs:
+  image:
+    name: Build, push & attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Buyers accept only images built from main; a run elsewhere would just overwrite the version tag.
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Read the locked CLI version
+        id: version
+        run: |
+          if [ ! -f deploy/tee-seller/package-lock.json ]; then
+            echo "::error::no deploy/tee-seller lock; run update-lock.mjs for a released CLI and merge it first"; exit 1
+          fi
+          version="$(node -p "require('./deploy/tee-seller/package.json').dependencies['@antseed/cli']")"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::deploy/tee-seller/package.json pins no exact @antseed/cli version ('$version')"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Fixed timestamps, so a rebuild of the same commit and version yields the same layers.
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: deploy/tee-seller
+          platforms: linux/amd64
+          build-args: ANTSEED_VERSION=${{ steps.version.outputs.version }}
+          tags: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          outputs: type=image,push=true,rewrite-timestamp=true
+
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### TEE seller image $VERSION"
+            echo
+            echo "Pin it in the compose file (\`node deploy/tee-seller/compose.mjs --image $IMAGE@$DIGEST ...\`):"
+            echo
+            echo '```'
+            echo "$IMAGE@$DIGEST"
+            echo '```'
+            echo
+            echo "Verify: \`gh attestation verify oci://$IMAGE@$DIGEST --repo $GITHUB_REPOSITORY\`"
+            echo
+            echo "Buyers on verifier 0.1.3 or later accept it through its build record; older ones only through the approved list."
+          } >> "$GITHUB_STEP_SUMMARY"

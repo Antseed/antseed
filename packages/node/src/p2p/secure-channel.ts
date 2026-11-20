@@ -56,6 +56,8 @@ function importPublicKey(publicKeyHex: string): KeyObject {
 export interface SessionKeys {
   sendKey: Buffer;
   recvKey: Buffer;
+  /** Handshake transcript hash: identical on both ends of this session, different for any other session. */
+  channelBinding: Buffer;
 }
 
 export interface HandshakeTranscript {
@@ -87,14 +89,15 @@ export function deriveSessionKeys(
     privateKey: localPrivateKey,
     publicKey: importPublicKey(remotePublicKeyHex),
   });
+  const channelBinding = transcriptHash(transcript);
   const okm = Buffer.from(
-    hkdfSync("sha256", shared, transcriptHash(transcript), HKDF_INFO, 64),
+    hkdfSync("sha256", shared, channelBinding, HKDF_INFO, 64),
   );
   const initiatorToResponder = okm.subarray(0, 32);
   const responderToInitiator = okm.subarray(32, 64);
   return isInitiator
-    ? { sendKey: initiatorToResponder, recvKey: responderToInitiator }
-    : { sendKey: responderToInitiator, recvKey: initiatorToResponder };
+    ? { sendKey: initiatorToResponder, recvKey: responderToInitiator, channelBinding }
+    : { sendKey: responderToInitiator, recvKey: initiatorToResponder, channelBinding };
 }
 
 function counterIv(counter: bigint): Buffer {
@@ -181,12 +184,14 @@ export class FrameDecryptor {
 export interface TransportCrypto {
   encryptor: FrameEncryptor;
   decryptor: FrameDecryptor;
+  channelBinding: Buffer;
 }
 
 export function createTransportCrypto(keys: SessionKeys): TransportCrypto {
   return {
     encryptor: new FrameEncryptor(keys.sendKey),
     decryptor: new FrameDecryptor(keys.recvKey),
+    channelBinding: keys.channelBinding,
   };
 }
 

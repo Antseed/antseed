@@ -1026,6 +1026,18 @@ verify_gateway() {
   die "the gateway is not answering on 127.0.0.1:$PORT (last status: ${code:-none}); see the log above"
 }
 
+# Just after start the buyer is still discovering sellers, and a model it has
+# not found yet answers 503 with Retry-After. Wait for that, up to a minute.
+wait_for_sellers() {
+  local i
+  for ((i = 0; i < 60; i++)); do
+    curl -fsS --max-time 2 "http://127.0.0.1:$BUYER_PORT/_antseed/status" 2>/dev/null | grep -q '"discovering":true' || return 0
+    if [[ "$i" -eq 0 ]]; then step "Waiting for the buyer to discover sellers (up to a minute)"; fi
+    sleep 1
+  done
+  note "Still discovering sellers: for a few more seconds, a model not found yet answers 503 (retry it)."
+}
+
 # The whole script runs from main, so a truncated download executes nothing.
 main() {
   parse_args "$@"
@@ -1064,6 +1076,7 @@ main() {
 
   if [[ "$MODE" == caddy ]]; then install_caddy; fi
   verify_gateway
+  wait_for_sellers
   remove_legacy_cli
   quiet_x console_link
 

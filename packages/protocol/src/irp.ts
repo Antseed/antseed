@@ -9,11 +9,11 @@ import type { RoutingWireProtocol } from './routing.js';
 
 /** Service API protocol advertised by sellers that rank destinations over IRP suggest-only mode. */
 export const IRP_SUGGEST_PROTOCOL = 'irp-suggest';
-/** IRP §4: the router's supported models (free on AntSeed). */
+/** IRP §4: the router's supported models (free on Antseed). */
 export const IRP_MODELS_PATH = '/v1/routing/models';
 /** `GET /v1/routing/models` entry meaning the router scores any model the buyer sends. */
 export const IRP_ANY_MODEL = '*';
-/** IRP §5: suggest-only ranking (one completed request on AntSeed). */
+/** IRP §5: suggest-only ranking (one completed request on Antseed). */
 export const IRP_RANK_PATH = '/v1/routing/rank';
 export const IRP_RANKING_OBJECT = 'routing.ranking';
 export const IRP_MAX_CANDIDATES = 512;
@@ -25,7 +25,7 @@ export const IRP_DEFAULT_COST_QUALITY_TRADEOFF = 5;
 export type IrpPricing = { input: number; cache_read: number; output: number };
 
 /**
- * A `GET /v1/routing/models` entry. AntSeed extension: on the `*` entry, `max_pricing` caps
+ * A `GET /v1/routing/models` entry. Antseed extension: on the `*` entry, `max_pricing` caps
  * the candidates the buyer sends through it; an omitted field means no limit.
  */
 export type IrpModelEntry = { id: string; max_pricing?: Partial<IrpPricing> };

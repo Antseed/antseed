@@ -7,9 +7,16 @@ no separate shim. Select it with `ANTSEED_VERIFIER_PROVIDER_ADAPTER=aci`.
 
 ```bash
 export ANTSEED_VERIFIER_PROVIDER_ADAPTER=aci
-export ACI_ATTESTATION_URL=https://<gateway>/v1/aci/attestation
+export ANTSEED_VERIFIER_PROVIDER_ACI_URL=https://<gateway>/v1/aci/attestation
 # export ACI_API_KEY=<bearer token>   # if the gateway requires auth
 ```
+
+`ANTSEED_VERIFIER_PROVIDER_ACI_URL` takes precedence over the legacy `ACI_ATTESTATION_URL`,
+which remains supported as a fallback. Use the new name with the official TEE seller image:
+its compose rules allow it as a literal provider setting, but reject the legacy name.
+Use a keyless attestation endpoint with that image: a separate hidden `ACI_API_KEY` is rejected
+unless the seller config also names it as a provider's `apiKeyEnv`. See the
+[TEE seller setup](../../apps/website/docs/provide/tee.md#5-attest-your-inference-provider-too-optional).
 
 The adapter fetches the nonce-bound ACI report. It extracts the TDX quote. It binds the quote with
 `aci-keyset-v1` (`report_data = workload_keyset_digest ‖ nonce`).

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { AbiCoder, Interface, zeroPadValue, type Log, type TransactionReceipt } from 'ethers'
-import { ReceiptUnavailableError, SOURCE_LOOKBACK_BLOCKS, verifyDeposit, type DepositChainProvider } from './deposits.js'
+import { ReceiptUnavailableError, SOURCE_LOOKBACK_BLOCKS, SOURCE_LOOKBACK_WINDOW_BLOCKS, verifyDeposit, type DepositChainProvider } from './deposits.js'
 
 // Obvious fakes: fixed test addresses and hashes, never real ones.
 const DEPOSITS = `0x${'d0'.repeat(20)}`
@@ -72,6 +72,22 @@ test('a log query the RPC refuses fails the sweep, to be checked again, rather t
   const chain = provider({ status: 1, logs: [deposited(WALLET, 1_000_000n, SWEEP_TX), swept(WALLET, 1_000_000n, 50_000n, SWEEP_TX)] })
   chain.getLogs = async () => { throw new Error('block range too large') }
   await assert.rejects(verifyDeposit(chain, CHAIN, SWEEP_TX, WALLET), /block range too large/)
+})
+
+test('an RPC that caps log queries at a few blocks still finds the funding, in windows newest first', async () => {
+  const chain = provider({ status: 1, logs: [deposited(WALLET, 1_000_000n, SWEEP_TX), swept(WALLET, 1_000_000n, 50_000n, SWEEP_TX)] })
+  const windows: Array<[number, number]> = []
+  chain.getLogs = async ({ fromBlock, toBlock }) => {
+    if (toBlock - fromBlock + 1 > SOURCE_LOOKBACK_WINDOW_BLOCKS) throw new Error('Block range too large: maximum allowed is 50 blocks')
+    windows.push([fromBlock, toBlock])
+    // The funding transfer landed 120 blocks before the sweep.
+    return fromBlock <= 4_880 && 4_880 <= toBlock ? [transfer(PAYER, WALLET, 1_050_000n, FUND_TX)] : []
+  }
+  const result = await verifyDeposit(chain, CHAIN, SWEEP_TX, WALLET)
+  assert.equal(result?.kind, 'relay')
+  assert.deepEqual(result?.sources, [{ from: PAYER, amountUsdc: 1_050_000, txHash: FUND_TX }])
+  // Stops at the window that covered the sweep instead of reading the whole lookback.
+  assert.deepEqual(windows, [[4_951, 5_000], [4_901, 4_950], [4_851, 4_900]])
 })
 
 test('USDC sent to the wallet is a transfer: the amount, and who sent it', async () => {

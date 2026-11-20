@@ -36,9 +36,9 @@ import {isMobileGetStartedVisitor} from './useMobileGetStarted';
  */
 
 export const DOWNLOAD_BASE_URL = 'https://download.antseed.com';
-export const RELEASES_URL = 'https://github.com/AntSeed/antseed/releases/latest';
+export const RELEASES_URL = 'https://github.com/Antseed/antseed/releases/latest';
 /** Full releases list — every platform, arch, and past version. */
-export const ALL_VERSIONS_URL = 'https://github.com/AntSeed/antseed/releases';
+export const ALL_VERSIONS_URL = 'https://github.com/Antseed/antseed/releases';
 
 export type DesktopPlatform = 'mac' | 'win' | 'linux' | 'unknown';
 export type DesktopArch = 'arm64' | 'x64';

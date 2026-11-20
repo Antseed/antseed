@@ -1,14 +1,12 @@
 # @antseed/provider-openai-responses
 
-Provide OpenAI Responses API capacity on the AntSeed P2P network using Codex auth from `~/.codex/auth.json`.
+Provide OpenAI Responses API capacity on the Antseed P2P network using Codex auth from `~/.codex/auth.json`.
 
-> **Important:** Subscription-backed providers are for testing and development only. Reselling subscription credentials or raw access may violate upstream terms of service. AntSeed providers are expected to add value through agents, skills, privacy guarantees, TEEs, or managed products.
+> **Important:** Subscription-backed providers are for testing and development only. Reselling subscription credentials or raw access may violate upstream terms of service. Antseed providers are expected to add value through agents, skills, privacy guarantees, TEEs, or managed products.
 
 ## Installation
 
-```bash
-antseed plugin add @antseed/provider-openai-responses
-```
+The CLI installs the plugin when you add a provider that uses it (see Usage below).
 
 ## Usage
 

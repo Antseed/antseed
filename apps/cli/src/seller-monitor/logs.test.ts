@@ -43,6 +43,25 @@ test('a request in full: receipt, session position and the channel open with tha
   assert.equal(readSellerLogDetail(dataDir, 'nope'), null)
 })
 
+test('a request\'s cost is its unrounded value, and a failed request with a receipt earned nothing', () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'seller-log-detail-'))
+  // 2,500 tokens at 0.016 cents per 1K: $0.0004, though the receipt is floored at 1 cent.
+  const cheap = { sessionId: 's1', service: 'kimi-k3', tokens: 2_500, costCents: 1, unitPriceCentsPerThousandTokens: 0.016, buyer: BUYER }
+  writeSellerFixture(dataDir, { requests: [{ ...cheap, at: 10_000 }, { ...cheap, at: 20_000, statusCode: 400 }] })
+  mkdirSync(join(dataDir, 'payments'), { recursive: true })
+  const store = new ChannelStore(join(dataDir, 'payments'))
+  store.upsertChannel(channel('ch-now', 8_000, 'active', null) as never)
+  store.close()
+  const [failed, paid] = readSellerLogs(dataDir).entries
+  assert.equal(failed!.statusCode, 400)
+  assert.equal(failed!.costUsd, 0)
+  assert.ok(Math.abs(paid!.costUsd! - 0.0004) < 1e-12, `cost ${paid!.costUsd}, not the $0.01 floor`)
+  const detail = readSellerLogDetail(dataDir, paid!.id)!
+  assert.ok(Math.abs(detail.session.costUsd! - 0.0004) < 1e-12, `session total ${detail.session.costUsd}`)
+  assert.equal(detail.channel?.id, 'ch-now', 'a sub-cent request was still paid by the open channel')
+  assert.equal(readSellerLogDetail(dataDir, failed!.id)!.channel, null, 'a failed request was not paid by a channel')
+})
+
 test('a one-off request links to its own channel by request id, and one-off pay counts in the totals', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'seller-log-detail-'))
   writeSellerFixture(dataDir, { requests: [{ at: 10_000, sessionId: 's1', service: 'video-1', tokens: 100, costCents: 30, buyer: BUYER, requestId: 'req-1' }] })

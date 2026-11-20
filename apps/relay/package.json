@@ -1,7 +1,7 @@
 {
   "name": "@antseed/relay",
   "version": "0.1.1",
-  "description": "Web relay for AntSeed: seller discovery cache + WebSocket-to-TCP signaling bridge for browser buyers",
+  "description": "Web relay for Antseed: seller discovery cache + WebSocket-to-TCP signaling bridge for browser buyers",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"
@@ -27,7 +27,7 @@
     "@antseed/node": "workspace:*",
     "@types/node": "^20.11.0",
     "@types/ws": "^8.5.12",
-    "typescript": "^5.5.0",
+    "typescript": "catalog:",
     "vitest": "^2.0.0"
   }
 }

@@ -103,6 +103,69 @@ describe('indexed display / live financial read boundary', () => {
     expect(requests).toEqual([]);
   });
 
+  it('rebuilds the lock start of merge candidates from lineage and pool checkpoints (#1390)', async () => {
+    const { ctx, live } = positionFeeds();
+    const template = live.positions[0]!;
+    const row = (id: number, stakeStartEpoch: number, closed: { at: number; into: number } | null) => ({
+      ...template, id, stakeStartEpoch, stakeEndEpoch: 30, maxLocked: false, maxLockedNext: false,
+      closedAtEpoch: closed?.at ?? 0, closedBy: closed ? 'merge' as const : null, replacementIds: closed ? [closed.into] : [],
+      state: closed ? 'closed' as const : 'active' as const,
+    });
+    // B (5) merges positions staked at epoch 1, A (6) positions staked at 3; both read public start 5, end 30.
+    live.positions = [row(1, 1, { at: 5, into: 5 }), row(2, 1, { at: 5, into: 5 }), row(3, 3, { at: 5, into: 6 }), row(4, 3, { at: 5, into: 6 }), row(5, 5, null), row(6, 5, null)];
+    const lockReads: MulticallRequest[] = [];
+    vi.mocked(multicallRead).mockImplementation(async (_provider, calls) => {
+      lockReads.push(...calls);
+      return calls.map(call => {
+        const id = call.args![0] as number;
+        if (call.method === 'currentEpoch') return [22n];
+        if (call.method === 'positionWithdrawableEpoch') return [id >= 5 ? 5n : 0n];
+        if (call.method === 'positionPowerSegmentAt') return [30n, 0n, 2n ** 256n - 1n];
+        throw new Error(`unexpected ${call.method}`);
+      });
+    });
+    const result = await positions(ctx);
+    const byId = new Map(result.positions.map(position => [position.id, position]));
+    expect(byId.get(5)).toMatchObject({ stakeStartEpoch: 5, stakeEndEpoch: 30, normalStartEpoch: 1 });
+    expect(byId.get(6)).toMatchObject({ stakeStartEpoch: 5, stakeEndEpoch: 30, normalStartEpoch: 3 });
+    // The burn preview divides by the normal window (29 and 27 epochs), not the public one (25).
+    expect(byId.get(5)!.projectedSlashBps).toBe(Math.floor(9000 * 8 / 29));
+    expect(byId.get(6)!.projectedSlashBps).toBe(Math.floor(9000 * 8 / 27));
+    expect(new Set(lockReads.map(call => call.method))).toEqual(new Set(['positionWithdrawableEpoch', 'positionPowerSegmentAt', 'currentEpoch']));
+  });
+
+  it('rebuilds the lock start of restructured and un-max-locked positions with no merge partner', async () => {
+    const { ctx, live } = positionFeeds();
+    const template = live.positions[0]!;
+    const row = (id: number, stakeStartEpoch: number, stakeEndEpoch: number, closed: { at: number; into: number } | null) => ({
+      ...template, id, stakeStartEpoch, stakeEndEpoch, maxLocked: false, maxLockedNext: false,
+      closedAtEpoch: closed?.at ?? 0, closedBy: closed ? 'merge' as const : null, replacementIds: closed ? [closed.into] : [],
+      state: closed ? 'closed' as const : 'active' as const,
+    });
+    // 5: merged at 5 from positions staked at 1, alone on its unlock epoch. 6: a plain stake, alone too.
+    // 7: staked at 2, max lock disabled effective 20 (start 20, end 124), alone too.
+    live.positions = [row(1, 1, 30, { at: 5, into: 5 }), row(2, 1, 30, { at: 5, into: 5 }), row(5, 5, 30, null), row(6, 3, 40, null), row(7, 2, 124, null)];
+    const lockReads: MulticallRequest[] = [];
+    vi.mocked(multicallRead).mockImplementation(async (_provider, calls) => {
+      lockReads.push(...calls);
+      return calls.map(call => {
+        const [id, epoch] = call.args as [number, number];
+        if (call.method === 'currentEpoch') return [22n];
+        if (call.method === 'positionWithdrawableEpoch') return [id === 5 ? 5n : 0n];
+        if (call.method !== 'positionPowerSegmentAt') throw new Error(`unexpected ${call.method}`);
+        if (id === 7) return epoch < 20 ? [0n, 200n, 20n] : [124n, 0n, 2n ** 256n - 1n];
+        return [30n, 0n, 2n ** 256n - 1n];
+      });
+    });
+    const result = await positions(ctx);
+    const byId = new Map(result.positions.map(position => [position.id, position]));
+    expect(byId.get(5)).toMatchObject({ normalStartEpoch: 1, projectedSlashBps: Math.floor(9000 * 8 / 29) });
+    expect(byId.get(7)).toMatchObject({ normalStartEpoch: 20, projectedSlashBps: Math.floor(9000 * 102 / 104) });
+    // A plain stake with no partner still makes no RPC read.
+    expect(byId.get(6)!.normalStartEpoch ?? null).toBeNull();
+    expect(lockReads.some(call => call.args![0] === 6)).toBe(false);
+  });
+
   it('preserves live positions when indexed rewards are incomplete', async () => {
     const { ctx, reward, rewards } = positionFeeds();
     reward.source.historyComplete = false;

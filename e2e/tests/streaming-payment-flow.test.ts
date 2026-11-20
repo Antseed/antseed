@@ -2,7 +2,6 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { AntseedNode } from '@antseed/node';
 import type {
   Provider,
-  ProviderStreamCallbacks,
   SerializedHttpRequest,
   SerializedHttpResponse,
   PeerInfo,

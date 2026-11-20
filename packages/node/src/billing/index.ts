@@ -14,3 +14,5 @@ export {
   type CapturedUnitBillingContext,
   type FinalUnitBillingResult,
 } from "./unit.js";
+
+export { isPricedProviderService } from "./priced-service.js";

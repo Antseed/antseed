@@ -66,7 +66,7 @@ function ProviderBadges({ peer, model }: { peer: Peer; model: string }) {
   const coolingDown = (peer.health.coolingDownUntil ?? 0) > Date.now()
   return (
     <div className="gc-badges">
-      <TeeBadge tee={peer.tee} scope={peer.teeScope} />
+      <TeeBadge tee={peer.tee} scope={peer.teeScope} upstreams={peer.teeUpstreams} />
       {isFreePeer(peer, model) && <Badge tone="success">Free</Badge>}
       {peer.washFlagged && <Badge tone="danger">Flagged</Badge>}
       {coolingDown && <Badge tone="warning">Cooling down</Badge>}

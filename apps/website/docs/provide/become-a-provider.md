@@ -17,7 +17,30 @@ Antseed is for providers who build differentiated services: TEE-secured inferenc
 - Node.js 20 or newer.
 - An upstream to serve from: an OpenAI-compatible API key, an Anthropic API key, or a local model server (Ollama or llama.cpp).
 - A little ETH on Base for the gas your seller spends on registration and settlement.
-- A machine with a public IP address, or a port you can forward to it.
+- A machine with a public IP address, or a port you can forward to it. See [Server requirements](#server-requirements) for its size.
+
+### Server requirements
+
+| | Minimum | Recommended for production |
+| --- | --- | --- |
+| CPU | 1 vCPU | 2 vCPUs |
+| Memory | 1 GiB | 4 GiB |
+| Disk | 10 GB | 20 GB or more |
+| Network | A public IP address or forwarded ports, with UDP 6881 and TCP 6882 open | The same |
+
+A seller passes requests on to its upstream, so it needs little CPU. An idle seller uses about 200 MB of memory. Under traffic its memory follows the size and number of requests in flight: a request stays in memory while it is served, and one request can be as large as 64 MiB. The disk holds your payment channels and metering history under `~/.antseed`, which grows with traffic.
+
+These figures are for the seller alone. If the same machine also runs your model server, add what that needs.
+
+On Linux, start a production seller with these variables in its environment. Without them glibc keeps the memory of freed request buffers, so the seller's memory stays at the highest point traffic ever pushed it to. The [TEE seller image](/docs/provide/tee) sets them itself.
+
+```bash
+export MALLOC_ARENA_MAX=2
+export MALLOC_MMAP_THRESHOLD_=131072
+export MALLOC_TRIM_THRESHOLD_=131072
+```
+
+A TEE seller needs more memory than this. See [Server requirements for a TEE seller](/docs/provide/tee#server-requirements).
 
 ## 1. Install the CLI
 
@@ -44,6 +67,8 @@ export ANTSEED_IDENTITY_HEX=<64-hex-char-private-key>
 ```
 
 Use a dedicated key for your seller. To encrypt `identity.key` at rest, see [Protecting wallet keys](/docs/gateway/wallet-keys); an encrypted key needs `ANTSEED_PASSPHRASE` or `ANTSEED_PASSPHRASE_FILE` set whenever the seller starts.
+
+To try the whole loop first, with no funds and nothing announced, see [Test your seller before going live](/docs/provide/test-locally).
 
 ## 3. Fund and register
 
@@ -101,6 +126,8 @@ antseed seller start
 
 `seller start` checks before it begins announcing: at least one service per provider, ETH for gas, and on-chain registration. It prints what is missing and the command that fixes it.
 
+The checks need the Base RPC. If it and its fallbacks don't answer after 3 tries, a seller with priced services doesn't start. A seller whose services are all free starts without payments. To test without payments, set `ANTSEED_ENABLE_SETTLEMENT=false`.
+
 It also serves your seller dashboard on `127.0.0.1:3120`: status, model health, gas, earnings, request logs, prices against other sellers, settings and alerts. In a terminal, `seller start` prints the link. For a seller running as a service, `antseed seller dashboard` prints it. Pass `--no-dashboard` to turn it off. See [Monitoring](/docs/provide/monitoring).
 
 ## 6. Make sure buyers can reach you
@@ -128,4 +155,4 @@ Your services, prices and categories should appear. Run `antseed network browse`
 - [Model verification for providers](/docs/verify/providers): how auditors check that you serve the models you advertise, and what a DIFF costs you.
 - [Metrics](/docs/provide/metrics): monitor requests, tokens and earnings with Prometheus.
 - [Provider plugin API](/docs/provider-api): build a plugin for an upstream the built-in plugins don't cover.
-- [`join-provider` agent skill](https://github.com/AntSeed/antseed/tree/main/skills/join-provider): let a coding agent walk you through this setup.
+- [`join-provider` agent skill](https://github.com/Antseed/antseed/tree/main/skills/join-provider): let a coding agent walk you through this setup.

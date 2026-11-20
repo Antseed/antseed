@@ -1,6 +1,6 @@
 /**
  * Browser transport to one seller: relay-signaled WebRTC DataChannel carrying
- * AntSeed protocol frames. Satisfies @antseed/buyer-core's BuyerConnection
+ * Antseed protocol frames. Satisfies @antseed/buyer-core's BuyerConnection
  * interface; all request/payment logic lives in the shared buyer machinery.
  */
 

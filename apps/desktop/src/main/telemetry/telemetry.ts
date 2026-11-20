@@ -9,7 +9,7 @@
  *   property passes through ./sanitize.ts's allowlist — unknown properties
  *   are dropped, strings truncated, numbers bounded.
  * - Disabled in development builds, when the TELEMETRY_ENABLED kill switch
- *   is falsy, under the opt-outs every AntSeed product honors
+ *   is falsy, under the opt-outs every Antseed product honors
  *   (`DO_NOT_TRACK=1`, `ANTSEED_TELEMETRY=0`), when PostHog config is
  *   missing, and until the user turns it on in Settings.
  * - Routine captures are fire-and-forget; clean shutdown uses a bounded flush.
@@ -47,7 +47,7 @@ import {
 import type { TelemetryAppName, UserActionSignal } from '../../shared/telemetry.js';
 
 export const TELEMETRY_ENABLED_ENV = 'TELEMETRY_ENABLED';
-/** The opt-outs every AntSeed product honors (see packages/telemetry's consent rule). */
+/** The opt-outs every Antseed product honors (see packages/telemetry's consent rule). */
 export const ANTSEED_TELEMETRY_ENV = 'ANTSEED_TELEMETRY';
 export const DO_NOT_TRACK_ENV = 'DO_NOT_TRACK';
 export const POSTHOG_HOST_ENV = 'POSTHOG_HOST';

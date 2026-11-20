@@ -5,12 +5,16 @@ import { sharedChainProvider } from '../proxy/chain-rpc.js'
 import { loadConfig } from '../config/loader.js'
 import { GatewayAccounting } from './accounting.js'
 import { loadOrCreateControlSecret, recordGatewayBuyerPort } from './buyer-control.js'
+import { createKeyWalletReader } from './key-wallet.js'
+import { fetchComparableRetailPrices } from '../retail-prices.js'
 import { BuyerPolicyProbe } from './buyer-policy-probe.js'
 import { parseBaseUnits, parseUsdToUsdc } from './money.js'
 import { GatewayServer, type GatewayServerOptions, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
-import { GatewayStore } from './store.js'
-import { X402Facilitator, type X402Asset } from './x402.js'
+import { GatewayStore, gatewayDir } from './store.js'
+import { StreamResumeStore } from './stream-resume.js'
+import { join } from 'node:path'
+import { X402Facilitator, erc1271SignatureCheck, type X402Asset } from './x402.js'
 import { GatewayTelemetry } from '../telemetry/gateway.js'
 import { cdpAuthorization, type CdpCredentials } from './cdp-auth.js'
 
@@ -80,17 +84,20 @@ export interface GatewayRuntime {
   stop: () => Promise<void>
 }
 
-/**
- * The USDC the buyer's chain uses, with the EIP-712 domain its
- * `transferWithAuthorization` signatures are checked against.
- */
-function usdcAsset(config: Awaited<ReturnType<typeof loadConfig>>): () => Promise<X402Asset> {
+function paymentChain(config: Awaited<ReturnType<typeof loadConfig>>): ReturnType<typeof resolveChainConfig> {
   const crypto = config.payments?.crypto
-  const chain = resolveChainConfig({
+  return resolveChainConfig({
     chainId: crypto?.chainId,
     rpcUrl: resolveBaseRpcUrlOverride() ?? crypto?.rpcUrl,
     usdcContractAddress: crypto?.usdcContractAddress,
   })
+}
+
+/**
+ * The USDC the buyer's chain uses, with the EIP-712 domain its
+ * `transferWithAuthorization` signatures are checked against.
+ */
+function usdcAsset(chain: ReturnType<typeof resolveChainConfig>): () => Promise<X402Asset> {
   let asset: Promise<X402Asset> | null = null
   return () => {
     // Read once per process through the shared provider (which fails over between endpoints).
@@ -151,6 +158,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
   // an older buyer would ignore the header and route unrestricted.
   const policyProbe = new BuyerPolicyProbe({ buyerPort, secret: controlSecret, onLog: options.onLog })
   const identityAddress = (name: string): Promise<string | null> => liveBuyerIdentityAddress(buyerPort, name)
+  const keyWallet = createKeyWalletReader({ buyerPort, secret: controlSecret, configPath: options.configPath, fetchRetailPrices: fetchComparableRetailPrices })
 
   const accounting = new GatewayAccounting(store, {
     holdUsdc: parseBaseUnits(config.payments?.maxPerRequestUsdc ?? DEFAULT_MAX_PER_REQUEST_USDC),
@@ -167,9 +175,11 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     },
     onLog: options.onLog,
   })
+  const chain = paymentChain(config)
   const topup: GatewayTopupOptions | null = options.topup
     ? {
-      asset: usdcAsset(config),
+      asset: usdcAsset(chain),
+      checkContractSignature: erc1271SignatureCheck(sharedChainProvider(chain)),
       facilitator: new X402Facilitator({ url: options.topup.facilitatorUrl, ...facilitatorAuth(options.topup) }),
       minUsdc: parseUsdToUsdc(options.topup.minUsd ?? DEFAULT_TOPUP_MIN_USD),
       maxUsdc: parseUsdToUsdc(options.topup.maxUsd ?? DEFAULT_TOPUP_MAX_USD),
@@ -191,7 +201,11 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     x402Enabled: Boolean(topup),
     listenHost,
   }) ?? null
+  // Streams whose client dropped, kept for the client's retry; copies too large for memory go here.
+  const streamResume = new StreamResumeStore({ dir: join(gatewayDir(options.dataDir), 'stream-resume'), onLog: options.onLog })
+  streamResume.prepare()
   const server = new GatewayServer({
+    streamResume,
     console: consoleHandler,
     controlSecret,
     buyerPolicyUnsupported: () => policyProbe.policyUnsupported(),
@@ -200,6 +214,9 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     accounting,
     buyerPort,
     identityAddress,
+    identityBalance: (name, balanceOptions) => keyWallet.balance(name, balanceOptions),
+    walletRewards: (address) => keyWallet.rewards(address),
+    retailPrices: () => keyWallet.retailPrices(),
     spendFeedState: () => spendFeed.state,
     refreshSpendFeed: () => spendFeed.pollOnce(),
     videoBudgetEnforced: () => spendFeed.videoBudgetEnforced,

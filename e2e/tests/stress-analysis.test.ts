@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+// @ts-expect-error The stress harness is plain .mjs with no type declarations.
 import { analyzePayments, analyzeRecordedCosts } from '../stress/analysis.mjs';
 
 const CHANNEL = '0x' + 'ab'.repeat(32);

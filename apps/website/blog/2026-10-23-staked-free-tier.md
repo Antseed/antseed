@@ -89,4 +89,4 @@ Not every provider offers this yet. The quickest way to find the ones that do is
 
 > Check Antscan's free-tier feed (antscan.co/api/free-tier) for providers offering staking benefits, including free requests on normally paid models. Compare the models, free usage and required staking power, showing how different amounts and lock durations qualify. Then help me stake with the provider I choose. Show me the terms and ask for confirmation before submitting any transaction.
 
-You can also look for the stake prompt next to free models in the [AI VPN desktop app](https://github.com/AntSeed/antseed/releases/latest) or the [Gateway](/docs/quickstart/) on [the Antseed website](/).
+You can also look for the stake prompt next to free models in the [AI VPN desktop app](https://github.com/Antseed/antseed/releases/latest) or the [Gateway](/docs/quickstart/) on [the Antseed website](/).

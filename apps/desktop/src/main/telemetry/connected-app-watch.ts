@@ -6,7 +6,7 @@
  * time means the app sent a request. Only the fixed app name leaves the
  * device — never a slug, a snippet or a conversation id.
  */
-import { SYSTEM_PROXY_PROFILES } from '../system-proxy/profiles.js';
+import { connectableProfiles } from '../connected-apps/patching/profiles.js';
 import { effectiveToolSlugs } from '../connected-apps/profile-targets.js';
 import { resolveBuyerProxyPort } from '../runtime/active-config.js';
 import { LOCALHOST_URL } from '../constants.js';
@@ -20,7 +20,7 @@ const POLL_INTERVAL_MS = 30_000;
 const watches = new Map<TelemetryAppName, () => void>();
 
 function toolSlugsFor(app: TelemetryAppName): string[] {
-  const profile = SYSTEM_PROXY_PROFILES.find((entry) => entry.name === app);
+  const profile = connectableProfiles().find((entry) => entry.name === app);
   if (!profile) return [];
   return effectiveToolSlugs(profile.name, profile.toolSlugs, profile.label);
 }

@@ -17,7 +17,8 @@
  *   so callers serve cached data instead of hammering.
  * - Requests are paced per endpoint so a burst never exceeds a few per second.
  */
-import { FetchRequest, Interface, JsonRpcProvider, Network, type JsonRpcPayload, type JsonRpcResult } from 'ethers'
+import { Interface, JsonRpcProvider, Network, type JsonRpcPayload, type JsonRpcResult } from 'ethers'
+import { withUrlCredentials } from '@antseed/node/payments'
 import { recordRpcCall } from './rpc-sources.js'
 
 export interface RpcTransportResponse {
@@ -438,14 +439,29 @@ function isRateLimited(body: unknown): boolean {
   })
 }
 
-/** An RPC URL without its path or query, which is where providers put API keys. */
+/**
+ * An RPC URL reduced to its http(s) origin, safe to print or log. Providers put API keys in the
+ * path, the query or the userinfo, so any of those becomes "/…". Anything that is not an http(s)
+ * URL becomes a fixed placeholder, never the input or the parser's error.
+ */
 export function redact(url: string): string {
+  let parsed: URL
   try {
-    const parsed = new URL(url)
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname.length > 1 || parsed.search ? '/…' : ''}`
+    parsed = new URL(url)
   } catch {
-    return 'RPC endpoint'
+    return '<invalid RPC URL>'
   }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return '<invalid RPC URL>'
+  const hidden = parsed.pathname.length > 1 || parsed.search || parsed.hash || parsed.username || parsed.password
+  return `${parsed.origin}${hidden ? '/…' : ''}`
+}
+
+/**
+ * `text` with every http(s) URL in it passed through `redact`. For error messages that can quote
+ * an RPC URL, such as ethers' `info.requestUrl`. A URL runs to the next space, quote or angle bracket.
+ */
+export function redactUrlsIn(text: string): string {
+  return text.replace(/\bhttps?:\/\/[^\s"'<>`]+/gi, (url) => redact(url))
 }
 
 function retryAfter(value: string | null | undefined): number | null {
@@ -456,21 +472,29 @@ function retryAfter(value: string | null | undefined): number | null {
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null
 }
 
+/**
+ * One POST, aborted once REQUEST_TIMEOUT_MS has passed in total. ethers' FetchRequest only times
+ * out a socket that goes quiet, so a response that kept trickling in never failed, and a write
+ * waiting on it held its signer's nonce lock for good.
+ */
 async function fetchTransport(url: string, body: string): Promise<RpcTransportResponse> {
-  const request = new FetchRequest(url)
-  request.timeout = REQUEST_TIMEOUT_MS
-  request.retryFunc = async () => false
-  request.setThrottleParams({ maxAttempts: 1 })
-  request.setHeader('content-type', 'application/json')
-  request.body = body
-  const response = await request.send()
+  const target = withUrlCredentials(url, { 'content-type': 'application/json' })
+  const response = await fetch(target.url, {
+    method: 'POST',
+    headers: target.headers,
+    body,
+    // Like ethers' own transport: an RPC POST is never redirected, so an HTTPS endpoint can't move it to plain HTTP.
+    redirect: 'error',
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  })
+  const text = await response.text()
   let parsed: unknown = null
   try {
-    parsed = response.bodyJson
+    parsed = JSON.parse(text)
   } catch {
     parsed = null
   }
-  return { status: response.statusCode, body: parsed, retryAfterMs: retryAfter(response.getHeader('retry-after')) }
+  return { status: response.status, body: parsed, retryAfterMs: retryAfter(response.headers.get('retry-after')) }
 }
 
 export interface ChainRpcTarget {

@@ -1,6 +1,7 @@
 import type {
   FreeTierDelegation,
   SellerBuyerLimitsConfig,
+  SellerFreeTierProgramConfig,
   ServiceApiProtocol,
   ServiceCapabilities,
   UnitBillingModelV1,
@@ -49,6 +50,8 @@ export interface SellerServiceConfig {
   upstreamModel?: string;
   /** Native image-edit model paired with this advertised generation service. */
   imageEditModel?: string;
+  /** Additional text API protocols served unchanged by the openai plugin's upstream. */
+  extraProtocols?: Array<Extract<ServiceApiProtocol, 'openai-responses' | 'anthropic-messages'>>;
   /** Normie-friendly tags announced in peer metadata (e.g. "chat", "coding"). */
   categories?: string[];
   /**
@@ -83,8 +86,9 @@ export interface SellerProviderConfig {
    * Name of the environment variable holding this provider's API key.
    * Allows multiple providers on the same peer to use different credentials.
    * Example: `"ZAI_API_KEY"` reads `process.env.ZAI_API_KEY` and injects it
-   * as `OPENAI_API_KEY` into the plugin config. When omitted, the plugin's
-   * default env var (`OPENAI_API_KEY`) is used.
+   * as the plugin's API key setting (`OPENAI_API_KEY`, or the plugin's own
+   * prefix such as `ANTHROPIC_API_KEY`). When omitted, the plugin's default
+   * env var is used.
    */
   apiKeyEnv?: string;
   /**
@@ -228,8 +232,12 @@ export interface SellerAlertsCLIConfig {
   minSeverity?: 'info' | 'warning' | 'critical';
 }
 
-/** One free-tier program: base limits and the staked tiers above them. */
-export interface SellerFreeTierCLIConfig {
+/**
+ * One free-tier program: base limits, the staked tiers above them, and the
+ * free-request screening settings shared with the node's program.
+ */
+export interface SellerFreeTierCLIConfig
+  extends Pick<SellerFreeTierProgramConfig, 'newBuyerMaxInputTokens' | 'newBuyerRequests' | 'movedConversations'> {
   /** Maximum zero-priced requests accepted from one buyer address per window. */
   maxRequestsPerAddress?: number;
   /** Maximum zero-priced requests accepted from one remote IP per window (IPv6 grouped by /64). */
@@ -286,9 +294,24 @@ export interface SellerCLIConfig {
   verifications?: VerificationConfig;
   /** Maximum upload body size (bytes) accepted from buyers per request. Default: 64 MiB. */
   maxUploadBodyBytes?: number;
+  /** Most request body bytes held at once across all buyers; past it a request gets a retryable 503. Default: 256 MiB. */
+  maxInFlightRequestBytes?: number;
+  /** Buyer peer IDs (40 hex characters, with or without 0x) this seller refuses with 403 `buyer_blocked`. */
+  blockedBuyers?: string[];
   /** Buyer connections held open at once; past it new buyers are refused. Metadata requests never count. Default: 2048. */
   maxInboundConnections?: number;
-  /** Close a buyer's connection after this long with no traffic and no channel open on it; 0 keeps idle connections. Default: 30 minutes. */
+  /**
+   * Buyer connections accepted from one IP at once. Raise it when every buyer reaches this seller
+   * through one address, such as Phala Cloud's TLS gateway. Default: 64.
+   */
+  maxInboundConnectionsPerIp?: number;
+  /**
+   * Announce each provider by an ID instead of its plugin name, so buyers don't see which
+   * plugin (and upstream) serves a model. Default: false while older buyers, which refuse a
+   * pinned request naming a provider the peer doesn't announce, are still in use.
+   */
+  announceProviderIds?: boolean;
+  /** Close a buyer's connection after this long with no traffic and no paid channel open on it; 0 keeps idle connections. Default: 30 minutes. */
   inboundIdleTimeoutMs?: number;
   /**
    * Verifier SDK ids this seller advertises and runs provers for (first is the
@@ -424,6 +447,8 @@ export interface PaymentsCLIConfig {
   maxReserveAmountUsdc?: string;
   /** Most the buyer pays for one video in base units; a gateway reserves up to this while a video is priced. Default: "5000000" ($5.00). */
   maxVideoRequestUsdc?: string;
+  /** Validity in seconds of the auths the node signs. Default: the node's (900 for a ReserveAuth). */
+  defaultAuthDurationSecs?: number;
   /**
    * Optional on-chain seller contract (e.g. DiemStakingProxy). When set, the
    * peer publishes it in metadata; buyers verify the binding via
@@ -509,6 +534,20 @@ export interface RelayerCLIConfig {
 export interface NetworkCLIConfig {
   /** Additional bootstrap nodes for DHT discovery (host:port pairs) */
   bootstrapNodes: string[];
+  /** UDP port for the DHT; 0 lets the OS choose. Default: 6881 for a seller, OS-assigned for a buyer. `--dht-port` wins. */
+  dhtPort?: number;
+  /** TCP port for seller signaling; 0 lets the OS choose. Default: 6882. `--signaling-port` wins. */
+  signalingPort?: number;
+  /** Local address the DHT and signaling sockets bind to. Default: all interfaces. */
+  bindHost?: string;
+  /** Map seller ports via UPnP/NAT-PMP on start. Default: true. */
+  natTraversal?: boolean;
+  /** Use only `bootstrapNodes` and never contact the official DHT nodes. Default: false. */
+  noOfficialBootstrap?: boolean;
+  /** Accept private and loopback addresses in DHT lookups. Default: true for a buyer, false for a seller. */
+  allowPrivateIPs?: boolean;
+  /** Timeout of one DHT operation in ms. Default: the node's. */
+  dhtOperationTimeoutMs?: number;
 }
 
 /**

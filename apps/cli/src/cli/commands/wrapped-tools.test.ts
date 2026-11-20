@@ -94,7 +94,7 @@ function runWrapper(workspace: TempWorkspace, args: string[]): ReturnType<typeof
 }
 
 test('parseWrappedToolArgs', async (t) => {
-  await t.test('consumes AntSeed flags and forwards child args', () => {
+  await t.test('consumes Antseed flags and forwards child args', () => {
     const parsed = parseWrappedToolArgs([
       '--model',
       'gpt-oss-120b',
@@ -115,7 +115,7 @@ test('parseWrappedToolArgs', async (t) => {
     assert.deepEqual(parsed.childArgs, ['--model', 'child-model'])
   })
 
-  await t.test('rejects unsupported AntSeed wrapper flags', () => {
+  await t.test('rejects unsupported Antseed wrapper flags', () => {
     assert.throws(
       () => parseWrappedToolArgs(['--antseed-peer', 'peer-id']),
       /--antseed-peer is not supported by this wrapper/,
@@ -163,7 +163,7 @@ test('buildCodexConfigArgs uses ephemeral config overrides on the real Codex hom
   assert.ok(args.includes(`model_context_window=${ANTSEED_MODEL_CONTEXT_WINDOW}`))
 })
 
-test('buildOpenCodeConfigContent configures AntSeed provider and selected model', () => {
+test('buildOpenCodeConfigContent configures Antseed provider and selected model', () => {
   const model = 'gpt-oss-120b'
   const parsed = JSON.parse(buildOpenCodeConfigContent(V1_PROXY_URL, model)) as OpenCodeConfig
 
@@ -177,7 +177,7 @@ test('buildOpenCodeConfigContent configures AntSeed provider and selected model'
 })
 
 test('wrapped tool execution', async (t) => {
-  await t.test('codex receives AntSeed config overrides and forwarded child args', async () => {
+  await t.test('codex receives Antseed config overrides and forwarded child args', async () => {
     await withTempWorkspace(async (workspace) => {
       const codex = await createRecordingChildCli(workspace, 'codex')
 

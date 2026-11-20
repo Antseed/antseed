@@ -131,7 +131,7 @@ describe('OpenAI SDK integration: Images API over buyer proxy', () => {
     } as any);
 
     expect(response.created).toBeTypeOf('number');
-    expect(response.data[0]?.b64_json).toBe(Buffer.from('mock-image-bytes').toString('base64'));
+    expect(response.data![0]?.b64_json).toBe(Buffer.from('mock-image-bytes').toString('base64'));
     expect(provider.requestCount).toBe(1);
     expect(provider.lastRequest?.path).toBe('/v1/images/generations');
 

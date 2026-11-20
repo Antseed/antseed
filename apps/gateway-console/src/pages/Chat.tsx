@@ -891,7 +891,7 @@ export default function Chat() {
           {freeTierError && <FreeTierLimitNotice error={freeTierError} onAuto={peerId ? () => setPeerId(null) : null} />}
           {error && !freeTierError && (
             <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
-              {/out of AntSeed credits|insufficient_deposits/i.test(error.message)
+              {/out of Antseed credits|insufficient_deposits/i.test(error.message)
                 ? (
                   <>
                     <span className="font-medium">No free seller took this, and paid ones need funds.</span>{' '}

@@ -5,8 +5,7 @@ import { safeNumber, safeString } from '../../core/safe';
 type SettingsModuleOptions = {
   uiState: RendererUiState;
   getDashboardData: (
-    endpoint: string,
-    query?: Record<string, string | number | boolean>,
+    endpoint: 'config',
   ) => Promise<{ ok: boolean; data: unknown; error?: string | null }>;
   updateDashboardConfig: (
     config: Record<string, unknown>,

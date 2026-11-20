@@ -98,8 +98,8 @@ antseed gateway key limits <keyId> --weekly-limit 10 --total-limit none
 # The key owner's own layer
 antseed gateway key update <keyId> --owner-daily-limit 1
 
-# Member and workspace
-antseed gateway member update alice@example.com --monthly-limit 100
+# Member (by member id or email) and workspace
+antseed gateway member update <member> --monthly-limit 100
 antseed gateway workspace update Research --weekly-limit 150
 ```
 

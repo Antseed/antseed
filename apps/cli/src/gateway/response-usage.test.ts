@@ -61,6 +61,24 @@ test('Anthropic messages SSE: input from message_start, output from the last mes
   assert.deepEqual(read('text/event-stream', body, 3), { inputTokens: 205, cachedInputTokens: 200, outputTokens: 42 })
 })
 
+test('Anthropic messages SSE translated from OpenAI: input only in message_delta is counted once', () => {
+  const body = sse([
+    { event: 'message_start', data: { type: 'message_start', message: { id: 'msg_1', usage: { input_tokens: 0, output_tokens: 0 } } } },
+    { event: 'content_block_delta', data: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } } },
+    { event: 'message_delta', data: { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 32, output_tokens: 7, cache_read_input_tokens: 10 } } },
+    { event: 'message_stop', data: { type: 'message_stop' } },
+  ])
+  assert.deepEqual(read('text/event-stream', body, 5), { inputTokens: 42, cachedInputTokens: 10, outputTokens: 7 })
+})
+
+test('Anthropic messages SSE with cumulative input in both message_start and message_delta is counted once', () => {
+  const body = sse([
+    { event: 'message_start', data: { type: 'message_start', message: { id: 'msg_1', usage: { input_tokens: 32, cache_read_input_tokens: 10, output_tokens: 1 } } } },
+    { event: 'message_delta', data: { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 32, output_tokens: 7, cache_read_input_tokens: 10 } } },
+  ])
+  assert.deepEqual(read('text/event-stream', body), { inputTokens: 42, cachedInputTokens: 10, outputTokens: 7 })
+})
+
 test('Anthropic messages JSON', () => {
   const body = JSON.stringify({ id: 'msg_1', type: 'message', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 11, cache_read_input_tokens: 4, output_tokens: 6 } })
   assert.deepEqual(read('application/json', body), { inputTokens: 15, cachedInputTokens: 4, outputTokens: 6 })

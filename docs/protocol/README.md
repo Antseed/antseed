@@ -64,9 +64,15 @@ cd my-router && npm install && npm run verify
 - [@antseed/cli](https://npmjs.com/package/@antseed/cli) — CLI tools
 - [@antseed/provider-anthropic](https://npmjs.com/package/@antseed/provider-anthropic) — Anthropic provider (API key)
 - [@antseed/provider-claude-code](https://npmjs.com/package/@antseed/provider-claude-code) — Claude Code provider (keychain, testing only)
+- [@antseed/provider-claude-oauth](https://npmjs.com/package/@antseed/provider-claude-oauth) — Claude OAuth provider (testing only)
 - [@antseed/provider-openai](https://npmjs.com/package/@antseed/provider-openai) — OpenAI-compatible provider (OpenAI, Together, OpenRouter)
+- [@antseed/provider-openai-responses](https://npmjs.com/package/@antseed/provider-openai-responses) — OpenAI Responses provider (Codex auth, testing only)
 - [@antseed/provider-local-llm](https://npmjs.com/package/@antseed/provider-local-llm) — Local LLM provider
 - [@antseed/provider-typesafe](https://npmjs.com/package/@antseed/provider-typesafe) — TypeSafe System One decision-model provider
+- [@antseed/provider-venice-video](https://npmjs.com/package/@antseed/provider-venice-video) — Venice video API provider
+- [@antseed/provider-fal-video](https://npmjs.com/package/@antseed/provider-fal-video) — fal.ai video models provider
+- [@antseed/provider-fal-image](https://npmjs.com/package/@antseed/provider-fal-image) — fal.ai image models provider (OpenAI Images API)
+- [@antseed/provider-alibaba-video](https://npmjs.com/package/@antseed/provider-alibaba-video) — Alibaba Cloud Model Studio video provider (Wan, HappyHorse)
 - [@antseed/provider-irp-router](https://npmjs.com/package/@antseed/provider-irp-router) — `irp-suggest` routing provider for any IRP router
 - [@antseed/provider-free-model-router](https://npmjs.com/package/@antseed/provider-free-model-router) — `irp-suggest` routing provider that ranks free models
 - [@antseed/router-local](https://npmjs.com/package/@antseed/router-local) — Local router (Claude Code, Codex)

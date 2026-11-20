@@ -8,11 +8,13 @@ import type {
   SellerProviderConfig,
   TokenPricingUsdPerMillion,
 } from './types.js';
-import { MAX_FREE_TIER_DELEGATIONS, SellerFreeTierLimiter, validateFreeTierStakeTiers } from '@antseed/node';
+import { FREE_TIER_MOVED_CONVERSATIONS_MODES, MAX_FREE_TIER_DELEGATIONS, SellerFreeTierLimiter, validateFreeTierStakeTiers } from '@antseed/node';
 import { validateServiceMetadata } from './service-metadata.js';
 import { parseHostPort } from './public-address.js';
 import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
 import { sellerAlertsErrors } from './seller-alerts.js';
+
+const BUYER_PEER_ID_PATTERN = /^(0x)?[0-9a-fA-F]{40}$/;
 
 const SERVICE_CATEGORY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_PUBLIC_ADDRESS_LENGTH = 255;
@@ -46,6 +48,45 @@ function validatePricingLeaf(
   if (value.cachedInputUsdPerMillion != null && (!Number.isFinite(value.cachedInputUsdPerMillion) || value.cachedInputUsdPerMillion < 0)) {
     errors.push(`${path}.cachedInputUsdPerMillion must be a non-negative finite number`);
   }
+}
+
+/**
+ * Why buyers would skip this seller price, or null. A cached-input price above
+ * the input price makes the whole offer invalid to a buyer (router-local), so
+ * the model gets no requests.
+ */
+export function cachedPriceProblem(label: string, pricing: Partial<TokenPricingUsdPerMillion> | undefined): string | null {
+  const cached = pricing?.cachedInputUsdPerMillion;
+  const input = pricing?.inputUsdPerMillion;
+  if (typeof cached !== 'number' || typeof input !== 'number' || !(cached > input)) return null;
+  return `${label}: cached-input price $${cached} per 1M tokens is above the input price $${input}. `
+    + 'Buyers skip an offer priced like this, so it gets no requests. '
+    + 'Set the cached-input price at or below the input price, or leave it out to bill cached input at the input price.';
+}
+
+/** Every seller price buyers would skip, one line each (see `cachedPriceProblem`). */
+export function sellerCachedPriceProblems(providers: Record<string, SellerProviderConfig>): string[] {
+  const problems: string[] = [];
+  for (const [providerName, providerCfg] of Object.entries(providers)) {
+    const providerProblem = cachedPriceProblem(`${providerName} default prices`, providerCfg.defaults);
+    if (providerProblem) problems.push(providerProblem);
+    for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services ?? {})) {
+      const serviceProblem = cachedPriceProblem(`${providerName}/${serviceId}`, serviceCfg.pricing);
+      if (serviceProblem) problems.push(serviceProblem);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Refuses a seller config edit that leaves a price buyers would skip. Only
+ * problems the edit adds count, so a bad price saved earlier never blocks
+ * changing something else.
+ */
+export function assertNoNewCachedPriceProblems(before: Record<string, SellerProviderConfig>, after: Record<string, SellerProviderConfig>): void {
+  const existing = new Set(sellerCachedPriceProblems(before));
+  const added = sellerCachedPriceProblems(after).filter((problem) => !existing.has(problem));
+  if (added.length > 0) throw new Error(added.join('\n'));
 }
 
 function validateHierarchicalPricing(
@@ -117,6 +158,8 @@ function validateFallbackUpstreams(
 }
 
 const OPENAI_PLUGINS = new Set(['openai', '@antseed/provider-openai']);
+/** The fal image plugin maps each service to its fal edit endpoint. */
+const FAL_IMAGE_PLUGINS = new Set(['fal-image', '@antseed/provider-fal-image']);
 
 /** Venice image edits need the openai plugin pointed at Venice, which it detects from the base URL. */
 function isVeniceOpenAiProvider(providerCfg: SellerProviderConfig): boolean {
@@ -158,8 +201,11 @@ function validateSellerProviders(
       }
       if (serviceCfg.imageEditModel !== undefined && serviceCfg.imageEditModel.trim().length === 0) {
         errors.push(`${servicePath}.imageEditModel must be a non-empty string when provided`);
-      } else if (serviceCfg.imageEditModel !== undefined && !isVeniceOpenAiProvider(providerCfg)) {
-        errors.push(`${servicePath}.imageEditModel requires the openai plugin with a Venice baseUrl (https://api.venice.ai/api)`);
+      } else if (serviceCfg.imageEditModel !== undefined && !isVeniceOpenAiProvider(providerCfg) && !FAL_IMAGE_PLUGINS.has(providerCfg.plugin?.trim())) {
+        errors.push(`${servicePath}.imageEditModel requires the fal-image plugin or the openai plugin with a Venice baseUrl (https://api.venice.ai/api)`);
+      }
+      if (serviceCfg.extraProtocols !== undefined && !OPENAI_PLUGINS.has(providerCfg.plugin?.trim())) {
+        errors.push(`${servicePath}.extraProtocols requires the openai plugin`);
       }
       if (serviceCfg.pricing) {
         validatePricingLeaf(`${servicePath}.pricing`, serviceCfg.pricing, errors);
@@ -428,10 +474,36 @@ export function validateConfig(config: AntseedConfig): string[] {
   }
 
   if (
+    config.seller.maxInFlightRequestBytes !== undefined &&
+    (!Number.isInteger(config.seller.maxInFlightRequestBytes) || config.seller.maxInFlightRequestBytes < MIN_SELLER_UPLOAD_BODY_BYTES)
+  ) {
+    errors.push('seller.maxInFlightRequestBytes must be an integer >= 1048576');
+  }
+
+  const blockedBuyers: unknown = config.seller.blockedBuyers;
+  if (
+    blockedBuyers !== undefined &&
+    (!Array.isArray(blockedBuyers) || blockedBuyers.some((id) => typeof id !== 'string' || !BUYER_PEER_ID_PATTERN.test(id.trim())))
+  ) {
+    errors.push('seller.blockedBuyers must be a list of buyer peer IDs (40 hex characters, with or without 0x)');
+  }
+
+  if (
     config.seller.maxInboundConnections !== undefined &&
     (!Number.isInteger(config.seller.maxInboundConnections) || config.seller.maxInboundConnections < 1)
   ) {
     errors.push('seller.maxInboundConnections must be an integer >= 1');
+  }
+
+  if (
+    config.seller.maxInboundConnectionsPerIp !== undefined &&
+    (!Number.isInteger(config.seller.maxInboundConnectionsPerIp) || config.seller.maxInboundConnectionsPerIp < 1)
+  ) {
+    errors.push('seller.maxInboundConnectionsPerIp must be an integer >= 1');
+  }
+
+  if (config.seller.announceProviderIds !== undefined && typeof config.seller.announceProviderIds !== 'boolean') {
+    errors.push('seller.announceProviderIds must be a boolean');
   }
 
   if (
@@ -458,6 +530,8 @@ export function validateConfig(config: AntseedConfig): string[] {
       }
     }
   }
+
+  validateNetworkConfig(config, errors);
 
   if (config.seller.publicAddress) {
     const raw = config.seller.publicAddress.trim();
@@ -606,6 +680,31 @@ export function assertValidConfig(config: AntseedConfig): void {
   throw new Error(`Invalid config:\n- ${errors.join('\n- ')}`);
 }
 
+function validateNetworkConfig(config: AntseedConfig, errors: string[]): void {
+  const network = config.network;
+  for (const key of ['dhtPort', 'signalingPort'] as const) {
+    const port = network[key];
+    if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
+      errors.push(`network.${key} must be an integer in range 0-65535`);
+    }
+  }
+  if (network.bindHost !== undefined && (typeof network.bindHost !== 'string' || network.bindHost.trim().length === 0)) {
+    errors.push('network.bindHost must be a non-empty string');
+  }
+  for (const key of ['natTraversal', 'noOfficialBootstrap', 'allowPrivateIPs'] as const) {
+    if (network[key] !== undefined && typeof network[key] !== 'boolean') {
+      errors.push(`network.${key} must be a boolean`);
+    }
+  }
+  if (network.dhtOperationTimeoutMs !== undefined && (!Number.isInteger(network.dhtOperationTimeoutMs) || network.dhtOperationTimeoutMs < 1)) {
+    errors.push('network.dhtOperationTimeoutMs must be an integer >= 1');
+  }
+  const authDuration = config.payments.defaultAuthDurationSecs;
+  if (authDuration !== undefined && (!Number.isInteger(authDuration) || authDuration < 1)) {
+    errors.push('payments.defaultAuthDurationSecs must be an integer >= 1');
+  }
+}
+
 function validateFreeTierDelegations(value: unknown, errors: string[]): void {
   if (value === undefined) return;
   const path = 'buyer.freeTierDelegations';
@@ -661,6 +760,18 @@ function validateFreeTierProgram(path: string, freeTier: SellerFreeTierCLIConfig
     errors.push(`${path}.stakersOnly must be a boolean`);
   } else if (freeTier.stakersOnly && freeTier.stakeTiers?.length === 0) {
     errors.push(`${path}.stakersOnly requires at least one stake tier`);
+  }
+  for (const key of ['newBuyerMaxInputTokens', 'newBuyerRequests'] as const) {
+    const value = freeTier[key];
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+      errors.push(`${path}.${key} must be a positive safe integer`);
+    }
+  }
+  if (freeTier.newBuyerMaxInputTokens !== undefined && freeTier.maxRequestsPerAddress === undefined) {
+    errors.push(`${path}.newBuyerMaxInputTokens requires maxRequestsPerAddress`);
+  }
+  if (freeTier.movedConversations !== undefined && !FREE_TIER_MOVED_CONVERSATIONS_MODES.includes(freeTier.movedConversations)) {
+    errors.push(`${path}.movedConversations must be one of: ${FREE_TIER_MOVED_CONVERSATIONS_MODES.join(', ')}`);
   }
   if (errors.length > errorsBefore) return;
   // Otherwise valid limits can still be too long to advertise in peer metadata.

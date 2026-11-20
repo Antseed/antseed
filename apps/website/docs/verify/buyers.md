@@ -36,8 +36,8 @@ antseed verifier check <model>
 
 The command finds the latest on-chain audit for the model, asks the same kind of questions and prints `SAME`, `DIFF` or `UNDETERMINED` (exit code 0, 2 or 3). Use `--base-url` and `--api-key-env` to point it at another endpoint. The full list of options is in the [CLI reference](/docs/commands).
 
-Outside Antseed, the [`@antseed/model-verifier`](https://github.com/AntSeed/antseed/tree/main/packages/model-verifier) package does the same check. The [`antseed-verify-model`](https://github.com/AntSeed/antseed/tree/main/skills/antseed-verify-model) agent skill walks you through it and explains the result.
+Outside Antseed, the [`@antseed/model-verifier`](https://github.com/Antseed/antseed/tree/main/packages/model-verifier) package does the same check. The [`antseed-verify-model`](https://github.com/Antseed/antseed/tree/main/skills/antseed-verify-model) agent skill walks you through it and explains the result.
 
 ## See every seller's results
 
-[Antscan](https://antscan.co/view/verifications) lists every audited seller with its SAME and DIFF services and the audits behind them. In the desktop app, a service with a DIFF shows a warning in Discover.
+[Antscan](https://antscan.co/view/verifications) lists every audited seller with its SAME and DIFF services and the audits behind them.

@@ -8,7 +8,14 @@ import { pinnedUpstreamModel } from './pinned-upstream-model.js';
 
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
 
+/** OpenAI Chat Completions or legacy Completions, at whatever prefix an upstream serves them. */
+const COMPLETIONS_PATH = /^[^?]*\/(?:chat\/)?completions\/?(?:\?|$)/i;
+
 export interface RelayConfig {
+  /**
+   * Upstream redirects. Default 'error': following one would resend the buyer's request, prompt
+   * and credentials included, to a destination the seller did not configure.
+   */
   redirect?: 'error' | 'follow' | 'manual';
   baseUrl: string;
   authHeaderName: string;
@@ -24,6 +31,14 @@ export interface RelayConfig {
   stripHeaderPrefixes?: string[];
   /** Optional lowercase map: announced service -> upstream service. */
   serviceRewriteMap?: Record<string, string>;
+  /** Headers set only when the request does not carry them (any case; a blank value counts as missing). */
+  defaultHeaders?: Record<string, string>;
+  /**
+   * Top-level JSON body fields to drop, given the path sent upstream (no query string) and the
+   * model the upstream will see (after alias rewrite and pin). For fields the upstream's own
+   * standard rejects for that model. Runs before `injectJsonFields`.
+   */
+  omitJsonFields?: (request: { path: string; model: string | undefined }) => readonly string[];
   /** Fields to deep-merge into the JSON request body before forwarding upstream. */
   injectJsonFields?: Record<string, unknown>;
   /** If true, retry once with a force-refreshed token on 401. Only meaningful for providers with a refreshable tokenProvider (e.g. OAuth). */
@@ -97,7 +112,8 @@ interface ResolvedUpstream {
 
 export interface RelayCallbacks {
   onResponse: (response: SerializedHttpResponse) => void;
-  onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void;
+  /** A returned promise is awaited before the relay reads more of the upstream stream. */
+  onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void | Promise<void>;
 }
 
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
@@ -211,6 +227,7 @@ export class HttpRelay {
   private readonly _upstreams: ResolvedUpstream[];
   /** `${upstreamIndex}:${service}` -> time until which that upstream is tried last for the service. */
   private readonly _cooldownUntil = new Map<string, number>();
+  private readonly _loggedOmissions = new Set<string>();
   private _activeCount = 0;
 
   constructor(config: RelayConfig, callbacks: RelayCallbacks) {
@@ -267,7 +284,8 @@ export class HttpRelay {
 
   async handleRequest(request: SerializedHttpRequest): Promise<void> {
     // Validate service against pre-computed set (normalized at construction time).
-    const validationError = validateRequestService(request, this._validationServices);
+    const jsonBody = new JsonBody(request);
+    const validationError = validateRequestService(request, this._validationServices, jsonBody.read);
     if (validationError) {
       this._sendError(request.requestId, 403, validationError);
       return;
@@ -283,14 +301,14 @@ export class HttpRelay {
     this._activeCount++;
 
     try {
-      const service = this._upstreams.length > 1 ? serviceOfRequest(request) : '';
+      const service = this._upstreams.length > 1 ? serviceOfRequest(request, jsonBody) : '';
       const candidates = this._candidateUpstreams(service);
       for (const [position, { upstream, index }] of candidates.entries()) {
         const isLast = position === candidates.length - 1;
         let attempt: UpstreamAttempt | undefined;
         try {
           try {
-            attempt = await this._fetchUpstream(request, upstream);
+            attempt = await this._fetchUpstream(request, upstream, jsonBody);
           } catch (err) {
             if (isLast) throw err;
             this._coolDown(index, service, null);
@@ -360,7 +378,24 @@ export class HttpRelay {
     );
   }
 
-  private async _fetchUpstream(request: SerializedHttpRequest, upstream: ResolvedUpstream): Promise<UpstreamAttempt> {
+  /**
+   * Once per model and field set: a seller should see that it happens, not every request.
+   * The model is the buyer's text, so it is quoted and cut, and the set is capped.
+   */
+  private _logOmittedFields(model: string | undefined, fields: readonly string[]): void {
+    const name = JSON.stringify((model ?? '').slice(0, 80));
+    const key = `${name}:${fields.join(',')}`;
+    if (this._loggedOmissions.has(key) || this._loggedOmissions.size >= 100) return;
+    this._loggedOmissions.add(key);
+    console.warn(`[http-relay] ${name}: dropped ${fields.join(', ')} (the upstream rejects them for this model)`);
+  }
+
+  private async _fetchUpstream(request: SerializedHttpRequest, upstream: ResolvedUpstream, jsonBody: JsonBody): Promise<UpstreamAttempt> {
+    // Every decision below reads the path fetch will send, so a decision and the URL cannot disagree.
+    const { pathname, search } = new URL(`http://local${request.path.startsWith('/') ? '' : '/'}${request.path}`);
+    const requestPath = `${pathname}${search}`;
+    const upstreamPath = upstream.pathRewrite?.[requestPath] ?? requestPath;
+
     // Resolve dynamic auth token if provider uses OAuth / keychain
     let effectiveConfig: { authHeaderName: string; authHeaderValue: string; extraHeaders?: Record<string, string> } = {
       authHeaderName: this._config.authHeaderName,
@@ -389,6 +424,17 @@ export class HttpRelay {
 
     // Swap auth headers
     let swappedRequest = swapAuthHeader(request, effectiveConfig);
+    if (this._config.defaultHeaders) {
+      const headers = { ...swappedRequest.headers };
+      for (const [name, value] of Object.entries(this._config.defaultHeaders)) {
+        if (getHeader(headers, name).trim().length > 0) continue;
+        for (const key of Object.keys(headers)) {
+          if (key.toLowerCase() === name.toLowerCase()) delete headers[key];
+        }
+        headers[name] = value;
+      }
+      swappedRequest = { ...swappedRequest, headers };
+    }
     const pinnedModel = pinnedUpstreamModel(request);
 
     // Normalize the requested service into the upstream model for both JSON
@@ -412,7 +458,7 @@ export class HttpRelay {
         }
       } else {
         try {
-          const decoded = JSON.parse(new TextDecoder().decode(swappedRequest.body)) as Record<string, unknown>;
+          const decoded = jsonBody.read() as Record<string, unknown>;
           const transformed: Record<string, unknown> = { ...decoded };
 
           // Read from both "model" (upstream API compat) and "service" (native) fields
@@ -439,29 +485,31 @@ export class HttpRelay {
           // Force `stream_options.include_usage = true` on streaming OpenAI Chat
           // Completions requests. Without this, strict OpenAI-spec upstreams
           // (e.g. api.minimax.io) return SSE streams with no `usage` chunk,
-          // which makes `parseResponseUsage` return zeros and causes the
-          // seller to record `cost=0 (in=0 out=0)` for every request —
-          // effectively giving away inference for free.
+          // and the seller has no figure to bill by.
           //
-          // We only touch `/v1/chat/completions` with `stream:true`, and we
-          // preserve any caller-supplied `stream_options` fields. We don't
-          // override an explicit `include_usage:false` (operators can still
-          // disable via `injectJsonFields` below if they really need to).
-          if (
-            request.path.toLowerCase().startsWith('/v1/chat/completions')
-            && transformed.stream === true
-          ) {
+          // We only touch completions paths on a streaming request, and we
+          // preserve the caller's other `stream_options` fields. A caller's
+          // `include_usage:false` does not count: the figure is what the
+          // answer is billed by. Operators can still disable it via
+          // `injectJsonFields` below if they really need to.
+          if ((COMPLETIONS_PATH.test(requestPath) || COMPLETIONS_PATH.test(upstreamPath)) && transformed.stream) {
             const existing = transformed.stream_options && typeof transformed.stream_options === 'object' && !Array.isArray(transformed.stream_options)
               ? transformed.stream_options as Record<string, unknown>
               : {};
-            if (existing.include_usage === undefined) {
-              transformed.stream_options = { ...existing, include_usage: true };
-            }
+            transformed.stream_options = { ...existing, include_usage: true };
+          }
+
+          if (this._config.omitJsonFields) {
+            const upstreamModel = typeof transformed.model === 'string' ? transformed.model : undefined;
+            const dropped = this._config.omitJsonFields({ path: upstreamPath.split('?')[0] ?? upstreamPath, model: upstreamModel })
+              .filter((field) => field in transformed);
+            for (const field of dropped) delete transformed[field];
+            if (dropped.length > 0) this._logOmittedFields(upstreamModel, dropped);
           }
 
           // Body injection targets chat-style APIs. Image and speech APIs
           // reject unknown fields (Venice validates them strictly).
-          const lowerPath = request.path.toLowerCase();
+          const lowerPath = requestPath.toLowerCase();
           const isMediaRequest = lowerPath.startsWith('/v1/images/') || lowerPath.startsWith('/v1/audio/');
           const merged = this._config.injectJsonFields && !isMediaRequest
             ? deepMerge(transformed, this._config.injectJsonFields)
@@ -473,14 +521,12 @@ export class HttpRelay {
         }
       }
     }
+    // The body is written; what was parsed from it is not held while the upstream answers.
+    jsonBody.release();
 
     // Build upstream URL
     const base = upstream.baseUrl.replace(/\/+$/, '');
-    let path = request.path.startsWith('/') ? request.path : `/${request.path}`;
-    if (upstream.pathRewrite && path in upstream.pathRewrite) {
-      path = upstream.pathRewrite[path]!;
-    }
-    const url = `${base}${path}`;
+    const url = `${base}${upstreamPath}`;
 
     // Build fetch headers, stripping hop-by-hop and provider-specific prefixes
     const stripPrefixes = this._config.stripHeaderPrefixes ?? [];
@@ -492,23 +538,31 @@ export class HttpRelay {
 
     const doFetch = async (headers: Record<string, string>): Promise<UpstreamAttempt> => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`)), timeoutMs);
+      let paused = false;
+      const timeout = setTimeout(() => {
+        if (!paused) controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       const refreshTimeout = () => {
+        paused = false;
         if (!controller.signal.aborted) timeout.refresh();
       };
       try {
         const response = await fetch(url, {
-          redirect: this._config.redirect,
+          redirect: this._config.redirect ?? 'error',
           method: swappedRequest.method,
           headers,
+          // A view, not a copy: fetch takes its own copy of the bytes.
           body: swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD'
-            ? Buffer.from(swappedRequest.body)
+            ? Buffer.from(swappedRequest.body.buffer, swappedRequest.body.byteOffset, swappedRequest.body.byteLength)
             : undefined,
           signal: controller.signal,
         });
         refreshTimeout();
         return {
           response, headers, url, signal: controller.signal, refreshTimeout,
+          pauseTimeout: () => {
+            paused = true;
+          },
           dispose: () => {
             clearTimeout(timeout);
             controller.abort();
@@ -578,7 +632,23 @@ export class HttpRelay {
       result = await fetchWithRetries();
     }
 
+    // The attempt's timeout handlers keep this scope reachable until the response is delivered,
+    // and nothing fetches again: let go of the body written for the upstream.
+    swappedRequest = { ...swappedRequest, body: new Uint8Array(0) };
     return result;
+  }
+
+  /**
+   * Delivers a chunk that closes a stream and waits for it to be taken. A delivery that rejects
+   * is dropped: the stream is ending either way, and there is no one left to tell.
+   */
+  private async _deliverClosingChunk(chunk: SerializedHttpResponseChunk): Promise<void> {
+    const delivered = this._callbacks.onResponseChunk?.(chunk);
+    try {
+      await delivered;
+    } catch {
+      // The buyer is gone.
+    }
   }
 
   private async _deliver(request: SerializedHttpRequest, attempt: UpstreamAttempt): Promise<void> {
@@ -601,40 +671,47 @@ export class HttpRelay {
 
       const reader = fetchResponse.body.getReader();
       let totalStreamBytes = 0;
-      const debugChunks: Uint8Array[] = [];
+      /** The last two bytes streamed (LF is 10): whether a cut stream left a line or an event open. */
+      let tail: number[] = [10, 10];
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           attempt.refreshTimeout();
           totalStreamBytes += value.byteLength;
-          if (totalStreamBytes <= 500) debugChunks.push(value);
-          this._callbacks.onResponseChunk?.({
+          if (value.byteLength > 0) tail = [...tail, ...value.subarray(-2)].slice(-2);
+          // Waiting here leaves the rest of the stream with the upstream instead of in memory.
+          const delivered = this._callbacks.onResponseChunk?.({
             requestId: request.requestId,
             data: value,
             done: false,
           });
+          if (delivered) {
+            // The upstream is not what is slow here: its deadline starts again once the buyer has the chunk.
+            attempt.pauseTimeout();
+            await delivered;
+            attempt.refreshTimeout();
+          }
         }
       } catch (err) {
         const error = attempt.signal.aborted ? attempt.signal.reason : err;
-        this._callbacks.onResponseChunk?.({
+        await this._deliverClosingChunk({
           requestId: request.requestId,
+          // A stream cut mid-line or mid-event is closed first, so the error frame reads as an event of its own.
           data: new TextEncoder().encode(
-            `event: error\ndata: ${error instanceof Error ? error.message : 'stream error'}\n\n`
+            `${tail[1] !== 10 ? '\n\n' : tail[0] !== 10 ? '\n' : ''}event: error\ndata: ${error instanceof Error ? error.message : 'stream error'}\n\n`
           ),
           done: false,
         });
       }
       if (totalStreamBytes < 300) {
-        const body = new TextDecoder().decode(
-          debugChunks.reduce((a, b) => { const r = new Uint8Array(a.byteLength + b.byteLength); r.set(a); r.set(b, a.byteLength); return r; }, new Uint8Array(0))
-        );
+        // Never the stream itself: a seller's logs hold no part of an answer.
         let model = 'unknown';
         try { model = JSON.parse(new TextDecoder().decode(request.body))?.model ?? 'unknown'; } catch {}
-        console.warn(`[http-relay] Short stream (${totalStreamBytes}b) model="${model}" url=${url}: ${JSON.stringify(body)}`);
+        console.warn(`[http-relay] Short stream (${totalStreamBytes}b) model="${model}" url=${url.split('?')[0]}`);
       }
 
-      this._callbacks.onResponseChunk?.({
+      await this._deliverClosingChunk({
         requestId: request.requestId,
         data: new Uint8Array(0),
         done: true,
@@ -659,6 +736,8 @@ interface UpstreamAttempt {
   signal: AbortSignal;
   /** Activity resets the body timeout without capping a healthy stream's duration. */
   refreshTimeout: () => void;
+  /** Stop the body timeout until the next `refreshTimeout`, while nothing is being read from the upstream. */
+  pauseTimeout: () => void;
   /** Clear the deadline and abort any unread response body before discarding it. */
   dispose: () => void;
   /** The complete response body, once buffered for a non-streaming response. */
@@ -697,8 +776,35 @@ function isStreamingAttempt({ response, headers }: UpstreamAttempt): boolean {
   return contentType.includes('text/event-stream') || (acceptedSSE && !contentType && response.status >= 200 && response.status < 300);
 }
 
+/**
+ * A request's body read as JSON, parsed once for every reader of one relayed request. `release`
+ * drops what was parsed; a read after it (an upstream tried after a failover) parses again.
+ */
+class JsonBody {
+  private _parsed: { value: unknown } | { error: unknown } | undefined;
+
+  constructor(private readonly _request: Pick<SerializedHttpRequest, 'body'>) {}
+
+  /** The parsed body. Throws what `JSON.parse` threw when the body is not JSON. */
+  readonly read = (): unknown => {
+    if (!this._parsed) {
+      try {
+        this._parsed = { value: JSON.parse(new TextDecoder().decode(this._request.body)) as unknown };
+      } catch (error) {
+        this._parsed = { error };
+      }
+    }
+    if ('error' in this._parsed) throw this._parsed.error;
+    return this._parsed.value;
+  };
+
+  release(): void {
+    this._parsed = undefined;
+  }
+}
+
 /** Lowercase service named by a JSON or multipart request body, or '' when there is none. */
-function serviceOfRequest(request: SerializedHttpRequest): string {
+function serviceOfRequest(request: SerializedHttpRequest, jsonBody: JsonBody): string {
   if (request.method === 'GET' || request.method === 'HEAD') return '';
   const contentType = getHeader(request.headers, 'content-type');
   if (/^multipart\/form-data/i.test(contentType.trim())) {
@@ -709,7 +815,7 @@ function serviceOfRequest(request: SerializedHttpRequest): string {
     return (fields.get('service') || fields.get('model') || '').toLowerCase();
   }
   try {
-    const decoded = JSON.parse(new TextDecoder().decode(request.body)) as Record<string, unknown> | null;
+    const decoded = jsonBody.read() as Record<string, unknown> | null;
     const service = decoded?.service ?? decoded?.model;
     return typeof service === 'string' ? service.trim().toLowerCase() : '';
   } catch {

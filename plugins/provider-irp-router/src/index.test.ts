@@ -20,7 +20,7 @@ function upstream(status: number, body: unknown, contentType = 'application/json
 }
 
 describe('IrpRouterProxy', () => {
-  it('forwards the IRP catalog and rank requests unchanged, with the API key and no AntSeed headers', async () => {
+  it('forwards the IRP catalog and rank requests unchanged, with the API key and no Antseed headers', async () => {
     const fetchMock = upstream(200, { object: 'list', data: [{ id: '*', object: 'model' }] });
     const proxy = new IrpRouterProxy({ baseUrl: 'https://router.example/', apiKey: 'secret', fetch: fetchMock });
     const models = await proxy.handleRequest(request('GET', '/v1/routing/models'));

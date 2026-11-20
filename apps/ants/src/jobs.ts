@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { JobView, JobStep } from './api-types.js';
 import type { StepReporter } from './service/steps.js';
+import { poolRevertMessage } from './pool-errors.js';
 
 const JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -134,6 +135,9 @@ export class JobRunner {
 export function describeError(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const candidate = error as Error & { reason?: string; shortMessage?: string; info?: { error?: { message?: string } }; code?: string };
+  // Without the pool's errors in the ABI, ethers reports "unknown custom error"; name it instead.
+  const poolError = poolRevertMessage(error);
+  if (poolError && candidate.code === 'CALL_EXCEPTION') return `The staking pool rejected the transaction: ${poolError}`;
   const revert = candidate.reason ?? candidate.info?.error?.message;
   if (revert && revert !== candidate.message) return `${candidate.shortMessage ?? candidate.message} (${revert})`;
   return candidate.shortMessage ?? candidate.message;

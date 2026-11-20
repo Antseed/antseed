@@ -81,6 +81,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'provide/become-a-provider',
+        'provide/test-locally',
         'provide/config',
         'provide/media',
         'provide/verified-identity',
@@ -146,16 +147,6 @@ const sidebars: SidebarsConfig = {
         'reference/flags',
         'reference/contracts',
         'reference/faq',
-      ],
-    },
-    {
-      type: 'category',
-      label: 'Papers',
-      className: 'sidebar-icon sidebar-icon--papers',
-      collapsible: true,
-      collapsed: true,
-      items: [
-        'lightpaper',
       ],
     },
     {

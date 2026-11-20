@@ -41,11 +41,11 @@ When your node picks a seller that advertises verification, it runs the check be
 
 One more boundary matters. Verification code is security-critical, so your node only ever runs verifiers from a curated list, pinned to an exact version. A seller can advertise anything it likes; code outside your pinned list is never downloaded or run, and nobody upstream can silently change what checks run on your machine.
 
-Details: [Verify a seller's TEE](/docs/verify-tee) · [The protocol specification (AIP-3)](https://github.com/AntSeed/AIPs/blob/main/AIPS/aip-3.md)
+Details: [Verify a seller's TEE](/docs/verify-tee) · [The protocol specification (AIP-3)](https://github.com/Antseed/AIPs/blob/main/AIPS/aip-3.md)
 
 ## What the first verifier proves
 
-The first verifier SDK, [antseed-verifier](https://github.com/AntSeed/antseed/tree/main/packages/antseed-verifier), checks Intel TDX. A passing verdict rests on two proofs, both required:
+The first verifier SDK, [antseed-verifier](https://github.com/Antseed/antseed/tree/main/packages/antseed-verifier), checks Intel TDX. A passing verdict rests on two proofs, both required:
 
 **The hardware is genuine, and the proof is fresh.** Your node sends the seller a random challenge number, used once. The seller's hardware mints a quote bound to that exact number, and your node verifies the quote's signature chain up to Intel's root certificates — confirming a genuine TDX machine, with its security patches at an acceptable level and debugging switched off. A recorded quote from an earlier session, a machine faking it in software, or an enclave borrowed from someone else all fail.
 

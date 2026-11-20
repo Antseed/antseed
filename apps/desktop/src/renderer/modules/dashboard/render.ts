@@ -1,4 +1,5 @@
 import type { RendererUiState, BadgeTone, PeerEntry } from '../../core/state';
+import { connectionHealth } from './connection-health';
 import { notifyUiStateChanged } from '../../core/store';
 import { safeNumber, safeArray, safeString, safeObject } from '../../core/safe';
 import {
@@ -6,7 +7,6 @@ import {
   formatInt,
   formatPercent,
   formatLatency,
-  formatEndpoint,
 } from '../../core/format';
 import { normalizeReputationScore } from '../../core/peer-utils';
 
@@ -186,19 +186,13 @@ export function initDashboardRenderModule({
   populateSettingsForm,
 }: DashboardRenderModuleOptions) {
   function renderOfflineState(message: string): void {
-    uiState.peersMessage = message;
     uiState.configMessage = { text: message, type: 'info' };
     uiState.networkAlert = 'none';
     uiState.dhtNodeCount = 0;
 
-    uiState.ovNodeState = 'offline';
     uiState.ovPeers = '0';
     uiState.ovDhtHealth = 'Down';
-    uiState.ovProxyPort = '-';
     uiState.ovServiceCount = '0';
-    uiState.ovLastScan = 'n/a';
-    uiState.ovPeersCount = '0';
-    uiState.overviewPeers = [];
     uiState.lastPeers = [];
 
     uiState.connectionStatus = message;
@@ -206,7 +200,6 @@ export function initDashboardRenderModule({
     uiState.connectionSources = message;
     uiState.connectionNotes = message;
 
-    uiState.overviewBadge = { tone: 'idle', label: 'Idle' };
     uiState.connectionMeta = { tone: 'idle', label: 'offline' };
 
     notifyUiStateChanged();
@@ -237,12 +230,11 @@ export function initDashboardRenderModule({
     const daemonChannelDetails = safeArray(daemonStateRoot?.activeChannelDetails);
     const daemonDetailsCount = daemonChannelDetails.length;
 
-    const buyerRuntimeState = isModeRunning('connect') ? 'connected' : 'offline';
     const dht = networkHealth(stats, peers.length);
-    // Network stats are owned by the main process and keep the last DHT
-    // snapshot after the buyer runtime stops, so the footer would keep saying
-    // "Healthy" while disconnected. Report the network as offline instead.
-    const ovDhtHealth = buyerRuntimeState === 'offline' ? 'Offline' : dht.label;
+    const connection = connectionHealth(uiState.gatewayStatus, isModeRunning('gateway'), dht.label);
+    const buyerRuntimeState = connection.runtime;
+    const ovDhtHealth = connection.health;
+    const dhtNote = connection.localNetwork ? dht.label : 'not available for a remote gateway';
     const activeChannels = Math.max(
       safeNumber(statusPayload?.activeChannels, 0),
       daemonActiveChannels,
@@ -254,31 +246,16 @@ export function initDashboardRenderModule({
     const runtimeProxyPort = safeNumber(statusPayload?.proxyPort, 0);
     const proxyPort = runtimeProxyPort > 0 ? runtimeProxyPort : configuredProxyPort;
 
-    uiState.networkAlert = deriveNetworkAlert(stats, buyerRuntimeState === 'connected');
+    // A remote gateway's network isn't this machine's to judge.
+    uiState.networkAlert = connection.localNetwork ? deriveNetworkAlert(stats, buyerRuntimeState === 'connected') : 'none';
     uiState.dhtNodeCount = safeNumber(stats.dhtNodeCount, 0);
 
     // Overview stats
-    uiState.ovNodeState = buyerRuntimeState;
     uiState.ovPeers = formatInt(peers.length);
     uiState.ovDhtHealth = ovDhtHealth;
-    uiState.ovProxyPort = proxyPort > 0 ? String(proxyPort) : '-';
     uiState.ovServiceCount = formatInt(serviceCount);
-    uiState.ovLastScan = formatRelativeTime(stats.lastScanAt);
-    uiState.ovPeersCount = formatInt(peers.length);
-    uiState.overviewBadge = {
-      tone: buyerRuntimeState === 'offline' ? 'idle' : dht.tone,
-      label: `${buyerRuntimeState.toUpperCase()} • DHT ${dht.label}`,
-    };
-    uiState.overviewPeers = peers.slice(0, 6);
-
     // Peers
     uiState.lastPeers = peers;
-    if (networkOk) {
-      uiState.peersMessage = `Peer visibility merged from daemon and DHT. Last scan: ${formatRelativeTime(stats.lastScanAt)}`;
-    } else {
-      const msg = results.network.error ?? results.peers.error ?? 'network unavailable';
-      uiState.peersMessage = `Unable to load peers: ${msg}`;
-    }
 
     // Connection
     if (results.status.ok) {
@@ -288,7 +265,7 @@ export function initDashboardRenderModule({
         activeChannels,
         peerCount: peers.length,
         dht: {
-          health: dht.label,
+          health: dhtNote,
           healthy: Boolean(stats.dhtHealthy),
           nodeCount: safeNumber(stats.dhtNodeCount, 0),
           lastScanAt: stats.lastScanAt,
@@ -321,14 +298,17 @@ export function initDashboardRenderModule({
       `Buyer runtime: ${buyerRuntimeState}`,
       `Proxy port: ${proxyPort > 0 ? proxyPort : 'not available'}`,
       `Active channels: ${formatInt(activeChannels)}`,
-      `DHT health: ${dht.label}`,
-      `DHT nodes: ${formatInt(stats.dhtNodeCount)}`,
-      `Lookup success: ${formatPercent(safeNumber(stats.lookupSuccessRate, 0) * 100)}`,
-      `Avg lookup latency: ${formatLatency(stats.averageLookupLatencyMs)}`,
-      `Last scan: ${formatRelativeTime(stats.lastScanAt)}`,
+      `DHT health: ${dhtNote}`,
+      // This machine's network view says nothing about a remote gateway's.
+      ...(connection.localNetwork ? [
+        `DHT nodes: ${formatInt(stats.dhtNodeCount)}`,
+        `Lookup success: ${formatPercent(safeNumber(stats.lookupSuccessRate, 0) * 100)}`,
+        `Avg lookup latency: ${formatLatency(stats.averageLookupLatencyMs)}`,
+        `Last scan: ${formatRelativeTime(stats.lastScanAt)}`,
+      ] : []),
     ];
 
-    if (safeString(stats.healthReason, '').length > 0) {
+    if (connection.localNetwork && safeString(stats.healthReason, '').length > 0) {
       notes.push(`DHT reason: ${stats.healthReason}`);
     }
     if (degradedReasons.length > 0) {
@@ -336,14 +316,14 @@ export function initDashboardRenderModule({
     }
 
     uiState.connectionNotes = notes.join('\n');
-    uiState.connectionMeta = { tone: dht.tone, label: `DHT ${dht.label}` };
+    uiState.connectionMeta = connection.localNetwork
+      ? { tone: dht.tone, label: `DHT ${dht.label}` }
+      : { tone: connection.runtime === 'remote' ? 'active' : 'bad', label: connection.health };
 
     // Config
     if (results.config.ok) {
       const config = (configPayload as Record<string, unknown> | null)?.config ?? configPayload;
       populateSettingsForm(config);
-
-      const pluginCount = safeArray((config as Record<string, unknown> | null)?.plugins).length;
       uiState.configMessage = { text: 'Config loaded from config.json', type: 'info' };
     } else {
       uiState.configMessage = { text: `Unable to load config: ${results.config.error ?? 'unknown error'}`, type: 'error' };

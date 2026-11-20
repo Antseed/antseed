@@ -44,6 +44,14 @@ describe('secure channel', () => {
     expect(initiatorKeys.sendKey.equals(initiatorKeys.recvKey)).toBe(false);
   });
 
+  it('gives both ends the same channel binding, distinct per session', () => {
+    const first = makeSessionPair();
+    const second = makeSessionPair();
+    expect(first.initiatorKeys.channelBinding.equals(first.responderKeys.channelBinding)).toBe(true);
+    expect(first.initiatorKeys.channelBinding).toHaveLength(32);
+    expect(first.initiatorKeys.channelBinding.equals(second.initiatorKeys.channelBinding)).toBe(false);
+  });
+
   it('round-trips frames initiator -> responder and back', () => {
     const { initiatorKeys, responderKeys } = makeSessionPair();
     const a = createTransportCrypto(initiatorKeys);
