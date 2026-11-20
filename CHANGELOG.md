@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Sellers (CLI, `@antseed/node`): `payments.suggestedReserveAmount` sets the first reserve a seller suggests to a buyer with no channel (USDC base units; default `1000000`, the contract's default first-sign cap), kept between `minBudgetPerRequest` and the cap. A seller of small per-request services can suggest less, so a buyer's deposit reaches more sellers.
+
 ### Fixed
 
 - Website: providers can apply for Foundation staking directly from the providers page again.
