@@ -10,6 +10,7 @@ import { getUiStateRef } from '../../../core/store';
 import { studioFileUrl } from '../../../modules/studio/board-view';
 import { openStudioProject, holdSend, useOpenStudioProject } from '../../../modules/studio/open-project';
 import { studioProjectResource, studioProjectsResource } from '../../../modules/studio/resources';
+import { composerContext, type OfferedContext, type TrackSelection } from '../../../modules/studio/track-view';
 import { useActions } from '../../hooks/useActions';
 import { useUiSelector } from '../../hooks/useUiSelector';
 import { useRetainedState } from '../../hooks/useRetainedState';
@@ -148,7 +149,10 @@ function StudioProject({ id, onClose, onSelectView }: { id: string; onClose: () 
   const resource = useMemo(() => studioProjectResource(id), [id]);
   const project = useCachedResource(resource);
   const [chatReady, setChatReady] = useState(false);
-  const [context, setContext] = useState<ChatContext | null>(null);
+  const [offered, setOffered] = useState<OfferedContext<ChatContext>>({ context: null, selection: null });
+  // The selection whose chip the user removed: it stays off until they select again.
+  const [dismissed, setDismissed] = useState<TrackSelection | null>(null);
+  const context = composerContext(offered, dismissed);
   const [converting, setConverting] = useState(false);
   const [convertError, setConvertError] = useState('');
   const sending = useUiSelector(state => state.chatSending || state.chatInputDisabled || !state.chatSelectedModelId);
@@ -185,7 +189,7 @@ function StudioProject({ id, onClose, onSelectView }: { id: string; onClose: () 
                 detail={{ ...detail, track: detail.track }}
                 canSend={chatReady && !sending}
                 beginSend={() => holdSend(projectChat, (text) => { void actions.sendMessage(text); })}
-                onContext={setContext}
+                onContext={(next, selection) => setOffered({ context: next, selection })}
                 onChanged={() => { void resource.reload(); }}
               />
             ) : (
@@ -222,7 +226,7 @@ function StudioProject({ id, onClose, onSelectView }: { id: string; onClose: () 
           )}
         </div>
         <aside className={styles.chatPane} aria-label="Project agent">
-          {chatReady && detail ? <ChatView embedded emptyHint={AGENT_HINT} context={context} onClearContext={() => setContext(null)} onSelectView={onSelectView} /> : null}
+          {chatReady && detail ? <ChatView embedded emptyHint={AGENT_HINT} context={context} onClearContext={() => setDismissed(offered.selection)} onSelectView={onSelectView} /> : null}
         </aside>
       </div>
     </VprPage>

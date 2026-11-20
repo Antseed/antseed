@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseStudioTrack } from '../../../shared/studio-track.js';
-import { clipRequestMessage, filmClipKey, filmIndex, filmPlayers, formatTimecode, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
+import { clipRequestMessage, composerContext, filmClipKey, filmIndex, filmPlayers, formatTimecode, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
 
 const track = parseStudioTrack({
   aspectRatio: '16:9',
@@ -75,6 +75,13 @@ it('shows a clip request from Update as one chip naming its clips', () => {
   expect(splitStudioMessage(asked)?.label).toMatch(/^Make Clip 1→2$/);
 });
 
+it('names the last clip in a clip request chip, alone or with others', () => {
+  const ending = parseStudioTrack({ anchors: [...track.anchors, { id: 'a4', image: 'stills/a4.png', clip: { id: 'c4' } }].map((anchor, index) => index === 2 ? { ...anchor, clip: { id: 'c3', then: 'cut' } } : anchor) });
+  const last = ending.anchors[3]!.id;
+  expect(splitStudioMessage(clipRequestMessage(ending, [last]))?.label).toBe('Make Clip after 4');
+  expect(splitStudioMessage(clipRequestMessage(ending, [ending.anchors[0]!.id, last]))?.label).toBe('Make 2 clips · 1→2, after 4');
+});
+
 it('follows the clip playing when the film changes under it, and stops when that clip leaves', () => {
   const film = parseStudioTrack({ anchors: [
     { id: 'a1', clip: { id: 'c1', then: 'cut', use: 'clips/one.mp4', versions: [{ file: 'clips/one.mp4' }] } },
@@ -113,4 +120,15 @@ it('keeps the clip playing in its own player when a shot is moved during playbac
   // The last clip has nothing after it; a clip gone from the film leaves both players empty.
   expect(filmPlayers([two, one], playing)).toEqual({ index: 1, players: [one, null] });
   expect(filmPlayers([two, three], playing)).toEqual({ index: null, players: [null, null] });
+});
+
+it('keeps a removed chip off when a poll hands the editor the same selection with a fresh track, until the user selects again', () => {
+  const selection = { anchor: 'a1', clip: false };
+  const offer = (from: typeof track, picked: typeof selection) => ({ context: selectionContext(from, picked), selection: picked });
+  expect(composerContext(offer(track, selection), null)?.label).toBe('Shot 1 · Harbor at dusk');
+  // The user removes the chip; the next poll reads the same track afresh, so the editor offers it again.
+  const dismissed = selection;
+  expect(composerContext(offer(parseStudioTrack(JSON.parse(JSON.stringify(track))), selection), dismissed)).toBeNull();
+  // Selecting the same shot again is a new selection, and its chip comes back.
+  expect(composerContext(offer(track, { anchor: 'a1', clip: false }), dismissed)?.label).toBe('Shot 1 · Harbor at dusk');
 });

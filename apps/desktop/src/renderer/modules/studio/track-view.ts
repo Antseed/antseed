@@ -93,6 +93,18 @@ export function clipRequestMessage(track: StudioTrack, anchorIds: string[]): str
 
 export type TrackSelection = { anchor: string; clip: boolean };
 
+/** What the editor offers the chat composer, and the selection it is for. */
+export type OfferedContext<T> = { context: T | null; selection: TrackSelection | null };
+
+/**
+ * The chip the composer shows. One the user removed stays off for that
+ * selection: a poll hands the editor a fresh track but the same selection, so
+ * it brings nothing back. Selecting a shot or a clip again does.
+ */
+export function composerContext<T>(offered: OfferedContext<T>, dismissed: TrackSelection | null): T | null {
+  return offered.selection !== null && offered.selection === dismissed ? null : offered.context;
+}
+
 /**
  * The chip in the chat composer: a short label for the user, and a line for
  * the agent with the ids, files and moment it needs to find what was meant.
@@ -179,7 +191,8 @@ export function splitStudioContext(message: string): { label: string; context: s
  */
 export function splitClipRequest(message: string): { label: string; context: string; rest: string } | null {
   if (!/^Please make (?:this clip|these \d+ clips) for the track\.\n/.test(message)) return null;
-  const clips = [...message.matchAll(/^Clip (\S+) \(clip [^)]+\)$/gm)].map((match) => match[1]!);
+  // Every name clipName gives: "Clip 1→2", and "Clip after 3" for the last clip.
+  const clips = [...message.matchAll(/^Clip (after \d+|\S+) \(clip [^)]+\)$/gm)].map((match) => match[1]!);
   if (clips.length === 0) return null;
   const label = clips.length === 1 ? `Make Clip ${clips[0]!}` : `Make ${String(clips.length)} clips · ${clips.join(', ')}`;
   return { label, context: message, rest: '' };

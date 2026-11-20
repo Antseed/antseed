@@ -54,8 +54,8 @@ type Props = {
    * project or chat by then.
    */
   beginSend: () => HeldSend;
-  /** The selection, for the chip in the chat composer. */
-  onContext: (context: ChatContext | null) => void;
+  /** The selection, for the chip in the chat composer, and the selection it is for. */
+  onContext: (context: ChatContext | null, selection: TrackSelection | null) => void;
   onChanged: () => void;
 };
 
@@ -86,12 +86,12 @@ export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }
   // What is selected travels with the next chat message, as a chip.
   useEffect(() => {
     if (!selection || !selected) {
-      onContext(null);
+      onContext(null, null);
       return;
     }
     const context = selectionContext(track, selection, time);
     const thumbnail = selected.image ? url(selected.image) : null;
-    onContext(context ? { ...context, thumbnail } : null);
+    onContext(context ? { ...context, thumbnail } : null, selection);
   }, [selection, track, time]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function select(next: Selection) {
