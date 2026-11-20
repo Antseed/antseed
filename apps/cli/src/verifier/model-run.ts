@@ -3,6 +3,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
+  KBF_COVERAGE_RULE,
   KBF_LOW_COVERAGE_RETRIES,
   KBF_PROMPT_VARIANT_IDS,
   KBF_OPTIONAL_SAMPLING_FIELDS,
@@ -390,6 +391,8 @@ export interface ModelVerificationTargetResult {
    * `verifier.closeCallExtensions = 0`): those keep the single-look rule.
    */
   decisionRule?: 'kbf-extension-v1' | 'kbf-extension-v2'
+  /** The coverage rule this set's look was decided by, as its evidence names it; absent on older sets. */
+  coverageRule?: 'kbf-coverage-v1'
   /** This set's own KBF statistics, as in its evidence file. */
   stats?: FingerprintStats
   /** False when a successful batch lacked verified ResponseAuth (the set's verdict is then UNDETERMINED). */
@@ -1154,7 +1157,8 @@ export async function verifyModelTarget(input: {
   }
   const answers = input.reference.probes.map((probe) => answersByProbeId.get(probe.id) ?? null)
   const matchVector = input.reference.probes.map((probe) => matchesByProbeId.get(probe.id) ?? null)
-  const fragment = verifyKbf(input.reference, { answers, matchVector }, KBF_AUDIT_VERIFY_OPTIONS)
+  // New looks are decided by the current coverage rule, named in the evidence so every reader judges them by it.
+  const fragment = verifyKbf(input.reference, { answers, matchVector }, { ...KBF_AUDIT_VERIFY_OPTIONS, coverageRule: KBF_COVERAGE_RULE })
   if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'verification returned UNKNOWN')
 
   const completedAt = Date.now()
@@ -1201,6 +1205,7 @@ export async function verifyModelTarget(input: {
       outcomeReason: questionsOutcome,
       // The questions were not finished: the seller was skipped at this batch (stored above, not succeeded).
       ...(skip ? { unfinished: { batchIndex: skip.exchange.batchIndex, reason: skip.reason } } : {}),
+      coverageRule: KBF_COVERAGE_RULE.id,
       cost,
       cumulativeCost,
     },
@@ -1238,6 +1243,7 @@ export async function verifyModelTarget(input: {
     evidenceHash: written.evidenceHash,
     firstRequestAt: earliestAuditorTime([evidence]),
     stats: fragment.stats,
+    coverageRule: KBF_COVERAGE_RULE.id,
     responseAuthVerified: authenticated,
     ...(precheck ? { tokenizerPrecheck: summarizeTokenizerPrecheck(precheck) } : {}),
     ...(outputCap ? { outputCap: summarizeOutputCap(outputCap) } : {}),

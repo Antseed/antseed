@@ -145,7 +145,7 @@ async function runTarget(
     | 'malformed-first-batch' | 'empty-responses' | 'content-filter' | 'sse' | 'transport-failure' | 'hanging'
     | 'rate-limited' | 'semantic-unavailable' | 'blank-length'
     | 'persistent-blank-length' | 'checkpoint-abort' | 'sampling-rejected' | 'thinking-rejected'
-    | 'sparse-then-better' | 'sparse-best-first' = 'valid',
+    | 'sparse-then-better' | 'sparse-best-first' | 'wrong-then-down' = 'valid',
   transientFailures = 0,
   authMode: 'verified' | 'missing' | 'unverified' | 'wrong-request' | 'wrong-seller' | 'wrong-service' = 'verified',
   includeCost = true,
@@ -226,6 +226,8 @@ async function runTarget(
       return new Response('temporarily unavailable', { status: 502 })
     }
     if (answerMode === 'transport-failure') return new Response('unavailable', { status: 502 })
+    // Wrong answers, then every batch past 60% of the questions fails whole, as a seller whose larger batches never answer.
+    if (answerMode === 'wrong-then-down' && firstProbe > count * 0.6) return new Response('unavailable', { status: 502 })
     const values = [...prompt.matchAll(/test probe (\d+) value is ___/g)].map((match) => Number(match[1]))
     // Answers kept per attempt of the batch holding probe 1 (the rest are dropped).
     const sparseKeep = firstProbe === 1 && (answerMode === 'sparse-then-better' || answerMode === 'sparse-best-first')
@@ -237,7 +239,7 @@ async function runTarget(
         return `(${index + 1}) ${count + 100}`
       }
       // In range but wrong: an out-of-range answer would be unscored instead.
-      if (answerMode === 'all-wrong') return `(${index + 1}) ${(value % count) + 1}`
+      if (answerMode === 'all-wrong' || answerMode === 'wrong-then-down') return `(${index + 1}) ${(value % count) + 1}`
       if (answerMode === 'partial-malformed' && index > 0) return `(${index + 1}) unknown`
       return `(${index + 1}) ${value}`
     }).join('\n')
@@ -1170,6 +1172,19 @@ test('fully parsed wrong answers are DIFF', async () => {
   assert.equal(run.evidence.result.stats.targetHamming, 100)
   assert.equal(run.evidence.result.stats.targetTotal, 100)
   assert.equal(run.result.outcomeReason, null)
+})
+
+test('kbf-coverage-v1: a seller whose answers are far off and whose other batches fail is DIFF under 0.8 coverage, and its evidence names the rule', async () => {
+  const run = await runTarget(100, 'wrong-then-down')
+  assert.equal(run.result.parsedProbeCount, 60)
+  assert.equal(run.evidence.result.stats.targetTotal, 60)
+  assert.equal(run.evidence.result.stats.targetHamming, 60)
+  assert.equal(run.result.status, 'DIFF')
+  assert.equal(run.evidence.result.verdict, 'DIFF')
+  assert.equal(run.evidence.result.coverageRule, 'kbf-coverage-v1')
+  assert.equal(run.result.coverageRule, 'kbf-coverage-v1')
+  assert.match(run.evidence.result.verdictReason ?? '', /over 60 scored answers \(kbf-coverage-v1\), though coverage 0\.6000 is below 0\.8/)
+  assert.deepEqual(run.evidence.exchanges.map((exchange) => exchange.status), [...Array(6).fill('succeeded'), ...Array(4).fill('failed')])
 })
 
 test('selective omissions are unscored, and a batch missing most answers is re-asked', async () => {

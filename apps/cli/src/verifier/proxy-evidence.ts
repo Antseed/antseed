@@ -5,6 +5,7 @@ import {
   canonicalJsonStringify,
   type FingerprintStats,
   type FingerprintVerdict,
+  type KbfCoverageRule,
   type KbfProbe,
   type KbfReferenceCalibrationV1,
   type MatchVector,
@@ -263,6 +264,12 @@ export interface ProxyAuditEvidenceV1 {
      * A reader takes it only when that batch is stored and did not succeed; the questions are then undecided.
      */
     unfinished?: { batchIndex: number; reason: string }
+    /**
+     * The coverage rule this set's look was decided by (`kbf-coverage-v1`: under the coverage a DIFF needs, still DIFF
+     * at p ≤ 1e-6 over at least 50 scored answers). Absent on sets from before it: they keep the plain coverage rule.
+     * Every reader judges the set by the rule it names, never by a newer one.
+     */
+    coverageRule?: KbfCoverageRule['id']
     cost: AuditCostSummaryV1
     cumulativeCost?: AuditCostSummaryV1
   }

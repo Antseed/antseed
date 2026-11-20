@@ -39,7 +39,7 @@ import {
   type EpochQuestionSetV1,
   type EpochSetCalibrationV1,
 } from './probe-bank.js'
-import { auditDecision, closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
+import { auditDecision, closeCallRule, coverageRuleOf, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { AUDIT_CHECK_IDS, betweenChecks, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
@@ -1281,9 +1281,12 @@ function recomputedFirstLook(evidence: ProxyAuditEvidenceV1): { verdict: ModelAu
   } catch {
     return { verdict: 'UNDETERMINED', stats: null }
   }
+  // The set is judged by the coverage rule it names, never by a newer one; a set from before it names none.
+  const coverageRule = evidence.result.coverageRule
   const computed = computeKbfVerdict({
     selfHamming: baseline.hamming, selfTotal: baseline.total, targetMatchVector: matchVector,
     minCoverage: KBF_AUDIT_VERIFY_OPTIONS.minCoverage, minDiffCoverage: KBF_AUDIT_VERIFY_OPTIONS.minDiffCoverage,
+    ...(coverageRule !== undefined ? { coverageRule: coverageRuleOf(coverageRule) } : {}),
   })
   const authenticated = evidence.exchanges.every((exchange) => exchange.status !== 'succeeded' || exchange.responseAuth.status === 'verified')
   const stats: FingerprintStats = { ...computed.stats, selfCoverage: baseline.coverage }
@@ -1342,6 +1345,9 @@ export function adjudicateQuestions(input: {
   }
   if (extraSets.length > 0) {
     if (!rule || extraSets.some(({ record }) => record.rule !== rule.id)) throw new Error('extension without the close-call rule')
+    if (extraSets.some(({ evidence: set }) => set.result.coverageRule !== evidence.result.coverageRule)) {
+      throw new Error('an extra set decided by another coverage rule than its first set')
+    }
     if (extraSets.length > rule.maxExtensions) throw new Error(`${rule.id} allows at most ${rule.maxExtensions} extra set(s)`)
     if (!firstLookExtends) {
       throw new Error(unverified(evidence) ? 'extension of a first check without verified ResponseAuth' : 'extension of a first check that was not a close call')
@@ -1359,6 +1365,7 @@ export function adjudicateQuestions(input: {
         { stats: firstLook.stats!, probeCount: evidence.reference.probes.length },
         extraSets.slice(0, index + 1).map(({ evidence: e }, at) => ({ stats: looks[at]!.stats!, probeCount: e.reference.probes.length })),
         rule,
+        evidence.result.coverageRule,
       )
       if (pooled.verdict === 'UNKNOWN') throw new Error(`pooled verdict is UNKNOWN: ${pooled.verdictReason}`)
       const recordedPooled = record.pooled

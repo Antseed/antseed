@@ -166,10 +166,13 @@ export function combineExtension(
     { stats: extension.stats, probeCount: extension.probeCount },
   ]
   if (extraSets.some((set) => !set.stats)) throw new Error('an earlier extra set has no statistics')
+  // Every set of a close call is decided by one coverage rule: the first set's.
+  if (extension.coverageRule !== first.coverageRule) throw new Error('an extra set decided by another coverage rule than its first set')
   const pooled = pooledCloseCallVerdict(
     { stats: first.stats, probeCount: first.probeCount },
     extraSets as Array<{ stats: NonNullable<ModelVerificationTargetResult['stats']>; probeCount: number }>,
     rule,
+    first.coverageRule,
   )
   if (pooled.verdict === 'UNKNOWN') throw new Error(pooled.verdictReason ?? 'pooled verdict is UNKNOWN')
   // A set whose successful batches lacked verified ResponseAuth cannot count towards a verdict, and

@@ -18,7 +18,7 @@ Published, Node only, no dependencies, no network or storage.
 | Audits use `KBF_AUDIT_VERIFY_OPTIONS`, not `verifyKbf`'s defaults. | review only |
 | Stored audits find their close-call rule by id, so a used rule is never edited. | review only |
 | A missing, non-finite or out-of-range answer is null (unscored), not a mismatch. A match vector holding anything but 1, 0 or null gives UNKNOWN. | `tests/scoring.test.ts`, `tests/verdict.test.ts` |
-| A DIFF needs `minDiffCoverage`; a SAME needs only `minCoverage`. Below `minCoverage` the verdict is UNDETERMINED. | `tests/verdict.test.ts` |
+| A DIFF needs `minDiffCoverage`; a SAME needs only `minCoverage`. Below `minCoverage` the verdict is UNDETERMINED. The one exception is a `KbfCoverageRule` (`kbf-coverage-v1`): under `minDiffCoverage` a look is DIFF at its strict p over enough scored answers. A stored look names its coverage rule, and a used rule is never edited. | `tests/verdict.test.ts`, `tests/extension.test.ts` |
 | A reference that is `imported` without `trustImported`, under-powered, or disagrees with its own data or `referenceId` is refused. | `tests/reference.test.ts` |
 | Worst-case false-DIFF over all looks of a close-call rule stays under the single-look 5%. | `tests/extension.test.ts` |
 

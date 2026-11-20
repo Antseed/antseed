@@ -7,6 +7,7 @@ import {
   KBF_EXTENSION_RULE_V1,
   classifyKbfFirstLook,
   computeKbfPooledVerdict,
+  kbfCoverageRuleById,
   kbfExtensionRuleById,
   type FingerprintStats,
   type KbfExtensionRule,
@@ -149,6 +150,8 @@ export function pooledCloseCallVerdict(
   first: { stats: FingerprintStats; probeCount: number },
   extensions: ReadonlyArray<{ stats: FingerprintStats; probeCount: number }>,
   rule: KbfExtensionRule = KBF_EXTENSION_RULE,
+  /** The coverage rule the first set names (`coverageRule`); absent on older sets, which keep the plain coverage rule. */
+  coverageRule?: string,
 ): KbfPooledVerdictResult {
   return computeKbfPooledVerdict({
     first,
@@ -156,7 +159,15 @@ export function pooledCloseCallVerdict(
     minCoverage: KBF_AUDIT_VERIFY_OPTIONS.minCoverage,
     minDiffCoverage: KBF_AUDIT_VERIFY_OPTIONS.minDiffCoverage,
     rule,
+    ...(coverageRule !== undefined ? { coverageRule: coverageRuleOf(coverageRule) } : {}),
   })
+}
+
+/** The coverage rule a set names; throws on one this verifier does not know, which it must never judge by another. */
+export function coverageRuleOf(id: string): NonNullable<ReturnType<typeof kbfCoverageRuleById>> {
+  const rule = kbfCoverageRuleById(id)
+  if (!rule) throw new Error(`unknown coverage rule ${JSON.stringify(id)}`)
+  return rule
 }
 
 /**

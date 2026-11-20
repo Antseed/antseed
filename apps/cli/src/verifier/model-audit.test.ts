@@ -830,6 +830,50 @@ function answeredEvidence(referenceId: string, probeIds: readonly string[], wron
   } as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
 }
 
+/**
+ * A set of 100 questions: one batch of 60 answered, 30 of them wrong; one batch of 40 that failed whole. No self-test
+ * error. Coverage 0.6: under the 0.8 a plain DIFF needs, decisive at kbf-coverage-v1's bar.
+ */
+function partlyAnsweredEvidence(referenceId: string, label: string, coverageRule?: string) {
+  const ids = Array.from({ length: 100 }, (_, index) => `${referenceId}-p${index}`)
+  const answered = ids.slice(0, 60), lost = ids.slice(60)
+  const matches = answered.map((_, index) => (index < 30 ? 0 : 1) as 0 | 1)
+  const stats = computeKbfVerdict({
+    selfHamming: 0, selfTotal: 100, targetMatchVector: [...matches, ...lost.map(() => null)],
+    minCoverage: KBF_AUDIT_VERIFY_OPTIONS.minCoverage, minDiffCoverage: KBF_AUDIT_VERIFY_OPTIONS.minDiffCoverage,
+  }).stats
+  return {
+    target: { peerId: 'aa', service: 'm', agentId: '1' },
+    tests: 'all-tests-v1',
+    reference: {
+      referenceId, probes: ids.map((id) => ({ id })),
+      selfTest: { outcomes: ids.map((id) => ({ probeId: id, answers: [1], matches: [1] })) },
+    },
+    exchanges: [
+      { batchIndex: 0, status: 'succeeded', probeIds: answered, answers: answered.map(() => 1), matches, responseAuth: { status: 'verified' } },
+      { batchIndex: 1, status: 'failed', probeIds: lost, answers: lost.map(() => null), matches: lost.map(() => null), responseAuth: { status: 'missing' } },
+    ],
+    result: { verdict: label, parsedProbeCount: 60, stats: { ...stats, selfCoverage: 1 }, ...(coverageRule !== undefined ? { coverageRule } : {}) },
+  } as unknown as Parameters<typeof adjudicateQuestions>[0]['evidence']
+}
+
+test('a stored look is judged again by the coverage rule it names: submit and the confirmer keep an old look\'s judgment', () => {
+  // `adjudicateQuestions` is what submit's evidence check and the confirmer's read of published evidence both call.
+  const judge = (evidence: ReturnType<typeof partlyAnsweredEvidence>) => adjudicateQuestions({ evidence, extraSets: [], decisionRule: 'kbf-extension-v2', closed: false })
+  // A look made before the coverage rule names none: UNDETERMINED as it was stored, and never re-read as DIFF.
+  assert.deepEqual(judge(partlyAnsweredEvidence('sha256:a', 'UNDETERMINED')), { verdict: 'UNDETERMINED', pending: false })
+  assert.throws(() => judge(partlyAnsweredEvidence('sha256:a', 'DIFF')), /the questions' first look says DIFF, but its stored answers give UNDETERMINED/)
+  // The same answers under kbf-coverage-v1: DIFF, and an UNDETERMINED label for them is refused as a withheld look.
+  assert.deepEqual(judge(partlyAnsweredEvidence('sha256:a', 'DIFF', 'kbf-coverage-v1')), { verdict: 'DIFF', pending: false })
+  assert.throws(() => judge(partlyAnsweredEvidence('sha256:a', 'UNDETERMINED', 'kbf-coverage-v1')), /the questions' first look says UNDETERMINED, but its stored answers give DIFF/)
+  // A rule this verifier does not know is never replaced by one it does.
+  assert.throws(() => judge(partlyAnsweredEvidence('sha256:a', 'DIFF', 'kbf-coverage-v9')), /unknown coverage rule "kbf-coverage-v9"/)
+  // Every set of a close call is decided by its first set's coverage rule.
+  const extra = [{ record: { rule: 'kbf-extension-v2', pooled: { verdict: 'DIFF' } } as never, evidence: partlyAnsweredEvidence('sha256:b', 'UNDETERMINED') }]
+  assert.throws(() => adjudicateQuestions({ evidence: partlyAnsweredEvidence('sha256:a', 'DIFF', 'kbf-coverage-v1'), extraSets: extra, decisionRule: 'kbf-extension-v2', closed: false }),
+    /an extra set decided by another coverage rule than its first set/)
+})
+
 test('a close call is checked against the close-call rule', () => {
   const ids = Array.from({ length: 10 }, (_, index) => `p${index}`)
   // Every answer right: a clear SAME, so it must not have been extended.

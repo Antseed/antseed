@@ -1,5 +1,6 @@
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
+  KBF_COVERAGE_RULE,
   KBF_CALIBRATION_METHOD,
   KBF_CALIBRATION_PASSES,
   KBF_DEFAULT_PROMPT_VARIANT_ID,
@@ -753,5 +754,20 @@ function sampleVerdicts(): unknown {
       )
       return { firstMismatches, extraMismatches, verdict: pooled.verdict, extend: pooled.extend }
     })),
+    // Under the coverage a DIFF needs (60 of 100 scored, or 45), with and without the coverage rule new looks name, and a
+    // pooled look of two such sets.
+    coverageRule: KBF_COVERAGE_RULE,
+    coverageLooks: [[60, 10], [60, 25], [60, 40], [45, 40]].map(([scored, mismatches]) => {
+      const vector = Array.from({ length: 100 }, (_, index) => (index < mismatches! ? 0 : index < scored! ? 1 : null))
+      const look = (coverageRule?: typeof KBF_COVERAGE_RULE) => computeKbfVerdict({
+        selfHamming: SAMPLE_SELF_HAMMING, selfTotal: SAMPLE_PROBES, targetMatchVector: vector, ...KBF_AUDIT_VERIFY_OPTIONS, ...(coverageRule ? { coverageRule } : {}),
+      }).verdict
+      return { scored, mismatches, plain: look(), byRule: look(KBF_COVERAGE_RULE) }
+    }),
+    coveragePooled: [undefined, KBF_COVERAGE_RULE.id].map((coverageRule) => pooledCloseCallVerdict(
+      { stats: { ...sampleLook(SAMPLE_PROBES, 12).stats, targetHamming: 12, targetTotal: 75 }, probeCount: SAMPLE_PROBES },
+      [{ stats: { ...sampleLook(SAMPLE_PROBES, 30).stats, targetHamming: 30, targetTotal: 75 }, probeCount: SAMPLE_PROBES }],
+      closeCallRuleForExtensions(2) ?? undefined, coverageRule,
+    ).verdict),
   }
 }
