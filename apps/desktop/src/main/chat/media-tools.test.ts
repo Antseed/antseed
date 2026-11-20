@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { WORKSPACE_APPS_DIR } from '../paths.js';
 import {
+  BUNDLED_CHAT_SKILL_NAMES,
+  chatSkillNames,
   createChatImagePathTool,
   createChatVideoPathTool,
   createShowMediaTool,
@@ -87,9 +90,9 @@ test('get_chat_video_path returns an uploaded MP4 path and refuses images', asyn
   });
 });
 
-test('resolveBundledChatSkillPaths returns the bundled image, video and decision skills', async () => {
+test('resolveBundledChatSkillPaths returns the bundled image, video, decision and studio skills', async () => {
   await withTempDir(async (dir) => {
-    for (const name of ['antseed-images', 'antseed-videos', 'antseed-decisions']) {
+    for (const name of ['antseed-images', 'antseed-videos', 'antseed-decisions', 'antseed-studio']) {
       await mkdir(path.join(dir, name), { recursive: true });
       await writeFile(path.join(dir, name, 'SKILL.md'), '---\nname: test\ndescription: test\n---\n');
     }
@@ -97,6 +100,20 @@ test('resolveBundledChatSkillPaths returns the bundled image, video and decision
       path.join(dir, 'antseed-images'),
       path.join(dir, 'antseed-videos'),
       path.join(dir, 'antseed-decisions'),
+      path.join(dir, 'antseed-studio'),
     ]);
   });
+});
+
+test('the installed app ships every bundled chat skill', async () => {
+  // Without the copy, resolveBundledChatSkillPaths drops the skill silently in an installed app.
+  const config = await readFile(path.join(WORKSPACE_APPS_DIR, 'desktop', 'electron-builder.yml'), 'utf8');
+  for (const name of BUNDLED_CHAT_SKILL_NAMES) {
+    assert.match(config, new RegExp(`- from: \\.\\./\\.\\./skills/${name}\\n\\s+to: skills/${name}\\n`), `${name} is not in extraResources`);
+  }
+});
+
+test('chats load the Studio skill only while Studio is on', () => {
+  assert.deepEqual(chatSkillNames(false), ['antseed-images', 'antseed-videos', 'antseed-decisions']);
+  assert.deepEqual(chatSkillNames(true), [...BUNDLED_CHAT_SKILL_NAMES]);
 });

@@ -156,8 +156,15 @@ function formatVoiceElapsed(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+/** What the message is about, shown as a chip in the composer and sent ahead of the text. */
+export type ChatContext = { label: string; text: string; thumbnail?: string | null };
+
 type ChatViewProps = {
+  context?: ChatContext | null;
+  onClearContext?: () => void;
   onSelectView?: (view: import('../../types').ViewName) => void;
+  embedded?: boolean;
+  emptyHint?: string;
 };
 
 type PendingDraft = {
@@ -216,7 +223,7 @@ const chatViewCache: ChatViewCache = {
   hasNewActivityWhileScrolledUp: false,
 };
 
-export function ChatView({ onSelectView }: ChatViewProps) {
+export function ChatView({ onSelectView, embedded = false, emptyHint, context = null, onClearContext }: ChatViewProps) {
   const privateMode = usePrivateMode();
   const progress = useHomeProgress();
   // Counts the user's switches, so a dismissed privacy note can flash back.
@@ -417,6 +424,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   }, [closeMessageSearch, selectNextSearchResult, selectPreviousSearchResult]);
 
   useEffect(() => {
+    if (embedded) return undefined;
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
         event.preventDefault();
@@ -430,7 +438,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [closeMessageSearch, messageSearchOpen, openMessageSearch]);
+  }, [closeMessageSearch, embedded, messageSearchOpen, openMessageSearch]);
 
   // A new note lands below the last message: bring it into view.
   const noteKey = [snap.chatError, snap.chatFundsNotice?.message, attachmentError, voiceError].filter(Boolean).join('|');
@@ -622,8 +630,11 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   }, []);
 
   const handleSend = useCallback(() => {
-    const text = inputValue.trim();
-    if (!text && attachedFiles.length === 0) return;
+    const typed = inputValue.trim();
+    if (!typed && attachedFiles.length === 0) return;
+    // The selection travels with every message while its chip is shown.
+    // Once only, even when the typed text already starts with the selection (pasted from an earlier message).
+    const text = context && !imageMode && !typed.startsWith(context.text) ? `${context.text}\n${typed}` : typed;
     // A send during a privacy switch is held until the switch lands.
     if (noModelAvailable) return;
     // If the current turn is still streaming, park the draft as a pending
@@ -654,7 +665,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
       actions.sendMessage(text, filesToSend, options);
     }
     scrollChatToBottom('smooth');
-  }, [inputValue, attachedFiles, actions, snap.chatInputDisabled, snap.chatActiveConversation, resetComposer, noModelAvailable, imageMode, privateMode]);
+  }, [inputValue, attachedFiles, actions, snap.chatInputDisabled, snap.chatActiveConversation, resetComposer, noModelAvailable, imageMode, privateMode, context]);
 
   const handleRemovePending = useCallback((id: string) => {
     setPendingQueue((prev) => prev.filter((item) => item.id !== id));
@@ -933,20 +944,29 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   const chatSendDisabled = chatComposerDisabled
     || (imageMode ? snap.chatSendDisabled || inputValue.trim().length === 0 : snap.chatSendDisabled && attachedFiles.length === 0);
 
-  const workspacePath = snap.chatWorkspacePath || snap.chatWorkspaceDefaultPath;
+  const studioFolder = useMemo(() => {
+    const open = (snap.chatConversations as Array<{ id?: string; studioProjectId?: string; workspacePath?: string }>)
+      .find((conversation) => conversation.id === snap.chatActiveConversation);
+    return open?.studioProjectId ? open.workspacePath ?? null : null;
+  }, [snap.chatConversations, snap.chatActiveConversation]);
+  const workspacePath = studioFolder ?? (snap.chatWorkspacePath || snap.chatWorkspaceDefaultPath);
   const workspaceLabel = getPathEnding(workspacePath);
+  const Root = embedded ? 'div' : 'section';
 
   // Compute widths for split view
-  const chatStyle = previewOpen
+  const showPreview = previewOpen && !embedded;
+  // The Studio project chat has no room for the browser pane, so its messages offer no Preview button for one.
+  const openPreview = embedded ? undefined : handleOpenPreview;
+  const chatStyle = showPreview
     ? { flex: `0 0 ${(1 - previewFraction) * 100}%`, minWidth: CHAT_MIN_WIDTH }
     : undefined;
-  const previewStyle = previewOpen
+  const previewStyle = showPreview
     ? { flex: `0 0 ${previewFraction * 100}%`, minWidth: PREVIEW_MIN_WIDTH }
     : undefined;
 
   return (
-    <section className={`view view-chat`} role="tabpanel">
-      <div className={styles.pageHeader} data-glide-fade>
+    <Root className={embedded ? styles.chatEmbedded : 'view view-chat'} {...(embedded ? {} : { role: 'tabpanel' })}>
+      {embedded ? null : <div className={styles.pageHeader} data-glide-fade>
         <div className={styles.pageHeaderLeft}>
           {showWelcome ? null : <PrivacyToggle control={privacyControl} size="small" />}
         </div>
@@ -1024,16 +1044,16 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             </>}
             <VprHeaderActions onSelectView={onSelectView} />
           </div>
-      </div>
+      </div>}
 
-      {progress.firstPromptAt !== null && !progress.chatNoteSeen && (
+      {!embedded && progress.firstPromptAt !== null && !progress.chatNoteSeen && (
         <div className={styles.chatHandoff} role="status">
           <span>Your chats live here now. Home keeps your setup, usage and balance.</span>
           <button type="button" className={styles.chatHandoffDismiss} onClick={homeProgress.markChatNoteSeen}>Got it</button>
         </div>
       )}
 
-      {showWelcome && (
+      {showWelcome && !embedded && (
         <button
           className={styles.chatExternalHint}
           onClick={() => onSelectView?.('tools')}
@@ -1045,7 +1065,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
 
       <div className={styles.chatContainer} ref={containerRef}>
         <div
-          className={`${styles.chatMain}${showWelcome ? ` ${styles.chatMainArt}` : ''}`}
+          className={`${styles.chatMain}${showWelcome && !embedded ? ` ${styles.chatMainArt}` : ''}`}
           style={chatStyle}
           onDragOver={handleFileDragOver}
           onDragLeave={handleFileDragLeave}
@@ -1061,7 +1081,13 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             </div>
           )}
           <div className={styles.chatMessages} ref={scrollRef} data-chat-scroll data-glide-fade>
-            {showWelcome ? (
+            {showWelcome && embedded ? (
+              <div className={styles.chatWelcome}>
+                <div className={styles.chatWelcomeSubtitle}>
+                  {snap.chatModelsError && !snap.chatSelectedModelId ? snap.chatModelsError : emptyHint}
+                </div>
+              </div>
+            ) : showWelcome ? (
               <div className={styles.chatWelcome}>
                 <Logo height={32} />
                 <div className={styles.chatWelcomeSubtitle}>
@@ -1088,7 +1114,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                   >
                     <ChatBubble
                       message={msg}
-                      onOpenPreview={handleOpenPreview}
+                      onOpenPreview={openPreview}
                       conversationId={snap.chatActiveConversation || undefined}
                       searchQuery={isSearchMatch ? messageSearchQuery : undefined}
                       searchActive={isActiveSearchMatch}
@@ -1109,7 +1135,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                 key={`streaming:${snap.chatActiveConversation || 'new'}`}
                 message={snap.chatStreamingMessage as ChatMessage}
                 streaming
-                onOpenPreview={handleOpenPreview}
+                onOpenPreview={openPreview}
                 conversationId={snap.chatActiveConversation || undefined}
               />
             ) : null}
@@ -1282,6 +1308,15 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                 onChange={handleFileAttach}
                 disabled={chatComposerDisabled || imageMode}
               />
+              {context && !imageMode ? (
+                <div className={styles.chatContextChip} title={context.text}>
+                  {context.thumbnail ? <img className={styles.chatContextThumb} src={context.thumbnail} alt="" /> : null}
+                  <span className={styles.chatContextLabel}>{context.label}</span>
+                  {onClearContext ? (
+                    <button type="button" className={styles.chatContextRemove} onClick={onClearContext} aria-label={`Stop sending ${context.label} with the message`}>×</button>
+                  ) : null}
+                </div>
+              ) : null}
               <textarea
                 ref={inputRef}
                 className={styles.chatTextInput}
@@ -1435,20 +1470,24 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                   ) : null}
                 </div>
               </div>
-              <button
-                type="button"
-                className={styles.workspaceButton}
-                onClick={() => void actions.chooseWorkspace()}
-                disabled={snap.chatWorkspaceLocked}
-                title={snap.chatWorkspaceLocked ? 'Available once your message is on its way' : workspacePath || 'Choose workspace'}
-              >
-                <HugeiconsIcon icon={Folder01Icon} size={14} strokeWidth={1.5} />
-                <span className={styles.workspaceLabel}>{workspaceLabel}</span>
-              </button>
+              {embedded ? null : (
+                <button
+                  type="button"
+                  className={styles.workspaceButton}
+                  onClick={() => void actions.chooseWorkspace()}
+                  disabled={snap.chatWorkspaceLocked || studioFolder !== null}
+                  title={studioFolder !== null
+                    ? `This chat works in its Studio project folder: ${studioFolder}`
+                    : snap.chatWorkspaceLocked ? 'Available once your message is on its way' : workspacePath || 'Choose workspace'}
+                >
+                  <HugeiconsIcon icon={Folder01Icon} size={14} strokeWidth={1.5} />
+                  <span className={styles.workspaceLabel}>{workspaceLabel}</span>
+                </button>
+              )}
             </div>
           </div>
         </div>
-        {previewOpen && (
+        {showPreview && (
           <>
             <div
               className={styles.divider}
@@ -1473,7 +1512,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
           onClose={() => setPreviewAttachment(null)}
         />
       )}
-    </section>
+    </Root>
   );
 }
 

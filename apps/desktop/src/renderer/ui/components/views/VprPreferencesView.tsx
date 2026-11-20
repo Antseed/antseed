@@ -10,6 +10,7 @@ import { useCachedResource } from '../../../modules/app/cached-resource';
 import { VprCard, VprPage, VprSettingRow, VprToggle } from '../vpr/VprKit';
 import { ExportSignerKeyDialog, ImportSignerKeyDialog } from './SignerKeyDialogs';
 import { VprFreeTierCard } from './VprFreeTierCard';
+import { setStudioPreview, useStudioPreview } from '../../../modules/studio/preview';
 import styles from './VprPreferencesView.module.scss';
 
 type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
@@ -214,6 +215,9 @@ export function VprPreferencesView({ onSelectView }: Props) {
   const [exportKeyOpen, setExportKeyOpen] = useState(false);
   const [importKeyOpen, setImportKeyOpen] = useState(false);
   const local = gateway.data?.status.mode !== 'remote';
+  const studioOn = useStudioPreview();
+  const [studioSaving, setStudioSaving] = useState(false);
+  const [studioError, setStudioError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -241,6 +245,14 @@ export function VprPreferencesView({ onSelectView }: Props) {
         else setTelemetryStatus(previousStatus);
       })
       .catch(() => setTelemetryStatus(previousStatus));
+  };
+
+  const toggleStudio = (next: boolean) => {
+    setStudioSaving(true);
+    setStudioError(null);
+    void setStudioPreview(next)
+      .catch((error: unknown) => setStudioError(error instanceof Error ? error.message : String(error)))
+      .finally(() => setStudioSaving(false));
   };
 
   const selectTheme = (mode: ThemeMode) => {
@@ -306,6 +318,24 @@ export function VprPreferencesView({ onSelectView }: Props) {
             >
               Review every event and privacy control
             </button>
+          </VprCard>
+        </div>
+
+        <div className={styles.appearanceSection}>
+          <span className={styles.sectionLabel}>Preview</span>
+          <VprCard className={styles.card}>
+            <VprSettingRow
+              title="Studio"
+              hint={studioError ?? 'Make a film from a storyboard with a project agent. Each image and clip is quoted in chat before anything is paid for.'}
+              control={(
+                <VprToggle
+                  checked={studioOn === true}
+                  onChange={toggleStudio}
+                  ariaLabel="Studio"
+                  disabled={studioOn === null || studioSaving}
+                />
+              )}
+            />
           </VprCard>
         </div>
 

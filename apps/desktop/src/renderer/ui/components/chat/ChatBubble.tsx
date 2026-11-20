@@ -11,6 +11,7 @@ import { ChatCopyButton } from './ChatCopyButton';
 import { RoutedModelIndicator } from './RoutedModelIndicator';
 import { ImageGenerationPlaceholder } from './ImageGenerationPlaceholder';
 import type { ChatMessage, ContentBlock } from './chat-shared';
+import { splitStudioMessage } from '../../../modules/studio/track-view';
 import {
   buildChatMetaParts,
   formatToolExecutionLabel,
@@ -942,6 +943,23 @@ function CopyResponseButton({ content }: { content: unknown }) {
   );
 }
 
+type StudioChip = { label: string; context: string };
+
+/** A user message sent with a Studio selection keeps it as a chip, as in the composer; the agent gets the full line. */
+function withoutStudioContext(content: unknown): { chip: StudioChip | null; content: unknown } {
+  if (typeof content === 'string') {
+    const split = splitStudioMessage(content);
+    return split ? { chip: split, content: split.rest } : { chip: null, content };
+  }
+  if (Array.isArray(content)) {
+    const blocks = content as ContentBlock[];
+    const index = blocks.findIndex((block) => block.type === 'text');
+    const split = index === -1 ? null : splitStudioMessage(String(blocks[index]!.text || ''));
+    if (split) return { chip: split, content: blocks.map((block, at) => (at === index ? { ...block, text: split.rest } : block)) };
+  }
+  return { chip: null, content };
+}
+
 type ChatBubbleProps = {
   message: ChatMessage;
   streaming?: boolean;
@@ -979,12 +997,19 @@ export function ChatBubble({ message, streaming = false, onOpenPreview, conversa
       return <MarkdownContent text={String(message.content)} highlightQuery={searchQuery} activeHighlight={searchActive} blockUnsafePaymentInstructions />;
     }
 
-    if (typeof message.content === 'string') {
-      return <MarkdownContent text={message.content} highlightQuery={searchQuery} activeHighlight={searchActive} />;
+    const { chip, content: userContent } = withoutStudioContext(message.content);
+    const chipNode = chip ? (
+      <span className={styles.contextChip} title={chip.context}>
+        <span className={styles.contextLabel}>{chip.label}</span>
+      </span>
+    ) : null;
+
+    if (typeof userContent === 'string') {
+      return <>{chipNode}{userContent ? <MarkdownContent text={userContent} highlightQuery={searchQuery} activeHighlight={searchActive} /> : null}</>;
     }
 
-    if (Array.isArray(message.content)) {
-      return (message.content as ContentBlock[]).map((block, index) => renderBlock(block, index, isStreamingBubble, messagePrefix, conversationId, searchQuery, searchActive, false));
+    if (Array.isArray(userContent)) {
+      return <>{chipNode}{(userContent as ContentBlock[]).map((block, index) => renderBlock(block, index, isStreamingBubble, messagePrefix, conversationId, searchQuery, searchActive, false))}</>;
     }
 
     return <div className="chat-bubble-content">{JSON.stringify(message.content)}</div>;
