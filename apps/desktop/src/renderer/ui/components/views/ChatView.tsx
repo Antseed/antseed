@@ -955,6 +955,8 @@ export function ChatView({ onSelectView, embedded = false, emptyHint, context = 
 
   // Compute widths for split view
   const showPreview = previewOpen && !embedded;
+  // The Studio project chat has no room for the browser pane, so its messages offer no Preview button for one.
+  const openPreview = embedded ? undefined : handleOpenPreview;
   const chatStyle = showPreview
     ? { flex: `0 0 ${(1 - previewFraction) * 100}%`, minWidth: CHAT_MIN_WIDTH }
     : undefined;
@@ -1112,7 +1114,7 @@ export function ChatView({ onSelectView, embedded = false, emptyHint, context = 
                   >
                     <ChatBubble
                       message={msg}
-                      onOpenPreview={handleOpenPreview}
+                      onOpenPreview={openPreview}
                       conversationId={snap.chatActiveConversation || undefined}
                       searchQuery={isSearchMatch ? messageSearchQuery : undefined}
                       searchActive={isActiveSearchMatch}
@@ -1133,7 +1135,7 @@ export function ChatView({ onSelectView, embedded = false, emptyHint, context = 
                 key={`streaming:${snap.chatActiveConversation || 'new'}`}
                 message={snap.chatStreamingMessage as ChatMessage}
                 streaming
-                onOpenPreview={handleOpenPreview}
+                onOpenPreview={openPreview}
                 conversationId={snap.chatActiveConversation || undefined}
               />
             ) : null}
