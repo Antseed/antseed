@@ -64,6 +64,13 @@ function debugLog(...args: unknown[]): void {
 }
 
 /**
+ * A blank line ends an SSE event. Lines end in CRLF, LF or CR (SSE spec), so
+ * match two consecutive line endings in any mix. A CR followed by LF is one
+ * CRLF ending, never two.
+ */
+const SSE_EVENT_DELIMITER = /(?:\r\n|\n|\r(?!\n))(?:\r\n|\n|\r(?!\n))/;
+
+/**
  * Re-frame raw network chunks into complete SSE events.
  *
  * Network chunk boundaries don't align with SSE event boundaries, so a chunk
@@ -78,11 +85,13 @@ function createSseEventBuffer(): { push: (data: Uint8Array) => string[]; flush: 
 
   function drain(final: boolean): string[] {
     const events: string[] = [];
-    const delimiter = /\r?\n\r?\n/;
     for (;;) {
-      const match = delimiter.exec(buffer);
+      const match = SSE_EVENT_DELIMITER.exec(buffer);
       if (!match) break;
       const end = match.index + match[0].length;
+      // A trailing CR may be the first half of a CRLF split across chunks;
+      // wait for the next chunk so its LF stays with this event.
+      if (!final && end === buffer.length && buffer.endsWith('\r')) break;
       events.push(buffer.slice(0, end));
       buffer = buffer.slice(end);
     }
@@ -156,7 +165,7 @@ function eventHasResponseCreated(event: string): boolean {
 function eventHasInternalToolCall(event: string, format: RequestFormat): boolean {
   if (format === 'openai') {
     // OpenAI: look for "name":"antseed_" in tool_calls deltas
-    for (const line of event.split('\n')) {
+    for (const line of event.split(/\r\n|\r|\n/)) {
       if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
       try {
         const chunk = JSON.parse(line.slice(6).trimEnd()) as Record<string, unknown>;

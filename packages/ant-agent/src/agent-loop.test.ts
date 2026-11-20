@@ -130,6 +130,7 @@ function collectBuyerStream() {
       },
     } as ProviderStreamCallbacks,
     text: () => chunks.map(c => decoder.decode(c)).join(''),
+    payloads: () => chunks.filter(c => c.length > 0).map(c => decoder.decode(c)),
     doneCount: () => doneCount,
   };
 }
@@ -151,7 +152,7 @@ function expectWellFormedSse(text: string): string[] {
   return events;
 }
 
-async function runLoop(inner: Provider): Promise<{ text: string; doneCount: number }> {
+async function runLoop(inner: Provider): Promise<{ text: string; payloads: string[]; doneCount: number }> {
   const buyer = collectBuyerStream();
   await runAgentLoopStream(
     inner,
@@ -159,7 +160,7 @@ async function runLoop(inner: Provider): Promise<{ text: string; doneCount: numb
     () => ({ definition: AGENT, tools: [knowledgeTool(KNOWLEDGE)] }),
     buyer.callbacks,
   );
-  return { text: buyer.text(), doneCount: buyer.doneCount() };
+  return { text: buyer.text(), payloads: buyer.payloads(), doneCount: buyer.doneCount() };
 }
 
 // ─── Tests ───────────────────────────────────────────────────────
@@ -178,10 +179,20 @@ describe('runAgentLoopStream — chunk-boundary handling', () => {
     expect(text).not.toContain('toolu_1');
   });
 
-  it('does not forward a partial event whose tail reveals the internal tool call', async () => {
-    // Cut inside the antseed content_block_start event, before its name completes:
-    // the first half contains no detectable marker, the second half does.
-    const cut = ITER1_SSE.indexOf('"name":"antseed') + 1;
+  it.each([
+    {
+      // Cut inside the antseed content_block_start event, before its name completes:
+      // the first half contains no detectable marker, the second half does.
+      name: 'does not forward a partial event whose tail reveals the internal tool call',
+      cut: ITER1_SSE.indexOf('"name":"antseed') + 1,
+    },
+    {
+      // Cut inside the buyer's text_delta event: its closing brace lands in the
+      // next chunk together with the internal tool call start.
+      name: 'does not drop the tail of a buyer event that shares a chunk with the tool call',
+      cut: ITER1_SSE.indexOf('Hello buyer') + 'Hello buyer'.length,
+    },
+  ])('$name', async ({ cut }) => {
     expect(cut).toBeGreaterThan(0);
 
     const { text } = await runLoop(streamFake([ITER1_SSE, ITER2_SSE], [[cut], []]));
@@ -195,21 +206,49 @@ describe('runAgentLoopStream — chunk-boundary handling', () => {
     expect(text).not.toContain('toolu_1');
   });
 
-  it('does not drop the tail of a buyer event that shares a chunk with the tool call', async () => {
-    // Cut inside the buyer's text_delta event: its closing brace lands in the
-    // next chunk together with the internal tool call start.
-    const cut = ITER1_SSE.indexOf('Hello buyer') + 'Hello buyer'.length;
-    expect(cut).toBeGreaterThan(0);
+  it('splits events on CR-only blank lines', async () => {
+    // CR-only line endings are valid SSE. Without recognizing \r\r as a
+    // boundary the whole round buffers into one event, and the internal tool
+    // call in it would suppress the buyer's text too.
+    const iter1 = ITER1_SSE.replace(/\n/g, '\r');
+    const iter2 = ITER2_SSE.replace(/\n/g, '\r');
+    // Also cut between the two CRs of a boundary.
+    const cut = iter1.indexOf('\r\r') + 1;
 
-    const { text } = await runLoop(streamFake([ITER1_SSE, ITER2_SSE], [[cut], []]));
+    const { text, payloads, doneCount } = await runLoop(streamFake([iter1, iter2], [[cut], []]));
 
-    const events = expectWellFormedSse(text);
+    expect(doneCount).toBe(1);
+    for (const payload of payloads) expect(payload.endsWith('\r\r')).toBe(true);
+    const events = expectWellFormedSse(text.replace(/\r/g, '\n'));
     expect(events.filter(e => e.includes('event: message_start'))).toHaveLength(1);
     expect(events.filter(e => e.includes('event: message_stop'))).toHaveLength(1);
     expect(text).toContain('Hello buyer');
     expect(text).toContain('Final answer');
     expect(text).not.toContain('antseed');
-    expect(text).not.toContain('toolu_1');
+  });
+
+  it.each([
+    { name: 'inside the line ending before the blank line', offset: 1 },
+    { name: 'inside the blank line itself', offset: 3 },
+  ])('keeps a CRLF split across chunks $name with its event', async ({ offset }) => {
+    const iter1 = ITER1_SSE.replace(/\n/g, '\r\n');
+    const iter2 = ITER2_SSE.replace(/\n/g, '\r\n');
+    // Cut right after a CR of the first event's \r\n\r\n boundary.
+    const cut = iter1.indexOf('\r\n\r\n') + offset;
+
+    const { text, payloads } = await runLoop(streamFake([iter1, iter2], [[cut], []]));
+
+    // Every forwarded event is whole: none ends in a lone CR or starts with
+    // the stray LF of a split CRLF.
+    for (const payload of payloads) {
+      expect(payload.endsWith('\r\n\r\n')).toBe(true);
+      expect(payload.startsWith('\n')).toBe(false);
+    }
+    const events = expectWellFormedSse(text.replace(/\r\n/g, '\n'));
+    expect(events.filter(e => e.includes('event: message_start'))).toHaveLength(1);
+    expect(text).toContain('Hello buyer');
+    expect(text).toContain('Final answer');
+    expect(text).not.toContain('antseed');
   });
 
   it('keeps a nonempty partial chunk buffered until its event completes', async () => {
