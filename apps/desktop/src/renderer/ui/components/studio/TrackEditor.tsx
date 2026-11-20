@@ -23,7 +23,7 @@ import {
   type TrackEdit,
 } from '../../../../shared/studio-track.js';
 import { formatStudioUsd, studioFileUrl } from '../../../modules/studio/board-view';
-import { clipRequestMessage, formatSeconds, formatTimecode, selectionContext, type TrackSelection } from '../../../modules/studio/track-view';
+import { clipRequestMessage, filmClipKey, filmIndex, formatSeconds, formatTimecode, selectionContext, type TrackSelection } from '../../../modules/studio/track-view';
 import type { ChatContext } from '../views/ChatView';
 import styles from './TrackEditor.module.scss';
 
@@ -358,33 +358,48 @@ function EmptyStart({ busy, onUpload, onLibrary }: { busy: boolean; onUpload: ()
  * cut swaps them in the same frame. A trimmed clip ends on the frame where
  * its trim is, not at the next time update.
  */
-function FilmPlayer({ run, frame, url, caption, onDone }: {
+function FilmPlayer({ run, frame, url, caption, onDone, onStop }: {
   run: TrackAnchor[];
   frame: CSSProperties;
   url: (file: string) => string;
   caption: (anchor: TrackAnchor) => string;
   onDone: () => void;
+  /** The clip playing left the film (an undo, or a delivery for it): playback stops. */
+  onStop: () => void;
 }) {
   const players = [useRef<HTMLVideoElement>(null), useRef<HTMLVideoElement>(null)] as const;
-  const [index, setIndex] = useState(0);
-  const advanced = useRef(-1);
-  const current = run[index]!;
+  // The clip playing, by key rather than position: the film can change while it plays.
+  const [playing, setPlaying] = useState(() => (run[0] ? filmClipKey(run[0]) : ''));
+  const index = filmIndex(run, playing);
+  const latest = useRef(run);
+  latest.current = run;
+  const advanced = useRef('');
+  const current = index === null ? null : run[index]!;
   // Player k % 2 holds clip k: the one playing, and the other the clip after it.
-  const clipFor = (player: 0 | 1) => run[index % 2 === player ? index : index + 1] ?? null;
+  const clipFor = (player: 0 | 1) => (index === null ? null : run[index % 2 === player ? index : index + 1] ?? null);
 
-  const advance = (from: number) => {
-    if (advanced.current >= from) return;
+  const advance = (from: string) => {
+    if (advanced.current === from) return;
     advanced.current = from;
-    if (from + 1 >= run.length) {
+    const film = latest.current;
+    const at = filmIndex(film, from);
+    if (at === null) return;
+    const next = film[at + 1];
+    if (!next) {
       onDone();
       return;
     }
     // Started here, on the last frame, not after the next render: the next clip is already loaded.
-    void players[((from + 1) % 2) as 0 | 1].current?.play().catch(() => {});
-    setIndex(from + 1);
+    void players[((at + 1) % 2) as 0 | 1].current?.play().catch(() => {});
+    setPlaying(filmClipKey(next));
   };
 
   useEffect(() => {
+    if (index === null) onStop();
+  }, [index === null]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (index === null || !current) return undefined;
     const active = players[(index % 2) as 0 | 1].current;
     const idle = players[((index + 1) % 2) as 0 | 1].current;
     idle?.pause();
@@ -395,34 +410,34 @@ function FilmPlayer({ run, frame, url, caption, onDone }: {
     // hands over on its last frame instead of waiting for the ended event.
     let frameId = requestAnimationFrame(function check() {
       const end = current.clip?.end ?? (Number.isFinite(active.duration) ? active.duration : null);
-      if (end !== null && active.currentTime >= end - 1 / 30) advance(index);
+      if (end !== null && active.currentTime >= end - 1 / 30) advance(playing);
       else frameId = requestAnimationFrame(check);
     });
     return () => cancelAnimationFrame(frameId);
-  }, [index]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [index, playing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <figure className={styles.stage}>
       <div className={`${styles.preview} ${styles.film}`} style={frame}>
         {([0, 1] as const).map((player) => {
           const anchor = clipFor(player);
-          const playing = index % 2 === player;
+          const active = index !== null && index % 2 === player;
           return (
             <video
               key={player}
               ref={players[player]}
-              className={`${styles.media} ${playing ? styles.filmActive : ''}`}
+              className={`${styles.media} ${active ? styles.filmActive : ''}`}
               src={anchor?.clip?.use ? url(anchor.clip.use) : undefined}
               preload="auto"
               muted
               playsInline
-              aria-hidden={!playing}
-              onEnded={() => { if (playing) advance(index); }}
+              aria-hidden={!active}
+              onEnded={() => { if (active) advance(playing); }}
             />
           );
         })}
       </div>
-      <figcaption className={styles.captionRow}><span className={styles.caption}>{caption(current)}</span></figcaption>
+      <figcaption className={styles.captionRow}><span className={styles.caption}>{current ? caption(current) : ''}</span></figcaption>
     </figure>
   );
 }
@@ -476,6 +491,7 @@ function Preview({ track, selected, selection, playing, busy, url, onStop, onSel
           if (gap?.clip && !gap.clip.use) onSelect({ anchor: gap.id, clip: true });
           onStop();
         }}
+        onStop={onStop}
       />
     );
   }

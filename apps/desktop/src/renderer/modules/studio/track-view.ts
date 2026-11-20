@@ -4,6 +4,7 @@ import {
   sceneRuns,
   STUDIO_DELIVERIES_DIR,
   type StudioTrack,
+  type TrackAnchor,
 } from '../../../shared/studio-track.js';
 
 export function formatSeconds(value: number): string {
@@ -15,6 +16,21 @@ export function formatTimecode(value: number): string {
   const minutes = Math.floor(whole / 60);
   const seconds = whole - minutes * 60;
   return `${String(minutes)}:${seconds.toFixed(1).padStart(4, '0')}`;
+}
+
+/** A clip as the film plays it: a new version or trim makes it another clip. */
+export function filmClipKey(anchor: TrackAnchor): string {
+  return `${anchor.id}:${anchor.clip?.use ?? ''}:${String(anchor.clip?.end ?? '')}`;
+}
+
+/**
+ * Where the clip playing is in the film now, or null when it is no longer in
+ * it (undone, replaced or retrimmed), so playback stops instead of reading
+ * past the end of a shorter film.
+ */
+export function filmIndex(run: readonly TrackAnchor[], playing: string): number | null {
+  const index = run.findIndex((anchor) => filmClipKey(anchor) === playing);
+  return index >= 0 ? index : null;
 }
 
 function sceneLine(track: StudioTrack, anchorId: string): string | null {

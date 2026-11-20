@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseStudioTrack } from '../../../shared/studio-track.js';
-import { clipRequestMessage, formatTimecode, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
+import { clipRequestMessage, filmClipKey, filmIndex, formatTimecode, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
 
 const track = parseStudioTrack({
   aspectRatio: '16:9',
@@ -73,4 +73,23 @@ it('shows a clip request from Update as one chip naming its clips', () => {
   // The editor's own request parses back to the clips it names.
   const asked = clipRequestMessage(track, [track.anchors[0]!.id]);
   expect(splitStudioMessage(asked)?.label).toMatch(/^Make Clip 1→2$/);
+});
+
+it('follows the clip playing when the film changes under it, and stops when that clip leaves', () => {
+  const film = parseStudioTrack({ anchors: [
+    { id: 'a1', clip: { id: 'c1', then: 'cut', use: 'clips/one.mp4', versions: [{ file: 'clips/one.mp4' }] } },
+    { id: 'a2', clip: { id: 'c2', then: 'cut', use: 'clips/two.mp4', versions: [{ file: 'clips/two.mp4' }, { file: 'clips/two-b.mp4' }] } },
+    { id: 'a3', clip: { id: 'c3', then: 'cut', use: 'clips/three.mp4', versions: [{ file: 'clips/three.mp4' }] } },
+    { id: 'a4' },
+  ] }).anchors.slice(0, 3);
+  const third = filmClipKey(film[2]!);
+  expect(filmIndex(film, third)).toBe(2);
+  // Undo empties the third clip while it plays: the film is two clips long and playback stops.
+  expect(filmIndex(film.slice(0, 2), third)).toBeNull();
+  // A clip before it leaves: the one playing goes on where it now is.
+  expect(filmIndex([film[1]!, film[2]!], third)).toBe(1);
+  // Another version or a trim of the clip playing is another clip.
+  const second = filmClipKey(film[1]!);
+  expect(filmIndex([film[0]!, { ...film[1]!, clip: { ...film[1]!.clip!, use: 'clips/two-b.mp4' } }], second)).toBeNull();
+  expect(filmIndex([film[0]!, { ...film[1]!, clip: { ...film[1]!.clip!, end: 1.5 } }], second)).toBeNull();
 });
