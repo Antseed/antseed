@@ -6,6 +6,18 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+## 2026-11-20 — CLI 0.1.256, Node 0.2.189
+
+### Packages
+
+- `@antseed/cli@0.1.256`
+- `@antseed/node@0.2.189`
+- `@antseed/router-core@0.1.53`
+- `@antseed/ant-agent@0.1.39`
+- `@antseed/router-local@0.1.54`
+- `@antseed/payments@0.1.116`
+- `@antseed/ants@0.1.74`
+
 ### Added
 
 - Docs: **Gateway → Run on a server** explains how to keep long streamed responses alive behind a proxy: an nginx example for `--public-url` with buffering off and a longer read timeout, why Cloudflare can close a stream that stays silent for about 100 seconds (a DNS-only record avoids it), and `/healthz` for uptime checks.
@@ -13,6 +25,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI gateway: a key blocked with `402 spend_limit_reached` now says what holds its spend. The 402's `limit` object adds `held_requests_usd` (requests in flight) and `held_video_usd` (videos being priced, or accepted and not yet charged) next to `held_usd`, which stays the total, and the message names both parts. `antseed gateway key show` prints what video jobs hold as a `Held for video:` line (`videoHeldUsd` and `videoJobsHeld` with `--json`), for example `Held for video: $5.00 (1 not yet charged)`, and `GET /v1/key` adds `held` (`held_usd`, `requests_usd`, `video_usd`) from the running gateway. A gateway that restarts with requests still in its request log from the previous run (stopped or crashed mid-request) marks them ended with `499 gateway_restarted` instead of leaving them in flight forever; they never held spend, since request holds end with the gateway process. A video accepted just before a restart that kept the gateway from saving the job is now held at the price the buyer reported (logged with the request, gateway database migration 17) instead of everything the create was allowed; a video whose price was never reported still holds that whole allowance until it is downloaded, fails or expires. A video whose price can't be read is logged.
 - ANTS dashboard: a matured position tells users to withdraw and stake again only when their wallet can transfer ANTS. While transfers are disabled, the action error (extend, move, split, merge, max lock), the **Status** tip and the **Can no longer be extended** tip say the position can only be withdrawn and that withdrawn ANTS can't be staked again for now, since wallet ANTS can't be staked until then.
 - Agent streaming (`@ant-agent`): streamed provider chunks are re-framed into whole SSE events before internal-tool suppression, so a chunk ending mid-event no longer leaks a partial event to the buyer or glues the buyer's event tail to the next chunk. Nonempty partial chunks stay buffered until an event completes, and a nonempty terminal chunk is emitted once through the event filter instead of being replayed raw.
 - Payments portal: `GET /api/emissions/pending` no longer reports a recognized-usage buyer epoch as unclaimed after the buyer (or its authorized wallet) has claimed or staked it. `AntseedUsageRewards.pendingBuyerReward` keeps returning the full amount after a claim, so the route now also reads `buyerEpochClaimed` and reports such an epoch with `buyer.claimed: true` and `buyer.amount: "0"`, as the CLI and the ANTS dashboard already do. Seller amounts were already correct.
@@ -182,7 +195,6 @@ This project uses selective package publishing. Each release entry lists the pub
 - Verifiers (CLI): `antseed verifier watch` unlocks its keystore (`--keystore` or `verifier.keystore`) when it starts, so a wrong password, or a keystore that signs as another address than `--auditor` or `verifier.auditor`, stops it at once. Before, the keystore was only unlocked at the first submit, after a whole run.
 - CLI verifier: `antseed verifier assignment --epochs <count>` (and `--epoch <n>` for a later epoch) now previews an epoch that has not started with the auditors approved so far. It used the auditors approved when the current epoch started, so auditors approved during the current epoch were missing from the next epochs, and a newly deployed audits contract showed `no approved auditors` for every epoch. Such an epoch is printed as `starts … (preview …)` and has `preview: true` in `--json`; an approval or removal before it starts still changes it.
 - Verifiers (CLI, `@antseed/buyer-core`): a chain read right after one of this client's own transactions no longer returns the state from before it. ethers answers an identical read (`eth_getLogs`, `eth_blockNumber`, `eth_call`) made within 250 ms from the earlier answer, and `verifier submit` reads this epoch's reports both before submitting and for its confirmation summary (`model: N recorded, M waiting for another auditor`), so on a chain that mines at once (a local anvil) the summary got the reports from before the submission and printed `0 recorded, 0 waiting`. Nothing wrong was submitted. The verifier client now reads without that cache (`BaseEvmClient` takes a `cacheTimeout` option; the other clients keep ethers' default).
-- CLI gateway: a key blocked with `402 spend_limit_reached` now says what holds its spend. The 402's `limit` object adds `held_requests_usd` (requests in flight) and `held_video_usd` (videos being priced, or accepted and not yet charged) next to `held_usd`, which stays the total, and the message names both parts. `antseed gateway key show` prints what video jobs hold as a `Held for video:` line (`videoHeldUsd` and `videoJobsHeld` with `--json`), for example `Held for video: $5.00 (1 not yet charged)`, and `GET /v1/key` adds `held` (`held_usd`, `requests_usd`, `video_usd`) from the running gateway. A gateway that restarts with requests still in its request log from the previous run (stopped or crashed mid-request) marks them ended with `499 gateway_restarted` instead of leaving them in flight forever; they never held spend, since request holds end with the gateway process. A video accepted just before a restart that kept the gateway from saving the job is now held at the price the buyer reported (logged with the request, gateway database migration 17) instead of everything the create was allowed; a video whose price was never reported still holds that whole allowance until it is downloaded, fails or expires. A video whose price can't be read is logged.
 
 ### Removed
 
