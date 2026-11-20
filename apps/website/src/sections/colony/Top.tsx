@@ -17,7 +17,7 @@ export default function Top(): JSX.Element {
       subWidth={324}
       actions={<>
         <Button href={join} size="page">Join the waitlist</Button>
-        {TELEGRAM_URL && <Button href={TELEGRAM_URL} variant="ghost" size="page">Join Local AI Colony on Telegram</Button>}
+        {TELEGRAM_URL && <Button href={TELEGRAM_URL} variant="ghost" size="page">Join the local AI Telegram group</Button>}
         <Button href="#how" variant="ghost" size="page">How it works</Button>
       </>}
       fillActions
