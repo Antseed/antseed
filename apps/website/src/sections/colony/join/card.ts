@@ -9,7 +9,8 @@ const load = (src: string) => new Promise<HTMLImageElement>((ok, no) => { const 
 
 const H = 675;
 
-/** The waitlist card as a PNG, 1200 by 675 so it fits an X post: the dotted page on the left with their name, the painting on the right. */
+/** The waitlist card as a PNG, 1200 by 675 so it fits an X post: the dotted page on the left with their waitlist number in large type,
+ *  their name and Mac, the painting on the right. */
 export async function drawCard({name, mac, number}: CardFacts): Promise<Blob | null> {
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
@@ -37,10 +38,20 @@ export async function drawCard({name, mac, number}: CardFacts): Promise<Blob | n
   else if (mac) lead = `My ${model}`;           // no name kept: "My MacBook Air wants in."
   else { lead = 'I’m on'; tail = 'the list.'; }
   const detail = who ? mac : rest.join(' · ');
-  g.fillStyle = '#4f7a24'; pixel(28); g.fillText(number ? `Mac Colony waitlist · #${number.toLocaleString('en-US')}` : 'Mac Colony waitlist', 64, 236);
-  g.fillStyle = '#30382c'; fit(lead, 72, 460); g.fillText(lead, 58, 330);
-  g.fillStyle = '#929292'; g.fillText(tail, 58, 400);
-  if (detail) { g.font = `500 24px ${SANS}`; g.fillStyle = '#56656f'; g.fillText(detail, 64, 460); }
+  if (number) {
+    // their spot is the headline: "#42", then "Ada’s Mac wants in." and the Mac line
+    const spot = `#${number.toLocaleString('en-US')}`;
+    const line = `${lead} ${tail}`;
+    g.fillStyle = '#4f7a24'; pixel(28); g.fillText('On the Mac Colony waitlist', 64, 196);
+    g.fillStyle = '#30382c'; fit(spot, 160, 460); g.fillText(spot, 54, 344);
+    g.fillStyle = '#929292'; fit(line, 44, 460); g.fillText(line, 60, 414);
+    if (detail) { g.font = `500 24px ${SANS}`; g.fillStyle = '#56656f'; g.fillText(detail, 64, 468); }
+  } else {
+    g.fillStyle = '#4f7a24'; pixel(28); g.fillText('Mac Colony waitlist', 64, 236);
+    g.fillStyle = '#30382c'; fit(lead, 72, 460); g.fillText(lead, 58, 330);
+    g.fillStyle = '#929292'; g.fillText(tail, 58, 400);
+    if (detail) { g.font = `500 24px ${SANS}`; g.fillStyle = '#56656f'; g.fillText(detail, 64, 460); }
+  }
   g.fillStyle = '#4f7a24'; g.font = `500 22px ${MONO}`; g.fillText('antseed.com/colony', 64, H - 64);
   return new Promise((ok) => c.toBlob(ok, 'image/png'));
 }

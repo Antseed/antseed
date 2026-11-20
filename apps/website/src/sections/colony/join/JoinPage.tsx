@@ -7,7 +7,7 @@ import {MACS, NO_MAC, chipsFor, memsFor, settle, stepsFor, type Answers, type St
 import {prefillUrl, sourceOf} from './waitlist';
 import {macLine, rememberCard} from './cardFacts';
 import {JoinBar} from './JoinBar';
-import {JoinGroup, NextSteps, ShareCard} from './Share';
+import {CardByEmail, JoinGroup, NextSteps} from './Share';
 import styles from './JoinPage.module.css';
 
 const TITLE = 'Join the Mac Colony waitlist · Antseed';
@@ -126,7 +126,7 @@ export default function JoinPage(): JSX.Element {
     const url = prefillUrl(WAITLIST, answers, source.current);
     if (!url) { setFormError('Sign-ups open soon.'); return; }
     setFormError('');
-    rememberCard({name: answers.name, mac: macLine(answers)});   // for the card on /colony/joined/, where Google's thank-you note leads
+    rememberCard({name: answers.name, mac: macLine(answers)});   // the first name for the card on /colony/joined/, where the welcome email's link leads
     open(url, '_blank', 'noopener');
     go('done');
   };
@@ -229,7 +229,7 @@ export default function JoinPage(): JSX.Element {
                 {joinUrl && <p className={styles.hint}>Tab didn’t open? <button type="button" className={styles.textLink} onClick={() => open(joinUrl, '_blank', 'noopener')}>Open the form</button>.</p>}
                 <JoinGroup />
                 <p className={clsx(styles.eyebrow, styles.small)}>Your card</p>
-                <ShareCard name={answers.name} mac={macLine(answers)} />
+                <CardByEmail />
                 <NextSteps />
                 <div className={styles.go}>
                   <Link className={styles.skip} to="/colony/">Back to Colony</Link>

@@ -172,8 +172,15 @@
 .cardImage img, .cardWait { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; border: 1px solid var(--jn-line); border-radius: 14px; background: var(--jn-art); box-shadow: 0 10px 30px rgba(20, 51, 30, .12); }
 .cardImage .go { margin-top: 14px; }
 .help + .cardImage { margin-top: 24px; }
-/* a phone shares the picture itself, so the note about attaching it on X is for computers only */
+/* a phone shares the picture itself, so the note about pasting it on X is for computers only; after Share it says what happened */
 @media (hover: none) { .cardImage .deskNote { display: none; } }
+.cardImage .copied { color: var(--jn-green); font-weight: 500; }
+/* before the number exists: the card comes in the welcome email */
+.mailCard { display: flex; align-items: center; gap: 14px; padding: 16px 18px; border: 1px solid var(--jn-line); border-radius: 14px; background: var(--jn-card); }
+.mailCard svg { flex: none; width: 44px; height: 44px; padding: 10px; border-radius: 12px; background: var(--jn-art); fill: none; stroke: var(--jn-green); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.mailCard > div { display: grid; flex: 1; gap: 3px; min-width: 0; }
+.mailCard b { font-size: 15.5px; font-weight: 600; }
+.mailCard span { font-size: 14px; color: var(--jn-muted); }
 /* Local AI Colony: the one call to action after signing up */
 .group { display: flex; align-items: center; gap: 16px; margin-top: 24px; padding: 18px 18px 18px 20px; border: 1.5px solid var(--jn-fill); border-radius: 14px; background: var(--jn-card); }
 .group > div { display: grid; flex: 1; gap: 4px; min-width: 0; }
