@@ -132,6 +132,9 @@ function mediaPath(value: unknown, kind: 'image' | 'video'): string | null {
   return normalized && studioMediaKind(normalized) === kind ? normalized : null;
 }
 
+/** The parsers the board and the track share, so the two cannot drift apart. */
+export { record as parseRecord, text as parseText, mediaPath as parseMediaPath };
+
 /** Every line is kept: totals are their sum, so dropping one would hide money paid or quoted. */
 function costLines(value: unknown): StudioCostLine[] {
   if (!Array.isArray(value)) return [];

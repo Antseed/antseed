@@ -7,6 +7,7 @@ import {
   type StudioShot,
   type StudioShotStatus,
 } from '../../../shared/studio.js';
+import { formatUsdcAmount } from '../../core/format';
 
 export function studioFileUrl(projectId: string, filePath: string, version?: number): string {
   const encoded = filePath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
@@ -18,8 +19,8 @@ export function studioMimeType(filePath: string): string {
 }
 
 export function formatStudioUsd(value: number): string {
-  if (value > 0 && value < 0.01) return '<$0.01';
-  return `$${value.toFixed(2)}`;
+  const amount = formatUsdcAmount(value);
+  return amount.startsWith('<') ? `<$${amount.slice(1)}` : `$${amount}`;
 }
 
 export type ShotBadge = { label: string; tone: 'neutral' | 'success' | 'warning' };

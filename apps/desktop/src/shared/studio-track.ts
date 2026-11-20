@@ -1,4 +1,12 @@
-import { normalizeStudioPath, studioMediaKind, type StudioBoard, type StudioCostLine } from './studio.js';
+import {
+  normalizeStudioPath,
+  parseMediaPath as media,
+  parseRecord as record,
+  parseText as text,
+  studioMediaKind,
+  type StudioBoard,
+  type StudioCostLine,
+} from './studio.js';
 
 /**
  * A Studio film is one track: anchor images in order, and a clip leaving each
@@ -142,19 +150,6 @@ export function emptyStudioTrack(): StudioTrack {
 }
 
 // ---------- parsing ----------
-
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function text(value: unknown, max: number): string {
-  return typeof value === 'string' ? value.trim().slice(0, max) : '';
-}
-
-function media(value: unknown, kind: 'image' | 'video'): string | null {
-  const normalized = normalizeStudioPath(value);
-  return normalized && studioMediaKind(normalized) === kind ? normalized : null;
-}
 
 function seconds(value: unknown, max = MAX_MEDIA_SECONDS): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= max ? value : null;
