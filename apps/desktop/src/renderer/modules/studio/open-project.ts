@@ -24,3 +24,45 @@ export function useOpenStudioProject(): string | null {
 export function studioProjectForConversation(projects: readonly StudioProjectSummary[] | null, conversationId: string): string | null {
   return projects?.find((project) => project.conversationId === conversationId)?.id ?? null;
 }
+
+export type ConversationRoute = {
+  /** The project list read so far. */
+  known: readonly StudioProjectSummary[] | null;
+  reload: () => Promise<readonly StudioProjectSummary[] | null>;
+  /** False once the user has made a newer choice. */
+  current: () => boolean;
+  activate: (conversationId: string) => void;
+  openProject: (projectId: string) => void;
+  selectView: (view: 'studio' | 'chat') => void;
+};
+
+/**
+ * Opens a chat picked in the sidebar where it belongs: in its Studio project,
+ * or in Chat. The chat becomes active only once that is known, so the project
+ * on screen never talks to it while the list is read again.
+ */
+export async function openConversationWhereItBelongs(conversationId: string, route: ConversationRoute): Promise<void> {
+  let projects = route.known;
+  // A project's chat may be newer than the list read so far: read it again before opening plain Chat.
+  if (!studioProjectForConversation(projects, conversationId)) projects = await route.reload().catch(() => null);
+  if (!route.current()) return;
+  const project = studioProjectForConversation(projects, conversationId);
+  if (project) route.openProject(project);
+  route.activate(conversationId);
+  route.selectView(project ? 'studio' : 'chat');
+}
+
+/** A request held while its edit is saved: `still` says whether it may go out now, `send` sends it only then. */
+export type HeldSend = { still: () => boolean; send: (text: string) => void };
+
+/**
+ * Holds a request that saves an edit first. `where` is the chat the project
+ * on screen talks to (null while its chat is not made yet), or false when the
+ * project is not on screen. The request goes out only if the same project
+ * still talks to the same chat once the edit is saved.
+ */
+export function holdSend(where: () => string | null | false, send: (text: string) => void): HeldSend {
+  const at = where();
+  const still = () => at !== false && where() === at;
+  return { still, send: (text) => { if (still()) send(text); } };
+}

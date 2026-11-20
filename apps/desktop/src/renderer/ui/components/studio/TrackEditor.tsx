@@ -26,6 +26,7 @@ import {
 } from '../../../../shared/studio-track.js';
 import { formatStudioUsd, studioFileUrl } from '../../../modules/studio/board-view';
 import { clipRequestMessage, filmClipKey, filmIndex, filmPlayers, formatSeconds, formatTimecode, selectionContext, type FilmPlayback, type TrackSelection } from '../../../modules/studio/track-view';
+import type { HeldSend } from '../../../modules/studio/open-project';
 import type { ChatContext } from '../views/ChatView';
 import styles from './TrackEditor.module.scss';
 
@@ -46,13 +47,18 @@ function clipUpdating(anchor: TrackAnchor): boolean {
 type Props = {
   detail: StudioProjectDetail & { track: StudioTrack };
   canSend: boolean;
-  onSend: (text: string) => void;
+  /**
+   * Called when a request starts, before its edit is saved. What it returns
+   * sends the request, or drops it if the user has moved on to another
+   * project or chat by then.
+   */
+  beginSend: () => HeldSend;
   /** The selection, for the chip in the chat composer. */
   onContext: (context: ChatContext | null) => void;
   onChanged: () => void;
 };
 
-export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: Props) {
+export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }: Props) {
   const projectId = detail.project.id;
   const [track, setTrack] = useState(detail.track);
   const [selection, setSelection] = useState<Selection>(null);
@@ -154,9 +160,11 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
   /** Update asks the project agent to remake out-of-date clips. It quotes in chat first, as for every clip. */
   async function updateClips(anchorIds: string[]) {
     if (!canSend || anchorIds.length === 0) return;
+    const request = beginSend();
     const asked = await edit({ type: 'request', clips: anchorIds, images: [] });
     if (!asked) return;
-    onSend(clipRequestMessage(asked.track, anchorIds));
+    request.send(clipRequestMessage(asked.track, anchorIds));
+    if (!mounted.current) return;
     // The selection goes with the reply to the quote, so it names this clip, or nothing for several.
     const only = anchorIds.length === 1 ? anchorIds[0]! : null;
     select(only ? { anchor: only, clip: true } : null);
@@ -307,10 +315,12 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
             const target = replacing;
             setReplacing(null);
             const touching = clipsTouching(track, target.anchor, target.file);
+            const request = beginSend();
             const next = await edit({ type: 'set-image', anchor: target.anchor, file: target.file });
-            if (!next || !remake) return;
+            // Moved on meanwhile: the image stays replaced, and no clip is marked as asked for.
+            if (!next || !remake || !request.still()) return;
             const asked = await edit({ type: 'request', clips: touching, images: [] });
-            if (asked) onSend(clipRequestMessage(asked.track, touching));
+            if (asked) request.send(clipRequestMessage(asked.track, touching));
           }}
         />
       ) : null}

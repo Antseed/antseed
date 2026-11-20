@@ -14,7 +14,7 @@ function detail(canSend = true, mediaTools = true) {
     { id: 'a4', image: 'stills/d.png' },
   ] });
   const value = { project: { id: 'p1', name: 'Test' }, track, trackError: null, notices: [], library: [], canUndo: false, files: {}, mediaTools } as unknown as StudioProjectDetail & { track: typeof track };
-  return renderToStaticMarkup(<TrackEditor detail={value} canSend={canSend} onSend={() => {}} onContext={() => {}} onChanged={() => {}} />);
+  return renderToStaticMarkup(<TrackEditor detail={value} canSend={canSend} beginSend={() => ({ still: () => true, send: () => {} })} onContext={() => {}} onChanged={() => {}} />);
 }
 
 test('out-of-date clips each get an Update button, with Update all in the toolbar', () => {

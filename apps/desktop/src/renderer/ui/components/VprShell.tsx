@@ -11,9 +11,8 @@ import { homeProgress } from '../../modules/app/home-progress';
 import { gatewayResource, privacyResource, usePrivacySwitch } from '../../modules/app/vpr-resources';
 import { useCachedResource } from '../../modules/app/cached-resource';
 import { useStudioPreview } from '../../modules/studio/preview';
-import { openStudioProject, studioProjectForConversation } from '../../modules/studio/open-project';
+import { openConversationWhereItBelongs, openStudioProject } from '../../modules/studio/open-project';
 import { studioProjectsResource } from '../../modules/studio/resources';
-import type { StudioProjectSummary } from '../../../shared/studio.js';
 import { navViews, type NavView } from './viewRegistry';
 import { ChatListPanel } from './ChatListPanel';
 import { DepositProgressBanner } from './DepositProgressBanner';
@@ -156,20 +155,19 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
   const openConversation = useCallback((id: string) => {
     const turn = ++navigation.current;
     if (studioOn !== true) {
+      void actions.openConversation(id);
       onSelectView('chat');
       return;
     }
-    const known = studioProjectsResource.getSnapshot().data;
-    const open = (projects: StudioProjectSummary[] | null) => {
-      if (turn !== navigation.current) return;
-      const project = studioProjectForConversation(projects, id);
-      if (project) openStudioProject(project);
-      onSelectView(project ? 'studio' : 'chat');
-    };
-    // A project's chat may be newer than the list read so far: read it again before opening plain Chat.
-    if (studioProjectForConversation(known, id)) open(known);
-    else void studioProjectsResource.reload().then(open, () => open(null));
-  }, [onSelectView, studioOn]);
+    void openConversationWhereItBelongs(id, {
+      known: studioProjectsResource.getSnapshot().data,
+      reload: () => studioProjectsResource.reload(),
+      current: () => turn === navigation.current,
+      activate: (conversationId) => { void actions.openConversation(conversationId); },
+      openProject: openStudioProject,
+      selectView: onSelectView,
+    });
+  }, [actions, onSelectView, studioOn]);
   const goHome = useCallback(() => onSelectView('home'), [onSelectView]);
   // A remote gateway pays from its own wallet: Add funds opens its console's
   // Wallet page, never this computer's checkout.

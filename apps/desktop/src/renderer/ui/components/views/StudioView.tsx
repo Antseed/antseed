@@ -6,8 +6,9 @@ import { Film01Icon } from '@hugeicons/core-free-icons';
 import type { StudioProjectSummary } from '../../../../shared/studio.js';
 import { formatRelativeTime } from '../../../core/format';
 import { useCachedResource } from '../../../modules/app/cached-resource';
+import { getUiStateRef } from '../../../core/store';
 import { studioFileUrl } from '../../../modules/studio/board-view';
-import { openStudioProject, useOpenStudioProject } from '../../../modules/studio/open-project';
+import { openStudioProject, holdSend, useOpenStudioProject } from '../../../modules/studio/open-project';
 import { studioProjectResource, studioProjectsResource } from '../../../modules/studio/resources';
 import { useActions } from '../../hooks/useActions';
 import { useUiSelector } from '../../hooks/useUiSelector';
@@ -154,6 +155,8 @@ function StudioProject({ id, onClose, onSelectView }: { id: string; onClose: () 
   const hasOpenChat = useUiSelector((state) => state.chatActiveConversation !== null);
   const splitRef = useRef<HTMLDivElement>(null);
   const onShow = (): boolean => !splitRef.current?.closest('[aria-hidden="true"]');
+  // The chat this project talks to, or false once it is off screen or closed.
+  const projectChat = (): string | null | false => (splitRef.current && onShow() ? getUiStateRef().chatActiveConversation : false);
 
   useEffect(() => {
     if (!onShow()) return undefined;
@@ -181,7 +184,7 @@ function StudioProject({ id, onClose, onSelectView }: { id: string; onClose: () 
               <TrackEditor
                 detail={{ ...detail, track: detail.track }}
                 canSend={chatReady && !sending}
-                onSend={(text) => { void actions.sendMessage(text); }}
+                beginSend={() => holdSend(projectChat, (text) => { void actions.sendMessage(text); })}
                 onContext={setContext}
                 onChanged={() => { void resource.reload(); }}
               />
