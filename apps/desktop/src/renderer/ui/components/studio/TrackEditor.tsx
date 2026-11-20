@@ -468,8 +468,13 @@ function Preview({ track, selected, selection, playing, busy, url, onStop, onSel
 }) {
   const video = useRef<HTMLVideoElement>(null);
   const [now, setNow] = useState(0);
-  // The time shown belongs to the clip on screen, so it starts again with each one.
-  useEffect(() => { setNow(0); }, [selection?.anchor, selection?.clip]);
+  // The time shown, and the moment the chat names, belong to the file on screen: they start again with
+  // each clip and with each version of it (picked in the menu, from the library, or delivered).
+  const shownFile = selection?.clip ? selected?.clip?.use ?? null : null;
+  useEffect(() => {
+    setNow(0);
+    onTime(null);
+  }, [selection?.anchor, selection?.clip, shownFile]); // eslint-disable-line react-hooks/exhaustive-deps
   const playable = track.anchors.filter((anchor) => anchor.clip?.use);
   const [w, h] = track.aspectRatio.split(':').map(Number) as [number, number];
   // The frame keeps the film's shape and fits the width, or 62% of the window height for a tall film.
