@@ -47,6 +47,7 @@ import { assertSignerOwners, parseSignerSpecs, resolveSigners, signerEnvironment
 import { parseSandboxArgs } from './m001-sandbox.mjs';
 import { renderNetwork } from './generate-contract-chain-config.mjs';
 import { activationRecords, DEPLOYMENTS, migration as m003, parseBonusBps, rejectAuditorList, RELEASE as M003_RELEASE, verificationOwner } from './deployments/m003.mjs';
+import { activationRecords as m004ActivationRecords, freeTierDeployer, migration as m004, RELEASE as M004_RELEASE } from './deployments/m004.mjs';
 
 const ADDRESS = {
   registry: '0x0000000000000000000000000000000000000001',
@@ -483,7 +484,7 @@ test('reports incomplete network baselines before deployment', () => {
 
 test('registers migrations explicitly', () => {
   assert.equal(getDeploymentMigration('M001').id, 'M001');
-  assert.deepEqual([...deploymentMigrations.keys()], ['M001', 'M002', 'M003']);
+  assert.deepEqual([...deploymentMigrations.keys()], ['M001', 'M002', 'M003', 'M004']);
   assert.equal(getDeploymentMigration('M002').id, 'M002');
 });
 
@@ -2520,4 +2521,65 @@ test('published M001 address inventories match the immutable deployment record',
       assert.ok(document.includes(contract.address.toLowerCase()), `${file} is missing ${name}`);
     }
   }
+});
+
+const M004_BOARD = '0x00000000000000000000000000000000000000a4';
+const M004_GATE = '0x00000000000000000000000000000000000000f5';
+const M004_BASELINE = {
+  registry: { address: ADDRESS.registry }, identityRegistry: { address: ADDRESS.channels },
+  sellerRegistry: { address: ADDRESS.sellerRegistry }, usageAccounting: { address: ADDRESS.usageAccounting },
+  emissionsGate: { address: M004_GATE },
+};
+
+test('M004 registers one deploy phase after M001 and validates its inputs', () => {
+  assert.equal(getDeploymentMigration('M004'), m004);
+  assert.deepEqual(m004.phases.map((phase) => phase.id), ['deploy']);
+  assert.deepEqual(m004.phases[0].signers(), ['freeTierDeployer']);
+  assert.equal(buildReleaseOwners().get(M004_RELEASE), m004);
+  for (const network of ['base-mainnet', 'base-sepolia']) {
+    assert.equal(parseDeployArgs(['M004', '--network', network, '--dry-run']).migration, 'M004');
+  }
+  assert.throws(() => parseDeployArgs(['M004', '--network', 'base-sepolia', '--fork-test']), /M004 supports/);
+  const rehearsal = resolveRehearsal(m004, { ...REHEARSAL_OPTIONS, migration: 'M004' }, deploymentMigrations);
+  assert.deepEqual(rehearsal.migrations.map((entry) => entry.id), ['M001', 'M004']);
+  assert.doesNotThrow(() => m004.validateBaseline({ contracts: M004_BASELINE }));
+  assert.throws(() => m004.validateBaseline({ contracts: { registry: { address: ADDRESS.registry } } }), /missing identityRegistry/);
+  assert.throws(() => freeTierDeployer(''), /FREE_TIER_DEPLOYER/);
+  assert.throws(() => freeTierDeployer('0x0000000000000000000000000000000000000000'), /FREE_TIER_DEPLOYER/);
+  assert.equal(freeTierDeployer(ADDRESS.ants), ADDRESS.ants);
+});
+
+test('M004 activation keeps every earlier contract and records the ownerless board', async () => {
+  const baseline = JSON.parse(await readFile('packages/contracts/deployments/base-mainnet/current.json', 'utf8'));
+  const original = structuredClone(baseline);
+  const checkpoint = {
+    registry: ADDRESS.registry, identityRegistry: ADDRESS.channels, sellerRegistry: ADDRESS.sellerRegistry,
+    usageAccounting: ADDRESS.usageAccounting, emissionsGate: M004_GATE, deployer: ADDRESS.ants, deploymentNonce: 9,
+    boardAddress: M004_BOARD, sourceCommit: 'b'.repeat(40),
+    contracts: {
+      freeTierTerms: {
+        address: M004_BOARD, owner: ADDRESS.ants, constructorArguments: [ADDRESS.registry, M004_GATE, ADDRESS.channels],
+        deployedInRelease: true, deploymentBlock: 1, runtimeCodeHash: `0x${'1'.repeat(64)}`, transactionHash: `0x${'1'.repeat(64)}`,
+      },
+    },
+    transactions: [{ action: 'deploy', hash: `0x${'1'.repeat(64)}`, blockNumber: 1, from: ADDRESS.ants, to: null }],
+  };
+  const { record, current } = m004ActivationRecords({ network: 'base-mainnet', canonical: baseline }, checkpoint);
+  assert.deepEqual(m004.recordErrors(record), []);
+  assert.deepEqual(recordErrors(record), []);
+  assert.deepEqual(baseline, original);
+  for (const [key, contract] of Object.entries(original.contracts)) {
+    assert.deepEqual(current.contracts[key], { ...contract, deployedInRelease: false });
+  }
+  assert.equal(current.contracts.freeTierTerms.owner, null, 'the board has no owner');
+  assert.equal(current.verificationConfiguration.freeTierPromises.boardAddress, M004_BOARD);
+  // Clients get no address from M004 until the ledger is committed and the addresses are regenerated.
+  assert.equal(renderNetwork(current).freeTierTermsAddress, undefined);
+  const wrong = structuredClone(record);
+  wrong.contracts.freeTierTerms.constructorArguments[1] = ADDRESS.ants;
+  assert.ok(m004.recordErrors(wrong).includes('M004 board constructor mismatch'));
+  const owned = structuredClone(record);
+  owned.contracts.freeTierTerms.owner = ADDRESS.ants;
+  assert.ok(m004.recordErrors(owned).includes('M004 board must record no owner'));
+  assert.ok(m004.recordErrors({ ...record, contracts: {} }).length);
 });

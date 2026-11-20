@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Contracts and protocol (`@antseed/protocol`): the staked free-tier promise board, `AntseedFreeTierTerms`. A seller publishes, per agent, the free tier it promises to stakers (programs of tiers and models, free or a free allowance on a priced model) and the notice it gives before changing it, from 2 to 104 epochs; terms up to `promisedThrough` can no longer change. The protocol package adds the matching types, encoding, checks, program lookup and tier helper (`@antseed/protocol/free-tier-terms`). Nothing is deployed on Base yet (migration M004); seller nodes and apps follow in later changes.
+
 ### Fixed
 
 - Website: providers can apply for Foundation staking directly from the providers page again.

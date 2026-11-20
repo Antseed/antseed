@@ -35,7 +35,7 @@ interface ILocalLegacyEmissionsAdmin {
  * @title DeployLocalFull
  * @notice Local Anvil (chain 31337) only. Lays the rest of the production contract stack on top of
  *         script/Deploy.s.sol so a fresh local chain has the layout Base runs: the recognized-usage stack
- *         (M001), free usage and the verification contracts (M003). The worktree testbench
+ *         (M001), free usage, the verification contracts (M003) and the free-tier promise board (M004). The worktree testbench
  *         (e2e/testbench/lib/local-deploy.mjs) runs, in order:
  *           1. script/Deploy.s.sol (payments, legacy staking and emissions, stats, deposit relay)
  *           2. anvil_setCode: ANTSToken's runtime and storage copied to AntseedEmissionsGate.ANTS_TOKEN, the
@@ -46,6 +46,7 @@ interface ILocalLegacyEmissionsAdmin {
  *           6. script/DeployFreeUsage.s.sol, unchanged
  *           7. script/migrations/M003VerificationRegistry/Deploy.s.sol, unchanged
  *           8. this script's wireVerification(): M003's manual owner steps 1 and 3
+ *           9. script/migrations/M004FreeTierPromises/Deploy.s.sol, unchanged (the free-tier promise board)
  *
  *         Differences from M001 Deploy.s.sol, all because a fresh chain has no history:
  *           - the registry is pointed at the ANTS token at the gate's hardcoded address, and gets a team wallet;
