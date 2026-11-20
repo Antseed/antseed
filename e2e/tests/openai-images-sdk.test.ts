@@ -75,6 +75,7 @@ describe('OpenAI SDK integration: Images API over buyer proxy', () => {
     const provider = new MockOpenAIImageProvider();
     sellerNode = new AntseedNode({
       role: 'seller',
+      natTraversal: false,
       dataDir: sellerDataDir,
       dhtPort: 0,
       signalingPort: 0,

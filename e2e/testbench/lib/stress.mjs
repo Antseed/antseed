@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { cliCommandEnv, runCli } from './cli-run.mjs';
 import { createPrng, randomTag } from './prng.mjs';
 
-export { analyzePayments, analyzeRecordedCosts } from '../../stress/analysis.mjs';
+export { analyzePayments, analyzeRecordedCosts, quiesceChannels, settledRows } from '../../stress/analysis.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 

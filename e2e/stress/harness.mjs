@@ -17,7 +17,7 @@ import { freshChain, chainSnapshot, readChannel, ADDR, KEYS, C } from './chain.m
 import { startMockUpstream } from './mock-upstream.mjs';
 import { startRpcProxy } from './rpc-proxy.mjs';
 import { SCENARIOS } from './scenarios.mjs';
-import { analyzePayments, analyzeRecordedCosts } from './analysis.mjs';
+import { analyzePayments, analyzeRecordedCosts, quiesceChannels, settledRows } from './analysis.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const REPO = resolve(HERE, '../..');
@@ -372,6 +372,17 @@ function scanLog(file, patterns) {
   return { counts, ex };
 }
 
+/** Waits up to `maxMs` for post-response auths to land; quiesceChannels in analysis.mjs says when it ends sooner. */
+function quiesceFor(sellerDir, buyerDir, mock, maxMs = 10_000) {
+  const q = 'select session_id, role, status, auth_max, tokens_delivered, settled_amount, request_count from payment_channels';
+  return quiesceChannels({
+    sellerRows: () => sqliteJson(join(sellerDir, 'payments', 'sessions.db'), q).filter((r) => r.role === 'seller'),
+    buyerRows: () => sqliteJson(join(buyerDir, 'payments', 'sessions.db'), q).filter((r) => r.role === 'buyer'),
+    inFlight: async () => mock.stats.active,
+    maxMs,
+  });
+}
+
 // ── #1050: stale active channels after a seller-side close ─────────────
 function buyerActiveRows(buyerDb) {
   return sqliteJson(buyerDb, "select session_id, status from payment_channels where role='buyer' and status='active'");
@@ -418,11 +429,11 @@ async function proxyJson(path) {
     return { error: e.message };
   }
 }
-async function stale1050Phase({ sc, seller, buyer, buyerDir, buyerTree, buyerHome, rpc, result }) {
+async function stale1050Phase({ sc, seller, buyer, sellerDir, buyerDir, buyerTree, buyerHome, rpc, mock, result }) {
   const buyerDb = join(buyerDir, 'payments', 'sessions.db');
   const out = { t: {} };
   const t0 = Date.now();
-  await sleep(5000); // let post-response auths land
+  await quiesceFor(sellerDir, buyerDir, mock, 5000); // let post-response auths land
   const before = buyerActiveRows(buyerDb).map((r) => r.session_id);
   out.activeBeforeStop = before.length;
   // Buyer goes away; the seller closes the channel on disconnect.
@@ -430,6 +441,8 @@ async function stale1050Phase({ sc, seller, buyer, buyerDir, buyerTree, buyerHom
   await waitFor(() => before.every((id) => readChannel(rpc, id).status !== 1), 'seller close on-chain', 180_000, 2000)
     .catch((e) => result.notes.push(`1050 close wait: ${e.message}`));
   out.t.closedOnChainMs = Date.now() - t0;
+  // The close's transaction is mined by now; reads lag for RPC_LAG_WINDOW_MS after it.
+  const lagOverAt = Date.now() + Number(process.env.RPC_LAG_WINDOW_MS ?? 4000) * 2;
   out.onchainStatus = Object.fromEntries(before.map((id) => [id.slice(0, 10), readChannel(rpc, id).status]));
   out.staleRowsWhileStopped = buyerActiveRows(buyerDb).filter((r) => before.includes(r.session_id)).length;
   // Without a stale row there is nothing for the restart to fix.
@@ -440,7 +453,7 @@ async function stale1050Phase({ sc, seller, buyer, buyerDir, buyerTree, buyerHom
   const offlineDir = join(buyerDir, '..', 'buyer-offline-copy');
   cpSync(buyerDir, offlineDir, { recursive: true });
   out.cliStatusStopped = await cliActiveChannels(buyerTree, offlineDir, buyerHome);
-  await sleep(Number(process.env.RPC_LAG_WINDOW_MS ?? 4000) * 2);
+  await sleep(Math.max(0, lagOverAt - Date.now()));
   out.cliStatusStopped2 = await cliActiveChannels(buyerTree, offlineDir, buyerHome);
   if (out.staleRowsWhileStopped !== buyerActiveRows(buyerDb).filter((r) => before.includes(r.session_id)).length) {
     result.violations.push({ kind: 'HARNESS-offline-status-touched-the-buyer-store' });
@@ -603,7 +616,7 @@ async function oneRun({ scenarioName, sc, sellerTree, buyerTree, runDir }) {
       if (!restartInfo) result.violations.push({ kind: 'HARNESS-no-top-up-held-for-the-restart' });
     }
     if (sc.stale1050) {
-      result.issue1050 = await stale1050Phase({ sc, seller, buyer, buyerDir, buyerTree, buyerHome, rpc, result });
+      result.issue1050 = await stale1050Phase({ sc, seller, buyer, sellerDir, buyerDir, buyerTree, buyerHome, rpc, mock, result });
       // Pay again: the buyer must open a fresh channel and settle it like any other.
       await runLoad({ ...sc, requests: sc.requests }, results);
     }
@@ -617,7 +630,7 @@ async function oneRun({ scenarioName, sc, sellerTree, buyerTree, runDir }) {
       if (ext.length) { result.violations.push({ kind: 'HARNESS-ISOLATION-LEAK', ips: [...new Set(ext)].slice(0, 5) }); }
     }
     // Quiesce: let post-response NeedAuth / SpendingAuth round trips finish.
-    await sleep(10000);
+    result.quiesceMs = await quiesceFor(sellerDir, buyerDir, mock);
     result.procAliveBeforeClose = { seller: seller.alive, buyer: buyer.alive };
     const sellerDb = join(sellerDir, 'payments', 'sessions.db');
     const buyerDb = join(buyerDir, 'payments', 'sessions.db');
@@ -652,7 +665,7 @@ async function oneRun({ scenarioName, sc, sellerTree, buyerTree, runDir }) {
       return allClosed;
     }, 'on-chain close', 60000, 1000).catch((e) => result.notes.push(`close wait: ${e.message}`));
     for (const id of allIds) onchain[id] = readChannel(rpc, id);
-    await sleep(1500);
+    await settledRows({ sellerRows: () => sqliteJson(sellerDb, q).filter((r) => r.role === 'seller'), buyerRows: () => sqliteJson(buyerDb, q).filter((r) => r.role === 'buyer'), allIds, onchain });
     const sellerRowsPost = sqliteJson(sellerDb, q).filter((r) => r.role === 'seller');
     const buyerRowsPost = sqliteJson(buyerDb, q).filter((r) => r.role === 'buyer');
     const chain1 = chainSnapshot(rpc);

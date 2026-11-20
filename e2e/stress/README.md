@@ -50,8 +50,8 @@ Needs Foundry (`anvil`, `forge`, `cast`) and a full build (`pnpm run build`, or 
 # Every gated scenario once, two at a time
 node e2e/stress/ci.mjs --parallel 2
 
-# What CI runs: the same, split over three jobs. Shards 1/N to N/N run each scenario exactly once
-node e2e/stress/ci.mjs --parallel 2 --shard 1/3
+# What CI runs: the same, split over nine jobs. Shards 1/N to N/N run each scenario exactly once
+node e2e/stress/ci.mjs --parallel 2 --shard 1/9
 
 # Some scenarios, or the gates against another built checkout's CLI
 node e2e/stress/ci.mjs --scenarios c64,restart-buyer

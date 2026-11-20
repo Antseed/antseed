@@ -413,12 +413,21 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
     manager.recordSpend(CHANNEL_ID, 750_000n);
 
-    const result = await manager.handleCloseChannelRequest(
-      buyer.peerId,
-      { version: 1, channelId: CHANNEL_ID },
-      mux,
-      // No buyer answers the NeedAuth here, so the close waits out the catch-up window.
-    );
+    // No buyer answers the NeedAuth here, so the close waits out the 5 s catch-up window, on a fake clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let result: Awaited<ReturnType<typeof manager.handleCloseChannelRequest>>;
+    try {
+      const pending = manager.handleCloseChannelRequest(
+        buyer.peerId,
+        { version: 1, channelId: CHANNEL_ID },
+        mux,
+      );
+      pending.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(5_000);
+      result = await pending;
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(result.status).toBe('rejected');
     expect(result.code).toBe('pending_auth');
@@ -428,7 +437,7 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     const needAuth = mux.sentNeedAuths.at(-1) as Record<string, unknown>;
     expect(needAuth.channelId).toBe(CHANNEL_ID);
     expect(needAuth.requiredCumulativeAmount).toBe('750000');
-  }, 10_000);
+  });
 
   it('asks for the catch-up auth before waiting, so a buyer that answers gets its close', async () => {
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);

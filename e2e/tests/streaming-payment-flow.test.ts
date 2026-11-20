@@ -336,6 +336,7 @@ describe('Streaming payment flow E2E', () => {
 
     sellerNode = new AntseedNode({
       role: 'seller',
+      natTraversal: false,
       dataDir: sellerDataDir,
       dhtPort: 0,
       signalingPort: 0,

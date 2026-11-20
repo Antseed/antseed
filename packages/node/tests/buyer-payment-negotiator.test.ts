@@ -266,10 +266,23 @@ describe('BuyerPaymentNegotiator', () => {
   });
 
   describe('handle402', () => {
+    /** handle402 with no PaymentRequired frame buffered: it waits out the 2 s PaymentRequired wait on a fake clock. */
+    async function handle402WaitingOutPaymentRequired() {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const pending = negotiator.handle402(make402Response(), peer, conn, makeRequest());
+        pending.catch(() => undefined);
+        await vi.advanceTimersByTimeAsync(2_000);
+        return await pending;
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+
     it('returns a non-payment error when no depositsClient is configured in auto mode', async () => {
       negotiator = new BuyerPaymentNegotiator(identity, bpm as unknown as BuyerPaymentManager, null, channelsClient, channelStore, config, emitter);
 
-      const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
+      const result = await handle402WaitingOutPaymentRequired();
       expect(result.action).toBe('return');
       const res = (result as { action: 'return'; response: SerializedHttpResponse }).response;
       expect(res.statusCode).toBe(503);
@@ -283,7 +296,7 @@ describe('BuyerPaymentNegotiator', () => {
       depositsClient = createMockDepositsClient(0n);
       negotiator = new BuyerPaymentNegotiator(identity, bpm as unknown as BuyerPaymentManager, depositsClient, channelsClient, channelStore, config, emitter);
 
-      const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
+      const result = await handle402WaitingOutPaymentRequired();
       expect(result.action).toBe('return');
     });
 
