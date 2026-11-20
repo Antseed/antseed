@@ -254,7 +254,9 @@ function StateBadge({ position, currentEpoch, fromEarning = false }: { position:
       : `Replaces a split, merged, or moved position and starts earning at epoch ${position.stakeStartEpoch}.`;
     return <Pill tone="amber" title={title}>Takes over epoch {position.stakeStartEpoch}</Pill>;
   }
-  return <Pill tone={activating ? 'amber' : STATE_TONE[state]} title={activating ? 'The transaction is confirmed. This position starts contributing staking power at its activation epoch.' : state === 'matured' && canTransfer ? MATURED_RESTAKE_DESCRIPTION : STATE_DESCRIPTION[state]}>{activating ? `Activates epoch ${position.stakeStartEpoch}` : state}</Pill>;
+  if (activating) return <Pill tone="amber" title="The transaction is confirmed. This position starts contributing staking power at its activation epoch.">Activates epoch {position.stakeStartEpoch}</Pill>;
+  const description = state === 'matured' && canTransfer ? MATURED_RESTAKE_DESCRIPTION : STATE_DESCRIPTION[state];
+  return <Pill tone={STATE_TONE[state]} title={description}>{state}</Pill>;
 }
 
 function actionProblem(position: PositionView, action: PositionAction, currentEpoch?: number, canTransfer = false): string | null {
