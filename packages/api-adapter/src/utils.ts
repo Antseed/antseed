@@ -205,7 +205,7 @@ export function extractImageRequestFacts(input: {
 }
 
 /** Every request field `extractSpeechRequestFacts` reads. A seller checks each is spelled exactly. */
-export const SPEECH_REQUEST_FIELDS: readonly string[] = ['input', 'voice', 'response_format'];
+export const SPEECH_REQUEST_FIELDS: readonly string[] = ['input', 'voice', 'response_format', 'stream_format'];
 
 /** What an OpenAI `POST /v1/audio/speech` request asks for. */
 export interface SpeechRequestFacts {
@@ -213,6 +213,8 @@ export interface SpeechRequestFacts {
   characters: number;
   voice?: string;
   responseFormat?: string;
+  /** Set when `stream_format` asks for anything but plain audio, such as a stream of events. */
+  eventStream?: true;
 }
 
 /** Speech request facts from a JSON body, or null when `input` is missing or not text. */
@@ -225,6 +227,7 @@ export function extractSpeechRequestFacts(body: Record<string, unknown> | null |
     characters,
     ...(typeof body?.voice === 'string' ? { voice: body.voice } : {}),
     ...(typeof body?.response_format === 'string' ? { responseFormat: body.response_format } : {}),
+    ...(body?.stream_format != null && body.stream_format !== 'audio' ? { eventStream: true as const } : {}),
   };
 }
 
@@ -432,7 +435,8 @@ function hasImageOutputAttributes(attrs: ImageRequestFacts): boolean {
     || attrs.resolution !== undefined;
 }
 
-function isDeliveredImageOutput(value: unknown): boolean {
+/** Whether an image item (a JSON `data` entry or a streamed completed event) carries an image: a non-empty `b64_json` or `url`. */
+export function isDeliveredImageOutput(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
   return isNonEmptyString(item.b64_json) || isNonEmptyString(item.url);

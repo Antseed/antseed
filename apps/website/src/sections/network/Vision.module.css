@@ -1,0 +1,20 @@
+.rail { padding-top: 120px; }
+.head { padding-bottom: 64px; }
+.vision .principles { grid-template-columns: repeat(4, 1fr); }
+.vision .principle { --dots-top: 2px; place-items: start; }
+.vision .caption { max-width: none; }
+
+@media (min-width: 1200px) {
+  .vision .rail { padding-block: 124px; }
+  .vision .head { padding-bottom: 40px; }
+}
+@media (max-width: 1023px) {
+  .vision .principles { grid-template-columns: 1fr 1fr; }
+  .vision .principle:nth-child(3) { --dots-left: 0px; }
+}
+@media (max-width: 760px) {
+  .rail { padding-top: 72px; }
+  .vision .head { padding-bottom: 40px; }
+  .vision .principles { grid-template-columns: 1fr; }
+  .vision .principle { padding: 24px var(--site-pad) 28px; }
+}

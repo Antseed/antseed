@@ -75,6 +75,12 @@ export interface PositionView {
   weightAmount: string;
   stakeStartEpoch: number;
   stakeEndEpoch: number;
+  /**
+   * Lock start the pool uses for merges and the early-exit burn. For split, merged
+   * and moved positions it is inherited from the originals, so it can precede
+   * `stakeStartEpoch`; disabling max lock resets it. Null or absent when unknown.
+   */
+  normalStartEpoch?: number | null;
   closedAtEpoch: number;
   withdrawn: boolean;
   state: PositionState;

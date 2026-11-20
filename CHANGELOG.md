@@ -8,6 +8,119 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
+- Docs: **Gateway → Run on a server** explains how to keep long streamed responses alive behind a proxy: an nginx example for `--public-url` with buffering off and a longer read timeout, why Cloudflare can close a stream that stays silent for about 100 seconds (a DNS-only record avoids it), and `/healthz` for uptime checks.
+- Sellers (CLI, `@antseed/node`): `payments.suggestedReserveAmount` sets the first reserve a seller suggests to a buyer with no channel (USDC base units; default `1000000`, the contract's default first-sign cap), kept between `minBudgetPerRequest` and the cap. A seller of small per-request services can suggest less, so a buyer's deposit reaches more sellers.
+
+### Fixed
+
+- ANTS dashboard: a matured position tells users to withdraw and stake again only when their wallet can transfer ANTS. While transfers are disabled, the action error (extend, move, split, merge, max lock), the **Status** tip and the **Can no longer be extended** tip say the position can only be withdrawn and that withdrawn ANTS can't be staked again for now, since wallet ANTS can't be staked until then.
+- Agent streaming (`@ant-agent`): streamed provider chunks are re-framed into whole SSE events before internal-tool suppression, so a chunk ending mid-event no longer leaks a partial event to the buyer or glues the buyer's event tail to the next chunk. Nonempty partial chunks stay buffered until an event completes, and a nonempty terminal chunk is emitted once through the event filter instead of being replayed raw.
+- Payments portal: `GET /api/emissions/pending` no longer reports a recognized-usage buyer epoch as unclaimed after the buyer (or its authorized wallet) has claimed or staked it. `AntseedUsageRewards.pendingBuyerReward` keeps returning the full amount after a claim, so the route now also reads `buyerEpochClaimed` and reports such an epoch with `buyer.claimed: true` and `buyer.amount: "0"`, as the CLI and the ANTS dashboard already do. Seller amounts were already correct.
+- Routing (CLI, `@antseed/node`, `@antseed/router-core`): sellers that tie on reputation, for a buyer with no routing preferences, and sellers that tie on composite score in the local router now rotate which one is tried first, instead of always going in peer id order. The reputation-only path keeps peer id order on the first request to a tied pool, then rotates. Each model, and each distinct seller pool of a model, keeps its own place. A seller with a higher reputation, a higher composite score or a better price still stays in front. The `/v1/models` peer list and the desktop model list keep a stable order (issue #1554).
+- Website: providers can apply for Foundation staking directly from the providers page again.
+
+### Changed
+
+- Website: the Telegram buttons on `/colony/` now read "Join the local AI Telegram group".
+- Website: the Colony page no longer says early access is invite-only while we test.
+- Website: the Colony waitlist card now leads with the waitlist number in large type, and it only appears once the number is known, from the welcome email's link to `/colony/joined/`. Before that, the sign-up's last step and `/colony/joined/` say the card with the number comes by email. On a computer, Share on X copies the card to the clipboard before it opens X, so one paste attaches the picture to the post. If the browser refuses the copy, the page says to save the image instead.
+
+## 2026-11-20 — CLI 0.1.255, Node 0.2.188
+
+### Packages
+
+- `@antseed/cli@0.1.255`
+- `@antseed/node@0.2.188`
+- `@antseed/protocol@0.1.22`
+- `@antseed/api-adapter@0.1.66`
+- `@antseed/buyer-core@0.1.53`
+- `@antseed/connected-apps@0.1.16`
+- `@antseed/web-sdk@0.1.47`
+- `@antseed/provider-fal-video@0.1.25`
+- `@antseed/provider-alibaba-video@0.1.13`
+- `@antseed/provider-fal-image@0.1.9`
+- `@antseed/provider-venice-video@0.1.26`
+- `@antseed/payments@0.1.115`
+- `@antseed/ants@0.1.73`
+
+### Fixed
+
+- fal video sellers (`@antseed/provider-fal-video`): a job whose model failed behind fal now ends as `FAILED`. fal reports such a job as `COMPLETED` and answers its result with `500 downstream_service_error` on every fetch; the plugin treated that as temporary, so buyers polled "status unavailable" until the job's channel expired.
+
+### Changed
+
+- Sellers (`@antseed/node`): a single video job still undownloaded an hour after it started no longer holds the buyer back from new videos on that seller (`409 video_jobs_uncollected`). A job stuck upstream stayed undownloaded however often the buyer polled, so one failed job blocked every video the buyer started there until its channel expired a day later. Undownloaded jobs still count toward the limit of 16 (`409 video_jobs_open_limit`), and a downloaded video that isn't paid for still holds the buyer back.
+- Verifier docs: "Become a verifier" and "How audits run" now lead with `verifier watch` as the way to run an approved auditor. A single `verifier run` and `verifier submit` per epoch misses the `DIFF`s other auditors submit later, which need your confirmation within 12 hours. "Become a verifier" has a new step, "Keep it running", and the cron example calls `watch --once`. Its setup also explains the two keys a verifier uses (the buyer wallet that pays sellers and the auditor key that signs submits and holds the gas) and how to create the auditor keystore.
+
+## 2026-11-20 — CLI 0.1.254, Node 0.2.187, Desktop 0.2.90
+
+### Packages
+
+- `@antseed/cli@0.1.254`
+- `@antseed/node@0.2.187`
+- `@antseed/provider-core@0.2.69`
+- `@antseed/provider-alibaba-video@0.1.12`
+- `@antseed/provider-anthropic@0.1.63`
+- `@antseed/provider-claude-code@0.1.63`
+- `@antseed/provider-claude-oauth@0.1.69`
+- `@antseed/provider-fal-image@0.1.8`
+- `@antseed/provider-fal-video@0.1.24`
+- `@antseed/provider-local-llm@0.1.63`
+- `@antseed/provider-openai@0.2.62`
+- `@antseed/provider-openai-responses@0.1.56`
+- `@antseed/provider-typesafe@0.1.15`
+- `@antseed/provider-venice-video@0.1.25`
+- `@antseed/payments@0.1.114`
+- `@antseed/ants@0.1.72`
+- `@antseed/gateway-console@0.1.37`
+
+### Desktop
+
+- `@antseed/desktop@0.2.90`
+
+### Changed
+
+- Website: the light paper is removed from the docs, the sidebar, the footer and `llms.txt`. `/lightpaper` and `/docs/lightpaper` redirect to the protocol overview, and links in the blog and docs point there. The desktop app's chat assistant links to the protocol overview instead.
+- The network stats service (`@antseed/network-stats`, `network.antseed.com/stats`) is retired. Read cached peers and prices from Antscan instead: `GET https://antscan.co/api/marketplace?limit=5000` (public JSON, CORS `*`); `PRICING.md`, the routing docs and `llms.txt` now show it. `@antseed/node`'s chain config drops `networkStatsUrl`, and the payments portal's `/api/config` no longer returns it.
+- Website: antseed.com has a new design. The homepage, `/network/`, `/providers/` and `/ecosystem/` are redesigned. There are two new pages: `/ants/` (the token page, which replaces `/ants-token/`; the old URL redirects) and `/colony/`, whose waitlist sign-up at `/colony/join/` asks one question at a time (people without a Mac can join too), then hands off to a Google Form that confirms the visitor's email (one sign-up per Mac). The last step and the new `/colony/joined/` page, where the form's thank-you note and the welcome email lead, point people to the Local AI Colony group on Telegram first, then show a waitlist card to share on X or save. A link from the welcome email puts the waitlist number on the card, on any device. A post shared from there links to a page for that Mac (`/colony/mac/macbook-pro/` and so on), so X and other apps show the card for their Mac as the post's picture. Its Telegram buttons lead to the Local AI Colony group. The other marketing pages, `/brand/` and the integration guides are rebuilt in the same design. The docs and the blog share the new navigation, footer, fonts and colours. Dark mode is opt-in. The header links to gateway setup, GitHub and X. The network diagram uses watercolour layers. Network figures and live model prices (text, image, video and voice) now come from Antscan.
+
+### Fixed
+
+- Gateway (CLI): x402 key top-ups now accept payments from smart accounts, such as EIP-7702 wallets. The gateway checked the payment signature as an ECDSA signature by the payer only, and refused any other with `invalid_exact_evm_payload_signature` before asking the facilitator, even when USDC would accept it. It now does what USDC does: when the signature is not the payer's ECDSA signature, it asks the payer's contract (ERC-1271 `isValidSignature`) through the gateway's Base RPC. When that RPC cannot be read, the top-up is refused with `unexpected_verify_error`.
+- Website: link previews on X, Telegram, WhatsApp and LinkedIn show the new share image with the site's approved description. The share images are now JPEGs under 250 KB, since WhatsApp leaves out a preview image that is too large, and blog posts without their own image share the new one instead of the old logo card. The `/ants/` preview says ANTS, without the dollar sign.
+- Website: the homepage shows its first screen sooner, most of all on phones. Images further down the page (the network diagram's paintings, the desktop app's screens, the price board's ants), the hero's clouds and its meadow video now wait until the hero painting is on screen, so they never slow it down, even on a slow phone; phones get a smaller cut of the hero painting, and Google Tag Manager waits until the page has loaded.
+- Website: on iPhones, iPads and Safari, the homepage's incognito ant no longer sits in a blue box.
+- Website: the homepage loads much faster. Google Tag Manager now loads off the critical path (on the first interaction, or when the browser goes idle), and the marketing-title fonts show in a fallback and swap in rather than blocking the first paint.
+- Website: the homepage price board's title says "700+ models", the same count as the network figures and the rest of the site. It used to show a live count rounded to the hundred, which disagreed with the figures.
+- Sellers and buyers (`@antseed/node`, `@antseed/provider-core`, CLI): a video download refused because all of the seller's download slots are taken now reaches the buyer as what it is, a 429 `video_download_busy` with `Retry-After: 5`, which the buyer proxy passes on to the client. Before, the seller reported it as `upstream_rate_limited` ("rate limited on this seller right now") with no `Retry-After`, so buyers took a short wait for an upstream limit and gave up on a video that was ready.
+
+## 2026-11-18 — CLI 0.1.253, Node 0.2.186, Desktop 0.2.89
+
+### Packages
+
+- `@antseed/cli@0.1.253`
+- `@antseed/node@0.2.186`
+- `@antseed/api-adapter@0.1.65`
+- `@antseed/buyer-core@0.1.52`
+- `@antseed/web-sdk@0.1.46`
+- `@antseed/fingerprints@0.1.6`
+- `@antseed/model-verifier@0.1.6`
+- `@antseed/provider-fal-image@0.1.7`
+- `@antseed/provider-fal-video@0.1.23`
+- `@antseed/provider-alibaba-video@0.1.11`
+- `@antseed/provider-venice-video@0.1.24`
+- `@antseed/payments@0.1.113`
+- `@antseed/ants@0.1.71`
+- `@antseed/gateway-console@0.1.36`
+
+### Desktop
+
+- `@antseed/desktop@0.2.89`
+
+### Added
+
+- `@antseed/provider-fal-image` and `@antseed/provider-fal-video`: a service can be sold under a name of its own, like with every other provider plugin. Set `upstreamModel` (`ANTSEED_SERVICE_ALIAS_MAP_JSON`) to the fal endpoint ID, and buyers call the service by its name, for example `openai/gpt-image-2.5-flare` for `openai/gpt-image-2.5/flare/text-to-image`. Before, the plugins refused to start with an alias, so a service had to be named by its fal endpoint ID.
+- Buyers and sellers (`@antseed/buyer-core`, `@antseed/api-adapter`, `@antseed/node`): a speech request for its audio as a stream of events (`POST /v1/audio/speech` with `stream_format: "sse"`) is served and billed by the characters of its `input`, as a request for the audio itself is. The audio is OpenAI's `speech.audio.delta` events, decoded and joined in order, and it is billed only when it is real audio in the requested format and a `speech.audio.done` event ends it. A stream cut off before that, an error event or a malformed delta bills nothing. An upstream that ignores `stream_format` and answers with the audio file is billed as before. Clients that want the events as they arrive send `Accept: text/event-stream`.
 - `antseed verifier watch --no-submit`: every tick only audits (`verifier run`), so the audits, retries and confirmations go on without signing, publishing or sending anything, and no keystore is unlocked or password asked. Send the results with `antseed verifier submit` before the epoch ends. `--keystore` without `--auditor` is refused with this flag, since the auditor would have to be learned by unlocking it.
 - KBF batching (`@antseed/fingerprints`, `@antseed/model-verifier`, CLI): `kbfDomainBatches` (with the `IndexedKbfProbeBatch` type) cuts probes into the single-domain batches KBF audits ask, at most ten per request. `verifier run` and `@antseed/model-verifier` now both use it instead of a copy each, so their batches cannot drift apart. The batches are unchanged.
 - Verifiers (CLI): an auditor the owner removes mid-epoch stops paying at once. `verifier run` reads its own approval at the start of every tick and again before each model's question builds, each seller audit and each close call's extra set; once removed it starts nothing new and says so (a close call is left waiting for its extra questions), instead of building question sets and paying sellers until its `submit` is refused. A failed read never stops a run.
@@ -22,7 +135,6 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
-- Verifiers (CLI): **publish this release at the end of an epoch.** It raises the verifier compat to 3 (two opinions per seller, one confirmer at a time, never a third opinion). Once it is on npm, `verifier run` and `verifier submit` on any auditor still on an older release (a lower compat, or none, which counts as 0) stop before sending anything, so a release mid-epoch would strand that auditor's unsent results, and auditors on both rules would disagree on who confirms. Publish just before an epoch ends and have every auditor run `antseed update` before the next epoch starts.
 - Verifier docs: "How audits run" has a section for running several auditors (approve 72 hours before the auditor's first epoch, one data dir, buyer and reference key per auditor, remove auditors at an epoch boundary, one CLI release for all) and explains the 10-minute submit wait, pending transactions and results lost at an epoch change.
 - Verifiers (CLI): each model now runs in its own lane in `verifier run` and `watch`. A model's audits start as soon as its question set is ready, instead of waiting for every other model's build. A model that can't be audited no longer stops the others, whether its build failed, its question set can't be used (with `--no-enroll`, a missing set used to stop the whole run) or the buyer or a `--peer` seller went away during its build. It's reported, and the run exits with an error. Docs: **Verify → Audits**.
 - Verifiers (CLI): a question build that runs into the last 45 minutes of the epoch no longer opens an audit window or starts paid audits. The cutoff is read again after the build and when the model gets its audit slot. Such a model stops without an error and waits for the next epoch; a model whose window is already open keeps finishing, and confirmations are still audited. A window also no longer opens late just because the model has a confirmation. A model that waits for its audit slot until the epoch is over starts no audit, not even for an open window or a confirmation, and the next round plans it for the new epoch; before, it paid sellers for results `verifier submit` then refused.
@@ -35,11 +147,13 @@ This project uses selective package publishing. Each release entry lists the pub
 - Verifiers (CLI): verifier compat 2. The pinned rules hash now also covers the domain table (ranges, tolerances, templates), the prompt variants, sample parsed replies and scored answers, the calibration rules, the layout filter passes and the close-call extensions. `verifier.closeCallExtensions`, `verifier.referenceSelfTestRuns`, `verifier.referenceLayoutFilterPasses`, `verifier.referenceMinimumProbeCount`, `verifier.referenceMaximumProbeCount`, `verifier.referenceProbeStep` and `verifier.referenceMinimumStatisticalPower` set away from their defaults (2, 3, 2, 100, 500, 10 and 0.9) now stop `verifier run`, since auditors on the same compat would judge differently; `--skip-version-check` allows them for a test.
 - Docs: `@antseed/fingerprints` comments, the `@antseed/model-verifier` README and **Protocol → Model verification** no longer claim parity with the KBF reference code where it doesn't hold: how audits send thinking suppression, what the self-test measures, how many questions a verdict needs, and that a quantized copy of a model has a different boundary.
 - Verifiers (CLI): **one question set per model and epoch, and one audit window per model.** Every seller of a model now gets the same questions in the same order, and every close call the same extra sets: the auditor's question set for the model and epoch (`<banksDir>/<model>/epochs/<epoch>/set.json`, selection method `epoch-shared-set-v1`, recorded in the model audit evidence as `questionSelection`). The model's first `verifier run` of the epoch builds it from new questions (up to 4 builds per run; `--no-enroll` turns this off and stops the run for a model without a set), leaving out every question whose text was asked before, in an earlier epoch's set or in a bank from before shared sets, even under a new id; a set is never used after its epoch, extra questions nobody needed included. The audit set is sized as before (statistical power, every testable contrast detected), and each of the two extra sets is as large, so every epoch needs a new reference build per model. Each model is audited once per epoch in an audit window (`<evidenceDir>/epochs/<epoch>/windows/<model>.json`): the first run fixes the window's sellers, later runs only retry them (with the same attempt limits and spacing as before) and finish their close calls, and `verifier submit` holds the model back until the window closes, once none of its sellers has anything left or with less than 45 minutes left in the epoch, then sends its results in one audit. A seller that was tried but couldn't be decided, and a close call whose extra questions couldn't be asked, are submitted UNDETERMINED; a seller that came online after the window opened gets no result that epoch. Confirmations of other auditors' DIFFs are not windowed and are submitted as before; a stand-in model opens its own window. No window opens with less than 45 minutes left in the epoch. Removed: the per-seller draw (`per-seller-csprng-shuffle-v1`, still read for earlier runs), the per-seller unseen-question checks and the builds they triggered (also for close calls), `BANK_EXHAUSTED`, and `--allow-probe-reuse` on `verifier run` and `verifier watch`. The seller ledgers only record reservations now (resume and voiding). These rules are part of verifier compat 1. Docs: **Verify → Audits → Questions for each epoch**, **Audit windows**, **Become a verifier**, CLI README.
-- Verifiers (CLI): `antseed verifier run` and `verifier submit` no longer stop for every new `@antseed/cli` release, only for one that changes how audits work. Each release carries a verifier compat number (`antseedVerifier.compat` in `apps/cli/package.json`, 1 in this release), read from npm's latest `package.json`; a CLI stops only when the published compat is higher than its own, and any other newer release prints that an update is available while the command, or `verifier watch`, carries on. Releases without the field (0.1.230 and earlier) count as compat 0. The number goes up only for changes to the audited models and their contrasts, the round-robin split, confirmer and stand-in rules, scoring and verdict thresholds, close-call rules, question selection, audit window and retry rules, or the reference builder and sizing versions; a CI test pins a hash of these rules (including sampled assignments and verdicts) per compat number, so changing them without a bump fails. Releases that raise the compat number are published at the end of an epoch, so every auditor switches at the same epoch start. The `--skip-version-check` help texts say so. Docs: **Verify → Audits → Up-to-date CLI**, CLI README.
+- Verifiers (CLI): `antseed verifier run` and `verifier submit` no longer stop for every new `@antseed/cli` release, only for one that changes how audits work. Each release carries a verifier compat number (`antseedVerifier.compat` in `apps/cli/package.json`, 1 in this release), read from npm's latest `package.json`; a CLI stops only when the published compat is higher than its own, and any other newer release prints that an update is available while the command, or `verifier watch`, carries on. Releases without the field (0.1.230 and earlier) count as compat 0. The number goes up only for changes to the audited models and their contrasts, the round-robin split, confirmer and stand-in rules, scoring and verdict thresholds, close-call rules, question selection, audit window and retry rules, or the reference builder and sizing versions; a CI test pins a hash of these rules (including sampled assignments and verdicts) per compat number, so changing them without a bump fails. The `--skip-version-check` help texts say so. Docs: **Verify → Audits → Up-to-date CLI**, CLI README.
 - Verifiers (CLI): a seller or unclear failure is retried at least 30 minutes after the audit that failed (before: 3 hours), also when the retry resumes automatically from this epoch's results or an interrupted run, and audits closer together than that count as one attempt. A retry minutes later failed the same way and used up the seller's retry for the epoch. A longer outage (an upstream rate or usage limit, a failing self-health check) can still fail the retry.
 
 ### Fixed
 
+- ANTS staking (`@antseed/ants`, `@antseed/node`, staking window, gateway console, `antseed ants positions`): the merge dialog no longer offers merges the pool refuses when it knows the positions' lock history. The pool merges only positions whose locks started in the same epoch, and split, merged and moved positions keep the lock start of the positions they came from (disabling max lock resets it), so two positions with the same shown start and unlock epoch could still be unmergeable. The dashboard now rebuilds each position's real lock start from its history (the Antscan feed and the pool's checkpoints) and says "These positions started their locks at different epochs, so they can't be merged" before you sign. The positions list shows that lock start under the unlock date ("lock started epoch 24") whenever it is known, so you can see which positions will merge, the Merge button's hover text names the lock start the selected positions share, and when they can't be merged the reason shows under the button. When the history can't settle a start (no indexer, or right after a change that takes effect next epoch), the start stays unknown and the merge is left to the check that runs before signing, so the dashboard never blocks a merge the pool accepts. The early-exit burn estimated for split, merged and moved positions, and for positions that left max lock, now uses that real lock start as the pool does, instead of the shown start (which overstated the burn after a merge and understated it after max lock). A pool refusal is named in words (for example the merge reason above, or "The position changed this epoch") instead of "unknown custom error". `projectedEarlyExitSlashBps` in `@antseed/node` takes an optional normal lock start.
+- Buyers and sellers (`@antseed/buyer-core`, `@antseed/api-adapter`, `@antseed/node`): an image answered as a stream of events (`stream: true`, with or without `partial_images`) is billed per final image (OpenAI's `image_generation.completed` and `image_edit.completed` events), as an image answered as JSON is. Before, buyer and seller both counted no image in a streamed answer, so it was served for free. Partial previews are not billed, and no more images are billed than the request asked for. A seller refuses `stream_format` on a speech request spelled any other way.
 - Verifiers (CLI), `@antseed/fingerprints` and `@antseed/model-verifier`: an epoch question set is only asked of sellers once its audit set reaches the required statistical power on its own calibration, the limit sellers are judged against. Sets were sized from the enrollment self-test's miss rate, so a reference that missed more in the calibration left its set under-powered without a word, and a calibration that missed every question would have judged every seller `SAME`. Now `verifier run` checks the power on the calibration's trials. When it falls short, the set grows in one step to the size the measured miss rate needs (the audit set keeps its questions, both extra sets grow to match it, more questions are built if needed) and is calibrated again in its new batches, at most 3 calibrations per model and run; a set still short goes on in the next run. When no allowed size reaches the power (up to 500 questions, or a miss rate above 50%), the calibration fails with the reason and the model is not audited that epoch. A grown set keeps its earlier calibrations in `set.json` (`growth`), and their raw exchanges are published with the bank's evidence like any calibration. No seller is asked a set that waits to grow or to be calibrated again. A set calibrated before this check that falls short is not asked of new sellers, and audits already made on it can still be submitted. `validateKbfReferenceV1` also checks the power on a reference's calibration (option `minimumCalibrationPower`, by default `minimumStatisticalPower`; new helper `kbfCalibrationPower`). `antseed-verify` and `verifier check` refuse a published reference whose calibration gives no power at all, and still load ones published before this check. Docs: **Verify → Audits → Questions for each epoch**.
 - Docs: **Protocol → Model verification** and **Verify → Audits** no longer say that a seller refusing `temperature` gets `UNDETERMINED`. Such a seller is asked again without the field and judged on those answers, with the dropped field recorded in the evidence (`omittedSamplingFields`); a seller that only accepts another `temperature` value is skipped.
 - Verifiers (CLI): each epoch's questions are built into a bank of their own (`<banks>/<model>/epochs/<epoch>/bank.json`), whose first build takes its settings from the config and the built-ins as they are then: provider pin, contrast models, thinking suppression, layout filter and request timeout. Before, every epoch added to one bank per model and kept the settings of that bank's first build, so a model whose pinned provider had left OpenRouter could not be built any more and was skipped for the epoch (`No endpoints found`). Within an epoch the settings stay fixed: its later builds, the calibration (which now asks the provider the bank pinned, whatever the config pins now), close calls and confirmations keep them, and a build never resumes another epoch's checkpoint. Before an epoch's first build, pinned providers OpenRouter no longer lists for the model are left out of the pin; when none is left, one listed provider is pinned instead, the same on every auditor (the first by tag with the pin's quantization, else the first of all), and the run log names both. When the list can't be read, the pin stays. A question set no longer leaves out questions asked in an earlier epoch, and a submission publishes only the reference evidence of its epoch's bank. Banks from before (`<banks>/<model>/bank.json`) and question sets built on them are no longer read: such an epoch is not audited, resumed or submitted, and there is no migration. `antseed verifier reference build` is removed: `verifier run` builds every epoch's bank.

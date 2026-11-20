@@ -1,5 +1,5 @@
 import type { AntseedProviderPlugin, Provider, SerializedHttpRequest, SerializedHttpResponse, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus } from '@antseed/node';
-import { validateServiceCapabilityFields } from '@antseed/node';
+import { MAX_SERVICE_NAME_LENGTH, validateServiceCapabilityFields } from '@antseed/node';
 import { parseJsonObject, parseMultipartForm } from '@antseed/api-adapter';
 import {
   FAL_PLATFORM_URL,
@@ -11,6 +11,7 @@ import {
   isFalEndpointId,
   openAiError,
   parseCsv,
+  parseServiceAliasMap,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
   readFalAccount,
@@ -256,6 +257,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'FAL_IMAGE_BASE_URL', label: 'fal URL', type: 'string', default: FAL_IMAGE_DEFAULT_BASE_URL },
     { key: 'FAL_IMAGE_API_KEY', label: 'fal API Key', type: 'secret', required: true },
     { key: 'ANTSEED_ALLOWED_SERVICES', label: 'Services', type: 'string[]', required: true },
+    { key: 'ANTSEED_SERVICE_ALIAS_MAP_JSON', label: 'Service Aliases', type: 'string', description: 'JSON map of announced service → fal endpoint ID' },
     { key: 'ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON', label: 'Unit Pricing', type: 'string', required: true },
     { key: 'ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON', label: 'Edit Endpoints', type: 'string', description: 'JSON map of service → fal edit endpoint ID' },
     { key: 'ANTSEED_SERVICE_CAPABILITIES_JSON', label: 'Capabilities', type: 'string' },
@@ -276,12 +278,16 @@ const plugin: AntseedProviderPlugin = {
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
       throw new Error('FAL_IMAGE_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment');
     }
-    if (config['ANTSEED_SERVICE_ALIAS_MAP_JSON']) throw new Error('fal image services must use fal endpoint IDs');
 
     const services = parseCsv(config['ANTSEED_ALLOWED_SERVICES']);
     if (services.length === 0) throw new Error('ANTSEED_ALLOWED_SERVICES is required');
-    const invalid = services.find(service => !isFalEndpointId(service));
-    if (invalid) throw new Error(`Invalid fal endpoint ID: ${invalid}`);
+    const tooLong = services.find(service => service.length > MAX_SERVICE_NAME_LENGTH);
+    if (tooLong) throw new Error(`Service ID is longer than ${MAX_SERVICE_NAME_LENGTH} characters: ${tooLong}`);
+    // A service is the fal endpoint it names, unless the alias map sends it to another.
+    const aliases = parseServiceAliasMap(config['ANTSEED_SERVICE_ALIAS_MAP_JSON']);
+    const endpointOf = (service: string) => aliases?.[service.toLowerCase()] ?? service;
+    const invalid = services.find(service => !isFalEndpointId(endpointOf(service)));
+    if (invalid) throw new Error(`Invalid fal endpoint ID: ${endpointOf(invalid)}`);
     const serviceUnitBillingModels = parseServiceUnitBillingModelsJson(config['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON']);
     const missingPricing = services.find(service => !serviceUnitBillingModels?.[service]?.[PROTOCOL]);
     if (missingPricing) throw new Error(`Missing ${PROTOCOL} unit pricing for ${missingPricing}`);
@@ -316,7 +322,7 @@ const plugin: AntseedProviderPlugin = {
 
     // Announces the OpenAI fields each service takes, from its fal schema.
     const init = async () => {
-      await Promise.all([...new Set([...services, ...editEndpoints.values()])].map(async endpoint => {
+      await Promise.all([...new Set([...services.map(endpointOf), ...editEndpoints.values()])].map(async endpoint => {
         try {
           const response = await fetch(`${FAL_SCHEMA_URL}?endpoint_id=${encodeURIComponent(endpoint)}`, { redirect: 'error', signal: AbortSignal.timeout(SCHEMA_TIMEOUT_MS) });
           const schema = response.ok ? falImageSchema(parseJsonObject(Buffer.from(await response.arrayBuffer())), endpoint) : null;
@@ -327,7 +333,7 @@ const plugin: AntseedProviderPlugin = {
       }));
       for (const service of services) {
         const capabilities = serviceCapabilities[service]!;
-        const schema = schemas.get(service);
+        const schema = schemas.get(endpointOf(service));
         if (capabilities.supportedParameters || !schema) continue;
         const parameters = [
           'n', 'response_format', 'moderation', 'size',
@@ -364,7 +370,7 @@ const plugin: AntseedProviderPlugin = {
       if (headerService && headerService.toLowerCase() !== service.toLowerCase()) {
         throw new RequestError(400, `x-antseed-service "${headerService}" does not match the requested model "${service}".`, 'model');
       }
-      const endpoint = edit ? editEndpoints.get(service) : service;
+      const endpoint = edit ? editEndpoints.get(service) : endpointOf(service);
       if (!endpoint) throw new RequestError(400, `Model "${service}" does not support image edits.`, 'model');
       const schema = schemas.get(endpoint) ?? null;
       const input = falImageInput(fields, schema);
@@ -433,11 +439,11 @@ const plugin: AntseedProviderPlugin = {
       init,
       handleRequest,
       async checkServiceHealth(checked) {
-        const endpoints = [...new Set(checked.flatMap(service => [service, ...(editEndpoints.has(service) ? [editEndpoints.get(service)!] : [])]))];
+        const endpoints = [...new Set(checked.flatMap(service => [endpointOf(service), ...(editEndpoints.has(service) ? [editEndpoints.get(service)!] : [])]))];
         const statuses = await readFalModelStatuses(FAL_PLATFORM_URL, authorization, endpoints);
         return Object.fromEntries(checked.map((service): [string, ServiceHealthStatus] => {
           if (!statuses) return [service, { status: 'unknown', reason: 'fal model list unavailable' }];
-          for (const endpoint of [service, editEndpoints.get(service)].filter((id): id is string => !!id)) {
+          for (const endpoint of [endpointOf(service), editEndpoints.get(service)].filter((id): id is string => !!id)) {
             const status = statuses.get(endpoint);
             if (!status) return [service, { status: 'unavailable', reason: `fal no longer offers ${endpoint}` }];
             if (status !== 'active' && status !== 'deprecated') return [service, { status: 'unavailable', reason: `fal reports ${endpoint} ${status}` }];

@@ -99,6 +99,7 @@ Some values live in more than one file and no compiler links them. Change every 
 | Gateway console API types | `apps/cli/src/gateway/console-api/types.ts`, imported by `apps/gateway-console` by relative path |
 | Private source packages | `packages/ui` and `packages/wallet-config` are compiled into gateway-console, payments, ants and the desktop. `scripts/npm-publish-plan.mjs` skips private packages, so a change there ships only when those apps are released; say which in the PR. |
 | Service protocol ids | `packages/protocol`; the separate list in `packages/api-adapter/src/types.ts`. No test checks they match. |
+| The video download busy code | `VIDEO_DOWNLOAD_BUSY_CODE` in `packages/node/src/health/self-health-error.ts` and `packages/provider-core/src/video-download.ts`; `packages/provider-core/src/video-download.test.ts` checks they match |
 | Telemetry rules | `packages/telemetry` (CLI and gateway); the desktop's own copy in `apps/desktop/src/main/telemetry/`, including the host env names and `TELEMETRY_SCHEMA_VERSION`; `docs/telemetry.md` |
 
 ## Map
@@ -126,7 +127,7 @@ An area's **Ask first** line lists changes to raise before you write them: with 
 | `apps/desktop` (guide) | Electron app |
 | `apps/gateway-console` (guide), `ants` (guide), `payments` (guide) | The gateway's web console; the ANTS staking service and web UI (compiled into the console); the buyer payments portal |
 | `apps/website` (guide) | antseed.com and the docs (Docusaurus). Doc URLs come from frontmatter slugs that other apps link to |
-| `apps/relay` (guide), `network-stats` (guide), `download-proxy` (guide) | Browser-buyer relay; network stats service; installer downloads Worker |
+| `apps/relay` (guide), `download-proxy` (guide) | Browser-buyer relay; installer downloads Worker |
 | `e2e/` (guide), `docs/protocol/` | End-to-end tests and the testbench; protocol spec and plugin templates |
 
 Dependency direction: `protocol` and `api-adapter` ← `buyer-core` ← `node` ← `provider-core` and `router-core` ← `plugins` ← `cli` ← `desktop`. `web-sdk` uses `buyer-core` and `protocol`. Cross-package references use `workspace:*`.

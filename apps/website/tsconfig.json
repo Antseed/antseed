@@ -5,6 +5,7 @@
     "paths": {
       "@site/*": ["./*"]
     },
-    "strict": false
+    "strict": false,
+    "allowImportingTsExtensions": true
   }
 }

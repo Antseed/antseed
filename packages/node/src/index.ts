@@ -226,6 +226,7 @@ export {
   SELF_HEALTH_ERROR_STATUS,
   buildSelfHealthErrorResponse,
   describeServiceHealth,
+  VIDEO_DOWNLOAD_BUSY_CODE,
 } from './health/self-health-error.js';
 export {
   buildNetworkServiceOffers,
@@ -500,6 +501,7 @@ export {
   MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER,
   VERIFICATION_STATUS_STALE_MAX_MS,
   compareEffectiveModelReputation,
+  rotateEqualReputationHead,
   effectiveModelReputationScore,
   hasLiveDiffVerdict,
   hasLiveSameVerdict,
@@ -558,4 +560,5 @@ export {
   type LoadedProvider,
   type LoadedRouter,
 } from './config/plugin-loader.js'
+export { nextRotationOffset, rotateHead, tiedSellerSignature } from './routing/rotation.js'
 export { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV, portInUse } from './gateway-process.js'

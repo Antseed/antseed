@@ -1,5 +1,5 @@
 import type { AntseedProviderPlugin, Provider, ProviderRequestRefusal, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus, VideoInputKind } from '@antseed/node';
-import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
+import { MAX_SERVICE_NAME_LENGTH, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
 import { audioSourceLengthProblem, nativeVideoRoute, parseJsonObject, referenceVideoPriceProblem, requestService, videoSourceLengthProblem } from '@antseed/api-adapter';
 import {
   FAL_PLATFORM_URL,
@@ -9,6 +9,7 @@ import {
   falUpstreamAccountStatus,
   isFalEndpointId,
   parseCsv,
+  parseServiceAliasMap,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
   createVideoResponseStreamer,
@@ -23,6 +24,15 @@ import {
 
 export const FAL_DEFAULT_BASE_URL = 'https://queue.fal.run';
 export { FAL_PLATFORM_URL, FAL_SCHEMA_URL, falErrorReason };
+
+/** fal error types that a COMPLETED job's result keeps answering: the job failed, so retrying never delivers it. */
+const FAL_JOB_FAILURE_TYPES = new Set(['downstream_service_error']);
+
+/** Whether a fal result error body says the job itself failed, rather than fal being briefly unavailable. */
+function isFalJobFailure(body: Record<string, unknown> | null): boolean {
+  const detail = body?.detail;
+  return Array.isArray(detail) && detail.some(item => FAL_JOB_FAILURE_TYPES.has(String((item as { type?: unknown } | null)?.type)));
+}
 export const FAL_STORAGE_URL = 'https://rest.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3';
 
 const PROTOCOL = 'fal-video';
@@ -296,6 +306,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'FAL_VIDEO_BASE_URL', label: 'fal Queue URL', type: 'string', default: FAL_DEFAULT_BASE_URL },
     { key: 'FAL_VIDEO_API_KEY', label: 'fal API Key', type: 'secret', required: true },
     { key: 'ANTSEED_ALLOWED_SERVICES', label: 'Services', type: 'string[]', required: true },
+    { key: 'ANTSEED_SERVICE_ALIAS_MAP_JSON', label: 'Service Aliases', type: 'string', description: 'JSON map of announced service → fal endpoint ID' },
     { key: 'ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON', label: 'Unit Pricing', type: 'string', required: true },
     { key: 'ANTSEED_SERVICE_CAPABILITIES_JSON', label: 'Capabilities', type: 'string' },
     { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Concurrency', type: 'number', default: 10 },
@@ -315,12 +326,16 @@ const plugin: AntseedProviderPlugin = {
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
       throw new Error('FAL_VIDEO_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment');
     }
-    if (config['ANTSEED_SERVICE_ALIAS_MAP_JSON']) throw new Error('fal video services must use fal endpoint IDs');
 
     const services = parseCsv(config['ANTSEED_ALLOWED_SERVICES']);
     if (services.length === 0) throw new Error('ANTSEED_ALLOWED_SERVICES is required');
-    const invalid = services.find(service => !isFalEndpointId(service));
-    if (invalid) throw new Error(`Invalid fal endpoint ID: ${invalid}`);
+    const tooLong = services.find(service => service.length > MAX_SERVICE_NAME_LENGTH);
+    if (tooLong) throw new Error(`Service ID is longer than ${MAX_SERVICE_NAME_LENGTH} characters: ${tooLong}`);
+    // A service is the fal endpoint it names, unless the alias map sends it to another.
+    const aliases = parseServiceAliasMap(config['ANTSEED_SERVICE_ALIAS_MAP_JSON']);
+    const endpointOf = (service: string) => aliases?.[service.toLowerCase()] ?? service;
+    const invalid = services.find(service => !isFalEndpointId(endpointOf(service)));
+    if (invalid) throw new Error(`Invalid fal endpoint ID: ${endpointOf(invalid)}`);
     const serviceUnitBillingModels = parseServiceUnitBillingModelsJson(config['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON']);
     const missingPricing = services.find(service => !serviceUnitBillingModels?.[service]?.[PROTOCOL]);
     if (missingPricing) throw new Error(`Missing ${PROTOCOL} unit pricing for ${missingPricing}`);
@@ -355,8 +370,8 @@ const plugin: AntseedProviderPlugin = {
     const init = async () => {
       await Promise.all(services.map(async service => {
         try {
-          const response = await fetch(`${FAL_SCHEMA_URL}?endpoint_id=${encodeURIComponent(service)}`, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
-          const input = response.ok ? falInputSchema(await readJson(response), service) : null;
+          const response = await fetch(`${FAL_SCHEMA_URL}?endpoint_id=${encodeURIComponent(endpointOf(service))}`, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
+          const input = response.ok ? falInputSchema(await readJson(response), endpointOf(service)) : null;
           const capabilities = serviceCapabilities[service]!;
           if (input?.parameters && !capabilities.supportedParameters) {
             capabilities.supportedParameters = [...input.parameters, ...falReferenceAliases(input.fields)].sort();
@@ -461,7 +476,7 @@ const plugin: AntseedProviderPlugin = {
         // An inline source goes to fal's storage first: some endpoints take video_url or audio_url only as a URL.
         if (input.video_url !== undefined) input.video_url = await uploadInlineMedia(input.video_url, 'video', authorization, signal);
         if (followsAudioLength) input.audio_url = await uploadInlineMedia(input.audio_url, 'audio', authorization, signal);
-        const upstream = await fetch(`${baseUrl}/${service}`, {
+        const upstream = await fetch(`${baseUrl}/${endpointOf(service)}`, {
           method: 'POST',
           headers: { authorization, 'content-type': 'application/json' },
           body: JSON.stringify(input),
@@ -500,10 +515,10 @@ const plugin: AntseedProviderPlugin = {
       checkRequest,
       handleRequest,
       async checkServiceHealth(checked) {
-        const statuses = await readFalModelStatuses(FAL_PLATFORM_URL, authorization, checked);
+        const statuses = await readFalModelStatuses(FAL_PLATFORM_URL, authorization, [...new Set(checked.map(endpointOf))]);
         return Object.fromEntries(checked.map((service): [string, ServiceHealthStatus] => {
           if (!statuses) return [service, { status: 'unknown', reason: 'fal model list unavailable' }];
-          const status = statuses.get(service);
+          const status = statuses.get(endpointOf(service));
           if (!status) return [service, { status: 'unavailable', reason: 'fal no longer offers this endpoint' }];
           if (status !== 'active' && status !== 'deprecated') {
             return [service, { status: 'unavailable', reason: `fal reports this endpoint ${status}` }];
@@ -531,7 +546,7 @@ const plugin: AntseedProviderPlugin = {
         }
 
         const download = videoDownloadSignal(callbacks.signal);
-        const requestUrl = `${baseUrl}/${falAppId(service)}/requests/${videoRoute.resourceId}`;
+        const requestUrl = `${baseUrl}/${falAppId(endpointOf(service))}/requests/${videoRoute.resourceId}`;
         const get = (target: string) => fetch(target, { headers: { authorization }, redirect: 'error', signal: download.signal });
         let streaming = false;
         try {
@@ -551,11 +566,12 @@ const plugin: AntseedProviderPlugin = {
           if (!resultResponse.ok) {
             // A temporary fal error must not end the job: FAILED releases its
             // payment channel, and the next retrieve may still deliver the video.
-            if (resultResponse.status === 408 || resultResponse.status === 429 || resultResponse.status >= 500) {
+            if ((resultResponse.status === 408 || resultResponse.status === 429 || resultResponse.status >= 500) && !isFalJobFailure(result)) {
               return error(request, 502, 'video_result_unavailable', 'fal result is temporarily unavailable');
             }
             // fal reports a job it refused (bad input, content checks) as COMPLETED and answers its result with
-            // a 4xx; a job whose result is already gone answers 404 "Request not found".
+            // a 4xx; a job whose result is already gone answers 404 "Request not found". A job whose model failed
+            // behind fal is COMPLETED too, and its result answers 500 downstream_service_error on every fetch.
             const reason = falErrorReason(result);
             console.warn(`[fal-video] ${service} job ${videoRoute.resourceId} failed: HTTP ${resultResponse.status} ${reason ?? '(no reason)'}`);
             return json(request, 200, reason === undefined

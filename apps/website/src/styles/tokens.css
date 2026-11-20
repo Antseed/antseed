@@ -1,0 +1,116 @@
+/* Site design tokens: the one source for colour, type and layout across marketing pages, docs and blog.
+   Components never hard-code these values; they read the variables. Dark mode follows Docusaurus' <html data-theme>. */
+
+/* Geist Pixel's face is declared in the head, beside its preload (src/lib/pixelFont.ts). */
+
+/* The arrows (→ ↗) as Google's Geist draws them: the variable fontsource Geist draws both 2px wider, enough to wrap paired buttons on a
+   phone. Two glyphs, 1.2 KB, used ahead of Geist for those code points only. */
+@font-face {
+  font-family: 'Geist Arrows';
+  src: url(/site/assets/fonts/geist-arrows.woff2) format('woff2');
+  font-weight: 100 900;
+  unicode-range: U+2192, U+2197;
+}
+
+:root {
+  /* type */
+  --site-font: 'Geist Arrows', 'Geist Variable', system-ui, sans-serif;
+  --site-font-ui: 'Instrument Sans', 'Geist Variable', system-ui, sans-serif;
+  --site-font-mono: 'Geist Mono Variable', ui-monospace, monospace;
+  --site-font-pixel: 'Geist Pixel', 'Geist Variable', system-ui, sans-serif;
+
+  /* surfaces */
+  --site-bg: #fcfcfc;               /* page, behind the dotted margins */
+  --site-bg-hero: #ffffff;          /* chrome and the first screen */
+  --site-surface: #ffffff;          /* the content rail */
+  --site-surface-dark: #181d1b;     /* panels that stay dark in both themes */
+
+  /* text */
+  --site-text: #30382c;
+  --site-text-muted: #929292;       /* the grey half of titles */
+  --site-text-body: #56656f;
+  --site-text-small: #66746b;
+  --site-text-strong: #000000;
+  --site-ink: #090b0c;              /* chrome text (nav) */
+  --site-ink-muted: #737373;
+
+  /* accent */
+  --site-accent: #4f7a24;           /* green text and lines */
+  --site-fill: #4f7a24;             /* green buttons, the same in both themes */
+  --site-fill-hover: #436a1e;
+  --site-lime: #c8f53c;
+
+  /* lines and tiles */
+  --site-dot: #e2e2e2;              /* dotted outlines and the margin matrix */
+  --site-hairline: rgba(10, 26, 18, .12);
+  --site-tile: rgba(214, 219, 211, .2);
+  --site-tile-hover: rgba(214, 219, 211, .4);
+  --site-tile-line: rgba(64, 76, 66, .1);
+
+  /* layout */
+  --site-gutter: clamp(16px, 6.4vw, 96px);
+  --site-rail: min(1312px, 100% - 2 * var(--site-gutter));
+  --site-pad: clamp(20px, 9.64vw, 145px);   /* the rail's inner margin */
+  --site-nav-height: 69px;
+  --site-radius-card: 11px;
+  --site-radius-control: 10px;
+}
+
+/* a phone: the dotted margins one dot column wide (8 to 15px a side as the rail rounds to 16) */
+@media (max-width: 760px) {
+  :root { --site-gutter: 8px; }
+}
+
+/* the rail snaps to a multiple of 16 so its edges land on the 8px dot matrix */
+@supports (width: round(down, 10px, 4px)) {
+  :root { --site-rail: round(down, min(1312px, 100% - 2 * var(--site-gutter)), 16px); }
+}
+
+:root[data-theme='dark'] {
+  --site-bg: #0f1312;
+  --site-bg-hero: #0f1312;
+  --site-surface: #181d1b;
+  --site-text: #eceee9;
+  --site-text-muted: #9ba49e;
+  --site-text-body: #9ba49e;
+  --site-text-small: #9ba49e;
+  --site-text-strong: #eceee9;
+  --site-ink: #eceee9;
+  --site-ink-muted: #9ba49e;
+  --site-accent: #98c463;
+  --site-fill-hover: #5b8a2b;
+  --site-dot: #3d4340;
+  --site-hairline: rgba(255, 255, 255, .12);
+  --site-tile: rgba(255, 255, 255, .06);
+  --site-tile-hover: rgba(255, 255, 255, .1);
+  --site-tile-line: rgba(255, 255, 255, .1);
+}
+
+/* Reveal on scroll (src/lib/useDocumentReveal.ts). Blocks are hidden only under html[data-motion], which the head script sets before the
+   first paint when motion is allowed, so no page ever paints content and then hides it. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-rv] {
+    transition: opacity .6s cubic-bezier(.2, .7, .2, 1), transform .7s cubic-bezier(.2, .7, .2, 1);
+    transition-delay: calc(var(--rv-i, 0) * 50ms);
+  }
+  [data-rv='panel'] { transition-duration: .8s; }
+  html[data-motion] [data-rv]:not([data-rv-in], [data-rv='lead']) { opacity: 0; transform: translateY(20px); }
+  html[data-motion] [data-rv='panel']:not([data-rv-in]) { transform: translateY(24px) scale(.98); }
+  /* a first screen's offer fades up from the first paint, in the reveal's own timing and stagger, so it never waits for script */
+  [data-rv='lead'] { transition: none; }
+  html[data-motion] [data-rv='lead'] {
+    animation: rv-fade .6s cubic-bezier(.2, .7, .2, 1) both, rv-rise .7s cubic-bezier(.2, .7, .2, 1) both;
+    animation-delay: calc(var(--rv-i, 0) * 50ms);
+  }
+  [data-rv='lead']:nth-child(2) { --rv-i: 1; }
+  [data-rv='lead']:nth-child(3) { --rv-i: 2; }
+}
+@keyframes rv-fade { from { opacity: 0; } }
+@keyframes rv-rise { from { transform: translateY(20px); } }
+
+/* theme changes crossfade (src/lib/theme.ts) */
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: .6s; animation-timing-function: ease-in-out; }
+
+/* The design is drawn with the browser's default text rendering; Infima's grayscale antialiasing makes every face, and the pixel
+   titles most of all, render visibly thinner. */
+body { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }

@@ -30,6 +30,7 @@ import {
   checkPaymentPayload,
   decodeHeaderJson,
   encodeHeaderJson,
+  type ContractSignatureCheck,
   type PaymentPayload,
   type PaymentRequired,
   type PaymentRequirements,
@@ -256,6 +257,8 @@ export interface GatewayServerOptions {
 export interface GatewayTopupOptions {
   asset: () => Promise<X402Asset>
   facilitator: X402Facilitator
+  /** Accepts smart-account (ERC-1271) payers; without it only ECDSA signatures are accepted. */
+  checkContractSignature?: ContractSignatureCheck
   minUsdc: number
   maxUsdc: number
 }
@@ -1154,7 +1157,13 @@ export class GatewayServer {
       sendError(res, 400, 'invalid_request_error', 'invalid_payload', 'PAYMENT-SIGNATURE is not base64-encoded JSON')
       return
     }
-    const localError = checkPaymentPayload(payment, requirements, asset, Math.floor(Date.now() / 1000))
+    let localError: string | null
+    try {
+      localError = await checkPaymentPayload(payment, requirements, asset, Math.floor(Date.now() / 1000), topup.checkContractSignature)
+    } catch (error) {
+      this._log(`gateway top-up: smart-account signature check failed: key=${key.id}: ${errorMessage(error)}`)
+      localError = 'unexpected_verify_error'
+    }
     if (localError) {
       paymentRequired(localError)
       return

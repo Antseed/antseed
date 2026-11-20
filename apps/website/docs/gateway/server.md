@@ -52,6 +52,37 @@ curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh \
   | sudo CLOUDFLARED_TUNNEL_TOKEN="…" bash -s -- --public-url https://gateway.example.com
 ```
 
+### Keep long-running requests alive through a proxy
+
+The gateway answers chat completions as streamed responses that can stay open for minutes (long generations, reasoning models). Any proxy in front of it must pass streams through without buffering or short idle timeouts, or the connection is cut mid-answer and clients retry — which looks like the gateway flapping while it is perfectly healthy.
+
+- **Your own reverse proxy** (`--public-url` mode): disable response buffering and raise the read timeout. A minimal nginx site that fronts the gateway:
+
+  ```nginx
+  server {
+      listen 443 ssl;
+      server_name gateway.example.com;
+      # ... your TLS certificate ...
+
+      location / {
+          proxy_pass http://127.0.0.1:8379;
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+          proxy_buffering off;                 # stream as it comes
+          proxy_read_timeout 300s;             # long generations
+          proxy_send_timeout 300s;
+      }
+  }
+  ```
+
+- **Cloudflare**: proxied (orange-cloud) records and named tunnels both route traffic through the Cloudflare edge, which applies a read/idle timeout of about 100 seconds: a stream is cut once no bytes have flowed for that long. A continuously flowing stream is fine; the risk is the quiet phase of long generations (reasoning models can emit nothing for a minute or more) — the edge then closes the connection even though the origin is healthy. For dependable long streams, point the DNS record at the server **DNS-only** (grey cloud) so requests reach your own proxy (and TLS) directly and no edge timeout applies; if you keep Cloudflare in front, make sure the gateway streams continuously (a heartbeat or flush while thinking) rather than staying silent.
+- **Health checks**: the gateway serves `/healthz` on its port; point uptime monitors and load-balancer probes at `https://gateway.example.com/healthz`.
+
 ### Console sign-in options
 
 These configure how people sign in to the console. They need an `https` console address (`--domain`, a tunnel, or `--public-url https://…`). [Sign-in and access](/docs/gateway/sign-in) explains each one.

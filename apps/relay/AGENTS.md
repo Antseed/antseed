@@ -22,7 +22,7 @@ The relay that lets a browser buyer (`packages/web-sdk`) reach an unmodified sel
 
 - Uses `@antseed/node` and `@antseed/node/discovery`; a change to metadata decoding, `publicAddress` or the signaling handshake in node reaches the relay.
 - `packages/web-sdk` is the only client. Its `integration.test.ts` runs `RelayServer` and `SellerCache` from this package's `src/` against real seller code, so a relay API change breaks that test.
-- Published from `scripts/npm-publish-plan.mjs` `EXTRA_DIRS`. The discovery flow mirrors `apps/network-stats`.
+- Published from `scripts/npm-publish-plan.mjs` `EXTRA_DIRS`.
 
 ## Traps
 

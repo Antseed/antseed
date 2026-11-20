@@ -1,0 +1,21 @@
+/* the lanes run the screen's full width; the section clips them sideways so a classic scrollbar never scrolls the page */
+.section { overflow-x: clip; }
+.rail { display: flex; flex-direction: column; align-items: flex-start; gap: 56px; }
+.models { width: 100%; }
+/* the tabs span the rail's whole width, out of its inner margin */
+.tabs { width: calc(100% + 2 * var(--site-pad)); margin: 0 calc(-1 * var(--site-pad)); }
+
+/* 100vw, centred on the rail; the rail's surface runs on behind the lanes over the dotted margins */
+.flow, .carriedFlow { display: flex; flex-direction: column; overflow: hidden; width: 100vw; margin: 32px 0 0 calc(50% - 50vw); background: var(--site-surface); }
+.flow { gap: 12px; padding: 12px 0; }
+/* room for the hop over the first lane and the shadows under the last */
+.carriedFlow { gap: 28px; padding: 30px 0 24px; }
+
+.allModels { position: relative; font: 500 16px/24px var(--site-font); color: var(--site-accent); }
+.allModels:hover { color: var(--site-accent); }
+
+@media (max-width: 760px) {
+  .rail { gap: 40px; }
+}
+/* a touch screen: the link keeps its look in a 44px tall touch area */
+@media (max-width: 1079px) { .allModels::after { content: ''; position: absolute; inset: -10px 0; } }

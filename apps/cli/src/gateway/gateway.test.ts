@@ -15,13 +15,14 @@ import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
 import { GatewayStore } from './store.js'
 import { liveBuyerIdentityAddress } from './runtime.js'
-import { Wallet } from 'ethers'
+import { Wallet, recoverAddress } from 'ethers'
 import { randomBytes } from 'node:crypto'
 import { tempDataDir } from './console-api/test-support.js'
 import {
   X402Facilitator,
   decodeHeaderJson,
   encodeHeaderJson,
+  type ContractSignatureCheck,
   type PaymentPayload,
   type PaymentRequired,
   type SettlementResponse,
@@ -2033,6 +2034,81 @@ test('x402 top-up rejects payments that do not match before asking the facilitat
 
     assert.equal((await topup({}, '{"amount_usd":"0.5"}')).status, 400)
     assert.equal(store.usageStats(team.key.id).creditedUsdc, 0)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    await facilitator.close()
+    cleanup()
+  }
+})
+
+test('x402 top-up accepts a smart-account payer whose contract approves the signature (ERC-1271)', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const facilitator = await fakeFacilitator()
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null, topupEnabled: true })
+  // A smart account approves digests its owner key signed, behind a one-byte
+  // validator prefix: 66 bytes, as EIP-7702 accounts sign. ECDSA recovery of
+  // such a signature never yields the account's address.
+  const owner = Wallet.createRandom()
+  const account = Wallet.createRandom().address
+  const checked: string[] = []
+  let chainDown = false
+  const checkContractSignature: ContractSignatureCheck = async (address, digest, signature) => {
+    checked.push(address)
+    if (chainDown) throw new Error('every RPC endpoint is backing off')
+    return address.toLowerCase() === account.toLowerCase()
+      && signature.startsWith('0x00') && signature.length === 2 + 66 * 2
+      && recoverAddress(digest, `0x${signature.slice(4)}`) === owner.address
+  }
+  const smartAccount = {
+    address: account,
+    signTypedData: async (...args: Parameters<Wallet['signTypedData']>) => `0x00${(await owner.signTypedData(...args)).slice(2)}`,
+  }
+  const gateway = await startGateway(store, buyer.port, 300_000, { ...facilitator.topup(), checkContractSignature })
+  const topup = (headers: http.OutgoingHttpHeaders = {}) =>
+    request(gateway.port, '/v1/key/topup', { method: 'POST', key: team.secret, body: '{"amount_usd":"5"}', headers })
+  const reasonFor = async (signature: string) =>
+    decodeHeaderJson<PaymentRequired>((await topup({ 'payment-signature': signature })).headers['payment-required'] as string)!.error
+  try {
+    const required = decodeHeaderJson<PaymentRequired>((await topup()).headers['payment-required'] as string)!
+
+    const paid = await topup({ 'payment-signature': await signPayment(smartAccount, required) })
+    const refusal = paid.headers['payment-required'] && decodeHeaderJson<PaymentRequired>(paid.headers['payment-required'] as string)!.error
+    assert.equal(paid.status, 200, `refused: ${refusal}`)
+    assert.equal(decodeHeaderJson<SettlementResponse>(paid.headers['payment-response'] as string)!.payer, account)
+    assert.deepEqual(checked, [account])
+    assert.deepEqual(facilitator.calls, ['/verify', '/settle'])
+    assert.equal(store.usageStats(team.key.id).creditedUsdc, 5_000_000)
+
+    // The same signature naming another payer: that address does not approve it.
+    const forged = decodeHeaderJson<PaymentPayload>(await signPayment(smartAccount, required))!
+    forged.payload.authorization.from = Wallet.createRandom().address
+    assert.equal(await reasonFor(encodeHeaderJson(forged)), 'invalid_exact_evm_payload_signature')
+
+    // A signature that is not hex is refused without asking the chain.
+    const garbled = decodeHeaderJson<PaymentPayload>(await signPayment(smartAccount, required))!
+    garbled.payload.signature = 'not-a-signature'
+    checked.length = 0
+    assert.equal(await reasonFor(encodeHeaderJson(garbled)), 'invalid_exact_evm_payload_signature')
+    assert.deepEqual(checked, [])
+
+    // Hex of odd length is not bytes either, so the ERC-1271 call could not encode it.
+    garbled.payload.signature = '0xabc'
+    assert.equal(await reasonFor(encodeHeaderJson(garbled)), 'invalid_exact_evm_payload_signature')
+    assert.deepEqual(checked, [])
+
+    // The chain cannot be read: refused before the facilitator, not called a bad signature.
+    chainDown = true
+    assert.equal(await reasonFor(await signPayment(smartAccount, required)), 'unexpected_verify_error')
+    assert.ok(gateway.logs.some((line) => line.includes('smart-account signature check failed')))
+    assert.deepEqual(facilitator.calls, ['/verify', '/settle'])
+
+    // An ECDSA signature by the payer itself is accepted without asking the chain.
+    checked.length = 0
+    assert.equal((await topup({ 'payment-signature': await signPayment(Wallet.createRandom(), required) })).status, 200)
+    assert.deepEqual(checked, [])
+    assert.equal(store.usageStats(team.key.id).creditedUsdc, 10_000_000)
   } finally {
     await gateway.stop()
     await buyer.close()

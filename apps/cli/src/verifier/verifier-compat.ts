@@ -57,8 +57,7 @@ import {
  * and judge sellers the same way, so their results line up in an epoch. It is
  * `antseedVerifier.compat` in the CLI's package.json, and is bumped only when the audit rules change
  * (`verifierRulesFingerprint`). `verifier run` and `submit` stop only when npm's latest CLI has a
- * higher one; any other new release is just an update notice. Release a bump at the end of an epoch,
- * so every auditor moves to the new rules at the same epoch start.
+ * higher one; any other new release is just an update notice.
  */
 export const VERIFIER_COMPAT: number = readCompat(pkg)
 if (VERIFIER_COMPAT < 1) throw new Error('apps/cli/package.json needs antseedVerifier.compat')

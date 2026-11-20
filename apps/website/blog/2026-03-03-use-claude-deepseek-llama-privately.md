@@ -117,4 +117,4 @@ No account. No identity. Just the model.
 
 [Get started](/docs/install)
 
-[How the protocol works](/docs/lightpaper)
+[How the protocol works](/docs/overview)

@@ -253,7 +253,7 @@ The `venice-video` and `fal-video` plugins refuse a create that sends reference 
 
 ### fal.ai models
 
-The `fal-video` plugin relays fal's queue API. The service ID must be the fal endpoint ID (at most 64 characters), and every service needs `fal-video` pricing:
+The `fal-video` plugin relays fal's queue API. The service ID is the fal endpoint ID (at most 64 characters), or a name of your own with `upstreamModel` set to the endpoint ID, and every service needs `fal-video` pricing:
 
 ```bash
 export FAL_VIDEO_API_KEY=<your-fal-key>

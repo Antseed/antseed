@@ -10,16 +10,22 @@ This page covers **KBF audits**, one of the first of many verification methods A
 
 ## Running an audit
 
-With the buyer running (`antseed buyer start`), each epoch is:
+With the buyer running (`antseed buyer start`), an approved auditor leaves one command running:
+
+```bash
+antseed verifier watch                        # every 10 minutes: run, then submit
+antseed verifier status                       # optional, from another terminal
+```
+
+Each tick of `watch` is a `verifier run` (audit, confirm and retry) followed by `verifier submit --yes` (publish the evidence and put the results on-chain). Keep it running all epoch: other auditors' `DIFF`s reach you at any time and wait 12 hours for your confirmation (see [Keeping a verifier running](#keeping-a-verifier-running)). You can also run the two steps yourself, for example to check a submit first:
 
 ```bash
 antseed verifier run                          # audit, confirm and retry, all in one run
-antseed verifier status                       # optional, from another terminal
 antseed verifier submit --dry-run             # check before sending
-antseed verifier submit --yes                # publish the evidence and put the results on-chain
+antseed verifier submit --yes                 # publish the evidence and put the results on-chain
 ```
 
-The rest of this page explains what these commands do.
+A manual run confirms only the `DIFF`s already waiting when it starts, so run both again during the epoch, or use `watch --no-submit` and send the results with `submit`. The rest of this page explains what these commands do.
 
 ## One audit
 
@@ -149,7 +155,7 @@ All auditors must audit the same models in the same way, or the round-robin spli
 
 If the npm registry can't be reached, `verifier run` warns and continues, and `verifier submit` stops (`submit --dry-run` only warns). `--skip-version-check` skips the check on both.
 
-Releases that raise the compat number are published at the end of an epoch, so every auditor moves to the new rules at the same epoch start. A CI test pins a hash of the audit rules for each compat number: the model list, the split, the thresholds, the domain table, the prompt variants, the calibration and layout filter settings, and sample verdicts, parsed replies and scored answers. A change to those without a bump fails the build. A change to the audit code that none of the samples reaches still needs a manual bump.
+A CI test pins a hash of the audit rules for each compat number: the model list, the split, the thresholds, the domain table, the prompt variants, the calibration and layout filter settings, and sample verdicts, parsed replies and scored answers. A change to those without a bump fails the build. A change to the audit code that none of the samples reaches still needs a manual bump.
 
 Eight local settings change the rules, so `verifier run` stops when they differ from their defaults: `verifier.closeCallExtensions` (2), `verifier.diffHoldEpochs` (1), `verifier.referenceSelfTestRuns` (3), `verifier.referenceLayoutFilterPasses` (2), and the question set sizing `verifier.referenceMinimumProbeCount` (100), `verifier.referenceMaximumProbeCount` (500), `verifier.referenceProbeStep` (10) and `verifier.referenceMinimumStatisticalPower` (0.9). Remove them from your config, or pass `--skip-version-check` for a test.
 
@@ -249,7 +255,7 @@ For the contract owner, and for anyone running several auditors:
 - **Give every auditor its own data dir, buyer and reference key.** Each auditor pays sellers through the buyer in its own data dir (see [Become a verifier](/docs/verify/)), and its question sets are built with the API key its `verifier.referenceEndpoint` names (`apiKeyEnv`). Two auditors sharing a buyer look like one buyer to sellers and share its limits; two sharing a key share its rate limits and spend.
 - **Give every auditor a keyed RPC of its own.** `verifier run` and `submit` read the contract's events every tick; public Base RPCs rate-limit and refuse wide log queries. Set `payments.crypto.rpcUrl` to a keyed endpoint and add `fallbackRpcUrls`.
 - **Remove an auditor at an epoch boundary, not mid-epoch.** A revocation restarts every report still waiting for a second auditor, from every auditor, so the `DIFF`s waiting at that moment have to be audited and confirmed again. Right after an epoch starts, few reports are waiting. A removal mid-epoch still works: the removed auditor's `verifier run` stops paying (see [If an auditor goes missing](#if-an-auditor-goes-missing)), and its models are handed over at once.
-- **Run the same CLI release on every auditor.** Auditors on different releases can split the models differently or disagree on who confirms. A release that raises the verifier compat is published at the end of an epoch (see [Up-to-date CLI](#up-to-date-cli)); update every auditor before the next epoch starts, and don't rebuild or update one auditor in the middle of an epoch.
+- **Run the same CLI release on every auditor.** Auditors on different releases can split the models differently or disagree on who confirms. When a release raises the verifier compat (see [Up-to-date CLI](#up-to-date-cli)), run `antseed verifier submit` on every auditor before it is published and `antseed update` on every auditor right after, and don't rebuild or update one auditor on its own in the middle of an epoch.
 
 ## Submitting
 
@@ -305,7 +311,7 @@ Every tick runs `verifier run` (your models, plus the confirmations you're respo
 
 ## Running again in the same epoch
 
-Run the same `antseed verifier run` command again; it continues the epoch. It first prints a plan built from the epoch's earlier runs:
+Every `watch` tick does this. By hand, run the same `antseed verifier run` command again; it continues the epoch. It first prints a plan built from the epoch's earlier runs:
 
 - **Finished:** SAME or DIFF. Not asked again.
 - **Retry, our side:** a payment channel timed out, or the deposit or the epoch's question set was missing. Retried up to 3 times per epoch. A seller our buyer refuses is not retried, since every attempt would fail the same way. An UNDETERMINED caused on our side is never submitted: it says nothing about the seller's model.
@@ -334,11 +340,7 @@ Confirmations of other auditors' `DIFF`s and the models you stand in for are aud
 
 ## Running every epoch
 
-A verdict counts for the epoch it was given in and the next one, so run and submit once per epoch, for example from cron:
-
-```bash
-antseed verifier run; antseed verifier submit --yes
-```
+Keep `antseed verifier watch` running (see [Keeping a verifier running](#keeping-a-verifier-running)). It starts each new epoch on its own. Running `run` and `submit` once per epoch is not enough: your own models get audited, but the `DIFF`s other auditors submit later wait for your confirmation, and after 12 hours they go to the next auditor. To drive it from cron instead, call `antseed verifier watch --once` every 10 minutes.
 
 ## Rewards
 
