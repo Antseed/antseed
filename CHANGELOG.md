@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Sellers (CLI, `@antseed/node`): `payments.suggestedReserveAmount` sets the first reserve a seller suggests to a buyer with no channel (USDC base units; default `1000000`, the contract's default first-sign cap), kept between `minBudgetPerRequest` and the cap. A seller of small per-request services can suggest less, so a buyer's deposit reaches more sellers.
+
 ### Fixed
 
 - Website: providers can apply for Foundation staking directly from the providers page again.
@@ -110,8 +114,6 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
-- Sellers (CLI, `@antseed/node`): `payments.suggestedReserveAmount` sets the first reserve a seller suggests to a buyer with no channel (USDC base units; default `1000000`, the contract's default first-sign cap), kept between `minBudgetPerRequest` and the cap. A seller of small per-request services can suggest less, so a buyer's deposit reaches more sellers.
-- Desktop chat: the model picker lists the routing services your gateway can use, under **Routers** at the top, and an **Auto** filter beside **Free** shows only them. A router picks the model for each message; each row shows what one pick costs and how many models it picks from, and the chat sends to it as `<peerId>@<serviceId>`. The list comes from the gateway's `GET /v1/models?type=router` under the key's routing policy; a gateway that doesn't answer it lists no routers.
 - `@antseed/provider-fal-image` and `@antseed/provider-fal-video`: a service can be sold under a name of its own, like with every other provider plugin. Set `upstreamModel` (`ANTSEED_SERVICE_ALIAS_MAP_JSON`) to the fal endpoint ID, and buyers call the service by its name, for example `openai/gpt-image-2.5-flare` for `openai/gpt-image-2.5/flare/text-to-image`. Before, the plugins refused to start with an alias, so a service had to be named by its fal endpoint ID.
 - Buyers and sellers (`@antseed/buyer-core`, `@antseed/api-adapter`, `@antseed/node`): a speech request for its audio as a stream of events (`POST /v1/audio/speech` with `stream_format: "sse"`) is served and billed by the characters of its `input`, as a request for the audio itself is. The audio is OpenAI's `speech.audio.delta` events, decoded and joined in order, and it is billed only when it is real audio in the requested format and a `speech.audio.done` event ends it. A stream cut off before that, an error event or a malformed delta bills nothing. An upstream that ignores `stream_format` and answers with the audio file is billed as before. Clients that want the events as they arrive send `Accept: text/event-stream`.
 - `antseed verifier watch --no-submit`: every tick only audits (`verifier run`), so the audits, retries and confirmations go on without signing, publishing or sending anything, and no keystore is unlocked or password asked. Send the results with `antseed verifier submit` before the epoch ends. `--keystore` without `--auditor` is refused with this flag, since the auditor would have to be learned by unlocking it.
