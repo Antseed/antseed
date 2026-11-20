@@ -6,9 +6,14 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Sellers (CLI, `@antseed/node`): `payments.suggestedReserveAmount` sets the first reserve a seller suggests to a buyer with no channel (USDC base units; default `1000000`, the contract's default first-sign cap), kept between `minBudgetPerRequest` and the cap. A seller of small per-request services can suggest less, so a buyer's deposit reaches more sellers.
+
 ### Fixed
 
 - Payments portal: `GET /api/emissions/pending` no longer reports a recognized-usage buyer epoch as unclaimed after the buyer (or its authorized wallet) has claimed or staked it. `AntseedUsageRewards.pendingBuyerReward` keeps returning the full amount after a claim, so the route now also reads `buyerEpochClaimed` and reports such an epoch with `buyer.claimed: true` and `buyer.amount: "0"`, as the CLI and the ANTS dashboard already do. Seller amounts were already correct.
+- Routing (CLI, `@antseed/node`, `@antseed/router-core`): sellers that tie on reputation, for a buyer with no routing preferences, and sellers that tie on composite score in the local router now rotate which one is tried first, instead of always going in peer id order. The reputation-only path keeps peer id order on the first request to a tied pool, then rotates. Each model, and each distinct seller pool of a model, keeps its own place. A seller with a higher reputation, a higher composite score or a better price still stays in front. The `/v1/models` peer list and the desktop model list keep a stable order (issue #1554).
 - Website: providers can apply for Foundation staking directly from the providers page again.
 
 ### Changed
