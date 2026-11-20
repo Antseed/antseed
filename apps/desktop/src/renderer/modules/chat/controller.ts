@@ -1083,9 +1083,7 @@ export function initChatModule({
     } catch {
     }
     if (token !== studioOpenToken) return;
-    if (conversationId && uiState.chatConversationsLoaded && !getConversationSummaries().some((conv) => conv.id === conversationId)) {
-      conversationId = null;
-    }
+    // The main process checked that this conversation exists; the cached list can be stale or failed to load.
     if (conversationId) {
       if (uiState.chatActiveConversation !== conversationId) await openConversation(conversationId);
       return;

@@ -12,7 +12,7 @@ async function waitFor(predicate: () => boolean, ms = 400): Promise<void> {
 const model = (id: string) => ({ id, label: id, type: 'text', protocol: 'openai-chat-completions', supportsImages: false, sellers: 1, free: false, minImageUsd: null, freeSellerId: null, freeForStakers: false, tee: false, toolUse: true, reasoning: false, inputUsdPerMillion: null, outputUsdPerMillion: null });
 const conv = (id: string, extra: Partial<Conv> = {}): Conv => ({ id, title: id, service: 'model-a', messages: [], createdAt: 1, updatedAt: 1, usage: { inputTokens: 0, outputTokens: 0 }, ...extra });
 
-function setup(conversations: Conv[], projectChats: Record<string, string> = {}) {
+function setup(conversations: Conv[], projectChats: Record<string, string> = {}, options: { listFails?: boolean } = {}) {
   const uiState = createInitialUiState();
   uiState.chatModels = [model('model-a')] as never;
   uiState.chatSelectedModelId = 'model-a';
@@ -25,7 +25,7 @@ function setup(conversations: Conv[], projectChats: Record<string, string> = {})
   const studioChatsMade: Array<{ projectId: string; model: string }> = [];
   const on = () => () => () => undefined;
   const bridge = {
-    chatAiListConversations: async () => ({ ok: true, data: [...conversations] }),
+    chatAiListConversations: async () => (options.listFails ? { ok: false, error: 'unavailable' } : { ok: true, data: [...conversations] }),
     chatAiGetConversation: async (id: string) => {
       const found = conversations.find((candidate) => candidate.id === id);
       return found ? { ok: true, data: { ...found } } : { ok: false, error: 'not found' };
@@ -110,6 +110,15 @@ describe('chat controller: Studio projects', () => {
     api.sendMessage('hello again');
     await waitFor(() => sends.length === 2);
     expect(studioChatsMade).toEqual([]);
+  });
+
+  it('opens the project\'s own chat even when the conversation list failed to load', async () => {
+    const chat = conv('studio-chat', { workspacePath: '/studio/lighthouse', studioProjectId: 'lighthouse', messages: [{ role: 'user', content: 'earlier' }] });
+    const { api, uiState } = setup([chat], { lighthouse: 'studio-chat' }, { listFails: true });
+    await api.refreshChatConversations();
+    expect(uiState.chatConversationsLoaded).toBe(true);
+    await api.openStudioProject('lighthouse');
+    expect(uiState.chatActiveConversation).toBe('studio-chat');
   });
 
   it('does not pull the user back to a project they left while its chat was looked up', async () => {
