@@ -10,7 +10,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 - Verifier docs: "Become a verifier" and "How audits run" now lead with `verifier watch` as the way to run an approved auditor. A single `verifier run` and `verifier submit` per epoch misses the `DIFF`s other auditors submit later, which need your confirmation within 12 hours. "Become a verifier" has a new step, "Keep it running", and the cron example calls `watch --once`. Its setup also explains the two keys a verifier uses (the buyer wallet that pays sellers and the auditor key that signs submits and holds the gas) and how to create the auditor keystore.
 
-## 2026-11-20 — CLI 0.1.254, Node 0.2.187
+## 2026-11-20 — CLI 0.1.254, Node 0.2.187, Desktop 0.2.90
 
 ### Packages
 
@@ -31,6 +31,10 @@ This project uses selective package publishing. Each release entry lists the pub
 - `@antseed/payments@0.1.114`
 - `@antseed/ants@0.1.72`
 - `@antseed/gateway-console@0.1.37`
+
+### Desktop
+
+- `@antseed/desktop@0.2.90`
 
 ### Changed
 
