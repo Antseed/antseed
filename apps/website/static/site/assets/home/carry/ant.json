@@ -1,0 +1,45 @@
+{
+ "_": "ant.webp: one row of cells per layer (2x a 176px card): walk frames, run frames, stand (still, waiting), look (still, under the pointer, the card a touch higher), hop; row 1 the ant, behind the card; row 2 its near arm and hand where they lie over the card, over it. walk, run: how many frames each; stand, look, hop: which frame. corner: where the card's lower-left corner goes in a cell; ground: where the walking feet are. lift: how far the card rises on each frame so the feet stay on the ground. steps, runSteps: px it goes on each walk and run frame. card: the card it is drawn for",
+ "cell": [
+  82,
+  130
+ ],
+ "card": 352,
+ "walk": 8,
+ "run": 1,
+ "stand": 9,
+ "look": 10,
+ "hop": 11,
+ "corner": [
+  54.7,
+  104.9
+ ],
+ "ground": 119.5,
+ "lift": [
+  -0.2,
+  0.9,
+  -0.6,
+  0.2,
+  -0.6,
+  1.5,
+  -0.3,
+  0.5,
+  5.5,
+  8.3,
+  12.3,
+  13.3
+ ],
+ "steps": [
+  4.7,
+  4.7,
+  4.7,
+  4.7,
+  4.7,
+  4.7,
+  4.7,
+  4.7
+ ],
+ "runSteps": [
+  6.81
+ ]
+}

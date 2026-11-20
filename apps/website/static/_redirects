@@ -5,3 +5,6 @@
 # link agents were given in llms.txt, so it gets a real redirect.
 /docs/pricing   /docs/api/routing/  301
 /docs/pricing/  /docs/api/routing/  301
+# The $ANTS page moved from /ants-token/ to /ants/ with the site redesign.
+/ants-token     /ants/  301
+/ants-token/    /ants/  301

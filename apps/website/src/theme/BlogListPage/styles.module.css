@@ -1,15 +1,2 @@
-.paginator {
-  margin-top: 32px;
-}
-
-/* Docusaurus paginator links → the homepage ghost-pill voice */
-.paginator :global(.pagination-nav__link) {
-  border: 1px solid var(--as-line);
-  border-radius: 24px;
-  background: var(--as-soil-2);
-  transition: border-color 0.15s ease;
-}
-
-.paginator :global(.pagination-nav__link:hover) {
-  border-color: var(--as-line-strong);
-}
+.grid { margin-top: 56px; }
+.paginator { margin-top: 32px; }

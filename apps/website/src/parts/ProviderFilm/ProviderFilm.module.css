@@ -1,0 +1,44 @@
+/* The film box: the painting's own shape, the panel's width, placed as the panel's `cover` background is (85% down by default). */
+.film { position: absolute; inset: 0; z-index: -2; overflow: hidden; border-radius: inherit; pointer-events: none; }
+/* while the painting arrives (Wash unveil) the film waits, then shows at once: its first frame is the painting */
+[data-unveil] > .film { visibility: hidden; }
+.set {
+  position: absolute;
+  left: var(--film-left, 0%);
+  top: var(--film-y, 85%);
+  width: var(--film-width, 100%);
+  aspect-ratio: var(--film-aspect);
+  translate: 0 calc(-1 * var(--film-y, 85%));
+  visibility: hidden;
+}
+.ready[data-set='day'] { visibility: visible; }
+:global(:root[data-theme='dark']) .ready[data-set='day'] { visibility: hidden; }
+:global(:root[data-theme='dark']) .ready[data-set='night'] { visibility: visible; }
+.video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
+
+/* the price board on its nail: a pendulum, slowest at each end, swinging only while the film runs */
+.sign {
+  position: absolute;
+  left: 32.52%;
+  top: 43.741%;
+  width: 11.035%;
+  height: 14.41%;
+  transform-origin: 50% 1.52%;
+  animation: swing 1.5s cubic-bezier(.37, 0, .63, 1) -.75s infinite alternate paused;
+}
+.set[data-set='night'] .sign { left: 32.275%; width: 11.328%; height: 14.265%; transform-origin: 50.86% 1.53%; }
+.sign img { display: block; width: 100%; height: 100%; }
+.running .sign { animation-play-state: running; }
+@keyframes swing { from { rotate: -5deg; } to { rotate: 5deg; } }
+
+.ant { position: absolute; left: 42.676%; top: 44.469%; width: 15.381%; height: 26.929%; }
+
+/* each pupil a box the size of its eye white, clipped to its ellipse; moved by useStallEyes */
+.eye { position: absolute; overflow: hidden; border-radius: 50%; }
+.eyeLeft { left: 48.727%; top: 54.598%; width: 3.357%; height: 5.029%; }
+.eyeRight { left: 54.396%; top: 54.659%; width: 2.382%; height: 4.503%; }
+.pupil { position: absolute; inset: 0; background: url(/site/assets/home/providers/stall-pupil-day.webp) center / 34.9% 34.73% no-repeat; }
+.eyeRight .pupil { background-size: 49.19% 38.79%; }
+.set[data-set='night'] .pupil { background-image: url(/site/assets/home/providers/stall-pupil-night.webp); }
+
+@media (prefers-reduced-motion: reduce) { .film { display: none; } }

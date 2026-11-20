@@ -10,16 +10,22 @@ This page covers **KBF audits**, one of the first of many verification methods A
 
 ## Running an audit
 
-With the buyer running (`antseed buyer start`), each epoch is:
+With the buyer running (`antseed buyer start`), an approved auditor leaves one command running:
+
+```bash
+antseed verifier watch                        # every 10 minutes: run, then submit
+antseed verifier status                       # optional, from another terminal
+```
+
+Each tick of `watch` is a `verifier run` (audit, confirm and retry) followed by `verifier submit --yes` (publish the evidence and put the results on-chain). Keep it running all epoch: other auditors' `DIFF`s reach you at any time and wait 12 hours for your confirmation (see [Keeping a verifier running](#keeping-a-verifier-running)). You can also run the two steps yourself, for example to check a submit first:
 
 ```bash
 antseed verifier run                          # audit, confirm and retry, all in one run
-antseed verifier status                       # optional, from another terminal
 antseed verifier submit --dry-run             # check before sending
-antseed verifier submit --yes                # publish the evidence and put the results on-chain
+antseed verifier submit --yes                 # publish the evidence and put the results on-chain
 ```
 
-The rest of this page explains what these commands do.
+A manual run confirms only the `DIFF`s already waiting when it starts, so run both again during the epoch, or use `watch --no-submit` and send the results with `submit`. The rest of this page explains what these commands do.
 
 ## One audit
 
@@ -305,7 +311,7 @@ Every tick runs `verifier run` (your models, plus the confirmations you're respo
 
 ## Running again in the same epoch
 
-Run the same `antseed verifier run` command again; it continues the epoch. It first prints a plan built from the epoch's earlier runs:
+Every `watch` tick does this. By hand, run the same `antseed verifier run` command again; it continues the epoch. It first prints a plan built from the epoch's earlier runs:
 
 - **Finished:** SAME or DIFF. Not asked again.
 - **Retry, our side:** a payment channel timed out, or the deposit or the epoch's question set was missing. Retried up to 3 times per epoch. A seller our buyer refuses is not retried, since every attempt would fail the same way. An UNDETERMINED caused on our side is never submitted: it says nothing about the seller's model.
@@ -334,11 +340,7 @@ Confirmations of other auditors' `DIFF`s and the models you stand in for are aud
 
 ## Running every epoch
 
-A verdict counts for the epoch it was given in and the next one, so run and submit once per epoch, for example from cron:
-
-```bash
-antseed verifier run; antseed verifier submit --yes
-```
+Keep `antseed verifier watch` running (see [Keeping a verifier running](#keeping-a-verifier-running)). It starts each new epoch on its own. Running `run` and `submit` once per epoch is not enough: your own models get audited, but the `DIFF`s other auditors submit later wait for your confirmation, and after 12 hours they go to the next auditor. To drive it from cron instead, call `antseed verifier watch --once` every 10 minutes.
 
 ## Rewards
 

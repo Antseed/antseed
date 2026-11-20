@@ -1,0 +1,7 @@
+/* The row of steps closes the section: space above the head only. */
+.rail { padding-top: 120px; }
+.board { margin-top: 40px; }
+.layers .point { padding: 48px 32px; }
+
+@media (min-width: 1200px) { .rail { padding-top: 124px; } }
+@media (max-width: 760px) { .rail { padding-top: 72px; } }

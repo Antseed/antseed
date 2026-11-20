@@ -1,0 +1,8 @@
+/* on phones the text and the cards sit 20px inside the rail */
+@media (max-width: 760px) {
+  .page { --site-pad: 20px; }
+}
+/* the smallest phones: 16px, and buttons a little narrower, so the longest one ("Join Local AI Colony on Telegram") fits at 320px */
+@media (max-width: 359px) {
+  .page { --site-pad: 16px; --button-pad: 14px; }
+}

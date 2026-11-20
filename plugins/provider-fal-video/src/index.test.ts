@@ -212,6 +212,14 @@ it.each([429, 500, 503])('does not report a job as FAILED when its result fetch 
   expect(parse(response.body).status).toBeUndefined();
 });
 
+it('reports a job as FAILED when its model failed behind fal, which answers 500 on every result fetch', async () => {
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))
+    .mockResolvedValueOnce(Response.json({ detail: [{ loc: ['body'], msg: 'Downstream service error', type: 'downstream_service_error' }] }, { status: 500 })));
+  const response = await stream(plugin.createProvider(config) as Provider);
+  expect(parse(response.body)).toEqual({ status: 'FAILED', error: 'Downstream service error' });
+});
+
 it('reports a job as FAILED when fal refuses its result', async () => {
   vi.stubGlobal('fetch', vi.fn()
     .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))

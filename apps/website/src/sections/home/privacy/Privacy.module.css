@@ -1,0 +1,116 @@
+/* Privacy and trust: dark from margin to margin in both themes, with its own light type. From 900 wide, where the frame fits the
+   screen, usePinnedPoints sets data-pinned on the hold: the frame sticks a screen tall while the page scrolls through the run. */
+.privacy {
+  --site-text: #f2f4ef; --site-text-muted: #7b827e; --site-text-body: #a4aca7; --site-dot: #363b3a;
+  background: var(--site-surface-dark);
+}
+.privacy::before {
+  content: ''; position: absolute; z-index: 1; left: 0; right: 0; top: -1px; height: 2px; pointer-events: none;
+  background: radial-gradient(circle at 4px 1px, var(--site-dot) .85px, #0000 1.25px) 50% 0 / 8px 2px repeat-x;
+}
+
+.hold, .pin { position: relative; flex: 1 0 auto; display: flex; flex-direction: column; }
+.run { flex: none; height: var(--run-length, 0px); }
+.hold[data-pinned] .pin { position: sticky; top: var(--pin-top, 0px); min-height: 100vh; justify-content: center; padding-block: clamp(24px, 4vh, 48px); }
+
+.rail { position: relative; width: var(--site-rail); margin: 0 auto; display: flex; flex-direction: column; align-items: center; text-align: center; }
+.top { flex: none; padding-top: 120px; }
+.body { flex: none; padding-bottom: 123px; }
+.hold[data-pinned] .top { padding-top: 0; }
+.hold[data-pinned] .body { padding-bottom: 0; }
+
+.head { --head-gap: 20px; display: flex; flex-direction: column; align-items: center; gap: var(--head-gap); }
+.head .eyebrow { color: var(--site-lime); }
+.head .title { font-weight: 400; }
+.head .sub { max-width: 600px; }
+
+/* the four points beside one panel */
+.points {
+  display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); align-items: center; gap: 28px 56px;
+  width: 100%; max-width: 1160px; margin-top: 64px; padding: 0 24px; text-align: left;
+}
+.hold[data-pinned] .points { margin-top: clamp(32px, 5vh, 56px); }
+
+.list { display: flex; flex-direction: column; gap: 4px; min-height: var(--list-height, 0px); }
+.tab {
+  display: grid; grid-template-rows: auto 0fr; width: 100%; padding: 18px 24px; border: 0; border-radius: 14px; background: none;
+  text-align: left; cursor: pointer; color: var(--site-text); font: 500 18px/26px var(--site-font);
+  transition: grid-template-rows .45s cubic-bezier(.2, .7, .2, 1);
+}
+.tab > * { transition: opacity .3s ease; }
+.tab[aria-selected='false'] > * { opacity: .4; }
+.tab[aria-selected='false']:hover > * { opacity: .6; }
+.tab[aria-selected='true'] { grid-template-rows: auto 1fr; cursor: default; }
+.tab:focus-visible { outline: 2px solid var(--site-lime); outline-offset: 2px; }
+.tabLine { overflow: hidden; }
+.tabLine > span {
+  display: block; padding-top: 8px; font: 400 16px/24px var(--site-font); color: var(--site-text-body); text-wrap: pretty;
+  opacity: 0; visibility: hidden; transition: opacity .2s, visibility 0s .2s;
+}
+.tab[aria-selected='true'] .tabLine > span { opacity: 1; visibility: visible; transition: opacity .35s .15s, visibility 0s; }
+
+/* the panels share one cell and cross-fade */
+.stage { position: relative; display: grid; }
+.slot { grid-area: 1 / 1; display: grid; transition: opacity .4s ease, visibility 0s; }
+.slot:not(.on) { opacity: 0; visibility: hidden; transition: opacity .4s ease, visibility 0s .4s; }
+.panel {
+  display: grid; grid-template-rows: minmax(0, 1fr); place-items: center; height: 460px; padding: 0 32px;
+  border-radius: var(--site-radius-card); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
+}
+/* while a painting arrives only its window waits (fading itself: an ancestor's opacity would drop the glass's frost); gated on
+   html[data-motion] as Wash's own waiting state is, so still captures show every window */
+:global(html[data-motion]) .slot .panel:is([data-unveil='wait'], [data-unveil='soon']) > :not(canvas) { opacity: 1; }
+:global(html[data-motion]) .slot .panel:is([data-unveil='wait'], [data-unveil='soon']) [data-window] { opacity: 0; }
+.slot .panel[data-unveil='run'] [data-window] { transition: opacity .55s ease-out; }
+
+/* the incognito ant sits on the panel's top edge by its right corner, legs over the edge, looking toward the text */
+.antSeat { position: absolute; z-index: 2; right: 5%; bottom: 100%; width: clamp(68px, 17%, 127px); translate: 0 12%; transform: scaleX(-1); }
+.ant { position: relative; display: block; width: 100%; padding: 0; border: 0; background: none; border-radius: 40% 40% 16% 16%; cursor: pointer; }
+.ant:disabled { cursor: default; }
+.ant:focus-visible { outline: 2px solid #6f9b3a; outline-offset: 4px; }
+:global(:root[data-theme='dark']) .ant { filter: brightness(.84) saturate(.83) contrast(1.12); }
+.clip { display: block; width: 100%; height: auto; }
+.clip:not(.idle) { position: absolute; inset: 0; }
+.clip:not([data-shown]) { opacity: 0; }
+
+@media (min-width: 900px) {
+  .panel { height: clamp(420px, 100vh - 280px, 580px); }
+}
+@media (max-width: 1199px) {
+  .points { gap: 28px 40px; }
+  .panel { padding: 0 28px; }
+}
+@media (max-width: 899px) {
+  .points { grid-template-columns: minmax(0, 1fr); gap: 24px; max-width: 640px; }
+  .stage { margin-top: 96px; }
+  .panel { height: auto; min-height: 300px; padding: 32px 24px; }
+  .antSeat { width: 93px; }
+}
+@media (max-width: 760px) {
+  .body { padding-bottom: 72px; }
+  .top { padding-top: 72px; }
+  .head .sub { padding: 0 20px; }
+  .points { margin-top: 40px; padding: 0 16px; }
+  .stage { margin-top: 72px; }
+  .antSeat { width: 68px; }
+  .tab { padding: 14px 18px; font-size: 17px; line-height: 24px; }
+  .tabLine > span { font-size: 15px; line-height: 22px; }
+  .panel { padding: 28px 20px; }
+}
+/* a phone: the four one under another, each its name and line over its panel, the ant on the first panel (--point: PointList) */
+@media (max-width: 760px) {
+  .points { display: flex; flex-direction: column; gap: 0; }
+  .list, .stage { display: contents; }
+  .tab { order: calc(var(--point) * 3); grid-template-rows: auto 1fr; margin: 0; letter-spacing: normal; padding: 0 4px; cursor: default; pointer-events: none; }
+  .tab > *, .tab[aria-selected='false'] > * { opacity: 1; }
+  .tabLine > span { opacity: 1; visibility: visible; }
+  .tab ~ .tab { margin-top: 64px; }
+  .antSeat { order: 1; position: relative; bottom: auto; right: auto; align-self: flex-end; margin: 16px 5% -30px 0; }
+  .slot { order: calc(var(--point) * 3 + 2); margin-top: 24px; }
+  .slot:not(.on) { opacity: 1; visibility: visible; }
+  .antSeat + .slot { margin-top: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tab, .tab > *, .tabLine > span, .slot { transition: none; }
+  .ant { cursor: default; }
+}

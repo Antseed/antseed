@@ -1,0 +1,37 @@
+/* the listing's place on the stall panel, its flow line, and the colony's caption */
+.listing { right: 5.7%; width: 33%; }
+.flow, .label { --ink-soft: #30382c; --rule: rgba(10, 26, 18, .12); }
+:global(:root[data-theme='dark']) :is(.flow, .label) { --ink-soft: #cbd8d0; --rule: rgba(236, 243, 238, .12); }
+.flow {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 3px 5px; padding-top: 8px; border-top: .5px solid var(--rule);
+  font: 400 10.5px/14px var(--site-font-mono); color: var(--ink-soft);
+}
+.flow i { font-style: normal; color: var(--glass-muted); }
+.flow span { white-space: nowrap; }
+.flow > span:first-of-type { width: 100%; }   /* "Request received", then "→ serve → settle" */
+
+.label {
+  position: absolute; left: 50%; top: 8%; translate: -50% 0;
+  display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 9px 16px; border-radius: 8px; white-space: nowrap;
+}
+.labelTitle { font: 500 14px/18px var(--site-font); }
+.labelSub { font: 400 10.5px/14px var(--site-font-mono); color: var(--ink-soft); }
+
+@container (max-width: 520px) {
+  .listing { right: 2.5%; width: 41%; }
+  .flow { padding-top: 5px; font-size: 9.5px; line-height: 12px; }
+  .label { top: 5%; padding: 7px 12px; }
+  .labelTitle { font-size: 13px; line-height: 16px; }
+  .labelSub { font-size: 9.5px; line-height: 12px; }
+}
+@container (max-width: 420px) {
+  .flow { padding-top: 4px; }
+}
+/* a phone: nothing written under 12, the listing wider, the caption wrapping centred */
+@media (max-width: 520px) {
+  .listing { right: 3%; width: 47%; }
+  .flow { padding-top: 5px; font-size: 12px; line-height: 15px; }
+  .label { width: max-content; max-width: 88%; padding: 8px 14px; white-space: normal; text-align: center; }
+  .labelTitle { font-size: 14px; line-height: 18px; }
+  .labelSub { font-size: 12px; line-height: 15px; text-wrap: balance; }
+}

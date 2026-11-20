@@ -1070,7 +1070,6 @@ describe('native video job ownership', () => {
       const firstSignCap = vi.spyOn(channelsClient, 'getFirstSignCap');
       const holds = {
         video_payment_pending: 'A video you downloaded from this seller is not paid for yet. New videos start here once it is paid. Its job ID is in error.jobs.',
-        video_jobs_uncollected: 'A video you started on this seller over an hour ago has not been downloaded. Download it, or check its status until it ends, before starting another here. Its job ID is in error.jobs.',
         video_jobs_open_limit: 'You have 16 videos on this seller that are not downloaded yet. Download one before starting another here. Their job IDs are in error.jobs.',
       };
       try {

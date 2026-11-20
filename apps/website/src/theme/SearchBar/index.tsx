@@ -1,7 +1,8 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {createPortal} from 'react-dom';
 import clsx from 'clsx';
-import MiniSearch, {type SearchResult} from 'minisearch';
+import type MiniSearch from 'minisearch';
+import type {SearchResult} from 'minisearch';
 import {useHistory} from '@docusaurus/router';
 import type {SearchEntry} from '@site/plugins/docs-search';
 import styles from './styles.module.css';
@@ -47,9 +48,10 @@ let indexPromise: Promise<MiniSearch<SearchEntry>> | null = null;
 // A failed load (say, the network dropped) clears the cached promise so the
 // next call retries.
 function loadIndex(): Promise<MiniSearch<SearchEntry>> {
-  indexPromise ??= import('@generated/docs-search/default/search-index.json').then((mod) => {
+  // the library and the index load together, on the first open (or hover), never with the page
+  indexPromise ??= Promise.all([import('minisearch'), import('@generated/docs-search/default/search-index.json')]).then(([lib, mod]) => {
     const entries = (mod.default ?? mod) as SearchEntry[];
-    const search = new MiniSearch<SearchEntry>({
+    const search = new lib.default<SearchEntry>({
       idField: 'url',
       fields: ['heading', 'page', 'summary', 'text'],
       storeFields: ['page', 'heading', 'category', 'summary', 'url'],

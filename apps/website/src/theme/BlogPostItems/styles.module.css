@@ -1,8 +1,4 @@
-/* Blog card grid — every value lifted from the homepage styleguide:
-   card surface = .stepCard (index.module.css): 1px var(--as-line),
-   r24, var(--as-soil-2), 16px pad · headings = .stepHead h3 (display
-   20/28 semibold) · body = .stepCard p (14/22 medium, text-2) ·
-   meta/tags = mono kicker treatment (font-data, uppercase, 0.08em). */
+/* Blog card grid: hairline cards on the rail surface, Geist titles, mono uppercase meta. */
 
 .grid {
   display: grid;
@@ -14,15 +10,14 @@
   grid-column: 1 / -1;
 }
 
-/* .stepCard recipe */
 .card {
   display: flex;
   flex-direction: column;
   gap: 12px;
   height: 100%;
-  border: 1px solid var(--as-line);
-  border-radius: 24px;
-  background: var(--as-soil-2);
+  border: 1px solid var(--site-hairline);
+  border-radius: var(--site-radius-card);
+  background: var(--site-surface);
   padding: 16px;
   text-decoration: none;
   transition: border-color 0.15s ease;
@@ -34,7 +29,7 @@
 }
 
 /* Featured card: text left, illustration right (homepage split-card idiom) */
-.cardFeatured {
+.card.cardFeatured {
   padding: 24px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(240px, 360px);
@@ -75,9 +70,9 @@
   position: relative;
   display: block;
   height: 160px;
-  border-radius: 16px;
-  background: #F4F5F4;
-  border: 1px solid rgba(0, 30, 18, 0.04);
+  border-radius: 7px;
+  background: var(--as-soil-0);
+  border: 1px solid var(--site-hairline);
   overflow: hidden;
 }
 
@@ -93,7 +88,7 @@
   position: absolute;
   top: 12px;
   left: 12px;
-  font-family: var(--as-font-data);
+  font-family: var(--site-font-mono);
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.08em;
@@ -101,30 +96,29 @@
   line-height: 1;
   padding: 6px 10px;
   border-radius: var(--as-radius-pill);
-  background: #FFFFFF;
-  border: 1px solid #CCCDCC;
-  color: #676663;
+  background: var(--site-surface);
+  border: 1px solid var(--site-hairline);
+  color: var(--site-text-small);
 }
 
 .meta {
   margin: 0;
-  font-family: var(--as-font-data);
+  font-family: var(--site-font-mono);
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--as-text-3);
+  color: var(--site-text-small);
 }
 
-/* .stepHead h3 recipe */
 .cardTitle {
   margin: 0;
-  font-family: var(--as-font-display);
+  font-family: var(--site-font);
   font-size: 20px;
   line-height: 28px;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0;
-  color: var(--as-heading);
+  color: var(--site-text);
 }
 
 .cardFeatured .cardTitle {
@@ -133,13 +127,12 @@
   max-width: 720px;
 }
 
-/* .stepCard p recipe */
 .cardDesc {
   margin: 0;
   font-size: 14px;
   line-height: 22px;
   font-weight: 500;
-  color: var(--as-text-2);
+  color: var(--site-text-body);
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -165,13 +158,13 @@
   gap: 4px;
   flex-shrink: 0;
   font-size: 14px;
-  font-weight: 600;
-  color: var(--as-heading);
+  font-weight: 500;
+  color: var(--site-text);
   white-space: nowrap;
 }
 
 .card:hover .readMore {
-  color: var(--as-green-deep);
+  color: var(--site-accent);
 }
 
 @media (max-width: 996px) {
@@ -184,7 +177,7 @@
   .grid {
     grid-template-columns: 1fr;
   }
-  .cardFeatured {
+  .card.cardFeatured {
     padding: 16px;
     display: flex;
     flex-direction: column;

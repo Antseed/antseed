@@ -47,7 +47,7 @@ That single alignment changes everything. In an ecosystem where there is no Labs
 
 ## What the Foundation holds and does
 
-- **15% of total supply.** Recognising the contribution to the network and to support its role, the Foundation shall receive 15% of the tokens: the [Ecosystem Reserve](https://antseed.com/ants-token). Importantly, this allocation is not unlocked upfront. It vests in epochs, on the same schedule as the rest of the supply. No special treatment, no head start.
+- **15% of total supply.** Recognising the contribution to the network and to support its role, the Foundation shall receive 15% of the tokens: the [Ecosystem Reserve](/ants/). Importantly, this allocation is not unlocked upfront. It vests in epochs, on the same schedule as the rest of the supply. No special treatment, no head start.
 - The brand, the website, and other assets related to the network.
 - Core development funding and direction.
 - Grants to builders, contributors, and researchers growing the ecosystem.
