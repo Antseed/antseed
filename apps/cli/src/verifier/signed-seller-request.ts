@@ -13,8 +13,8 @@ import { asError } from './utils.js'
 
 /**
  * One request to the audited seller through the buyer proxy, pinned to it, with the bytes it signed
- * captured: the same path as the tokenizer pre-check's requests (`askSeller` in `tokenizer-precheck.ts`),
- * for a body the caller writes. The output-token checks read the answer from `responseAuth.signedPreimages`.
+ * captured (`sendSignedRequest`, the tokenizer pre-check's path too), for a body the caller writes. The
+ * output-token checks read the answer from `responseAuth.signedPreimages`.
  */
 export interface SignedSellerRequestV1 {
   requestIds: string[]
@@ -42,14 +42,34 @@ export interface SignedSellerRequestInput {
   onSend?: () => void
 }
 
-/** Times one request is sent before it counts as failed, as for the pre-check. */
+/** Times one request is sent before it counts as failed: the pre-check's and the output checks' alike. */
 export const SIGNED_REQUEST_TRIES = 2
 const SIGNED_REQUEST_TIMEOUT_MS = 60_000
 
-/** Sends `body` to `/v1/chat/completions` of the buyer proxy. Never rejects: a failure is in `failureReason`. */
-export async function askSellerSigned(input: SignedSellerRequestInput, body: Record<string, unknown>): Promise<SignedSellerRequestV1> {
-  const record: SignedSellerRequestV1 = { requestIds: [], statusCode: null, attemptCosts: [], responseAuth: null, failureReason: null }
-  const bytes = new TextEncoder().encode(JSON.stringify(body))
+/** What a caller of `sendSignedRequest` adds to each try: its own fields of the record and when an answer is enough. */
+export interface SignedRequestHooks<Record extends SignedSellerRequestV1> {
+  /** Clears the caller's own fields at the start of every try, so the record holds what the last try's answer gave. */
+  reset?: (record: Record) => void
+  /**
+   * Reads a try's verified signed answer into the caller's fields: null when it is enough, or why it is not, and the
+   * request is tried again (within `SIGNED_REQUEST_TRIES`).
+   */
+  inspect?: (record: Record) => string | null
+}
+
+/**
+ * The one way an audit request reaches the seller: through the buyer proxy, pinned to the seller, with the bytes it
+ * signed captured, tried up to `SIGNED_REQUEST_TRIES` times. It runs the seller's clock only while a try is out, from
+ * when it leaves the limiter to its ResponseAuth, counts every try's cost (an answer after the audit was stopped too,
+ * which then measures nothing), asks again after a 429, a 5xx, an answer without this request's ID or without a
+ * verified ResponseAuth, and stops at any other 4xx. Never rejects: a failure is in `failureReason`.
+ */
+export async function sendSignedRequest<Record extends SignedSellerRequestV1>(
+  input: SignedSellerRequestInput,
+  body: Uint8Array,
+  record: Record,
+  hooks: SignedRequestHooks<Record> = {},
+): Promise<Record> {
   const timeoutMs = Math.min(input.requestTimeoutMs ?? SIGNED_REQUEST_TIMEOUT_MS, SIGNED_REQUEST_TIMEOUT_MS)
   for (let attempt = 1; attempt <= SIGNED_REQUEST_TRIES; attempt += 1) {
     if (input.signal?.aborted) {
@@ -58,7 +78,9 @@ export async function askSellerSigned(input: SignedSellerRequestInput, body: Rec
     }
     const requestId = randomUUID()
     record.requestIds.push(requestId)
+    // The record holds the last try: its ResponseAuth, and what the caller read from it.
     record.responseAuth = null
+    hooks.reset?.(record)
     let out = false
     let answered = false
     try {
@@ -75,7 +97,7 @@ export async function askSellerSigned(input: SignedSellerRequestInput, body: Rec
             'x-antseed-request-id': requestId,
             'x-antseed-capture-response-auth-preimages': '1',
           },
-          body: bytes,
+          body,
           signal: AbortSignal.any(signals),
         })
         return { response: answer, text: await answer.text() }
@@ -91,6 +113,7 @@ export async function askSellerSigned(input: SignedSellerRequestInput, body: Rec
       if (response.status !== 200) {
         const detail = sanitizeOutcomeSummary(text).slice(0, 160)
         record.failureReason = `the seller answered HTTP ${response.status}${detail ? `: ${detail}` : ''}`
+        // Any other 4xx is the seller refusing the request; asking again gives the same answer.
         if (response.status !== 429 && response.status < 500) break
         continue
       }
@@ -117,6 +140,11 @@ export async function askSellerSigned(input: SignedSellerRequestInput, body: Rec
         record.failureReason = evidence.failureReason ?? 'the answer has no verified ResponseAuth'
         continue
       }
+      const notEnough = hooks.inspect?.(record) ?? null
+      if (notEnough !== null) {
+        record.failureReason = notEnough
+        continue
+      }
       record.failureReason = null
       return record
     } catch (error) {
@@ -126,6 +154,12 @@ export async function askSellerSigned(input: SignedSellerRequestInput, body: Rec
     }
   }
   return record
+}
+
+/** Sends `body` to `/v1/chat/completions` of the buyer proxy; any verified signed answer is enough. Never rejects. */
+export async function askSellerSigned(input: SignedSellerRequestInput, body: Record<string, unknown>): Promise<SignedSellerRequestV1> {
+  const record: SignedSellerRequestV1 = { requestIds: [], statusCode: null, attemptCosts: [], responseAuth: null, failureReason: null }
+  return sendSignedRequest(input, new TextEncoder().encode(JSON.stringify(body)), record)
 }
 
 /**

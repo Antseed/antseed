@@ -1,11 +1,9 @@
-import { randomInt, randomUUID } from 'node:crypto'
+import { randomInt } from 'node:crypto'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe, signedResponseInputUsage } from '@antseed/node/payments'
 import type { AuditTaskLimiter } from './audit-concurrency.js'
-import { sanitizeOutcomeSummary } from './outcome-reason.js'
 import {
   costOfRequests,
-  parseProxyAuditExchangeCost,
   requestCountOf,
   type AuditCostSummaryV1,
   type PaidRequest,
@@ -14,7 +12,7 @@ import {
 } from './proxy-evidence.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
 import { requestAsksOnly } from './output-usage.js'
-import { signedExchange } from './signed-seller-request.js'
+import { SIGNED_REQUEST_TRIES, sendSignedRequest, signedExchange } from './signed-seller-request.js'
 import { asError } from './utils.js'
 
 /**
@@ -492,9 +490,8 @@ export async function measureTokenizerReference(input: {
   return { upstream, probes: measured.map((entry) => entry.probe), rounds: measured.map((entry) => entry.round) }
 }
 
-/** Times one request is sent to a seller before it counts as failed. */
-export const SELLER_REQUEST_TRIES = 2
-const SELLER_REQUEST_TIMEOUT_MS = 60_000
+/** Times one request is sent to a seller before it counts as failed (`sendSignedRequest`). */
+export const SELLER_REQUEST_TRIES = SIGNED_REQUEST_TRIES
 
 /**
  * The audited seller's clock (`LazyAuditDeadline` in `model-run.ts`): it runs only while a request to the seller
@@ -781,6 +778,11 @@ export function createTokenizerPrecheckScreen<Settings>(input: {
   }
 }
 
+/**
+ * One request of the pre-check (`sendSignedRequest`): a try is enough only when the response the seller signed reports
+ * its input tokens, which are stored exactly as `validateTokenizerPrecheck` reads the kept bytes again, also when there
+ * is no count (a response can report cached input and no count that can be read).
+ */
 async function askSeller(
   input: SellerAskInput,
   rule: TokenizerPrecheckRule,
@@ -795,99 +797,20 @@ async function askSeller(
     max_tokens: rule.maxTokens,
     stream: false,
   }))
-  const timeoutMs = Math.min(input.requestTimeoutMs ?? SELLER_REQUEST_TIMEOUT_MS, SELLER_REQUEST_TIMEOUT_MS)
-  for (let attempt = 1; attempt <= SELLER_REQUEST_TRIES; attempt += 1) {
-    if (input.signal?.aborted) {
-      record.failureReason = 'the audit was stopped'
-      break
-    }
-    const requestId = randomUUID()
-    record.requestIds.push(requestId)
-    // The record holds the last try: its ResponseAuth, and what that signed response reports.
-    record.responseAuth = null
-    record.signedInputTokens = null
-    record.cachedInput = false
-    delete record.cache
-    // The seller's clock runs while this request is out, from when it leaves the limiter to its ResponseAuth.
-    let out = false
-    let answered = false
-    try {
-      const { response, text } = await input.limiter.run(async () => {
-        const live = input.clock?.start()
-        out = input.clock !== undefined
-        const signals = [AbortSignal.timeout(timeoutMs), ...(live ? [live] : []), ...(input.signal ? [input.signal] : [])]
-        const answer = await (input.fetchFn ?? fetch)(`${input.proxyBaseUrl.replace(/\/$/, '')}/v1/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-antseed-pin-peer': input.peerId,
-            'x-antseed-request-id': requestId,
-            'x-antseed-capture-response-auth-preimages': '1',
-          },
-          body,
-          signal: AbortSignal.any(signals),
-        })
-        return { response: answer, text: await answer.text() }
-      })
-      record.statusCode = response.status
-      const cost = parseProxyAuditExchangeCost(Object.fromEntries(response.headers.entries()))
-      if (cost) record.attemptCosts.push(cost)
-      // An answer that comes after the check was stopped (the audit's deadline, the crowd's time) is paid for and
-      // counted, but measures nothing.
-      if (input.signal?.aborted) {
-        record.failureReason = 'the audit was stopped'
-        break
-      }
-      if (response.status !== 200) {
-        const detail = sanitizeOutcomeSummary(text).slice(0, 160)
-        record.failureReason = `the seller answered HTTP ${response.status}${detail ? `: ${detail}` : ''}`
-        // Any other 4xx is the seller refusing the request; asking again gives the same answer.
-        if (response.status !== 429 && response.status < 500) break
-        continue
-      }
-      if (response.headers.get('x-antseed-request-id') !== requestId) {
-        record.failureReason = 'the buyer proxy answered without this request\'s ID'
-        continue
-      }
-      answered = true
-      const evidence = await input.responseAuthReader.waitForVerified({
-        requestId,
-        sellerPeerId: input.peerId,
-        advertisedService: input.service,
-        serviceAliases: input.serviceAliases,
-        signal: input.signal,
-      })
-      record.responseAuth = {
-        requestId: evidence.requestId,
-        status: evidence.status,
-        record: evidence.responseAuth ? withoutPreimages(evidence.responseAuth) : null,
-        signedPreimages: evidence.signedPreimages ? { ...evidence.signedPreimages, hashAlgorithm: 'keccak256' } : null,
-        failureReason: evidence.failureReason,
-      }
-      if (evidence.status !== 'verified' || !evidence.signedPreimages) {
-        record.failureReason = evidence.failureReason ?? 'the answer has no verified ResponseAuth'
-        continue
-      }
-      // Stored exactly as `validateTokenizerPrecheck` reads the kept bytes again, also when there is no count:
-      // a response can report cached input and no count that can be read.
-      const usage = signedUsage(record)
-      record.signedInputTokens = usage.inputTokens
-      record.cachedInput = usage.cachedInput
-      if (usage.cachedInput) record.cache = { ...usage.cache }
-      else delete record.cache
-      if (usage.inputTokens === null) {
-        record.failureReason = 'the response the seller signed reports no input tokens'
-        continue
-      }
-      record.failureReason = null
-      return record
-    } catch (error) {
-      record.failureReason = `request failed: ${asError(error).message}`.slice(0, 300)
-    } finally {
-      if (out) input.clock!.finish(answered)
-    }
-  }
-  return record
+  return sendSignedRequest(input, body, record, {
+    reset: (request) => {
+      request.signedInputTokens = null
+      request.cachedInput = false
+      delete request.cache
+    },
+    inspect: (request) => {
+      const usage = signedUsage(request)
+      request.signedInputTokens = usage.inputTokens
+      request.cachedInput = usage.cachedInput
+      if (usage.cachedInput) request.cache = { ...usage.cache }
+      return usage.inputTokens === null ? 'the response the seller signed reports no input tokens' : null
+    },
+  })
 }
 
 /** A peer ID as the pre-check compares them: without `0x`, in lower case. */
@@ -922,13 +845,6 @@ function roundDeltas(round: TokenizerPrecheckRoundV1, rule: TokenizerPrecheckRul
 function signedUsage(request: TokenizerSellerRequestV1): { inputTokens: number | null; cachedInput: boolean; cache: Readonly<Record<string, number>> } {
   const preimages = request.responseAuth?.status === 'verified' ? request.responseAuth.signedPreimages : null
   return preimages ? signedResponseInputUsage(Buffer.from(preimages.responseBase64, 'base64')) : { inputTokens: null, cachedInput: false, cache: {} }
-}
-
-function withoutPreimages<T extends { requestPreimage?: unknown; responsePreimage?: unknown }>(
-  record: T,
-): Omit<T, 'requestPreimage' | 'responsePreimage'> {
-  const { requestPreimage: _request, responsePreimage: _response, ...exported } = record
-  return exported
 }
 
 /** Every request the pre-check sent to the seller, tried or answered. */
