@@ -283,6 +283,21 @@ export type PaymentRequiredCode =
   | typeof PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED;
 
 /**
+ * Error codes of a seller's HTTP 409 to a video create while the buyer's own
+ * earlier jobs with that seller are not settled: a video it downloaded but has
+ * not paid for, or as many uncollected jobs as the seller allows. The buyer can
+ * act on each, so buyers pass them through as is. `uncollected` (one job left
+ * undownloaded for an hour) is no longer sent by current sellers; buyers still
+ * pass it through from older ones.
+ */
+export const VIDEO_JOB_HOLD_CODES = {
+  paymentPending: 'video_payment_pending',
+  uncollected: 'video_jobs_uncollected',
+  openLimit: 'video_jobs_open_limit',
+} as const;
+export type VideoJobHoldCode = typeof VIDEO_JOB_HOLD_CODES[keyof typeof VIDEO_JOB_HOLD_CODES];
+
+/**
  * Seller tells buyer that the current cumulative authorization is insufficient.
  * After every served request the seller includes the cost of that request so
  * the buyer can validate before signing a new SpendingAuth.

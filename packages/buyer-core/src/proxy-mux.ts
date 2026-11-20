@@ -48,6 +48,11 @@ export interface ProxyMuxUploadLimits {
   maxTotalPendingUploadBytes?: number;
   /** Max ms between the header frame and HttpRequestEnd. Default: 120_000 ms. */
   uploadTimeoutMs?: number;
+  /**
+   * A budget every in-progress upload also reserves from, so one cap can cover
+   * all of a seller's connections. An upload that would pass it gets a 503.
+   */
+  sharedUploadBudget?: ByteBudget;
 }
 
 // Codex-style /v1/responses requests can include large repository context.
@@ -57,6 +62,31 @@ export interface ProxyMuxUploadLimits {
 export const DEFAULT_MAX_UPLOAD_BODY_BYTES = 64  * 1024 * 1024; // 64 MiB
 const DEFAULT_MAX_TOTAL_PENDING_BYTES      = 256 * 1024 * 1024; // 256 MiB
 const DEFAULT_UPLOAD_TIMEOUT_MS            = 120_000;            // 2 min
+
+/**
+ * A cap on bytes held at once, shared by everything that reserves from it.
+ * Reserve before taking the bytes and release the same amount when done.
+ */
+export class ByteBudget {
+  private _used = 0;
+
+  constructor(readonly maxBytes: number) {}
+
+  /** Reserves `bytes`, or returns false and reserves nothing when that would pass the cap. */
+  tryReserve(bytes: number): boolean {
+    if (this._used + bytes > this.maxBytes) return false;
+    this._used += bytes;
+    return true;
+  }
+
+  release(bytes: number): void {
+    this._used = Math.max(0, this._used - bytes);
+  }
+
+  get usedBytes(): number {
+    return this._used;
+  }
+}
 
 interface PendingUpload {
   headerReq: SerializedHttpRequest;
@@ -93,6 +123,7 @@ export class ProxyMux {
   private readonly _uploadThresholdBytes: number;
   private readonly _maxTotalPendingUploadBytes: number;
   private readonly _uploadTimeoutMs: number;
+  private readonly _sharedUploadBudget: ByteBudget | null;
 
   constructor(connection: BuyerConnection, uploadLimits?: ProxyMuxUploadLimits) {
     this._connection = connection;
@@ -100,6 +131,7 @@ export class ProxyMux {
     this._uploadThresholdBytes     = uploadLimits?.uploadThresholdBytes     ?? ANTSEED_UPLOAD_THRESHOLD_BYTES;
     this._maxTotalPendingUploadBytes = uploadLimits?.maxTotalPendingUploadBytes ?? DEFAULT_MAX_TOTAL_PENDING_BYTES;
     this._uploadTimeoutMs          = uploadLimits?.uploadTimeoutMs          ?? DEFAULT_UPLOAD_TIMEOUT_MS;
+    this._sharedUploadBudget       = uploadLimits?.sharedUploadBudget       ?? null;
   }
 
   /** Buyer side: send a proxy request and register response/chunk handlers. */
@@ -274,7 +306,7 @@ export class ProxyMux {
             const existing = this._pendingUploads.get(request.requestId);
             if (existing) {
               clearTimeout(existing.timer);
-              this._totalPendingUploadBytes -= existing.byteCount;
+              this._releasePending(existing.byteCount);
               for (const c of existing.chunks) c.fill(0);
             }
             const timer = setTimeout(
@@ -307,15 +339,10 @@ export class ProxyMux {
             this._abortUpload(chunk.requestId, 413, 'Upload body exceeds per-request limit');
             break;
           }
-          // Global budget guard
-          if (this._totalPendingUploadBytes + chunk.data.length > this._maxTotalPendingUploadBytes) {
-            this._abortUpload(chunk.requestId, 413, 'Server upload capacity exceeded');
-            break;
-          }
+          if (!this._acceptPending(chunk.requestId, chunk.data.length)) break;
 
           entry.chunks.push(chunk.data);
           entry.byteCount += chunk.data.length;
-          this._totalPendingUploadBytes += chunk.data.length;
           break;
         }
         case MessageType.HttpRequestEnd: {
@@ -334,19 +361,15 @@ export class ProxyMux {
               this._abortUpload(chunk.requestId, 413, 'Upload body exceeds per-request limit');
               break;
             }
-            if (this._totalPendingUploadBytes + finalLen > this._maxTotalPendingUploadBytes) {
-              this._abortUpload(chunk.requestId, 413, 'Server upload capacity exceeded');
-              break;
-            }
+            if (!this._acceptPending(chunk.requestId, finalLen)) break;
             entry.chunks.push(chunk.data);
             entry.byteCount += finalLen;
-            this._totalPendingUploadBytes += finalLen;
           }
 
           // Clean up tracking state
           clearTimeout(entry.timer);
           this._pendingUploads.delete(chunk.requestId);
-          this._totalPendingUploadBytes -= entry.byteCount;
+          this._releasePending(entry.byteCount);
 
           if (this._requestHandler) {
             const body = _concatChunks(entry.chunks);
@@ -482,7 +505,38 @@ export class ProxyMux {
       for (const c of entry.chunks) c.fill(0);
     }
     this._pendingUploads.clear();
-    this._totalPendingUploadBytes = 0;
+    this._releasePending(this._totalPendingUploadBytes);
+  }
+
+  /**
+   * Seller side: for a response sent chunk by chunk. Undefined when the buyer is
+   * keeping up, else a promise to wait on before sending more.
+   */
+  whenWritable(): Promise<void> | undefined {
+    return this._connection.whenWritable?.();
+  }
+
+  /**
+   * Counts `bytes` more of an in-progress upload against this connection's budget
+   * and the shared one. When either is full the upload is aborted with an error
+   * response and false is returned.
+   */
+  private _acceptPending(requestId: string, bytes: number): boolean {
+    if (this._totalPendingUploadBytes + bytes > this._maxTotalPendingUploadBytes) {
+      this._abortUpload(requestId, 413, 'Server upload capacity exceeded');
+      return false;
+    }
+    if (this._sharedUploadBudget && !this._sharedUploadBudget.tryReserve(bytes)) {
+      this._abortUpload(requestId, 503, 'Seller is at its limit for request bytes in flight; retry shortly');
+      return false;
+    }
+    this._totalPendingUploadBytes += bytes;
+    return true;
+  }
+
+  private _releasePending(bytes: number): void {
+    this._totalPendingUploadBytes -= bytes;
+    this._sharedUploadBudget?.release(bytes);
   }
 
   /**
@@ -494,7 +548,7 @@ export class ProxyMux {
     if (!entry) return;
 
     clearTimeout(entry.timer);
-    this._totalPendingUploadBytes -= entry.byteCount;
+    this._releasePending(entry.byteCount);
     for (const c of entry.chunks) c.fill(0);
     this._pendingUploads.delete(requestId);
 
@@ -504,6 +558,7 @@ export class ProxyMux {
       headers: {
         'content-type': 'text/plain',
         ...(statusCode === 413 ? { 'x-antseed-max-upload-body-bytes': String(this._maxUploadBodyBytes) } : {}),
+        ...(statusCode === 503 ? { 'retry-after': '1' } : {}),
       },
       body: new TextEncoder().encode(reason),
     });

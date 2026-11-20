@@ -67,7 +67,7 @@ Details: [Model Verification Needs More Than a Label](/blog/model-verification-f
 
 ## What anonymity here does — and doesn't — mean
 
-Trust requires honesty about limits, so here are Antseed's, stated plainly — the same way the [light paper](/docs/lightpaper) states them.
+Trust requires honesty about limits, so here are Antseed's, stated plainly.
 
 Antseed's anonymity is *architectural*: no central account, no platform API key, no centralized chat database, and no aggregator reading your traffic. What it is not is a promise that every piece of data is invisible to every participant:
 
@@ -85,4 +85,4 @@ Centralized platforms ask you to trust their intentions. Antseed asks you to ver
 
 ---
 
-*Want to go deeper? Start with the [protocol overview](/docs/overview), read the [light paper](/docs/lightpaper), or browse the [code](https://github.com/Antseed/antseed).*
+*Want to go deeper? Start with the [protocol overview](/docs/overview) or browse the [code](https://github.com/Antseed/antseed).*

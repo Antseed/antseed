@@ -23,7 +23,7 @@ import { useRetainedState } from '../../hooks/useRetainedState';
 import { ChatBubble } from '../chat/ChatBubble';
 import { isImageRequestPhase } from '../chat/chat-shared';
 import { hasSearchPhraseMatch, isToolResultOnlyMessage } from '../chat/chat-utils.js';
-import { ThinkingDots } from '../chat/ThinkingDots';
+import { WalkingAnt } from '../chat/WalkingAnt';
 import { ImageGenerationPlaceholder } from '../chat/ImageGenerationPlaceholder';
 import { ToolApprovalCard } from '../chat/ToolApprovalCard';
 import { FundingStatusNotice } from './FundingStatusNotice';
@@ -255,6 +255,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     chatSendingConversationIds: state.chatSendingConversationIds,
     chatStreamingMessage: state.chatStreamingMessage,
     chatThinkingPhase: state.chatThinkingPhase,
+    chatThinkingStartedAt: state.chatThinkingStartedAt,
     chatToolApprovalRequests: state.chatToolApprovalRequests,
     chatWorkspaceDefaultPath: state.chatWorkspaceDefaultPath,
     chatWorkspaceLocked: state.chatWorkspaceLocked,
@@ -514,6 +515,8 @@ export function ChatView({ onSelectView }: ChatViewProps) {
   // An image model picked in the dropdown makes Send generate an image until
   // the user picks a text model again; the conversation keeps its text model.
   const imageMode = imageModel?.type === 'image';
+  // The seller picker follows the model Send uses: the image model in image mode.
+  const pickerModelId = imageMode ? snap.chatImageModelId ?? '' : snap.chatSelectedModelId;
   // Unknown models (a plain OpenAI-compatible gateway, or the list still
   // loading) are treated as text-only.
   const supportsMultimodal = selectedTextModel ? modelAcceptsImages(selectedTextModel, snap.chatSelectedModelId) : false;
@@ -1113,7 +1116,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             {imageRequestInProgress ? (
               <ImageGenerationPlaceholder editing={snap.chatThinkingPhase === 'Editing image'} />
             ) : showThinkingIndicator ? (
-              <ThinkingDots label={snap.chatThinkingPhase} />
+              <WalkingAnt phaseLabel={snap.chatThinkingPhase} startedAt={snap.chatThinkingStartedAt} />
             ) : null}
             {snap.chatError && <ChatNote>{snap.chatError}</ChatNote>}
             {/* The welcome screen's privacy note shows a failed switch; an open chat shows it here. */}
@@ -1409,13 +1412,24 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                     onOpen={() => void actions.refreshChatModels()}
                     onRetry={() => void actions.refreshChatModels(true)}
                     menuPlacement="above"
+                    onUsePrompt={(prompt) => {
+                      // The chat model runs it: leave image mode, or Send would make an image.
+                      if (imageMode) actions.selectChatModel(snap.chatSelectedModelId);
+                      setInputValue(prompt);
+                      requestAnimationFrame(() => {
+                        const input = inputRef.current;
+                        input?.focus();
+                        input?.setSelectionRange(prompt.length, prompt.length);
+                      });
+                    }}
                   />
-                  {!imageMode && snap.chatSelectedModelId && !selectedTextModel?.router ? (
+                  {/* Image models have sellers too: pick one, or leave it to Auto. */}
+                  {pickerModelId && (imageMode || !selectedTextModel?.router) ? (
                     <ChatSellerPicker
                       onOpenChange={setSellerMenuOpen}
-                      modelId={snap.chatSelectedModelId}
+                      modelId={pickerModelId}
                       disabled={snap.chatInputDisabled || snap.chatSending}
-                      onChange={(peerId) => actions.selectChatModel(joinPinnedModel(snap.chatSelectedModelId, peerId))}
+                      onChange={(peerId) => actions.selectChatModel(joinPinnedModel(pickerModelId, peerId))}
                       menuPlacement="above"
                     />
                   ) : null}

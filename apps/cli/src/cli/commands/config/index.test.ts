@@ -166,3 +166,19 @@ test('set still accepts whole provider and service objects and free-form capabil
   assert.deepEqual(providers.inference.defaults, { inputUsdPerMillion: 1.5, outputUsdPerMillion: 2 });
   assert.equal(providers.other.plugin, 'openai');
 });
+
+test('config seller set refuses a cached-input price above the input price, but not other edits beside an old one', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'config-set-cached-')), 'config.json');
+  writeFileSync(path, JSON.stringify({ seller: { providers: { inference: { plugin: 'openai', services: {
+    'kimi-k2': { pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 } },
+    old: { pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2, cachedInputUsdPerMillion: 5 } },
+  } } } } }));
+  await assert.rejects(
+    patchValidatedConfig(path, (raw) => setValidatedConfigValue(raw, 'seller.providers.inference.services.kimi-k2.pricing.cachedInputUsdPerMillion', '50000')),
+    /inference\/kimi-k2: cached-input price \$50000 per 1M tokens is above the input price \$0\.1/,
+  );
+  // A bad price saved earlier doesn't block changing something else.
+  await patchValidatedConfig(path, (raw) => setValidatedConfigValue(raw, 'seller.providers.inference.services.kimi-k2.pricing.cachedInputUsdPerMillion', '0.01'));
+  const services = JSON.parse(readFileSync(path, 'utf-8')).seller.providers.inference.services;
+  assert.equal(services['kimi-k2'].pricing.cachedInputUsdPerMillion, 0.01);
+});

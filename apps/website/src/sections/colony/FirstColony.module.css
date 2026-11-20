@@ -1,0 +1,39 @@
+.first .painting { background-position: 50% 60%; }
+.facts { align-self: stretch; }
+.fact { padding: 14px 0; }
+.fact + .fact { background: radial-gradient(circle at 1px 1px, var(--site-dot) .85px, transparent 1.25px) 0 0 / 8px 2px repeat-x; }
+.term { font: 500 16px/24px var(--site-font); color: var(--site-text); }
+.detail { margin: 2px 0 0; font: 400 16px/24px var(--site-font); color: var(--site-text-body); text-wrap: pretty; }
+
+/* wide: exactly one screen, the painting as tall as the rail allows */
+@media (min-width: 1200px) {
+  .first { height: 100svh; }   /* exactly the screen */
+  .first .rail { height: 100%; padding-block: 124px; align-content: center; }
+  .first .painting { height: 100%; }
+  .first .text { gap: 24px; padding-block: 0; }
+  .first .head { gap: 16px; }
+  .fact { padding: 10px 0; }
+}
+/* 900–1023px: one column, as under 900px; side by side the title's grey line would break and the anthill shrink to a sliver */
+@media (min-width: 900px) and (max-width: 1023px) {
+  .first .rail { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .first .text { order: -1; gap: 28px; padding: 72px var(--site-pad) 56px; }
+}
+@media (max-width: 1023px) { .first .painting { height: 420px; } }
+/* 1024–1279px: the text column a little wider, so "its first members." stays on one line */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .first .rail { grid-template-columns: minmax(0, 4fr) minmax(0, 5fr); }
+  .first .text { padding-inline: 64px 48px; }
+}
+/* phones: eyebrow and title, then the painting across the rail, the facts and the button (the text column opened so the painting
+   comes in under the head) */
+@media (max-width: 760px) {
+  .first .text { display: contents; }
+  .first .rail > * { min-width: 0; }
+  .text > * { margin-inline: var(--site-pad); }
+  .eyebrow { order: 1; margin-top: 72px; }
+  .head { order: 2; margin-top: 16px; }
+  .first .painting { order: 3; height: auto; aspect-ratio: 4 / 3; margin-top: 32px; }
+  .facts { order: 4; margin-top: 16px; }
+  .actions { order: 5; margin: 24px var(--site-pad) 72px; }
+}

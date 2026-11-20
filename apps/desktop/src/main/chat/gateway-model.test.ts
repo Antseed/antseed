@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeGatewayModel } from './gateway-model.js';
+import type { AnthropicGatewayModel } from './anthropic-thinking.js';
 import { recommendAppModels, resolveEntryProtocol, toChatModel, toChatModels } from '../gateway/catalog.js';
 
 const ENDPOINT = { mode: 'local' as const, origin: 'http://127.0.0.1:8379', apiKey: 'antseed_key' };
@@ -101,6 +102,30 @@ test('the picker lists each model id once: tool-capable first, then most sellers
     { id: 'd', name: 'Delta', capabilities: { tool_use: true } },
   ]);
   assert.deepEqual(models.map((model) => model.label), ['Delta', 'Crowded', 'alpha', 'Beta']);
+});
+
+test('thinking needs every seller to declare reasoning, or the pinned one', () => {
+  const peers = [
+    { peerId: 'AA', capabilities: { reasoning: true } },
+    { peerId: 'bb', capabilities: { reasoning: false } },
+  ];
+  const mixed = toChatModel({ id: 'claude-haiku-5-5', peers });
+  assert.deepEqual([mixed.reasoning, mixed.reasoningEverySeller, mixed.reasoningSellerIds], [true, undefined, ['aa']]);
+  // The gateway's guarantee: every seller reported reasoning.
+  const guaranteed = toChatModel({ id: 'm', capabilities: { reasoning: true }, peers: [{ peerId: 'cc' }] });
+  assert.equal(guaranteed.reasoningEverySeller, true);
+  const all = toChatModel({ id: 'm', peers: [{ peerId: 'dd', capabilities: { reasoning: true } }] });
+  assert.equal(all.reasoningEverySeller, true);
+  assert.equal(toChatModel({ id: 'm' }).reasoningEverySeller, undefined);
+});
+
+test('an Anthropic model carries its sellers\' reasoning flag, and stays reasoning for pi so a saved thinking level is never lowered', () => {
+  const anthropic = (reasoning?: boolean) => makeGatewayModel({ modelId: 'claude-haiku-5-5', endpoint: ENDPOINT, protocol: 'anthropic-messages', supportsImages: false, ...(reasoning === undefined ? {} : { reasoning }) }) as AnthropicGatewayModel;
+  assert.deepEqual([anthropic(true).sellersReason, anthropic(false).sellersReason, anthropic().sellersReason], [true, false, false]);
+  // pi lowers a session's level to `off`, and saves that, for a model whose `reasoning` is false.
+  assert.deepEqual([anthropic(true).reasoning, anthropic(false).reasoning], [true, true]);
+  // The OpenAI protocols keep their own reasoning handling.
+  assert.equal(makeGatewayModel({ modelId: 'm', endpoint: ENDPOINT, protocol: 'openai-responses', supportsImages: false }).reasoning, true);
 });
 
 test('gateway models use the origin for Anthropic and /v1 for OpenAI, with a bearer key', () => {
@@ -229,4 +254,11 @@ test('a seller that only advertises the TEE verifier, unchecked, doesn\'t make a
   // Shared with a proven one, the model is TEE (some of its sellers are).
   assert.equal(toChatModel({ id: 'm', peers: [advertised, { ...advertised, peerId: 'b', teeScope: 'seller-node' }] }).tee, true);
   assert.equal(toChatModel({ id: 'm', peers: [{ peerId: 'c', inputUsdPerMillion: 1, outputUsdPerMillion: 2 }] }).tee, false);
+});
+
+test('an Auto chat asks the gateway to prefer its expected seller; a chat without one sends no preference', () => {
+  const preferring = makeGatewayModel({ modelId: 'm', endpoint: ENDPOINT, protocol: 'openai-chat-completions', supportsImages: false, preferredPeerId: 'ab12' });
+  assert.equal(preferring.headers?.['x-antseed-prefer-peer'], 'ab12');
+  const plain = makeGatewayModel({ modelId: 'm', endpoint: ENDPOINT, protocol: 'openai-chat-completions', supportsImages: false, preferredPeerId: null });
+  assert.equal(plain.headers?.['x-antseed-prefer-peer'], undefined);
 });

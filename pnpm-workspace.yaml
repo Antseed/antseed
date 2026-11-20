@@ -3,3 +3,6 @@ packages:
   - "plugins/*"
   - "apps/*"
   - "e2e"
+
+catalog:
+  typescript: ^7.0.2

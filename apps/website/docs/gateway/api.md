@@ -203,6 +203,12 @@ wire_api = "responses"
 
 Step-by-step setups for more tools (OpenCode, Pi, the Vercel AI SDK, LangChain and others) are in the [Integrations directory](/integrations); for Hermes and OpenClaw, see [Connect agents](/docs/agents). Each uses the same base URL and key. To launch coding tools against Antseed with one click instead, use the [desktop app](/docs/desktop).
 
+## Dropped connections
+
+A streamed answer keeps generating for 30 seconds after the client's connection drops. When the client sends the same request again in that time, with the same key, the gateway replays the answer from the start and streams the rest as it arrives. It is generated and paid for once. Clients that retry a failed request on their own, as most SDKs and coding tools do, need no setup.
+
+If no retry arrives within 30 seconds, the generation is cancelled, as it is for a client that leaves on purpose. The gateway keeps a compressed copy of each streamed answer only while it is in flight, and deletes it once the answer is delivered or the 30 seconds pass. A very long answer that outgrows the copy limit is cancelled on a drop, as before.
+
 ## Check a key's usage and limits
 
 Anyone with a key can read its usage and remaining limits:
@@ -251,6 +257,16 @@ curl https://gateway.example.com/v1/key/savings -H "Authorization: Bearer $ANTSE
 `/v1/key/rewards` reports the $ANTS the paying wallet earned from usage, read on the gateway's own chain (`available` is false where rewards aren't live). Claiming needs the wallet's operator, so it happens in the console's Rewards page.
 
 `/v1/key/savings` compares this key's own requests with retail reference prices: what they would have cost at retail, and what they paid. It counts only models with a retail price, free requests at $0 paid. Its usage comes from the gateway's records per model (requests the gateway pruned from its log keep their spend but no longer their tokens if no spend was metered). `data` is `null` when retail prices can't be read (`ANTSEED_COMPARABLE_PRICES_URL`) or no request matched. Both answer `null` rather than an error when they can't be read.
+
+`GET /v1/models` lists the same retail prices per model. A text model the price list names has a `reference_price`, in USD per million tokens:
+
+```json
+{ "id": "<model>", "reference_price": { "input_usd_per_million": 1.25, "output_usd_per_million": 5, "cached_input_usd_per_million": 0.125 }, "peers": [] }
+```
+
+It is a price to compare with, not one a seller charges: what each seller charges is under `peers[]`. A side the price list doesn't price is left out, and so is the whole field for a model it doesn't name, and for image, video and speech models and routers. The buyer reads the price list in the background when it starts and every 10 minutes after that, so a listing never waits for it: until the first read finishes, or when no price list is set, no model has the field. A read that fails keeps the prices from the last one that worked, and is retried after a minute.
+
+A video model's sellers under `peers[]` each list `videoUsdPerSecond`: the cheapest price per second of video for a plain create (no reference video), as that seller's billing prices it at the resolutions it offers, and `videoUsdPerVideo` when its billing adds a fixed charge per video.
 
 `limits` are the key's own limits (the lower of the admins' and the owner's). Member and workspace budgets can stop a request first; see [Budgets and spend limits](/docs/gateway/budgets).
 
@@ -325,6 +341,7 @@ The gateway tells the buyer which identity pays with the `x-antseed-buyer-identi
 ## Where state lives
 
 - `<data-dir>/gateway/gateway.db`: hashed keys, the request log and spend (SQLite).
+- `<data-dir>/gateway/stream-resume/`: compressed copies of large streamed answers in flight (see [Dropped connections](#dropped-connections)), one folder per running gateway process. A gateway removes the folders of processes that are no longer running when it starts; nothing to back up.
 - `<data-dir>/buyer-identities/<name>/`: each extra identity's wallet key, or a reference to it.
 
 Back up the identity directories, or the secrets they point to: each wallet can hold credits.

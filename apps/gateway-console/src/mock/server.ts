@@ -474,6 +474,10 @@ function preview(query: URLSearchParams): RoutePreview {
     if (policy.requireTee && !peer.tee) reasons.push('no TEE')
     if (policy.requireVerified && !peer.verified) reasons.push('not verified')
     if (policy.maxInputUsdPerMillion !== undefined && (service.inputUsdPerMillion ?? 0) > policy.maxInputUsdPerMillion) reasons.push('over input price cap')
+    const cachedCap = policy.maxCachedInputUsdPerMillion ?? policy.maxInputUsdPerMillion
+    if (cachedCap !== undefined && service.cachedInputUsdPerMillion != null && service.cachedInputUsdPerMillion > cachedCap) {
+      reasons.push(policy.maxCachedInputUsdPerMillion !== undefined ? 'over cached input price cap' : 'cached input over input price cap')
+    }
     // The buyer judges its own trust minimum on the effective trust: a live DIFF verdict keeps 10%.
     const buyerMinTrust = db.settings.buyer.routingPreferences.minTrustScore
     if (service.modelCheck?.verdict === 'diff' && peer.trustScore !== null && peer.trustScore * 0.1 < buyerMinTrust) {

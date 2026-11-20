@@ -16,6 +16,9 @@ export const UNIT_BILLING_UNITS_V1 = [
  * metadata v16+ documents may name them. `reference_video` (`"true"` or
  * `"false"`) is whether the create sends reference videos, which upstreams
  * bill on top of the output; only metadata v17+ documents may name it.
+ * `input_images` is how many image files an image edit sends (`"1"`, `"2"`,
+ * ...), which upstreams bill as input on top of the output; only metadata v18+
+ * documents may name it.
  */
 export const UNIT_BILLING_MATCH_KEYS_V1 = [
   'model',
@@ -25,6 +28,7 @@ export const UNIT_BILLING_MATCH_KEYS_V1 = [
   'aspect_ratio',
   'audio',
   'reference_video',
+  'input_images',
 ] as const;
 
 export type UnitBillingUnitV1 = (typeof UNIT_BILLING_UNITS_V1)[number];

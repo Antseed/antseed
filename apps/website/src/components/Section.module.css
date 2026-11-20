@@ -1,0 +1,28 @@
+.section {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.rail {
+  composes: dots from './dots.module.css';
+  flex: 1 0 auto;
+  width: var(--site-rail);
+  margin: 0 auto;
+  background: var(--site-surface);
+  isolation: isolate;
+}
+.rail::before { z-index: -1; }   /* under the rail's content, as panels against the edge hide half the dots */
+.outlineTop { --dots-top: 2px; }
+.outlineRight { --dots-right: 2px; }
+.outlineBottom { --dots-bottom: 2px; }
+.outlineLeft { --dots-left: 2px; }
+
+.padAll { padding: 120px var(--site-pad); }
+.padX { padding-inline: var(--site-pad); }
+.padY { padding-block: 120px; }
+
+@media (max-width: 760px) {
+  .padAll { padding: 72px var(--site-pad); }
+  .padY { padding-block: 72px; }
+}

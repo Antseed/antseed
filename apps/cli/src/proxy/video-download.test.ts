@@ -165,6 +165,19 @@ test('passes seller JSON errors below 500 through unchanged', async () => {
   })
 })
 
+test('passes a busy seller\'s Retry-After on with its 429', async () => {
+  const busy = { error: { code: 'video_download_busy', message: 'Too many concurrent video downloads; retry shortly' } }
+  await serve(async sent => ({
+    requestId: sent.requestId, statusCode: 429, headers: { 'content-type': 'application/json', 'retry-after': '5' },
+    body: Buffer.from(JSON.stringify(busy)),
+  }), async url => {
+    const response = await fetch(url)
+    assert.equal(response.status, 429)
+    assert.equal(response.headers.get('retry-after'), '5')
+    assert.deepEqual(await response.json(), busy)
+  })
+})
+
 test('reports a reachable seller that cannot read the job state as unknown, not 502', async () => {
   const sellerError = (statusCode: number, code: string): SerializedHttpResponse => ({
     requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json' },

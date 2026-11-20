@@ -1,15 +1,16 @@
-import React, {
+import {
   Children,
   cloneElement,
   createContext,
   isValidElement,
   useContext,
-  useEffect,
-  useState,
+  type ComponentProps,
   type ReactElement,
   type ReactNode,
 } from 'react';
+import clsx from 'clsx';
 import {CheckIcon, CopyIcon} from '@site/src/components/CopyIcons';
+import {useCopy} from '@site/src/lib/useCopy';
 import styles from './CommandTable.module.css';
 
 /**
@@ -35,25 +36,12 @@ function textOf(node: ReactNode): string {
 }
 
 function CopyCommandButton({command}: {command: string}) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return undefined;
-    const t = window.setTimeout(() => setCopied(false), 1500);
-    return () => window.clearTimeout(t);
-  }, [copied]);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-    } catch {
-      /* clipboard unavailable — the command stays selectable */
-    }
-  };
+  const {copied, copy} = useCopy();
   return (
     <button
       type="button"
-      className={`${styles.copy} ${copied ? styles.copied : ''}`}
-      onClick={copy}
+      className={clsx(styles.copy, copied && styles.copied)}
+      onClick={() => copy(command)}
       aria-label={copied ? 'Copied' : `Copy command: ${command}`}
       title={copied ? 'Copied' : 'Copy command'}>
       {copied ? <CheckIcon /> : <CopyIcon />}
@@ -62,7 +50,7 @@ function CopyCommandButton({command}: {command: string}) {
 }
 
 /** MDX `tr`: inside a CommandTable, body rows get a copy button in cell one. */
-export function CommandTableRow(props: React.ComponentProps<'tr'>) {
+export function CommandTableRow(props: ComponentProps<'tr'>) {
   const inCommandTable = useContext(CommandTableContext);
   const cells = Children.toArray(props.children).filter(isValidElement) as ReactElement<{
     children?: ReactNode;

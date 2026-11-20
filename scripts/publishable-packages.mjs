@@ -10,7 +10,7 @@ export const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Must match the --filter set in .github/workflows/npm-publish.yml.
 const GROUP_DIRS = ['packages', 'plugins'];
-const EXTRA_DIRS = ['apps/cli', 'apps/network-stats', 'apps/payments', 'apps/ants', 'apps/gateway-console', 'apps/relay'];
+const EXTRA_DIRS = ['apps/cli', 'apps/payments', 'apps/ants', 'apps/gateway-console', 'apps/relay'];
 
 /** The package in `dir` (relative to the repo root), or null when it has no manifest or is private. */
 export function readPackage(dir) {

@@ -133,7 +133,7 @@ try {
   provider = new JsonRpcProvider(rpcUrl, 31337, { staticNetwork: true, cacheTimeout: -1, batchMaxCount: 1 });
   provider.pollingInterval = 100;
   assert.equal(Number(await rpc('eth_chainId')), 31337);
-  const chain = { ...base, chainId: 'base-local', evmChainId: 31337, rpcUrl, fallbackRpcUrls: [], explorerApiUrl: '', networkStatsUrl: '' };
+  const chain = { ...base, chainId: 'base-local', evmChainId: 31337, rpcUrl, fallbackRpcUrls: [], explorerApiUrl: '' };
   await writeFile(path.join(dataDir, 'config.json'), JSON.stringify({ payments: { crypto: chain } }, null, 2), { mode: 0o600 });
   const identity = await loadOrCreateIdentity(dataDir);
   const second = await loadOrCreateIdentity(path.join(dataDir, 'second-seller'));

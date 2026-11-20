@@ -142,7 +142,7 @@ Image edits are billed per delivered output image (plus any token prices the sel
 
 ### Text to speech
 
-`POST /v1/audio/speech` takes OpenAI's JSON body (`model`, `input`, `voice`, optional `response_format` and `speed`) and returns the audio file. Find speech models and their voices with `GET /v1/models?type=speech`: each offer lists its voices under `capabilities.speech.voices`, and `voices` on the model lists those every seller of it accepts.
+`POST /v1/audio/speech` takes OpenAI's JSON body (`model`, `input`, `voice`, optional `response_format`, `speed` and `stream_format`) and returns the audio file. Find speech models and their voices with `GET /v1/models?type=speech`: each offer lists its voices under `capabilities.speech.voices`, and `voices` on the model lists those every seller of it accepts.
 
 ```bash
 curl -s http://localhost:8377/v1/models?type=speech | jq '.data[] | {id, voices}'
@@ -153,7 +153,9 @@ curl http://localhost:8377/v1/audio/speech \
   -o hello.mp3
 ```
 
-You pay per character of `input`, only when audio comes back. A voice the seller does not offer is refused with `400 unsupported_voice` and the list of its voices; you never get a different voice than the one you asked for. Without `voice`, the seller's upstream picks its default voice; some upstreams (OpenAI) require one, so send a voice the seller lists.
+With `"stream_format": "sse"`, the audio comes back as OpenAI's stream of events instead: base64 `speech.audio.delta` chunks, then `speech.audio.done`. Send `Accept: text/event-stream` too to get the events as they arrive; without it they come all at once at the end. Not every model streams events: an upstream that ignores the field answers with the audio file.
+
+You pay per character of `input`, only when audio comes back, as a file or as a stream of events that ends with `speech.audio.done`. A voice the seller does not offer is refused with `400 unsupported_voice` and the list of its voices; you never get a different voice than the one you asked for. Without `voice`, the seller's upstream picks its default voice; some upstreams (OpenAI) require one, so send a voice the seller lists.
 
 ## Choose the model and seller
 

@@ -29,23 +29,6 @@ export function depositShortfall(input: {
     + 'or lower payments.maxReserveAmountUsdc and restart the buyer'
 }
 
-/** Problems with a model's probe bank for the sellers of this run; empty when it is ready. */
-export function probeBankProblems(input: {
-  model: string
-  sellers: ReadonlyArray<{ sellerPeerId: string; unseenProbeCount: number; neededProbeCount: number }>
-  enrollIfNeeded: boolean
-}): string[] {
-  if (input.enrollIfNeeded) return []
-  const short = input.sellers.filter((seller) => seller.unseenProbeCount < seller.neededProbeCount)
-  if (short.length === 0) return []
-  const worst = short.reduce((low, seller) => seller.unseenProbeCount < low.unseenProbeCount ? seller : low)
-  return [
-    `${input.model}: ${short.length} seller(s) have too few unseen questions for an audit `
-    + `(lowest: ${worst.unseenProbeCount} of ${worst.neededProbeCount} needed, seller ${worst.sellerPeerId.slice(0, 12)}…). `
-    + 'Run without --no-enroll to add fresh questions',
-  ]
-}
-
 /** The error that stops a run, listing every problem found before it started. */
 export function preRunError(problems: readonly string[]): Error {
   return new Error(

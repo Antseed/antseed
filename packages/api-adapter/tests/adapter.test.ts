@@ -1666,6 +1666,23 @@ describe('transformRequest responses to anthropic', () => {
     const body = JSON.parse(new TextDecoder().decode(result!.request.body)) as Record<string, unknown>;
     expect(body.max_tokens).toBe(DEFAULT_ANTHROPIC_MAX_TOKENS);
   });
+
+  it('preserves max_completion_tokens from a chat completions request', () => {
+    const chatRequest = (limits: Record<string, number>): SerializedHttpRequest => ({
+      requestId: 'req-chat-max-completion',
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ model: 'gpt-4.1', messages: [{ role: 'user', content: 'hello' }], ...limits })),
+    });
+    const translate = (limits: Record<string, number>, to: ServiceApiProtocol) =>
+      JSON.parse(new TextDecoder().decode(transformRequest(chatRequest(limits), { from: 'openai-chat-completions', to })!.request.body)) as Record<string, unknown>;
+
+    expect(translate({ max_completion_tokens: 64_000 }, 'anthropic-messages').max_tokens).toBe(64_000);
+    expect(translate({ max_completion_tokens: 64_000 }, 'openai-responses').max_output_tokens).toBe(64_000);
+    // The newer field wins when a client sends both.
+    expect(translate({ max_tokens: 1_000, max_completion_tokens: 64_000 }, 'anthropic-messages').max_tokens).toBe(64_000);
+  });
 });
 
 describe('transformResponse chat to responses', () => {

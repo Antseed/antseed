@@ -907,6 +907,26 @@ describe('ModelHealthChecker live failures on unprobed services', () => {
     expect(checkUpstreamAccount).toHaveBeenCalledTimes(2);
   });
 
+  it('leaves a 401 or 403 on a buyer request to the account check when the provider has one', async () => {
+    const checkUpstreamAccount = vi.fn(async (): Promise<UpstreamAccountStatus> => ({ status: 'available', balanceUsd: 20 }));
+    const provider = makeProvider({ services: ['video-a'], serviceApiProtocols: { 'video-a': ['venice-video'] }, checkUpstreamAccount });
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    checker.reportUpstreamResponse(provider, 403, '{"error":{"code":"fal_request_rejected","message":"Forbidden"}}', true, 'video-a');
+    checker.reportUpstreamResponse(provider, 401, '', true, 'video-a');
+    expect(provider.serviceHealth).toBeUndefined();
+    // An out-of-credit 403 is still the account's failure.
+    checker.reportUpstreamResponse(provider, 403, '{"error":"Insufficient credits"}', true, 'video-a');
+    expect(statusOf(provider, 'video-a')).toBe('failing');
+  });
+
+  it('counts a 403 on a buyer request when nothing else checks the key', () => {
+    const { provider } = imageProvider();
+    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
+    fail(checker, provider, 1, 403);
+    expect(statusOf(provider, 'image-a')).toBe('failing');
+    expect(checker.getSnapshot()[0]?.reason).toBe('auth');
+  });
+
   it('keeps live failures after a failed account check is followed by a passing one', async () => {
     const accounts: UpstreamAccountStatus[] = [{ status: 'unavailable', reason: 'account check: invalid key' }, { status: 'available', balanceUsd: 20 }];
     const checkUpstreamAccount = vi.fn(async (): Promise<UpstreamAccountStatus> => accounts.shift() ?? { status: 'available', balanceUsd: 20 });

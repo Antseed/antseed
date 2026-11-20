@@ -300,12 +300,12 @@ describe('MeteringStorage rowid summaries', () => {
   });
 
   it('summarizes receipt cost after a rowid', () => {
-    storage.insertReceipt(makeReceipt({ timestamp: 86_400_000, costCents: 7 }));
-    storage.insertReceipt(makeReceipt({ timestamp: 86_400_000 + 5, costCents: 3 }));
+    storage.insertReceipt(makeReceipt({ timestamp: 86_400_000, unitPriceCentsPerThousandTokens: 7, costCents: 7 }));
+    storage.insertReceipt(makeReceipt({ timestamp: 86_400_000 + 5, unitPriceCentsPerThousandTokens: 3, costCents: 3 }));
 
     const chunk = storage.summarizeReceiptsAfter(0, 10);
     expect(chunk.rows).toBe(2);
-    expect(chunk.days).toEqual([{ day: 1, costCents: 10 }]);
+    expect(chunk.days).toEqual([{ day: 1, costCents: 10, revenueCents: 10 }]);
     expect(storage.getMaxRowids().receipts).toBe(chunk.lastRowid);
   });
 });

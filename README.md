@@ -2,7 +2,7 @@
 
 A peer-to-peer AI services network. Providers offer AI services, buyers discover providers via DHT and route requests through encrypted P2P connections.
 
-**Live pricing:** see [PRICING.md](PRICING.md) or `https://network.antseed.com/stats` (public JSON, no auth).
+**Live pricing:** see [PRICING.md](PRICING.md) or `https://antscan.co/api/marketplace?limit=5000` (public JSON, no auth).
 
 ## How It Works
 
@@ -155,7 +155,7 @@ See [packages/node/README.md](packages/node/README.md) for the `Provider` and `R
 ## Tech Stack
 
 - **Development runtime**: Node.js 24 (pinned in `.nvmrc`), ES modules
-- **Language**: TypeScript 5.x, strict mode
+- **Language**: TypeScript 7.x, strict mode
 - **Package Manager**: pnpm workspaces
 - **Build**: tsc for libraries, Vite for web apps
 - **Test**: vitest
