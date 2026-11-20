@@ -1383,6 +1383,7 @@ export async function collectReferenceProbes(input: {
   while (state.probes.length < input.targetCount) {
     state.generationRound += 1
     input.log?.(`generation round ${state.generationRound}: collecting ${state.probes.length}/${input.targetCount} probes`)
+    const writingTally: CandidateWritingTally = { batches: 0, empty: 0 }
     const generated = await generateCandidates(
       input.model,
       candidateCountPerRound,
@@ -1391,7 +1392,17 @@ export async function collectReferenceProbes(input: {
       input.excludedDomains,
       input.log,
       input.candidateWriting,
+      writingTally,
     )
+    // Every question-writing batch of the round gave no list, after its retries and any writing fallback: the next round
+    // asks the same way and would only pay for the same empty answers, so the build stops here, not at the no-progress
+    // limit (a model whose thinking fills every token, for example).
+    if (writingTally.batches > 0 && writingTally.empty === writingTally.batches) {
+      throw new Error(
+        `question writing gave no list in any of the ${writingTally.batches} batches of generation round ${state.generationRound}; `
+        + `stopping the build after this round (collected ${state.probes.length}/${input.targetCount} probes)`,
+      )
+    }
     const candidates = generated.filter((probe) => {
       if (state.generatedProbeIds.has(probe.id) || input.excludedProbeIds?.has(probe.id)) return false
       state.generatedProbeIds.add(probe.id)
@@ -1659,6 +1670,12 @@ async function queryContrastOutcomes(
   return { outcomes, answered }
 }
 
+/** The question-writing batches of one generation round, and how many gave no list. */
+interface CandidateWritingTally {
+  batches: number
+  empty: number
+}
+
 async function generateCandidates(
   model: string,
   count: number,
@@ -1667,6 +1684,7 @@ async function generateCandidates(
   excludedDomains: readonly string[] = [],
   log?: (message: string) => void,
   writing?: CandidateWritingPolicy,
+  tally: CandidateWritingTally = { batches: 0, empty: 0 },
 ): Promise<KbfProbe[]> {
   const excluded = new Set(excludedDomains)
   const activeDomains = CANONICAL_KBF_DOMAINS.filter((definition) => !excluded.has(definition.key))
@@ -1693,9 +1711,11 @@ async function generateCandidates(
         ],
       }
       let content: string
+      tally.batches += 1
       try {
         content = await writeCandidateBatch(model, body, batchSize, definition, query, writing, log)
       } catch (error) {
+        tally.empty += 1
         // A candidate batch only proposes questions; nothing is measured from it. A batch that
         // stays empty, or keeps timing out or failing upstream after its retries, is skipped and
         // the next generation round makes up the shortfall (bounded by the no-progress limit).
@@ -1707,7 +1727,9 @@ async function generateCandidates(
         log?.(`skipping failed candidate batch for ${definition.key} after retries: ${asError(error).message}`)
         continue
       }
-      for (const fact of parseCanonicalFacts(content, definition.range)) {
+      const facts = parseCanonicalFacts(content, definition.range)
+      if (facts.length === 0) tally.empty += 1
+      for (const fact of facts) {
         const probe = createCanonicalKbfProbe({
           domainKey: definition.key,
           name: fact.name,

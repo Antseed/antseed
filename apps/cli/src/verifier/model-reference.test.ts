@@ -27,6 +27,7 @@ import {
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
 import { setAuditedModelsForTesting } from './audited-models.js'
+import { CANONICAL_KBF_DOMAINS } from './canonical-kbf-domains.js'
 import { appendModelReferenceToBank, loadBankEnrollmentReference } from './probe-bank.js'
 
 const MODEL = 'gpt-test'
@@ -554,6 +555,78 @@ test('question writing that runs out of tokens retries with a little thinking; a
     assert.equal(writing.retriedBatches, 3)
     assert.ok((writing.directBatches as number) > 0)
     await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+/**
+ * A model like GLM 5.3 on its maker's endpoint (November 2026): no setting turns its thinking off (each still reports
+ * reasoning tokens, so the route is recorded 'bare'), and asked for a long list with thinking on it thinks until
+ * max_tokens and returns no text at all. With `reasoning.effort: "minimal"` it thinks a little and writes the list.
+ */
+function thinkingModelFetch(input: { writingWithMinimal: 'list' | 'empty'; writing: Array<Record<string, unknown>>; other: Array<Record<string, unknown>> }): typeof fetch {
+  return async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    const effort = (body.reasoning as { effort?: string } | undefined)?.effort
+    const reply = (content: string | null, finishReason: string, completion: number, reasoning: number) => new Response(JSON.stringify({
+      choices: [{ message: { content }, finish_reason: finishReason }],
+      usage: { prompt_tokens: 100, completion_tokens: completion, completion_tokens_details: { reasoning_tokens: reasoning } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+    // Every way of turning thinking off is accepted and ignored: it always reports some reasoning, so the route is 'bare'.
+    if (body.messages.some((message) => String(message.content).includes(DISCOVERY_MARKER))) return reply(DISCOVERY_ANSWERS, 'stop', 300, 200)
+    if (!prompt.startsWith('Generate ')) {
+      input.other.push(body)
+      return reply(successfulContent(body.model, prompt), 'stop', 300, 200)
+    }
+    input.writing.push(body)
+    if (effort === 'minimal' && input.writingWithMinimal === 'list') return reply(generatedCandidates(prompt), 'stop', 1500, 800)
+    return reply(null, 'length', 6000, 6000)
+  }
+}
+
+test('a model that thinks until no text is left writes its questions with a little thinking; asking keeps its recorded setting', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-candidate-bare-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const writing: Array<Record<string, unknown>> = []
+  const other: Array<Record<string, unknown>> = []
+  try {
+    const logs: string[] = []
+    // The real thinking discovery, against the model's own answers (not the stub the other tests use).
+    const built = await buildModelReferenceWithoutDiscoveryStub({ model: MODEL, referencesDir: directory, config: value, fetchFn: thinkingModelFetch({ writingWithMinimal: 'list', writing, other }), log: (line) => logs.push(line) })
+    const params = built.reference.generator.params as Record<string, unknown>
+    assert.equal((params.referenceEndpointRequest as { reasoningStrategy: string }).reasoningStrategy, 'bare', logs.filter((line) => line.includes('thinking')).join('\n'))
+    // Asking (stability, contrasts, self-test) keeps the recorded setting: no thinking setting at all.
+    assert.ok(other.length > 0)
+    for (const body of other.filter((entry) => entry.model === 'upstream-test')) assert.equal('reasoning' in body || 'reasoning_effort' in body, false)
+    // Writing: the three trial batches with the recorded setting ran out; every later batch went straight to the fallback.
+    assert.equal(writing.filter((body) => !('reasoning' in body)).length, 3)
+    const fallback = params.candidateWriting as Record<string, unknown>
+    assert.equal(fallback.fallbackStrategy, 'reasoning-effort-minimal')
+    assert.equal(fallback.ramblingAnswers, 3)
+    assert.ok((fallback.recoveredBatches as number) > 0)
+    assert.ok(built.reference.probes.length > 0)
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a generation round in which no question-writing batch gives a list stops the build, without asking another round', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-candidate-empty-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const writing: Array<Record<string, unknown>> = []
+  const other: Array<Record<string, unknown>> = []
+  try {
+    await assert.rejects(
+      buildModelReferenceWithoutDiscoveryStub({ model: MODEL, referencesDir: directory, config: value, fetchFn: thinkingModelFetch({ writingWithMinimal: 'empty', writing, other }) }),
+      /question writing gave no list in any of the \d+ batches of generation round 1; stopping the build after this round \(collected 0\/\d+ probes\)/,
+    )
+    assert.ok(writing.length > 0)
+    assert.equal(writing.some((body) => /generation round 2/.test((body.messages as Array<{ content: string }>).at(-1)!.content)), false, 'round 2 was never asked')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -1819,11 +1892,13 @@ test('collector rejects consistently non-integral answers in exact-match domains
 })
 
 test('collector rejects relative-domain stability spread above two percent', async () => {
+  let stabilityAsks = 0
   const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
     const messages = body.messages as Array<{ content: string }>
     const prompt = messages.at(-1)?.content ?? ''
     if (prompt.startsWith('Generate ')) return prompt.includes('domain medical') ? 'test medicine | 100' : ''
     const cacheDomain = String(body.__antseedReferenceCacheDomain ?? '')
+    if (cacheDomain.startsWith('stability-')) stabilityAsks += 1
     if (cacheDomain === 'stability-1') return '(1) 103'
     if (cacheDomain === 'stability-2') return '(1) 97'
     return '(1) 100'
@@ -1833,10 +1908,12 @@ test('collector rejects relative-domain stability spread above two percent', asy
     model: 'reference-model',
     contrastModels: [],
     targetCount: 1,
-    candidateCountPerRound: 5,
+    // One candidate per domain, so the medical domain is asked for its fact (with five, only the first five domains are).
+    candidateCountPerRound: CANONICAL_KBF_DOMAINS.length,
     maxNoProgressRounds: 1,
     query,
   }), /made no progress for 1 rounds/)
+  assert.ok(stabilityAsks > 0, 'the medical candidate was tested for stability and rejected for its spread')
 })
 
 test('collector independently shuffles every stability pass and preserves probe alignment', async () => {

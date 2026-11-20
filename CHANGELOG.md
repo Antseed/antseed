@@ -22,6 +22,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Verifiers (CLI): building a question set for a model whose thinking cannot be turned off no longer stalls. Such a model could spend every token of a question-writing request thinking and return no text, so no question was written. Question writing now falls back to a little thinking for it too (asking keeps the recorded setting, as before). A generation round in which no question-writing batch gives a list stops the build at once, instead of paying for more rounds up to the no-progress limit.
 - Sellers and buyers (`@antseed/node`, `@antseed/provider-core`, CLI): a video download refused because all of the seller's download slots are taken now reaches the buyer as what it is, a 429 `video_download_busy` with `Retry-After: 5`, which the buyer proxy passes on to the client. Before, the seller reported it as `upstream_rate_limited` ("rate limited on this seller right now") with no `Retry-After`, so buyers took a short wait for an upstream limit and gave up on a video that was ready.
 
 ## 2026-11-18 — CLI 0.1.253, Node 0.2.186, Desktop 0.2.89
