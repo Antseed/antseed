@@ -1,4 +1,4 @@
-import { nextRotationOffset, rotateHead } from './rotation.js';
+import { nextRotationOffset, rotateHead, tiedSellerSignature } from './rotation.js';
 import { normalizedModelReputationScore } from '../reputation/model-reputation.js';
 
 export type ModelRoutingPreferences = {
@@ -216,13 +216,7 @@ function rotationPoolKey<T extends ModelRouteCandidate>(
   rotationKey: string | undefined,
 ): string {
   if (rotationKey && rotationKey.length > 0) return `key:${rotationKey}`;
-  const ids: string[] = [];
-  for (let index = 0; index < group; index += 1) {
-    const peerId = ranked[index]?.route.peerId;
-    if (peerId) ids.push(normalizedPeerId(peerId));
-  }
-  ids.sort();
-  return `peers:${ids.join('\n')}`;
+  return `peers:${tiedSellerSignature(ranked, group, (entry) => entry.route.peerId, normalizedPeerId)}`;
 }
 
 function rotateEqualHead<T extends ModelRouteCandidate>(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nextRotationOffset, rotateHead } from '../src/routing/rotation.js';
+import { nextRotationOffset, rotateHead, tiedSellerSignature } from '../src/routing/rotation.js';
 
 describe('bounded rotation counter', () => {
   it('peeks without creating or refreshing a pool and consumes only live turns', () => {
@@ -43,5 +43,13 @@ describe('head rotation', () => {
     expect(rotateHead(items, 3, 1)).toBe(items);
     expect(items).toEqual(['b', 'c', 'a', 'd']);
     expect(rotateHead(items, 3, 0)).toEqual(['b', 'c', 'a', 'd']);
+  });
+});
+
+describe('tied seller signature', () => {
+  it('sorts the leading group ids and skips empty ones', () => {
+    const items = [{ id: 'C' }, { id: '' }, { id: 'a' }, { id: 'b' }];
+    expect(tiedSellerSignature(items, 3, (item) => item.id)).toBe('C\na');
+    expect(tiedSellerSignature(items, 3, (item) => item.id, (id) => id.toLowerCase())).toBe('a\nc');
   });
 });

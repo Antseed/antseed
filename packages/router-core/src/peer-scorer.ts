@@ -1,4 +1,10 @@
-import { nextRotationOffset, normalizedModelReputationScore, rotateHead, type PeerInfo } from '@antseed/node'
+import {
+  nextRotationOffset,
+  normalizedModelReputationScore,
+  rotateHead,
+  tiedSellerSignature,
+  type PeerInfo,
+} from '@antseed/node'
 
 export interface TokenPricingUsdPerMillion {
   inputUsdPerMillion: number
@@ -229,13 +235,7 @@ function rotateEqualScoreHead(
     group += 1
   }
   if (group < 2) return scored
-  const ids: string[] = []
-  for (let index = 0; index < group; index += 1) {
-    const peerId = scored[index]?.peer.peerId
-    if (peerId) ids.push(peerId)
-  }
-  ids.sort()
-  const sellers = ids.join('\n')
+  const sellers = tiedSellerSignature(scored, group, (entry) => entry.peer.peerId)
   const pool = rotationKey && rotationKey.length > 0 ? `key:${rotationKey}\n${sellers}` : `peers:${sellers}`
   const offset = nextRotationOffset(equalScoreRotation, pool, group, true)
   return rotateHead(scored, group, offset)

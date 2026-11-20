@@ -33,3 +33,20 @@ export function rotateHead<T>(items: T[], group: number, offset: number): T[] {
   }
   return items;
 }
+
+/** Sorted, newline-joined ids of the first `group` sellers, so a tied pool keeps one counter in any order. */
+export function tiedSellerSignature<T>(
+  items: T[],
+  group: number,
+  peerIdOf: (item: T) => string | undefined,
+  normalize: (peerId: string) => string = (peerId) => peerId,
+): string {
+  const ids: string[] = [];
+  for (let index = 0; index < group; index += 1) {
+    const item = items[index];
+    const peerId = item === undefined ? undefined : peerIdOf(item);
+    if (peerId) ids.push(normalize(peerId));
+  }
+  ids.sort();
+  return ids.join('\n');
+}

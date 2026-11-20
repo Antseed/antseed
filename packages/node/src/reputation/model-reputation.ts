@@ -1,4 +1,4 @@
-import { nextRotationOffset, rotateHead } from '../routing/rotation.js';
+import { nextRotationOffset, rotateHead, tiedSellerSignature } from '../routing/rotation.js';
 
 export const MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER = 0.5;
 /** A service with a live on-chain DIFF verification verdict keeps 10% of its reputation. */
@@ -139,13 +139,7 @@ function reputationPoolKey<T extends { peerId: string }>(
   group: number,
   key: string | undefined,
 ): string {
-  const ids: string[] = [];
-  for (let index = 0; index < group; index += 1) {
-    const peerId = ordered[index]?.peerId;
-    if (peerId) ids.push(peerId);
-  }
-  ids.sort();
-  const sellers = ids.join('\n');
+  const sellers = tiedSellerSignature(ordered, group, (entry) => entry.peerId);
   if (key && key.length > 0) return sellers.length > 0 ? `key:${key}\n${sellers}` : `key:${key}`;
   return sellers.length > 0 ? `peers:${sellers}` : 'default';
 }
