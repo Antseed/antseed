@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Changed
+
+- Video sellers (`@antseed/provider-fal-video`, `@antseed/provider-alibaba-video`, `@antseed/provider-venice-video`, `@antseed/provider-core`): a provider now streams up to 6 finished videos to buyers at the same time instead of 2, and `ANTSEED_MAX_VIDEO_DOWNLOADS` sets the limit. With only 2 slots, a seller with several buyers downloading at once turned extra retrieves away with HTTP 429 `video_download_busy`.
+
 ## 2026-11-20 — CLI 0.1.256, Node 0.2.189
 
 ### Packages

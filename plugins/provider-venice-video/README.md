@@ -16,6 +16,7 @@ antseed config seller add-provider video --plugin venice-video
 - `ANTSEED_ALLOWED_SERVICES`: Venice video model names
 - `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON`: `venice-video` pricing using `video_generations` or `video_seconds`
 - `ANTSEED_SERVICE_CAPABILITIES_JSON`: optional video options to advertise
+- `ANTSEED_MAX_VIDEO_DOWNLOADS`: optional, default `6`. Finished videos streamed to buyers at the same time; a download past the limit gets HTTP 429 `video_download_busy` with `Retry-After`, and the buyer tries again
 - `VENICE_VIDEO_MIN_BALANCE_USD`: optional, default `0`. Models stop being advertised while the key's Venice balance (USD + DIEM + bundled credits) is at or below it
 
 Each seller health sweep runs two free checks. The account check reads `GET /api/v1/api_keys/rate_limits` (key, access, balance): a rejected key, blocked access, or a balance at the minimum stops every model being advertised. The model check reads Venice's public `GET /api/v1/models?type=video`: a model Venice no longer lists stops being advertised. The list doesn't count against the key's video request limit. A model is advertised again once both checks pass. Neither call generates media.
