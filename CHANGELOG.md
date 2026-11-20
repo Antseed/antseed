@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
+- Docs: **Gateway → Run on a server** explains how to keep long streamed responses alive behind a proxy: an nginx example for `--public-url` with buffering off and a longer read timeout, why Cloudflare can close a stream that stays silent for about 100 seconds (a DNS-only record avoids it), and `/healthz` for uptime checks.
 - Sellers (CLI, `@antseed/node`): `payments.suggestedReserveAmount` sets the first reserve a seller suggests to a buyer with no channel (USDC base units; default `1000000`, the contract's default first-sign cap), kept between `minBudgetPerRequest` and the cap. A seller of small per-request services can suggest less, so a buyer's deposit reaches more sellers.
 
 ### Fixed
