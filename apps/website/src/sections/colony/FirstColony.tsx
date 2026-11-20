@@ -1,5 +1,5 @@
 import type {JSX} from 'react';
-import {Actions, Button, Duo, DuoHead, Eyebrow, Heading, Sub, Wash} from '../../components';
+import {Actions, Button, Duo, DuoHead, Eyebrow, Heading, Wash} from '../../components';
 import {useJoinHref} from './useColony';
 import styles from './FirstColony.module.css';
 
@@ -39,7 +39,6 @@ export default function FirstColony(): JSX.Element {
         <Eyebrow className={styles.eyebrow}>The first Mac Colony</Eyebrow>
         <DuoHead className={styles.head}>
           <Heading as="h2" id="first-title" strong secondLine="break" title={['Built with', 'its first members.']} className={styles.title} />
-          <Sub className={styles.sub}>Early access is invite-only while we test.</Sub>
         </DuoHead>
         <dl className={styles.facts}>
           {FACTS.map((f) => <div key={f.term} className={styles.fact}><dt className={styles.term}>{f.term}</dt><dd className={styles.detail}>{f.detail}</dd></div>)}
