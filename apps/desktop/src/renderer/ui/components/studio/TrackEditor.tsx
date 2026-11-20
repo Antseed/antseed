@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type P
 import { ActionMenu, Button, IconButton, Modal, Segmented, TextField } from '@antseed/ui';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { MoreHorizontalIcon, PlayIcon, StopIcon, Undo02Icon } from '@hugeicons/core-free-icons';
-import { STUDIO_MEDIA_TOOLS_MISSING, sumStudioCost, type StudioProjectDetail } from '../../../../shared/studio.js';
+import { STUDIO_MEDIA_TOOLS_MISSING, studioMediaKind, sumStudioCost, type StudioProjectDetail } from '../../../../shared/studio.js';
 import {
   anchorName,
   clipName,
@@ -18,6 +18,7 @@ import {
   STUDIO_ASPECT_RATIOS,
   trackRuntime,
   type SceneRun,
+  type StudioEditResult,
   type StudioLibraryItem,
   type StudioTrack,
   type TrackAnchor,
@@ -30,8 +31,6 @@ import styles from './TrackEditor.module.scss';
 
 const FILE_DRAG = 'application/x-antseed-studio-file';
 const SHOT_DRAG = 'application/x-antseed-studio-shot';
-const IMAGE_FILE = /\.(png|jpe?g|webp|gif)$/i;
-const VIDEO_FILE = /\.(mp4|m4v|mov|webm)$/i;
 
 type Selection = TrackSelection | null;
 
@@ -68,7 +67,6 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
   const [exporting, setExporting] = useState(false);
   const libraryRef = useRef<HTMLDivElement>(null);
   useEffect(() => { if (libraryOpen) libraryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, [libraryOpen]);
-  const imported = useRef<string[]>([]);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
   // The file on disk wins whenever it changes, for example after the agent delivers a clip.
@@ -95,20 +93,19 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
     setSelection(next);
   }
 
-  async function edit(change: TrackEdit): Promise<StudioTrack | null> {
+  async function edit(change: TrackEdit): Promise<StudioEditResult | null> {
     setBusy(true);
     setError('');
     setMessage('');
     try {
       const result = await window.antseedDesktop?.studioEdit?.(projectId, change);
       if (!result?.ok || !result.data) throw new Error(result?.error ?? 'Restart the desktop to edit the track.');
-      imported.current = result.data.imported ?? [];
       if (mounted.current) {
         setTrack(result.data.track);
         if (result.data.message) setMessage(result.data.message);
       }
       onChanged();
-      return result.data.track;
+      return result.data;
     } catch (err) {
       if (mounted.current) setError(err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(err));
       return null;
@@ -136,21 +133,21 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
 
   /** An upload for one shot goes through the same check as a picture from the library. */
   async function uploadFor(anchorId: string) {
-    const next = await edit({ type: 'import', anchor: anchorId });
-    const file = imported.current[0];
-    if (next && file) replaceImage(anchorId, file, next);
+    const result = await edit({ type: 'import', anchor: anchorId });
+    const file = result?.imported?.[0];
+    if (result && file) replaceImage(anchorId, file, result.track);
   }
 
   async function insertImage(file: string) {
     const index = selected ? selectedIndex + 1 : track.anchors.length;
-    const next = await edit({ type: 'add-anchor', index, file });
-    const added = next?.anchors[index];
+    const result = await edit({ type: 'add-anchor', index, file });
+    const added = result?.track.anchors[index];
     if (added) select({ anchor: added.id, clip: false });
   }
 
   async function addAtEnd(scene: 'continue' | 'new', file: string | null = null) {
-    const next = await edit({ type: 'add-anchor', index: track.anchors.length, file, scene });
-    const added = next?.anchors.at(-1);
+    const result = await edit({ type: 'add-anchor', index: track.anchors.length, file, scene });
+    const added = result?.track.anchors.at(-1);
     if (added) select({ anchor: added.id, clip: false });
   }
 
@@ -159,7 +156,7 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
     if (!canSend || anchorIds.length === 0) return;
     const asked = await edit({ type: 'request', clips: anchorIds, images: [] });
     if (!asked) return;
-    onSend(clipRequestMessage(asked, anchorIds));
+    onSend(clipRequestMessage(asked.track, anchorIds));
     // The selection goes with the reply to the quote, so it names this clip, or nothing for several.
     const only = anchorIds.length === 1 ? anchorIds[0]! : null;
     select(only ? { anchor: only, clip: true } : null);
@@ -313,7 +310,7 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
             const next = await edit({ type: 'set-image', anchor: target.anchor, file: target.file });
             if (!next || !remake) return;
             const asked = await edit({ type: 'request', clips: touching, images: [] });
-            if (asked) onSend(clipRequestMessage(asked, touching));
+            if (asked) onSend(clipRequestMessage(asked.track, touching));
           }}
         />
       ) : null}
@@ -514,7 +511,7 @@ function Preview({ track, selected, selection, playing, busy, url, onStop, onSel
           className={styles.preview}
           style={frame}
           onDragOver={(event) => event.preventDefault()}
-          onDrop={(event) => { event.preventDefault(); const file = dragFile(event); if (file && IMAGE_FILE.test(file) && selected) onDropImage(file); }}
+          onDrop={(event) => { event.preventDefault(); const file = dragFile(event); if (file && studioMediaKind(file) === 'image' && selected) onDropImage(file); }}
         >
           {shown.image ? <img className={styles.media} src={url(shown.image)} alt={anchorName(track, shown.id)} /> : (
             <div className={styles.dropZone}>
@@ -607,7 +604,7 @@ function Storyboard({ track, selection, busy, url, onSelect, edit, onDropImage, 
   busy: boolean;
   url: (file: string) => string;
   onSelect: (selection: Selection) => void;
-  edit: (change: TrackEdit) => Promise<StudioTrack | null>;
+  edit: (change: TrackEdit) => Promise<StudioEditResult | null>;
   onDropImage: (anchor: string, file: string) => void;
   onDropVideo: (anchor: string, file: string) => void;
   onAddAtEnd: (scene: 'continue' | 'new', file: string | null) => void;
@@ -625,7 +622,7 @@ function Storyboard({ track, selection, busy, url, onSelect, edit, onDropImage, 
     <li
       className={`${styles.shot} ${styles.addEnd}`}
       onDragOver={(event) => event.preventDefault()}
-      onDrop={(event) => { event.preventDefault(); const file = dragFile(event); if (file && IMAGE_FILE.test(file)) onAddAtEnd('continue', file); }}
+      onDrop={(event) => { event.preventDefault(); const file = dragFile(event); if (file && studioMediaKind(file) === 'image') onAddAtEnd('continue', file); }}
     >
       <div className={styles.shotHead} />
       <div className={styles.shotRow}>
@@ -733,7 +730,7 @@ function Shot({ track, anchor, index, size, selection, busy, renaming, url, onSe
   url: (file: string) => string;
   onSelect: (selection: Selection) => void;
   onRename: (on: boolean) => void;
-  edit: (change: TrackEdit) => Promise<StudioTrack | null>;
+  edit: (change: TrackEdit) => Promise<StudioEditResult | null>;
   onDropImage: (anchor: string, file: string) => void;
   onDropVideo: (anchor: string, file: string) => void;
   onUpload: (anchor: string) => void;
@@ -828,7 +825,7 @@ function Shot({ track, anchor, index, size, selection, busy, renaming, url, onSe
           aria-label={anchorName(track, anchor.id)}
           onClick={() => onSelect({ anchor: anchor.id, clip: false })}
           onDragOver={(event) => event.preventDefault()}
-          onDrop={(event) => { const file = dragFile(event); if (file && IMAGE_FILE.test(file)) { event.preventDefault(); onDropImage(anchor.id, file); } }}
+          onDrop={(event) => { const file = dragFile(event); if (file && studioMediaKind(file) === 'image') { event.preventDefault(); onDropImage(anchor.id, file); } }}
         >
           {anchor.image ? <img src={url(anchor.image)} alt="" draggable={false} /> : <span className={styles.imageEmpty}>+</span>}
         </button>
@@ -933,7 +930,7 @@ function ClipTile({ track, anchor, selected, busy, stale, updating, onUpdate, ur
         title={stale ?? undefined}
         onClick={onSelect}
         onDragOver={(event) => event.preventDefault()}
-        onDrop={(event) => { const file = dragFile(event); if (file && VIDEO_FILE.test(file)) { event.preventDefault(); onDropVideo(file); } }}
+        onDrop={(event) => { const file = dragFile(event); if (file && studioMediaKind(file) === 'video') { event.preventDefault(); onDropVideo(file); } }}
       >
         {/* A frame of the clip in use: in colour, or greyed while it is made from an image since replaced. */}
         {clip.use ? <video className={styles.clipFrame} src={`${url(clip.use)}#t=0.5`} preload="metadata" muted playsInline tabIndex={-1} aria-hidden="true" /> : null}

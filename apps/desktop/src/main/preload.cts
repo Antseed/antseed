@@ -5,7 +5,7 @@ import type { ConnectedAppsState } from './connected-apps/patching/connection.js
 import type { TelegramBridgeStatus } from './telegram/bridge.js';
 import type { ChatModel, ChatRoutePreview, ConversationFlags, OutgoingPrivacy } from '../shared/chat-gateway-types.js';
 import type { StudioProjectDetail, StudioProjectSummary } from '../shared/studio.js';
-import type { StudioTrack, TrackEdit } from '../shared/studio-track.js';
+import type { StudioEditResult, TrackEdit } from '../shared/studio-track.js';
 import type {
   DepositStepSignal,
   FirstModelShownSignal,
@@ -253,7 +253,7 @@ const api = {
   studioList(): Promise<{ ok: boolean; data?: StudioProjectSummary[]; error?: string }> {
     return ipcRenderer.invoke('studio:list');
   },
-  studioEdit(id: string, edit: TrackEdit): Promise<{ ok: boolean; data?: { track: StudioTrack; message?: string; imported?: string[] }; error?: string }> {
+  studioEdit(id: string, edit: TrackEdit): Promise<{ ok: boolean; data?: StudioEditResult; error?: string }> {
     return ipcRenderer.invoke('studio:edit', { id, edit });
   },
   studioCreate(name: string): Promise<{ ok: boolean; data?: StudioProjectSummary; error?: string }> {

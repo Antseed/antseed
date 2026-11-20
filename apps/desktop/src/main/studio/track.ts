@@ -21,6 +21,7 @@ import {
   TrackEditError,
   undoTo,
   type IngestRecord,
+  type StudioEditResult,
   type StudioLibraryItem,
   type StudioTrack,
   type TrackEdit,
@@ -224,9 +225,6 @@ async function exportFilm(dir: string, track: StudioTrack, media: Map<string, nu
 function trackFiles(media: Map<string, number>, seconds: Map<string, number | null>): TrackFiles {
   return { has: (file) => media.has(file), seconds: (file) => seconds.get(file) ?? null };
 }
-
-/** `imported`: the files an import added to the library, in order. */
-export type StudioEditResult = { track: StudioTrack; message?: string; imported?: string[] };
 
 /** Applies one edit to a project's track, one edit at a time across all projects. */
 export function editStudioTrack(dir: string, edit: TrackEdit, options: { picked?: string[]; board?: StudioBoard } = {}): Promise<StudioEditResult> {

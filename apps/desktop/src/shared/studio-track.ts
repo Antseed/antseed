@@ -94,6 +94,9 @@ export type IngestRecord = { key: string; applied: boolean };
 /** `inputs`: the images a delivered clip was made from, so Undo puts it back with them. */
 export type DeliveryRecord = { key: string; at: number; seconds: number | null; delivery: StudioDelivery; inputs?: ClipInputs };
 
+/** What an edit in the app returns. `imported`: the pictures an import added to the library, in order. */
+export type StudioEditResult = { track: StudioTrack; message?: string; imported?: string[] };
+
 export type StudioLibraryItem = {
   file: string;
   kind: 'image' | 'video';

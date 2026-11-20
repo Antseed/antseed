@@ -183,7 +183,7 @@ export type ChatPermissionMode = 'manual' | 'full';
 import type { ChatModel, ChatRoutePreview, ConversationFlags, OutgoingPrivacy } from '../../shared/chat-gateway-types.js';
 export type { ChatModel, ChatRouteCandidate, ChatRoutePreview, ConversationFlags } from '../../shared/chat-gateway-types.js';
 import type { StudioProjectDetail, StudioProjectSummary } from '../../shared/studio.js';
-import type { StudioTrack, TrackEdit } from '../../shared/studio-track.js';
+import type { StudioEditResult, TrackEdit } from '../../shared/studio-track.js';
 
 export type ToolApprovalDecision = 'allow_once' | 'always_allow' | 'deny';
 // Mirrors TelegramBridgeStatus in apps/desktop/src/main/telegram/bridge.ts
@@ -285,7 +285,7 @@ export type DesktopBridge = {
   pickDirectory?: () => Promise<{ ok: boolean; path: string | null }>;
   studioGetEnabled?: () => Promise<{ ok: boolean; enabled: boolean }>;
   studioSetEnabled?: (enabled: boolean) => Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
-  studioEdit?: (id: string, edit: TrackEdit) => Promise<{ ok: boolean; data?: { track: StudioTrack; message?: string; imported?: string[] }; error?: string }>;
+  studioEdit?: (id: string, edit: TrackEdit) => Promise<{ ok: boolean; data?: StudioEditResult; error?: string }>;
   studioList?: () => Promise<{ ok: boolean; data?: StudioProjectSummary[]; error?: string }>;
   studioCreate?: (name: string) => Promise<{ ok: boolean; data?: StudioProjectSummary; error?: string }>;
   studioGet?: (id: string) => Promise<{ ok: boolean; data?: StudioProjectDetail; error?: string }>;
