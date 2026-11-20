@@ -40,14 +40,15 @@ const AGENT: AntAgentDefinition = {
 };
 
 /**
- * Fake inner provider that streams each iteration's SSE text as raw network
- * chunks cut at arbitrary byte offsets (chunk boundaries that do not align
- * with SSE event boundaries, like a real upstream).
+ * Fake inner provider shell. `emit` drives the stream callbacks for one call
+ * and returns the response body text.
  */
-function streamFake(streams: string[], splits: number[][]): Provider {
-  let callIndex = 0;
+function fakeStreamProvider(
+  name: string,
+  emit: (req: SerializedHttpRequest, callbacks: ProviderStreamCallbacks) => string,
+): Provider {
   return {
-    name: 'fake',
+    name,
     services: ['claude-sonnet-4-5-20250929'],
     pricing: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } },
     maxConcurrency: 1,
@@ -59,26 +60,39 @@ function streamFake(streams: string[], splits: number[][]): Provider {
       req: SerializedHttpRequest,
       callbacks: ProviderStreamCallbacks,
     ): Promise<SerializedHttpResponse> => {
-      const text = streams[callIndex] ?? '';
-      const offsets = [...(splits[callIndex] ?? []), text.length].sort((a, b) => a - b);
-      callIndex++;
-      let prev = 0;
-      for (const off of offsets) {
-        const piece = encoder.encode(text.slice(prev, off));
-        if (piece.length > 0) {
-          callbacks.onResponseChunk({ requestId: req.requestId, data: piece, done: false });
-        }
-        prev = off;
-      }
-      callbacks.onResponseChunk({ requestId: req.requestId, data: new Uint8Array(0), done: true });
+      const body = emit(req, callbacks);
       return {
         requestId: req.requestId,
         statusCode: 200,
         headers: { 'content-type': 'text/event-stream' },
-        body: encoder.encode(text),
+        body: encoder.encode(body),
       };
     },
   };
+}
+
+/**
+ * Fake inner provider that streams each iteration's SSE text as raw network
+ * chunks cut at arbitrary byte offsets (chunk boundaries that do not align
+ * with SSE event boundaries, like a real upstream).
+ */
+function streamFake(streams: string[], splits: number[][]): Provider {
+  let callIndex = 0;
+  return fakeStreamProvider('fake', (req, callbacks) => {
+    const text = streams[callIndex] ?? '';
+    const offsets = [...(splits[callIndex] ?? []), text.length].sort((a, b) => a - b);
+    callIndex++;
+    let prev = 0;
+    for (const off of offsets) {
+      const piece = encoder.encode(text.slice(prev, off));
+      if (piece.length > 0) {
+        callbacks.onResponseChunk({ requestId: req.requestId, data: piece, done: false });
+      }
+      prev = off;
+    }
+    callbacks.onResponseChunk({ requestId: req.requestId, data: new Uint8Array(0), done: true });
+    return text;
+  });
 }
 
 // Iteration 1: buyer text block, then an internal antseed_* tool call block.
@@ -217,28 +231,10 @@ describe('runAgentLoopStream — chunk-boundary handling', () => {
     // The framing drains it through the event filter, then forwards an empty
     // terminal marker — the payload must not also be replayed raw.
     const payload = ITER2_SSE;
-    const inner: Provider = {
-      name: 'fake-terminal',
-      services: ['claude-sonnet-4-5-20250929'],
-      pricing: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } },
-      maxConcurrency: 1,
-      getCapacity: () => ({ current: 0, max: 1 }),
-      handleRequest: async (): Promise<SerializedHttpResponse> => {
-        throw new Error('unexpected non-streaming call');
-      },
-      handleRequestStream: async (
-        req: SerializedHttpRequest,
-        callbacks: ProviderStreamCallbacks,
-      ): Promise<SerializedHttpResponse> => {
-        callbacks.onResponseChunk({ requestId: req.requestId, data: encoder.encode(payload), done: true });
-        return {
-          requestId: req.requestId,
-          statusCode: 200,
-          headers: { 'content-type': 'text/event-stream' },
-          body: encoder.encode(payload),
-        };
-      },
-    };
+    const inner = fakeStreamProvider('fake-terminal', (req, callbacks) => {
+      callbacks.onResponseChunk({ requestId: req.requestId, data: encoder.encode(payload), done: true });
+      return payload;
+    });
     const { text, doneCount } = await runLoop(inner);
     expect(doneCount).toBe(1);
     expect(text).toBe(payload);
@@ -251,30 +247,12 @@ describe('runAgentLoopStream — chunk-boundary handling', () => {
     const cut = ITER2_SSE.indexOf('message_start') + 5;
     expect(cut).toBeGreaterThan(0);
     const tail = ITER2_SSE.slice(0, cut);
-    const inner: Provider = {
-      name: 'fake-empty-terminal',
-      services: ['claude-sonnet-4-5-20250929'],
-      pricing: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } },
-      maxConcurrency: 1,
-      getCapacity: () => ({ current: 0, max: 1 }),
-      handleRequest: async (): Promise<SerializedHttpResponse> => {
-        throw new Error('unexpected non-streaming call');
-      },
-      handleRequestStream: async (
-        req: SerializedHttpRequest,
-        callbacks: ProviderStreamCallbacks,
-      ): Promise<SerializedHttpResponse> => {
-        // Nonempty unterminated tail with done:false, then an empty done:true.
-        callbacks.onResponseChunk({ requestId: req.requestId, data: encoder.encode(tail), done: false });
-        callbacks.onResponseChunk({ requestId: req.requestId, data: new Uint8Array(0), done: true });
-        return {
-          requestId: req.requestId,
-          statusCode: 200,
-          headers: { 'content-type': 'text/event-stream' },
-          body: encoder.encode(tail),
-        };
-      },
-    };
+    const inner = fakeStreamProvider('fake-empty-terminal', (req, callbacks) => {
+      // Nonempty unterminated tail with done:false, then an empty done:true.
+      callbacks.onResponseChunk({ requestId: req.requestId, data: encoder.encode(tail), done: false });
+      callbacks.onResponseChunk({ requestId: req.requestId, data: new Uint8Array(0), done: true });
+      return tail;
+    });
     const { text, doneCount } = await runLoop(inner);
     expect(doneCount).toBe(1);
     // The unterminated prefix was buffered, then flushed as an event on the

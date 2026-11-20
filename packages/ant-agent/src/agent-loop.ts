@@ -2,6 +2,7 @@ import type {
   Provider,
   SerializedHttpRequest,
   SerializedHttpResponse,
+  SerializedHttpResponseChunk,
   ProviderStreamCallbacks,
 } from '@antseed/node';
 import type { AntAgentDefinition } from './loader.js';
@@ -113,10 +114,10 @@ function createSseEventBuffer(): { push: (data: Uint8Array) => string[]; flush: 
  * payload that was already emitted as events.
  */
 function forwardChunkAsEvents(
-  chunk: { requestId: string; data: Uint8Array; done: boolean },
+  chunk: SerializedHttpResponseChunk,
   eventBuffer: { push: (data: Uint8Array) => string[]; flush: () => string[] },
   forwardEvent: (event: string) => void,
-  forwardRaw: (chunk: { requestId: string; data: Uint8Array; done: boolean }) => void,
+  forwardRaw: (chunk: SerializedHttpResponseChunk) => void,
 ): void {
   const events = [
     ...(chunk.data.length > 0 ? eventBuffer.push(chunk.data) : []),
@@ -329,6 +330,7 @@ export async function runAgentLoopStream(
         },
         onResponseChunk: (chunk) => {
           // Once suppression starts, drop everything of this iteration, including the provider's done chunk.
+          if (suppressingChunks) return;
           forwardChunkAsEvents(chunk, eventBuffer, forwardEvent, (c) => {
             if (!suppressingChunks) callbacks.onResponseChunk(c);
           });
