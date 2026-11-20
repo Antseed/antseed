@@ -132,9 +132,6 @@ function mediaPath(value: unknown, kind: 'image' | 'video'): string | null {
   return normalized && studioMediaKind(normalized) === kind ? normalized : null;
 }
 
-/** The parsers the board and the track share, so the two cannot drift apart. */
-export { record as parseRecord, text as parseText, mediaPath as parseMediaPath };
-
 /** Every line is kept: totals are their sum, so dropping one would hide money paid or quoted. */
 function costLines(value: unknown): StudioCostLine[] {
   if (!Array.isArray(value)) return [];
@@ -148,6 +145,9 @@ function costLines(value: unknown): StudioCostLine[] {
   }
   return lines;
 }
+
+/** The parsers the board and the track share, so the two cannot drift apart: a cost a board keeps, its track keeps too. */
+export { record as parseRecord, text as parseText, mediaPath as parseMediaPath, costLines as parseCostLines };
 
 export function sumStudioCost(lines: readonly StudioCostLine[]): number {
   return Math.round(lines.reduce((total, line) => total + line.usd, 0) * 1e6) / 1e6;

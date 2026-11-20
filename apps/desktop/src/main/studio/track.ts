@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { STUDIO_BOARD_FILE, STUDIO_MEDIA_TOOLS_MISSING, studioMediaKind, type StudioBoard } from '../../shared/studio.js';
 import {
+  addStudioExport,
   applyStudioDelivery,
   applyTrackEdit,
   emptyStudioTrack,
@@ -62,8 +63,15 @@ async function writeAtomic(dir: string, name: string, content: string): Promise<
   await rename(tmp, path.join(dir, name));
 }
 
-async function writeJsonAtomic(dir: string, name: string, value: unknown): Promise<void> {
-  await writeAtomic(dir, name, `${JSON.stringify(value, null, 2)}\n`);
+export const STUDIO_TRACK_TOO_LARGE = 'This change was not saved: the track would grow past the 2 MB the app can read back. Remove shots you no longer need, then try again.';
+
+class TrackTooLargeError extends TrackEditError {}
+
+/** track.json as it is written, refused when a read would not take it back, so the file on disk stays the last track that fits. */
+function trackJson(track: StudioTrack): string {
+  const json = `${JSON.stringify(track, null, 2)}\n`;
+  if (Buffer.byteLength(json) > MAX_TRACK_BYTES) throw new TrackTooLargeError(STUDIO_TRACK_TOO_LARGE);
+  return json;
 }
 
 /** The newest snapshots, at most HISTORY_LIMIT, that fit the size readHistory takes; the oldest go first. */
@@ -104,8 +112,9 @@ async function readHistory(dir: string): Promise<unknown[]> {
 }
 
 async function saveTrack(dir: string, track: StudioTrack, previous: StudioTrack | null): Promise<void> {
+  const json = trackJson(track);
   if (previous) await writeAtomic(dir, HISTORY_FILE, historyJson([...await readHistory(dir), previous]));
-  await writeJsonAtomic(dir, STUDIO_TRACK_FILE, track);
+  await writeAtomic(dir, STUDIO_TRACK_FILE, json);
 }
 
 /** Every picture and video in the project folder, so nothing made for the project is ever out of reach. */
@@ -258,8 +267,9 @@ export function editStudioTrack(dir: string, edit: TrackEdit, options: { picked?
         const last = history.pop();
         if (last === undefined) throw new TrackEditError('Nothing to undo.');
         const restored = undoTo(parseStudioTrack(last), current);
+        const json = trackJson(restored);
         await writeAtomic(dir, HISTORY_FILE, historyJson(history));
-        await writeJsonAtomic(dir, STUDIO_TRACK_FILE, restored);
+        await writeAtomic(dir, STUDIO_TRACK_FILE, json);
         return { track: restored };
       }
       case 'import': {
@@ -274,7 +284,7 @@ export function editStudioTrack(dir: string, edit: TrackEdit, options: { picked?
           const relative = `uploads/${randomUUID()}${path.extname(source).toLowerCase()}`;
           await copyFile(source, path.join(dir, relative), constants.COPYFILE_EXCL);
           media.set(relative, Date.now());
-          track = { ...track, labels: { ...track.labels, [relative]: path.basename(source).slice(0, 200) } };
+          track = { ...track, labels: { ...track.labels, [relative]: path.basename(source).trim().slice(0, 200) } };
           if (kind === 'image') images.push(relative);
         }
         const files = trackFiles(media, seconds);
@@ -300,7 +310,7 @@ export function editStudioTrack(dir: string, edit: TrackEdit, options: { picked?
       case 'export': {
         const stale = exportCheck(current).stale;
         const file = await exportFilm(dir, current, media);
-        const track = { ...current, exports: [...current.exports, file] };
+        const track = addStudioExport(current, file);
         await saveTrack(dir, track, null);
         return { track, message: stale.length > 0 ? `Exported ${file}. ${stale.join(', ')} still use${stale.length === 1 ? 's' : ''} an earlier image.` : `Exported ${file}.` };
       }
@@ -406,15 +416,24 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
         }
         // What the agent paid for is spent even when the file has no place on the track.
         if (!applied && delivery && delivery.usd !== null && track) {
-          track = { ...track, spent: [...track.spent, { label: `Not placed: ${delivery.file}`, detail: delivery.model, usd: delivery.usd }] };
+          // A file's path may be longer than a cost label takes.
+          track = { ...track, spent: [...track.spent, { label: `Not placed: ${delivery.file}`.slice(0, 120), detail: delivery.model, usd: delivery.usd }] };
         }
       } catch {
         applied = false;
       }
       if (track && track !== saved) {
         if (key) track = { ...track, ingested: [...track.ingested, { key, applied }].slice(-200) };
-        await saveTrack(dir, track, undoable ? before : null);
-        saved = track;
+        try {
+          await saveTrack(dir, track, undoable ? before : null);
+          saved = track;
+        } catch (error) {
+          if (!(error instanceof TrackTooLargeError)) throw error;
+          // Taking it in would leave a track no read takes back: it is set aside and the track stays as it was.
+          track = before;
+          applied = false;
+          problem = 'would make the track larger than the app can read back';
+        }
       }
       if (!applied) notices.push(`${STUDIO_DELIVERIES_DIR}/${name} ${problem}. It was moved to ${STUDIO_DELIVERIES_DIR}/failed.`);
       await mediaDir(dir, `${STUDIO_DELIVERIES_DIR}/${applied ? 'done' : 'failed'}`);

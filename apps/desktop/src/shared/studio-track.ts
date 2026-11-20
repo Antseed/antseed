@@ -1,5 +1,6 @@
 import {
   normalizeStudioPath,
+  parseCostLines,
   parseMediaPath as media,
   parseRecord as record,
   parseText as text,
@@ -144,6 +145,10 @@ export const MAX_MEDIA_SECONDS = 24 * 60 * 60;
 const MAX_ANCHORS = 120;
 const MAX_INGESTED = 200;
 const MAX_VERSIONS = 64;
+/** The exports a track lists; the oldest go first. */
+const MAX_EXPORTS = 50;
+/** Ids are a letter and up to six digits. */
+const MAX_ID = 999_999;
 
 export function emptyStudioTrack(): StudioTrack {
   return { version: 1, aspectRatio: '16:9', anchors: [], scenes: {}, labels: {}, spent: [], exports: [], delivered: [], ingested: [], nextId: 1 };
@@ -184,6 +189,15 @@ function limitVersions(versions: ClipVersion[], use: string | null): ClipVersion
   return versions.filter((version) => version.file === use || kept.has(version));
 }
 
+/** The newest earlier images, oldest first and each once, so a shot keeps the alternatives it had last. */
+function limitEarlier(entries: string[]): string[] {
+  const kept: string[] = [];
+  for (let index = entries.length - 1; index >= 0 && kept.length < MAX_VERSIONS; index -= 1) {
+    if (!kept.includes(entries[index]!)) kept.push(entries[index]!);
+  }
+  return kept.reverse();
+}
+
 function parseInputs(value: unknown): ClipInputs | null {
   const item = record(value);
   return item ? { from: media(item['from'], 'image'), to: media(item['to'], 'image') } : null;
@@ -221,7 +235,7 @@ function parseAnchor(value: unknown): TrackAnchor | null {
   const fromClip = id(from?.['clip']);
   const fromAt = seconds(from?.['at']);
   const earlier = Array.isArray(item['earlier'])
-    ? [...new Set(item['earlier'].slice(0, MAX_VERSIONS).map((entry) => media(entry, 'image')).filter((entry): entry is string => entry !== null))]
+    ? limitEarlier(item['earlier'].map((entry) => media(entry, 'image')).filter((entry): entry is string => entry !== null))
     : [];
   // A frame saved before `replaced` was kept took the place of the image saved last.
   const replaced = from && 'replaced' in from ? media(from['replaced'], 'image') : earlier.at(-1) ?? null;
@@ -235,19 +249,6 @@ function parseAnchor(value: unknown): TrackAnchor | null {
     requestedAt: stamp(item['requestedAt']),
     clip: parseClip(item['clip']),
   };
-}
-
-/** Every line is kept: the total spent is their sum, so dropping one would hide money paid. */
-function parseCostLines(value: unknown): StudioCostLine[] {
-  if (!Array.isArray(value)) return [];
-  const lines: StudioCostLine[] = [];
-  for (const entry of value) {
-    const item = record(entry);
-    const usd = typeof item?.['usd'] === 'number' && Number.isFinite(item['usd']) && item['usd'] >= 0 && item['usd'] <= 10_000 ? item['usd'] : null;
-    const label = text(item?.['label'], 120);
-    if (usd !== null && label) lines.push({ label, detail: text(item?.['detail'], 200), usd });
-  }
-  return lines;
 }
 
 export function parseStudioTrack(raw: unknown): StudioTrack {
@@ -287,12 +288,13 @@ export function parseStudioTrack(raw: unknown): StudioTrack {
     labels,
     spent: parseCostLines(item['spent']),
     exports: Array.isArray(item['exports'])
-      ? item['exports'].slice(-50).map((entry) => media(entry, 'video')).filter((entry): entry is string => entry !== null)
+      ? item['exports'].slice(-MAX_EXPORTS).map((entry) => media(entry, 'video')).filter((entry): entry is string => entry !== null)
       : [],
     delivered: Array.isArray(item['delivered']) ? item['delivered'].slice(-200).flatMap((entry): DeliveryRecord[] => {
       const recordEntry = record(entry);
       const delivery = parseStudioDelivery(recordEntry?.['delivery']);
-      const key = text(recordEntry?.['key'], 200);
+      // A key is the delivery's time and file, and a file's path may take 300 characters.
+      const key = text(recordEntry?.['key'], 400);
       if (!delivery || !key) return [];
       const inputs = parseInputs(recordEntry?.['inputs']);
       return [{ key, at: stamp(recordEntry?.['at']) ?? 0, seconds: seconds(recordEntry?.['seconds']), delivery, ...(inputs ? { inputs } : {}) }];
@@ -316,6 +318,10 @@ function uniqueId(prefix: 'a' | 'c', seen: Set<string>): string {
 
 function blankClip(clipId: string): TrackClip {
   return { id: clipId, plannedSeconds: DEFAULT_CLIP_SECONDS, prompt: '', then: null, use: null, end: null, endFrame: null, versions: [], requestedAt: null, requested: null };
+}
+
+function blankAnchor(anchorId: string, image: string | null): TrackAnchor {
+  return { id: anchorId, image, earlier: [], from: null, title: '', prompt: '', requestedAt: null, clip: null };
 }
 
 // ---------- deliveries from the agent ----------
@@ -560,6 +566,7 @@ function fail(message: string): never {
 }
 
 function nextId(track: StudioTrack, prefix: 'a' | 'c'): string {
+  if (track.nextId > MAX_ID) fail('The track is full.');
   const value = `${prefix}${String(track.nextId)}`;
   track.nextId += 1;
   return value;
@@ -583,7 +590,7 @@ function clipOf(track: StudioTrack, anchorId: string): { clip: TrackClip; anchor
 
 function setImage(anchor: TrackAnchor, file: string | null, from: TrackAnchor['from'] = null): void {
   if (anchor.image && anchor.image !== file && !anchor.earlier.includes(anchor.image)) anchor.earlier.push(anchor.image);
-  anchor.earlier = anchor.earlier.filter((entry) => entry !== file);
+  anchor.earlier = limitEarlier(anchor.earlier.filter((entry) => entry !== file));
   anchor.image = file;
   anchor.from = from;
   anchor.requestedAt = null;
@@ -623,7 +630,11 @@ export function applyTrackEdit(source: StudioTrack, edit: TrackEdit, files: Trac
     case 'add-anchor': {
       if (track.anchors.length >= MAX_ANCHORS) fail('The track is full.');
       const index = Math.max(0, Math.min(track.anchors.length, Math.floor(edit.index)));
-      const anchor: TrackAnchor = { id: nextId(track, 'a'), image: edit.file ? requireFile(edit.file, 'image') : null, earlier: [], from: null, title: text(edit.title, 120), prompt: text(edit.prompt, 2000), requestedAt: null, clip: null };
+      const anchor: TrackAnchor = {
+        ...blankAnchor(nextId(track, 'a'), edit.file ? requireFile(edit.file, 'image') : null),
+        title: text(edit.title, 120),
+        prompt: text(edit.prompt, 2000),
+      };
       const previous = track.anchors[index - 1];
       const following = track.anchors[index];
       if (previous) {
@@ -708,7 +719,7 @@ export function applyTrackEdit(source: StudioTrack, edit: TrackEdit, files: Trac
         // The image to put back on Reset end is the one before this clip's first frame, not an earlier frame of it.
         if (next) setImage(next, clip.endFrame, { clip: clip.id, at: clip.end, replaced: next.from?.clip === clip.id ? next.from.replaced : next.image });
         else if (track.anchors.length >= MAX_ANCHORS) fail('The track is full.');
-        else track.anchors.push({ id: nextId(track, 'a'), image: clip.endFrame, earlier: [], from: { clip: clip.id, at: clip.end, replaced: null }, title: '', prompt: '', requestedAt: null, clip: null });
+        else track.anchors.push({ ...blankAnchor(nextId(track, 'a'), clip.endFrame), from: { clip: clip.id, at: clip.end, replaced: null } });
       } else if (!next) {
         fail('This is the last clip. Add an anchor after it first.');
       }
@@ -749,7 +760,8 @@ export function applyTrackEdit(source: StudioTrack, edit: TrackEdit, files: Trac
       const { clip, index } = clipOf(track, edit.anchor);
       const file = requireFile(edit.file, 'video');
       if (!clip.versions.some((version) => version.file === file)) {
-        clip.versions.push({ file, from: null, to: null, seconds: seconds(files.seconds?.(file)), label: track.labels[file] ?? 'From the library', addedAt: now });
+        // An upload's name may be longer than a version's label takes.
+        clip.versions.push({ file, from: null, to: null, seconds: seconds(files.seconds?.(file)), label: text(track.labels[file], 120) || 'From the library', addedAt: now });
       }
       activateClipVersion(track, index, file);
       break;
@@ -811,6 +823,7 @@ export function undoTo(earlier: StudioTrack, now: StudioTrack): StudioTrack {
     for (const file of [...current.earlier, ...(current.image ? [current.image] : [])]) {
       if (file !== anchor.image && !anchor.earlier.includes(file)) anchor.earlier.push(file);
     }
+    anchor.earlier = limitEarlier(anchor.earlier);
   }
   track.labels = { ...earlier.labels, ...now.labels };
   track.exports = now.exports;
@@ -864,13 +877,19 @@ export function applyStudioDelivery(source: StudioTrack, delivery: StudioDeliver
   return track;
 }
 
+/** The track with a film exported to `file`, listing only as many exports as a read keeps. */
+export function addStudioExport(track: StudioTrack, file: string): StudioTrack {
+  return { ...track, exports: [...track.exports, file].slice(-MAX_EXPORTS) };
+}
+
 /** Opens a storyboard made before the track editor: each shot's still is an anchor, its clip a version, every boundary a Cut. */
 export function trackFromBoard(board: StudioBoard, files: TrackFiles, now: number): StudioTrack {
   const track = emptyStudioTrack();
   if (STUDIO_ASPECT_RATIOS.some((ratio) => ratio === board.aspectRatio)) track.aspectRatio = board.aspectRatio;
   board.shots.forEach((shot, index) => {
     const image = shot.still && files.has(shot.still) ? shot.still : null;
-    const anchor: TrackAnchor = { id: nextId(track, 'a'), image, earlier: [], from: null, title: shot.title, prompt: shot.description, requestedAt: null, clip: null };
+    // A board takes longer titles and style lines than a track: they are cut to what a read keeps.
+    const anchor: TrackAnchor = { ...blankAnchor(nextId(track, 'a'), image), title: text(shot.title, 120), prompt: shot.description };
     const clipFile = shot.clip && files.has(shot.clip) ? shot.clip : null;
     if (clipFile || index < board.shots.length - 1) {
       const clip = newClip(track);
@@ -884,7 +903,7 @@ export function trackFromBoard(board: StudioBoard, files: TrackFiles, now: numbe
       anchor.clip = clip;
     }
     track.anchors.push(anchor);
-    if (shot.title && (index === 0)) track.scenes[anchor.id] = { name: shot.title, world: board.style };
+    if (shot.title && (index === 0)) track.scenes[anchor.id] = { name: text(shot.title, 120), world: text(board.style, 400) };
   });
   track.spent = [...board.spent];
   return track;

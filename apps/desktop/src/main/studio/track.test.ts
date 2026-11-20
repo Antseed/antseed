@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
+  addStudioExport,
   applyStudioDelivery,
   applyTrackEdit,
   clipState,
@@ -16,12 +17,13 @@ import {
   parseStudioAgentEdit,
   parseStudioTrack,
   sceneRuns,
+  trackFromBoard,
   type StudioTrack,
   type TrackEdit,
 } from '../../shared/studio-track.js';
 import { parseStudioBoard, STUDIO_MEDIA_TOOLS_MISSING, sumStudioCost } from '../../shared/studio.js';
 import { createStudioProject, getStudioProject } from './store.js';
-import { detectStudioMediaTools, editStudioTrack, ingestStudioDeliveries, studioCanUndo } from './track.js';
+import { detectStudioMediaTools, editStudioTrack, ingestStudioDeliveries, readStudioTrack, studioCanUndo, STUDIO_TRACK_TOO_LARGE } from './track.js';
 
 const files = (...names: string[]) => ({ has: (file: string) => names.includes(file), seconds: () => 4 });
 const all = files('stills/a.png', 'stills/b.png', 'stills/c.png', 'stills/new.png', 'clips/one.mp4', 'clips/two.mp4');
@@ -653,4 +655,113 @@ test('a long undo history of a large track keeps its newest steps within the siz
     const undone = await editStudioTrack(dir, { type: 'undo' });
     assert.equal(undone.track.anchors[0]!.title, `Take ${String(step)}`);
   }
+});
+
+/** What a save and the next read make of a track. */
+const reread = (track: StudioTrack) => parseStudioTrack(JSON.parse(JSON.stringify(track)));
+
+test('a converted storyboard reads back as it was converted: costs above $10,000, long titles and its style line', () => {
+  const board = parseStudioBoard({
+    style: 's'.repeat(600),
+    shots: [{ id: '01', title: 't'.repeat(200), still: 'stills/a.png' }, { id: '02', still: 'stills/b.png' }],
+    spent: [{ label: 'Feature film', usd: 12_500 }, { label: 'Retake', usd: 0.5 }],
+  });
+  const track = trackFromBoard(board, all, 1);
+  assert.equal(sumStudioCost(reread(track).spent), 12_500.5, 'every cost the storyboard kept stays spent');
+  assert.deepEqual(reread(track), track, 'nothing is dropped or cut on the next read');
+});
+
+test('a shot keeps its newest earlier images after more replacements than it keeps, through a save and a read', () => {
+  const many = { has: () => true };
+  let track = parseStudioTrack({ anchors: [{ id: 'a1', image: 'stills/take-0.png' }] });
+  for (let n = 1; n <= 66; n += 1) track = applyTrackEdit(track, { type: 'set-image', anchor: 'a1', file: `stills/take-${String(n)}.png` }, many);
+  const earlier = reread(track).anchors[0]!.earlier;
+  assert.equal(earlier.length, 64);
+  assert.equal(earlier.at(-1), 'stills/take-65.png', 'the image just replaced is kept');
+  assert.equal(earlier[0], 'stills/take-2.png', 'the oldest ones are let go');
+  assert.deepEqual(reread(track), track, 'the edit keeps what a read keeps');
+  // Undo puts back the images the shot had since, within the same limit.
+  const undone = undoTo(parseStudioTrack({ anchors: [{ id: 'a1', image: 'stills/first.png' }] }), track);
+  assert.equal(undone.anchors[0]!.earlier.length, 64);
+  assert.equal(undone.anchors[0]!.earlier.at(-1), 'stills/take-66.png');
+  assert.deepEqual(reread(undone), undone);
+});
+
+test('values an edit or a delivery writes come back the same from a read', () => {
+  const long = `clips/${'n'.repeat(280)}.mp4`;
+  const base = parseStudioTrack({ anchors: [{ id: 'a1', image: 'stills/a.png', clip: { id: 'c1', then: 'cut' } }, { id: 'a2', image: 'stills/b.png' }] });
+  // A delivery's key holds its file, whose path may take 300 characters: Undo matches deliveries by key.
+  const delivered = applyStudioDelivery(base, { kind: 'clip', clip: 'c1', file: long, usd: 0.2, model: 'Example video model' }, 4, 7)!;
+  assert.deepEqual(reread(delivered).delivered, delivered.delivered);
+  // A version from the library is labelled with its upload's name, which may be longer than a label takes.
+  const named = { ...base, labels: { 'uploads/x.mp4': 'u'.repeat(200) } };
+  const added = applyTrackEdit(named, { type: 'add-version', anchor: 'a1', file: 'uploads/x.mp4' }, { has: () => true });
+  assert.deepEqual(reread(added), added);
+  // Exports beyond the ones a read lists go, oldest first.
+  let exported = base;
+  for (let n = 1; n <= 51; n += 1) exported = addStudioExport(exported, `exports/film-${String(n)}.mp4`);
+  assert.equal(exported.exports.length, 50);
+  assert.equal(exported.exports[0], 'exports/film-2.mp4');
+  assert.deepEqual(reread(exported), exported);
+});
+
+test('ids stop at six digits: an edit that needs a longer one is refused', () => {
+  const track = applyTrackEdit({ ...emptyStudioTrack(), nextId: 999_999 }, { type: 'add-anchor', index: 0 }, all);
+  assert.equal(track.anchors[0]!.id, 'a999999');
+  assert.deepEqual(reread(track), track);
+  assert.throws(() => applyTrackEdit(track, { type: 'add-anchor', index: 1 }, all), /The track is full\./);
+});
+
+const MAX_TRACK_BYTES = 2 * 1024 * 1024;
+const trackBytes = (track: StudioTrack) => Buffer.byteLength(`${JSON.stringify(track, null, 2)}\n`);
+
+/** Writes a track.json `room` bytes short of the size a read takes: one shot without an image, padded with upload names. */
+async function nearlyFullTrack(dir: string, room: number): Promise<Buffer> {
+  const padded = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`pad/${String(index).padStart(5, '0')}.png`, 'x'.repeat(200)]));
+  const sized = (count: number) => trackBytes(parseStudioTrack({ anchors: [{ id: 'a1' }], labels: padded(count) }));
+  const entry = sized(2) - sized(1);
+  const labels = padded(Math.floor((MAX_TRACK_BYTES - room - 1000 - sized(0)) / entry));
+  const make = (prompt: string) => parseStudioTrack({ anchors: [{ id: 'a1', prompt }], labels });
+  const track = make('y'.repeat(MAX_TRACK_BYTES - room - trackBytes(make(''))));
+  assert.equal(trackBytes(track), MAX_TRACK_BYTES - room);
+  const content = Buffer.from(`${JSON.stringify(track, null, 2)}\n`);
+  await writeFile(path.join(dir, 'track.json'), content);
+  return content;
+}
+
+test('an edit that would grow the track past what a read takes is refused, and the track stays readable', async (t) => {
+  const tmp = await mkdtemp(path.join(tmpdir(), 'studio-track-size-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const root = path.join(tmp, 'studio');
+  await mkdir(root);
+  const { id } = await createStudioProject('Full', root);
+  const dir = path.join(root, id);
+  const before = await nearlyFullTrack(dir, 50);
+  await assert.rejects(editStudioTrack(dir, { type: 'title', anchor: 'a1', title: 'T'.repeat(120) }), { message: STUDIO_TRACK_TOO_LARGE });
+  assert.deepEqual(await readFile(path.join(dir, 'track.json')), before, 'track.json is untouched');
+  assert.equal(await studioCanUndo(dir), false, 'no undo step was saved for it');
+  assert.equal((await readStudioTrack(dir))!.anchors[0]!.title, '');
+  // A change that fits still goes in.
+  const { track } = await editStudioTrack(dir, { type: 'title', anchor: 'a1', title: 'Short' });
+  assert.equal((await readStudioTrack(dir))!.anchors[0]!.title, track.anchors[0]!.title);
+});
+
+test('a delivery that would grow the track past what a read takes is set aside, and the track stays readable', async (t) => {
+  const tmp = await mkdtemp(path.join(tmpdir(), 'studio-ingest-size-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const root = path.join(tmp, 'studio');
+  await mkdir(root);
+  const { id } = await createStudioProject('Full inbox', root);
+  const dir = path.join(root, id);
+  const before = await nearlyFullTrack(dir, 100);
+  await mkdir(path.join(dir, 'stills'));
+  await writeFile(path.join(dir, 'stills/a.png'), 'x');
+  await mkdir(path.join(dir, 'deliveries'));
+  await writeFile(path.join(dir, 'deliveries/image.json'), JSON.stringify({ anchor: 'a1', file: 'stills/a.png', usd: 0.04, model: 'Example image model' }));
+  const notices = await ingestStudioDeliveries(dir, 9);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0]!, /deliveries\/image\.json would make the track larger than the app can read back\. It was moved to deliveries\/failed\./);
+  assert.deepEqual(await readFile(path.join(dir, 'track.json')), before, 'track.json is untouched');
+  assert.equal((await readStudioTrack(dir))!.anchors[0]!.image, null);
+  assert.deepEqual(await readdir(path.join(dir, 'deliveries/failed')), ['9-image.json']);
 });
