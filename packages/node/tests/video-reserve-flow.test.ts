@@ -1137,28 +1137,16 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect((await h.send(h.videoRequest('limit-again'))).statusCode).toBe(409);
   }, 30_000);
 
-  it('holds back a buyer that left a job uncollected for an hour, until it collects it', async () => {
+  it('does not hold back a buyer for one job left uncollected for over an hour', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const h = setup({ videoPricing: 'cheap' });
     expect((await h.send(h.videoRequest('first'))).statusCode).toBe(200);
     await h.settle();
 
-    advanceClock(30 * 60_000);
-    expect((await h.send(h.videoRequest('still-generating'))).statusCode).toBe(200);
-    await h.settle();
-
-    advanceClock(31 * 60_000);
-    const heldBack = await h.send(h.videoRequest('overdue'));
-    expect(heldBack.statusCode).toBe(409);
-    expect(errorOf(heldBack).code).toBe('video_jobs_uncollected');
-    // Only the overdue job, not the one still generating.
-    expect(jobIdsOf(heldBack)).toEqual(['job-1']);
-    expect(heldBack.headers['retry-after']).toBe('60');
+    // A job stuck upstream stays uncollected however often the buyer polls; it counts toward the limit only.
+    advanceClock(2 * 60 * 60_000);
+    expect((await h.send(h.videoRequest('after-an-old-job'))).statusCode).toBe(200);
     expect(h.reserve).toHaveBeenCalledTimes(2);
-
-    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
-    await h.settle();
-    expect((await h.send(h.videoRequest('after-collecting'))).statusCode).toBe(200);
   }, 30_000);
 
   it('holds back a buyer that took a video without signing for it', async () => {

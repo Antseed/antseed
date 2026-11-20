@@ -6,8 +6,13 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- fal video sellers (`@antseed/provider-fal-video`): a job whose model failed behind fal now ends as `FAILED`. fal reports such a job as `COMPLETED` and answers its result with `500 downstream_service_error` on every fetch; the plugin treated that as temporary, so buyers polled "status unavailable" until the job's channel expired.
+
 ### Changed
 
+- Sellers (`@antseed/node`): a single video job still undownloaded an hour after it started no longer holds the buyer back from new videos on that seller (`409 video_jobs_uncollected`). A job stuck upstream stayed undownloaded however often the buyer polled, so one failed job blocked every video the buyer started there until its channel expired a day later. Undownloaded jobs still count toward the limit of 16 (`409 video_jobs_open_limit`), and a downloaded video that isn't paid for still holds the buyer back.
 - Verifier docs: "Become a verifier" and "How audits run" now lead with `verifier watch` as the way to run an approved auditor. A single `verifier run` and `verifier submit` per epoch misses the `DIFF`s other auditors submit later, which need your confirmation within 12 hours. "Become a verifier" has a new step, "Keep it running", and the cron example calls `watch --once`. Its setup also explains the two keys a verifier uses (the buyer wallet that pays sellers and the auditor key that signs submits and holds the gas) and how to create the auditor keystore.
 
 ## 2026-11-20 — CLI 0.1.254, Node 0.2.187, Desktop 0.2.90
