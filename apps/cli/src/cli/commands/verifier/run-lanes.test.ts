@@ -390,6 +390,30 @@ test('a finished model is on record while another model\'s build still runs, so 
   assert.deepEqual(manifest!.modelOrder, ['model-a', 'model-b'])
 }))
 
+test('a seller skipped after a paid pre-check: its cost is in its model\'s total, and the models add up to the run\'s', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const paid = { ...emptyAuditCostSummary(), inputTokens: 300, outputTokens: 40, totalTokens: 340, estimatedCostUsd: 0.004, pricedExchangeCount: 4 }
+  // model-a's seller answers its pre-check, then is skipped while it is asked its questions; model-b's is skipped first.
+  scenario.firstResult = (model, peerId) => ({
+    status: 'SKIPPED', peerId, displayName: null, agentId: null, service: model,
+    code: 'policy_rejected', reason: 'refused', outcomeReason: OUTCOME_REASON, source: 'runtime',
+    evidencePath: null, evidenceHash: null,
+    ...(model === 'model-a' ? { cost: paid } : {}),
+  })
+
+  await scenario.run()
+
+  const final = await status(scenario)
+  assert.equal(final.skipped, 2)
+  assert.deepEqual(final.cost, paid)
+  const [manifest] = await runManifests(scenario)
+  const byModel = new Map(manifest!.models.map((entry) => [entry.model, entry]))
+  assert.deepEqual(byModel.get('model-a')!.cost, paid)
+  assert.deepEqual(byModel.get('model-b')!.cost, emptyAuditCostSummary())
+  // The persisted summary, which the model's HTML report reads, carries the same total.
+  const summary = JSON.parse(await readFile(byModel.get('model-a')!.summaryPath, 'utf8')) as { cost: unknown }
+  assert.deepEqual(summary.cost, paid)
+}))
+
 test('a waiting build holds no audit slot, and audits stay under the cap', LANE_TIMEOUT, () => withScenario(async (scenario) => {
   scenario.maxConcurrentModels = 1
   scenario.snapshots = [snapshot([seller('aa'.repeat(20), ['model-a']), seller('bb'.repeat(20), ['model-b'])])]

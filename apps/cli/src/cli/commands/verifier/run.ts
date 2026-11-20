@@ -2320,7 +2320,11 @@ export async function runVerifierRound(
               : result
           })
           const modelCompletedAt = new Date().toISOString()
-          const modelCost = addAuditCostSummaries(...results.map((result) => result.cost))
+          // A seller skipped after a paid check (a pre-check before a runtime skip) cost what that check cost.
+          const modelCost = addAuditCostSummaries(
+            ...results.map((result) => result.cost),
+            ...allSkipped.flatMap((skip) => (skip.cost ? [skip.cost] : [])),
+          )
           const reasonCounts = countOutcomeReasons(results, failures, allSkipped)
           const consensusEvidence = await writeModelProbeConsensusEvidence({
             directory: modelAuditsDirectory(evidenceDir, epoch, model, runId),
