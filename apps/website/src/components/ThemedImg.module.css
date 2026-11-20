@@ -1,0 +1,3 @@
+.night { display: none; }
+:global(:root[data-theme='dark']) .day { display: none; }
+:global(:root[data-theme='dark']) .night { display: block; }

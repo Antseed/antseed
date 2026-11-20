@@ -285,8 +285,10 @@ export type PaymentRequiredCode =
 /**
  * Error codes of a seller's HTTP 409 to a video create while the buyer's own
  * earlier jobs with that seller are not settled: a video it downloaded but has
- * not paid for, a job it left uncollected, or as many uncollected jobs as the
- * seller allows. The buyer can act on each, so buyers pass them through as is.
+ * not paid for, or as many uncollected jobs as the seller allows. The buyer can
+ * act on each, so buyers pass them through as is. `uncollected` (one job left
+ * undownloaded for an hour) is no longer sent by current sellers; buyers still
+ * pass it through from older ones.
  */
 export const VIDEO_JOB_HOLD_CODES = {
   paymentPending: 'video_payment_pending',

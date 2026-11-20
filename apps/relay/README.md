@@ -2,8 +2,8 @@
 
 Web relay for browser buyers. Two jobs:
 
-1. **Seller cache** — periodically discovers sellers over the DHT (same flow
-   as network-stats) and serves the snapshot at `GET /sellers` (CORS `*`).
+1. **Seller cache** — periodically discovers sellers over the DHT and serves
+   the snapshot at `GET /sellers` (CORS `*`).
 2. **Signaling bridge** — `WS /bridge/<peerId>` pipes bytes verbatim to that
    seller's TCP signaling port. The bridge never parses traffic; connection
    auth is end-to-end (the buyer signs its own hello envelope). It only dials

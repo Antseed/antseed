@@ -1,0 +1,4 @@
+/* the current value, hidden, holds the width while the figure counts */
+.tally { display: inline-grid; font-variant-numeric: tabular-nums; }
+.tally > * { grid-area: 1 / 1; }
+.holder { visibility: hidden; }

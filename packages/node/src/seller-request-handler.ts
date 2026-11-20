@@ -1591,9 +1591,7 @@ export class SellerRequestHandler {
     debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... held back from another video: ${hold.code}`);
     const message = hold.code === VIDEO_JOB_HOLD_CODES.openLimit
       ? `You have ${hold.limit} videos on this seller that are not downloaded yet. Download one before starting another here. Their job IDs are in error.jobs.`
-      : hold.code === VIDEO_JOB_HOLD_CODES.paymentPending
-        ? 'A video you downloaded from this seller is not paid for yet. New videos start here once it is paid. Its job ID is in error.jobs.'
-        : 'A video you started on this seller over an hour ago has not been downloaded. Download it, or check its status until it ends, before starting another here. Its job ID is in error.jobs.';
+      : 'A video you downloaded from this seller is not paid for yet. New videos start here once it is paid. Its job ID is in error.jobs.';
     let jobs: Array<{ id: string; protocol: string }> = [];
     try {
       jobs = (this._deps.resourceOwnershipStore?.jobsForChannels(buyerPeerId.toLowerCase(), hold.channelIds) ?? [])

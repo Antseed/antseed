@@ -1,0 +1,10 @@
+.logo { display: block; flex: none; }
+.logo:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 3px; border-radius: 4px; }
+.image { display: block; width: 95.3464px; height: 33px; max-width: none; }
+/* the logo file is black: lifted to the dark theme's ink */
+:global(:root[data-theme='dark']) .image { filter: invert(.93); }
+/* a touch screen: a 44 tall touch area */
+@media (max-width: 1079px) {
+  .logo { position: relative; }
+  .logo::after { content: ''; position: absolute; inset: -6px -4px; }
+}

@@ -1,0 +1,81 @@
+.rail { padding-block: 72px 120px; }
+@media (max-width: 760px) { .rail { padding-block: 56px 72px; } }
+.column { display: flex; flex-direction: column; gap: 64px; max-width: 760px; }
+
+.part {
+  composes: dots from '../../../components/dots.module.css';
+  --dots-top: 2px;
+  padding-top: 48px;
+  scroll-margin-top: calc(var(--site-nav-height) + 24px);
+}
+.partHead { display: flex; flex-direction: column; gap: 12px; margin-bottom: 28px; }
+.partTitle {
+  font: 400 30px/34px var(--site-font-pixel);
+  font-variation-settings: 'ELSH' 40;
+  letter-spacing: -1px;
+  color: var(--site-text);
+}
+.partBody { display: flex; flex-direction: column; gap: 20px; }
+
+/* running text inside a part */
+.para, .note, .gui, .bullets li, .facts li, .fixes dd { font: 400 16px/26px var(--site-font); color: var(--site-text-body); }
+.note { font-size: 15px; line-height: 24px; }
+.part strong { font-weight: 500; color: var(--site-text); }
+.part :is(p, li, dd, dt) code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(10, 26, 18, .06);
+  font-size: .88em;
+  color: var(--site-text);
+  overflow-wrap: anywhere;
+}
+:global(:root[data-theme='dark']) .part :is(p, li, dd, dt) code { background: rgba(190, 228, 170, .08); }
+.part :is(p, li) a { color: var(--site-accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 3px; }
+.part :is(p, li) a:hover { color: var(--site-accent); text-decoration-color: currentColor; }
+
+.bullets, .facts { display: flex; flex-direction: column; gap: 10px; padding-left: 18px; list-style: disc; }
+.bullets li::marker, .facts li::marker { color: var(--site-text-muted); }
+.caveat { color: var(--site-text); }
+
+.steps, .configs { display: flex; flex-direction: column; gap: 28px; }
+.step, .config { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.stepLabel { font: 500 16px/24px var(--site-font); color: var(--site-text); }
+
+.env { display: flex; flex-direction: column; margin: 0; border-radius: 8px; box-shadow: inset 0 0 0 1px var(--site-tile-line); }
+.envRow { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 16px; padding: 10px 16px; }
+.envRow + .envRow { border-top: 1px solid var(--site-tile-line); }
+.envRow dt { font: 400 13px/20px var(--site-font-mono); color: var(--site-text); overflow-wrap: anywhere; }
+.envRow dd { margin: 0; font: 400 13px/20px var(--site-font-mono); color: var(--site-text-body); overflow-wrap: anywhere; }
+.exports summary { width: fit-content; font: 500 14px/20px var(--site-font-ui); color: var(--site-accent); cursor: pointer; }
+.exports summary:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 2px; }
+.exports[open] summary { margin-bottom: 12px; }
+
+.models { display: flex; flex-wrap: wrap; gap: 8px; }
+.models code {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--site-tile-line);
+  border-radius: var(--site-radius-control);
+  background: var(--site-tile);
+  font: 400 13px/20px var(--site-font-mono);
+  color: var(--site-text);
+}
+
+.fixes { display: flex; flex-direction: column; margin: 0; }
+.fix { display: flex; flex-direction: column; gap: 6px; padding: 16px 0; }
+.fix + .fix { border-top: 1px solid var(--site-tile-line); }
+.fix dt { font: 500 16px/24px var(--site-font); color: var(--site-text); }
+.fix dd { margin: 0; }
+
+.links { display: flex; flex-wrap: wrap; gap: 8px 24px; }
+.links a { font: 500 16px/24px var(--site-font); color: var(--site-accent); }
+.links a:hover { color: var(--site-accent); text-decoration: underline; text-underline-offset: 3px; }
+
+@media (max-width: 760px) {
+  .column { gap: 48px; }
+  .part { padding-top: 36px; }
+  .partTitle { font-size: 26px; line-height: 30px; }
+  .envRow { grid-template-columns: 1fr; gap: 2px; }
+}

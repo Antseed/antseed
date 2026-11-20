@@ -1,0 +1,13 @@
+{
+  "telegramUrl": "https://t.me/localai_colony",
+  "downloadUrl": null,
+  "waitlist": {
+    "formUrl": "https://docs.google.com/forms/d/e/1FAIpQLSfITKzxxBCPN18a-aoGwJhyE2Xx5Wm_n7haWgXCoNxO6bL6dg/viewform",
+    "fields": {
+      "mac": "entry.1193834601",
+      "chip": "entry.1079322790",
+      "memory": "entry.1503749572",
+      "name": "entry.905048791"
+    }
+  }
+}

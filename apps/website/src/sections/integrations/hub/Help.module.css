@@ -1,0 +1,10 @@
+.help .row { grid-template-columns: repeat(2, 1fr); }
+.help .point { place-items: start; padding: 48px var(--site-pad); }
+.help .caption { max-width: 440px; }
+.caption a { color: var(--site-accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 3px; }
+.caption a:hover { color: var(--site-accent); text-decoration-color: currentColor; }
+
+@media (max-width: 760px) {
+  .help .row { grid-template-columns: 1fr; }
+  .help .point { padding: 32px var(--site-pad); }
+}

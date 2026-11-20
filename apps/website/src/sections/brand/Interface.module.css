@@ -1,0 +1,32 @@
+.rail { padding-top: 120px; }
+.head { padding-bottom: 56px; }
+.row .point { --dots-top: 2px; place-items: start; align-content: start; gap: 28px; }
+.point .demo { min-height: 96px; }
+
+/* the margin matrix, as on the page behind the rail */
+.grid {
+  width: 100%;
+  height: 96px;
+  border-radius: var(--site-radius-card);
+  background: radial-gradient(circle at 4px 4px, var(--site-dot) .85px, #0000 1.25px) 0 0 / 8px 8px, var(--site-bg);
+  box-shadow: inset 0 0 0 1px var(--site-tile-line);
+}
+
+.radii { display: grid; grid-template-columns: repeat(4, auto); gap: 16px; min-height: 96px; align-content: center; }
+.radius { display: flex; flex-direction: column; gap: 8px; font: 400 13px/16px var(--site-font); color: var(--site-text-small); }
+.radius code { font-size: 12.5px; color: var(--site-text); }
+.corner {
+  width: 40px;
+  height: 40px;
+  border-top: 2px solid var(--site-accent);
+  border-left: 2px solid var(--site-accent);
+}
+
+@media (max-width: 1199px) {
+  .point .demo { flex-direction: column; align-items: flex-start; }
+}
+@media (max-width: 760px) {
+  .rail { padding-top: 72px; }
+  .head { padding-bottom: 40px; }
+  .point .demo { flex-direction: row; min-height: 0; }
+}

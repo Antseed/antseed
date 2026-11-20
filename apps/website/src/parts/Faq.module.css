@@ -1,0 +1,79 @@
+/* The title beside the questions; each question on a dotted rule, opening and closing by height. */
+.faq { interpolate-size: allow-keywords; }
+.faq .rail { display: grid; grid-template-columns: 360px minmax(0, 662px); }
+.faq .title { font-size: 42px; font-weight: 400; }
+
+.question {
+  composes: dots from '../components/dots.module.css';
+  --dots-top: 2px;
+  padding: 22px 0 23px;
+  scroll-margin-top: 16px;   /* a link to a question leaves a little room above it */
+}
+.question:last-child { --dots-bottom: 2px; }
+.question::details-content { height: 0; overflow: clip; transition: height .25s ease, content-visibility .25s allow-discrete; }
+.question[open]::details-content { height: auto; }
+
+.summary {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  cursor: pointer;
+  list-style: none;
+  font: 500 18px/26px var(--site-font);
+  color: var(--site-text);
+}
+.summary::-webkit-details-marker { display: none; }
+.summary:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 4px; border-radius: 2px; }
+/* the + : a bar across, and a bar down that turns flat as the answer opens */
+.summary::after {
+  content: '';
+  flex: none;
+  width: 13px;
+  height: 26px;
+  background: linear-gradient(var(--site-text-muted) 0 0) 50% 50% / 12px 1.5px no-repeat;
+}
+.summary::before {
+  content: '';
+  position: absolute;
+  right: 5.75px;
+  top: 50%;
+  width: 1.5px;
+  height: 12px;
+  margin-top: -6px;
+  background: var(--site-text-muted);
+  transition: transform .2s;
+}
+.question[open] .summary::before { transform: rotate(90deg); }
+
+.answer { display: flex; flex-direction: column; gap: 14px; padding-top: 14px; }
+.answer .text { max-width: 600px; font: 400 16px/25px var(--site-font); color: var(--site-text-body); }
+.answer .text a { font-weight: 500; color: var(--site-accent); }
+.answer .text code { padding: 1px 5px; border: 0; border-radius: 4px; background: var(--site-tile); font: 400 14px/20px var(--site-font-mono); color: var(--site-text); overflow-wrap: anywhere; }
+.answer .link { align-self: flex-start; font: 500 15px/22px var(--site-font); color: var(--site-accent); }
+
+@media (min-width: 1200px) {
+  .faq .rail { padding-block: var(--faq-wide-pad, 120px); }
+}
+@media (max-width: 1199px) {
+  .faq .rail { grid-template-columns: 280px minmax(0, 1fr); }
+}
+@media (max-width: 899px) {
+  .faq .rail { grid-template-columns: 1fr; gap: 40px; }
+}
+/* a touch screen: each question's row 9 taller above and below, taken back by its margins, and the answer's links 44 tall */
+@media (max-width: 1079px) {
+  .summary { padding-block: 9px; margin-block: -9px; }
+  .question[open] .summary { margin-bottom: 0; }
+  .question[open] .answer { padding-top: 5px; }
+  .answer .text a, .answer .link { padding-block: 11px; margin-block: -11px; }
+}
+@media (max-width: 760px) {
+  .faq .rail { gap: var(--faq-phone-gap, 40px); }
+  .faq .title { font-size: 34px; line-height: 36px; letter-spacing: -1.4px; }
+  .summary { font-size: 16px; line-height: 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .question::details-content, .summary::before { transition: none; }
+}
