@@ -382,9 +382,67 @@ jobs:
       - name: Typecheck
         run: pnpm run typecheck
 
+      # The CLI bundled exactly as flake.nix bundles it, then started. On a pull request the Nix
+      # build runs only when its inputs change (nix-changes below), so this is the check that a
+      # source change still bundles and starts. The web pages Nix copies next to the bundle must
+      # exist where flake.nix's installPhase reads them.
+      - name: Bundle and start the CLI as Nix does
+        run: |
+          node_modules/.bin/esbuild apps/cli/src/cli/index.ts \
+            --bundle --platform=node --format=esm --log-level=warning \
+            --outfile=apps/cli/dist/bundle.mjs \
+            --external:better-sqlite3 --external:node-datachannel \
+            --external:koffi --external:keytar \
+            '--banner:js=import { createRequire as __antseedCreateRequire } from "node:module"; var require = __antseedCreateRequire(import.meta.url);'
+          node apps/cli/dist/bundle.mjs --version
+          node apps/cli/dist/bundle.mjs --help > /dev/null
+          test -d apps/payments/dist/web
+          test -d apps/ants/dist/ants-web
+          test -d apps/gateway-console/dist
+
+  # Whether a pull request changes an input of the Nix build. The build takes 4-5 minutes and
+  # breaks on its own only through these files: the lockfile and flake (the pnpmDeps hash), the
+  # install's settings and patches, the scripts the build runs, the vite configs whose output
+  # installPhase copies, this workflow, and the package.json of a package the CLI is built from
+  # (the closure is computed, so a new dependency of the CLI is covered without editing this).
+  # Source changes are covered by the bundle check in Typecheck. Pushes to main always build.
+  nix-changes:
+    name: Nix inputs changed
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+
+    steps:
+      # HEAD is the pull request's merge commit and HEAD^1 is main: the diff is the files the pull
+      # request would change as it lands.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - *setup-pnpm
+
+      - id: diff
+        run: |
+          closure=$(pnpm --filter '@antseed/cli...' list --depth -1 --json \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const p of JSON.parse(s))console.log(require("path").relative(process.cwd(),p.path)+"/package.json")})')
+          echo "$closure"
+          git diff --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed"
+          cat "$RUNNER_TEMP/changed"
+          if grep -qxF -f <(echo "$closure") "$RUNNER_TEMP/changed" \
+            || grep -qE '^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.npmrc|flake\.(nix|lock)|patches/|packages/node/scripts/patch-ethers\.js|scripts/(remove-paths|fix-executable)\.mjs|\.github/workflows/ci\.yml|apps/(payments|ants|gateway-console)/vite\.config\.)' "$RUNNER_TEMP/changed"; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          else
+            echo run=false >> "$GITHUB_OUTPUT"
+          fi
+
   nix-build:
     name: Nix build (antseed CLI)
     runs-on: ubuntu-latest
+    needs: nix-changes
+    # On a push nix-changes is skipped and its output empty, so this runs. It also runs when
+    # nix-changes fails: only an explicit "false" skips it.
+    if: ${{ !cancelled() && needs.nix-changes.outputs.run != 'false' }}
 
     steps:
       - *checkout
