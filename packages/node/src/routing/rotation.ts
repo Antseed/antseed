@@ -22,3 +22,14 @@ export function nextRotationOffset(
   }
   return step % group;
 }
+
+/** Rotate the first `group` items left by `offset`, in place. */
+export function rotateHead<T>(items: T[], group: number, offset: number): T[] {
+  if (offset === 0) return items;
+  const head = items.slice(0, group);
+  for (let index = 0; index < group; index += 1) {
+    const next = head[(index + offset) % group];
+    if (next) items[index] = next;
+  }
+  return items;
+}

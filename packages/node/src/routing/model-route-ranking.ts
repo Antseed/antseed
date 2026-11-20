@@ -1,4 +1,4 @@
-import { nextRotationOffset } from './rotation.js';
+import { nextRotationOffset, rotateHead } from './rotation.js';
 import { normalizedModelReputationScore } from '../reputation/model-reputation.js';
 
 export type ModelRoutingPreferences = {
@@ -243,13 +243,7 @@ function rotateEqualHead<T extends ModelRouteCandidate>(
   }
   if (group < 2) return ranked;
   const offset = nextRotationOffset(equalHeadRotation, rotationPoolKey(ranked, group, rotationKey), group, advance);
-  if (offset === 0) return ranked;
-  const head = ranked.slice(0, group);
-  for (let index = 0; index < group; index += 1) {
-    const next = head[(index + offset) % group];
-    if (next) ranked[index] = next;
-  }
-  return ranked;
+  return rotateHead(ranked, group, offset);
 }
 
 export type ModelRouteRankingOptions = {

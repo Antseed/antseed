@@ -1,4 +1,4 @@
-import { nextRotationOffset } from '../routing/rotation.js';
+import { nextRotationOffset, rotateHead } from '../routing/rotation.js';
 
 export const MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER = 0.5;
 /** A service with a live on-chain DIFF verification verdict keeps 10% of its reputation. */
@@ -172,11 +172,5 @@ export function rotateEqualReputationHead<
   if (group < 2) return ordered;
   const pool = reputationPoolKey(ordered, group, options?.key);
   const offset = nextRotationOffset(reputationHeadRotation, pool, group, options?.advance !== false, 0);
-  if (offset === 0) return ordered;
-  const head = ordered.slice(0, group);
-  for (let index = 0; index < group; index += 1) {
-    const next = head[(index + offset) % group];
-    if (next) ordered[index] = next;
-  }
-  return ordered;
+  return rotateHead(ordered, group, offset);
 }

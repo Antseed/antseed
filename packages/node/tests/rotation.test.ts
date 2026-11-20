@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nextRotationOffset } from '../src/routing/rotation.js';
+import { nextRotationOffset, rotateHead } from '../src/routing/rotation.js';
 
 describe('bounded rotation counter', () => {
   it('peeks without creating or refreshing a pool and consumes only live turns', () => {
@@ -34,5 +34,14 @@ describe('bounded rotation counter', () => {
     expect(rotations.get('pool')).toBe(0);
     expect(nextRotationOffset(rotations, 'pool', 3, true)).toBe(0);
     expect(nextRotationOffset(rotations, 'pool', 3, true)).toBe(1);
+  });
+});
+
+describe('head rotation', () => {
+  it('rotates only the leading group in place', () => {
+    const items = ['a', 'b', 'c', 'd'];
+    expect(rotateHead(items, 3, 1)).toBe(items);
+    expect(items).toEqual(['b', 'c', 'a', 'd']);
+    expect(rotateHead(items, 3, 0)).toEqual(['b', 'c', 'a', 'd']);
   });
 });
