@@ -10,6 +10,8 @@ export interface SubmissionCandidate {
   verdict: VerifierVerdict
   /** Unix seconds the audit behind this result was made (its latest evidence file). */
   auditedAt: number
+  /** Set by `verifier run` on a result that answers a DIFF waiting for this auditor's confirmation. */
+  confirmsDiff?: boolean
 }
 
 /** The on-chain reads `resultsAlreadyOnChain` makes; only for results this auditor already reported. */

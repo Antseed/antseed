@@ -89,3 +89,27 @@ describe('seller self health errors', () => {
     expect(body.error.message).toMatch(/^Oops, peer could not complete the request/);
   });
 });
+
+describe('video job holds', () => {
+  const answer = (statusCode: number, code: string) => ({
+    requestId: 'r1',
+    statusCode,
+    headers: { 'content-type': 'application/json', 'retry-after': '60' },
+    body: new TextEncoder().encode(JSON.stringify({ error: { code, message: 'A video you started on this seller over an hour ago has not been downloaded.' } })),
+  });
+
+  it("passes a seller's hold through with its own message, not as a seller failure", () => {
+    const adapted = adaptPeerFaultErrorResponse(answer(409, 'video_jobs_uncollected'), 'openai-chat-completions');
+    expect(adapted.statusCode).toBe(409);
+    expect(adapted.headers['retry-after']).toBe('60');
+    expect(JSON.parse(new TextDecoder().decode(adapted.body)).error).toEqual({
+      code: 'video_jobs_uncollected',
+      message: 'A video you started on this seller over an hour ago has not been downloaded.',
+    });
+  });
+
+  it('wraps the same code on another status as a seller failure', () => {
+    const adapted = adaptPeerFaultErrorResponse(answer(500, 'video_jobs_uncollected'), 'openai-chat-completions');
+    expect(JSON.parse(new TextDecoder().decode(adapted.body)).error.antseed_fault).toBe('peer');
+  });
+});

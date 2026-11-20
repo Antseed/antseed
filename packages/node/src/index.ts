@@ -105,6 +105,7 @@ export {
   type FaultAttribution,
   type AntseedErrorCode,
 } from './errors.js';
+export { VIDEO_JOB_HOLD_CODES, type VideoJobHoldCode } from '@antseed/protocol/messages';
 export { adaptPeerFaultErrorResponse, describeFreeTierLimit, FREE_TIER_EXHAUSTED_ERROR_ID, isFreeTierExhaustedResponse, nextFreeTierStakeTier, readFreeTierLimit, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED } from '@antseed/buyer-core';
 export type { FreeTierLimit, FreeTierLimitStakeTier } from '@antseed/buyer-core';
 export { reconcileStoredChannels, type ChannelReconcileResult, type LivePaymentSessions } from '@antseed/buyer-core';
@@ -181,6 +182,7 @@ export {
   SPEECH_METADATA_VERSION,
   VIDEO_OPTION_PRICING_METADATA_VERSION,
   REFERENCE_VIDEO_PRICING_METADATA_VERSION,
+  INPUT_IMAGE_PRICING_METADATA_VERSION,
   speechVoiceProblem,
   type PeerMetadata,
   type PeerVerifications,
@@ -224,6 +226,7 @@ export {
   SELF_HEALTH_ERROR_STATUS,
   buildSelfHealthErrorResponse,
   describeServiceHealth,
+  VIDEO_DOWNLOAD_BUSY_CODE,
 } from './health/self-health-error.js';
 export {
   buildNetworkServiceOffers,
@@ -498,6 +501,7 @@ export {
   MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER,
   VERIFICATION_STATUS_STALE_MAX_MS,
   compareEffectiveModelReputation,
+  rotateEqualReputationHead,
   effectiveModelReputationScore,
   hasLiveDiffVerdict,
   hasLiveSameVerdict,
@@ -556,4 +560,5 @@ export {
   type LoadedProvider,
   type LoadedRouter,
 } from './config/plugin-loader.js'
+export { nextRotationOffset, rotateHead, tiedSellerSignature } from './routing/rotation.js'
 export { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV, portInUse } from './gateway-process.js'

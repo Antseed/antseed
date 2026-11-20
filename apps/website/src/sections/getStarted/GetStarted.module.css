@@ -1,0 +1,77 @@
+/* A phone-width column, centred on larger screens. */
+.page {
+  min-height: 100vh;
+  background: var(--site-bg);
+  color: var(--site-text);
+  font-family: var(--site-font);
+}
+.page *, .page *::before, .page *::after { box-sizing: border-box; }
+.page :where(p, h1, ul, ol) { margin: 0; padding: 0; }
+.page :where(ul, ol) { list-style: none; }
+
+.screen { display: flex; flex-direction: column; gap: 24px; width: 100%; max-width: 460px; margin: 0 auto; padding: 16px 16px 40px; }
+.bar { display: flex; align-items: center; justify-content: space-between; min-height: 32px; }
+.back, .share {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: 500 15px/22px var(--site-font);
+  color: var(--site-text-muted);
+  cursor: pointer;
+}
+.back:hover, .share:hover { color: var(--site-text); text-decoration: none; }
+.back:focus-visible, .share:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 4px; border-radius: 2px; }
+.share { color: var(--site-accent); }
+
+.painting { aspect-ratio: 16 / 10; border-radius: 16px; }
+.screen .title { font-size: 34px; line-height: 36px; letter-spacing: -1.4px; text-wrap: balance; }
+
+.cards, .steps { display: flex; flex-direction: column; }
+.card {
+  composes: dots from '../../components/dots.module.css';
+  --dots-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 0;
+  font: 400 16px/24px var(--site-font);
+  color: var(--site-text-body);
+}
+.card:last-child { --dots-bottom: 2px; }
+.badge {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--site-tile-line);
+  border-radius: var(--site-radius-control);
+  background: var(--site-tile);
+  color: var(--site-accent);
+}
+.wide { width: 100%; }
+
+.steps { gap: 16px; }
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--site-tile-line);
+  border-radius: var(--site-radius-card);
+  background: var(--site-surface);
+}
+.shot { display: block; width: 100%; height: auto; border-radius: 12px; }
+.shot.flush { width: calc(100% + 16px); margin: -8px -8px 0; }
+.stepText { display: flex; align-items: center; gap: 16px; font: 400 16px/24px var(--site-font); color: var(--site-text); }
+.number {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--site-fill);
+  color: #fff;
+  font: 400 16px/1 var(--site-font-pixel);
+}

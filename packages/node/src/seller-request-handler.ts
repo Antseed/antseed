@@ -9,7 +9,7 @@ import type { SellerSessionTracker } from './metering/seller-session-tracker.js'
 import type { PaymentMux } from './p2p/payment-mux.js';
 import type { Identity } from './p2p/identity.js';
 import type { ChannelsClient } from './payments/evm/channels-client.js';
-import type { SellerPaymentManager } from './payments/seller-payment-manager.js';
+import type { SellerPaymentManager, VideoJobHold } from './payments/seller-payment-manager.js';
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 import type { FreeTierDecision, FreeTierScreenRefusal, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
 import type { BuyerUsageReservation, SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
@@ -52,6 +52,7 @@ import {
   computeOneOffChannelPlan,
   PAYMENT_CODE_CHANNEL_EXHAUSTED,
   PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED,
+  VIDEO_JOB_HOLD_CODES,
   type OneOffChannelPlan,
   type PaymentRequiredPayload,
 } from './types/protocol.js';
@@ -78,7 +79,7 @@ import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/resp
 import { usageForBilling } from '@antseed/buyer-core';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
-import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, describeUpstreamError, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
+import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, describeUpstreamError, isUpstreamAccountError, isUpstreamFailureStatus, isVideoDownloadBusy } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
@@ -502,7 +503,10 @@ export class SellerRequestHandler {
         requestBilling = this._captureSellerBillingContext(provider, request);
         unitBillingModel = requestBilling ? this.resolveProviderUnitBillingModel(provider, requestBilling.context) : undefined;
         const facts = requestBilling?.requestFacts;
-        if (requestBilling && facts?.kind === 'video' && facts.video.action === 'create' && unitBillingModel) this._estimateUnitRequestCostUsdc(requestBilling, unitBillingModel);
+        // Refused before payment when the request names options the model can't price (a video's
+        // duration, an edit's number of input images).
+        const priceUpFront = facts?.kind === 'video' ? facts.video.action === 'create' : facts?.kind === 'image' && facts.image.inputImages !== undefined;
+        if (requestBilling && priceUpFront && unitBillingModel) this._estimateUnitRequestCostUsdc(requestBilling, unitBillingModel);
       } catch (error) {
         this._sendJsonError(mux, request.requestId, 400, 'invalid_billing_request', error instanceof Error ? error.message : String(error));
         return;
@@ -675,8 +679,10 @@ export class SellerRequestHandler {
         const oneOff = spm.getOneOffChannelForRequest(buyerPeerId, request.requestId);
         if (!oneOff) {
           // Before the chain reads, and again with the plan: parallel creates can all pass the first check.
+          if (this._sendVideoJobHold(mux, request.requestId, buyerPeerId, spm.videoJobHold(buyerPeerId, request.requestId))) return;
           if (this._sendOneOffBackoff(mux, request.requestId, buyerPeerId, spm.oneOffRetryAfterSeconds(buyerPeerId, request.requestId))) return;
           const plan = await this._buildOneOffPlan(estimatedRequestCost);
+          if (this._sendVideoJobHold(mux, request.requestId, buyerPeerId, spm.videoJobHold(buyerPeerId, request.requestId))) return;
           if (this._sendOneOffBackoff(mux, request.requestId, buyerPeerId, spm.registerOneOffPlan(buyerPeerId, request.requestId, plan))) return;
           debugLog(`[SellerHandler] Video create ${request.requestId} needs a one-off channel (price=${estimatedRequestCost})`);
           const requirements = spm.getPaymentRequirements(request.requestId, buyerPeerId, requestPricing);
@@ -1154,7 +1160,7 @@ export class SellerRequestHandler {
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
             statusCode = response.statusCode;
             maskedAs = 'account';
-          } else if (!streamedResponseStarted && statusCode === 429) {
+          } else if (!streamedResponseStarted && statusCode === 429 && !isVideoDownloadBusy(statusCode, upstreamError)) {
             response = buildUpstreamRateLimitedResponse(request.requestId, requestedModel, takeHeader({ ...response.headers }, 'retry-after'));
           }
           const health = serviceHealthOf(provider.serviceHealth, requestedModel);
@@ -1273,6 +1279,13 @@ export class SellerRequestHandler {
             billingUsageReport = finalBilling.billingUsage;
             unitCostUsdc = finalBilling.costUsdc;
           }
+
+        // A failed request is never charged: the buyer got an error, not an answer,
+        // even when the error body carries a usage figure or a unit adapter prices it.
+        if (statusCode >= 400) {
+          responseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+          unitCostUsdc = 0n;
+        }
 
         // Record metering
         const finishedAt = Date.now();
@@ -1564,6 +1577,34 @@ export class SellerRequestHandler {
     if (retryAfterSeconds === null) return false;
     debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... held back from another video channel, retry in ${retryAfterSeconds}s`);
     this._sendJsonError(mux, requestId, 429, 'one_off_channel_backoff', `This seller is not opening another video payment channel for this buyer yet; retry in ${retryAfterSeconds} seconds`, { 'retry-after': String(retryAfterSeconds) });
+    return true;
+  }
+
+  /**
+   * Answers a video create the buyer's own earlier jobs here hold back, with
+   * what the buyer can do about it and which jobs they are (`error.jobs`, the
+   * IDs the buyer got when it started them). Only this buyer's jobs are
+   * listed. Returns whether it answered.
+   */
+  private _sendVideoJobHold(mux: ProxyMux, requestId: string, buyerPeerId: string, hold: VideoJobHold | null): boolean {
+    if (!hold) return false;
+    debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... held back from another video: ${hold.code}`);
+    const message = hold.code === VIDEO_JOB_HOLD_CODES.openLimit
+      ? `You have ${hold.limit} videos on this seller that are not downloaded yet. Download one before starting another here. Their job IDs are in error.jobs.`
+      : 'A video you downloaded from this seller is not paid for yet. New videos start here once it is paid. Its job ID is in error.jobs.';
+    let jobs: Array<{ id: string; protocol: string }> = [];
+    try {
+      jobs = (this._deps.resourceOwnershipStore?.jobsForChannels(buyerPeerId.toLowerCase(), hold.channelIds) ?? [])
+        .map((job) => ({ id: job.resourceId, protocol: job.protocol }));
+    } catch (err) {
+      debugWarn(`[SellerHandler] Could not list held video jobs: ${err instanceof Error ? err.message : err}`);
+    }
+    mux.sendProxyResponse({
+      requestId,
+      statusCode: 409,
+      headers: { 'content-type': 'application/json', 'retry-after': String(hold.retryAfterSeconds) },
+      body: new TextEncoder().encode(JSON.stringify({ error: { code: hold.code, message, jobs } })),
+    });
     return true;
   }
 
@@ -1947,7 +1988,7 @@ export class SellerRequestHandler {
       return null;
     }
 
-    const inputTokens = estimateTokensFromBytesSampled(request.body);
+    const inputTokens = this._estimatedPromptTokens(request);
     return {
       cost: computeCostUsdc(inputTokens, maxOutputTokens, pricing),
       inputTokens,
@@ -1968,7 +2009,18 @@ export class SellerRequestHandler {
     if (costEstimate && costEstimate.inputTokens > 0) {
       return costEstimate.inputTokens + (costEstimate.maxOutputTokens || DEFAULT_OUTPUT_RESERVATION_TOKENS);
     }
-    return estimateTokensFromBytesSampled(request.body) + (this._requestedMaxOutputTokens(request) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+    return this._estimatedPromptTokens(request) + (this._requestedMaxOutputTokens(request) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+  }
+
+  /**
+   * The prompt tokens of a request, for checks before it goes upstream. A JSON body the seller wrote
+   * was estimated as it was read, with each inline image counted as a flat allowance: its base64 is
+   * megabytes of body but not of tokens. Any other body counts its bytes.
+   */
+  private _estimatedPromptTokens(request: SerializedHttpRequest): number {
+    const billed = this._requestedServices.get(request);
+    if (billed && billed.service !== null && billed.body === request.body && billed.promptTokens !== undefined) return billed.promptTokens;
+    return estimateTokensFromBytesSampled(request.body);
   }
 
   /**

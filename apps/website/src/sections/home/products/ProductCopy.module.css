@@ -1,0 +1,4 @@
+/* no downloads or setup on a phone: the docs stay */
+@media (max-width: 760px) {
+  .actions .primary { display: none; }
+}

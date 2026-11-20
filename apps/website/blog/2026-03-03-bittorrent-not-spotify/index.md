@@ -64,6 +64,6 @@ The infrastructure that seemed like the obviously right choice for a decade turn
 
 Antseed is building the BitTorrent for AI — a protocol, not a product. Open to any provider. Accessible to any agent. Priced by competition, not by rate cards. Always on, because the network doesn't have a single point to fail.
 
-[Read the lightpaper](/docs/lightpaper)
+[How the protocol works](/docs/overview)
 
 [Get started in one command](/docs/install)

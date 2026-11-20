@@ -17,8 +17,10 @@ const AUDITOR_TEXT = [
   /\bdeposit\b/i,
   /insufficient (?:funds|balance)/i,
   /probe bank/i,
+  // Older runs' per-seller draws.
   /BANK_EXHAUSTED/,
   /unseen questions/i,
+  /NO_EPOCH_QUESTION_SET/,
   /\benrol(?:l)?ment\b/i,
   /reference (?:endpoint|credits?)/i,
   /buyer proxy/i,

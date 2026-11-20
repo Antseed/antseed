@@ -1,0 +1,25 @@
+.main {
+  display: block;
+  background: var(--site-bg-hero);
+}
+
+/* the content below the hero: the dot matrix in the margins, one dot on the centre line and on the top edge */
+/* Links take their parent's colour and no underline, through Infima's own link variables (no specificity contest) */
+.page {
+  --ifm-link-color: currentColor;
+  --ifm-link-hover-color: currentColor;
+  --ifm-link-decoration: none;
+  --ifm-link-hover-decoration: none;
+  font-family: var(--site-font);
+  color: var(--site-text);
+  background: radial-gradient(circle at 4px 4px, var(--site-dot) .85px, #0000 1.25px) 50% -4px / 8px 8px, var(--site-bg);
+}
+:where(.page) *, :where(.page) *::before, :where(.page) *::after { box-sizing: border-box; }
+
+/* Neutralise Infima's element styles. Specificity (0,0,2): above Infima's bare element rules (0,0,1), below any component class
+   (0,1,0), so components always win without depending on stylesheet order. */
+html :where(.page) :is(p, h1, h2, h3, h4, ul, ol, figure, dl, dd, blockquote) { margin: 0; padding: 0; font-weight: inherit; }
+html :where(.page) :is(ul, ol) { list-style: none; }
+html :where(.page) :is(img, video, canvas, svg) { display: block; }
+html :where(.page) code { padding: 0; border: 0; background: none; font-family: var(--site-font-mono); font-size: inherit; vertical-align: baseline; }
+:where(.page) :where(video)::-webkit-media-controls { display: none !important; }

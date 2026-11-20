@@ -9,6 +9,7 @@ import type { ReceiptGenerator } from './receipt-generator.js';
 import { debugLog, debugWarn, isContentFreeLogging, upstreamErrorCode } from '../utils/debug.js';
 import { parseResponseUsage } from '../utils/response-usage.js';
 import { computeCostUsdc } from '../payments/pricing.js';
+import { estimatePromptTokens } from '@antseed/buyer-core';
 
 export interface SellerSessionState {
   sessionId: string;
@@ -134,8 +135,13 @@ export class SellerSessionTracker {
     return session;
   }
 
-  estimateTokens(inputBytes: number, outputBytes: number): TokenCount {
-    const inputTokens = Math.max(1, Math.round(inputBytes / 4));
+  /**
+   * Tokens of a request whose upstream reported no usage. The prompt counts its
+   * text plus a flat allowance per attachment: a base64 image counted by its
+   * bytes would be hundreds of thousands of tokens.
+   */
+  estimateTokens(requestBody: Uint8Array, outputBytes: number): TokenCount {
+    const inputTokens = Math.max(1, estimatePromptTokens(requestBody));
     const outputTokens = Math.max(1, Math.round(outputBytes / 4));
     return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, method: 'content-length', confidence: 'low' };
   }
@@ -173,8 +179,12 @@ export class SellerSessionTracker {
         confidence: 'high',
       };
       debugLog(`[SessionTracker] Metering: provider-usage tokens=${totalTokens} (in=${providerUsage.inputTokens} out=${providerUsage.outputTokens})`);
+    } else if (statusCode >= 400 || input.error) {
+      // A failed request is not charged, so it is not priced either.
+      tokens = { inputTokens: 0, outputTokens: 0, totalTokens: 0, method: 'fallback', confidence: 'low' };
+      debugLog(`[SessionTracker] Metering: failed request (status=${statusCode}), no tokens counted`);
     } else {
-      tokens = this.estimateTokens(inputBytes, outputBytes);
+      tokens = this.estimateTokens(request.body, outputBytes);
       debugLog(`[SessionTracker] Metering: estimated tokens=${tokens.totalTokens} from ${inputBytes}+${outputBytes} bytes`);
     }
 

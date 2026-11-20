@@ -57,7 +57,8 @@ export interface VerifierRunManifestV1 {
   version: 1
   kind: 'antseed-verifier-run-manifest'
   runId: string
-  state: 'completed' | 'completed-with-failures'
+  /** `running` while the run goes on: the manifest is written again each time one of its models finishes. */
+  state: 'running' | 'completed' | 'completed-with-failures'
   epoch: string
   epochSource: 'onchain' | 'utc-day'
   epochStartedAt: string

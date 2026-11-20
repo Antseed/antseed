@@ -16,7 +16,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 /** Load shape defaults: the stress harness's BASE (e2e/stress/scenarios.mjs), minus what the topology owns. */
 export const LOAD_DEFAULTS = {
-  concurrency: 8, requests: 100, streamRatio: 0.5, abortRatio: 0, imageRatio: 0,
+  concurrency: 8, requests: 100, streamRatio: 0.5, abortRatio: 0, imageRatio: 0, imageStreamRatio: 0,
   minInTokens: 1000, maxInTokens: 20_000, restart: null,
 };
 
@@ -98,20 +98,27 @@ function percentile(sorted, p) {
   return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
 }
 
-async function imageRequest({ proxyUrl, model }, index, results, { tag, random }) {
+async function imageRequest({ proxyUrl, model, load }, index, results, { tag, random }) {
   const n = 1 + Math.floor(random() * 2);
+  // Drawn only when the load streams images, so seeds recorded without it keep their meaning.
+  const stream = load.imageStreamRatio > 0 && random() < load.imageStreamRatio;
+  const partials = stream ? Math.floor(random() * 4) : 0;
   const started = Date.now();
-  const record = { i: index, tag, image: true, n, start: started };
+  const record = { i: index, tag, image: true, n, ...(stream ? { stream: true, partials } : {}), start: started };
   results.push(record);
   try {
     const response = await fetch(`${proxyUrl}/v1/images/generations`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model, prompt: `[req:${tag}] a small ant carrying a coin, ${'detailed '.repeat(50)}`, n, size: '1024x1024' }),
+      body: JSON.stringify({ model, prompt: `[req:${tag}] a small ant carrying a coin, ${'detailed '.repeat(50)}`, n, size: '1024x1024', ...(stream ? { stream: true, partial_images: partials } : {}) }),
     });
     record.status = response.status;
     const text = await response.text();
     if (response.status !== 200) { record.error = classifyError(response.status, text); record.body = text.slice(0, 400); }
-    else {
+    else if (stream) {
+      // OpenAI's image stream: the final images are the completed events, after any partial previews.
+      const types = [...text.matchAll(/^data: (.+)$/gm)].map((match) => { try { return JSON.parse(match[1]).type; } catch { return null; } });
+      if (types.filter((type) => type === 'image_generation.completed').length !== n) record.error = 'image:bad-stream';
+    } else {
       try { const body = JSON.parse(text); if (!Array.isArray(body.data) || body.data.length !== n) record.error = 'image:bad-body'; } catch { record.error = 'image:non-json'; }
     }
   } catch (error) { record.error = `fetch:${error.cause?.code ?? error.name ?? error.message}`; }
@@ -176,7 +183,8 @@ async function chatRequest({ proxyUrl, model, load }, index, results, { tag, ran
 /**
  * Concurrent paid traffic through the buyer proxy: `concurrency` workers send `requests` tagged requests
  * (`[req:TAG]`, so the mock ledger can say what was delivered), a `streamRatio` share streamed, an `abortRatio`
- * share abandoned by the client, an `imageRatio` share as image generations. `restart` ({ atFraction, run })
+ * share abandoned by the client, an `imageRatio` share as image generations (an `imageStreamRatio` share of them
+ * streamed as OpenAI's image events, with 0 to 3 partial previews). `restart` ({ atFraction, run })
  * pauses new requests while `run()` restarts a peer once that share of the load is done; requests already in
  * flight finish or fail on their own. With `when` (a promise) in place of `atFraction`, the restart starts once it
  * resolves during the load, and never after. Returns the per-request records, the client summary and restart timing.
@@ -211,7 +219,7 @@ export async function runLoad({ proxyUrl, model, imageModel, load: shape = {}, r
       next += 1;
       const plan = plans[index];
       const record = load.imageRatio > 0 && plan.random() < load.imageRatio
-        ? await imageRequest({ proxyUrl, model: imageModel }, index, results, plan)
+        ? await imageRequest({ proxyUrl, model: imageModel, load }, index, results, plan)
         : await chatRequest({ proxyUrl, model, load }, index, results, plan);
       done += 1;
       onRequest?.(record);

@@ -1,0 +1,24 @@
+.head { --head-gap: 16px; display: flex; flex-direction: column; gap: var(--head-gap); }
+/* the audience pages' promises run long: the compact title keeps each half on one line */
+.head .title { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; text-wrap: balance; }
+.head .lead { max-width: 520px; }
+@media (max-width: 760px) {
+  .head .title { font-size: 34px; line-height: 36px; letter-spacing: -1.4px; }
+  .head .lead { max-width: none; }
+}
+.actions { margin-top: -4px; }
+.note { display: flex; align-items: flex-start; gap: 12px; max-width: 440px; font: 400 15px/22px var(--site-font); color: var(--site-text-body); }
+.icon { color: var(--site-accent); }
+
+.panel { --price-card: 176px; display: grid; place-items: center; padding: 40px 32px; }
+.cards { --card-size: var(--price-card); display: grid; grid-template-columns: repeat(2, var(--price-card)); gap: 16px; margin: 0; padding: 0; list-style: none; }
+.card { box-shadow: 0 0 0 .5px rgba(10, 26, 18, .12), 0 12px 32px rgba(20, 51, 89, .14); }
+:global(:root[data-theme='dark']) .card { box-shadow: 0 0 0 .5px rgba(150, 200, 145, .2), 0 12px 32px rgba(8, 26, 14, .3); }
+
+@media (max-width: 899px) {
+  .panel { aspect-ratio: 4 / 3; padding: 28px 16px; }
+}
+@media (max-width: 560px) {
+  .panel { --price-card: 140px; aspect-ratio: auto; padding: 40px 16px; }
+  .cards { gap: 12px; }
+}

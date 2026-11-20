@@ -9,7 +9,7 @@ import type {
   CloseChannelResultPayload,
   CloseChannelRejectCode,
 } from '../types/protocol.js';
-import { DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS } from '../types/protocol.js';
+import { DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS, VIDEO_JOB_HOLD_CODES } from '../types/protocol.js';
 import { ChannelsClient } from './evm/channels-client.js';
 import {
   SPENDING_AUTH_TYPES,
@@ -33,6 +33,13 @@ export interface SellerPaymentConfig {
   dataDir: string;
   /** Minimum USDC per request (base units). Default: "10000" ($0.01). */
   minBudgetPerRequest?: string;
+  /**
+   * First reserve suggested to a buyer with no channel here (base units).
+   * Default: "1000000" ($1.00), the contract's default first-sign cap. A seller of
+   * small per-request services may suggest less, so a buyer's deposit reaches
+   * more sellers. Kept between `minBudgetPerRequest` and the cap.
+   */
+  suggestedReserveAmount?: string;
   /** Whether to settle as soon as the buyer disconnects and no request is still being served. Default: true. */
   settleOnDisconnect?: boolean;
   /**
@@ -115,7 +122,8 @@ export const ONE_OFF_UNCLAIMED_TTL_MS = 10 * 60_000;
  * unpaid since it last paid for a video, or still without an accepted create.
  * Each costs the seller a reserve and a close, so at this many the buyer waits
  * for another. Plans it has not answered count too, so parallel creates cannot
- * overshoot. Above the video plugins' default concurrency of 10.
+ * overshoot. Above the video plugins' default concurrency of 10. It also caps
+ * the accepted jobs a buyer has not collected yet (see _uncollectedOneOffJobs).
  */
 const ONE_OFF_UNPAID_LIMIT = 16;
 /** Earnings below this (USDC base units, $0.01: a fixed floor above the usual gas of a reserve and a close on Base) leave a channel unpaid. */
@@ -133,6 +141,17 @@ export const TIMED_OUT_CLOSE_RETRY_INTERVAL_MS = 10 * 60_000;
 const TIMED_OUT_CLOSE_RETRY_BATCH = 20;
 /** Slow-cadence attempts with the buyer's latest auth before closing at the settled amount (~1 hour). */
 const TIMED_OUT_AUTH_CLOSE_ATTEMPTS = 6;
+
+/** Why a buyer may not start another video yet (see SellerPaymentManager.videoJobHold). */
+export type VideoJobHold = {
+  retryAfterSeconds: number;
+  /** The one-off channels of the jobs that hold the buyer back, so the buyer can be told which jobs they are. */
+  channelIds: string[];
+} & (
+  | { code: typeof VIDEO_JOB_HOLD_CODES.paymentPending }
+  /** At the limit: `limit` is the most uncollected jobs a buyer may have. */
+  | { code: typeof VIDEO_JOB_HOLD_CODES.openLimit; limit: number }
+);
 
 interface PendingOneOffPlan {
   openingReserveAmount: bigint;
@@ -1130,16 +1149,7 @@ export class SellerPaymentManager {
    */
   oneOffRetryAfterSeconds(buyerPeerId: string, requestId: string): number | null {
     const now = Date.now();
-    const buyerPlans = oneOffPlanKey(buyerPeerId, '');
-    const thisPlan = oneOffPlanKey(buyerPeerId, requestId);
-    let undecided = 0;
-    for (const [key, pending] of this._pendingOneOffPlans) {
-      if (pending.expiresAt <= now) this._pendingOneOffPlans.delete(key);
-      else if (key.startsWith(buyerPlans) && key !== thisPlan) undecided += 1;
-    }
-    for (const buyer of this._unacceptedOneOffs.values()) {
-      if (buyer === buyerPeerId) undecided += 1;
-    }
+    const undecided = this._undecidedOneOffs(buyerPeerId, requestId, now);
     const { count, lastEndedAt } = this._channelStore.getUnpaidOneOffChannels(
       buyerPeerId, CHANNEL_ROLE.SELLER, now - ONE_OFF_UNPAID_WINDOW_MS, ONE_OFF_MIN_EARNED_USDC,
     );
@@ -1150,6 +1160,65 @@ export class SellerPaymentManager {
       : lastEndedAt + Math.min(ONE_OFF_BACKOFF_BASE_MS * 2 ** (count + undecided - ONE_OFF_UNPAID_LIMIT), ONE_OFF_BACKOFF_MAX_MS) - now;
     if (waitMs > 0) return Math.ceil(waitMs / 1_000);
     return undecided > 0 ? ONE_OFF_UNDECIDED_RETRY_SECONDS : null;
+  }
+
+  /** Creates offered a plan or a channel whose answer is not in yet, other than this request's own. */
+  private _undecidedOneOffs(buyerPeerId: string, requestId: string, now: number): number {
+    const buyerPlans = oneOffPlanKey(buyerPeerId, '');
+    const thisPlan = oneOffPlanKey(buyerPeerId, requestId);
+    let undecided = 0;
+    for (const [key, pending] of this._pendingOneOffPlans) {
+      if (pending.expiresAt <= now) this._pendingOneOffPlans.delete(key);
+      else if (key.startsWith(buyerPlans) && key !== thisPlan) undecided += 1;
+    }
+    for (const buyer of this._unacceptedOneOffs.values()) {
+      if (buyer === buyerPeerId) undecided += 1;
+    }
+    return undecided;
+  }
+
+  /**
+   * Why this buyer may not start another video yet because of its own earlier
+   * jobs here, or null. Jobs the provider accepted are paid only once the buyer
+   * collects them, while the seller pays its upstream as soon as they run. A
+   * delivered video the buyer has not signed for holds it back; so does having
+   * as many uncollected jobs as the limit, counting creates still being decided
+   * so parallel ones cannot pass it. A single old job does not: it may be stuck
+   * upstream, which the buyer cannot fix. Only this buyer's own channels are counted.
+   */
+  videoJobHold(buyerPeerId: string, requestId: string): VideoJobHold | null {
+    const now = Date.now();
+    const jobs = this._uncollectedOneOffJobs(buyerPeerId);
+    if (jobs.unpaidDeliveries.length > 0) {
+      return { code: VIDEO_JOB_HOLD_CODES.paymentPending, retryAfterSeconds: ONE_OFF_UNDECIDED_RETRY_SECONDS, channelIds: jobs.unpaidDeliveries };
+    }
+    // Creates still being decided alone are a burst that ends in seconds; oneOffRetryAfterSeconds answers those.
+    if (jobs.open.length > 0 && jobs.open.length + this._undecidedOneOffs(buyerPeerId, requestId, now) >= ONE_OFF_UNPAID_LIMIT) {
+      return { code: VIDEO_JOB_HOLD_CODES.openLimit, retryAfterSeconds: ONE_OFF_UNDECIDED_RETRY_SECONDS, limit: ONE_OFF_UNPAID_LIMIT, channelIds: jobs.open };
+    }
+    return null;
+  }
+
+  /**
+   * The buyer's accepted video jobs still on an active channel: `open` not yet
+   * delivered, and `unpaidDeliveries` delivered but not yet signed for. A job is delivered
+   * once its price is spent on the channel (nothing is spent before), and paid
+   * once the buyer's signed amount covers that.
+   */
+  private _uncollectedOneOffJobs(buyerPeerId: string): { open: string[]; unpaidDeliveries: string[] } {
+    const jobs = { open: [] as string[], unpaidDeliveries: [] as string[] };
+    for (const channel of this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER, CHANNEL_KIND.ONE_OFF)) {
+      if (channel.peerId !== buyerPeerId || channel.requestCount === 0) continue;
+      if (!this._oneOffChannelIds.has(channel.sessionId) || this._unacceptedOneOffs.has(channel.sessionId)) continue;
+      const spent = this._spent.get(channel.sessionId) ?? 0n;
+      const accepted = this._acceptedCumulative.get(channel.sessionId) ?? 0n;
+      if (spent > accepted) {
+        jobs.unpaidDeliveries.push(channel.sessionId);
+      } else if (spent === 0n) {
+        jobs.open.push(channel.sessionId);
+      }
+    }
+    return jobs;
   }
 
   /** This channel's create was accepted: the channel is in use, so it stops counting against the buyer. */
@@ -2852,6 +2921,27 @@ export class SellerPaymentManager {
   private static readonly DEFAULT_SUGGESTED_AMOUNT = 1_000_000n; // $1.00 — matches contract FIRST_SIGN_CAP and buyer default
 
   /**
+   * The first reserve to suggest: the seller's `suggestedReserveAmount`, never
+   * under one request's minimum budget and never over the contract's
+   * first-sign cap. An unreadable setting falls back to the default.
+   */
+  private _suggestedReserveAmount(minBudgetPerRequest: string): bigint {
+    const cap = SellerPaymentManager.DEFAULT_SUGGESTED_AMOUNT;
+    // Config files are JSON: accept the documented string and an unquoted whole number.
+    const configured: unknown = this._config.suggestedReserveAmount;
+    const text = typeof configured === 'string'
+      ? configured.trim()
+      : typeof configured === 'number' && Number.isSafeInteger(configured) ? String(configured) : '';
+    if (!/^[0-9]+$/.test(text)) return cap;
+    const amount = BigInt(text);
+    const floor = /^[0-9]+$/.test(minBudgetPerRequest) ? BigInt(minBudgetPerRequest) : 0n;
+    if (amount <= 0n || amount > cap) return cap;
+    // The request minimum lifts a low value; the cap still wins when the minimum is above it.
+    const lifted = amount < floor ? floor : amount;
+    return lifted > cap ? cap : lifted;
+  }
+
+  /**
    * Build the PaymentRequired payload for a buyer that doesn't have a session.
    */
   getPaymentRequirements(
@@ -2861,13 +2951,13 @@ export class SellerPaymentManager {
   ): PaymentRequiredPayload {
     const minBudgetPerRequest = this._config.minBudgetPerRequest ?? DEFAULT_MIN_BUDGET_PER_REQUEST;
 
-    let suggestedAmount = SellerPaymentManager.DEFAULT_SUGGESTED_AMOUNT;
+    let suggestedAmount = this._suggestedReserveAmount(minBudgetPerRequest);
     if (buyerPeerId) {
       const priorSession = this._channelStore.getLatestChannel(buyerPeerId, 'seller');
       if (priorSession && priorSession.status === CHANNEL_STATUS.SETTLED) {
         // Returning buyer with proven history — could use a different amount
-        // For now, use the same default; config can override later
-        suggestedAmount = SellerPaymentManager.DEFAULT_SUGGESTED_AMOUNT;
+        // For now, use the same amount as for a new buyer
+        suggestedAmount = this._suggestedReserveAmount(minBudgetPerRequest);
       }
     }
 

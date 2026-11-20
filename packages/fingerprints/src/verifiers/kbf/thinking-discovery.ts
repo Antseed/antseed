@@ -1,7 +1,8 @@
 /**
  * Thinking suppression, discovered per endpoint the way the KBF reference code
- * does it (`discover_thinking_strategy` in kbf_common.py, 30 Sep 2026; it runs
- * for every endpoint it queries, reference and audited target alike).
+ * does it (`discover_thinking_strategy` in kbf_common.py at upstream commit 6b4c403;
+ * the `2026-09-30` in the method id is the date of paper v3). It runs for every
+ * endpoint it queries, reference and audited target alike.
  * Providers disable hidden reasoning in incompatible ways, and some accept a
  * field but ignore it. So each strategy is tried in order on a fixed
  * ten-question test batch, and the first one that returns at least 5/10

@@ -47,7 +47,7 @@ describe('configuration', () => {
     expect(() => plugin.createProvider({ ...config, ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{}' })).toThrow('Missing openai-images unit pricing');
     expect(() => plugin.createProvider({ ...config, ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: JSON.stringify({ 'fal-ai/other': EDIT }) })).toThrow('unknown service');
     expect(() => plugin.createProvider({ ...config, ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: JSON.stringify({ [MODEL]: '../edit' }) })).toThrow('Invalid fal edit endpoint');
-    expect(() => plugin.createProvider({ ...config, ANTSEED_SERVICE_ALIAS_MAP_JSON: '{"a":"b"}' })).toThrow('fal endpoint IDs');
+    expect(() => plugin.createProvider({ ...config, ANTSEED_SERVICE_ALIAS_MAP_JSON: JSON.stringify({ [MODEL]: '../other' }) })).toThrow('Invalid fal endpoint ID: ../other');
   });
 
   it('announces OpenAI images with the fields the fal schema takes', async () => {
@@ -109,6 +109,27 @@ describe('requests', () => {
     expect(url).toBe(`https://fal.run/${MODEL}`);
     expect(init?.headers).toMatchObject({ authorization: 'Key seller-secret' });
     expect(JSON.parse(String(init?.body))).toEqual({ prompt: 'cat', num_images: 2, sync_mode: true });
+  });
+
+  it('sells an aliased service under its own name and sends it to the fal endpoint it aliases', async () => {
+    const alias = 'openai/gpt-image-2-fast';
+    const { provider: created, fetchMock } = await provider({ [MODEL]: GPT_IMAGE_FIELDS }, (url) => url.startsWith('https://api.fal.ai/v1/models?')
+      ? Response.json({ models: new URL(url).searchParams.getAll('endpoint_id').map(id => ({ endpoint_id: id, metadata: { status: 'active' } })) })
+      : Response.json({ images: [{ url: 'data:image/png;base64,aW1hZ2Ux' }] }), {
+      ANTSEED_ALLOWED_SERVICES: alias,
+      ANTSEED_SERVICE_ALIAS_MAP_JSON: JSON.stringify({ [alias]: MODEL }),
+      ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [alias]: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.2 }] } } }),
+      ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: JSON.stringify({ [alias]: EDIT }),
+    });
+    expect(created.services).toEqual([alias]);
+    expect(created.serviceCapabilities?.[alias]?.supportedParameters).toContain('quality');
+    const response = await created.handleRequest(generation({ model: alias, prompt: 'cat', quality: 'high' }));
+    expect(response.statusCode).toBe(200);
+    const [, init] = fetchMock.mock.calls.find(([target]) => target === `https://fal.run/${MODEL}`)!;
+    expect(JSON.parse(String(init?.body))).toMatchObject({ prompt: 'cat', quality: 'high' });
+    expect(await created.checkServiceHealth!([alias])).toEqual({ [alias]: { status: 'available' } });
+    const lookup = fetchMock.mock.calls.map(([target]) => target).find(target => target.startsWith('https://api.fal.ai/v1/models?'))!;
+    expect(new URL(lookup).searchParams.getAll('endpoint_id').sort()).toEqual([MODEL, EDIT].sort());
   });
 
   it('downloads a fal image URL without the seller key, or returns it when asked', async () => {

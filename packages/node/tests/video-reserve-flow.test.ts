@@ -15,7 +15,8 @@ import { VerificationMux } from '../src/verification/verification-mux.js';
 import { BuyerRequestHandler } from '../src/buyer-request-handler.js';
 import { SellerRequestHandler } from '../src/seller-request-handler.js';
 import { ResourceOwnershipStore } from '../src/resources/resource-ownership-store.js';
-import { FrameDecoder } from '../src/p2p/message-protocol.js';
+import { connectionPair, wireFrames } from './helpers/framed-connection.js';
+import { fakeChannelChain, type ChainChannel } from './helpers/fake-channel-chain.js';
 import { ConnectionState } from '../src/types/connection.js';
 import { toPeerId, type PeerInfo } from '../src/types/peer.js';
 import type { Identity } from '../src/p2p/identity.js';
@@ -23,9 +24,7 @@ import type { PeerConnection } from '../src/p2p/connection-manager.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
 import type { NeedAuthPayload, SpendingAuthPayload } from '../src/types/protocol.js';
-import { computeChannelId } from '@antseed/protocol/signatures';
 
-interface ChainChannel { deposit: bigint; settled: bigint; status: number }
 
 /**
  * End-to-end one-off video channel flow over the real buyer and seller stacks.
@@ -56,59 +55,6 @@ function identity(): Identity {
     peerId: toPeerId(wallet.address.slice(2).toLowerCase()),
     privateKey: Buffer.from(wallet.privateKey.slice(2), 'hex'),
   };
-}
-
-type Listener = (...args: any[]) => void;
-
-/**
- * Two ends of an in-memory framed connection. Delivery is async like a real socket. With `coalesce`, all that
- * one end sends before the other end reads arrives as a single chunk, as on a byte-stream transport.
- */
-function connectionPair(coalesce = false): { buyerSide: PeerConnection; sellerSide: PeerConnection } {
-  const make = () => {
-    const listeners = new Map<string, Set<Listener>>();
-    const end: any = {
-      state: ConnectionState.Open,
-      remoteAddress: '203.0.113.9',
-      hasRemoteCapability: () => false,
-      on(event: string, listener: Listener) {
-        if (!listeners.has(event)) listeners.set(event, new Set());
-        listeners.get(event)!.add(listener);
-      },
-      off(event: string, listener: Listener) { listeners.get(event)?.delete(listener); },
-      emitMessage(data: Uint8Array) { for (const listener of listeners.get('message') ?? []) listener(data); },
-      send: (_data: Uint8Array) => {},
-      /** The connection reports a new state to its listeners, as a real one does when it closes. */
-      emitState(state: ConnectionState) { for (const listener of listeners.get('stateChange') ?? []) listener(state); },
-    };
-    return end;
-  };
-  const buyerSide = make();
-  const sellerSide = make();
-  const sendTo = (target: any) => {
-    let unread: Uint8Array[] = [];
-    return (data: Uint8Array) => {
-      const copy = data.slice();
-      if (!coalesce) return void setImmediate(() => target.emitMessage(copy));
-      if (unread.push(copy) === 1) setImmediate(() => { const chunk = Buffer.concat(unread); unread = []; target.emitMessage(chunk); });
-    };
-  };
-  buyerSide.send = sendTo(sellerSide);
-  sellerSide.send = sendTo(buyerSide);
-  return { buyerSide, sellerSide };
-}
-
-/** Route incoming frames the same way AntseedNode._wireConnection does. */
-function wireFrames(conn: PeerConnection, muxes: { proxy: { handleFrame(frame: any): Promise<unknown> }; payment: PaymentMux; verification: VerificationMux }): void {
-  const decoder = new FrameDecoder();
-  conn.on('message', (data: Uint8Array) => {
-    for (const frame of decoder.feed(data)) {
-      const target = PaymentMux.isPaymentMessage(frame.type)
-        ? muxes.payment
-        : VerificationMux.isVerificationMessage(frame.type) ? muxes.verification : muxes.proxy;
-      void target.handleFrame(frame).catch(() => {});
-    }
-  });
 }
 
 interface Harness {
@@ -204,53 +150,16 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     }, sellerStore);
 
     // Every on-chain channel, keyed by channelId, shared by both sides through the same ChannelsClient.
-    const chain = new Map<string, ChainChannel>();
-    const channelOf = (channelId: string): ChainChannel => {
-      const channel = chain.get(channelId);
-      if (!channel) throw new Error('execution reverted: ChannelNotFound');
-      return channel;
-    };
     let releaseTopUp: (() => void) | null = null;
     const topUpBehavior = options.topUpBehavior ?? 'land';
-    vi.spyOn(seller.channelsClient, 'getFirstSignCap').mockResolvedValue(FIRST_SIGN_CAP);
-    vi.spyOn(seller.channelsClient, 'getTopUpSettledThresholdBps').mockResolvedValue(8_500n);
-    const reserve = vi.spyOn(seller.channelsClient, 'reserve').mockImplementation(async (_signer, buyerAddr, salt, maxAmount) => {
-      if (maxAmount > FIRST_SIGN_CAP) throw new Error('execution reverted: FirstSignCapExceeded');
-      const channelId = computeChannelId(buyerAddr, sellerIdentity.wallet.address, salt);
-      if (chain.has(channelId)) throw new Error('execution reverted: ChannelExists');
-      chain.set(channelId, { deposit: maxAmount, settled: 0n, status: 1 });
-      return '0xreserve';
-    }) as unknown as ReturnType<typeof vi.fn>;
-    const topUp = vi.spyOn(seller.channelsClient, 'topUp').mockImplementation(async (_signer, channelId, cumulative, _meta, _sig, newMax) => {
-      if (topUpBehavior === 'revert') throw new Error('execution reverted: InsufficientBalance');
-      if (topUpBehavior === 'slow') await new Promise<void>((resolve) => { releaseTopUp = resolve; });
-      const channel = channelOf(channelId);
-      if (cumulative > channel.deposit) throw new Error('execution reverted: InvalidAmount');
-      if (cumulative > channel.settled) channel.settled = cumulative;
-      if (channel.settled * 10_000n < channel.deposit * 8_500n) throw new Error('execution reverted: TopUpThresholdNotMet');
-      channel.deposit = newMax;
-      return '0xtopup';
-    }) as unknown as ReturnType<typeof vi.fn>;
-    const close = vi.spyOn(seller.channelsClient, 'close').mockImplementation(async (_signer, channelId, finalAmount) => {
-      const channel = channelOf(channelId);
-      if (channel.status !== 1) throw new Error('execution reverted: ChannelNotActive');
-      if (finalAmount < channel.settled) throw new Error('execution reverted: FinalAmountBelowSettled');
-      if (finalAmount > channel.deposit) throw new Error('execution reverted: InvalidAmount');
-      channel.settled = finalAmount;
-      channel.status = 2;
-      return '0xclose';
-    }) as unknown as ReturnType<typeof vi.fn>;
-    vi.spyOn(seller.channelsClient, 'settle').mockImplementation(async (_signer, channelId, amount) => {
-      channelOf(channelId).settled = amount;
-      return '0xsettle';
-    });
-    vi.spyOn(seller.channelsClient, 'getSession').mockImplementation(async (channelId) => {
-      const channel = chain.get(channelId) ?? { deposit: 0n, settled: 0n, status: 0 };
-      return {
-        buyer: buyerIdentity.wallet.address, seller: sellerIdentity.wallet.address,
-        deposit: channel.deposit, settled: channel.settled, metadataHash: '0x' + '00'.repeat(32),
-        deadline: 0n, settledAt: 0n, closeRequestedAt: 0n, status: channel.status,
-      };
+    const { chain, reserve, topUp, close } = fakeChannelChain(seller.channelsClient, {
+      buyerAddress: buyerIdentity.wallet.address,
+      sellerAddress: sellerIdentity.wallet.address,
+      firstSignCap: FIRST_SIGN_CAP,
+      beforeTopUp: async () => {
+        if (topUpBehavior === 'revert') throw new Error('execution reverted: InsufficientBalance');
+        if (topUpBehavior === 'slow') await new Promise<void>((resolve) => { releaseTopUp = resolve; });
+      },
     });
 
     const providerCreates: SerializedHttpRequest[] = [];
@@ -1093,6 +1002,8 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
   }
 
   const statusesOf = (answers: Array<{ statusCode: number }>) => answers.map((answer) => answer.statusCode);
+  const errorOf = (answer: { body: Uint8Array }) => JSON.parse(Buffer.from(answer.body).toString()).error as { code: string; message: string; jobs: Array<{ id: string; protocol: string }> };
+  const jobIdsOf = (answer: { body: Uint8Array }) => errorOf(answer).jobs.map((job) => job.id);
   const repeat = <T,>(value: T, count: number): T[] => Array.from({ length: count }, () => value);
   const advanceClock = (ms: number) => vi.setSystemTime(Date.now() + ms);
 
@@ -1163,7 +1074,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.close.mock.calls.map((call) => call[2])).toEqual(repeat(800_000n, UNPAID_LIMIT));
   }, 30_000);
 
-  it('asks the rest of a batch above the limit to retry shortly, and serves it then', async () => {
+  it('asks the rest of a batch above the limit to retry shortly, and serves it once the buyer collects as many', async () => {
     const h = setup({ videoPricing: 'cheap' });
 
     const answers = await Promise.all(Array.from({ length: UNPAID_LIMIT + 4 }, (_, index) => h.send(h.videoRequest(`batch-${index}`))));
@@ -1172,6 +1083,14 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     const heldBack = answers.flatMap((answer, index) => (answer.statusCode === 429 ? [{ answer, index }] : []));
     expect(heldBack).toHaveLength(4);
     for (const { answer } of heldBack) expect(answer.headers['retry-after']).toBe('5');
+
+    // The accepted batch is still uncollected: the retries wait for it.
+    const tooEarly = await Promise.all(heldBack.map(({ index }) => h.send(h.videoRequest(`batch-${index}`))));
+    expect(statusesOf(tooEarly)).toEqual(repeat(409, 4));
+    for (const answer of tooEarly) expect(errorOf(answer).code).toBe('video_jobs_open_limit');
+
+    for (let job = 1; job <= 4; job += 1) expect((await h.send(h.retrieveRequest(`retrieve-${job}`, `job-${job}`))).statusCode).toBe(200);
+    await h.settle();
 
     const retried = await Promise.all(heldBack.map(({ index }) => h.send(h.videoRequest(`batch-${index}`))));
     expect(statusesOf(retried)).toEqual(repeat(200, 4));
@@ -1196,13 +1115,54 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(statusesOf(await sendVideos(h, UNPAID_LIMIT - 1, 'after'))).toEqual(repeat(400, UNPAID_LIMIT - 1));
   }, 30_000);
 
-  it('never holds back a buyer for jobs still running, however many', async () => {
+  it('holds back a buyer with as many uncollected jobs as the limit, until it collects one', async () => {
     const h = setup({ videoPricing: 'cheap' });
 
-    expect(statusesOf(await sendVideos(h, UNPAID_LIMIT + 4, 'running'))).toEqual(repeat(200, UNPAID_LIMIT + 4));
-
-    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT + 4);
+    const answers = await sendVideos(h, UNPAID_LIMIT + 2, 'running');
+    expect(statusesOf(answers)).toEqual([...repeat(200, UNPAID_LIMIT), 409, 409]);
+    expect(answers.at(-1)!.headers['retry-after']).toBe('5');
+    expect(errorOf(answers.at(-1)!)).toMatchObject({
+      code: 'video_jobs_open_limit',
+      message: `You have ${UNPAID_LIMIT} videos on this seller that are not downloaded yet. Download one before starting another here. Their job IDs are in error.jobs.`,
+    });
+    expect(jobIdsOf(answers.at(-1)!)).toEqual(Array.from({ length: UNPAID_LIMIT }, (_, index) => `job-${index + 1}`));
+    expect(h.reserve).toHaveBeenCalledTimes(UNPAID_LIMIT);
     expect(h.close).not.toHaveBeenCalled();
+
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
+    await h.settle();
+    expect(h.close.mock.calls.map((call) => call[2])).toEqual([800_000n]);
+
+    expect((await h.send(h.videoRequest('after-collecting'))).statusCode).toBe(200);
+    expect((await h.send(h.videoRequest('limit-again'))).statusCode).toBe(409);
+  }, 30_000);
+
+  it('does not hold back a buyer for one job left uncollected for over an hour', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const h = setup({ videoPricing: 'cheap' });
+    expect((await h.send(h.videoRequest('first'))).statusCode).toBe(200);
+    await h.settle();
+
+    // A job stuck upstream stays uncollected however often the buyer polls; it counts toward the limit only.
+    advanceClock(2 * 60 * 60_000);
+    expect((await h.send(h.videoRequest('after-an-old-job'))).statusCode).toBe(200);
+    expect(h.reserve).toHaveBeenCalledTimes(2);
+  }, 30_000);
+
+  it('holds back a buyer that took a video without signing for it', async () => {
+    const h = setup({ videoPricing: 'cheap' });
+    vi.spyOn(h.buyer, 'handleNeedAuth').mockResolvedValue(undefined);
+    expect((await h.send(h.videoRequest('first'))).statusCode).toBe(200);
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
+    await h.settle();
+    expect(h.close).not.toHaveBeenCalled();
+
+    const heldBack = await h.send(h.videoRequest('unpaid'));
+    expect(heldBack.statusCode).toBe(409);
+    expect(errorOf(heldBack).code).toBe('video_payment_pending');
+    expect(jobIdsOf(heldBack)).toEqual(['job-1']);
+    expect(heldBack.headers['retry-after']).toBe('5');
+    expect(h.reserve).toHaveBeenCalledTimes(1);
   }, 30_000);
 
   it('counts a video that was accepted and then failed: the buyer paid nothing for it', async () => {

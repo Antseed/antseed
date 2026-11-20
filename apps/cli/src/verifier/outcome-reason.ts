@@ -81,3 +81,22 @@ export function sanitizeOutcomeSummary(value: string): string {
     .trim()
     .slice(0, 500)
 }
+
+/**
+ * A close call whose first audit was made on a question set a submit has since published: its extra
+ * questions are public and never asked. A confirmation is audited again from the start; anything else,
+ * and a confirmation whose attempts are used up, is submitted UNDETERMINED with this reason.
+ */
+export const EXTRA_QUESTIONS_PUBLISHED: VerificationOutcomeReasonV1 = {
+  code: 'audit_failed',
+  summary: 'close call left undecided: its extra questions were published before they could be asked',
+  retryable: false,
+  source: 'verifier',
+  affectedBatchCount: 0,
+  totalBatchCount: 0,
+  nextAction: 'inspect verifier evidence',
+}
+
+export function isExtraQuestionsPublished(reason: Pick<VerificationOutcomeReasonV1, 'code' | 'summary'> | null | undefined): boolean {
+  return reason?.code === EXTRA_QUESTIONS_PUBLISHED.code && reason.summary === EXTRA_QUESTIONS_PUBLISHED.summary
+}

@@ -1,0 +1,22 @@
+.rail { padding: 120px 0 124px; }
+.sub { text-wrap: balance; }
+/* the grey half its own balanced line; on a phone it follows the ink half when both fit, kept whole */
+.second { display: block; text-wrap: balance; }
+@media (min-width: 761px) and (max-width: 1199px) {
+  .head .title { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
+}
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; margin-top: 64px; padding: 0 24px; }
+
+/* stacked below 900, where side by side the windows would be cut */
+@media (max-width: 899px) {
+  .cards { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .second { display: inline-block; }
+  .rail { padding: 72px 0 64px; }
+  .cards { margin-top: 40px; padding: 0 var(--site-pad); }
+}
+@media (min-width: 1200px) {
+  .rail { padding-block: 124px; }
+  .cards { margin-top: 40px; }
+}

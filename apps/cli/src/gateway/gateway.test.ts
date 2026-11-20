@@ -15,13 +15,14 @@ import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
 import { GatewayStore } from './store.js'
 import { liveBuyerIdentityAddress } from './runtime.js'
-import { Wallet } from 'ethers'
+import { Wallet, recoverAddress } from 'ethers'
 import { randomBytes } from 'node:crypto'
 import { tempDataDir } from './console-api/test-support.js'
 import {
   X402Facilitator,
   decodeHeaderJson,
   encodeHeaderJson,
+  type ContractSignatureCheck,
   type PaymentPayload,
   type PaymentRequired,
   type SettlementResponse,
@@ -810,6 +811,13 @@ async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0, priceHeade
       if (req.url?.endsWith('/queue')) {
         const cap = (req.headers['x-antseed-max-video-usdc'] as string | undefined) ?? null
         caps.push(cap)
+        // A seller holding the buyer back lists the buyer's jobs that hold it, whichever key started them.
+        if (body.job?.startsWith('hold:')) {
+          const jobs = body.job.slice('hold:'.length).split(',').map((id) => ({ id, protocol: 'venice-video' }))
+          res.writeHead(409, { ...headers, 'content-type': 'application/json', 'retry-after': '60' })
+          res.end(JSON.stringify({ error: { code: 'video_jobs_uncollected', message: 'A video you started on this seller over an hour ago has not been downloaded. Its job ID is in error.jobs.', jobs } }))
+          return
+        }
         if (cap !== null && priceUsdc > Number(cap)) {
           res.writeHead(422, { ...headers, 'content-type': 'application/json' })
           res.end(JSON.stringify({ error: { code: 'buyer-budget-too-low', message: 'Video costs more than the spend limit has left' } }))
@@ -858,7 +866,7 @@ async function videoGateway(priceUsdc: number, dailyCap: number, createDelayMs =
   const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
   return {
     store, key, buyer, gateway,
-    create: (job: string) => request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: JSON.stringify({ model: 'seedance', prompt: 'An ant', duration: '8s', job }) }),
+    create: (job: string, as: string = secret) => request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: as, body: JSON.stringify({ model: 'seedance', prompt: 'An ant', duration: '8s', job }) }),
     poll: (job: string, as: string = secret) => request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: as, body: JSON.stringify({ model: 'seedance', queue_id: job }) }),
     secret,
     otherSecret: other.secret,
@@ -976,6 +984,33 @@ test('only the key that created a video job may retrieve it', async () => {
     assert.equal(JSON.parse(stolen.body).error.code, 'video_route_not_found')
     assert.equal((await video.poll('job-unknown')).status, 404, 'a job this gateway never created is refused too')
     assert.equal((await video.poll('job-done')).status, 200)
+  } finally {
+    await video.close()
+  }
+})
+
+test("a seller's video job hold shows each key only the jobs it created", async () => {
+  const video = await videoGateway(400_000, 1_000_000)
+  try {
+    assert.equal((await video.create('job-mine')).status, 200)
+    assert.equal((await video.create('job-theirs', video.otherSecret)).status, 200)
+
+    const mine = await video.create('hold:job-mine,job-theirs')
+    assert.equal(mine.status, 409)
+    assert.equal(mine.headers['retry-after'], '60')
+    assert.deepEqual(JSON.parse(mine.body).error, {
+      code: 'video_jobs_uncollected',
+      message: 'A video you started on this seller over an hour ago has not been downloaded. Its job ID is in error.jobs.',
+      jobs: [{ id: 'job-mine', protocol: 'venice-video' }],
+    })
+
+    // Held back only by another key's job: told so, with no job of anyone's.
+    const theirs = await video.create('hold:job-mine,job-unknown', video.otherSecret)
+    assert.equal(theirs.status, 409)
+    const error = JSON.parse(theirs.body).error
+    assert.equal(error.code, 'video_jobs_held')
+    assert.deepEqual(error.jobs, [])
+    assert.ok(!theirs.body.includes('job-mine') && !theirs.body.includes('job-unknown'))
   } finally {
     await video.close()
   }
@@ -1147,6 +1182,7 @@ test('gateway settles reported spend per key and answers 402 once a cap is reach
     assert.equal(data.limits.daily.limit_usd, '1.000000')
     assert.equal(data.limits.daily.remaining_usd, '0.000000')
     assert.equal(data.limits.total.limit_usd, null)
+    assert.deepEqual(data.held, { held_usd: '0.000000', requests_usd: '0.000000', video_usd: '0.000000' }, 'nothing in flight, no video')
 
     const stats = store.usageStats(limited.key.id)
     assert.equal(stats.failedRequests, 0)
@@ -1379,10 +1415,98 @@ test('an accepted video whose commitment could not be stored still counts after 
     const restarted = new GatewayAccounting(store, { holdUsdc: 100_000 })
     const job = videoJobKey('venice-video', 'job-1')
     assert.equal(restarted.videoJobOwner(job), key.id, 'its key can still retrieve it')
-    assert.equal(restarted.heldUsdc(key.id), 1_000_000, 'and it still holds the whole room its create was told about')
+    assert.equal(restarted.heldUsdc(key.id), 400_000, 'and it holds the price the buyer reported, not the whole room its create was told about')
     assert.deepEqual(store.listVideoCommitments(Date.now()).map((row) => row.job), [job], 'the reservation became the job')
-    assert.equal(restarted.admit(key).ok, false, 'so other spend cannot take that room')
+    const next = restarted.admit(key)
+    assert.ok(next.ok, 'so the rest of the key\'s room stays usable')
+    restarted.release(next.tag)
+    store.startRequest({ tag: 'late', keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: null, startedAt: 0 })
+    restarted.ingest('boot', [{ seq: 1, tag: 'late', requestId: 'r', buyerIdentity: DEFAULT_BUYER_IDENTITY, sellerPeerId: 's', amountUsdc: '600000', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0', at: Date.now() }])
+    assert.equal(restarted.admit(key).ok, false, 'while other spend still cannot take the job\'s price')
     restarted.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('a recovered video whose price the buyer did not report still holds the whole room its create was told about', async () => {
+  const { store, cleanup } = tempDataDir()
+  // A price the gateway cannot read: the job may cost up to the room, so all of it stays held.
+  const buyer = await pricedVideoBuyer(400_000, 0, 'lots')
+  const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+  const save = store.saveVideoCommitment.bind(store)
+  let failWrites = true
+  store.saveVideoCommitment = (record, replaces) => { if (failWrites && !record.job.startsWith('create\n')) throw new Error('database is locked'); save(record, replaces) }
+  const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
+  try {
+    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: '{"model":"seedance","prompt":"An ant","duration":"8s","job":"job-1"}' })).status, 200)
+    await waitFor(() => gateway.accounting.heldUsdc(key.id) === 1_000_000)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+  }
+  try {
+    failWrites = false
+    const restarted = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    assert.equal(restarted.heldUsdc(key.id), 1_000_000)
+    assert.equal(restarted.admit(key).ok, false)
+    restarted.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('requests a stopped gateway left unfinished never hold spend, and a restart marks them ended', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Chat', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 5_000_000, monthly: null, total: null }, expiresAt: null })
+    const before = new GatewayAccounting(store, { holdUsdc: 300_000 })
+    // Nine requests in flight when the gateway is stopped.
+    for (let i = 0; i < 9; i += 1) {
+      const admission = before.admit(key)
+      assert.ok(admission.ok)
+      store.startRequest({ tag: admission.tag, keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: 'm', startedAt: Date.now() - 1_000 })
+    }
+    assert.equal(before.heldUsdc(key.id), 2_700_000)
+    before.dispose()
+
+    // Their holds lived in the stopped process: the next one starts with none, before or after the cleanup.
+    const after = new GatewayAccounting(store, { holdUsdc: 300_000 })
+    assert.equal(after.heldUsdc(key.id), 0)
+    const unfinished = () => (store.database.prepare('SELECT COUNT(*) AS n FROM gateway_requests WHERE key_id = ? AND finished_at IS NULL').get(key.id) as { n: number }).n
+    assert.equal(unfinished(), 9)
+    const restartedAt = Date.now()
+    store.startRequest({ tag: 'new', keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: 'm', startedAt: restartedAt })
+    assert.equal(store.finishAbandonedRequests(restartedAt), 9, 'only the previous run\'s requests')
+    assert.equal(unfinished(), 1, 'this run\'s request is still in flight')
+    const ended = store.database.prepare("SELECT DISTINCT status, error_code FROM gateway_requests WHERE tag != 'new'").all()
+    assert.deepEqual(ended, [{ status: 499, error_code: 'gateway_restarted' }])
+    assert.equal(after.heldUsdc(key.id), 0)
+    after.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('a 402 says how much of the hold is requests in flight and how much is video jobs', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 900_000, monthly: null, total: null }, expiresAt: null })
+    const accounting = new GatewayAccounting(store, { holdUsdc: 300_000 })
+    const create = accounting.admit(key, undefined, { videoCreate: true })
+    assert.ok(create.ok)
+    accounting.commitVideo(create.tag, videoJobKey('venice-video', 'job-1'), 600_000)
+    accounting.release(create.tag)
+    const running = accounting.admit(key)
+    assert.ok(running.ok)
+    const refused = accounting.admit(key)
+    assert.equal(refused.ok, false)
+    assert.ok(!refused.ok && refused.breach)
+    assert.equal(refused.breach.heldUsdc, 900_000)
+    assert.equal(refused.breach.heldRequestsUsdc, 300_000)
+    assert.equal(refused.breach.heldVideoUsdc, 600_000)
+    assert.deepEqual(accounting.heldBreakdown(key.id), { requestsUsdc: 300_000, videoUsdc: 600_000 })
+    accounting.dispose()
   } finally {
     cleanup()
   }
@@ -1910,6 +2034,81 @@ test('x402 top-up rejects payments that do not match before asking the facilitat
 
     assert.equal((await topup({}, '{"amount_usd":"0.5"}')).status, 400)
     assert.equal(store.usageStats(team.key.id).creditedUsdc, 0)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    await facilitator.close()
+    cleanup()
+  }
+})
+
+test('x402 top-up accepts a smart-account payer whose contract approves the signature (ERC-1271)', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const facilitator = await fakeFacilitator()
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null, topupEnabled: true })
+  // A smart account approves digests its owner key signed, behind a one-byte
+  // validator prefix: 66 bytes, as EIP-7702 accounts sign. ECDSA recovery of
+  // such a signature never yields the account's address.
+  const owner = Wallet.createRandom()
+  const account = Wallet.createRandom().address
+  const checked: string[] = []
+  let chainDown = false
+  const checkContractSignature: ContractSignatureCheck = async (address, digest, signature) => {
+    checked.push(address)
+    if (chainDown) throw new Error('every RPC endpoint is backing off')
+    return address.toLowerCase() === account.toLowerCase()
+      && signature.startsWith('0x00') && signature.length === 2 + 66 * 2
+      && recoverAddress(digest, `0x${signature.slice(4)}`) === owner.address
+  }
+  const smartAccount = {
+    address: account,
+    signTypedData: async (...args: Parameters<Wallet['signTypedData']>) => `0x00${(await owner.signTypedData(...args)).slice(2)}`,
+  }
+  const gateway = await startGateway(store, buyer.port, 300_000, { ...facilitator.topup(), checkContractSignature })
+  const topup = (headers: http.OutgoingHttpHeaders = {}) =>
+    request(gateway.port, '/v1/key/topup', { method: 'POST', key: team.secret, body: '{"amount_usd":"5"}', headers })
+  const reasonFor = async (signature: string) =>
+    decodeHeaderJson<PaymentRequired>((await topup({ 'payment-signature': signature })).headers['payment-required'] as string)!.error
+  try {
+    const required = decodeHeaderJson<PaymentRequired>((await topup()).headers['payment-required'] as string)!
+
+    const paid = await topup({ 'payment-signature': await signPayment(smartAccount, required) })
+    const refusal = paid.headers['payment-required'] && decodeHeaderJson<PaymentRequired>(paid.headers['payment-required'] as string)!.error
+    assert.equal(paid.status, 200, `refused: ${refusal}`)
+    assert.equal(decodeHeaderJson<SettlementResponse>(paid.headers['payment-response'] as string)!.payer, account)
+    assert.deepEqual(checked, [account])
+    assert.deepEqual(facilitator.calls, ['/verify', '/settle'])
+    assert.equal(store.usageStats(team.key.id).creditedUsdc, 5_000_000)
+
+    // The same signature naming another payer: that address does not approve it.
+    const forged = decodeHeaderJson<PaymentPayload>(await signPayment(smartAccount, required))!
+    forged.payload.authorization.from = Wallet.createRandom().address
+    assert.equal(await reasonFor(encodeHeaderJson(forged)), 'invalid_exact_evm_payload_signature')
+
+    // A signature that is not hex is refused without asking the chain.
+    const garbled = decodeHeaderJson<PaymentPayload>(await signPayment(smartAccount, required))!
+    garbled.payload.signature = 'not-a-signature'
+    checked.length = 0
+    assert.equal(await reasonFor(encodeHeaderJson(garbled)), 'invalid_exact_evm_payload_signature')
+    assert.deepEqual(checked, [])
+
+    // Hex of odd length is not bytes either, so the ERC-1271 call could not encode it.
+    garbled.payload.signature = '0xabc'
+    assert.equal(await reasonFor(encodeHeaderJson(garbled)), 'invalid_exact_evm_payload_signature')
+    assert.deepEqual(checked, [])
+
+    // The chain cannot be read: refused before the facilitator, not called a bad signature.
+    chainDown = true
+    assert.equal(await reasonFor(await signPayment(smartAccount, required)), 'unexpected_verify_error')
+    assert.ok(gateway.logs.some((line) => line.includes('smart-account signature check failed')))
+    assert.deepEqual(facilitator.calls, ['/verify', '/settle'])
+
+    // An ECDSA signature by the payer itself is accepted without asking the chain.
+    checked.length = 0
+    assert.equal((await topup({ 'payment-signature': await signPayment(Wallet.createRandom(), required) })).status, 200)
+    assert.deepEqual(checked, [])
+    assert.equal(store.usageStats(team.key.id).creditedUsdc, 10_000_000)
   } finally {
     await gateway.stop()
     await buyer.close()

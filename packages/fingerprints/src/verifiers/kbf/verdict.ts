@@ -156,11 +156,16 @@ export function computeKbfVerdict(input: KbfVerdictInput): KbfVerdictResult {
  * (clear DIFF below `clearDiffAlpha`, SAME at `greyUpper` or above, else one more set); the last
  * allowed look is decided at `pooledAlpha`.
  *
- * - `kbf-extension-v1`: at most one extra set (two looks). Worst-case false-DIFF of both looks
- *   together about 4.0% (exact binomial search over n = 100..300, p0 = 0.02..0.36).
- * - `kbf-extension-v2`: at most two extra sets (three looks). Worst-case false-DIFF of all looks
- *   together about 3.3% over the same grid, under the single-look 5%, and a cheater in the grey zone
- *   is caught more often.
+ * - `kbf-extension-v1`: at most one extra set (two looks). With the limit p0 held fixed across
+ *   looks and a true mismatch rate exactly at it, the false-DIFF of both looks together is at
+ *   most about 4.0% (exact binomial, n = 100..300, p0 = 0.02..0.36).
+ * - `kbf-extension-v2`: at most two extra sets (three looks). Same assumptions: at most about
+ *   3.4%, under the single-look 5%, and a cheater in the grey zone is caught more often.
+ *
+ * Pooled looks re-estimate p0 from the pooled self-test, which tightens it, so these figures do
+ * not bound a target that sits at the first look's limit: it is called DIFF about 7-11% of the
+ * time with 3 or 5 self-test runs. A target at the reference's own self-test rate is called
+ * DIFF in under 0.2% of audits.
  */
 export interface KbfExtensionRule {
   readonly id: 'kbf-extension-v1' | 'kbf-extension-v2';

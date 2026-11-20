@@ -50,7 +50,7 @@ antseed gateway service install
 ## Connect tools and agents
 
 - [Local buyer proxy](https://antseed.com/docs/api/): Call Antseed on `localhost:8377` without a gateway, keys or budgets.
-- [Routing and catalog](https://antseed.com/docs/api/routing/): How automatic routing picks a seller, and how to read models and prices from `/v1/models`, `network browse` and `/stats`.
+- [Routing and catalog](https://antseed.com/docs/api/routing/): How automatic routing picks a seller, and how to read models and prices from `/v1/models`, `network browse` and Antscan's marketplace endpoint.
 - [Connect agents](https://antseed.com/docs/agents/): Connect Hermes, OpenClaw and other agents through a gateway key, a tunnel or the local proxy.
 - [Tunnels](https://antseed.com/docs/tunnels/): Publish a desktop app or CLI buyer at a public HTTPS endpoint.
 - [Buyer configuration](https://antseed.com/docs/buyer-config/): The buyer config file, routing preferences, data directories and the Base RPC URL.
@@ -86,13 +86,13 @@ Three sources. Say which one you used when you tell a user a price.
 curl -s http://localhost:8377/v1/models | jq --arg m deepseek-v4-flash '.data[] | select(.id == $m) | .peers[] | {peerId, displayName, inputUsdPerMillion, outputUsdPerMillion}'
 ```
 
-2. Cached snapshot, no install or auth: https://network.antseed.com/stats (JSON, from the indexer, a few minutes old; the data behind https://antseed.com/network/). Top-level keys: `peers`, `updatedAt`, `totals`, `indexer`. Provider announcements are at `.peers[].providers[]`, each with `provider`, `services`, `defaultPricing`, `servicePricing[serviceId]` (`inputUsdPerMillion`, `outputUsdPerMillion`, `cachedInputUsdPerMillion`). A service's price is `servicePricing[id] // defaultPricing`, in USD per million tokens. Some peers have an empty `providers` list, so don't read only `.peers[0]`.
+2. Cached snapshot, no install or auth: https://antscan.co/api/marketplace?limit=5000 (JSON from Antscan, the Antseed explorer, a few minutes old; the data behind https://antseed.com/network/). `limit` caps the list (250 by default, 5000 at most). Top-level keys: `offerings`, `sellers`, `providers`, `popularServices`, `totals`, `collector`. Each entry in `.offerings[]` is one service from one seller, with `peerId`, `sellerName`, `provider`, `service`, `inputUsdPerMillion`, `outputUsdPerMillion`, `cachedInputUsdPerMillion` (prices already resolved, USD per million tokens) and `unitPrices` for image and video services.
 
 ```bash
-curl -s https://network.antseed.com/stats | jq --arg m deepseek-v4-flash '[.peers[] | .peerId as $id | .providers[] | select(.services | index($m)) | {peerId: $id, price: (.servicePricing[$m] // .defaultPricing)}] | sort_by(.price.inputUsdPerMillion) | .[:5]'
+curl -s 'https://antscan.co/api/marketplace?limit=5000' | jq --arg m deepseek-v4-flash '[.offerings[] | select(.service == $m) | {peerId, inputUsdPerMillion, outputUsdPerMillion}] | sort_by(.inputUsdPerMillion) | .[:5]'
 ```
 
-3. Live: `antseed network browse --json` (asks peers directly, which takes about a minute, or reads a running buyer's peer list). The shape is different from `/stats`: top-level `source`, `sort`, `filters`, `total`, `peers`, and only the top 20 peers unless you pass `--top <n>`. `.peers[].providers` is a list of provider names, not announcements. Prices are in `.peers[].providerPricing[provider]`: `defaults`, and `services[serviceId]` with the price already resolved. Some peers have no `providerPricing`.
+3. Live: `antseed network browse --json` (asks peers directly, which takes about a minute, or reads a running buyer's peer list). The shape is different from Antscan's: top-level `source`, `sort`, `filters`, `total`, `peers`, and only the top 20 peers unless you pass `--top <n>`. `.peers[].providers` is a list of provider names, not announcements. Prices are in `.peers[].providerPricing[provider]`: `defaults`, and `services[serviceId]` with the price already resolved. Some peers have no `providerPricing`.
 
 ```bash
 antseed network browse --json --top 200 | jq --arg m deepseek-v4-flash '[.peers[] | .peerId as $id | (.providerPricing // {}) | to_entries[] | select(.value.services[$m]) | {peerId: $id, provider: .key, price: .value.services[$m]}] | sort_by(.price.inputUsdPerMillion) | .[:5]'
@@ -138,7 +138,6 @@ Antseed is for value-added services (TEEs, agents, fine-tunes, managed products)
 
 ## Optional
 
-- [Light paper](https://antseed.com/docs/lightpaper/): Why Antseed exists and how the market works.
 - [Blog](https://antseed.com/blog/): Technical articles.
 - [Network status](https://antseed.com/network/): Live view of peers and models.
 - [GitHub](https://github.com/Antseed/antseed): Source code, skills and the changelog.
