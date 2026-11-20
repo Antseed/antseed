@@ -49,6 +49,8 @@ export interface SameCheckConfirmationV1 {
   sameCheck: AuditCheckId | null
   /** For a SAME: a check that flagged there and passed here. */
   passedCheck?: AuditCheckId
+  /** For a SAME: checks that flagged there and here scored between their bars, which clears like a pass. */
+  clearedBetween?: AuditCheckId[]
 }
 
 /** A confirmation needs material made at least this long after the first report (design note, "an hour later"). */
@@ -83,6 +85,8 @@ export type SameCheckExcludeCode =
 export type SameCheckCandidate = SubmissionCandidate & {
   flaggedBy: readonly AuditCheckId[]
   passedBy: readonly AuditCheckId[]
+  /** Checks scored between their bars where such a score clears like a pass (`betweenChecks`); none when absent. */
+  betweenBy?: readonly AuditCheckId[]
   /** The report the audit's evidence says it confirms (`ProxyAuditEvidenceV1.confirming`); absent on a first look. */
   confirming?: { checks: readonly AuditCheckId[]; reportedAt?: number }
 }
@@ -151,6 +155,9 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
   const answering = (checks: readonly AuditCheckId[]) => (confirmsFlips ? [...checks] : checks.filter((check) => check !== 'flips'))
   const answeringOwn = answering(ownChecks)
   const answeringPassed = answering(candidate.passedBy)
+  // A score between the bars clears like a pass: only a confirmation of FLIPS has one (`betweenChecks`).
+  const answeringBetween = answering(candidate.betweenBy ?? [])
+  const clearing = [...answeringPassed, ...answeringBetween]
   // A confirmation answers the report it was made for: the tests it repeats and the report's time are the live ones,
   // as the run read them (every first flag's tests, the latest report's time). Material made for another report is
   // never credited to this one.
@@ -175,7 +182,7 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
           : `${describeChecks(first.checks)}, which flagged the waiting DIFF, did not decide in this audit; nothing is sent, so the seller keeps its record`,
       }
     }
-    const record = (sameCheck: AuditCheckId | null, passedCheck?: AuditCheckId): SameCheckConfirmationV1 => ({
+    const record = (sameCheck: AuditCheckId | null, passedCheck?: AuditCheckId, clearedBetween?: AuditCheckId[]): SameCheckConfirmationV1 => ({
       auditor: first.auditor,
       evidenceUri: first.evidenceUri,
       evidenceHash: first.evidenceHash,
@@ -184,6 +191,7 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
       ownChecks,
       sameCheck,
       ...(passedCheck ? { passedCheck } : {}),
+      ...(clearedBetween && clearedBetween.length > 0 ? { clearedBetween } : {}),
     })
     if (!isFreshConfirmation(candidate.auditedAt, first.reportedAt)) {
       return {
@@ -219,9 +227,10 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
       }
     }
     // A SAME clears the waiting DIFF only when every check that flagged it passed here: one left open clears nothing.
-    const passedCheck = AUDIT_CHECK_IDS.find((check) => first.checks.includes(check) && answeringPassed.includes(check))
-    const open = first.checks.filter((check) => !answeringPassed.includes(check))
-    if (candidate.verdict === VERIFIER_VERDICT.SAME && passedCheck && open.length === 0) return { kind: 'send', confirmation: record(null, passedCheck) }
+    const passedCheck = AUDIT_CHECK_IDS.find((check) => first.checks.includes(check) && clearing.includes(check))
+    const open = first.checks.filter((check) => !clearing.includes(check))
+    const between = first.checks.filter((check) => answeringBetween.includes(check))
+    if (candidate.verdict === VERIFIER_VERDICT.SAME && passedCheck && open.length === 0) return { kind: 'send', confirmation: record(null, passedCheck, between) }
     return {
       kind: 'exclude',
       code: 'repeated-test-open',

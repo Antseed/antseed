@@ -423,10 +423,12 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       // One judged record through each branch of the judge: placeholders cut at the limit, replies without a sequence on
       // either side, repeated replies, and an over-long reference reply left out.
       // A waiting FLIPS flag is answered only by a confirmation of FLIPS: a first look's FLIPS flag or pass answers nothing.
-      stageBound: [true, false].flatMap((confirms) => (['flag', 'pass'] as const).map((outcome) => {
+      // A score between the bars clears like a pass, only on a confirmation of FLIPS (`confirmBetweenClears`).
+      stageBound: [true, false].flatMap((confirms) => (['flag', 'pass', 'between'] as const).map((outcome) => {
         const decision = decide({
           agentId: 1n, serviceHash: '0x00', verdict: verifierVerdict(outcome === 'flag' ? 'DIFF' : 'SAME'), auditedAt: 10_000,
           flaggedBy: outcome === 'flag' ? ['flips'] : [], passedBy: outcome === 'pass' ? ['flips', 'kbf'] : ['kbf'],
+          ...(outcome === 'between' ? { betweenBy: ['flips'] } : {}),
           ...(confirms ? { confirming: { checks: ['flips'], reportedAt: 1 } } : {}),
         }, [{ auditor: '0x00', evidenceUri: 'ipfs://x', evidenceHash: '0x00', reportedAt: 1, checks: ['flips'] }])
         return [confirms, outcome, decision.kind, decision.kind === 'exclude' ? decision.code : null]

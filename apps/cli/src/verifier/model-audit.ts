@@ -42,7 +42,7 @@ import {
 import { auditDecision, closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
-import { AUDIT_CHECK_IDS, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
+import { AUDIT_CHECK_IDS, betweenChecks, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
 import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
 import type { AlreadyOnChain, SubmissionCandidate } from './submission-delta.js'
@@ -95,6 +95,8 @@ export interface ModelAuditSellerResultV1 {
   flaggedBy?: AuditCheckId[]
   /** The checks that ran to a pass in this audit (`passedChecks`). */
   passedBy?: AuditCheckId[]
+  /** The checks scored between their bars where such a score clears like a pass (`betweenChecks`). */
+  betweenBy?: AuditCheckId[]
   /**
    * Unix seconds of the earliest request the audit behind this result rests on, on the auditor's own clock, over its first
    * set and extra sets (`earliestAuditorTime`); 0 when none has a time. A confirmation is fresh only from this time on.
@@ -589,6 +591,7 @@ export async function prepareModelAudits(input: {
         ...candidate,
         flaggedBy: flaggingChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
         passedBy: passedChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
+        betweenBy: betweenChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
         // Freshness is the earliest request used, on the auditor's clock, over the first set and its extra sets (0: none).
         auditedAt: earliestAuditorTime([accepted[index]!.evidence, accepted[index]!.extensionEvidence, accepted[index]!.extension2Evidence]) ?? 0,
         ...(accepted[index]!.evidence.confirming ? { confirming: accepted[index]!.evidence.confirming } : {}),
@@ -797,6 +800,7 @@ export async function prepareModelAudits(input: {
           : {}),
         flaggedBy: flaggingChecks(evidence, questionsVerdictOf(result)),
         passedBy: passedChecks(evidence, questionsVerdictOf(result)),
+        ...(betweenChecks(evidence, questionsVerdictOf(result)).length > 0 ? { betweenBy: betweenChecks(evidence, questionsVerdictOf(result)) } : {}),
         questionsVerdict: questionsVerdictOf(result),
         ...(result.decisionRule ? { decisionRule: result.decisionRule } : {}),
         ...(result.closeCallClosed ? { questionsClosed: true as const } : {}),

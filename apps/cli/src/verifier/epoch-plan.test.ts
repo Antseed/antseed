@@ -415,28 +415,29 @@ test('an undecided confirmation keeps an auditor-caused cause, and a report\'s a
   assert.equal(sellerRetryDueAt(failed), null, 'outside a report, as before')
 })
 
-test('a confirmation of FLIPS scored between its bars is finished at once: a retry carries that score and could never decide', async () => {
+test('a confirmation of FLIPS scored between its bars: under flips-v2 a SAME, done; with a test left open it is retried; no score is retried', async () => {
   const { settleAuditVerdict } = await import('./close-call.js')
   const flips = (p: number | null) => ({
     rule: 'flips-v2', model: 'claude-opus-5.5', stage: 'confirm', outcome: 'inconclusive', counted: true, p, score: p === null ? null : 4, reason: 'x',
   })
-  const cellOf = (confirming: AuditCheckId[], extra: Partial<ModelVerificationTargetResult>) => {
+  const cellOf = (confirming: AuditCheckId[], extra: Partial<ModelVerificationTargetResult>, undecided = true) => {
     const settled = settleAuditVerdict(result('a', 'SAME', { confirming, confirmsDiff: true, questionsStatus: 'SAME', ...extra } as Partial<ModelVerificationTargetResult>))
-    assert.equal(settled.outcomeReason?.code, 'confirmation_undecided')
+    assert.equal(settled.outcomeReason?.code === 'confirmation_undecided', undecided)
     return splitEpochRuns(EPOCH, [run('c1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [{ ...settled, confirmingReportedAt: 100 }] }])])
       .reports.get(reportCellKey('m', 'a', reportKey(settled.service, 100, confirming)))!
   }
-  // FLIPS scored between the bars: the retry would carry it, so the confirmation is done after one attempt.
-  const between = cellOf(['flips'], { flips: flips(0.02) } as Partial<ModelVerificationTargetResult>)
-  assert.deepEqual([between.attempts, between.action, heldForConfirmationRecheck(between)], [1, 'done', false])
+  // FLIPS scored between the bars clears like a pass under flips-v2 (`confirmBetweenClears`): the questions SAME, a
+  // SAME, and the confirmation is done after one attempt.
+  const between = cellOf(['flips'], { flips: flips(0.02) } as Partial<ModelVerificationTargetResult>, false)
+  assert.deepEqual([between.state, between.attempts, between.action, heldForConfirmationRecheck(between)], ['same', 1, 'done', false])
   // FLIPS with no score is asked again: the confirmation stays open within its attempts.
   const noScore = cellOf(['flips'], { flips: flips(null) } as Partial<ModelVerificationTargetResult>)
   assert.deepEqual([noScore.attempts, noScore.action], [1, 'retry'])
   // The questions are undecided too: they are asked again, so the retry can still decide.
   const withQuestions = cellOf(['kbf', 'flips'], { flips: flips(0.02), questionsStatus: 'UNDETERMINED' } as Partial<ModelVerificationTargetResult>)
   assert.deepEqual([withQuestions.attempts, withQuestions.action], [1, 'retry'])
-  // Only a counting result of this build's rule finishes it: a probe's score, a flips-v1 one or an unknown rule's
-  // never does, since a production ask could still decide.
+  // A probe's score, a flips-v1 one or an unknown rule's neither clears nor finishes it: a production ask could still
+  // decide.
   for (const other of [{ ...flips(0.02), probe: true }, { ...flips(0.02), rule: 'flips-v1' }, { ...flips(0.02), rule: 'flips-v9' }]) {
     const open = cellOf(['flips'], { flips: other } as Partial<ModelVerificationTargetResult>)
     assert.deepEqual([open.attempts, open.action], [1, 'retry'], JSON.stringify(other))

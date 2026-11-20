@@ -53,9 +53,11 @@ test('the rule is frozen and known by its id', () => {
   assert.equal(flipsRuleById('flips-v0'), undefined)
   assert.ok(Object.isFrozen(FLIPS_RULE) && Object.isFrozen(FLIPS_RULE_V1))
   // flips-v2 is flips-v1 with counting and replies without a sequence left out; nothing else changed.
-  const { id: _v2, counts: countsV2, noSequence, repeats, asksRequired, ...restV2 } = FLIPS_RULE
-  const { id: _v1, counts: countsV1, noSequence: noneV1, repeats: repeatsV1, asksRequired: asksV1, ...restV1 } = FLIPS_RULE_V1
+  const { id: _v2, counts: countsV2, noSequence, repeats, asksRequired, confirmBetweenClears, bar, ...restV2 } = FLIPS_RULE
+  const { id: _v1, counts: countsV1, noSequence: noneV1, repeats: repeatsV1, asksRequired: asksV1, confirmBetweenClears: clearsV1, bar: barV1, ...restV1 } = FLIPS_RULE_V1
   assert.deepEqual([asksV1, asksRequired], [undefined, true])
+  assert.deepEqual([clearsV1, confirmBetweenClears], [undefined, true])
+  assert.deepEqual([barV1, bar], [{ first: 0.005, confirm: 0.001 }, { first: 0.002, confirm: 0.001 }], 'a first bar of 0.2%, the confirmation bar unchanged')
   assert.deepEqual(restV2, restV1)
   assert.deepEqual([countsV1, countsV2], [{ default: false, never: ['minimax-m3'] }, { default: true, never: ['minimax-m3'] }])
   assert.deepEqual([noneV1, noSequence], [undefined, { below: 8, maxShare: 0.2 }])

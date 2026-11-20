@@ -34,6 +34,17 @@ export function passedChecks(
   return checksWith(readingsOfEvidence(evidence, kbfVerdict), 'pass')
 }
 
+/**
+ * The checks of one audit scored between their bars where such a score clears a waiting flag like a pass (a
+ * confirmation's FLIPS under `confirmBetweenClears`): the same-check decision credits them as passed.
+ */
+export function betweenChecks(
+  evidence: Pick<ProxyAuditEvidenceV1, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho' | 'flips' | 'exchanges'>,
+  kbfVerdict: 'SAME' | 'DIFF' | 'UNDETERMINED' | null,
+): AuditCheckId[] {
+  return readingsOfEvidence(evidence, kbfVerdict).filter((reading) => reading.between === true).map((reading) => reading.check)
+}
+
 /** The checks an audit's summary shows flagged, for the planner. */
 export function flaggedSummaryChecks(result: Parameters<typeof decidedChecks>[0]): AuditCheckId[] {
   return checksWith(readingsOfSummary(result), 'flag')
@@ -48,7 +59,9 @@ export function decidedChecks(result: {
   outputEcho?: { growth?: string; fixedAmount?: string }
   flips?: { outcome: string; model?: string; probe?: true }
 }): AuditCheckId[] {
-  return checksWith(readingsOfSummary(result), 'flag', 'pass')
+  // A score between the bars that clears like a pass (`CheckReading.between`) decided too.
+  const readings = readingsOfSummary(result)
+  return [...new Set([...checksWith(readings, 'flag', 'pass'), ...readings.filter((reading) => reading.between === true).map((reading) => reading.check)])]
 }
 
 /**

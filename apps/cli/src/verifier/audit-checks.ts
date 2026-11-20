@@ -44,6 +44,12 @@ export interface CheckReading {
    * `inconclusive`; `verdictOf` reads the judged one only when told to count recorded findings.
    */
   recordedOnly?: Exclude<CheckOutcome, 'not-run'>
+  /**
+   * Set on an `inconclusive` finding of a confirmation's FLIPS scored between its bars, under a rule whose such score
+   * clears the waiting flag like a pass (`FlipsRule.confirmBetweenClears`): `verdictOf` and the same-check decision
+   * read it, never the score itself.
+   */
+  between?: true
 }
 
 /** The evidence fields that hold a check's record. The names are the stored ones and never change. */
@@ -80,6 +86,9 @@ export interface CheckFinding<Slot extends CheckSlot> {
   ofSummary(summary: CheckSummaryOutcomes): Exclude<CheckOutcome, 'not-run'>
   /** For a finding that can be recorded only: its judged outcome when it is (then `ofRecord` reads `inconclusive`). */
   recordedOnly?(record: CheckRecords[Slot], rules?: ReadingRules): Exclude<CheckOutcome, 'not-run'> | null
+  /** Whether an `inconclusive` finding is a score between the bars that clears like a pass (`CheckReading.between`). */
+  betweenOfRecord?(record: CheckRecords[Slot], rules?: ReadingRules): boolean
+  betweenOfSummary?(summary: CheckSummaryOutcomes): boolean
 }
 
 /**
@@ -284,6 +293,14 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
     ofRecord: (record, rules) => (flipsCountsFor(record, rules) ? outcome(record.outcome, 'flag', 'pass') : 'inconclusive'),
     ofSummary: (summary) => (flipsSummaryCounts(summary) ? outcome(summary.outcome, 'flag', 'pass') : 'inconclusive'),
     recordedOnly: (record, rules) => (flipsCountsFor(record, rules) ? null : outcome(record.outcome, 'flag', 'pass')),
+    // A confirmation's counting FLIPS scored between its bars, under a rule whose such score clears like a pass.
+    betweenOfRecord: (record, rules) => flipsCountsFor(record, rules) && record.draw.stage === 'confirm' && record.outcome === 'inconclusive'
+      && record.p !== null && (rules?.flips ?? flipsRuleById(record.rule))?.confirmBetweenClears === true,
+    betweenOfSummary: (summary) => {
+      const flips = summary as { rule?: unknown; stage?: unknown; outcome?: unknown; p?: unknown; model?: unknown; probe?: unknown }
+      return flipsSummaryCounts(flips) && flips.stage === 'confirm' && flips.outcome === 'inconclusive' && typeof flips.p === 'number'
+        && typeof flips.rule === 'string' && flipsRuleById(flips.rule)?.confirmBetweenClears === true
+    },
   }],
   summarize: summarizeFlips,
   // Recomputed from the replies the seller signed and the reference replies stored with them.
@@ -375,9 +392,12 @@ export function readingsOfEvidence(
     const record = evidence[check.slot]
     for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
       const recorded = record == null ? null : finding.recordedOnly?.(record, rules) ?? null
+      const outcome = record == null ? 'not-run' : finding.ofRecord(record, rules)
+      const between = record != null && outcome === 'inconclusive' && finding.betweenOfRecord?.(record, rules) === true
       readings.push({
-        check: finding.id, subject: finding.subject, outcome: record == null ? 'not-run' : finding.ofRecord(record, rules),
+        check: finding.id, subject: finding.subject, outcome,
         ...(recorded ? { recordedOnly: recorded } : {}),
+        ...(between ? { between: true as const } : {}),
       })
     }
   }
@@ -396,7 +416,9 @@ export function readingsOfSummary(
   for (const check of RECORD_CHECKS) {
     const summary = result[check.slot]
     for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
-      readings.push({ check: finding.id, subject: finding.subject, outcome: summary == null ? 'not-run' : finding.ofSummary(summary) })
+      const outcome = summary == null ? 'not-run' : finding.ofSummary(summary)
+      const between = summary != null && outcome === 'inconclusive' && finding.betweenOfSummary?.(summary) === true
+      readings.push({ check: finding.id, subject: finding.subject, outcome, ...(between ? { between: true as const } : {}) })
     }
   }
   // The questions' own verdict: an audit's `status` is DIFF when another test flagged, whatever the questions said.
@@ -694,9 +716,11 @@ export function verdictOf(
   // The verdict as the readings give it; "what if FLIPS counted" is a reading under another rule (`ReadingRules`).
   const flaggedBy = checksWith(readings, 'flag')
   const passedBy = checksWith(readings, 'pass')
+  // A confirmation's FLIPS scored between its bars under a rule whose such score clears like a pass (`between`).
+  const clearsBetween = readings.filter((reading) => reading.between === true).map((reading) => reading.check)
   if (confirming && confirming.length > 0 && !confirming.some((check) => flaggedBy.includes(check))) {
     // The questions still waiting for an extra set are not undecided yet: the confirmation waits with them.
-    const open = confirming.filter((check) => !passedBy.includes(check)
+    const open = confirming.filter((check) => !passedBy.includes(check) && !clearsBetween.includes(check)
       && !(check === 'kbf' && options.questionsPending === true))
     const waits = options.questionsPending === true && confirming.includes('kbf') && !passedBy.includes('kbf')
     if (open.length > 0) return { verdict: 'UNDETERMINED', flaggedBy, passedBy, undecidedConfirmation: open }

@@ -99,6 +99,12 @@ export interface FlipsRule {
   repeats?: { sellerShare: number; referenceShare: number; minReplies: number }
   /** Every seller slot stores its asks (`FlipsSellerSlotV1.asks`), so its trail is checked (`flips-v2` on). */
   asksRequired?: true
+  /**
+   * A confirmation of a FLIPS flag whose FLIPS is scored between its bars (above the confirmation bar, at most
+   * `passAbove`) clears that flag like a pass, when every other test it repeats passed (`flips-v2` on): a score between
+   * the bars is no swap by the confirmation's own bar. A FLIPS with no result still clears nothing.
+   */
+  confirmBetweenClears?: true
 }
 
 /**
@@ -144,8 +150,12 @@ export const FLIPS_RULE: FlipsRule = Object.freeze({
   id: 'flips-v2',
   counts: Object.freeze({ default: true, never: Object.freeze(['minimax-m3']) }),
   noSequence: Object.freeze({ below: 8, maxShare: 0.2 }),
+  // A first bar of 0.2% (v1: 0.5%): at 0.5% the eval flagged one honest check on its first audit (one the confirmation
+  // passed); at 0.2% none on its test half. The confirmation bar stays 0.1%.
+  bar: Object.freeze({ first: 0.002, confirm: 0.001 }),
   repeats: Object.freeze({ sellerShare: 0.5, referenceShare: 0.25, minReplies: 4 }),
   asksRequired: true,
+  confirmBetweenClears: true,
 })
 
 /**

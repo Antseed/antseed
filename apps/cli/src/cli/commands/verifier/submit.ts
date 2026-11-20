@@ -636,6 +636,7 @@ export async function sameCheckChanged(
     auditedAt: result.auditedAt ?? 0,
     flaggedBy: result.flaggedBy ?? [],
     passedBy: result.passedBy ?? [],
+    ...(result.betweenBy ? { betweenBy: result.betweenBy } : {}),
     // The report the audit confirms, as prepared from its evidence: without it a confirmation of FLIPS would read as
     // a first look and be held.
     ...(result.confirming ? { confirming: result.confirming } : {}),
