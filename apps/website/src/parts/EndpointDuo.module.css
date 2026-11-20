@@ -1,0 +1,16 @@
+.head { --head-gap: 16px; display: flex; flex-direction: column; gap: var(--head-gap); max-width: 560px; }
+@media (max-width: 760px) { .head { max-width: none; } }
+.lead code {
+  padding: 1px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--site-tile);
+  font: 400 15px/22px var(--site-font-mono);
+  color: var(--site-text);
+}
+.panel { display: grid; place-items: center; min-width: 0; padding: 40px 24px; }
+.terminal { max-width: 576px; }
+
+@media (max-width: 899px) {
+  .panel { padding: 40px 16px; }
+}

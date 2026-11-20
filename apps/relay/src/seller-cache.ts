@@ -2,7 +2,7 @@
  * SellerCache
  *
  * Maintains the set of sellers a browser buyer may bridge to. Entries come
- * from periodic DHT discovery (same flow as network-stats) and/or a static
+ * from periodic DHT discovery and/or a static
  * list supplied via config. The bridge only ever dials endpoints found here,
  * so the relay can never be used as an open TCP proxy.
  */

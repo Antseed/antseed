@@ -1,0 +1,62 @@
+/* The meadow's height follows the footer's width (container units), so the text above it keeps clear of the painting. */
+.footer {
+  --meadow-height: 51cqw;
+  position: relative; display: flex; flex-direction: column;
+  container-type: inline-size; overflow: hidden; background: var(--site-bg);
+}
+
+.rail {
+  composes: dots from '../../components/dots.module.css';
+  --dots-top: 2px;
+  width: var(--site-rail); margin: 0 auto;
+  padding: 72px 0 calc(var(--meadow-height) * .76);   /* all of the painting but its faded sky sits below the text */
+}
+
+.columns { display: grid; grid-template-columns: 352fr 240fr 240fr 240fr 240fr; }
+.brand { padding: 0 48px; }
+.logo { display: block; }
+:global(:root[data-theme='dark']) .logo { filter: invert(.93); }
+@media (prefers-reduced-motion: no-preference) {
+  .brand:is(:hover, :focus-visible) .logo { animation: wiggle .3s ease-in-out; }
+}
+@keyframes wiggle { 33% { transform: rotate(-4deg); } 66% { transform: rotate(4deg); } }
+
+.column { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; font: 400 14px/20px var(--site-font); color: var(--site-text); }
+.columnTitle { margin: 0; font-weight: 500; color: var(--site-text-muted); }
+.link { color: inherit; text-decoration: none; }
+.link:hover { color: var(--site-accent); text-decoration: none; }
+
+.bar {
+  composes: dots from '../../components/dots.module.css';
+  --dots-top: 2px;
+  display: flex; align-items: center; gap: 24px; margin-top: 40px; padding-top: 24px;
+  font: 400 14px/20px var(--site-font); color: var(--site-text);
+}
+.copyright { flex: 1; color: var(--site-text-small); white-space: nowrap; }
+
+.social { display: flex; gap: 4px; margin: -6px 0; }   /* 32px targets in a 20px row */
+.socialLink { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; color: var(--site-text); transition: color .15s; }
+.socialLink:hover { color: var(--site-accent); }
+.socialLink:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 1px; }
+.socialLink svg { width: 18px; height: 18px; fill: currentColor; }
+
+@media (max-width: 1199px) {
+  .columns { grid-template-columns: repeat(4, 1fr); row-gap: 40px; }
+  .brand { grid-column: 1 / -1; padding: 0; }
+}
+/* narrower, the painting stops following the width so the ants keep their size */
+@media (max-width: 999px) {
+  .footer { --meadow-height: max(min(123cqw, 520px), 64cqw); }
+}
+/* a touch screen: the same look, every link and button a 44 tall touch area (the links' areas overlap, their rows stay 34 apart) */
+@media (max-width: 1079px) {
+  .link { padding-block: 12px; margin-block: -12px; }
+  .brand, .socialLink { position: relative; }
+  .brand::after, .socialLink::after { content: ''; position: absolute; inset: -6px 0; }
+}
+@media (max-width: 760px) {
+  .rail { padding-inline: 20px; }   /* the words on the sections' content line; the meadow stays full width */
+  .columns { grid-template-columns: 1fr 1fr; }
+  .bar { flex-wrap: wrap; }
+  .copyright { flex-basis: 100%; }
+}

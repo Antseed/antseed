@@ -1,0 +1,46 @@
+/* The painting fills the card, 4px under the nav and 2px in from its sides. Only the theme on screen is painted; while the theme
+   flips ([data-theming]) both are, the other one already cached (Painting.tsx). The stills come in as variables (--day, --night) so
+   they keep the URLs the head preloads (a url() here would be a hashed copy, fetched twice). */
+.paint { position: absolute; inset: 4px 2px 0; overflow: hidden; container-type: size;
+  background: var(--day-cut, var(--day)) 50% 50% / cover no-repeat; }
+:global(:root[data-theme='dark']) .paint { isolation: isolate; }
+:global(:root[data-theme='dark']) .paint:not([data-theming]) { background-image: none; }
+
+/* a 16:9 stage covering the painting from its centre: the film and the clouds share it */
+.stage { position: absolute; left: 50%; top: 50%; width: max(100cqw, 177.7778cqh); aspect-ratio: 16 / 9; translate: -50% -50%; }
+.film { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .4s; }
+.film.on { opacity: 1; }
+
+/* the clouds, cut above the horizon */
+.clouds { position: absolute; inset: 0; clip-path: inset(0 0 52% 0); pointer-events: none; }
+.cloud { position: absolute; display: block; height: auto; left: var(--cloud-left); top: var(--cloud-top); width: var(--cloud-width);
+  animation: drift var(--cloud-duration) linear var(--cloud-delay) infinite; will-change: transform; }
+.paused .cloud { animation-play-state: paused; }
+@keyframes drift { to { transform: translate3d(var(--cloud-travel), 0, 0); } }
+/* the clouds come in after the page has loaded (Clouds.tsx), fading up rather than popping in; on the layer, so a paused drift can't hold it */
+.cloudsIn { animation: cloudsIn .8s ease-out; }
+@keyframes cloudsIn { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .cloud { animation-play-state: paused; } }
+
+/* the night: the meadow painted at night over the whole painting. --night-share is 0 by day and 1 at night; it fades only while the
+   theme flips ([data-theming]) */
+@property --night-share { syntax: '<number>'; inherits: false; initial-value: 0; }
+.night { position: absolute; inset: 0; pointer-events: none; background: 50% 0 / cover no-repeat; --night-share: 0; opacity: var(--night-share); }
+:global(:root[data-theme='dark']) .night { --night-share: 1; }
+:global(:root[data-theme='dark']) .night, .paint[data-theming] .night { background-image: var(--night-cut, var(--night)); }
+.paint[data-theming] .night { transition: --night-share 1.2s ease-in-out; }
+/* phones (PHONE_PAINTINGS in src/lib/paintings.ts): the stills' centre cuts, the part a phone's tall card shows (Hero.tsx preloads them) */
+@media (max-width: 560px) { .paint { --day-cut: var(--day-phone); --night-cut: var(--night-phone); } }
+.nightFilm { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 50% 0; opacity: 0; transition: opacity .8s; }
+.nightFilm.on { opacity: 1; }
+.flies { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0; }
+:global(:root[data-theme='dark']) .flies { opacity: 1; }
+
+/* the arrival: a cover in the hero's colour from the first frame, then the canvas with holes (usePaintingArrival). Without
+   script the cover lifts by itself; with reduced motion there is none */
+.veil { position: absolute; inset: 0; z-index: 3; background: var(--site-bg-hero); animation: lift 0s linear 4s forwards; }
+@keyframes lift { to { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { .veil { display: none; } }
+.cover { position: absolute; inset: 0; z-index: 3; width: 100%; height: 100%; pointer-events: none; }
+.paint[data-arriving] > :is(.stage, .night) { animation: settle var(--arrive, 1.5s) cubic-bezier(.2, .7, .3, 1) both; }
+@keyframes settle { from { scale: 1.07; } }

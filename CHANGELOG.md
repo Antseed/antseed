@@ -23,6 +23,110 @@ This project uses selective package publishing. Each release entry lists the pub
 ### Fixed
 
 - Verifiers (CLI): building a question set for a model whose thinking cannot be turned off no longer stalls. Such a model could spend every token of a question-writing request thinking and return no text, so no question was written. Question writing now falls back to a little thinking for it too (asking keeps the recorded setting, as before). A generation round in which no question-writing batch gives a list stops the build at once, instead of paying for more rounds up to the no-progress limit.
+
+## 2026-11-20 — CLI 0.1.256, Node 0.2.189, Desktop 0.2.91
+
+### Packages
+
+- `@antseed/cli@0.1.256`
+- `@antseed/node@0.2.189`
+- `@antseed/router-core@0.1.53`
+- `@antseed/ant-agent@0.1.39`
+- `@antseed/router-local@0.1.54`
+- `@antseed/payments@0.1.116`
+- `@antseed/ants@0.1.74`
+
+### Desktop
+
+- `@antseed/desktop@0.2.91`
+
+### Added
+
+- Docs: **Gateway → Run on a server** explains how to keep long streamed responses alive behind a proxy: an nginx example for `--public-url` with buffering off and a longer read timeout, why Cloudflare can close a stream that stays silent for about 100 seconds (a DNS-only record avoids it), and `/healthz` for uptime checks.
+- Sellers (CLI, `@antseed/node`): `payments.suggestedReserveAmount` sets the first reserve a seller suggests to a buyer with no channel (USDC base units; default `1000000`, the contract's default first-sign cap), kept between `minBudgetPerRequest` and the cap. A seller of small per-request services can suggest less, so a buyer's deposit reaches more sellers.
+
+### Fixed
+
+- CLI gateway: a key blocked with `402 spend_limit_reached` now says what holds its spend. The 402's `limit` object adds `held_requests_usd` (requests in flight) and `held_video_usd` (videos being priced, or accepted and not yet charged) next to `held_usd`, which stays the total, and the message names both parts. `antseed gateway key show` prints what video jobs hold as a `Held for video:` line (`videoHeldUsd` and `videoJobsHeld` with `--json`), for example `Held for video: $5.00 (1 not yet charged)`, and `GET /v1/key` adds `held` (`held_usd`, `requests_usd`, `video_usd`) from the running gateway. A gateway that restarts with requests still in its request log from the previous run (stopped or crashed mid-request) marks them ended with `499 gateway_restarted` instead of leaving them in flight forever; they never held spend, since request holds end with the gateway process. A video accepted just before a restart that kept the gateway from saving the job is now held at the price the buyer reported (logged with the request, gateway database migration 17) instead of everything the create was allowed; a video whose price was never reported still holds that whole allowance until it is downloaded, fails or expires. A video whose price can't be read is logged.
+- ANTS dashboard: a matured position tells users to withdraw and stake again only when their wallet can transfer ANTS. While transfers are disabled, the action error (extend, move, split, merge, max lock), the **Status** tip and the **Can no longer be extended** tip say the position can only be withdrawn and that withdrawn ANTS can't be staked again for now, since wallet ANTS can't be staked until then.
+- Agent streaming (`@ant-agent`): streamed provider chunks are re-framed into whole SSE events before internal-tool suppression, so a chunk ending mid-event no longer leaks a partial event to the buyer or glues the buyer's event tail to the next chunk. Nonempty partial chunks stay buffered until an event completes, and a nonempty terminal chunk is emitted once through the event filter instead of being replayed raw.
+- Payments portal: `GET /api/emissions/pending` no longer reports a recognized-usage buyer epoch as unclaimed after the buyer (or its authorized wallet) has claimed or staked it. `AntseedUsageRewards.pendingBuyerReward` keeps returning the full amount after a claim, so the route now also reads `buyerEpochClaimed` and reports such an epoch with `buyer.claimed: true` and `buyer.amount: "0"`, as the CLI and the ANTS dashboard already do. Seller amounts were already correct.
+- Routing (CLI, `@antseed/node`, `@antseed/router-core`): sellers that tie on reputation, for a buyer with no routing preferences, and sellers that tie on composite score in the local router now rotate which one is tried first, instead of always going in peer id order. The reputation-only path keeps peer id order on the first request to a tied pool, then rotates. Each model, and each distinct seller pool of a model, keeps its own place. A seller with a higher reputation, a higher composite score or a better price still stays in front. The `/v1/models` peer list and the desktop model list keep a stable order (issue #1554).
+- Website: providers can apply for Foundation staking directly from the providers page again.
+
+### Changed
+
+- Website: the Telegram buttons on `/colony/` now read "Join the local AI Telegram group".
+- Website: the Colony page no longer says early access is invite-only while we test.
+- Website: the Colony waitlist card now leads with the waitlist number in large type, and it only appears once the number is known, from the welcome email's link to `/colony/joined/`. Before that, the sign-up's last step and `/colony/joined/` say the card with the number comes by email. On a computer, Share on X copies the card to the clipboard before it opens X, so one paste attaches the picture to the post. If the browser refuses the copy, the page says to save the image instead.
+
+## 2026-11-20 — CLI 0.1.255, Node 0.2.188
+
+### Packages
+
+- `@antseed/cli@0.1.255`
+- `@antseed/node@0.2.188`
+- `@antseed/protocol@0.1.22`
+- `@antseed/api-adapter@0.1.66`
+- `@antseed/buyer-core@0.1.53`
+- `@antseed/connected-apps@0.1.16`
+- `@antseed/web-sdk@0.1.47`
+- `@antseed/provider-fal-video@0.1.25`
+- `@antseed/provider-alibaba-video@0.1.13`
+- `@antseed/provider-fal-image@0.1.9`
+- `@antseed/provider-venice-video@0.1.26`
+- `@antseed/payments@0.1.115`
+- `@antseed/ants@0.1.73`
+
+### Fixed
+
+- fal video sellers (`@antseed/provider-fal-video`): a job whose model failed behind fal now ends as `FAILED`. fal reports such a job as `COMPLETED` and answers its result with `500 downstream_service_error` on every fetch; the plugin treated that as temporary, so buyers polled "status unavailable" until the job's channel expired.
+
+### Changed
+
+- Sellers (`@antseed/node`): a single video job still undownloaded an hour after it started no longer holds the buyer back from new videos on that seller (`409 video_jobs_uncollected`). A job stuck upstream stayed undownloaded however often the buyer polled, so one failed job blocked every video the buyer started there until its channel expired a day later. Undownloaded jobs still count toward the limit of 16 (`409 video_jobs_open_limit`), and a downloaded video that isn't paid for still holds the buyer back.
+- Verifier docs: "Become a verifier" and "How audits run" now lead with `verifier watch` as the way to run an approved auditor. A single `verifier run` and `verifier submit` per epoch misses the `DIFF`s other auditors submit later, which need your confirmation within 12 hours. "Become a verifier" has a new step, "Keep it running", and the cron example calls `watch --once`. Its setup also explains the two keys a verifier uses (the buyer wallet that pays sellers and the auditor key that signs submits and holds the gas) and how to create the auditor keystore.
+
+## 2026-11-20 — CLI 0.1.254, Node 0.2.187, Desktop 0.2.90
+
+### Packages
+
+- `@antseed/cli@0.1.254`
+- `@antseed/node@0.2.187`
+- `@antseed/provider-core@0.2.69`
+- `@antseed/provider-alibaba-video@0.1.12`
+- `@antseed/provider-anthropic@0.1.63`
+- `@antseed/provider-claude-code@0.1.63`
+- `@antseed/provider-claude-oauth@0.1.69`
+- `@antseed/provider-fal-image@0.1.8`
+- `@antseed/provider-fal-video@0.1.24`
+- `@antseed/provider-local-llm@0.1.63`
+- `@antseed/provider-openai@0.2.62`
+- `@antseed/provider-openai-responses@0.1.56`
+- `@antseed/provider-typesafe@0.1.15`
+- `@antseed/provider-venice-video@0.1.25`
+- `@antseed/payments@0.1.114`
+- `@antseed/ants@0.1.72`
+- `@antseed/gateway-console@0.1.37`
+
+### Desktop
+
+- `@antseed/desktop@0.2.90`
+
+### Changed
+
+- Website: the light paper is removed from the docs, the sidebar, the footer and `llms.txt`. `/lightpaper` and `/docs/lightpaper` redirect to the protocol overview, and links in the blog and docs point there. The desktop app's chat assistant links to the protocol overview instead.
+- The network stats service (`@antseed/network-stats`, `network.antseed.com/stats`) is retired. Read cached peers and prices from Antscan instead: `GET https://antscan.co/api/marketplace?limit=5000` (public JSON, CORS `*`); `PRICING.md`, the routing docs and `llms.txt` now show it. `@antseed/node`'s chain config drops `networkStatsUrl`, and the payments portal's `/api/config` no longer returns it.
+- Website: antseed.com has a new design. The homepage, `/network/`, `/providers/` and `/ecosystem/` are redesigned. There are two new pages: `/ants/` (the token page, which replaces `/ants-token/`; the old URL redirects) and `/colony/`, whose waitlist sign-up at `/colony/join/` asks one question at a time (people without a Mac can join too), then hands off to a Google Form that confirms the visitor's email (one sign-up per Mac). The last step and the new `/colony/joined/` page, where the form's thank-you note and the welcome email lead, point people to the Local AI Colony group on Telegram first, then show a waitlist card to share on X or save. A link from the welcome email puts the waitlist number on the card, on any device. A post shared from there links to a page for that Mac (`/colony/mac/macbook-pro/` and so on), so X and other apps show the card for their Mac as the post's picture. Its Telegram buttons lead to the Local AI Colony group. The other marketing pages, `/brand/` and the integration guides are rebuilt in the same design. The docs and the blog share the new navigation, footer, fonts and colours. Dark mode is opt-in. The header links to gateway setup, GitHub and X. The network diagram uses watercolour layers. Network figures and live model prices (text, image, video and voice) now come from Antscan.
+
+### Fixed
+
+- Gateway (CLI): x402 key top-ups now accept payments from smart accounts, such as EIP-7702 wallets. The gateway checked the payment signature as an ECDSA signature by the payer only, and refused any other with `invalid_exact_evm_payload_signature` before asking the facilitator, even when USDC would accept it. It now does what USDC does: when the signature is not the payer's ECDSA signature, it asks the payer's contract (ERC-1271 `isValidSignature`) through the gateway's Base RPC. When that RPC cannot be read, the top-up is refused with `unexpected_verify_error`.
+- Website: link previews on X, Telegram, WhatsApp and LinkedIn show the new share image with the site's approved description. The share images are now JPEGs under 250 KB, since WhatsApp leaves out a preview image that is too large, and blog posts without their own image share the new one instead of the old logo card. The `/ants/` preview says ANTS, without the dollar sign.
+- Website: the homepage shows its first screen sooner, most of all on phones. Images further down the page (the network diagram's paintings, the desktop app's screens, the price board's ants), the hero's clouds and its meadow video now wait until the hero painting is on screen, so they never slow it down, even on a slow phone; phones get a smaller cut of the hero painting, and Google Tag Manager waits until the page has loaded.
+- Website: on iPhones, iPads and Safari, the homepage's incognito ant no longer sits in a blue box.
+- Website: the homepage loads much faster. Google Tag Manager now loads off the critical path (on the first interaction, or when the browser goes idle), and the marketing-title fonts show in a fallback and swap in rather than blocking the first paint.
+- Website: the homepage price board's title says "700+ models", the same count as the network figures and the rest of the site. It used to show a live count rounded to the hundred, which disagreed with the figures.
 - Sellers and buyers (`@antseed/node`, `@antseed/provider-core`, CLI): a video download refused because all of the seller's download slots are taken now reaches the buyer as what it is, a 429 `video_download_busy` with `Retry-After: 5`, which the buyer proxy passes on to the client. Before, the seller reported it as `upstream_rate_limited` ("rate limited on this seller right now") with no `Retry-After`, so buyers took a short wait for an upstream limit and gave up on a video that was ready.
 
 ## 2026-11-18 — CLI 0.1.253, Node 0.2.186, Desktop 0.2.89

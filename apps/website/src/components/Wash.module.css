@@ -1,0 +1,34 @@
+/* A watercolour painting as the panel's background: --wash by day, --wash-night at night. */
+.wash {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background: #f6f3ea var(--wash) var(--wash-position, 50% 50%) / cover no-repeat;
+}
+:global(:root[data-theme='dark']) .wash {
+  background-color: #39403d;
+  background-image: var(--wash-night, var(--wash));
+}
+/* phone cuts, where the painting has them (PHONE_PAINTINGS in src/lib/paintings.ts) */
+@media (max-width: 560px) {
+  .wash { background-image: var(--wash-phone, var(--wash)); }
+  :global(:root[data-theme='dark']) .wash { background-image: var(--wash-night-phone, var(--wash-night, var(--wash-phone, var(--wash)))); }
+}
+
+/* a first screen's painting as images (Wash.tsx), placed as the background would be */
+.picture { position: absolute; inset: 0; z-index: -2; pointer-events: none; }
+.picture img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: var(--wash-position, 50% 50%); }
+.night, :global(:root[data-theme='dark']) .day { display: none; }
+:global(:root[data-theme='dark']) .night { display: block; }
+
+/* arrival (useUnveil): plain in its colour, children hidden, until the painting grows in. A first-screen panel (.eager) paints its
+   painting from the first frame, under a cover in its colour, so the page's largest paint never waits for script; the arrival's
+   canvas takes over from the cover. Below the fold the painting is not even fetched until the arrival starts. */
+:global(html[data-motion]) .wash:not(.eager):is([data-unveil='wait'], [data-unveil='soon']) { background-image: none; }
+:global(html[data-motion]) .eager:is([data-unveil='wait'], [data-unveil='soon'])::before {
+  content: ''; position: absolute; inset: 0; z-index: -1; background-color: inherit; pointer-events: none;
+}
+:global(html[data-motion]) .wash:is([data-unveil='wait'], [data-unveil='soon']) > :not(canvas, .picture) { opacity: 0; scale: .9; }
+.wash[data-unveil='run'] > :not(canvas, .picture) { transition: opacity .55s ease-out, scale .9s cubic-bezier(.2, .9, .25, 1.12); }
+.wash > canvas[data-unveil-cover] { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; pointer-events: none; }
+.wash > canvas[data-wash-trail] { position: absolute; left: 0; top: 0; z-index: -1; pointer-events: none; }

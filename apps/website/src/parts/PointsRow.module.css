@@ -1,0 +1,31 @@
+.row { display: grid; grid-template-columns: repeat(3, 1fr); text-align: left; }
+.point {
+  composes: dots from '../components/dots.module.css';
+  display: grid;
+  place-items: center;
+  padding: 40px 32px 48px;
+}
+.point + .point { --dots-left: 2px; }
+.caption {
+  max-width: 300px;
+  font: 400 16px/24px var(--site-font);
+  color: var(--site-text-body);
+  text-wrap: balance;
+}
+.caption b { font-weight: 500; color: var(--site-text); }
+
+@media (max-width: 1199px) {
+  .point { padding: 28px 16px; }
+}
+@media (max-width: 760px) {
+  .row { grid-template-columns: 1fr; }
+  .point { padding: 28px 24px; }
+  .point + .point { --dots-left: 0px; --dots-top: 2px; }
+}
+
+/* rise: each point's content fades up 6px, 100ms after the one before */
+.rise .point > * { transition: opacity .5s, transform .5s cubic-bezier(.2, .7, .2, 1); transition-delay: calc(var(--rise-i, 0) * 100ms); }
+.rise .point:nth-child(2) { --rise-i: 1; }
+.rise .point:nth-child(3) { --rise-i: 2; }
+.rise .point:nth-child(4) { --rise-i: 3; }
+.pending .point > * { opacity: 0; transform: translateY(6px); transition: none; }

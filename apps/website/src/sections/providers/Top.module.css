@@ -1,0 +1,6 @@
+.top .sub { max-width: 460px; text-wrap: pretty; }
+/* the film laid as a cover over the painting's size container */
+.film {
+  --film-width: max(100cqw, 100cqh * 1600 / 1074);
+  --film-left: calc(50% - var(--film-width) / 2);
+}

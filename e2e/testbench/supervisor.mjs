@@ -418,7 +418,7 @@ async function startBuyerInProcess(port) {
   const launch = async (candidatePort) => {
     await saveJson(manifest.buyerConfig, {
       buyer: { proxyPort: candidatePort, minPeerReputation: 0, routingPreferences, ...(plan.topology.buyer.maxPricing ? { maxPricing: plan.topology.buyer.maxPricing } : {}) },
-      payments: { crypto: { ...buyerChain, networkStatsUrl: '', explorerApiUrl: '' } },
+      payments: { crypto: { ...buyerChain, explorerApiUrl: '' } },
       network: { bootstrapNodes: bootstrapNodes.map((n) => `${n.host}:${n.port}`) },
       relayer: { enabled: false },
     });
@@ -748,7 +748,7 @@ async function main() {
       // The CLI reads the idle-settle timer from this variable only.
       if (paymentOptions.settlementIdleMs) spec.env = { ...spec.env, ANTSEED_SETTLEMENT_IDLE_MS: String(paymentOptions.settlementIdleMs) };
     } else {
-      await saveJson(configPath, { seller: { providers }, payments: { crypto: { ...chainState.chain, rpcUrl: sellerRpc, networkStatsUrl: '', explorerApiUrl: '' } }, network: { bootstrapNodes: bootstrapNodes.map((n) => `${n.host}:${n.port}`) }, relayer: { enabled: false } });
+      await saveJson(configPath, { seller: { providers }, payments: { crypto: { ...chainState.chain, rpcUrl: sellerRpc, explorerApiUrl: '' } }, network: { bootstrapNodes: bootstrapNodes.map((n) => `${n.host}:${n.port}`) }, relayer: { enabled: false } });
     }
     const worker = await startSeller(spec);
     assert.equal(worker.info.peerId, sellerIdentities.find((entry) => entry.id === seller.id).identity.peerId, `seller ${seller.id} started with another identity`);

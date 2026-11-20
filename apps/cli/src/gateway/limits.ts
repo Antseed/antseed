@@ -30,6 +30,13 @@ export interface LimitBreach {
   limitUsdc: number
   spentUsdc: number
   heldUsdc: number
+  /**
+   * What `heldUsdc` is made of, when the caller knows: requests in flight
+   * (each up to the per-request maximum until its spend is signed), and
+   * video jobs (creates being priced and accepted jobs not yet charged).
+   */
+  heldRequestsUsdc?: number
+  heldVideoUsdc?: number
   /** Epoch ms when the period rolls over; null for the lifetime cap. */
   resetsAt: number | null
   /** Set by multi-level admission; absent means the key's own cap. */

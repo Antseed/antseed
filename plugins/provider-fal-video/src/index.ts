@@ -24,6 +24,15 @@ import {
 
 export const FAL_DEFAULT_BASE_URL = 'https://queue.fal.run';
 export { FAL_PLATFORM_URL, FAL_SCHEMA_URL, falErrorReason };
+
+/** fal error types that a COMPLETED job's result keeps answering: the job failed, so retrying never delivers it. */
+const FAL_JOB_FAILURE_TYPES = new Set(['downstream_service_error']);
+
+/** Whether a fal result error body says the job itself failed, rather than fal being briefly unavailable. */
+function isFalJobFailure(body: Record<string, unknown> | null): boolean {
+  const detail = body?.detail;
+  return Array.isArray(detail) && detail.some(item => FAL_JOB_FAILURE_TYPES.has(String((item as { type?: unknown } | null)?.type)));
+}
 export const FAL_STORAGE_URL = 'https://rest.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3';
 
 const PROTOCOL = 'fal-video';
@@ -557,11 +566,12 @@ const plugin: AntseedProviderPlugin = {
           if (!resultResponse.ok) {
             // A temporary fal error must not end the job: FAILED releases its
             // payment channel, and the next retrieve may still deliver the video.
-            if (resultResponse.status === 408 || resultResponse.status === 429 || resultResponse.status >= 500) {
+            if ((resultResponse.status === 408 || resultResponse.status === 429 || resultResponse.status >= 500) && !isFalJobFailure(result)) {
               return error(request, 502, 'video_result_unavailable', 'fal result is temporarily unavailable');
             }
             // fal reports a job it refused (bad input, content checks) as COMPLETED and answers its result with
-            // a 4xx; a job whose result is already gone answers 404 "Request not found".
+            // a 4xx; a job whose result is already gone answers 404 "Request not found". A job whose model failed
+            // behind fal is COMPLETED too, and its result answers 500 downstream_service_error on every fetch.
             const reason = falErrorReason(result);
             console.warn(`[fal-video] ${service} job ${videoRoute.resourceId} failed: HTTP ${resultResponse.status} ${reason ?? '(no reason)'}`);
             return json(request, 200, reason === undefined
