@@ -6,6 +6,24 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+## 2026-11-20 — CLI 0.1.255, Node 0.2.188
+
+### Packages
+
+- `@antseed/cli@0.1.255`
+- `@antseed/node@0.2.188`
+- `@antseed/protocol@0.1.22`
+- `@antseed/api-adapter@0.1.66`
+- `@antseed/buyer-core@0.1.53`
+- `@antseed/connected-apps@0.1.16`
+- `@antseed/web-sdk@0.1.47`
+- `@antseed/provider-fal-video@0.1.25`
+- `@antseed/provider-alibaba-video@0.1.13`
+- `@antseed/provider-fal-image@0.1.9`
+- `@antseed/provider-venice-video@0.1.26`
+- `@antseed/payments@0.1.115`
+- `@antseed/ants@0.1.73`
+
 ### Fixed
 
 - fal video sellers (`@antseed/provider-fal-video`): a job whose model failed behind fal now ends as `FAILED`. fal reports such a job as `COMPLETED` and answers its result with `500 downstream_service_error` on every fetch; the plugin treated that as temporary, so buyers polled "status unavailable" until the job's channel expired.
