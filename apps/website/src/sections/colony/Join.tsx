@@ -22,7 +22,7 @@ export default function Join(): JSX.Element {
           className={styles.head}>
           <Actions fill reveal className={styles.cta}>
             <Button href={join} size="page">Join the waitlist</Button>
-            {TELEGRAM_URL && <Button href={TELEGRAM_URL} variant="ghost" size="page">Join Local AI Colony on Telegram</Button>}
+            {TELEGRAM_URL && <Button href={TELEGRAM_URL} variant="ghost" size="page">Join the local AI Telegram group</Button>}
           </Actions>
         </SectionHead>
         <Wash

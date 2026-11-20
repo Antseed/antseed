@@ -18,7 +18,7 @@ export default function ColonyPathCard({path}: {path: ColonyPath}): JSX.Element 
         {signUp ? (
           <>
             <Button href={join} size="page">Join the waitlist</Button>
-            {TELEGRAM_URL && <Button href={TELEGRAM_URL} variant="ghost" size="page">Join Local AI Colony on Telegram</Button>}
+            {TELEGRAM_URL && <Button href={TELEGRAM_URL} variant="ghost" size="page">Join the local AI Telegram group</Button>}
           </>
         ) : (
           <Button disabled size="page">{path.state}</Button>
