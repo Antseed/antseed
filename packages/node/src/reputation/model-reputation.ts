@@ -1,3 +1,5 @@
+import { nextRotationOffset, rotateHead, tiedSellerSignature } from '../routing/rotation.js';
+
 export const MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER = 0.5;
 /** A service with a live on-chain DIFF verification verdict keeps 10% of its reputation. */
 export const DIFF_VERIFICATION_REPUTATION_MULTIPLIER = 0.1;
@@ -124,4 +126,45 @@ export function compareEffectiveModelReputation(
 ): number {
   return (b.effectiveReputationScore ?? -1) - (a.effectiveReputationScore ?? -1)
     || a.peerId.localeCompare(b.peerId);
+}
+
+const reputationHeadRotation = new Map<string, number>();
+
+function reputationSortKey(score: number | null | undefined): number {
+  return finiteScore(score) ?? -1;
+}
+
+function reputationPoolKey<T extends { peerId: string }>(
+  ordered: T[],
+  group: number,
+  key: string | undefined,
+): string {
+  const sellers = tiedSellerSignature(ordered, group, (entry) => entry.peerId);
+  if (key && key.length > 0) return sellers.length > 0 ? `key:${key}\n${sellers}` : `key:${key}`;
+  return sellers.length > 0 ? `peers:${sellers}` : 'default';
+}
+
+/**
+ * Rotate the leading run of equal reputation, starting in peer id order.
+ * `advance: false` peeks the next seller, which a route preview uses so it does
+ * not spend the turn a live request should take. A model key is combined with
+ * the tied seller ids, so one model does not share a counter across different
+ * seller pools, and two models that share sellers do not move each other.
+ */
+export function rotateEqualReputationHead<
+  T extends { peerId: string; effectiveReputationScore?: number | null },
+>(
+  ordered: T[],
+  options?: { advance?: boolean; key?: string },
+): T[] {
+  if (ordered.length < 2) return ordered;
+  const firstKey = reputationSortKey(ordered[0]?.effectiveReputationScore);
+  let group = 1;
+  while (group < ordered.length && reputationSortKey(ordered[group]?.effectiveReputationScore) === firstKey) {
+    group += 1;
+  }
+  if (group < 2) return ordered;
+  const pool = reputationPoolKey(ordered, group, options?.key);
+  const offset = nextRotationOffset(reputationHeadRotation, pool, group, options?.advance !== false, 0);
+  return rotateHead(ordered, group, offset);
 }
