@@ -291,10 +291,11 @@ export async function prepareOutputEchoReference(input: {
     } catch (error) {
       return failed(`the reference could not be asked: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300))
     }
+    // Each reply is read once; both modes judge the same reading.
+    const readings = asked.results.map((result) => (result.response ? readOutput(result.requestBody, result.response) : null))
     const inMode = (mode: EchoMode): EchoReferenceTextV1 => {
-      const asks = asked.results.map((result) => {
-        const reading = result.response ? readOutput(result.requestBody, result.response) : null
-        const reply = result.failure ? { count: null, reasoning: 0, unusable: result.failure } : readEchoReply(reading, text, mode)
+      const asks = asked.results.map((result, index) => {
+        const reply = result.failure ? { count: null, reasoning: 0, unusable: result.failure } : readEchoReply(readings[index] ?? null, text, mode)
         return { count: reply.count, reasoning: reply.reasoning, provider: result.provider, unusable: reply.unusable }
       })
       const judged = referenceEchoCount(asks, mode, rule)

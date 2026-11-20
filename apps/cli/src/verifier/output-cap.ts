@@ -184,15 +184,18 @@ function measurementRule(rule: OutputCapRule): TokenizerPrecheckRule {
  */
 export function answerToMeasure(reading: OutputReadingV1 | null, cap: number, rule: OutputCapRule = OUTPUT_CAP_RULE, withinToo = false): string | null {
   if (!readable(reading, cap)) return null
-  if (!withinToo && reading!.billedOutputTokens! <= cap + rule.tolerance) return null
+  if (!withinToo && reading.billedOutputTokens <= cap + rule.tolerance) return null
   // Measured without its outer whitespace, which can only make it shorter.
-  const text = reading!.text?.trim()
+  const text = reading.text?.trim()
   if (!text) return null
   const b = ` ${text}`
   return isSafeProbe(b) ? b : null
 }
 
-function readable(reading: OutputReadingV1 | null, cap: number): boolean {
+/** A reading the cap check can classify: a known shape and a billed count. */
+type ReadableOutput = OutputReadingV1 & { shape: NonNullable<OutputReadingV1['shape']>; billedOutputTokens: number }
+
+function readable(reading: OutputReadingV1 | null, cap: number): reading is ReadableOutput {
   return reading !== null
     && reading.shape !== null
     && reading.billedOutputTokens !== null
@@ -210,11 +213,11 @@ export function classifyCapAnswer(
   rule: OutputCapRule = OUTPUT_CAP_RULE,
 ): OutputCapClass {
   if (!readable(reading, cap)) return 'unread'
-  const billed = reading!.billedOutputTokens!
+  const billed = reading.billedOutputTokens
   const limit = cap + rule.tolerance
   if (billed <= limit) return 'within'
   if (measured !== null && measured > rule.flagFactor * cap) return 'cap-ignored'
-  const reasoning = reading!.reasoningTokens
+  const reasoning = reading.reasoningTokens
   if (reasoning !== null && billed - reasoning <= limit && (measured === null || measured <= limit)) {
     return measured === null ? 'reasoning-unmeasured' : 'reasoning-outside-cap'
   }
@@ -290,8 +293,8 @@ export async function prepareOutputCapReference(input: { ask: TokenizerReference
   if (!readable(reading, cap)) {
     return notApplying(`the reference's own answer to a capped request could not be read${failure ? ` (${failure})` : ''}`, null, { cap, billed: null, reasoning: null, measured: null })
   }
-  const billed = reading!.billedOutputTokens!
-  const reasoning = reading!.reasoningTokens
+  const billed = reading.billedOutputTokens
+  const reasoning = reading.reasoningTokens
   const b = answerToMeasure(reading, cap, rule, true)
   if (!b) return notApplying('the reference\'s own answer could not be measured', null, { cap, billed, reasoning, measured: null })
   const measurement = await measureAnswer(input.ask, b, rule)

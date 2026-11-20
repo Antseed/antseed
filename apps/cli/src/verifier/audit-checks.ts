@@ -251,7 +251,6 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
         : 'the echo check\'s pre-check match is not this audit\'s pre-check')
     }
   },
-  // The record's overall flag ends the audit, attributed to the finding that flagged.
   requests: (record) => [
     ...record.rounds.flatMap((round): EchoSellerAskV1[] => [...round.short, ...round.long, ...(round.repeats ? [round.repeats.short, round.repeats.long] : [])])
       .map((ask) => stored('audited', ask.request)),
@@ -259,6 +258,7 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
     ...(record.crowd?.votes ?? []).flatMap((vote) => [vote.short, vote.long].map((ask) => stored({ peerId: vote.peerId }, ask.request))),
   ],
   paid: outputEchoPaidRequests,
+  // The record's overall flag makes the audit DIFF, described by the finding that flagged; the other tests still run.
   describeFlag: describeOutputEchoFlag,
   texts: {
     name: 'the echo check',

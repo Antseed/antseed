@@ -257,20 +257,20 @@ export interface ProxyVerificationContext {
    */
   sellerThinking?: Map<string, Promise<SellerThinkingDiscoveryV1>>
   /**
-   * When set, each first audit starts with the tokenizer pre-check (`tokenizer-precheck.ts`): a seller whose
-   * signed input tokens are not the model's in every round is DIFF and is asked no question. The audited model's
+   * When set, each first audit starts with the tokenizer pre-check (`tokenizer-precheck.ts`). The audited model's
    * screen for this run (`createTokenizerPrecheckScreen`): its reference is awaited before the seller's clock
-   * starts, and the seller's clock runs only while a pre-check request to it is out.
+   * starts, and the clock runs only while a pre-check request to the seller is out. A mismatch is a DIFF finding;
+   * the questions and the other tests still run (`all-tests-v1`).
    */
   tokenizerPrecheck?: Pick<TokenizerPrecheckScreen<KbfReferenceV1>, 'ready' | 'check'>
   /**
-   * When set, each first audit runs the cap check after thinking discovery (`output-cap.ts`): a seller whose
-   * delivered answer measures more than twice the reply limit, twice, is DIFF and is asked no question.
+   * When set, each first audit runs the cap check after its questions (`output-cap.ts`), with the thinking setting
+   * discovered before them: a seller whose delivered answer measures more than twice the reply limit, twice, is DIFF.
    */
   outputCap?: Pick<OutputCapScreen<KbfReferenceV1>, 'ready' | 'check'>
   /**
    * When set, each first audit runs the echo check after the cap check (`output-echo.ts`): a seller that bills
-   * output the model did not write, held against the model's other sellers, is DIFF and is asked no question.
+   * output the model did not write, held against the model's other sellers, is DIFF.
    */
   outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
   /** The randomness check of this model's sellers (`flips.ts`); absent when it does not run. */
@@ -398,16 +398,16 @@ export interface ModelVerificationTargetResult {
   /** False when a successful batch lacked verified ResponseAuth (the set's verdict is then UNDETERMINED). */
   responseAuthVerified?: boolean
   /**
-   * The tokenizer pre-check this audit started with; absent when none ran. On a `mismatch` the status is DIFF
-   * and no question was asked, so the audit has no close call to extend.
+   * The tokenizer pre-check this audit started with; absent when none ran. On a `mismatch` the status is DIFF;
+   * the questions were asked too, and their own verdict is `questionsStatus`.
    */
   tokenizerPrecheck?: TokenizerPrecheckSummary
   /**
-   * The cap check this audit ran before its questions; absent when none ran. On a `flag` the status is DIFF and
-   * no question was asked, so the audit has no close call to extend.
+   * The cap check this audit ran after its questions; absent when none ran. On a `flag` the status is DIFF; the
+   * questions' own verdict is `questionsStatus`.
    */
   outputCap?: OutputCapSummary
-  /** The echo check this audit ran before its questions; absent when none ran. On a `flag` the status is DIFF. */
+  /** The echo check this audit ran after its cap check; absent when none ran. On a `flag` the status is DIFF. */
   outputEcho?: OutputEchoSummary
   /** The randomness check (FLIPS) this audit ran last before its verdict; absent when none ran. */
   flips?: FlipsSummary
