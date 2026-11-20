@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Website: providers can apply for Foundation staking directly from the providers page again.
+
 ### Changed
 
 - Website: the Colony page no longer says early access is invite-only while we test.
