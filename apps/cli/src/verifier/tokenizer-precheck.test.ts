@@ -28,6 +28,7 @@ import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
 import {
   TOKENIZER_PRECHECK_RULE,
+  TOKENIZER_PRECHECK_RULE_V1,
   createTokenizerPrecheckScreen,
   describeTokenizerMismatch,
   generateTokenizerProbe,
@@ -37,12 +38,14 @@ import {
   referenceDelta,
   runTokenizerPrecheck,
   tokenizerCrowd,
+  tokenizerPrecheckRuleById,
   tokenizerPrecheckCost,
   tokenizerPrecheckRequestCount,
   validateTokenizerPrecheck,
   type TokenizerBackerV1,
   type TokenizerPrecheckClock,
   type TokenizerPrecheckReferenceV1,
+  type TokenizerPrecheckRule,
   type TokenizerPrecheckV1,
   type TokenizerProbeV1,
   type TokenizerReferenceAsk,
@@ -170,10 +173,12 @@ async function backingAsk(reference: TokenizerPrecheckReferenceV1, peerId: strin
 async function precheck(
   target: ReturnType<typeof seller>,
   reference?: TokenizerPrecheckReferenceV1,
-  options: { backers?: number; signal?: AbortSignal } = {},
+  options: { backers?: number; signal?: AbortSignal; rule?: TokenizerPrecheckRule } = {},
 ): Promise<TokenizerPrecheckV1> {
   const measured = reference ?? await measuredReference()
+  const rule = options.rule ?? TOKENIZER_PRECHECK_RULE
   return runTokenizerPrecheck({
+    ...(options.rule ? { rule } : {}),
     proxyBaseUrl: 'http://127.0.0.1:8390/',
     peerId: PEER_ID,
     service: SERVICE,
@@ -186,7 +191,7 @@ async function precheck(
       const backers = await Promise.all(Array.from({ length: options.backers ?? 1 }, (_entry, index) => (
         backingAsk(measured, `${String(index + 3).padStart(2, '0')}`.repeat(20))
       )))
-      return tokenizerCrowd([own.delta, ...backers.map((backer) => backer.ask.delta)], measured.rounds[0]!.delta!, TOKENIZER_PRECHECK_RULE, [], backers)
+      return tokenizerCrowd([own.delta, ...backers.map((backer) => backer.ask.delta)], measured.rounds[0]!.delta!, rule, [], backers)
     },
   })
 }
@@ -197,32 +202,36 @@ const asked = (baseTokens: number | null, probedTokens: number | null, extra: Pa
 })
 
 test('a round is off only when the seller is asked twice, is off the reference both times and agrees with itself', () => {
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [100] }), 'match')
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [102] }), 'match')
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [98] }), 'match')
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [103] }), 'unmeasured', 'one ask off proves nothing yet')
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [140, 101] }), 'match', 'the second ask counted like the model')
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [140, 140] }), 'off')
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [140, 142] }), 'off', 'its asks may differ by the tolerance')
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [140, 143] }), 'unstable')
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [125, 64] }), 'unstable')
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [140, null] }), 'unmeasured')
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [] }), 'unmeasured')
-  assert.equal(judgeTokenizerRound({ referenceDelta: null, sellerDeltas: [140, 140] }), 'unmeasured')
+  // The first rule's tolerance of 2 tokens (`tokenizer-precheck-v1`, kept for stored evidence).
+  const judgeTokenizerRoundV1 = (input: Parameters<typeof judgeTokenizerRound>[0]) => judgeTokenizerRound(input, TOKENIZER_PRECHECK_RULE_V1)
+  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [100] }), 'match')
+  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [102] }), 'match')
+  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [98] }), 'match')
+  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [103] }), 'unmeasured', 'one ask off proves nothing yet')
+  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [140, 101] }), 'match', 'the second ask counted like the model')
+  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [140, 140] }), 'off')
+  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [140, 142] }), 'off', 'its asks may differ by the tolerance')
+  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [140, 143] }), 'unstable')
+  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [125, 64] }), 'unstable')
+  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [140, null] }), 'unmeasured')
+  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [] }), 'unmeasured')
+  assert.equal(judgeTokenizerRoundV1({ referenceDelta: null, sellerDeltas: [140, 140] }), 'unmeasured')
 })
 
 test('a seller is a mismatch only when every round of the rule is off', () => {
+  // The first rule's tolerance of 2 tokens (`tokenizer-precheck-v1`, kept for stored evidence).
+  const judgeTokenizerPrecheckV1 = (input: Parameters<typeof judgeTokenizerPrecheck>[0]) => judgeTokenizerPrecheck(input, TOKENIZER_PRECHECK_RULE_V1)
   const off = { referenceDelta: 100, sellerDeltas: [140, 140] }
-  assert.equal(judgeTokenizerPrecheck([off, off, off]), 'mismatch')
-  assert.equal(judgeTokenizerPrecheck([off, off, { referenceDelta: 100, sellerDeltas: [140, 102] }]), 'match', 'within the tolerance once is a match')
-  assert.equal(judgeTokenizerPrecheck([off, off, { referenceDelta: 100, sellerDeltas: [103, 104] }]), 'mismatch', 'one past the tolerance is off')
-  assert.equal(judgeTokenizerPrecheck([off, off]), 'inconclusive', 'two rounds prove nothing')
-  assert.equal(judgeTokenizerPrecheck([off, off, { referenceDelta: 100, sellerDeltas: [140, null] }]), 'inconclusive')
-  assert.equal(judgeTokenizerPrecheck([off, off, { referenceDelta: 100, sellerDeltas: [140, 90] }]), 'inconclusive', 'counts that change between asks')
-  assert.equal(judgeTokenizerPrecheck([off, off, { referenceDelta: null, sellerDeltas: [140, 140] }]), 'inconclusive')
+  assert.equal(judgeTokenizerPrecheckV1([off, off, off]), 'mismatch')
+  assert.equal(judgeTokenizerPrecheckV1([off, off, { referenceDelta: 100, sellerDeltas: [140, 102] }]), 'match', 'within the tolerance once is a match')
+  assert.equal(judgeTokenizerPrecheckV1([off, off, { referenceDelta: 100, sellerDeltas: [103, 104] }]), 'mismatch', 'one past the tolerance is off')
+  assert.equal(judgeTokenizerPrecheckV1([off, off]), 'inconclusive', 'two rounds prove nothing')
+  assert.equal(judgeTokenizerPrecheckV1([off, off, { referenceDelta: 100, sellerDeltas: [140, null] }]), 'inconclusive')
+  assert.equal(judgeTokenizerPrecheckV1([off, off, { referenceDelta: 100, sellerDeltas: [140, 90] }]), 'inconclusive', 'counts that change between asks')
+  assert.equal(judgeTokenizerPrecheckV1([off, off, { referenceDelta: null, sellerDeltas: [140, 140] }]), 'inconclusive')
   // In the order the run asks: a round that decides nothing ends the check, whatever a later round would say.
-  assert.equal(judgeTokenizerPrecheck([{ referenceDelta: 100, sellerDeltas: [140, 90] }, { referenceDelta: 100, sellerDeltas: [100] }]), 'inconclusive')
-  assert.equal(judgeTokenizerPrecheck([]), 'inconclusive')
+  assert.equal(judgeTokenizerPrecheckV1([{ referenceDelta: 100, sellerDeltas: [140, 90] }, { referenceDelta: 100, sellerDeltas: [100] }]), 'inconclusive')
+  assert.equal(judgeTokenizerPrecheckV1([]), 'inconclusive')
 })
 
 test('the reference has a difference only when every ask is readable, grows with the follow-up and agrees', () => {
@@ -433,7 +442,7 @@ test('a seller counting with another tokenizer is a mismatch after every round i
   }
   assert.match(describeTokenizerMismatch(record), new RegExp(
     `the seller signed ${record.rounds.map((round) => round.seller[0]!.delta).join('/')} input tokens, each 2 times over, `
-    + `for text the model counts as ${record.rounds.map((round) => round.reference.delta).join('/')}: off by more than 2 in every round, `
+    + `for text the model counts as ${record.rounds.map((round) => round.reference.delta).join('/')}: off by more than ${TOKENIZER_PRECHECK_RULE.toleranceTokens} in every round, `
     + 'while 1 of the model\'s other sellers signed the model\'s count$',
   ))
   assert.equal(record.crowd!.corroborated, true)
@@ -589,7 +598,8 @@ test('a count with cached input can match the model, and is never held against t
   assert.throws(() => validateTokenizerPrecheck(claimed), /not the ones in its signed responses/)
   assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [140, 140], cachedAsks: [false, true] }), 'unmeasured')
   assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [140, 140], cachedAsks: [false, false] }), 'off')
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [99], cachedAsks: [true] }), 'match')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [100], cachedAsks: [true] }), 'match', 'a count with cached input that is the model\'s matches')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [99], cachedAsks: [true] }, TOKENIZER_PRECHECK_RULE_V1), 'match', 'within the first rule\'s tolerance too')
 })
 
 test('a response signed without usage, or with a zero count, decides nothing after one more try', async () => {
@@ -674,7 +684,7 @@ test('a stored pre-check that does not follow from its signed responses is refus
   assert.throws(() => validateTokenizerPrecheck(edit((copy) => { copy.rounds[1]!.seller[1]!.delta! += 30 })), /difference does not follow/)
   assert.throws(() => validateTokenizerPrecheck(edit((copy) => { copy.rounds[2]!.reference.delta! -= 40 })), /reference difference does not follow/)
   assert.throws(() => validateTokenizerPrecheck(edit((copy) => { copy.rounds[0]!.seller[0]!.base.responseAuth!.status = 'invalid' })), /not the ones in its signed responses/)
-  assert.throws(() => validateTokenizerPrecheck(edit((copy) => { copy.rule = { ...copy.rule, toleranceTokens: 0 } })), /unknown rule/)
+  assert.throws(() => validateTokenizerPrecheck(edit((copy) => { copy.rule = { ...copy.rule, toleranceTokens: 1 } })), /unknown rule/)
   assert.throws(() => validateTokenizerPrecheck(edit((copy) => { copy.rule = { ...copy.rule, id: 'tokenizer-precheck-v0' } })), /unknown rule/)
   assert.throws(() => validateTokenizerPrecheck(edit((copy) => { copy.rounds[0]!.b = ' it\'s not guarded' })), /probe guard refuses/)
   assert.throws(() => validateTokenizerPrecheck(edit((copy) => { copy.outcome = 'match' })), /outcome match does not follow/)
@@ -767,12 +777,43 @@ test('a pre-check DIFF holds the signed pair of another seller on the reference\
 
 // ── the model's sellers against the reference ────────────────────────────────────────────────────
 
+test('tokenizer-precheck-v2 counts exactly: one token off is off, two asks one token apart are unstable, and only the exact count backs the reference', () => {
+  assert.equal(TOKENIZER_PRECHECK_RULE.id, 'tokenizer-precheck-v2')
+  assert.equal(tokenizerPrecheckRuleById('tokenizer-precheck-v1'), TOKENIZER_PRECHECK_RULE_V1, 'a used rule stays known, so its records are judged as they were')
+  const { id: _v2, toleranceTokens, ...restV2 } = TOKENIZER_PRECHECK_RULE
+  const { id: _v1, toleranceTokens: toleranceV1, ...restV1 } = TOKENIZER_PRECHECK_RULE_V1
+  assert.deepEqual([restV2, toleranceV1, toleranceTokens], [restV1, 2, 0], 'v2 is v1 with an exact count, nothing else')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [100] }), 'match')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [101] }), 'unmeasured', 'one token off is no match: it is asked again')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [101, 101] }), 'off')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [101, 102] }), 'unstable', 'two asks one token apart are no one answer')
+  const off = { referenceDelta: 100, sellerDeltas: [101, 101] }
+  assert.equal(judgeTokenizerPrecheck([off, off, off]), 'mismatch', 'still every round off')
+  assert.equal(judgeTokenizerPrecheck([off, off]), 'inconclusive')
+  assert.equal(judgeTokenizerPrecheck([off, off, { referenceDelta: 100, sellerDeltas: [100] }]), 'match')
+  // Only the exact count backs the reference, and only one same count is a group.
+  assert.equal(tokenizerCrowd([119, 120], 119).agree, 1)
+  assert.equal(tokenizerCrowd([131, 132, 119], 119).outvoted, false, 'two counts one token apart are no group')
+  assert.equal(tokenizerCrowd([132, 132, 119], 119).outvoted, true)
+})
+
+test('a seller one token off the model: a match under tokenizer-precheck-v1, a mismatch under v2; a v1 record is still judged by v1', async () => {
+  const oneOff = () => seller({ usage: (content) => 1 + MODEL_TOKENIZER(content) + (content.length > 40 ? 1 : 0) })
+  const v1 = await precheck(oneOff(), undefined, { rule: TOKENIZER_PRECHECK_RULE_V1 })
+  assert.deepEqual([v1.rule.id, v1.outcome], ['tokenizer-precheck-v1', 'match'])
+  // Stored, it is judged again by its own rule, not this build's exact one.
+  assert.doesNotThrow(() => validateTokenizerPrecheck(v1))
+  const v2 = await precheck(oneOff())
+  assert.deepEqual([v2.rule.id, v2.outcome], ['tokenizer-precheck-v2', 'mismatch'])
+  assert.doesNotThrow(() => validateTokenizerPrecheck(v2))
+})
+
 test('sellers outvote the reference when two or more agree on another count and outnumber those on the reference\'s', () => {
   const crowd = (deltas: Array<number | null>) => {
-    const { deltas: _deltas, requests: _requests, backers: _backers, ...tally } = tokenizerCrowd(deltas, 119)
+    const { deltas: _deltas, requests: _requests, backers: _backers, ...tally } = tokenizerCrowd(deltas, 119, TOKENIZER_PRECHECK_RULE_V1)
     return tally
   }
-  // The reference endpoint counts 119; thirteen sellers sign 132, two sign the reference's count.
+  // Under the first rule's tolerance of 2 tokens (`tokenizer-precheck-v1`). The reference endpoint counts 119; thirteen sellers sign 132, two sign the reference's count.
   assert.deepEqual(crowd([...new Array<number>(13).fill(132), 119, 120, null, 740]), { measured: 16, agree: 2, largestGroup: 13, groupDelta: 132, corroborated: true, outvoted: true })
   // Sellers within the tolerance of each other are one group.
   assert.equal(crowd([131, 132, 133, 119]).outvoted, true)
@@ -789,7 +830,7 @@ test('sellers outvote the reference when two or more agree on another count and 
   assert.deepEqual(crowd([132]), { measured: 1, agree: 0, largestGroup: 1, groupDelta: 132, corroborated: false, outvoted: false })
   assert.deepEqual(crowd([null, null]), { measured: 0, agree: 0, largestGroup: 0, groupDelta: null, corroborated: false, outvoted: false })
   // The stored differences are in ascending order with the unreadable ones last, so no seller can be told by its place.
-  assert.deepEqual(tokenizerCrowd([132, null, 119, 121], 119).deltas, [119, 121, 132, null])
+  assert.deepEqual(tokenizerCrowd([132, null, 119, 121], 119, TOKENIZER_PRECHECK_RULE_V1).deltas, [119, 121, 132, null])
 })
 
 /** A seller's audit clock driven by `signal` alone: what a test's audit deadline looks like to the pre-check. */
@@ -1330,7 +1371,7 @@ test('a seller that counts like the model is asked its questions and judged on t
   assert.equal(result.status, 'SAME')
   assert.equal(precheckRequests.length, 2)
   assert.ok(questionRequests.length > 0)
-  assert.deepEqual(result.tokenizerPrecheck, { rule: 'tokenizer-precheck-v1', outcome: 'match' })
+  assert.deepEqual(result.tokenizerPrecheck, { rule: TOKENIZER_PRECHECK_RULE.id, outcome: 'match' })
   assert.equal(result.parsedProbeCount, PROBE_COUNT)
   assert.equal(evidence.tokenizerPrecheck!.outcome, 'match')
   assert.equal(evidence.exchanges.length, questionRequests.length)
@@ -1348,7 +1389,7 @@ test('the only seller of a model that is off the reference is asked its question
   assert.equal(result.status, 'SAME')
   assert.equal(precheckRequests.length, 12)
   assert.ok(questionRequests.length > 0)
-  assert.deepEqual(result.tokenizerPrecheck, { rule: 'tokenizer-precheck-v1', outcome: 'inconclusive' })
+  assert.deepEqual(result.tokenizerPrecheck, { rule: TOKENIZER_PRECHECK_RULE.id, outcome: 'inconclusive' })
   assert.match(evidence.tokenizerPrecheck!.reason!, /no other seller of the model signed the reference's count/)
   assert.equal(result.requestCount, questionRequests.length + 12)
   assert.doesNotThrow(() => validateAuditMatchesSummary(evidence, result))
@@ -1410,7 +1451,7 @@ test('a pre-check that decides nothing leaves the seller to its questions', asyn
   const { result, evidence, questionRequests } = await audit({ usage: () => 0 })
   assert.equal(result.status, 'SAME')
   assert.ok(questionRequests.length > 0)
-  assert.deepEqual(result.tokenizerPrecheck, { rule: 'tokenizer-precheck-v1', outcome: 'inconclusive' })
+  assert.deepEqual(result.tokenizerPrecheck, { rule: TOKENIZER_PRECHECK_RULE.id, outcome: 'inconclusive' })
   assert.match(evidence.tokenizerPrecheck!.reason!, /could not be read/)
 })
 
@@ -1566,7 +1607,7 @@ test('check pipeline: tests that pass, or have no result, leave the verdict to t
   // An undecided test never blocks SAME.
   const undecided = await pipeline({ usage: () => 0, cap: capRecord('inconclusive'), echo: null })
   assert.equal(undecided.result.status, 'SAME')
-  assert.deepEqual(undecided.result.tokenizerPrecheck, { rule: 'tokenizer-precheck-v1', outcome: 'inconclusive' })
+  assert.deepEqual(undecided.result.tokenizerPrecheck, { rule: TOKENIZER_PRECHECK_RULE.id, outcome: 'inconclusive' })
 })
 
 test('check pipeline: a counted fixed amount flags as its own finding', async () => {

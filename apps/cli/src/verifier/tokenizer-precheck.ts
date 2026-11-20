@@ -67,8 +67,8 @@ export interface TokenizerPrecheckRule {
   maxTokens: number
 }
 
-/** The rule new audits use. A used rule is never edited: stored evidence names its rule by id. */
-export const TOKENIZER_PRECHECK_RULE: TokenizerPrecheckRule = Object.freeze({
+/** The first rule, a tolerance of 2 tokens. A used rule is never edited: stored evidence names its rule by id. */
+export const TOKENIZER_PRECHECK_RULE_V1: TokenizerPrecheckRule = Object.freeze({
   id: 'tokenizer-precheck-v1',
   rounds: 3,
   toleranceTokens: 2,
@@ -79,7 +79,20 @@ export const TOKENIZER_PRECHECK_RULE: TokenizerPrecheckRule = Object.freeze({
   maxTokens: 64,
 })
 
-const RULES: ReadonlyMap<string, TokenizerPrecheckRule> = new Map([[TOKENIZER_PRECHECK_RULE.id, TOKENIZER_PRECHECK_RULE]])
+/**
+ * The rule new audits use: `tokenizer-precheck-v1` with an exact count (`toleranceTokens` 0). A swap is often off the
+ * model's count by one or two tokens on a short text, which a tolerance of 2 let through. Every round must still be off
+ * for a mismatch, and the model's other sellers must still back the reference. The same tolerance applies throughout:
+ * a seller whose two asks of one text sign counts one token apart is unstable (hidden input that varies), so the round
+ * decides nothing; and a crowd seller backs the reference only by signing its exact count.
+ */
+export const TOKENIZER_PRECHECK_RULE: TokenizerPrecheckRule = Object.freeze({
+  ...TOKENIZER_PRECHECK_RULE_V1,
+  id: 'tokenizer-precheck-v2',
+  toleranceTokens: 0,
+})
+
+const RULES: ReadonlyMap<string, TokenizerPrecheckRule> = new Map([TOKENIZER_PRECHECK_RULE_V1, TOKENIZER_PRECHECK_RULE].map((rule) => [rule.id, rule]))
 
 /** The rule stored evidence was judged by; undefined for an id this CLI does not know. */
 export function tokenizerPrecheckRuleById(id: string): TokenizerPrecheckRule | undefined {

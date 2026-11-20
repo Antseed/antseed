@@ -28,6 +28,7 @@ const RULES_BY_COMPAT: Readonly<Record<number, string>> = {
   6: '0x2737cfab7304593d2ac4ffa44d6333384b10b04a1c9028e74278981a47ebdcd8',
   7: '0x47c7be1b6bf2f890e490f6f14bb4bb84841ed71aad6c8d367ffc099a7a88c1d3',
   8: '0xaac53c624372ecd4eac0e11907ce1c56b0b234a708b2993880b97a1baa59c63f',
+  9: '0xb46a449becd26d4a2301ccc08e453560c448cc5bae1f5c63b8e9653a4835b006',
 }
 
 test('the audit rules match the hash pinned for this verifier compat', () => {
@@ -119,7 +120,7 @@ test('the tokenizer pre-check is part of the rules: turned off it is named, and 
   const { rule } = tokenizerPrecheck
   assert.deepEqual(
     [rule.id, rule.rounds, rule.toleranceTokens, rule.referenceAsks, rule.sellerAsks, rule.outvoteSellers, rule.corroboratingSellers],
-    ['tokenizer-precheck-v1', 3, 2, 2, 2, 2, 1],
+    ['tokenizer-precheck-v2', 3, 0, 2, 2, 2, 1],
   )
   // The retry limits, the probe guard's table and what the probe writer writes are rules too: a change to any of
   // them changes which counts are compared.
@@ -129,21 +130,23 @@ test('the tokenizer pre-check is part of the rules: turned off it is named, and 
   assert.equal(new Set(tokenizerPrecheck.probes.map((probe) => probe.a + probe.b)).size, 4)
   for (const probe of tokenizerPrecheck.probes) assert.ok(isSafeProbe(probe.b), probe.b)
   assert.deepEqual(tokenizerPrecheck.probes, (verifierRulesFingerprint() as { tokenizerPrecheck: { probes: unknown } }).tokenizerPrecheck.probes, 'the same probes every time')
-  // Within the tolerance once is a match, cached or not; a mismatch is three rounds off, each the same way twice;
-  // anything missing, a seller whose two asks disagree, and a count that is off with the cache in play decide nothing.
+  // Under tokenizer-precheck-v2 (an exact count): the exact count is a match; a mismatch is three rounds off by even
+  // one token, each the same way twice; anything missing, a seller whose two asks are a token or more apart, and a count
+  // that is off with the cache in play decide nothing.
   assert.deepEqual(tokenizerPrecheck.judged, [
-    'match', 'match', 'mismatch', 'match', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive',
-    'match', 'inconclusive',
+    'match', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive',
+    'inconclusive', 'inconclusive', 'mismatch', 'match',
   ])
   // A reference with cached input or from two providers has no difference; one that names no provider has.
   assert.deepEqual(tokenizerPrecheck.referenceDeltas, [117, null, null, null, null, null, null, 117])
   // For each crowd: whether a seller signs the reference's count, whether the sellers outvote the reference (a
   // group of two or more on one other count, larger than the group on the reference's), and whether a seller
-  // off in every round is then a mismatch: only when the reference is backed and not outvoted.
+  // off in every round is then a mismatch: only when the reference is backed and not outvoted. Under an exact count a
+  // seller two tokens off the reference's (121 against 119) no longer backs it.
   assert.deepEqual(tokenizerPrecheck.crowds, [
     [true, true, false], [true, false, true], [true, false, true], [false, true, false],
-    [true, false, true], [false, false, false], [true, false, true], [false, false, false],
-    [true, true, false],
+    [true, false, true], [false, false, false], [false, false, false], [false, false, false],
+    [true, true, false], [true, false, true],
   ])
   assert.deepEqual(tokenizerPrecheck.guarded, [true, true, true, false, false, false, false, false])
   // The last four: cached input without a count, a body cut off before its end, an event-stream line, an error

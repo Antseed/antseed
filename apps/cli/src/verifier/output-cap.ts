@@ -13,7 +13,7 @@ import {
   generateTokenizerProbe,
   measureTokenizerReference,
   referenceDelta,
-  TOKENIZER_PRECHECK_RULE,
+  TOKENIZER_PRECHECK_RULE_V1,
   type TokenizerPrecheckRule,
   type TokenizerReferenceAsk,
   type TokenizerReferenceRoundV1,
@@ -174,7 +174,8 @@ export function measuredTokens(measurement: OutputCapMeasurementV1 | null, rule:
 
 /** The pre-check's measurement rule, with this rule's number of reference asks. */
 function measurementRule(rule: OutputCapRule): TokenizerPrecheckRule {
-  return { ...TOKENIZER_PRECHECK_RULE, referenceAsks: rule.referenceAsks }
+  // Pinned to the first token rule: the cap check measures with it as it was measured, whatever the pre-check's own rule.
+  return { ...TOKENIZER_PRECHECK_RULE_V1, referenceAsks: rule.referenceAsks }
 }
 
 /**

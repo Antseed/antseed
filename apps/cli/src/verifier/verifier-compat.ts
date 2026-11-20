@@ -517,6 +517,10 @@ const SAMPLE_TOKENIZER_ROUNDS: ReadonlyArray<ReadonlyArray<{ referenceDelta: num
   [{ referenceDelta: null, sellerDeltas: [140, 140] }, { referenceDelta: 90, sellerDeltas: [130, 130] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
   [{ referenceDelta: 100, sellerDeltas: [101], cachedAsks: [true] }],
   [{ referenceDelta: 100, sellerDeltas: [140, 140], cachedAsks: [false, true] }, { referenceDelta: 90, sellerDeltas: [130, 130] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
+  // One token off in every round, the same way twice: a mismatch only under an exact count (tokenizer-precheck-v2).
+  [{ referenceDelta: 100, sellerDeltas: [101, 101] }, { referenceDelta: 90, sellerDeltas: [91, 91] }, { referenceDelta: 80, sellerDeltas: [81, 81] }],
+  // Two rounds off, then the exact count: a match.
+  [{ referenceDelta: 100, sellerDeltas: [101, 101] }, { referenceDelta: 90, sellerDeltas: [91, 91] }, { referenceDelta: 80, sellerDeltas: [80] }],
 ]
 
 /**
@@ -534,6 +538,8 @@ const SAMPLE_TOKENIZER_CROWDS: ReadonlyArray<Array<number | null>> = [
   [132, 121],
   [132, null, null],
   [132, 132, 119],
+  // One seller off with one on the reference's exact count (tokenizer-precheck-v2: only the exact count backs it).
+  [132, 119],
 ]
 
 const referenceAsk = (baseTokens: number | null, probedTokens: number | null, extra: Partial<TokenizerReferenceAskV1> = {}): TokenizerReferenceAskV1 => ({
