@@ -2,7 +2,7 @@ import type {FaqItem} from '../../parts/Faq';
 
 export const QUESTIONS: readonly FaqItem[] = [
   {question: 'What is a Colony?', answer: 'A Colony is a group of machines working together to serve AI on Antseed. An operator coordinates the Colony, and each machine is paid for the answers it gives.'},
-  {question: 'Can I join the Mac Colony today?', answer: 'Early access is invite-only while we test. Join the waitlist with your email and your Mac, and we’ll email you when there’s a spot.', link: {href: '#join', label: 'Join the waitlist →'}},
+  {question: 'Can I join the Mac Colony today?', answer: 'Join the waitlist with your email and your Mac, and we’ll email you when there’s a spot.', link: {href: '#join', label: 'Join the waitlist →'}},
   {question: 'Can I download the app now?', answer: 'Not yet. The download comes with your invite, along with the address of the Colony you join.'},
   {question: 'Which Macs can join?', answer: 'Any Mac with Apple silicon on macOS 14 or later can sign up.'},
   {question: 'What do I need once I’m invited?', answer: 'The address of the Colony from your invite, and a wallet on Base for what your Mac earns. The app walks you through both.', link: {href: '#setup', label: 'Set up your Mac →'}},
