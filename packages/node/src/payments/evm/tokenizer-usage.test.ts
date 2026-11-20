@@ -129,7 +129,11 @@ describe('signedResponseInputUsage', () => {
   });
 
   it('tells when the usage reports cached input, in every shape upstreams and gateways use', () => {
-    const usage = (value: unknown) => signedResponseInputUsage(preimage(JSON.stringify({ usage: value })));
+    // The count and the cache flag; the cache amounts are read in the test below.
+    const usage = (value: unknown) => {
+      const { cache: _cache, ...read } = signedResponseInputUsage(preimage(JSON.stringify({ usage: value })));
+      return read;
+    };
     expect(usage({ prompt_tokens: 143, completion_tokens: 40 })).toEqual({ inputTokens: 143, cachedInput: false });
     expect(usage({ prompt_tokens: 143, prompt_tokens_details: { cached_tokens: 0, audio_tokens: 0 } })).toEqual({ inputTokens: 143, cachedInput: false });
     expect(usage({ prompt_tokens: 120, prompt_tokens_details: { cached_tokens: 108, text_tokens: 1279 } })).toEqual({ inputTokens: 120, cachedInput: true });
@@ -141,7 +145,19 @@ describe('signedResponseInputUsage', () => {
     // Not a count, and not where usage is read.
     expect(usage({ prompt_tokens: 143, cache: 'none' }).cachedInput).toBe(false);
     expect(signedResponseInputUsage(preimage('{"cached_tokens":5,"usage":{"prompt_tokens":143}}')).cachedInput).toBe(false);
-    expect(signedResponseInputUsage(preimage('{"usage":{"prompt_tokens":143}}', 500))).toEqual({ inputTokens: null, cachedInput: false });
+    expect(signedResponseInputUsage(preimage('{"usage":{"prompt_tokens":143}}', 500))).toEqual({ inputTokens: null, cachedInput: false, cache: {} });
+  });
+
+  it('reads the cached amounts by their path, so two answers that report the same amount can be told apart from two that do not', () => {
+    const cache = (value: unknown) => signedResponseInputUsage(preimage(JSON.stringify({ usage: value }))).cache;
+    expect(cache({ prompt_tokens: 143, completion_tokens: 40 })).toEqual({});
+    expect(cache({ prompt_tokens: 120, prompt_tokens_details: { cached_tokens: 108, text_tokens: 1279 } })).toEqual({ 'prompt_tokens_details.cached_tokens': 108 });
+    expect(cache({ prompt_tokens: 802, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 770 } })).toEqual({ 'prompt_tokens_details.cache_write_tokens': 770 });
+    expect(cache({ input_tokens: 12, cache_read_input_tokens: 3, cache_creation_input_tokens: 9 })).toEqual({ cache_read_input_tokens: 3, cache_creation_input_tokens: 9 });
+    // A cached amount of zero, and a member that is no number, are no cache.
+    expect(cache({ input_tokens: 12, cache_creation_input_tokens: 0, cache: 'none' })).toEqual({});
+    expect(cache({ prompt_tokens: 140, prompt_tokens_details: { cached_tokens: 108 } })).toEqual(cache({ prompt_tokens: 175, prompt_tokens_details: { cached_tokens: 108 } }));
+    expect(cache({ prompt_tokens: 140, prompt_tokens_details: { cached_tokens: 108 } })).not.toEqual(cache({ prompt_tokens: 175, prompt_tokens_details: { cached_tokens: 140 } }));
   });
 
   it('tells cached input also when there is no count to read, so a stored record and its bytes agree', () => {
@@ -152,7 +168,7 @@ describe('signedResponseInputUsage', () => {
       // Gemini's own usage shape: not one the reader counts.
       '{"usage":{"promptTokenCount":40,"cachedContentTokenCount":30}}',
     ]) {
-      expect(signedResponseInputUsage(preimage(body)), body).toEqual({ inputTokens: null, cachedInput: true });
+      expect(signedResponseInputUsage(preimage(body)), body).toMatchObject({ inputTokens: null, cachedInput: true });
     }
   });
 
@@ -170,15 +186,15 @@ describe('signedResponseInputUsage', () => {
       `\uFEFF${complete}`,
     ]) {
       expect(promptTokensOfBody(encoder.encode(body)), body).not.toBeNull();
-      expect(signedResponseInputUsage(preimage(body)), body).toEqual({ inputTokens: null, cachedInput: false });
+      expect(signedResponseInputUsage(preimage(body)), body).toEqual({ inputTokens: null, cachedInput: false, cache: {} });
     }
     // Two documents, and a document that is not an object.
     for (const body of [`${complete}\n${complete}`, `[${complete}]`, '15', 'null']) {
-      expect(signedResponseInputUsage(preimage(body)), body).toEqual({ inputTokens: null, cachedInput: false });
+      expect(signedResponseInputUsage(preimage(body)), body).toEqual({ inputTokens: null, cachedInput: false, cache: {} });
     }
     // Bytes that are not UTF-8.
     const broken = Uint8Array.from([...encoder.encode('{"note":"'), 0xff, ...encoder.encode('","usage":{"prompt_tokens":15}}')]);
-    expect(responseBodyInputUsage(broken)).toEqual({ inputTokens: null, cachedInput: false });
+    expect(responseBodyInputUsage(broken)).toEqual({ inputTokens: null, cachedInput: false, cache: {} });
   });
 
   it('reads no count from an error sent with status 200, whatever usage it carries', () => {
@@ -188,19 +204,19 @@ describe('signedResponseInputUsage', () => {
       '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"},"usage":{"input_tokens":40}}',
       '{"error":"rate limited","usage":{"prompt_tokens":40,"prompt_tokens_details":{"cached_tokens":8}}}',
     ]) {
-      expect(signedResponseInputUsage(preimage(body)), body).toEqual({ inputTokens: null, cachedInput: false });
+      expect(signedResponseInputUsage(preimage(body)), body).toEqual({ inputTokens: null, cachedInput: false, cache: {} });
     }
     // Nor an error beside an empty list of choices: no first choice, as the reference's reader sees it.
-    expect(signedResponseInputUsage(preimage('{"choices":[],"error":{"message":"partial"},"usage":{"prompt_tokens":40}}'))).toEqual({ inputTokens: null, cachedInput: false });
+    expect(signedResponseInputUsage(preimage('{"choices":[],"error":{"message":"partial"},"usage":{"prompt_tokens":40}}'))).toEqual({ inputTokens: null, cachedInput: false, cache: {} });
     // Nor beside a first choice that is no choice.
-    expect(signedResponseInputUsage(preimage('{"choices":[null],"error":{"message":"partial"},"usage":{"prompt_tokens":40}}'))).toEqual({ inputTokens: null, cachedInput: false });
+    expect(signedResponseInputUsage(preimage('{"choices":[null],"error":{"message":"partial"},"usage":{"prompt_tokens":40}}'))).toEqual({ inputTokens: null, cachedInput: false, cache: {} });
     // An answer is read whatever else it says: a null error, or an error beside a choice.
     expect(signedResponseInputUsage(preimage('{"object":"response","error":null,"usage":{"input_tokens":40}}')).inputTokens).toBe(40);
     expect(signedResponseInputUsage(preimage('{"choices":[{"message":{"content":"ok"}}],"error":{"message":"partial"},"usage":{"prompt_tokens":40}}')).inputTokens).toBe(40);
   });
 
   it('reads a body on its own as it reads a signed response', () => {
-    expect(responseBodyInputUsage(encoder.encode('{"usage":{"input_tokens":12,"cache_read_input_tokens":3}}'))).toEqual({ inputTokens: 15, cachedInput: true });
-    expect(responseBodyInputUsage(encoder.encode('{"usage":{"prompt_tokens":143}}'))).toEqual({ inputTokens: 143, cachedInput: false });
+    expect(responseBodyInputUsage(encoder.encode('{"usage":{"input_tokens":12,"cache_read_input_tokens":3}}'))).toEqual({ inputTokens: 15, cachedInput: true, cache: { cache_read_input_tokens: 3 } });
+    expect(responseBodyInputUsage(encoder.encode('{"usage":{"prompt_tokens":143}}'))).toEqual({ inputTokens: 143, cachedInput: false, cache: {} });
   });
 });

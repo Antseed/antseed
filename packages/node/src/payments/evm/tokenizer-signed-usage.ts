@@ -15,6 +15,12 @@ export interface SignedInputUsage {
    * so such a count says nothing reliable about the text it was signed for.
    */
   cachedInput: boolean;
+  /**
+   * The cache members the usage reports above zero, by their path in `usage` (`prompt_tokens_details.cached_tokens`,
+   * `cache_read_input_tokens`); empty when it reports none. Two answers whose members are equal report the same
+   * cached amount: the cache then cancels out of their difference, whether a gateway counts it in or leaves it out.
+   */
+  cache: Readonly<Record<string, number>>;
 }
 
 /** Reads a seller's signed input usage from the response preimage its ResponseAuth covers (binary HTTP codec). */
@@ -28,7 +34,7 @@ export function signedResponseInputUsage(responsePreimage: Uint8Array): SignedIn
   return response.statusCode === 200 ? responseBodyInputUsage(response.body) : NO_USAGE;
 }
 
-const NO_USAGE: SignedInputUsage = Object.freeze({ inputTokens: null, cachedInput: false });
+const NO_USAGE: SignedInputUsage = Object.freeze({ inputTokens: null, cachedInput: false, cache: Object.freeze({}) });
 
 /**
  * The input usage a response body reports: the same reading for a seller's signed response and for the answer of
@@ -50,16 +56,23 @@ export function responseBodyInputUsage(body: Uint8Array): SignedInputUsage {
   const answered = typeof first === 'object' && first !== null;
   if (envelope.error !== undefined && envelope.error !== null && !answered) return NO_USAGE;
   const tokens = promptTokensOfBody(body);
-  return { inputTokens: tokens !== null && tokens > 0 ? tokens : null, cachedInput: reportsCachedInput((parsed as { usage?: unknown }).usage) };
+  const cache = cacheMembers((parsed as { usage?: unknown }).usage);
+  return { inputTokens: tokens !== null && tokens > 0 ? tokens : null, cachedInput: Object.keys(cache).length > 0, cache };
 }
 
-/** Whether the top-level `usage`, or one of its detail objects, has a cache member above zero. */
-function reportsCachedInput(usage: unknown): boolean {
-  const cached = (value: unknown, depth: number): boolean => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-    return Object.entries(value).some(([key, member]) => (
-      /cache/i.test(key) ? typeof member === 'number' && member > 0 : depth < 1 && cached(member, depth + 1)
-    ));
+/** The cache members above zero of the top-level `usage` and of its detail objects, by path. */
+function cacheMembers(usage: unknown): Readonly<Record<string, number>> {
+  const found: Record<string, number> = {};
+  const walk = (value: unknown, depth: number, prefix: string): void => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    for (const [key, member] of Object.entries(value)) {
+      if (/cache/i.test(key)) {
+        if (typeof member === 'number' && member > 0) found[`${prefix}${key}`] = member;
+      } else if (depth < 1) {
+        walk(member, depth + 1, `${prefix}${key}.`);
+      }
+    }
   };
-  return cached(usage, 0);
+  walk(usage, 0, '');
+  return Object.freeze(found);
 }

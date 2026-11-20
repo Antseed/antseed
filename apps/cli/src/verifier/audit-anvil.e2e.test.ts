@@ -468,7 +468,7 @@ test('a tokenizer pre-check DIFF is one auditor\'s report until another auditor\
     }
     const diff = evidence.results.find((result) => result.agentId === '2')!
     assert.equal(diff.verdict, 'DIFF')
-    assert.match(diff.verdictReason!, /^tokenizer pre-check \(tokenizer-precheck-v2\): the seller signed .* off by more than 0 in every round, while 2 of the model's other sellers signed the model's count$/)
+    assert.match(diff.verdictReason!, /^tokenizer pre-check \(tokenizer-precheck-v3\): the seller signed .* off by more than 0 in every round, while 2 of the model's other sellers signed the model's count$/)
     const sellerEvidence = JSON.parse(await readFile(
       resolve(dirname(modelAuditEvidencePath(a.evidenceDir, 'a-audit', model)), diff.audit.evidencePath), 'utf8',
     )) as { exchanges: unknown[]; tokenizerPrecheck: { outcome: string; rounds: Array<{ seller: Array<{ delta: number }>; reference: { delta: number } }> } }

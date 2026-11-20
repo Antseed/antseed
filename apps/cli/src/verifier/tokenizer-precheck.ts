@@ -65,6 +65,12 @@ export interface TokenizerPrecheckRule {
   corroboratingSellers: number
   /** Reply limit of every request. Lower limits cut reasoning models off before they report usage. */
   maxTokens: number
+  /**
+   * A pair whose two answers (A, and A + B) report the same cached amount is kept (`tokenizer-precheck-v3`): the cache
+   * cancels out of the difference, whether the count includes it or leaves it out. Without it any cached input leaves
+   * the pair without a measurement, which leaves a model whose reference always reports cached input without a test.
+   */
+  sameCacheCancels?: true
 }
 
 /** The first rule, a tolerance of 2 tokens. A used rule is never edited: stored evidence names its rule by id. */
@@ -86,13 +92,35 @@ export const TOKENIZER_PRECHECK_RULE_V1: TokenizerPrecheckRule = Object.freeze({
  * a seller whose two asks of one text sign counts one token apart is unstable (hidden input that varies), so the round
  * decides nothing; and a crowd seller backs the reference only by signing its exact count.
  */
-export const TOKENIZER_PRECHECK_RULE: TokenizerPrecheckRule = Object.freeze({
+export const TOKENIZER_PRECHECK_RULE_V2: TokenizerPrecheckRule = Object.freeze({
   ...TOKENIZER_PRECHECK_RULE_V1,
   id: 'tokenizer-precheck-v2',
   toleranceTokens: 0,
 })
 
-const RULES: ReadonlyMap<string, TokenizerPrecheckRule> = new Map([TOKENIZER_PRECHECK_RULE_V1, TOKENIZER_PRECHECK_RULE].map((rule) => [rule.id, rule]))
+/**
+ * The rule new audits use: `tokenizer-precheck-v2` (an exact count) that keeps a pair whose two answers report the same
+ * cached amount (`sameCacheCancels`). A pair whose answers report different amounts, or one only, still decides nothing.
+ */
+export const TOKENIZER_PRECHECK_RULE: TokenizerPrecheckRule = Object.freeze({
+  ...TOKENIZER_PRECHECK_RULE_V2,
+  id: 'tokenizer-precheck-v3',
+  sameCacheCancels: true,
+})
+
+const RULES: ReadonlyMap<string, TokenizerPrecheckRule> = new Map([TOKENIZER_PRECHECK_RULE_V1, TOKENIZER_PRECHECK_RULE_V2, TOKENIZER_PRECHECK_RULE].map((rule) => [rule.id, rule]))
+
+/** Two answers' cache members, equal and not empty: the same cached amount, which cancels out of their difference. */
+export function sameCache(left: Readonly<Record<string, number>> | undefined, right: Readonly<Record<string, number>> | undefined): boolean {
+  if (!left || !right || Object.keys(left).length === 0) return false
+  return canonicalJsonStringify(left) === canonicalJsonStringify(right)
+}
+
+/** Whether a seller's pair is left without a measurement by its cache: cached input that does not cancel out. */
+export function cacheBlocks(ask: Pick<TokenizerSellerAskV1, 'base' | 'probed'>, rule: TokenizerPrecheckRule = TOKENIZER_PRECHECK_RULE): boolean {
+  if (!ask.base.cachedInput && !ask.probed?.cachedInput) return false
+  return !(rule.sameCacheCancels === true && ask.probed !== null && ask.probed !== undefined && sameCache(ask.base.cache, ask.probed.cache))
+}
 
 /** The rule stored evidence was judged by; undefined for an id this CLI does not know. */
 export function tokenizerPrecheckRuleById(id: string): TokenizerPrecheckRule | undefined {
@@ -127,6 +155,8 @@ export interface TokenizerReferenceAskV1 {
   probedTokens: number | null
   /** One of the two answers reports cached input. */
   cachedInput: boolean
+  /** The cache members each answer reports above zero (A, then A + B); absent in records from before it was kept. */
+  cache?: [Readonly<Record<string, number>>, Readonly<Record<string, number>>]
   /** The provider that answered A and the one that answered A + B; null where the endpoint named none. */
   providers: [string | null, string | null]
 }
@@ -158,6 +188,8 @@ export interface TokenizerSellerRequestV1 {
   signedInputTokens: number | null
   /** The signed response reports cached input. Its count can match the model's, and is never held against the seller. */
   cachedInput: boolean
+  /** The cache members the signed response reports above zero, by path; absent in records from before it was kept. */
+  cache?: Record<string, number>
   attemptCosts: ProxyAuditExchangeCostV1[]
   /** The ResponseAuth of the last try, with the exact bytes the seller signed. */
   responseAuth: ProxyAuditEvidenceExchangeV1['responseAuth'] | null
@@ -324,8 +356,8 @@ export function tokenizerCrowd(
  * A seller's first-round pair as a vote in the crowd: its difference, or null when it has none or reports cached
  * input. The same reading for a seller's own first ask and for an ask sent for another seller's crowd.
  */
-export function tokenizerVote(ask: TokenizerSellerAskV1 | null | undefined): number | null {
-  if (!ask || ask.delta === null || ask.base.cachedInput || ask.probed?.cachedInput) return null
+export function tokenizerVote(ask: TokenizerSellerAskV1 | null | undefined, rule: TokenizerPrecheckRule = TOKENIZER_PRECHECK_RULE): number | null {
+  if (!ask || ask.delta === null || cacheBlocks(ask, rule)) return null
   return ask.delta
 }
 
@@ -363,7 +395,11 @@ export function referenceDelta(
 ): { delta: number | null; failure: string | null } {
   if (asks.length < rule.referenceAsks) return { delta: null, failure: `the reference was asked ${asks.length} of ${rule.referenceAsks} times` }
   if (asks.some((ask) => ask.baseTokens === null || ask.probedTokens === null)) return { delta: null, failure: 'the reference reported no input tokens' }
-  if (asks.some((ask) => ask.cachedInput !== false)) return { delta: null, failure: 'the reference reported cached input' }
+  // Cached input leaves an ask without a measurement, unless both its answers report the same cached amount and the
+  // rule lets that cancel out (`sameCacheCancels`).
+  if (asks.some((ask) => ask.cachedInput !== false && !(rule.sameCacheCancels === true && sameCache(ask.cache?.[0], ask.cache?.[1])))) {
+    return { delta: null, failure: 'the reference reported cached input' }
+  }
   const providers = [...new Set(asks.flatMap((ask) => (Array.isArray(ask.providers) ? ask.providers : [undefined])))]
   if (providers.length !== 1 || providers[0] === undefined) {
     return { delta: null, failure: `the reference answered from more than one provider (${providers.map((provider) => provider ?? 'unnamed').join(', ')})` }
@@ -382,7 +418,7 @@ export function referenceDelta(
  */
 export type TokenizerReferenceAsk = (contents: readonly string[], signal?: AbortSignal) => Promise<{
   upstream: unknown
-  results: ReadonlyArray<{ inputTokens: number | null; cachedInput?: boolean; provider?: string | null; failure: string | null }>
+  results: ReadonlyArray<{ inputTokens: number | null; cachedInput?: boolean; cache?: Readonly<Record<string, number>>; provider?: string | null; failure: string | null }>
 }>
 
 /** Probes written for one round before it is left without a reference difference. */
@@ -427,6 +463,7 @@ export async function measureTokenizerReference(input: {
           baseTokens: base?.inputTokens ?? null,
           probedTokens: probed?.inputTokens ?? null,
           cachedInput: base?.cachedInput === true || probed?.cachedInput === true,
+          ...(base?.cache || probed?.cache ? { cache: [{ ...(base?.cache ?? {}) }, { ...(probed?.cache ?? {}) }] as [Record<string, number>, Record<string, number>] } : {}),
           providers: [base?.provider ?? null, probed?.provider ?? null],
         }
       })
@@ -530,9 +567,9 @@ export async function runTokenizerPrecheck(input: {
           ? `the seller signed no more input tokens with the follow-up (${probed.signedInputTokens}) than without (${base.signedInputTokens})`
           : `the seller's signed input tokens could not be read: ${(probed ?? base).failureReason ?? 'no signed usage'}`)
       }
-      const verdict = judgeTokenizerRound(roundDeltas(round), rule)
+      const verdict = judgeTokenizerRound(roundDeltas(round, rule), rule)
       if (verdict === 'match') return done('match', null)
-      if (base.cachedInput || probed!.cachedInput) {
+      if (cacheBlocks({ base, probed }, rule)) {
         return done('inconclusive', `the seller signed ${delta} input tokens where the model counts ${round.reference.delta}, `
           + 'but its response reports cached input, whose count cannot be held against it')
       }
@@ -645,7 +682,7 @@ export function createTokenizerPrecheckScreen<Settings>(input: {
   const votes = new Map<string, Promise<Vote>>()
   // A vote that measured nothing is dropped, so the next check that needs the crowd asks that seller again.
   const keepIfMeasured = (peer: string, entry: Promise<Vote>, vote: Vote): void => {
-    if (tokenizerVote(vote.ask) === null && votes.get(peer) === entry) votes.delete(peer)
+    if (tokenizerVote(vote.ask, rule) === null && votes.get(peer) === entry) votes.delete(peer)
   }
   const told = new Set<'outvoted' | 'uncorroborated'>()
   const askInput = (seller: TokenizerPrecheckSeller, stop: { signal?: AbortSignal; clock?: TokenizerPrecheckClock }): SellerAskInput => ({
@@ -709,7 +746,7 @@ export function createTokenizerPrecheckScreen<Settings>(input: {
           if (!known) return askAfresh(peer, other)
           const vote = await inTime(known)
           if (vote === null) return { seller: other, ask: null }
-          if (tokenizerVote(vote.ask) !== null) return vote
+          if (tokenizerVote(vote.ask, rule) !== null) return vote
           // A shared ask that ended without a measure (it failed, or another check stopped it) is asked again, once:
           // a check that finds another's new ask for that seller already out waits for it.
           const replacement = votes.get(peer)
@@ -722,12 +759,12 @@ export function createTokenizerPrecheckScreen<Settings>(input: {
         }
         const referenceDelta = round!.delta!
         const backers = collected.flatMap((vote): TokenizerBackerV1[] => {
-          const delta = tokenizerVote(vote.ask)
+          const delta = tokenizerVote(vote.ask, rule)
           return key(vote.seller) !== key(seller) && delta !== null && Math.abs(delta - referenceDelta) <= rule.toleranceTokens
             ? [{ peerId: vote.seller.peerId, service: vote.seller.service, ask: vote.ask! }]
             : []
         })
-        return tokenizerCrowd(collected.map((vote) => tokenizerVote(vote.ask)), referenceDelta, rule, requests, backers)
+        return tokenizerCrowd(collected.map((vote) => tokenizerVote(vote.ask, rule)), referenceDelta, rule, requests, backers)
       }
       const record = await runTokenizerPrecheck({ ...askInput(seller, own), reference: measured, rule, crowd, ...(firstAsk ? { firstAsk } : {}) })
       if (record.crowd && record.outcome !== 'mismatch') {
@@ -768,6 +805,7 @@ async function askSeller(
     record.responseAuth = null
     record.signedInputTokens = null
     record.cachedInput = false
+    delete record.cache
     // The seller's clock runs while this request is out, from when it leaves the limiter to its ResponseAuth.
     let out = false
     let answered = false
@@ -833,6 +871,8 @@ async function askSeller(
       const usage = signedUsage(record)
       record.signedInputTokens = usage.inputTokens
       record.cachedInput = usage.cachedInput
+      if (usage.cachedInput) record.cache = { ...usage.cache }
+      else delete record.cache
       if (usage.inputTokens === null) {
         record.failureReason = 'the response the seller signed reports no input tokens'
         continue
@@ -867,18 +907,19 @@ function untilAborted<T, U>(promise: Promise<T>, signal: AbortSignal, otherwise:
 }
 
 /** A round's differences as the rule judges them. */
-function roundDeltas(round: TokenizerPrecheckRoundV1): TokenizerRoundDeltas {
+function roundDeltas(round: TokenizerPrecheckRoundV1, rule: TokenizerPrecheckRule): TokenizerRoundDeltas {
   return {
     referenceDelta: round.reference.delta,
     sellerDeltas: round.seller.map((ask) => ask.delta),
-    cachedAsks: round.seller.map((ask) => ask.base.cachedInput || ask.probed?.cachedInput === true),
+    // An ask whose cache does not cancel out (`cacheBlocks`): its count is never held against the seller.
+    cachedAsks: round.seller.map((ask) => cacheBlocks(ask, rule)),
   }
 }
 
 /** What a stored request's signed response carries for the pre-check, read as the run read it. */
-function signedUsage(request: TokenizerSellerRequestV1): { inputTokens: number | null; cachedInput: boolean } {
+function signedUsage(request: TokenizerSellerRequestV1): { inputTokens: number | null; cachedInput: boolean; cache: Readonly<Record<string, number>> } {
   const preimages = request.responseAuth?.status === 'verified' ? request.responseAuth.signedPreimages : null
-  return preimages ? signedResponseInputUsage(Buffer.from(preimages.responseBase64, 'base64')) : { inputTokens: null, cachedInput: false }
+  return preimages ? signedResponseInputUsage(Buffer.from(preimages.responseBase64, 'base64')) : { inputTokens: null, cachedInput: false, cache: {} }
 }
 
 function withoutPreimages<T extends { requestPreimage?: unknown; responsePreimage?: unknown }>(
@@ -984,7 +1025,7 @@ export function validateTokenizerPrecheck(record: TokenizerPrecheckV1, auditedPe
       }
       if (sellerDelta(ask.base, ask.probed) !== ask.delta) throw new Error(`${where}: the seller's difference does not follow from its signed responses`)
     }
-    return { ...roundDeltas(round), referenceDelta: reference }
+    return { ...roundDeltas(round, rule), referenceDelta: reference }
   })
   // The run's own stop rules. Without a reference for every round the seller is asked nothing. Otherwise each
   // round is asked until an ask ends the check (no count, within the tolerance, cached input while off, or two
@@ -1005,7 +1046,7 @@ export function validateTokenizerPrecheck(record: TokenizerPrecheckV1, auditedPe
         sellerDeltas: judged[index]!.sellerDeltas.slice(0, ask + 1),
         cachedAsks: judged[index]!.cachedAsks?.slice(0, ask + 1),
       }, rule)
-      if (entry.delta === null || verdict === 'match' || verdict === 'unstable' || entry.base.cachedInput || entry.probed?.cachedInput) ended = true
+      if (entry.delta === null || verdict === 'match' || verdict === 'unstable' || cacheBlocks(entry, rule)) ended = true
     }
     if (!ended && round.seller.length < rule.sellerAsks) throw new Error(`${where}: the seller was asked fewer times than the rule asks`)
   }
@@ -1035,7 +1076,9 @@ export function validateTokenizerPrecheck(record: TokenizerPrecheckV1, auditedPe
 /** Whether a stored request's count and cache flag are the ones its kept signed response gives. */
 function signedAsStored(request: TokenizerSellerRequestV1): boolean {
   const signed = signedUsage(request)
-  return signed.inputTokens === request.signedInputTokens && signed.cachedInput === request.cachedInput
+  // A stored cache is the signed one; a record from before it was kept has none, and then never cancels.
+  const cacheAsSigned = request.cache === undefined || canonicalJsonStringify(request.cache) === canonicalJsonStringify(signed.cache)
+  return signed.inputTokens === request.signedInputTokens && signed.cachedInput === request.cachedInput && cacheAsSigned
 }
 
 /**
@@ -1064,9 +1107,9 @@ function validateTokenizerBackers(
     peers.add(peerKey(backer.peerId))
     const { ask } = backer
     if (!ask?.probed) throw new Error(`${where} has no signed pair`)
+    if (cacheBlocks(ask, rule)) throw new Error(`${where}: its response reports cached input`)
     for (const request of [ask.base, ask.probed]) {
       if (!signedAsStored(request)) throw new Error(`${where}: its input tokens are not the ones in its signed responses`)
-      if (request.cachedInput) throw new Error(`${where}: its response reports cached input`)
       const signer = request.responseAuth?.record?.sellerPeerId
       if (typeof signer !== 'string' || peerKey(signer) !== peerKey(backer.peerId)) throw new Error(`${where}: its responses are not signed by it`)
       for (const id of request.requestIds) {

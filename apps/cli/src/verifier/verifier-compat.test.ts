@@ -30,6 +30,7 @@ const RULES_BY_COMPAT: Readonly<Record<number, string>> = {
   8: '0xaac53c624372ecd4eac0e11907ce1c56b0b234a708b2993880b97a1baa59c63f',
   9: '0xb46a449becd26d4a2301ccc08e453560c448cc5bae1f5c63b8e9653a4835b006',
   10: '0x7c6e610eaaf6cf644b9bae6d7ab5473b7a508ce55485caca5554dbc2218cc7cd',
+  11: '0x1c21e29e252155cb8473219f25fbe08f9cc310992713fab548944147c19a630a',
 }
 
 test('the audit rules match the hash pinned for this verifier compat', () => {
@@ -121,7 +122,7 @@ test('the tokenizer pre-check is part of the rules: turned off it is named, and 
   const { rule } = tokenizerPrecheck
   assert.deepEqual(
     [rule.id, rule.rounds, rule.toleranceTokens, rule.referenceAsks, rule.sellerAsks, rule.outvoteSellers, rule.corroboratingSellers],
-    ['tokenizer-precheck-v2', 3, 0, 2, 2, 2, 1],
+    ['tokenizer-precheck-v3', 3, 0, 2, 2, 2, 1],
   )
   // The retry limits, the probe guard's table and what the probe writer writes are rules too: a change to any of
   // them changes which counts are compared.

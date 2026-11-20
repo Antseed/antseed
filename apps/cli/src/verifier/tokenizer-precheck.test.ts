@@ -29,6 +29,8 @@ import type { ResponseAuthReader } from './response-auth-reader.js'
 import {
   TOKENIZER_PRECHECK_RULE,
   TOKENIZER_PRECHECK_RULE_V1,
+  TOKENIZER_PRECHECK_RULE_V2,
+  cacheBlocks,
   createTokenizerPrecheckScreen,
   describeTokenizerMismatch,
   generateTokenizerProbe,
@@ -562,7 +564,7 @@ test('a seller whose count for the same text changes between asks decides nothin
 
 test('a count with cached input can match the model, and is never held against the seller when it is off', async () => {
   // Upstreams that cache every prompt report the hit on each request; the count still covers the whole input.
-  const cached = (tokens: number) => ({ prompt_tokens: tokens, completion_tokens: 3, prompt_tokens_details: { cached_tokens: 64 } })
+  const cached = (tokens: number, cachedTokens = 64) => ({ prompt_tokens: tokens, completion_tokens: 3, prompt_tokens_details: { cached_tokens: cachedTokens } })
   const honest = seller({ usage: (content) => cached(900 + MODEL_TOKENIZER(content)) })
   const matched = await precheck(honest)
   assert.equal(matched.outcome, 'match')
@@ -572,7 +574,9 @@ test('a count with cached input can match the model, and is never held against t
 
   // A gateway that leaves the cached part out of its count: where the cache ends moves with the text, so the
   // difference is off by a little every time, the same way when asked again.
-  const netOfCache = seller({ usage: (content) => cached(MODEL_TOKENIZER(content) - Math.round(content.length / 12)) })
+  // It reports the part it left out, which moves with the text: the two answers of a pair report different cached
+  // amounts, so the cache does not cancel out (`sameCache`) even under tokenizer-precheck-v3.
+  const netOfCache = seller({ usage: (content) => cached(MODEL_TOKENIZER(content) - Math.round(content.length / 12), Math.round(content.length / 12)) })
   const undecided = await precheck(netOfCache)
   assert.equal(undecided.outcome, 'inconclusive')
   const round = undecided.rounds[0]!
@@ -778,9 +782,10 @@ test('a pre-check DIFF holds the signed pair of another seller on the reference\
 // ── the model's sellers against the reference ────────────────────────────────────────────────────
 
 test('tokenizer-precheck-v2 counts exactly: one token off is off, two asks one token apart are unstable, and only the exact count backs the reference', () => {
-  assert.equal(TOKENIZER_PRECHECK_RULE.id, 'tokenizer-precheck-v2')
+  assert.equal(TOKENIZER_PRECHECK_RULE_V2.id, 'tokenizer-precheck-v2')
   assert.equal(tokenizerPrecheckRuleById('tokenizer-precheck-v1'), TOKENIZER_PRECHECK_RULE_V1, 'a used rule stays known, so its records are judged as they were')
-  const { id: _v2, toleranceTokens, ...restV2 } = TOKENIZER_PRECHECK_RULE
+  assert.equal(tokenizerPrecheckRuleById('tokenizer-precheck-v2'), TOKENIZER_PRECHECK_RULE_V2)
+  const { id: _v2, toleranceTokens, ...restV2 } = TOKENIZER_PRECHECK_RULE_V2
   const { id: _v1, toleranceTokens: toleranceV1, ...restV1 } = TOKENIZER_PRECHECK_RULE_V1
   assert.deepEqual([restV2, toleranceV1, toleranceTokens], [restV1, 2, 0], 'v2 is v1 with an exact count, nothing else')
   assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [100] }), 'match')
@@ -804,7 +809,7 @@ test('a seller one token off the model: a match under tokenizer-precheck-v1, a m
   // Stored, it is judged again by its own rule, not this build's exact one.
   assert.doesNotThrow(() => validateTokenizerPrecheck(v1))
   const v2 = await precheck(oneOff())
-  assert.deepEqual([v2.rule.id, v2.outcome], ['tokenizer-precheck-v2', 'mismatch'])
+  assert.deepEqual([v2.rule.id, v2.outcome], [TOKENIZER_PRECHECK_RULE.id, 'mismatch'])
   assert.doesNotThrow(() => validateTokenizerPrecheck(v2))
 })
 
@@ -1084,8 +1089,9 @@ test('a check whose audit stops while it waits for another check\'s ask is no mi
   assert.equal(sellers.requests('honest'), 2, 'asked once, by its own check')
 })
 
-test('a crowd vote whose pair reports cached input neither backs the reference nor helps outvote it', async () => {
-  const cached = (tokens: number) => ({ prompt_tokens: tokens, prompt_tokens_details: { cached_tokens: 32 } })
+test('a crowd vote whose pair reports cached input that does not cancel neither backs the reference nor helps outvote it', async () => {
+  // A cached amount that moves with the text: the two answers of a pair report different amounts.
+  const cached = (tokens: number) => ({ prompt_tokens: tokens, prompt_tokens_details: { cached_tokens: tokens } })
   // The only other seller on the reference's count reports a cache hit: nothing backs the reference.
   const unbacked = market({ off: OTHER_TOKENIZER, honest: (content) => cached(MODEL_TOKENIZER(content)) })
   const alone = await unbacked.check('off')
@@ -1103,6 +1109,48 @@ test('a crowd vote whose pair reports cached input neither backs the reference n
   // A cached vote is asked again by the next check that needs the crowd.
   await outvoting.check('off')
   assert.deepEqual([outvoting.requests('copy1'), outvoting.requests('honest')], [4, 2])
+})
+
+test('tokenizer-precheck-v3: a pair whose two answers report the same cached amount is kept, for the reference, the seller and the crowd', async () => {
+  assert.equal(TOKENIZER_PRECHECK_RULE.id, 'tokenizer-precheck-v3')
+  const { id: _v3, sameCacheCancels, ...restV3 } = TOKENIZER_PRECHECK_RULE
+  const { id: _v2, ...restV2 } = TOKENIZER_PRECHECK_RULE_V2
+  assert.deepEqual([restV3, sameCacheCancels], [restV2, true], 'v3 is v2 that keeps a same-cache pair, nothing else')
+  // The pair helper: equal, non-empty cache members cancel; one side only, or different amounts, do not.
+  const ask = (baseCache: Record<string, number> | undefined, probedCache: Record<string, number> | undefined) => ({
+    base: { cachedInput: baseCache !== undefined, ...(baseCache ? { cache: baseCache } : {}) },
+    probed: { cachedInput: probedCache !== undefined, ...(probedCache ? { cache: probedCache } : {}) },
+  }) as never
+  assert.equal(cacheBlocks(ask(undefined, undefined)), false, 'no cache, nothing to block')
+  assert.equal(cacheBlocks(ask({ cached_tokens: 64 }, { cached_tokens: 64 })), false, 'the same amount cancels')
+  assert.equal(cacheBlocks(ask({ cached_tokens: 64 }, { cached_tokens: 64 }), TOKENIZER_PRECHECK_RULE_V2), true, 'not under v2')
+  assert.equal(cacheBlocks(ask({ cached_tokens: 64 }, { cached_tokens: 70 })), true)
+  assert.equal(cacheBlocks(ask({ cached_tokens: 64 }, undefined)), true)
+  assert.equal(cacheBlocks({ base: { cachedInput: true }, probed: { cachedInput: true } } as never), true, 'a record from before the cache was kept never cancels')
+  // The reference: every answer reports the same cached amount, which the count includes. v3 measures it; v2 does not.
+  const sameCached = (count = MODEL_TOKENIZER): TokenizerReferenceAsk => async (contents) => ({
+    upstream: { name: 'referenceEndpoint' },
+    results: contents.map((content) => ({ inputTokens: 7 + count(content), cachedInput: true, cache: { 'prompt_tokens_details.cached_tokens': 512 }, failure: null })),
+  })
+  const reference = await measureTokenizerReference({ ask: sameCached(), probes: PROBES })
+  assert.ok(reference.rounds.every((round) => round.delta !== null), 'measured under v3')
+  const v2Reference = await measureTokenizerReference({ ask: sameCached(), probes: PROBES, rule: TOKENIZER_PRECHECK_RULE_V2 })
+  assert.ok(v2Reference.rounds.every((round) => round.delta === null && /cached input/.test(round.failure ?? '')), 'no measurement under v2')
+  // A seller on another tokenizer whose answers report the same cached amount: off in every round, a mismatch once the
+  // model's other sellers back the reference, also with a cache of their own.
+  const cachedUsage = (tokens: number) => ({ prompt_tokens: tokens, prompt_tokens_details: { cached_tokens: 512 } })
+  const off = await precheck(seller({ usage: (content) => cachedUsage(7 + OTHER_TOKENIZER(content)) }), reference)
+  assert.equal(off.outcome, 'mismatch')
+  assert.deepEqual(off.rounds[0]!.seller[0]!.base.cache, { 'prompt_tokens_details.cached_tokens': 512 })
+  assert.doesNotThrow(() => validateTokenizerPrecheck(off))
+  // A seller that counts like the model, with the same cache: a match.
+  const honest = await precheck(seller({ usage: (content) => cachedUsage(7 + MODEL_TOKENIZER(content)) }), reference)
+  assert.equal(honest.outcome, 'match')
+  assert.doesNotThrow(() => validateTokenizerPrecheck(honest))
+  // A stored cache that is not the signed one is refused.
+  const edited = structuredClone(off)
+  edited.rounds[0]!.seller[0]!.base.cache = { 'prompt_tokens_details.cached_tokens': 600 }
+  assert.throws(() => validateTokenizerPrecheck(edited), /not the ones in its signed responses/)
 })
 
 test('a seller whose own first ask failed is asked again for a later crowd, and can back the reference then', async () => {

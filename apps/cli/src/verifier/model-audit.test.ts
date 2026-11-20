@@ -483,7 +483,7 @@ test('a tokenizer pre-check DIFF is submitted with its reason and its evidence, 
     ])
     assert.deepEqual(prepared.excluded, [])
     const [diff, same] = entry.evidence.results as [ModelAuditSellerResultV1, ModelAuditSellerResultV1]
-    assert.match(diff.verdictReason!, /^tokenizer pre-check \(tokenizer-precheck-v2\): the seller signed \d+\/\d+\/\d+ input tokens/)
+    assert.match(diff.verdictReason!, /^tokenizer pre-check \(tokenizer-precheck-v3\): the seller signed \d+\/\d+\/\d+ input tokens/)
     // Its questions were asked beside the mismatch and passed: the questions' own verdict is published apart.
     assert.ok((diff.stats.targetTotal ?? 0) > 0)
     assert.equal(diff.questionsVerdict, 'SAME')

@@ -916,6 +916,8 @@ export interface ReferenceInputTokensV1 {
   inputTokens: number | null
   /** The answer reports cached input: its count says nothing reliable about the text. */
   cachedInput: boolean
+  /** The cache members the answer reports above zero, by path (`responseBodyInputUsage`). */
+  cache?: Readonly<Record<string, number>>
   /** The provider that answered, when the endpoint names it. */
   provider: string | null
   failure: string | null

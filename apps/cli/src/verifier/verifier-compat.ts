@@ -47,6 +47,7 @@ import {
   TOKENIZER_PRECHECK_RULE,
   generateTokenizerProbe,
   judgeTokenizerPrecheck,
+  cacheBlocks,
   referenceDelta,
   tokenizerCrowd,
   tokenizerCrowdObjection,
@@ -312,6 +313,17 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       probes: SAMPLE_PROBE_SEEDS.map((seed) => generateTokenizerProbe(fixedSequence(seed))),
       judged: SAMPLE_TOKENIZER_ROUNDS.map((rounds) => judgeTokenizerPrecheck(rounds)),
       referenceDeltas: SAMPLE_REFERENCE_ASKS.map((asks) => referenceDelta(asks).delta),
+      // A pair whose two answers report the same cached amount is kept (tokenizer-precheck-v3); different amounts, one
+      // side only, or no stored cache are not.
+      cacheCancels: [
+        [{ cached_tokens: 64 }, { cached_tokens: 64 }], [{ cached_tokens: 64 }, { cached_tokens: 70 }], [{ cached_tokens: 64 }, undefined], [undefined, undefined],
+      ].map(([base, probed]) => cacheBlocks({
+        base: { cachedInput: base !== undefined, ...(base ? { cache: base } : {}) },
+        probed: { cachedInput: probed !== undefined, ...(probed ? { cache: probed } : {}) },
+      } as never)),
+      cachedReference: referenceDelta([1, 2].map(() => ({
+        baseTokens: 140, probedTokens: 157, cachedInput: true, cache: [{ cached_tokens: 128 }, { cached_tokens: 128 }] as [Record<string, number>, Record<string, number>], providers: ['Provider-A', 'Provider-A'] as [string, string],
+      }))).delta,
       // Whether a seller off a reference of 119 in every round is a mismatch, next to the model's sellers'
       // first-round differences: they must back the reference and must not outvote it.
       crowds: SAMPLE_TOKENIZER_CROWDS.map((deltas) => {
