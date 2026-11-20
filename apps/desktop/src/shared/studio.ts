@@ -72,9 +72,6 @@ export const STUDIO_MEDIA_TOOLS_MISSING = 'End clip here and Export need ffmpeg 
 const MAX_SHOTS = 60;
 const MAX_USD = 100_000;
 
-const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
-const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'mov', 'webm']);
-
 export function emptyStudioBoard(): StudioBoard {
   return { kind: 'video', brief: '', aspectRatio: '', style: '', shots: [], estimate: null, spent: [], final: null };
 }
@@ -93,11 +90,28 @@ export function normalizeStudioPath(value: unknown): string | null {
   return segments.join('/');
 }
 
-export function studioMediaKind(filePath: string): 'image' | 'video' | null {
+/** The pictures and videos Studio works with, by extension. */
+const MIME_BY_EXTENSION: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  mov: 'video/quicktime',
+  webm: 'video/webm',
+};
+
+/** The content type of a Studio picture or video, or undefined for any other file. */
+export function studioMediaMimeType(filePath: string): string | undefined {
   const extension = filePath.slice(filePath.lastIndexOf('.') + 1).toLowerCase();
-  if (IMAGE_EXTENSIONS.has(extension)) return 'image';
-  if (VIDEO_EXTENSIONS.has(extension)) return 'video';
-  return null;
+  return Object.hasOwn(MIME_BY_EXTENSION, extension) ? MIME_BY_EXTENSION[extension] : undefined;
+}
+
+export function studioMediaKind(filePath: string): 'image' | 'video' | null {
+  const type = studioMediaMimeType(filePath);
+  return type?.startsWith('image/') ? 'image' : type?.startsWith('video/') ? 'video' : null;
 }
 
 function text(value: unknown, max: number): string {

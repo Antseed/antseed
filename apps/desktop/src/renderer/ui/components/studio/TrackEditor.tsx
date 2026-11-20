@@ -14,6 +14,7 @@ import {
   MAX_CLIP_SECONDS,
   MIN_CLIP_SECONDS,
   sceneRuns,
+  shotTitle,
   STUDIO_ASPECT_RATIOS,
   trackRuntime,
   type SceneRun,
@@ -739,7 +740,7 @@ function Shot({ track, anchor, index, size, selection, busy, renaming, url, onSe
   const imageSelected = selection?.anchor === anchor.id && !selection.clip;
   const clipSelected = selection?.anchor === anchor.id && selection.clip;
   const active = selection?.anchor === anchor.id;
-  const title = `${String(index + 1)}.${anchor.title ? ` ${anchor.title}` : ''}`;
+  const title = shotTitle(track, anchor.id);
   const item = useRef<HTMLLIElement>(null);
   // The selected shot stays in view on the strip, a new one at the end included.
   useEffect(() => {

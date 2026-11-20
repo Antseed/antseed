@@ -1,6 +1,7 @@
 import {
   STUDIO_SCHEME,
   STUDIO_URL_HOST,
+  studioMediaMimeType,
   sumStudioCost,
   type StudioBoard,
   type StudioShot,
@@ -13,12 +14,7 @@ export function studioFileUrl(projectId: string, filePath: string, version?: num
 }
 
 export function studioMimeType(filePath: string): string {
-  const extension = filePath.slice(filePath.lastIndexOf('.') + 1).toLowerCase();
-  if (extension === 'mp4' || extension === 'm4v') return 'video/mp4';
-  if (extension === 'mov') return 'video/quicktime';
-  if (extension === 'webm') return 'video/webm';
-  if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
-  return `image/${extension}`;
+  return studioMediaMimeType(filePath) ?? `image/${filePath.slice(filePath.lastIndexOf('.') + 1).toLowerCase()}`;
 }
 
 export function formatStudioUsd(value: number): string {
