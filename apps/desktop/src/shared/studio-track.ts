@@ -712,6 +712,7 @@ export function applyTrackEdit(source: StudioTrack, edit: TrackEdit, files: Trac
         // The trimmed end frame becomes the next anchor, so the next clip starts where this one stops.
         // The image to put back on Reset end is the one before this clip's first frame, not an earlier frame of it.
         if (next) setImage(next, clip.endFrame, { clip: clip.id, at: clip.end, replaced: next.from?.clip === clip.id ? next.from.replaced : next.image });
+        else if (track.anchors.length >= MAX_ANCHORS) fail('The track is full.');
         else track.anchors.push({ id: nextId(track, 'a'), image: clip.endFrame, earlier: [], from: { clip: clip.id, at: clip.end, replaced: null }, title: '', prompt: '', requestedAt: null, clip: null });
       } else if (!next) {
         fail('This is the last clip. Add an anchor after it first.');

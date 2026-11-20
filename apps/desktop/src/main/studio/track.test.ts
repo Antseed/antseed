@@ -606,3 +606,51 @@ test('a delivery saved to the track but not moved out of the inbox is not applie
   assert.deepEqual(await ingestStudioDeliveries(dir, 11), []);
   assert.equal((await getStudioProject(id, root))!.track!.anchors.length, 3);
 });
+
+test('extending a trimmed last clip on a full track is refused, and an accepted one survives a read', () => {
+  const trackOf = (count: number) => parseStudioTrack({
+    anchors: Array.from({ length: count }, (_, index) => ({
+      id: `a${String(index + 1)}`,
+      image: 'stills/a.png',
+      clip: index === count - 1
+        ? { id: `c${String(index + 1)}`, use: 'clips/one.mp4', end: 2, endFrame: 'stills/new.png', versions: [{ file: 'clips/one.mp4', from: 'stills/a.png', seconds: 4 }] }
+        : { id: `c${String(index + 1)}`, then: 'cut' },
+    })),
+  });
+  const full = trackOf(120);
+  assert.equal(full.anchors.length, 120);
+  assert.throws(() => applyTrackEdit(full, { type: 'then', anchor: 'a120', then: 'extend' }, all), /The track is full\./);
+  const extended = applyTrackEdit(trackOf(119), { type: 'then', anchor: 'a119', then: 'extend' }, all);
+  assert.equal(extended.anchors.length, 120);
+  assert.deepEqual(parseStudioTrack(JSON.parse(JSON.stringify(extended))), extended, 'nothing is dropped on the next read');
+});
+
+test('a long undo history of a large track keeps its newest steps within the size a read takes', async (t) => {
+  const tmp = await mkdtemp(path.join(tmpdir(), 'studio-history-size-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const root = path.join(tmp, 'studio');
+  await mkdir(root);
+  const { id } = await createStudioProject('Large', root);
+  const dir = path.join(root, id);
+  // A full track with the longest prompts: about half a megabyte a snapshot, under the 2 MiB a track may take.
+  const long = 'x'.repeat(2000);
+  const track = parseStudioTrack({
+    anchors: Array.from({ length: 120 }, (_, index) => ({
+      id: `a${String(index + 1)}`,
+      prompt: long,
+      clip: index < 119 ? { id: `c${String(index + 1)}`, prompt: long } : undefined,
+    })),
+  });
+  await writeFile(path.join(dir, 'track.json'), JSON.stringify(track, null, 2));
+  const edits = 24;
+  for (let step = 1; step <= edits; step += 1) {
+    await editStudioTrack(dir, { type: 'title', anchor: 'a1', title: `Take ${String(step)}` });
+  }
+  const saved = await readFile(path.join(dir, 'track.history.json'));
+  assert.ok(saved.length <= 8 * 1024 * 1024, 'the saved history is no larger than a read takes');
+  assert.equal(await studioCanUndo(dir), true);
+  for (let step = edits - 1; step >= edits - 10; step -= 1) {
+    const undone = await editStudioTrack(dir, { type: 'undo' });
+    assert.equal(undone.track.anchors[0]!.title, `Take ${String(step)}`);
+  }
+});

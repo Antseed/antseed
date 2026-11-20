@@ -35,6 +35,7 @@ const queue = createSerialQueue();
 const HISTORY_FILE = 'track.history.json';
 const HISTORY_LIMIT = 30;
 const MAX_TRACK_BYTES = 2 * 1024 * 1024;
+const MAX_HISTORY_BYTES = MAX_TRACK_BYTES * 4;
 const MAX_LIBRARY_FILES = 2000;
 const SKIPPED_DIRS = new Set([STUDIO_DELIVERIES_DIR, 'node_modules']);
 
@@ -55,10 +56,28 @@ async function readJson(file: string, max: number): Promise<unknown> {
   return JSON.parse(await readFile(file, 'utf8')) as unknown;
 }
 
-async function writeJsonAtomic(dir: string, name: string, value: unknown): Promise<void> {
+async function writeAtomic(dir: string, name: string, content: string): Promise<void> {
   const tmp = path.join(dir, `.${randomUUID()}.tmp`);
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+  await writeFile(tmp, content, { flag: 'wx', mode: 0o600 });
   await rename(tmp, path.join(dir, name));
+}
+
+async function writeJsonAtomic(dir: string, name: string, value: unknown): Promise<void> {
+  await writeAtomic(dir, name, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+/** The newest snapshots, at most HISTORY_LIMIT, that fit the size readHistory takes; the oldest go first. */
+function historyJson(snapshots: unknown[]): string {
+  const kept: string[] = [];
+  let bytes = '[]\n'.length;
+  for (let index = snapshots.length - 1; index >= 0 && kept.length < HISTORY_LIMIT; index -= 1) {
+    const entry = JSON.stringify(snapshots[index]);
+    const size = Buffer.byteLength(entry) + (kept.length > 0 ? 1 : 0);
+    if (bytes + size > MAX_HISTORY_BYTES) break;
+    kept.push(entry);
+    bytes += size;
+  }
+  return `[${kept.reverse().join(',')}]\n`;
 }
 
 export async function readStudioTrack(dir: string): Promise<StudioTrack | null> {
@@ -77,7 +96,7 @@ export async function studioCanUndo(dir: string): Promise<boolean> {
 
 async function readHistory(dir: string): Promise<unknown[]> {
   try {
-    const raw = await readJson(path.join(dir, HISTORY_FILE), MAX_TRACK_BYTES * 4);
+    const raw = await readJson(path.join(dir, HISTORY_FILE), MAX_HISTORY_BYTES);
     return Array.isArray(raw) ? raw.slice(-HISTORY_LIMIT) : [];
   } catch {
     return [];
@@ -85,7 +104,7 @@ async function readHistory(dir: string): Promise<unknown[]> {
 }
 
 async function saveTrack(dir: string, track: StudioTrack, previous: StudioTrack | null): Promise<void> {
-  if (previous) await writeJsonAtomic(dir, HISTORY_FILE, [...await readHistory(dir), previous].slice(-HISTORY_LIMIT));
+  if (previous) await writeAtomic(dir, HISTORY_FILE, historyJson([...await readHistory(dir), previous]));
   await writeJsonAtomic(dir, STUDIO_TRACK_FILE, track);
 }
 
@@ -239,7 +258,7 @@ export function editStudioTrack(dir: string, edit: TrackEdit, options: { picked?
         const last = history.pop();
         if (last === undefined) throw new TrackEditError('Nothing to undo.');
         const restored = undoTo(parseStudioTrack(last), current);
-        await writeJsonAtomic(dir, HISTORY_FILE, history);
+        await writeAtomic(dir, HISTORY_FILE, historyJson(history));
         await writeJsonAtomic(dir, STUDIO_TRACK_FILE, restored);
         return { track: restored };
       }
