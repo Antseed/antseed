@@ -2,7 +2,7 @@ import { useMemo, useState, type MouseEvent } from 'react';
 import type { ExtendRequest, MaxLockRequest, MergeRequest, MoveRequest, PoolConfigView, PoolView, PositionView, SplitRequest } from '../../../src/api-types';
 import { mergeLockStartProblem, mergeRuleHint, positionActionEpoch, positionActionProblem, scheduledMaxLock, type PositionAction } from '../../../src/position-actions';
 import { api } from '../api';
-import { useEpochInfo } from '../app-context';
+import { useCanTransfer, useEpochInfo } from '../app-context';
 import { usePageData } from '../data';
 import { epochStartAt, formatAnts, formatBps, formatEpochLength, formatUtcDate, isPositiveDecimal, parseUnits, shortAddress, toBigInt } from '../format';
 import { ActionButton, ActionDialog } from './Confirm';
@@ -25,6 +25,7 @@ type BulkActionKind = 'merge' | 'withdraw';
 
 export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; enabled?: boolean }) {
   const info = useEpochInfo();
+  const canTransfer = useCanTransfer();
   const page = usePageData(enabled ? 'positions:current' : null, api.positions);
   const [showClosed, setShowClosed] = useState(false);
   const [rowAction, setRowAction] = useState<{ id: number; kind: RowActionKind } | null>(null);
@@ -45,7 +46,7 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
   const poolById = useMemo(() => new Map(pools.map((p) => [p.agentId, p])), [pools]);
   const openPositions = useMemo(() => positions.filter(isOpen), [positions]);
   const selectedRows = useMemo(() => openPositions.filter((p) => selected.has(p.id)), [openPositions, selected]);
-  const mergeProblem = mergeEligibility(selectedRows, info?.current);
+  const mergeProblem = mergeEligibility(selectedRows, info?.current, canTransfer);
 
   const openRowAction = (id: number, kind: RowActionKind) => setRowAction({ id, kind });
   const toggle = (id: number) => setSelected((current) => {
@@ -113,10 +114,10 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
             <Menu
               label={`More actions for position ${p.id}`}
               items={[
-                { label: 'Split', onSelect: () => openRowAction(p.id, 'split'), disabled: actionProblem(p, 'split', info?.current) !== null, title: actionProblem(p, 'split', info?.current) ?? undefined },
-                { label: 'Extend lock', onSelect: () => openRowAction(p.id, 'extend'), disabled: actionProblem(p, 'extend', info?.current) !== null, title: actionProblem(p, 'extend', info?.current) ?? undefined },
-                { label: willBeMaxLocked(p) ? 'Disable max lock' : 'Enable max lock', onSelect: () => openRowAction(p.id, 'max-lock'), disabled: maxLockProblem(p, info?.current) !== null, title: maxLockProblem(p, info?.current) ?? undefined },
-                { label: 'Move allocation', onSelect: () => openRowAction(p.id, 'move'), disabled: actionProblem(p, 'move', info?.current) !== null, title: actionProblem(p, 'move', info?.current) ?? undefined },
+                { label: 'Split', onSelect: () => openRowAction(p.id, 'split'), disabled: actionProblem(p, 'split', info?.current, canTransfer) !== null, title: actionProblem(p, 'split', info?.current, canTransfer) ?? undefined },
+                { label: 'Extend lock', onSelect: () => openRowAction(p.id, 'extend'), disabled: actionProblem(p, 'extend', info?.current, canTransfer) !== null, title: actionProblem(p, 'extend', info?.current, canTransfer) ?? undefined },
+                { label: willBeMaxLocked(p) ? 'Disable max lock' : 'Enable max lock', onSelect: () => openRowAction(p.id, 'max-lock'), disabled: maxLockProblem(p, info?.current, canTransfer) !== null, title: maxLockProblem(p, info?.current, canTransfer) ?? undefined },
+                { label: 'Move allocation', onSelect: () => openRowAction(p.id, 'move'), disabled: actionProblem(p, 'move', info?.current, canTransfer) !== null, title: actionProblem(p, 'move', info?.current, canTransfer) ?? undefined },
                 { label: 'Withdraw', onSelect: () => openRowAction(p.id, 'withdraw') },
               ]}
             />
@@ -176,13 +177,13 @@ function sumAmounts(positions: PositionView[]): string {
   return positions.reduce((sum, position) => sum + (toBigInt(position.amount) ?? 0n), 0n).toString();
 }
 
-export function mergeEligibility(positions: PositionView[], currentEpoch?: number): string | null {
+export function mergeEligibility(positions: PositionView[], currentEpoch?: number, canTransfer = false): string | null {
   if (positions.length < 2) return 'Select at least two positions to merge.';
   if (new Set(positions.map(position => position.id)).size !== positions.length) return 'Select each position only once.';
   if (new Set(positions.map((p) => p.agentId)).size !== 1) return 'Merged positions must stake the same seller.';
   const effectiveEpoch = currentEpoch === undefined ? null : positionActionEpoch('merge', currentEpoch, positions);
   for (const position of positions) {
-    const problem = positionActionProblem(position, 'merge', effectiveEpoch);
+    const problem = positionActionProblem(position, 'merge', effectiveEpoch, canTransfer);
     if (problem) return problem;
   }
   if (new Set(positions.map((p) => p.stakeEndEpoch)).size !== 1) return 'Merged positions must share the same unlock epoch. Extend the shorter ones first.';
@@ -211,10 +212,12 @@ const STATE_TONE: Record<PositionView['state'], 'accent' | 'amber' | 'muted'> = 
 const STATE_DESCRIPTION: Record<PositionView['state'], string> = {
   pending: 'Waiting for the stake activation epoch.',
   active: 'The staking position is active and its lock has not expired.',
-  matured: 'The lock has expired, so this position no longer earns rewards and can no longer be extended, moved, split, or merged. It can only be withdrawn (no early-exit burn; withdrawal is not automatic). While ANTS transfers are disabled, withdrawn ANTS stay in your wallet and cannot be staked again.',
+  matured: 'The lock has expired, so this position no longer earns rewards and can no longer be extended, moved, split, or merged. It can only be withdrawn (no early-exit burn; withdrawal is not automatic). Withdrawn ANTS can\'t be staked again for now, while ANTS transfers are disabled.',
   closed: 'This position has been closed, for example by a split, merge, or move.',
   withdrawn: 'Funds have been withdrawn from this position.',
 };
+/** Withdrawn ANTS can be staked again once the wallet can transfer. */
+const MATURED_RESTAKE_DESCRIPTION = 'The lock has expired, so this position no longer earns rewards and can no longer be extended, moved, split, or merged. Withdraw it (no early-exit burn) and stake again to keep earning; withdrawal is not automatic.';
 
 /** Whether the position contributes power in the current epoch, i.e. has activated. */
 function isEarning(p: PositionView, currentEpoch?: number): boolean {
@@ -238,6 +241,7 @@ function handoverLabel(p: PositionView): string {
 }
 
 function StateBadge({ position, currentEpoch, fromEarning = false }: { position: PositionView; currentEpoch?: number; fromEarning?: boolean }) {
+  const canTransfer = useCanTransfer();
   const { state } = position;
   if (isHandingOver(position, currentEpoch)) {
     const handover = position.closedAtEpoch;
@@ -250,16 +254,16 @@ function StateBadge({ position, currentEpoch, fromEarning = false }: { position:
       : `Replaces a split, merged, or moved position and starts earning at epoch ${position.stakeStartEpoch}.`;
     return <Pill tone="amber" title={title}>Takes over epoch {position.stakeStartEpoch}</Pill>;
   }
-  return <Pill tone={activating ? 'amber' : STATE_TONE[state]} title={activating ? 'The transaction is confirmed. This position starts contributing staking power at its activation epoch.' : STATE_DESCRIPTION[state]}>{activating ? `Activates epoch ${position.stakeStartEpoch}` : state}</Pill>;
+  return <Pill tone={activating ? 'amber' : STATE_TONE[state]} title={activating ? 'The transaction is confirmed. This position starts contributing staking power at its activation epoch.' : state === 'matured' && canTransfer ? MATURED_RESTAKE_DESCRIPTION : STATE_DESCRIPTION[state]}>{activating ? `Activates epoch ${position.stakeStartEpoch}` : state}</Pill>;
 }
 
-function actionProblem(position: PositionView, action: PositionAction, currentEpoch?: number): string | null {
+function actionProblem(position: PositionView, action: PositionAction, currentEpoch?: number, canTransfer = false): string | null {
   const effective = currentEpoch === undefined ? null : positionActionEpoch(action, currentEpoch, [position]);
-  return positionActionProblem(position, action, effective);
+  return positionActionProblem(position, action, effective, canTransfer);
 }
 
-function maxLockProblem(position: PositionView, currentEpoch?: number): string | null {
-  return actionProblem(position, willBeMaxLocked(position) ? 'disable-max-lock' : 'enable-max-lock', currentEpoch);
+function maxLockProblem(position: PositionView, currentEpoch?: number, canTransfer = false): string | null {
+  return actionProblem(position, willBeMaxLocked(position) ? 'disable-max-lock' : 'enable-max-lock', currentEpoch, canTransfer);
 }
 
 function PositionUnlock({ position, dateOnly = false }: { position: PositionView; dateOnly?: boolean }) {
@@ -279,10 +283,11 @@ function LockStartNote({ position, currentEpoch }: { position: PositionView; cur
 
 /** Lock changes apply from the next epoch, so the final epoch before unlock is already too late to extend. */
 function LockEndingNote({ position, currentEpoch }: { position: PositionView; currentEpoch?: number }) {
+  const canTransfer = useCanTransfer();
   if (currentEpoch === undefined || position.state === 'matured') return null;
   const epochsLeft = position.stakeEndEpoch - currentEpoch;
   if (epochsLeft === 2) return <span className="cell-sub pending-amount" title="Extend the lock or enable max lock this epoch to keep earning. From next epoch the position can only be withdrawn once it unlocks.">Last epoch to extend</span>;
-  if (epochsLeft === 1) return <span className="cell-sub" title="Changes would take effect at the unlock epoch, so this position can no longer be extended, moved, split, or merged. After it unlocks it can only be withdrawn; while ANTS transfers are disabled, withdrawn ANTS cannot be staked again.">Can no longer be extended</span>;
+  if (epochsLeft === 1) return <span className="cell-sub" title={`Changes would take effect at the unlock epoch, so this position can no longer be extended, moved, split, or merged. ${canTransfer ? 'Withdraw after it unlocks and stake again.' : 'After it unlocks it can only be withdrawn; withdrawn ANTS can\'t be staked again for now, while ANTS transfers are disabled.'}`}>Can no longer be extended</span>;
   return null;
 }
 
@@ -313,11 +318,12 @@ export function PositionSummary({ position, pools }: { position: PositionView; p
 
 function MoveForm({ position, config, pools, onStarted }: { position: PositionView; config: PoolConfigView; pools: PoolView[]; onStarted: () => void }) {
   const info = useEpochInfo();
+  const canTransfer = useCanTransfer();
   const targets = pools.filter((pool) => pool.stakeable && pool.agentId !== position.agentId);
   const [toAgent, setToAgent] = useState(() => String(targets[0]?.agentId ?? ''));
   const target = targets.find((p) => String(p.agentId) === toAgent) ?? null;
   const body: MoveRequest = { positionIds: [position.id], toAgentId: Number(toAgent) };
-  const problem = actionProblem(position, 'move', info?.current);
+  const problem = actionProblem(position, 'move', info?.current, canTransfer);
   const effective = Math.max((info?.current ?? 0) + 1, position.stakeStartEpoch);
   return (
     <div className="form-row">
@@ -351,13 +357,14 @@ function MoveForm({ position, config, pools, onStarted }: { position: PositionVi
 /** Carve `amount` out of a position into a new position with the same lock; both parts keep proportional power. */
 function SplitForm({ position, onStarted }: { position: PositionView; onStarted: () => void }) {
   const info = useEpochInfo();
+  const canTransfer = useCanTransfer();
   const total = toBigInt(position.amount) ?? 0n;
   const weight = toBigInt(position.weightAmount) ?? 0n;
   const [amount, setAmount] = useState('');
   const units = isPositiveDecimal(amount) ? parseUnits(amount, 18) : null;
   const valid = units !== null && units > 0n && units < total;
   const secondWeight = valid ? (weight * units) / total : 0n;
-  const problem = actionProblem(position, 'split', info?.current);
+  const problem = actionProblem(position, 'split', info?.current, canTransfer);
   const percent = (fraction: number) => setAmount(formatAnts((total * BigInt(Math.round(fraction * 10_000))) / 10_000n, 18).replace(/,/g, ''));
   const body: SplitRequest = { positionId: position.id, amount: amount.trim() };
   return (
@@ -404,9 +411,10 @@ function SplitForm({ position, onStarted }: { position: PositionView; onStarted:
 
 function MaxLockForm({ position, config, onStarted }: { position: PositionView; config: PoolConfigView; onStarted: () => void }) {
   const info = useEpochInfo();
+  const canTransfer = useCanTransfer();
   const enable = !willBeMaxLocked(position);
   const body: MaxLockRequest = { positionId: position.id, enable };
-  const problem = maxLockProblem(position, info?.current);
+  const problem = maxLockProblem(position, info?.current, canTransfer);
   const restartEnd = info ? info.current + 1 + config.maxStakeEpochs : null;
   return (
     <div className="stack">
@@ -445,10 +453,11 @@ interface RowActionProps {
 
 export function RowActionPanel({ kind, position, config, pools = [], onClose }: RowActionProps) {
   const info = useEpochInfo();
+  const canTransfer = useCanTransfer();
   const effectiveEpoch = info ? positionActionEpoch('extend', info.current, [position]) : null;
   const extensionStart = effectiveEpoch === null ? null : position.stakeEndEpoch;
   const maxAdd = extensionStart === null || effectiveEpoch === null ? 0 : Math.max(config.maxStakeEpochs - (extensionStart - effectiveEpoch), 0);
-  const extendProblem = actionProblem(position, 'extend', info?.current);
+  const extendProblem = actionProblem(position, 'extend', info?.current, canTransfer);
   const [epochs, setEpochs] = useState(Math.min(1, maxAdd) || 1);
   const titles: Record<RowActionKind, string> = {
     move: 'Move allocation',
@@ -513,8 +522,9 @@ export function RowActionPanel({ kind, position, config, pools = [], onClose }: 
 /** Merge or withdraw several selected positions at once. */
 export function BulkActionPanel({ kind, positions, pools, onClose, onStarted }: { kind: BulkActionKind; positions: PositionView[]; pools: PoolView[]; onClose: () => void; onStarted: () => void }) {
   const info = useEpochInfo();
+  const canTransfer = useCanTransfer();
   const ids = positions.map((p) => p.id);
-  const mergeProblem = mergeEligibility(positions, info?.current);
+  const mergeProblem = mergeEligibility(positions, info?.current, canTransfer);
   const mergeBody: MergeRequest = { positionIds: ids };
   const first = positions[0]!;
   const handover = info ? positionActionEpoch('merge', info.current, positions) : null;

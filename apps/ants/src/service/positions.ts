@@ -242,7 +242,10 @@ async function requireActionState(ctx: AntsContext, list: SellerPoolPosition[], 
   const states = await Promise.all(list.map(async position => {
     const effectiveEpoch = action === 'merge' ? sharedEpoch : positionActionEpoch(action, currentEpoch, [position]);
     const segment = await pools.positionPowerSegmentAt(position.id, effectiveEpoch);
-    const problem = positionActionProblem({ ...position, stakeEndEpoch: segment.normalEndEpoch, maxLocked: segment.maxLockPower > 0n }, action, effectiveEpoch);
+    const view = { ...position, stakeEndEpoch: segment.normalEndEpoch, maxLocked: segment.maxLockPower > 0n };
+    let problem = positionActionProblem(view, action, effectiveEpoch);
+    // The wallet's transfer state only changes the restake advice, so it is read only when that advice is the problem.
+    if (problem !== positionActionProblem(view, action, effectiveEpoch, true)) problem = positionActionProblem(view, action, effectiveEpoch, await ctx.antsToken().canTransfer(ctx.address));
     if (problem) throw new Error(`Position ${position.id}: ${problem}`);
     return { effectiveEpoch, normalEndEpoch: segment.normalEndEpoch };
   }));

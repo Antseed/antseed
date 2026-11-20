@@ -5,9 +5,9 @@ import type { PoolView, PositionView } from '../../src/api-types';
 import { PositionSummary, PositionsCard } from './components/Positions';
 import { PoolsTable } from './components/Pools';
 
-const mocks = vi.hoisted(() => ({ page: vi.fn(), table: vi.fn(), menu: vi.fn(), epoch: vi.fn() }));
+const mocks = vi.hoisted(() => ({ canTransfer: vi.fn(() => false), page: vi.fn(), table: vi.fn(), menu: vi.fn(), epoch: vi.fn() }));
 vi.mock('./data', () => ({ usePageData: mocks.page }));
-vi.mock('./app-context', () => ({ useEpochInfo: mocks.epoch }));
+vi.mock('./app-context', () => ({ useEpochInfo: mocks.epoch, useCanTransfer: mocks.canTransfer }));
 vi.mock('./components/Menu', async original => {
   const actual = await original<typeof import('./components/Menu')>();
   return { ...actual, Menu: (props: Parameters<typeof actual.Menu>[0]) => {
@@ -56,7 +56,7 @@ function pool(name: string | null): PoolView {
   };
 }
 
-beforeEach(() => { vi.clearAllMocks(); mocks.epoch.mockReturnValue(null); });
+beforeEach(() => { vi.clearAllMocks(); mocks.epoch.mockReturnValue(null); mocks.canTransfer.mockReturnValue(false); });
 
 describe('position summary', () => {
   it('shows live power rather than the original weight and exposes next-epoch power', () => {
@@ -256,11 +256,24 @@ describe('positions table', () => {
     expect(renderPosition({ stakeEndEpoch: 38 })).toContain(note);
   });
 
-  it('explains that a matured position no longer earns and does not promise a restake while transfers are disabled', () => {
-    const html = renderPosition({ state: 'matured' });
-    expect(html).toContain('no longer earns rewards');
-    expect(html).not.toContain('stake again to keep earning');
-    expect(html).toContain('cannot be staked again');
+  it('explains that a matured position no longer earns and promises a restake only when the wallet can transfer', () => {
+    mocks.canTransfer.mockReturnValue(false);
+    const restricted = renderPosition({ state: 'matured' });
+    expect(restricted).toContain('no longer earns rewards');
+    expect(restricted).not.toContain('stake again to keep earning');
+    expect(restricted).toContain('can&#x27;t be staked again for now');
+    mocks.canTransfer.mockReturnValue(true);
+    const transferable = renderPosition({ state: 'matured' });
+    expect(transferable).toContain('stake again to keep earning');
+    expect(transferable).not.toContain('staked again for now');
+  });
+
+  it('words the last-epoch tooltip by whether the wallet can transfer', () => {
+    mocks.epoch.mockReturnValue({ current: 37, genesis: 1775728461, epochDuration: 604800 });
+    mocks.canTransfer.mockReturnValue(false);
+    expect(renderPosition({ stakeEndEpoch: 38 })).toContain('can&#x27;t be staked again for now');
+    mocks.canTransfer.mockReturnValue(true);
+    expect(renderPosition({ stakeEndEpoch: 38 })).toContain('Withdraw after it unlocks and stake again.');
   });
 
   it.each([null, '   '])('falls back to the seller address when its name is %s', name => {
