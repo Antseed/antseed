@@ -130,3 +130,26 @@ export async function quiesceChannels({ sellerRows, buyerRows, inFlight, maxMs =
   }
   return now() - started;
 }
+
+/**
+ * Waits for both stores to record the cooperative closes, for at most `maxMs` (the fixed wait it replaces), and
+ * returns how long it waited. It ends early only once every row is a channel in `allIds`, settled at exactly its
+ * on-chain amount, and neither store has changed for `stableMs`. Any other state waits the full `maxMs`, so the
+ * oracle judges it on the same rows as before.
+ */
+export async function settledRows({ sellerRows, buyerRows, allIds, onchain, maxMs = 1_500, stableMs = 500, intervalMs = 100, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+  const started = now();
+  const ids = new Set(allIds);
+  let last = null;
+  let since = started;
+  while (now() - started < maxMs) {
+    const rows = [...sellerRows(), ...buyerRows()];
+    const key = JSON.stringify(rows);
+    if (key !== last) { last = key; since = now(); }
+    const recorded = rows.every((row) => ids.has(row.session_id) && row.status === 'settled'
+      && onchain[row.session_id] !== undefined && BigInt(row.auth_max ?? '0') === onchain[row.session_id].settled);
+    if (recorded && now() - since >= stableMs) return now() - started;
+    await sleep(intervalMs);
+  }
+  return now() - started;
+}

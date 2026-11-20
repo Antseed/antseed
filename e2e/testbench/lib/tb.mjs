@@ -9,7 +9,7 @@ import { launchDesktop } from './desktop.mjs';
 import { assertLocalUrl } from './env.mjs';
 import { MOCK_USAGE } from './mock.mjs';
 import { createPrng, derive } from './prng.mjs';
-import { analyzePayments, analyzeRecordedCosts, bootstrapCounts, BUYER_PATTERNS, channelRows, costLinesCheck, countPatterns, CRASH_PATTERN, externalHosts, GATES, gateProblems, logOffsets, mergeDeliveries, peerLogs, quiesceChannels, readLog, runAll, runLoad, scanLogs, SELLER_PATTERNS } from './stress.mjs';
+import { analyzePayments, analyzeRecordedCosts, bootstrapCounts, BUYER_PATTERNS, channelRows, costLinesCheck, countPatterns, CRASH_PATTERN, externalHosts, GATES, gateProblems, logOffsets, mergeDeliveries, peerLogs, quiesceChannels, readLog, runAll, runLoad, scanLogs, SELLER_PATTERNS, settledRows } from './stress.mjs';
 
 const { keccak256, toUtf8Bytes, Wallet } = createRequire(import.meta.url)('ethers');
 
@@ -462,8 +462,8 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
       const notes = [];
       await tb.waitFor(readAll, 'every channel closed on-chain', { timeoutMs: 60_000, intervalMs: 1000 }).catch((error) => notes.push(error.message));
       await readAll();
-      await sleep(1500);
       const fresh = (rows) => rows.filter((row) => !earlier.has(row.session_id));
+      await settledRows({ sellerRows: () => fresh(sellerRows()), buyerRows: () => fresh(channelRows(manifest.buyerDir, 'buyer')), allIds, onchain });
       const sellerRowsPost = fresh(sellerRows());
       const buyerRowsPost = fresh(channelRows(manifest.buyerDir, 'buyer'));
       const after = await tb.paymentSnapshot();

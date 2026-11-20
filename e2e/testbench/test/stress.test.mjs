@@ -10,7 +10,7 @@ import { MOCK_USAGE, NO_USAGE_MARKER, startMock, summarizeDeliveries, usageCost 
 import { createPrng } from '../lib/prng.mjs';
 import { createTestbenchApi, parseSse } from '../lib/tb.mjs';
 import { classifyScenarioError } from '../lib/report.mjs';
-import { bootstrapCounts, BUYER_PATTERNS, classifyError, clientSummary, costLinesCheck, countPatterns, CRASH_PATTERN, externalHosts, GATES, gateProblems, latencyPercentiles, loadTimings, mergeDeliveries, peerLogs, quiesceChannels, runAll, runLoad, SELLER_PATTERNS, stressRun, stressTopology } from '../lib/stress.mjs';
+import { bootstrapCounts, BUYER_PATTERNS, classifyError, clientSummary, costLinesCheck, countPatterns, CRASH_PATTERN, externalHosts, GATES, gateProblems, latencyPercentiles, loadTimings, mergeDeliveries, peerLogs, quiesceChannels, runAll, runLoad, SELLER_PATTERNS, settledRows, stressRun, stressTopology } from '../lib/stress.mjs';
 import { combinedGate } from '../scenarios/issues/issue-1050-stale-channel.mjs';
 import { normalizeTopology, topologyDifferences, topologyFingerprint, topologySummary, validateScenarioModule } from '../lib/topology.mjs';
 
@@ -442,6 +442,34 @@ describe('quiesce before the oracle', () => {
     const buyerRows = () => [row('a', 'active', 50, Math.min(reads++, 8))];
     const waited = await quiesceChannels({ sellerRows: () => [row('a', 'active', 50, 50)], buyerRows, inFlight: async () => 0, ...clock() });
     assert.equal(waited, 8 * 250 + 2000);
+  });
+});
+
+describe('stores read after the cooperative close', () => {
+  const clock = () => {
+    let t = 0;
+    return { now: () => t, sleep: async (ms) => { t += ms; } };
+  };
+  const row = (id, status, signed) => ({ session_id: id, status, auth_max: String(signed) });
+  const onchain = { a: { settled: 50n, status: 2 }, b: { settled: 7n, status: 2 } };
+
+  it('ends after the stable window once both stores hold every channel settled at its on-chain amount', async () => {
+    const waited = await settledRows({ sellerRows: () => [row('a', 'settled', 50), row('b', 'settled', 7)], buyerRows: () => [row('a', 'settled', 50)], allIds: ['a', 'b'], onchain, ...clock() });
+    assert.equal(waited, 500);
+  });
+
+  it('waits the full time while a row is still active, differs from the chain, or is not a closed channel', async () => {
+    for (const rows of [[row('a', 'active', 50)], [row('a', 'settled', 49)], [row('c', 'settled', 50)]]) {
+      assert.equal(await settledRows({ sellerRows: () => rows, buyerRows: () => [], allIds: ['a', 'b'], onchain, ...clock() }), 1_500);
+    }
+  });
+
+  it('restarts the stable window whenever a store changes', async () => {
+    let reads = 0;
+    // The buyer row is still active on the first 4 reads (100 ms apart), then settled.
+    const buyerRows = () => [row('a', reads++ < 4 ? 'active' : 'settled', 50)];
+    const waited = await settledRows({ sellerRows: () => [row('a', 'settled', 50)], buyerRows, allIds: ['a'], onchain, ...clock() });
+    assert.equal(waited, 4 * 100 + 500);
   });
 });
 

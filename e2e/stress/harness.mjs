@@ -17,7 +17,7 @@ import { freshChain, chainSnapshot, readChannel, ADDR, KEYS, C } from './chain.m
 import { startMockUpstream } from './mock-upstream.mjs';
 import { startRpcProxy } from './rpc-proxy.mjs';
 import { SCENARIOS } from './scenarios.mjs';
-import { analyzePayments, analyzeRecordedCosts, quiesceChannels } from './analysis.mjs';
+import { analyzePayments, analyzeRecordedCosts, quiesceChannels, settledRows } from './analysis.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const REPO = resolve(HERE, '../..');
@@ -665,7 +665,7 @@ async function oneRun({ scenarioName, sc, sellerTree, buyerTree, runDir }) {
       return allClosed;
     }, 'on-chain close', 60000, 1000).catch((e) => result.notes.push(`close wait: ${e.message}`));
     for (const id of allIds) onchain[id] = readChannel(rpc, id);
-    await sleep(1500);
+    await settledRows({ sellerRows: () => sqliteJson(sellerDb, q).filter((r) => r.role === 'seller'), buyerRows: () => sqliteJson(buyerDb, q).filter((r) => r.role === 'buyer'), allIds, onchain });
     const sellerRowsPost = sqliteJson(sellerDb, q).filter((r) => r.role === 'seller');
     const buyerRowsPost = sqliteJson(buyerDb, q).filter((r) => r.role === 'buyer');
     const chain1 = chainSnapshot(rpc);
