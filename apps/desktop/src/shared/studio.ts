@@ -63,7 +63,11 @@ export type StudioProjectDetail = {
   notices: string[];
   canUndo: boolean;
   files: Record<string, number>;
+  /** Whether ffmpeg and ffprobe run on this computer: trimming a clip and export need them. */
+  mediaTools: boolean;
 };
+
+export const STUDIO_MEDIA_TOOLS_MISSING = 'End clip here and Export need ffmpeg and ffprobe on this computer. Install them, then restart the app.';
 
 const MAX_SHOTS = 60;
 const MAX_USD = 100_000;

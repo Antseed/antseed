@@ -19,9 +19,9 @@ import {
   type StudioTrack,
   type TrackEdit,
 } from '../../shared/studio-track.js';
-import { parseStudioBoard, sumStudioCost } from '../../shared/studio.js';
+import { parseStudioBoard, STUDIO_MEDIA_TOOLS_MISSING, sumStudioCost } from '../../shared/studio.js';
 import { createStudioProject, getStudioProject } from './store.js';
-import { editStudioTrack, ingestStudioDeliveries } from './track.js';
+import { detectStudioMediaTools, editStudioTrack, ingestStudioDeliveries } from './track.js';
 
 const files = (...names: string[]) => ({ has: (file: string) => names.includes(file), seconds: () => 4 });
 const all = files('stills/a.png', 'stills/b.png', 'stills/c.png', 'stills/new.png', 'clips/one.mp4', 'clips/two.mp4');
@@ -433,4 +433,27 @@ test('a delivery stays in the inbox until the track it changed is saved', async 
   assert.equal(track.anchors[0]!.image, 'stills/a.png');
   assert.equal(sumStudioCost(track.spent), 0.04);
   assert.deepEqual(await readdir(path.join(dir, 'deliveries/done')), ['8-image.json']);
+});
+
+test('without ffmpeg and ffprobe, trim says why and a library clip still goes in without its length', async (t) => {
+  const tmp = await mkdtemp(path.join(tmpdir(), 'studio-no-tools-'));
+  const emptyBin = path.join(tmp, 'bin');
+  await mkdir(emptyBin);
+  const savedPath = process.env['PATH'];
+  process.env['PATH'] = emptyBin;
+  t.after(async () => { process.env['PATH'] = savedPath; await rm(tmp, { recursive: true, force: true }); });
+  assert.equal(await detectStudioMediaTools(), false);
+  const root = path.join(tmp, 'studio');
+  await mkdir(root);
+  const { id } = await createStudioProject('No tools', root);
+  const dir = path.join(root, id);
+  await mkdir(path.join(dir, 'clips'));
+  await writeFile(path.join(dir, 'clips/one.mp4'), 'not really a video');
+  await editStudioTrack(dir, { type: 'add-anchor', index: 0 });
+  await editStudioTrack(dir, { type: 'add-anchor', index: 1, scene: 'new' });
+  const { track } = await editStudioTrack(dir, { type: 'add-version', anchor: 'a1', file: 'clips/one.mp4' });
+  assert.equal(track.anchors[0]!.clip!.use, 'clips/one.mp4');
+  assert.equal(track.anchors[0]!.clip!.versions[0]!.seconds, null, 'its length is unknown without ffprobe');
+  await assert.rejects(editStudioTrack(dir, { type: 'trim', anchor: 'a1', end: 1 }), (error: Error) => error.message === STUDIO_MEDIA_TOOLS_MISSING);
+  await assert.rejects(editStudioTrack(dir, { type: 'export' }), (error: Error) => error.message === STUDIO_MEDIA_TOOLS_MISSING);
 });

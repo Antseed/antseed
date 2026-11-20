@@ -15,7 +15,7 @@ import {
   type StudioProjectSummary,
 } from '../../shared/studio.js';
 import { emptyStudioTrack, STUDIO_DELIVERIES_DIR, STUDIO_TRACK_FILE, type StudioTrack } from '../../shared/studio-track.js';
-import { readStudioTrack, scanStudioMedia, studioCanUndo, studioLibrary } from './track.js';
+import { readStudioTrack, scanStudioMedia, studioCanUndo, studioLibrary, studioMediaTools } from './track.js';
 
 export const STUDIO_DIR = path.join(ANTSEED_HOME_DIR, 'studio');
 
@@ -181,6 +181,7 @@ export async function getStudioProject(id: string, root: string = STUDIO_DIR): P
     notices: [],
     canUndo: project.track ? await studioCanUndo(projectDir(id, root)) : false,
     files,
+    mediaTools: await studioMediaTools(),
   };
 }
 

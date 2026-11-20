@@ -4,7 +4,7 @@ import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, stat, writ
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { STUDIO_BOARD_FILE, studioMediaKind, type StudioBoard } from '../../shared/studio.js';
+import { STUDIO_BOARD_FILE, STUDIO_MEDIA_TOOLS_MISSING, studioMediaKind, type StudioBoard } from '../../shared/studio.js';
 import {
   applyStudioDelivery,
   applyTrackEdit,
@@ -130,6 +130,32 @@ export function studioLibrary(track: StudioTrack | null, media: Map<string, numb
     .sort((left, right) => right.version - left.version);
 }
 
+/** Whether `ffmpeg` and `ffprobe` both run from PATH. The desktop does not ship them; trim and export need them. */
+export async function detectStudioMediaTools(): Promise<boolean> {
+  const runs = (command: string) => run(command, ['-version'], { timeout: 10_000 }).then(() => true, () => false);
+  const [ffmpeg, ffprobe] = await Promise.all([runs('ffmpeg'), runs('ffprobe')]);
+  return ffmpeg && ffprobe;
+}
+
+let mediaTools: Promise<boolean> | null = null;
+
+/** detectStudioMediaTools, checked once per launch. */
+export function studioMediaTools(): Promise<boolean> {
+  mediaTools ??= detectStudioMediaTools();
+  return mediaTools;
+}
+
+/** ffmpeg, with a missing executable reported as the reason instead of ENOENT. */
+async function ffmpeg(args: string[], options: { timeout: number; maxBuffer?: number }): Promise<void> {
+  try {
+    await run('ffmpeg', args, options);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new TrackEditError(STUDIO_MEDIA_TOOLS_MISSING);
+    throw error;
+  }
+}
+
+/** The video's length, or null when it cannot be read (ffprobe missing, or not a video it knows). */
 async function probeSeconds(file: string): Promise<number | null> {
   try {
     const { stdout } = await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { timeout: 20_000 });
@@ -159,7 +185,7 @@ async function saveFrame(dir: string, video: string, at: number): Promise<string
   const relative = `frames/${randomUUID()}.png`;
   // The frame on screen at `at`; at the very end of a clip there is none, so step back to the last one.
   for (const seek of [at, at - 0.05, at - 0.2]) {
-    await run('ffmpeg', ['-nostdin', '-v', 'error', '-protocol_whitelist', 'file', '-ss', Math.max(0, seek).toFixed(3), ...inputFormat(video), '-i', path.join(dir, video), '-frames:v', '1', '-y', path.join(dir, relative)], { timeout: 60_000 });
+    await ffmpeg(['-nostdin', '-v', 'error', '-protocol_whitelist', 'file', '-ss', Math.max(0, seek).toFixed(3), ...inputFormat(video), '-i', path.join(dir, video), '-frames:v', '1', '-y', path.join(dir, relative)], { timeout: 60_000 });
     try {
       if ((await stat(path.join(dir, relative))).size > 0) return relative;
     } catch {
@@ -186,7 +212,7 @@ async function exportFilm(dir: string, track: StudioTrack, media: Map<string, nu
   const join = `${clips.map((_, index) => `[v${String(index)}]`).join('')}concat=n=${String(clips.length)}:v=1:a=0[out]`;
   await mediaDir(dir, 'exports');
   const relative = `exports/film-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`;
-  await run('ffmpeg', [
+  await ffmpeg([
     '-nostdin', '-v', 'error', '-protocol_whitelist', 'file', ...inputs,
     '-filter_complex', [...parts, join].join(';'), '-map', '[out]', '-an',
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-movflags', '+faststart', '-n', path.join(dir, relative),

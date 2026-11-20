@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type P
 import { ActionMenu, Button, IconButton, Modal, Segmented, TextField } from '@antseed/ui';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { MoreHorizontalIcon, PlayIcon, StopIcon, Undo02Icon } from '@hugeicons/core-free-icons';
-import { sumStudioCost, type StudioProjectDetail } from '../../../../shared/studio.js';
+import { STUDIO_MEDIA_TOOLS_MISSING, sumStudioCost, type StudioProjectDetail } from '../../../../shared/studio.js';
 import {
   anchorName,
   clipName,
@@ -173,6 +173,9 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
   const spent = sumStudioCost(track.spent);
   const notices = [...(detail.trackError ? [`${detail.trackError}.`] : []), ...detail.notices];
   const canPlay = track.anchors.some((anchor) => anchor.clip?.use);
+  // Trim and export run ffmpeg, which the desktop does not ship.
+  const toolsMissing = detail.mediaTools ? null : STUDIO_MEDIA_TOOLS_MISSING;
+  const exportBlocker = toolsMissing ?? check.blockers[0] ?? null;
 
   return (
     <div className={styles.editor}>
@@ -207,8 +210,8 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
         <Button
           size="sm"
           variant="brand"
-          disabled={busy || check.blockers.length > 0}
-          title={check.blockers[0] ?? 'Join the clips into one video in this project folder'}
+          disabled={busy || exportBlocker !== null}
+          title={exportBlocker ?? 'Join the clips into one video in this project folder'}
           onClick={() => { if (check.stale.length > 0) setConfirmExport(true); else void exportFilm(); }}
         >
           {exporting ? 'Exporting…' : 'Export'}
@@ -251,6 +254,7 @@ export function TrackEditor({ detail, canSend, onSend, onContext, onChanged }: P
             onStop={() => setPlaying(false)}
             onSelect={select}
             onTime={setTime}
+            trimBlocker={toolsMissing}
             onTrim={(end) => { if (selected) void edit({ type: 'trim', anchor: selected.id, end }); }}
             onResetTrim={() => { if (selected) void edit({ type: 'reset-trim', anchor: selected.id }); }}
             onUpload={() => { if (selected) void uploadFor(selected.id); }}
@@ -423,7 +427,7 @@ function FilmPlayer({ run, frame, url, caption, onDone }: {
   );
 }
 
-function Preview({ track, selected, selection, playing, busy, url, onStop, onSelect, onTime, onTrim, onResetTrim, onUpload, onLibrary, onDropImage, stale, updating, onUpdate }: {
+function Preview({ track, selected, selection, playing, busy, url, onStop, onSelect, onTime, trimBlocker, onTrim, onResetTrim, onUpload, onLibrary, onDropImage, stale, updating, onUpdate }: {
   track: StudioTrack;
   selected: TrackAnchor | null;
   selection: Selection;
@@ -433,6 +437,8 @@ function Preview({ track, selected, selection, playing, busy, url, onStop, onSel
   onStop: () => void;
   onSelect: (selection: Selection) => void;
   onTime: (time: number | null) => void;
+  /** Why a clip cannot be ended early here, or null. */
+  trimBlocker: string | null;
   onTrim: (end: number) => void;
   onResetTrim: () => void;
   onUpload: () => void;
@@ -559,7 +565,7 @@ function Preview({ track, selected, selection, playing, busy, url, onStop, onSel
           <span className={styles.caption}>{formatTimecode(now)}{end !== null ? ` · ends at ${formatSeconds(end)}` : ''}</span>
         )}
         {stale && !updating ? <Button size="sm" variant="outline" disabled={!onUpdate} onClick={() => onUpdate?.()}>Update</Button> : null}
-        <Button size="sm" variant="outline" disabled={busy || now < 0.1} onClick={() => { video.current?.pause(); onTrim(video.current?.currentTime ?? now); }}>End clip here</Button>
+        <Button size="sm" variant="outline" disabled={busy || trimBlocker !== null || now < 0.1} title={trimBlocker ?? undefined} onClick={() => { video.current?.pause(); onTrim(video.current?.currentTime ?? now); }}>End clip here</Button>
         {end !== null ? <Button size="sm" variant="link" disabled={busy} onClick={onResetTrim}>Reset end</Button> : null}
       </figcaption>
     </figure>
