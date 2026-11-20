@@ -55,6 +55,8 @@ function makeRelayer(config?: Partial<ConstructorParameters<typeof DepositRelaye
   });
   const estimateSpy = vi.spyOn(relayer.client, 'estimateSweepProfit').mockResolvedValue({
     gasEstimate: 200_000n,
+    gasPriceWei: 6_000_000n,
+    ethPriceUsdE8: 165_266_541_925n,
     estGasCostUsdc: 5_000n,
     fee: FEE,
     profitUsdc: FEE - 5_000n,
@@ -153,6 +155,8 @@ describe('DepositRelayer', () => {
     const { relayer, estimateSpy, sweepSpy } = makeRelayer();
     estimateSpy.mockResolvedValue({
       gasEstimate: 200_000n,
+      gasPriceWei: 250_000_000n,
+      ethPriceUsdE8: 165_266_541_925n,
       estGasCostUsdc: 80_000n,
       fee: FEE,
       profitUsdc: FEE - 80_000n, // negative
@@ -167,6 +171,8 @@ describe('DepositRelayer', () => {
     const { relayer, estimateSpy, sweepSpy } = makeRelayer({ minProfitBaseUnits: -100_000_000n });
     estimateSpy.mockResolvedValue({
       gasEstimate: 200_000n,
+      gasPriceWei: 250_000_000n,
+      ethPriceUsdE8: 165_266_541_925n,
       estGasCostUsdc: 4_100_150n, // anvil-scale gas cost
       fee: FEE,
       profitUsdc: FEE - 4_100_150n,
@@ -175,6 +181,13 @@ describe('DepositRelayer', () => {
 
     expect(await relayer.handleSweepRequest(PEER, await makeValidPayload(), makeMux())).toBe('submitted');
     expect(sweepSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('prices with the configured ETH price', async () => {
+    const { relayer, estimateSpy } = makeRelayer({ ethPriceUsd: 2_500 });
+
+    expect(await relayer.handleSweepRequest(PEER, await makeValidPayload(), makeMux())).toBe('submitted');
+    expect(estimateSpy.mock.calls[0][2]).toEqual({ minProfitUsdc: 0n, ethPriceUsd: 2_500 });
   });
 
   it('rejects when simulation fails', async () => {
@@ -206,6 +219,8 @@ describe('DepositRelayer', () => {
 
     estimateSpy.mockResolvedValueOnce({
       gasEstimate: 200_000n,
+      gasPriceWei: 250_000_000n,
+      ethPriceUsdE8: 165_266_541_925n,
       estGasCostUsdc: 80_000n,
       fee: FEE,
       profitUsdc: FEE - 80_000n,

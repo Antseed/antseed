@@ -231,6 +231,24 @@ describe('BaseEvmClient speed-ups within a fee limit', () => {
   });
 });
 
+describe('BaseEvmClient writes within a fee limit', () => {
+  it('sends the first tx at no more than the max fee per gas allowed', async () => {
+    const client = new TestEvmClient();
+    const provider = client.provider as JsonRpcProvider;
+    vi.spyOn(provider, 'getBlock').mockResolvedValue({ baseFeePerGas: 5_000_000n } as never);
+    vi.spyOn(provider, '_perform').mockResolvedValue('0xf4240'); // 0.001 gwei tip
+    vi.spyOn(provider, 'send').mockRejectedValue(new Error('no fee history'));
+    vi.spyOn(provider, 'getTransactionCount').mockResolvedValue(40);
+    const sent: TransactionRequest[] = [];
+    // Uncapped, the first send would offer 2 x base fee + tip = 0.011 gwei.
+    await (client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> })
+      ._execWriteWithin(signerSendingTo(sent, '0x' + '16'.repeat(20)), 8_000_000n, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n);
+    expect(sent).toHaveLength(1);
+    expect(BigInt(sent[0]!.maxFeePerGas!)).toBe(8_000_000n);
+    expect(BigInt(sent[0]!.maxPriorityFeePerGas!)).toBe(1_000_000n);
+  });
+});
+
 describe('BaseEvmClient speed-ups with nonce-managing signers', () => {
   it('never re-sends through a NonceManager, which would send the replacement on a new nonce', async () => {
     vi.useFakeTimers();

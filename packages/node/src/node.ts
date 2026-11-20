@@ -316,6 +316,8 @@ export interface NodePaymentsConfig {
   disableMetadataV2Services?: boolean;
   /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps). */
   depositRelayAddress?: string;
+  /** Chainlink ETH/USD aggregator the sweep relayer prices gas with (chain-config `ethUsdPriceFeedAddress`). */
+  ethUsdPriceFeedAddress?: string;
 }
 
 export interface NodeRelayerConfig {
@@ -328,6 +330,8 @@ export interface NodeRelayerConfig {
   maxInFlight?: number;
   /** Max sweep requests accepted per peer per minute. Default: 6. */
   maxPerPeerPerMinute?: number;
+  /** ETH price in US dollars for the profit estimate. Default: the chain's Chainlink ETH/USD feed. */
+  ethPriceUsd?: number;
 }
 
 export interface NodeVerificationConfig {
@@ -2819,6 +2823,8 @@ export class AntseedNode extends EventEmitter {
           ...(relayerConfig?.maxPerPeerPerMinute !== undefined
             ? { maxPerPeerPerMinute: relayerConfig.maxPerPeerPerMinute }
             : {}),
+          ...(payments.ethUsdPriceFeedAddress ? { ethUsdPriceFeedAddress: payments.ethUsdPriceFeedAddress } : {}),
+          ...(relayerConfig?.ethPriceUsd !== undefined ? { ethPriceUsd: relayerConfig.ethPriceUsd } : {}),
         });
         debugLog(`[Node] DepositRelayer initialized (relay=${payments.depositRelayAddress.slice(0, 10)}...)`);
       }

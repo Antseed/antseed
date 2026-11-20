@@ -345,8 +345,8 @@ export abstract class BaseEvmClient {
   }
 
   /**
-   * `_execWrite` whose speed-ups never raise the max fee per gas above `maxFeePerGasWei` (null: no
-   * limit beyond MAX_SPEED_UP_TIP_WEI), for a write that only pays off below some gas price.
+   * `_execWrite` whose first send and speed-ups never offer a max fee per gas above `maxFeePerGasWei`
+   * (null: no limit beyond MAX_SPEED_UP_TIP_WEI), for a write that only pays off below some gas price.
    */
   protected async _execWriteWithin(
     signer: AbstractSigner,
@@ -394,7 +394,7 @@ export abstract class BaseEvmClient {
     maxFeePerGasWei: bigint | null = null,
   ): Promise<TransactionReceipt> {
     const owner = {};
-    const tx = await this._sendBuffered(connected, signerAddress, populated, owner);
+    const tx = await this._sendBuffered(connected, signerAddress, populated, owner, maxFeePerGasWei);
     const replaceable = !(connected instanceof NonceManager) && typeof tx.nonce === 'number' && tx.nonce === populated.nonce;
     return this._waitForReceipt(
       tx,
@@ -557,12 +557,21 @@ export abstract class BaseEvmClient {
     signerAddress: string,
     populated: TransactionRequest,
     owner?: object,
+    maxFeePerGasWei: bigint | null = null,
   ): Promise<TransactionResponse> {
     return this._sendWithNonce(signerAddress, async (nonce) => {
       populated.nonce = nonce;
       const estimated = await connected.estimateGas(populated);
       populated.gasLimit = (estimated * GAS_BUFFER_NUMERATOR) / GAS_BUFFER_DENOMINATOR;
       if (populated.maxFeePerGas == null && populated.gasPrice == null) Object.assign(populated, await this._feeFields());
+      // A capped write never offers more per gas than it can afford, even if the base fee climbs
+      // while it waits. Clamped at the cap, it cannot be sped up (a replacement must offer more).
+      if (maxFeePerGasWei !== null && populated.maxFeePerGas != null) {
+        populated.maxFeePerGas = min(getBigInt(populated.maxFeePerGas), maxFeePerGasWei);
+        if (populated.maxPriorityFeePerGas != null) {
+          populated.maxPriorityFeePerGas = min(getBigInt(populated.maxPriorityFeePerGas), maxFeePerGasWei);
+        }
+      }
       return connected.sendTransaction(populated);
     }, owner);
   }
