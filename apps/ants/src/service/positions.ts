@@ -9,7 +9,7 @@ import { stakeEligibility } from './stake-eligibility.js';
 import { assertAgentId, assertEpochs, assertPositiveIds, silentReporter, type StepReporter } from './steps.js';
 import { liveWalletPositions, validateWalletRewards } from './indexed-wallet.js';
 import type { LivePositions } from './position-feed.js';
-import { positionActionEpoch, positionActionProblem, type PositionAction } from '../position-actions.js';
+import { describePositionActionProblem, findPositionActionProblem, positionActionEpoch, type PositionAction } from '../position-actions.js';
 import { normalLockStarts, restructureSources, type LineageRow, type LockStartConfig } from './lock-start.js';
 import { poolRevertMessage } from '../pool-errors.js';
 
@@ -243,10 +243,12 @@ async function requireActionState(ctx: AntsContext, list: SellerPoolPosition[], 
     const effectiveEpoch = action === 'merge' ? sharedEpoch : positionActionEpoch(action, currentEpoch, [position]);
     const segment = await pools.positionPowerSegmentAt(position.id, effectiveEpoch);
     const view = { ...position, stakeEndEpoch: segment.normalEndEpoch, maxLocked: segment.maxLockPower > 0n };
-    let problem = positionActionProblem(view, action, effectiveEpoch);
-    // The wallet's transfer state only changes the restake advice, so it is read only when that advice is the problem.
-    if (problem !== positionActionProblem(view, action, effectiveEpoch, true)) problem = positionActionProblem(view, action, effectiveEpoch, await ctx.antsToken().canTransfer(ctx.address));
-    if (problem) throw new Error(`Position ${position.id}: ${problem}`);
+    const problem = findPositionActionProblem(view, action, effectiveEpoch);
+    if (problem) {
+      // Only the restake advice depends on the wallet's transfer state, so it is read only for that problem.
+      const canTransfer = problem.kind === 'no-remaining-lock' && await ctx.antsToken().canTransfer(ctx.address);
+      throw new Error(`Position ${position.id}: ${describePositionActionProblem(problem, canTransfer)}`);
+    }
     return { effectiveEpoch, normalEndEpoch: segment.normalEndEpoch };
   }));
   return states;

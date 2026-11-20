@@ -18,22 +18,36 @@ export function positionActionEpoch(action: PositionAction, currentEpoch: number
   return Math.max(currentEpoch + 1, ...positions.map(position => position.stakeStartEpoch));
 }
 
+/** A position with no lock left can only be withdrawn; its wording depends on the wallet's transfer state. */
+export type PositionActionProblem = { kind: 'no-remaining-lock' } | { kind: 'other'; message: string };
+
+export function findPositionActionProblem(position: ActionPosition, action: PositionAction, effectiveEpoch: number | null): PositionActionProblem | null {
+  const other = (message: string): PositionActionProblem => ({ kind: 'other', message });
+  if (position.withdrawn || position.closedAtEpoch !== 0) return other('This position is already closed or withdrawn.');
+  if (effectiveEpoch === null) return other('Waiting for current epoch information.');
+  const locked = scheduledMaxLock(position);
+  if (action === 'disable-max-lock') return locked ? null : other('This position is not scheduled for max lock.');
+  if (locked) return other(action === 'enable-max-lock' ? 'This position is already scheduled for max lock.' : 'Disable maximum lock before this action.');
+  if (action === 'enable-max-lock' && effectiveEpoch < position.stakeStartEpoch) return other(`Max lock can be enabled when the next epoch reaches activation epoch ${position.stakeStartEpoch}.`);
+  if (position.stakeEndEpoch === 0 || effectiveEpoch >= position.stakeEndEpoch) return { kind: 'no-remaining-lock' };
+  return null;
+}
+
 /**
  * Withdrawn ANTS land in the wallet, and wallet ANTS can be staked again only
  * while the wallet can transfer (`transfersEnabled || whitelisted`), so advice
  * to restake depends on it.
  */
-export function positionActionProblem(position: ActionPosition, action: PositionAction, effectiveEpoch: number | null, canTransfer = false): string | null {
-  if (position.withdrawn || position.closedAtEpoch !== 0) return 'This position is already closed or withdrawn.';
-  if (effectiveEpoch === null) return 'Waiting for current epoch information.';
-  const locked = scheduledMaxLock(position);
-  if (action === 'disable-max-lock') return locked ? null : 'This position is not scheduled for max lock.';
-  if (locked) return action === 'enable-max-lock' ? 'This position is already scheduled for max lock.' : 'Disable maximum lock before this action.';
-  if (action === 'enable-max-lock' && effectiveEpoch < position.stakeStartEpoch) return `Max lock can be enabled when the next epoch reaches activation epoch ${position.stakeStartEpoch}.`;
-  if (position.stakeEndEpoch === 0 || effectiveEpoch >= position.stakeEndEpoch) return canTransfer
+export function describePositionActionProblem(problem: PositionActionProblem, canTransfer = false): string {
+  if (problem.kind === 'other') return problem.message;
+  return canTransfer
     ? 'The position has no remaining lock when this action takes effect. Withdraw it, then stake again to start a new lock.'
     : 'This position has no remaining lock when this action takes effect, so it can only be withdrawn. Withdrawn ANTS can\'t be staked again for now, while ANTS transfers are disabled.';
-  return null;
+}
+
+export function positionActionProblem(position: ActionPosition, action: PositionAction, effectiveEpoch: number | null, canTransfer = false): string | null {
+  const problem = findPositionActionProblem(position, action, effectiveEpoch);
+  return problem && describePositionActionProblem(problem, canTransfer);
 }
 
 export const MERGE_LOCK_START_MISMATCH = 'These positions started their locks at different epochs, so they can\'t be merged. Matching unlock dates are not enough: split, merged and moved positions keep the lock start of the originals.';
