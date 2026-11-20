@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Sellers (CLI, `@antseed/node`): `payments.suggestedReserveAmount` sets the first reserve a seller suggests to a buyer with no channel (USDC base units; default `1000000`, the contract's default first-sign cap), kept between `minBudgetPerRequest` and the cap. A seller of small per-request services can suggest less, so a buyer's deposit reaches more sellers.
+
 ### Fixed
 
 - Agent streaming (`@ant-agent`): streamed provider chunks are re-framed into whole SSE events before internal-tool suppression, so a chunk ending mid-event no longer leaks a partial event to the buyer or glues the buyer's event tail to the next chunk. Nonempty partial chunks stay buffered until an event completes, and a nonempty terminal chunk is emitted once through the event filter instead of being replayed raw.
