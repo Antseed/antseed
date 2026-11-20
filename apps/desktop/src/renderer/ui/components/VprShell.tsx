@@ -148,14 +148,20 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [startNewChat]);
 
+  // Each chat picked and each change of view is a newer choice: a project lookup still pending for an older one is dropped.
+  const navigation = useRef(0);
+  useEffect(() => { navigation.current += 1; }, [activeView]);
+
   // A Studio project's chat opens in its project, with the storyboard beside it.
   const openConversation = useCallback((id: string) => {
+    const turn = ++navigation.current;
     if (studioOn !== true) {
       onSelectView('chat');
       return;
     }
     const known = studioProjectsResource.getSnapshot().data;
     const open = (projects: StudioProjectSummary[] | null) => {
+      if (turn !== navigation.current) return;
       const project = studioProjectForConversation(projects, id);
       if (project) openStudioProject(project);
       onSelectView(project ? 'studio' : 'chat');
