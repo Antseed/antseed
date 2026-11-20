@@ -24,7 +24,7 @@ import {
   type TrackEdit,
 } from '../../../../shared/studio-track.js';
 import { formatStudioUsd, studioFileUrl } from '../../../modules/studio/board-view';
-import { clipRequestMessage, filmClipKey, filmIndex, formatSeconds, formatTimecode, selectionContext, type TrackSelection } from '../../../modules/studio/track-view';
+import { clipRequestMessage, filmClipKey, filmIndex, filmPlayers, formatSeconds, formatTimecode, selectionContext, type FilmPlayback, type TrackSelection } from '../../../modules/studio/track-view';
 import type { ChatContext } from '../views/ChatView';
 import styles from './TrackEditor.module.scss';
 
@@ -369,20 +369,20 @@ function FilmPlayer({ run, frame, url, caption, onDone, onStop }: {
   onStop: () => void;
 }) {
   const players = [useRef<HTMLVideoElement>(null), useRef<HTMLVideoElement>(null)] as const;
-  // The clip playing, by key rather than position: the film can change while it plays.
-  const [playing, setPlaying] = useState(() => (run[0] ? filmClipKey(run[0]) : ''));
-  const index = filmIndex(run, playing);
-  const latest = useRef(run);
-  latest.current = run;
+  // The clip playing, by key rather than position (the film can change while it plays), and the player showing it.
+  const [playback, setPlayback] = useState<FilmPlayback>(() => ({ key: run[0] ? filmClipKey(run[0]) : '', slot: 0 }));
+  const { index, players: loaded } = filmPlayers(run, playback);
+  const latest = useRef({ run, playback });
+  latest.current = { run, playback };
   const advanced = useRef('');
   const current = index === null ? null : run[index]!;
-  // Player k % 2 holds clip k: the one playing, and the other the clip after it.
-  const clipFor = (player: 0 | 1) => (index === null ? null : run[index % 2 === player ? index : index + 1] ?? null);
+  const slot = playback.slot;
+  const other = slot === 0 ? 1 : 0;
 
   const advance = (from: string) => {
     if (advanced.current === from) return;
     advanced.current = from;
-    const film = latest.current;
+    const { run: film, playback: now } = latest.current;
     const at = filmIndex(film, from);
     if (at === null) return;
     const next = film[at + 1];
@@ -390,9 +390,10 @@ function FilmPlayer({ run, frame, url, caption, onDone, onStop }: {
       onDone();
       return;
     }
-    // Started here, on the last frame, not after the next render: the next clip is already loaded.
-    void players[((at + 1) % 2) as 0 | 1].current?.play().catch(() => {});
-    setPlaying(filmClipKey(next));
+    // Started here, on the last frame, not after the next render: the next clip is already loaded in the other player.
+    const nextSlot = now.slot === 0 ? 1 : 0;
+    void players[nextSlot].current?.play().catch(() => {});
+    setPlayback({ key: filmClipKey(next), slot: nextSlot });
   };
 
   useEffect(() => {
@@ -401,8 +402,8 @@ function FilmPlayer({ run, frame, url, caption, onDone, onStop }: {
 
   useEffect(() => {
     if (index === null || !current) return undefined;
-    const active = players[(index % 2) as 0 | 1].current;
-    const idle = players[((index + 1) % 2) as 0 | 1].current;
+    const active = players[slot].current;
+    const idle = players[other].current;
     idle?.pause();
     if (idle) idle.currentTime = 0;
     if (!active) return undefined;
@@ -411,18 +412,18 @@ function FilmPlayer({ run, frame, url, caption, onDone, onStop }: {
     // hands over on its last frame instead of waiting for the ended event.
     let frameId = requestAnimationFrame(function check() {
       const end = current.clip?.end ?? (Number.isFinite(active.duration) ? active.duration : null);
-      if (end !== null && active.currentTime >= end - 1 / 30) advance(playing);
+      if (end !== null && active.currentTime >= end - 1 / 30) advance(playback.key);
       else frameId = requestAnimationFrame(check);
     });
     return () => cancelAnimationFrame(frameId);
-  }, [index, playing]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [index, playback.key, slot]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <figure className={styles.stage}>
       <div className={`${styles.preview} ${styles.film}`} style={frame}>
         {([0, 1] as const).map((player) => {
-          const anchor = clipFor(player);
-          const active = index !== null && index % 2 === player;
+          const anchor = loaded[player];
+          const active = index !== null && slot === player;
           return (
             <video
               key={player}
@@ -433,7 +434,7 @@ function FilmPlayer({ run, frame, url, caption, onDone, onStop }: {
               muted
               playsInline
               aria-hidden={!active}
-              onEnded={() => { if (active) advance(playing); }}
+              onEnded={() => { if (active) advance(playback.key); }}
             />
           );
         })}

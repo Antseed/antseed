@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseStudioTrack } from '../../../shared/studio-track.js';
-import { clipRequestMessage, filmClipKey, filmIndex, formatTimecode, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
+import { clipRequestMessage, filmClipKey, filmIndex, filmPlayers, formatTimecode, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
 
 const track = parseStudioTrack({
   aspectRatio: '16:9',
@@ -92,4 +92,25 @@ it('follows the clip playing when the film changes under it, and stops when that
   const second = filmClipKey(film[1]!);
   expect(filmIndex([film[0]!, { ...film[1]!, clip: { ...film[1]!.clip!, use: 'clips/two-b.mp4' } }], second)).toBeNull();
   expect(filmIndex([film[0]!, { ...film[1]!, clip: { ...film[1]!.clip!, end: 1.5 } }], second)).toBeNull();
+});
+
+it('keeps the clip playing in its own player when a shot is moved during playback', () => {
+  const film = parseStudioTrack({ anchors: [
+    { id: 'a1', clip: { id: 'c1', then: 'cut', use: 'clips/one.mp4', versions: [{ file: 'clips/one.mp4' }] } },
+    { id: 'a2', clip: { id: 'c2', then: 'cut', use: 'clips/two.mp4', versions: [{ file: 'clips/two.mp4' }] } },
+    { id: 'a3', clip: { id: 'c3', then: 'cut', use: 'clips/three.mp4', versions: [{ file: 'clips/three.mp4' }] } },
+    { id: 'a4' },
+  ] }).anchors.slice(0, 3);
+  const [one, two, three] = film as [typeof film[0], typeof film[0], typeof film[0]];
+  const playing = { key: filmClipKey(one), slot: 0 as const };
+  expect(filmPlayers(film, playing)).toEqual({ index: 0, players: [one, two] });
+  // The first shot moves one later while it plays: it stays in player 0, and player 1 loads what now follows it.
+  expect(filmPlayers([two, one, three], playing)).toEqual({ index: 1, players: [one, three] });
+  // After a hand-over the second player plays, wherever its clip is.
+  const handedOver = { key: filmClipKey(two), slot: 1 as const };
+  expect(filmPlayers(film, handedOver)).toEqual({ index: 1, players: [three, two] });
+  expect(filmPlayers([two, one, three], handedOver)).toEqual({ index: 0, players: [one, two] });
+  // The last clip has nothing after it; a clip gone from the film leaves both players empty.
+  expect(filmPlayers([two, one], playing)).toEqual({ index: 1, players: [one, null] });
+  expect(filmPlayers([two, three], playing)).toEqual({ index: null, players: [null, null] });
 });

@@ -33,6 +33,24 @@ export function filmIndex(run: readonly TrackAnchor[], playing: string): number 
   return index >= 0 ? index : null;
 }
 
+/** The clip playing, and which of the film's two players shows it. */
+export type FilmPlayback = { key: string; slot: 0 | 1 };
+
+/**
+ * What each of the film's two players holds: the one playing keeps its clip
+ * wherever that clip now is in the film, and the other holds the clip after
+ * it. A shot moved during playback so never hands the clip playing to the
+ * other player, which would start it again from its first frame.
+ */
+export function filmPlayers(run: readonly TrackAnchor[], playback: FilmPlayback): { index: number | null; players: [TrackAnchor | null, TrackAnchor | null] } {
+  const index = filmIndex(run, playback.key);
+  const players: [TrackAnchor | null, TrackAnchor | null] = [null, null];
+  if (index === null) return { index, players };
+  players[playback.slot] = run[index]!;
+  players[playback.slot === 0 ? 1 : 0] = run[index + 1] ?? null;
+  return { index, players };
+}
+
 function sceneLine(track: StudioTrack, anchorId: string): string | null {
   const run = sceneRuns(track).find((scene) => scene.anchors.includes(anchorId));
   if (!run) return null;
