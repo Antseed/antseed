@@ -1,4 +1,5 @@
 import { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV } from '@antseed/node/gateway-process'
+import { processExists } from './process-exists.js'
 
 // Shared with the hosts that set them (Antseed Desktop).
 export { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV }
@@ -23,16 +24,6 @@ export function stopWhenStdinCloses(
   for (const output of outputs) output.on('error', () => {})
   stdin.once('end', stop)
   stdin.resume()
-}
-
-/** Whether a process with this id exists (EPERM: it does, owned by someone else). */
-function processExists(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM'
-  }
 }
 
 /**

@@ -1,0 +1,8 @@
+.token .sub { max-width: 460px; text-wrap: balance; }
+
+@media (max-width: 760px) {
+  .token .title { font-size: 34px; line-height: 36px; }
+}
+@media (min-width: 1200px) {
+  .token .sub { text-wrap: wrap; }
+}

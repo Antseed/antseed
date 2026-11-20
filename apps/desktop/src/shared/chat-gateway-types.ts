@@ -19,6 +19,13 @@ export type ChatModel = {
   free: boolean;
   /** Cheapest price per image for an image model; null otherwise. */
   minImageUsd: number | null;
+  /** An image model's price per image, by seller (lowercase, no 0x): what the seller picker shows. */
+  imageUsdBySeller?: Record<string, number>;
+  /**
+   * A video model's cheapest price across its sellers: per second of video at
+   * the cheapest resolution, plus any fixed charge per video. Absent when none lists one.
+   */
+  videoPrice?: { perSecondUsd: number; perVideoUsd: number };
   /** A seller serving it for $0 to everyone, for a user who can't pay any other. */
   freeSellerId: string | null;
   /** Some seller's free tier is for its stakers only. */
@@ -30,13 +37,24 @@ export type ChatModel = {
   /** Some seller runs it sealed end to end: the seller and its model provider are both in a verified TEE. */
   teeEndToEnd?: boolean;
   toolUse: boolean;
+  /** Some seller declares reasoning. */
   reasoning: boolean;
+  /** Every seller the gateway may pick declares reasoning (the buyer's guaranteed capability), so the chat may ask it to think. */
+  reasoningEverySeller?: boolean;
+  /** Sellers (lowercase, no 0x) that declare reasoning, for a chat pinned to one when not all of them do. */
+  reasoningSellerIds?: string[];
   /**
    * Cheapest advertised prices across sellers, USD per million tokens; null when none advertised.
    * A stakers-only $0 offer counts only when no other seller has one.
    */
   inputUsdPerMillion: number | null;
   outputUsdPerMillion: number | null;
+  /**
+   * What a text model costs at retail, USD per million tokens, as the gateway
+   * lists it (`reference_price`). Absent when it lists none: an older gateway,
+   * one without a retail price list, or a model the list doesn't name.
+   */
+  referencePrice?: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null };
   /**
    * No trusted seller serves it, as the connected apps judge it, while other
    * models have one. Pickers list it only while it is the model in use, and

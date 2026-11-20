@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { sanitizeConfig, DEFAULT_SOURCE_CONFIG } from '../lib/config.mjs';
 import { MOCK_USAGE, NO_USAGE_MARKER, startMock, summarizeDeliveries, usageCost } from '../lib/mock.mjs';
+import { createPrng } from '../lib/prng.mjs';
 import { createTestbenchApi, parseSse } from '../lib/tb.mjs';
 import { classifyScenarioError } from '../lib/report.mjs';
 import { bootstrapCounts, BUYER_PATTERNS, classifyError, clientSummary, costLinesCheck, countPatterns, CRASH_PATTERN, externalHosts, GATES, gateProblems, latencyPercentiles, loadTimings, mergeDeliveries, peerLogs, runAll, runLoad, SELLER_PATTERNS, stressRun, stressTopology } from '../lib/stress.mjs';
@@ -84,6 +85,19 @@ describe('mock delivery ledger', () => {
       assert.ok(Object.keys(ledger.byTag).some((tag) => tag.startsWith('untagged-')));
       assert.equal(ledger.deliveredCost, String(3 * (10 * 3 + 8 * 15)));
       assert.equal(ledger.counts.ok, 3);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it('prices responses after setPricing at the new price, and earlier ones at the old', async () => {
+    const mock = await startMock({ models: ['m'], pricing: { m: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } });
+    try {
+      await post(`${mock.url}/v1/chat/completions`, { model: 'm', messages: [{ role: 'user', content: '[req:free] hi' }] });
+      mock.setPricing({ m: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } });
+      await post(`${mock.url}/v1/chat/completions`, { model: 'm', messages: [{ role: 'user', content: '[req:paid] hi' }] });
+      const ledger = mock.deliveries();
+      assert.deepEqual([ledger.byTag.free.cost, ledger.byTag.paid.cost], ['0', String(10 * 3 + 8 * 15)]);
     } finally {
       await mock.stop();
     }
@@ -241,6 +255,21 @@ describe('stress load and gates', () => {
       assert.equal(run.client.streamed.count, 4);
       for (const record of run.results) assert.ok(record.ttfbMs >= 0 && record.ttfbMs <= record.ms);
       assert.ok(run.client.okPerSecond > 0);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it('streams a share of its images and checks each stream carries its final images', async () => {
+    const mock = await startMock({ models: ['m', 'img'], usage: 'load', latencyRangeMs: [0, 0], pricing: { m: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, img: { imageUsd: 0.04 } } });
+    try {
+      const run = await runLoad({ proxyUrl: mock.url, model: 'm', imageModel: 'img', random: createPrng(5), load: { concurrency: 2, requests: 12, streamRatio: 0, imageRatio: 1, imageStreamRatio: 0.5, minInTokens: 1, maxInTokens: 2 } });
+      const streamed = run.results.filter((record) => record.stream);
+      assert.ok(streamed.length > 0 && streamed.length < run.results.length, `streamed ${streamed.length} of ${run.results.length}`);
+      for (const record of run.results) assert.equal(record.error, undefined, JSON.stringify(record));
+      for (const record of streamed) assert.ok(record.partials >= 0 && record.partials <= 3);
+      const ledger = mock.deliveries().byTag;
+      for (const record of streamed) assert.equal(ledger[record.tag]?.stream, true, record.tag);
     } finally {
       await mock.stop();
     }

@@ -71,6 +71,19 @@ describe('ChannelStore', () => {
     expect(loaded!.settledAmount).toBeNull();
   });
 
+  it('finds a channel by its id in any hex case, and by its exact spelling when both are stored', () => {
+    const lower = '0x' + 'ab'.repeat(32);
+    const upper = '0x' + 'AB'.repeat(32);
+    store.upsertChannel(makeChannel({ sessionId: upper, peerId: 'peer-upper' }));
+
+    expect(store.getChannelIgnoringCase(lower)?.sessionId).toBe(upper);
+    expect(store.getChannelIgnoringCase('0x' + 'cd'.repeat(32))).toBeNull();
+
+    store.upsertChannel(makeChannel({ sessionId: lower, peerId: 'peer-lower', nonce: 2 }));
+    expect(store.getChannelIgnoringCase(lower)?.sessionId).toBe(lower);
+    expect(store.getChannelIgnoringCase(upper)?.sessionId).toBe(upper);
+  });
+
   it('test_updateStatus: update to settled, verify', () => {
     const channel = makeChannel();
     store.upsertChannel(channel);
@@ -312,6 +325,28 @@ describe('ChannelStore', () => {
 
     const active = store.getActiveChannelByPeer('peer-abc123', CHANNEL_ROLE.BUYER);
     expect(active).toBeNull();
+  });
+
+  it('reads one buyer\'s channels in a status through an index instead of scanning every channel', () => {
+    const buyer = makeChannel({ sessionId: 'paid', createdAt: 1 });
+    for (const channel of [
+      buyer,
+      makeChannel({ sessionId: 'video', channelKind: CHANNEL_KIND.ONE_OFF, createdAt: 2 }),
+      makeChannel({ sessionId: 'settled', status: CHANNEL_STATUS.SETTLED, createdAt: 3 }),
+      makeChannel({ sessionId: 'free', channelKind: CHANNEL_KIND.FREE }),
+      makeChannel({ sessionId: 'seller', role: CHANNEL_ROLE.SELLER }),
+      makeChannel({ sessionId: 'other-buyer', buyerEvmAddr: '0x' + 'dd'.repeat(20) }),
+    ]) store.upsertChannel(channel);
+
+    expect(store.getBuyerPaymentChannelsByStatus(buyer.buyerEvmAddr, CHANNEL_STATUS.ACTIVE).map((channel) => channel.sessionId))
+      .toEqual(['video', 'paid']);
+    expect(store.getBuyerPaymentChannelsByStatus(buyer.buyerEvmAddr, CHANNEL_STATUS.SETTLED).map((channel) => channel.sessionId))
+      .toEqual(['settled']);
+
+    const plan = ((store as any)._db.prepare(
+      'EXPLAIN QUERY PLAN SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND status = ? AND channel_kind IN (?, ?) ORDER BY created_at DESC',
+    ).all('buyer', buyer.buyerEvmAddr, 'active', 'paid', 'one_off') as Array<{ detail: string }>).map((row) => row.detail).join('; ');
+    expect(plan).toContain('idx_channels_role_buyer_status');
   });
 
   it('lists funded buyer channels across kinds and statuses without changing session lookups', () => {

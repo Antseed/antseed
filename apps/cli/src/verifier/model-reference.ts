@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
   KBF_DEFAULT_SELF_TEST_RUNS,
+  KBF_CALIBRATION_METHOD,
   KBF_ENROLLMENT_TEMPERATURES,
   KBF_LOW_COVERAGE_RETRIES,
   KBF_PROBES_PER_REQUEST,
@@ -13,6 +14,7 @@ import {
   canonicalJsonStringify,
   computeBinomialPower,
   computeMatchVector,
+  hasMissingKbfAnswers,
   isKbfTokenLimitFinishReason,
   isLowCoverageKbfBatch,
   computeReferenceId,
@@ -26,10 +28,12 @@ import {
   computeContrastDetection,
   matchesTolerance,
   parseKbfAnswers,
-  rescoreKbfReference,
   sha256Hex,
+  stripKbfThinkBlocks,
   validateKbfReferenceV1,
+  type KbfCalibrationBatchV1,
   type KbfProbe,
+  type KbfReferenceCalibrationV1,
   type KbfReferenceV1,
   type ReferenceProbeSelfTestV1,
 } from '@antseed/fingerprints'
@@ -44,13 +48,17 @@ import {
   REFERENCE_POWER_ALPHA,
   REFERENCE_MAXIMUM_SELF_TEST_ERROR_RATE,
   REFERENCE_POWER_CONFIDENCE,
-  isReferenceProbeCountAllowed,
   resolveReferenceSizingPolicy,
 } from './reference-sizing.js'
 import { probeBankCompatibilityHash } from './probe-bank.js'
 import { safeServiceSlug } from './slug.js'
-import { auditedVerifierModels, resolveVerifierModelConfig, type ResolvedVerifierModelConfig } from './model-config.js'
-import type { VerifierModelCatalog, VerifierReasoningEffort } from './openrouter-catalog.js'
+import { auditedVerifierModels, isOpenRouterUrl, resolveVerifierModelConfig, type ResolvedVerifierModelConfig } from './model-config.js'
+import {
+  listedProviderOrder,
+  loadOpenRouterEndpoints,
+  type VerifierModelCatalog,
+  type VerifierReasoningEffort,
+} from './openrouter-catalog.js'
 import {
   THINKING_DISCOVERY_PROBES,
   THINKING_DISCOVERY_TIMEOUT_MS,
@@ -69,10 +77,11 @@ import {
 } from './canonical-kbf-domains.js'
 import { writeJsonAtomic, writeTextAtomic } from './atomic-files.js'
 import { CandidateWritingPolicy, candidateWritingFallback, isRamblingCandidateAnswer } from './candidate-writing.js'
-import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
+import { createDomainHomogeneousKbfBatches, kbfAuditBatches } from './kbf-batching.js'
 import { asError, normalized, sleep } from './utils.js'
+import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
 
-const REFERENCE_BUILDER_VERSION = '6'
+export { REFERENCE_BUILDER_VERSION }
 const CANDIDATE_COUNT = 300
 const CANDIDATE_BATCH_SIZE = 20
 const DEFAULT_MAX_REQUESTS_PER_BUILD = 2_000
@@ -87,18 +96,22 @@ const DEFAULT_RETRY_BASE_DELAY_MS = 500
 const REFERENCE_THROTTLE_BASE_DELAY_MS = 10_000
 const REFERENCE_THROTTLE_MAX_DELAY_MS = 60_000
 const DEFAULT_MAX_NO_PROGRESS_ROUNDS = 3
-/** Layout-filter passes for a new bank, as `generate_probes.py --layout-filter 1` in the KBF reference code. */
-const DEFAULT_LAYOUT_FILTER_PASSES = 1
+/**
+ * Layout-filter passes for a new bank. The KBF reference code's flag is off by default and recommended
+ * for weaker reference models; its own MiniMax M3 set used two (`layout_filter.passes` in
+ * `probes/reference_202609/minimax-m3_20260911.json`).
+ */
+export const DEFAULT_LAYOUT_FILTER_PASSES = 2
 // Candidate batches ask for a long list (up to 6000 tokens) and nothing is scored from them, so
 // they get more time than the measured requests, whose timeout is part of the bank settings.
 const CANDIDATE_GENERATION_TIMEOUT_MS = 300_000
-const DEFAULT_MAX_CONCURRENT_REQUESTS = 4
-const DEFAULT_MAX_CONCURRENT_REQUESTS_PER_MODEL = 3
+const DEFAULT_MAX_CONCURRENT_REQUESTS = 16
+const DEFAULT_MAX_CONCURRENT_REQUESTS_PER_MODEL = 6
 const NEW_ACCOUNT_MINIMUM_REQUEST_INTERVAL_MS = 6_500
 const NEW_ACCOUNT_RATE_LIMIT_COOLDOWN_MS = 65_000
 const MAX_TOKENS = 1600
 const ANTHROPIC_VERSION = '2023-06-01'
-const REFERENCE_SIZING_ALGORITHM_VERSION = 2
+export const REFERENCE_SIZING_ALGORITHM_VERSION = 2
 const MINIMUM_SUPPORTED_REASONING_STRATEGY = 'reasoning-effort-minimum-supported' as const
 const DISABLED_REASONING_STRATEGY = 'reasoning-effort-none' as const
 const BARE_REASONING_STRATEGY = 'bare' as const
@@ -152,7 +165,7 @@ interface ReferenceCachedResponseBaseV1 {
 interface ReferenceCachedSuccessV1 extends ReferenceCachedResponseBaseV1 {
   outcome?: 'success'
   content: string
-  /** Kept for thinking-discovery responses, so a replayed reply cut off at the token limit stays rejected. */
+  /** Kept so a replayed reply cut off at the token limit is treated like the first time. */
   finishReason?: string | null
 }
 
@@ -176,7 +189,7 @@ export interface ReferenceBuildCostModelV1 {
 }
 
 export interface ReferenceBuildCostPurposeV1 extends ReferenceBuildCostModelV1 {
-  purpose: 'candidate-generation' | 'target-model' | 'contrast-model' | 'self-test' | 'thinking-discovery'
+  purpose: 'candidate-generation' | 'target-model' | 'contrast-model' | 'self-test' | 'thinking-discovery' | 'calibration'
 }
 
 export interface ReferenceBuildCostV1 {
@@ -189,6 +202,17 @@ export interface ReferenceBuildCostV1 {
 export interface ReferenceRequestLimiter {
   run: <T>(model: string, execute: () => Promise<T>) => Promise<T>
   recordSuccess: (model: string) => void
+}
+
+/**
+ * A warning for a per-model limit of 1, or null. Builds then ask one question batch at a time, so a
+ * model that thinks for a minute per request takes many hours and holds up every other audit of
+ * that run.
+ */
+export function referenceConcurrencyWarning(config: VerifierCLIConfig | undefined): string | null {
+  if (config?.referenceMaxConcurrentRequestsPerModel !== 1) return null
+  return `verifier.referenceMaxConcurrentRequestsPerModel is 1: reference builds ask one batch at a time and can take `
+    + `many hours. Remove it to use the default of ${DEFAULT_MAX_CONCURRENT_REQUESTS_PER_MODEL}.`
 }
 
 export function createReferenceRequestLimiter(
@@ -209,8 +233,8 @@ export function createReferenceRequestLimiter(
 interface ReferenceQueryOptions {
   /** Sends this one request with another thinking setting (candidate writing fallback only). */
   thinkingStrategy?: ThinkingDiscoveryStrategy
-  /** Called with the answer's output tokens, whether fresh or replayed from the checkpoint. */
-  onUsage?: (usage: { outputTokens: number }) => void
+  /** Called with the answer's output tokens and finish reason, whether fresh or replayed from the checkpoint. */
+  onUsage?: (usage: { outputTokens: number; finishReason?: string | null }) => void
 }
 
 type ReferenceQuery = ((model: string, body: Record<string, unknown>, options?: ReferenceQueryOptions) => Promise<string>) & {
@@ -304,61 +328,6 @@ export interface ReferenceExchangesV1 {
   exchanges: ReferenceExchangeV1[]
 }
 
-export async function loadModelReference(input: {
-  model: string
-  referencesDir: string
-  config?: VerifierCLIConfig
-}): Promise<{ reference: KbfReferenceV1; path: string }> {
-  const path = referencePath(input.referencesDir, input.model)
-  let raw: string
-  try {
-    raw = await readFile(path, 'utf8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error(`no reference exists for ${input.model}; run antseed verifier reference build ${input.model}`)
-    }
-    throw error
-  }
-  try {
-    const sizing = resolveReferenceSizingPolicy(input.config)
-    // References built before unscoreable answers were left out are re-scored on load.
-    const reference = rescoreKbfReference(validateKbfReferenceV1(JSON.parse(raw), {
-      trustImported: true,
-      minimumStatisticalPower: Number.EPSILON,
-    }))
-    if (!reference.serviceAliases.some((alias) => normalized(alias) === normalized(input.model))) {
-      throw new Error(`reference does not include service alias ${input.model}`)
-    }
-    if (!isReferenceProbeCountAllowed(reference.probes.length, sizing)) {
-      throw new Error(
-        `reference probe count ${reference.probes.length} is outside the configured adaptive sizing sequence`,
-      )
-    }
-    if (Math.abs(reference.minimumMismatchDelta - REFERENCE_MINIMUM_MISMATCH_DELTA) > 1e-12) {
-      throw new Error(`reference minimumMismatchDelta must be ${REFERENCE_MINIMUM_MISMATCH_DELTA}`)
-    }
-    if (Math.abs(reference.statisticalPowerEvidence.alpha - REFERENCE_POWER_ALPHA) > 1e-12) {
-      throw new Error(`reference statistical power alpha must be ${REFERENCE_POWER_ALPHA}`)
-    }
-    if (Math.abs(
-      reference.statisticalPowerEvidence.clopperPearsonConfidence - REFERENCE_POWER_CONFIDENCE,
-    ) > 1e-12) {
-      throw new Error(
-        `reference Clopper-Pearson confidence must be ${REFERENCE_POWER_CONFIDENCE}`,
-      )
-    }
-    if (reference.statisticalPower < sizing.minimumStatisticalPower) {
-      throw new Error(
-        `reference statistical power ${reference.statisticalPower.toFixed(3)} is below `
-        + sizing.minimumStatisticalPower.toFixed(3),
-      )
-    }
-    return { reference, path }
-  } catch (error) {
-    throw new Error(`invalid reference for ${input.model}: ${asError(error).message}; run antseed verifier reference build ${input.model}`)
-  }
-}
-
 export async function buildModelReference(input: {
   model: string
   referencesDir: string
@@ -368,14 +337,11 @@ export async function buildModelReference(input: {
   fetchFn?: typeof fetch
   log?: (message: string) => void
   requestLimiter?: ReferenceRequestLimiter
-  initialReference?: KbfReferenceV1
   /**
-   * Probes already certified stable for this model by an earlier enrollment
-   * with the same enrollment prompt, temperatures and stability rule. They skip
-   * candidate generation and stability passes only; contrast checks and
-   * self-tests are measured again by this build.
+   * The epoch this build is for. Its checkpoints are kept per epoch, so a build never resumes the
+   * cached answers of another epoch's build.
    */
-  seedProbes?: { probes: readonly KbfProbe[]; source: Record<string, unknown> }
+  epoch?: string
   /** Probe ids already banked; generation never returns them, so every selected probe is new. */
   excludedProbeIds?: ReadonlySet<string>
   /**
@@ -408,24 +374,19 @@ export async function buildModelReference(input: {
   const sizing = resolveReferenceSizingPolicy(input.config)
   const selfTestRuns = input.config?.referenceSelfTestRuns ?? KBF_DEFAULT_SELF_TEST_RUNS
   assertPositiveInteger(selfTestRuns, 'referenceSelfTestRuns')
-  const initial = input.initialReference && validateKbfReferenceV1(input.initialReference, {
+  // The request settings of the bank this build adds fresh probes to, so they are measured exactly
+  // like the banked ones.
+  const settings = input.settingsReference && validateKbfReferenceV1(input.settingsReference, {
     minimumStatisticalPower: Number.EPSILON,
   })
-  if (initial && input.settingsReference) throw new Error('initialReference already carries the bank settings')
-  // Where this build's request settings come from: the enrollment it extends, or the bank it adds
-  // fresh probes to. Either way new probes are measured exactly like the banked ones.
-  const settings = initial ?? (input.settingsReference && validateKbfReferenceV1(input.settingsReference, {
-    minimumStatisticalPower: Number.EPSILON,
-  }))
-  // The provider pin: the verifier's own, else the one the bank being extended was built with (so
-  // its measurements stay comparable), else the built-in pin for a new bank.
+  // The provider pin: the one the bank being extended was built with, so its measurements stay
+  // comparable (an epoch keeps its first build's pin), else the verifier's own or the built-in one.
   const recordedPin = settings
     ? (settings.generator.params.referenceProvider as { pinned?: { order?: string[] } | null } | undefined)?.pinned
     : undefined
-  const targetReferenceProvider = modelConfig.referenceProvider
-    ?? (settings
-      ? (recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined)
-      : modelConfig.defaultReferenceProvider)
+  const targetReferenceProvider = settings
+    ? (recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined)
+    : modelConfig.referenceProvider ?? modelConfig.defaultReferenceProvider
   // KBF layout filter (`generate_probes.py --layout-filter`): a bank keeps the setting it was built
   // with; a new bank uses the config (default one pass).
   const layoutFilterPasses = settings
@@ -451,6 +412,11 @@ export async function buildModelReference(input: {
       })] as const
     }),
   )
+  // A new bank's pin leaves out providers OpenRouter no longer lists for the model.
+  if (!settings) {
+    const targetKey = normalized(modelConfig.upstreamModel)
+    routesByModel.set(targetKey, await withListedProviders(routesByModel.get(targetKey)!, input.fetchFn ?? fetch, input.log))
+  }
   // The request timeout is part of the measurement (it decides which slow answers count), so a
   // bank keeps the one it was enrolled with.
   const timeoutMs = settings?.queryProfile.requestTimeoutMs ?? input.config?.probeRequestTimeoutMs ?? 120_000
@@ -482,6 +448,7 @@ export async function buildModelReference(input: {
   const discoveryCheckpoint = discover ? await ReferenceBuildCheckpoint.open(discoveryCheckpointPath, canonicalHashBytes32({
     version: 1,
     model: normalized(input.model),
+    ...(input.epoch !== undefined ? { epoch: input.epoch } : {}),
     routesByModel: [...routesByModel.entries()],
   })) : null
   const discoveryUsedBefore = discoveryCheckpoint?.requestsUsed ?? 0
@@ -556,9 +523,9 @@ export async function buildModelReference(input: {
     maxTokensPerRequest: Math.max(MAX_TOKENS, targetRoute.minMaxTokens ?? 0),
     requestTimeoutMs: timeoutMs,
   })
-  // The reference endpoint's request settings stay out of the query profile. Audits
-  // send targets only the thinking suppression from them (as the KBF reference code
-  // does for every endpoint), never omissions or provider pins.
+  // The reference endpoint's request settings stay out of the query profile. A target
+  // whose own thinking discovery finds nothing is sent only the thinking suppression
+  // from them, never omissions or provider pins.
   const referenceEndpointRequest: ReferenceEndpointRequestV1 = {
     reasoningStrategy: targetReasoningStrategy,
     requestOverrides: targetRequestOverrides,
@@ -596,7 +563,7 @@ export async function buildModelReference(input: {
   }
   const checkpointPath = join(input.referencesDir, '.checkpoints', `${safeServiceSlug(input.model)}.json`)
   const compatibilityHash = canonicalHashBytes32({
-    version: 4,
+    version: 5,
     model: normalized(input.model),
     endpoint: {
       baseUrl: endpoint.baseUrl.replace(/\/+$/, ''),
@@ -623,12 +590,8 @@ export async function buildModelReference(input: {
     timeoutMs,
     reasoningStrategy: targetReasoningStrategy,
     routesByModel: [...routesByModel.entries()],
-    ...(initial ? { initialReferenceId: initial.referenceId } : {}),
+    ...(input.epoch !== undefined ? { epoch: input.epoch } : {}),
     ...(input.excludedProbeIds ? { excludedProbeIds: canonicalHashBytes32([...input.excludedProbeIds].sort()) } : {}),
-    ...(input.seedProbes ? {
-      seedProbeIds: canonicalHashBytes32(input.seedProbes.probes.map((probe) => probe.id)),
-      seedSource: input.seedProbes.source,
-    } : {}),
   })
   const checkpoint = await ReferenceBuildCheckpoint.open(checkpointPath, compatibilityHash)
   const usedBefore = checkpoint.requestsUsed + discoveryUsedBefore
@@ -656,50 +619,8 @@ export async function buildModelReference(input: {
     log: input.log,
   })
   const candidateWriting = new CandidateWritingPolicy(candidateWritingFallback(targetRoute), input.log)
-  const excludedDomains = new Set<string>(modelConfig.excludedDomains ?? [])
-  const retained = initial?.probes.filter((probe) => !excludedDomains.has(probe.domain)) ?? []
-  const selfById = new Map(initial?.selfTest.outcomes.map((outcome) => [outcome.probeId, outcome]) ?? [])
-  let collected: CollectedReferenceProbes | undefined = initial ? {
-    probes: [...retained],
-    candidateCount: initial.probes.length,
-    distinguishingProbeIdsByModel: new Map(initial.contrasts.map((entry) => [entry.model, [...entry.distinguishingProbeIds]])),
-    answeredContrastModelsByProbeId: new Map(retained.map((probe) => [probe.id, [...modelConfig.contrastModels]])),
-    generatedProbeIds: new Set(initial.probes.map((probe) => probe.id)),
-    reserveProbes: [],
-    generationRound: Math.max(0, ...initial.probes.map((probe) => Number(probe.generationRound) || 0)),
-  } : undefined
-  const selfOutcomes: ReferenceProbeSelfTestV1[] = retained.map((probe) => {
-    const outcome = selfById.get(probe.id)
-    if (!outcome) throw new Error(`existing bank enrollment lacks a self-test for probe ${probe.id}`)
-    return outcome
-  })
-  if (initial) input.log?.(`reusing ${retained.length} enrolled probes and self-test outcomes; checking every contrast before audit`)
-  let seededProbeCount = 0
-  if (input.seedProbes) {
-    if (initial) throw new Error('seed probes cannot be combined with an existing bank enrollment')
-    const seeds = input.seedProbes.probes
-      .filter((probe) => !excludedDomains.has(probe.domain))
-      .map(({ contrast: _contrast, ...probe }) => probe as KbfProbe)
-    input.log?.(`seeding ${seeds.length} previously certified stable probes; re-checking contrasts`)
-    const { outcomes, answered } = await queryContrastOutcomes(seeds, modelConfig.contrastModels, query, input.log)
-    const reserveProbes = seeds.flatMap((probe) => {
-      const distinguishingModels = outcomes.get(probe.id) ?? []
-      return modelConfig.contrastModels.length === 0 || distinguishingModels.length > 0
-        ? [{ ...probe, ...(distinguishingModels.length > 0 ? { contrast: { distinguishingModels } } : {}) }]
-        : []
-    })
-    seededProbeCount = reserveProbes.length
-    input.log?.(`${reserveProbes.length}/${seeds.length} seeded probes distinguish at least one current contrast`)
-    collected = {
-      probes: [],
-      candidateCount: seeds.length,
-      distinguishingProbeIdsByModel: new Map(modelConfig.contrastModels.map((model) => [model, [] as string[]])),
-      answeredContrastModelsByProbeId: answered,
-      generatedProbeIds: new Set(seeds.map((probe) => probe.id)),
-      reserveProbes,
-      generationRound: Math.max(0, ...seeds.map((probe) => Number(probe.generationRound) || 0)),
-    }
-  }
+  let collected: CollectedReferenceProbes | undefined
+  const selfOutcomes: ReferenceProbeSelfTestV1[] = []
   let selected: {
     probes: KbfProbe[]
     selfTest: ReturnType<typeof aggregateKbfSelfTestOutcomes>
@@ -729,22 +650,25 @@ export async function buildModelReference(input: {
         candidateWriting,
       })
       collected = await collect(collected)
-      // Layout filter: ask every new probe once more the way audits do (fresh domain shuffle, a
-      // rotating prompt variant, temperature 0) and drop the ones whose answer moves, then refill.
+      // Layout filter, as in the KBF reference code: ask probes again in single-domain batches of ten
+      // and drop the ones whose answer moves, then refill. A size step adds about ten probes across
+      // fifteen domains, which would be single-question requests, so a step that has unchecked
+      // probes asks the whole unchecked pool (its reserve too) and later steps draw on the survivors.
       // The self-test below runs on the survivors only, as separate requests, so the error limit is
       // measured independently of the answers that chose them.
       while (layoutFilterPasses > 0) {
-        const pending = collected.probes.slice(selfOutcomes.length, targetCount)
-          .filter((probe) => !layoutCheckedProbeIds.has(probe.id))
+        const unchecked = (probe: KbfProbe) => !layoutCheckedProbeIds.has(probe.id)
+        const pending = collected.probes.slice(selfOutcomes.length, targetCount).filter(unchecked)
         if (pending.length === 0) break
+        const pool = [...pending, ...collected.reserveProbes.filter(unchecked)]
         const moved = await layoutFilterMovedProbeIds(
-          modelConfig.upstreamModel, pending, layoutFilterPasses, query, input.log,
+          modelConfig.upstreamModel, pool, layoutFilterPasses, query, input.log,
         )
-        for (const probe of pending) layoutCheckedProbeIds.add(probe.id)
-        layoutFilterStats.checkedProbeCount += pending.length
+        for (const probe of pool) layoutCheckedProbeIds.add(probe.id)
+        layoutFilterStats.checkedProbeCount += pool.length
         layoutFilterStats.droppedProbeCount += moved.size
         input.log?.(
-          `layout filter: ${moved.size}/${pending.length} new probes changed answer under audit layout; `
+          `layout filter: ${moved.size}/${pool.length} pooled probes changed answer under audit layout; `
           + `${layoutFilterStats.droppedProbeCount}/${layoutFilterStats.checkedProbeCount} dropped so far`,
         )
         if (moved.size === 0) break
@@ -806,7 +730,7 @@ export async function buildModelReference(input: {
       }
     }
   } catch (error) {
-    if (!initial && asError(error).message.includes('reference generation made no progress')) await checkpoint.remove()
+    if (asError(error).message.includes('reference generation made no progress')) await checkpoint.remove()
     throw error
   }
   if (!collected || !selected) {
@@ -875,18 +799,15 @@ export async function buildModelReference(input: {
         ...(layoutFilterPasses > 0 ? {
           layoutFilterPasses,
           layoutFilter: {
-            version: 1,
-            method: 'kbf-layout-filter-audit-variants-v1',
+            version: 2,
+            method: 'kbf-layout-filter-audit-batches-v2',
             passes: layoutFilterPasses,
+            batchSize: KBF_PROBES_PER_REQUEST,
             ...layoutFilterStats,
           },
         } : {}),
         ...(thinkingDiscovery ?? initialDiscovery ? { thinkingDiscovery: thinkingDiscovery ?? initialDiscovery } : {}),
         ...(candidateWriting.summary() ? { candidateWriting: candidateWriting.summary() } : {}),
-        ...(initial ? { enrollmentSeedReferenceId: initial.referenceId, reusedProbeCount: retained.length } : {}),
-        ...(input.seedProbes ? {
-          seededStableProbes: { ...input.seedProbes.source, offeredProbeCount: input.seedProbes.probes.length, acceptedProbeCount: seededProbeCount },
-        } : {}),
         ...(targetRoute.type === 'direct' ? {
           referenceProvider: {
             pinned: targetRoute.providerRouting
@@ -948,6 +869,184 @@ export async function buildModelReference(input: {
       await discoveryCheckpoint?.remove()
     },
   }
+}
+
+/**
+ * Calibrates a question set: asks the pinned reference endpoint each batch of each reference exactly
+ * as a seller is asked it (`kbfAuditBatches`), at temperature 0 with the bank's recorded thinking
+ * suppression and token budget, and treats the replies as a seller audit does: `<think>` blocks
+ * stripped, a reply cut off at the token limit unscored, a batch with any answer missing asked again
+ * up to twice and the fullest attempt kept. Prompt variants are seeded per batch so that an
+ * interrupted run replays its checkpointed answers instead of paying for them twice. The same
+ * endpoint, pin and request settings as the bank's enrollment, or it throws.
+ */
+export async function calibrateReferenceSets(input: {
+  model: string
+  /** The audit set first, then its extra sets. They come from one bank, so they share its settings. */
+  references: readonly KbfReferenceV1[]
+  passes: number
+  checkpointPath: string
+  exchangesPath: string
+  config: VerifierCLIConfig | undefined
+  catalog?: VerifierModelCatalog | null
+  buyerProxyPort?: number
+  fetchFn?: typeof fetch
+  log?: (message: string) => void
+  requestLimiter?: ReferenceRequestLimiter
+  /** New requests this call may make; an unfinished calibration continues in the next run. */
+  maxNewRequests: number
+  /** The calibration's total, including earlier runs. */
+  maxRequests: number
+  now?: () => number
+}): Promise<{
+  calibrations: KbfReferenceCalibrationV1[]
+  exchanges: ReferenceExchangesFileV1
+  cost: ReferenceBuildCostV1
+  finalize: () => Promise<void>
+}> {
+  const endpoint = input.config?.referenceEndpoint
+  if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
+  assertPositiveInteger(input.passes, 'calibration passes')
+  const settings = input.references[0]
+  if (!settings) throw new Error('calibration needs a reference')
+  const catalog = input.catalog ?? null
+  const modelConfig = resolveVerifierModelConfig(input.config, input.model, catalog)
+  const pricing = referenceTargetPricing(modelConfig, catalog)
+  const recordedPin = (settings.generator.params.referenceProvider as { pinned?: { order?: string[] } | null } | undefined)?.pinned
+  const route = withRecordedSettings(resolveReferenceRequestRoute({
+    endpoint,
+    model: modelConfig.upstreamModel,
+    apiKey: (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey,
+    catalog,
+    referenceRoute: modelConfig.referenceRoute,
+    // The pin the bank recorded, so the set is asked of the provider that answered its enrollment.
+    referenceProvider: recordedPin === undefined
+      ? modelConfig.referenceProvider
+      : recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined,
+    upstream: modelConfig.upstream ? {
+      name: modelConfig.upstream.name,
+      model: modelConfig.upstream.model,
+      config: input.config?.upstreams?.[modelConfig.upstream.name],
+    } : undefined,
+    buyerProxyPort: input.buyerProxyPort,
+  }), settings)
+  if (settings.provenance && settings.provenance.sourceId !== referenceSourceId(endpoint, route)) {
+    throw new Error(
+      `calibration would ask ${referenceSourceId(endpoint, route)}, but this bank was enrolled on ${settings.provenance.sourceId}`,
+    )
+  }
+  if (recordedPin !== undefined && canonicalHashBytes32(recordedPin)
+    !== canonicalHashBytes32(route.providerRouting ? { order: route.providerRouting.order, allowFallbacks: false } : null)) {
+    throw new Error(`calibration would ask another provider than the one this bank's ${input.model} enrollment pinned`)
+  }
+  const checkpoint = await ReferenceBuildCheckpoint.open(input.checkpointPath, canonicalHashBytes32({
+    version: 1,
+    kind: 'antseed-set-calibration',
+    model: normalized(input.model),
+    referenceIds: input.references.map((reference) => reference.referenceId),
+    passes: input.passes,
+    route,
+  }))
+  if (checkpoint.requestsUsed > 0) input.log?.(`calibration continues from its checkpoint: ${checkpoint.requestsUsed} requests already used`)
+  const query = createReferenceQuery({
+    timeoutMs: settings.queryProfile.requestTimeoutMs,
+    fetchFn: input.fetchFn ?? fetch,
+    checkpoint,
+    limiter: input.requestLimiter ?? createReferenceRequestLimiter(input.config),
+    runBudget: { limit: input.maxNewRequests, used: 0 },
+    maxRequests: input.maxRequests,
+    retryCount: input.config?.referenceBatchRetryCount ?? DEFAULT_BATCH_RETRY_COUNT,
+    retryBaseDelayMs: input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS,
+    pricingForModel: () => pricing,
+    routeForModel: () => route,
+    log: input.log,
+  })
+  const calibratedAt = new Date(input.now?.() ?? Date.now()).toISOString()
+  const calibrations = await allSettledOrThrow(input.references.map(async (reference): Promise<KbfReferenceCalibrationV1> => {
+    const auditBatches = kbfAuditBatches(reference.probes)
+    const batches: KbfCalibrationBatchV1[] = []
+    const answersByPass = await allSettledOrThrow(Array.from({ length: input.passes }, async (_unused, pass) => {
+      const seed = `calibration-${reference.referenceId}-${pass}`
+      const answers = new Array<number | null>(reference.probes.length).fill(null)
+      await allSettledOrThrow(auditBatches.map(async (batch, batchIndex) => {
+        const promptVariantId = seededPromptVariantId(seed, batch.probes)
+        const asked = await askCalibrationBatch({
+          model: modelConfig.upstreamModel, probes: batch.probes, query, seed: `${seed}-${batchIndex}`, promptVariantId,
+          maxTokens: settings.queryProfile.maxTokensPerRequest,
+        })
+        for (const [position, originalIndex] of batch.indexes.entries()) answers[originalIndex] = asked.answers[position] ?? null
+        batches.push({
+          pass, batchIndex, probeIds: batch.probes.map((probe) => probe.id), promptVariantId, attempts: asked.attempts,
+          ...(asked.truncated ? { truncated: true as const } : {}),
+        })
+      }))
+      return answers
+    }))
+    const outcomes: ReferenceProbeSelfTestV1[] = reference.probes.map((probe, index) => {
+      const answers = answersByPass.map((pass) => pass[index] ?? null)
+      return { probeId: probe.id, answers, matches: computeMatchVector(answers, answers.map(() => probe)) }
+    })
+    return {
+      version: 1,
+      method: KBF_CALIBRATION_METHOD,
+      passes: input.passes,
+      ...aggregateKbfSelfTestOutcomes(outcomes),
+      batches: batches.sort((left, right) => left.pass - right.pass || left.batchIndex - right.batchIndex),
+      calibratedAt,
+    }
+  }))
+  const exchanges = await writeReferenceExchanges({
+    path: input.exchangesPath,
+    model: input.model,
+    upstream: referenceUpstreamProvenance(endpoint, route),
+    checkpoints: [checkpoint],
+  })
+  return {
+    calibrations,
+    exchanges,
+    cost: summarizeReferenceCosts(query.consumedResponses?.() ?? []),
+    finalize: () => checkpoint.remove(),
+  }
+}
+
+/** One calibration batch under the seller rules of `executeProxyProbeBatch`. */
+async function askCalibrationBatch(input: {
+  model: string
+  probes: readonly KbfProbe[]
+  query: ReferenceQuery
+  seed: string
+  promptVariantId: string
+  maxTokens: number
+}): Promise<{ answers: Array<number | null>; attempts: number; truncated: boolean }> {
+  const { model, probes, query } = input
+  const empty = (): Array<number | null> => probes.map(() => null)
+  let best = { answers: empty(), truncated: false, scored: -1 }
+  let attempts = 0
+  while (attempts <= KBF_LOW_COVERAGE_RETRIES) {
+    const cacheDomain = attempts === 0 ? input.seed : `${input.seed}-low-coverage-retry-${attempts}`
+    attempts += 1
+    let content: string | null = null
+    let finishReason: string | null | undefined
+    try {
+      content = await query(model, {
+        ...buildKbfChatRequestBody(model, probes, { maxTokens: input.maxTokens, variantId: input.promptVariantId }),
+        // No top_p, matching audits and the KBF reference code.
+        temperature: 0,
+        __antseedReferenceCacheDomain: cacheDomain,
+      }, { onUsage: (usage) => { finishReason = usage.finishReason } })
+    } catch (error) {
+      // A seller's empty or timed-out reply is an unanswered batch, asked again; so is the reference's.
+      if (error instanceof EmptyReferenceResponseError) finishReason = error.finishReason
+      else if (!isUnansweredBatchError(error)) throw error
+    }
+    const truncated = isKbfTokenLimitFinishReason(finishReason)
+    const answers = content === null || truncated ? empty() : parseKbfAnswers(stripKbfThinkBlocks(content), probes.length)
+    const matches = computeMatchVector(answers, [...probes])
+    const scored = matches.filter((match) => match !== null).length
+    if (scored > best.scored) best = { answers, truncated, scored }
+    if (!hasMissingKbfAnswers(computeMatchVector(best.answers, [...probes]))) break
+  }
+  return { answers: best.answers, attempts, truncated: best.truncated }
 }
 
 function referenceContrasts(
@@ -1085,8 +1184,9 @@ export async function collectReferenceProbes(input: {
  * ask a candidate next to its own generation round's candidates; audits ask it next to other probes
  * and, here, with a rotating prompt variant. A probe that agrees under the first layout but not the
  * second only inflates the self-test error (and so the DIFF limit) without telling models apart.
- * Each pass asks every probe once at temperature 0 in a fresh domain shuffle with a seeded prompt
- * variant, as an audit would; any probe whose answer misses its consensus (or is missing) moved.
+ * Each pass asks every given probe once at temperature 0, in shuffled single-domain batches of up to
+ * ten with a seeded prompt variant, as an audit would; any probe whose answer misses its label (or
+ * is missing) in any pass moved. Callers pass a whole pool, so the batches really hold ten.
  */
 async function layoutFilterMovedProbeIds(
   model: string,
@@ -1113,6 +1213,7 @@ async function layoutFilterMovedProbeIds(
 
 function removeCollectedProbes(collected: CollectedReferenceProbes, probeIds: ReadonlySet<string>): void {
   collected.probes = collected.probes.filter((probe) => !probeIds.has(probe.id))
+  collected.reserveProbes = collected.reserveProbes.filter((probe) => !probeIds.has(probe.id))
   for (const [model, ids] of collected.distinguishingProbeIdsByModel) {
     collected.distinguishingProbeIdsByModel.set(model, ids.filter((id) => !probeIds.has(id)))
   }
@@ -1170,7 +1271,7 @@ function stableConsensus(values: readonly number[], probe: KbfProbe): number | n
     ? canonicalKbfTolerance(probe.domain)
     : probe.tolerance
   if (tolerance.mode === 'absolute') {
-    const rounded = values.map(roundHalfToEven)
+    const rounded = values.map(roundHalfAwayFromZero)
     if (!rounded.every((value) => value === rounded[0])) return null
     const consensus = rounded[0]!
     return matchesTolerance(values[0]!, { ...probe, consensus, tolerance }) ? consensus : null
@@ -1179,16 +1280,16 @@ function stableConsensus(values: readonly number[], probe: KbfProbe): number | n
   if (mean === 0) return null
   const maximumRelativeSpread = Math.max(...values.map((value) => Math.abs(value - mean) / Math.abs(mean)))
   if (maximumRelativeSpread > 0.02) return null
-  const consensus = Math.round(mean * 10_000) / 10_000
-  return matchesTolerance(values[0]!, { ...probe, consensus, tolerance }) ? consensus : null
+  // The label is the temperature-0 answer itself, as in the KBF reference code (`generate_probes.py`:
+  // "never a mean of three answers or a rounded stand-in"). It is the answer the self-test and audits
+  // re-ask for, and it keeps small values exact: a mean rounded to four decimals turned 0.00123 into
+  // 0.0012 and anything under 0.00005 into 0.
+  return values[0]!
 }
 
-function roundHalfToEven(value: number): number {
-  const lower = Math.floor(value)
-  const fraction = value - lower
-  if (fraction < 0.5) return lower
-  if (fraction > 0.5) return lower + 1
-  return lower % 2 === 0 ? lower : lower + 1
+/** Rounds halves away from zero, as the KBF reference code does (`_round_half_up`): 16.5 to 17, -38.5 to -39. */
+function roundHalfAwayFromZero(value: number): number {
+  return value >= 0 ? Math.floor(value + 0.5) : Math.ceil(value - 0.5)
 }
 
 async function queryDomainGroupedProbeAnswers(
@@ -1245,15 +1346,18 @@ async function queryDomainGroupedProbeAnswers(
         continue
       }
       consecutiveEmptyBatches += 1
-      if (!isTerminalEmptyReferenceError(lastError) || answeredBatches === 0
+      // As in the KBF reference code, a batch that fails for a passing reason loses only its own
+      // questions. Several in a row, or a refusal of the first batch, mean the model is unavailable.
+      const passing = isUnansweredBatchError(lastError)
+      if ((!passing && (!isTerminalEmptyReferenceError(lastError) || answeredBatches === 0))
         || consecutiveEmptyBatches >= CONTRAST_MAX_CONSECUTIVE_EMPTY_BATCHES) {
         log?.(`contrast model ${model} unavailable; skipping remaining probe answers: ${asError(lastError).message}`)
         break
       }
-      log?.(
-        `contrast model ${model} returned no text for a ${batch.probes.length}-probe batch after `
-        + `${CONTRAST_EMPTY_BATCH_RETRIES + 1} attempts; continuing with the next batch`,
-      )
+      log?.(passing
+        ? `contrast model ${model} failed a ${batch.probes.length}-probe batch: ${asError(lastError).message}; continuing with the next batch`
+        : `contrast model ${model} returned no text for a ${batch.probes.length}-probe batch after `
+          + `${CONTRAST_EMPTY_BATCH_RETRIES + 1} attempts; continuing with the next batch`)
     }
   } else {
     await allSettledOrThrow(batches.map(queryBatch))
@@ -1579,26 +1683,32 @@ function createReferenceQuery(input: {
           cached.outputTokens,
         )
       }
-      options?.onUsage?.({ outputTokens: cached.outputTokens })
+      options?.onUsage?.({ outputTokens: cached.outputTokens, finishReason: cached.finishReason })
       return cached.content
     }
     let attempt = 0
     for (;;) {
       attempt += 1
       await reserve()
+      const purpose = referenceRequestPurpose(__antseedReferenceCacheDomain)
+      let requestStartedAt = Date.now()
       try {
-        const response = await input.limiter.run(model, () => postChatCompletion(
-          route,
-          requestBody,
-          referenceRequestPurpose(__antseedReferenceCacheDomain) === 'candidate-generation'
-            ? Math.max(input.timeoutMs, CANDIDATE_GENERATION_TIMEOUT_MS)
-            : input.timeoutMs,
-          input.fetchFn,
-        ))
+        const response = await input.limiter.run(model, () => {
+          requestStartedAt = Date.now()
+          return postChatCompletion(
+            route,
+            requestBody,
+            purpose === 'candidate-generation'
+              ? Math.max(input.timeoutMs, CANDIDATE_GENERATION_TIMEOUT_MS)
+              : input.timeoutMs,
+            input.fetchFn,
+          )
+        })
         const pricing = input.pricingForModel(model)
         const cachedResponse: ReferenceCachedSuccessV1 = {
           outcome: 'success',
           content: response.content,
+          finishReason: response.finishReason ?? null,
           model,
           ...(response.provider ? { provider: response.provider } : {}),
           purpose: referenceRequestPurpose(__antseedReferenceCacheDomain),
@@ -1622,7 +1732,7 @@ function createReferenceQuery(input: {
         consumed.set(cacheKey, cachedResponse)
         recordProvider(model, response.provider)
         input.limiter.recordSuccess(model)
-        options?.onUsage?.({ outputTokens: response.outputTokens })
+        options?.onUsage?.({ outputTokens: response.outputTokens, finishReason: response.finishReason })
         return response.content
       } catch (error) {
         if (isTerminalEmptyReferenceError(error)) {
@@ -1656,9 +1766,13 @@ function createReferenceQuery(input: {
           consumed.set(cacheKey, cachedResponse)
         }
         const retryable = isRetryableReferenceError(error)
-        if (!retryable || attempt >= input.retryCount + 1) throw error
+        const elapsedSeconds = ((Date.now() - requestStartedAt) / 1000).toFixed(1)
+        if (!retryable || attempt >= input.retryCount + 1) {
+          input.log?.(`reference request failed for ${model} (${purpose}) after ${elapsedSeconds}s, attempt ${attempt}/${input.retryCount + 1}: ${asError(error).message}`)
+          throw error
+        }
         const delayMs = retryDelayMs(error, input.retryBaseDelayMs, attempt)
-        input.log?.(`reference request retry ${attempt}/${input.retryCount + 1} for ${model} in ${delayMs}ms: ${asError(error).message}`)
+        input.log?.(`reference request retry ${attempt}/${input.retryCount + 1} for ${model} (${purpose}, took ${elapsedSeconds}s) in ${delayMs}ms: ${asError(error).message}`)
         await sleep(delayMs)
       }
     }
@@ -2042,9 +2156,11 @@ async function queryProbeAnswers(
     }
     try {
       const content = await query(model, body)
-      answers.push(...parseKbfAnswers(content, batch.length))
+      // As audits and the KBF reference code do before parsing: `<think>…</think>` blocks are not answers.
+      answers.push(...parseKbfAnswers(stripKbfThinkBlocks(content), batch.length))
     } catch (error) {
-      if (options.recoverTerminalEmptyBatches && isTerminalEmptyReferenceError(error)) {
+      if (options.recoverTerminalEmptyBatches
+        && (isTerminalEmptyReferenceError(error) || isContentFilterRefusal(error) || isUnansweredBatchError(error))) {
         const domain = options.stabilityDomain ? ` in domain ${options.stabilityDomain}` : ''
         options.log?.(`skipping ${batch.length}-probe stability batch for ${model}${domain}: ${asError(error).message}`)
         answers.push(...new Array<number | null>(batch.length).fill(null))
@@ -2057,10 +2173,11 @@ async function queryProbeAnswers(
 }
 
 /**
- * Self-test the reference under audit conditions: each run shuffles the
- * probes into domain batches of ten and asks every batch with a prompt
- * variant, so the honest-error baseline includes order and wording effects
- * that audits see. Shuffles and variant picks are seeded per run so a resumed
+ * Self-test the given probes: each run shuffles them into single-domain batches of
+ * up to ten and asks every batch with a prompt variant, so the honest-error baseline
+ * includes order and wording effects. The caller passes one size step's new probes
+ * at a time, so after the first step most batches hold one or two probes, not the
+ * batches an audit asks. Shuffles and variant picks are seeded per run so a resumed
  * build reuses its checkpointed responses. Answers are scored like target
  * answers: a missing, refused, or unreadable answer is unscored (null), as in
  * the KBF paper (v3) and its reference code. A batch with more than half its
@@ -2153,6 +2270,10 @@ async function querySelfTestBatch(
   try {
     return await queryProbeAnswers(model, probes, 0, cacheDomain, query, { variantId })
   } catch (error) {
+    if (isUnansweredBatchError(error)) {
+      log?.(`skipping ${probes.length}-probe self-test batch: ${asError(error).message}`)
+      return probes.map(() => null)
+    }
     if (!isTerminalEmptyReferenceError(error)) throw error
     if (probes.length === 1) {
       log?.(`skipping refused self-test probe ${probes[0]!.id}: ${asError(error).message}`)
@@ -2217,13 +2338,21 @@ async function postChatCompletion(
         signal: controller.signal,
       })
     } catch (error) {
+      if (controller.signal.aborted) throw new ReferenceTimeoutError(timeoutMs)
       if (route.type !== 'antseed') throw error
       throw new Error(
         `Antseed reference route unavailable for peer ${route.peerId} service ${route.model}: ${asError(error).message}`,
         { cause: error },
       )
     }
-    const responseBody = await response.text()
+    let responseBody: string
+    try {
+      responseBody = await response.text()
+    } catch (error) {
+      // OpenRouter sends 200 and keep-alive padding at once, so a slow answer times out here.
+      if (controller.signal.aborted) throw new ReferenceTimeoutError(timeoutMs)
+      throw error
+    }
     if (!response.ok) {
       const detail = responseBody.slice(0, 200)
       throw new ReferenceEndpointError(
@@ -2252,6 +2381,11 @@ async function postChatCompletion(
         null,
         `HTTP ${response.status} body (${responseBody.length} bytes) was not valid JSON: ${asError(error).message}`,
       )
+    }
+    if (parsed.upstreamError) {
+      // OpenRouter sends 200 and padding first, so an upstream failure such as xAI's "at capacity"
+      // arrives as an `error` object in a 200 body. It's a failed request, not an empty answer.
+      throw new ReferenceEndpointError(parsed.upstreamError.status, null, parsed.upstreamError.message)
     }
     assertPinnedProvider(route, parsed.provider)
     if (parsed.content === null) {
@@ -2291,6 +2425,7 @@ function parseCompletion(anthropic: boolean, responseBody: string): {
   finishReason: string | null
   nativeFinishReason: string | null
   emptyDetail: string
+  upstreamError?: { status: number; message: string }
 } {
   if (anthropic) {
     const parsed = JSON.parse(responseBody) as {
@@ -2319,6 +2454,7 @@ function parseCompletion(anthropic: boolean, responseBody: string): {
   const parsed = JSON.parse(responseBody) as {
     provider?: unknown
     choices?: Array<{ message?: { content?: unknown }; finish_reason?: unknown; native_finish_reason?: unknown }>
+    error?: { code?: unknown; message?: unknown }
     usage?: {
       prompt_tokens?: unknown
       completion_tokens?: unknown
@@ -2328,7 +2464,14 @@ function parseCompletion(anthropic: boolean, responseBody: string): {
   const choice = parsed.choices?.[0]
   const finishReason = optionalString(choice?.finish_reason)
   const nativeFinishReason = optionalString(choice?.native_finish_reason)
+  const upstreamError = parsed.error && !choice
+    ? {
+      status: typeof parsed.error.code === 'number' ? parsed.error.code : 502,
+      message: optionalString(parsed.error.message) ?? JSON.stringify(parsed.error),
+    }
+    : undefined
   return {
+    ...(upstreamError ? { upstreamError } : {}),
     content: completionText(choice?.message?.content),
     inputTokens: nonNegativeInteger(parsed.usage?.prompt_tokens),
     outputTokens: nonNegativeInteger(parsed.usage?.completion_tokens),
@@ -2408,6 +2551,27 @@ export function resolveReferenceRequestOverrides(
   return { reasoning: { effort, exclude: true } }
 }
 
+/**
+ * The provider's content filter refused the question text (Alibaba's `data_inspection_failed`). It's
+ * about one batch of candidates, and asking again gets the same answer, so that batch is skipped
+ * rather than ending the build.
+ */
+function isContentFilterRefusal(error: unknown): boolean {
+  return error instanceof ReferenceEndpointError && error.message.includes('data_inspection_failed')
+}
+
+/**
+ * A reference request passed its time limit. The model was still thinking, or the upstream stalled.
+ * Asked again it often answers, so it's retried; once the retries are spent the batch goes
+ * unanswered, as in the KBF reference code (`query_api` returns None), instead of ending the build.
+ */
+export class ReferenceTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`reference request timed out after ${timeoutMs}ms`)
+    this.name = 'ReferenceTimeoutError'
+  }
+}
+
 export class ReferenceEndpointError extends Error {
   constructor(
     readonly status: number,
@@ -2482,10 +2646,22 @@ function summarizeReferenceCosts(responses: ReferenceCachedResponseV1[]): Refere
 
 function referenceRequestPurpose(value: unknown): ReferenceBuildCostPurposeV1['purpose'] {
   if (typeof value === 'string' && value.startsWith('self-test')) return 'self-test'
+  if (typeof value === 'string' && value.startsWith('calibration-')) return 'calibration'
   if (typeof value === 'string' && value.startsWith('contrast-')) return 'contrast-model'
   if (typeof value === 'string' && value.startsWith('stability-')) return 'target-model'
   if (typeof value === 'string' && value.startsWith('layout-filter-')) return 'target-model'
   return 'candidate-generation'
+}
+
+function referenceTargetPricing(
+  resolved: ResolvedVerifierModelConfig,
+  catalog: VerifierModelCatalog | null,
+): VerifierModelPricingConfig {
+  const pricing = resolved.referenceRoute?.pricing
+    ?? resolved.pricing
+    ?? catalog?.get(normalized(resolved.upstreamModel))?.pricing
+  if (!pricing) throw new Error(`no reference pricing is available for ${resolved.upstreamModel}`)
+  return pricing
 }
 
 function referencePricingByModel(
@@ -2494,11 +2670,7 @@ function referencePricingByModel(
   catalog: VerifierModelCatalog | null,
 ): Map<string, VerifierModelPricingConfig> {
   const prices = new Map<string, VerifierModelPricingConfig>()
-  const targetPricing = resolved.referenceRoute?.pricing
-    ?? resolved.pricing
-    ?? catalog?.get(normalized(resolved.upstreamModel))?.pricing
-  if (!targetPricing) throw new Error(`no reference pricing is available for ${resolved.upstreamModel}`)
-  prices.set(normalized(resolved.upstreamModel), targetPricing)
+  prices.set(normalized(resolved.upstreamModel), referenceTargetPricing(resolved, catalog))
   for (const contrastModel of resolved.contrastModels) {
     const catalogPricing = catalog?.get(normalized(contrastModel))?.pricing
     const configuredPricing = Object.values(config?.referenceEndpoint?.contrastModelBank ?? {})
@@ -2586,6 +2758,32 @@ function resolveReferenceRequestRoute(input: {
   }
 }
 
+/**
+ * An OpenRouter route without the pinned providers OpenRouter no longer lists for its model
+ * (`listedProviderOrder`), so a provider that left does not stop a new bank's build. When the listing
+ * can't be read, the pin stays as it is.
+ */
+async function withListedProviders(
+  route: ReferenceRequestRoute,
+  fetchFn: typeof fetch,
+  log: ((message: string) => void) | undefined,
+): Promise<ReferenceRequestRoute> {
+  const pinned = route.providerRouting?.order
+  if (route.type !== 'direct' || !pinned?.length
+    || !(route.upstream ? route.upstream.type === 'openrouter' : isOpenRouterUrl(route.baseUrl))) return route
+  let order: string[]
+  try {
+    order = listedProviderOrder(pinned, await loadOpenRouterEndpoints(route.baseUrl, route.model, route.apiKey, fetchFn))
+  } catch (error) {
+    log?.(`could not read which providers OpenRouter lists for ${route.model} (${asError(error).message}); keeping the pin ${pinned.join(', ')}`)
+    return route
+  }
+  if (order.length === pinned.length && order.every((provider, index) => provider === pinned[index])) return route
+  const dropped = pinned.filter((provider) => !order.includes(provider))
+  log?.(`OpenRouter no longer lists ${dropped.join(', ')} for ${route.model}; pinning ${order.join(', ')} instead`)
+  return { ...route, providerRouting: { ...route.providerRouting!, order } }
+}
+
 function applyReferenceRouteToBody(
   route: ReferenceRequestRoute,
   body: Record<string, unknown>,
@@ -2661,6 +2859,12 @@ function withRecordedEndpointRequest(
   }
 }
 
+/** A bank's route as enrolled: its recorded request settings when it has them, else the route as resolved. */
+function withRecordedSettings(route: ReferenceRequestRoute, reference: KbfReferenceV1): ReferenceRequestRoute {
+  const recorded = recordedReferenceEndpointRequest(reference)
+  return recorded ? withRecordedEndpointRequest(route, recorded, reference) : route
+}
+
 /**
  * A checkpointed thinking-discovery reply as the discovery saw it first, including whether it
  * stopped at the token limit. Null for a reply cached before its finish reason was kept: it can't
@@ -2683,7 +2887,7 @@ function isReferenceCachedResponse(value: unknown): value is ReferenceCachedResp
   const response = value as Record<string, unknown>
   const common = typeof response.model === 'string'
     && typeof response.purpose === 'string'
-    && ['candidate-generation', 'target-model', 'contrast-model', 'self-test', 'thinking-discovery'].includes(response.purpose)
+    && ['candidate-generation', 'target-model', 'contrast-model', 'self-test', 'thinking-discovery', 'calibration'].includes(response.purpose)
     && (response.reasoningTokens === undefined || nonNegativeInteger(response.reasoningTokens) !== null)
     && nonNegativeInteger(response.inputTokens) !== null
     && nonNegativeInteger(response.outputTokens) !== null
@@ -2713,6 +2917,7 @@ function nonNegativeInteger(value: unknown): number | null {
 function isRetryableReferenceError(error: unknown): boolean {
   if (error instanceof ReferenceEndpointError) return error.status === 429 || error.status >= 500
   if (error instanceof EmptyReferenceResponseError) return !isTerminalEmptyReferenceError(error)
+  if (error instanceof ReferenceTimeoutError) return true
   if (error instanceof Error && error.name === 'AbortError') return true
   const retryableCodes = new Set([
     'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'EHOSTDOWN', 'EHOSTUNREACH', 'ENETDOWN', 'ENETRESET',
@@ -2735,7 +2940,19 @@ function isTerminalEmptyReferenceError(error: unknown): error is EmptyReferenceR
 }
 
 function isRecoverableContrastError(error: unknown): boolean {
-  return error instanceof ReferenceEndpointError || error instanceof EmptyReferenceResponseError
+  return error instanceof ReferenceEndpointError
+    || error instanceof EmptyReferenceResponseError
+    || isUnansweredBatchError(error)
+}
+
+/**
+ * A failure that outlasted its retries and says nothing about the questions: a timeout, a server
+ * error, a dropped connection. The KBF reference code leaves such a batch unanswered (`query_api`
+ * returns None) and drops its questions. A rate limit stays an error, so a throttled build stops
+ * instead of quietly losing questions.
+ */
+function isUnansweredBatchError(error: unknown): boolean {
+  return isRetryableReferenceError(error) && !isThrottleError(error)
 }
 
 function isThrottleError(error: unknown): error is ReferenceEndpointError {

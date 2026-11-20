@@ -60,7 +60,9 @@ export function swapAuthHeader(
  */
 export function validateRequestService(
   request: SerializedHttpRequest,
-  allowedServices: ReadonlySet<string>
+  allowedServices: ReadonlySet<string>,
+  /** Reads the body as JSON, throwing when it is not: pass one to share a single parse with other readers. */
+  readJsonBody: () => unknown = () => JSON.parse(new TextDecoder().decode(request.body)) as unknown,
 ): string | null {
   // If allowedServices is empty, allow everything
   if (allowedServices.size === 0) {
@@ -74,7 +76,7 @@ export function validateRequestService(
 
   let payload: unknown;
   try {
-    payload = JSON.parse(new TextDecoder().decode(request.body)) as unknown;
+    payload = readJsonBody();
   } catch {
     // Non-JSON body — no service field to validate, allow through
     return null;

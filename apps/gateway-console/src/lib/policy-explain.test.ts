@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Peer, RoutePreview } from '../api/types'
+import type { Peer, RoutePreview, RoutingPolicy } from '../api/types'
 import { exclusionCounts, exclusionsFor, policySentences } from './policy-explain'
 
 const A = 'aa'.repeat(20)
@@ -71,6 +71,16 @@ describe('which level keeps a seller out', () => {
       'requires trust 60+ (it has 9, 10% of 90 after a DIFF model check)',
     ])
     expect(exclusionsFor({ ...withTrustFloor, model: 'm2' }, candidate(A, false, 90), flagged)).toEqual([])
+  })
+
+  it('explains a cached-input price over the input cap when no cached-input cap is set', () => {
+    const cachedOnly = { ...candidate(A, false, 90, 0), outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.75 }
+    const at = (policy: RoutingPolicy) => exclusionsFor({ ...preview, sources: [{ level: 'key', id: 'k', policy }] }, cachedOnly, PEERS).map((entry) => entry.rule)
+    expect(at({ maxInputUsdPerMillion: 0, maxOutputUsdPerMillion: 0 })).toEqual(['allows only free input, cached input too (it asks $0.75 for cached input)'])
+    expect(at({ maxInputUsdPerMillion: 0.5 })).toEqual(['caps input at $0.50/M, cached input too (it asks $0.75 for cached input)'])
+    expect(at({ maxInputUsdPerMillion: 0, maxCachedInputUsdPerMillion: 0.5 })).toEqual(['caps cached input at $0.50/M (it asks $0.75 for cached input)'])
+    expect(at({ maxInputUsdPerMillion: 0, maxCachedInputUsdPerMillion: 1 })).toEqual([])
+    expect(exclusionsFor({ ...preview, sources: [{ level: 'key', id: 'k', policy: { maxInputUsdPerMillion: 0 } }] }, { ...cachedOnly, cachedInputUsdPerMillion: null }, PEERS)).toEqual([])
   })
 
   it('counts what each level keeps out', () => {

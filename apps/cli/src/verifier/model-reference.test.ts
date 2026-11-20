@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
 import {
   computeBinomialPower,
@@ -17,16 +17,17 @@ import {
   buildModelReference as buildModelReferenceWithoutDiscoveryStub,
   collectReferenceProbes,
   createReferenceRequestLimiter,
-  loadModelReference,
+  REFERENCE_BUILDER_VERSION,
   ReferenceBuildCheckpoint,
   ReferenceEndpointError,
   replayedThinkingDiscovery,
   resolveReferenceRequestOverrides,
   retryDelayMs,
+  referenceConcurrencyWarning,
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
 import { setAuditedModelsForTesting } from './audited-models.js'
-import { appendModelReferenceToBank, inspectModelProbeBankPower, loadBankEnrollmentReference } from './probe-bank.js'
+import { appendModelReferenceToBank, loadBankEnrollmentReference } from './probe-bank.js'
 
 const MODEL = 'gpt-test'
 
@@ -60,7 +61,7 @@ const DISCOVERY_ANSWERS = ['78.37', '79', '299792458', '1538', '206', '12', '100
 
 const buildModelReference: typeof buildModelReferenceWithoutDiscoveryStub = (input) =>
   buildModelReferenceWithoutDiscoveryStub({ ...input, fetchFn: answerThinkingDiscovery(input.fetchFn) })
-setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
 
 test('collector promotes reserve probes that distinguish the failing contrast first', async () => {
   const probes = reference(100).probes.slice(0, 2)
@@ -96,8 +97,8 @@ test('fresh probes for an existing bank reuse its recorded request settings inst
     legacy.queryProfile.requestTimeoutMs = 360_000
     legacy.referenceId = computeReferenceId(legacy)
     const banksDir = join(directory, 'banks')
-    await appendModelReferenceToBank({ banksDir, model: MODEL, reference: legacy, cost: built.cost })
-    const settingsReference = await loadBankEnrollmentReference(banksDir, MODEL)
+    await appendModelReferenceToBank({ banksDir, model: MODEL, epoch: '7', reference: legacy, cost: built.cost })
+    const settingsReference = await loadBankEnrollmentReference(banksDir, MODEL, '7')
     assert.ok(settingsReference)
     const excludedProbeIds = new Set(settingsReference.probes.map((probe) => probe.id))
     // New candidates, as a real generator would produce on a second build.
@@ -125,7 +126,7 @@ test('fresh probes for an existing bank reuse its recorded request settings inst
       },
     })
     await assert.rejects(
-      appendModelReferenceToBank({ banksDir, model: MODEL, reference: rediscovered.reference, cost: rediscovered.cost }),
+      appendModelReferenceToBank({ banksDir, model: MODEL, epoch: '7', reference: rediscovered.reference, cost: rediscovered.cost }),
       /incompatible/,
     )
 
@@ -142,83 +143,7 @@ test('fresh probes for an existing bank reuse its recorded request settings inst
     }
     assert.equal(fresh.reference.probes.some((probe) => excludedProbeIds.has(probe.id)), false)
     assert.equal(fresh.reference.queryProfile.requestTimeoutMs, 360_000)
-    await appendModelReferenceToBank({ banksDir, model: MODEL, reference: fresh.reference, cost: fresh.cost })
-    await assert.rejects(buildModelReference({
-      model: MODEL, referencesDir: directory, config: config(), initialReference: settingsReference, settingsReference,
-      fetchFn: async () => { throw new Error('must not query') },
-    }), /already carries the bank settings/)
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
-test('bank top-up reuses enrolled measurements, grows against the failed contrast, and resumes without repeating calls', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-top-up-'))
-  const policy = config()
-  policy.models![MODEL]!.contrastModels = ['contrast-test', 'contrast-other']
-  policy.referenceEndpoint!.contrastModelBank!['contrast-other'] = {
-    upstreamModel: 'contrast-other', pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 }, capabilityRank: 2,
-  }
-  const fetchFn: typeof fetch = async (_url, init) => {
-    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
-    return response(successfulContent(body.model, body.messages.at(-1)?.content ?? ''))
-  }
-  try {
-    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: policy, fetchFn })
-    await built.finalize()
-    const seed = structuredClone(built.reference)
-    seed.contrasts[0]!.distinguishingProbeIds = [seed.probes[0]!.id]
-    delete seed.contrastDetection
-    seed.referenceId = computeReferenceId(seed)
-    const banksDir = join(directory, 'banks')
-    await appendModelReferenceToBank({ banksDir, model: MODEL, reference: seed, cost: built.cost })
-    assert.equal((await inspectModelProbeBankPower({ banksDir, model: MODEL })).selectedProbeCount, null)
-    const initialReference = await loadBankEnrollmentReference(banksDir, MODEL)
-    assert.ok(initialReference)
-    const original = JSON.stringify(initialReference)
-    const prompts: string[] = []
-    const topUpFetch: typeof fetch = async (url, init) => {
-      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
-      prompts.push(body.messages.at(-1)?.content ?? '')
-      return fetchFn(url, init)
-    }
-    await assert.rejects(buildModelReference({
-      model: MODEL, referencesDir: directory, initialReference,
-      config: { ...policy, referenceMaxRequestsPerBuild: 1 }, fetchFn: topUpFetch,
-    }), /request budget exhausted/)
-    assert.equal(prompts.length, 1)
-    await assert.rejects(buildModelReference({
-      model: MODEL, referencesDir: join(directory, 'bounded'), initialReference,
-      config: { ...policy, referenceMaximumProbeCount: seed.probes.length },
-      fetchFn: async () => { throw new Error('must not query beyond the configured probe maximum') },
-    }), /reference remains underpowered/)
-    const expanded = await buildModelReference({
-      model: MODEL, referencesDir: directory, config: policy, initialReference, fetchFn: topUpFetch,
-    })
-    assert.ok(expanded.reference.probes.length > seed.probes.length)
-    assert.ok(expanded.reference.contrastDetection!.every((entry) => entry.detected))
-    assert.deepEqual(expanded.reference.selfTest.outcomes.slice(0, seed.probes.length), seed.selfTest.outcomes)
-    assert.equal(JSON.stringify(initialReference), original)
-    assert.equal(prompts.filter((prompt) => prompt === prompts[0]).length, 1)
-    assert.equal(prompts.some((prompt) => initialReference.probes.some((probe) => prompt.includes(probe.template))), false)
-    await appendModelReferenceToBank({ banksDir, model: MODEL, reference: expanded.reference, cost: expanded.cost })
-    assert.ok((await inspectModelProbeBankPower({ banksDir, model: MODEL })).selectedProbeCount)
-    await expanded.finalize()
-    const changedContrast = structuredClone(policy)
-    changedContrast.models![MODEL]!.contrastModels = ['contrast-test']
-    await assert.rejects(buildModelReference({
-      model: MODEL, referencesDir: directory, config: changedContrast, initialReference,
-      fetchFn: async () => { throw new Error('must not mix contrast enrollments') },
-    }), /incompatible/)
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'other-model' } })
-    try {
-      await assert.rejects(buildModelReference({
-        model: MODEL, referencesDir: directory, config: config(), initialReference,
-        fetchFn: async () => { throw new Error('must not make paid requests') },
-      }), /incompatible/)
-    } finally {
-      setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
-    }
+    await appendModelReferenceToBank({ banksDir, model: MODEL, epoch: '7', reference: fresh.reference, cost: fresh.cost })
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -357,22 +282,10 @@ function response(content: string, status = 200): Response {
   })
 }
 
-test('missing references fail with the explicit build command', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-load-'))
-  try {
-    await assert.rejects(
-      loadModelReference({ model: MODEL, referencesDir: directory }),
-      new RegExp(`antseed verifier reference build ${MODEL}`),
-    )
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
 test('reference build discovers thinking suppression like the KBF reference code and records it', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-build-'))
   const value = config()
-  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', serviceAliases: ['model.test-alias'] } })
+  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [], serviceAliases: ['model.test-alias'] } })
   const requestBodies: Array<Record<string, unknown>> = []
   const discoveryBodies: Array<Record<string, unknown>> = []
   const fetchFn: typeof fetch = async (_url, init) => {
@@ -451,13 +364,13 @@ test('reference build discovers thinking suppression like the KBF reference code
       new Set(built.cost.purposes.map((entry) => entry.purpose)),
       new Set(['candidate-generation', 'target-model', 'contrast-model', 'self-test', 'thinking-discovery']),
     )
-    const loaded = await loadModelReference({ model: MODEL, referencesDir: directory })
-    assert.equal(loaded.reference.referenceId, built.reference.referenceId)
+    const written = JSON.parse(await readFile(built.path, 'utf8')) as { referenceId: string }
+    assert.equal(written.referenceId, built.reference.referenceId)
     await readFile(join(directory, '.checkpoints', `${MODEL}.json`), 'utf8')
     await built.finalize()
     await assert.rejects(readFile(join(directory, '.checkpoints', `${MODEL}.json`), 'utf8'), { code: 'ENOENT' })
   } finally {
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
     await rm(directory, { recursive: true, force: true })
   }
 })
@@ -541,7 +454,7 @@ test('reference build sends target requests to a native Anthropic upstream and r
     assert.equal(JSON.parse(anthropicExchange.responseBody).stop_reason, 'end_turn')
 
     const appended = await appendModelReferenceToBank({
-      banksDir, model: MODEL, reference: built.reference, cost: built.cost, exchanges,
+      banksDir, model: MODEL, epoch: '7', reference: built.reference, cost: built.cost, exchanges,
     })
     await built.finalize()
     await assert.rejects(readFile(join(directory, '.checkpoints', `${MODEL}.exchanges.jsonl`)), { code: 'ENOENT' })
@@ -551,7 +464,7 @@ test('reference build sends target requests to a native Anthropic upstream and r
     assert.equal(bank.referenceExchanges.length, 1)
     assert.equal(bank.referenceExchanges[0]!.sha256, exchanges.sha256)
     assert.deepEqual(bank.referenceExchanges[0]!.upstream, upstream)
-    const stored = await readFile(join(banksDir, MODEL, bank.referenceExchanges[0]!.path))
+    const stored = await readFile(join(dirname(appended.path), bank.referenceExchanges[0]!.path))
     assert.equal(stored.equals(raw), true)
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -563,7 +476,9 @@ test('the default reference endpoint records OpenRouter-style upstream provenanc
   const value = config()
   value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
   value.models![MODEL]!.referenceProvider = { order: ['Provider A'] }
-  const fetchFn: typeof fetch = async (_url, init) => {
+  const fetchFn: typeof fetch = async (url, init) => {
+    // OpenRouter still lists the pinned provider, by its name.
+    if (String(url).endsWith('/endpoints')) return Response.json({ data: { endpoints: [{ tag: 'provider-a', provider_name: 'Provider A' }] } })
     const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
     const content = successfulContent(body.model, body.messages.at(-1)?.content ?? '')
     return new Response(JSON.stringify({
@@ -1014,6 +929,196 @@ test('reference build rejects a refused stability batch without aborting the tar
   }
 })
 
+test('reference build skips a stability batch that keeps timing out', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-timeout-stability-'))
+  let slowPrompt: string | null = null
+  let slowAttempts = 0
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (slowPrompt === null && body.model === 'upstream-test' && !prompt.startsWith('Generate ') && body.temperature === 0) {
+      slowPrompt = prompt
+    }
+    if (prompt === slowPrompt && body.temperature === 0) {
+      slowAttempts += 1
+      // Like a model thinking past the limit: nothing arrives until our timer aborts the request.
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')))
+      })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), probeRequestTimeoutMs: 200, referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(slowAttempts, 4)
+    assert.equal(logs.some((message) => message.includes('skipping 10-probe stability batch') && message.includes('timed out after 200ms')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+for (const [name, failure] of [
+  ['a server error', () => response('overloaded', 503)],
+  ['a capacity error inside a 200 body', () => Response.json({ error: { message: 'at capacity', code: 502 } })],
+] as const) {
+  test(`reference build skips a stability batch that keeps failing with ${name}`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-failing-stability-'))
+    let failingPrompt: string | null = null
+    let attempts = 0
+    const logs: string[] = []
+    const fetchFn: typeof fetch = async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { model: string; temperature: number; messages: Array<{ content: string }> }
+      const prompt = body.messages.at(-1)?.content ?? ''
+      if (failingPrompt === null && body.model === 'upstream-test' && !prompt.startsWith('Generate ') && body.temperature === 0) {
+        failingPrompt = prompt
+      }
+      if (prompt === failingPrompt && body.temperature === 0) {
+        attempts += 1
+        return failure()
+      }
+      return response(successfulContent(body.model, prompt))
+    }
+    try {
+      const built = await buildModelReference({
+        model: MODEL,
+        referencesDir: directory,
+        config: { ...config(), referenceRetryBaseDelayMs: 1 },
+        fetchFn,
+        log: (message) => logs.push(message),
+      })
+      assert.equal(built.reference.probes.length, 100)
+      assert.equal(attempts, 4)
+      assert.equal(logs.some((message) => message.includes('skipping 10-probe stability batch')), true)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+}
+
+test('reference build leaves a self-test batch unanswered when its retries run out', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-failing-self-test-'))
+  let contrastChecked = false
+  let failingProbe: string | null = null
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') contrastChecked = true
+    if (contrastChecked && body.model === 'upstream-test' && failingProbe === null) {
+      failingProbe = prompt.split('\n').find((line) => PROBE_LINE_LABEL.test(line))?.replace(PROBE_LINE_LABEL, '') ?? null
+    }
+    if (body.model === 'upstream-test' && failingProbe !== null && prompt.includes(failingProbe)) {
+      return response('overloaded', 503)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config({ referenceLayoutFilterPasses: 0 }), referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length > 0, true)
+    assert.equal(logs.some((message) => message.includes('-probe self-test batch')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a rate limit that outlasts its retries still stops a reference build', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-throttled-'))
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return response(successfulContent('upstream-test', prompt))
+    return new Response(JSON.stringify({ error: 'slow down' }), { status: 429, headers: { 'retry-after': '0' } })
+  }
+  try {
+    await assert.rejects(buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), referenceRetryBaseDelayMs: 1, referenceBatchRetryCount: 0 },
+      fetchFn,
+      log: () => undefined,
+    }))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a contrast batch that keeps failing loses only its own questions', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-failing-contrast-'))
+  let failingPrompt: string | null = null
+  const otherContrastPrompts = new Set<string>()
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') {
+      failingPrompt ??= prompt
+      if (prompt === failingPrompt) return response('overloaded', 503)
+      otherContrastPrompts.add(prompt)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(otherContrastPrompts.size > 0, true)
+    assert.equal(logs.some((message) => message.includes('continuing with the next batch')), true)
+    assert.equal(logs.some((message) => message.includes('unavailable')), false)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a contrast model whose batches all fail is given up after a few', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-dead-contrast-'))
+  const failedPrompts = new Set<string>()
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') {
+      failedPrompts.add(prompt)
+      return response('overloaded', 503)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: { ...config(), referenceRetryBaseDelayMs: 1 },
+      fetchFn,
+      log: (message) => logs.push(message),
+    }).catch(() => undefined)
+    assert.equal(logs.some((message) => message.includes('contrast model contrast-test unavailable')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('reference build skips a stability batch the model filters as sensitive', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-sensitive-stability-'))
   let refusedPrompt: string | null = null
@@ -1050,6 +1155,51 @@ test('reference build skips a stability batch the model filters as sensitive', a
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('reference build skips a stability batch the provider content filter refuses', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-filtered-stability-'))
+  let refusedPrompt: string | null = null
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (refusedPrompt === null && body.model === 'upstream-test' && !prompt.startsWith('Generate ') && body.temperature === 0) {
+      refusedPrompt = prompt
+    }
+    if (prompt === refusedPrompt) {
+      // As OpenRouter relays Alibaba's content filter.
+      return Response.json(
+        { error: { message: 'Provider returned error', code: 400, metadata: { raw: '{"error":{"code":"data_inspection_failed"}}' } } },
+        { status: 400 },
+      )
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(logs.some((message) => message.includes('skipping 10-probe stability batch')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a per-model reference limit of 1 is called out, other limits are not', () => {
+  assert.match(referenceConcurrencyWarning({ referenceMaxConcurrentRequestsPerModel: 1 }) ?? '', /one batch at a time/)
+  assert.equal(referenceConcurrencyWarning({ referenceMaxConcurrentRequestsPerModel: 2 }), null)
+  assert.equal(referenceConcurrencyWarning({}), null)
+  assert.equal(referenceConcurrencyWarning(undefined), null)
 })
 
 test('reference build adaptively isolates and caches a refused self-test probe', async () => {
@@ -1221,29 +1371,6 @@ test('reference build isolates an unavailable contrast after its first terminal 
     assert.equal(built.reference.probes.length, 100)
     assert.equal(gatedAttempts, 1)
     assert.equal(logs.some((message) => message.includes('contrast model gated-contrast unavailable')), true)
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
-test('loader rejects references outside the configured adaptive sizing policy', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-policy-'))
-  const path = join(directory, `${MODEL}.json`)
-  try {
-    for (const [candidate, policy, message] of [
-      [reference(50), undefined, /probe count 50/],
-      [reference(510), undefined, /probe count 510/],
-      [reference(110), config({ referenceProbeStep: 20 }), /adaptive sizing sequence/],
-      [reference(100, 2), undefined, /statistical power .* is below 0\.900/],
-      [reference(100, 0, 0.1), undefined, /statistical power alpha must be 0\.05/],
-      [reference(100, 0, 0.05, 0.98), undefined, /Clopper-Pearson confidence must be 0\.99/],
-    ] as const) {
-      await writeFile(path, JSON.stringify(candidate))
-      await assert.rejects(
-        loadModelReference({ model: MODEL, referencesDir: directory, config: policy }),
-        message,
-      )
-    }
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -2130,14 +2257,15 @@ test('a pinned endpoint tag matches the provider name OpenRouter reports', async
 
 test('a new OpenRouter bank uses the built-in provider pin; a bank built unpinned stays unpinned', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-builtin-pin-'))
-  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', referenceProvider: ['maker/fp8'] } })
+  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [], referenceProvider: ['maker/fp8'] } })
   const openRouter = () => {
     const value = config()
     value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
     return value
   }
   const bodies: Array<Record<string, unknown>> = []
-  const fetchFn: typeof fetch = async (_url, init) => {
+  const fetchFn: typeof fetch = async (url, init) => {
+    if (String(url).endsWith('/endpoints')) return Response.json({ data: { endpoints: [{ tag: 'maker/fp8', quantization: 'fp8' }] } })
     const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
     bodies.push(body)
     return providerResponse(successfulContent(body.model, body.messages.at(-1)?.content ?? ''), body.model === 'upstream-test' ? 'Maker' : 'Other')
@@ -2153,14 +2281,14 @@ test('a new OpenRouter bank uses the built-in provider pin; a bank built unpinne
     })
 
     // A bank enrolled before the built-in pin keeps being extended unpinned, so its measurements stay comparable.
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
     const unpinned = await buildModelReference({ model: MODEL, referencesDir: join(directory, 'old'), config: openRouter(), fetchFn })
     await unpinned.finalize()
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', referenceProvider: ['maker/fp8'] } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [], referenceProvider: ['maker/fp8'] } })
     bodies.length = 0
     const extended = await buildModelReference({
       model: MODEL, referencesDir: join(directory, 'extended'), config: openRouter(), fetchFn,
-      initialReference: unpinned.reference,
+      settingsReference: unpinned.reference,
     })
     assert.equal(bodies.filter((body) => body.model === 'upstream-test').every((body) => body.provider === undefined), true)
     assert.equal((extended.reference.generator.params.referenceProvider as { pinned: unknown }).pinned, null)
@@ -2170,7 +2298,73 @@ test('a new OpenRouter bank uses the built-in provider pin; a bank built unpinne
     await buildModelReference({ model: MODEL, referencesDir: join(directory, 'other'), config: config(), fetchFn })
     assert.equal(bodies.every((body) => body.provider === undefined), true)
   } finally {
-    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test' } })
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a new bank\'s pin leaves out providers OpenRouter no longer lists; an extended bank keeps its pin, an unreadable listing the configured one', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-listed-pin-'))
+  const builtIn = (order: string[]) => setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [], referenceProvider: order } })
+  const openRouter = () => {
+    const value = config()
+    value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+    return value
+  }
+  // The pinned provider left the model; OpenRouter answers a request pinned to it alone with a 404.
+  let listing = () => Response.json({ data: { endpoints: [
+    { tag: 'other/fp4', quantization: 'fp4' }, { tag: 'maker/fp8/eu', quantization: 'fp8' }, { tag: 'maker/fp8', quantization: 'fp8' },
+  ] } })
+  const listed: string[] = []
+  const bodies: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (url, init) => {
+    if (String(url).endsWith('/endpoints')) {
+      listed.push(String(url))
+      return listing()
+    }
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
+    bodies.push(body)
+    const order = (body.provider as { order?: string[] } | undefined)?.order ?? []
+    if (body.model === 'upstream-test' && order.every((provider) => provider === 'gone/fp8')) {
+      return Response.json({ error: { message: 'No endpoints found for upstream-test' } }, { status: 404 })
+    }
+    return providerResponse(successfulContent(body.model, body.messages.at(-1)?.content ?? ''), body.model === 'upstream-test' ? 'Maker' : 'Other')
+  }
+  const targetOrders = () => bodies.filter((body) => body.model === 'upstream-test')
+    .map((body) => (body.provider as { order?: string[] } | undefined)?.order)
+  const logs: string[] = []
+  const log = (message: string) => logs.push(message)
+  try {
+    builtIn(['gone/fp8'])
+    const built = await buildModelReference({ model: MODEL, referencesDir: join(directory, 'new'), config: openRouter(), fetchFn, log })
+    await built.finalize()
+    assert.deepEqual(listed, ['https://openrouter.ai/api/v1/models/upstream-test/endpoints'])
+    assert.ok(targetOrders().length > 0)
+    for (const order of targetOrders()) assert.deepEqual(order, ['maker/fp8'])
+    assert.deepEqual((built.reference.generator.params.referenceProvider as { pinned: unknown }).pinned, { order: ['maker/fp8'], allowFallbacks: false })
+    assert.ok(logs.includes('OpenRouter no longer lists gone/fp8 for upstream-test; pinning maker/fp8 instead'), logs.join('\n'))
+
+    // More builds of the same bank keep the pin it recorded, whatever the built-in pin says now; no listing is read.
+    builtIn(['newer/fp8'])
+    listed.length = 0
+    bodies.length = 0
+    const extended = await buildModelReference({
+      model: MODEL, referencesDir: join(directory, 'extended'), config: openRouter(), fetchFn, settingsReference: built.reference,
+    })
+    await extended.finalize()
+    assert.deepEqual(listed, [])
+    for (const order of targetOrders()) assert.deepEqual(order, ['maker/fp8'])
+
+    // A listing that can't be read changes nothing: the pin stays, and the build fails on it as before.
+    builtIn(['gone/fp8'])
+    listing = () => Response.json({ error: 'not found' }, { status: 404 })
+    bodies.length = 0
+    logs.length = 0
+    await assert.rejects(buildModelReference({ model: MODEL, referencesDir: join(directory, 'unread'), config: openRouter(), fetchFn, log }))
+    assert.ok(logs.some((message) => message.startsWith('could not read which providers OpenRouter lists for upstream-test')), logs.join('\n'))
+    for (const order of targetOrders()) assert.deepEqual(order, ['gone/fp8'])
+  } finally {
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
     await rm(directory, { recursive: true, force: true })
   }
 })
@@ -2201,10 +2395,10 @@ test('the KBF layout filter drops probes whose answer moves under audit layout a
     // Survivors are self-tested on separate requests, so their limit is not set by the answers that chose them.
     assert.equal(built.reference.selfTest.hamming, 0)
     const layoutFilter = built.reference.generator.params.layoutFilter as { passes: number; droppedProbeCount: number; checkedProbeCount: number }
-    assert.equal(layoutFilter.passes, 1)
+    assert.equal(layoutFilter.passes, 2)
     assert.ok(layoutFilter.droppedProbeCount > 0)
     assert.ok(layoutFilter.checkedProbeCount >= values.length + layoutFilter.droppedProbeCount)
-    assert.equal(built.reference.generator.params.layoutFilterPasses, 1)
+    assert.equal(built.reference.generator.params.layoutFilterPasses, 2)
 
     // Turned off, nothing is re-asked and the wobbly probes stay.
     const unfiltered = await buildModelReference({
@@ -2216,6 +2410,82 @@ test('the KBF layout filter drops probes whose answer moves under audit layout a
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('the layout filter asks its whole pool in single-domain batches of ten, not each size step\'s leftovers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-layout-pool-'))
+  const filterBatches: number[][] = []
+  let layoutPass = false
+  const phaseLog = (message: string): void => {
+    if (/^generation round \d+: .* selected$/.test(message)) layoutPass = true
+    if (message.startsWith('layout filter:') || message.startsWith('self-testing')) layoutPass = false
+  }
+  const trackingFetch: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ') || body.model !== 'upstream-test') return response(successfulContent(body.model, prompt))
+    const values = testPromptValues(prompt)
+    if (layoutPass) filterBatches.push(values)
+    // The first of the two passes drops some probes, so a size step would have only a few to re-ask.
+    const moved = (value: number) => layoutPass && filterBatches.length <= 12 && value % 11 === 4
+    return response(values.map((value, index) => `(${index + 1}) ${moved(value) ? value + 5_000 : value}`).join('\n'))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL, referencesDir: directory, config: config({ referenceSelfTestRuns: 1 }), fetchFn: trackingFetch, log: phaseLog,
+    })
+    const layoutFilter = built.reference.generator.params.layoutFilter as { method: string; version: number; batchSize: number; droppedProbeCount: number }
+    assert.equal(layoutFilter.method, 'kbf-layout-filter-audit-batches-v2')
+    assert.equal(layoutFilter.batchSize, 10)
+    assert.ok(layoutFilter.droppedProbeCount > 0)
+    assert.equal(built.reference.generator.version, REFERENCE_BUILDER_VERSION)
+    assert.ok(filterBatches.length > 0)
+    // Every fact in these tests has one domain per fifteen, so a pool fills its batches; only domain tails are short.
+    const asked = filterBatches.flat().length
+    assert.ok(asked / filterBatches.length >= 7, `${asked} probes in ${filterBatches.length} filter requests`)
+    assert.ok(filterBatches.filter((batch) => batch.length <= 2).length / filterBatches.length < 0.2)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a relative-domain label is the temperature-0 answer, not a rounded mean', async () => {
+  const stabilityAnswers = new Map([['stability-0', 0.01234], ['stability-1', 0.01236], ['stability-2', 0.01238]])
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const prompt = (body.messages as Array<{ content: string }>).at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return prompt.includes('domain medical') ? 'test medicine | 0.0123' : ''
+    return `(1) ${String(stabilityAnswers.get(String(body.__antseedReferenceCacheDomain)) ?? 0)}`
+  }
+  const collected = await collectReferenceProbes({
+    model: 'reference-model', contrastModels: [], targetCount: 1, candidateCountPerRound: 15, query,
+  })
+  assert.equal(collected.probes[0]?.domain, 'medical')
+  assert.equal(collected.probes[0]?.consensus, 0.01234)
+})
+
+test('exact-match answers round halves away from zero, as the KBF reference code does', async () => {
+  const stabilityAnswers = new Map([['stability-0', 100.5], ['stability-1', 100.6], ['stability-2', 100.7]])
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const prompt = (body.messages as Array<{ content: string }>).at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return 'test compound | 100'
+    return `(1) ${String(stabilityAnswers.get(String(body.__antseedReferenceCacheDomain)) ?? 100)}`
+  }
+  const collected = await collectReferenceProbes({
+    model: 'reference-model', contrastModels: [], targetCount: 1, candidateCountPerRound: 1, query,
+  })
+  assert.equal(collected.probes[0]?.consensus, 101)
+})
+
+test('the reference builder strips think blocks before parsing, as seller audits do', async () => {
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const prompt = (body.messages as Array<{ content: string }>).at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return 'test compound | 100'
+    return '(1) 100\n<think>\n(1) 7\n</think>'
+  }
+  const collected = await collectReferenceProbes({
+    model: 'reference-model', contrastModels: [], targetCount: 1, candidateCountPerRound: 1, query,
+  })
+  assert.equal(collected.probes[0]?.consensus, 100)
 })
 
 test('reference build fails when a pinned provider is not the one that served', async () => {

@@ -201,7 +201,6 @@ export function registerRoutes(fastify: FastifyInstance, ctx: RouteContext): voi
         ? ctx.chainConfig.recognizedUsage.effectiveEpoch
         : null,
       antsTokenAddress: ctx.chainConfig.antsTokenAddress ?? null,
-      networkStatsUrl: ctx.chainConfig.networkStatsUrl ?? null,
       evmAddress: ctx.cryptoCtx?.evmAddress ?? null,
     };
   });

@@ -62,6 +62,26 @@ async function expectFormReadAlike(request: Request, context = '') {
 }
 
 describe('billedRequestBody', () => {
+  describe('reads the output token limit a JSON body asks for as it reads the service', () => {
+    it.each<[string, Record<string, unknown>, number]>([
+      ['max_tokens', { max_tokens: 4096 }, 4096],
+      ['max_completion_tokens', { max_completion_tokens: 512 }, 512],
+      ['max_output_tokens', { max_output_tokens: 300 }, 300],
+      ['a camel-case name', { maxOutputTokens: 77 }, 77],
+      ['a number written as text', { max_tokens: '2048' }, 2048],
+      ['a fraction', { max_tokens: 10.9 }, 10],
+      ['the first limit that counts', { max_tokens: 0, max_completion_tokens: 64 }, 64],
+      ['no limit', { messages: [] }, 0],
+      ['a limit that is not a number', { max_tokens: 'many' }, 0],
+    ])('%s', (_name, fields, expected) => {
+      expect(billedRequestBody(json({ model: 'svc', ...fields }))).toMatchObject({ service: 'svc', maxOutputTokens: expected });
+    });
+
+    it('reads none from a form', () => {
+      expect(billedRequestBody(multipart(model, field('max_tokens', '5')))).not.toHaveProperty('maxOutputTokens');
+    });
+  });
+
   describe('serves the one service a JSON body names, and hands on the JSON it read', () => {
     it.each<[string, string]>([
       ['only model', '{"model":"svc","messages":[]}'],
@@ -220,7 +240,7 @@ describe('billedRequestBody', () => {
   });
 
   describe('says why it serves no service', () => {
-    it.each(['n', 'size', 'quality', 'resolution', 'duration', 'aspect_ratio', 'audio', 'generate_audio', 'reference_video', 'reference_video_urls', 'video_urls', 'prompt', 'input'])('refuses the billing input %s spelled another way, and repeated in a form', (name) => {
+    it.each(['n', 'size', 'quality', 'resolution', 'duration', 'aspect_ratio', 'audio', 'generate_audio', 'reference_video', 'reference_video_urls', 'video_urls', 'prompt', 'input', 'stream_format'])('refuses the billing input %s spelled another way, and repeated in a form', (name) => {
       for (const spelled of [name.toUpperCase(), `${name}[]`, ` ${name}`, `${name[0]!.toUpperCase()}${name.slice(1)}`]) {
         expect(billedRequestBody(json({ model: 'svc', [spelled]: 'x' })), spelled).toMatchObject({ refusal: { code: 'invalid_billing_field' } });
       }

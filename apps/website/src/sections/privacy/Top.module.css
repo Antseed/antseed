@@ -1,0 +1,2 @@
+/* narrower as the painting narrows */
+.card { width: min(300px, 64%); }

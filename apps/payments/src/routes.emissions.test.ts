@@ -62,33 +62,6 @@ describe('GET /api/config', () => {
     });
     await app.close();
   });
-
-  it('includes networkStatsUrl when the chain config has it', async () => {
-    const app = Fastify();
-    registerRoutes(app, mockCtx({
-      chainConfig: {
-        chainId: 'base-mainnet',
-        evmChainId: 8453,
-        networkStatsUrl: 'https://network.antseed.com',
-      } as any,
-    }));
-    const res = await app.inject({ method: 'GET', url: '/api/config' });
-    expect(res.json().networkStatsUrl).toBe('https://network.antseed.com');
-    await app.close();
-  });
-
-  it('returns networkStatsUrl: null when the chain config has none', async () => {
-    const app = Fastify();
-    registerRoutes(app, mockCtx({
-      chainConfig: {
-        chainId: 'base-local',
-        evmChainId: 31337,
-      } as any,
-    }));
-    const res = await app.inject({ method: 'GET', url: '/api/config' });
-    expect(res.json().networkStatsUrl).toBeNull();
-    await app.close();
-  });
 });
 
 describe('GET /api/rpc-health', () => {

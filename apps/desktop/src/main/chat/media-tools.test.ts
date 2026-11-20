@@ -87,15 +87,16 @@ test('get_chat_video_path returns an uploaded MP4 path and refuses images', asyn
   });
 });
 
-test('resolveBundledChatSkillPaths returns the bundled image and video skills', async () => {
+test('resolveBundledChatSkillPaths returns the bundled image, video and decision skills', async () => {
   await withTempDir(async (dir) => {
-    for (const name of ['antseed-images', 'antseed-videos']) {
+    for (const name of ['antseed-images', 'antseed-videos', 'antseed-decisions']) {
       await mkdir(path.join(dir, name), { recursive: true });
       await writeFile(path.join(dir, name, 'SKILL.md'), '---\nname: test\ndescription: test\n---\n');
     }
     assert.deepEqual(resolveBundledChatSkillPaths([dir]), [
       path.join(dir, 'antseed-images'),
       path.join(dir, 'antseed-videos'),
+      path.join(dir, 'antseed-decisions'),
     ]);
   });
 });

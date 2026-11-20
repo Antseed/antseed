@@ -12,18 +12,14 @@ import { AntseedRegistry } from "../core/AntseedRegistry.sol";
 import { AntseedSellerRewardsPool } from "../rewards/AntseedSellerRewardsPool.sol";
 import { AntseedSellerUnlockPolicy } from "../policies/AntseedSellerUnlockPolicy.sol";
 import { AntseedStaking } from "../staking/AntseedStaking.sol";
-import { DiemStakingProxy } from "../staking/DiemStakingProxy.sol";
 import { MockERC8004Registry } from "./mocks/MockERC8004Registry.sol";
 import { MockUSDC } from "./mocks/MockUSDC.sol";
 
-import { MockDiem } from "./mocks/MockDiem.sol";
 
 contract AntseedEmissionsV2IntegrationTest is Test {
     uint256 constant BUYER_PK = 0xA11CE;
     uint256 constant SELLER_PK = 0xB0B;
     uint256 constant OWNER_PK = 0x0A;
-    uint256 constant OPERATOR_PK = 0x0B;
-    uint256 constant ALICE_PK = 0x0C;
 
     uint256 constant INITIAL_EMISSION = 1000 ether;
     uint256 constant EPOCH_DURATION = 1 weeks;
@@ -42,8 +38,6 @@ contract AntseedEmissionsV2IntegrationTest is Test {
     address protocolReserve = address(0xFEE);
     address teamWallet = address(0xBEEF);
     address owner;
-    address operator;
-    address alice;
 
     MockUSDC usdc;
     ANTSToken ants;
@@ -61,8 +55,6 @@ contract AntseedEmissionsV2IntegrationTest is Test {
         buyer = vm.addr(BUYER_PK);
         seller = vm.addr(SELLER_PK);
         owner = vm.addr(OWNER_PK);
-        operator = vm.addr(OPERATOR_PK);
-        alice = vm.addr(ALICE_PK);
 
         vm.warp(1_700_000_000);
 
@@ -123,48 +115,6 @@ contract AntseedEmissionsV2IntegrationTest is Test {
         assertGt(ants.balanceOf(buyerOperator), 0, "buyer operator receives buyer emissions");
     }
 
-    function test_diemProxyCanClaimNormallyWhenUnlockPolicyAllowsIt() public {
-        MockDiem diem = new MockDiem(1 days);
-        DiemStakingProxy proxy;
-
-        vm.prank(owner);
-        proxy = new DiemStakingProxy(address(diem), address(usdc), address(antseedRegistry), operator);
-        unlockPolicy.setSellerEligibility(address(proxy), true);
-        ants.setTransferWhitelist(address(proxy), true);
-
-        vm.prank(address(proxy));
-        uint256 proxyAgentId = identityRegistry.register();
-
-        usdc.mint(address(this), STAKE_AMOUNT);
-        usdc.approve(address(staking), STAKE_AMOUNT);
-        staking.stakeFor(address(proxy), proxyAgentId, STAKE_AMOUNT);
-
-        vm.prank(owner);
-        proxy.setMaxTotalStake(0);
-
-        diem.mint(alice, 100e18);
-        vm.startPrank(alice);
-        diem.approve(address(proxy), 100e18);
-        proxy.stake(100e18);
-        vm.stopPrank();
-
-        _createBuyer(1000e6);
-        bytes32 channelId = _reserve(address(proxy), bytes32(uint256(2)), 1000e6);
-
-        bytes memory metadata = _encodeMetadata(500e6, 0);
-        bytes memory sig = _signSpendingAuth(channelId, 500e6, metadata);
-        vm.prank(operator);
-        proxy.settle(channelId, 500e6, metadata, sig);
-
-        vm.warp(legacyEmissions.genesis() + EPOCH_DURATION * 5 + 1);
-
-        uint256 beforeBal = ants.balanceOf(alice);
-        vm.prank(alice);
-        proxy.claimAnts(_rewardEpochs(4, 1));
-
-        assertGt(ants.balanceOf(alice) - beforeBal, 0, "Diem staker receives ANTS through V2");
-    }
-
     function _createBuyer(uint256 depositAmount) internal {
         vm.prank(buyer);
         identityRegistry.register();
@@ -199,13 +149,8 @@ contract AntseedEmissionsV2IntegrationTest is Test {
         channelId = channels.computeChannelId(buyer, sellerAddress, salt);
         uint256 deadline = block.timestamp + 1 days;
         bytes memory reserveSig = _signReserveAuth(channelId, maxAmount, deadline);
-        if (sellerAddress == seller) {
-            vm.prank(sellerAddress);
-            channels.reserve(buyer, salt, maxAmount, deadline, reserveSig);
-        } else {
-            vm.prank(operator);
-            DiemStakingProxy(sellerAddress).reserve(buyer, salt, maxAmount, deadline, reserveSig);
-        }
+        vm.prank(sellerAddress);
+        channels.reserve(buyer, salt, maxAmount, deadline, reserveSig);
     }
 
     function _settle(address sellerAddress, bytes32 channelId, uint128 cumulativeAmount) internal {
@@ -242,12 +187,5 @@ contract AntseedEmissionsV2IntegrationTest is Test {
     function _epochList(uint256 epoch) internal pure returns (uint256[] memory epochs) {
         epochs = new uint256[](1);
         epochs[0] = epoch;
-    }
-
-    function _rewardEpochs(uint32 first, uint32 count) internal pure returns (uint32[] memory epochs) {
-        epochs = new uint32[](count);
-        for (uint32 i = 0; i < count; i++) {
-            epochs[i] = first + i;
-        }
     }
 }

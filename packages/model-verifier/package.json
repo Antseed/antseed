@@ -1,6 +1,6 @@
 {
   "name": "@antseed/model-verifier",
-  "version": "0.1.4",
+  "version": "0.1.6",
   "description": "Standalone KBF model verifier: audit any OpenAI- or Anthropic-compatible endpoint against a published model reference",
   "type": "module",
   "files": [
@@ -26,7 +26,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.19.0",
-    "typescript": "^5.5.0",
+    "typescript": "catalog:",
     "vitest": "^2.0.0"
   }
 }

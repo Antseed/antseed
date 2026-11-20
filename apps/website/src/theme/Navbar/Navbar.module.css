@@ -1,0 +1,46 @@
+.frame { position: relative; z-index: 10; }
+/* doc-like pages: the docs sidebar and TOC are laid out under a nav that stays put */
+.frame.sticky { position: sticky; top: 0; z-index: var(--ifm-z-index-fixed, 200); }
+.home { padding: 16px 16px 0; background: var(--site-bg-hero); }
+
+/* .frame raises it over Infima's .navbar rules, which the same element carries */
+.frame .nav {
+  position: relative; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between;
+  width: 100%; height: var(--site-nav-height); margin: 0; padding: 0 16px;
+  background: rgba(255, 255, 255, .78); backdrop-filter: blur(2.5px); -webkit-backdrop-filter: blur(2.5px); box-shadow: 0 20px 12px rgba(0, 0, 0, .02);
+  color: var(--site-ink); font-family: var(--site-font);
+}
+:global(:root[data-theme='dark']) .frame .nav { background: rgba(24, 29, 27, .78); }
+/* on the homepage the nav is the hero frame's solid top edge */
+.frame.home .nav { background: var(--site-bg-hero); backdrop-filter: none; -webkit-backdrop-filter: none; }
+:global(:root[data-theme='dark']) .frame.home .nav { background: var(--site-bg-hero); }
+
+.links { display: flex; align-items: center; gap: 32px; margin: 0 auto 0 clamp(80px, calc(40vw - 360px), 240px); font: 500 14px/20px var(--site-font); white-space: nowrap; }
+.link { color: var(--site-ink); text-decoration: none; }
+.link:hover { color: var(--site-accent); text-decoration: none; }
+.link:focus-visible { outline: 2px solid #789f00; outline-offset: 3px; border-radius: 4px; }
+
+.social { display: inline-grid; place-items: center; width: 24px; height: 36px; }
+.actions { display: flex; align-items: center; gap: 8px; }
+.actions .themeSwitch { margin: 4px 8px 4px 0; }
+.search { display: flex; margin-right: 16px; }
+.search.searchHidden { display: none; }
+
+@media (max-width: 1239px) {
+  .links { gap: 24px; }
+  .search { margin-right: 4px; }
+}
+@media (max-width: 1079px) {
+  .links { display: none; }
+  .search { margin-right: 0; }
+}
+
+/* a touch screen: the switch, the only control left beside the burger, a 44 tall touch area */
+@media (max-width: 1079px) {
+  .themeSwitch::after { content: ''; position: absolute; inset: -8px -4px; }
+}
+/* a phone: the marketing pages' nav on the sections' content line (the rail's edge + 20); the homepage's sits in the hero's frame */
+@media (max-width: 760px) {
+  .actions .barGateway { display: none; }
+  .frame.page .nav { padding-inline: calc((100% - var(--site-rail)) / 2 + 20px); }
+}

@@ -1,0 +1,27 @@
+.rail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.case {
+  composes: dots from '../../components/dots.module.css';
+  padding: 96px var(--site-pad);
+}
+.case + .case { --dots-left: 2px; }
+.title { margin-bottom: 32px; font: 400 34px/36px var(--site-font-pixel); font-variation-settings: 'ELSH' 40; letter-spacing: -1.2px; color: var(--site-text); }
+.list { display: flex; flex-direction: column; gap: 4px; }
+.list li { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; font: 400 16px/24px var(--site-font); }
+.ours { color: var(--site-text); }
+.theirs { color: var(--site-text-body); }
+.ours .icon { color: var(--site-accent); }
+.theirs .icon { color: var(--site-text-muted); }
+.list a { color: var(--site-accent); text-decoration: underline; text-underline-offset: 3px; }
+
+@media (max-width: 1199px) {
+  .case { padding-inline: 64px; }
+}
+@media (max-width: 899px) {
+  .rail { grid-template-columns: 1fr; }
+  .case { padding-inline: var(--site-pad); }
+  .case + .case { --dots-left: 0px; --dots-top: 2px; }
+}
+@media (max-width: 760px) {
+  .case { padding: 64px var(--site-pad); }
+  .title { font-size: 28px; line-height: 30px; }
+}

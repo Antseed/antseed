@@ -1,6 +1,11 @@
 {
   "extends": "@docusaurus/tsconfig",
   "compilerOptions": {
-    "baseUrl": "."
+    "baseUrl": null,
+    "paths": {
+      "@site/*": ["./*"]
+    },
+    "strict": false,
+    "allowImportingTsExtensions": true
   }
 }

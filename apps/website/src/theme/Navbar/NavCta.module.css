@@ -1,0 +1,6 @@
+.gateway {
+  display: flex; align-items: center; height: 36px; padding: 0 15px; border-radius: var(--site-radius-control);
+  background: var(--site-fill); color: white; font: 500 14px/20px var(--site-font-ui); text-decoration: none; white-space: nowrap;
+}
+.gateway:hover { background: color-mix(in srgb, var(--site-fill) 88%, black); color: white; text-decoration: none; }
+.gateway:focus-visible { outline: 2px solid var(--site-ink); outline-offset: 2px; }

@@ -338,6 +338,38 @@ describe('chat controller', () => {
     expect(chatGenerateImage.mock.calls[0]![0]).toMatchObject({ conversationId: 'conv-b', prompt: 'first' });
   });
 
+  it('the walking ant\'s start time belongs to the sending chat and survives a visit to another chat', async () => {
+    const answer = deferred<{ ok: boolean }>();
+    const { api, uiState, emit } = setup(undefined, {
+      chatAiSendStream: () => answer.promise,
+      chatAiAbort: async () => ({ ok: true }),
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    expect(uiState.chatThinkingStartedAt).toBeNull();
+    const before = Date.now();
+    api.sendMessage('hello');
+    await waitFor(() => uiState.chatSending);
+    const startedAt = uiState.chatThinkingStartedAt;
+    expect(startedAt).toBeGreaterThanOrEqual(before);
+    expect(startedAt).toBeLessThanOrEqual(Date.now());
+
+    await api.openConversation('conv-b');
+    expect(uiState.chatThinkingStartedAt).toBeNull();
+    await tick(15);
+    await api.openConversation('conv-a');
+    expect(uiState.chatThinkingStartedAt).toBe(startedAt);
+
+    // The stream starting restarts the clock, as the old ant's did.
+    await tick(15);
+    emit('start', { conversationId: 'conv-a', turn: 0 });
+    expect(uiState.chatThinkingStartedAt).toBeGreaterThan(startedAt!);
+
+    await api.abortChat();
+    expect(uiState.chatThinkingStartedAt).toBeNull();
+    answer.resolve({ ok: false });
+  });
+
   it('clears the sending state of an aborted chat before the abort settles', async () => {
     const abort = deferred<void>();
     const { api, uiState } = setup(undefined, { chatAiAbort: () => abort.promise });

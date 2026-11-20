@@ -226,8 +226,8 @@ jobs:
       - name: Test the testbench
         run: pnpm test:testbench
 
-      - name: Test the PR guard
-        run: pnpm test:pr-guard
+      - name: Test the PR guard and the release scripts
+        run: pnpm test:scripts
 
       # One seed per commit, so a failure replays with the rerun line it prints. Set here because
       # the runner context is not available in a job-level env.

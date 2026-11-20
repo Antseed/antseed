@@ -458,8 +458,9 @@ export function advanceMeteringTotals(path: string, metering: MeteringStorage, r
   const receipts = metering.summarizeReceiptsAfter(totals.receiptsCursor, rowsPerScrape);
   totals.receiptsCursor = receipts.lastRowid;
   for (const day of receipts.days) {
-    totals.receiptCents += day.costCents;
-    totals.receiptDays.set(day.day, (totals.receiptDays.get(day.day) ?? 0) + day.costCents);
+    // Revenue without the per-receipt one-cent floor, and without failed requests.
+    totals.receiptCents += day.revenueCents;
+    totals.receiptDays.set(day.day, (totals.receiptDays.get(day.day) ?? 0) + day.revenueCents);
   }
 
   const today = Math.floor(Date.now() / DAY_MS);
