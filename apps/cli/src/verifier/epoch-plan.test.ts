@@ -624,6 +624,10 @@ test('a seller listed again gets its retry back, unless the window has closed', 
   })
   assert.deepEqual(decide(false), { entries: [], added: [], restored: [gaveUp('r1')] })
   assert.deepEqual(decide(true), { entries: [gaveUp('r1')], added: [], restored: [] })
+  // A confirmation's retry is no part of any window: its returning seller gets it back after the window closed too.
+  const report = [...cells.values()].map((cell) => ({ ...cell, confirmationReport: 'svc\u0000100\u0000flips' }))
+  assert.deepEqual(decideRetryGiveUps({ cells: report, nowSeconds: dueAt, offersModel: () => true, windowClosed: () => true }),
+    { entries: [], added: [], restored: [gaveUp('r1')] })
 })
 
 test('a given-up seller\'s UNDETERMINED is submitted unchanged', async () => {

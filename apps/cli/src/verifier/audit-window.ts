@@ -2,7 +2,8 @@ import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import { epochDirectory } from './audit-artifacts.js'
-import type { EpochState } from './epoch-plan.js'
+import type { EpochCell, EpochState } from './epoch-plan.js'
+import { FLIPS_WAITING_FOR_REFERENCE } from './flips.js'
 import { epochCellKey } from './epoch-plan.js'
 import { safeServiceSlug } from './slug.js'
 import { normalized } from './utils.js'
@@ -109,16 +110,21 @@ export function auditWindowSellersLeft(
   /** Cells (`epochCellKey`) that read done but are still to be audited again: a first look submit would refuse. */
   recovering?: ReadonlySet<string>,
 ): string[] {
-  // A window waits for first looks only: a confirmation's attempts (a report's own cell) never hold it, so a confirmation
-  // that is not started, or retried, does not keep the model's other sellers from closing their window.
-  const cells = state.ordinaryCells ?? state.cells
+  // Each seller's latest cell, as the planner reads it: a finished confirmation answers a first look still due a retry,
+  // and a close call waiting for its extra questions holds the window. One exception: a confirmation that was not
+  // started because its FLIPS reference was not whole (nothing was asked) holds nothing; the seller's first look counts.
+  const cellOf = (peerId: string) => {
+    const key = epochCellKey(window.model, peerId)
+    const latest = state.cells.get(key)
+    return latest && notStartedForReference(latest) ? state.ordinaryCells?.get(key) : latest
+  }
   const completedRun = state.manifests.some((manifest) => (
     // The opening run started before its window: a model's build comes first.
     (manifest.runId === window.openedByRunId || Date.parse(manifest.startedAt) >= Date.parse(window.openedAt) - 1_000)
     && manifest.modelOrder.some((model) => normalized(model) === normalized(window.model))
   ))
   return window.sellers.filter((peerId) => {
-    const cell = cells.get(epochCellKey(window.model, peerId))
+    const cell = cellOf(peerId)
     if (!cell) return !completedRun
     return cell.action === 'retry' || cell.action === 'extend' || (recovering?.has(epochCellKey(window.model, peerId)) ?? false)
   })
@@ -164,4 +170,9 @@ export async function closeFinishedAuditWindows(input: {
 
 function normalizePeer(peerId: string): string {
   return peerId.trim().replace(/^0x/i, '').toLowerCase()
+}
+
+/** A confirmation not started because its FLIPS reference was not whole this run: the auditor's attempt, nothing asked. */
+function notStartedForReference(cell: Pick<EpochCell, 'state' | 'blame' | 'reason'>): boolean {
+  return cell.state === 'failed' && cell.blame === 'auditor' && (cell.reason ?? '').includes(FLIPS_WAITING_FOR_REFERENCE)
 }

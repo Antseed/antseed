@@ -315,7 +315,10 @@ export function decideRetryGiveUps(input: {
     // A confirmation attempt made from a published close call keeps its record (it is never restored).
     if (cell.extraQuestionsPublished) entries.push(cell.extraQuestionsPublished)
     if (cell.givenUp) {
-      if (!cell.givenUp.extraQuestionsPublished && input.offersModel?.(cell) && !input.windowClosed(cell)) restored.push(cell.givenUp)
+      // A first look gets its retry back only while its window is open; a confirmation is no part of any window, so a
+      // returning seller gets its report's retry back whether the model's window has closed or not.
+      const windowAllows = cell.confirmationReport !== undefined || !input.windowClosed(cell)
+      if (!cell.givenUp.extraQuestionsPublished && input.offersModel?.(cell) && windowAllows) restored.push(cell.givenUp)
       else entries.push(cell.givenUp)
       continue
     }

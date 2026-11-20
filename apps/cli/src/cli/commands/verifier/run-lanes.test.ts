@@ -1573,6 +1573,63 @@ test('in an ordinary window, a first look with a DIFF whose evidence cannot be r
   assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'closed')
 }))
 
+test('a window closes on a finished confirmation: a first look due a retry whose seller the other auditor\'s report took over never holds it to the end of the epoch', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const peer = 'aa'.repeat(20)
+  const other = 'bb'.repeat(20)
+  const now = Math.floor(Date.now() / 1_000)
+  const step = Math.max(CONFIRMATION_RECHECK_SPACING_SECONDS, SELLER_RETRY_SPACING_SECONDS) + 60
+  scenario.snapshots = [snapshot([{ ...seller(peer, ['model-a']), onChainAgentId: 5 } as PeerInfo, seller(other, ['model-a'])])]
+  const decided = (model: string, peerId: string) => {
+    const verdict = computeKbfVerdict({ selfHamming: 30, selfTotal: 300, minCoverage: 0.5, minDiffCoverage: 0.8, targetMatchVector: Array.from({ length: 100 }, () => 1) })
+    return { ...closeCallResult(model, peerId), status: verdict.verdict, stats: { ...verdict.stats, selfCoverage: 1 }, correctProbeCount: 100, incorrectProbeCount: 0, correctRate: 1 }
+  }
+  // The first look of one seller fails on the seller's side and is due a retry; the other seller's is decided.
+  scenario.firstResult = (model: string, peerId: string) => (peerId === peer
+    ? { ...closeCallResult(model, peerId), status: 'UNDETERMINED', responseAuthVerified: false, outcomeReason: { code: 'transport_error', summary: 'connection reset', retryable: true, source: 'transport', affectedBatchCount: 1, totalBatchCount: 10, nextAction: 'retry later' } }
+    : decided(model, peerId))
+  const realNow = Date.now
+  const runAt = async (at: number, confirm: boolean) => {
+    Date.now = () => realNow() + at * 1_000
+    try {
+      await scenario.run(confirm ? { confirm: true } : {})
+    } finally {
+      Date.now = realNow
+    }
+  }
+  await runAt(0, false)
+  assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'open', 'its first look is due a retry')
+  // The other auditor's DIFF on that seller: the planner audits it by the report's own cell from now on, and its first
+  // look is never retried. The confirmation decides: the window closes on it.
+  scenario.confirmations = [{ model: 'model-a', agentId: '5' }]
+  scenario.confirmationsWaitOnDiff = true
+  scenario.firstReportedAt = now - 7_200
+  scenario.firstResult = decided
+  await runAt(step, true)
+  const ordinary = (await loadEpochState(scenario.evidenceDir, EPOCH)).ordinaryCells?.get(epochCellKey('model-a', peer))
+  assert.equal(ordinary?.action, 'retry', 'the first look itself is still the retry it was')
+  assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'closed', 'closed on the finished confirmation, not held to the end of the epoch')
+}))
+
+test('a confirmation waiting for its close call\'s extra questions holds the window, so the next submit does not publish its set', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  const peer = 'aa'.repeat(20)
+  const other = 'bb'.repeat(20)
+  const now = Math.floor(Date.now() / 1_000)
+  scenario.snapshots = [snapshot([{ ...seller(peer, ['model-a']), onChainAgentId: 5 } as PeerInfo, seller(other, ['model-a'])])]
+  scenario.confirmations = [{ model: 'model-a', agentId: '5' }]
+  scenario.confirmationsWaitOnDiff = true
+  scenario.firstReportedAt = now - 7_200
+  scenario.firstResult = (model: string, peerId: string) => {
+    const verdict = computeKbfVerdict({ selfHamming: 30, selfTotal: 300, minCoverage: 0.5, minDiffCoverage: 0.8, targetMatchVector: Array.from({ length: 100 }, () => 1) })
+    const done = { ...closeCallResult(model, peerId), status: verdict.verdict, stats: { ...verdict.stats, selfCoverage: 1 }, correctProbeCount: 100, incorrectProbeCount: 0, correctRate: 1 }
+    // The confirmation is a close call waiting for its extra questions.
+    return peerId === peer ? { ...closeCallResult(model, peerId), status: 'UNDETERMINED', confirmsDiff: true, extensionPending: { reason: 'close call', since: new Date().toISOString() } } : done
+  }
+  await scenario.run({ confirm: true })
+  const latest = (await loadEpochState(scenario.evidenceDir, EPOCH)).cells.get(epochCellKey('model-a', peer))
+  assert.equal(latest?.action, 'extend')
+  assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'open', 'the window waits for the extra questions')
+}))
+
 test('a first look still to be recovered stops holding its window once a completed run did not plan its seller', LANE_TIMEOUT, () => withScenario(async (scenario) => {
   const peer = 'aa'.repeat(20)
   const other = 'bb'.repeat(20)
