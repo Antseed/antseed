@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -340,4 +340,31 @@ test('what was spent counts every line, however many retakes a film has', () => 
   const board = parseStudioBoard({ spent: lines(70), estimate: { approved: true, lines: lines(70) } });
   assert.equal(sumStudioCost(board.spent), 7);
   assert.equal(board.estimate?.totalUsd, 7);
+});
+
+test('a delivery stays in the inbox until the track it changed is saved', async (t) => {
+  if (process.getuid?.() === 0) { t.skip('root ignores folder permissions'); return; }
+  const tmp = await mkdtemp(path.join(tmpdir(), 'studio-ingest-save-'));
+  t.after(async () => { await chmod(dir, 0o755).catch(() => {}); await rm(tmp, { recursive: true, force: true }); });
+  const root = path.join(tmp, 'studio');
+  await mkdir(root);
+  const { id } = await createStudioProject('Save first', root);
+  const dir = path.join(root, id);
+  await editStudioTrack(dir, { type: 'add-anchor', index: 0 });
+  await mkdir(path.join(dir, 'stills'));
+  await writeFile(path.join(dir, 'stills/a.png'), 'x');
+  await mkdir(path.join(dir, 'deliveries/done'), { recursive: true });
+  await writeFile(path.join(dir, 'deliveries/image.json'), JSON.stringify({ anchor: 'a1', file: 'stills/a.png', usd: 0.04, model: 'Example image model' }));
+  // The project folder refuses the track write; the inbox stays writable.
+  await chmod(dir, 0o555);
+  await assert.rejects(ingestStudioDeliveries(dir, 7));
+  assert.deepEqual(await readdir(path.join(dir, 'deliveries/done')), [], 'nothing was archived');
+  assert.deepEqual((await readdir(path.join(dir, 'deliveries'))).sort(), ['done', 'image.json']);
+  // Once the track can be saved, the same delivery goes in.
+  await chmod(dir, 0o755);
+  assert.deepEqual(await ingestStudioDeliveries(dir, 8), []);
+  const track = (await getStudioProject(id, root))!.track!;
+  assert.equal(track.anchors[0]!.image, 'stills/a.png');
+  assert.equal(sumStudioCost(track.spent), 0.04);
+  assert.deepEqual(await readdir(path.join(dir, 'deliveries/done')), ['8-image.json']);
 });

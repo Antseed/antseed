@@ -286,7 +286,8 @@ export function editStudioTrack(dir: string, edit: TrackEdit, options: { picked?
 /**
  * Takes in files the agent announced in deliveries/*.json: each becomes a new
  * version on the track. Read deliveries move to deliveries/done, unreadable
- * ones to deliveries/failed, so none is applied twice.
+ * ones to deliveries/failed, so none is applied twice. Each one is saved to
+ * the track before it moves, so a delivery that moved is never lost.
  */
 export function ingestStudioDeliveries(dir: string, now: number = Date.now()): Promise<string[]> {
   return queue.run(async () => {
@@ -346,12 +347,15 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
       } catch {
         applied = false;
       }
+      // A delivered file is not an edit of the user's, so Undo never takes it away.
+      if (track && track !== saved) {
+        await saveTrack(dir, track, null);
+        saved = track;
+      }
       if (!applied) notices.push(`${STUDIO_DELIVERIES_DIR}/${name} ${problem}. It was moved to ${STUDIO_DELIVERIES_DIR}/failed.`);
       await mediaDir(dir, `${STUDIO_DELIVERIES_DIR}/${applied ? 'done' : 'failed'}`);
       await rename(path.join(inbox, name), path.join(inbox, applied ? 'done' : 'failed', `${String(now)}-${name}`));
     }
-    // A delivered file is not an edit of the user's, so Undo never takes it away.
-    if (track && track !== saved) await saveTrack(dir, track, null);
     return notices;
   });
 }
