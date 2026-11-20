@@ -3,7 +3,8 @@ import pkg from '../../../../package.json' with { type: 'json' }
 import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import { verifierRuleOverrides } from '../../../verifier/verifier-compat.js'
 import type { Command } from 'commander'
-import { readFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
+import { link, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { canonicalHashBytes32, queryProfileHash, type KbfReferenceV1 } from '@antseed/fingerprints'
 import { modelHash, serviceHash } from '@antseed/node/payments'
@@ -13,6 +14,7 @@ import { loadConfig } from '../../../config/loader.js'
 import type { VerifierCLIConfig } from '../../../config/types.js'
 import {
   appendVerifierEvent,
+  epochDirectory,
   modelAuditsDirectory,
   modelAuditReportPath,
   modelAuditExtensionsDirectory,
@@ -43,8 +45,10 @@ import {
   createVerifierClient,
   loadCryptoContext,
   openChannelStore,
+  requireCryptoConfig,
   useVerifierEventCache,
 } from '../../payment-utils.js'
+import { testPublicationFor } from '../../../verifier/test-publication.js'
 import type { AntseedConfig } from '../../../config/types.js'
 import {
   ConcurrencyLimiter,
@@ -53,11 +57,14 @@ import {
   mapConcurrently,
   mapInLanes,
 } from '../../../verifier/audit-concurrency.js'
-import { acquirePidFileLock } from '../../../verifier/atomic-files.js'
+import { acquirePidFileLock, writeJsonAtomic } from '../../../verifier/atomic-files.js'
 import { findAdvertisedService } from '../../../verifier/service-discovery.js'
 import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { alreadyJudgedByOther, otherOpinions, type OtherOpinion } from '../../../verifier/third-opinion.js'
+import { attachFirstFlags, isFreshConfirmation } from '../../../verifier/same-check.js'
+import { describeAuditCheck, flaggedSummaryChecks, localConfirmationDecision } from '../../../verifier/flagging-checks.js'
+import { fetchIpfsText } from '@antseed/model-verifier'
 import { DIFF_HOLD_EPOCHS, diffHolds, type DiffHolds } from '../../../verifier/diff-hold.js'
 import { auditorRemovedMessage, createAuditorApprovalGate } from '../../../verifier/auditor-approval.js'
 import { asError, normalized } from '../../../verifier/utils.js'
@@ -65,6 +72,7 @@ import {
   classifyVerificationTargetServices,
   loadBuyerProxySnapshot,
   readModelAuditCheckpoints,
+  tokenizerPrecheckSellers,
   verifyModelTarget,
   DEFAULT_AUDIT_MAX_TIMEOUT_MS,
   type ModelVerificationFailure,
@@ -80,7 +88,7 @@ import {
   preRunError,
 } from '../../../verifier/pre-run-checks.js'
 import { buyerCapShortfall, describeAuditPriceCap, requiredBuyerCap, resolveAuditPriceCaps } from '../../../verifier/audit-price.js'
-import { loadHighestEndpointPrice, loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
+import { loadConfiguredVerifierModelCatalog, loadHighestEndpointPrice, loadVerifierModelCatalog } from '../../../verifier/openrouter-catalog.js'
 import {
   epochQuestionSetPath,
   epochSetCalibrationProblem,
@@ -104,6 +112,8 @@ import { openResponseAuthReader } from '../../../verifier/response-auth-reader.j
 import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import {
   CONFIRMATION_ATTEMPTS,
+  AUDITOR_FAILURE_ATTEMPTS,
+  SELLER_RETRY_SPACING_SECONDS,
   CONFIRMATION_RECHECK_SPACING_SECONDS,
   sellerRetryWaitUntil,
   countPlan,
@@ -111,6 +121,8 @@ import {
   writeRetryGiveUps,
   type RetryGiveUpV1,
   epochCellKey,
+  reportCellKey,
+  reportKey as liveReportKey,
   heldForConfirmationRecheck,
   epochModelRows,
   loadEpochState,
@@ -121,16 +133,21 @@ import { getGlobalOptions } from '../types.js'
 import { BUILD_REQUEST_RUNS, ensureEpochQuestionSet } from '../../../verifier/ensure-auditable-reference.js'
 import {
   MIN_SECONDS_FOR_ANOTHER_ROUND,
-  closeFinishedAuditWindows,
   listAuditWindows,
   openAuditWindow,
   readAuditWindow,
   windowIncludesSeller,
   type AuditWindowV1,
 } from '../../../verifier/audit-window.js'
-import { createReferenceRequestLimiter, referenceConcurrencyWarning } from '../../../verifier/model-reference.js'
+import { askReferenceInputTokens, askReferenceReplies, createReferenceRequestLimiter, referenceConcurrencyWarning } from '../../../verifier/model-reference.js'
+import { TOKENIZER_PRECHECK_RULE, createTokenizerPrecheckScreen, describeTokenizerCounts, measureTokenizerReference } from '../../../verifier/tokenizer-precheck.js'
+import { createOutputCapScreen, describeOutputCapSummary } from '../../../verifier/output-cap.js'
+import { OUTPUT_ECHO_RULE, createOutputEchoScreen, outputEchoPrompt } from '../../../verifier/output-echo.js'
+import { createFlipsScreen, flipsSeed, type FlipsProbe, type FlipsUnavailable } from '../../../verifier/flips.js'
+import { FLIPS_RULE, flipsCounts, isValidFlipsPair } from '../../../verifier/flips-score.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
-import { closeCallRuleForExtensions, extensionSets, latestExtension } from '../../../verifier/close-call.js'
+import { auditDecision, closeCallRuleForExtensions, earliestSetTime, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
+import { decidedRecords, resumeMaterialFor, sameConfirmation, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
 import {
   confirmationTargetsByModel,
   describeTallies,
@@ -146,6 +163,10 @@ import {
   waitingReportBlocks,
   type ConfirmationTarget,
 } from '../../../verifier/pending-confirmations.js'
+import { auditFinishedAt, resultTimeKey, sentAuditTimes } from '../../../verifier/model-audit.js'
+import { closeFinishedWindowsRecovering, recoveringFirstLooks } from '../../../verifier/first-look-recovery.js'
+import { ownReportFinishedAt } from '../../../verifier/submission-delta.js'
+import { getAddress } from 'ethers'
 import { loadPendingExtensions, pendingExtensionKey, type PendingExtension } from '../../../verifier/pending-extensions.js'
 import { VerifierRunProgress } from './run-progress.js'
 import { failureOutcomeReason } from '../../../verifier/outcome-reason.js'
@@ -507,29 +528,77 @@ export async function loadRunConfirmations(input: {
           : `the reported service is not one of the names configured for ${entry.model}`}`,
       ))
     }
+    // Which check flagged first is read before the seller is audited, so the confirmation runs that check to its
+    // end (`model-run.ts`). A confirmation whose first evidence cannot be read, or that is younger than an hour,
+    // is not audited now: its result could not be sent (same-check.ts), and the next run tries again.
+    const testPublication = input.config.verifier?.testPublication
+      ? testPublicationFor(input.config.verifier.testPublication, requireCryptoConfig(input.config).rpcUrl)
+      : null
+    await attachFirstFlags(targets, {
+      events,
+      auditor: auditor.address,
+      revoked,
+      now: input.now ?? Math.floor(Date.now() / 1_000),
+      reader: {
+        modelAudits: (filter) => client.queryModelAudits(filter),
+        // A dry run on a local fork reads it from this machine (`verifier.testPublication`, refused off a local RPC).
+        fetchText: (cidPath) => fetchIpfsText(cidPath, testPublication ? { ipfsGateway: testPublication.gatewayUrl } : {}),
+        reportRound: (agentId, service) => client.reportRound(agentId, service),
+        blockTimestamp: async (blockNumber) => {
+          const block = await client.provider.getBlock(blockNumber)
+          if (!block) throw new Error(`block ${blockNumber} is unavailable`)
+          return block.timestamp
+        },
+      },
+      log: (line) => console.log(chalk.yellow(line)),
+    })
     // When this auditor reported on a seller in a round the contract no longer counts, a local
-    // result only answers the confirmation if it is newer than that report.
+    // result only answers the confirmation if its audit finished after the audit behind that report: the ordering
+    // submit uses (`ownReportFinishedAt`), so a correction counted as done here is one submit sends.
     const ownReports = ownLatestReports(events, auditor.address)
     // Results submitted together share a block, so each block is read once.
     const timestamps = new Map(blockTimestamps)
+    const blockTimestamp = async (block: number): Promise<number> => {
+      let timestamp = timestamps.get(block)
+      if (timestamp === undefined) {
+        const header = await client.provider.getBlock(block)
+        if (!header) throw new Error(`block ${block} of an earlier report is unavailable`)
+        timestamp = header.timestamp
+        timestamps.set(block, timestamp)
+      }
+      return timestamp
+    }
+    let sent: Map<string, Record<string, number>> | null = null
     for (const [model, agents] of targets) {
       for (const target of agents.values()) {
-        const block = ownReports.get(reportKey(target.agentId, serviceHash(target.service), modelHash(model)))?.blockNumber
-        if (block === undefined) continue
-        let timestamp = timestamps.get(block)
-        if (timestamp === undefined) {
-          const header = await client.provider.getBlock(block)
-          if (!header) throw new Error(`block ${block} of an earlier report is unavailable`)
-          timestamp = header.timestamp
-          timestamps.set(block, timestamp)
-        }
-        target.ownReportedAt = timestamp
+        const own = ownReports.get(reportKey(target.agentId, serviceHash(target.service), modelHash(model)))
+        if (!own) continue
+        sent ??= await sentAuditTimes(
+          input.config.verifier?.evidenceDir ?? join(input.dataDir, 'verifier', 'evidence'),
+          (await client.provider.getNetwork()).chainId, getAddress(client.contractAddress),
+        )
+        const key = resultTimeKey(target.agentId, serviceHash(target.service))
+        target.ownReportedAt = await ownReportFinishedAt(
+          own, async (value) => (value.transactionHash ? sent!.get(value.transactionHash.toLowerCase())?.[key] ?? null : null), { blockTimestamp },
+        )
       }
     }
     return targets
   } catch (error) {
     console.warn(chalk.yellow(`Could not read reports waiting for a confirmation: ${asError(error).message}`))
     return new Map()
+  }
+}
+
+/**
+ * Writes what a model's cap or echo reference decided this run (whether the check applies, why, and the reference's
+ * own numbers) beside the model's audits, for the run's report and a dry pass. Never fails the run.
+ */
+async function writeOutputCheckReference(directory: string, model: string, check: 'output-cap' | 'output-echo' | 'flips-first' | 'flips-confirm', record: unknown): Promise<void> {
+  try {
+    await writeJsonAtomic(join(directory, `${check}-reference.json`), { version: 1, kind: 'antseed-verifier-output-check-reference', model, check, record }, true)
+  } catch {
+    // The report is best effort.
   }
 }
 
@@ -576,6 +645,140 @@ export interface ResumeCandidate {
   queryProfileHash: string
   probeIds: string[]
   exchanges: ProxyAuditEvidenceV1['exchanges']
+  /** The test records the earlier attempt finished, carried into the resume (each test runs once per audit chain). */
+  records?: StoredCheckRecords
+  /** The report the earlier attempt confirmed, if it was a confirmation: only a confirmation of it may carry its records. */
+  confirming?: ConfirmationIdentity
+}
+
+/**
+ * The key a retry's material is kept under: the seller, and the report it was made for when it was a confirmation, so
+ * a confirmation of one report never picks up another report's attempt (`materialFor`).
+ */
+function materialKey(model: string, peerId: string, service: string, confirming?: { checks: readonly string[]; reportedAt?: number } | null): string {
+  const base = resumeKey(model, peerId)
+  return confirming ? `${base}\u0000${liveReportKey(service, confirming.reportedAt, confirming.checks)}` : base
+}
+
+/** The report a summary row confirms, as its row names it (`confirming`, `confirmingReportedAt`). */
+function summaryConfirming(result: { confirming?: ConfirmationIdentity['checks']; confirmingReportedAt?: number }): ConfirmationIdentity | undefined {
+  return result.confirming ? { checks: result.confirming, ...(result.confirmingReportedAt !== undefined ? { reportedAt: result.confirmingReportedAt } : {}) } : undefined
+}
+
+/** Why a resume's reservation is voided when the confirmation it would serve is for another report. */
+const OTHER_REPORT_VOID_REASON = 'a confirmation of another report closes this attempt: a new audit is reserved, and the seller is asked the questions again with none of these answers reused'
+
+/** Whether an evidence file is the audit of this seller and service, as its summary says. */
+function sameAuditTarget(evidence: ProxyAuditEvidenceV1, result: { peerId: string; service: string }): boolean {
+  const target = evidence.target as ProxyAuditEvidenceV1['target'] | undefined
+  return target !== undefined && normalized(target.peerId) === normalized(result.peerId) && normalized(target.service) === normalized(result.service)
+}
+
+/** The test records an evidence file holds: what a resume or a retry of its audit carries. */
+function evidenceRecords(evidence: ProxyAuditEvidenceV1): StoredCheckRecords {
+  return {
+    ...(evidence.tokenizerPrecheck ? { tokenizerPrecheck: evidence.tokenizerPrecheck } : {}),
+    ...(evidence.outputCap ? { outputCap: evidence.outputCap } : {}),
+    ...(evidence.outputEcho ? { outputEcho: evidence.outputEcho } : {}),
+    ...(evidence.flips ? { flips: evidence.flips } : {}),
+  }
+}
+
+/**
+ * The auditor's private FLIPS master for the epoch: 32 random bytes in the epoch's evidence directory, readable by the
+ * owner only, made once before any lane. Only the seed derived from it for one model audit and stage (`flipsSeed`) is
+ * stored and published, so a publication reveals no other audit's pairs. Made atomically: written in full to a file of
+ * its own, then linked into place, so a crash leaves no empty key and a concurrent run's key wins. Throws when the key
+ * is unreadable or readable by others.
+ */
+export async function flipsMasterFor(evidenceDir: string, epoch: string): Promise<string> {
+  const path = join(epochDirectory(evidenceDir, epoch), 'flips-master.key')
+  const readKey = async (): Promise<string | null> => {
+    const info = await stat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    })
+    if (!info) return null
+    if ((info.mode & 0o077) !== 0) {
+      throw new Error(`the FLIPS key ${path} is readable by others (mode ${(info.mode & 0o777).toString(8)}): restrict it to its owner (chmod 600) and run again`)
+    }
+    const text = (await readFile(path, 'utf8')).trim()
+    if (!/^[0-9a-f]{64}$/.test(text)) {
+      throw new Error(`the FLIPS key ${path} is unreadable: rename it to start a new key for epoch ${epoch}; checks already published keep their own seeds`)
+    }
+    return text
+  }
+  const stored = await readKey()
+  if (stored) return stored
+  await mkdir(dirname(path), { recursive: true })
+  const temporary = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
+  await writeFile(temporary, `${randomBytes(32).toString('hex')}\n`, { mode: 0o600, flag: 'wx' })
+  try {
+    await link(temporary, path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EEXIST') throw error
+    })
+  } finally {
+    await unlink(temporary).catch(() => undefined)
+  }
+  const made = await readKey()
+  if (!made) throw new Error(`the FLIPS key for epoch ${epoch} could not be made`)
+  return made
+}
+
+/**
+ * Dry run only (`ANTSEED_VERIFIER_FLIPS_PROBE`, JSON): chosen word pairs, a stage for every check, and a fresh-pairs
+ * follow-up after each first flag. A probed check is a diagnostic and never counts. A value that cannot be read is no
+ * probe, with the reason: it never stops the run.
+ */
+export function parseFlipsProbe(raw: string | undefined): { probe: FlipsProbe | null; problem: string | null } {
+  if (!raw) return { probe: null, problem: null }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE is not JSON' }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE is not an object' }
+  const value = parsed as { pairs?: unknown; stage?: unknown; followUpFirstFlags?: unknown }
+  let pairs: Array<[string, string]> | undefined
+  if (value.pairs !== undefined) {
+    if (!Array.isArray(value.pairs) || value.pairs.length !== FLIPS_RULE.pairsPerCheck
+      || !value.pairs.every((pair) => Array.isArray(pair) && pair.length === 2 && typeof pair[0] === 'string' && typeof pair[1] === 'string'
+        && pair[0].length <= 40 && pair[1].length <= 40 && isValidFlipsPair([pair[0], pair[1]]))) {
+      return { probe: null, problem: `ANTSEED_VERIFIER_FLIPS_PROBE pairs must be ${FLIPS_RULE.pairsPerCheck} pairs of two different words` }
+    }
+    pairs = (value.pairs as string[][]).map((pair) => [pair[0]!, pair[1]!])
+  }
+  if (value.stage !== undefined && value.stage !== 'first' && value.stage !== 'confirm') return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE stage must be first or confirm' }
+  if (value.followUpFirstFlags !== undefined && typeof value.followUpFirstFlags !== 'boolean') return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE followUpFirstFlags must be true or false' }
+  return {
+    probe: {
+      ...(pairs ? { pairs } : {}),
+      ...(value.stage === 'first' || value.stage === 'confirm' ? { stage: value.stage } : {}),
+      ...(value.followUpFirstFlags === true ? { followUpFirstFlags: true } : {}),
+    },
+    problem: null,
+  }
+}
+
+/**
+ * The FLIPS status of one model in one run, beside its audits: every stage with no result and why (the reference
+ * failed or is unusable, a check failed, the key failed), and the probe when one is on. Best effort, never published.
+ */
+function flipsStatusRecorder(path: string, model: string, base: { probe?: FlipsProbe; keyFailed?: string }, warn: (line: string) => void) {
+  const status: { version: 1; kind: 'antseed-verifier-flips-status'; model: string; probe?: FlipsProbe; keyFailed?: string; unavailable: FlipsUnavailable[] } = {
+    version: 1, kind: 'antseed-verifier-flips-status', model, ...base, unavailable: [],
+  }
+  let tail = Promise.resolve()
+  const write = (): void => {
+    tail = tail.then(() => writeJsonAtomic(path, status, true)).catch(() => undefined)
+  }
+  write()
+  return (event: FlipsUnavailable): void => {
+    status.unavailable.push(event)
+    warn(`FLIPS ${model} ${event.stage}: no result (${event.code}): ${event.detail}`)
+    write()
+  }
 }
 
 export function normalizeVerifierPeerId(value: string): string {
@@ -951,10 +1154,8 @@ export async function runVerifierRound(
             },
           })
         }
-        await closeFinishedAuditWindows({
-          evidenceDir, epoch,
-          state: await loadEpochState(evidenceDir, epoch),
-          secondsLeftInEpoch: epochWindow.endsAt - await clock(),
+        await closeFinishedWindowsRecovering({
+          evidenceDir, epoch, state: await loadEpochState(evidenceDir, epoch), secondsLeftInEpoch: epochWindow.endsAt - await clock(),
         })
         for (const model of models) {
           if (!confirmationOnly.has(model)) auditWindows.set(model, await readAuditWindow(evidenceDir, epoch, model))
@@ -969,34 +1170,97 @@ export async function runVerifierRound(
         const epochState: EpochState | null = options.fresh || requestedResumeManifest
           ? null
           : await loadEpochState(evidenceDir, epoch)
-        const epochCellFor = (model: string, peerId: string): EpochCell | undefined =>
-          epochState?.cells.get(epochCellKey(model, peerId))
-        const isDone = (model: string, peerId: string): boolean => epochCellFor(model, peerId)?.action === 'done'
+        // When each confirmation result's audit finished, from its verified evidence: the planner orders it against
+        // this auditor's own report as submit does, and a result without readable evidence answers nothing.
+        const reportCellFinishedAt = new Map<EpochCell, number>()
+        for (const cell of epochState?.reportCells?.values() ?? []) {
+          if (!cell.result) continue
+          const finished = await auditFinishedAt(cell.result)
+          if (finished !== null) reportCellFinishedAt.set(cell, finished)
+        }
+        // A report's result whose evidence cannot be read is unusable, whatever the attempts.
+        const unusableReportResult = (cell: EpochCell): boolean => (
+          cell.confirmationReport !== undefined && cell.result !== null && !reportCellFinishedAt.has(cell)
+        )
+        // Its attempts are used up by the seller's limit or, for a cause of the auditor's own making, by the auditor's:
+        // it is not audited again every spacing.
+        const reportAttemptsUsed = (cell: EpochCell): boolean => (
+          cell.attempts >= CONFIRMATION_ATTEMPTS || (unusableReportResult(cell) && cell.auditorAttempts >= AUDITOR_FAILURE_ATTEMPTS)
+        )
+        // A first look whose evidence cannot be read or has no valid date: submit leaves it out, so its SAME or DIFF
+        // would go unsent all epoch. It is audited again within the ordinary attempts.
+        const recovering = new Set((await recoveringFirstLooks(epochState)).values())
+        // With the ordinary retry spacing: a re-audit minutes later counts as the same attempt.
+        const planNow = await clock()
+        const unusableFirstLook = (cell: EpochCell): boolean => (
+          recovering.has(cell) && (cell.lastAttemptAt === null || cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS <= planNow)
+        )
+        // A cell whose confirmation attempts were for another report than the one waiting now is no history of this
+        // one: its attempts, cooldown and result neither answer nor hold back the live report.
+        // A seller with a report waiting for this auditor is planned by that report's own cell (its result, attempts and
+        // spacing, starting at zero); any other seller by its first looks. Another report's cell never answers or holds it.
+        const epochCellFor = (model: string, peer: { peerId: string; onChainAgentId?: number | bigint | string | null }): EpochCell | undefined => {
+          const live = confirmationFor(model, peer)
+          if (live?.firstChecks) {
+            const report = liveReportKey(live.service, live.firstReportedAt, live.firstChecks)
+            return epochState?.reportCells?.get(reportCellKey(model, peer.peerId, report))
+          }
+          return (epochState?.ordinaryCells ?? epochState?.cells)?.get(epochCellKey(model, peer.peerId))
+        }
+        const isDone = (model: string, peer: PeerInfo): boolean => {
+          const cell = epochCellFor(model, peer)
+          // A report's unusable result whose attempts are used up is done whatever its action: one blamed on the auditor
+          // stays 'retry' in the plan, where only the seller's attempts finish a report.
+          if (cell?.confirmationReport !== undefined && unusableReportResult(cell) && reportAttemptsUsed(cell)) return true
+          return cell?.action === 'done' && !unusableFirstLook(cell)
+        }
         // A seller this epoch already finished is audited again when a confirmation assigned to this
         // auditor is still open for it: its finished result is for another service, or it was
         // submitted in a report round the contract no longer counts.
         const openConfirmationFor = (model: string, peer: PeerInfo): ConfirmationTarget | undefined => {
           const confirmation = confirmationFor(model, peer)
           if (!confirmation) return undefined
-          const cell = epochCellFor(model, peer.peerId)
-          const completedAt = cell?.result
-            ? epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
-            : undefined
-          const local = cell?.result && completedAt
-            ? { service: cell.result.service, completedAt: Date.parse(completedAt) / 1_000 }
+          const cell = epochCellFor(model, peer)
+          // A report whose attempts are used up without a result to send (failures, runtime skips) is finished: nothing
+          // is sent for it, and the seller is not audited for it again.
+          // Only the seller's own attempts finish it: the auditor's failures never do.
+          // A result whose evidence cannot be read is kept for diagnosis but is no usable result: the seller's later
+          // failures and skips count toward this stop as for a cell with no result.
+          // An unusable result is capped whatever its action: one blamed on the auditor stays 'retry' in the plan (only the
+          // seller's attempts finish a report there), so its own cap of auditor attempts is applied here.
+          if (cell?.confirmationReport !== undefined && ((cell.action === 'done' && !cell.result) || unusableReportResult(cell))
+            && reportAttemptsUsed(cell)) return undefined
+          // When its audit finished, read from its verified evidence as submit reads it. A result whose evidence cannot
+          // be read or verified (a missing extra set, say) answers nothing: submit would refuse it, so the report is
+          // audited again.
+          const completedAt = cell?.result ? reportCellFinishedAt.get(cell) : undefined
+          // Only a result made for this report answers it: one that names no report (a first look, or a summary from
+          // before reports were named) answers none, and the seller is audited for it.
+          const local = cell?.result && completedAt !== undefined && cell.confirmationReport !== undefined
+            ? {
+              service: cell.result.service,
+              completedAt,
+              // Fresh by every set the result pools, as submit reads it.
+              firstRequestAt: earliestSetTime(cell.result),
+              decided: localConfirmationDecision(cell.result, cell.action === 'done'),
+              flagged: flaggedSummaryChecks(cell.result),
+            }
             : null
           return localResultAnswersConfirmation(confirmation, local) ? undefined : confirmation
         }
         // When a confirmation's UNDETERMINED held for another audit may be audited again, or null when
         // the seller has none: attempts are spaced, so one seller outage does not use them all up.
         const confirmationRecheckDueAt = (model: string, peer: PeerInfo): number | null => {
-          const cell = epochCellFor(model, peer.peerId)
-          if (!cell || !heldForConfirmationRecheck(cell)) return null
+          const cell = epochCellFor(model, peer)
+          // A report's result without usable evidence is audited again with the same spacing as an undecided one.
+          if (!cell || (!heldForConfirmationRecheck(cell) && !(unusableReportResult(cell) && !reportAttemptsUsed(cell)))) return null
+          // From the cell's last attempt (a later failure included), not from the run of its older result.
+          if (cell.lastAttemptAt !== null) return cell.lastAttemptAt + CONFIRMATION_RECHECK_SPACING_SECONDS
           const completedAt = epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
           return completedAt ? Date.parse(completedAt) / 1_000 + CONFIRMATION_RECHECK_SPACING_SECONDS : null
         }
         const finished = (model: string, peer: PeerInfo): boolean => (
-          isDone(model, peer.peerId) && openConfirmationFor(model, peer) === undefined
+          isDone(model, peer) && openConfirmationFor(model, peer) === undefined
         )
         // The service names a seller is audited under. A confirmation is only answered by a report on
         // the service it waits on: confirmation-only work and the re-audit of a finished seller try
@@ -1006,7 +1270,7 @@ export async function runVerifierRound(
           if (resumeService) return [resumeService.toLowerCase(), ...configured]
           const confirmation = openConfirmationFor(model, peer)
           if (!confirmation) return configured
-          if (confirmationOnly.has(model) || isDone(model, peer.peerId)) return [confirmation.service]
+          if (confirmationOnly.has(model) || isDone(model, peer)) return [confirmation.service]
           return [confirmation.service, ...configured]
         }
         // A run that stopped before writing its manifest left checkpoints; their exchanges are reused
@@ -1019,15 +1283,21 @@ export async function runVerifierRound(
           : null
         const discoveredResumeCandidates = requestedResumeManifest
           ? await loadResumeCandidates(requestedResumeManifest, models)
+          // The interrupted run is newer than every finished one: its checkpoints go last, so for the same seller and
+          // report they win over an older finished retry (a later entry replaces an earlier one, also once rekeyed).
           : new Map<string, ResumeCandidate>([
+            ...(epochState ? await loadEpochRetryCandidates(epochState, models) : new Map<string, ResumeCandidate>()),
             ...(interruptedRunId
               ? await loadCheckpointResumeCandidates(evidenceDir, interruptedRunId, epoch, models)
               : new Map<string, ResumeCandidate>()),
-            ...(epochState ? await loadEpochRetryCandidates(epochState, models) : new Map<string, ResumeCandidate>()),
           ])
+        // Every candidate under the report it was made for (a checkpoint's or a retry file's own identity).
+        const keyedResumeCandidates = new Map([...discoveredResumeCandidates.values()].map((candidate) => [
+          materialKey(candidate.model, candidate.peerId, candidate.service, candidate.confirming), candidate,
+        ] as const))
         const selectedResumeCandidates = selectedPeerId
-          ? filterResumeCandidatesByPeer(discoveredResumeCandidates, selectedPeerId)
-          : discoveredResumeCandidates
+          ? filterResumeCandidatesByPeer(keyedResumeCandidates, selectedPeerId)
+          : keyedResumeCandidates
         const resumeCandidates = requestedResumeManifest
           ? await filterCompatibleResumeCandidates({
             candidates: selectedResumeCandidates, banksDir, config: config.verifier, epoch, strict: true,
@@ -1036,8 +1306,21 @@ export async function runVerifierRound(
             candidates: selectedResumeCandidates, banksDir, config: config.verifier, epoch,
           })
         const resumeSourceRunId = requestedResumeManifest?.runId ?? null
+        // Settled tests of retried audits whose questions are not resumed (a close call with an extra set): a fresh
+        // audit carries them instead of asking them again.
+        const carriedTestsByKey = requestedResumeManifest
+          ? await loadManifestCarriedTests(requestedResumeManifest, models)
+          : epochState ? await loadEpochCarriedTests(epochState, models) : new Map<string, CarriedTests>()
         // Only an explicit --resume-run limits the run to repairs.
         const resumeOnly = resumeSourceRunId !== null
+        // A seller's retry material for the report waiting for it now, or its first look's when none waits. A repair
+        // (--resume-run) reads no waiting reports: it takes the seller's attempt whatever report it was for.
+        const materialFor = <T>(map: ReadonlyMap<string, T>, model: string, peer: PeerInfo): T | undefined => {
+          const base = resumeKey(model, peer.peerId)
+          const live = confirmationFor(model, peer)
+          if (live?.firstChecks) return map.get(`${base}\u0000${liveReportKey(live.service, live.firstReportedAt, live.firstChecks)}`)
+          return map.get(base) ?? (resumeOnly ? [...map].find(([key]) => key.startsWith(`${base}\u0000`))?.[1] : undefined)
+        }
         // Close calls whose extra questions could not be asked in earlier runs this epoch: finished
         // here without repeating the first check. --fresh audits those sellers from the start instead.
         const pendingExtensions = !options.fresh && (config.verifier?.closeCallExtensions ?? 2) > 0
@@ -1135,6 +1418,30 @@ export async function runVerifierRound(
           buyerProxy: proxy.baseUrl,
           startedAt: startedAtMs,
         })
+        // FLIPS: the auditor's private master for the epoch, made once before any lane (`flipsMasterFor`), and its
+        // address for the draw. While FLIPS does not count, a failure here means no FLIPS this run, never a failed run.
+        const flipsOn = config.verifier?.flips !== false
+        let flipsKeyFailed: string | null = null
+        const flipsMaster = !flipsOn ? null : await flipsMasterFor(evidenceDir, epoch).catch((error: unknown) => {
+          flipsKeyFailed = asError(error).message
+          console.warn(chalk.yellow(`FLIPS: no randomness check this run: ${flipsKeyFailed}`))
+          return null
+        })
+        // A resumed run keeps the seeds of the run it resumes, so an unfinished FLIPS is drawn as before.
+        const flipsRunId = requestedResumeManifest?.runId ?? runId
+        // FLIPS's own limiters: its reference and seller requests never queue with the questions'.
+        const flipsReferenceLimiter = createReferenceRequestLimiter(config.verifier)
+        const flipsSellerLimiter = new ConcurrencyLimiter(config.verifier?.auditMaxConcurrentBatches ?? 24)
+        let flipsAuditor = ''
+        try {
+          flipsAuditor = (await resolveAuditorAddress({ config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor })).address
+        } catch {
+          // The draw keeps its pairs unforeseeable through the seed; the address only sets auditors apart.
+        }
+        const parsedProbe = flipsOn ? parseFlipsProbe(process.env['ANTSEED_VERIFIER_FLIPS_PROBE']) : { probe: null, problem: null }
+        if (parsedProbe.problem) console.warn(chalk.yellow(`FLIPS: probe ignored: ${parsedProbe.problem}`))
+        const flipsProbe = parsedProbe.probe
+        if (flipsProbe) console.warn(chalk.yellow(`FLIPS: dry-run probe on (${JSON.stringify(flipsProbe)}): every FLIPS record is a diagnostic`))
         // Confirmations assigned to this auditor: which got a target (or are already answered by a
         // result this epoch), and why each of the seller's other peers did not.
         const auditedConfirmations = new Set<string>()
@@ -1148,8 +1455,27 @@ export async function runVerifierRound(
             const notAudited = (reason: string): void => {
               if (confirmationKey) confirmationSkipReasons.set(confirmationKey, [...confirmationSkipReasons.get(confirmationKey) ?? [], reason])
             }
-            const resumeCandidate = resumeCandidates.get(resumeKey(model, peer.peerId))
-            const pendingExtension = pendingExtensions.get(pendingExtensionKey(model, peer.peerId))
+            const resumeCandidate = materialFor(resumeCandidates, model, peer)
+            // A close call waiting for its extra set is finished with it, unless this seller now has a report to confirm
+            // and the close call's first check is older than that report allows: then it is audited fresh, so a flag
+            // of it is not refused as stale at submit.
+            const waitingExtension = pendingExtensions.get(pendingExtensionKey(model, peer.peerId))
+            const live = confirmationKey ? confirmationFor(model, peer) : undefined
+            // For a report waiting now, a close call's extra set is asked only for a confirmation of that same report and
+            // tests whose first check is fresh for it; another report's, a first look's or a stale one starts a new audit.
+            const liveIdentity: ConfirmationIdentity | null = live?.firstChecks
+              ? { checks: live.firstChecks, ...(live.firstReportedAt !== undefined ? { reportedAt: live.firstReportedAt } : {}) }
+              : null
+            const waitingIdentity: ConfirmationIdentity | null = waitingExtension?.result.confirming
+              ? { checks: waitingExtension.result.confirming, ...(waitingExtension.result.confirmingReportedAt !== undefined ? { reportedAt: waitingExtension.result.confirmingReportedAt } : {}) }
+              : null
+            // Fresh by the earliest request of every set the evidence will hold, the first and each extra set already
+            // pooled, as submit reads it; a set with no time is not fresh.
+            const pendingExtension = waitingExtension && liveIdentity && (
+              !waitingIdentity || !sameConfirmation(waitingIdentity, liveIdentity)
+              || !isFreshConfirmation(earliestSetTime(waitingExtension.result), liveIdentity.reportedAt!)
+            ) ? undefined : waitingExtension
+            const carriedTests = materialFor(carriedTestsByKey, model, peer)
             if (!confirmationKey && peer.onChainAgentId != null) {
               const judged = alreadyJudgedByOther(othersOpinions, peer.onChainAgentId, targetServicesFor(model, peer, resumeCandidate?.service), model)
               if (judged) {
@@ -1163,13 +1489,13 @@ export async function runVerifierRound(
             if (recheckDueAt !== null && recheckDueAt > Date.now() / 1_000) {
               // A confirmation's held UNDETERMINED: audited again only once its spacing has passed.
               doneCount += 1
-              notAudited(`its UNDETERMINED (attempt ${epochCellFor(model, peer.peerId)!.attempts} of ${CONFIRMATION_ATTEMPTS}) `
+              notAudited(`its UNDETERMINED (attempt ${epochCellFor(model, peer)!.attempts} of ${CONFIRMATION_ATTEMPTS}) `
                 + `is audited again from ${new Date(recheckDueAt * 1_000).toISOString()}`)
               return []
             }
             // A seller's one retry waits instead of failing again in the same outage, also
             // when it resumes automatically from this epoch's retry cell. Only --resume-run skips it.
-            const retryDueAt = sellerRetryWaitUntil(epochCellFor(model, peer.peerId), Date.now() / 1_000, resumeOnly)
+            const retryDueAt = sellerRetryWaitUntil(epochCellFor(model, peer), Date.now() / 1_000, resumeOnly)
             if (retryDueAt !== null) {
               doneCount += 1
               notAudited(`its failed audit is retried from ${new Date(retryDueAt * 1_000).toISOString()}`)
@@ -1193,6 +1519,9 @@ export async function runVerifierRound(
                 service: eligibility.service,
                 resumeCandidate: resumable ? resumeCandidate : undefined,
                 pendingExtension: carried ? pendingExtension : undefined,
+                carriedTests: carriedTests && carriedTests.service.toLowerCase() === eligibility.service.toLowerCase() ? carriedTests : undefined,
+                // The auditor's last attempt at this seller: a FLIPS that cannot run is then no result, never a failure.
+                lastAuditorAttempt: (epochCellFor(model, peer)?.auditorAttempts ?? 0) >= AUDITOR_FAILURE_ATTEMPTS - 1,
               }]
             }
             if (eligibility.code !== 'model_not_advertised') {
@@ -1317,7 +1646,7 @@ export async function runVerifierRound(
           .map(({ model, skipped, targets }) => ({ model, skipped, targets }))
         runModels = preparedModels.map((entry) => entry.model)
         if (epochState) {
-          printEpochPlan(epoch, epochState, plannedModels, resumeCandidates)
+          printEpochPlan(epoch, epochState, plannedModels, resumeCandidates, (model, peer) => epochCellFor(model, peer as PeerInfo))
         }
         if (preparedModels.every((entry) => entry.targets.length === 0)) {
           if (epochState && epochState.manifests.length > 0) {
@@ -1430,6 +1759,9 @@ export async function runVerifierRound(
         const concurrencyWarning = enrollmentBudget === null ? null : referenceConcurrencyWarning(config.verifier)
         if (concurrencyWarning) console.warn(chalk.yellow(concurrencyWarning))
         const requestLimiter = enrollmentBudget === null ? null : createReferenceRequestLimiter(config.verifier)
+        // The tokenizer pre-check asks the reference in every run, also one that builds no question set: one
+        // limiter for the run, so its models' reference asks share the configured cap.
+        const precheckReferenceLimiter = requestLimiter ?? createReferenceRequestLimiter(config.verifier)
         runProgress = new VerifierRunProgress(preparedModels.map(({ model, targets, skipped }) => ({
           model,
           providerCount: targets.length + skipped.length,
@@ -1462,6 +1794,152 @@ export async function runVerifierRound(
 
           // Every seller is asked this epoch's question set; a resumed audit may still use an older reference.
           const referenceSources = new Map<string, KbfReferenceV1>()
+          // The tokenizer pre-check of this model's sellers (`createTokenizerPrecheckScreen`): its probes are
+          // written and measured on the reference once, when the first seller is audited, whose question set
+          // names the bank whose route is asked. Its crowd is every seller of the model the buyer would audit
+          // (`tokenizerPrecheckSellers`), not only the ones this run audits: a retry, a confirmation or a
+          // `--peer` run audits one or two, and they alone could not tell a wrong reference from a wrong seller.
+          const tokenizerPrecheck = config.verifier?.tokenizerPrecheck === false ? null : createTokenizerPrecheckScreen<KbfReferenceV1>({
+            sellers: tokenizerPrecheckSellers(laneProxy.peers, verifierModelServices(config.verifier, model), targetPolicyFor(model)),
+            proxyBaseUrl: laneProxy.baseUrl,
+            responseAuthReader: responseAuthReader!,
+            limiter: batchLimiter,
+            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
+            onUnbacked: (crowd, referenceDelta) => runProgress!.above(() => console.warn(chalk.yellow(crowd.outvoted
+              ? `${model}: ${crowd.largestGroup} sellers sign ${crowd.groupDelta} input tokens for a text the reference counts as ${referenceDelta}, `
+                + `and only ${crowd.agree} sign the reference's count. The reference may not be the model they serve; such a seller is judged on its questions.`
+              : `${model}: a seller signs input tokens that are off the reference's (${referenceDelta}) in every round, but none of the model's `
+                + `${crowd.deltas.length - 1} other seller(s) signs the reference's count (${crowd.measured - 1} could be read). Nothing backs the reference; such a seller is judged on its questions.`,
+            ))),
+            reference: async (settings) => {
+              const reference = await measureTokenizerReference({
+                ask: async (contents, signal) => askReferenceInputTokens({
+                  model,
+                  settings,
+                  contents,
+                  ...(signal ? { signal } : {}),
+                  maxTokens: TOKENIZER_PRECHECK_RULE.maxTokens,
+                  config: config.verifier,
+                  catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
+                  buyerProxyPort: config.buyer.proxyPort,
+                  requestLimiter: precheckReferenceLimiter,
+                }),
+              })
+              const unmeasured = reference.rounds.find((round) => round.delta === null)
+              if (unmeasured) {
+                runProgress!.above(() => console.warn(chalk.yellow(
+                  `${model}: the tokenizer pre-check has no reference this run (${unmeasured.failure}); its sellers are judged on the questions alone`,
+                )))
+              }
+              return reference
+            },
+          })
+          const capMeasureWithin = process.env['ANTSEED_VERIFIER_CAP_MEASURE_WITHIN'] === '1'
+          if (capMeasureWithin) {
+            runProgress!.above(() => console.log(chalk.yellow(`${model}: ANTSEED_VERIFIER_CAP_MEASURE_WITHIN is on: the cap check also measures answers that kept to the limit (a dry pass's diagnostic; it costs reference requests and changes no result)`)))
+          }
+          // The cap check of this model's sellers (`createOutputCapScreen`): whether it applies is decided once, by
+          // the reference measuring a count in words on the route of the seller's question set; each seller's
+          // answers billed over the limit are measured there too.
+          const outputCap = config.verifier?.outputChecks === false ? null : createOutputCapScreen<KbfReferenceV1>({
+            // A dry pass (nothing submitted) also measures answers that kept to the limit, to show the measurement's scale.
+            measureWithin: capMeasureWithin,
+            onReady: (record) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, 'output-cap', record),
+            proxyBaseUrl: laneProxy.baseUrl,
+            responseAuthReader: responseAuthReader!,
+            limiter: batchLimiter,
+            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
+            ask: (settings) => async (contents, signal) => askReferenceInputTokens({
+              model,
+              settings,
+              contents,
+              ...(signal ? { signal } : {}),
+              maxTokens: TOKENIZER_PRECHECK_RULE.maxTokens,
+              config: config.verifier,
+              catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
+              buyerProxyPort: config.buyer.proxyPort,
+              requestLimiter: precheckReferenceLimiter,
+            }),
+            // The model's own reply to a capped request: the check applies only when it keeps the limit.
+            askReply: (settings) => async (prompt, cap, signal) => {
+              const replied = await askReferenceReplies({
+                model,
+                settings,
+                contents: [prompt],
+                ...(signal ? { signal } : {}),
+                maxTokens: cap,
+                config: config.verifier,
+                catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
+                buyerProxyPort: config.buyer.proxyPort,
+                requestLimiter: precheckReferenceLimiter,
+              })
+              const first = replied.results[0]
+              if (!first?.response) throw new Error(first?.failure ?? 'no answer')
+              return { requestBody: first.requestBody, response: first.response, provider: first.provider, oneProvider: replied.oneProvider }
+            },
+          })
+          // The echo check of this model's sellers (`createOutputEchoScreen`): its texts are written and measured on
+          // the reference once, and its crowd is every seller of the model the buyer would audit, as for the pre-check.
+          const outputEcho = config.verifier?.outputChecks === false ? null : createOutputEchoScreen<KbfReferenceV1>({
+            onReady: (record) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, 'output-echo', record),
+            sellers: tokenizerPrecheckSellers(laneProxy.peers, verifierModelServices(config.verifier, model), targetPolicyFor(model)),
+            proxyBaseUrl: laneProxy.baseUrl,
+            responseAuthReader: responseAuthReader!,
+            limiter: batchLimiter,
+            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
+            ask: (settings) => async (texts, signal) => askReferenceReplies({
+              model,
+              settings,
+              contents: texts.map(outputEchoPrompt),
+              ...(signal ? { signal } : {}),
+              maxTokens: OUTPUT_ECHO_RULE.maxTokens,
+              config: config.verifier,
+              catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
+              buyerProxyPort: config.buyer.proxyPort,
+              requestLimiter: precheckReferenceLimiter,
+            }),
+          })
+          // The randomness check of this model's sellers (`createFlipsScreen`): its reference is asked once per stage
+          // and run, on a plain route with the sellers' own body; its pairs come from this model audit's seed.
+          const flipsUnavailable = flipsOn ? flipsStatusRecorder(
+            join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'flips-status.json'),
+            model,
+            { ...(flipsProbe && !flipsCounts(model, FLIPS_RULE) ? { probe: flipsProbe } : {}), ...(flipsKeyFailed ? { keyFailed: flipsKeyFailed } : {}) },
+            (line) => runProgress ? runProgress.above(() => console.warn(chalk.yellow(line))) : console.warn(chalk.yellow(line)),
+          ) : null
+          // A probe is a dry-run diagnostic: where FLIPS counts for this model it is refused, never run.
+          const modelProbe = flipsProbe && flipsCounts(model, FLIPS_RULE) ? null : flipsProbe
+          if (flipsProbe && !modelProbe) console.warn(chalk.yellow(`FLIPS: probe refused for ${model}: FLIPS counts for it`))
+          const flips = flipsMaster === null ? null : createFlipsScreen<KbfReferenceV1>({
+            model,
+            auditor: flipsAuditor,
+            epoch,
+            seedFor: (stage) => flipsSeed(flipsMaster, { model, epoch, runId: flipsRunId, stage }),
+            ...(modelProbe ? { probe: modelProbe } : {}),
+            onReady: (reference) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, `flips-${reference.stage}`, reference),
+            ...(flipsUnavailable ? { onUnavailable: flipsUnavailable } : {}),
+            proxyBaseUrl: laneProxy.baseUrl,
+            responseAuthReader: responseAuthReader!,
+            limiter: flipsSellerLimiter,
+            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
+            // Only a route proven to serve one provider (a pinned peer, or OpenRouter pinned to one) vouches for unnamed answers.
+            ask: (settings) => async (bodies, signal) => {
+              const asked = await askReferenceReplies({
+                model,
+                settings,
+                contents: [],
+                bodies,
+                plainRoute: true,
+                signal,
+                maxTokens: 0,
+                config: config.verifier,
+                catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
+                buyerProxyPort: config.buyer.proxyPort,
+                requestLimiter: flipsReferenceLimiter,
+              })
+              return { ...asked, oneProvider: asked.provenOneProvider }
+            },
+          })
           // First audits and extra sets share timeouts and concurrency; only where evidence goes differs.
           const verificationContext = (peer: PeerInfo, auditEvidenceDir: string): ProxyVerificationContext => ({
             proxy: laneProxy,
@@ -1478,6 +1956,10 @@ export async function runVerifierRound(
             batchConcurrencyPromotionLatencyMs: config.verifier?.auditConcurrencyPromotionLatencyMs ?? 30_000,
             batchLimiter,
             sellerThinking,
+            ...(tokenizerPrecheck ? { tokenizerPrecheck } : {}),
+            ...(outputCap ? { outputCap } : {}),
+            ...(outputEcho ? { outputEcho } : {}),
+            ...(flips ? { flips } : {}),
           })
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
             if (await stopIfAuditorRemoved()) {
@@ -1510,22 +1992,50 @@ export async function runVerifierRound(
               if (!runProgress!.interactive) {
                 console.log(chalk.dim(`Verifying ${model} on ${target.peer.peerId.slice(0, 12)}… (${target.service})`))
               }
+              // A confirmation of a waiting DIFF runs the check that flagged it to its end.
+              const confirming = confirmationFor(model, target.peer)
+              const confirmingChecks = confirming?.firstChecks && normalized(confirming.service) === normalized(target.service)
+                ? confirming.firstChecks
+                : null
+              // The report this audit confirms: the live one, or, where none waits for it now (--resume-run reads no
+              // waiting reports), the one its earlier attempt confirmed, so its stage and its material stay that report's.
+              const confirmingIdentity: ConfirmationIdentity | null = confirmingChecks
+                ? { checks: confirmingChecks, ...(confirming?.firstReportedAt !== undefined ? { reportedAt: confirming.firstReportedAt } : {}) }
+                : target.resumeCandidate?.confirming ?? null
               try {
                 let reservationAuditId: string
                 let reference
                 let auditId: string
                 let resume: ModelVerificationResumeInput | undefined
-                const loaded = target.resumeCandidate ? await loadModelAuditReservation({
+                // Seconds, as submit reads them; with no report time nothing is fresh.
+                const freshForReport = (at: number | null): boolean => (
+                  confirmingIdentity?.reportedAt !== undefined && isFreshConfirmation(at, confirmingIdentity.reportedAt)
+                )
+                // Into a confirmation only material of an earlier confirmation of the same report and tests, fresh for
+                // it: its test records and its question batches alike (`resumeMaterialFor`).
+                const carriedFor = (records: StoredCheckRecords, source: ConfirmationIdentity | null | undefined): StoredCheckRecords => (
+                  resumeMaterialFor({ exchanges: [], records, confirming: source ?? null }, confirmingIdentity, freshForReport).records
+                )
+                // A confirmation resumes an earlier attempt only when that attempt confirmed this same report. Otherwise
+                // the earlier attempt (another report's, or a first look's) is closed: a new audit with a new reservation,
+                // none of its answers reused. A reservation is an entry on the epoch's one shared set, so the seller is
+                // asked the same questions again in full; a disjoint set would need newly calibrated questions.
+                const resumable = target.resumeCandidate && (!confirmingIdentity
+                  || (target.resumeCandidate.confirming !== undefined && sameConfirmation(target.resumeCandidate.confirming, confirmingIdentity)))
+                  ? target.resumeCandidate
+                  : undefined
+                const closedAttempt = target.resumeCandidate && !resumable ? target.resumeCandidate : undefined
+                const loaded = resumable ? await loadModelAuditReservation({
                   banksDir,
                   model,
                   sellerPeerId: target.peer.peerId,
-                  auditId: target.resumeCandidate.reservationAuditId,
+                  auditId: resumable.reservationAuditId,
                   config: config.verifier,
                 }) : null
                 // A submit may have published its set since the plan: then a new audit on the current set,
                 // without the answers already given, so no question of a public set is asked.
-                if (target.resumeCandidate && loaded?.retired) await voidRetiredReservation(banksDir, target.resumeCandidate)
-                if (target.resumeCandidate && loaded && !loaded.retired) {
+                if (resumable && loaded?.retired) await voidRetiredReservation(banksDir, resumable)
+                if (resumable && target.resumeCandidate && loaded && !loaded.retired) {
                   validateResumeCandidate(target.resumeCandidate, loaded.reference, target.service, epoch)
                   reservationAuditId = target.resumeCandidate.reservationAuditId
                   reference = loaded.reference
@@ -1535,11 +2045,13 @@ export async function runVerifierRound(
                     parentAuditId: target.resumeCandidate.auditId,
                     startedAt,
                   })
+                  const material = resumeMaterialFor(target.resumeCandidate, confirmingIdentity, freshForReport)
                   resume = {
                     parentAuditId: target.resumeCandidate.auditId,
                     reservationAuditId: target.resumeCandidate.reservationAuditId,
                     parentEvidenceHash: target.resumeCandidate.evidenceHash,
-                    exchanges: target.resumeCandidate.exchanges,
+                    exchanges: material.exchanges,
+                    records: material.records,
                   }
                 } else {
                   const reserved = await reserveModelAuditReference({
@@ -1554,6 +2066,14 @@ export async function runVerifierRound(
                   reservationAuditId = reserved.auditId
                   reference = reserved.reference
                   auditId = reserved.auditId
+                  // The closed attempt's reservation is voided only once its replacement is reserved: a failed
+                  // replacement leaves the earlier attempt usable.
+                  if (closedAttempt) {
+                    await voidModelAuditReference({
+                      banksDir, model, sellerPeerId: target.peer.peerId, auditId: closedAttempt.reservationAuditId,
+                      reason: OTHER_REPORT_VOID_REASON,
+                    })
+                  }
                 }
                 referenceSources.set(reference.referenceId, reference)
                 const verified = await verifyModelTarget({
@@ -1564,10 +2084,20 @@ export async function runVerifierRound(
                   auditId,
                   resume,
                   checkpointIdentity: { runId, epoch, model },
+                  ...(confirmingIdentity ? { confirming: confirmingIdentity } : {}),
+                  ...(target.lastAuditorAttempt ? { lastAuditorAttempt: true } : {}),
+                  // A fresh audit (no resume) carries the settled tests of the attempt it retries.
+                  ...(!resume && target.carriedTests
+                    ? { carried: carriedFor(target.carriedTests.records, target.carriedTests.confirming) }
+                    : !resume && target.resumeCandidate?.records
+                      ? { carried: carriedFor(target.resumeCandidate.records, target.resumeCandidate.confirming) }
+                      : {}),
                 })
-                // New first audits are decided by the close-call rule unless it is turned off.
+                // New first audits are decided by the close-call rule unless it is turned off; every audit asks its
+                // questions, so the rule always applies. The audit's verdict is settled again with it: a close call
+                // of a confirmation that repeats the questions waits for its extra set.
                 const result = verified.status !== 'SKIPPED' && closeCallRule
-                  ? { ...verified, decisionRule: closeCallRule.id }
+                  ? settleAuditVerdict({ ...verified, decisionRule: closeCallRule.id })
                   : verified
                 if (result.status === 'SKIPPED') {
                   await voidModelAuditReference({
@@ -1582,7 +2112,10 @@ export async function runVerifierRound(
                     auditId: result.auditId, code: result.code, reason: result.reason,
                     outcomeReason: result.outcomeReason, source: result.source,
                     evidencePath: result.evidencePath, at: new Date().toISOString(),
+                    ...(result.cost ? { cost: result.cost } : {}),
                   })
+                  // A pre-check that ran before the seller was skipped was paid for.
+                  if (result.cost) await updateStatus((value) => { value.cost = addAuditCostSummaries(value.cost, result.cost!) })
                   await updateStatus((value) => { value.skipped += 1 })
                   await updateStatus((value) => incrementReasonCount(value.reasonCounts, result.outcomeReason))
                   runProgress!.recordSkip(model, result.outcomeReason)
@@ -1591,10 +2124,17 @@ export async function runVerifierRound(
                   }
                   return { result: null, failure: null, skipped: result }
                 }
+                // The one shared decision, never the stored status: a close call waiting for its extra set is PENDING.
+                const decision = auditDecision(result)
+                const shownVerdict = decision.pending ? 'PENDING' : decision.audit.verdict
                 await appendEvent({
                   type: 'audit-completed', runId, epoch, model, peerId: result.peerId,
-                  auditId: result.auditId, verdict: result.status, cost: result.cost,
+                  auditId: result.auditId, verdict: shownVerdict, cost: result.cost,
                   outcomeReason: result.outcomeReason,
+                  // Every test that flagged, and the questions' own verdict and reason, apart from the audit's.
+                  flaggedBy: shownVerdict === 'DIFF' ? flaggedSummaryChecks(result) : [],
+                  questionsVerdict: decision.questionsStatus,
+                  questionsOutcomeReason: result.questionsOutcomeReason ?? null,
                   at: new Date().toISOString(),
                 })
                 await updateStatus((value) => {
@@ -1602,13 +2142,20 @@ export async function runVerifierRound(
                   value.cost = addAuditCostSummaries(value.cost, result.cost)
                   incrementReasonCount(value.reasonCounts, result.outcomeReason)
                 })
-                runProgress!.recordVerdict(model, result.status, result.outcomeReason)
+                runProgress!.recordVerdict(model, decision.audit.verdict, result.outcomeReason)
                 if (!runProgress!.interactive) {
-                  console.log(chalk.green(
-                    `${result.status} ${target.peer.peerId.slice(0, 12)}… `
-                    + `(${result.parsedProbeCount}/${result.probeCount} scoreable, `
-                    + `$${result.cost.estimatedCostUsd.toFixed(6)})`,
-                  ))
+                  // Every test that flagged, each with what it saw, then the questions' own verdict and reason, in one bracket.
+                  const flagged = shownVerdict === 'DIFF' ? flaggedSummaryChecks(result) : []
+                  const questionsReason = result.questionsOutcomeReason?.code
+                  const parts = [
+                    ...(flagged.length > 0 ? [`flagged by ${flagged.map(describeAuditCheck).join(', ')}`] : []),
+                    ...(result.tokenizerPrecheck?.outcome === 'mismatch' ? [`tokenizer pre-check: ${describeTokenizerCounts(result.tokenizerPrecheck)}`] : []),
+                    ...(result.outputCap?.outcome === 'flag' ? [`cap check: ${describeOutputCapSummary(result.outputCap)}`] : []),
+                    ...(result.outputEcho?.outcome === 'flag' ? [`echo check: ${result.outputEcho.reason}`] : []),
+                    `questions ${decision.questionsStatus}${questionsReason ? ` (${questionsReason})` : ''}, ${result.parsedProbeCount}/${result.probeCount} scoreable`,
+                    `$${result.cost.estimatedCostUsd.toFixed(6)}`,
+                  ]
+                  console.log(chalk.green(`${shownVerdict} ${target.peer.peerId.slice(0, 12)}… (${parts.join('; ')})`))
                 }
                 return { result, failure: null, skipped: null }
               } catch (error) {
@@ -1621,6 +2168,8 @@ export async function runVerifierRound(
                   status: 'FAILED',
                   reason,
                   outcomeReason,
+                  // A failed confirmation is an attempt on the report it was for.
+                  ...(confirmingIdentity ? { confirming: [...confirmingIdentity.checks], ...(confirmingIdentity.reportedAt !== undefined ? { confirmingReportedAt: confirmingIdentity.reportedAt } : {}) } : {}),
                 }
                 runProgress!.recordFailure(model, outcomeReason)
                 if (!runProgress!.interactive) {
@@ -1726,7 +2275,7 @@ export async function runVerifierRound(
                 firstAuditId: result.auditId, extensionAuditId: latest.auditId,
                 extensionAuditIds: extensionSets(result).map((set) => set.auditId),
                 firstPValue: latest.firstLook.pValue, pooledPValue: latest.pooled.pValueBinomial,
-                verdict: latest.pooled.extendNext ? 'PENDING' : result.status, at: new Date().toISOString(),
+                verdict: auditDecision(result).pending ? 'PENDING' : auditDecision(result).audit.verdict, at: new Date().toISOString(),
               })
             }
           }
@@ -2021,6 +2570,8 @@ export async function runVerifierRound(
             completedAt,
             summaryPath: epochSummaryPath,
             selection: selectedPeerId ? { peerIds: [selectedPeerId] } : undefined,
+            ...(resumeSourceRunId !== null ? { repairOf: resumeSourceRunId } : {}),
+            ...(confirmationOnly.size > 0 ? { confirmationOnly: [...confirmationOnly.keys()] } : {}),
             modelOrder: models.map((entry) => entry.model),
             models,
             failureCount: status!.failures,
@@ -2121,7 +2672,7 @@ export async function runVerifierRound(
         console.log(chalk.dim(`Estimated audit cost: $${status.cost.estimatedCostUsd.toFixed(6)}`))
         const finalState = await loadEpochState(evidenceDir, epoch)
         printEpochTable(epoch, finalState, models)
-        for (const window of await closeFinishedAuditWindows({
+        for (const window of await closeFinishedWindowsRecovering({
           evidenceDir, epoch, state: finalState, secondsLeftInEpoch: epochWindow.endsAt - await clock(),
         })) {
           console.log(chalk.green(`${window.model}: audit window closed (${window.closeReason}); \`antseed verifier submit\` sends its results`))
@@ -2192,8 +2743,11 @@ export async function updateRetryGiveUps(input: {
     .filter((window) => window.state === 'closed')
     .map((window) => normalized(window.model)))
   const peers = new Map(input.peers.map((peer) => [peer.peerId.toLowerCase(), peer]))
+  // First looks still to be recovered are given up like retries when their seller is gone (`recoveringFirstLooks`).
+  const recovering = new Set((await recoveringFirstLooks(state)).keys())
   const { entries, added, restored } = decideRetryGiveUps({
     cells: state.cells.values(),
+    recovering: (cell) => recovering.has(epochCellKey(cell.model, cell.peerId)),
     nowSeconds: nowMs / 1_000,
     windowClosed: (cell) => closedModels.has(normalized(cell.model)),
     offersModel: peersFresh ? (cell) => {
@@ -2366,7 +2920,8 @@ export async function loadResumeCandidates(
       throw new Error(`resume model summary is incompatible: ${model.summaryPath}`)
     }
     for (const result of summary.results) {
-      if (result.status !== 'UNDETERMINED' || result.extension) continue
+      // The one shared decision, never the stored status.
+      if (auditDecision(result).pending || auditDecision(result).audit.verdict !== 'UNDETERMINED' || result.extension) continue
       const evidence = await verifyProxyAuditEvidenceFile(result.evidencePath, result.evidenceHash)
       candidates.set(resumeKey(model.model, result.peerId), {
         model: model.model,
@@ -2382,6 +2937,8 @@ export async function loadResumeCandidates(
         queryProfileHash: evidence.reference.queryProfileHash,
         probeIds: evidence.reference.probes.map((probe) => probe.id),
         exchanges: evidence.exchanges,
+        records: sameAuditTarget(evidence, result) ? decidedRecords(evidenceRecords(evidence)) : {},
+        ...(evidence.confirming ? { confirming: evidence.confirming } : {}),
       })
     }
   }
@@ -2392,14 +2949,71 @@ export async function loadResumeCandidates(
  * UNDETERMINED audits from this epoch that the plan retries: the retry keeps the exchanges that
  * already succeeded and only asks the rest again, on the same probes.
  */
+/** The settled tests a fresh audit of a seller carries, and the service they were asked as. */
+export interface CarriedTests {
+  service: string
+  records: StoredCheckRecords
+  /** The report the attempt they come from confirmed; null for a first look. */
+  confirming: ConfirmationIdentity | null
+}
+
+/**
+ * The settled tests of this epoch's retried audits whose questions are not resumed (a close call with an extra set):
+ * only the tests that decided (`decidedRecords`), for a fresh audit to carry.
+ */
+export async function loadEpochCarriedTests(state: EpochState, models: string[]): Promise<Map<string, CarriedTests>> {
+  const cells = state.reportCells || state.ordinaryCells ? [...state.ordinaryCells?.values() ?? [], ...state.reportCells?.values() ?? []] : [...state.cells.values()]
+  return carriedTestsOf(cells
+    .filter((cell) => cell.action === 'retry' && cell.result)
+    .map((cell) => ({ model: cell.model, result: cell.result! })), models)
+}
+
+/** The same for `--resume-run`: its rows with an extra set, whose questions are not resumed either. */
+export async function loadManifestCarriedTests(manifest: VerifierRunManifestV1, models: string[]): Promise<Map<string, CarriedTests>> {
+  const rows: Array<{ model: string; result: ModelVerificationTargetResult }> = []
+  for (const model of manifest.models) {
+    const summary = JSON.parse(await readFile(model.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    for (const result of summary.results) rows.push({ model: model.model, result })
+  }
+  return carriedTestsOf(rows, models)
+}
+
+async function carriedTestsOf(
+  rows: ReadonlyArray<{ model: string; result: ModelVerificationTargetResult }>,
+  models: string[],
+): Promise<Map<string, CarriedTests>> {
+  const requested = new Set(models.map((model) => model.toLowerCase()))
+  const carried = new Map<string, CarriedTests>()
+  for (const { model: rowModel, result } of rows) {
+    if (auditDecision(result).pending || auditDecision(result).audit.verdict !== 'UNDETERMINED' || !result.extension) continue
+    if (!requested.has(rowModel.toLowerCase())) continue
+    const model = models.find((value) => value.toLowerCase() === rowModel.toLowerCase())!
+    try {
+      const evidence = await verifyProxyAuditEvidenceFile(result.evidencePath, result.evidenceHash)
+      // The seller and the service are the evidence's own, not only the summary's.
+      if (!sameAuditTarget(evidence, result)) continue
+      const records = decidedRecords(evidenceRecords(evidence))
+      if (Object.keys(records).length > 0) {
+        const confirming = evidence.confirming ?? summaryConfirming(result)
+        carried.set(materialKey(model, result.peerId, result.service, confirming), { service: result.service, records, confirming: confirming ?? null })
+      }
+    } catch {
+      continue
+    }
+  }
+  return carried
+}
+
 export async function loadEpochRetryCandidates(
   state: EpochState,
   models: string[],
 ): Promise<Map<string, ResumeCandidate>> {
   const requested = new Set(models.map((model) => model.toLowerCase()))
   const candidates = new Map<string, ResumeCandidate>()
-  for (const cell of state.cells.values()) {
-    if (cell.action !== 'retry' || !cell.result || cell.result.status !== 'UNDETERMINED'
+  // Each report's cell and the first looks' apart: a retry resumes the attempt of the report it is for.
+  const cells = state.reportCells || state.ordinaryCells ? [...state.ordinaryCells?.values() ?? [], ...state.reportCells?.values() ?? []] : [...state.cells.values()]
+  for (const cell of cells) {
+    if (cell.action !== 'retry' || !cell.result || auditDecision(cell.result).pending || auditDecision(cell.result).audit.verdict !== 'UNDETERMINED'
       || cell.result.extension) continue
     if (!requested.has(cell.model.toLowerCase())) continue
     const model = models.find((value) => value.toLowerCase() === cell.model.toLowerCase())!
@@ -2410,7 +3024,8 @@ export async function loadEpochRetryCandidates(
     } catch {
       continue
     }
-    candidates.set(resumeKey(model, result.peerId), {
+    const confirming = evidence.confirming ?? summaryConfirming(result)
+    candidates.set(materialKey(model, result.peerId, result.service, confirming), {
       model,
       peerId: result.peerId,
       service: result.service,
@@ -2422,6 +3037,8 @@ export async function loadEpochRetryCandidates(
       queryProfileHash: evidence.reference.queryProfileHash,
       probeIds: evidence.reference.probes.map((probe) => probe.id),
       exchanges: evidence.exchanges,
+      records: sameAuditTarget(evidence, result) ? decidedRecords(evidenceRecords(evidence)) : {},
+      ...(confirming ? { confirming } : {}),
     })
   }
   return candidates
@@ -2450,6 +3067,8 @@ export function printEpochPlan(
   state: EpochState,
   planned: ReadonlyArray<{ model: string; targets: ReadonlyArray<{ peer: { peerId: string }; pendingExtension?: unknown; resumeCandidate?: unknown }>; skipped: readonly unknown[]; doneCount: number; held?: readonly unknown[] }>,
   resumeCandidates: ReadonlyMap<string, ResumeCandidate>,
+  /** The cell the planner used for a seller: the waiting report's own, or the first looks'. */
+  cellFor: (model: string, peer: { peerId: string }) => EpochCell | undefined = (model, peer) => state.cells.get(epochCellKey(model, peer.peerId)),
 ): void {
   const held = planned.reduce((total, model) => total + (model.held?.length ?? 0), 0)
   const heldNote = held > 0 ? `; ${held} held after a recent DIFF, not audited this epoch` : ''
@@ -2466,7 +3085,7 @@ export function printEpochPlan(
   for (const entry of planned) {
     done += entry.doneCount
     for (const target of entry.targets) {
-      const cell = state.cells.get(epochCellKey(entry.model, target.peer.peerId))
+      const cell = cellFor(entry.model, target.peer)
       if (target.pendingExtension) closeCalls += 1
       else if (!cell || cell.state === 'skipped') fresh += 1
       else if (cell.blame === 'auditor') retryAuditor += 1
@@ -2480,6 +3099,7 @@ export function printEpochPlan(
     + `${closeCalls} close call(s) to finish, ${fresh} new${heldNote}. Running ${audits} audit(s) and ${closeCalls} follow-up(s)`
     + (resumeCandidates.size > 0 ? `; ${resumeCandidates.size} retry(s) keep their answered questions.` : '.'),
   ))
+  console.log(chalk.dim('  Each seller is counted by the cell it is planned from: a waiting report\'s own attempts for a confirmation, its first looks otherwise.'))
   console.log(chalk.dim('  Use --fresh to ignore the earlier runs.'))
 }
 
@@ -2510,7 +3130,20 @@ export async function loadCheckpointResumeCandidates(
         || checkpoint.epoch !== epoch
         || checkpoint.model.toLowerCase() !== model.toLowerCase()
         || checkpoint.extension) continue
-      const evidenceHash = canonicalHashBytes32(checkpoint)
+      // A damaged diagnostic in the file (a number canonical JSON cannot hold) is dropped before hashing, never a
+      // stopped resume; a checkpoint that still cannot be hashed is not resumed.
+      let evidenceHash: string
+      let records = checkpoint.records
+      try {
+        evidenceHash = canonicalHashBytes32(checkpoint)
+      } catch {
+        records = withoutOrphans(checkpoint.records ?? {})
+        try {
+          evidenceHash = canonicalHashBytes32({ ...checkpoint, records })
+        } catch {
+          continue
+        }
+      }
       candidates.set(resumeKey(model, checkpoint.targetPeerId), {
         model,
         peerId: checkpoint.targetPeerId,
@@ -2525,6 +3158,8 @@ export async function loadCheckpointResumeCandidates(
         queryProfileHash: checkpoint.queryProfileHash,
         probeIds: checkpoint.probeIds,
         exchanges: checkpoint.exchanges,
+        records,
+        ...(checkpoint.confirming ? { confirming: checkpoint.confirming } : {}),
       })
     }
   }

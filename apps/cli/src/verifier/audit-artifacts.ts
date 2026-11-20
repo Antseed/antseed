@@ -1,3 +1,4 @@
+import { describeAuditCheck, flaggedSummaryChecks } from './flagging-checks.js'
 import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, sep } from 'node:path'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
@@ -11,6 +12,8 @@ import type {
 } from './model-run.js'
 import type { ModelProbeConsensusEvidenceV1 } from './model-consensus-evidence.js'
 import { safeServiceSlug } from './slug.js'
+import { describeTokenizerCounts } from './tokenizer-precheck.js'
+import { describeOutputCapSummary, type OutputCapSummary } from './output-cap.js'
 
 export interface VerifierStatusV1 {
   version: 1
@@ -69,6 +72,10 @@ export interface VerifierRunManifestV1 {
   selection?: {
     peerIds: string[]
   }
+  /** The run a `--resume-run` repairs: it audits only that run's undetermined sellers, so it is no full pass. */
+  repairOf?: string
+  /** Models this run audited only for the sellers awaiting a confirmation: no full pass of their other sellers. */
+  confirmationOnly?: string[]
   modelOrder: string[]
   models: EpochAuditSummaryV1['models']
   failureCount: number
@@ -122,6 +129,13 @@ interface SellerAuditReportResult {
     pooled: { pValueBinomial: number | null; verdict: string; extendNext?: boolean }
   }
   extensionPending?: { reason: string }
+  tokenizerPrecheck?: { rule: string; outcome: string; sellerTokens?: number[]; modelTokens?: number[] }
+  outputCap?: OutputCapSummary
+  outputEcho?: { rule: string; outcome: string; reason: string; growth?: string; fixedAmount?: string }
+  flips?: { outcome: string; model?: string; probe?: true }
+  /** The questions' own verdict and reason, apart from the audit's. */
+  questionsStatus?: string
+  questionsOutcomeReason?: VerificationOutcomeReasonV1 | null
 }
 
 interface SellerAuditReportFailure {
@@ -418,13 +432,36 @@ export async function renderModelAuditReports(
   })
 }
 
-/** A result's report reason: its close call (first look, each extra set, what it waits for) or its outcome reason. */
+/**
+ * A result's report reason. A DIFF names every test that flagged it, as the verdict reads them (`flaggedSummaryChecks`),
+ * then the questions' own result; otherwise the questions' close call (first look, each extra set, what it waits for)
+ * or the outcome reason.
+ */
 function sellerResultReason(
   result: SellerAuditReportResult,
 ): string {
+  const questions = questionsReportReason(result)
+  // Every test that flagged, the questions too when they did (named in the list, their own result after it).
+  const flagged = result.status === 'DIFF' ? flaggedSummaryChecks(result) : []
+  if (flagged.length === 0) return questions
+  const tests = flagged.map((check) => {
+    if (check === 'tokens' && result.tokenizerPrecheck) return `tokenizer pre-check (${result.tokenizerPrecheck.rule}): ${describeTokenizerCounts(result.tokenizerPrecheck)}`
+    if (check === 'output-cap' && result.outputCap) return `cap check (${result.outputCap.rule}): ${describeOutputCapSummary(result.outputCap)}: the reply limit was ignored`
+    if (check === 'output-echo' && result.outputEcho) return `echo check (${result.outputEcho.rule}): ${result.outputEcho.reason}`
+    return describeAuditCheck(check)
+  })
+  const asked = result.questionsStatus ?? (result.parsedProbeCount === 0 ? 'not asked' : result.status)
+  return [`flagged by ${tests.join('; and ')}`, `questions ${asked}${questions === '—' ? '' : `: ${questions}`}`].join('; ')
+}
+
+/**
+ * The questions' own part of a result's reason: its close call, or the questions' own outcome reason (never the
+ * audit's, which another test may have set).
+ */
+function questionsReportReason(result: SellerAuditReportResult): string {
   if (!result.extension) {
     if (result.extensionPending) return `close call waiting for extra questions: ${result.extensionPending.reason}`
-    return reportReason(result.outcomeReason)
+    return reportReason('questionsOutcomeReason' in result ? result.questionsOutcomeReason : result.outcomeReason)
   }
   const parts = [`close call (p=${result.extension.firstLook.pValue?.toFixed(3) ?? '?'})`]
   for (const [index, set] of [result.extension, result.extension2].entries()) {

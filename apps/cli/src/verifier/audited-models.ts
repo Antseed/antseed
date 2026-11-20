@@ -7,8 +7,8 @@ import { canonicalModelKey } from '@antseed/node/model-identity'
  * optional per-model settings in `verifier.models`.
  *
  * Only the newest version of each model line is audited: older versions that a newer audited
- * model replaces (Claude Sonnet 5, Opus 4.6 and Opus 5, GPT-5.6 Sol, Grok 4.5) are left out, and so
- * are Gemini 3 Flash Preview and DeepSeek V4 Pro 0813.
+ * model replaces (Claude Fable 5.1, Sonnet 5, Opus 4.6 and Opus 5, GPT-5.6 Sol, Grok 4.5) are left
+ * out, and so are Gemini 3 Flash Preview and DeepSeek V4 Pro 0813.
  *
  * The key is the service name sellers advertise and the probe-bank directory name
  * (`<dataDir>/verifier/banks/<key>`), so renaming a key orphans its bank.
@@ -42,10 +42,11 @@ const GOOGLE = ['google-ai-studio'] as const
 const OPENAI = ['openai'] as const
 
 export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.freeze({
-  'claude-fable-5.1': {
-    upstreamModel: 'anthropic/claude-fable-5.1',
+  // Fable 5.1 is not one of Fable 5.2's contrast models: it costs more than Fable 5.2, so no seller gains by serving it.
+  'claude-fable-5.2': {
+    upstreamModel: 'anthropic/claude-fable-5.2',
     referenceProvider: ANTHROPIC,
-    serviceAliases: ['claude-fable-5-1', 'fable-5.1', 'fable-5-1', 'anthropic/claude-fable-5.1'],
+    serviceAliases: ['claude-fable-5-2', 'fable-5.2', 'fable-5-2', 'anthropic/claude-fable-5.2'],
     contrastModels: ['anthropic/claude-sonnet-5.5', 'openai/gpt-6.1-sol', 'openai/gpt-6.1-terra'],
   },
   'claude-opus-5.5': {
@@ -78,11 +79,12 @@ export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.fre
     serviceAliases: ['openai/gpt-6-astra', 'openai-gpt-6-astra'],
     contrastModels: ['anthropic/claude-sonnet-5.5', 'openai/gpt-6.1-terra'],
   },
+  // GPT-6.1 Terra is the cheaper sibling a seller would serve as GPT-6.1 Sol.
   'gpt-6.1-sol': {
     upstreamModel: 'openai/gpt-6.1-sol',
     referenceProvider: OPENAI,
     serviceAliases: ['openai-gpt-61-sol', 'gpt-61-sol', 'openai/gpt-6.1-sol'],
-    contrastModels: ['anthropic/claude-haiku-5.5', 'xiaomi/mimo-v2.6-pro', 'z-ai/glm-5.3'],
+    contrastModels: ['anthropic/claude-haiku-5.5', 'z-ai/glm-5.3', 'openai/gpt-6.1-terra'],
   },
   'grok-4.7': {
     upstreamModel: 'x-ai/grok-4.7',
@@ -158,6 +160,12 @@ export function setAuditedModelsForTesting(models: Readonly<Record<string, Audit
  * exact name (any case) wins; otherwise the name is matched by canonical model key the way buyers
  * route, so `anthropic/claude-opus-5.5` or `claude-opus-5-5-latest` finds `claude-opus-5.5`.
  */
+/** The names an audited model is sold under: its key and its aliases; empty for a model not in the list. */
+export function auditedServiceNames(model: string): string[] {
+  const key = findAuditedModelKey(model)
+  return key ? [key, ...(auditedModels()[key]!.serviceAliases ?? [])] : []
+}
+
 export function findAuditedModelKey(service: string): string | undefined {
   const wanted = service.trim().toLowerCase()
   const entries = Object.entries(auditedModels())

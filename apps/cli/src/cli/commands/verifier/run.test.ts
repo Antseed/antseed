@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
@@ -28,6 +28,8 @@ import {
   validateAssignedModeOptions,
   confirmationPlanKey,
   unauditedConfirmations,
+  flipsMasterFor,
+  parseFlipsProbe,
   type ResumeCandidate,
 } from './run.js'
 
@@ -467,4 +469,83 @@ test('a confirmation the plan cannot audit is reported with its reason, not drop
     [777n, 'the buyer sees no peer for this seller agent now'],
     [42n, 'grok-4.7 is not audited in this run (see the warnings above)'],
   ])
+})
+
+test('a retry after an extra set carries the settled tests of its seller file, checked against the file itself', async () => {
+  const { writeSignedAuditRun, referenceFixture } = await import('../../../verifier/model-audit-fixtures.test-support.js')
+  const { loadEpochCarriedTests } = await import('./run.js')
+  const { Wallet } = await import('ethers')
+  const { readFile } = await import('node:fs/promises')
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-carried-tests-'))
+  try {
+    const evidenceDir = join(directory, 'evidence')
+    const seller = new Wallet(Wallet.createRandom().privateKey)
+    const capPass = { rule: { id: 'output-cap-v1' }, outcome: 'pass', reason: 'within', asks: [] } as never
+    const manifest = await writeSignedAuditRun({
+      evidenceDir, banksDir: join(directory, 'banks'), runId: 'run-1', epoch: '7', auditor: new Wallet(Wallet.createRandom().privateKey),
+      audits: [{ agentId: '1', seller, model: 'model-a', service: 'model-a', verdict: 'SAME', reference: referenceFixture('model-a', 20), outputCap: capPass }],
+    })
+    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    // As a run writes an undecided close call after its extra set: the questions' own verdict and the pooled look say so.
+    const result = {
+      ...summary.results[0]!, status: 'UNDETERMINED' as const, questionsStatus: 'UNDETERMINED' as const,
+      extension: { rule: 'kbf-extension-v2', pooled: { verdict: 'UNDETERMINED' } } as never,
+    }
+    const cell = (row: typeof result) => ({ action: 'retry', model: 'model-a', result: row })
+    const state = (row: typeof result) => ({ cells: new Map([['k', cell(row)]]) }) as never
+    const carried = await loadEpochCarriedTests(state(result), ['model-a'])
+    const entry = [...carried.values()][0]!
+    assert.deepEqual(Object.keys(entry.records), ['outputCap'])
+    assert.deepEqual([entry.service, entry.confirming], ['model-a', null])
+    // A summary row that names another service than its own file carries nothing.
+    assert.equal((await loadEpochCarriedTests(state({ ...result, service: 'model-b' }), ['model-a'])).size, 0)
+    // Without an extra set the row is a resume candidate instead, not a carry.
+    const { extension: _extension, ...firstLook } = result
+    assert.equal((await loadEpochCarriedTests(state(firstLook as typeof result), ['model-a'])).size, 0)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('the FLIPS key is made once, atomically, readable by its owner only; a key others can read is refused', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-flips-key-'))
+  try {
+    const keys = await Promise.all(Array.from({ length: 6 }, () => flipsMasterFor(dir, '7')))
+    assert.equal(new Set(keys).size, 1, 'concurrent runs share one key')
+    assert.match(keys[0]!, /^[0-9a-f]{64}$/)
+    assert.equal(await flipsMasterFor(dir, '7'), keys[0])
+    const keyAt = await findKey(dir)
+    const path = join(dir, ...keyAt)
+    const files = await readdir(dirname(path))
+    assert.equal(files.filter((name) => name.endsWith('.tmp')).length, 0, 'no partial file is left')
+    await chmod(path, 0o644)
+    await assert.rejects(flipsMasterFor(dir, '7'), /flips-master\.key is readable by others .*chmod 600/)
+    await chmod(path, 0o600)
+    await writeFile(path, '')
+    await assert.rejects(flipsMasterFor(dir, '7'), /flips-master\.key is unreadable: rename it/, 'an empty key is never taken for a new one')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+async function findKey(root: string, at: string[] = []): Promise<string[]> {
+  for (const entry of await readdir(join(root, ...at), { withFileTypes: true })) {
+    if (entry.isFile() && entry.name === 'flips-master.key') return [...at, entry.name]
+    if (entry.isDirectory()) {
+      const found = await findKey(root, [...at, entry.name]).catch(() => [])
+      if (found.length) return found
+    }
+  }
+  return []
+}
+
+test('a FLIPS probe value that cannot be read is no probe, with the reason, and never stops the run', () => {
+  assert.deepEqual(parseFlipsProbe(undefined), { probe: null, problem: null })
+  assert.match(parseFlipsProbe('{nope').problem!, /not JSON/)
+  assert.match(parseFlipsProbe('[]').problem!, /not an object/)
+  assert.match(parseFlipsProbe('{"pairs":[["amber","amber"],["dune","ember"]]}').problem!, /pairs must be/)
+  assert.match(parseFlipsProbe('{"stage":"third"}').problem!, /stage must be/)
+  assert.match(parseFlipsProbe('{"pairs":[[{"toString":null},"basin"],["dune","ember"]]}').problem!, /pairs must be/, 'a word is a string, never an object')
+  assert.deepEqual(parseFlipsProbe('{"stage":"confirm","followUpFirstFlags":true}'), { probe: { stage: 'confirm', followUpFirstFlags: true }, problem: null })
+  assert.deepEqual(parseFlipsProbe('{"pairs":[["amber","basin"],["dune","ember"]]}').probe, { pairs: [['amber', 'basin'], ['dune', 'ember']] })
 })

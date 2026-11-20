@@ -3,6 +3,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
+  KBF_COVERAGE_RULE,
   KBF_LOW_COVERAGE_RETRIES,
   KBF_PROMPT_VARIANT_IDS,
   KBF_OPTIONAL_SAMPLING_FIELDS,
@@ -19,6 +20,8 @@ import {
   isKbfTokenLimitFinishReason,
   kbfResponseFinishReason,
   reportedReasoningTokens,
+  billedOutputTokensOf,
+  reasoningShownInReply,
   stripKbfThinkBlocks,
   verifyKbf,
   type FingerprintStats,
@@ -34,7 +37,10 @@ import {
   type TokenPricingUsdPerMillion,
 } from '@antseed/node'
 import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
-import { auditedModels, findAuditedModelKey } from './audited-models.js'
+import { auditedServiceNames } from './audited-models.js'
+import { ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from './audit-checks.js'
+import { settleAuditVerdict } from './close-call.js'
+import { FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE, flipsCost, flipsRequestCount, isFlipsRecord, isProbeDraw, summarizeFlips, type FlipsScreen, type FlipsSummary, type FlipsV1 } from './flips.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { kbfAuditBatches } from './kbf-batching.js'
@@ -62,6 +68,32 @@ import {
   type ThinkingDiscoveryProbe,
 } from './thinking-suppression.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
+import {
+  tokenizerPrecheckCost,
+  tokenizerPrecheckRequestCount,
+  summarizeTokenizerPrecheck,
+  type TokenizerPrecheckScreen,
+  type TokenizerPrecheckSummary,
+  type TokenizerPrecheckSeller,
+  type TokenizerPrecheckV1,
+} from './tokenizer-precheck.js'
+import type { AuditCheckId } from './flagging-checks.js'
+import {
+  outputEchoCost,
+  outputEchoRequestCount,
+  summarizeOutputEcho,
+  type OutputEchoScreen,
+  type OutputEchoSummary,
+  type OutputEchoV1,
+} from './output-echo.js'
+import {
+  outputCapCost,
+  outputCapRequestCount,
+  summarizeOutputCap,
+  type OutputCapScreen,
+  type OutputCapSummary,
+  type OutputCapV1,
+} from './output-cap.js'
 import { advertisedServices, findAdvertisedService } from './service-discovery.js'
 import { mapWithAdaptiveConcurrency, type AuditTaskLimiter } from './audit-concurrency.js'
 import { writeJsonAtomic } from './atomic-files.js'
@@ -115,6 +147,7 @@ class LazyAuditDeadline {
   private inFlight = 0
   private idleLeftMs: number
   private idleRunningSince = 0
+  private maxStartedAt = 0
 
   constructor(readonly idleMs: number, readonly maxMs: number) {
     this.idleLeftMs = idleMs
@@ -123,7 +156,10 @@ class LazyAuditDeadline {
   /** A batch request goes out to the seller: the idle clock runs while any request is out. */
   start(): AbortSignal {
     if (this.controller.signal.aborted) return this.controller.signal
-    if (!this.maxTimer) this.maxTimer = setTimeout(() => this.abort('max'), this.maxMs)
+    if (!this.maxTimer) {
+      this.maxStartedAt = Date.now()
+      this.maxTimer = setTimeout(() => this.abort('max'), this.maxMs)
+    }
     this.inFlight += 1
     if (this.inFlight === 1) this.runIdle(this.idleLeftMs)
     return this.controller.signal
@@ -143,6 +179,15 @@ class LazyAuditDeadline {
       clearTimeout(this.idleTimer)
       this.idleTimer = null
     }
+  }
+
+  /**
+   * A signal for optional work (the echo check's fixed amount alone): it fires with the audit's, or once only
+   * `reserveMs` of the audit's total time is left, so that the questions keep it.
+   */
+  spare(reserveMs: number): AbortSignal {
+    const left = this.maxTimer ? this.maxMs - (Date.now() - this.maxStartedAt) : this.maxMs
+    return AbortSignal.any([this.controller.signal, AbortSignal.timeout(Math.max(0, left - reserveMs))])
   }
 
   /** Why the audit stopped, for its outcome reason. */
@@ -211,6 +256,25 @@ export interface ProxyVerificationContext {
    * extra sets reuse its discovery. Without it, sellers get the reference's suppression.
    */
   sellerThinking?: Map<string, Promise<SellerThinkingDiscoveryV1>>
+  /**
+   * When set, each first audit starts with the tokenizer pre-check (`tokenizer-precheck.ts`): a seller whose
+   * signed input tokens are not the model's in every round is DIFF and is asked no question. The audited model's
+   * screen for this run (`createTokenizerPrecheckScreen`): its reference is awaited before the seller's clock
+   * starts, and the seller's clock runs only while a pre-check request to it is out.
+   */
+  tokenizerPrecheck?: Pick<TokenizerPrecheckScreen<KbfReferenceV1>, 'ready' | 'check'>
+  /**
+   * When set, each first audit runs the cap check after thinking discovery (`output-cap.ts`): a seller whose
+   * delivered answer measures more than twice the reply limit, twice, is DIFF and is asked no question.
+   */
+  outputCap?: Pick<OutputCapScreen<KbfReferenceV1>, 'ready' | 'check'>
+  /**
+   * When set, each first audit runs the echo check after the cap check (`output-echo.ts`): a seller that bills
+   * output the model did not write, held against the model's other sellers, is DIFF and is asked no question.
+   */
+  outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
+  /** The randomness check of this model's sellers (`flips.ts`); absent when it does not run. */
+  flips?: Pick<FlipsScreen<KbfReferenceV1>, 'check'> & Partial<Pick<FlipsScreen<KbfReferenceV1>, 'probing' | 'probeSettings' | 'warm' | 'ruleId' | 'referenceDecision'>>
 }
 
 /** What a seller's batch requests carry: its thinking suppression, token budget and timeout. */
@@ -235,16 +299,25 @@ export interface ModelVerificationResumeInput {
   reservationAuditId: string
   parentEvidenceHash: string
   exchanges: ProxyAuditEvidenceExchangeV1[]
+  /** The test records an earlier attempt of this audit finished: they are carried, never asked again. */
+  records?: StoredCheckRecords
 }
 
+/**
+ * A running audit's state on disk, so an interrupted audit resumes without asking anything twice. Version 2 also
+ * holds the finished test records; a version 1 checkpoint (written before every test ran in one audit) is not
+ * resumed: its audit restarts clean.
+ */
 export interface ModelAuditCheckpointV1 {
-  version: 1
+  version: 2
   kind: 'antseed-verifier-audit-checkpoint'
   auditId: string
   parentAuditId: string | null
   reservationAuditId?: string
   /** Set on checkpoints of a close-call extension set, which a resume never repairs as a first check. */
   extension?: true
+  /** The report a confirmation answers: a resume keeps to it. */
+  confirming?: ConfirmationIdentity
   runId: string
   epoch: string
   model: string
@@ -254,6 +327,8 @@ export interface ModelAuditCheckpointV1 {
   queryProfileHash: string
   probeIds: string[]
   exchanges: ProxyAuditEvidenceExchangeV1[]
+  /** The tests this audit finished so far. */
+  records: StoredCheckRecords
   updatedAt: string
 }
 
@@ -264,6 +339,35 @@ export interface ModelVerificationTargetResult {
   service: string
   status: 'SAME' | 'DIFF' | 'UNDETERMINED'
   outcomeReason?: VerificationOutcomeReasonV1 | null
+  /**
+   * Unix seconds of the earliest request of this set on the auditor's own clock (`earliestAuditorTime`); null when none
+   * has a time. The planner reads it for "fresh"; absent on summaries written before it, which are never fresh.
+   */
+  firstRequestAt?: number | null
+  /**
+   * The questions' own verdict, after any close call (`extension-round.ts`). `status` is the audit's verdict over
+   * every test (`settleAuditVerdict`): DIFF when any test flagged, whatever the questions said.
+   */
+  questionsStatus?: 'SAME' | 'DIFF' | 'UNDETERMINED'
+  /** The questions' own outcome reason; `outcomeReason` is the audit's (an undecided confirmation's, for one). */
+  questionsOutcomeReason?: VerificationOutcomeReasonV1 | null
+  /** The tests this audit repeats for another auditor's waiting DIFF (`confirming`); absent on a first look. */
+  confirming?: AuditCheckId[]
+  /** The chain time of the report it confirms: with `confirming`, which report this is. */
+  confirmingReportedAt?: number
+  /**
+   * Set by the epoch submission on another report's own result it offers beside the seller's latest: submit sends it
+   * only when the confirmation decision sends it for the report waiting now.
+   */
+  offeredAsAlternate?: true
+  /** An undecided confirmation's cause when it was the auditor's own (`outcomeReason` says `confirmation_undecided`). */
+  undecidedCause?: VerificationOutcomeReasonV1 | null
+  /**
+   * A close call whose extra set will not be asked: in the run, beside a flag of another test (a flagged result never
+   * waits across runs); at submit, when its window closed or its extra questions were published. Its questions are
+   * undecided, and the closure is published (`questionsClosed`).
+   */
+  closeCallClosed?: { reason: string }
   /**
    * This audit answered another auditor's DIFF on this service waiting for this auditor's
    * confirmation. An UNDETERMINED from a seller failure is then audited again before it is
@@ -287,10 +391,26 @@ export interface ModelVerificationTargetResult {
    * `verifier.closeCallExtensions = 0`): those keep the single-look rule.
    */
   decisionRule?: 'kbf-extension-v1' | 'kbf-extension-v2'
+  /** The coverage rule this set's look was decided by, as its evidence names it; absent on older sets. */
+  coverageRule?: 'kbf-coverage-v1'
   /** This set's own KBF statistics, as in its evidence file. */
   stats?: FingerprintStats
   /** False when a successful batch lacked verified ResponseAuth (the set's verdict is then UNDETERMINED). */
   responseAuthVerified?: boolean
+  /**
+   * The tokenizer pre-check this audit started with; absent when none ran. On a `mismatch` the status is DIFF
+   * and no question was asked, so the audit has no close call to extend.
+   */
+  tokenizerPrecheck?: TokenizerPrecheckSummary
+  /**
+   * The cap check this audit ran before its questions; absent when none ran. On a `flag` the status is DIFF and
+   * no question was asked, so the audit has no close call to extend.
+   */
+  outputCap?: OutputCapSummary
+  /** The echo check this audit ran before its questions; absent when none ran. On a `flag` the status is DIFF. */
+  outputEcho?: OutputEchoSummary
+  /** The randomness check (FLIPS) this audit ran last before its verdict; absent when none ran. */
+  flips?: FlipsSummary
   /**
    * Extra set of never-seen probes asked after a close-call first audit; `status` above is then the
    * verdict on both sets pooled.
@@ -311,6 +431,8 @@ export interface ModelVerificationTargetResult {
 export interface ModelVerificationExtensionV1 {
   rule: 'kbf-extension-v1' | 'kbf-extension-v2'
   auditId: string
+  /** The extra set's own earliest request (`earliestAuditorTime`, seconds); absent on sets pooled before it was kept. */
+  firstRequestAt?: number | null
   /** The extension set's own single-set verdict (never used on its own). */
   status: 'SAME' | 'DIFF' | 'UNDETERMINED'
   referenceId: string
@@ -339,6 +461,11 @@ export interface ModelVerificationFailure {
   status: 'FAILED'
   reason: string
   outcomeReason?: VerificationOutcomeReasonV1
+  /** A failed confirmation: the report it was for (`confirmationReportKey`), so the attempt counts for that report. */
+  confirming?: AuditCheckId[]
+  confirmingReportedAt?: number
+  /** Set by the epoch submission on a confirmation held to be audited again: a hold for its report, not a failure. */
+  confirmationHeld?: true
 }
 
 export interface ModelVerificationSkip {
@@ -354,6 +481,12 @@ export interface ModelVerificationSkip {
   auditId: string | null
   evidencePath: string | null
   evidenceHash: string | null
+  /** Set when a tokenizer pre-check ran before the seller was skipped: the requests it sent and what they cost. */
+  requestCount?: number
+  cost?: AuditCostSummaryV1
+  /** A skipped confirmation: the report it was for, so the attempt counts for that report. */
+  confirming?: AuditCheckId[]
+  confirmingReportedAt?: number
 }
 
 export interface VerificationTargetPolicy {
@@ -476,6 +609,29 @@ export function classifyVerificationTargetServices(
 }
 
 /**
+ * The crowd of a model's tokenizer pre-check (`createTokenizerPrecheckScreen`): every peer the buyer sees that it
+ * would audit for the model under the model's own service names, whether or not this run audits it. So a retry,
+ * a confirmation, a `--peer` run, and a run in which most sellers are finished, held or judged by another auditor
+ * still have the model's other sellers to hold a wrong reference against. A peer the buyer would refuse (priced
+ * above the reference, under the reputation floor, without ResponseAuth) is left out: a request to it could
+ * only fail. One entry per peer.
+ */
+export function tokenizerPrecheckSellers(
+  peers: readonly PeerInfo[],
+  services: readonly string[],
+  policy: VerificationTargetPolicy,
+): TokenizerPrecheckSeller[] {
+  const sellers = new Map<string, TokenizerPrecheckSeller>()
+  for (const peer of peers) {
+    const key = peer.peerId.replace(/^0x/i, '').toLowerCase()
+    if (sellers.has(key)) continue
+    const eligibility = classifyVerificationTargetServices(peer, services, policy)
+    if (eligibility.eligible) sellers.set(key, { peerId: peer.peerId, service: eligibility.service })
+  }
+  return [...sellers.values()]
+}
+
+/**
  * The seller's price for the model, as the buyer's router reads it: a provider's offer for the
  * service (or that provider's defaults) is final, so an invalid one is refused rather than replaced
  * by a cheaper or valid fallback, which would let the audit pick a seller the buyer never routes to.
@@ -552,8 +708,7 @@ function isValidOffer(offer: TokenPricingUsdPerMillion | undefined): offer is To
 
 /** Every name the audited model currently goes by (empty for a model that is not audited). */
 function currentServiceNames(model: string): string[] {
-  const key = findAuditedModelKey(model)
-  return key ? [key, ...(auditedModels()[key]!.serviceAliases ?? [])] : []
+  return auditedServiceNames(model)
 }
 
 function isFiniteNonNegative(value: number | undefined): value is number {
@@ -573,7 +728,26 @@ export async function verifyModelTarget(input: {
     model: string
   }
   extension?: boolean
+  /**
+   * Settled test records of an earlier attempt that this fresh audit carries without resuming its questions (a retry
+   * after a close call's extra set, or after its question set was retired): they are not asked again.
+   */
+  carried?: StoredCheckRecords
+  /**
+   * The audit answers another auditor's waiting DIFF, flagged by these checks (`same-check.ts`): a flag by any
+   * other check does not end it, so the checks that must confirm always run to their end.
+   */
+  confirming?: ConfirmationIdentity
+  /**
+   * This is the auditor's last attempt at the seller: a FLIPS reference that is not whole does not stop the audit, which
+   * runs with FLIPS at no result (`flipsReferenceDecision`), so the tests that decided stand.
+   */
+  lastAuditorAttempt?: boolean
 }): Promise<ModelVerificationTargetResult | ModelVerificationSkip> {
+  const confirmingIdentity = input.confirming
+    ? { checks: [...input.confirming.checks], ...(input.confirming.reportedAt !== undefined ? { reportedAt: input.confirming.reportedAt } : {}) }
+    : null
+  const confirmingEvidence = confirmingIdentity ? { confirming: confirmingIdentity } : {}
   const batches = kbfAuditBatches(input.reference.probes)
   const deadline = new LazyAuditDeadline(
     input.context.auditTimeoutMs,
@@ -605,8 +779,136 @@ export async function verifyModelTarget(input: {
     omit: input.resume?.exchanges.some((exchange) => exchange.omittedSamplingFields?.length) ?? false,
     omitThinking: input.resume?.exchanges.some((exchange) => exchange.omittedThinkingSuppression === true) ?? false,
   }
-  const discovery = pending.length > 0 && input.context.sellerThinking
-    ? await sellerThinkingFor(input.context, input.target, input.service, input.reference, sampling)
+  const target = {
+    peerId: input.target.peerId,
+    displayName: input.target.displayName ?? null,
+    agentId: input.target.onChainAgentId ? String(input.target.onChainAgentId) : null,
+    service: input.service,
+  }
+  const evidenceHead = (createdAt: number) => ({
+    version: 1 as const,
+    kind: 'antseed-buyer-proxy-kbf-audit' as const,
+    evidenceLevel: 'proxy-observation-with-verified-response-auth-no-payment-evidence' as const,
+    createdAt: new Date(createdAt).toISOString(),
+    buyerProxy: {
+      baseUrl: input.context.proxy.baseUrl,
+      statePath: basename(input.context.proxy.statePath),
+      pid: input.context.proxy.pid,
+    },
+    target,
+    reference: {
+      referenceId: input.reference.referenceId,
+      referenceModel: input.reference.referenceModel,
+      queryProfileHash: queryProfileHash(input.reference.queryProfile),
+      queryProfile: input.reference.queryProfile,
+      statisticalPower: input.reference.statisticalPower,
+      statisticalPowerEvidence: input.reference.statisticalPowerEvidence as unknown as Record<string, unknown>,
+      selfTest: input.reference.selfTest,
+      ...(input.reference.calibration ? { calibration: input.reference.calibration } : {}),
+      probes: input.reference.probes,
+    },
+  })
+  const resumeEvidence = input.resume ? {
+    resume: {
+      parentAuditId: input.resume.parentAuditId,
+      reservationAuditId: input.resume.reservationAuditId,
+      parentEvidenceHash: input.resume.parentEvidenceHash,
+      reusedBatchIndexes,
+    },
+  } : {}
+  // Every test of the audit runs, and none ends it (rule `all-tests-v1`, `audit-checks.ts` `verdictOf`): the
+  // pre-check, thinking discovery, the questions, then the cap check and the echo check. The questions come before
+  // the other output tests, so they keep their time and are not announced by requests a seller could recognise; a
+  // test that runs out of time has no result, which blocks nothing. An extra set of a close call asks questions only.
+  // Each test runs once in an audit's chain of attempts: a resume or a retry carries what an earlier attempt found
+  // (`resume.records`) and does not ask it again.
+  const runsTests = !input.extension
+  // A carried test judged against an earlier test that is asked now is asked again with it (`withoutOrphans`).
+  const carried: StoredCheckRecords = withoutOrphans(input.resume?.records ?? input.carried ?? {})
+  // FLIPS's stage, and its reference asked while the questions run: FLIPS then adds only the seller's own time.
+  const flipsStage = input.confirming?.checks.includes('flips') ? 'confirm' as const : 'first' as const
+  // A carried record is kept only for its own stage: a first look's FLIPS never stands for a confirmation of FLIPS, or
+  // the other way round. A requested probe is always run: a carried record that is no probe's, or a probe of other
+  // settings, is asked again and not kept.
+  const flipsToAsk = runsTests && input.context.flips !== undefined
+    // A record of another rule than this build's (an earlier build's, recorded only) is asked again under this one.
+    && (carried.flips == null || carried.flips.draw.stage !== flipsStage
+      || (input.context.flips.ruleId !== undefined && carried.flips.rule !== input.context.flips.ruleId)
+      // A probe's record is a diagnostic: without a probe on, the production FLIPS is asked.
+      || (input.context.flips.probing !== true && isProbeDraw(carried.flips.draw))
+      || (input.context.flips.probing === true
+        && (!isProbeDraw(carried.flips.draw) || carried.flips.probeSettings !== input.context.flips.probeSettings)))
+  // Without a screen too: a carried record of another stage is not this audit's, so it is not kept.
+  let flips: FlipsV1 | null = flipsToAsk || carried.flips?.draw.stage !== flipsStage ? null : carried.flips ?? null
+  // The stage's FLIPS reference is decided before the seller is asked anything paid, once per model, stage and run:
+  // where FLIPS counts and it is not whole, the audit is not started (the auditor's attempt, nothing paid), except on the
+  // auditor's last attempt, which runs with FLIPS at no result (never for a report only FLIPS flagged).
+  if (flipsToAsk) {
+    const screen = input.context.flips!
+    if (screen.referenceDecision) {
+      const decision = await screen.referenceDecision(flipsStage, input.service, input.reference, {
+        lastAuditorAttempt: input.lastAuditorAttempt === true,
+        confirming: input.confirming?.checks ?? [],
+      })
+      if (decision === 'not-started') throw new Error(`${FLIPS_AUDITOR_FAILURE}: ${FLIPS_WAITING_FOR_REFERENCE}`)
+    } else {
+      screen.warm?.(input.service, input.reference, flipsStage)
+    }
+  }
+  const sellerTarget = {
+    peerId: input.target.peerId,
+    service: input.service,
+    serviceAliases: [...input.reference.serviceAliases, ...currentServiceNames(input.reference.referenceModel)],
+  }
+  // The seller's clock runs only while one of its requests is out: references and crowds are the auditor's time.
+  const clock = () => ({
+    signal: deadline.controller.signal,
+    start: () => deadline.start(),
+    finish: (answered: boolean) => deadline.finish(answered),
+  })
+  if (runsTests) {
+    await Promise.all([
+      carried.outputCap == null ? input.context.outputCap?.ready(input.reference) : undefined,
+      carried.outputEcho == null ? input.context.outputEcho?.ready(input.reference) : undefined,
+    ])
+  }
+  let precheck: TokenizerPrecheckV1 | null = carried.tokenizerPrecheck ?? null
+  const screen = input.context.tokenizerPrecheck
+  if (runsTests && precheck === null && screen) {
+    try {
+      await screen.ready(input.reference)
+      precheck = await screen.check(sellerTarget, input.reference, clock())
+    } catch (error) {
+      deadline.close()
+      throw error
+    }
+  }
+  let outputCap: OutputCapV1 | null = carried.outputCap ?? null
+  let outputEcho: OutputEchoV1 | null = carried.outputEcho ?? null
+  /** The tests this attempt ran itself: a carried record was paid for by the attempt that ran it. */
+  const freshRecords = (): StoredCheckRecords => ({
+    ...(precheck && precheck !== carried.tokenizerPrecheck ? { tokenizerPrecheck: precheck } : {}),
+    ...(outputCap && outputCap !== carried.outputCap ? { outputCap } : {}),
+    ...(outputEcho && outputEcho !== carried.outputEcho ? { outputEcho } : {}),
+    ...(flips && flips !== carried.flips ? { flips } : {}),
+  })
+  /** The tests finished so far, as the checkpoint and the evidence store them. */
+  const records = (): StoredCheckRecords => ({
+    ...(precheck ? { tokenizerPrecheck: precheck } : {}),
+    ...(outputCap ? { outputCap } : {}),
+    ...(outputEcho ? { outputEcho } : {}),
+    ...(flips ? { flips } : {}),
+  })
+  // Discovery runs whenever the seller is still to be asked something with its own thinking setting: a question batch,
+  // or a test a retry asks again after every batch was answered.
+  const testsToAsk = runsTests && ((input.context.outputCap !== undefined && carried.outputCap == null)
+    || (input.context.outputEcho !== undefined && carried.outputEcho == null))
+  const discovery = (pending.length > 0 || testsToAsk) && input.context.sellerThinking
+    // The pre-check may have started the audit's clock: an audit that ends here stops it.
+    ? await sellerThinkingFor(input.context, input.target, input.service, input.reference, sampling).catch((error: unknown) => {
+      deadline.close()
+      throw error
+    })
     : null
   const settings = sellerRequestSettings(input.context, input.reference, discovery?.record ?? null)
   const sellerThinkingEvidence = discovery
@@ -615,15 +917,17 @@ export async function verifyModelTarget(input: {
   const discoveryCost = discovery?.fresh ? summarizeDiscoveryCosts(discovery.record.attempts) : null
   let checkpointTail = Promise.resolve()
   let checkpointFailure: Error | null = null
-  const persistCheckpoint = async (): Promise<void> => {
+  /** `bestEffort`: a write made only for a diagnostic (FLIPS) never stops the audit when it fails. */
+  const persistCheckpoint = async (options: { bestEffort?: boolean } = {}): Promise<void> => {
     const snapshot = [...exchangeByBatch.values()].sort((left, right) => left.batchIndex - right.batchIndex)
     const checkpoint: ModelAuditCheckpointV1 = {
-      version: 1,
+      version: 2,
       kind: 'antseed-verifier-audit-checkpoint',
       auditId,
       parentAuditId: input.resume?.parentAuditId ?? null,
       reservationAuditId: input.resume?.reservationAuditId ?? auditId,
       ...(input.extension ? { extension: true as const } : {}),
+      ...(confirmingIdentity ? { confirming: confirmingIdentity } : {}),
       runId: input.checkpointIdentity?.runId ?? '',
       epoch: input.checkpointIdentity?.epoch ?? '',
       model: input.checkpointIdentity?.model ?? input.reference.referenceModel,
@@ -633,6 +937,7 @@ export async function verifyModelTarget(input: {
       queryProfileHash: queryProfileHash(input.reference.queryProfile),
       probeIds: input.reference.probes.map((probe) => probe.id),
       exchanges: snapshot,
+      records: records(),
       updatedAt: new Date().toISOString(),
     }
     const path = join(input.context.checkpointRootDir ?? input.context.evidenceDir, '.checkpoints', `${auditId}.json`)
@@ -642,6 +947,7 @@ export async function verifyModelTarget(input: {
           await (input.context.writeCheckpoint ?? writeJsonAtomic)(path, checkpoint)
           return
         } catch (error) {
+          if (attempt === 1 && options.bestEffort) return
           if (attempt === 1) {
             checkpointFailure = new Error(`audit stopped: checkpoint could not be persisted at ${path}; resume from the last durable checkpoint`, { cause: error })
             deadline.controller.abort()
@@ -652,7 +958,13 @@ export async function verifyModelTarget(input: {
     })
     await checkpointTail
   }
+  /** The seller was skipped while its questions were asked (it refused them, its key is gone, ...). */
+  let skip: VerificationSkipSignal | null = null
+  /** The questions ended in a seller failure (its first batch failed): no other test is started in this attempt. */
+  let sellerFailed = false
   try {
+    // A pre-check finished before the questions is kept, so an interrupted audit does not ask it again.
+    if (precheck && !carried.tokenizerPrecheck) await persistCheckpoint()
     const executed = await mapWithAdaptiveConcurrency(
       pending,
       input.context.batchConcurrency,
@@ -690,6 +1002,7 @@ export async function verifyModelTarget(input: {
     for (const exchange of executed) exchangeByBatch.set(exchange.batchIndex, exchange)
   } catch (error) {
     if (error instanceof VerificationTerminalTransientSignal) {
+      sellerFailed = true
       exchangeByBatch.set(error.exchange.batchIndex, error.exchange)
       for (const { probes, batchIndex } of pending) {
         if (!exchangeByBatch.has(batchIndex)) {
@@ -704,11 +1017,76 @@ export async function verifyModelTarget(input: {
           ))
         }
       }
-      await persistCheckpoint()
-    } else if (!(error instanceof VerificationSkipSignal)) {
-      throw error
+      await persistCheckpoint().catch((persistError: unknown) => {
+        deadline.close()
+        throw persistError
+      })
+    } else if (error instanceof VerificationSkipSignal) {
+      skip = error
     } else {
+      deadline.close()
+      throw error
+    }
+  }
+  const flaggedSoFar = (): boolean => readingsOfEvidence({ ...records(), exchanges: [] }, null).some((reading) => reading.outcome === 'flag')
+  if (skip && !flaggedSoFar()) {
+    // A skip with no flag is today's skip: the seller is not audited this run, and what ran before is paid for.
+    deadline.close()
+    return writeSkip(skip)
+  }
+  // The other output tests, after the questions, unless the seller was skipped (a flag stands through a skip: the
+  // audit is a DIFF with its questions unfinished, and nothing more is asked of the seller), or the questions ended in
+  // a seller failure or on the time limit: a test started then could only find nothing, and a retry asks it again.
+  const timeIsUp = deadline.controller.signal.aborted
+  if (runsTests && !skip && !sellerFailed && !timeIsUp) {
+    try {
+      const capScreen = input.context.outputCap
+      // The time is checked before each test: one that starts after it ran out could only find nothing.
+      const timeLeft = (): boolean => !deadline.controller.signal.aborted
+      if (outputCap === null && capScreen && timeLeft()) {
+        outputCap = await capScreen.check(sellerTarget, input.reference, settings.thinking, clock())
+        if (outputCap) await persistCheckpoint()
+      }
+      const echoScreen = input.context.outputEcho
+      if (outputEcho === null && echoScreen && timeLeft()) {
+        outputEcho = await echoScreen.check(sellerTarget, input.reference, {
+          thinking: settings.thinking,
+          // The model's other sellers are asked with the reference's thinking setting.
+          crowdThinking: kbfTargetThinkingSuppression(input.reference),
+          precheckMatch: precheck?.outcome === 'match',
+          clock: clock(),
+          // Work for the fixed amount alone keeps to the audit's spare time.
+          spare: () => deadline.spare(input.context.auditTimeoutMs),
+        })
+        if (outputEcho) await persistCheckpoint()
+      }
+      // FLIPS last: its stage is `confirm` only when this audit confirms another auditor's FLIPS flag.
+      const flipsScreen = input.context.flips
+      if (flipsToAsk && flipsScreen && timeLeft()) {
+        const asked = await flipsScreen.check(sellerTarget, input.reference, {
+          stage: flipsStage,
+          clock: clock(),
+          signal: deadline.controller.signal,
+        })
+        // Only a record every required write can hold: an unwritable diagnostic is dropped, never a failed audit.
+        if (asked && isFlipsRecord(asked)) {
+          flips = asked
+          await persistCheckpoint({ bestEffort: true })
+        }
+      }
+    } catch (error) {
+      deadline.close()
+      throw error
+    }
+  }
+  deadline.close()
+
+  /** The skip evidence, with what ran before the seller was skipped (hoisted: used above). */
+  async function writeSkip(error: VerificationSkipSignal): Promise<ModelVerificationSkip> {
     const completedAt = Date.now()
+    const ran = records()
+    // Only what this attempt asked is its cost: a carried test was paid for by the attempt that ran it.
+    const ranCosts = testCosts(freshRecords())
     const evidence: ProxyAuditSkipEvidenceV1 = {
       version: 1,
       kind: 'antseed-buyer-proxy-target-skip',
@@ -730,12 +1108,15 @@ export async function verifyModelTarget(input: {
         referenceModel: input.reference.referenceModel,
       },
       ...sellerThinkingEvidence,
+      ...ran,
       exchange: error.exchange,
       result: {
         status: 'SKIPPED',
         code: error.code,
         reason: error.reason,
         outcomeReason: withBatchCounts(error.outcomeReason, 1, batches.length),
+        // The tests that ran before the seller was skipped were paid for.
+        ...(ranCosts.length > 0 ? { cost: addAuditCostSummaries(...ranCosts) } : {}),
       },
     }
     const evidenceHash = canonicalHashBytes32(evidence)
@@ -759,11 +1140,12 @@ export async function verifyModelTarget(input: {
       auditId: resolvedAuditId,
       evidencePath: written.path,
       evidenceHash: written.evidenceHash,
+      ...(ranCosts.length > 0 ? { requestCount: testRequestCount(freshRecords()), cost: addAuditCostSummaries(...ranCosts) } : {}),
+      ...(confirmingIdentity ? { confirming: [...confirmingIdentity.checks], ...(confirmingIdentity.reportedAt !== undefined ? { confirmingReportedAt: confirmingIdentity.reportedAt } : {}) } : {}),
     }
-    }
-  } finally {
-    deadline.close()
   }
+
+  if (skip) exchangeByBatch.set(skip.exchange.batchIndex, skip.exchange)
   const exchanges = [...exchangeByBatch.values()].sort((left, right) => left.batchIndex - right.batchIndex)
   const answersByProbeId = new Map<string, number | null>()
   const matchesByProbeId = new Map<string, 0 | 1 | null>()
@@ -775,71 +1157,55 @@ export async function verifyModelTarget(input: {
   }
   const answers = input.reference.probes.map((probe) => answersByProbeId.get(probe.id) ?? null)
   const matchVector = input.reference.probes.map((probe) => matchesByProbeId.get(probe.id) ?? null)
-  const fragment = verifyKbf(input.reference, { answers, matchVector }, KBF_AUDIT_VERIFY_OPTIONS)
+  // New looks are decided by the current coverage rule, named in the evidence so every reader judges them by it.
+  const fragment = verifyKbf(input.reference, { answers, matchVector }, { ...KBF_AUDIT_VERIFY_OPTIONS, coverageRule: KBF_COVERAGE_RULE })
   if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'verification returned UNKNOWN')
 
   const completedAt = Date.now()
   const authenticated = exchanges.every((exchange) => exchange.status !== 'succeeded'
     || exchange.responseAuth.status === 'verified')
-  const verdict = authenticated ? fragment.verdict : 'UNDETERMINED'
-  const verdictReason = authenticated
-    ? fragment.verdictReason
-    : 'one or more successful proxy batches lacked valid verified ResponseAuth'
-  const outcomeReason = verdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
-  // Discovery requests are paid for like batches, so the audit that sent them counts them.
-  const withDiscovery = (summary: AuditCostSummaryV1) => discoveryCost ? addAuditCostSummaries(summary, discoveryCost) : summary
-  const cumulativeCost = withDiscovery(summarizeAuditExchangeCosts(exchanges))
+  // The questions' own verdict, exactly as the questions decide alone; a skip leaves them unfinished.
+  const questionsVerdict = skip ? 'UNDETERMINED' as const : authenticated ? fragment.verdict : 'UNDETERMINED' as const
+  const questionsReason = skip
+    ? `the questions were not finished: the seller was skipped (${skip.reason})`
+    : authenticated ? fragment.verdictReason : 'one or more successful proxy batches lacked valid verified ResponseAuth'
+  const questionsOutcome = skip
+    ? withBatchCounts(skip.outcomeReason, 1, batches.length)
+    : questionsVerdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
+  const ran = records()
+  // Tests and discovery are paid for like batches, so the audit that sent them counts them; carried tests were paid
+  // for by the attempt that ran them.
+  const fresh = freshRecords()
+  const extraCosts = [...testCosts(fresh), discoveryCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
+  const withExtras = (summary: AuditCostSummaryV1) => addAuditCostSummaries(summary, ...extraCosts)
+  const cumulativeCost = withExtras(summarizeAuditExchangeCosts(exchanges))
   const newBatchIndexes = new Set(pending.map((entry) => entry.batchIndex))
-  const cost = withDiscovery(summarizeAuditExchangeCosts(exchanges.filter((exchange) => newBatchIndexes.has(exchange.batchIndex))))
+  const cost = withExtras(summarizeAuditExchangeCosts(exchanges.filter((exchange) => newBatchIndexes.has(exchange.batchIndex))))
   const correctProbeCount = matchVector.filter((entry) => entry === 1).length
   const incorrectProbeCount = matchVector.filter((entry) => entry === 0).length
   const parsedProbeCount = correctProbeCount + incorrectProbeCount
   const evidence: ProxyAuditEvidenceV1 = {
-    version: 1,
-    kind: 'antseed-buyer-proxy-kbf-audit',
-    evidenceLevel: 'proxy-observation-with-verified-response-auth-no-payment-evidence',
-    createdAt: new Date(completedAt).toISOString(),
-    buyerProxy: {
-      baseUrl: input.context.proxy.baseUrl,
-      statePath: basename(input.context.proxy.statePath),
-      pid: input.context.proxy.pid,
-    },
-    target: {
-      peerId: input.target.peerId,
-      displayName: input.target.displayName ?? null,
-      agentId: input.target.onChainAgentId ? String(input.target.onChainAgentId) : null,
-      service: input.service,
-    },
-    reference: {
-      referenceId: input.reference.referenceId,
-      referenceModel: input.reference.referenceModel,
-      queryProfileHash: queryProfileHash(input.reference.queryProfile),
-      queryProfile: input.reference.queryProfile,
-      statisticalPower: input.reference.statisticalPower,
-      statisticalPowerEvidence: input.reference.statisticalPowerEvidence as unknown as Record<string, unknown>,
-      selfTest: input.reference.selfTest,
-      ...(input.reference.calibration ? { calibration: input.reference.calibration } : {}),
-      probes: input.reference.probes,
-    },
+    ...evidenceHead(completedAt),
+    tests: ALL_TESTS_FORMAT,
+    ...confirmingEvidence,
     ...sellerThinkingEvidence,
+    ...ran,
     exchanges,
-    ...(input.resume ? {
-      resume: {
-        parentAuditId: input.resume.parentAuditId,
-        reservationAuditId: input.resume.reservationAuditId,
-        parentEvidenceHash: input.resume.parentEvidenceHash,
-        reusedBatchIndexes,
-      },
-    } : {}),
+    ...resumeEvidence,
+    // The questions' own result: the audit's verdict over every test is derived from it and the test records
+    // (`verdictOf`), never stored in its place.
     result: {
       selectedProbeCount: input.reference.probes.length,
       parsedProbeCount,
       matchVector,
       matchVectorHash: fragment.matchVectorHash,
       stats: fragment.stats,
-      verdict,
-      verdictReason,
-      outcomeReason,
+      verdict: questionsVerdict,
+      verdictReason: questionsReason,
+      outcomeReason: questionsOutcome,
+      // The questions were not finished: the seller was skipped at this batch (stored above, not succeeded).
+      ...(skip ? { unfinished: { batchIndex: skip.exchange.batchIndex, reason: skip.reason } } : {}),
+      coverageRule: KBF_COVERAGE_RULE.id,
       cost,
       cumulativeCost,
     },
@@ -852,27 +1218,56 @@ export async function verifyModelTarget(input: {
     evidenceHash,
   })
   const written = await writeProxyAuditEvidence(input.context.evidenceDir, resolvedAuditId, evidence)
-  return {
+  return settleAuditVerdict({
     peerId: input.target.peerId,
     displayName: input.target.displayName ?? null,
     agentId: input.target.onChainAgentId ? String(input.target.onChainAgentId) : null,
     service: input.service,
-    status: verdict,
-    outcomeReason,
+    status: questionsVerdict,
+    questionsStatus: questionsVerdict,
+    outcomeReason: questionsOutcome,
+    questionsOutcomeReason: questionsOutcome,
+    ...(input.confirming ? { confirming: [...input.confirming.checks] } : {}),
+    ...(input.confirming?.reportedAt !== undefined ? { confirmingReportedAt: input.confirming.reportedAt } : {}),
     auditId: resolvedAuditId,
     parsedProbeCount,
     probeCount: input.reference.probes.length,
     correctProbeCount,
     incorrectProbeCount,
     correctRate: parsedProbeCount === 0 ? null : correctProbeCount / parsedProbeCount,
-    requestCount: exchanges.length,
+    // The question batches, and the requests of the tests this attempt ran.
+    requestCount: exchanges.length + testRequestCount(fresh),
     cost,
     cumulativeCost,
     evidencePath: written.path,
     evidenceHash: written.evidenceHash,
+    firstRequestAt: earliestAuditorTime([evidence]),
     stats: fragment.stats,
+    coverageRule: KBF_COVERAGE_RULE.id,
     responseAuthVerified: authenticated,
-  }
+    ...(precheck ? { tokenizerPrecheck: summarizeTokenizerPrecheck(precheck) } : {}),
+    ...(outputCap ? { outputCap: summarizeOutputCap(outputCap) } : {}),
+    ...(outputEcho ? { outputEcho: summarizeOutputEcho(outputEcho) } : {}),
+    ...(flips ? { flips: summarizeFlips(flips) } : {}),
+  })
+}
+
+/** What these test records' requests cost, in run order. */
+function testCosts(records: StoredCheckRecords): AuditCostSummaryV1[] {
+  return [
+    ...(records.tokenizerPrecheck ? [tokenizerPrecheckCost(records.tokenizerPrecheck)] : []),
+    ...(records.outputCap ? [outputCapCost(records.outputCap)] : []),
+    ...(records.outputEcho ? [outputEchoCost(records.outputEcho)] : []),
+    ...(records.flips ? [flipsCost(records.flips)] : []),
+  ]
+}
+
+/** The requests these test records sent, counting tries. */
+function testRequestCount(records: StoredCheckRecords): number {
+  return (records.tokenizerPrecheck ? tokenizerPrecheckRequestCount(records.tokenizerPrecheck) : 0)
+    + (records.outputCap ? outputCapRequestCount(records.outputCap) : 0)
+    + (records.outputEcho ? outputEchoRequestCount(records.outputEcho) : 0)
+    + (records.flips ? flipsRequestCount(records.flips) : 0)
 }
 
 export async function readModelAuditCheckpoints(
@@ -890,11 +1285,15 @@ export async function readModelAuditCheckpoints(
     .filter((filename) => filename.endsWith('.json'))
     .map(async (filename) => {
       const path = join(directory, filename)
-      const checkpoint = JSON.parse(await readFile(path, 'utf8')) as ModelAuditCheckpointV1
-      if (checkpoint.version !== 1
+      const checkpoint = JSON.parse(await readFile(path, 'utf8')) as ModelAuditCheckpointV1 | { version: 1; kind: string }
+      // A version 1 checkpoint was written before every test ran in one audit, and holds no test records: its
+      // audit is not resumed, it restarts clean.
+      if (checkpoint.version === 1 && checkpoint.kind === 'antseed-verifier-audit-checkpoint') return null
+      if (checkpoint.version !== 2
         || checkpoint.kind !== 'antseed-verifier-audit-checkpoint'
         || typeof checkpoint.auditId !== 'string'
-        || !Array.isArray(checkpoint.exchanges)) {
+        || !Array.isArray(checkpoint.exchanges)
+        || typeof checkpoint.records !== 'object' || checkpoint.records === null) {
         throw new Error(`invalid verifier audit checkpoint: ${path}`)
       }
       if (!checkpoint.runId || !checkpoint.epoch || !checkpoint.model) return null
@@ -1289,11 +1688,15 @@ async function discoverSellerThinking(
         if (cost) record.attemptCosts.push(cost)
         if (response.ok) {
           outages = 0
+          const billed = billedOutputTokensOf(responseText(responseBody))
           return {
             ok: true,
             content: extractCompletionText(responseBody),
             reasoningTokens: reportedReasoningTokens(responseText(responseBody)),
             truncated: isKbfTokenLimitFinishReason(kbfResponseFinishReason(responseText(responseBody))),
+            // Recorded only: reasoning a host shows while itemising none, and what the reply bills.
+            reasoningShown: reasoningShownInReply(responseText(responseBody)),
+            ...(billed !== undefined ? { billedOutputTokens: billed } : {}),
           }
         }
         const text = responseText(responseBody)

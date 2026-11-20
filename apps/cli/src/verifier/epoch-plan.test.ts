@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import type { AuditCheckId } from './flagging-checks.js'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import {
   AUDITOR_FAILURE_ATTEMPTS,
@@ -18,6 +19,10 @@ import {
   epochModelRows,
   failureBlame,
   mergeEpochRuns,
+  CONFIRMATION_RECHECK_SPACING_SECONDS,
+  reportCellKey,
+  reportKey,
+  splitEpochRuns,
   type EpochCell,
   type RetryGiveUpV1,
   writeEpochSubmissionManifest,
@@ -339,6 +344,106 @@ test('a confirmation\'s UNDETERMINED from a failure is held and retried up to CO
   assert.equal(heldForConfirmationRecheck(tie), false)
 })
 
+test('confirmation attempts are kept per report: each report has its own result, attempts and spacing, first looks apart', () => {
+  const confirming = (reportedAt: number, extra: Partial<ModelVerificationTargetResult> = {}) => result('a', 'UNDETERMINED', {
+    outcomeReason: sellerDown, confirmsDiff: true, confirming: ['kbf'], confirmingReportedAt: reportedAt, ...extra,
+  } as Partial<ModelVerificationTargetResult>)
+  const service = confirming(100).service
+  const at = (hour: string) => `2026-10-28T${hour}:00.000Z`
+  const runs = [
+    // Two first looks, then three attempts on report 100, and a result and a failure on report 200.
+    run('f0', at('10:00'), [{ model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })] }]),
+    run('f1', at('14:00'), [{ model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })] }]),
+    ...[0, 1, 2].map((index) => run(`a${index}`, at(`2${index}:00`), [{ model: 'm', results: [confirming(100)] }])),
+    run('b0', at('23:00'), [{ model: 'm', results: [confirming(200)] }]),
+    run('b1', at('23:30'), [{ model: 'm', results: [], failures: [{ peerId: 'a', agentId: null, service, status: 'FAILED', reason: 'connection reset', outcomeReason: sellerDown, confirming: ['kbf'], confirmingReportedAt: 200 }] }]),
+  ]
+  const { ordinary, reports } = splitEpochRuns(EPOCH, runs)
+  const cellOf = (report: number) => reports.get(reportCellKey('m', 'a', reportKey(service, report, ['kbf'])))!
+  // Report 100: its own three attempts, used up, its own result; first looks never counted on it.
+  assert.equal(cellOf(100).attempts, CONFIRMATION_ATTEMPTS)
+  assert.equal(cellOf(100).action, 'done')
+  assert.equal(cellOf(100).result?.confirmingReportedAt, 100)
+  // Report 200 started at zero: one result and one failure of its own, and report 100's result never answers it.
+  assert.equal(cellOf(200).attempts, 2)
+  assert.equal(cellOf(200).confirmationReport, reportKey(service, 200, ['kbf']))
+  assert.equal(cellOf(200).result?.confirmingReportedAt, 200)
+  // First looks are their own bucket: two attempts, no report.
+  const firstLooks = ordinary.get(epochCellKey('m', 'a'))!
+  assert.equal(firstLooks.attempts, 2)
+  assert.equal(firstLooks.confirmationReport, undefined)
+})
+
+test('a report\'s attempts end only on the seller\'s side: the auditor\'s own failures neither finish nor count', () => {
+  const service = result('a', 'SAME').service
+  const failure = (reason: typeof sellerDown | typeof buyerRefused) => ({
+    peerId: 'a', agentId: null, service, status: 'FAILED' as const, reason: reason.summary, outcomeReason: reason, confirming: ['kbf'] as AuditCheckId[], confirmingReportedAt: 100,
+  })
+  const cellAfter = (reasons: Array<typeof sellerDown | typeof buyerRefused>) => {
+    const runs = reasons.map((reason, index) => run(`f${index}`, `2026-10-28T1${index}:00:00.000Z`, [{ model: 'm', results: [], failures: [failure(reason)] }]))
+    return splitEpochRuns(EPOCH, runs).reports.get(reportCellKey('m', 'a', reportKey(service, 100, ['kbf'])))!
+  }
+  // Three failures of the auditor's own (a buyer routing policy, even a permanent one): still open, none counted.
+  const ours = cellAfter([buyerRefused, buyerRefused, buyerRefused])
+  assert.deepEqual([ours.attempts, ours.action], [0, 'retry'])
+  // Two of the seller's, then two of ours: two counted, one attempt left.
+  const mixed = cellAfter([sellerDown, sellerDown, buyerRefused, buyerRefused])
+  assert.deepEqual([mixed.attempts, mixed.action], [2, 'retry'])
+  // Three of the seller's: finished.
+  const theirs = cellAfter([sellerDown, sellerDown, sellerDown])
+  assert.deepEqual([theirs.attempts, theirs.action], [CONFIRMATION_ATTEMPTS, 'done'])
+})
+
+test('an undecided confirmation keeps an auditor-caused cause, and a report\'s auditor-side failure waits before it is tried again', async () => {
+  const { settleAuditVerdict } = await import('./close-call.js')
+  const { failureBlame } = await import('./failure-blame.js')
+  const undecided = (reason: typeof sellerDown | typeof buyerRefused) => settleAuditVerdict(result('a', 'UNDETERMINED', {
+    confirming: ['kbf'], questionsStatus: 'UNDETERMINED', questionsOutcomeReason: reason, outcomeReason: reason,
+  } as Partial<ModelVerificationTargetResult>))
+  // The seller's failure: the confirmation is undecided, and that attempt counts on the seller's side.
+  assert.equal(undecided(sellerDown).outcomeReason?.code, 'confirmation_undecided')
+  // Our own failure: the decision still says undecided (as submit checks), and its cause is kept apart, so it never
+  // counts toward the seller's three.
+  const ours = undecided(buyerRefused)
+  assert.equal(ours.outcomeReason?.code, 'confirmation_undecided')
+  assert.equal(failureBlame(ours.undecidedCause), 'auditor')
+  const cell = splitEpochRuns(EPOCH, [run('u1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [{ ...ours, confirmingReportedAt: 100 }] }])])
+    .reports.get(reportCellKey('m', 'a', reportKey(ours.service, 100, ['kbf'])))!
+  assert.deepEqual([cell.blame, cell.attempts], ['auditor', 0])
+  const failed = { state: 'failed' as const, action: 'retry' as const, blame: 'auditor' as const, result: null, attempts: 0, lastAttemptAt: 1_000 }
+  assert.equal(sellerRetryDueAt({ ...failed, confirmationReport: 'report' }), 1_000 + CONFIRMATION_RECHECK_SPACING_SECONDS)
+  assert.equal(sellerRetryDueAt(failed), null, 'outside a report, as before')
+})
+
+test('a confirmation of FLIPS scored between its bars: under flips-v2 a SAME, done; with a test left open it is retried; no score is retried', async () => {
+  const { settleAuditVerdict } = await import('./close-call.js')
+  const flips = (p: number | null) => ({
+    rule: 'flips-v2', model: 'claude-opus-5.5', stage: 'confirm', outcome: 'inconclusive', counted: true, p, score: p === null ? null : 4, reason: 'x',
+  })
+  const cellOf = (confirming: AuditCheckId[], extra: Partial<ModelVerificationTargetResult>, undecided = true) => {
+    const settled = settleAuditVerdict(result('a', 'SAME', { confirming, confirmsDiff: true, questionsStatus: 'SAME', ...extra } as Partial<ModelVerificationTargetResult>))
+    assert.equal(settled.outcomeReason?.code === 'confirmation_undecided', undecided)
+    return splitEpochRuns(EPOCH, [run('c1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [{ ...settled, confirmingReportedAt: 100 }] }])])
+      .reports.get(reportCellKey('m', 'a', reportKey(settled.service, 100, confirming)))!
+  }
+  // FLIPS scored between the bars clears like a pass under flips-v2 (`confirmBetweenClears`): the questions SAME, a
+  // SAME, and the confirmation is done after one attempt.
+  const between = cellOf(['flips'], { flips: flips(0.02) } as Partial<ModelVerificationTargetResult>, false)
+  assert.deepEqual([between.state, between.attempts, between.action, heldForConfirmationRecheck(between)], ['same', 1, 'done', false])
+  // FLIPS with no score is asked again: the confirmation stays open within its attempts.
+  const noScore = cellOf(['flips'], { flips: flips(null) } as Partial<ModelVerificationTargetResult>)
+  assert.deepEqual([noScore.attempts, noScore.action], [1, 'retry'])
+  // The questions are undecided too: they are asked again, so the retry can still decide.
+  const withQuestions = cellOf(['kbf', 'flips'], { flips: flips(0.02), questionsStatus: 'UNDETERMINED' } as Partial<ModelVerificationTargetResult>)
+  assert.deepEqual([withQuestions.attempts, withQuestions.action], [1, 'retry'])
+  // A probe's score, a flips-v1 one or an unknown rule's neither clears nor finishes it: a production ask could still
+  // decide.
+  for (const other of [{ ...flips(0.02), probe: true }, { ...flips(0.02), rule: 'flips-v1' }, { ...flips(0.02), rule: 'flips-v9' }]) {
+    const open = cellOf(['flips'], { flips: other } as Partial<ModelVerificationTargetResult>)
+    assert.deepEqual([open.attempts, open.action], [1, 'retry'], JSON.stringify(other))
+  }
+})
+
 test('a confirmation whose close-call extension failed is retried; a decided or non-confirming one is done', () => {
   const extension = (extra: Partial<NonNullable<ModelVerificationTargetResult['extension']>> = {}) => ({
     rule: 'kbf-extension-v2', auditId: 'x', status: 'UNDETERMINED', referenceId: 'ref', probeCount: 10, parsedProbeCount: 10,
@@ -385,7 +490,7 @@ test('the submission leaves out a held confirmation UNDETERMINED and says why', 
   const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-held-'))
   try {
     const runs = [run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [
-      result('a', 'UNDETERMINED', { outcomeReason: sellerDown, confirmsDiff: true }),
+      result('a', 'UNDETERMINED', { outcomeReason: sellerDown, confirmsDiff: true, confirming: ['kbf'], confirmingReportedAt: 100 }),
       result('b', 'UNDETERMINED', { outcomeReason: sellerDown }),
     ] }])]
     const state = { epoch: EPOCH, manifests: runs.map((entry) => entry.manifest), cells: mergeEpochRuns(EPOCH, runs) }
@@ -399,6 +504,36 @@ test('the submission leaves out a held confirmation UNDETERMINED and says why', 
     assert.deepEqual(summary.results.map((entry) => entry.peerId), ['b'])
     assert.deepEqual(summary.failures.map((entry) => entry.peerId), ['a'])
     assert.match(summary.failures[0]!.reason, /^held: UNDETERMINED .*\(attempt 1 of 3\)$/)
+    // A hold for its report, not a failure: it keeps the report it answers.
+    assert.deepEqual([summary.failures[0]!.confirmationHeld, summary.failures[0]!.confirming, summary.failures[0]!.confirmingReportedAt], [true, ['kbf'], 100])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('the submission offers each report\'s own decided result after the seller\'s latest, so the one for the report waiting now can be sent', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epoch-plan-reports-'))
+  try {
+    const confirming = (status: 'DIFF' | 'UNDETERMINED', reportedAt: number, auditId: string) => result('a', status, {
+      auditId, confirmsDiff: true, confirming: ['kbf'], confirmingReportedAt: reportedAt, ...(status === 'UNDETERMINED' ? { outcomeReason: sellerDown } : {}),
+    } as Partial<ModelVerificationTargetResult>)
+    const runs = [
+      run('r1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [confirming('DIFF', 100, 'audit-for-a')] }]),
+      run('r2', '2026-10-28T21:00:00.000Z', [{ model: 'm', results: [confirming('UNDETERMINED', 200, 'audit-for-b')] }]),
+    ]
+    const { ordinary, reports } = splitEpochRuns(EPOCH, runs)
+    const state = { epoch: EPOCH, manifests: runs.map((entry) => entry.manifest), cells: mergeEpochRuns(EPOCH, runs), ordinaryCells: ordinary, reportCells: reports }
+    const { writeJsonAtomic } = await import('./atomic-files.js')
+    for (const [index, entry] of runs.entries()) {
+      const path = join(directory, `r${index + 1}.summary.json`)
+      await writeJsonAtomic(path, entry.summaries[0])
+      entry.manifest.models = [{ model: 'm', summaryPath: path } as VerifierRunManifestV1['models'][number]]
+    }
+    const manifest = await writeEpochSubmissionManifest(directory, state)
+    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as ModelAuditSummaryV1
+    // B's latest is held for its re-check; A's own decided DIFF is offered, so submit can send it for A.
+    assert.deepEqual(summary.results.map((entry) => entry.auditId), ['audit-for-a'])
+    assert.deepEqual(summary.failures.map((entry) => entry.peerId), ['a'])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -490,6 +625,10 @@ test('a seller listed again gets its retry back, unless the window has closed', 
   })
   assert.deepEqual(decide(false), { entries: [], added: [], restored: [gaveUp('r1')] })
   assert.deepEqual(decide(true), { entries: [gaveUp('r1')], added: [], restored: [] })
+  // A confirmation's retry is no part of any window: its returning seller gets it back after the window closed too.
+  const report = [...cells.values()].map((cell) => ({ ...cell, confirmationReport: 'svc\u0000100\u0000flips' }))
+  assert.deepEqual(decideRetryGiveUps({ cells: report, nowSeconds: dueAt, offersModel: () => true, windowClosed: () => true }),
+    { entries: [], added: [], restored: [gaveUp('r1')] })
 })
 
 test('a given-up seller\'s UNDETERMINED is submitted unchanged', async () => {

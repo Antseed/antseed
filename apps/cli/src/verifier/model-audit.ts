@@ -1,9 +1,11 @@
-import { copyFile, mkdir, readFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { getAddress } from 'ethers'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
   classifyKbfFirstLook,
+  computeKbfVerdict,
+  kbfAuditBaseline,
   canonicalHashBytes32,
   kbfExtensionRuleById,
   canonicalJsonStringify,
@@ -37,11 +39,15 @@ import {
   type EpochQuestionSetV1,
   type EpochSetCalibrationV1,
 } from './probe-bank.js'
-import { closeCallRule, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
+import { auditDecision, closeCallRule, coverageRuleOf, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
+import { AUDIT_CHECK_IDS, betweenChecks, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
+import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
-import type { SubmissionCandidate } from './submission-delta.js'
+import type { AlreadyOnChain, SubmissionCandidate } from './submission-delta.js'
+import { confirmationReportKey } from './epoch-plan.js'
+import { ALL_TESTS_FORMAT, RECORD_CHECKS, auditVerdictReason, earliestAuditorTime, readingsOfEvidence, readingsOfSummary, validateCheckRecordsAgainstSummary, verdictOf, type ReportOfAudit } from './audit-checks.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
@@ -79,6 +85,34 @@ export interface ModelAuditSellerResultV1 {
    * `extension2.pooled.verdict`, computed from all three sets' stats.
    */
   extension2?: ModelAuditExtensionV1
+  /** The questions' own verdict, after any close call; `verdict` is the audit's over every test (`verdictOf`). */
+  questionsVerdict?: ModelAuditVerdict
+  /** The close-call rule the questions were decided by; absent under the single-look rule. */
+  decisionRule?: CloseCallRuleId
+  /** A flagged audit whose close call could not be finished in its run: its questions are undecided. */
+  questionsClosed?: true
+  /** The checks that flagged the seller in this audit (`flaggingChecks`). */
+  flaggedBy?: AuditCheckId[]
+  /** The checks that ran to a pass in this audit (`passedChecks`). */
+  passedBy?: AuditCheckId[]
+  /** The checks scored between their bars where such a score clears like a pass (`betweenChecks`). */
+  betweenBy?: AuditCheckId[]
+  /**
+   * Unix seconds of the earliest request the audit behind this result rests on, on the auditor's own clock, over its first
+   * set and extra sets (`earliestAuditorTime`); 0 when none has a time. A confirmation is fresh only from this time on.
+   */
+  auditedAt?: number
+  /**
+   * Set on a result that answers another auditor's waiting DIFF: which checks flagged there and here
+   * (`same-check.ts`). A DIFF is sent only with a check in common; a SAME only when a check that flagged
+   * there passed here.
+   */
+  confirmation?: SameCheckConfirmationV1
+  /**
+   * The report this audit confirms, as its evidence names it (`ProxyAuditEvidenceV1.confirming`): read again right
+   * before sending, so a confirmation of FLIPS keeps its stage and an untagged first look stays one.
+   */
+  confirming?: { checks: AuditCheckId[]; reportedAt?: number }
 }
 
 export interface ModelAuditExtensionV1 {
@@ -103,6 +137,27 @@ export interface ExcludedSellerAuditV1 {
   auditId: string | null
   reason: string
 }
+
+/** One row's decision in a submit preparation (`PreparedModelAudits.decisions`). */
+export interface PreparedRowDecisionV1 {
+  model: string
+  peerId: string
+  agentId: string | null
+  service: string
+  /** Null when the row names no service (a malformed row is recorded, never a reason to stop). */
+  serviceHash: string | null
+  auditId: string | null
+  /** The report the row answers (`confirmationReportKey`), null for a first look. */
+  reportKey: string | null
+  evidenceHash: string | null
+  verdict: string | null
+  decision: 'send' | 'held' | 'superseded' | 'excluded' | 'already-on-chain'
+  /** Why it is not sent, as a fixed code; null for a send. */
+  reasonCode: string | null
+}
+
+/** The reason codes a preparation gives a row it does not send, and which of them hold it for a later submit. */
+export const PREPARED_HOLD_CODES: readonly string[] = Object.freeze(['window-open', 'confirmation-reaudit', 'close-call-waiting', 'confirmation-hold'])
 
 /** Public evidence for one `submitModelAudit` call: every seller audited as one model in one run. */
 export interface ModelAuditEvidenceV1 {
@@ -166,7 +221,8 @@ export interface ModelAuditReferenceEvidenceV1 {
 }
 
 export interface AuditPublicationV1 {
-  provider: 'pinata'
+  /** `local-test`: a dry run's publication on this machine (`verifier.testPublication`), never on Base. */
+  provider: 'pinata' | 'local-test'
   evidenceHash: string
   cid: string
   uri: string
@@ -188,6 +244,11 @@ export interface PreparedModelAudit {
   results: ServiceResultInput[]
   references: Array<{ path: string; reference: KbfReferenceV1 }>
   auditEvidencePaths: string[]
+  /**
+   * When each result's audit was made (its latest evidence file, seconds), by `resultTimeKey`: the last read before a
+   * send judges each row by it, as the preparation did.
+   */
+  auditedAt?: Record<string, number>
   /** Raw reference exchange files: where they are read from and where they go next to the evidence. */
   referenceEvidence: Array<{ sourcePath: string; path: string }>
 }
@@ -203,6 +264,8 @@ export interface ModelAuditLedgerEntryV1 {
   resultCount: number
   evidenceUri: string
   publication?: AuditPublicationV1
+  /** Each result's audit time (`resultTimeKey`), as prepared: the audit behind this entry's report. */
+  auditedAt?: Record<string, number>
   status: ModelAuditSubmissionStatus
   transactionHash: string | null
   blockNumber: number | null
@@ -270,7 +333,7 @@ export async function prepareModelAudits(input: {
    * per candidate. They are left out before the evidence is built, so the evidence lists exactly the
    * results sent; a model with nothing left is not prepared at all.
    */
-  alreadyOnChain?: (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<boolean[]>
+  alreadyOnChain?: (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<AlreadyOnChain[]>
   /**
    * Never a third opinion (`third-opinion.ts`): one reason or null per candidate; a result with a
    * reason is left out of the submission and listed among the excluded sellers with that reason.
@@ -288,9 +351,22 @@ export async function prepareModelAudits(input: {
    * online after it opened) gets no result, unless the result confirms another auditor's DIFF.
    */
   auditWindow?: (model: string) => Promise<Pick<AuditWindowV1, 'state' | 'sellers'> | null>
+  /**
+   * For a DIFF that answers another auditor's waiting DIFF: whether the same check flagged in both
+   * audits (`sameCheckFilter`). Runs after `thirdOpinion`. Without it no result is checked.
+   */
+  sameCheck?: (modelHash: string, candidates: readonly SameCheckCandidate[]) => Promise<Array<SameCheckDecision | null>>
+  /** Set when the evidence is not published: every DIFF is left out with this reason, since no confirmer could read it. */
+  unpublishedDiffs?: string
 }): Promise<{
   audits: PreparedModelAudit[]
   excluded: Array<ExcludedSellerAuditV1 & { model: string }>
+  /**
+   * What the preparation decided for every row it read, with the row's identity (never published): sent, held for a
+   * later submit, held as older than the auditor's own report, left out, or already on chain. `submit --dry-run`
+   * writes it (`writeDryRunPrepared`).
+   */
+  decisions: PreparedRowDecisionV1[]
   /** Per model, results left out because the auditor already has them on-chain (models with none are omitted). */
   alreadyOnChain: Array<{ model: string; count: number }>
   /**
@@ -320,6 +396,25 @@ export async function prepareModelAudits(input: {
   const audits: PreparedModelAudit[] = []
   const allExcluded: Array<ExcludedSellerAuditV1 & { model: string }> = []
   const heldBack: string[] = []
+  const decisions: PreparedRowDecisionV1[] = []
+  const decide = (
+    model: string,
+    row: { peerId: string; agentId: string | null; service: string; auditId?: string | null; evidenceHash?: string | null; status?: string; confirming?: readonly string[]; confirmingReportedAt?: number; confirmsDiff?: boolean },
+    decision: PreparedRowDecisionV1['decision'],
+    reasonCode: string | null,
+  ): void => {
+    // A record for the dry run only: whatever a malformed row holds, recording it never stops the preparation.
+    const safely = <T>(read: () => T, fallback: T): T => { try { return read() } catch { return fallback } }
+    const text = (value: unknown): string | null => (typeof value === 'string' ? value : null)
+    decisions.push({
+      model, peerId: text(row.peerId) ?? '', agentId: text(row.agentId), service: text(row.service) ?? '',
+      serviceHash: safely(() => (typeof row.service === 'string' ? serviceHash(row.service) : null), null),
+      auditId: text(row.auditId), reportKey: safely(() => confirmationReportKey(row), null), evidenceHash: text(row.evidenceHash),
+      verdict: text(row.status),
+      decision: decision === 'excluded' && reasonCode !== null && PREPARED_HOLD_CODES.includes(reasonCode) ? 'held' : decision,
+      reasonCode,
+    })
+  }
   const alreadyOnChain: Array<{ model: string; count: number }> = []
   for (const model of input.manifest.modelOrder) {
     const modelManifest = input.manifest.models.find((entry) => normalized(entry.model) === normalized(model))
@@ -327,6 +422,9 @@ export async function prepareModelAudits(input: {
     const summary = await readModelSummary(modelManifest.summaryPath, input.manifest.runId, model)
     const window = await input.auditWindow?.(model) ?? null
     const excluded: ExcludedSellerAuditV1[] = []
+    // A confirmation held to be audited again (`heldForConfirmationRecheck`) is a hold for its report, not a failure.
+    for (const entry of summary.failures) decide(model, entry, entry.confirmationHeld ? 'held' : 'excluded', entry.confirmationHeld ? 'confirmation-reaudit' : 'failed')
+    for (const entry of summary.skipped) decide(model, entry, 'excluded', 'skipped')
     for (const entry of [...summary.failures, ...summary.skipped]) {
       excluded.push({
         peerId: entry.peerId,
@@ -343,21 +441,27 @@ export async function prepareModelAudits(input: {
       evidence: ProxyAuditEvidenceV1
       extensionEvidence: ProxyAuditEvidenceV1 | null
       extension2Evidence: ProxyAuditEvidenceV1 | null
+      confirmation?: SameCheckConfirmationV1
+      /** Another report's own result, as the submission offers it beside the seller's latest. */
+      alternate?: true
+      /** The confirmation decision on this row (`sameCheck`), applied once one row per seller is chosen. */
+      decision?: SameCheckDecision
     }> = []
     const seen = new Set<string>()
     let referenceModel: string | null = null
     for (let result of summary.results) {
-      const exclude = (reason: string): void => {
+      const exclude = (reason: string, code: string): void => {
         excluded.push({ peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason })
+        decide(model, result, 'excluded', code)
       }
       const agentId = parseAgentId(result.agentId)
       if (agentId === null) {
-        exclude('missing or invalid seller agent ID')
+        exclude('missing or invalid seller agent ID', 'invalid-agent-id')
         continue
       }
       if (retiredRecheckResult(result)) {
         exclude('made by the retired DIFF self-recheck (CLI 0.2.70 and older), whose combined verdict the evidence '
-          + 'no longer carries; a later run this epoch audits the seller again')
+          + 'no longer carries; a later run this epoch audits the seller again', 'retired-self-recheck')
         continue
       }
       let evidence: ProxyAuditEvidenceV1
@@ -371,9 +475,14 @@ export async function prepareModelAudits(input: {
         if (result.extension2) {
           extension2Evidence = await verifyProxyAuditEvidenceFile(result.extension2.evidencePath, result.extension2.evidenceHash)
         }
-        validateAuditMatchesSummary(evidence, result, extensionEvidence, extension2Evidence)
+        validateAuditMatchesSummary(evidence, result, extensionEvidence, extension2Evidence, { epoch: input.manifest.epoch, auditor })
       } catch (error) {
-        exclude(`invalid audit evidence: ${asError(error).message}`)
+        exclude(`invalid audit evidence: ${asError(error).message}`, 'invalid-evidence')
+        continue
+      }
+      // A date that is not valid is damaged evidence: its time orders nothing, and a confirmer could not read it.
+      if (latestEvidenceTime([evidence, extensionEvidence, extension2Evidence]) === null) {
+        exclude('invalid audit evidence: an evidence file\'s date is not valid', 'invalid-evidence-date')
         continue
       }
       if (window?.state === 'open') {
@@ -381,18 +490,28 @@ export async function prepareModelAudits(input: {
         // the window's other sellers are still being asked them.
         exclude(result.confirmsDiff
           ? 'a confirmation on a model whose audit window is still open: it is submitted when the window closes, so the window\'s questions stay unpublished while its sellers are asked'
-          : 'its audit window is still open: the model\'s results are submitted together once every seller of the window is finished')
+          : 'its audit window is still open: the model\'s results are submitted together once every seller of the window is finished', 'window-open')
         heldBack.push(`${model} ${result.agentId ?? result.peerId}: its audit window is still open`)
         continue
       }
       if (window && !result.confirmsDiff && !windowIncludesSeller(window, result.peerId)) {
-        exclude('not in this epoch\'s audit window (it came online after the window opened); audited next epoch')
+        exclude('not in this epoch\'s audit window (it came online after the window opened); audited next epoch', 'outside-window')
         continue
       }
       // A closed window asks no more extra questions: its open close calls are audited but undecided. A
       // confirmation is not part of the window and still gets its extra questions, so it waits for them.
+      // A close call that can no longer be finished reads its questions as undecided; the audit's verdict then still
+      // counts every other test, so a flag is never sent as UNDETERMINED.
+      const unfinished = (): ModelAuditVerdict => verdictOf(
+        readingsOfSummary({ ...result, questionsStatus: 'UNDETERMINED' }), 'UNDETERMINED', result.confirming,
+      ).verdict
+      // The close is published (`questionsClosed`), so a confirmer reads its questions as undecided, not as waiting.
+      const close = (reason: string): void => { result = { ...result, closeCallClosed: result.closeCallClosed ?? { reason } } }
       let finalVerdict = finalAuditVerdict(result)
-        ?? (window?.state === 'closed' && !result.confirmsDiff ? 'UNDETERMINED' : null)
+      if (finalVerdict === null && window?.state === 'closed' && !result.confirmsDiff) {
+        finalVerdict = unfinished()
+        close('its audit window closed before its extra questions were asked')
+      }
       // So is a close call whose first audit was made on a set a submit has published since: its extra
       // questions are public and are never asked (`decideRetryGiveUps`). A confirmation's is an undecided
       // attempt instead: the seller is audited again on new questions, and only the merged epoch's last
@@ -400,57 +519,60 @@ export async function prepareModelAudits(input: {
       if (finalVerdict === null && await questionSetRetired(input, model, evidence.reference.referenceId)) {
         if (result.confirmsDiff && !isExtraQuestionsPublished(result.outcomeReason)) {
           exclude('a confirmation whose extra questions were published before they could be asked: the seller is audited '
-            + 'again on new questions, up to its attempt limit, before anything is submitted')
+            + 'again on new questions, up to its attempt limit, before anything is submitted', 'confirmation-reaudit')
           heldBack.push(`${model} ${result.agentId ?? result.peerId}: confirmation audited again on new questions`)
           continue
         }
-        finalVerdict = 'UNDETERMINED'
+        finalVerdict = unfinished()
         result = { ...result, outcomeReason: result.outcomeReason ?? EXTRA_QUESTIONS_PUBLISHED }
+        close('its extra questions were published before they could be asked')
       }
       if (finalVerdict === null) {
         if (result.extensionPending) heldBack.push(`${model} ${result.agentId ?? result.peerId}: close call waiting for its extra questions`)
         exclude(result.extensionPending
           ? `close call waiting for its extra questions (${result.extensionPending.reason}); a later run this epoch asks them, so it is not submitted yet`
-          : 'close call without its extra questions, so it is not submitted')
+          : 'close call without its extra questions, so it is not submitted', result.extensionPending ? 'close-call-waiting' : 'close-call-unfinished')
+        continue
+      }
+      if (result.outcomeReason?.code === 'confirmation_undecided') {
+        exclude('a confirmation whose check to repeat did not decide: it is never sent, whatever the chain shows now', 'confirmation-undecided')
         continue
       }
       if (finalVerdict === 'UNDETERMINED' && failureBlame(result.outcomeReason) === 'auditor') {
         // The auditor's own failure says nothing about the seller's model, also when a run is
         // submitted directly (`--run-id`) rather than through the merged epoch.
-        exclude(`UNDETERMINED caused by this auditor (${result.outcomeReason?.summary ?? 'audit failed'}), so it is not submitted`)
+        exclude(`UNDETERMINED caused by this auditor (${result.outcomeReason?.summary ?? 'audit failed'}), so it is not submitted`, 'auditor-caused-undetermined')
         continue
       }
-      if (finalVerdict !== result.status) result = { ...result, status: finalVerdict }
+      // The questions' own verdict travels apart from the audit's: the attribution reads it (a cap DIFF beside the
+      // questions' SAME never reads as a questions DIFF). A close call that cannot be finished is undecided.
+      result = { ...result, status: finalVerdict, questionsStatus: stageOneVerdict(result) ?? 'UNDETERMINED' }
       if (referenceModel === null) referenceModel = evidence.reference.referenceModel
       else if (normalized(referenceModel) !== normalized(evidence.reference.referenceModel)) {
-        exclude(`audited against ${evidence.reference.referenceModel}, not ${referenceModel}`)
+        exclude(`audited against ${evidence.reference.referenceModel}, not ${referenceModel}`, 'wrong-reference-model')
         continue
       }
+      // Another report's own result, marked so where the epoch submission offers it (never by its position): it goes
+      // through the checks, and one row per seller is chosen with the confirmation decision.
       const duplicateKey = `${agentId}:${serviceHash(result.service)}`
-      if (seen.has(duplicateKey)) {
-        exclude(`duplicate audited service ${result.service}`)
-        continue
-      }
+      const alternate = result.offeredAsAlternate === true
       let owner: string
       try {
         owner = await ownerOf(agentId)
       } catch (error) {
-        exclude(`unknown seller agent ${agentId}: ${asError(error).message}`)
+        exclude(`unknown seller agent ${agentId}: ${asError(error).message}`, 'unknown-agent')
         continue
       }
       if (normalized(owner) === normalized(auditor)) {
-        exclude(`self-audit: the auditor owns seller agent ${agentId}`)
+        exclude(`self-audit: the auditor owns seller agent ${agentId}`, 'self-audit')
         continue
       }
       seen.add(duplicateKey)
-      accepted.push({ agentId, result, evidence, extensionEvidence, extension2Evidence })
+      accepted.push({ agentId, result, evidence, extensionEvidence, extension2Evidence, ...(alternate ? { alternate: true as const } : {}) })
     }
 
-    keepOneSamePerSeller(accepted, excluded)
     allExcluded.push(...excluded.map((entry) => ({ ...entry, model })))
     if (accepted.length === 0 || referenceModel === null) continue
-    // After keepOneSamePerSeller, so the SAME kept per seller is the same one whether or not it is
-    // already on-chain (another of its services is never sent in its place).
     const candidatesOf = (): SubmissionCandidate[] => accepted.map((entry) => ({
       agentId: entry.agentId,
       serviceHash: serviceHash(entry.result.service),
@@ -458,27 +580,118 @@ export async function prepareModelAudits(input: {
       auditedAt: auditedAt(entry),
       confirmsDiff: entry.result.confirmsDiff === true,
     }))
+    const drop = (index: number, reason: string, code: string): void => {
+      const { result } = accepted[index]!
+      allExcluded.push({ model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason })
+      decide(model, result, code === 'superseded' ? 'superseded' : 'excluded', code)
+      accepted.splice(index, 1)
+    }
+    // The confirmation decision of every row first: the choice of one row per seller depends on it.
+    if (input.sameCheck) {
+      const decisions = await input.sameCheck(modelHash(referenceModel), candidatesOf().map((candidate, index) => ({
+        ...candidate,
+        flaggedBy: flaggingChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
+        passedBy: passedChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
+        betweenBy: betweenChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
+        // Freshness is the earliest request used, on the auditor's clock, over the first set and its extra sets (0: none).
+        auditedAt: earliestAuditorTime([accepted[index]!.evidence, accepted[index]!.extensionEvidence, accepted[index]!.extension2Evidence]) ?? 0,
+        ...(accepted[index]!.evidence.confirming ? { confirming: accepted[index]!.evidence.confirming } : {}),
+      })))
+      for (const [index, entry] of accepted.entries()) {
+        const decision = decisions[index]
+        if (decision) entry.decision = decision
+      }
+    }
+    // One row per seller and service, chosen before anything else removes rows, so no row is promoted because another
+    // was removed (as already on chain, say). The submission marks which row is the seller's latest and which is
+    // another report's own (`alternate`): an alternate stands only when the decision sends it for the report waiting
+    // now, and a sent row whose evidence names the report wins over an untagged first look. Otherwise the latest row
+    // stands; when it was refused (its evidence unreadable), the seller gets nothing.
+    {
+      const sends = (entry: (typeof accepted)[number]) => entry.decision?.kind === 'send'
+      const rank = (entry: (typeof accepted)[number]): number => (
+        sends(entry) && entry.evidence.confirming ? 3 : sends(entry) ? 2 : entry.alternate ? 0 : 1
+      )
+      const kept = new Map<string, number>()
+      for (const [index, entry] of accepted.entries()) {
+        if (rank(entry) === 0) continue
+        const key = `${entry.agentId}:${serviceHash(entry.result.service)}`
+        const earlier = kept.get(key)
+        if (earlier === undefined || rank(entry) > rank(accepted[earlier]!)) kept.set(key, index)
+      }
+      for (let index = accepted.length - 1; index >= 0; index -= 1) {
+        const entry = accepted[index]!
+        if (kept.get(`${entry.agentId}:${serviceHash(entry.result.service)}`) === index) continue
+        const winner = accepted[kept.get(`${entry.agentId}:${serviceHash(entry.result.service)}`) ?? -1]
+        drop(index, entry.alternate
+          ? 'another report\'s result of this seller, not sent for the report waiting now'
+          : winner && sends(winner) ? 'the result made for the report waiting now is sent in its place' : `duplicate audited service ${entry.result.service}`,
+        entry.alternate ? 'other-report-row' : winner && sends(winner) ? 'report-row-sent-instead' : 'duplicate-service')
+      }
+    }
+    // After the choice, so the SAME kept per seller is the same one whether or not it is already on-chain (another of
+    // its services is never sent in its place).
+    {
+      const before = accepted.length
+      const sameExcluded: typeof excluded = []
+      const keptRows = new Map(accepted.map((entry) => [entry.result.auditId, entry.result]))
+      keepOneSamePerSeller(accepted, sameExcluded)
+      for (const entry of sameExcluded) decide(model, keptRows.get(entry.auditId ?? '') ?? entry, 'excluded', 'one-same-per-seller')
+      // As before: these are listed in the published evidence too.
+      excluded.push(...sameExcluded)
+      allExcluded.push(...sameExcluded.map((entry) => ({ ...entry, model })))
+      if (accepted.length !== before && accepted.length === 0) continue
+    }
+    if (accepted.length === 0) continue
     if (input.alreadyOnChain) {
       const onChain = await input.alreadyOnChain(modelHash(referenceModel), candidatesOf())
-      const count = onChain.filter(Boolean).length
-      if (count > 0) {
-        alreadyOnChain.push({ model, count })
-        for (let index = accepted.length - 1; index >= 0; index -= 1) if (onChain[index]) accepted.splice(index, 1)
+      const count = onChain.filter((entry) => entry === true).length
+      if (count > 0) alreadyOnChain.push({ model, count })
+      for (let index = accepted.length - 1; index >= 0; index -= 1) {
+        if (onChain[index] === true) {
+          decide(model, accepted[index]!.result, 'already-on-chain', 'already-on-chain')
+          accepted.splice(index, 1)
+        }
+        // Not on chain, and not sent: this auditor's own newer report with another verdict stands.
+        else if (onChain[index] === 'superseded') {
+          // Outstanding too, on every path (nothing else to send included): the seller needs a newer audit.
+          const { result } = accepted[index]!
+          heldBack.push(`${model} ${result.agentId ?? result.peerId}: held: older than your own report with another verdict; a newer audit of this seller is needed to change it`)
+          drop(index, 'held: older than your own report with another verdict, which stands; a newer audit of this seller can change it', 'superseded')
+        }
       }
       if (accepted.length === 0) continue
     }
-    for (const excludes of [input.diffHold, input.thirdOpinion]) {
+    for (const [excludes, code] of [[input.diffHold, 'diff-hold'], [input.thirdOpinion, 'third-opinion']] as const) {
       if (!excludes) continue
       const reasons = await excludes(modelHash(referenceModel), candidatesOf())
       for (let index = accepted.length - 1; index >= 0; index -= 1) {
         const reason = reasons[index]
-        if (!reason) continue
-        const { result } = accepted[index]!
-        allExcluded.push({ model, peerId: result.peerId, agentId: result.agentId, service: result.service, auditId: result.auditId, reason })
-        accepted.splice(index, 1)
+        if (reason) drop(index, reason, code)
       }
       if (accepted.length === 0) break
     }
+    // A DIFF the auditor does not publish can never be confirmed: a confirmer reads which check flagged from
+    // the published evidence (`same-check.ts`).
+    if (input.unpublishedDiffs) {
+      for (let index = accepted.length - 1; index >= 0; index -= 1) {
+        if (accepted[index]!.result.status === 'DIFF') drop(index, input.unpublishedDiffs, 'unpublished-diff')
+      }
+    }
+    // The decisions, applied to the rows left: a send carries its confirmation; nothing else is sent, and only a hold is
+    // tried again by the next submit.
+    for (let index = accepted.length - 1; index >= 0; index -= 1) {
+      const entry = accepted[index]!
+      const decision = entry.decision
+      if (!decision) continue
+      if (decision.kind === 'send') {
+        entry.confirmation = decision.confirmation
+        continue
+      }
+      if (decision.kind === 'hold') heldBack.push(`${model} ${entry.result.agentId ?? entry.result.peerId}: ${decision.reason}`)
+      drop(index, decision.reason, decision.kind === 'hold' ? 'confirmation-hold' : decision.code)
+    }
+    for (const entry of accepted) decide(model, entry.result, 'send', null)
     if (accepted.length === 0) continue
     accepted.sort((left, right) => compareResults(
       left.agentId, serviceHash(left.result.service), right.agentId, serviceHash(right.result.service),
@@ -560,14 +773,17 @@ export async function prepareModelAudits(input: {
           exchangeCount: stored.exchangeCount,
         })
       }
-      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, extensionEvidence, extension2Evidence }) => ({
+      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, extensionEvidence, extension2Evidence, confirmation }) => ({
         agentId: agentId.toString(),
         peerId: result.peerId,
         displayName: result.displayName,
         service: result.service,
         serviceHash: serviceHash(result.service),
         verdict: result.status,
-        verdictReason: evidence.result.verdictReason,
+        // The audit's reason: what each test that flagged found, or the questions' own reason.
+        verdictReason: auditVerdictReason(evidence, verdictOf(
+          readingsOfEvidence(evidence, questionsVerdictOf(result)), questionsVerdictOf(result), evidence.confirming?.checks,
+        ), evidence.result.verdictReason),
         outcomeReason: evidence.result.outcomeReason ?? result.outcomeReason ?? null,
         referenceId: evidence.reference.referenceId,
         stats: evidence.result.stats,
@@ -583,6 +799,15 @@ export async function prepareModelAudits(input: {
         ...(result.extension2 && extension2Evidence
           ? { extension2: submittedExtension(result.extension2, extension2Evidence, evidence, evidenceDirectory) }
           : {}),
+        flaggedBy: flaggingChecks(evidence, questionsVerdictOf(result)),
+        passedBy: passedChecks(evidence, questionsVerdictOf(result)),
+        ...(betweenChecks(evidence, questionsVerdictOf(result)).length > 0 ? { betweenBy: betweenChecks(evidence, questionsVerdictOf(result)) } : {}),
+        questionsVerdict: questionsVerdictOf(result),
+        ...(result.decisionRule ? { decisionRule: result.decisionRule } : {}),
+        ...(result.closeCallClosed ? { questionsClosed: true as const } : {}),
+        auditedAt: earliestAuditorTime([evidence, extensionEvidence, extension2Evidence]) ?? 0,
+        ...(confirmation ? { confirmation } : {}),
+        ...(evidence.confirming ? { confirming: { checks: [...evidence.confirming.checks], ...(evidence.confirming.reportedAt !== undefined ? { reportedAt: evidence.confirming.reportedAt } : {}) } } : {}),
       }))
       const evidence: ModelAuditEvidenceV1 = {
         version: 1,
@@ -622,22 +847,105 @@ export async function prepareModelAudits(input: {
           ...(result.extension ? [result.extension.evidencePath] : []),
           ...(result.extension2 ? [result.extension2.evidencePath] : []),
         ]),
+        auditedAt: Object.fromEntries(slice.map((entry) => [resultTimeKey(entry.agentId, serviceHash(entry.result.service)), auditedAt(entry)])),
       })
     }
   }
-  return { audits, excluded: allExcluded, alreadyOnChain, heldBack }
+  return { audits, excluded: allExcluded, decisions, alreadyOnChain, heldBack }
 }
 
 /** Unix seconds of the latest evidence file behind a result: its last extra set when it has one. */
+/** The key of a result's audit time on a prepared audit (`PreparedModelAudit.auditedAt`). */
+export function resultTimeKey(agentId: bigint | string, serviceHash: string): string {
+  return `${agentId.toString()}:${serviceHash.toLowerCase()}`
+}
+
 function auditedAt(entry: {
   evidence: ProxyAuditEvidenceV1
   extensionEvidence: ProxyAuditEvidenceV1 | null
   extension2Evidence: ProxyAuditEvidenceV1 | null
 }): number {
-  const times = [entry.evidence, entry.extensionEvidence, entry.extension2Evidence]
-    .flatMap((evidence) => evidence ? [Date.parse(evidence.createdAt)] : [])
-    .filter(Number.isFinite)
-  return times.length === 0 ? 0 : Math.max(...times) / 1_000
+  // Rows with a date that is not valid are left out before this (`invalid-evidence-date`).
+  return latestEvidenceTime([entry.evidence, entry.extensionEvidence, entry.extension2Evidence]) ?? 0
+}
+
+/**
+ * The one rule for when a row's audit finished (seconds), for submit and the planner alike: the latest `createdAt` of
+ * its evidence files. A file whose date is missing or not valid makes the row's time unknown (null): submit leaves the
+ * row out as damaged evidence and the planner audits its report again; an unknown time is never ordered as 0.
+ */
+function latestEvidenceTime(evidences: ReadonlyArray<Pick<ProxyAuditEvidenceV1, 'createdAt'> | null>): number | null {
+  const times: number[] = []
+  for (const evidence of evidences) {
+    if (!evidence) continue
+    const time = typeof evidence.createdAt === 'string' ? Date.parse(evidence.createdAt) : Number.NaN
+    // A date that is not valid is damaged evidence: the row has no finish time at all.
+    if (!Number.isFinite(time)) return null
+    times.push(time)
+  }
+  return times.length === 0 ? null : Math.max(...times) / 1_000
+}
+
+/**
+ * When the audit behind a summary row finished (seconds), by submit's rule (`latestEvidenceTime`), each file read and
+ * verified against its hash as the submit preparation reads it. Null when any file of the row (an extra set included)
+ * is missing, unreadable or not the one its summary names: submit would refuse the row. A file whose date is not valid
+ * gives no time, as in submit.
+ */
+export async function auditFinishedAt(result: {
+  evidencePath: string
+  evidenceHash: string
+  extension?: { evidencePath: string; evidenceHash: string } | null
+  extension2?: { evidencePath: string; evidenceHash: string } | null
+}): Promise<number | null> {
+  const sets = [result, result.extension, result.extension2].filter((set) => set != null)
+  const evidences: ProxyAuditEvidenceV1[] = []
+  for (const set of sets) {
+    try {
+      evidences.push(await verifyProxyAuditEvidenceFile(set.evidencePath, set.evidenceHash))
+    } catch {
+      return null
+    }
+  }
+  return latestEvidenceTime(evidences)
+}
+
+/**
+ * When each result this auditor sent finished, by transaction: every run's submit ledger in `evidenceDir` for this
+ * chain and contract (`auditedAt`, by `resultTimeKey`). An unreadable ledger is passed over.
+ */
+export async function sentAuditTimes(
+  evidenceDir: string, chainId: bigint | string, contract: string,
+): Promise<Map<string, Record<string, number>>> {
+  const byTransaction = new Map<string, Record<string, number>>()
+  const root = join(evidenceDir, 'submissions')
+  let runs: string[]
+  try {
+    runs = await readdir(root)
+  } catch {
+    return byTransaction
+  }
+  for (const run of runs) {
+    try {
+      const ledger = JSON.parse(await readFile(join(root, run, `ledger-${String(chainId)}-${contract.toLowerCase()}.json`), 'utf8')) as {
+        models?: Record<string, Partial<ModelAuditLedgerEntryV1>>
+      }
+      for (const entry of Object.values(ledger.models ?? {})) {
+        if (typeof entry.transactionHash !== 'string' || !entry.auditedAt || typeof entry.auditedAt !== 'object') continue
+        // Only real times: an unknown one (0, or not a number) is no time. Every ledger that knows the transaction adds
+        // its valid times, so one ledger's unknown never masks another's.
+        const key = entry.transactionHash.toLowerCase()
+        const times = byTransaction.get(key) ?? {}
+        for (const [row, time] of Object.entries(entry.auditedAt)) {
+          if (typeof time === 'number' && Number.isFinite(time) && time > 0 && !(row in times)) times[row] = time
+        }
+        byTransaction.set(key, times)
+      }
+    } catch {
+      // No ledger for this chain and contract in this run.
+    }
+  }
+  return byTransaction
 }
 
 /**
@@ -872,6 +1180,7 @@ export function validateAuditMatchesSummary(
   result: ModelAuditSummaryV1['results'][number],
   extensionEvidence: ProxyAuditEvidenceV1 | null = null,
   extension2Evidence: ProxyAuditEvidenceV1 | null = null,
+  report: ReportOfAudit = {},
 ): void {
   for (const checked of [evidence, extensionEvidence, extension2Evidence]) {
     if (!checked) continue
@@ -879,20 +1188,26 @@ export function validateAuditMatchesSummary(
     if (normalized(checked.target.service) !== normalized(result.service)) throw new Error('service mismatch')
     if ((checked.target.agentId ?? null) !== (result.agentId ?? null)) throw new Error('seller agent ID mismatch')
   }
-  const sharesProbes = (left: ProxyAuditEvidenceV1, right: ProxyAuditEvidenceV1): boolean => {
-    const ids = new Set(left.reference.probes.map((probe) => probe.id))
-    return left.reference.referenceId === right.reference.referenceId
-      || right.reference.probes.some((probe) => ids.has(probe.id))
-  }
   // The close-call decision reads the summary's stats; they must be the first check's evidence stats.
   if (result.stats && canonicalHashBytes32(result.stats) !== canonicalHashBytes32(evidence.result.stats)) {
     throw new Error('first check statistics do not match its evidence')
   }
-  // The stage-1 verdict, recomputed from the evidence: the first check's own verdict, or after a
-  // close call the pooled verdict of the first check and its extra sets.
-  let stageOne: ModelAuditVerdict = evidence.result.verdict
-  const extraSets: Array<{ record: NonNullable<typeof result.extension>; evidence: ProxyAuditEvidenceV1 }> = []
+  // Every seller file names its format: every test ran, and `result` is the questions' own (`ALL_TESTS_FORMAT`).
+  for (const checked of [evidence, extensionEvidence, extension2Evidence]) {
+    if (checked && checked.tests !== ALL_TESTS_FORMAT) throw new Error('the evidence does not name the all-tests format')
+  }
+  // A confirmation names the tests it repeats; every test ran in it, as in a first look.
+  if (evidence.confirming && (!Array.isArray(evidence.confirming.checks) || evidence.confirming.checks.length === 0
+    || evidence.confirming.checks.some((check) => !AUDIT_CHECK_IDS.includes(check)))) {
+    throw new Error('a confirmation names no known check it confirms')
+  }
+  if (evidence.confirming?.reportedAt !== undefined && !Number.isSafeInteger(evidence.confirming.reportedAt)) {
+    throw new Error('a confirmation names its report at no valid time')
+  }
+  // Each test's record follows from the signed responses it stores, is bound to the seller, and is the summary's.
+  validateCheckRecordsAgainstSummary(evidence, result, report)
   if (result.extension2 && !result.extension) throw new Error('second extra set without a first one')
+  const extraSets: Array<{ record: NonNullable<typeof result.extension>; evidence: ProxyAuditEvidenceV1 }> = []
   if (result.extension) {
     if (!extensionEvidence) throw new Error('extension evidence missing')
     extraSets.push({ record: result.extension, evidence: extensionEvidence })
@@ -901,32 +1216,156 @@ export function validateAuditMatchesSummary(
     if (!extension2Evidence) throw new Error('second extension evidence missing')
     extraSets.push({ record: result.extension2, evidence: extension2Evidence })
   }
+  for (const [index, { record, evidence: setEvidence }] of extraSets.entries()) {
+    if (record.status !== setEvidence.result.verdict) throw new Error(`${index === 0 ? 'extension' : 'second extension'} verdict mismatch`)
+  }
+  // The questions' verdict, recomputed from the evidence by the adjudicator a confirmer uses too.
+  const questions = adjudicateQuestions({
+    evidence,
+    extraSets,
+    decisionRule: result.decisionRule,
+    closed: result.closeCallClosed !== undefined,
+  })
+  const stageOne = questions.verdict
+  if ((result.questionsStatus ?? result.status) !== stageOne && !questions.pending) throw new Error('questions verdict mismatch')
+  // The audit's verdict, recomputed from the questions and every test record (`verdictOf`, rule `all-tests-v1`).
+  const looked = questions.pending ? 'UNDETERMINED' as const : stageOne
+  const audit = verdictOf(
+    readingsOfEvidence(evidence, looked === 'UNDETERMINED' ? null : looked),
+    looked,
+    evidence.confirming?.checks,
+    { questionsPending: questions.pending },
+  )
+  if (result.closeCallClosed && !audit.flaggedBy.some((check) => check !== 'kbf')) throw new Error('a close call closed without a flag of another test')
+  const pending = questions.pending && audit.undecidedConfirmation === null
+  // The summary and its evidence decide alike: whether its answers are verified, and whether it waits for an extra set.
+  // A summary that says ResponseAuth failed beside verified evidence would be final to the sender and pending here.
+  const firstVerified = evidence.exchanges.every((exchange) => exchange.status !== 'succeeded' || exchange.responseAuth.status === 'verified')
+  if (result.responseAuthVerified !== undefined && result.responseAuthVerified !== firstVerified) throw new Error('the summary\'s ResponseAuth state is not its evidence\'s')
+  if (auditDecision(result).pending !== pending) throw new Error('the summary and its evidence disagree on whether the close call waits for an extra set')
+  if (!pending && audit.verdict !== result.status) throw new Error('verdict mismatch')
+  if ((audit.undecidedConfirmation !== null) !== (result.outcomeReason?.code === 'confirmation_undecided')) {
+    throw new Error('the undecided confirmation is not the one its tests give')
+  }
+}
+
+/** What an extra set of a close call records about its pooled look, in a summary and in a published result alike. */
+interface ExtraSetRecord {
+  rule: string
+  pooled: Omit<FingerprintStats, 'selfCoverage'> & { verdict: ModelAuditVerdict; extendNext?: boolean }
+}
+
+/**
+ * The first look of a seller's evidence recomputed from what it stores: each question's match from the batch that
+ * asked it, the reference's own error baseline over those questions (`kbfAuditBaseline`), the run's coverage rules
+ * (`KBF_AUDIT_VERIFY_OPTIONS`), and UNDETERMINED when a successful batch lacks verified ResponseAuth, as the run
+ * decides it. Stats are null when the reference cannot give a baseline.
+ */
+function recomputedFirstLook(evidence: ProxyAuditEvidenceV1): { verdict: ModelAuditVerdict; stats: FingerprintStats | null } {
+  // An unfinished question set (the seller skipped at a batch) is undecided, as the run decides it, only when the
+  // batch it names is stored as the run stores a skip: failed, with no scored answer, and the failure's own summary as
+  // the mark's reason. A mark the evidence cannot back is ignored, and the numbers decide.
+  const unfinished = evidence.result.unfinished
+  const skippedAt = unfinished ? evidence.exchanges.find((exchange) => exchange.batchIndex === unfinished.batchIndex) : undefined
+  const backedSkip = skippedAt !== undefined && skippedAt.status === 'failed'
+    && skippedAt.matches.every((match) => match === null)
+    && typeof skippedAt.outcomeReason?.summary === 'string' && skippedAt.outcomeReason.summary === unfinished!.reason
+  const matches = new Map<string, 0 | 1 | null>()
+  for (const exchange of evidence.exchanges) {
+    for (const [index, probeId] of exchange.probeIds.entries()) matches.set(probeId, exchange.matches[index] ?? null)
+  }
+  const matchVector = evidence.reference.probes.map((probe) => matches.get(probe.id) ?? null)
+  let baseline: ReturnType<typeof kbfAuditBaseline>
+  try {
+    baseline = kbfAuditBaseline(evidence.reference as unknown as KbfReferenceV1, evidence.reference.probes.map((probe) => probe.id))
+  } catch {
+    return { verdict: 'UNDETERMINED', stats: null }
+  }
+  // The set is judged by the coverage rule it names, never by a newer one; a set from before it names none.
+  const coverageRule = evidence.result.coverageRule
+  const computed = computeKbfVerdict({
+    selfHamming: baseline.hamming, selfTotal: baseline.total, targetMatchVector: matchVector,
+    minCoverage: KBF_AUDIT_VERIFY_OPTIONS.minCoverage, minDiffCoverage: KBF_AUDIT_VERIFY_OPTIONS.minDiffCoverage,
+    ...(coverageRule !== undefined ? { coverageRule: coverageRuleOf(coverageRule) } : {}),
+  })
+  const authenticated = evidence.exchanges.every((exchange) => exchange.status !== 'succeeded' || exchange.responseAuth.status === 'verified')
+  const stats: FingerprintStats = { ...computed.stats, selfCoverage: baseline.coverage }
+  return { verdict: authenticated && !backedSkip && computed.verdict !== 'UNKNOWN' ? computed.verdict : 'UNDETERMINED', stats }
+}
+
+/**
+ * The questions' own verdict, from a seller's evidence files: the first set's look, or after a close call the pooled
+ * look of the first set and its extra sets, each checked (the rule, the close-call zone, verified ResponseAuth, no
+ * probe asked twice, the pooled statistics and the continuation). `closed`: a flagged audit whose close call could not
+ * be finished, accepted only when the latest look really was a close call; its questions are undecided. A questions
+ * DIFF needs scored answers. `pending`: the latest look is still a close call waiting for an extra set. Submit and the
+ * confirmer's read of published evidence both decide the questions' finding here, never from a stored label. Throws.
+ */
+export function adjudicateQuestions(input: {
+  evidence: ProxyAuditEvidenceV1
+  extraSets: ReadonlyArray<{ record: ExtraSetRecord; evidence: ProxyAuditEvidenceV1 }>
+  decisionRule: string | undefined
+  closed: boolean
+}): { verdict: ModelAuditVerdict; pending: boolean } {
+  const { evidence, extraSets } = input
+  const rule = input.decisionRule === undefined ? undefined : kbfExtensionRuleById(input.decisionRule) ?? undefined
+  const unverified = (checked: ProxyAuditEvidenceV1): boolean => checked.exchanges.some((exchange) => (
+    exchange.status === 'succeeded' && exchange.responseAuth.status !== 'verified'
+  ))
+  const sharesProbes = (left: ProxyAuditEvidenceV1, right: ProxyAuditEvidenceV1): boolean => {
+    const ids = new Set(left.reference.probes.map((probe) => probe.id))
+    return left.reference.referenceId === right.reference.referenceId
+      || right.reference.probes.some((probe) => ids.has(probe.id))
+  }
+  // Every set's look recomputed from what its evidence stores (each batch's matches and the reference's own errors),
+  // with the run's coverage and auth rules, exactly as the run decides it. Its label must be that look, UNDETERMINED
+  // included: a decisive look is never relabelled (hidden from both readers, or withheld), and a look whose numbers say
+  // SAME never passes as DIFF. The zone test and the pooled verdict read only these recomputed statistics.
+  const lookOf = (set: ProxyAuditEvidenceV1, which: string) => {
+    const recomputed = recomputedFirstLook(set)
+    if (set.result.verdict !== recomputed.verdict) {
+      throw new Error(`the questions' ${which} says ${set.result.verdict}, but its stored answers give ${recomputed.verdict}`)
+    }
+    return recomputed
+  }
+  const firstLook = lookOf(evidence, 'first look')
+  const looks = extraSets.map(({ evidence: set }, index) => lookOf(set, index === 0 ? 'extra set' : 'second extra set'))
+  // As `needsExtension`: a set whose ResponseAuth failed, or a seller that refuses the request profile, is not extended.
+  const firstLookExtends = rule !== undefined && !unverified(evidence)
+    && evidence.result.outcomeReason?.code !== 'request_profile_incompatible'
+    && firstLook.stats !== null
+    && classifyKbfFirstLook(firstLook.stats, { minCoverage: KBF_VERIFY_OPTIONS.minCoverage, rule }) === 'extend'
+  let verdict: ModelAuditVerdict = evidence.result.verdict
+  let latestExtends = firstLookExtends
+  // Both readers (submit and the confirmer) hold an extra set to the same form: tagged with the all-tests format, and no
+  // test record on it, since tests run on the first set only.
+  for (const { evidence: set } of extraSets) {
+    if (set.tests !== ALL_TESTS_FORMAT) throw new Error('an extra set does not name the all-tests format')
+    if (RECORD_CHECKS.some((check) => set[check.slot] != null)) throw new Error('an extra set stores a test record; tests run on the first set only')
+  }
   if (extraSets.length > 0) {
-    const rule = kbfExtensionRuleById(result.decisionRule)
-    if (!rule || extraSets.some(({ record }) => record.rule !== rule.id)) {
-      throw new Error('extension without the close-call rule')
+    if (!rule || extraSets.some(({ record }) => record.rule !== rule.id)) throw new Error('extension without the close-call rule')
+    if (extraSets.some(({ evidence: set }) => set.result.coverageRule !== evidence.result.coverageRule)) {
+      throw new Error('an extra set decided by another coverage rule than its first set')
     }
     if (extraSets.length > rule.maxExtensions) throw new Error(`${rule.id} allows at most ${rule.maxExtensions} extra set(s)`)
-    if (classifyKbfFirstLook(evidence.result.stats, { minCoverage: KBF_VERIFY_OPTIONS.minCoverage, rule }) !== 'extend') {
-      throw new Error('extension of a first check that was not a close call')
+    if (!firstLookExtends) {
+      throw new Error(unverified(evidence) ? 'extension of a first check without verified ResponseAuth' : 'extension of a first check that was not a close call')
     }
-    const unverified = (checked: ProxyAuditEvidenceV1): boolean => checked.exchanges.some((exchange) => (
-      exchange.status === 'succeeded' && exchange.responseAuth.status !== 'verified'
-    ))
-    if (unverified(evidence)) throw new Error('extension of a first check without verified ResponseAuth')
     const sameNumber = (left: number | null, right: number | null): boolean => (
       left === right || (left !== null && right !== null && Math.abs(left - right) <= 1e-12 * Math.max(1, Math.abs(left)))
     )
     const seen: ProxyAuditEvidenceV1[] = [evidence]
     for (const [index, { record, evidence: setEvidence }] of extraSets.entries()) {
       const label = index === 0 ? 'extension' : 'second extension'
-      if (record.status !== setEvidence.result.verdict) throw new Error(`${label} verdict mismatch`)
       if (seen.some((earlier) => sharesProbes(earlier, setEvidence))) throw new Error(`${label} reused probes from an earlier set`)
       seen.push(setEvidence)
+      if (looks.slice(0, index + 1).some((look) => look.stats === null)) throw new Error(`${label}: its statistics cannot be recomputed`)
       const pooled = pooledCloseCallVerdict(
-        { stats: evidence.result.stats, probeCount: evidence.reference.probes.length },
-        extraSets.slice(0, index + 1).map(({ evidence: e }) => ({ stats: e.result.stats, probeCount: e.reference.probes.length })),
+        { stats: firstLook.stats!, probeCount: evidence.reference.probes.length },
+        extraSets.slice(0, index + 1).map(({ evidence: e }, at) => ({ stats: looks[at]!.stats!, probeCount: e.reference.probes.length })),
         rule,
+        evidence.result.coverageRule,
       )
       if (pooled.verdict === 'UNKNOWN') throw new Error(`pooled verdict is UNKNOWN: ${pooled.verdictReason}`)
       const recordedPooled = record.pooled
@@ -940,13 +1379,22 @@ export function validateAuditMatchesSummary(
       if ((recordedPooled.extendNext === true) !== extendNext) throw new Error(`close-call continuation mismatch (${label})`)
       const lookVerdict: ModelAuditVerdict = authFailed ? 'UNDETERMINED' : pooled.verdict
       if (recordedPooled.verdict !== lookVerdict) throw new Error('pooled verdict mismatch')
-      const last = index === extraSets.length - 1
       // Only the last set's look may be undecided, and then the close call is still waiting.
-      if (!last && !extendNext) throw new Error(`extra set after a decided look (${label})`)
-      stageOne = lookVerdict
+      if (index < extraSets.length - 1 && !extendNext) throw new Error(`extra set after a decided look (${label})`)
+      verdict = lookVerdict
+      latestExtends = extendNext && extraSets.length < rule.maxExtensions
     }
   }
-  if (stageOne !== result.status) throw new Error('verdict mismatch')
+  if (input.closed) {
+    // Only a real close call can be closed: the latest look still extends.
+    if (!latestExtends) throw new Error('a closed close call whose latest look was not a close call')
+    return { verdict: 'UNDETERMINED', pending: false }
+  }
+  // The questions flag only on scored answers.
+  if (verdict === 'DIFF' && extraSets.length === 0 && evidence.result.parsedProbeCount === 0) {
+    throw new Error('a questions DIFF with no scored answer')
+  }
+  return { verdict, pending: latestExtends }
 }
 
 /**
@@ -965,7 +1413,15 @@ export function retiredRecheckResult(result: ModelAuditSummaryV1['results'][numb
  * is one auditor's report, and the contract records it only once another auditor confirms it.
  */
 export function finalAuditVerdict(result: ModelAuditSummaryV1['results'][number]): ModelAuditVerdict | null {
-  return stageOneVerdict(result)
+  // The one decision the run, the extension round, the planner and submit share (`auditDecision`), never the stored
+  // status: null while a close call waits, else the audit's verdict over every test. Submit recomputes it again.
+  const decision = auditDecision(result)
+  return decision.pending ? null : decision.audit.verdict
+}
+
+/** The questions' own verdict of a result, as the attribution reads it. */
+function questionsVerdictOf(result: Pick<ModelAuditSummaryV1['results'][number], 'status' | 'questionsStatus'>): ModelAuditVerdict {
+  return result.questionsStatus ?? result.status
 }
 
 async function readModelSummary(path: string, runId: string, model: string): Promise<ModelAuditSummaryV1> {

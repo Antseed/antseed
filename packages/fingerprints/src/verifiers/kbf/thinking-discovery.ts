@@ -98,6 +98,13 @@ export interface ThinkingDiscoveryAttemptV1 {
   answersOnly?: boolean;
   /** True when the reply stopped at the token limit. */
   truncated?: boolean;
+  /**
+   * Recorded only, never decided on: the reply carries reasoning text in a field of its own (`reasoning_content`,
+   * `reasoning`, `thinking`), which some hosts send while itemising no reasoning tokens.
+   */
+  reasoningShown?: boolean;
+  /** Recorded only: the output tokens the reply bills, beside its visible answers. */
+  billedOutputTokens?: number;
   failure?: string;
 }
 
@@ -111,7 +118,7 @@ export type ThinkingDiscoveryProbe = (input: {
   request: ThinkingStrategyRequest;
   maxTokens: number;
 }) => Promise<
-  | { ok: true; content: string | null; reasoningTokens: number; truncated?: boolean }
+  | { ok: true; content: string | null; reasoningTokens: number; truncated?: boolean; reasoningShown?: boolean; billedOutputTokens?: number }
   | { ok: false; status: number | null; failure: string }
 >;
 
@@ -172,6 +179,35 @@ export function reportedReasoningTokens(responseBody: string): number {
   }
 }
 
+/**
+ * Whether an OpenAI-style response body carries reasoning text in a field of its own (`reasoning_content`, `reasoning`
+ * or `thinking` on the first choice's message, non-empty): reasoning a host may send while itemising no reasoning tokens.
+ */
+export function reasoningShownInReply(responseBody: string): boolean {
+  try {
+    const parsed = JSON.parse(responseBody) as { choices?: Array<{ message?: Record<string, unknown> }> };
+    const message = parsed.choices?.[0]?.message;
+    if (!message || typeof message !== 'object') return false;
+    return ['reasoning_content', 'reasoning', 'thinking'].some((key) => {
+      const value = message[key];
+      return (typeof value === 'string' && value.trim().length > 0) || (Array.isArray(value) && value.length > 0);
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** `usage.completion_tokens` (or `output_tokens`) of a response body, a non-negative integer; undefined when absent. */
+export function billedOutputTokensOf(responseBody: string): number | undefined {
+  try {
+    const parsed = JSON.parse(responseBody) as { usage?: { completion_tokens?: unknown; output_tokens?: unknown } };
+    const tokens = parsed.usage?.completion_tokens ?? parsed.usage?.output_tokens;
+    return typeof tokens === 'number' && Number.isSafeInteger(tokens) && tokens >= 0 ? tokens : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Removes `<think>…</think>` blocks from an answer, as the reference code does before parsing a batch. */
 export function stripKbfThinkBlocks(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
@@ -198,6 +234,9 @@ export async function discoverThinkingSuppression(input: {
         reasoningTokens: outcome.reasoningTokens,
         answersOnly: outcome.content === null || isKbfAnswersOnlyReply(stripKbfThinkBlocks(outcome.content)),
         truncated: outcome.truncated === true,
+        // Recorded for the replay that decides whether shown reasoning should fail a strategy; not read below.
+        ...(outcome.reasoningShown !== undefined ? { reasoningShown: outcome.reasoningShown } : {}),
+        ...(outcome.billedOutputTokens !== undefined ? { billedOutputTokens: outcome.billedOutputTokens } : {}),
       }
       : { strategy, maxTokens, status: outcome.status, validAnswers: null, reasoningTokens: null, failure: outcome.failure };
     attempts.push(attempt);

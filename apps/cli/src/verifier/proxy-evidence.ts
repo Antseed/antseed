@@ -5,6 +5,7 @@ import {
   canonicalJsonStringify,
   type FingerprintStats,
   type FingerprintVerdict,
+  type KbfCoverageRule,
   type KbfProbe,
   type KbfReferenceCalibrationV1,
   type MatchVector,
@@ -15,6 +16,11 @@ import type { StoredResponseAuth } from '@antseed/node'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import { safeServiceSlug } from './slug.js'
 import type { ThinkingDiscoveryAttemptV1, ThinkingDiscoveryStrategy } from './thinking-suppression.js'
+import type { TokenizerPrecheckV1 } from './tokenizer-precheck.js'
+import type { OutputCapV1 } from './output-cap.js'
+import type { OutputEchoV1 } from './output-echo.js'
+import type { FlipsV1 } from './flips.js'
+import type { AuditCheckId } from './flagging-checks.js'
 
 export type ExportedResponseAuthRecord = Omit<StoredResponseAuth, 'requestPreimage' | 'responsePreimage'>
 
@@ -153,12 +159,22 @@ export interface ProxyAuditSkipEvidenceV1 {
     referenceModel: string
   }
   sellerThinking?: SellerThinkingDiscoveryV1
+  /** The tokenizer pre-check that ran before the skipped request; absent when none ran. */
+  tokenizerPrecheck?: TokenizerPrecheckV1
+  /** The cap check that ran before the skipped request; absent when none ran. */
+  outputCap?: OutputCapV1
+  /** The echo check that ran before the skipped request; absent when none ran. */
+  outputEcho?: OutputEchoV1
+  /** The randomness check (FLIPS, `flips.ts`) that ran after the echo check; absent when none ran. */
+  flips?: FlipsV1
   exchange: ProxyAuditEvidenceExchangeV1
   result: {
     status: 'SKIPPED'
     code: VerificationSkipCode
     reason: string
     outcomeReason?: VerificationOutcomeReasonV1
+    /** What the tokenizer pre-check's requests cost, when one ran before the seller was skipped. */
+    cost?: AuditCostSummaryV1
   }
 }
 
@@ -198,6 +214,35 @@ export interface ProxyAuditEvidenceV1 {
   }
   /** Absent on audits that sent the reference's thinking suppression without asking the seller. */
   sellerThinking?: SellerThinkingDiscoveryV1
+  /**
+   * The tokenizer pre-check that ran before the questions (`tokenizer-precheck.ts`); absent when none ran. On a
+   * `mismatch` the verdict is DIFF and no question was asked: `exchanges` is empty and `result.matchVector` holds
+   * no answer.
+   */
+  tokenizerPrecheck?: TokenizerPrecheckV1
+  /**
+   * The cap check that ran after thinking discovery and before the questions (`output-cap.ts`); absent when none
+   * ran or it does not apply to the model this run. On a `flag` the verdict is DIFF and no question was asked.
+   */
+  outputCap?: OutputCapV1
+  /**
+   * The echo check that ran after the cap check and before the questions (`output-echo.ts`); absent when none ran
+   * or it does not apply to the model this run. On a `flag` the verdict is DIFF and no question was asked.
+   */
+  outputEcho?: OutputEchoV1
+  /** The randomness check (FLIPS, `flips.ts`) that ran after the echo check; absent when none ran. */
+  flips?: FlipsV1
+  /**
+   * Set on an audit that answered another auditor's waiting DIFF: the checks that flagged it there, which ran to
+   * their end here. A flag by another check did not end this audit, so a pre-check mismatch or a cap check flag
+   * may then sit beside the questions.
+   */
+  confirming?: { checks: AuditCheckId[]; /** The chain time of the report it answers. */ reportedAt?: number }
+  /**
+   * The evidence format: `all-tests-v1`, every test runs and none ends the audit; `result` is the questions' own,
+   * and the audit's verdict is derived from it and the test records (`audit-checks.ts` `verdictOf`).
+   */
+  tests?: 'all-tests-v1'
   exchanges: ProxyAuditEvidenceExchangeV1[]
   resume?: {
     parentAuditId: string
@@ -214,6 +259,17 @@ export interface ProxyAuditEvidenceV1 {
     verdict: Exclude<FingerprintVerdict, 'UNKNOWN'>
     verdictReason: string | null
     outcomeReason?: VerificationOutcomeReasonV1 | null
+    /**
+     * The questions were not finished: the seller was skipped at this batch (another test may still have flagged).
+     * A reader takes it only when that batch is stored and did not succeed; the questions are then undecided.
+     */
+    unfinished?: { batchIndex: number; reason: string }
+    /**
+     * The coverage rule this set's look was decided by (`kbf-coverage-v1`: under the coverage a DIFF needs, still DIFF
+     * at p ≤ 1e-6 over at least 50 scored answers). Absent on sets from before it: they keep the plain coverage rule.
+     * Every reader judges the set by the rule it names, never by a newer one.
+     */
+    coverageRule?: KbfCoverageRule['id']
     cost: AuditCostSummaryV1
     cumulativeCost?: AuditCostSummaryV1
   }
@@ -259,6 +315,30 @@ export function addAuditCostSummaries(...summaries: AuditCostSummaryV1[]): Audit
     pricedExchangeCount: total.pricedExchangeCount + summary.pricedExchangeCount,
     missingCostExchangeCount: total.missingCostExchangeCount + summary.missingCostExchangeCount,
   }), emptyAuditCostSummary())
+}
+
+/** One paid request, for cost and request counts: its tries (`requestCount`) and what each priced try cost. */
+export interface PaidRequest {
+  requestCount: number
+  attemptCosts: readonly ProxyAuditExchangeCostV1[]
+}
+
+/** What these requests cost, in their order (the float sums follow it). A request with no priced try is missing its cost. */
+export function costOfRequests(requests: readonly PaidRequest[]): AuditCostSummaryV1 {
+  const priced = requests.flatMap((request) => request.attemptCosts)
+  return {
+    inputTokens: priced.reduce((total, cost) => total + cost.inputTokens, 0),
+    outputTokens: priced.reduce((total, cost) => total + cost.outputTokens, 0),
+    totalTokens: priced.reduce((total, cost) => total + cost.totalTokens, 0),
+    estimatedCostUsd: priced.reduce((total, cost) => total + cost.estimatedCostUsd, 0),
+    pricedExchangeCount: requests.filter((request) => request.attemptCosts.length > 0).length,
+    missingCostExchangeCount: requests.filter((request) => request.attemptCosts.length === 0).length,
+  }
+}
+
+/** The requests sent, counting tries. */
+export function requestCountOf(requests: readonly PaidRequest[]): number {
+  return requests.reduce((total, request) => total + request.requestCount, 0)
 }
 
 export function summarizeAuditExchangeCosts(

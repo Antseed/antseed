@@ -63,12 +63,23 @@ export function findAdvertisedService(
   const normalized = service.trim().toLowerCase()
   const exact = services.get(normalized)
   if (exact) return { service: normalized, advertised: exact }
-  const key = canonicalModelKey(normalized)
-  if (key.length === 0) return null
   for (const [candidate, advertised] of services) {
-    if (canonicalModelKey(candidate) === key) return { service: candidate, advertised }
+    if (sameModelService(candidate, normalized)) return { service: candidate, advertised }
   }
   return null
+}
+
+/**
+ * Whether two service names are one model as sellers are admitted to it: the same name, or the same canonical model key
+ * (`anthropic/claude-opus-5.5` and `claude-opus-5-5` are `claude-opus-5.5`). Discovery and the evidence readers use
+ * this one rule, so a seller admitted under its own spelling is never refused for it at submit.
+ */
+export function sameModelService(left: string, right: string): boolean {
+  const a = left.trim().toLowerCase()
+  const b = right.trim().toLowerCase()
+  if (a === b) return true
+  const key = canonicalModelKey(a)
+  return key.length > 0 && key === canonicalModelKey(b)
 }
 
 /**

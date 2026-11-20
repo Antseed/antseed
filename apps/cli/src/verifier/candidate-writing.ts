@@ -131,8 +131,12 @@ export class CandidateWritingPolicy {
 
 /**
  * The fallback for a route: a little thinking (`reasoning.effort: "minimal"`), only on OpenRouter
- * routes whose recorded setting turns thinking off. Routes that already think, Anthropic Messages
- * routes and other APIs get none and write questions exactly as before.
+ * routes whose recorded setting turns thinking off, or sets no thinking at all (`bare`: the model
+ * ignored every way of turning it off). A `bare` model thinks as long as it likes, and on a long list
+ * it can spend every token thinking and return no text: GLM 5.3 on its maker's endpoint did this for
+ * every batch, while `minimal` cut its thinking about fourfold on audit questions. Routes with
+ * another thinking setting, Anthropic Messages routes and other APIs get none and write questions
+ * exactly as before.
  */
 export function candidateWritingFallback(route: {
   type: string
@@ -152,5 +156,9 @@ export function candidateWritingFallback(route: {
   const overrides = route.requestOverrides
   const reasoning = overrides.reasoning as { effort?: unknown } | undefined
   const thinkingOff = overrides.reasoning_effort === 'none' || reasoning?.effort === 'none'
-  return thinkingOff ? 'reasoning-effort-minimal' : null
+  const noThinkingSetting = !THINKING_SETTINGS.some((key) => key in overrides)
+  return thinkingOff || noThinkingSetting ? 'reasoning-effort-minimal' : null
 }
+
+/** Request fields that set thinking on some route: a route with none of them leaves thinking to the model. */
+const THINKING_SETTINGS = ['reasoning', 'reasoning_effort', 'thinking', 'enable_thinking', 'chat_template_kwargs'] as const

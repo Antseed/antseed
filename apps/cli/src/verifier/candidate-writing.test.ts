@@ -16,13 +16,20 @@ test('only an answer that used its tokens and gave under half the facts rambles'
   assert.equal(isRamblingCandidateAnswer({ factCount: 10, requestedCount: 20, outputTokens: 6000, maxTokens: 6000 }), false)
 })
 
-test('the fallback is a little thinking, only on OpenRouter routes that turn thinking off', () => {
+test('the fallback is a little thinking, only on OpenRouter routes that turn thinking off or set none', () => {
   assert.equal(candidateWritingFallback(openRouter({ reasoning_effort: 'none' })), 'reasoning-effort-minimal')
   assert.equal(candidateWritingFallback(openRouter({ reasoning: { effort: 'none' } })), 'reasoning-effort-minimal')
-  // Always-thinking models already think; other strategies, APIs and Antseed peers are left alone.
+  // 'bare' (no thinking setting: the model ignored every way to turn it off) can think until no text is left, as GLM 5.3
+  // did on every question-writing batch; a little thinking caps it.
+  assert.equal(candidateWritingFallback(openRouter({})), 'reasoning-effort-minimal')
+  assert.equal(candidateWritingFallback(openRouter({ provider: { order: ['example'] } })), 'reasoning-effort-minimal')
+  // A route with another thinking setting keeps it; other APIs and Antseed peers are left alone.
   assert.equal(candidateWritingFallback(openRouter({ reasoning: { effort: 'low', exclude: true } })), null)
   assert.equal(candidateWritingFallback(openRouter({ thinking: { type: 'disabled' } })), null)
-  assert.equal(candidateWritingFallback(openRouter({})), null)
+  assert.equal(candidateWritingFallback(openRouter({ enable_thinking: false })), null)
+  assert.equal(candidateWritingFallback(openRouter({ chat_template_kwargs: { enable_thinking: false } })), null)
+  assert.equal(candidateWritingFallback({ ...openRouter({}), assistantPrefill: '<think></think>' }), null)
+  assert.equal(candidateWritingFallback({ ...openRouter({}), type: 'antseed' }), null)
   assert.equal(candidateWritingFallback({ ...openRouter({ reasoning_effort: 'none' }), assistantPrefill: '<think></think>' }), null)
   assert.equal(candidateWritingFallback({ ...openRouter({ reasoning_effort: 'none' }), protocol: 'anthropic-messages' }), null)
   assert.equal(candidateWritingFallback({ ...openRouter({ reasoning_effort: 'none' }), baseUrl: 'https://api.openai.com/v1' }), null)

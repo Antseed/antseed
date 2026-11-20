@@ -3,6 +3,7 @@ import {
   KBF_EXTENSION_RULE,
   KBF_EXTENSION_RULE_V1,
   KBF_EXTENSION_RULE_V2,
+  KBF_COVERAGE_RULE_V1,
   binomialOneSidedPValue,
   classifyKbfFirstLook,
   computeKbfPooledVerdict,
@@ -183,5 +184,30 @@ describe('kbf-extension-v2 (up to two extra sets)', () => {
   it('catches a grey-zone cheater more often than the two-look rule', () => {
     // Null rate 10%, the seller 17%, 100 questions per set.
     expect(sequentialDiffRate(100, 0.1, 0.17, v2)).toBeGreaterThan(sequentialDiffRate(100, 0.1, 0.17, KBF_EXTENSION_RULE_V1));
+  });
+});
+
+describe('computeKbfPooledVerdict under kbf-coverage-v1', () => {
+  const set = (selfHamming: number, selfTotal: number, targetHamming: number, targetTotal: number, probeCount = targetTotal) => ({
+    stats: { selfHamming, selfTotal, targetHamming, targetTotal }, probeCount,
+  });
+
+  it('a pooled look under minDiffCoverage is DIFF at p <= 1e-6 over at least 50 scored answers, and UNDETERMINED without the rule', () => {
+    // A close call (13 of 105 scored off), then an extra set with whole batches lost (26 of 97 off): pooled 202 of 260.
+    const input = {
+      first: set(6, 150, 13, 105, 130), extensions: [set(6, 150, 26, 97, 130)], minCoverage: 0.5, minDiffCoverage: 0.8, rule: KBF_EXTENSION_RULE_V2,
+    };
+    const without = computeKbfPooledVerdict(input);
+    expect(without.stats.targetCoverage!).toBeLessThan(0.8);
+    expect(without.stats.pValueBinomial!).toBeLessThanOrEqual(1e-6);
+    expect([without.verdict, without.extend]).toEqual(['UNDETERMINED', false]);
+    const withRule = computeKbfPooledVerdict({ ...input, coverageRule: KBF_COVERAGE_RULE_V1 });
+    expect([withRule.verdict, withRule.extend]).toEqual(['DIFF', false]);
+    expect(withRule.stats).toEqual(without.stats);
+    expect(withRule.verdictReason).toMatch(/kbf-coverage-v1.*\(kbf-extension-v2\)$/);
+    // A pooled look still in the grey zone extends as before, whatever the coverage rule says.
+    const grey = { ...input, extensions: [set(6, 150, 8, 97, 130)] };
+    expect(computeKbfPooledVerdict(grey).extend).toBe(true);
+    expect(computeKbfPooledVerdict({ ...grey, coverageRule: KBF_COVERAGE_RULE_V1 })).toEqual(computeKbfPooledVerdict(grey));
   });
 });
