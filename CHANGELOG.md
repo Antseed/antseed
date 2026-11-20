@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Website: providers can apply for Foundation staking directly from the providers page again.
+
 ### Changed
 
 - Website: the Colony waitlist card now leads with the waitlist number in large type, and it only appears once the number is known, from the welcome email's link to `/colony/joined/`. Before that, the sign-up's last step and `/colony/joined/` say the card with the number comes by email. On a computer, Share on X copies the card to the clipboard before it opens X, so one paste attaches the picture to the post. If the browser refuses the copy, the page says to save the image instead.

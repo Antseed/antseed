@@ -4,6 +4,7 @@ import {Top} from './Top';
 import {Figures} from './Figures';
 import {Running} from './Running';
 import {Reputation} from './Reputation';
+import {FoundationStaking} from './FoundationStaking';
 import styles from './Page.module.css';
 
 /** /providers/: becoming your own provider. */
@@ -18,6 +19,7 @@ export default function Page(): JSX.Element {
       <Figures />
       <Running />
       <Reputation />
+      <FoundationStaking />
     </SitePage>
   );
 }
