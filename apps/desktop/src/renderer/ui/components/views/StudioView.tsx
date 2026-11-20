@@ -148,7 +148,8 @@ function StudioProject({ id, onClose, onSelectView }: { id: string; onClose: () 
   const project = useCachedResource(resource);
   const [chatReady, setChatReady] = useState(false);
   const [context, setContext] = useState<ChatContext | null>(null);
-  const [opening, setOpening] = useState<string | null>(null);
+  const [converting, setConverting] = useState(false);
+  const [convertError, setConvertError] = useState('');
   const sending = useUiSelector(state => state.chatSending || state.chatInputDisabled || !state.chatSelectedModelId);
   const hasOpenChat = useUiSelector((state) => state.chatActiveConversation !== null);
   const splitRef = useRef<HTMLDivElement>(null);
@@ -190,18 +191,23 @@ function StudioProject({ id, onClose, onSelectView }: { id: string; onClose: () 
                   <p className={styles.notice} role="status"><span className={styles.dot} aria-hidden="true" />This project was made as a storyboard. Open it in the editor to trim, replace and export it; its shots and titles are kept, and its clips each end in a Cut.</p>
                   <Button
                     size="sm"
-                    disabled={opening !== null}
+                    disabled={converting}
                     onClick={() => {
-                      setOpening('');
-                      void window.antseedDesktop?.studioEdit?.(id, { type: 'convert' }).then((result) => {
-                        setOpening(result?.ok ? null : result?.error ?? 'Could not open the track editor');
-                        void resource.reload();
-                      });
+                      setConverting(true);
+                      setConvertError('');
+                      // A failed attempt says why and leaves the button on, so the user can try again.
+                      void Promise.resolve(window.antseedDesktop?.studioEdit?.(id, { type: 'convert' }))
+                        .then((result) => { if (!result?.ok) setConvertError(result?.error ?? 'Could not open the track editor'); })
+                        .catch((err: unknown) => { setConvertError(err instanceof Error ? err.message : 'Could not open the track editor'); })
+                        .finally(() => {
+                          setConverting(false);
+                          void resource.reload();
+                        });
                     }}
                   >
                     Open in the editor
                   </Button>
-                  {opening ? <p className={styles.notice} role="alert"><span className={styles.dot} aria-hidden="true" />{opening}</p> : null}
+                  {convertError ? <p className={styles.notice} role="alert"><span className={styles.dot} aria-hidden="true" />{convertError}</p> : null}
                 </div>
                 <StudioBoard detail={detail} />
               </>
