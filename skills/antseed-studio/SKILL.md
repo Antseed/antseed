@@ -68,10 +68,10 @@ When a file is saved, write a small JSON file into `deliveries/` (create the fol
 
 ```bash
 mkdir -p deliveries
-jq -n --arg file clips/c4-v2.mp4 '{clip: "c4", file: $file, usd: 0.36, model: "<video model>"}' > deliveries/.c4-v2.tmp && mv deliveries/.c4-v2.tmp deliveries/c4-v2.json
+jq -n --arg file clips/c4-v2.mp4 '{clip: "c4", file: $file, usd: 0.36, model: "<video model>", startFrame: "stills/a4.png", endFrame: "stills/a5.png"}' > deliveries/.c4-v2.tmp && mv deliveries/.c4-v2.tmp deliveries/c4-v2.json
 ```
 
-- A clip: `{"clip": "<clip id>", "file": "clips/...mp4", "usd": <price paid>, "model": "<model>"}`.
+- A clip: `{"clip": "<clip id>", "file": "clips/...mp4", "usd": <price paid>, "model": "<model>", "startFrame": "<image it started from>", "endFrame": "<image it landed on>"}`. `startFrame` and `endFrame` are the image files you gave the model, as paths in the project folder; `endFrame` is `null` for a clip without an end frame. The app checks the clip against these, so if the user replaced one of them while you worked, the clip shows as out of date. Always include them.
 - An image: `{"anchor": "<anchor id>", "file": "stills/...png", "usd": <price paid>, "model": "<model>"}`.
 - Write to a temporary name starting with a dot, then move it, so the app never reads half a file. `usd` is what the output cost, as you quoted it; the app shows the sum as spent by your count.
 - A delivery whose clip or anchor is no longer on the track lands in `deliveries/failed/`; tell the user, since the user may have removed it while you worked.

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants, type Dirent } from 'node:fs';
 import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -20,6 +20,7 @@ import {
   trackFromBoard,
   TrackEditError,
   undoTo,
+  type IngestRecord,
   type StudioLibraryItem,
   type StudioTrack,
   type TrackEdit,
@@ -309,11 +310,21 @@ export function editStudioTrack(dir: string, edit: TrackEdit, options: { picked?
   });
 }
 
+/** A delivery file and its key: its name, time and content, so a file written again under the same name is new. */
+async function readDelivery(file: string): Promise<{ raw: unknown; key: string }> {
+  const info = await lstat(file);
+  if (!info.isFile() || info.size > 64 * 1024) throw new Error(`${path.basename(file)} is not readable`);
+  const content = await readFile(file);
+  const hash = createHash('sha256').update(content).digest('hex').slice(0, 16);
+  return { raw: JSON.parse(content.toString('utf8')) as unknown, key: `${path.basename(file)}:${String(Math.floor(info.mtimeMs))}:${hash}` };
+}
+
 /**
  * Takes in files the agent announced in deliveries/*.json: each becomes a new
  * version on the track. Read deliveries move to deliveries/done, unreadable
  * ones to deliveries/failed, so none is applied twice. Each one is saved to
- * the track before it moves, so a delivery that moved is never lost.
+ * the track, with its key, before it moves: a delivery that moved is never
+ * lost, and one that could not be moved is only moved on the next read.
  */
 export function ingestStudioDeliveries(dir: string, now: number = Date.now()): Promise<string[]> {
   return queue.run(async () => {
@@ -333,23 +344,33 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
     const media = await scanStudioMedia(dir);
     const notices: string[] = [];
     for (const name of names) {
+      const before = track;
       let applied = false;
       let problem = 'could not be read';
+      let key: string | null = null;
+      // An edit the user asked for in chat is undoable like the user's own; a delivered file is not an edit of the user's, so Undo never takes it away.
+      let undoable = false;
+      let taken: IngestRecord | undefined;
       try {
-        const raw = await readJson(path.join(inbox, name), 64 * 1024);
-        const agentEdit = parseStudioAgentEdit(raw);
-        const delivery = agentEdit ? null : parseStudioDelivery(raw);
-        if (agentEdit) {
+        const read = await readDelivery(path.join(inbox, name));
+        key = read.key;
+        taken = track?.ingested.find((entry) => entry.key === read.key);
+        const raw = read.raw;
+        const agentEdit = taken ? null : parseStudioAgentEdit(raw);
+        const delivery = taken || agentEdit ? null : parseStudioDelivery(raw);
+        if (taken) {
+          // Saved to the track on an earlier read, which could not move it: only the move is left.
+          applied = taken.applied;
+          problem = 'was not placed on the track';
+        } else if (agentEdit) {
           if (!track) {
             problem = 'is an edit, and this project is still an old storyboard: open it in the editor first';
           } else {
+            // Only the edit's own refusal sets it aside; a failure to save it leaves it in the inbox.
             try {
-              // An edit the user asked for in chat is undoable like the user's own.
-              const next = applyTrackEdit(track, agentEdit, trackFiles(media, new Map()));
-              await saveTrack(dir, next, track);
-              track = next;
-              saved = next;
+              track = applyTrackEdit(track, agentEdit, trackFiles(media, new Map()));
               applied = true;
+              undoable = true;
             } catch (err) {
               problem = `asks for an edit the track refused (${err instanceof Error ? err.message : String(err)})`;
             }
@@ -373,9 +394,9 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
       } catch {
         applied = false;
       }
-      // A delivered file is not an edit of the user's, so Undo never takes it away.
       if (track && track !== saved) {
-        await saveTrack(dir, track, null);
+        if (key) track = { ...track, ingested: [...track.ingested, { key, applied }].slice(-200) };
+        await saveTrack(dir, track, undoable ? before : null);
         saved = track;
       }
       if (!applied) notices.push(`${STUDIO_DELIVERIES_DIR}/${name} ${problem}. It was moved to ${STUDIO_DELIVERIES_DIR}/failed.`);
@@ -385,4 +406,3 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
     return notices;
   });
 }
-

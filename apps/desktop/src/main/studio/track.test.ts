@@ -21,7 +21,7 @@ import {
 } from '../../shared/studio-track.js';
 import { parseStudioBoard, STUDIO_MEDIA_TOOLS_MISSING, sumStudioCost } from '../../shared/studio.js';
 import { createStudioProject, getStudioProject } from './store.js';
-import { detectStudioMediaTools, editStudioTrack, ingestStudioDeliveries } from './track.js';
+import { detectStudioMediaTools, editStudioTrack, ingestStudioDeliveries, studioCanUndo } from './track.js';
 
 const files = (...names: string[]) => ({ has: (file: string) => names.includes(file), seconds: () => 4 });
 const all = files('stills/a.png', 'stills/b.png', 'stills/c.png', 'stills/new.png', 'clips/one.mp4', 'clips/two.mp4');
@@ -81,7 +81,7 @@ test('a trim sets a new end frame and needs a decision; Extend makes that frame 
   assert.equal(cut.anchors[1]!.image, 'stills/b.png');
   const extended = applyTrackEdit(trimmed, { type: 'then', anchor: 'a1', then: 'extend' }, all);
   assert.equal(extended.anchors[1]!.image, 'frames/x.png');
-  assert.deepEqual(extended.anchors[1]!.from, { clip: 'c1', at: 2.5 });
+  assert.deepEqual(extended.anchors[1]!.from, { clip: 'c1', at: 2.5, replaced: 'stills/b.png' });
   assert.deepEqual(extended.anchors[1]!.earlier, ['stills/b.png']);
   assert.equal(clipState(extended, 0), 'ready', 'the trimmed clip ends on its own frame');
   assert.equal(clipState(extended, 1), 'stale', 'the next clip started from the old image');
@@ -456,4 +456,153 @@ test('without ffmpeg and ffprobe, trim says why and a library clip still goes in
   assert.equal(track.anchors[0]!.clip!.versions[0]!.seconds, null, 'its length is unknown without ffprobe');
   await assert.rejects(editStudioTrack(dir, { type: 'trim', anchor: 'a1', end: 1 }), (error: Error) => error.message === STUDIO_MEDIA_TOOLS_MISSING);
   await assert.rejects(editStudioTrack(dir, { type: 'export' }), (error: Error) => error.message === STUDIO_MEDIA_TOOLS_MISSING);
+});
+
+test('resetting an end after several trims that extend puts back the image from before the first', () => {
+  const base = parseStudioTrack({ aspectRatio: '16:9', anchors: [
+    { id: 'a1', image: 'stills/a.png', clip: { id: 'c1', then: null, use: 'clips/one.mp4', versions: [{ file: 'clips/one.mp4', from: 'stills/a.png', to: null, seconds: 4 }] } },
+    { id: 'a2', image: 'stills/b.png' },
+  ] });
+  const files = { has: () => true, seconds: () => 4 };
+  const trimAndExtend = (track: StudioTrack, end: number, frame: string) =>
+    applyTrackEdit(applyTrackEdit(track, { type: 'trim', anchor: 'a1', end }, files, { frame }), { type: 'then', anchor: 'a1', then: 'extend' }, files);
+  const twice = trimAndExtend(trimAndExtend(base, 3, 'frames/f1.png'), 2, 'frames/f2.png');
+  assert.equal(twice.anchors[1]!.image, 'frames/f2.png');
+  const reset = applyTrackEdit(twice, { type: 'reset-trim', anchor: 'a1' }, files);
+  assert.equal(reset.anchors[1]!.image, 'stills/b.png', 'the image the shot had before any frame of this clip');
+  assert.equal(reset.anchors[1]!.from, null);
+  assert.ok(reset.anchors[1]!.earlier.includes('frames/f1.png') && reset.anchors[1]!.earlier.includes('frames/f2.png'), 'both frames stay in the library');
+  // The kept image survives a save and a read.
+  const reread = parseStudioTrack(JSON.parse(JSON.stringify(twice)));
+  assert.equal(applyTrackEdit(reread, { type: 'reset-trim', anchor: 'a1' }, files).anchors[1]!.image, 'stills/b.png');
+});
+
+test('resetting an end that extended into a shot without an image leaves it without one', () => {
+  const base = parseStudioTrack({ aspectRatio: '16:9', anchors: [
+    { id: 'a1', image: 'stills/a.png', clip: { id: 'c1', then: null, use: 'clips/one.mp4', versions: [{ file: 'clips/one.mp4', from: 'stills/a.png', to: null, seconds: 4 }] } },
+    { id: 'a2', image: null, earlier: ['stills/old.png'] },
+  ] });
+  const files = { has: () => true, seconds: () => 4 };
+  const extended = applyTrackEdit(applyTrackEdit(base, { type: 'trim', anchor: 'a1', end: 2 }, files, { frame: 'frames/x.png' }), { type: 'then', anchor: 'a1', then: 'extend' }, files);
+  assert.equal(extended.anchors[1]!.image, 'frames/x.png');
+  const reset = applyTrackEdit(extended, { type: 'reset-trim', anchor: 'a1' }, files);
+  assert.equal(reset.anchors[1]!.image, null, 'not an older image from its library');
+  assert.equal(reset.anchors[1]!.from, null);
+  assert.ok(reset.anchors[1]!.earlier.includes('frames/x.png'));
+});
+
+test('a video longer than ten minutes keeps its length and a trim past ten minutes through a save and a read', () => {
+  const base = parseStudioTrack({ anchors: [
+    { id: 'a1', image: 'stills/a.png', clip: { id: 'c1', then: null } },
+    { id: 'a2', image: 'stills/b.png' },
+  ] });
+  const long = { has: () => true, seconds: () => 900 };
+  const added = applyTrackEdit(base, { type: 'add-version', anchor: 'a1', file: 'uploads/long.mp4' }, long);
+  const trimmed = applyTrackEdit(added, { type: 'trim', anchor: 'a1', end: 700 }, long, { frame: 'frames/x.png' });
+  const extended = applyTrackEdit(trimmed, { type: 'then', anchor: 'a1', then: 'extend' }, long);
+  const reread = parseStudioTrack(JSON.parse(JSON.stringify(extended)));
+  const clip = reread.anchors[0]!.clip!;
+  assert.equal(clip.versions[0]!.seconds, 900);
+  assert.equal(clip.end, 700, 'the trim the editor took is the one the export uses');
+  assert.equal(clip.endFrame, 'frames/x.png');
+  assert.equal(reread.anchors[1]!.from?.at, 700);
+  assert.equal(clipState(reread, 0), 'ready');
+});
+
+test('a clip asked for in chat and delivered after its start image changed is out of date', async (t) => {
+  const tmp = await mkdtemp(path.join(tmpdir(), 'studio-chat-clip-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const root = path.join(tmp, 'studio');
+  await mkdir(root);
+  const { id } = await createStudioProject('Chat clip', root);
+  const dir = path.join(root, id);
+  await mkdir(path.join(dir, 'stills'));
+  await mkdir(path.join(dir, 'clips'));
+  for (const file of ['stills/a.png', 'stills/b.png', 'stills/new.png']) await writeFile(path.join(dir, file), 'x');
+  await writeFile(path.join(dir, 'clips/one.mp4'), 'x');
+  await editStudioTrack(dir, { type: 'add-anchor', index: 0, file: 'stills/a.png' });
+  await editStudioTrack(dir, { type: 'add-anchor', index: 1, file: 'stills/b.png', scene: 'new' });
+  // The user asked in chat, not with Update, so the editor recorded no request; then replaced the start image.
+  const clipId = (await editStudioTrack(dir, { type: 'set-image', anchor: 'a1', file: 'stills/new.png' })).track.anchors[0]!.clip!.id;
+  await mkdir(path.join(dir, 'deliveries'));
+  await writeFile(path.join(dir, 'deliveries/clip.json'), JSON.stringify({ clip: clipId, file: 'clips/one.mp4', usd: 0.36, model: 'Example video model', startFrame: 'stills/a.png', endFrame: null }));
+  assert.deepEqual(await ingestStudioDeliveries(dir, 5), []);
+  const track = (await getStudioProject(id, root))!.track!;
+  assert.equal(track.anchors[0]!.clip!.use, 'clips/one.mp4');
+  assert.equal(track.anchors[0]!.clip!.versions[0]!.from, 'stills/a.png', 'made from the image the agent used');
+  assert.equal(clipStaleReason(track, 0), 'image');
+  assert.equal(track.delivered[0]!.delivery.kind === 'clip' ? track.delivered[0]!.delivery.startFrame : null, 'stills/a.png');
+});
+
+test('an edit the agent delivers stays in the inbox when the track cannot be saved, and goes in once it can', async (t) => {
+  if (process.getuid?.() === 0) { t.skip('root ignores folder permissions'); return; }
+  const tmp = await mkdtemp(path.join(tmpdir(), 'studio-edit-save-'));
+  t.after(async () => { await chmod(dir, 0o755).catch(() => {}); await rm(tmp, { recursive: true, force: true }); });
+  const root = path.join(tmp, 'studio');
+  await mkdir(root);
+  const { id } = await createStudioProject('Edit save', root);
+  const dir = path.join(root, id);
+  await editStudioTrack(dir, { type: 'add-anchor', index: 0 });
+  await mkdir(path.join(dir, 'deliveries/failed'), { recursive: true });
+  await mkdir(path.join(dir, 'deliveries/done'));
+  await writeFile(path.join(dir, 'deliveries/title.json'), JSON.stringify({ edit: { type: 'title', anchor: 'a1', title: 'The chase' } }));
+  // The project folder refuses the track write; the inbox stays writable.
+  await chmod(dir, 0o555);
+  await assert.rejects(ingestStudioDeliveries(dir, 7));
+  assert.deepEqual(await readdir(path.join(dir, 'deliveries/failed')), [], 'a failed save is not a refused edit');
+  assert.ok((await readdir(path.join(dir, 'deliveries'))).includes('title.json'));
+  await chmod(dir, 0o755);
+  assert.deepEqual(await ingestStudioDeliveries(dir, 8), []);
+  assert.equal((await getStudioProject(id, root))!.track!.anchors[0]!.title, 'The chase');
+  assert.deepEqual(await readdir(path.join(dir, 'deliveries/done')), ['8-title.json']);
+});
+
+test('a delivery saved to the track but not moved out of the inbox is not applied again', async (t) => {
+  const tmp = await mkdtemp(path.join(tmpdir(), 'studio-ingest-twice-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const root = path.join(tmp, 'studio');
+  await mkdir(root);
+  const { id } = await createStudioProject('Twice', root);
+  const dir = path.join(root, id);
+  await editStudioTrack(dir, { type: 'add-anchor', index: 0 });
+  await mkdir(path.join(dir, 'stills'));
+  await writeFile(path.join(dir, 'stills/a.png'), 'x');
+  await mkdir(path.join(dir, 'deliveries'));
+  // A file where the archive folder goes: the track saves, the move fails.
+  const blockArchive = () => writeFile(path.join(dir, 'deliveries/done'), 'not a folder');
+  const unblockArchive = () => rm(path.join(dir, 'deliveries/done'));
+  const historyLength = async () => JSON.parse(await readFile(path.join(dir, 'track.history.json'), 'utf8')).length as number;
+
+  // A file delivery with a price.
+  await writeFile(path.join(dir, 'deliveries/image.json'), JSON.stringify({ anchor: 'a1', file: 'stills/a.png', usd: 0.04, model: 'Example image model' }));
+  await blockArchive();
+  await assert.rejects(ingestStudioDeliveries(dir, 7));
+  let track = (await getStudioProject(id, root))!.track!;
+  assert.equal(track.anchors[0]!.image, 'stills/a.png', 'saved before the move');
+  await unblockArchive();
+  assert.deepEqual(await ingestStudioDeliveries(dir, 8), []);
+  track = (await getStudioProject(id, root))!.track!;
+  assert.equal(sumStudioCost(track.spent), 0.04, 'spent once');
+  assert.equal(track.delivered.length, 1);
+  assert.deepEqual(await readdir(path.join(dir, 'deliveries/done')), ['8-image.json']);
+
+  // An edit the agent delivers.
+  const history = await historyLength();
+  await writeFile(path.join(dir, 'deliveries/add.json'), JSON.stringify({ edit: { type: 'add-anchor', index: 1, scene: 'new' } }));
+  await rm(path.join(dir, 'deliveries/done'), { recursive: true });
+  await blockArchive();
+  await assert.rejects(ingestStudioDeliveries(dir, 9));
+  assert.equal((await getStudioProject(id, root))!.track!.anchors.length, 2);
+  await unblockArchive();
+  assert.deepEqual(await ingestStudioDeliveries(dir, 10), []);
+  track = (await getStudioProject(id, root))!.track!;
+  assert.equal(track.anchors.length, 2, 'one anchor added, not two');
+  assert.equal(await historyLength(), history + 1, 'one undo step');
+  assert.ok(await studioCanUndo(dir));
+  assert.deepEqual(await readdir(path.join(dir, 'deliveries/done')), ['10-add.json']);
+
+  // The same name written again later is a new delivery.
+  await writeFile(path.join(dir, 'deliveries/add.json'), JSON.stringify({ edit: { type: 'add-anchor', index: 2, scene: 'new' } }));
+  assert.deepEqual(await ingestStudioDeliveries(dir, 11), []);
+  assert.equal((await getStudioProject(id, root))!.track!.anchors.length, 3);
 });

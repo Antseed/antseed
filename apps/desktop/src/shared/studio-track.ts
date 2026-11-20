@@ -51,8 +51,12 @@ export type TrackAnchor = {
   id: string;
   image: string | null;
   earlier: string[];
-  /** Set when the image is a frame taken from a clip (a trim that extends). */
-  from: { clip: string; at: number } | null;
+  /**
+   * Set when the image is a frame taken from a clip (a trim that extends).
+   * `replaced` is the image the shot had before that frame, null when it had
+   * none: Reset end puts it back, however often the clip was trimmed since.
+   */
+  from: { clip: string; at: number; replaced: string | null } | null;
   /** The shot's title on the storyboard, e.g. "Grand theft ladybug". */
   title: string;
   prompt: string;
@@ -75,8 +79,17 @@ export type StudioTrack = {
   exports: string[];
   /** Every file the agent delivered, in order, so Undo can put them back. */
   delivered: DeliveryRecord[];
+  /**
+   * The inbox files already taken in, saved with the track they changed, so
+   * a delivery whose file could not be moved out of the inbox is never
+   * applied twice.
+   */
+  ingested: IngestRecord[];
   nextId: number;
 };
+
+/** `key`: the inbox file's name, time and content; `applied`: whether it went on the track. */
+export type IngestRecord = { key: string; applied: boolean };
 
 /** `inputs`: the images a delivered clip was made from, so Undo puts it back with them. */
 export type DeliveryRecord = { key: string; at: number; seconds: number | null; delivery: StudioDelivery; inputs?: ClipInputs };
@@ -115,11 +128,14 @@ export const MIN_CLIP_SECONDS = 1;
 export const MAX_CLIP_SECONDS = 30;
 export const DEFAULT_CLIP_SECONDS = 5;
 export const STUDIO_ASPECT_RATIOS = ['16:9', '9:16', '1:1'] as const;
+/** The longest video, trim or frame time the track keeps; an edit takes no more than a read keeps. */
+export const MAX_MEDIA_SECONDS = 24 * 60 * 60;
 const MAX_ANCHORS = 120;
+const MAX_INGESTED = 200;
 const MAX_VERSIONS = 64;
 
 export function emptyStudioTrack(): StudioTrack {
-  return { version: 1, aspectRatio: '16:9', anchors: [], scenes: {}, labels: {}, spent: [], exports: [], delivered: [], nextId: 1 };
+  return { version: 1, aspectRatio: '16:9', anchors: [], scenes: {}, labels: {}, spent: [], exports: [], delivered: [], ingested: [], nextId: 1 };
 }
 
 // ---------- parsing ----------
@@ -137,7 +153,7 @@ function media(value: unknown, kind: 'image' | 'video'): string | null {
   return normalized && studioMediaKind(normalized) === kind ? normalized : null;
 }
 
-function seconds(value: unknown, max = 600): number | null {
+function seconds(value: unknown, max = MAX_MEDIA_SECONDS): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= max ? value : null;
 }
 
@@ -206,13 +222,16 @@ function parseAnchor(value: unknown): TrackAnchor | null {
   const from = record(item['from']);
   const fromClip = id(from?.['clip']);
   const fromAt = seconds(from?.['at']);
+  const earlier = Array.isArray(item['earlier'])
+    ? [...new Set(item['earlier'].slice(0, MAX_VERSIONS).map((entry) => media(entry, 'image')).filter((entry): entry is string => entry !== null))]
+    : [];
+  // A frame saved before `replaced` was kept took the place of the image saved last.
+  const replaced = from && 'replaced' in from ? media(from['replaced'], 'image') : earlier.at(-1) ?? null;
   return {
     id: anchorId,
     image: media(item['image'], 'image'),
-    earlier: Array.isArray(item['earlier'])
-      ? [...new Set(item['earlier'].slice(0, MAX_VERSIONS).map((entry) => media(entry, 'image')).filter((entry): entry is string => entry !== null))]
-      : [],
-    from: fromClip && fromAt !== null ? { clip: fromClip, at: fromAt } : null,
+    earlier,
+    from: fromClip && fromAt !== null ? { clip: fromClip, at: fromAt, replaced } : null,
     title: text(item['title'], 120),
     prompt: text(item['prompt'], 2000),
     requestedAt: stamp(item['requestedAt']),
@@ -280,6 +299,11 @@ export function parseStudioTrack(raw: unknown): StudioTrack {
       const inputs = parseInputs(recordEntry?.['inputs']);
       return [{ key, at: stamp(recordEntry?.['at']) ?? 0, seconds: seconds(recordEntry?.['seconds']), delivery, ...(inputs ? { inputs } : {}) }];
     }) : [],
+    ingested: Array.isArray(item['ingested']) ? item['ingested'].slice(-MAX_INGESTED).flatMap((entry): IngestRecord[] => {
+      const recordEntry = record(entry);
+      const key = text(recordEntry?.['key'], 400);
+      return key && typeof recordEntry?.['applied'] === 'boolean' ? [{ key, applied: recordEntry['applied'] }] : [];
+    }) : [],
     nextId: Math.max(nextId, highest + 1),
   };
 }
@@ -298,8 +322,13 @@ function blankClip(clipId: string): TrackClip {
 
 // ---------- deliveries from the agent ----------
 
+/**
+ * A clip delivery may say which images it was made from (`startFrame`, and
+ * `endFrame` or null for no end frame): those, not the track's images when it
+ * arrives, are what it is checked against.
+ */
 export type StudioDelivery =
-  | { kind: 'clip'; clip: string; file: string; usd: number | null; model: string }
+  | { kind: 'clip'; clip: string; file: string; usd: number | null; model: string; startFrame?: string; endFrame?: string | null }
   | { kind: 'image'; anchor: string; file: string; usd: number | null; model: string };
 
 /** The edits the agent may ask for when the user tells it in chat. Each one is undoable, like the user's own. */
@@ -379,7 +408,11 @@ export function parseStudioDelivery(raw: unknown): StudioDelivery | null {
   if (item['kind'] !== undefined && item['kind'] !== (clip ? 'clip' : 'image')) return null;
   if (clip && !anchor) {
     const file = media(item['file'], 'video');
-    return file ? { kind: 'clip', clip, file, usd, model } : null;
+    if (!file) return null;
+    const startFrame = media(item['startFrame'], 'image');
+    return startFrame
+      ? { kind: 'clip', clip, file, usd, model, startFrame, endFrame: media(item['endFrame'], 'image') }
+      : { kind: 'clip', clip, file, usd, model };
   }
   if (anchor && !clip) {
     const file = media(item['file'], 'image');
@@ -674,8 +707,9 @@ export function applyTrackEdit(source: StudioTrack, edit: TrackEdit, files: Trac
       const next = track.anchors[index + 1];
       if (edit.then === 'extend' && clip.end !== null && clip.endFrame) {
         // The trimmed end frame becomes the next anchor, so the next clip starts where this one stops.
-        if (next) setImage(next, clip.endFrame, { clip: clip.id, at: clip.end });
-        else track.anchors.push({ id: nextId(track, 'a'), image: clip.endFrame, earlier: [], from: { clip: clip.id, at: clip.end }, title: '', prompt: '', requestedAt: null, clip: null });
+        // The image to put back on Reset end is the one before this clip's first frame, not an earlier frame of it.
+        if (next) setImage(next, clip.endFrame, { clip: clip.id, at: clip.end, replaced: next.from?.clip === clip.id ? next.from.replaced : next.image });
+        else track.anchors.push({ id: nextId(track, 'a'), image: clip.endFrame, earlier: [], from: { clip: clip.id, at: clip.end, replaced: null }, title: '', prompt: '', requestedAt: null, clip: null });
       } else if (!next) {
         fail('This is the last clip. Add an anchor after it first.');
       }
@@ -686,7 +720,7 @@ export function applyTrackEdit(source: StudioTrack, edit: TrackEdit, files: Trac
       const { clip, index } = clipOf(track, edit.anchor);
       if (!clip.use) fail('There is no clip to trim yet.');
       const length = clip.versions.find((version) => version.file === clip.use)?.seconds ?? null;
-      if (!Number.isFinite(edit.end) || edit.end < 0.1 || (length !== null && edit.end > length)) fail('Pick an end inside the clip.');
+      if (!Number.isFinite(edit.end) || edit.end < 0.1 || edit.end > MAX_MEDIA_SECONDS || (length !== null && edit.end > length)) fail('Pick an end inside the clip.');
       if (!extras.frame) fail('The end frame could not be saved.');
       clip.end = Math.round(edit.end * 100) / 100;
       clip.endFrame = extras.frame;
@@ -698,9 +732,8 @@ export function applyTrackEdit(source: StudioTrack, edit: TrackEdit, files: Trac
     case 'reset-trim': {
       const { clip, index } = clipOf(track, edit.anchor);
       const next = track.anchors[index + 1];
-      // The frame this trim gave the next shot goes back to the library, and the image it replaced returns.
-      const replaced = next?.from?.clip === clip.id ? next.earlier.at(-1) : undefined;
-      if (next && replaced) setImage(next, replaced);
+      // The frame this trim gave the next shot goes back to the library, and the image it replaced returns (or none, if it had none).
+      if (next?.from?.clip === clip.id) setImage(next, next.from.replaced);
       clip.end = null;
       clip.endFrame = null;
       if (next) clip.then = null;
@@ -717,7 +750,7 @@ export function applyTrackEdit(source: StudioTrack, edit: TrackEdit, files: Trac
       const { clip, index } = clipOf(track, edit.anchor);
       const file = requireFile(edit.file, 'video');
       if (!clip.versions.some((version) => version.file === file)) {
-        clip.versions.push({ file, from: null, to: null, seconds: files.seconds?.(file) ?? null, label: track.labels[file] ?? 'From the library', addedAt: now });
+        clip.versions.push({ file, from: null, to: null, seconds: seconds(files.seconds?.(file)), label: track.labels[file] ?? 'From the library', addedAt: now });
       }
       activateClipVersion(track, index, file);
       break;
@@ -784,6 +817,7 @@ export function undoTo(earlier: StudioTrack, now: StudioTrack): StudioTrack {
   track.exports = now.exports;
   track.spent = now.spent;
   track.delivered = now.delivered;
+  track.ingested = now.ingested;
   track.nextId = Math.max(earlier.nextId, now.nextId);
   return track;
 }
@@ -797,11 +831,14 @@ function clipInputs(track: StudioTrack, index: number): ClipInputs {
 
 /**
  * Applies a file the agent delivered. Returns null when it no longer has a place on the track.
- * A clip is recorded as made from the images it was asked for with (or `options.inputs`, on
- * Undo), not the track's images now: an image replaced while it was being made leaves it out of date.
+ * A clip is recorded as made from the images it says it was made from, else the ones it was
+ * asked for with in the editor (or `options.inputs`, on Undo), and only failing both from the
+ * track's images now: an image replaced while it was being made leaves it out of date.
  */
-export function applyStudioDelivery(source: StudioTrack, delivery: StudioDelivery, seconds: number | null, now: number, options: { record?: boolean; inputs?: ClipInputs } = {}): StudioTrack | null {
+export function applyStudioDelivery(source: StudioTrack, delivery: StudioDelivery, length: number | null, now: number, options: { record?: boolean; inputs?: ClipInputs } = {}): StudioTrack | null {
   const log = options.record ?? true;
+  // A length a read would drop is not kept now either.
+  const duration = seconds(length);
   const track = structuredClone(source);
   let inputs: ClipInputs | undefined;
   if (delivery.kind === 'image') {
@@ -812,14 +849,15 @@ export function applyStudioDelivery(source: StudioTrack, delivery: StudioDeliver
     const index = track.anchors.findIndex((entry) => entry.clip?.id === delivery.clip);
     if (index < 0) return null;
     const clip = track.anchors[index]!.clip!;
-    inputs = options.inputs ?? clip.requested ?? clipInputs(track, index);
+    const stated = delivery.startFrame ? { from: delivery.startFrame, to: delivery.endFrame ?? null } : null;
+    inputs = options.inputs ?? stated ?? clip.requested ?? clipInputs(track, index);
     clip.versions = clip.versions.filter((version) => version.file !== delivery.file);
-    clip.versions.push({ file: delivery.file, from: inputs.from, to: inputs.to, seconds, label: delivery.model || 'Generated', addedAt: now });
+    clip.versions.push({ file: delivery.file, from: inputs.from, to: inputs.to, seconds: duration, label: delivery.model || 'Generated', addedAt: now });
     activateClipVersion(track, index, delivery.file);
     clip.requestedAt = null;
     clip.requested = null;
   }
-  if (log) track.delivered = [...track.delivered, { key: `${String(now)}:${delivery.file}`, at: now, seconds, delivery, ...(inputs ? { inputs } : {}) }].slice(-200);
+  if (log) track.delivered = [...track.delivered, { key: `${String(now)}:${delivery.file}`, at: now, seconds: duration, delivery, ...(inputs ? { inputs } : {}) }].slice(-200);
   if (log && delivery.usd !== null) {
     const label = delivery.kind === 'image' ? `${anchorName(track, delivery.anchor)} image` : clipName(track, track.anchors.find((entry) => entry.clip?.id === delivery.clip)!.id);
     track.spent.push({ label, detail: delivery.model, usd: delivery.usd });
@@ -841,7 +879,7 @@ export function trackFromBoard(board: StudioBoard, files: TrackFiles, now: numbe
       clip.prompt = shot.description;
       clip.then = index < board.shots.length - 1 ? 'cut' : null;
       if (clipFile) {
-        clip.versions.push({ file: clipFile, from: image, to: null, seconds: files.seconds?.(clipFile) ?? null, label: `Shot ${shot.id}`, addedAt: now });
+        clip.versions.push({ file: clipFile, from: image, to: null, seconds: seconds(files.seconds?.(clipFile)), label: `Shot ${shot.id}`, addedAt: now });
         clip.use = clipFile;
       }
       anchor.clip = clip;
