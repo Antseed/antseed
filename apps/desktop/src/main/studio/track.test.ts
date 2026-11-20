@@ -342,6 +342,72 @@ test('what was spent counts every line, however many retakes a film has', () => 
   assert.equal(board.estimate?.totalUsd, 7);
 });
 
+test('a clip keeps the version it plays when it has more versions than the track keeps', () => {
+  let track = parseStudioTrack({ anchors: [{ id: 'a1', image: 'stills/a.png', clip: { id: 'c1', then: 'cut' } }, { id: 'a2', image: 'stills/b.png' }] });
+  const many = { has: () => true, seconds: () => 4 };
+  for (let n = 1; n <= 65; n += 1) track = applyTrackEdit(track, { type: 'add-version', anchor: 'a1', file: `clips/take-${String(n)}.mp4` }, many, { now: n });
+  const reread = parseStudioTrack(JSON.parse(JSON.stringify(track)));
+  const clip = reread.anchors[0]!.clip!;
+  assert.equal(clip.use, 'clips/take-65.mp4', 'the newest version stays in use after a save and a read');
+  assert.equal(clip.versions.length, 64);
+  assert.equal(clip.versions[0]!.file, 'clips/take-2.mp4', 'the oldest version is the one let go');
+  // A version in use that is older than the rest stays too.
+  const old = parseStudioTrack({ anchors: [{ id: 'a1', image: 'stills/a.png', clip: { id: 'c1', use: 'clips/take-1.mp4', versions: Array.from({ length: 70 }, (_, index) => ({ file: `clips/take-${String(index + 1)}.mp4` })) } }] });
+  assert.equal(old.anchors[0]!.clip!.use, 'clips/take-1.mp4');
+  assert.equal(old.anchors[0]!.clip!.versions.length, 64);
+});
+
+test('switching versions after a trim that extends leaves the next shot\'s frame, and the new version is checked against it', () => {
+  const base = parseStudioTrack({ anchors: [
+    { id: 'a1', image: 'stills/a.png', clip: { id: 'c1', then: null, use: 'clips/one.mp4', versions: [
+      { file: 'clips/one.mp4', from: 'stills/a.png', to: null, seconds: 4 },
+      { file: 'clips/two.mp4', from: 'stills/a.png', to: null, seconds: 4 },
+    ] } },
+    { id: 'a2', image: 'stills/b.png' },
+  ] });
+  const trimmed = applyTrackEdit(base, { type: 'trim', anchor: 'a1', end: 2 }, all, { frame: 'frames/x.png' });
+  const extended = applyTrackEdit(trimmed, { type: 'then', anchor: 'a1', then: 'extend' }, all);
+  assert.equal(clipState(extended, 0), 'ready', 'the trimmed clip ends on its own frame');
+  const switched = applyTrackEdit(extended, { type: 'use-version', anchor: 'a1', file: 'clips/two.mp4' }, all);
+  assert.equal(switched.anchors[1]!.image, 'frames/x.png');
+  assert.equal(switched.anchors[1]!.from, null, 'the frame no longer belongs to the clip in use');
+  assert.equal(clipStaleReason(switched, 0), 'cut', 'the other version was made without an end frame');
+  assert.deepEqual(exportCheck(switched).stale, ['Clip 1→2']);
+});
+
+test('a clip delivered after its images or boundary changed is out of date, and Undo keeps what it was made from', () => {
+  const base = parseStudioTrack({ anchors: [{ id: 'a1', image: 'stills/a.png', clip: { id: 'c1', then: 'extend' } }, { id: 'a2', image: 'stills/b.png' }] });
+  const clipFile = { kind: 'clip' as const, clip: 'c1', file: 'clips/one.mp4', usd: 0.36, model: 'Example' };
+  const asked = edit(base, { type: 'request', clips: ['a1'], images: [] });
+
+  // The start image is replaced while the clip is being made.
+  const replaced = edit(asked, { type: 'set-image', anchor: 'a1', file: 'stills/new.png' });
+  const late = applyStudioDelivery(replaced, clipFile, 4, 2)!;
+  assert.equal(late.anchors[0]!.clip!.versions[0]!.from, 'stills/a.png', 'made from the image it was asked for with');
+  assert.equal(late.anchors[0]!.clip!.requested, null);
+  assert.equal(clipStaleReason(late, 0), 'image');
+  assert.deepEqual(late.delivered[0]!.inputs, { from: 'stills/a.png', to: 'stills/b.png' });
+
+  // The image it lands on is replaced.
+  const landing = applyStudioDelivery(edit(asked, { type: 'set-image', anchor: 'a2', file: 'stills/new.png' }), clipFile, 4, 2)!;
+  assert.equal(clipStaleReason(landing, 0), 'end');
+
+  // Asked for as a Cut, then made an Extend.
+  const cutAsked = edit(edit(base, { type: 'then', anchor: 'a1', then: 'cut' }), { type: 'request', clips: ['a1'], images: [] });
+  const nowExtend = applyStudioDelivery(edit(cutAsked, { type: 'then', anchor: 'a1', then: 'extend' }), clipFile, 4, 2)!;
+  assert.equal(clipStaleReason(nowExtend, 0), 'cut');
+
+  // Undoing the image change puts back the image the clip was made from: it fits again.
+  const undone = undoTo(parseStudioTrack(JSON.parse(JSON.stringify(asked))), parseStudioTrack(JSON.parse(JSON.stringify(late))));
+  assert.equal(undone.anchors[0]!.image, 'stills/a.png');
+  assert.equal(undone.anchors[0]!.clip!.use, 'clips/one.mp4');
+  assert.equal(clipState(undone, 0), 'ready');
+
+  // A clip nobody asked for in the editor is taken as made from the images the track has.
+  const unasked = applyStudioDelivery(base, clipFile, 4, 2)!;
+  assert.equal(clipState(unasked, 0), 'ready');
+});
+
 test('a delivery stays in the inbox until the track it changed is saved', async (t) => {
   if (process.getuid?.() === 0) { t.skip('root ignores folder permissions'); return; }
   const tmp = await mkdtemp(path.join(tmpdir(), 'studio-ingest-save-'));
