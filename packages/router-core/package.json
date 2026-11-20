@@ -1,6 +1,6 @@
 {
   "name": "@antseed/router-core",
-  "version": "0.1.51",
+  "version": "0.1.52",
   "description": "Shared router infrastructure for Antseed plugins",
   "type": "module",
   "files": [
@@ -18,7 +18,7 @@
     "@antseed/node": ">=0.1.0"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
+    "typescript": "catalog:",
     "vitest": "^2.0.0",
     "@antseed/node": "workspace:*"
   }

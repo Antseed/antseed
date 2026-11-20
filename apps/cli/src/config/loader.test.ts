@@ -1028,6 +1028,25 @@ test('loadConfig preserves seller maxInFlightRequestBytes setting', async () => 
   );
 });
 
+test('loadConfig preserves seller blockedBuyers and rejects malformed ones', async () => {
+  const blockedBuyers = ['22'.repeat(20), `0x${'AB'.repeat(20)}`];
+  await withTempConfig(
+    JSON.stringify({ seller: { blockedBuyers } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.blockedBuyers, blockedBuyers);
+    }
+  );
+  for (const invalid of ['22'.repeat(20), ['not-a-peer-id'], ['22'.repeat(19)], [42]]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { blockedBuyers: invalid } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /seller\.blockedBuyers must be a list of buyer peer IDs/);
+      }
+    );
+  }
+});
+
 test('loadConfig rejects invalid seller maxInFlightRequestBytes setting', async () => {
   await withTempConfig(
     JSON.stringify({
@@ -1395,4 +1414,27 @@ test('loadConfig reads seller buyerLimits and rejects non-positive ones', async 
       },
     );
   });
+});
+
+test('sellerCachedPriceProblems names each price buyers would skip, and an edit is refused only for one it adds', async () => {
+  const { assertNoNewCachedPriceProblems, sellerCachedPriceProblems } = await import('./validation.js');
+  const providers = {
+    openai: {
+      plugin: 'openai',
+      defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 3 },
+      services: {
+        cheap: { pricing: { inputUsdPerMillion: 0.0001, outputUsdPerMillion: 0.0002, cachedInputUsdPerMillion: 50000 } },
+        fine: { pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 1 } },
+        inherits: {},
+      },
+    },
+  };
+  const problems = sellerCachedPriceProblems(providers);
+  assert.equal(problems.length, 2);
+  assert.match(problems[0]!, /^openai default prices: cached-input price \$3 per 1M tokens is above the input price \$1\. Buyers skip/);
+  assert.match(problems[1]!, /^openai\/cheap: cached-input price \$50000/);
+  assert.doesNotThrow(() => assertNoNewCachedPriceProblems(providers, structuredClone(providers)));
+  const edited = structuredClone(providers);
+  edited.openai.services.fine.pricing.inputUsdPerMillion = 0.5;
+  assert.throws(() => assertNoNewCachedPriceProblems(providers, edited), /openai\/fine: cached-input price \$1 per 1M tokens is above the input price \$0\.5/);
 });

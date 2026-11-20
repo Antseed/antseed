@@ -50,6 +50,7 @@ import { loadProviderPlugin, loadProverPlugin, buildPluginConfig, getPackageVers
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { dropDisabledServices, pricedSellerServices, resolveEffectiveSellerConfig, resolveSellerFreeTier, type SellerRuntimeOverrides } from '../../../config/effective.js'
 import { ensureDerivedIdentityDisplayName } from '../../../config/identity-display-name.js'
+import { sellerCachedPriceProblems } from '../../../config/validation.js'
 import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antseed/ant-agent'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { startupReachabilityWarning } from './reachability.js'
@@ -366,6 +367,8 @@ export function buildSellerRuntimeOverridesFromFlags(options: {
 
 /** Config-key prefix of a provider plugin package. Other plugins use `OPENAI`. */
 const PROVIDER_ENV_PREFIXES: Readonly<Record<string, string>> = {
+  '@antseed/provider-anthropic': 'ANTHROPIC',
+  '@antseed/provider-openai-responses': 'OPENAI_RESPONSES',
   '@antseed/provider-local-llm': 'LOCAL_LLM',
   '@antseed/provider-typesafe': 'TYPESAFE',
   '@antseed/provider-venice-video': 'VENICE_VIDEO',
@@ -837,8 +840,14 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         console.log(
           chalk.dim(
             `  ${providerName} pricing defaults (USD/1M): input=${provider.pricing.defaults.inputUsdPerMillion}, output=${provider.pricing.defaults.outputUsdPerMillion}`
+            + (provider.pricing.defaults.cachedInputUsdPerMillion != null ? `, cached input=${provider.pricing.defaults.cachedInputUsdPerMillion}` : '')
           )
         )
+      }
+      // Buyers skip these offers; the seller still starts so its other models keep serving.
+      const selectedProviders = Object.fromEntries(selectedProviderNames.map((name) => [name, effectiveSellerConfig.providers[name]!]))
+      for (const problem of sellerCachedPriceProblems(selectedProviders)) {
+        console.log(chalk.yellow(`  Warning: ${problem}`))
       }
       const minBudgetPerRequest = config.payments.minBudgetPerRequest ?? '10000'
       console.log(chalk.dim(`  min budget per request: ${minBudgetPerRequest} base units`))
@@ -900,6 +909,14 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ?? effectiveSellerConfig.maxInFlightRequestBytes
       if (maxInFlightRequestBytes !== undefined) {
         console.log(chalk.dim(`  max request bytes in flight: ${maxInFlightRequestBytes}`))
+      }
+      // ANTSEED_BLOCKED_BUYERS (comma-separated) replaces seller.blockedBuyers.
+      const blockedBuyersEnv = process.env['ANTSEED_BLOCKED_BUYERS']
+      const blockedBuyers = blockedBuyersEnv !== undefined
+        ? blockedBuyersEnv.split(',').map((id) => id.trim()).filter(Boolean)
+        : effectiveSellerConfig.blockedBuyers ?? []
+      if (blockedBuyers.length > 0) {
+        console.log(chalk.dim(`  blocked buyers: ${blockedBuyers.length}`))
       }
       const maxInboundConnections = parseOptionalPositiveIntegerEnv(process.env['ANTSEED_MAX_INBOUND_CONNECTIONS'])
         ?? effectiveSellerConfig.maxInboundConnections
@@ -983,6 +1000,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         }),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
         ...(maxInFlightRequestBytes !== undefined ? { maxInFlightRequestBytes } : {}),
+        ...(blockedBuyers.length > 0 ? { blockedBuyers } : {}),
         ...(maxInboundConnections !== undefined ? { maxInboundConnections } : {}),
         ...(maxInboundConnectionsPerIp !== undefined ? { maxInboundConnectionsPerIp } : {}),
         ...(announceProviderIds ? { announceProviderIds } : {}),
@@ -1116,6 +1134,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         try { return baseUrl ? new URL(baseUrl).host : null } catch { return null }
       }
       const upstreamAlerts = new UpstreamAlerts(alerts, { hostOf: upstreamHost })
+      // A buyer only sees "unavailable on this seller"; the operator sees what the upstream said.
+      node.on('provider:error-masked', ({ provider, service, reason, statusCode, detail }: { provider: string; service: string; reason: string; statusCode: number; detail: string }) => {
+        console.log(chalk.yellow(`Upstream error on ${provider}/${service} answered ${statusCode} to the buyer (${reason}): ${detail}`))
+      })
 
       let healthChecker: ModelHealthChecker | null = null
       if (healthCheckEnabled && registeredProviders.length > 0) {

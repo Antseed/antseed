@@ -194,7 +194,8 @@ export class SellerUsageReader {
           entry.requests = events.totalRequests
           entry.tokens = events.totalTokens
           entry.sessions = metering.getSessionSummary(day, end).channelCount
-          entry.revenueUsd = metering.getTotalCost(day, end) / 100
+          // Not getTotalCost: receipts are floored at a cent each, and failed requests carry one.
+          entry.revenueUsd = metering.getRevenueCents(day, end) / 100
           await yieldToLoop()
         }
         this._days.set(key, { entry, readAt: now })

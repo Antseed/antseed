@@ -1,6 +1,6 @@
 import { useMemo, useState, type MouseEvent } from 'react';
 import type { ExtendRequest, MaxLockRequest, MergeRequest, MoveRequest, PoolConfigView, PoolView, PositionView, SplitRequest } from '../../../src/api-types';
-import { positionActionEpoch, positionActionProblem, scheduledMaxLock, type PositionAction } from '../../../src/position-actions';
+import { mergeLockStartProblem, mergeRuleHint, positionActionEpoch, positionActionProblem, scheduledMaxLock, type PositionAction } from '../../../src/position-actions';
 import { api } from '../api';
 import { useEpochInfo } from '../app-context';
 import { usePageData } from '../data';
@@ -147,11 +147,12 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
           <span className="bulk-bar-count">{selectedRows.length} selected · {formatAnts(sumAmounts(selectedRows), 4)} ANTS</span>
           <button type="button" className="link-button" onClick={clearSelection}>clear</button>
           <div className="bulk-bar-actions">
-            <span className="btn-wrap" title={mergeProblem ?? 'Combine the selected positions into one.'}>
+            <span className="btn-wrap" title={mergeProblem ?? `Combine the selected positions into one. ${mergeRuleHint(selectedRows)}`}>
               <Button variant="outline" size="sm" disabled={mergeProblem !== null} onClick={() => setBulkAction('merge')}>Merge {selectedRows.length > 1 ? selectedRows.length : ''}</Button>
             </span>
             <Button variant="outline" size="sm" onClick={() => setBulkAction('withdraw')}>Withdraw {selectedRows.length}</Button>
           </div>
+          {selectedRows.length > 1 && mergeProblem ? <span className="bulk-bar-note">{mergeProblem}</span> : null}
         </div>
       ) : null}
       {rowAction && actionRow && data && !unavailable ? <RowActionPanel key={`${rowAction.id}:${rowAction.kind}`} kind={rowAction.kind} position={actionRow} config={data.config} pools={pools} onClose={() => setRowAction(null)} /> : null}
@@ -185,7 +186,7 @@ export function mergeEligibility(positions: PositionView[], currentEpoch?: numbe
     if (problem) return problem;
   }
   if (new Set(positions.map((p) => p.stakeEndEpoch)).size !== 1) return 'Merged positions must share the same unlock epoch. Extend the shorter ones first.';
-  return null;
+  return mergeLockStartProblem(positions);
 }
 
 /** Max-lock state the next action must reverse: the contract applies changes from the next epoch. */
@@ -266,7 +267,14 @@ function PositionUnlock({ position, dateOnly = false }: { position: PositionView
   if (!isOpen(position)) return <span className="muted">—</span>;
   const nextEpoch = info ? `epoch ${info.current + 1}` : 'next epoch';
   if (willBeMaxLocked(position)) return <span className="cell-stack"><span className="muted" title="Disable max lock to start the countdown.">Max lock</span>{!position.maxLocked && <span className="cell-sub">Max lock starts {nextEpoch}</span>}</span>;
-  return <span className="cell-stack"><EpochCell epoch={position.stakeEndEpoch} dateOnly={dateOnly} />{position.maxLocked ? <span className="cell-sub">Countdown starts {nextEpoch}</span> : <LockEndingNote position={position} currentEpoch={info?.current} />}</span>;
+  return <span className="cell-stack"><EpochCell epoch={position.stakeEndEpoch} dateOnly={dateOnly} />{position.maxLocked ? <span className="cell-sub">Countdown starts {nextEpoch}</span> : <>{!dateOnly && <LockStartNote position={position} currentEpoch={info?.current} />}<LockEndingNote position={position} currentEpoch={info?.current} /></>}</span>;
+}
+
+/** The pool merges only positions with the same lock start, which the public start doesn't show after a split, merge or move. */
+function LockStartNote({ position, currentEpoch }: { position: PositionView; currentEpoch?: number }) {
+  const start = position.normalStartEpoch;
+  if (typeof start !== 'number') return null;
+  return <span className="cell-sub" title="Positions merge only when they share this lock start, the seller and the unlock date. Split, merged and moved positions keep the lock start of the originals.">lock {currentEpoch !== undefined && start > currentEpoch ? 'starts' : 'started'} epoch {start}</span>;
 }
 
 /** Lock changes apply from the next epoch, so the final epoch before unlock is already too late to extend. */

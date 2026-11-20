@@ -247,3 +247,37 @@ test('gas auto-refuel is on by default and its settings save to seller.gasRefuel
   await assert.rejects(updateSellerSettings(configPath, dir, { gasRefuel: { swapUsdc: 0.5 } }), /gasRefuel\.swapUsdc/)
   await assert.rejects(updateSellerSettings(configPath, dir, { gasRefuel: { triggerBalanceEth: 0 } }), /gasRefuel\.triggerBalanceEth/)
 })
+
+test('a cached-input price above the input price is refused, from a price edit or a new model', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-settings-'))
+  const configPath = join(dir, 'config.json')
+  const glm = { pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.5 } }
+  writeFileSync(configPath, JSON.stringify({ seller: { providers: { openai: { plugin: 'openai', services: { 'glm-5.3': glm } } } } }))
+  await assert.rejects(
+    updateSellerSettings(configPath, dir, { pricing: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.0001, outputUsdPerMillion: 0.0002, cachedInputUsdPerMillion: 50000 }] }),
+    { code: 'invalid_request', message: /cached-input price \$50000 per 1M tokens is above the input price \$0\.0001\. Buyers skip/ },
+  )
+  // Lowering only the input price below the saved cached-input price is refused too.
+  await assert.rejects(updateSellerSettings(configPath, dir, { pricing: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.1 }] }), /above the input price/)
+  await assert.rejects(
+    updateSellerSettings(configPath, dir, { addServices: [{ provider: 'openai', service: 'kimi-k3', inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 1.5 }] }),
+    /addServices: kimi-k3: cached-input price \$1\.5 per 1M tokens is above the input price \$1/,
+  )
+  assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf-8')).seller.providers.openai.services, { 'glm-5.3': glm })
+  await updateSellerSettings(configPath, dir, { pricing: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.5, cachedInputUsdPerMillion: 0.5 }] })
+  assert.equal(JSON.parse(readFileSync(configPath, 'utf-8')).seller.providers.openai.services['glm-5.3'].pricing.cachedInputUsdPerMillion, 0.5)
+})
+
+test('an output-only price edit is kept beside a cached-input price saved above the input price', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seller-settings-'))
+  const configPath = join(dir, 'config.json')
+  writeFileSync(configPath, JSON.stringify({ seller: { providers: { openai: { plugin: 'openai', services: {
+    'glm-5.3': { pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 5 } },
+  } } } } }))
+  await updateSellerSettings(configPath, dir, { pricing: [{ provider: 'openai', service: 'glm-5.3', outputUsdPerMillion: 3 }] })
+  assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf-8')).seller.providers.openai.services['glm-5.3'].pricing,
+    { inputUsdPerMillion: 0.1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: 5 })
+  // Changing the input or cached price still has to fix the pair.
+  await assert.rejects(updateSellerSettings(configPath, dir, { pricing: [{ provider: 'openai', service: 'glm-5.3', inputUsdPerMillion: 0.2 }] }), /above the input price \$0\.2/)
+  await updateSellerSettings(configPath, dir, { pricing: [{ provider: 'openai', service: 'glm-5.3', cachedInputUsdPerMillion: null }] })
+})

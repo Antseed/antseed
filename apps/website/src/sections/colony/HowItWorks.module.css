@@ -1,0 +1,32 @@
+.how .rail { padding-top: 120px; }
+.how .painting { aspect-ratio: 1312 / 620; margin-top: 56px; background-position: 50% 72%; }
+
+.how .row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.how .step { place-items: start; padding: 32px 32px 48px; }
+.how .caption { max-width: none; text-wrap: pretty; }
+
+/* the steps fade up one after another as the row comes into view */
+.caption { transition: opacity .5s, transform .5s cubic-bezier(.2, .7, .2, 1); }
+.step:nth-child(2) .caption { transition-delay: .1s; }
+.step:nth-child(3) .caption { transition-delay: .2s; }
+.step:nth-child(4) .caption { transition-delay: .3s; }
+.pending .caption { opacity: 0; transform: translateY(6px); transition: none; }
+
+@media (min-width: 1200px) {
+  .how .rail { display: flex; flex-direction: column; justify-content: center; padding-block: 124px; }   /* centred when snapped taller */
+  .how .painting { margin-top: 40px; }
+  .how .step { padding: 24px 32px 0; }
+}
+@media (max-width: 1023px) {
+  .how .row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .how .step:nth-child(3) { --dots-left: 0px; }
+  .how .step:nth-child(n + 3) { --dots-top: 2px; }
+}
+@media (max-width: 760px) {
+  .how .rail { padding-top: 72px; }
+  .how .head { --head-gap: 16px; }
+  .how .painting { aspect-ratio: 4 / 3; margin-top: 32px; background-position: 80% 72%; }
+  .how .row { grid-template-columns: minmax(0, 1fr); }
+  .how .step { padding: 24px var(--site-pad); }
+  .how .step:last-child { padding-bottom: 72px; }
+}

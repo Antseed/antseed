@@ -78,6 +78,8 @@ export interface ImageRequestFacts {
   quality?: string;
   resolution?: string;
   requestedImages?: number;
+  /** Image files an edit sends (see parseMultipartForm); unset for a generation. */
+  inputImages?: number;
   /** Estimated token count of the text prompt only — input images never contribute. */
   promptTokens?: number;
 }
@@ -175,7 +177,8 @@ export function extractImageRequestFacts(input: {
 }): ImageRequestFacts {
   const body = input.body ?? {};
   const facts: ImageRequestFacts = {};
-  const normalizedPath = input.path?.split('?')[0];
+  // Any letter case, as protocol detection and providers read the path.
+  const normalizedPath = input.path?.split('?')[0]?.toLowerCase();
   const isOpenAiImageEndpoint = normalizedPath === '/v1/images/generations'
     || normalizedPath === '/v1/images/edits';
 
@@ -202,7 +205,7 @@ export function extractImageRequestFacts(input: {
 }
 
 /** Every request field `extractSpeechRequestFacts` reads. A seller checks each is spelled exactly. */
-export const SPEECH_REQUEST_FIELDS: readonly string[] = ['input', 'voice', 'response_format'];
+export const SPEECH_REQUEST_FIELDS: readonly string[] = ['input', 'voice', 'response_format', 'stream_format'];
 
 /** What an OpenAI `POST /v1/audio/speech` request asks for. */
 export interface SpeechRequestFacts {
@@ -210,6 +213,8 @@ export interface SpeechRequestFacts {
   characters: number;
   voice?: string;
   responseFormat?: string;
+  /** Set when `stream_format` asks for anything but plain audio, such as a stream of events. */
+  eventStream?: true;
 }
 
 /** Speech request facts from a JSON body, or null when `input` is missing or not text. */
@@ -222,6 +227,7 @@ export function extractSpeechRequestFacts(body: Record<string, unknown> | null |
     characters,
     ...(typeof body?.voice === 'string' ? { voice: body.voice } : {}),
     ...(typeof body?.response_format === 'string' ? { responseFormat: body.response_format } : {}),
+    ...(body?.stream_format != null && body.stream_format !== 'audio' ? { eventStream: true as const } : {}),
   };
 }
 
@@ -260,16 +266,74 @@ export function parseMultipartFormFields(
   body: Uint8Array,
   contentType: string | undefined,
 ): Record<string, string> | null {
-  if (!contentType) return null;
+  return parseMultipartForm(body, contentType)?.fields ?? null;
+}
+
+/**
+ * A multipart/form-data body's text fields (as parseMultipartFormFields reads
+ * them) and, in the same pass, how many image files it sends for an OpenAI
+ * `/v1/images/edits` request: file parts named `image`, `image[]` or `mask`.
+ * Upstreams bill each as input, so the count prices the edit (the
+ * `input_images` match key). Parts are named the way sellers read them
+ * (parseFormDataDisposition), so buyer and seller count alike. Null when the
+ * content type names no boundary.
+ */
+export function parseMultipartForm(
+  body: Uint8Array,
+  contentType: string | undefined,
+): { fields: Record<string, string>; imageEditFiles: number } | null {
+  const fields: Record<string, string> = {};
+  let imageEditFiles = 0;
+  const read = forEachMultipartPart(body, contentType, (part) => {
+    if (part.isFile) {
+      if (IMAGE_EDIT_FILE_FIELDS.includes(part.name)) imageEditFiles += 1;
+      return;
+    }
+    // Latin-1 offsets are byte offsets: decode the field's own bytes as UTF-8.
+    if (part.name && !(part.name in fields) && part.end - part.start <= MAX_MULTIPART_TEXT_FIELD_BYTES) {
+      fields[part.name] = decoder.decode(body.subarray(part.start, part.end));
+    }
+  });
+  return read ? { fields, imageEditFiles } : null;
+}
+
+/** The multipart file fields an OpenAI image edit sends images in: the images to edit and the mask. */
+export const IMAGE_EDIT_FILE_FIELDS: readonly string[] = ['image', 'image[]', 'mask'];
+
+/** Whether a content type is multipart/form-data. */
+export function isMultipartFormData(contentType: string): boolean {
+  return /^multipart\/form-data/i.test(contentType.trim());
+}
+
+/** Whether a request path is the OpenAI image edit endpoint, in any letter case (as protocol detection and providers read it). */
+export function isImageEditPath(path: string): boolean {
+  return path.split('?')[0]?.toLowerCase() === '/v1/images/edits';
+}
+
+interface MultipartPart {
+  name: string;
+  /** Whether the part names a filename (a file part). */
+  isFile: boolean;
+  /** Byte offsets of the part's content in the body. */
+  start: number;
+  end: number;
+}
+
+/** Calls `visit` for each part of a multipart/form-data body; false when the content type names no boundary. */
+function forEachMultipartPart(
+  body: Uint8Array,
+  contentType: string | undefined,
+  visit: (part: MultipartPart) => void,
+): boolean {
+  if (!contentType) return false;
   const boundaryMatch = /^multipart\/form-data\s*;.*?boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType.trim());
   const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2] ?? '').trim();
-  if (!boundary) return null;
+  if (!boundary) return false;
 
   // latin1 keeps a 1:1 byte-to-char mapping so offsets stay byte-accurate
-  // even through binary file parts; text field values are re-decoded as UTF-8.
+  // even through binary file parts.
   const text = new TextDecoder('latin1').decode(body);
   const delimiter = `--${boundary}`;
-  const fields: Record<string, string> = {};
   let index = text.indexOf(delimiter);
   while (index !== -1) {
     index += delimiter.length;
@@ -278,18 +342,58 @@ export function parseMultipartFormFields(
     if (headerEnd === -1) break;
     const next = text.indexOf(`\r\n${delimiter}`, headerEnd + 4);
     if (next === -1) break;
-    const headerBlock = text.slice(index, headerEnd);
-    const dispositionParams = /content-disposition:\s*form-data\s*;([^\r\n]*)/i.exec(headerBlock)?.[1];
-    if (dispositionParams !== undefined && !/filename\s*=/i.test(dispositionParams)) {
-      const name = /name="([^"]*)"/.exec(dispositionParams)?.[1];
-      // Latin-1 offsets are byte offsets: decode the field's own bytes as UTF-8.
-      if (name && !(name in fields) && next - (headerEnd + 4) <= MAX_MULTIPART_TEXT_FIELD_BYTES) {
-        fields[name] = decoder.decode(body.subarray(headerEnd + 4, next));
-      }
+    // The part's own Content-Disposition header line, read the way sellers read it.
+    const disposition = text.slice(index, headerEnd).split('\r\n')
+      .map((line) => /^content-disposition:(.*)$/i.exec(line)?.[1]?.trim())
+      .find((value) => value !== undefined);
+    const params = disposition === undefined ? undefined : parseFormDataDisposition(disposition);
+    const name = params?.get('name');
+    if (params && name !== undefined) {
+      visit({ name, isFile: params.has('filename') || params.has('filename*'), start: headerEnd + 4, end: next });
     }
     index = next + 2;
   }
-  return fields;
+  return true;
+}
+
+/**
+ * The parameters of a `form-data` disposition, keys in lower case; undefined unless every byte is
+ * read and no key repeats. Written by hand so that no regex runs over buyer-controlled lengths.
+ */
+export function parseFormDataDisposition(value: string): Map<string, string> | undefined {
+  if (!/^form-data(?:[ \t;]|$)/i.test(value)) return undefined;
+  const params = new Map<string, string>();
+  let i = 'form-data'.length;
+  const skipBlanks = () => { while (value[i] === ' ' || value[i] === '\t') i += 1; };
+  for (;;) {
+    skipBlanks();
+    if (i >= value.length) return params;
+    if (value[i] !== ';') return undefined;
+    i += 1;
+    skipBlanks();
+    if (i >= value.length) return params;
+    const start = i;
+    while (i < value.length && /[A-Za-z0-9*_-]/.test(value[i]!)) i += 1;
+    const key = value.slice(start, i).toLowerCase();
+    if (key === '' || value[i] !== '=' || params.has(key)) return undefined;
+    i += 1;
+    let text = '';
+    if (value[i] === '"') {
+      for (i += 1; ; i += 1) {
+        if (i >= value.length) return undefined;
+        if (value[i] === '\\' && (value[i + 1] === '"' || value[i + 1] === '\\')) i += 1;
+        else if (value[i] === '"') break;
+        text += value[i];
+      }
+      i += 1;
+    } else {
+      const from = i;
+      while (i < value.length && value[i] !== ';' && value[i] !== ' ' && value[i] !== '\t') i += 1;
+      text = value.slice(from, i);
+      if (text === '' || /["\\]/.test(text)) return undefined;
+    }
+    params.set(key, text);
+  }
 }
 
 /**
@@ -302,7 +406,7 @@ export function extractRequestBodyFields(
   body: Uint8Array,
 ): Record<string, unknown> | null {
   const contentType = headerValue(headers, 'content-type');
-  if (contentType && /^multipart\/form-data/i.test(contentType.trim())) {
+  if (contentType && isMultipartFormData(contentType)) {
     return parseMultipartFormFields(body, contentType);
   }
   return parseJsonObject(body);
@@ -315,7 +419,7 @@ function toOptionalPositiveInt(value: unknown): number | undefined {
   return parsed;
 }
 
-function setStringAttr(target: ImageRequestFacts, key: keyof Omit<ImageRequestFacts, 'requestedImages' | 'promptTokens'>, value: unknown): void {
+function setStringAttr(target: ImageRequestFacts, key: keyof Omit<ImageRequestFacts, 'requestedImages' | 'inputImages' | 'promptTokens'>, value: unknown): void {
   if (typeof value === 'string' && value.trim().length > 0) {
     target[key] = value.trim();
   }
@@ -331,7 +435,8 @@ function hasImageOutputAttributes(attrs: ImageRequestFacts): boolean {
     || attrs.resolution !== undefined;
 }
 
-function isDeliveredImageOutput(value: unknown): boolean {
+/** Whether an image item (a JSON `data` entry or a streamed completed event) carries an image: a non-empty `b64_json` or `url`. */
+export function isDeliveredImageOutput(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
   return isNonEmptyString(item.b64_json) || isNonEmptyString(item.url);

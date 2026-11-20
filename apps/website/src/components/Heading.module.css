@@ -1,0 +1,53 @@
+/* The title and sub line read their sizes from variables the head's size sets, so a size never competes with the base rule on the
+   same element, and a page's class hook (two classes) on the title or sub line always wins. */
+.title {
+  font: 400 var(--title-size, 48px)/var(--title-line, 46px) var(--site-font-pixel);
+  font-variation-settings: 'ELSH' 40;
+  letter-spacing: var(--title-tracking, -2px);
+  color: var(--site-text);
+}
+.title > .second { color: var(--site-text-muted); }
+.block { display: block; text-wrap: balance; }
+.title.strong { color: var(--site-text-strong); }
+
+.eyebrow {
+  color: var(--site-accent);
+  font: 400 18px/1.5 var(--site-font-pixel);
+  font-variation-settings: 'ELSH' 20;
+}
+
+.sub {
+  max-width: var(--sub-max, none);
+  font: 400 18px/var(--sub-line, 27px) var(--site-font);
+  color: var(--site-text-body);
+}
+
+.head {
+  --head-gap: 20px;
+  --sub-max: 780px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--head-gap);
+}
+.head.center { align-items: center; text-align: center; }
+.padX { padding-inline: var(--site-pad); }
+.head.page { --sub-max: 540px; }
+
+/* title and sub line sit 8px apart on wider screens (16px, or the page's own, from 1200px), whatever the head's gap */
+@media (min-width: 761px) {
+  .title + .sub { margin-top: calc(var(--title-sub, 8px) - var(--head-gap, 0px)); }
+}
+
+@media (max-width: 760px) {
+  .title { font-size: var(--title-size-phone, 34px); line-height: var(--title-line-phone, 36px); letter-spacing: -1.4px; }
+  .sub { max-width: none; font-size: 16px; line-height: 24px; }
+  .sub br { display: none; }
+  .head.page { --title-size-phone: 40px; --title-line-phone: 40px; }
+}
+
+@media (min-width: 1200px) {
+  .head.wide { --head-gap: 24px; --title-sub: 16px; --sub-max: 640px; --sub-line: 28px; }
+  .head.compact { --title-size: 40px; --title-line: 40px; --title-tracking: -1.6px; }
+  .head.page { --head-gap: 16px; --title-sub: var(--sub-gap, 16px); --sub-max: var(--sub-width, 540px); --sub-line: 28px; }
+}

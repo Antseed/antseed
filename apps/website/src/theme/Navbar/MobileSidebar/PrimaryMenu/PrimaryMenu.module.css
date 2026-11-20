@@ -1,0 +1,2 @@
+/* Docusaurus pads the sidebar panel by 8px; 8 more puts the rows on the logo's line and 16px under the header, as in the phone sheet */
+.links { padding: 8px 8px 0; }

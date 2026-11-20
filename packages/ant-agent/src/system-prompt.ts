@@ -40,6 +40,29 @@ function wrapClientContext(buyerPrompt: string): string {
 }
 
 /**
+ * Prepend the agent's prompt to buyer text blocks (Anthropic `system` array or
+ * OpenAI system `content` parts), wrapping the buyer's text as client context.
+ */
+function wrapTextBlocks(
+  blocks: { text?: string; cache_control?: unknown }[],
+  systemContent: string,
+): Record<string, unknown>[] {
+  const buyerText = blocks.map(b => b.text ?? '').join('\n\n').trim();
+  if (!buyerText) return [{ type: 'text', text: systemContent }];
+  // Preserve cache_control from the last buyer block that has one
+  const lastCache = [...blocks].reverse().find(b => b.cache_control)?.cache_control;
+  const wrappedBlock: Record<string, unknown> = { type: 'text', text: wrapClientContext(buyerText) };
+  if (lastCache) wrappedBlock.cache_control = lastCache;
+  return [{ type: 'text', text: systemContent }, wrappedBlock];
+}
+
+function hasMarker(content: unknown): boolean {
+  if (typeof content === 'string') return content.includes(INJECTION_MARKER);
+  return Array.isArray(content)
+    && (content as { text?: string }[]).some(b => b.text?.includes(INJECTION_MARKER));
+}
+
+/**
  * Inject system prompt content into a request body.
  * Agent's system prompt is authoritative; buyer's system prompt is reframed
  * as client context so the model treats it as metadata, not identity.
@@ -65,15 +88,18 @@ export function injectSystemPrompt(
     // Check if already injected (multi-turn)
     if (messages.some(m => {
       const msg = m as Record<string, unknown>;
-      return msg.role === 'system' && typeof msg.content === 'string' && msg.content.includes(INJECTION_MARKER);
+      return msg.role === 'system' && hasMarker(msg.content);
     })) {
       return body;
     }
 
     const systemIdx = messages.findIndex(m => (m as Record<string, unknown>).role === 'system');
     if (systemIdx >= 0) {
-      const existing = messages[systemIdx] as { role: string; content: string };
-      messages[systemIdx] = { ...existing, content: `${systemContent}\n\n${wrapClientContext(existing.content)}` };
+      const existing = messages[systemIdx] as { role: string; content: unknown };
+      const content = Array.isArray(existing.content)
+        ? wrapTextBlocks(existing.content as { text?: string; cache_control?: unknown }[], systemContent)
+        : `${systemContent}\n\n${wrapClientContext(existing.content as string)}`;
+      messages[systemIdx] = { ...existing, content };
     } else {
       messages.unshift({ role: 'system', content: systemContent });
     }
@@ -82,22 +108,8 @@ export function injectSystemPrompt(
 
   // Anthropic format
   if (Array.isArray(body.system)) {
-    if ((body.system as { text?: string }[]).some(b => b.text?.includes(INJECTION_MARKER))) {
-      return body;
-    }
-    const blocks = body.system as { text?: string; cache_control?: unknown }[];
-    const buyerText = blocks.map(b => b.text ?? '').join('\n\n').trim();
-    if (!buyerText) {
-      return { ...body, system: [{ type: 'text', text: systemContent }] };
-    }
-    // Preserve cache_control from the last buyer block that has one
-    const lastCache = [...blocks].reverse().find(b => b.cache_control)?.cache_control;
-    const wrappedBlock: Record<string, unknown> = { type: 'text', text: wrapClientContext(buyerText) };
-    if (lastCache) wrappedBlock.cache_control = lastCache;
-    return {
-      ...body,
-      system: [{ type: 'text', text: systemContent }, wrappedBlock],
-    };
+    if (hasMarker(body.system)) return body;
+    return { ...body, system: wrapTextBlocks(body.system as { text?: string; cache_control?: unknown }[], systemContent) };
   }
 
   const existing = typeof body.system === 'string' ? body.system : '';

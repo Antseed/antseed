@@ -2579,6 +2579,19 @@ describe('SellerPaymentManager', () => {
       return manager.handleSpendingAuth(buyer.peerId, { ...auth, oneOffRequestId: requestId }, mux);
     }
 
+    it('holds back only the buyer whose own jobs are uncollected, never another buyer', async () => {
+      for (let n = 1; n <= UNPAID_LIMIT; n += 1) {
+        await openUnusedChannel(buyerIdentity, n);
+        expect(manager.claimOneOffChannel(makeChannelId(n))).toBe(true);
+        manager.markOneOffCreateAccepted(makeChannelId(n));
+      }
+      expect(manager.videoJobHold(buyerIdentity.peerId, 'next')?.code).toBe('video_jobs_open_limit');
+
+      const otherBuyer = createTestIdentity();
+      expect(manager.videoJobHold(otherBuyer.peerId, 'next')).toBeNull();
+      expect(manager.oneOffRetryAfterSeconds(otherBuyer.peerId, 'next')).toBeNull();
+    });
+
     it('counts a channel the buyer opens and never uses', async () => {
       const outcomes: string[] = [];
       for (let n = 1; n <= UNPAID_LIMIT + 3; n += 1) outcomes.push(await openUnusedChannel(buyerIdentity, n));
@@ -2737,17 +2750,24 @@ describe('SellerPaymentManager', () => {
       expect(await opening).toBe('reserved');
     });
 
-    it('does not count a running job after a restart, whose create has already started', async () => {
-      for (let n = 1; n <= UNPAID_LIMIT; n += 1) {
+    it('counts running jobs after a restart only as uncollected jobs, up to the limit', async () => {
+      for (let n = 1; n < UNPAID_LIMIT; n += 1) {
         await openUnusedChannel(buyerIdentity, n);
         expect(manager.claimOneOffChannel(makeChannelId(n))).toBe(true);
       }
-
-      const restarted = new SellerPaymentManager(sellerIdentity, {
+      const restart = () => new SellerPaymentManager(sellerIdentity, {
         rpcUrl: 'http://127.0.0.1:8545', channelsContractAddress: CONTRACT_ADDR, chainId: CHAIN_ID, dataDir: tempDir,
       }, store);
 
-      expect(restarted.registerOneOffPlan(buyerIdentity.peerId, 'next', plan)).toBeNull();
+      const first = restart();
+      expect(first.videoJobHold(buyerIdentity.peerId, 'next')).toBeNull();
+      expect(first.registerOneOffPlan(buyerIdentity.peerId, 'next', plan)).toBeNull();
+
+      await openUnusedChannel(buyerIdentity, UNPAID_LIMIT);
+      expect(manager.claimOneOffChannel(makeChannelId(UNPAID_LIMIT))).toBe(true);
+      const hold = restart().videoJobHold(buyerIdentity.peerId, 'next');
+      expect(hold).toMatchObject({ code: 'video_jobs_open_limit', retryAfterSeconds: 5, limit: UNPAID_LIMIT });
+      expect([...hold!.channelIds].sort()).toEqual(Array.from({ length: UNPAID_LIMIT }, (_, index) => makeChannelId(index + 1)).sort());
     });
 
     it('still counts a channel opened before a restart whose create never started', async () => {

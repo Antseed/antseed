@@ -1,0 +1,11 @@
+.products {
+  display: flex;
+  flex-direction: column;
+  gap: 120px;
+  padding-bottom: 120px;
+  /* the rail's surface behind the gaps, without its dotted sides */
+  background: linear-gradient(var(--site-surface) 0 0) 50% 0 / var(--site-rail) 100% no-repeat;
+}
+@media (max-width: 760px) {
+  .products { gap: 64px; padding-bottom: 64px; }
+}

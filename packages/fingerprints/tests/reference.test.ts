@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  KBF_CALIBRATION_METHOD,
+  KBF_DEFAULT_PROMPT_VARIANT_ID,
+  KBF_PARSER_VERSION,
+  aggregateKbfSelfTestOutcomes,
   assertMatchingQueryProfile,
+  clopperPearsonUpper,
   computeBinomialPower,
   computeContrastDetection,
   computeReferenceId,
   createReferenceQueryProfile,
+  kbfAuditBaseline,
+  kbfCalibrationPower,
   kbfPromptVariantsHash,
   queryProfileHash,
   referenceCompatibilityProfileHash,
@@ -12,6 +19,8 @@ import {
   rescoreKbfReference,
   subsetReferenceSelfTest,
   validateKbfReferenceV1,
+  verifyKbf,
+  type KbfReferenceCalibrationV1,
   type KbfReferenceV1,
 } from '../src/index.js';
 
@@ -82,6 +91,33 @@ function reference(source: KbfReferenceV1['source'] = 'generated'): KbfReference
       distinguishingProbeIds: probes.slice(0, 40).map((probe) => probe.id),
     }],
   };
+  value.referenceId = computeReferenceId(value);
+  return value;
+}
+
+/** A calibration of `reference()`'s probes, one pass in batches of ten, with the first `misses` answers wrong. */
+function calibrated(misses = 0, change: (calibration: KbfReferenceCalibrationV1) => void = () => {}): KbfReferenceV1 {
+  const value = reference();
+  const outcomes = value.probes.map((probe, index) => {
+    const miss = index < misses;
+    return { probeId: probe.id, answers: [miss ? probe.consensus + 5 : probe.consensus], matches: [miss ? 0 as const : 1 as const] };
+  });
+  const calibration: KbfReferenceCalibrationV1 = {
+    version: 1,
+    method: KBF_CALIBRATION_METHOD,
+    passes: 1,
+    ...aggregateKbfSelfTestOutcomes(outcomes),
+    batches: Array.from({ length: 10 }, (_unused, batchIndex) => ({
+      pass: 0,
+      batchIndex,
+      probeIds: value.probes.slice(batchIndex * 10, (batchIndex + 1) * 10).map((probe) => probe.id),
+      promptVariantId: KBF_DEFAULT_PROMPT_VARIANT_ID,
+      attempts: 1,
+    })),
+    calibratedAt: '2026-11-05T00:00:00.000Z',
+  };
+  change(calibration);
+  value.calibration = calibration;
   value.referenceId = computeReferenceId(value);
   return value;
 }
@@ -449,6 +485,137 @@ describe('validateKbfReferenceV1', () => {
     expect(() => validateKbfReferenceV1(legacy)).not.toThrow();
     const outOfRange = withOutcome(reference(), { probeId: 'p-0', answers: [5_000, 0, 0], matches: [null, 1, 1] });
     expect(() => validateKbfReferenceV1(outOfRange)).not.toThrow();
+  });
+});
+
+describe('parser versions a reference may name', () => {
+  const named = (parserVersion: string): KbfReferenceV1 => {
+    const value = reference();
+    value.queryProfile.parserVersion = parserVersion as KbfReferenceV1['queryProfile']['parserVersion'];
+    value.referenceId = computeReferenceId(value);
+    return value;
+  };
+
+  it('writes new references with the current parser', () => {
+    expect(reference().queryProfile.parserVersion).toBe(KBF_PARSER_VERSION);
+  });
+
+  it('still loads a reference enrolled under v2', () => {
+    const stored = named('kbf-numeric-lines-v2');
+    expect(validateKbfReferenceV1(stored).queryProfile.parserVersion).toBe('kbf-numeric-lines-v2');
+    const answers = stored.probes.map((probe) => probe.consensus);
+    expect(verifyKbf(stored, { answers }).verdict).toBe('SAME');
+  });
+
+  it('rejects a parser version it does not know', () => {
+    expect(() => validateKbfReferenceV1(named('kbf-numeric-lines-v1'))).toThrow(/parser version mismatch/);
+    expect(() => validateKbfReferenceV1(named('kbf-numeric-lines-v4'))).toThrow(/parser version mismatch/);
+  });
+});
+
+describe('calibration', () => {
+  it('accepts a consistent record', () => {
+    expect(() => validateKbfReferenceV1(calibrated(1))).not.toThrow();
+  });
+
+  it('binds the calibration into the reference id', () => {
+    expect(calibrated(4).referenceId).not.toBe(calibrated(5).referenceId);
+    const tampered = calibrated(1);
+    tampered.calibration!.calibratedAt = '2026-11-06T00:00:00.000Z';
+    expect(() => validateKbfReferenceV1(tampered)).toThrow(/referenceId mismatch/);
+  });
+
+  it.each<[string, (calibration: KbfReferenceCalibrationV1) => void, RegExp]>([
+    ['an unknown version', (c) => { (c as { version: number }).version = 2; }, /unsupported calibration record/],
+    ['an unknown method', (c) => { (c as { method: string }).method = 'other'; }, /unsupported calibration record/],
+    ['no passes', (c) => { c.passes = 0; }, /calibration passes/],
+    ['a bad timestamp', (c) => { c.calibratedAt = 'yesterday'; }, /calibratedAt/],
+    ['a missing outcome', (c) => { c.outcomes.pop(); }, /exactly one entry per probe/],
+    ['a repeated outcome', (c) => { c.outcomes[1] = c.outcomes[0]!; }, /duplicate calibration outcome/],
+    ['an unknown probe', (c) => { c.outcomes[0] = { ...c.outcomes[0]!, probeId: 'other' }; }, /invalid or duplicate calibration outcome/],
+    ['too few answers for its passes', (c) => { c.outcomes[0] = { ...c.outcomes[0]!, answers: [], matches: [] }; }, /one answer and match per pass/],
+    ['an answer that is not a number', (c) => { c.outcomes[0]!.answers = ['12' as unknown as number]; }, /invalid calibration answer/],
+    ['a match that disagrees with its answer', (c) => { c.outcomes[0]!.matches = [1]; }, /inconsistent with its answer/],
+    ['an aggregate that disagrees with its outcomes', (c) => { c.hamming += 1; }, /aggregate calibration/],
+    ['a probe asked twice', (c) => { c.batches[1]!.probeIds[0] = c.batches[0]!.probeIds[0]!; }, /must ask every probe exactly once/],
+    ['a probe never asked', (c) => { c.batches.pop(); }, /must ask every probe exactly once/],
+    ['a batch of more than ten', (c) => {
+      c.batches[0]!.probeIds.push(c.batches[1]!.probeIds.shift()!);
+    }, /at most 10 probes/],
+    ['an unknown prompt variant', (c) => { c.batches[0]!.promptVariantId = 'v99'; }, /variant/i],
+  ])('rejects %s', (_name, change, message) => {
+    expect(() => validateKbfReferenceV1(calibrated(1, change))).toThrow(message);
+  });
+
+  it('rejects a reference whose enrollment self-test is powered but whose calibration misses every question', () => {
+    const value = calibrated(100);
+    expect(value.statisticalPower).toBeGreaterThanOrEqual(0.9);
+    expect(() => validateKbfReferenceV1(value)).toThrow(/power on the calibration is 0\.000, under the 0\.9 required/);
+    // Not even the tiny minimum extension sets are validated with lets it through: no audit on it could be DIFF.
+    expect(() => validateKbfReferenceV1(value, { minimumStatisticalPower: Number.EPSILON })).toThrow(/power on the calibration/);
+    expect(kbfCalibrationPower(value)).toBe(0);
+  });
+
+  it('enforces the minimum power on the calibration, which misses more than enrollment did', () => {
+    // 4 misses of 100 calibration answers: power 0.814 against 0.963 on the clean enrollment.
+    const value = calibrated(4);
+    expect(() => validateKbfReferenceV1(value)).toThrow(/power on the calibration is 0\.814, under the 0\.9 required/);
+    expect(kbfCalibrationPower(value)).toBeCloseTo(0.8144, 4);
+    expect(() => validateKbfReferenceV1(value, { minimumStatisticalPower: 0.8 })).not.toThrow();
+    expect(() => validateKbfReferenceV1(value, { minimumCalibrationPower: 0.8 })).not.toThrow();
+    expect(() => validateKbfReferenceV1(value, { minimumCalibrationPower: 0 })).toThrow(/minimumCalibrationPower/);
+  });
+
+  it('passes a calibration as good as its enrollment, as before', () => {
+    const value = calibrated(0);
+    expect(kbfCalibrationPower(value)).toBeCloseTo(0.9631, 4);
+    expect(kbfCalibrationPower(reference())).toBeNull();
+    expect(validateKbfReferenceV1(value)).toBe(value);
+  });
+
+  it('still passes an extension reference validated with the tiny minimum', () => {
+    // Extra sets of a close call are judged pooled with the first set, so callers validate them with Number.EPSILON.
+    expect(() => validateKbfReferenceV1(calibrated(12), { minimumStatisticalPower: Number.EPSILON })).not.toThrow();
+  });
+
+  it('rejects a batch that mixes domains', () => {
+    const value = calibrated(1);
+    value.probes[0] = { ...value.probes[0]!, domain: 'other' };
+    value.referenceId = computeReferenceId(value);
+    expect(() => validateKbfReferenceV1(value)).toThrow(/must hold one domain/);
+  });
+
+  it('is the baseline of an audit when a reference has one, and the self-test is otherwise', () => {
+    const ids = reference().probes.map((probe) => probe.id);
+    expect(kbfAuditBaseline(reference(), ids)).toMatchObject({ hamming: 0, total: 300 });
+    expect(kbfAuditBaseline(calibrated(4), ids)).toMatchObject({ hamming: 4, total: 100 });
+    expect(kbfAuditBaseline(calibrated(4), ids.slice(0, 2))).toMatchObject({ hamming: 2, total: 2 });
+    expect(() => kbfAuditBaseline(calibrated(4), ['other'])).toThrow(/missing selected probe/);
+    // The enrollment self-test stays as it was.
+    expect(subsetReferenceSelfTest(calibrated(4), ids)).toMatchObject({ hamming: 0, total: 300 });
+  });
+
+  it('sets the limit verifyKbf judges by', () => {
+    const value = calibrated(4);
+    const answers = value.probes.map((probe) => probe.consensus);
+    const judged = verifyKbf(value, { answers });
+    expect(judged.stats).toMatchObject({ selfHamming: 4, selfTotal: 100, p0Cp99: clopperPearsonUpper(4, 100, 0.99) });
+    expect(verifyKbf(reference(), { answers }).stats).toMatchObject({ selfHamming: 0, selfTotal: 300 });
+  });
+
+  it('gives the verdict a target only the calibrated limit lets through', () => {
+    // 9 misses of 100 is a DIFF against a clean self-test, and within what the reference itself missed on these batches.
+    const value = calibrated(12);
+    const answers = value.probes.map((probe, index) => (index < 9 ? probe.consensus + 5 : probe.consensus));
+    expect(verifyKbf(reference(), { answers }).verdict).toBe('DIFF');
+    expect(verifyKbf(value, { answers }).verdict).toBe('SAME');
+  });
+
+  it('reports the calibration when the audit has nothing to score', () => {
+    const value = calibrated(4);
+    const { stats, verdict } = verifyKbf(value, { answers: value.probes.map(() => null) });
+    expect(verdict).toBe('UNDETERMINED');
+    expect(stats).toMatchObject({ selfHamming: 4, selfTotal: 100 });
   });
 });
 

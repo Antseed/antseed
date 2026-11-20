@@ -6,7 +6,8 @@ import { DEFAULT_RESTRICTED_COUNTRIES } from '../config/defaults.js'
 import { resolveGasRefuelConfig } from '../config/gas-refuel.js'
 import { configFromObject, resolveConfigPath } from '../config/loader.js'
 import { isPricedSellerService } from '../config/effective.js'
-import type { AntseedConfig, SellerFreeTierCLIConfig } from '../config/types.js'
+import type { AntseedConfig, SellerFreeTierCLIConfig, TokenPricingUsdPerMillion } from '../config/types.js'
+import { cachedPriceProblem } from '../config/validation.js'
 import { ConsoleError } from '../console-error.js'
 import type { FreeTierProgramView, SellerUnitComponent, SellerAlertSettings, SellerAlertsPatch, SellerFreeTierProgramSettings, SellerSettings, SellerSettingsPatch } from '../gateway/console-api/types.js'
 import { configWritable, patchValidatedConfig } from '../config/patch.js'
@@ -355,6 +356,10 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown, started
           else next[key] = price(item[key], `${String(item.service)} ${key}`)
         }
         if (next.inputUsdPerMillion === undefined || next.outputUsdPerMillion === undefined) bad(`pricing: ${String(item.service)} needs both input and output prices`)
+        // Only a problem this edit adds: an input/cached pair saved earlier doesn't block an output-only edit.
+        const label = `pricing: ${String(item.service)}`
+        const problem = cachedPriceProblem(label, next as Partial<TokenPricingUsdPerMillion>)
+        if (problem && problem !== cachedPriceProblem(label, current as Partial<TokenPricingUsdPerMillion>)) bad(problem)
         service.pricing = next
       }
       if (item.enabled !== undefined) {
@@ -451,6 +456,8 @@ export function applySellerSettingsPatch(raw: JsonObject, body: unknown, started
         outputUsdPerMillion: price(item.outputUsdPerMillion, `${id} outputUsdPerMillion`),
       }
       if (item.cachedInputUsdPerMillion !== undefined && item.cachedInputUsdPerMillion !== null) pricing.cachedInputUsdPerMillion = price(item.cachedInputUsdPerMillion, `${id} cachedInputUsdPerMillion`)
+      const problem = cachedPriceProblem(`addServices: ${id}`, pricing as Partial<TokenPricingUsdPerMillion>)
+      if (problem) bad(problem)
       added.pricing = pricing
       services[id] = added
     }

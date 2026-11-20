@@ -240,7 +240,7 @@ describe('billedRequestBody', () => {
   });
 
   describe('says why it serves no service', () => {
-    it.each(['n', 'size', 'quality', 'resolution', 'duration', 'aspect_ratio', 'audio', 'generate_audio', 'reference_video', 'reference_video_urls', 'video_urls', 'prompt', 'input'])('refuses the billing input %s spelled another way, and repeated in a form', (name) => {
+    it.each(['n', 'size', 'quality', 'resolution', 'duration', 'aspect_ratio', 'audio', 'generate_audio', 'reference_video', 'reference_video_urls', 'video_urls', 'prompt', 'input', 'stream_format'])('refuses the billing input %s spelled another way, and repeated in a form', (name) => {
       for (const spelled of [name.toUpperCase(), `${name}[]`, ` ${name}`, `${name[0]!.toUpperCase()}${name.slice(1)}`]) {
         expect(billedRequestBody(json({ model: 'svc', [spelled]: 'x' })), spelled).toMatchObject({ refusal: { code: 'invalid_billing_field' } });
       }

@@ -1,0 +1,30 @@
+.join .rail { padding: 0; }
+.scene { background: var(--site-bg); }
+.scene .head { padding: 112px var(--site-pad) 16px; text-wrap: balance; }
+.join .sub { max-width: 620px; text-wrap: wrap; }
+.painting { aspect-ratio: 1312 / 560; }
+.join .painting { background-position: 50% 72%; }
+/* the painting's sky fades up into the band's, so the two read as one */
+.painting::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 48%;
+  pointer-events: none;
+  background: linear-gradient(var(--site-bg), transparent);
+}
+:global(:root[data-theme='dark']) .scene { --night-sky: #0e1614; background: var(--night-sky); }
+:global(:root[data-theme='dark']) .head { --site-text: #f2f4ef; --site-text-muted: #9fb1a6; --site-text-body: #cdd5d0; }
+:global(:root[data-theme='dark']) .join .eyebrow { color: var(--site-lime); }
+:global(:root[data-theme='dark']) .painting::after { background: linear-gradient(var(--night-sky), rgba(14, 22, 20, 0)); }
+
+.join .cta { justify-content: center; margin-top: 12px; }
+
+@media (min-width: 1200px) { .scene .head { padding-top: 124px; } }
+@media (max-width: 1023px) { .scene .head { padding-top: 88px; } }
+@media (max-width: 760px) {
+  .scene .head { --head-gap: 16px; padding: 72px var(--site-pad) 32px; }
+  .painting { aspect-ratio: 16 / 10; }
+  .join .painting { background-position: 50% 75%; }   /* the whole story: the three at their Macs and the fourth walking up */
+  .join .cta { flex-direction: column; align-items: stretch; align-self: stretch; margin-top: 8px; }
+}

@@ -1,0 +1,8 @@
+/* the switch beside Close at the right, where Docusaurus puts its own toggle */
+.end { display: flex; align-items: center; gap: 16px; margin-left: auto; }
+/* the nav's burger box: 44 square, its icon on the bar's right edge */
+.close {
+  display: grid; place-items: center; width: 44px; height: 44px; margin: 0 -10px 0 0; padding: 0; border: 0; border-radius: var(--site-radius-control);
+  background: none; color: var(--site-ink); cursor: pointer;
+}
+.close:focus-visible { outline: 2px solid #789f00; outline-offset: -4px; }

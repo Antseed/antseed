@@ -1,0 +1,8 @@
+.switch {
+  position: relative; display: inline-grid; flex: none; place-items: center;
+  width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
+  background: transparent; color: var(--site-ink-muted);
+}
+.switch:hover { color: var(--site-ink); }
+.switch[aria-checked='true'] { background: var(--site-hairline); color: var(--site-ink); }
+.switch:focus-visible { outline: 2px solid var(--site-ink); outline-offset: 2px; }

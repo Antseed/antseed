@@ -105,8 +105,20 @@ export interface EventDayTotals {
 
 export interface ReceiptDayTotals {
   day: number;
+  /** Sum of the receipts' floored `cost_cents`: every receipt counts at least one cent, so this is not revenue. */
   costCents: number;
+  /** What the day earned, in fractional cents: see `MeteringStorage.getRevenueCents`. */
+  revenueCents: number;
 }
+
+/**
+ * A receipt's unrounded value in cents (`r` is `usage_receipts`, `e` its `metering_events`
+ * row): its tokens at its unit price, and nothing for a request that failed (status >= 400),
+ * which no buyer pays for. `cost_cents` floors every receipt at one cent, so summing it
+ * counts requests, not revenue.
+ */
+const RECEIPT_REVENUE_CENTS =
+  'CASE WHEN COALESCE(e.status_code, 0) >= 400 THEN 0 ELSE r.total_tokens * r.unit_price_cents_per_thousand_tokens / 1000.0 END';
 
 export interface RowidChunkSummary<T> {
   /** Highest rowid read; the cursor for the next call. */
@@ -258,12 +270,29 @@ export class MeteringStorage {
     return rows.map(rowToReceipt);
   }
 
-  /** Get total cost in a time range (sum of costCents). */
+  /**
+   * Sum of the receipts' `costCents` in a time range. Each receipt is floored at one
+   * cent and failed requests carry one too, so this is not revenue: use `getRevenueCents`.
+   */
   getTotalCost(startMs: number, endMs: number): number {
     const stmt = this.db.prepare(
       'SELECT COALESCE(SUM(cost_cents), 0) as total FROM usage_receipts WHERE timestamp >= ? AND timestamp < ?'
     );
     const row = stmt.get(startMs, endMs) as { total: number };
+    return row.total;
+  }
+
+  /**
+   * What the seller earned in a time range, in fractional USD cents: each receipt's
+   * tokens at its unit price, without the per-receipt one-cent floor, and nothing for
+   * requests that failed (status >= 400).
+   */
+  getRevenueCents(startMs: number, endMs: number): number {
+    const row = this.db.prepare(`
+      SELECT COALESCE(SUM(${RECEIPT_REVENUE_CENTS}), 0) AS total
+      FROM usage_receipts r LEFT JOIN metering_events e ON e.event_id = r.event_id
+      WHERE r.timestamp >= ? AND r.timestamp < ?
+    `).get(startMs, endMs) as { total: number };
     return row.total;
   }
 
@@ -429,7 +458,8 @@ export class MeteringStorage {
     const rows = this.db.prepare(`
       SELECT e.rowid AS rowid, e.event_id, e.session_id, e.timestamp, e.provider, e.service, e.buyer_peer_id,
         e.input_tokens, e.output_tokens, e.total_tokens, e.token_method, e.latency_ms, e.status_code, e.was_streaming,
-        e.error, e.cached_input_tokens, r.cost_cents AS cost_cents
+        e.error, e.cached_input_tokens, r.cost_cents AS cost_cents,
+        CASE WHEN r.receipt_id IS NULL THEN NULL ELSE ${RECEIPT_REVENUE_CENTS} END AS revenue_cents
       FROM ${window} e ${filters.length === 0 ? 'INDEXED BY idx_events_timestamp' : 'ON e.rowid = w.rid'}
       LEFT JOIN usage_receipts r ON r.session_id = e.session_id AND r.event_id = e.event_id
       WHERE ${filters.length === 0 ? bounds.replace(/(^|\(| AND )(timestamp|rowid)/g, '$1e.$2') : filters.join(' AND ')}
@@ -459,7 +489,8 @@ export class MeteringStorage {
       SELECT e.rowid AS rowid, e.event_id, e.session_id, e.timestamp, e.provider, e.service, e.buyer_peer_id,
         e.input_tokens, e.output_tokens, e.total_tokens, e.token_method, e.latency_ms, e.status_code, e.was_streaming,
         e.error, e.cached_input_tokens, e.token_confidence, e.request_id,
-        r.cost_cents AS cost_cents, r.receipt_id, r.unit_price_cents_per_thousand_tokens AS unit_price_cents_per_thousand
+        r.cost_cents AS cost_cents, r.receipt_id, r.unit_price_cents_per_thousand_tokens AS unit_price_cents_per_thousand,
+        CASE WHEN r.receipt_id IS NULL THEN NULL ELSE ${RECEIPT_REVENUE_CENTS} END AS revenue_cents
       FROM metering_events e
       LEFT JOIN usage_receipts r ON r.session_id = e.session_id AND r.event_id = e.event_id
       WHERE e.event_id >= @id AND e.event_id < @end
@@ -473,9 +504,13 @@ export class MeteringStorage {
       ? this.db.prepare('SELECT signature_valid, buyer_total_tokens, percentage_difference, disputed FROM receipt_verifications WHERE receipt_id = ?')
         .get(event.receipt_id) as MeteringEventDetailRow['verification'] | undefined
       : undefined;
-    const session = this.db.prepare(
-      'SELECT started_at, ended_at, total_requests, total_tokens, total_cost_cents, avg_latency_ms FROM sessions WHERE session_id = ?',
-    ).get(event.session_id) as MeteringEventDetailRow['session'] | undefined;
+    const session = this.db.prepare(`
+      SELECT started_at, ended_at, total_requests, total_tokens, total_cost_cents, avg_latency_ms,
+        (SELECT COALESCE(SUM(${RECEIPT_REVENUE_CENTS}), 0)
+          FROM usage_receipts r LEFT JOIN metering_events e ON e.event_id = r.event_id
+          WHERE r.session_id = s.session_id) AS revenue_cents
+      FROM sessions s WHERE s.session_id = ?
+    `).get(event.session_id) as MeteringEventDetailRow['session'] | undefined;
     // The request's place in its session; sessions are short, so this reads few rows.
     const position = this.db.prepare(
       'SELECT COUNT(*) AS n FROM metering_events WHERE session_id = ? AND (timestamp < ? OR (timestamp = ? AND rowid <= ?))',
@@ -555,17 +590,19 @@ export class MeteringStorage {
         timestamp / ${DAY_MS} AS day,
         MAX(rid) AS last_rowid,
         COUNT(*) AS receipts,
-        COALESCE(SUM(cost_cents), 0) AS cost_cents
+        COALESCE(SUM(cost_cents), 0) AS cost_cents,
+        COALESCE(SUM(revenue_cents), 0) AS revenue_cents
       FROM (
-        SELECT rowid AS rid, timestamp, cost_cents
-        FROM usage_receipts WHERE rowid > ? ORDER BY rowid LIMIT ?
+        SELECT r.rowid AS rid, r.timestamp AS timestamp, r.cost_cents AS cost_cents, ${RECEIPT_REVENUE_CENTS} AS revenue_cents
+        FROM usage_receipts r LEFT JOIN metering_events e ON e.event_id = r.event_id
+        WHERE r.rowid > ? ORDER BY r.rowid LIMIT ?
       )
       GROUP BY day
-    `).all(afterRowid, limit) as Array<{ day: number; last_rowid: number; receipts: number; cost_cents: number }>;
+    `).all(afterRowid, limit) as Array<{ day: number; last_rowid: number; receipts: number; cost_cents: number; revenue_cents: number }>;
     return {
       lastRowid: rows.reduce((max, row) => Math.max(max, row.last_rowid), afterRowid),
       rows: rows.reduce((count, row) => count + row.receipts, 0),
-      days: rows.map((row) => ({ day: row.day, costCents: row.cost_cents })),
+      days: rows.map((row) => ({ day: row.day, costCents: row.cost_cents, revenueCents: row.revenue_cents })),
     };
   }
 
@@ -979,7 +1016,10 @@ export interface MeteringEventPageRow {
   was_streaming: number;
   error: string | null;
   cached_input_tokens: number | null;
+  /** The receipt's floored cost (at least one cent); null without a receipt. Not revenue. */
   cost_cents: number | null;
+  /** The receipt's unrounded value in cents, 0 for a failed request; null without a receipt. */
+  revenue_cents: number | null;
 }
 
 export interface MeteringEventDetailRow extends MeteringEventPageRow {
@@ -990,7 +1030,7 @@ export interface MeteringEventDetailRow extends MeteringEventPageRow {
   unit_price_cents_per_thousand: number | null;
   verification: { signature_valid: number; buyer_total_tokens: number; percentage_difference: number; disputed: number } | null;
   /** The metering session (a buyer's run of requests); null until it is first saved. */
-  session: { started_at: number; ended_at: number | null; total_requests: number; total_tokens: number; total_cost_cents: number; avg_latency_ms: number } | null;
+  session: { started_at: number; ended_at: number | null; total_requests: number; total_tokens: number; total_cost_cents: number; avg_latency_ms: number; revenue_cents: number } | null;
   /** 1-based index of this request within its session. */
   session_position: number;
 }
