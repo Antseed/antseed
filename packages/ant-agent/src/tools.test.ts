@@ -312,6 +312,23 @@ describe('appendToolLoop', () => {
     expect(resultBlocks[0].type).toBe('tool_result');
   });
 
+  it('drops empty unsigned thinking blocks when replaying the assistant turn', () => {
+    const body = { messages: [{ role: 'user', content: 'hello' }] };
+    const toolUse = { type: 'tool_use', id: 'tc1', name: 'antseed_load_knowledge', input: {} };
+    const signed = { type: 'thinking', thinking: '', signature: 'sig' };
+    const withText = { type: 'thinking', thinking: 'hmm' };
+    const assistantResponse = {
+      content: [{ type: 'thinking', thinking: '' }, signed, withText, { type: 'text', text: 'ok' }, toolUse],
+    };
+    const results = [{ id: 'tc1', content: 'x', isError: false }];
+    const updated = appendToolLoop(body, assistantResponse, results, 'anthropic');
+    const msgs = updated.messages as Record<string, unknown>[];
+    expect(msgs[1]).toEqual({
+      role: 'assistant',
+      content: [signed, withText, { type: 'text', text: 'ok' }, toolUse],
+    });
+  });
+
   it('appends correctly in OpenAI format', () => {
     const body = { messages: [{ role: 'user', content: 'hello' }] };
     const assistantResponse = {
