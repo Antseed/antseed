@@ -84,7 +84,7 @@ describe('DepositRelayer', () => {
     expect(statuses).toEqual(['submitted', 'confirmed']);
     expect(mux.sendSweepReceipt.mock.calls[1][0].txHash).toBe('0x' + '77'.repeat(32));
     expect(mux.sendSweepReceipt.mock.calls[1][0].authNonce).toBe(payload.nonce);
-    // Speed-ups of the sweep stop at the gas price where it would stop paying for itself.
+    // The sweep and its speed-ups stop at the gas price where it would stop paying for itself.
     expect(sweepSpy.mock.calls[0][2]).toEqual({ maxFeePerGasWei: 100_000_000n });
   });
 

@@ -247,6 +247,19 @@ describe('BaseEvmClient writes within a fee limit', () => {
     expect(BigInt(sent[0]!.maxFeePerGas!)).toBe(8_000_000n);
     expect(BigInt(sent[0]!.maxPriorityFeePerGas!)).toBe(1_000_000n);
   });
+
+  it('sends nothing when the base fee cannot be read to price the capped tx', async () => {
+    const client = new TestEvmClient();
+    const provider = client.provider as JsonRpcProvider;
+    vi.spyOn(provider, 'getBlock').mockRejectedValue(new Error('rpc timeout'));
+    vi.spyOn(provider, 'getTransactionCount').mockResolvedValue(41);
+    const sent: TransactionRequest[] = [];
+    // Left unpriced, the signer would fill in its own fees, above the cap.
+    await expect((client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> })
+      ._execWriteWithin(signerSendingTo(sent, '0x' + '17'.repeat(20)), 8_000_000n, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n))
+      .rejects.toThrow('fee-capped');
+    expect(sent).toHaveLength(0);
+  });
 });
 
 describe('BaseEvmClient speed-ups with nonce-managing signers', () => {

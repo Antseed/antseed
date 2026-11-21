@@ -87,7 +87,7 @@ export class DepositRelayClient extends BaseEvmClient {
 
   // ─── Relayer Operations ────────────────────────────────────────────
 
-  /** `opts.maxFeePerGasWei` caps what speeding up a stalled sweep may pay (see `estimateSweepProfit`). */
+  /** `opts.maxFeePerGasWei` caps the max fee per gas the sweep and its speed-ups may offer (see `estimateSweepProfit`). */
   async sweep(signer: AbstractSigner, params: SweepParams, opts?: { maxFeePerGasWei?: bigint }): Promise<string> {
     return this._execWriteWithin(
       signer,
@@ -118,7 +118,7 @@ export class DepositRelayClient extends BaseEvmClient {
   async estimateSweepProfit(
     signer: AbstractSigner,
     params: SweepParams,
-    opts?: { ethPriceUsd?: number; minProfitUsdc?: bigint },
+    opts?: { ethPriceUsd?: number | bigint; minProfitUsdc?: bigint },
   ): Promise<SweepProfitEstimate> {
     const connected = this._ensureConnected(signer);
     const contract = new Contract(this._contractAddress, DEPOSIT_RELAY_ABI, connected);
@@ -138,10 +138,10 @@ export class DepositRelayClient extends BaseEvmClient {
       this.fee(),
     ]);
 
-    const baseFee = block?.baseFeePerGas ?? null;
-    const gasPriceWei = baseFee !== null
-      ? (baseFee * BASE_FEE_MARGIN_NUM) / BASE_FEE_MARGIN_DEN + getBigInt(feeFields.maxPriorityFeePerGas ?? 0)
-      : (await this._provider.getFeeData()).gasPrice ?? 0n;
+    // A capped sweep is never sent without a base fee to price it (BaseEvmClient._sendBuffered).
+    const baseFee = block?.baseFeePerGas;
+    if (baseFee == null) throw new Error('cannot read the base fee to price the sweep');
+    const gasPriceWei = (baseFee * BASE_FEE_MARGIN_NUM) / BASE_FEE_MARGIN_DEN + getBigInt(feeFields.maxPriorityFeePerGas ?? 0);
     const ethPriceUsdE8 = await this._ethPriceUsdE8(opts?.ethPriceUsd, block?.timestamp);
     const estGasCostUsdc = (gasEstimate * gasPriceWei * ethPriceUsdE8) / WEI_USD_E8_TO_USDC;
 
@@ -162,9 +162,12 @@ export class DepositRelayClient extends BaseEvmClient {
   }
 
   /** ETH/USD with 8 decimals: the override, else a fresh positive Chainlink answer, else the fallback. */
-  private async _ethPriceUsdE8(override: number | undefined, blockTimestamp: number | undefined): Promise<bigint> {
-    if (override !== undefined && Number.isFinite(override) && override > 0) {
-      return BigInt(Math.round(override * 1e8));
+  private async _ethPriceUsdE8(override: number | bigint | undefined, blockTimestamp: number | undefined): Promise<bigint> {
+    // A bigint is whole dollars, as this option took before; a number may carry cents.
+    if (typeof override === 'bigint' && override > 0n) return override * USD_E8;
+    if (typeof override === 'number' && Number.isFinite(override) && override > 0) {
+      const e8 = BigInt(Math.round(override * 1e8));
+      if (e8 > 0n) return e8;
     }
     if (this._ethUsdPriceFeedAddress && blockTimestamp !== undefined) {
       try {

@@ -145,7 +145,7 @@ describe('DepositRelayClient.estimateSweepProfit', () => {
       .toEqual({ estGasCostUsdc: 8_998n, profitUsdc: 41_002n });
     expect(estimate.gasPriceWei).toBe(33_000_000n);
     expect(estimate.ethPriceUsdE8).toBe(ETH_USD_E8);
-    // Speed-ups stop where the gas would eat the whole fee: 0.05 / (165,000 x $1,652.67) = 183.4 Mwei.
+    // The sweep and its speed-ups stop where the gas would eat the whole fee: 0.05 / (165,000 x $1,652.67) = 183.4 Mwei.
     expect(estimate.maxFeePerGasWei).toBe(183_358_530n);
   });
 
@@ -175,12 +175,28 @@ describe('DepositRelayClient.estimateSweepProfit', () => {
     expect(call).not.toHaveBeenCalled();
   });
 
-  it('ignores a configured ETH price that is not a positive number', async () => {
+  it('still takes a whole-dollar bigint ETH price over the feed', async () => {
+    const { client, call } = makeEstimatingClient({ feed: { answer: ETH_USD_E8, updatedAt: NOW } });
+
+    const estimate = await client.estimateSweepProfit(RELAYER_WALLET, SWEEP_PARAMS, { ethPriceUsd: 2_500n });
+
+    expect(estimate.ethPriceUsdE8).toBe(250_000_000_000n);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it.each([Number.NaN, 1e-9])('ignores a configured ETH price of %s, which is not a positive price', async (ethPriceUsd) => {
     const { client } = makeEstimatingClient({ feed: { answer: ETH_USD_E8, updatedAt: NOW } });
 
-    const estimate = await client.estimateSweepProfit(RELAYER_WALLET, SWEEP_PARAMS, { ethPriceUsd: Number.NaN });
+    const estimate = await client.estimateSweepProfit(RELAYER_WALLET, SWEEP_PARAMS, { ethPriceUsd });
 
     expect(estimate.ethPriceUsdE8).toBe(ETH_USD_E8);
+  });
+
+  it('refuses to price a sweep when the latest block has no base fee', async () => {
+    const { client } = makeEstimatingClient({ feed: { answer: ETH_USD_E8, updatedAt: NOW } });
+    vi.spyOn(client.provider as JsonRpcProvider, 'getBlock').mockResolvedValue({ baseFeePerGas: null, timestamp: NOW } as never);
+
+    await expect(client.estimateSweepProfit(RELAYER_WALLET, SWEEP_PARAMS)).rejects.toThrow('base fee');
   });
 
   it('keeps refusing when the expected gas cost is above the fee', async () => {

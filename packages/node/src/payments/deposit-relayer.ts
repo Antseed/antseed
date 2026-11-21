@@ -157,7 +157,7 @@ export class DepositRelayer {
       }
 
       this._sendReceipt(mux, payload, 'submitted');
-      // Speed-ups of a stalled sweep stop where it would no longer pay for itself.
+      // The sweep and its speed-ups never offer more per gas than the fee pays for.
       const txHash = await this._client.sweep(this._identity.wallet, params, { maxFeePerGasWei: estimate.maxFeePerGasWei });
       debugLog(`[Relayer] Sweep confirmed for ${payload.from.slice(0, 10)}...: tx=${txHash} fee=${estimate.fee}`);
       this._sendReceipt(mux, payload, 'confirmed', txHash);

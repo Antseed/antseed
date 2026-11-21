@@ -566,7 +566,9 @@ export abstract class BaseEvmClient {
       if (populated.maxFeePerGas == null && populated.gasPrice == null) Object.assign(populated, await this._feeFields());
       // A capped write never offers more per gas than it can afford, even if the base fee climbs
       // while it waits. Clamped at the cap, it cannot be sped up (a replacement must offer more).
-      if (maxFeePerGasWei !== null && populated.maxFeePerGas != null) {
+      // Without fee fields the signer would price it uncapped, so it is not sent.
+      if (maxFeePerGasWei !== null) {
+        if (populated.maxFeePerGas == null) throw new Error('cannot read the base fee to price a fee-capped transaction');
         populated.maxFeePerGas = min(getBigInt(populated.maxFeePerGas), maxFeePerGasWei);
         if (populated.maxPriorityFeePerGas != null) {
           populated.maxPriorityFeePerGas = min(getBigInt(populated.maxPriorityFeePerGas), maxFeePerGasWei);
