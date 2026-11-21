@@ -215,27 +215,25 @@ export interface ProxyAuditEvidenceV1 {
   /** Absent on audits that sent the reference's thinking suppression without asking the seller. */
   sellerThinking?: SellerThinkingDiscoveryV1
   /**
-   * The tokenizer pre-check that ran before the questions (`tokenizer-precheck.ts`); absent when none ran. On a
-   * `mismatch` the verdict is DIFF and no question was asked: `exchanges` is empty and `result.matchVector` holds
-   * no answer.
+   * The tokenizer pre-check, the first test (`tokenizer-precheck.ts`); absent when none ran. On a `mismatch` the
+   * verdict is DIFF, and the questions and the later tests still run (`all-tests-v1`).
    */
   tokenizerPrecheck?: TokenizerPrecheckV1
   /**
-   * The cap check that ran after thinking discovery and before the questions (`output-cap.ts`); absent when none
-   * ran or it does not apply to the model this run. On a `flag` the verdict is DIFF and no question was asked.
+   * The cap check that ran after the questions (`output-cap.ts`); absent when none ran or it does not apply to the
+   * model this run. On a `flag` the verdict is DIFF, and the later tests still run.
    */
   outputCap?: OutputCapV1
   /**
-   * The echo check that ran after the cap check and before the questions (`output-echo.ts`); absent when none ran
-   * or it does not apply to the model this run. On a `flag` the verdict is DIFF and no question was asked.
+   * The echo check that ran after the cap check (`output-echo.ts`); absent when none ran or it does not apply to the
+   * model this run. On a `flag` the verdict is DIFF, and the later tests still run.
    */
   outputEcho?: OutputEchoV1
   /** The randomness check (FLIPS, `flips.ts`) that ran after the echo check; absent when none ran. */
   flips?: FlipsV1
   /**
    * Set on an audit that answered another auditor's waiting DIFF: the checks that flagged it there, which ran to
-   * their end here. A flag by another check did not end this audit, so a pre-check mismatch or a cap check flag
-   * may then sit beside the questions.
+   * their end here.
    */
   confirming?: { checks: AuditCheckId[]; /** The chain time of the report it answers. */ reportedAt?: number }
   /**

@@ -47,14 +47,14 @@ export const SIGNED_REQUEST_TRIES = 2
 const SIGNED_REQUEST_TIMEOUT_MS = 60_000
 
 /** What a caller of `sendSignedRequest` adds to each try: its own fields of the record and when an answer is enough. */
-export interface SignedRequestHooks<Record extends SignedSellerRequestV1> {
+export interface SignedRequestHooks<SellerRequest extends SignedSellerRequestV1> {
   /** Clears the caller's own fields at the start of every try, so the record holds what the last try's answer gave. */
-  reset?: (record: Record) => void
+  reset?: (record: SellerRequest) => void
   /**
    * Reads a try's verified signed answer into the caller's fields: null when it is enough, or why it is not, and the
    * request is tried again (within `SIGNED_REQUEST_TRIES`).
    */
-  inspect?: (record: Record) => string | null
+  inspect?: (record: SellerRequest) => string | null
 }
 
 /**
@@ -64,12 +64,12 @@ export interface SignedRequestHooks<Record extends SignedSellerRequestV1> {
  * which then measures nothing), asks again after a 429, a 5xx, an answer without this request's ID or without a
  * verified ResponseAuth, and stops at any other 4xx. Never rejects: a failure is in `failureReason`.
  */
-export async function sendSignedRequest<Record extends SignedSellerRequestV1>(
+export async function sendSignedRequest<SellerRequest extends SignedSellerRequestV1>(
   input: SignedSellerRequestInput,
   body: Uint8Array,
-  record: Record,
-  hooks: SignedRequestHooks<Record> = {},
-): Promise<Record> {
+  record: SellerRequest,
+  hooks: SignedRequestHooks<SellerRequest> = {},
+): Promise<SellerRequest> {
   const timeoutMs = Math.min(input.requestTimeoutMs ?? SIGNED_REQUEST_TIMEOUT_MS, SIGNED_REQUEST_TIMEOUT_MS)
   for (let attempt = 1; attempt <= SIGNED_REQUEST_TRIES; attempt += 1) {
     if (input.signal?.aborted) {
