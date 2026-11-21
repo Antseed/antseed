@@ -124,6 +124,44 @@ Set `cachedInputUsdPerMillion` when your upstream charges less for cache hits. W
 
 The cached-input price must be at most the input price. Buyers skip an offer whose cached input costs more than its input, so the model would get no requests. `antseed seller setup`, the `antseed config seller` commands, `antseed seller settings` and the Gateway Console refuse such a price, and `antseed seller start` warns about one already in the config. Leave `cachedInputUsdPerMillion` out to bill cached input at the input price. A service with its own `pricing` doesn't take the provider's default cached-input price: set it on the service too.
 
+### Zero data access services
+
+A service whose upstream model encrypts end to end can be sold with zero data access: buyers encrypt every message to the upstream's attested key, and your seller relays ciphertext with your own upstream key. Today this works with the `openai` provider on Venice, for its `e2ee-*` models. Set the service's `upstreamModel` to the `e2ee-*` model and add the `e2ee` category:
+
+```json
+"qwen-2.5-7b": {
+  "upstreamModel": "e2ee-qwen-2-5-7b-p",
+  "categories": ["e2ee"]
+}
+```
+
+Your seller then answers buyers' attestation requests for the service for free, by relaying Venice's attestation for a nonce the buyer chose. Buyers check it themselves, so the category alone earns nothing: a service whose attestation fails is skipped. Encrypted requests need the `x-venice-tee-*` headers and `messages` to reach Venice unchanged, so don't strip those headers (`OPENAI_STRIP_HEADER_PREFIXES`) or inject body fields (`OPENAI_BODY_INJECT_JSON`) that touch `messages`.
+
+### Seller-blind relay services
+
+A service on an upstream without end-to-end encryption can still be sold with zero data access when the upstream mints scoped credentials. Today this works with the `openai` provider on DeepInfra (`OPENAI_BASE_URL` of `https://api.deepinfra.com/v1/openai`). Add the `seller-blind` category to the service:
+
+```json
+"llama-3.1-8b": {
+  "upstreamModel": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+  "categories": ["seller-blind"]
+}
+```
+
+For a buyer with an open payment channel that has signed for its earlier requests, your seller mints a DeepInfra scoped token for the service's upstream model, with a spend cap and an expiry. The buyer then runs TLS to DeepInfra through a raw relay stream on your seller, which connects only to that credential's host, so you forward ciphertext and never see the conversation. After each relayed request your seller reads the token's spend from DeepInfra and charges the buyer that amount times your multiplier. A token is used for one request at a time, so each change in spend belongs to one request.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OPENAI_BLIND_RELAY_SPEND_LIMIT_USD` | `0.10` | The spend cap of each token, in USD |
+| `OPENAI_BLIND_RELAY_TTL_SECONDS` | `600` | How long each token lives (at least 60) |
+| `OPENAI_BLIND_RELAY_PRICE_MULTIPLIER` | `1` | What a relayed request is charged per USD of DeepInfra spend |
+
+Advertise token prices of about DeepInfra's list price times your multiplier: buyers sign a relayed request only up to their tolerance times the price they compute from the usage they read and your advertised prices. Know the trade-offs before you offer it:
+
+- A buyer holds the token, so it can also use it outside the relay. It still can't exceed the cap or the expiry, and your seller bills any extra spend on the buyer's next relayed request, up to the buyer's own price for it. Keep the cap small.
+- A DeepInfra token shows your DeepInfra account id to the buyer, and the buyer learns that the service runs on DeepInfra.
+- A buyer holds at most 4 live tokens with your seller.
+
 ### Capabilities
 
 Capabilities tell buyers what a service can do. They are hints, not enforced limits, and an omitted field means "unknown".

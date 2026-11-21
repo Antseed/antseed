@@ -20,6 +20,7 @@ The policy editor groups its settings under **Sellers**, **Quality** (the minimu
 | **Minimum trust score** | 0 to 100, from the seller's staking power, recognized usage, verified identity and model checks. The ⓘ next to it in the editor explains the parts. It is judged per model: for a model with a live DIFF [model check](/docs/verify/overview), a seller counts at 10% of its score, and **Sort by trust** uses the same number. See [Trust score](/docs/reputation). |
 | **TEE sellers only** | Only providers whose trusted execution environment (TEE) attestation passes on your buyer |
 | **Verified sellers only** | Only providers whose responses pass a verifier, such as a TEE attestation check |
+| **Zero data access only** | Only services the seller cannot read: your buyer encrypts every message to a key that the upstream's TEE attests, and the seller relays ciphertext. See [Zero data access](#zero-data-access). |
 | **Sort by** | **Balanced**, **Lowest price**, **Lowest latency** or **Highest trust**. **Balanced** keeps the buyer's automatic order: the cheapest provider that passes the trust minimum, with trust only breaking ties (see [Router plugin API](/docs/router-api)). **Lowest latency** ranks by time to first token, which the buyer measures per provider and model on streamed answers; providers it hasn't measured yet come after the measured ones. |
 | **Free sellers first** | Rank free providers ahead of paid ones |
 | **Which models may be used** | **Any model**, or **Only these models**. Requests for other models get `403 model_not_allowed`. |
@@ -33,6 +34,30 @@ The policy editor groups its settings under **Sellers**, **Quality** (the minimu
 A seller list is a named group of providers that a policy allows or blocks in one step: for example the sellers you run yourself, or ones you trust. Organization admins manage them under **Routing → Seller lists**, or from the policy editor: **Manage seller lists** opens them all, and clicking a list's name opens that list. Editing a list changes every policy that uses it. The CLI (`antseed gateway peer-list`) and the management API (`/peer-lists`) call them peer lists.
 
 **TEE sellers only** has your buyer check each provider's TEE attestation before sending it a request, even when verification is otherwise optional. **Verified sellers only** requires a passing check from your buyer's verifier, whichever one the provider supports. [Verify TEE providers](/docs/verify-tee) explains the difference and how to turn verification on.
+
+## Zero data access
+
+**Zero data access only** sends requests only to services whose upstream model encrypts end to end. Sellers mark such a service with the `e2ee` category ([seller setup](/docs/provide/config#zero-data-access-services)). Before the first request to one, your buyer:
+
+1. asks the seller to relay the upstream's attestation for a nonce your buyer picked;
+2. checks it itself: the Intel TDX quote passes DCAP, it is not a debug environment, and it binds the model's public key and the nonce;
+3. encrypts every message (system prompt, history and the new turn) to that key, with a new key per request for the answer.
+
+The seller forwards the request with its own upstream key and sees only ciphertext. It still sees the model, token counts, timing and message sizes, which it needs for billing. Your buyer decrypts the answer as it streams.
+
+Only text chat completions can be encrypted. A request with images, audio, tools or tool results gets `400 zero_data_access_unsupported` instead of being sent in plaintext. Routing services read the whole conversation, so this setting leaves them out. A provider whose attestation fails is skipped for 5 minutes.
+
+A single request can ask for it with the header `x-antseed-require-zero-data-access: 1`, on top of its key's policy.
+
+### Seller-blind relay
+
+Some upstreams have no end-to-end encryption, but can mint short-lived, spend-capped credentials. A seller marks such a service with the `seller-blind` category ([seller setup](/docs/provide/config#seller-blind-relay-services)), and **Zero data access only** accepts it too. For these, your buyer:
+
+1. asks the seller for a credential scoped to the service's upstream model, with a small spend cap and an expiry in minutes;
+2. opens TLS to the upstream itself, through a raw relay stream on the seller, and checks the upstream's certificate;
+3. sends the request with that credential, and reads the usage in the answer to price it.
+
+The seller forwards ciphertext only and never sees the conversation, but the upstream does, under its own data policy. The seller charges each relayed request by what the upstream counted for the credential, and your buyer signs for it only up to its own price from the usage it read and the seller's advertised prices. Your buyer learns which upstream serves the model. Only text chat completions go through the relay.
 
 ## Policy levels
 
@@ -52,7 +77,7 @@ Each level only narrows the ones above it:
 
 - Allow lists intersect, and block lists add up.
 - Minimums take the higher value, and price caps the lower one.
-- **TEE sellers only** and **Verified sellers only** stay on once any level turns them on.
+- **TEE sellers only**, **Verified sellers only** and **Zero data access only** stay on once any level turns them on.
 - Ranking choices (sort, free first, fallback chains) take the most specific level that sets them.
 
 A member can therefore never give their own key more than their workspace allows. The default minimum trust score in the buyer settings is 60, so a lower minimum at a gateway level has no effect until you lower the buyer's. If providers you expect are missing, check **Settings → Buyer** first.
@@ -123,6 +148,7 @@ Codex needs a preset as its model. The **Codex** tab in a provider's API call pa
 ```bash
 antseed gateway routing set --min-trust 30 --max-input-price 5
 antseed gateway workspace policy set Research --layer org --require-tee
+antseed gateway key policy set <keyId> --require-zero-data-access
 antseed gateway key policy set <keyId> --allow-model deepseek-v4-flash --sort price
 antseed gateway routing preview --model deepseek-v4-flash --workspace Research
 antseed gateway preset create --slug coder --name Coder --model deepseek-v4-flash --param temperature=0.2

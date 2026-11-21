@@ -16,6 +16,8 @@ import {
 } from '@antseed/provider-core';
 import type { ServiceApiProtocol, ServiceCapabilities } from '@antseed/node';
 import { VeniceImageEditProvider } from './venice-image-edit.js';
+import { veniceE2eeAttestation } from './venice-e2ee.js';
+import { deepInfraBlindRelay, isDeepInfraBaseUrl } from './deepinfra-blind.js';
 import { announceVeniceSpeechVoices, withSpeechServiceCapabilityDefaults } from './speech.js';
 
 const SPECIAL_OPENAI_COMPAT_PROVIDERS = ['openrouter', 'venice'] as const;
@@ -237,6 +239,9 @@ const plugin: AntseedProviderPlugin = {
     { key: 'ANTSEED_SERVICE_ALIAS_MAP_JSON', label: 'Service Alias Map', type: 'string', required: false, description: 'JSON map of announced service → upstream model name (generic, works across all providers)' },
     { key: 'ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON', label: 'Image Edit Model Map', type: 'string', required: false, description: 'JSON map of announced image service → Venice native edit model' },
     { key: 'OPENAI_PATH_REWRITE_JSON', label: 'Path Rewrite', type: 'string', required: false, description: 'JSON map of exact request paths to rewrite, e.g. {"/v1/chat/completions":"/v4/chat/completions"} for APIs that use a different version prefix' },
+    { key: 'OPENAI_BLIND_RELAY_SPEND_LIMIT_USD', label: 'Blind relay spend cap', type: 'number', required: false, description: 'DeepInfra only: the USD spend cap of each credential minted for a buyer on a seller-blind service (default 0.10)' },
+    { key: 'OPENAI_BLIND_RELAY_TTL_SECONDS', label: 'Blind relay credential lifetime', type: 'number', required: false, description: 'DeepInfra only: how long each seller-blind credential lives, in seconds (default 600, at least 60)' },
+    { key: 'OPENAI_BLIND_RELAY_PRICE_MULTIPLIER', label: 'Blind relay price multiplier', type: 'number', required: false, description: 'DeepInfra only: what a seller-blind request is charged per USD of upstream spend (default 1). Advertise token prices of about the upstream list price times this.' },
     { key: 'ANTSEED_FALLBACK_UPSTREAMS_JSON', label: 'Fallback Upstreams', type: 'string', required: false, description: 'JSON array of backup upstreams for the same services ({baseUrl, apiKey?, services?, serviceAliasMap?, pathRewrite?}), tried in order when the main upstream fails' },
   ],
 
@@ -324,6 +329,22 @@ const plugin: AntseedProviderPlugin = {
         ...(fallbackUpstreams ? { fallbackUpstreams } : {}),
       },
     });
+    if (isDeepInfraBaseUrl(baseUrl)) {
+      const ttlSeconds = parseNonNegativeNumber(config['OPENAI_BLIND_RELAY_TTL_SECONDS'], 'OPENAI_BLIND_RELAY_TTL_SECONDS', 600);
+      if (ttlSeconds < 60) throw new Error('OPENAI_BLIND_RELAY_TTL_SECONDS must be at least 60');
+      const spendLimitUsd = parseNonNegativeNumber(config['OPENAI_BLIND_RELAY_SPEND_LIMIT_USD'], 'OPENAI_BLIND_RELAY_SPEND_LIMIT_USD', 0.1);
+      if (spendLimitUsd <= 0) throw new Error('OPENAI_BLIND_RELAY_SPEND_LIMIT_USD must be above 0');
+      // Services in category `seller-blind` are served by minting these; the seller opts in per service.
+      Object.assign(baseProvider, deepInfraBlindRelay({
+        baseUrl,
+        apiKey,
+        resolveUpstreamModel: (service) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service,
+        spendLimitUsd,
+        ttlSeconds,
+      }), {
+        blindRelayPriceMultiplier: parseNonNegativeNumber(config['OPENAI_BLIND_RELAY_PRICE_MULTIPLIER'], 'OPENAI_BLIND_RELAY_PRICE_MULTIPLIER', 1),
+      });
+    }
     if (flavor !== 'venice') return baseProvider;
     // Venice lists each speech model's voices; announce them unless the seller listed its own.
     const announceSpeechVoices = serviceCapabilities
@@ -335,7 +356,12 @@ const plugin: AntseedProviderPlugin = {
           (service) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service,
         )
       : undefined;
-    return new VeniceImageEditProvider(baseProvider, imageEditModelMap ?? {}, announceSpeechVoices);
+    const e2eeAttestation = veniceE2eeAttestation({
+      baseUrl,
+      apiKey,
+      resolveUpstreamModel: (service) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service,
+    });
+    return new VeniceImageEditProvider(baseProvider, imageEditModelMap ?? {}, announceSpeechVoices, e2eeAttestation);
   },
 };
 

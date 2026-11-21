@@ -10,6 +10,8 @@ import { MessageType } from "./types/protocol.js";
 import { ProxyMux } from "./proxy/proxy-mux.js";
 import { PaymentMux } from "./p2p/payment-mux.js";
 import { VerificationMux } from "./verification/verification-mux.js";
+import { RelayMux } from "./p2p/relay-mux.js";
+import type { Duplex } from "node:stream";
 import type { ResponseAuthSink } from "@antseed/buyer-core";
 import type { VerificationSampler } from "./verification/samples.js";
 import {
@@ -96,6 +98,7 @@ export class BuyerIdentityContext {
   private readonly _muxes = new Map<PeerId, ProxyMux>();
   private readonly _paymentMuxes = new Map<PeerId, PaymentMux>();
   private readonly _verificationMuxes = new Map<PeerId, VerificationMux>();
+  private readonly _relayMuxes = new Map<PeerId, RelayMux>();
   private readonly _decoders = new Map<PeerId, FrameDecoder>();
   private readonly _keepalives = new Map<PeerId, KeepaliveManager>();
 
@@ -199,6 +202,17 @@ export class BuyerIdentityContext {
     return conn;
   }
 
+  /** Opens a seller-blind relay stream; see AntseedNode.openRelayStream. */
+  async openRelayStream(peer: PeerInfo, streamId: string, credentialId: string): Promise<Duplex> {
+    const conn = await this.connect(peer);
+    let mux = this._relayMuxes.get(peer.peerId);
+    if (!mux) {
+      mux = new RelayMux(conn);
+      this._relayMuxes.set(peer.peerId, mux);
+    }
+    return mux.openStream(streamId, credentialId);
+  }
+
   /** Session hash of this identity's encrypted TCP connection to a seller, else null. */
   getChannelBinding(peerId: PeerId): string | null {
     return this._connectionManager.getConnection(peerId)?.channelBinding ?? null;
@@ -222,6 +236,8 @@ export class BuyerIdentityContext {
     this._keepalives.clear();
     for (const mux of this._verificationMuxes.values()) mux.close();
     this._verificationMuxes.clear();
+    for (const mux of this._relayMuxes.values()) mux.close();
+    this._relayMuxes.clear();
     this._muxes.clear();
     this._paymentMuxes.clear();
     this._decoders.clear();
@@ -267,6 +283,7 @@ export class BuyerIdentityContext {
       const proxyMux = this._muxes.get(peerId);
       const paymentMux = this._paymentMuxes.get(peerId);
       const verificationMux = this._verificationMuxes.get(peerId);
+      const relayMux = this._relayMuxes.get(peerId);
       for (const frame of frames) {
         if (frame.type === MessageType.Ping) {
           if (isOpen()) {
@@ -278,6 +295,8 @@ export class BuyerIdentityContext {
           paymentMux.handleFrame(frame).catch(logFailure("payment"));
         } else if (verificationMux && VerificationMux.isVerificationMessage(frame.type)) {
           verificationMux.handleFrame(frame).catch(logFailure("verification"));
+        } else if (RelayMux.isRelayMessage(frame.type)) {
+          relayMux?.handleFrame(frame).catch(logFailure("relay"));
         } else if (proxyMux) {
           proxyMux.handleFrame(frame).catch((err: unknown) => {
             logFailure("proxy")(err);
@@ -299,6 +318,8 @@ export class BuyerIdentityContext {
       this._paymentMuxes.delete(peerId);
       this._verificationMuxes.get(peerId)?.close();
       this._verificationMuxes.delete(peerId);
+      this._relayMuxes.get(peerId)?.close();
+      this._relayMuxes.delete(peerId);
       this._decoders.delete(peerId);
       this.negotiator?.onPeerDisconnect(peerId);
       this.freeUsageManager?.onPeerDisconnect(peerId);

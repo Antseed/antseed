@@ -55,6 +55,7 @@ export function combinePolicies(...levels: Array<RoutingPolicy | null | undefine
       minReputation: higher(result.minReputation, level.minReputation),
       requireVerified: result.requireVerified || level.requireVerified ? true : undefined,
       requireTee: result.requireTee || level.requireTee ? true : undefined,
+      requireZeroDataAccess: result.requireZeroDataAccess || level.requireZeroDataAccess ? true : undefined,
       maxInputUsdPerMillion: lower(result.maxInputUsdPerMillion, level.maxInputUsdPerMillion),
       maxOutputUsdPerMillion: lower(result.maxOutputUsdPerMillion, level.maxOutputUsdPerMillion),
       // A level without a cached-input cap bounds cached input by its input cap.
@@ -81,6 +82,15 @@ function serviceFits(policy: RoutingPolicy, service: Peer['services'][number]): 
   return true
 }
 
+/**
+ * A service the seller cannot read: its upstream encrypts end to end (category
+ * `e2ee`), or the buyer reaches the upstream through the seller-blind relay
+ * (category `seller-blind`).
+ */
+export function isZeroDataAccessService(service: { categories?: readonly string[] }): boolean {
+  return service.categories?.some((category) => ['e2ee', 'seller-blind'].includes(category.toLowerCase())) ?? false
+}
+
 /** Sellers the policy leaves eligible for at least one of their models. */
 export function matchingPeers(policy: RoutingPolicy, peers: readonly Peer[], lists: readonly PeerList[] = []): Peer[] {
   const p = expandLists(policy, lists)
@@ -95,6 +105,7 @@ export function matchingPeers(policy: RoutingPolicy, peers: readonly Peer[], lis
     if (p.requireTee && !peer.tee) return false
     // Trust is judged per model: a live DIFF model check cuts it to 10% for that model only.
     return peer.services.some((service) => serviceFits(p, service)
+      && (!p.requireZeroDataAccess || isZeroDataAccessService(service))
       && (p.minTrustScore === undefined || (offerTrust(peer.trustScore ?? 0, service.modelCheck) ?? 0) >= p.minTrustScore))
   })
 }
@@ -102,4 +113,16 @@ export function matchingPeers(policy: RoutingPolicy, peers: readonly Peer[], lis
 /** Whether any seller has a reputation score (the buyer reports its own score when it has one). */
 export function hasReputationData(peers: readonly Peer[] | undefined): boolean {
   return !!peers && peers.some((peer) => peer.reputationScore !== null)
+}
+
+/** The hint under the seller switches naming what the levels above already require, or ''. */
+export function inheritedRequirements(above: RoutingPolicy | null | undefined): string {
+  const names = [
+    above?.requireTee && 'TEE sellers',
+    above?.requireVerified && 'verified sellers',
+    above?.requireZeroDataAccess && 'zero data access',
+  ].filter((name): name is string => !!name)
+  if (names.length === 0) return ''
+  const list = names.length === 1 ? names[0]! : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  return `${list.charAt(0).toUpperCase()}${list.slice(1)} ${names.length === 1 && names[0] === 'zero data access' ? 'is' : 'are'} already required above.`
 }

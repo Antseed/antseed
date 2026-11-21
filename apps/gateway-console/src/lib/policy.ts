@@ -18,6 +18,7 @@ export interface PolicyDraft {
   minReputation: string
   requireVerified: boolean
   requireTee: boolean
+  requireZeroDataAccess: boolean
   maxInputUsdPerMillion: string
   maxOutputUsdPerMillion: string
   maxCachedInputUsdPerMillion: string
@@ -46,7 +47,7 @@ export function emptyDraft(): PolicyDraft {
   return {
     allowMode: 'any', allowedPeerIds: [], allowedListIds: [],
     blockedPeerIds: [], blockedListIds: [],
-    minTrustScore: '', minReputation: '', requireVerified: false, requireTee: false,
+    minTrustScore: '', minReputation: '', requireVerified: false, requireTee: false, requireZeroDataAccess: false,
     maxInputUsdPerMillion: '', maxOutputUsdPerMillion: '', maxCachedInputUsdPerMillion: '', maxImageUsdPerImage: '',
     preferFreePeers: 'inherit', sort: '',
     modelsMode: 'any', allowedModels: [],
@@ -77,6 +78,7 @@ export function policyToDraft(policy: RoutingPolicy | null | undefined): PolicyD
     minReputation: numberText(policy.minReputation),
     requireVerified: policy.requireVerified === true,
     requireTee: policy.requireTee === true,
+    requireZeroDataAccess: policy.requireZeroDataAccess === true,
     maxInputUsdPerMillion: numberText(policy.maxInputUsdPerMillion),
     maxOutputUsdPerMillion: numberText(policy.maxOutputUsdPerMillion),
     maxCachedInputUsdPerMillion: numberText(policy.maxCachedInputUsdPerMillion),
@@ -133,6 +135,7 @@ export function draftToPolicy(draft: PolicyDraft, lists: readonly PeerList[] | n
   if (minReputation !== undefined) policy.minReputation = minReputation
   if (draft.requireVerified) policy.requireVerified = true
   if (draft.requireTee) policy.requireTee = true
+  if (draft.requireZeroDataAccess) policy.requireZeroDataAccess = true
   const caps = [
     ['maxInputUsdPerMillion', 'Input price cap'],
     ['maxOutputUsdPerMillion', 'Output price cap'],
@@ -185,6 +188,7 @@ export function describePolicy(policy: RoutingPolicy | null | undefined): string
     parts.push(`${p.blockedPeerIds?.length ?? 0} blocked${lists}`)
   }
   if (p.requireTee) parts.push('TEE only')
+  if (p.requireZeroDataAccess) parts.push('zero data access')
   if (p.requireVerified) parts.push('verified only')
   if (p.minTrustScore !== undefined) parts.push(`trust ≥ ${p.minTrustScore}`)
   if (p.minReputation !== undefined) parts.push(`reputation ≥ ${p.minReputation}`)
@@ -264,6 +268,7 @@ export function policyChips(policy: RoutingPolicy | null | undefined): string[] 
     chips.push(`Block ${ids ? plural(ids, 'seller') + lists(p.blockedPeerLists?.length) : plural(p.blockedPeerLists!.length, 'list')}`)
   }
   if (p.requireTee) chips.push('TEE only')
+  if (p.requireZeroDataAccess) chips.push('Zero data access')
   if (p.requireVerified) chips.push('Verified only')
   if (p.minTrustScore !== undefined) chips.push(`Trust ≥ ${p.minTrustScore}`)
   if (p.minReputation !== undefined) chips.push(`Reputation ≥ ${p.minReputation}`)
@@ -351,7 +356,7 @@ export function blockEmptiesAllowList(policy: RoutingPolicy | null | undefined, 
 
 const DRAFT_FIELD_LABELS: Partial<Record<keyof PolicyDraft, string>> = {
   allowMode: 'allowed sellers', minTrustScore: 'minimum trust', minReputation: 'minimum reputation', requireVerified: 'verified only',
-  requireTee: 'TEE only', maxInputUsdPerMillion: 'input price cap', maxOutputUsdPerMillion: 'output price cap',
+  requireTee: 'TEE only', requireZeroDataAccess: 'zero data access', maxInputUsdPerMillion: 'input price cap', maxOutputUsdPerMillion: 'output price cap',
   maxCachedInputUsdPerMillion: 'cached input price cap', maxImageUsdPerImage: 'image price cap', preferFreePeers: 'free sellers first',
   sort: 'sort order', modelsMode: 'allowed models',
 }

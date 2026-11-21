@@ -28,6 +28,7 @@ export function addPolicyOptions(cmd: Command): Command {
     .option('--max-output-price <usd>', 'cap on output price, USD per million tokens')
     .option('--max-cached-input-price <usd>', 'cap on cached input price, USD per million tokens')
     .option('--require-tee', 'only sellers advertising TEE attestation')
+    .option('--require-zero-data-access', 'only services the seller cannot read (end-to-end encrypted to an attested upstream)')
     .option('--require-verified', 'only sellers whose responses pass a verifier')
     .option('--prefer-free', 'rank free sellers first')
     .option('--sort <order>', `how eligible sellers are ranked: ${SORTS.join(', ')}`)
@@ -55,7 +56,7 @@ function price(raw: string, flag: string): number {
 /** Whether any policy flag (or `--file`) was given. */
 export function hasPolicyOptions(options: Record<string, unknown>): boolean {
   return ['file', 'allowPeer', 'blockPeer', 'allowList', 'blockList', 'allowModel', 'minTrust', 'minReputation', 'maxInputPrice',
-    'maxOutputPrice', 'maxCachedInputPrice', 'requireTee', 'requireVerified', 'preferFree', 'sort'].some((name) => options[name] !== undefined)
+    'maxOutputPrice', 'maxCachedInputPrice', 'requireTee', 'requireZeroDataAccess', 'requireVerified', 'preferFree', 'sort'].some((name) => options[name] !== undefined)
 }
 
 /**
@@ -88,6 +89,7 @@ export function policyFromOptions(store: GatewayStore, options: Record<string, u
   if (typeof options['maxOutputPrice'] === 'string') policy['maxOutputUsdPerMillion'] = price(options['maxOutputPrice'], '--max-output-price')
   if (typeof options['maxCachedInputPrice'] === 'string') policy['maxCachedInputUsdPerMillion'] = price(options['maxCachedInputPrice'], '--max-cached-input-price')
   if (options['requireTee']) policy['requireTee'] = true
+  if (options['requireZeroDataAccess']) policy['requireZeroDataAccess'] = true
   if (options['requireVerified']) policy['requireVerified'] = true
   if (options['preferFree']) policy['preferFreePeers'] = true
   if (typeof options['sort'] === 'string') {
@@ -113,6 +115,7 @@ export function describePolicy(policy: RoutingPolicy | null | undefined, store?:
   if (policy.minTrustScore !== undefined) add('Min trust', policy.minTrustScore)
   if (policy.minReputation !== undefined) add('Min reputation', policy.minReputation)
   if (policy.requireTee) add('Require TEE', 'yes')
+  if (policy.requireZeroDataAccess) add('Require zero data access', 'yes')
   if (policy.requireVerified) add('Require verified', 'yes')
   if (policy.maxInputUsdPerMillion !== undefined) add('Max input $/M', policy.maxInputUsdPerMillion)
   if (policy.maxOutputUsdPerMillion !== undefined) add('Max output $/M', policy.maxOutputUsdPerMillion)

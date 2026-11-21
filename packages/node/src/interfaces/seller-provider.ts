@@ -111,6 +111,63 @@ export interface Provider {
    * service of this provider.
    */
   checkUpstreamAccount?(): Promise<UpstreamAccountStatus>;
+
+  /**
+   * Optional relay of the upstream's end-to-end encryption attestation for one
+   * service whose upstream model encrypts end to end (a service in category
+   * `e2ee`). The provider fetches the attestation for the service's upstream
+   * model with the buyer's `nonce` (64 hex characters) and its own upstream
+   * credential, and returns the upstream's response unchanged: the buyer
+   * verifies it and encrypts every message to the attested key, so the seller
+   * relays only ciphertext. The seller serves this route free of charge.
+   * Returns null when the service has no end-to-end encryption.
+   */
+  getE2eeAttestation?(service: string, nonce: string): Promise<E2eeAttestationResponse | null>;
+
+  /**
+   * Optional minting of a short-lived, spend-capped upstream credential for
+   * one service served through the seller-blind relay (a service in category
+   * `seller-blind`). The credential must be scoped as narrowly as the upstream
+   * allows: the service's upstream model only, a USD spend cap and an expiry
+   * in minutes. The buyer holds it and runs TLS to `upstream.host` through the
+   * seller's relay, so the seller forwards ciphertext only. Returns null when
+   * the service is not served this way.
+   */
+  mintBlindCredential?(service: string): Promise<MintedBlindCredential | null>;
+
+  /**
+   * Optional read of what a minted credential has spent upstream so far, in
+   * USD at the upstream's prices. The seller bills each relayed request by the
+   * change in this figure, so it must be the upstream's own counter.
+   */
+  blindCredentialSpendUsd?(handle: string): Promise<number>;
+
+  /**
+   * What the seller charges per USD of upstream spend on the blind relay
+   * (default 1). Advertise token prices of about the upstream's times this:
+   * a buyer pays a relayed request at most its tolerance times the cost it
+   * computes from the usage it reads and these advertised prices.
+   */
+  blindRelayPriceMultiplier?: number;
+}
+
+/** An upstream attestation response, relayed to the buyer as the upstream sent it. */
+/** A credential a provider minted for the seller-blind relay. */
+export interface MintedBlindCredential {
+  /** The provider's own handle for the credential, for spend reads. Never sent to the buyer. */
+  handle: string;
+  /** The upstream bearer credential the buyer sends. */
+  credential: string;
+  upstream: { host: string; port: number; baseUrl: string; model: string };
+  /** Unix milliseconds. */
+  expiresAt: number;
+  /** The credential's upstream spend cap, in USD. */
+  spendLimitUsd: number;
+}
+
+export interface E2eeAttestationResponse {
+  statusCode: number;
+  body: Uint8Array;
 }
 
 /**

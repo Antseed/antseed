@@ -7,7 +7,7 @@ import type { Peer, PeerList, RoutePreview, RoutingPolicy } from '../api/types'
 import { formatPricePerMillion, shortId } from './format'
 import { DIFF_ROUTING_SHARE, hasDiffVerdict } from './model-check'
 import { normalizePeerId } from './peer-id'
-import { expandLists } from './policy-match'
+import { expandLists, isZeroDataAccessService } from './policy-match'
 
 function names(peerIds: readonly string[], peers: readonly Peer[] | undefined, max = 3): string {
   const named = peerIds.map((id) => peers?.find((peer) => normalizePeerId(peer.peerId) === normalizePeerId(id))?.displayName ?? shortId(id, 8, 4))
@@ -37,6 +37,7 @@ export function policySentences(policy: RoutingPolicy | null | undefined, peers:
     out.push(`Never uses ${parts.join(', ')}.`)
   }
   if (p.requireTee) out.push('Only sellers running in a TEE.')
+  if (p.requireZeroDataAccess) out.push('Only services the seller cannot read: every message is encrypted end to end to an attested upstream.')
   if (p.requireVerified) out.push('Only sellers with a verified domain or GitHub account.')
   if (p.minTrustScore !== undefined) out.push(`Only sellers with trust ${p.minTrustScore} or more.`)
   if (p.minReputation !== undefined) out.push(`Only sellers with reputation ${p.minReputation} or more.`)
@@ -70,6 +71,10 @@ function exclusion(policy: RoutingPolicy, candidate: Candidate, peer: Peer | und
   if (policy.allowedPeerIds && !policy.allowedPeerIds.some((entry) => normalizePeerId(entry) === id)) return 'does not allow it'
   if (policy.requireTee && peer && !peer.tee) return 'requires a TEE'
   if (policy.requireVerified && peer && !peer.verified) return 'requires a verified seller'
+  if (policy.requireZeroDataAccess && peer) {
+    const service = peer.services.find((entry) => entry.service.toLowerCase() === model.toLowerCase())
+    if (service && !isZeroDataAccessService(service)) return 'requires zero data access'
+  }
   if (policy.minTrustScore !== undefined) {
     // A buyer that cut the score already says so (`trustScoreBeforeCut`): its `trustScore` is the
     // one routing judged. Older buyers send the raw score; cut it here from the peer's verdicts.

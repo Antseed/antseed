@@ -1,4 +1,5 @@
 import type {
+  E2eeAttestationResponse,
   Provider,
   ProviderStreamCallbacks,
   SerializedHttpRequest,
@@ -287,6 +288,7 @@ export class VeniceImageEditProvider implements Provider {
     private readonly delegate: Provider,
     private readonly editModelMap: Readonly<Record<string, string>>,
     private readonly afterInit?: () => Promise<void>,
+    private readonly e2eeAttestation?: (service: string, nonce: string) => Promise<E2eeAttestationResponse | null>,
   ) {
     this.name = delegate.name;
     this.services = delegate.services;
@@ -326,5 +328,9 @@ export class VeniceImageEditProvider implements Provider {
 
   getCapacity(): { current: number; max: number } {
     return this.delegate.getCapacity();
+  }
+
+  async getE2eeAttestation(service: string, nonce: string): Promise<E2eeAttestationResponse | null> {
+    return this.e2eeAttestation ? this.e2eeAttestation(service, nonce) : null;
   }
 }

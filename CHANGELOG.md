@@ -6,6 +6,11 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Zero data access (CLI, `@antseed/node`, `@antseed/buyer-core`, `@antseed/provider-openai`, Gateway Console): a routing policy can require services the seller cannot read (`requireZeroDataAccess`, **Zero data access only** in the console, `--require-zero-data-access` on `antseed gateway … policy set`, or the per-request header `x-antseed-require-zero-data-access`). The buyer fetches the upstream's TEE attestation through the seller, verifies the TDX quote and its binding to the model key and a fresh nonce itself, then encrypts every message to that key and decrypts the streamed answer; the seller relays ciphertext with its own upstream key. Requests that cannot be fully encrypted (images, audio, tools) are refused instead of sent in plaintext. Sellers offer it on Venice `e2ee-*` models by adding the `e2ee` category to the service; the `openai` provider relays the attestation on a free, rate-limited seller route.
+- Seller-blind relay (CLI, `@antseed/node`, `@antseed/protocol`, `@antseed/provider-openai`, Gateway Console): zero data access for upstreams without end-to-end encryption. A seller marks a service `seller-blind`; for a buyer with a paid-up channel it mints a short-lived, spend-capped upstream credential (DeepInfra scoped tokens in the `openai` provider), and the buyer runs TLS to the upstream through a new raw relay stream on the seller, which forwards ciphertext only. Each relayed request is charged by the change in the credential's upstream spend, and the buyer signs for it only up to its own price from the usage it read. New seller settings `OPENAI_BLIND_RELAY_SPEND_LIMIT_USD`, `OPENAI_BLIND_RELAY_TTL_SECONDS` and `OPENAI_BLIND_RELAY_PRICE_MULTIPLIER`.
+
 ## 2026-11-20 — CLI 0.1.256, Node 0.2.189, Desktop 0.2.91
 
 ### Packages
