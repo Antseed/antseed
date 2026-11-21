@@ -11,7 +11,7 @@ import { SELLER_RETRY_SPACING_SECONDS, decideRetryGiveUps, loadEpochState, retry
 import { FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE } from './flips.js'
 import { opinionKey } from './third-opinion.js'
 import { prepareModelAudits } from './model-audit.js'
-import { FIXTURE_CONFIG, peerIdOf, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
+import { FIXTURE_CONFIG, peerIdOf, referenceFixture, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
 
 const MODEL = 'model-a'
 const EPOCH = '7'
@@ -213,6 +213,48 @@ test('a confirmation of a seller that no longer offers the model is given up, th
     // Listed again, its retry is back on, and it holds again.
     const back = decideRetryGiveUps({ cells: retryGiveUpCells(gone), nowSeconds: nowSeconds + 60, offersModel: () => true, windowClosed: () => true })
     assert.equal(back.restored.length, 1)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a first look\'s close call still waiting for its extra questions is held with its model, not sent as UNDETERMINED', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-confirmation-hold-close-call-'))
+  try {
+    const evidenceDir = join(directory, 'evidence')
+    const banksDir = join(directory, 'banks')
+    const auditor = new Wallet(Wallet.createRandom().privateKey)
+    const close = new Wallet(Wallet.createRandom().privateKey)
+    const confirmed = new Wallet(Wallet.createRandom().privateKey)
+    await openAuditWindow({ evidenceDir, epoch: EPOCH, model: MODEL, runId: 'run-1', sellers: [peerIdOf(close)], now: () => Date.parse('2026-10-07T00:01:00.000Z') })
+    // C's first look is a close call waiting for its extra questions; B's confirmation failed once and waits.
+    await writeSignedAuditRun({
+      evidenceDir, banksDir, runId: 'run-1', epoch: EPOCH, auditor,
+      audits: [{ agentId: '1', seller: close, model: MODEL, service: MODEL, verdict: 'SAME', reference: referenceFixture(MODEL, 20), closeCall: { firstWrong: 7 } }],
+      failures: { [MODEL]: [{
+        peerId: peerIdOf(confirmed), agentId: '2', service: MODEL, status: 'FAILED' as const, reason: 'connection reset', outcomeReason: OUTAGE as never,
+        confirming: ['kbf'], confirmingReportedAt: REPORTED_AT,
+      }] },
+    })
+    // C stops listing the model: its extra questions are given up, which closes the window; B is still listed.
+    const state = await loadEpochState(evidenceDir, EPOCH)
+    const nowSeconds = Date.parse('2026-10-07T00:02:00.000Z') / 1_000 + SELLER_RETRY_SPACING_SECONDS + 60
+    const { entries } = decideRetryGiveUps({ cells: retryGiveUpCells(state), nowSeconds, offersModel: (cell) => cell.peerId !== peerIdOf(close), windowClosed: () => false })
+    await writeRetryGiveUps(evidenceDir, EPOCH, entries)
+    const given = await loadEpochState(evidenceDir, EPOCH)
+    await closeFinishedAuditWindows({ evidenceDir, epoch: EPOCH, state: given, secondsLeftInEpoch: 86_400 })
+    assert.equal((await readAuditWindow(evidenceDir, EPOCH, MODEL))?.state, 'closed')
+    const holds = confirmationsHoldingSubmit({ state: given, secondsLeftInEpoch: 86_400, stillMine: null })
+    assert.deepEqual([...holds.keys()], [MODEL])
+    const prepared = await prepareModelAudits({
+      evidenceDir, banksDir, manifest: await writeEpochSubmissionManifest(evidenceDir, given), auditor: auditor.address, config: FIXTURE_CONFIG,
+      resolveAgentOwner: async () => new Wallet(Wallet.createRandom().privateKey).address,
+      auditWindow: (model) => readAuditWindow(evidenceDir, EPOCH, model),
+      confirmationHold: (model) => confirmationHoldReason(holds.get(model.toLowerCase())),
+    })
+    // Sent, its questions (and the extra set's) would be public while B is still to be asked them.
+    assert.deepEqual(prepared.audits.flatMap((entry) => entry.results), [])
+    assert.deepEqual(prepared.decisions.filter((entry) => entry.agentId === '1').map((entry) => [entry.decision, entry.reasonCode]), [['held', 'confirmation-waiting']])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

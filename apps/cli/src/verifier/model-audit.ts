@@ -522,8 +522,9 @@ export async function prepareModelAudits(input: {
         heldBack.push(`${model} ${result.agentId ?? result.peerId}: its audit window is still open`)
         continue
       }
-      // A close call still waiting for its extra questions keeps its own handling below: it is never sent as it is.
-      const waiting = finalAuditVerdict(result) === null ? null : input.confirmationHold?.(model) ?? null
+      // Every row of a held model waits, a first look's open close call too: in a closed window it would be sent as
+      // UNDETERMINED below, publishing its questions. A confirmation's own open close call keeps its handling below.
+      const waiting = finalAuditVerdict(result) === null && result.confirmsDiff ? null : input.confirmationHold?.(model) ?? null
       if (waiting) {
         exclude(`held: ${waiting}`, 'confirmation-waiting')
         heldBack.push(`${model} ${result.agentId ?? result.peerId}: held for the model's confirmations waiting to be audited again`)
