@@ -94,8 +94,8 @@ const ETH_USD_E8 = 165_266_541_925n; // Chainlink ETH/USD on 20 Nov 2026: $1,652
 const FALLBACK_USD_E8 = 400_000_000_000n;
 
 /**
- * A relay client on a mocked Base: the latest block, the tip RPCs suggest (no fee history), the fee
- * data ethers reports (maxFeePerGas = 2 x base fee + tip), the relay's FEE and the Chainlink ETH/USD feed.
+ * A relay client on a mocked Base: the latest block, the tip RPCs suggest (no fee history), the
+ * relay's FEE and the Chainlink ETH/USD feed.
  */
 function makeEstimatingClient(opts: {
   baseFee?: bigint;
@@ -112,11 +112,6 @@ function makeEstimatingClient(opts: {
   const provider = client.provider as JsonRpcProvider;
   vi.spyOn(provider, 'estimateGas').mockResolvedValue(165_000n);
   vi.spyOn(provider, 'getBlock').mockResolvedValue({ baseFeePerGas: baseFee, timestamp: NOW } as never);
-  vi.spyOn(provider, 'getFeeData').mockResolvedValue({
-    gasPrice: baseFee + tip,
-    maxFeePerGas: baseFee * 2n + tip,
-    maxPriorityFeePerGas: tip,
-  } as never);
   vi.spyOn(provider, '_perform').mockImplementation(async (req) => {
     if (req.method === 'getPriorityFee') return '0x' + tip.toString(16);
     throw new Error(`unexpected ${req.method}`);
