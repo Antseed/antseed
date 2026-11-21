@@ -165,3 +165,41 @@ test('a first look written before the all-tests format whose window the old CLI 
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('submit says what becomes of a result written before the all-tests format: a first look in an open window, and a confirmation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-before-all-tests-reasons-'))
+  try {
+    const evidenceDir = join(directory, 'evidence')
+    const banksDir = join(directory, 'banks')
+    const auditor = new Wallet(Wallet.createRandom().privateKey)
+    const first = new Wallet(Wallet.createRandom().privateKey)
+    const confirmed = new Wallet(Wallet.createRandom().privateKey)
+    const model = 'model-a'
+    const epoch = '7'
+    await openAuditWindow({ evidenceDir, epoch, model, runId: 'run-1', sellers: [peerIdOf(first)], now: () => Date.parse('2026-10-07T00:01:00.000Z') })
+    await writeSignedAuditRun({
+      evidenceDir, banksDir, runId: 'run-1', epoch, auditor, audits: [
+        { agentId: '1', seller: first, model, service: model, verdict: 'DIFF', beforeAllTests: true },
+        { agentId: '2', seller: confirmed, model, service: model, verdict: 'DIFF', beforeAllTests: true, confirmsDiff: true, confirming: { checks: ['kbf'], reportedAt: Date.parse('2026-10-06T22:00:00.000Z') / 1_000 } },
+      ],
+    })
+    const state = await loadEpochState(evidenceDir, epoch)
+    const reasons = async () => (await prepareModelAudits({
+      evidenceDir, banksDir, manifest: await writeEpochSubmissionManifest(evidenceDir, state), auditor: auditor.address, config: FIXTURE_CONFIG,
+      resolveAgentOwner: async () => new Wallet(Wallet.createRandom().privateKey).address,
+      auditWindow: (name) => readAuditWindow(evidenceDir, epoch, name),
+    })).excluded.map((entry) => [entry.agentId, entry.reason]).sort(([left], [right]) => String(left).localeCompare(String(right)))
+    // Open: the first look promises no new audit, only one while an attempt is left. A confirmation's never names a window.
+    const firstLook = 'written by a CLI from before the all-tests format (an upgrade during the epoch): it is not sent; while its audit '
+      + 'window is open and an attempt is left, a run audits the seller again, and only that result is sent'
+    const confirmation = 'a confirmation written by a CLI from before the all-tests format (an upgrade during the epoch): it is not sent; '
+      + 'while the report still waits for this auditor and its attempts are not used up, the seller is audited again for it, and only that result is sent'
+    assert.deepEqual(await reasons(), [['1', firstLook], ['2', confirmation]])
+    // Closed by the old CLI: the confirmation is still audited again, outside any window.
+    await closeFinishedAuditWindows({ evidenceDir, epoch, state, secondsLeftInEpoch: 86_400 })
+    assert.equal((await readAuditWindow(evidenceDir, epoch, model))?.state, 'closed')
+    assert.deepEqual((await reasons())[1], ['2', confirmation])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

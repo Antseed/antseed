@@ -486,14 +486,20 @@ export async function prepareModelAudits(input: {
         continue
       }
       // A completed audit by a CLI from before an upgrade within the epoch: refused for its format alone, so the reason
-      // says what becomes of it. A closed window is never audited again, since its questions may be public by now.
+      // says what becomes of it. A confirmation is no part of any window: it is audited again like any unusable result
+      // of its report. A first look in a closed window is never audited again, since its questions may be public by now;
+      // in an open one it is, while an attempt is left (`recoveringFirstLooks`).
       if (beforeAllTests([evidence, extensionEvidence, extension2Evidence])) {
-        exclude(window?.state === 'closed'
-          ? 'written by a CLI from before the all-tests format (an upgrade during the epoch), and its audit window closed '
-            + 'before the seller could be audited again: its questions may be public, so nothing is sent for this seller '
-            + 'this epoch, and it is audited next epoch'
-          : 'written by a CLI from before the all-tests format (an upgrade during the epoch): a later run this epoch audits '
-            + 'the seller again, and its new result is sent', 'before-all-tests')
+        exclude(result.confirmsDiff
+          ? 'a confirmation written by a CLI from before the all-tests format (an upgrade during the epoch): it is not sent; '
+            + 'while the report still waits for this auditor and its attempts are not used up, the seller is audited again '
+            + 'for it, and only that result is sent'
+          : window?.state === 'closed'
+            ? 'written by a CLI from before the all-tests format (an upgrade during the epoch), and its audit window closed '
+              + 'before the seller could be audited again: its questions may be public, so nothing is sent for this seller '
+              + 'this epoch, and it is audited next epoch'
+            : 'written by a CLI from before the all-tests format (an upgrade during the epoch): it is not sent; while its audit '
+              + 'window is open and an attempt is left, a run audits the seller again, and only that result is sent', 'before-all-tests')
         continue
       }
       try {
