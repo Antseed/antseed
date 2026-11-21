@@ -754,7 +754,7 @@ test('a stored pre-check whose signed exchanges asked other text than its probes
   // The first ask's request with the follow-up, from another text.
   assert.throws(() => validateTokenizerPrecheck(swapped((copy) => { copy.rounds[0]!.seller[0]!.probed = structuredClone(other.rounds[0]!.seller[0]!.probed) })),
     /round 1: the seller's signed request is not the round's text/)
-  // A base request relabelled as the request with the follow-up of the same round.
+  // A round's base request, signed for another text.
   assert.throws(() => validateTokenizerPrecheck(swapped((copy) => {
     const ask = copy.rounds[2]!.seller[0]!
     ask.base = structuredClone(other.rounds[2]!.seller[0]!.base)
@@ -764,6 +764,42 @@ test('a stored pre-check whose signed exchanges asked other text than its probes
   assert.equal(backer.ask.delta, record.crowd!.backers[0]!.ask.delta)
   assert.throws(() => validateTokenizerPrecheck(swapped((copy) => { copy.crowd!.backers[0] = backer })),
     /backing seller 1: its signed request is not the first round's text/)
+})
+
+test('a stored pre-check whose signed request holds the round\'s text and other input is refused, in every shape', async () => {
+  const record = await precheck(seller({ usage: OTHER_TOKENIZER }))
+  assert.equal(record.outcome, 'mismatch')
+  const text = PROBES[0]!.a + PROBES[0]!.b
+  // The first round's request with the follow-up, its signed bytes swapped for `body`.
+  const asked = (body: Record<string, unknown>): TokenizerPrecheckV1 => {
+    const copy = structuredClone(record)
+    const request = copy.rounds[0]!.seller[0]!.probed!
+    request.responseAuth!.signedPreimages!.requestBase64 = signedRequestBase64(request.responseAuth!.requestId!, new TextEncoder().encode(JSON.stringify(body)))
+    return copy
+  }
+  const user = { role: 'user', content: text }
+  // The round's text alone, in each shape the buyer proxy translates to: Chat, Messages text blocks, Responses.
+  for (const body of [
+    { model: 'm', messages: [user], max_tokens: 64 },
+    { model: 'm', messages: [{ role: 'user', content: [{ type: 'text', text, cache_control: { type: 'ephemeral' } }] }], max_tokens: 64, tools: [] },
+    { model: 'm', input: text, max_output_tokens: 64 },
+    { model: 'm', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }], max_output_tokens: 64 },
+  ]) assert.doesNotThrow(() => validateTokenizerPrecheck(asked(body)), JSON.stringify(body))
+  const refused = /round 1: the seller's signed request is not the round's text/
+  const shapes: Array<[string, Record<string, unknown>]> = [
+    ['a system turn', { model: 'm', messages: [{ role: 'system', content: 'Be brief.' }, user] }],
+    ['a developer turn', { model: 'm', messages: [{ role: 'developer', content: 'Be brief.' }, user] }],
+    ['an assistant turn', { model: 'm', messages: [user, { role: 'assistant', content: 'ok' }] }],
+    ['a top-level system', { model: 'm', system: 'Be brief.', messages: [user] }],
+    ['a top-level system as blocks', { model: 'm', system: [{ type: 'text', text: 'Be brief.' }], messages: [user] }],
+    ['Responses instructions', { model: 'm', instructions: 'Be brief.', input: text }],
+    ['tools', { model: 'm', messages: [user], tools: [{ type: 'function', function: { name: 'f', parameters: { type: 'object' } } }] }],
+    ['a non-text part beside the text', { model: 'm', messages: [{ role: 'user', content: [{ type: 'text', text }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }] }],
+    ['the text split over two parts', { model: 'm', messages: [{ role: 'user', content: [{ type: 'text', text: PROBES[0]!.a }, { type: 'text', text: PROBES[0]!.b }] }] }],
+    ['a second user turn', { model: 'm', messages: [user, user] }],
+    ['an earlier response it continues', { model: 'm', previous_response_id: 'resp_1', input: text }],
+  ]
+  for (const [shape, body] of shapes) assert.throws(() => validateTokenizerPrecheck(asked(body)), refused, shape)
 })
 
 test('a stored pre-check is asked as the run asks: nothing after the ask that ended it', async () => {

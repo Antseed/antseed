@@ -211,12 +211,32 @@ export function requestCarriesPrompt(requestBody: Uint8Array, prompt: string): b
 }
 
 /**
- * Whether the request the seller signed asks `prompt` and nothing else: its one user text, in any API shape the buyer
- * proxy translates to. The tokenizer pre-check's binding of a signed count to the text it counts.
+ * Members of a request that add input the model counts besides its turns: a system prompt (Messages `system`, Responses
+ * `instructions`), tool or function definitions, a stored prompt, or an earlier response or conversation it continues.
+ */
+const EXTRA_INPUT_MEMBERS = ['system', 'instructions', 'tools', 'functions', 'prompt', 'previous_response_id', 'conversation'] as const
+
+/**
+ * Whether the request the seller signed asks `prompt` and nothing else, in any API shape the buyer proxy translates to:
+ * exactly one turn, the user's, whose content is `prompt` as a string or as one text part, and no other input (no
+ * system, developer or assistant turn, no `system`, `instructions` or tools, no part beside the text). The tokenizer
+ * pre-check's binding of a signed count to the text it counts: a count signed for more input than that text is not it.
  */
 export function requestAsksOnly(requestBody: Uint8Array, prompt: string): boolean {
-  const texts = userTexts(parseObject(requestBody))
-  return texts.length === 1 && texts[0] === prompt
+  const body = parseObject(requestBody)
+  if (!body || EXTRA_INPUT_MEMBERS.some((key) => body[key] !== undefined && body[key] !== null && present(body[key]))) return false
+  // Chat Completions and Messages: `messages`; Responses: `input`, a string or a list of turns. Never both.
+  if (body['messages'] !== undefined && body['input'] !== undefined) return false
+  if (typeof body['input'] === 'string') return body['input'] === prompt
+  const turns = body['messages'] ?? body['input']
+  if (!Array.isArray(turns) || turns.length !== 1) return false
+  const turn: unknown = turns[0]
+  if (!isRecord(turn) || turn['role'] !== 'user' || (turn['type'] !== undefined && turn['type'] !== 'message')) return false
+  const content = turn['content']
+  if (typeof content === 'string') return content === prompt
+  if (!Array.isArray(content) || content.length !== 1) return false
+  const part: unknown = content[0]
+  return isRecord(part) && (part['type'] === 'text' || part['type'] === 'input_text') && part['text'] === prompt
 }
 
 /** The reasoning count in `completion_tokens_details` or `output_tokens_details`; null when neither has one. */
