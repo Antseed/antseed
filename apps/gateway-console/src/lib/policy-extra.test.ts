@@ -4,7 +4,7 @@ import {
   applyPeerAction, blockEmptiesAllowList, describePolicy, draftToPolicy, emptyDraft, mergeTemplate, policyToDraft, templateConflicts,
   templateDraft, templatePolicy,
 } from './policy'
-import { combinePolicies, hasReputationData, matchingPeers } from './policy-match'
+import { combinePolicies, hasReputationData, inheritedRequirements, matchingPeers } from './policy-match'
 
 const A = '0xfa1e00000000000000000000000000000000000a'
 const B = '0xfa1e00000000000000000000000000000000000b'
@@ -100,5 +100,15 @@ describe('policyChips', () => {
     expect(policyChips({ allowedPeerIds: [] })).toEqual(['No seller allowed'])
     expect(policyChips({ blockedPeerIds: ['x'], blockedPeerLists: ['l1', 'l2'] })).toEqual(['Block 1 seller + 2 lists'])
     expect(policyChips({ allowedModels: ['m'], modelRoutes: { m: { peerIds: ['a'] } }, minTrustScore: 70 })).toEqual(['Trust ≥ 70', '1 model', '1 fallback chain'])
+  })
+})
+
+describe('inheritedRequirements', () => {
+  it('names every requirement the levels above set', () => {
+    expect(inheritedRequirements(null)).toBe('')
+    expect(inheritedRequirements({ requireTee: true })).toBe('TEE sellers are already required above.')
+    expect(inheritedRequirements({ requireZeroDataAccess: true })).toBe('Zero data access is already required above.')
+    expect(inheritedRequirements({ requireTee: true, requireVerified: true, requireZeroDataAccess: true }))
+      .toBe('TEE sellers, verified sellers and zero data access are already required above.')
   })
 })

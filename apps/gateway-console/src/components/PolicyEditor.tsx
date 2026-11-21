@@ -11,7 +11,7 @@ import {
   type DraftRoute, type PolicyDraft, type TemplateId,
 } from '../lib/policy'
 import { formatPricePerMillion } from '../lib/format'
-import { combinePolicies, matchingPeers } from '../lib/policy-match'
+import { combinePolicies, inheritedRequirements, matchingPeers } from '../lib/policy-match'
 import { ChipsInput, PeerPicker } from './PeerPicker'
 import { TrustTip } from './TrustInfo'
 import { SellerListLink, SellerListsButton } from './PeerLists'
@@ -79,6 +79,7 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
   const buyer = buyerPolicy(useBuyerLimits().data)
   // What this level narrows: the buyer's own config, then the gateway levels above it.
   const above = useMemo(() => (buyer || parent ? combinePolicies(buyer, parent) : null), [buyer, parent])
+  const inheritedHint = inheritedRequirements(above)
   const aboveLabel = buyer && parent ? 'the buyer config and the levels above' : buyer ? 'the buyer config' : parent ? 'the levels above' : ''
   const floorSource = (key: 'minTrustScore' | 'minReputation') =>
     buyer?.[key] !== undefined && buyer[key] === above?.[key] ? 'The buyer config' : 'The levels above'
@@ -170,11 +171,7 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
           <Switch checked={value.requireZeroDataAccess || !!above?.requireZeroDataAccess} disabled={!!above?.requireZeroDataAccess}
             onChange={(next) => set('requireZeroDataAccess', next)} label="Zero data access only" />
         </div>
-        {(above?.requireTee || above?.requireVerified) && (
-          <span className="as-field__hint">
-            {above.requireTee && above.requireVerified ? 'TEE and verified sellers are' : above.requireTee ? 'TEE sellers are' : 'Verified sellers are'} already required above.
-          </span>
-        )}
+        {inheritedHint && <span className="as-field__hint">{inheritedHint}</span>}
       </Group>
 
       <Group title="Price limits" help="Sellers asking more are skipped. Leave a field empty for no limit.">
