@@ -781,9 +781,11 @@ test('a stored pre-check whose signed request holds the round\'s text and other 
   // The round's text alone, in each shape the buyer proxy translates to: Chat, Messages text blocks, Responses.
   for (const body of [
     { model: 'm', messages: [user], max_tokens: 64 },
-    { model: 'm', messages: [{ role: 'user', content: [{ type: 'text', text, cache_control: { type: 'ephemeral' } }] }], max_tokens: 64, tools: [] },
+    { model: 'm', messages: [{ role: 'user', content: [{ type: 'text', text, cache_control: { type: 'ephemeral' } }] }], max_tokens: 64 },
     { model: 'm', input: text, max_output_tokens: 64 },
     { model: 'm', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }], max_output_tokens: 64 },
+    // Members the proxy adds when it translates: none of them is input the model counts.
+    { model: 'm', messages: [user], max_tokens: 64, stream: true, stream_options: { include_usage: true }, prompt_cache_key: 'k', metadata: { user_id: 'u' }, user: 'u', temperature: 1 },
   ]) assert.doesNotThrow(() => validateTokenizerPrecheck(asked(body)), JSON.stringify(body))
   const refused = /round 1: the seller's signed request is not the round's text/
   const shapes: Array<[string, Record<string, unknown>]> = [
@@ -798,6 +800,13 @@ test('a stored pre-check whose signed request holds the round\'s text and other 
     ['the text split over two parts', { model: 'm', messages: [{ role: 'user', content: [{ type: 'text', text: PROBES[0]!.a }, { type: 'text', text: PROBES[0]!.b }] }] }],
     ['a second user turn', { model: 'm', messages: [user, user] }],
     ['an earlier response it continues', { model: 'm', previous_response_id: 'resp_1', input: text }],
+    // Any member not known to add nothing: a response schema, a Responses text format, Messages output config, MCP
+    // servers, a turn's name.
+    ['a response schema', { model: 'm', messages: [user], response_format: { type: 'json_schema', json_schema: { name: 'x', schema: { type: 'object' } } } }],
+    ['a Responses text format', { model: 'm', input: text, text: { format: { type: 'json_schema', name: 'x', schema: { type: 'object' } } } }],
+    ['Messages output config', { model: 'm', messages: [user], output_config: { format: { type: 'json_schema', schema: { type: 'object' } } } }],
+    ['MCP servers', { model: 'm', messages: [user], mcp_servers: [{ type: 'url', url: 'https://mcp.example.com', name: 'x' }] }],
+    ['a turn with a name', { model: 'm', messages: [{ ...user, name: 'Example User' }] }],
   ]
   for (const [shape, body] of shapes) assert.throws(() => validateTokenizerPrecheck(asked(body)), refused, shape)
 })
