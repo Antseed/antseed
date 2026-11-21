@@ -34,7 +34,7 @@ A manual run confirms only the `DIFF`s already waiting when it starts, so run bo
 
    Each model runs in its own lane. Its audits start as soon as its questions are ready, so a model that takes hours to build doesn't hold up the others. Up to `verifier.auditMaxConcurrentModels` models (6 by default) audit at once, and a model that is still building doesn't use up one of those places. When its questions are ready, the model re-reads which sellers your buyer can see. All of this is one `verifier run`, so `verifier submit` gets the results when every model has finished.
 
-   Every test runs on every first audit, in this order: the tokenizer pre-check, thinking discovery, the questions, the cap check and the echo check. A flag never skips a later test: the audit is `DIFF` when any test flags, and its evidence holds every test's result.
+   Every test runs on every first audit, in this order: the tokenizer pre-check, thinking discovery, the questions, the cap check and the echo check. A flag never skips a later test: the audit is `DIFF` when any test flags, and its evidence holds the result of every test that ran. The cap and echo checks don't run when the seller is skipped during its questions, the questions end in a seller failure, or the audit runs out of time.
 
    Before anything else, each seller gets the [tokenizer pre-check](#tokenizer-pre-check): two short requests that show whether it counts input tokens like the model. A seller that clearly doesn't is `DIFF`, and is still asked the questions and the other checks.
 
@@ -112,6 +112,10 @@ The echo check asks whether a seller bills the output tokens the model wrote. It
 - **Anything unclear decides nothing.** A failed request, a changed or cut echo, reasoning where none is expected, a round that does not repeat, a repeat that cannot be read, too few other sellers, or one that has not answered within five minutes. When the audit's time runs out, a finding already decided before the extra requests and the other sellers' replies stands; anything still open is stored as stopped. Work for a fixed amount alone runs off the seller's clock and is set aside when it would cut into the time the questions need.
 
 An echo check `DIFF` means the seller bills more output than the model wrote. Like the cap check, it says nothing about which model the seller serves, and counts once another auditor's own echo check flags the seller the same way. `verifier submit` recomputes every count from the bytes the seller and the other sellers signed; the reference's own counts are your endpoint's measurement and are taken as stored, as for the pre-check. `verifier.outputChecks: false` turns the cap check and the echo check off together.
+
+### Randomness check (FLIPS)
+
+FLIPS checks whether the seller's model is random the way the genuine model is. It runs last, after the echo check. Each request asks for 64 symbols drawn at random from two words, and the seller and your reference endpoint get the same requests on two word pairs. Models are bad at randomness, each in its own way, so the seller's replies are compared with the reference's statistic by statistic (how often it switches words, how long its runs get, how it starts, how long its replies are), and the score becomes a p-value: how unusual it is for an honest seller. A first audit flags at a p of at most 0.2%. A FLIPS flag is confirmed or cleared only by another auditor's FLIPS at the confirmation stage, on fresh word pairs and twice the replies, which flags at a p of at most 0.1%. A check with too few usable replies on either side decides nothing. FLIPS never counts for MiniMax M3, whose honest sellers on another host than the reference's score like a swap, nor for a model the eval never measured: there it is recorded only. `verifier.flips: false` turns it off.
 
 ### Following a run
 
