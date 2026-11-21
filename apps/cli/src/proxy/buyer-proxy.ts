@@ -173,6 +173,7 @@ import { parseServiceFreeTierProgram } from '@antseed/node/free-tier-program'
 import { TeeVerification } from './tee-verification.js'
 import { E2eeError, type E2eeSession } from '@antseed/node'
 import { ZeroDataAccess, createStreamDecryptor, decryptResponse, encryptRequest, isE2eeOffer, loadVerifierQuoteCheck } from './zero-data-access.js'
+import { BlindRelayClient, isBlindRelayOffer } from './blind-relay.js'
 import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
 import { isClientCredentialHeader } from './credential-headers.js'
@@ -267,6 +268,8 @@ export interface BuyerProxyConfig {
   verifier?: VerifierPolicy
   /** Zero data access (end-to-end encryption) attestations; tests inject their own. */
   zeroDataAccess?: ZeroDataAccess
+  /** The seller-blind relay client; built from the node when absent. */
+  blindRelay?: BlindRelayClient
   /** Loads stored buyer identities on demand; defaults to one reading `dataDir`. */
   buyerIdentities?: BuyerIdentityLoader
   /** `buyer.minPeerReputation`, so gateway policies narrow under it (also enforced by the router plugin). */
@@ -1462,6 +1465,7 @@ export class BuyerProxy {
   private readonly _buyerIdentities: BuyerIdentityLoader
   private readonly _teeVerification: TeeVerification
   private readonly _zeroDataAccess: ZeroDataAccess
+  private readonly _blindRelay: BlindRelayClient
   private readonly _teeControl: TeeControl
   private _stateWatchDebounce: ReturnType<typeof setTimeout> | null = null
   private _configWatchDebounce: ReturnType<typeof setTimeout> | null = null
@@ -1580,6 +1584,14 @@ export class BuyerProxy {
         return { statusCode: resp.statusCode, body: resp.body }
       },
       loadQuoteVerifier: loadVerifierQuoteCheck,
+    })
+    this._blindRelay = config.blindRelay ?? new BlindRelayClient({
+      sendRequest: (peer, request, buyerIdentity) => this._node.sendRequest(peer, request, {
+        signal: AbortSignal.timeout(60_000),
+        ...(buyerIdentity ? { buyerIdentity } : {}),
+      }),
+      openRelayStream: (peer, streamId, credentialId, buyerIdentity) => this._node.openRelayStream(peer, streamId, credentialId, buyerIdentity),
+      recordRelayedResponse: (peer, relayed, buyerIdentity) => this._node.recordRelayedResponse(peer, relayed, buyerIdentity),
     })
     this._teeControl = new TeeControl(this._teeVerification.sessionId)
     this._port = config.port
@@ -1851,11 +1863,20 @@ export class BuyerProxy {
     }
   }
 
-  /** An offer in category `e2ee` gives zero data access until its attestation fails. */
+  /**
+   * An offer in category `e2ee` gives zero data access until its attestation
+   * fails; one in category `seller-blind` gives it through the blind relay.
+   */
   private _zeroDataAccessFacts(peer: PeerInfo, offer: NetworkServiceOffer | null): Pick<PolicyPeerFacts, 'zeroDataAccess' | 'zeroDataAccessFailure'> {
+    if (offer && !isE2eeOffer(offer) && isBlindRelayOffer(offer)) return { zeroDataAccess: true }
     if (!offer || !isE2eeOffer(offer)) return { zeroDataAccess: false }
     const failure = this._zeroDataAccess.failure(peer.peerId, offer.serviceId)
     return failure ? { zeroDataAccess: false, zeroDataAccessFailure: failure } : { zeroDataAccess: true }
+  }
+
+  /** Whether `serviceId` on `peer` is served through the seller-blind relay. */
+  private _isBlindRelayService(peer: PeerInfo, provider: string | undefined, serviceId: string): boolean {
+    return !!provider && isBlindRelayOffer(findAdvertisedServiceOffer(peer, provider, serviceId))
   }
 
   /**
@@ -5185,7 +5206,10 @@ export class BuyerProxy {
         }
         // Zero data access: attest the upstream key (cached) and encrypt to it; a failure moves on.
         let e2eeSession: E2eeSession | null = null
-        if (requireZeroDataAccess) {
+        let blindRelayService: string | null = null
+        if (requireZeroDataAccess && this._isBlindRelayService(selected.peer, modelPlans.get(selected.peer.peerId)?.provider, selected.serviceId)) {
+          blindRelayService = selected.serviceId
+        } else if (requireZeroDataAccess) {
           try {
             e2eeSession = await this._zeroDataAccess.session(selected.peer, selected.serviceId, selected.request.headers[BUYER_IDENTITY_HEADER])
           } catch (error) {
@@ -5243,6 +5267,7 @@ export class BuyerProxy {
                 : null,
               teeBinding,
               e2eeSession,
+              blindRelayService,
             },
           )
           trace?.noteAttemptResult(result, res.statusCode, Date.now())
@@ -5503,12 +5528,15 @@ export class BuyerProxy {
     }
 
     let e2eeSession: E2eeSession | null = null
+    let blindRelayService: string | null = null
     if (pinnedPolicy?.requireZeroDataAccess === true) {
       const short = selectedPeer.peerId.slice(0, 12)
       if (!pinnedServiceId) {
         return dispatchFailure(502, { 'content-type': 'text/plain' }, `Pinned peer ${short}... names no service to encrypt end to end for.`)
       }
-      try {
+      if (this._isBlindRelayService(selectedPeer, selectedPlan?.provider, pinnedServiceId)) {
+        blindRelayService = pinnedServiceId
+      } else try {
         e2eeSession = await this._zeroDataAccess.session(selectedPeer, pinnedServiceId, pinnedRequest.headers[BUYER_IDENTITY_HEADER])
       } catch (error) {
         return dispatchFailure(502, { 'content-type': 'text/plain' },
@@ -5541,7 +5569,7 @@ export class BuyerProxy {
       router,
       true,
       signal,
-      { routingConversationKey, teeBinding, e2eeSession },
+      { routingConversationKey, teeBinding, e2eeSession, blindRelayService },
     )
     trace?.noteAttemptResult(result, res.statusCode, Date.now())
     if (trace && result.done && result.interrupted) trace.interrupted = result.interrupted
@@ -5708,6 +5736,7 @@ export class BuyerProxy {
       attemptTimeoutMs = null,
       teeBinding = null,
       e2eeSession = null,
+      blindRelayService = null,
     }: {
       gatewayRouted?: boolean
       routingConversationKey?: string | null
@@ -5718,6 +5747,8 @@ export class BuyerProxy {
       teeBinding?: string | null
       /** Zero data access: encrypt every message to this attested upstream key and decrypt the answer. */
       e2eeSession?: E2eeSession | null
+      /** Zero data access through the seller-blind relay: send to the upstream over TLS the buyer runs, as this service. */
+      blindRelayService?: string | null
     } = {},
   ): Promise<PeerDispatchResult> {
     traceFor(res)?.noteAttempt(selectedPeer.peerId, Date.now())
@@ -5839,6 +5870,22 @@ export class BuyerProxy {
       }
       log(`Encrypted request end to end for peer ${selectedPeer.peerId.slice(0, 12)}...`)
     }
+    if (blindRelayService && (selectedRoutePlan.selection?.targetProtocol ?? requestProtocol) !== 'openai-chat-completions') {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { type: 'invalid_request_error', code: 'zero_data_access_unsupported', message: 'The blind relay carries chat completions only.' } }))
+      return { done: true }
+    }
+    // The seller-blind relay stands in for the seller's own request path; payment still goes through the node.
+    const relayBlind = blindRelayService
+    const sendRequestStream: AntseedNode['sendRequestStream'] = relayBlind
+      ? (peer, request, callbacks, options) => this._blindRelay.send(peer, relayBlind, request, options?.buyerIdentity, {
+        onResponseStart: (start) => callbacks.onResponseStart?.(start, { streaming: /text\/event-stream/i.test(start.headers['content-type'] ?? '') }),
+        onResponseChunk: (chunk) => callbacks.onResponseChunk?.(chunk),
+      }, options?.signal)
+      : (peer, request, callbacks, options) => this._node.sendRequestStream(peer, request, callbacks, options)
+    const sendRequest: AntseedNode['sendRequest'] = relayBlind
+      ? (peer, request, options) => this._blindRelay.send(peer, relayBlind, request, options?.buyerIdentity, {}, options?.signal)
+      : (peer, request, options) => this._node.sendRequest(peer, request, options)
 
     if (DEBUG()) {
       log(`Outbound request shape: ${summarizeRequestShape(requestForPeer)}`)
@@ -5924,7 +5971,7 @@ export class BuyerProxy {
             res.destroy()
           })
         }
-        const response = await this._node.sendRequestStream(selectedPeer, requestForPeer, {
+        const response = await sendRequestStream(selectedPeer, requestForPeer, {
           onResponseStart: (startResponse: SerializedHttpResponse, metadata: RequestStreamResponseMetadata) => {
             if (!metadata.streaming) return
             // The seller is answering: from here a slow answer is still an answer.
@@ -6121,7 +6168,7 @@ export class BuyerProxy {
         return { done: true, emptyAnswer: answeredEmpty }
       } else {
         const maxVideoCostUsdc = videoRoute?.action === 'create' ? parseUsdcBaseUnits(maxVideoCostHeader) : null
-        const upstreamResponse = await this._node.sendRequest(selectedPeer, requestForPeer, {
+        const upstreamResponse = await sendRequest(selectedPeer, requestForPeer, {
           signal: attemptSignal,
           pinned,
           captureResponseAuthPreimages: captureResponseAuthPreimages === '1',

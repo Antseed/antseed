@@ -49,6 +49,16 @@ Only text chat completions can be encrypted. A request with images, audio, tools
 
 A single request can ask for it with the header `x-antseed-require-zero-data-access: 1`, on top of its key's policy.
 
+### Seller-blind relay
+
+Some upstreams have no end-to-end encryption, but can mint short-lived, spend-capped credentials. A seller marks such a service with the `seller-blind` category ([seller setup](/docs/provide/config#seller-blind-relay-services)), and **Zero data access only** accepts it too. For these, your buyer:
+
+1. asks the seller for a credential scoped to the service's upstream model, with a small spend cap and an expiry in minutes;
+2. opens TLS to the upstream itself, through a raw relay stream on the seller, and checks the upstream's certificate;
+3. sends the request with that credential, and reads the usage in the answer to price it.
+
+The seller forwards ciphertext only and never sees the conversation, but the upstream does, under its own data policy. The seller charges each relayed request by what the upstream counted for the credential, and your buyer signs for it only up to its own price from the usage it read and the seller's advertised prices. Your buyer learns which upstream serves the model. Only text chat completions go through the relay.
+
 ## Policy levels
 
 ![The Routing page: the rules that apply, from buyer config to gateway, organization and workspace policies](/img/docs/gateway/routing.webp)

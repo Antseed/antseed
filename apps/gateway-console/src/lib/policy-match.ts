@@ -82,9 +82,13 @@ function serviceFits(policy: RoutingPolicy, service: Peer['services'][number]): 
   return true
 }
 
-/** A service whose upstream encrypts end to end, so the seller cannot read it (category `e2ee`). */
-export function isE2eeService(service: { categories?: readonly string[] }): boolean {
-  return service.categories?.some((category) => category.toLowerCase() === 'e2ee') ?? false
+/**
+ * A service the seller cannot read: its upstream encrypts end to end (category
+ * `e2ee`), or the buyer reaches the upstream through the seller-blind relay
+ * (category `seller-blind`).
+ */
+export function isZeroDataAccessService(service: { categories?: readonly string[] }): boolean {
+  return service.categories?.some((category) => ['e2ee', 'seller-blind'].includes(category.toLowerCase())) ?? false
 }
 
 /** Sellers the policy leaves eligible for at least one of their models. */
@@ -101,7 +105,7 @@ export function matchingPeers(policy: RoutingPolicy, peers: readonly Peer[], lis
     if (p.requireTee && !peer.tee) return false
     // Trust is judged per model: a live DIFF model check cuts it to 10% for that model only.
     return peer.services.some((service) => serviceFits(p, service)
-      && (!p.requireZeroDataAccess || isE2eeService(service))
+      && (!p.requireZeroDataAccess || isZeroDataAccessService(service))
       && (p.minTrustScore === undefined || (offerTrust(peer.trustScore ?? 0, service.modelCheck) ?? 0) >= p.minTrustScore))
   })
 }

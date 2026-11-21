@@ -77,6 +77,9 @@ import { parseResponseUsage, type ResponseUsage } from './utils/response-usage.j
 import { exposedResponseHeaders } from './utils/response-headers.js';
 import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/response-body.js';
 import { E2EE_ATTESTATION_PATH, usageForBilling } from '@antseed/buyer-core';
+import { BLIND_RELAY_CREDENTIAL_PATH, BLIND_RELAY_SERVICE_CATEGORY } from '@antseed/protocol/blind-relay';
+import { RelayMux } from './p2p/relay-mux.js';
+import { SellerBlindRelay, type BlindRelayCharge } from './seller-blind-relay.js';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, describeUpstreamError, isUpstreamAccountError, isUpstreamFailureStatus, isVideoDownloadBusy } from './health/self-health-error.js';
@@ -288,9 +291,13 @@ export class SellerRequestHandler {
   private _metadataRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   /** Request bodies in memory on every connection: uploads still arriving and requests being served. */
   private readonly _inFlightRequestBytes: ByteBudget;
+  private readonly _blindRelay: SellerBlindRelay;
+  /** Each buyer's payment mux on its live connection, for blind relay charges that land after a stream closes. */
+  private readonly _paymentMuxes = new Map<string, PaymentMux>();
 
   constructor(deps: SellerRequestHandlerDeps) {
     this._deps = deps;
+    this._blindRelay = new SellerBlindRelay({ charge: (charge) => this._chargeBlindRelay(charge) });
     this._inFlightRequestBytes = new ByteBudget(Math.max(
       deps.maxInFlightRequestBytes ?? DEFAULT_MAX_IN_FLIGHT_REQUEST_BYTES,
       deps.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
@@ -326,7 +333,17 @@ export class SellerRequestHandler {
     buyerPeerId: string,
     paymentMux: PaymentMux,
     verificationMux: VerificationMux,
-  ): { mux: ProxyMux } {
+  ): { mux: ProxyMux; relayMux: RelayMux } {
+    this._paymentMuxes.set(buyerPeerId, paymentMux);
+    // Test doubles of a connection may have no events.
+    conn.on?.('stateChange', (state: ConnectionState) => {
+      if ((state === ConnectionState.Closed || state === ConnectionState.Failed) && this._paymentMuxes.get(buyerPeerId) === paymentMux) {
+        this._paymentMuxes.delete(buyerPeerId);
+      }
+    });
+    const relayMux = new RelayMux(conn, {
+      authorize: (streamId, credentialId) => this._blindRelay.authorize(buyerPeerId, streamId, credentialId),
+    });
     const mux = new ProxyMux(conn, {
       maxUploadBodyBytes: this._deps.maxUploadBodyBytes,
       sharedUploadBudget: this._inFlightRequestBytes,
@@ -437,6 +454,11 @@ export class SellerRequestHandler {
 
       if (pathOnly === E2EE_ATTESTATION_PATH) {
         await this._handleE2eeAttestation(mux, request, buyerPeerId);
+        return;
+      }
+
+      if (pathOnly === BLIND_RELAY_CREDENTIAL_PATH) {
+        await this._handleBlindCredential(mux, paymentMux, request, buyerPeerId);
         return;
       }
 
@@ -724,39 +746,7 @@ export class SellerRequestHandler {
         if (isServedFree) {
           debugLog(`[SellerHandler] Free service for ${buyerPeerId.slice(0, 12)}... — skipping 402 / payment channel`);
         } else {
-          const baseRequirements = spm?.getPaymentRequirements(
-            request.requestId, buyerPeerId, requestPricing,
-          );
-          if (baseRequirements) {
-            const requirements: PaymentRequiredPayload = baseRequirements;
-            debugLog(`[SellerHandler] No payment session for ${buyerPeerId.slice(0, 12)}... — sending 402 + PaymentRequired`);
-            const paymentBody = JSON.stringify({
-              error: 'payment_required',
-              minBudgetPerRequest: requirements.minBudgetPerRequest,
-              suggestedAmount: requirements.suggestedAmount,
-              ...(requirements.inputUsdPerMillion != null ? { inputUsdPerMillion: requirements.inputUsdPerMillion } : {}),
-              ...(requirements.outputUsdPerMillion != null ? { outputUsdPerMillion: requirements.outputUsdPerMillion } : {}),
-              ...(requirements.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion } : {}),
-            });
-            mux.sendProxyResponse({
-              requestId: request.requestId,
-              statusCode: 402,
-              headers: { "content-type": "application/json" },
-              body: new TextEncoder().encode(paymentBody),
-            });
-            this._sendPaymentRequiredBestEffort(paymentMux, requirements, buyerPeerId, 'missing-session');
-          } else {
-            debugWarn(`[SellerHandler] No payment session — returning 402`);
-            mux.sendProxyResponse({
-              requestId: request.requestId,
-              statusCode: 402,
-              headers: { "content-type": "application/json" },
-              body: new TextEncoder().encode(JSON.stringify({
-                error: 'payment_required',
-                message: 'Seller not ready, try again later',
-              })),
-            });
-          }
+          this._sendMissingSession(mux, paymentMux, request, buyerPeerId, requestPricing);
           return;
         }
       }
@@ -1421,7 +1411,7 @@ export class SellerRequestHandler {
       }
     });
 
-    return { mux };
+    return { mux, relayMux };
   }
 
   /** Returns true when it already sent a response. */
@@ -1715,6 +1705,124 @@ export class SellerRequestHandler {
     } catch (err) {
       debugWarn(`[SellerHandler] E2EE attestation for ${service} failed: ${err instanceof Error ? err.message : String(err)}`);
       this._sendJsonError(mux, request.requestId, 502, 'e2ee_attestation_failed', 'The upstream attestation could not be fetched.');
+    }
+  }
+
+  /**
+   * Mints a seller-blind relay credential for a buyer with an open payment
+   * channel. Minting is free; each relayed request is charged afterwards by
+   * the change in the credential's upstream spend (`_chargeBlindRelay`). A
+   * buyer whose last relayed charges are not signed for gets no new one.
+   */
+  private async _handleBlindCredential(
+    mux: ProxyMux,
+    paymentMux: PaymentMux,
+    request: SerializedHttpRequest,
+    buyerPeerId: string,
+  ): Promise<void> {
+    const provider = request.method === 'POST' ? this.matchProvider(request) : null;
+    const service = provider ? this._extractRequestedService(request) : null;
+    if (!provider || !service || !provider.serviceCategories?.[service]?.includes(BLIND_RELAY_SERVICE_CATEGORY)
+      || !provider.mintBlindCredential || !provider.blindCredentialSpendUsd) {
+      this._sendJsonError(mux, request.requestId, 404, 'blind_relay_not_supported', 'This service is not served through the blind relay on this peer.');
+      return;
+    }
+    const spm = this._deps.sellerPaymentManager;
+    if (!this._deps.channelsClient || !spm) {
+      this._sendJsonError(mux, request.requestId, 503, 'blind_relay_unavailable', 'This seller takes no payments, so it mints no credentials.');
+      return;
+    }
+    const pricing = this.resolveProviderPricing(provider, request);
+    if (!spm.hasSession(buyerPeerId)) {
+      this._sendMissingSession(mux, paymentMux, request, buyerPeerId, pricing);
+      return;
+    }
+    const session = spm.getChannelByPeer(buyerPeerId);
+    if (session && spm.getAcceptedCumulative(session.sessionId) < spm.getCumulativeSpend(session.sessionId)) {
+      this._sendJsonError(mux, request.requestId, 409, 'blind_relay_unpaid', 'Sign for the requests already relayed, then ask again.', { 'retry-after': '2' });
+      return;
+    }
+    try {
+      const credential = await this._blindRelay.mint(buyerPeerId, service, provider);
+      mux.sendProxyResponse({
+        requestId: request.requestId,
+        statusCode: 200,
+        headers: { 'content-type': 'application/json' },
+        // Minting costs nothing: the zero usage tells the buyer so.
+        body: new TextEncoder().encode(JSON.stringify({
+          ...credential,
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        })),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugWarn(`[SellerHandler] Blind relay credential for ${service} failed: ${message}`);
+      this._sendJsonError(mux, request.requestId, 502, 'blind_relay_mint_failed', `No credential: ${message}`);
+    }
+  }
+
+  /** Records a relayed request's cost on the buyer's channel and asks the buyer to sign for it. */
+  private _chargeBlindRelay(charge: BlindRelayCharge): void {
+    const spm = this._deps.sellerPaymentManager;
+    const session = spm?.getChannelByPeer(charge.buyerPeerId);
+    const paymentMux = this._paymentMuxes.get(charge.buyerPeerId);
+    if (!spm || !session || charge.costUsdc <= 0n) return;
+    spm.recordSpend(session.sessionId, charge.costUsdc);
+    const cumulativeSpend = spm.getCumulativeSpend(session.sessionId);
+    debugLog(`[SellerHandler] Blind relay cost recorded: buyer=${charge.buyerPeerId.slice(0, 12)}... cost=${charge.costUsdc} cumulative=${cumulativeSpend}`);
+    if (!paymentMux) return;
+    this._sendNeedAuthBestEffort(paymentMux, {
+      channelId: session.sessionId,
+      requiredCumulativeAmount: cumulativeSpend.toString(),
+      currentAcceptedCumulative: spm.getAcceptedCumulative(session.sessionId).toString(),
+      deposit: session.authMax ?? '0',
+      requestId: charge.requestId,
+      lastRequestCost: charge.costUsdc.toString(),
+      service: charge.service,
+    }, charge.buyerPeerId, 'post-response');
+  }
+
+  /** Answers 402 and sends PaymentRequired, so the buyer opens a payment channel and retries. */
+  private _sendMissingSession(
+    mux: ProxyMux,
+    paymentMux: PaymentMux,
+    request: SerializedHttpRequest,
+    buyerPeerId: string,
+    requestPricing: Parameters<SellerPaymentManager['getPaymentRequirements']>[2],
+  ): void {
+    const spm = this._deps.sellerPaymentManager;
+    const baseRequirements = spm?.getPaymentRequirements(
+      request.requestId, buyerPeerId, requestPricing,
+    );
+    if (baseRequirements) {
+      const requirements: PaymentRequiredPayload = baseRequirements;
+      debugLog(`[SellerHandler] No payment session for ${buyerPeerId.slice(0, 12)}... — sending 402 + PaymentRequired`);
+      const paymentBody = JSON.stringify({
+        error: 'payment_required',
+        minBudgetPerRequest: requirements.minBudgetPerRequest,
+        suggestedAmount: requirements.suggestedAmount,
+        ...(requirements.inputUsdPerMillion != null ? { inputUsdPerMillion: requirements.inputUsdPerMillion } : {}),
+        ...(requirements.outputUsdPerMillion != null ? { outputUsdPerMillion: requirements.outputUsdPerMillion } : {}),
+        ...(requirements.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion } : {}),
+      });
+      mux.sendProxyResponse({
+        requestId: request.requestId,
+        statusCode: 402,
+        headers: { "content-type": "application/json" },
+        body: new TextEncoder().encode(paymentBody),
+      });
+      this._sendPaymentRequiredBestEffort(paymentMux, requirements, buyerPeerId, 'missing-session');
+    } else {
+      debugWarn(`[SellerHandler] No payment session — returning 402`);
+      mux.sendProxyResponse({
+        requestId: request.requestId,
+        statusCode: 402,
+        headers: { "content-type": "application/json" },
+        body: new TextEncoder().encode(JSON.stringify({
+          error: 'payment_required',
+          message: 'Seller not ready, try again later',
+        })),
+      });
     }
   }
 
