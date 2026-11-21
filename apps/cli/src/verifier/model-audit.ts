@@ -157,7 +157,7 @@ export interface PreparedRowDecisionV1 {
 }
 
 /** The reason codes a preparation gives a row it does not send, and which of them hold it for a later submit. */
-export const PREPARED_HOLD_CODES: readonly string[] = Object.freeze(['window-open', 'confirmation-reaudit', 'close-call-waiting', 'confirmation-hold'])
+export const PREPARED_HOLD_CODES: readonly string[] = Object.freeze(['window-open', 'confirmation-reaudit', 'close-call-waiting', 'confirmation-hold', 'confirmation-waiting'])
 
 /** Public evidence for one `submitModelAudit` call: every seller audited as one model in one run. */
 export interface ModelAuditEvidenceV1 {
@@ -352,6 +352,12 @@ export async function prepareModelAudits(input: {
    */
   auditWindow?: (model: string) => Promise<Pick<AuditWindowV1, 'state' | 'sellers'> | null>
   /**
+   * Why the model's results wait for its confirmations that wait to be audited again (`confirmationHoldReason`), or null:
+   * every row of the model is held, as for an open audit window, so their evidence does not publish the questions
+   * those confirmations are asked again.
+   */
+  confirmationHold?: (model: string) => string | null
+  /**
    * For a DIFF that answers another auditor's waiting DIFF: whether the same check flagged in both
    * audits (`sameCheckFilter`). Runs after `thirdOpinion`. Without it no result is checked.
    */
@@ -508,6 +514,13 @@ export async function prepareModelAudits(input: {
           ? 'a confirmation on a model whose audit window is still open: it is submitted when the window closes, so the window\'s questions stay unpublished while its sellers are asked'
           : 'its audit window is still open: the model\'s results are submitted together once every seller of the window is finished', 'window-open')
         heldBack.push(`${model} ${result.agentId ?? result.peerId}: its audit window is still open`)
+        continue
+      }
+      // A close call still waiting for its extra questions keeps its own handling below: it is never sent as it is.
+      const waiting = finalAuditVerdict(result) === null ? null : input.confirmationHold?.(model) ?? null
+      if (waiting) {
+        exclude(`held: ${waiting}`, 'confirmation-waiting')
+        heldBack.push(`${model} ${result.agentId ?? result.peerId}: held for the model's confirmations waiting to be audited again`)
         continue
       }
       if (window && !result.confirmsDiff && !windowIncludesSeller(window, result.peerId)) {

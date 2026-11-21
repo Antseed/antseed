@@ -7,6 +7,7 @@ import chalk from 'chalk'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { readAuditWindow } from '../../../verifier/audit-window.js'
 import { closeFinishedWindowsRecovering } from '../../../verifier/first-look-recovery.js'
+import { confirmationHoldReason, confirmationsHoldingSubmit } from '../../../verifier/confirmation-hold.js'
 import { chainNow } from '../../../verifier/chain-clock.js'
 import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import Table from 'cli-table3'
@@ -218,14 +219,17 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         verifierClient.creditLimits(),
       ])
       validateRunEpoch(manifest, window)
+      const secondsLeftInEpoch = window.endsAt - await chainNow(verifierClient.provider)
+      const epochState = await loadEpochState(evidenceDir, manifest.epoch)
       // Windows whose sellers are all finished (or that the end of the epoch closes) are submitted now.
       if (!options.dryRun) {
         // The same close as \`verifier run\`: a first look still to be recovered keeps its window open.
         for (const closed of await closeFinishedWindowsRecovering({
-          evidenceDir, epoch: manifest.epoch, state: await loadEpochState(evidenceDir, manifest.epoch),
-          secondsLeftInEpoch: window.endsAt - await chainNow(verifierClient.provider),
+          evidenceDir, epoch: manifest.epoch, state: epochState, secondsLeftInEpoch,
         })) console.log(chalk.green(`${closed.model}: audit window closed (${closed.closeReason})`))
       }
+      // A model whose started confirmations wait to be audited again is held for them, until the end-of-epoch cut-off.
+      const confirmationHolds = confirmationsHoldingSubmit(epochState, secondsLeftInEpoch)
       if (!options.dryRun && !approved) {
         throw new Error(
           `auditor wallet ${address} is not approved by the KBF audits contract ${getAddress(verifierClient.contractAddress)}`,
@@ -349,6 +353,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         resolveAgentOwner: (agentId) => verifierClient.agentOwner(agentId),
         config: config.verifier,
         auditWindow: (model) => readAuditWindow(evidenceDir, manifest.epoch, model),
+        confirmationHold: (model) => confirmationHoldReason(confirmationHolds.get(model.trim().toLowerCase())),
         alreadyOnChain: alreadyOnChainFilterFor(epochEvents),
         // Never a third opinion: a seller judged by another auditor this epoch is not reported on again,
         // except to confirm a DIFF this auditor is the confirmer of (third-opinion.ts).

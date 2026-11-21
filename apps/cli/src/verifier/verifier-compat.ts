@@ -29,13 +29,16 @@ import type { VerifierCLIConfig } from '../config/types.js'
 import { assignAuditModelsRoundRobin, confirmationAssignments } from './audit-assignment.js'
 import { MINIMUM_REAL_RESULTS_PERCENT, auditHandovers } from './audit-handover.js'
 import { MIN_SECONDS_FOR_ANOTHER_ROUND } from './audit-window.js'
+import { confirmationsHoldingSubmit } from './confirmation-hold.js'
 import {
   AUDITOR_FAILURE_ATTEMPTS,
   CONFIRMATION_ATTEMPTS,
   CONFIRMATION_RECHECK_SPACING_SECONDS,
   SELLER_FAILURE_ATTEMPTS,
   SELLER_RETRY_SPACING_SECONDS,
+  type EpochCell,
 } from './epoch-plan.js'
+import type { ModelVerificationTargetResult } from './model-run.js'
 import { CALIBRATION_MINIMUM_COVERAGE, EPOCH_QUESTION_SET_METHOD } from './probe-bank.js'
 import { AUDITED_MODELS, type AuditedModel } from './audited-models.js'
 import { CLOSE_CALL_RULE_ID, auditDecision, closeCallRuleForExtensions, needsExtension, pooledCloseCallVerdict } from './close-call.js'
@@ -498,6 +501,10 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       confirmationWindowSeconds: CONFIRMATION_WINDOW_SECONDS,
       minimumRealResultsPercent: MINIMUM_REAL_RESULTS_PERCENT,
       confirmationRecheckSpacingSeconds: CONFIRMATION_RECHECK_SPACING_SECONDS,
+      // Which started confirmations hold their model's submit, with a day left and just before the end-of-epoch cut-off.
+      confirmationHoldsSubmit: [86_400, MIN_SECONDS_FOR_ANOTHER_ROUND - 1].map((secondsLeft) => SAMPLE_WAITING_CONFIRMATIONS.map((cell) => (
+        confirmationsHoldingSubmit({ cells: new Map([['cell', cell]]) }, secondsLeft).size > 0
+      ))),
       // Which epochs after a DIFF recorded in epoch 10 hold the seller (and that a SAME holds nobody).
       diffHoldEpochs: DIFF_HOLD_EPOCHS,
       diffHold: [10n, 11n, 12n, 13n].map((epoch) => [
@@ -578,6 +585,16 @@ const SAMPLE_REFERENCE_ASKS: ReadonlyArray<TokenizerReferenceAskV1[]> = [
   [referenceAsk(26, 143), referenceAsk(26, 143, { providers: ['Provider-A', 'Provider-B'] })],
   [referenceAsk(26, 143, { providers: [null, null] }), referenceAsk(26, 143, { providers: [null, null] })],
 ]
+
+/** Confirmation cells by attempt and plan action, each started (an attempt finished): which wait to be audited again. */
+const SAMPLE_WAITING_CONFIRMATIONS: readonly EpochCell[] = ([
+  [1, 'retry'], [2, 'retry'], [CONFIRMATION_ATTEMPTS, 'retry'], [1, 'done'], [1, 'extend'],
+] as const).map(([attempts, action]) => ({
+  model: 'm', peerId: 'aa', runId: 'r', state: action === 'extend' ? 'pending_extension' : 'undetermined', attempts, auditorAttempts: 0,
+  permanent: false, lastAttemptAt: 1, blame: 'seller', reason: null, skipCode: null, action,
+  result: action === 'extend' ? null : { confirmsDiff: true } as ModelVerificationTargetResult,
+  ...(action === 'extend' ? { pending: { confirmsDiff: true } as ModelVerificationTargetResult } : {}),
+}))
 
 /** Seeds of the probes the fingerprint holds, each written from `fixedSequence`. */
 const SAMPLE_PROBE_SEEDS: readonly number[] = [1, 2, 3, 4]
