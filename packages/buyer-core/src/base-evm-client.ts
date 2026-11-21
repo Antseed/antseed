@@ -33,6 +33,8 @@ const NONCE_CHECK_EVERY_POLLS = 5;
 /** A tx not mined after this long is sent again on its nonce with higher fees. */
 const SPEED_UP_AFTER_MS = 30_000;
 const MAX_SPEED_UPS = 4;
+/** A fee-capped write still unmined after this long is cancelled, so its nonce does not block the wallet. */
+const CAPPED_WRITE_CANCEL_AFTER_MS = 120_000;
 /** Highest tip a speed-up offers (0.5 gwei, about $0.25 on a 200k-gas tx at $2,500/ETH). */
 const MAX_SPEED_UP_TIP_WEI = 500_000_000n;
 /** Recent blocks whose low-end tips set the floor for a new tx's tip. */
@@ -272,6 +274,31 @@ export class ReceiptWaitTimeoutError extends Error {
   }
 }
 
+/**
+ * A fee-capped write that did not mine in time (see `WriteFeeLimit`) and was replaced on its nonce
+ * by a 0-value transfer to the signer. The write itself never ran.
+ */
+export class TransactionCancelledError extends Error {
+  readonly code = 'TX_CANCELLED';
+  constructor(readonly hashes: readonly string[], readonly cancelHash: string) {
+    super(`transaction ${hashes[0]} was cancelled by ${cancelHash}: it did not mine within its fee limit in time`);
+    this.name = 'TransactionCancelledError';
+  }
+}
+
+/**
+ * For a write that only pays off below some gas price. Its first send and speed-ups never offer a
+ * max fee per gas above `maxFeePerGasWei`. If it has not mined by CAPPED_WRITE_CANCEL_AFTER_MS, or by
+ * `cancelByMs` (ms since epoch) when that is sooner, it is cancelled: its nonce gets a 0-value
+ * transfer to the signer at market fees, and the write throws TransactionCancelledError. From then on
+ * the write is not sped up, even with room left under the cap. A client `receiptWaitLimitMs` that
+ * ends the wait first leaves the write pending, uncancelled.
+ */
+export interface WriteFeeLimit {
+  maxFeePerGasWei: bigint;
+  cancelByMs?: number;
+}
+
 export const ERC20_ABI = [
   'function approve(address spender, uint256 amount) external returns (bool)',
   'function balanceOf(address owner) external view returns (uint256)',
@@ -344,13 +371,10 @@ export abstract class BaseEvmClient {
     return this._execWriteWithin(signer, null, abi, method, ...args);
   }
 
-  /**
-   * `_execWrite` whose speed-ups never raise the max fee per gas above `maxFeePerGasWei` (null: no
-   * limit beyond MAX_SPEED_UP_TIP_WEI), for a write that only pays off below some gas price.
-   */
+  /** `_execWrite` within `limit` (see `WriteFeeLimit`); null is no limit beyond MAX_SPEED_UP_TIP_WEI. */
   protected async _execWriteWithin(
     signer: AbstractSigner,
-    maxFeePerGasWei: bigint | null,
+    limit: WriteFeeLimit | null,
     abi: InterfaceAbi,
     method: string,
     ...args: unknown[]
@@ -359,7 +383,7 @@ export abstract class BaseEvmClient {
     const signerAddress = await connected.getAddress();
     const contract = new Contract(this._contractAddress, abi, connected);
     const populated = await contract.getFunction(method).populateTransaction(...args);
-    const receipt = await this._sendAndWait(connected, signerAddress, populated, maxFeePerGasWei);
+    const receipt = await this._sendAndWait(connected, signerAddress, populated, limit);
     return receipt.hash;
   }
 
@@ -391,14 +415,30 @@ export abstract class BaseEvmClient {
     connected: AbstractSigner,
     signerAddress: string,
     populated: TransactionRequest,
-    maxFeePerGasWei: bigint | null = null,
+    limit: WriteFeeLimit | null = null,
   ): Promise<TransactionReceipt> {
     const owner = {};
-    const tx = await this._sendBuffered(connected, signerAddress, populated, owner);
+    const maxFeePerGasWei = limit?.maxFeePerGasWei ?? null;
+    // Once cancelled, speed-ups bump the cancel past both the fee cap and the speed-up tip cap, or a
+    // cancel priced near that tip could not follow a rising base fee (at most MAX_SPEED_UPS bumps).
+    let cancelled = false;
+    const tx = await this._sendBuffered(connected, signerAddress, populated, owner, maxFeePerGasWei);
+    const sentAt = Date.now();
     const replaceable = !(connected instanceof NonceManager) && typeof tx.nonce === 'number' && tx.nonce === populated.nonce;
+    const cancel = replaceable && limit ? {
+      atMs: Math.min(sentAt + CAPPED_WRITE_CANCEL_AFTER_MS, limit.cancelByMs ?? Infinity),
+      send: async () => {
+        const sent = await this._cancel(connected, signerAddress, populated, owner);
+        if (sent) cancelled = true;
+        return sent;
+      },
+    } : undefined;
     return this._waitForReceipt(
       tx,
-      replaceable ? () => this._speedUp(connected, signerAddress, populated, owner, maxFeePerGasWei) : undefined,
+      replaceable
+        ? () => this._speedUp(connected, signerAddress, populated, owner, cancelled ? null : maxFeePerGasWei, cancelled ? null : MAX_SPEED_UP_TIP_WEI)
+        : undefined,
+      cancel,
     );
   }
 
@@ -410,30 +450,46 @@ export abstract class BaseEvmClient {
    * and a tx whose nonce was used by another tx throws as dropped/replaced.
    * With `speedUp`, a tx still not mined after SPEED_UP_AFTER_MS is sent
    * again on its nonce with higher fees, and whichever version mines counts.
+   * With `cancel`, a tx still not mined at `cancel.atMs` is replaced by the
+   * cancel, which `speedUp` then bumps; if the cancel mines, the wait throws
+   * TransactionCancelledError.
    */
   protected async _waitForReceipt(
     tx: Pick<TransactionResponse, 'hash' | 'from' | 'nonce'>,
     speedUp?: () => Promise<Pick<TransactionResponse, 'hash'> | null>,
+    cancel?: { atMs: number; send: () => Promise<Pick<TransactionResponse, 'hash'> | null> },
   ): Promise<TransactionReceipt> {
     const hashes = [tx.hash];
     const startedAt = Date.now();
     let lastSentAt = startedAt;
     let speedUps = 0;
+    let cancelIndex = -1; // where the cancel's versions start in `hashes`
     for (let poll = 1; ; poll += 1) {
       if (this._receiptWaitLimitMs !== null && poll > 1 && Date.now() - startedAt >= this._receiptWaitLimitMs) {
         throw new ReceiptWaitTimeoutError(hashes, Date.now() - startedAt);
       }
       try {
-        for (const hash of hashes) {
+        for (const [i, hash] of hashes.entries()) {
           const receipt = await this._provider.getTransactionReceipt(hash);
           if (!receipt) continue;
+          if (cancelIndex >= 0 && i >= cancelIndex) throw new TransactionCancelledError(hashes.slice(0, cancelIndex), hash);
           if (receipt.status === 0) throw revertError(receipt);
           return receipt;
         }
         if (poll % NONCE_CHECK_EVERY_POLLS === 0 && await this._nonceUsedElsewhere(tx, hashes)) {
           throw new Error('Transaction was dropped or replaced');
         }
-        if (speedUp && speedUps < MAX_SPEED_UPS && Date.now() - lastSentAt >= SPEED_UP_AFTER_MS) {
+        if (cancel && cancelIndex < 0 && Date.now() >= cancel.atMs) {
+          // Retried every poll until it is sent (fees unreadable, an RPC error). A cancel broadcast
+          // whose response was lost is not known here: if it mines, the wait ends as dropped/replaced.
+          const sent = await cancel.send().catch(() => null);
+          if (sent) {
+            cancelIndex = hashes.length;
+            hashes.push(sent.hash);
+            speedUps = 0;
+            lastSentAt = Date.now();
+          }
+        } else if (speedUp && speedUps < MAX_SPEED_UPS && Date.now() - lastSentAt >= SPEED_UP_AFTER_MS) {
           speedUps += 1;
           lastSentAt = Date.now();
           // A failed speed-up (the tx just mined, fees at the cap) leaves the versions already sent to mine.
@@ -441,7 +497,7 @@ export abstract class BaseEvmClient {
           if (replacement) hashes.push(replacement.hash);
         }
       } catch (err) {
-        if (err instanceof Error && ((err as Partial<CallExceptionError>).code === 'CALL_EXCEPTION' || err.message === 'Transaction was dropped or replaced')) {
+        if (err instanceof TransactionCancelledError || (err instanceof Error && ((err as Partial<CallExceptionError>).code === 'CALL_EXCEPTION' || err.message === 'Transaction was dropped or replaced'))) {
           throw err;
         }
         // Transient RPC failure (timeout, 5xx, rate limit): poll again.
@@ -463,7 +519,7 @@ export abstract class BaseEvmClient {
 
   /**
    * Send `populated` again on the same nonce with fees high enough to replace it (at least 25% more,
-   * and no less than a new tx would pay now). Null when the signer priced it, the tip is at the cap,
+   * and no less than a new tx would pay now). Null when the signer priced it, the tip is at `tipCap`,
    * the replacement would cost more than `maxFeePerGasWei` allows, or the nonce now belongs to a
    * newer operation.
    */
@@ -473,27 +529,77 @@ export abstract class BaseEvmClient {
     populated: TransactionRequest,
     owner: object,
     maxFeePerGasWei: bigint | null,
+    tipCap: bigint | null = MAX_SPEED_UP_TIP_WEI,
   ): Promise<TransactionResponse | null> {
     if (populated.maxPriorityFeePerGas == null || populated.maxFeePerGas == null || populated.nonce == null) return null;
     const key = this._nonceKey(signerAddress);
     const ownerKey = `${key}:${populated.nonce}`;
     // An operation that lost its nonce prices no more replacements (checked again under the lock).
     if (nonceOwners.get(ownerKey) !== owner) return null;
-    const prevTip = getBigInt(populated.maxPriorityFeePerGas);
-    const prevMax = getBigInt(populated.maxFeePerGas);
-    if (prevTip >= MAX_SPEED_UP_TIP_WEI) return null;
-    const current = await this._feeFields();
-    const bumpedTip = prevTip * 2n > prevTip + 1n ? prevTip * 2n : prevTip + 1n;
-    const currentTip = current.maxPriorityFeePerGas != null ? getBigInt(current.maxPriorityFeePerGas) : 0n;
-    const tip = min(MAX_SPEED_UP_TIP_WEI, max(bumpedTip, currentTip));
-    const currentMax = current.maxFeePerGas != null ? getBigInt(current.maxFeePerGas) - currentTip + tip : 0n;
-    const maxFee = max(prevMax + prevMax / 4n + (tip - prevTip), currentMax);
-    if (maxFeePerGasWei !== null && maxFee > maxFeePerGasWei) return null;
-    const replacement = { ...populated, maxPriorityFeePerGas: tip, maxFeePerGas: maxFee };
+    // At the tip cap no replacement is possible, so skip the fee reads.
+    if (tipCap !== null && getBigInt(populated.maxPriorityFeePerGas) >= tipCap) return null;
+    const fees = this._replacementFees(populated, await this._feeFields(), tipCap);
+    if (maxFeePerGasWei !== null && fees.maxFeePerGas > maxFeePerGasWei) return null;
+    const replacement = { ...populated, ...fees };
     return this._withNonceLock(key, async () => {
       if (nonceOwners.get(ownerKey) !== owner) return null;
       const tx = await connected.sendTransaction(replacement);
-      Object.assign(populated, { maxPriorityFeePerGas: tip, maxFeePerGas: maxFee });
+      Object.assign(populated, fees);
+      return tx;
+    });
+  }
+
+  /**
+   * Fees that replace `populated` on its nonce: the tip doubled (or the current one, if higher) and a
+   * max fee 25% higher (or what a new tx would pay now). The tip stops at `tipCap`; a cancel and its
+   * bumps have none, or a write priced near that tip could never be cancelled.
+   */
+  private _replacementFees(
+    populated: TransactionRequest,
+    current: Pick<TransactionRequest, 'maxFeePerGas' | 'maxPriorityFeePerGas'>,
+    tipCap: bigint | null = MAX_SPEED_UP_TIP_WEI,
+  ): { maxPriorityFeePerGas: bigint; maxFeePerGas: bigint } {
+    const prevTip = getBigInt(populated.maxPriorityFeePerGas ?? 0);
+    const prevMax = getBigInt(populated.maxFeePerGas ?? 0);
+    const bumpedTip = prevTip * 2n > prevTip + 1n ? prevTip * 2n : prevTip + 1n;
+    const currentTip = current.maxPriorityFeePerGas != null ? getBigInt(current.maxPriorityFeePerGas) : 0n;
+    const tip = tipCap !== null ? min(tipCap, max(bumpedTip, currentTip)) : max(bumpedTip, currentTip);
+    const currentMax = current.maxFeePerGas != null ? getBigInt(current.maxFeePerGas) - currentTip + tip : 0n;
+    return { maxPriorityFeePerGas: tip, maxFeePerGas: max(prevMax + prevMax / 4n + (tip - prevTip), currentMax) };
+  }
+
+  /**
+   * Replace `populated` on its nonce with a 0-value transfer to the signer at market fees, so a write
+   * that cannot mine within its fee limit stops blocking the wallet's later nonces. `populated` then
+   * holds the cancel, so speed-ups bump it. Null when the fees cannot be read (the caller retries) or
+   * the nonce now belongs to a newer operation.
+   */
+  private async _cancel(
+    connected: AbstractSigner,
+    signerAddress: string,
+    populated: TransactionRequest,
+    owner: object,
+  ): Promise<TransactionResponse | null> {
+    if (populated.nonce == null) return null;
+    const key = this._nonceKey(signerAddress);
+    const ownerKey = `${key}:${populated.nonce}`;
+    if (nonceOwners.get(ownerKey) !== owner) return null;
+    const current = await this._feeFields();
+    if (current.maxFeePerGas == null) return null;
+    const fees = this._replacementFees(populated, current, null);
+    const transfer = { to: signerAddress, value: 0n, data: '0x' };
+    // Estimated, not 21,000: a delegated (EIP-7702) account runs code on a call to itself.
+    const estimated = await connected.estimateGas({ ...transfer, from: signerAddress });
+    const cancelTx: TransactionRequest = {
+      ...transfer,
+      nonce: populated.nonce,
+      gasLimit: (estimated * GAS_BUFFER_NUMERATOR) / GAS_BUFFER_DENOMINATOR,
+      ...fees,
+    };
+    return this._withNonceLock(key, async () => {
+      if (nonceOwners.get(ownerKey) !== owner) return null;
+      const tx = await connected.sendTransaction(cancelTx);
+      Object.assign(populated, cancelTx);
       return tx;
     });
   }
@@ -557,12 +663,23 @@ export abstract class BaseEvmClient {
     signerAddress: string,
     populated: TransactionRequest,
     owner?: object,
+    maxFeePerGasWei: bigint | null = null,
   ): Promise<TransactionResponse> {
     return this._sendWithNonce(signerAddress, async (nonce) => {
       populated.nonce = nonce;
       const estimated = await connected.estimateGas(populated);
       populated.gasLimit = (estimated * GAS_BUFFER_NUMERATOR) / GAS_BUFFER_DENOMINATOR;
       if (populated.maxFeePerGas == null && populated.gasPrice == null) Object.assign(populated, await this._feeFields());
+      // A capped write never offers more per gas than it can afford, even if the base fee climbs
+      // while it waits. Clamped at the cap, it cannot be sped up (a replacement must offer more).
+      // Without fee fields the signer would price it uncapped, so it is not sent.
+      if (maxFeePerGasWei !== null) {
+        if (populated.maxFeePerGas == null) throw new Error('cannot read the base fee to price a fee-capped transaction');
+        populated.maxFeePerGas = min(getBigInt(populated.maxFeePerGas), maxFeePerGasWei);
+        if (populated.maxPriorityFeePerGas != null) {
+          populated.maxPriorityFeePerGas = min(getBigInt(populated.maxPriorityFeePerGas), maxFeePerGasWei);
+        }
+      }
       return connected.sendTransaction(populated);
     }, owner);
   }

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Wallet } from 'ethers';
 import { DepositRelayer } from '../src/payments/deposit-relayer.js';
+import { TransactionCancelledError } from '../src/payments/evm/base-evm-client.js';
 import { identityFromPrivateKeyHex } from '../src/p2p/identity.js';
 import { makeUsdcDomain, buildReceiveAuthorization } from '../src/payments/evm/signatures.js';
 import type { SweepRequestPayload } from '../src/types/protocol.js';
@@ -55,6 +56,8 @@ function makeRelayer(config?: Partial<ConstructorParameters<typeof DepositRelaye
   });
   const estimateSpy = vi.spyOn(relayer.client, 'estimateSweepProfit').mockResolvedValue({
     gasEstimate: 200_000n,
+    gasPriceWei: 6_000_000n,
+    ethPriceUsdE8: 165_266_541_925n,
     estGasCostUsdc: 5_000n,
     fee: FEE,
     profitUsdc: FEE - 5_000n,
@@ -82,7 +85,7 @@ describe('DepositRelayer', () => {
     expect(statuses).toEqual(['submitted', 'confirmed']);
     expect(mux.sendSweepReceipt.mock.calls[1][0].txHash).toBe('0x' + '77'.repeat(32));
     expect(mux.sendSweepReceipt.mock.calls[1][0].authNonce).toBe(payload.nonce);
-    // Speed-ups of the sweep stop at the gas price where it would stop paying for itself.
+    // The sweep and its speed-ups stop at the gas price where it would stop paying for itself.
     expect(sweepSpy.mock.calls[0][2]).toEqual({ maxFeePerGasWei: 100_000_000n });
   });
 
@@ -153,6 +156,8 @@ describe('DepositRelayer', () => {
     const { relayer, estimateSpy, sweepSpy } = makeRelayer();
     estimateSpy.mockResolvedValue({
       gasEstimate: 200_000n,
+      gasPriceWei: 250_000_000n,
+      ethPriceUsdE8: 165_266_541_925n,
       estGasCostUsdc: 80_000n,
       fee: FEE,
       profitUsdc: FEE - 80_000n, // negative
@@ -167,6 +172,8 @@ describe('DepositRelayer', () => {
     const { relayer, estimateSpy, sweepSpy } = makeRelayer({ minProfitBaseUnits: -100_000_000n });
     estimateSpy.mockResolvedValue({
       gasEstimate: 200_000n,
+      gasPriceWei: 250_000_000n,
+      ethPriceUsdE8: 165_266_541_925n,
       estGasCostUsdc: 4_100_150n, // anvil-scale gas cost
       fee: FEE,
       profitUsdc: FEE - 4_100_150n,
@@ -175,6 +182,13 @@ describe('DepositRelayer', () => {
 
     expect(await relayer.handleSweepRequest(PEER, await makeValidPayload(), makeMux())).toBe('submitted');
     expect(sweepSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('prices with the configured ETH price', async () => {
+    const { relayer, estimateSpy } = makeRelayer({ ethPriceUsd: 2_500 });
+
+    expect(await relayer.handleSweepRequest(PEER, await makeValidPayload(), makeMux())).toBe('submitted');
+    expect(estimateSpy.mock.calls[0][2]).toEqual({ minProfitUsdc: 0n, ethPriceUsd: 2_500 });
   });
 
   it('rejects when simulation fails', async () => {
@@ -206,6 +220,8 @@ describe('DepositRelayer', () => {
 
     estimateSpy.mockResolvedValueOnce({
       gasEstimate: 200_000n,
+      gasPriceWei: 250_000_000n,
+      ethPriceUsdE8: 165_266_541_925n,
       estGasCostUsdc: 80_000n,
       fee: FEE,
       profitUsdc: FEE - 80_000n,
@@ -225,6 +241,19 @@ describe('DepositRelayer', () => {
     expect(await relayer.handleSweepRequest(PEER, await makeValidPayload(), mux)).toBe('rejected');
     const statuses = mux.sendSweepReceipt.mock.calls.map((c) => c[0].status);
     expect(statuses).toEqual(['submitted', 'rejected']);
+  });
+
+  it('frees the slot and takes the same authorization again after a cancelled sweep', async () => {
+    const { relayer, sweepSpy } = makeRelayer({ maxInFlight: 1 });
+    const payload = await makeValidPayload();
+    sweepSpy.mockRejectedValueOnce(new TransactionCancelledError(['0x' + '01'.repeat(32)], '0x' + '02'.repeat(32)));
+    const mux = makeMux();
+
+    expect(await relayer.handleSweepRequest(PEER, payload, mux)).toBe('rejected');
+    expect(mux.sendSweepReceipt.mock.calls.map((c) => c[0].status)).toEqual(['submitted', 'rejected']);
+    // The sweep never ran: once gas falls, the buyer's retry goes through.
+    expect(await relayer.handleSweepRequest(PEER, payload, makeMux())).toBe('submitted');
+    expect(sweepSpy).toHaveBeenCalledTimes(2);
   });
 
   it('rate-limits per peer', async () => {

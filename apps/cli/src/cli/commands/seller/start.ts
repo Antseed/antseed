@@ -712,6 +712,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
 
       let paymentConfig: PaymentConfig | null = null
       let depositRelayAddress: string | undefined
+      let ethUsdPriceFeedAddress: string | undefined
       let sellerPoolsAddress: string | undefined
       if (preferredMethod === 'crypto') {
         const cc = resolveChainConfig({
@@ -729,6 +730,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           sellerPoolsAddress: config.payments.crypto?.sellerPoolsAddress,
         })
         depositRelayAddress = cc.depositRelayAddress
+        ethUsdPriceFeedAddress = cc.ethUsdPriceFeedAddress
         sellerPoolsAddress = cc.sellerPoolsAddress || undefined
         const defaultLockAmountUSDCBaseUnits = toUSDCBaseUnits(
           config.payments.crypto?.defaultLockAmountUSDC ?? defaultDepositAmountUSDC,
@@ -1036,6 +1038,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             chainId: resolveChainConfig({ chainId: paymentConfig.crypto.chainId }).evmChainId,
             ...(sellerPoolsAddress ? { sellerPoolsAddress } : {}),
             ...(depositRelayAddress ? { depositRelayAddress } : {}),
+            ...(ethUsdPriceFeedAddress ? { ethUsdPriceFeedAddress } : {}),
           } : {}),
         },
         ...(config.relayer ? { relayer: config.relayer } : {}),

@@ -4,6 +4,7 @@ import type { PeerId } from '../types/peer.js';
 import type { SweepRequestPayload, SweepReceiptPayload } from '../types/protocol.js';
 import type { SweepMux } from '../p2p/sweep-mux.js';
 import { DepositRelayClient } from './evm/deposit-relay-client.js';
+import { TransactionCancelledError } from './evm/base-evm-client.js';
 import { RECEIVE_WITH_AUTHORIZATION_TYPES, makeUsdcDomain } from './evm/signatures.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 
@@ -24,6 +25,10 @@ export interface DepositRelayerConfig {
   maxInFlight?: number;
   /** Max sweep requests accepted per peer per minute. Default: 6. */
   maxPerPeerPerMinute?: number;
+  /** Chainlink ETH/USD aggregator the profit estimate reads (chain-config `ethUsdPriceFeedAddress`). */
+  ethUsdPriceFeedAddress?: string;
+  /** ETH price in US dollars for the profit estimate, used instead of the feed. */
+  ethPriceUsd?: number;
 }
 
 export type SweepHandleResult = 'submitted' | 'rejected' | 'dropped';
@@ -61,6 +66,7 @@ export class DepositRelayer {
       ...(config.fallbackRpcUrls ? { fallbackRpcUrls: config.fallbackRpcUrls } : {}),
       contractAddress: config.relayAddress,
       evmChainId: config.evmChainId,
+      ...(config.ethUsdPriceFeedAddress ? { ethUsdPriceFeedAddress: config.ethUsdPriceFeedAddress } : {}),
     });
   }
 
@@ -133,6 +139,7 @@ export class DepositRelayer {
       try {
         estimate = await this._client.estimateSweepProfit(this._identity.wallet, params, {
           minProfitUsdc: this._config.minProfitBaseUnits ?? DEFAULT_MIN_PROFIT,
+          ...(this._config.ethPriceUsd !== undefined ? { ethPriceUsd: this._config.ethPriceUsd } : {}),
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -144,14 +151,14 @@ export class DepositRelayer {
 
       const minProfit = this._config.minProfitBaseUnits ?? DEFAULT_MIN_PROFIT;
       if (estimate.profitUsdc < minProfit) {
-        debugLog(`[Relayer] Unprofitable sweep for nonce ${payload.nonce.slice(0, 10)}...: fee=${estimate.fee} gasEst=${estimate.estGasCostUsdc} profit=${estimate.profitUsdc} min=${minProfit}`);
+        debugLog(`[Relayer] Unprofitable sweep for nonce ${payload.nonce.slice(0, 10)}...: fee=${estimate.fee} gasEst=${estimate.estGasCostUsdc} profit=${estimate.profitUsdc} min=${minProfit} gasPrice=${estimate.gasPriceWei} ethUsdE8=${estimate.ethPriceUsdE8}`);
         this._seenNonces.delete(nonceKey);
         this._sendReceipt(mux, payload, 'rejected', undefined, 'unprofitable for relayer');
         return 'rejected';
       }
 
       this._sendReceipt(mux, payload, 'submitted');
-      // Speed-ups of a stalled sweep stop where it would no longer pay for itself.
+      // The sweep and its speed-ups never offer more per gas than the fee pays for.
       const txHash = await this._client.sweep(this._identity.wallet, params, { maxFeePerGasWei: estimate.maxFeePerGasWei });
       debugLog(`[Relayer] Sweep confirmed for ${payload.from.slice(0, 10)}...: tx=${txHash} fee=${estimate.fee}`);
       this._sendReceipt(mux, payload, 'confirmed', txHash);
@@ -160,6 +167,8 @@ export class DepositRelayer {
       // Losing the submission race (nonce consumed by another relayer) is normal.
       const message = err instanceof Error ? err.message : String(err);
       debugLog(`[Relayer] Sweep submission failed for nonce ${payload.nonce.slice(0, 10)}...: ${message}`);
+      // A cancelled sweep never ran, so the buyer may send the same authorization again.
+      if (err instanceof TransactionCancelledError) this._seenNonces.delete(nonceKey);
       this._sendReceipt(mux, payload, 'rejected', undefined, 'submission failed');
       return 'rejected';
     } finally {

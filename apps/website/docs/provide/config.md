@@ -472,6 +472,7 @@ Relative paths resolve from the config file's directory. See [Provider plugin AP
 | `relayer.minProfitBaseUnits` | `"0"` | Minimum profit (relay fee minus estimated gas), in USDC base units |
 | `relayer.maxInFlight` | `2` | Concurrent sweep submissions |
 | `relayer.maxPerPeerPerMinute` | `6` | Sweep requests accepted per buyer per minute |
+| `relayer.ethPriceUsd` | Chainlink ETH/USD on Base | ETH price in US dollars used to estimate a sweep's gas cost. Without it the relayer reads the Chainlink feed, and uses $4,000 when the feed is missing or more than 2 hours old |
 
 How earnings reach you is covered in [Seller payments](/docs/provide/payments).
 
