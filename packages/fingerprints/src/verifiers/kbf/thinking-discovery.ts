@@ -111,11 +111,6 @@ export interface ThinkingDiscoveryAttemptV1 {
 export interface ThinkingDiscoveryResultV1 extends ThinkingStrategyRequest {
   strategy: ThinkingDiscoveryStrategy;
   attempts: ThinkingDiscoveryAttemptV1[];
-  /**
-   * Set when no strategy turned thinking off and the one recorded is the one that thought least
-   * (`THINKING_DISCOVERY_RULE`), not `bare`.
-   */
-  leastReasoning?: true;
 }
 
 /**
@@ -269,7 +264,8 @@ export async function discoverThinkingSuppression(input: {
       `thinking suppression for ${input.model}: nothing turns thinking off on ${input.label}; '${least.strategy}' thought least `
       + `(reasoning_tokens=${least.reasoningTokens}, ${against}), so it is used (${THINKING_DISCOVERY_RULE})`,
     );
-    return { strategy: least.strategy, ...thinkingStrategyRequest(least.strategy), attempts, leastReasoning: true };
+    // Nothing marks the pick in the result: a stored setting is read as it is, and its attempts show why it was chosen.
+    return { strategy: least.strategy, ...thinkingStrategyRequest(least.strategy), attempts };
   };
   for (const strategy of THINKING_DISCOVERY_STRATEGIES) {
     if (strategy === 'prefill' && !input.supportsPrefill) continue;

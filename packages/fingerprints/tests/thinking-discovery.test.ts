@@ -44,19 +44,21 @@ describe('thinking discovery helpers', () => {
       : { ok: true, content: ANSWERS, reasoningTokens: thinking[strategy] ?? 0 };
     const logs: string[] = [];
     const result = await discoverThinkingSuppression({ model: 'm', label: 'endpoint', supportsPrefill: true, probe: glm, log: (line) => logs.push(line) });
-    expect([result.strategy, result.leastReasoning, result.overrides]).toEqual(['reasoning-effort-minimal', true, { reasoning: { effort: 'minimal' } }]);
+    expect([result.strategy, result.overrides]).toEqual(['reasoning-effort-minimal', { reasoning: { effort: 'minimal' } }]);
+    // The result holds only what is stored: the strategy, its request and the attempts (which show why it was chosen).
+    expect(Object.keys(result).sort()).toEqual(['attempts', 'overrides', 'strategy']);
     expect(result.attempts.map((attempt) => attempt.strategy)).toEqual(['reasoning-effort-none', 'reasoning-effort-minimal', 'disable-thinking', 'enable-thinking-false', 'prefill', 'bare']);
     expect(logs.at(-1)).toMatch(/'reasoning-effort-minimal' thought least \(reasoning_tokens=70, against 295 with 'bare'\)/);
     // A strategy with no reasoning tokens still wins outright, as in the reference code.
     const off: ThinkingDiscoveryProbe = async ({ strategy }) => ({ ok: true, content: ANSWERS, reasoningTokens: strategy === 'disable-thinking' ? 0 : 50 });
     const offResult = await discoverThinkingSuppression({ model: 'm', label: 'endpoint', supportsPrefill: true, probe: off });
-    expect([offResult.strategy, offResult.leastReasoning]).toEqual(['disable-thinking', undefined]);
+    expect(offResult.strategy).toBe('disable-thinking');
   });
 
   it('kbf-discovery-least-reasoning-v1: bare stays when it thought least; on a tie the earlier strategy is used', async () => {
     const bareLeast: ThinkingDiscoveryProbe = async ({ strategy }) => ({ ok: true, content: ANSWERS, reasoningTokens: strategy === 'bare' ? 40 : 300 });
     const kept = await discoverThinkingSuppression({ model: 'm', label: 'endpoint', supportsPrefill: true, probe: bareLeast });
-    expect([kept.strategy, kept.leastReasoning]).toEqual(['bare', undefined]);
+    expect(kept.strategy).toBe('bare');
     const tie: ThinkingDiscoveryProbe = async ({ strategy }) => ({ ok: true, content: ANSWERS, reasoningTokens: strategy === 'bare' ? 500 : strategy === 'prefill' || strategy === 'disable-thinking' ? 60 : 300 });
     const tied = await discoverThinkingSuppression({ model: 'm', label: 'endpoint', supportsPrefill: true, probe: tie });
     expect(tied.strategy).toBe('disable-thinking');
@@ -70,7 +72,7 @@ describe('thinking discovery helpers', () => {
         ? { ok: true, content: ANSWERS, reasoningTokens: 120 }
         : { ok: true, content: '', reasoningTokens: 800 };
     const result = await discoverThinkingSuppression({ model: 'm', label: 'endpoint', supportsPrefill: true, probe });
-    expect([result.strategy, result.leastReasoning]).toEqual(['reasoning-effort-minimal', true]);
+    expect(result.strategy).toBe('reasoning-effort-minimal');
     expect(result.attempts.map((attempt) => attempt.strategy)).not.toContain('bare-expanded');
   });
 
