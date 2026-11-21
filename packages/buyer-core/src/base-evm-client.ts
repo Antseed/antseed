@@ -536,6 +536,8 @@ export abstract class BaseEvmClient {
     const ownerKey = `${key}:${populated.nonce}`;
     // An operation that lost its nonce prices no more replacements (checked again under the lock).
     if (nonceOwners.get(ownerKey) !== owner) return null;
+    // At the tip cap no replacement is possible, so skip the fee reads.
+    if (tipCap !== null && getBigInt(populated.maxPriorityFeePerGas) >= tipCap) return null;
     const fees = this._replacementFees(populated, await this._feeFields(), tipCap);
     if (fees === null || (maxFeePerGasWei !== null && fees.maxFeePerGas > maxFeePerGasWei)) return null;
     const replacement = { ...populated, ...fees };
