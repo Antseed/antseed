@@ -539,7 +539,7 @@ export abstract class BaseEvmClient {
     // At the tip cap no replacement is possible, so skip the fee reads.
     if (tipCap !== null && getBigInt(populated.maxPriorityFeePerGas) >= tipCap) return null;
     const fees = this._replacementFees(populated, await this._feeFields(), tipCap);
-    if (fees === null || (maxFeePerGasWei !== null && fees.maxFeePerGas > maxFeePerGasWei)) return null;
+    if (maxFeePerGasWei !== null && fees.maxFeePerGas > maxFeePerGasWei) return null;
     const replacement = { ...populated, ...fees };
     return this._withNonceLock(key, async () => {
       if (nonceOwners.get(ownerKey) !== owner) return null;
@@ -551,17 +551,16 @@ export abstract class BaseEvmClient {
 
   /**
    * Fees that replace `populated` on its nonce: the tip doubled (or the current one, if higher) and a
-   * max fee 25% higher (or what a new tx would pay now). The tip stops at `tipCap` (null once there);
-   * a cancel and its bumps have none, or a write priced near that tip could never be cancelled.
+   * max fee 25% higher (or what a new tx would pay now). The tip stops at `tipCap`; a cancel and its
+   * bumps have none, or a write priced near that tip could never be cancelled.
    */
   private _replacementFees(
     populated: TransactionRequest,
     current: Pick<TransactionRequest, 'maxFeePerGas' | 'maxPriorityFeePerGas'>,
     tipCap: bigint | null = MAX_SPEED_UP_TIP_WEI,
-  ): { maxPriorityFeePerGas: bigint; maxFeePerGas: bigint } | null {
+  ): { maxPriorityFeePerGas: bigint; maxFeePerGas: bigint } {
     const prevTip = getBigInt(populated.maxPriorityFeePerGas ?? 0);
     const prevMax = getBigInt(populated.maxFeePerGas ?? 0);
-    if (tipCap !== null && prevTip >= tipCap) return null;
     const bumpedTip = prevTip * 2n > prevTip + 1n ? prevTip * 2n : prevTip + 1n;
     const currentTip = current.maxPriorityFeePerGas != null ? getBigInt(current.maxPriorityFeePerGas) : 0n;
     const tip = tipCap !== null ? min(tipCap, max(bumpedTip, currentTip)) : max(bumpedTip, currentTip);
@@ -587,7 +586,7 @@ export abstract class BaseEvmClient {
     if (nonceOwners.get(ownerKey) !== owner) return null;
     const current = await this._feeFields();
     if (current.maxFeePerGas == null) return null;
-    const fees = this._replacementFees(populated, current, null)!;
+    const fees = this._replacementFees(populated, current, null);
     const transfer = { to: signerAddress, value: 0n, data: '0x' };
     // Estimated, not 21,000: a delegated (EIP-7702) account runs code on a call to itself.
     const estimated = await connected.estimateGas({ ...transfer, from: signerAddress });
