@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- `@antseed/ant-agent`: an agent tool loop on an Anthropic upstream with extended thinking no longer fails the second round with HTTP 400. Empty, unsigned `thinking` blocks are dropped from the assistant turn before it is sent back.
+
 ## 2026-11-20 — CLI 0.1.256, Node 0.2.189, Desktop 0.2.91
 
 ### Packages

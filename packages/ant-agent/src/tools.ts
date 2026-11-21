@@ -266,7 +266,7 @@ export function appendToolLoop(
     }
   } else {
     const content = assistantResponse.content as unknown[] | undefined;
-    if (content) messages.push({ role: 'assistant', content });
+    if (content) messages.push({ role: 'assistant', content: dropEmptyThinkingBlocks(content) });
     const toolResultBlocks = results.map(r => ({
       type: 'tool_result',
       tool_use_id: r.id,
@@ -277,6 +277,20 @@ export function appendToolLoop(
   }
 
   return { ...body, messages };
+}
+
+/**
+ * Drop `thinking` blocks that have no text and no signature. The streamed
+ * response is rebuilt without thinking or signature deltas, so such a block is
+ * empty and unsigned, and Anthropic rejects it when it is sent back.
+ * Blocks with text or a signature are kept untouched.
+ */
+function dropEmptyThinkingBlocks(content: unknown[]): unknown[] {
+  return content.filter(block => {
+    const b = block as { type?: unknown; thinking?: unknown; signature?: unknown } | null;
+    if (!b || b.type !== 'thinking') return true;
+    return Boolean(b.thinking) || Boolean(b.signature);
+  });
 }
 
 // ─── Response stripping ─────────────────────────────────────────
