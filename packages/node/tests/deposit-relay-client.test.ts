@@ -128,6 +128,20 @@ function makeEstimatingClient(opts: {
   return { client, call };
 }
 
+describe('DepositRelayClient.sweep', () => {
+  it('cancels a capped sweep no later than its authorization expires', async () => {
+    const client = new DepositRelayClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: RELAY, evmChainId: 8453 });
+    const exec = vi.spyOn(client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> }, '_execWriteWithin')
+      .mockResolvedValue('0x' + '77'.repeat(32));
+
+    await client.sweep(RELAYER_WALLET, { ...SWEEP_PARAMS, validBefore: 1_800_000_040n }, { maxFeePerGasWei: 183_000_000n });
+    await client.sweep(RELAYER_WALLET, SWEEP_PARAMS);
+
+    expect(exec.mock.calls[0]![1]).toEqual({ maxFeePerGasWei: 183_000_000n, cancelByMs: 1_800_000_030_000 });
+    expect(exec.mock.calls[1]![1]).toBeNull();
+  });
+});
+
 describe('DepositRelayClient.estimateSweepProfit', () => {
   it('prices a sweep at the expected gas cost and the Chainlink ETH price (base fee 25.6 Mwei, ETH $1,652.67)', async () => {
     const { client } = makeEstimatingClient({ feed: { answer: ETH_USD_E8, updatedAt: NOW - 600 } });

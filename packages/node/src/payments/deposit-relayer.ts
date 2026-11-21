@@ -4,6 +4,7 @@ import type { PeerId } from '../types/peer.js';
 import type { SweepRequestPayload, SweepReceiptPayload } from '../types/protocol.js';
 import type { SweepMux } from '../p2p/sweep-mux.js';
 import { DepositRelayClient } from './evm/deposit-relay-client.js';
+import { TransactionCancelledError } from './evm/base-evm-client.js';
 import { RECEIVE_WITH_AUTHORIZATION_TYPES, makeUsdcDomain } from './evm/signatures.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 
@@ -166,6 +167,8 @@ export class DepositRelayer {
       // Losing the submission race (nonce consumed by another relayer) is normal.
       const message = err instanceof Error ? err.message : String(err);
       debugLog(`[Relayer] Sweep submission failed for nonce ${payload.nonce.slice(0, 10)}...: ${message}`);
+      // A cancelled sweep never ran, so the buyer may send the same authorization again.
+      if (err instanceof TransactionCancelledError) this._seenNonces.delete(nonceKey);
       this._sendReceipt(mux, payload, 'rejected', undefined, 'submission failed');
       return 'rejected';
     } finally {

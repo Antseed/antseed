@@ -8,7 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
-- Sellers (CLI, `@antseed/node`, `@antseed/buyer-core`): the deposit-sweep relayer no longer refuses buyers' gasless deposits as unprofitable whenever Base is moderately busy. It now estimates a sweep's gas at the latest base fee plus 25% and the tip it would send, at the Chainlink ETH/USD price, instead of the 2x-base-fee ceiling at a fixed $10,000 per ETH. The new `relayer.ethPriceUsd` setting overrides the price; without the feed or with a stale reading, the relayer uses a cautious $4,000. A sweep's first transaction never offers more per gas than the relay fee covers, so it cannot mine at a loss if the base fee climbs while it waits.
+- Sellers (CLI, `@antseed/node`, `@antseed/buyer-core`): the deposit-sweep relayer no longer refuses buyers' gasless deposits as unprofitable whenever Base is moderately busy. It now estimates a sweep's gas at the latest base fee plus 25% and the tip it would send, at the Chainlink ETH/USD price, instead of the 2x-base-fee ceiling at a fixed $10,000 per ETH. The new `relayer.ethPriceUsd` setting overrides the price; without the feed or with a stale reading, the relayer uses a cautious $4,000. A sweep's first transaction never offers more per gas than the relay fee covers, so it cannot mine at a loss if the base fee climbs while it waits. If the base fee stays above that limit, the sweep is cancelled after two minutes, or shortly before the buyer's authorization expires if that is sooner, by a 0-value transaction to the relayer's own wallet on the same nonce, so a stuck sweep no longer holds up the seller's other transactions or the relayer's capacity.
 
 ## 2026-11-20 — CLI 0.1.256, Node 0.2.189, Desktop 0.2.91
 

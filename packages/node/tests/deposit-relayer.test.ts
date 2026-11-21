@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Wallet } from 'ethers';
 import { DepositRelayer } from '../src/payments/deposit-relayer.js';
+import { TransactionCancelledError } from '../src/payments/evm/base-evm-client.js';
 import { identityFromPrivateKeyHex } from '../src/p2p/identity.js';
 import { makeUsdcDomain, buildReceiveAuthorization } from '../src/payments/evm/signatures.js';
 import type { SweepRequestPayload } from '../src/types/protocol.js';
@@ -240,6 +241,19 @@ describe('DepositRelayer', () => {
     expect(await relayer.handleSweepRequest(PEER, await makeValidPayload(), mux)).toBe('rejected');
     const statuses = mux.sendSweepReceipt.mock.calls.map((c) => c[0].status);
     expect(statuses).toEqual(['submitted', 'rejected']);
+  });
+
+  it('frees the slot and takes the same authorization again after a cancelled sweep', async () => {
+    const { relayer, sweepSpy } = makeRelayer({ maxInFlight: 1 });
+    const payload = await makeValidPayload();
+    sweepSpy.mockRejectedValueOnce(new TransactionCancelledError(['0x' + '01'.repeat(32)], '0x' + '02'.repeat(32)));
+    const mux = makeMux();
+
+    expect(await relayer.handleSweepRequest(PEER, payload, mux)).toBe('rejected');
+    expect(mux.sendSweepReceipt.mock.calls.map((c) => c[0].status)).toEqual(['submitted', 'rejected']);
+    // The sweep never ran: once gas falls, the buyer's retry goes through.
+    expect(await relayer.handleSweepRequest(PEER, payload, makeMux())).toBe('submitted');
+    expect(sweepSpy).toHaveBeenCalledTimes(2);
   });
 
   it('rate-limits per peer', async () => {

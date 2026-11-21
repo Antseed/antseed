@@ -61,6 +61,8 @@ const BASE_FEE_MARGIN_NUM = 5n;
 const BASE_FEE_MARGIN_DEN = 4n;
 /** wei x USD/ETH (8 decimals) → USDC base units (6 decimals): / 1e18 / 1e8 * 1e6. */
 const WEI_USD_E8_TO_USDC = 10n ** 20n;
+/** A capped sweep is cancelled this long before its authorization expires, so it never mines as a revert. */
+const CANCEL_BEFORE_EXPIRY_SECS = 10;
 
 /** Chainlink aggregator; ETH/USD answers with 8 decimals. */
 const CHAINLINK_AGGREGATOR_ABI = [
@@ -87,11 +89,18 @@ export class DepositRelayClient extends BaseEvmClient {
 
   // ─── Relayer Operations ────────────────────────────────────────────
 
-  /** `opts.maxFeePerGasWei` caps the max fee per gas the sweep and its speed-ups may offer (see `estimateSweepProfit`). */
+  /**
+   * `opts.maxFeePerGasWei` caps the max fee per gas the sweep and its speed-ups may offer (see
+   * `estimateSweepProfit`). A capped sweep not mined in time, or by shortly before `validBefore`
+   * (after which it could only revert), is cancelled and throws TransactionCancelledError (see
+   * `WriteFeeLimit`).
+   */
   async sweep(signer: AbstractSigner, params: SweepParams, opts?: { maxFeePerGasWei?: bigint }): Promise<string> {
     return this._execWriteWithin(
       signer,
-      opts?.maxFeePerGasWei ?? null,
+      opts?.maxFeePerGasWei !== undefined
+        ? { maxFeePerGasWei: opts.maxFeePerGasWei, cancelByMs: (Number(params.validBefore) - CANCEL_BEFORE_EXPIRY_SECS) * 1_000 }
+        : null,
       DEPOSIT_RELAY_ABI,
       'sweepDeposit',
       params.from,

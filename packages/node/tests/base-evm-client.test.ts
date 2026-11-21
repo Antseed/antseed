@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Interface, JsonRpcProvider, makeError, NonceManager, type AbstractSigner, type InterfaceAbi, type TransactionReceipt, type TransactionRequest, type TransactionResponse } from 'ethers';
-import { BaseEvmClient, ReceiptWaitTimeoutError, type BaseEvmClientOptions } from '../src/payments/evm/base-evm-client.js';
+import { BaseEvmClient, ReceiptWaitTimeoutError, TransactionCancelledError, type BaseEvmClientOptions } from '../src/payments/evm/base-evm-client.js';
 
 class TestEvmClient extends BaseEvmClient {
   constructor(options?: BaseEvmClientOptions) {
@@ -220,9 +220,10 @@ describe('BaseEvmClient speed-ups within a fee limit', () => {
       const sent: TransactionRequest[] = [];
       // First send: max fee 0.011 gwei. One speed-up fits under 0.016 gwei; the next would not.
       void (client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> })
-        ._execWriteWithin(signerSendingTo(sent, '0x' + '15'.repeat(20)), 16_000_000n, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n)
+        ._execWriteWithin(signerSendingTo(sent, '0x' + '15'.repeat(20)), { maxFeePerGasWei: 16_000_000n }, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n)
         .catch(() => undefined);
-      await vi.advanceTimersByTimeAsync(130_000);
+      // Up to just before the write would be cancelled (120 s).
+      await vi.advanceTimersByTimeAsync(110_000);
       expect(sent).toHaveLength(2);
       expect(BigInt(sent[1]!.maxFeePerGas!)).toBeLessThanOrEqual(16_000_000n);
     } finally {
@@ -242,7 +243,7 @@ describe('BaseEvmClient writes within a fee limit', () => {
     const sent: TransactionRequest[] = [];
     // Uncapped, the first send would offer 2 x base fee + tip = 0.011 gwei.
     await (client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> })
-      ._execWriteWithin(signerSendingTo(sent, '0x' + '16'.repeat(20)), 8_000_000n, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n);
+      ._execWriteWithin(signerSendingTo(sent, '0x' + '16'.repeat(20)), { maxFeePerGasWei: 8_000_000n }, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n);
     expect(sent).toHaveLength(1);
     expect(BigInt(sent[0]!.maxFeePerGas!)).toBe(8_000_000n);
     expect(BigInt(sent[0]!.maxPriorityFeePerGas!)).toBe(1_000_000n);
@@ -256,7 +257,7 @@ describe('BaseEvmClient writes within a fee limit', () => {
     const sent: TransactionRequest[] = [];
     // Left unpriced, the signer would fill in its own fees, above the cap.
     await expect((client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> })
-      ._execWriteWithin(signerSendingTo(sent, '0x' + '17'.repeat(20)), 8_000_000n, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n))
+      ._execWriteWithin(signerSendingTo(sent, '0x' + '17'.repeat(20)), { maxFeePerGasWei: 8_000_000n }, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n))
       .rejects.toThrow('fee-capped');
     expect(sent).toHaveLength(0);
   });
@@ -397,6 +398,219 @@ describe('BaseEvmClient._waitForReceipt', () => {
       vi.mocked(client.provider.getTransactionReceipt).mockResolvedValue(receipt(1));
       await vi.advanceTimersByTimeAsync(2_000);
       await expect(waiting).resolves.toMatchObject({ status: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/** A signer that gives each send its own hash, recorded in `byHash`. */
+function signerWithHashes(sent: TransactionRequest[], byHash: Map<string, TransactionRequest>, address: string): AbstractSigner {
+  const signer = {
+    provider: undefined,
+    getAddress: async () => address,
+    connect() { return signer; },
+    estimateGas: async () => 21_000n,
+    sendTransaction: async (request: TransactionRequest): Promise<TransactionResponse> => {
+      // A copy, as a signer serializes it: the client reuses the request object for replacements.
+      const tx = { ...request };
+      sent.push(tx);
+      const hash = '0x' + sent.length.toString(16).padStart(64, '0');
+      byHash.set(hash, tx);
+      return { hash, nonce: tx.nonce, from: address } as unknown as TransactionResponse;
+    },
+  };
+  return signer as unknown as AbstractSigner;
+}
+
+describe('BaseEvmClient cancels a fee-capped write that cannot mine', () => {
+  const execWithin = (client: TestEvmClient, signer: AbstractSigner, limit: unknown) =>
+    (client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> })
+      ._execWriteWithin(signer, limit, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n)
+      .then((hash) => hash, (err: unknown) => err);
+
+  /** Base fee 5 Mwei and a 1 Mwei tip, so a capped first send is clamped to the cap; nothing mines yet. */
+  function stuckClient(nonce: number) {
+    const client = new TestEvmClient();
+    const provider = client.provider as JsonRpcProvider;
+    const getBlock = vi.spyOn(provider, 'getBlock').mockResolvedValue({ baseFeePerGas: 5_000_000n } as never);
+    vi.spyOn(provider, '_perform').mockResolvedValue('0xf4240');
+    vi.spyOn(provider, 'send').mockRejectedValue(new Error('no fee history'));
+    vi.spyOn(provider, 'getTransactionCount').mockResolvedValue(nonce);
+    const mined = new Set<string>();
+    vi.mocked(provider.getTransactionReceipt).mockImplementation(async (hash) => (
+      mined.has(hash) ? { hash, status: 1 } as unknown as TransactionReceipt : null
+    ));
+    // The base fee climbs above the cap once the write is out.
+    const raiseBaseFee = () => getBlock.mockResolvedValue({ baseFeePerGas: 20_000_000n } as never);
+    return { client, mined, raiseBaseFee };
+  }
+
+  it('replaces it on its nonce with a 0-value transfer to the signer after 120 s', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, mined, raiseBaseFee } = stuckClient(50);
+      const address = '0x' + '18'.repeat(20);
+      const sent: TransactionRequest[] = [];
+      const byHash = new Map<string, TransactionRequest>();
+      const result = execWithin(client, signerWithHashes(sent, byHash, address), { maxFeePerGasWei: 8_000_000n });
+      await vi.advanceTimersByTimeAsync(1_000);
+      raiseBaseFee();
+      // Speed-ups would cost more than the cap, so the write waits as it is.
+      await vi.advanceTimersByTimeAsync(110_000);
+      expect(sent).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(sent).toHaveLength(2);
+      const cancelTx = sent[1]!;
+      expect(cancelTx).toMatchObject({ to: address, value: 0n, data: '0x', nonce: 50 });
+      expect(BigInt(cancelTx.maxFeePerGas!)).toBeGreaterThanOrEqual(41_000_000n); // 2 x 20 Mwei + tip, above the cap
+
+      mined.add([...byHash.keys()][1]!);
+      await vi.advanceTimersByTimeAsync(3_000);
+      const err = await result;
+      expect(err).toBeInstanceOf(TransactionCancelledError);
+      expect((err as TransactionCancelledError).hashes).toEqual([[...byHash.keys()][0]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('unblocks a later write on the same wallet', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, mined, raiseBaseFee } = stuckClient(52);
+      const address = '0x' + '19'.repeat(20);
+      const sent: TransactionRequest[] = [];
+      const byHash = new Map<string, TransactionRequest>();
+      const signer = signerWithHashes(sent, byHash, address);
+      const capped = execWithin(client, signer, { maxFeePerGasWei: 8_000_000n });
+      await vi.advanceTimersByTimeAsync(1_000);
+      raiseBaseFee();
+      // A settle on the next nonce, which cannot mine while nonce 52 is pending.
+      const later = client.exec(signer, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0b'.repeat(20), 2n);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sent.map((tx) => tx.nonce)).toEqual([52, 53]);
+      vi.mocked(client.provider.getTransactionReceipt).mockImplementation(async (hash) => {
+        const nonce52Cleared = sent.some((tx) => tx.nonce === 52 && tx.to === address);
+        const tx = byHash.get(hash);
+        const isMined = mined.has(hash) || (nonce52Cleared && (tx?.to === address || tx?.nonce === 53));
+        return isMined ? { hash, status: 1 } as unknown as TransactionReceipt : null;
+      });
+
+      await vi.advanceTimersByTimeAsync(125_000);
+      await expect(later).resolves.toMatch(/^0x/);
+      expect(await capped).toBeInstanceOf(TransactionCancelledError);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still counts the write when it mines after the cancel was sent', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, mined, raiseBaseFee } = stuckClient(54);
+      const address = '0x' + '1a'.repeat(20);
+      const sent: TransactionRequest[] = [];
+      const byHash = new Map<string, TransactionRequest>();
+      const result = execWithin(client, signerWithHashes(sent, byHash, address), { maxFeePerGasWei: 8_000_000n });
+      await vi.advanceTimersByTimeAsync(1_000);
+      raiseBaseFee();
+      await vi.advanceTimersByTimeAsync(122_000);
+      expect(sent).toHaveLength(2);
+
+      const writeHash = [...byHash.keys()][0]!;
+      mined.add(writeHash);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await result).toBe(writeHash);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never cancels a nonce that now belongs to a newer write', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, raiseBaseFee } = stuckClient(56);
+      const address = '0x' + '1b'.repeat(20);
+      const sent: TransactionRequest[] = [];
+      const signer = signerWithHashes(sent, new Map(), address);
+      void execWithin(client, signer, { maxFeePerGasWei: 8_000_000n });
+      await vi.advanceTimersByTimeAsync(1_000);
+      raiseBaseFee();
+      // The nonce cursor goes stale after 60 s, and the chain still reports 56 pending: B takes nonce 56.
+      await vi.advanceTimersByTimeAsync(61_000);
+      void client.exec(signer, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0c'.repeat(20), 3n).catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(70_000);
+      expect(sent.filter((tx) => tx.nonce === 56).length).toBeGreaterThan(1);
+      expect(sent.some((tx) => tx.to === address)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('speeds the cancel up past the cap, and a mined bump still counts as cancelled', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, mined, raiseBaseFee } = stuckClient(60);
+      const address = '0x' + '1d'.repeat(20);
+      const sent: TransactionRequest[] = [];
+      const byHash = new Map<string, TransactionRequest>();
+      const result = execWithin(client, signerWithHashes(sent, byHash, address), { maxFeePerGasWei: 8_000_000n });
+      await vi.advanceTimersByTimeAsync(1_000);
+      raiseBaseFee();
+      await vi.advanceTimersByTimeAsync(122_000);
+      expect(sent).toHaveLength(2);
+      // The cancel does not mine at first: 30 s later it is bumped, with no cap.
+      await vi.advanceTimersByTimeAsync(32_000);
+      expect(sent).toHaveLength(3);
+      expect(sent[2]).toMatchObject({ to: address, nonce: 60 });
+      expect(BigInt(sent[2]!.maxFeePerGas!)).toBeGreaterThan(BigInt(sent[1]!.maxFeePerGas!));
+
+      mined.add([...byHash.keys()][2]!);
+      await vi.advanceTimersByTimeAsync(3_000);
+      const err = await result;
+      expect(err).toBeInstanceOf(TransactionCancelledError);
+      expect((err as TransactionCancelledError).hashes).toEqual([[...byHash.keys()][0]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('prices the cancel above the speed-up tip cap when the write was near it', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, raiseBaseFee } = stuckClient(62);
+      // A 0.48 gwei tip, within 10% of the 0.5 gwei speed-up tip cap.
+      vi.spyOn(client.provider as JsonRpcProvider, '_perform').mockResolvedValue('0x' + (480_000_000).toString(16));
+      const address = '0x' + '1e'.repeat(20);
+      const sent: TransactionRequest[] = [];
+      void execWithin(client, signerWithHashes(sent, new Map(), address), { maxFeePerGasWei: 490_000_000n });
+      await vi.advanceTimersByTimeAsync(1_000);
+      raiseBaseFee();
+      await vi.advanceTimersByTimeAsync(122_000);
+      expect(sent).toHaveLength(2);
+      // A replacement must raise the tip by at least 10% to be accepted.
+      expect(BigInt(sent[1]!.maxPriorityFeePerGas!)).toBeGreaterThanOrEqual(528_000_000n);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels at cancelByMs when that comes before 120 s', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, raiseBaseFee } = stuckClient(58);
+      const address = '0x' + '1c'.repeat(20);
+      const sent: TransactionRequest[] = [];
+      void execWithin(client, signerWithHashes(sent, new Map(), address), { maxFeePerGasWei: 8_000_000n, cancelByMs: Date.now() + 40_000 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      raiseBaseFee();
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(sent).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(sent).toHaveLength(2);
+      expect(sent[1]).toMatchObject({ to: address, nonce: 58 });
     } finally {
       vi.useRealTimers();
     }
