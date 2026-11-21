@@ -4,7 +4,7 @@
   "description": "Antseed Network CLI and Web Dashboard",
   "type": "module",
   "antseedVerifier": {
-    "compat": 16
+    "compat": 17
   },
   "files": [
     "dist"

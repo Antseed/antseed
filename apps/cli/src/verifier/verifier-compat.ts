@@ -503,7 +503,7 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       confirmationRecheckSpacingSeconds: CONFIRMATION_RECHECK_SPACING_SECONDS,
       // Which started confirmations hold their model's submit, with a day left and just before the end-of-epoch cut-off.
       confirmationHoldsSubmit: [86_400, MIN_SECONDS_FOR_ANOTHER_ROUND - 1].map((secondsLeft) => SAMPLE_WAITING_CONFIRMATIONS.map((cell) => (
-        confirmationsHoldingSubmit({ cells: new Map([['cell', cell]]) }, secondsLeft).size > 0
+        confirmationsHoldingSubmit({ state: { cells: new Map([['cell', cell]]), manifests: [] }, secondsLeftInEpoch: secondsLeft, stillMine: null }).size > 0
       ))),
       // Which epochs after a DIFF recorded in epoch 10 hold the seller (and that a SAME holds nobody).
       diffHoldEpochs: DIFF_HOLD_EPOCHS,
@@ -588,9 +588,11 @@ const SAMPLE_REFERENCE_ASKS: ReadonlyArray<TokenizerReferenceAskV1[]> = [
 
 /** Confirmation cells by attempt and plan action, each started (an attempt finished): which wait to be audited again. */
 const SAMPLE_WAITING_CONFIRMATIONS: readonly EpochCell[] = ([
-  [1, 'retry'], [2, 'retry'], [CONFIRMATION_ATTEMPTS, 'retry'], [1, 'done'], [1, 'extend'],
-] as const).map(([attempts, action]) => ({
-  model: 'm', peerId: 'aa', runId: 'r', state: action === 'extend' ? 'pending_extension' : 'undetermined', attempts, auditorAttempts: 0,
+  [1, 'retry', 0], [2, 'retry', 0], [CONFIRMATION_ATTEMPTS, 'retry', 0], [1, 'done', 0], [1, 'extend', 0],
+  // The auditor's own failures hold only up to its attempts.
+  [0, 'retry', AUDITOR_FAILURE_ATTEMPTS - 1], [0, 'retry', AUDITOR_FAILURE_ATTEMPTS],
+] as const).map(([attempts, action, auditorAttempts]) => ({
+  model: 'm', peerId: 'aa', runId: 'r', state: action === 'extend' ? 'pending_extension' : 'undetermined', attempts, auditorAttempts,
   permanent: false, lastAttemptAt: 1, blame: 'seller', reason: null, skipCode: null, action,
   result: action === 'extend' ? null : { confirmsDiff: true } as ModelVerificationTargetResult,
   ...(action === 'extend' ? { pending: { confirmsDiff: true } as ModelVerificationTargetResult } : {}),

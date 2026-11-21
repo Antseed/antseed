@@ -173,6 +173,6 @@ function normalizePeer(peerId: string): string {
 }
 
 /** A confirmation not started because its FLIPS reference was not whole this run: the auditor's attempt, nothing asked. */
-function notStartedForReference(cell: Pick<EpochCell, 'state' | 'blame' | 'reason'>): boolean {
+export function notStartedForReference(cell: Pick<EpochCell, 'state' | 'blame' | 'reason'>): boolean {
   return cell.state === 'failed' && cell.blame === 'auditor' && (cell.reason ?? '').includes(FLIPS_WAITING_FOR_REFERENCE)
 }

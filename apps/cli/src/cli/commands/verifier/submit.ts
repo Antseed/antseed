@@ -7,7 +7,7 @@ import chalk from 'chalk'
 import pkg from '../../../../package.json' with { type: 'json' }
 import { readAuditWindow } from '../../../verifier/audit-window.js'
 import { closeFinishedWindowsRecovering } from '../../../verifier/first-look-recovery.js'
-import { confirmationHoldReason, confirmationsHoldingSubmit } from '../../../verifier/confirmation-hold.js'
+import { confirmationHoldReason, confirmationTurnKey, confirmationsHoldingSubmit } from '../../../verifier/confirmation-hold.js'
 import { chainNow } from '../../../verifier/chain-clock.js'
 import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import Table from 'cli-table3'
@@ -49,7 +49,8 @@ import { writeEpochOverview } from '../../../verifier/epoch-overview.js'
 import { heldForConfirmationRecheck, loadEpochState, writeEpochSubmissionManifest } from '../../../verifier/epoch-plan.js'
 import { getGlobalOptions } from '../types.js'
 import {
-  epochReports, loadBlockTimestamps, loadDisputedSellers, loadEpochAuditEvents, loadEpochReports, ownResultTallies, pendingConfirmations, waitingReportBlocks,
+  dropSettledConfirmations, epochReports, loadBlockTimestamps, loadDisputedSellers, loadEpochAuditEvents, loadEpochReports, ownResultTallies, pendingConfirmations, waitingReportBlocks,
+  type PendingConfirmation,
 } from '../../../verifier/pending-confirmations.js'
 import { alreadyOnChainFilter, revocationPositions } from '../../../verifier/submission-delta.js'
 import { opinionKey, thirdOpinionFilter } from '../../../verifier/third-opinion.js'
@@ -228,8 +229,6 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           evidenceDir, epoch: manifest.epoch, state: epochState, secondsLeftInEpoch,
         })) console.log(chalk.green(`${closed.model}: audit window closed (${closed.closeReason})`))
       }
-      // A model whose started confirmations wait to be audited again is held for them, until the end-of-epoch cut-off.
-      const confirmationHolds = confirmationsHoldingSubmit(epochState, secondsLeftInEpoch)
       if (!options.dryRun && !approved) {
         throw new Error(
           `auditor wallet ${address} is not approved by the KBF audits contract ${getAddress(verifierClient.contractAddress)}`,
@@ -259,12 +258,11 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       // The waiting DIFFs whose confirmer this auditor is right now, by the rotation (as `verifier run` plans
       // them). Only these are answered, whether or not the run flagged the result as a confirmation: an
       // owner whose stand-in reported first answers too, and a flagged result whose 12 hours are over does not.
-      const readMyConfirmations = async (events: readonly ServiceAuditedEvent[]): Promise<Set<string>> => {
-        const mine = new Set<string>()
+      const myPendingConfirmations = async (events: readonly ServiceAuditedEvent[]): Promise<PendingConfirmation[]> => {
         const setEvents = await auditorSetEvents()
         const reports = epochReports(events)
         const blockTimestamps = await loadBlockTimestamps({ getBlock: (block) => verifierClient.provider.getBlock(block) }, waitingReportBlocks(reports))
-        for (const entry of pendingConfirmations({
+        return pendingConfirmations({
           reports,
           epoch: window.epoch,
           blockTimestamps,
@@ -273,9 +271,11 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           auditor: address,
           auditors: approvedAuditorsAt(setEvents, window.startedAt),
           auditedModels: configuredVerifierModels(config.verifier),
-        })) if (entry.mine) mine.add(opinionKey(entry.agentId, entry.serviceHash, entry.modelHash))
-        return mine
+        }).filter((entry) => entry.mine)
       }
+      const readMyConfirmations = async (events: readonly ServiceAuditedEvent[]): Promise<Set<string>> => (
+        new Set((await myPendingConfirmations(events)).map((entry) => opinionKey(entry.agentId, entry.serviceHash, entry.modelHash)))
+      )
       const epochEvents = await readEpochEvents()
       // Auditors revoked this epoch: their reports no longer count, so they are no opinion (`otherOpinions`).
       // Unreadable, every report counts, which holds back more, never less.
@@ -288,6 +288,22 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       } catch (error) {
         console.warn(chalk.yellow(`Could not work out this auditor's confirmations: ${asError(error).message}; no confirmation is sent this time, the next submit tries again`))
       }
+      // A model whose started confirmations wait to be audited again is held for them (`confirmationsHoldingSubmit`):
+      // only for reports whose confirmer this auditor still is and that are not settled, as \`verifier run\` keeps them,
+      // and never past the end-of-epoch cut-off. Unreadable, every waiting confirmation holds, so no question set it may
+      // still need is published.
+      let liveTurns: Set<string> | null = null
+      try {
+        const live = await dropSettledConfirmations(await myPendingConfirmations(epochEvents), verifierClient, BigInt(window.epoch))
+        liveTurns = new Set(live.map((entry) => opinionKey(entry.agentId, entry.serviceHash, entry.modelHash)))
+      } catch (error) {
+        console.warn(chalk.yellow(`Could not read which confirmations are still this auditor's: ${asError(error).message}; every confirmation waiting to be audited again holds its model this time`))
+      }
+      const confirmationHolds = confirmationsHoldingSubmit({
+        state: epochState,
+        secondsLeftInEpoch,
+        stillMine: liveTurns ? (cell) => liveTurns.has(confirmationTurnKey(cell) ?? '') : null,
+      })
       /**
        * The third-opinion check again, on the events up to now, right before `audit` is sent. Between
        * the first read and the send come the evidence, IPFS and the duplicate checks, and another

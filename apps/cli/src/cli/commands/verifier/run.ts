@@ -124,6 +124,7 @@ import {
   reportCellKey,
   reportKey as liveReportKey,
   heldForConfirmationRecheck,
+  retryGiveUpCells,
   epochModelRows,
   loadEpochState,
   type EpochCell,
@@ -2751,7 +2752,8 @@ export async function updateRetryGiveUps(input: {
   // First looks still to be recovered are given up like retries when their seller is gone (`recoveringFirstLooks`).
   const recovering = new Set((await recoveringFirstLooks(state)).keys())
   const { entries, added, restored } = decideRetryGiveUps({
-    cells: state.cells.values(),
+    // A confirmation of a seller whose own first look is finished is given up on its report's cell (`retryGiveUpCells`).
+    cells: retryGiveUpCells(state),
     recovering: (cell) => recovering.has(epochCellKey(cell.model, cell.peerId)),
     nowSeconds: nowMs / 1_000,
     windowClosed: (cell) => closedModels.has(normalized(cell.model)),

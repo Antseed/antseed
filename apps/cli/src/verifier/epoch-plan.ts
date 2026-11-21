@@ -74,6 +74,9 @@ export interface EpochCell {
   skipCode: string | null
   /** The result submitted for this cell, when there is one. */
   result: ModelVerificationTargetResult | null
+  /** The seller agent and service of the cell's latest entry (result, failure or skip), when it names them. */
+  agentId?: string
+  service?: string
   action: EpochCellAction
   /** Set when the cell's retry or extra questions were given up (`RetryGiveUpV1`); its action is then `done`. */
   givenUp?: RetryGiveUpV1
@@ -362,6 +365,18 @@ export function decideRetryGiveUps(input: {
   return { entries, added, restored }
 }
 
+/**
+ * The cells a run considers giving up (`decideRetryGiveUps`): each seller's latest cell, and a report's cell still to be
+ * audited again when the seller's latest cell reads done. The latest cell merges every entry of the seller, so with a
+ * first look of it finished it is done, and a confirmation of a seller that no longer offers the model would never be
+ * given up: it would wait, and hold its model's submit (`confirmationsHoldingSubmit`), to the end of the epoch.
+ */
+export function retryGiveUpCells(state: Pick<EpochState, 'cells' | 'reportCells'>): EpochCell[] {
+  const reports = [...state.reportCells?.values() ?? []].filter((cell) => (cell.action === 'retry' || cell.action === 'extend' || cell.givenUp)
+    && state.cells.get(epochCellKey(cell.model, cell.peerId))?.action === 'done')
+  return [...state.cells.values(), ...reports]
+}
+
 /** Whether a cell is a confirmation's UNDETERMINED that is audited again before it is submitted. */
 export function heldForConfirmationRecheck(cell: Pick<EpochCell, 'state' | 'action' | 'result' | 'attempts'>): boolean {
   return cell.state === 'undetermined' && cell.action === 'retry' && cell.result?.confirmsDiff === true
@@ -449,6 +464,9 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     /** Audit IDs of the results already counted, so a confirmation's close call carried on counts once. */
     countedAuditIds: Set<string>
     confirmationReport: string | null
+    /** The latest entry's seller agent and service. */
+    agentId: string | null
+    service: string | null
   }
   const acc = new Map<string, Acc>()
   const get = (model: string, peerId: string, runId: string): Acc => {
@@ -458,15 +476,17 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       entry = {
         model, peerId, runId, attempts: 0, auditorAttempts: 0, countedAt: null, lastAttemptAt: null,
         result: null, resultRunId: null,
-        pending: null, failure: null, skip: null, last: 'skip', countedAuditIds: new Set(), confirmationReport: null,
+        pending: null, failure: null, skip: null, last: 'skip', countedAuditIds: new Set(), confirmationReport: null, agentId: null, service: null,
       }
       acc.set(key, entry)
     }
     return entry
   }
   // The report the cell's latest keyed entry was for (a merge of one report's entries has only that one).
-  const switchReport = (entry: Acc, report: string | null): void => {
+  const switchReport = (entry: Acc, report: string | null, row: { agentId?: string | null; service?: string }): void => {
     if (report !== null) entry.confirmationReport = report
+    if (typeof row.agentId === 'string') entry.agentId = row.agentId
+    if (typeof row.service === 'string') entry.service = row.service
   }
   for (const { manifest, summaries } of runs) {
     const finishedAt = Number.isFinite(Date.parse(manifest.completedAt)) ? Date.parse(manifest.completedAt) / 1_000 : null
@@ -483,7 +503,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       if (summary.epoch !== epoch || summary.runId !== manifest.runId) continue
       for (const result of summary.results ?? []) {
         const entry = get(summary.model, result.peerId, manifest.runId)
-        switchReport(entry, confirmationReportKey(result))
+        switchReport(entry, confirmationReportKey(result), result)
         // A confirmation's close call carried on to a later run is written into that run's summary again,
         // with the same audit ID: it is the same audit still waiting for its extra questions, not another
         // attempt (confirmation attempts are unspaced, so counting it again would use up their limit).
@@ -509,7 +529,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       for (const failure of summary.failures ?? []) {
         if (failure.peerId.startsWith('model:')) continue
         const entry = get(summary.model, failure.peerId, manifest.runId)
-        switchReport(entry, confirmationReportKey(failure))
+        switchReport(entry, confirmationReportKey(failure), failure)
         if (failureBlame(failure.outcomeReason, failure.reason) === 'auditor') {
           entry.auditorAttempts += 1
           entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
@@ -520,7 +540,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       }
       for (const skip of summary.skipped ?? []) {
         const entry = get(summary.model, skip.peerId, manifest.runId)
-        switchReport(entry, confirmationReportKey(skip))
+        switchReport(entry, confirmationReportKey(skip), skip)
         if (skip.source === 'runtime') {
           if (failureBlame(skip.outcomeReason, skip.reason) === 'auditor') {
             entry.auditorAttempts += 1
@@ -540,6 +560,8 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       model: entry.model, peerId: entry.peerId, attempts: entry.attempts, auditorAttempts: entry.auditorAttempts,
       permanent: false, lastAttemptAt: entry.lastAttemptAt, skipCode: null,
       ...(entry.confirmationReport !== null ? { confirmationReport: entry.confirmationReport } : {}),
+      ...(entry.agentId !== null ? { agentId: entry.agentId } : {}),
+      ...(entry.service !== null ? { service: entry.service } : {}),
     }
     if (entry.pending) {
       // A close call newer than any submittable result: its extra questions decide the cell.
