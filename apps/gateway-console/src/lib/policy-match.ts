@@ -55,6 +55,7 @@ export function combinePolicies(...levels: Array<RoutingPolicy | null | undefine
       minReputation: higher(result.minReputation, level.minReputation),
       requireVerified: result.requireVerified || level.requireVerified ? true : undefined,
       requireTee: result.requireTee || level.requireTee ? true : undefined,
+      requireZeroDataAccess: result.requireZeroDataAccess || level.requireZeroDataAccess ? true : undefined,
       maxInputUsdPerMillion: lower(result.maxInputUsdPerMillion, level.maxInputUsdPerMillion),
       maxOutputUsdPerMillion: lower(result.maxOutputUsdPerMillion, level.maxOutputUsdPerMillion),
       // A level without a cached-input cap bounds cached input by its input cap.
@@ -81,6 +82,11 @@ function serviceFits(policy: RoutingPolicy, service: Peer['services'][number]): 
   return true
 }
 
+/** A service whose upstream encrypts end to end, so the seller cannot read it (category `e2ee`). */
+export function isE2eeService(service: { categories?: readonly string[] }): boolean {
+  return service.categories?.some((category) => category.toLowerCase() === 'e2ee') ?? false
+}
+
 /** Sellers the policy leaves eligible for at least one of their models. */
 export function matchingPeers(policy: RoutingPolicy, peers: readonly Peer[], lists: readonly PeerList[] = []): Peer[] {
   const p = expandLists(policy, lists)
@@ -95,6 +101,7 @@ export function matchingPeers(policy: RoutingPolicy, peers: readonly Peer[], lis
     if (p.requireTee && !peer.tee) return false
     // Trust is judged per model: a live DIFF model check cuts it to 10% for that model only.
     return peer.services.some((service) => serviceFits(p, service)
+      && (!p.requireZeroDataAccess || isE2eeService(service))
       && (p.minTrustScore === undefined || (offerTrust(peer.trustScore ?? 0, service.modelCheck) ?? 0) >= p.minTrustScore))
   })
 }

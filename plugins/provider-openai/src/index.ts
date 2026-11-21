@@ -16,6 +16,7 @@ import {
 } from '@antseed/provider-core';
 import type { ServiceApiProtocol, ServiceCapabilities } from '@antseed/node';
 import { VeniceImageEditProvider } from './venice-image-edit.js';
+import { veniceE2eeAttestation } from './venice-e2ee.js';
 import { announceVeniceSpeechVoices, withSpeechServiceCapabilityDefaults } from './speech.js';
 
 const SPECIAL_OPENAI_COMPAT_PROVIDERS = ['openrouter', 'venice'] as const;
@@ -335,7 +336,12 @@ const plugin: AntseedProviderPlugin = {
           (service) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service,
         )
       : undefined;
-    return new VeniceImageEditProvider(baseProvider, imageEditModelMap ?? {}, announceSpeechVoices);
+    const e2eeAttestation = veniceE2eeAttestation({
+      baseUrl,
+      apiKey,
+      resolveUpstreamModel: (service) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service,
+    });
+    return new VeniceImageEditProvider(baseProvider, imageEditModelMap ?? {}, announceSpeechVoices, e2eeAttestation);
   },
 };
 

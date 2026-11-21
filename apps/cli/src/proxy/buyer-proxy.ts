@@ -171,6 +171,8 @@ import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { parseServiceFreeTierProgram } from '@antseed/node/free-tier-program'
 import { TeeVerification } from './tee-verification.js'
+import { E2eeError, type E2eeSession } from '@antseed/node'
+import { ZeroDataAccess, createStreamDecryptor, decryptResponse, encryptRequest, isE2eeOffer, loadVerifierQuoteCheck } from './zero-data-access.js'
 import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
 import { isClientCredentialHeader } from './credential-headers.js'
@@ -263,6 +265,8 @@ export interface BuyerProxyConfig {
   adaptiveRouting?: { random?: () => number; spreadTolerance?: number; explorationRate?: number }
   /** Verifier-SDK policy: which verifier the buyer commits to + whether it is required. */
   verifier?: VerifierPolicy
+  /** Zero data access (end-to-end encryption) attestations; tests inject their own. */
+  zeroDataAccess?: ZeroDataAccess
   /** Loads stored buyer identities on demand; defaults to one reading `dataDir`. */
   buyerIdentities?: BuyerIdentityLoader
   /** `buyer.minPeerReputation`, so gateway policies narrow under it (also enforced by the router plugin). */
@@ -1457,6 +1461,7 @@ export class BuyerProxy {
   private readonly _verifier?: VerifierPolicy
   private readonly _buyerIdentities: BuyerIdentityLoader
   private readonly _teeVerification: TeeVerification
+  private readonly _zeroDataAccess: ZeroDataAccess
   private readonly _teeControl: TeeControl
   private _stateWatchDebounce: ReturnType<typeof setTimeout> | null = null
   private _configWatchDebounce: ReturnType<typeof setTimeout> | null = null
@@ -1563,6 +1568,19 @@ export class BuyerProxy {
     this._verifier = config.verifier
     this._buyerIdentities = config.buyerIdentities ?? new BuyerIdentityLoader(config.node, config.dataDir)
     this._teeVerification = new TeeVerification(config.verifier)
+    this._zeroDataAccess = config.zeroDataAccess ?? new ZeroDataAccess({
+      fetchFromPeer: async (peer, path, buyerIdentity) => {
+        const resp = await this._node.sendRequest(peer, {
+          requestId: randomUUID(),
+          method: 'GET',
+          path,
+          headers: {},
+          body: new Uint8Array(),
+        }, { signal: AbortSignal.timeout(30_000), controlPlane: true, ...(buyerIdentity ? { buyerIdentity } : {}) })
+        return { statusCode: resp.statusCode, body: resp.body }
+      },
+      loadQuoteVerifier: loadVerifierQuoteCheck,
+    })
     this._teeControl = new TeeControl(this._teeVerification.sessionId)
     this._port = config.port
     this._bgRefreshIntervalMs = Math.max(1, config.backgroundRefreshIntervalMs ?? DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS)
@@ -1829,7 +1847,15 @@ export class BuyerProxy {
       imageUsdPerImage: offer?.maxImageUsdPerImage ?? offer?.minImageUsdPerImage ?? null,
       unverifiedReason: this._unverifiedReason(peer),
       ...this._teeFacts(peer),
+      ...this._zeroDataAccessFacts(peer, offer),
     }
+  }
+
+  /** An offer in category `e2ee` gives zero data access until its attestation fails. */
+  private _zeroDataAccessFacts(peer: PeerInfo, offer: NetworkServiceOffer | null): Pick<PolicyPeerFacts, 'zeroDataAccess' | 'zeroDataAccessFailure'> {
+    if (!offer || !isE2eeOffer(offer)) return { zeroDataAccess: false }
+    const failure = this._zeroDataAccess.failure(peer.peerId, offer.serviceId)
+    return failure ? { zeroDataAccess: false, zeroDataAccessFailure: failure } : { zeroDataAccess: true }
   }
 
   /**
@@ -5013,6 +5039,7 @@ export class BuyerProxy {
       const { candidates, verdicts, effectivePolicy, explored, selections, firstPick } = plan
       const requireVerified = effectivePolicy?.requireVerified === true
       const requireTee = effectivePolicy?.requireTee === true
+      const requireZeroDataAccess = effectivePolicy?.requireZeroDataAccess === true
       if (candidates.length === 0) {
         // Every seller of the model was left out only for not offering the voice asked for.
         const voiceVerdicts = verdicts.filter((verdict) => verdict.reasons.includes(UNSUPPORTED_VOICE_REASON))
@@ -5156,6 +5183,17 @@ export class BuyerProxy {
             continue
           }
         }
+        // Zero data access: attest the upstream key (cached) and encrypt to it; a failure moves on.
+        let e2eeSession: E2eeSession | null = null
+        if (requireZeroDataAccess) {
+          try {
+            e2eeSession = await this._zeroDataAccess.session(selected.peer, selected.serviceId, selected.request.headers[BUYER_IDENTITY_HEADER])
+          } catch (error) {
+            lastVerificationError = `Peer ${selected.peer.peerId.slice(0, 12)}... failed end-to-end encryption attestation (${error instanceof Error ? error.message : String(error)}).`
+            log(`${lastVerificationError} Trying the next model peer.`)
+            continue
+          }
+        }
 
         // Why this seller serves the request, for the gateway's request log. A
         // seller that fails is replaced by the next one's before any header goes out.
@@ -5204,6 +5242,7 @@ export class BuyerProxy {
                 ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
                 : null,
               teeBinding,
+              e2eeSession,
             },
           )
           trace?.noteAttemptResult(result, res.statusCode, Date.now())
@@ -5463,6 +5502,20 @@ export class BuyerProxy {
       }
     }
 
+    let e2eeSession: E2eeSession | null = null
+    if (pinnedPolicy?.requireZeroDataAccess === true) {
+      const short = selectedPeer.peerId.slice(0, 12)
+      if (!pinnedServiceId) {
+        return dispatchFailure(502, { 'content-type': 'text/plain' }, `Pinned peer ${short}... names no service to encrypt end to end for.`)
+      }
+      try {
+        e2eeSession = await this._zeroDataAccess.session(selectedPeer, pinnedServiceId, pinnedRequest.headers[BUYER_IDENTITY_HEADER])
+      } catch (error) {
+        return dispatchFailure(502, { 'content-type': 'text/plain' },
+          `Pinned peer ${short}... failed end-to-end encryption attestation (${error instanceof Error ? error.message : String(error)}).`)
+      }
+    }
+
     log(`Using pinned peer ${selectedPeer.peerId.slice(0, 12)}...`)
     if (trace) {
       trace.candidates = 1
@@ -5488,7 +5541,7 @@ export class BuyerProxy {
       router,
       true,
       signal,
-      { routingConversationKey, teeBinding },
+      { routingConversationKey, teeBinding, e2eeSession },
     )
     trace?.noteAttemptResult(result, res.statusCode, Date.now())
     if (trace && result.done && result.interrupted) trace.interrupted = result.interrupted
@@ -5654,6 +5707,7 @@ export class BuyerProxy {
       extraAttempt = false,
       attemptTimeoutMs = null,
       teeBinding = null,
+      e2eeSession = null,
     }: {
       gatewayRouted?: boolean
       routingConversationKey?: string | null
@@ -5662,6 +5716,8 @@ export class BuyerProxy {
       attemptTimeoutMs?: number | null
       /** Send only on the connection with this session hash (a required TEE attestation's). */
       teeBinding?: string | null
+      /** Zero data access: encrypt every message to this attested upstream key and decrypt the answer. */
+      e2eeSession?: E2eeSession | null
     } = {},
   ): Promise<PeerDispatchResult> {
     traceFor(res)?.noteAttempt(selectedPeer.peerId, Date.now())
@@ -5767,6 +5823,23 @@ export class BuyerProxy {
       }
     }
 
+    if (e2eeSession) {
+      // Encrypted last, after any protocol translation, so the seller relays only ciphertext.
+      const sentProtocol = selectedRoutePlan.selection?.targetProtocol ?? requestProtocol
+      try {
+        if (sentProtocol !== 'openai-chat-completions') {
+          throw new E2eeError('End-to-end encryption covers chat completions only.')
+        }
+        requestForPeer = await encryptRequest(requestForPeer, e2eeSession)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        res.writeHead(400, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: { type: 'invalid_request_error', code: 'zero_data_access_unsupported', message } }))
+        return { done: true }
+      }
+      log(`Encrypted request end to end for peer ${selectedPeer.peerId.slice(0, 12)}...`)
+    }
+
     if (DEBUG()) {
       log(`Outbound request shape: ${summarizeRequestShape(requestForPeer)}`)
     }
@@ -5826,6 +5899,31 @@ export class BuyerProxy {
         let streamed = false
         let firstFrameAt = 0
         let streamStartBody: Uint8Array = new Uint8Array()
+        const writeStreamChunk = (chunk: SerializedHttpResponseChunk): void => {
+          const adaptedChunks = streamResponseAdapter
+            ? streamResponseAdapter.adaptChunk(chunk)
+            : [chunk]
+          for (const adaptedChunk of adaptedChunks) {
+            if (adaptedChunk.data.length > 0) {
+              res.write(Buffer.from(adaptedChunk.data))
+            }
+          }
+        }
+        // Decryption is async; a queue keeps chunks in order. A chunk that fails to decrypt ends
+        // the stream rather than reach the client unreadable.
+        const streamDecryptor = e2eeSession ? createStreamDecryptor(e2eeSession) : null
+        let decryptQueue: Promise<void> = Promise.resolve()
+        const enqueueEncryptedChunk = (chunk: SerializedHttpResponseChunk): void => {
+          decryptQueue = decryptQueue.then(async () => {
+            if (res.destroyed) return
+            const data = await streamDecryptor!.push(chunk.data)
+            const tail = chunk.done ? await streamDecryptor!.flush() : new Uint8Array()
+            writeStreamChunk({ ...chunk, data: tail.length > 0 ? Buffer.concat([data, tail]) : data })
+          }).catch((error: unknown) => {
+            log(`End-to-end decryption failed for peer ${selectedPeer.peerId.slice(0, 12)}...: ${error instanceof Error ? error.message : String(error)}`)
+            res.destroy()
+          })
+        }
         const response = await this._node.sendRequestStream(selectedPeer, requestForPeer, {
           onResponseStart: (startResponse: SerializedHttpResponse, metadata: RequestStreamResponseMetadata) => {
             if (!metadata.streaming) return
@@ -5835,9 +5933,11 @@ export class BuyerProxy {
             firstFrameAt = Date.now()
             traceFor(res)?.noteFirstByte(firstFrameAt)
             streamStartBody = startResponse.body
+            // An encrypted start body goes through the decrypting queue like any chunk.
+            const startForClient = streamDecryptor ? { ...startResponse, body: new Uint8Array() } : startResponse
             const adaptedStartResponse = streamResponseAdapter
-              ? streamResponseAdapter.adaptStart(startResponse)
-              : startResponse
+              ? streamResponseAdapter.adaptStart(startForClient)
+              : startForClient
             const streamingHeaders = attachStreamingAntseedHeaders(
               adaptedStartResponse.headers,
               selectedPeer,
@@ -5854,18 +5954,15 @@ export class BuyerProxy {
             if (adaptedStartResponse.body.length > 0) {
               res.write(Buffer.from(adaptedStartResponse.body))
             }
+            if (streamDecryptor && startResponse.body.length > 0) {
+              enqueueEncryptedChunk({ requestId: startResponse.requestId, data: startResponse.body, done: false })
+            }
           },
           onResponseChunk: (chunk: SerializedHttpResponseChunk) => {
             if (!streamed) return
             this._markModelActivity()
-            const adaptedChunks = streamResponseAdapter
-              ? streamResponseAdapter.adaptChunk(chunk)
-              : [chunk]
-            for (const adaptedChunk of adaptedChunks) {
-              if (adaptedChunk.data.length > 0) {
-                res.write(Buffer.from(adaptedChunk.data))
-              }
-            }
+            if (streamDecryptor) enqueueEncryptedChunk(chunk)
+            else writeStreamChunk(chunk)
           },
         }, {
           signal: attemptSignal,
@@ -5874,10 +5971,14 @@ export class BuyerProxy {
           ...(buyerIdentity ? { buyerIdentity } : {}),
           ...(teeBinding ? { channelBinding: teeBinding } : {}),
         })
+        await decryptQueue
 
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
-        let responseForClient = adaptBuyerFaultErrorResponse(response, requestProtocol)
+        let responseForClient = adaptBuyerFaultErrorResponse(
+          e2eeSession && !streamed ? await decryptResponse(response, e2eeSession) : response,
+          requestProtocol,
+        )
         const freeTierRefusal = adaptFreeTierRefusal(responseForClient)
         responseForClient = freeTierRefusal ?? adaptPeerResponse(responseForClient)
         if (
@@ -6045,7 +6146,10 @@ export class BuyerProxy {
         )) {
           await this._persistResourceRoutes().catch(error => console.error('[proxy] Accepted video route was not persisted:', error))
         }
-        let response = adaptBuyerFaultErrorResponse(upstreamResponse, requestProtocol)
+        let response = adaptBuyerFaultErrorResponse(
+          e2eeSession ? await decryptResponse(upstreamResponse, e2eeSession) : upstreamResponse,
+          requestProtocol,
+        )
         const freeTierRefusal = adaptFreeTierRefusal(response)
         response = freeTierRefusal ?? adaptPeerResponse(response)
         if (

@@ -472,6 +472,7 @@ function preview(query: URLSearchParams): RoutePreview {
     }
     if (policy.minTrustScore !== undefined && (peer.trustScore ?? 0) < policy.minTrustScore) reasons.push(`trust below ${policy.minTrustScore}`)
     if (policy.requireTee && !peer.tee) reasons.push('no TEE')
+    if (policy.requireZeroDataAccess && !service.categories.includes('e2ee')) reasons.push('no end-to-end encryption')
     if (policy.requireVerified && !peer.verified) reasons.push('not verified')
     if (policy.maxInputUsdPerMillion !== undefined && (service.inputUsdPerMillion ?? 0) > policy.maxInputUsdPerMillion) reasons.push('over input price cap')
     const cachedCap = policy.maxCachedInputUsdPerMillion ?? policy.maxInputUsdPerMillion

@@ -167,6 +167,8 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
             onChange={(next) => set('requireTee', next)} label="TEE sellers only" />
           <Switch checked={value.requireVerified || !!above?.requireVerified} disabled={!!above?.requireVerified}
             onChange={(next) => set('requireVerified', next)} label="Verified sellers only" />
+          <Switch checked={value.requireZeroDataAccess || !!above?.requireZeroDataAccess} disabled={!!above?.requireZeroDataAccess}
+            onChange={(next) => set('requireZeroDataAccess', next)} label="Zero data access only" />
         </div>
         {(above?.requireTee || above?.requireVerified) && (
           <span className="as-field__hint">

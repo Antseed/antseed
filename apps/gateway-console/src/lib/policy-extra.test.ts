@@ -18,6 +18,16 @@ function peer(id: string, overrides: Partial<Peer> = {}): Peer {
   }
 }
 
+describe('requireZeroDataAccess', () => {
+  it('round-trips through the draft, describes itself and keeps only e2ee services', () => {
+    expect(draftToPolicy(policyToDraft({ requireZeroDataAccess: true }))).toEqual({ requireZeroDataAccess: true })
+    expect(describePolicy({ requireZeroDataAccess: true })).toBe('zero data access')
+    const e2ee = peer(A, { services: [{ provider: 'p', service: 'kimi-k2', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, categories: ['chat', 'e2ee'] }] })
+    expect(matchingPeers({ requireZeroDataAccess: true }, [e2ee, peer(B)])).toEqual([e2ee])
+    expect(combinePolicies({ requireZeroDataAccess: true }, { requireZeroDataAccess: false }).requireZeroDataAccess).toBe(true)
+  })
+})
+
 describe('requireTee', () => {
   it('round-trips through the draft and describes as TEE only', () => {
     const draft = policyToDraft({ requireTee: true })

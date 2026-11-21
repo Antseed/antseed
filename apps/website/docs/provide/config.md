@@ -124,6 +124,19 @@ Set `cachedInputUsdPerMillion` when your upstream charges less for cache hits. W
 
 The cached-input price must be at most the input price. Buyers skip an offer whose cached input costs more than its input, so the model would get no requests. `antseed seller setup`, the `antseed config seller` commands, `antseed seller settings` and the Gateway Console refuse such a price, and `antseed seller start` warns about one already in the config. Leave `cachedInputUsdPerMillion` out to bill cached input at the input price. A service with its own `pricing` doesn't take the provider's default cached-input price: set it on the service too.
 
+### Zero data access services
+
+A service whose upstream model encrypts end to end can be sold with zero data access: buyers encrypt every message to the upstream's attested key, and your seller relays ciphertext with your own upstream key. Today this works with the `openai` provider on Venice, for its `e2ee-*` models. Set the service's `upstreamModel` to the `e2ee-*` model and add the `e2ee` category:
+
+```json
+"qwen-2.5-7b": {
+  "upstreamModel": "e2ee-qwen-2-5-7b-p",
+  "categories": ["e2ee"]
+}
+```
+
+Your seller then answers buyers' attestation requests for the service for free, by relaying Venice's attestation for a nonce the buyer chose. Buyers check it themselves, so the category alone earns nothing: a service whose attestation fails is skipped. Encrypted requests need the `x-venice-tee-*` headers and `messages` to reach Venice unchanged, so don't strip those headers (`OPENAI_STRIP_HEADER_PREFIXES`) or inject body fields (`OPENAI_BODY_INJECT_JSON`) that touch `messages`.
+
 ### Capabilities
 
 Capabilities tell buyers what a service can do. They are hints, not enforced limits, and an omitted field means "unknown".

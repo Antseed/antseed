@@ -134,6 +134,16 @@ test('requireTee is validated and sticky', () => {
   assert.deepEqual(decodePolicyHeader(encodePolicyHeader({ requireTee: true })), { requireTee: true })
 })
 
+test('requireZeroDataAccess is validated, sticky and never loosened by a lower level', () => {
+  assert.equal(isRoutingPolicy({ requireZeroDataAccess: true }), true)
+  assert.equal(isRoutingPolicy({ requireZeroDataAccess: 1 }), false)
+  assert.equal(narrowPolicy({ requireZeroDataAccess: true }, { requireZeroDataAccess: false }).requireZeroDataAccess, true)
+  assert.equal(narrowPolicy({}, { requireZeroDataAccess: true }).requireZeroDataAccess, true)
+  assert.equal(narrowPolicy({}, {}).requireZeroDataAccess, undefined)
+  assert.deepEqual(narrowedFields({ requireZeroDataAccess: false }, { requireZeroDataAccess: true }), ['requireZeroDataAccess'])
+  assert.deepEqual(decodePolicyHeader(encodePolicyHeader({ requireZeroDataAccess: true })), { requireZeroDataAccess: true })
+})
+
 // Regression repros (security review): a lower level must not widen the
 // allow list above it by mixing peer ids and peer lists.
 test('allow specs combine as one set per level, peer lists included (unexpanded narrowing)', () => {
