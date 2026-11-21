@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  THINKING_DISCOVERY_RULE,
   THINKING_FALLBACK_MAX_TOKENS,
   countDiscoveryAnswers,
   discoverThinkingSuppression,
@@ -32,6 +33,45 @@ describe('thinking discovery helpers', () => {
     expect(result.strategy).toBe('bare-expanded');
     expect(result.maxTokens).toBe(THINKING_FALLBACK_MAX_TOKENS);
     expect(result.attempts.map((attempt) => attempt.strategy)).not.toContain('prefill');
+  });
+
+  it('kbf-discovery-least-reasoning-v1: when nothing turns thinking off, the strategy that thought least is used, not bare', async () => {
+    expect(THINKING_DISCOVERY_RULE).toBe('kbf-discovery-least-reasoning-v1');
+    // GLM 5.3 on its maker's endpoint in November 2026: effort none refused, every other setting accepted but still thinking.
+    const thinking: Record<string, number> = { 'reasoning-effort-minimal': 70, 'disable-thinking': 200, 'enable-thinking-false': 197, prefill: 93, bare: 295 };
+    const glm: ThinkingDiscoveryProbe = async ({ strategy }) => strategy === 'reasoning-effort-none'
+      ? { ok: false, status: 400, failure: 'reasoning effort none is not supported' }
+      : { ok: true, content: ANSWERS, reasoningTokens: thinking[strategy] ?? 0 };
+    const logs: string[] = [];
+    const result = await discoverThinkingSuppression({ model: 'm', label: 'endpoint', supportsPrefill: true, probe: glm, log: (line) => logs.push(line) });
+    expect([result.strategy, result.leastReasoning, result.overrides]).toEqual(['reasoning-effort-minimal', true, { reasoning: { effort: 'minimal' } }]);
+    expect(result.attempts.map((attempt) => attempt.strategy)).toEqual(['reasoning-effort-none', 'reasoning-effort-minimal', 'disable-thinking', 'enable-thinking-false', 'prefill', 'bare']);
+    expect(logs.at(-1)).toMatch(/'reasoning-effort-minimal' thought least \(reasoning_tokens=70, against 295 with 'bare'\)/);
+    // A strategy with no reasoning tokens still wins outright, as in the reference code.
+    const off: ThinkingDiscoveryProbe = async ({ strategy }) => ({ ok: true, content: ANSWERS, reasoningTokens: strategy === 'disable-thinking' ? 0 : 50 });
+    const offResult = await discoverThinkingSuppression({ model: 'm', label: 'endpoint', supportsPrefill: true, probe: off });
+    expect([offResult.strategy, offResult.leastReasoning]).toEqual(['disable-thinking', undefined]);
+  });
+
+  it('kbf-discovery-least-reasoning-v1: bare stays when it thought least; on a tie the earlier strategy is used', async () => {
+    const bareLeast: ThinkingDiscoveryProbe = async ({ strategy }) => ({ ok: true, content: ANSWERS, reasoningTokens: strategy === 'bare' ? 40 : 300 });
+    const kept = await discoverThinkingSuppression({ model: 'm', label: 'endpoint', supportsPrefill: true, probe: bareLeast });
+    expect([kept.strategy, kept.leastReasoning]).toEqual(['bare', undefined]);
+    const tie: ThinkingDiscoveryProbe = async ({ strategy }) => ({ ok: true, content: ANSWERS, reasoningTokens: strategy === 'bare' ? 500 : strategy === 'prefill' || strategy === 'disable-thinking' ? 60 : 300 });
+    const tied = await discoverThinkingSuppression({ model: 'm', label: 'endpoint', supportsPrefill: true, probe: tie });
+    expect(tied.strategy).toBe('disable-thinking');
+  });
+
+  it('kbf-discovery-least-reasoning-v1: a strategy that answered while thinking a little beats bare with fifty times the tokens', async () => {
+    // Bare stops at the token limit; minimal answered cleanly with some reasoning: bare-expanded is never asked.
+    const probe: ThinkingDiscoveryProbe = async ({ strategy }) => strategy === 'bare'
+      ? { ok: true, content: ANSWERS, reasoningTokens: 700, truncated: true }
+      : strategy === 'reasoning-effort-minimal'
+        ? { ok: true, content: ANSWERS, reasoningTokens: 120 }
+        : { ok: true, content: '', reasoningTokens: 800 };
+    const result = await discoverThinkingSuppression({ model: 'm', label: 'endpoint', supportsPrefill: true, probe });
+    expect([result.strategy, result.leastReasoning]).toEqual(['reasoning-effort-minimal', true]);
+    expect(result.attempts.map((attempt) => attempt.strategy)).not.toContain('bare-expanded');
   });
 
   it('skips a strategy whose reply reasons in the open, as GLM-5.3 on DeepInfra does with effort none', async () => {

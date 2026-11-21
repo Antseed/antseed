@@ -111,7 +111,23 @@ export interface ThinkingDiscoveryAttemptV1 {
 export interface ThinkingDiscoveryResultV1 extends ThinkingStrategyRequest {
   strategy: ThinkingDiscoveryStrategy;
   attempts: ThinkingDiscoveryAttemptV1[];
+  /**
+   * Set when no strategy turned thinking off and the one recorded is the one that thought least
+   * (`THINKING_DISCOVERY_RULE`), not `bare`.
+   */
+  leastReasoning?: true;
 }
+
+/**
+ * How discovery chooses, an Antseed addition to the KBF reference code. As in the reference code, the first strategy that
+ * answers cleanly with no reasoning tokens wins, and `bare` is the baseline that may think. When none turns thinking off,
+ * the strategy that answered cleanly with the fewest reasoning tokens is recorded instead of `bare`, if it thought less
+ * than `bare` did (or `bare` failed): a setting that thinks a little is closer to the reference code's no-thinking answers
+ * than one that thinks as long as it likes, and it leaves room for the answer. GLM 5.3 on its maker's endpoint reasoned
+ * 70 tokens with `reasoning.effort: "minimal"` and 295 with nothing on the ten test questions, and with nothing it then
+ * spent every token of real batches thinking and answered none. Part of the audit rules (the verifier compat fingerprint).
+ */
+export const THINKING_DISCOVERY_RULE = 'kbf-discovery-least-reasoning-v1' as const;
 
 export type ThinkingDiscoveryProbe = (input: {
   strategy: ThinkingDiscoveryStrategy;
@@ -242,14 +258,35 @@ export async function discoverThinkingSuppression(input: {
     attempts.push(attempt);
     return attempt;
   };
+  /** Strategies that answered cleanly but still thought, fewest reasoning tokens first (earlier strategies on a tie). */
+  const thoughtAnyway: ThinkingDiscoveryAttemptV1[] = [];
+  const leastOf = (than: number | null): ThinkingDiscoveryAttemptV1 | null => {
+    const least = [...thoughtAnyway].sort((left, right) => (left.reasoningTokens ?? 0) - (right.reasoningTokens ?? 0))[0];
+    return least && (than === null || (least.reasoningTokens ?? 0) < than) ? least : null;
+  };
+  const useLeast = (least: ThinkingDiscoveryAttemptV1, against: string): ThinkingDiscoveryResultV1 => {
+    input.log?.(
+      `thinking suppression for ${input.model}: nothing turns thinking off on ${input.label}; '${least.strategy}' thought least `
+      + `(reasoning_tokens=${least.reasoningTokens}, ${against}), so it is used (${THINKING_DISCOVERY_RULE})`,
+    );
+    return { strategy: least.strategy, ...thinkingStrategyRequest(least.strategy), attempts, leastReasoning: true };
+  };
   for (const strategy of THINKING_DISCOVERY_STRATEGIES) {
     if (strategy === 'prefill' && !input.supportsPrefill) continue;
     const attempt = await tryOnce(strategy, THINKING_DISCOVERY_MAX_TOKENS);
     const valid = attempt.validAnswers ?? -1;
     const cleanReply = attempt.answersOnly !== false && attempt.truncated !== true;
-    // `bare` is the no-suppression baseline and may think. Any other strategy
-    // that still reports reasoning tokens was accepted but ignored. A reply that
-    // reasons in the open or stops at the token limit fails any strategy.
+    // `bare` is the no-suppression baseline and may think; a strategy that thought less than it is used instead
+    // (`THINKING_DISCOVERY_RULE`).
+    if (strategy === 'bare' && valid >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && cleanReply) {
+      const least = leastOf(attempt.reasoningTokens ?? 0);
+      if (least) return useLeast(least, `against ${attempt.reasoningTokens} with 'bare'`);
+    }
+    // Any other strategy that still reports reasoning tokens was accepted but ignored. A reply that reasons in the open
+    // or stops at the token limit fails any strategy.
+    if (valid >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && cleanReply && strategy !== 'bare' && (attempt.reasoningTokens ?? 0) > 0) {
+      thoughtAnyway.push(attempt);
+    }
     if (valid >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && cleanReply && (strategy === 'bare' || attempt.reasoningTokens === 0)) {
       input.log?.(
         `thinking suppression for ${input.model}: '${strategy}' works on ${input.label} `
@@ -269,6 +306,10 @@ export async function discoverThinkingSuppression(input: {
       );
     }
   }
+  // `bare` did not answer cleanly: a strategy that answered cleanly while thinking a little is better than thinking freely
+  // with fifty times the tokens.
+  const least = leastOf(null);
+  if (least) return useLeast(least, "'bare' did not answer cleanly");
   const expanded = await tryOnce('bare-expanded', THINKING_FALLBACK_MAX_TOKENS);
   // `bare-expanded` lets the model think in the open, so only a reply cut off at the limit fails it.
   if ((expanded.validAnswers ?? -1) >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && expanded.truncated !== true) {

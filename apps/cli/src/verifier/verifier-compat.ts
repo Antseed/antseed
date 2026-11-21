@@ -1,5 +1,6 @@
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
+  THINKING_DISCOVERY_RULE,
   KBF_COVERAGE_RULE,
   KBF_CALIBRATION_METHOD,
   KBF_CALIBRATION_PASSES,
@@ -298,6 +299,8 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       lowCoverageRetries: KBF_LOW_COVERAGE_RETRIES,
       auditVerifyOptions: KBF_AUDIT_VERIFY_OPTIONS,
       closeCallExtensions: CLOSE_CALL_EXTENSIONS,
+      // How thinking discovery chooses a setting, for the reference and for every seller audited.
+      thinkingDiscoveryRule: THINKING_DISCOVERY_RULE,
     },
     parsed: SAMPLE_REPLIES.map(([reply, count]) => parseKbfAnswers(stripKbfThinkBlocks(reply), count)),
     scored: SAMPLE_SCORES.map(([answer, domain, consensus]) => scoreKbfAnswer(answer, sampleProbe(domain, consensus))),

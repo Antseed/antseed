@@ -22,6 +22,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Verifiers (CLI): a model whose thinking no setting turns off is now asked with the setting that thinks least, not with no setting at all (rule `kbf-discovery-least-reasoning-v1`, in `@antseed/fingerprints`), for the reference and for each seller audited. With no setting such a model could think through the whole token limit of a real batch and answer nothing, so no question set could be built for it. A setting that turns thinking off still wins as before. Question writing also stops using its "think a little" fallback once the fallback's first three answers give no list either. The audit rules change, so the verifier compat number goes to 15.
 - Verifiers (CLI): building a question set for a model whose thinking cannot be turned off no longer stalls. Such a model could spend every token of a question-writing request thinking and return no text, so no question was written. Question writing now falls back to a little thinking for it too (asking keeps the recorded setting, as before). A generation round in which no question-writing batch gives a list stops the build at once, instead of paying for more rounds up to the no-progress limit.
 
 ## 2026-11-20 — CLI 0.1.256, Node 0.2.189, Desktop 0.2.91

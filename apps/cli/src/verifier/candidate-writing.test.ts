@@ -100,6 +100,24 @@ test('a refused fallback is dropped for the rest of the build', async () => {
   assert.equal(policy.summary()?.fallbackRefused, 'HTTP 400')
 })
 
+test('a fallback whose first three answers give no list either is dropped for the rest of the build', async () => {
+  // DeepSeek V4 Pro on its pinned host: with a little thinking it thought through every token too.
+  const policy = new CandidateWritingPolicy('reasoning-effort-minimal')
+  await trial(policy, [true, true, true])
+  for (let answer = 0; answer < 2; answer += 1) policy.observeFallbackAnswer(false)
+  assert.equal((await policy.beginBatch()).strategy, 'reasoning-effort-minimal', 'two failures are not yet enough')
+  policy.observeFallbackAnswer(false)
+  assert.deepEqual(await policy.beginBatch(), { trial: false, strategy: null })
+  assert.equal(policy.observeRecordedAnswer(true, false), null, 'no retry with it either')
+  assert.equal(policy.summary()?.fallbackAbandoned, 'its first 3 answers gave no usable list')
+  // One usable answer among the first three keeps it.
+  const helped = new CandidateWritingPolicy('reasoning-effort-minimal')
+  await trial(helped, [true, true, true])
+  for (const usable of [false, true, false, false]) helped.observeFallbackAnswer(usable)
+  assert.equal((await helped.beginBatch()).strategy, 'reasoning-effort-minimal')
+  assert.equal(helped.summary()?.fallbackAbandoned, undefined)
+})
+
 test('without a fallback nothing waits and nothing is retried', async () => {
   const policy = new CandidateWritingPolicy(null)
   for (let index = 0; index < 5; index += 1) assert.deepEqual(await policy.beginBatch(), { trial: false, strategy: null })

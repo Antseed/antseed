@@ -632,6 +632,49 @@ test('a generation round in which no question-writing batch gives a list stops t
   }
 })
 
+test('a model no setting turns thinking off for is asked with the setting that thinks least, and the build asks and writes with it', async () => {
+  // GLM 5.3 on its maker's endpoint (November 2026): every setting still thinks, 'minimal' least (70 tokens on the test
+  // questions, 'bare' 295). With nothing it thinks through the whole limit of a real batch and answers none.
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-least-reasoning-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const thinking: Record<string, number> = { minimal: 70 }
+  const asked: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; max_tokens?: number; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    const effort = (body.reasoning as { effort?: string } | undefined)?.effort
+    const reply = (content: string | null, finishReason: string, completion: number, reasoning: number) => new Response(JSON.stringify({
+      choices: [{ message: { content }, finish_reason: finishReason }],
+      usage: { prompt_tokens: 100, completion_tokens: completion, completion_tokens_details: { reasoning_tokens: reasoning } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+    if (body.messages.some((message) => String(message.content).includes(DISCOVERY_MARKER))) {
+      if (effort === 'none') return response('reasoning effort none is not supported', 400)
+      return reply(DISCOVERY_ANSWERS, 'stop', 400, thinking[effort ?? ''] ?? (body.thinking || body.enable_thinking === false ? 200 : 295))
+    }
+    asked.push(body)
+    if (effort !== 'minimal') return reply(null, 'length', body.max_tokens ?? 1600, (body.max_tokens ?? 1600) - 1)
+    return reply(successfulContent(body.model, prompt), 'stop', 300, 70)
+  }
+  try {
+    const logs: string[] = []
+    const built = await buildModelReferenceWithoutDiscoveryStub({ model: MODEL, referencesDir: directory, config: value, fetchFn, log: (line) => logs.push(line) })
+    const params = built.reference.generator.params as Record<string, unknown>
+    assert.deepEqual(params.referenceEndpointRequest, {
+      reasoningStrategy: 'reasoning-effort-minimal', requestOverrides: { reasoning: { effort: 'minimal' } }, requestOmissions: [],
+    }, logs.filter((line) => line.includes('thinking')).join('\n'))
+    assert.ok(logs.some((line) => line.includes("'reasoning-effort-minimal' thought least (reasoning_tokens=70, against 295 with 'bare')")))
+    // Every ask of the target (questions written, stability, self-test) went with 'minimal', so every one was answered.
+    const target = asked.filter((body) => body.model === 'upstream-test')
+    assert.ok(target.length > 0)
+    for (const body of target) assert.deepEqual(body.reasoning, { effort: 'minimal' })
+    assert.ok(built.reference.probes.length > 0)
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('question writing is unchanged for models that write clean lists', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-candidate-clean-'))
   const value = config()

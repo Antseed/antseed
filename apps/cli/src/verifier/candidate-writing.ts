@@ -15,6 +15,12 @@ import type { ThinkingDiscoveryStrategy } from './thinking-suppression.js'
 export const CANDIDATE_WRITING_TRIAL_ANSWERS = 3
 /** Rambling answers among the trial answers that switch the rest of the build to the fallback. */
 export const CANDIDATE_WRITING_SWITCH_THRESHOLD = 2
+/**
+ * Fallback answers that, all unusable, end the fallback for the rest of the build: when a little thinking also runs out of
+ * tokens (DeepSeek V4 Pro on its pinned host thought through all 6000 with it, 45 times in one build), every later batch
+ * would pay for it twice.
+ */
+export const CANDIDATE_WRITING_FALLBACK_TRIAL_ANSWERS = 3
 /** Share of `max_tokens` an answer must use to count as having run out of room. */
 const OUT_OF_ROOM_SHARE = 0.95
 
@@ -46,6 +52,8 @@ export interface CandidateWritingRecordV1 {
   recoveredBatches: number
   /** Set when the endpoint refused the fallback; writing then stays on the recorded setting. */
   fallbackRefused?: string
+  /** Set when the fallback's first answers gave no usable list either; writing then stays on the recorded setting. */
+  fallbackAbandoned?: string
 }
 
 export class CandidateWritingPolicy {
@@ -53,6 +61,7 @@ export class CandidateWritingPolicy {
   private trialStarted = 0
   private trialFinished = 0
   private trialRambling = 0
+  private fallbackAnswers = 0
   private switched = false
   private readonly trialDone: Promise<void>
   private resolveTrial!: () => void
@@ -109,9 +118,17 @@ export class CandidateWritingPolicy {
     return this.fallback
   }
 
-  /** Records whether a fallback answer gave a usable list. */
+  /** Records whether a fallback answer gave a usable list; ends the fallback when its first answers all gave none. */
   observeFallbackAnswer(usable: boolean): void {
+    this.fallbackAnswers += 1
     if (usable) this.record.recoveredBatches += 1
+    if (this.fallback && this.record.recoveredBatches === 0 && this.fallbackAnswers >= CANDIDATE_WRITING_FALLBACK_TRIAL_ANSWERS) {
+      const reason = `its first ${this.fallbackAnswers} answers gave no usable list`
+      this.log?.(`question writing: '${this.fallback}' did not help (${reason}); keeping the recorded setting`)
+      this.record.fallbackAbandoned = reason
+      this.fallback = null
+      this.switched = false
+    }
   }
 
   /** The endpoint refused the fallback: stop using it for the rest of the build. */
@@ -125,7 +142,7 @@ export class CandidateWritingPolicy {
 
   /** What happened, for the reference; null when no answer rambled. */
   summary(): CandidateWritingRecordV1 | null {
-    return this.record.ramblingAnswers > 0 || this.record.fallbackRefused ? { ...this.record } : null
+    return this.record.ramblingAnswers > 0 || this.record.fallbackRefused || this.record.fallbackAbandoned ? { ...this.record } : null
   }
 }
 
