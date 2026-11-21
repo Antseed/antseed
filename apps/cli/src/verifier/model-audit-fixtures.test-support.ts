@@ -270,7 +270,8 @@ export async function writeSignedAuditRun(input: {
    */
   completedAt?: string
 }): Promise<VerifierRunManifestV1> {
-  const models = [...new Set(input.audits.map((audit) => audit.model))]
+  // A model with only failures or skips in the run has its summary too.
+  const models = [...new Set([...input.audits.map((audit) => audit.model), ...Object.keys(input.failures ?? {}), ...Object.keys(input.skipped ?? {})])]
   const completedAt = input.completedAt ?? '2026-10-07T00:02:00.000Z'
   const timestamps = {
     epochStartedAt: '2026-10-07T00:00:00.000Z',

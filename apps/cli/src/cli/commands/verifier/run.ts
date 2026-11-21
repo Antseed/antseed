@@ -1189,7 +1189,7 @@ export async function runVerifierRound(
         )
         // A first look whose evidence cannot be read, has no valid date or was written before the all-tests format:
         // submit leaves it out, so its SAME or DIFF would go unsent all epoch. It is audited again within the ordinary
-        // attempts.
+        // attempts, and one written before the all-tests format once beyond them, while its window is open.
         const recovering = new Set((await recoveringFirstLooks(epochState)).values())
         // With the ordinary retry spacing: a re-audit minutes later counts as the same attempt.
         const planNow = await clock()

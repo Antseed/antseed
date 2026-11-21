@@ -475,6 +475,22 @@ export async function prepareModelAudits(input: {
         if (result.extension2) {
           extension2Evidence = await verifyProxyAuditEvidenceFile(result.extension2.evidencePath, result.extension2.evidenceHash)
         }
+      } catch (error) {
+        exclude(`invalid audit evidence: ${asError(error).message}`, 'invalid-evidence')
+        continue
+      }
+      // A completed audit by a CLI from before an upgrade within the epoch: refused for its format alone, so the reason
+      // says what becomes of it. A closed window is never audited again, since its questions may be public by now.
+      if (beforeAllTests([evidence, extensionEvidence, extension2Evidence])) {
+        exclude(window?.state === 'closed'
+          ? 'written by a CLI from before the all-tests format (an upgrade during the epoch), and its audit window closed '
+            + 'before the seller could be audited again: its questions may be public, so nothing is sent for this seller '
+            + 'this epoch, and it is audited next epoch'
+          : 'written by a CLI from before the all-tests format (an upgrade during the epoch): a later run this epoch audits '
+            + 'the seller again, and its new result is sent', 'before-all-tests')
+        continue
+      }
+      try {
         validateAuditMatchesSummary(evidence, result, extensionEvidence, extension2Evidence, { epoch: input.manifest.epoch, auditor })
       } catch (error) {
         exclude(`invalid audit evidence: ${asError(error).message}`, 'invalid-evidence')
@@ -893,23 +909,46 @@ function latestEvidenceTime(evidences: ReadonlyArray<Pick<ProxyAuditEvidenceV1, 
  * by a CLI from before an upgrade within the epoch): submit would refuse the row, so the planner audits it again and
  * its audit window waits for it (`recoveringFirstLooks`). A file whose date is not valid gives no time, as in submit.
  */
-export async function auditFinishedAt(result: {
+export async function auditFinishedAt(result: AuditFiles): Promise<number | null> {
+  const evidences = await verifiedAuditFiles(result)
+  if (!evidences || beforeAllTests(evidences)) return null
+  return latestEvidenceTime(evidences)
+}
+
+/**
+ * Whether a summary row's files all verify against their hashes and carry a valid date, but one of them was written
+ * before the all-tests format (`ALL_TESTS_FORMAT`), by a CLI from before an upgrade within the epoch: a completed
+ * audit that submit refuses only for its format, which `recoveringFirstLooks` audits again once more than the seller's
+ * attempts allow.
+ */
+export async function auditBeforeAllTests(result: AuditFiles): Promise<boolean> {
+  const evidences = await verifiedAuditFiles(result)
+  return evidences !== null && beforeAllTests(evidences) && latestEvidenceTime(evidences) !== null
+}
+
+interface AuditFiles {
   evidencePath: string
   evidenceHash: string
   extension?: { evidencePath: string; evidenceHash: string } | null
   extension2?: { evidencePath: string; evidenceHash: string } | null
-}): Promise<number | null> {
-  const sets = [result, result.extension, result.extension2].filter((set) => set != null)
+}
+
+/** A row's files (an extra set included), each read and verified against its hash; null when any is not. */
+async function verifiedAuditFiles(result: AuditFiles): Promise<ProxyAuditEvidenceV1[] | null> {
   const evidences: ProxyAuditEvidenceV1[] = []
-  for (const set of sets) {
+  for (const set of [result, result.extension, result.extension2]) {
+    if (set == null) continue
     try {
       evidences.push(await verifyProxyAuditEvidenceFile(set.evidencePath, set.evidenceHash))
     } catch {
       return null
     }
   }
-  if (evidences.some((evidence) => evidence.tests !== ALL_TESTS_FORMAT)) return null
-  return latestEvidenceTime(evidences)
+  return evidences
+}
+
+function beforeAllTests(evidences: ReadonlyArray<ProxyAuditEvidenceV1 | null>): boolean {
+  return evidences.some((evidence) => evidence !== null && evidence.tests !== ALL_TESTS_FORMAT)
 }
 
 /**
