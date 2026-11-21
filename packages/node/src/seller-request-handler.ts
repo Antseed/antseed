@@ -76,7 +76,7 @@ import {
 import { parseResponseUsage, type ResponseUsage } from './utils/response-usage.js';
 import { exposedResponseHeaders } from './utils/response-headers.js';
 import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/response-body.js';
-import { usageForBilling } from '@antseed/buyer-core';
+import { E2EE_ATTESTATION_PATH, usageForBilling } from '@antseed/buyer-core';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, describeUpstreamError, isUpstreamAccountError, isUpstreamFailureStatus, isVideoDownloadBusy } from './health/self-health-error.js';
@@ -432,6 +432,11 @@ export class SellerRequestHandler {
             })),
           });
         }
+        return;
+      }
+
+      if (pathOnly === E2EE_ATTESTATION_PATH) {
+        await this._handleE2eeAttestation(mux, request, buyerPeerId);
         return;
       }
 
@@ -1668,6 +1673,49 @@ export class SellerRequestHandler {
     });
     if (decision.allowed) screen.served();
     return { kind: 'counted', decision };
+  }
+
+  /**
+   * Free route: relays the upstream end-to-end encryption attestation for one
+   * service, for a buyer that will encrypt its messages to the attested key.
+   * Shares the attestation rate limit, since each call reaches the upstream.
+   */
+  private async _handleE2eeAttestation(mux: ProxyMux, request: SerializedHttpRequest, buyerPeerId: string): Promise<void> {
+    const query = new URLSearchParams(request.path.split('?')[1] ?? '');
+    const service = query.get('service') ?? '';
+    const nonce = (query.get('nonce') ?? '').toLowerCase();
+    if (request.method !== 'GET' || !service || !/^[0-9a-f]{64}$/.test(nonce)) {
+      this._sendJsonError(mux, request.requestId, 400, 'invalid_e2ee_attestation_request', 'Send GET with a service and a 32-byte hex nonce.');
+      return;
+    }
+    const provider = this._deps.providers.find((candidate) =>
+      candidate.services.includes(service)
+      && candidate.serviceCategories?.[service]?.includes('e2ee')
+      && typeof candidate.getE2eeAttestation === 'function');
+    if (!provider) {
+      this._sendJsonError(mux, request.requestId, 404, 'e2ee_not_supported', `Service "${service}" has no end-to-end encryption on this peer.`);
+      return;
+    }
+    if (!this._allowAttest(buyerPeerId)) {
+      this._sendJsonError(mux, request.requestId, 429, 'attestation_rate_limited', 'Attestation rate limit exceeded.');
+      return;
+    }
+    try {
+      const attestation = await provider.getE2eeAttestation!(service, nonce);
+      if (!attestation) {
+        this._sendJsonError(mux, request.requestId, 404, 'e2ee_not_supported', `Service "${service}" has no end-to-end encryption on this peer.`);
+        return;
+      }
+      mux.sendProxyResponse({
+        requestId: request.requestId,
+        statusCode: attestation.statusCode,
+        headers: { 'content-type': 'application/json' },
+        body: attestation.body,
+      });
+    } catch (err) {
+      debugWarn(`[SellerHandler] E2EE attestation for ${service} failed: ${err instanceof Error ? err.message : String(err)}`);
+      this._sendJsonError(mux, request.requestId, 502, 'e2ee_attestation_failed', 'The upstream attestation could not be fetched.');
+    }
   }
 
   private _sendJsonError(

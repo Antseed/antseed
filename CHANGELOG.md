@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Zero data access (CLI, `@antseed/node`, `@antseed/buyer-core`, `@antseed/provider-openai`, Gateway Console): a routing policy can require services the seller cannot read (`requireZeroDataAccess`, **Zero data access only** in the console, `--require-zero-data-access` on `antseed gateway … policy set`, or the per-request header `x-antseed-require-zero-data-access`). The buyer fetches the upstream's TEE attestation through the seller, verifies the TDX quote and its binding to the model key and a fresh nonce itself, then encrypts every message to that key and decrypts the streamed answer; the seller relays ciphertext with its own upstream key. Requests that cannot be fully encrypted (images, audio, tools) are refused instead of sent in plaintext. Sellers offer it on Venice `e2ee-*` models by adding the `e2ee` category to the service; the `openai` provider relays the attestation on a free, rate-limited seller route.
+
 ## 2026-11-20 — CLI 0.1.256, Node 0.2.189, Desktop 0.2.91
 
 ### Packages

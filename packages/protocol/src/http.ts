@@ -7,6 +7,12 @@ export const ANTSEED_STREAMING_RESPONSE_HEADER = 'x-antseed-streaming';
  * change mid-run (the desktop's Private chat) sends it on every request.
  */
 export const ANTSEED_REQUIRE_TEE_HEADER = 'x-antseed-require-tee';
+/**
+ * Like `x-antseed-require-tee`, for zero data access: any value but empty,
+ * `0` or `false` sends this request only to services the seller cannot read
+ * (end-to-end encrypted to an attested upstream), on top of the key's policy.
+ */
+export const ANTSEED_REQUIRE_ZERO_DATA_ACCESS_HEADER = 'x-antseed-require-zero-data-access';
 export const VIDEO_DOWNLOAD_STREAM_HEADER = 'x-antseed-video-download';
 export const VIDEO_DOWNLOAD_STREAM_VERSION = 'video-stream-v1';
 /** Keep the first native-video download path bounded and predictable. */

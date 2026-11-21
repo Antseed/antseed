@@ -60,6 +60,14 @@ export interface RoutingPolicy {
    * advertising the TEE verifier are left out before any check.
    */
   requireTee?: boolean
+  /**
+   * Zero data access: only services the seller cannot read. Each message is
+   * encrypted end to end to a key the upstream TEE attests; the buyer checks
+   * the attestation itself and the seller relays only ciphertext. Requests
+   * that cannot be fully encrypted (images, tools) are refused, never sent in
+   * plaintext.
+   */
+  requireZeroDataAccess?: boolean
   /** Price caps; a seller over any cap is not eligible. */
   maxInputUsdPerMillion?: number
   maxOutputUsdPerMillion?: number
@@ -283,7 +291,7 @@ function narrowModelRoutes(
  * Combines a parent policy with a child's. Restrictions accumulate (allow
  * specs intersect as sets of sellers, peer lists included, block lists
  * union, minimums take the higher value, caps the lower, `requireVerified`
- * and `requireTee` are sticky); ranking
+ * `requireTee` and `requireZeroDataAccess` are sticky); ranking
  * preferences (`sort`, `preferFreePeers`, non-strict per-model routes) take
  * the child's value when it sets one. A strict parent route stays strict and
  * can only lose sellers.
@@ -300,6 +308,7 @@ export function narrowPolicy(parent: RoutingPolicy, child: RoutingPolicy | null 
     minReputation: maxOf(p.minReputation, c.minReputation),
     requireVerified: p.requireVerified || c.requireVerified ? true : undefined,
     requireTee: p.requireTee || c.requireTee ? true : undefined,
+    requireZeroDataAccess: p.requireZeroDataAccess || c.requireZeroDataAccess ? true : undefined,
     maxInputUsdPerMillion: minOf(p.maxInputUsdPerMillion, c.maxInputUsdPerMillion),
     maxOutputUsdPerMillion: minOf(p.maxOutputUsdPerMillion, c.maxOutputUsdPerMillion),
     // A level without a cached-input cap bounds cached input by its input cap.
@@ -375,6 +384,7 @@ export function meaningfulPolicy(policy: RoutingPolicy): RoutingPolicy {
   if (result.preferFreePeers === false) delete result.preferFreePeers
   if (result.requireVerified === false) delete result.requireVerified
   if (result.requireTee === false) delete result.requireTee
+  if (result.requireZeroDataAccess === false) delete result.requireZeroDataAccess
   if (result.modelRoutes && Object.keys(result.modelRoutes).length === 0) delete result.modelRoutes
   return result
 }
@@ -402,7 +412,7 @@ export function narrowedFields(sent: RoutingPolicy, effective: RoutingPolicy): s
   for (const field of ['maxInputUsdPerMillion', 'maxOutputUsdPerMillion', 'maxCachedInputUsdPerMillion', 'maxImageUsdPerImage'] as const) {
     if (sent[field] !== undefined && effective[field] !== undefined && effective[field]! < sent[field]!) fields.push(field)
   }
-  for (const field of ['requireVerified', 'requireTee'] as const) {
+  for (const field of ['requireVerified', 'requireTee', 'requireZeroDataAccess'] as const) {
     if (sent[field] === false && effective[field] === true) fields.push(field)
   }
   if (sent.modelRoutes) {
@@ -471,7 +481,7 @@ export function isRoutingPolicy(value: unknown): value is RoutingPolicy {
   if (lists.some((key) => policy[key] !== undefined && !isStringArray(policy[key]))) return false
   const numbers = ['minTrustScore', 'minReputation', 'maxInputUsdPerMillion', 'maxOutputUsdPerMillion', 'maxCachedInputUsdPerMillion', 'maxImageUsdPerImage'] as const
   if (numbers.some((key) => !isOptionalNumber(policy[key]))) return false
-  const flags = ['requireVerified', 'requireTee', 'preferFreePeers'] as const
+  const flags = ['requireVerified', 'requireTee', 'requireZeroDataAccess', 'preferFreePeers'] as const
   if (flags.some((key) => policy[key] !== undefined && typeof policy[key] !== 'boolean')) return false
   if (policy['sort'] !== undefined && !['balanced', 'price', 'latency', 'trust'].includes(policy['sort'] as string)) return false
   const groups = policy['allowedPeerGroups']

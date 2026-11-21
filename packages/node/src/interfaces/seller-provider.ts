@@ -111,6 +111,24 @@ export interface Provider {
    * service of this provider.
    */
   checkUpstreamAccount?(): Promise<UpstreamAccountStatus>;
+
+  /**
+   * Optional relay of the upstream's end-to-end encryption attestation for one
+   * service whose upstream model encrypts end to end (a service in category
+   * `e2ee`). The provider fetches the attestation for the service's upstream
+   * model with the buyer's `nonce` (64 hex characters) and its own upstream
+   * credential, and returns the upstream's response unchanged: the buyer
+   * verifies it and encrypts every message to the attested key, so the seller
+   * relays only ciphertext. The seller serves this route free of charge.
+   * Returns null when the service has no end-to-end encryption.
+   */
+  getE2eeAttestation?(service: string, nonce: string): Promise<E2eeAttestationResponse | null>;
+}
+
+/** An upstream attestation response, relayed to the buyer as the upstream sent it. */
+export interface E2eeAttestationResponse {
+  statusCode: number;
+  body: Uint8Array;
 }
 
 /**

@@ -36,6 +36,31 @@ async function loadPlugin<T>(
   methodName: keyof AntseedProviderPlugin | keyof AntseedRouterPlugin | keyof AntseedVerifierPlugin | keyof Prover,
   opts?: { install?: boolean }
 ): Promise<T> {
+  const { mod, pkgName } = await importPluginModule(nameOrPackage, opts)
+  let plugin: Record<string, unknown> | undefined
+  try {
+    plugin = selectPluginExport(mod, kind, methodName as string)
+  } catch {
+    throw new Error(`Plugin "${pkgName}" exports multiple ${kind} plugins; expected exactly one.`)
+  }
+  if (!plugin) {
+    throw new Error(
+      `Plugin "${pkgName}" does not export a valid ${kind} plugin (expected an export with type: '${kind}' and ${String(methodName)}())`
+    )
+  }
+
+  return plugin as T
+}
+
+/**
+ * Imports an installed plugin package's module with the same path, pin and
+ * trusted-install checks as loading the plugin itself, for a plugin's named
+ * helper exports (e.g. the verifier's DCAP check).
+ */
+export async function importPluginModule(
+  nameOrPackage: string,
+  opts?: { install?: boolean },
+): Promise<{ mod: Record<string, unknown>; pkgName: string }> {
   const pkgName = resolvePackageName(nameOrPackage)
   const pluginsDir = getPluginsDir()
   const pluginPath = join(pluginsDir, 'node_modules', pkgName, 'dist', 'index.js')
@@ -74,20 +99,7 @@ async function loadPlugin<T>(
       )
     }
   }
-
-  let plugin: Record<string, unknown> | undefined
-  try {
-    plugin = selectPluginExport(mod, kind, methodName as string)
-  } catch {
-    throw new Error(`Plugin "${pkgName}" exports multiple ${kind} plugins; expected exactly one.`)
-  }
-  if (!plugin) {
-    throw new Error(
-      `Plugin "${pkgName}" does not export a valid ${kind} plugin (expected an export with type: '${kind}' and ${String(methodName)}())`
-    )
-  }
-
-  return plugin as T
+  return { mod, pkgName }
 }
 
 export function selectPluginExport(

@@ -104,6 +104,10 @@ export interface PolicyPeerFacts {
   teeCapable: boolean
   /** Why its TEE attestation failed, when it advertises one that did. */
   teeFailure?: string
+  /** Whether the offer is end-to-end encrypted (category `e2ee`) and its attestation has not failed. */
+  zeroDataAccess?: boolean
+  /** Why its end-to-end encryption attestation failed, when it did. */
+  zeroDataAccessFailure?: string
 }
 
 /** Up to 4 decimals; a sub-cent price keeps two significant digits so it never reads $0. */
@@ -153,6 +157,9 @@ export function policyExclusionReasons(policy: RoutingPolicy, facts: PolicyPeerF
   }
   if (policy.requireVerified && facts.unverifiedReason) reasons.push(facts.unverifiedReason)
   if (policy.requireTee && !facts.teeCapable) reasons.push(facts.teeFailure ? `TEE attestation failed: ${facts.teeFailure}` : 'no TEE')
+  if (policy.requireZeroDataAccess && !facts.zeroDataAccess) {
+    reasons.push(facts.zeroDataAccessFailure ? `end-to-end encryption failed: ${facts.zeroDataAccessFailure}` : 'no end-to-end encryption')
+  }
   return reasons
 }
 
@@ -166,7 +173,8 @@ function priceCapReasons(label: string, price: number | null, cap: number | unde
  * The policy as it applies to a routing service, which is paid per ranking
  * and returns no inference: without the token and image price caps, and
  * without `requireVerified` (verification proves which model a seller ran).
- * `requireTee` still applies, since a router reads the whole conversation.
+ * `requireTee` and `requireZeroDataAccess` still apply, since a router reads
+ * the whole conversation (so zero data access rules out routing services).
  */
 export function routingServicePolicy(policy: RoutingPolicy): RoutingPolicy {
   const {
