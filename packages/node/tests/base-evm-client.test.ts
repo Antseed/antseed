@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Interface, JsonRpcProvider, makeError, NonceManager, type AbstractSigner, type InterfaceAbi, type TransactionReceipt, type TransactionRequest, type TransactionResponse } from 'ethers';
-import { BaseEvmClient, ReceiptWaitTimeoutError, TransactionCancelledError, type BaseEvmClientOptions } from '../src/payments/evm/base-evm-client.js';
+import { BaseEvmClient, ReceiptWaitTimeoutError, TransactionCancelledError, type BaseEvmClientOptions, type WriteFeeLimit } from '../src/payments/evm/base-evm-client.js';
 
 class TestEvmClient extends BaseEvmClient {
   constructor(options?: BaseEvmClientOptions) {
@@ -16,6 +16,9 @@ class TestEvmClient extends BaseEvmClient {
   }
   async exec(signer: AbstractSigner, abi: InterfaceAbi, method: string, ...args: unknown[]): Promise<string> {
     return this._execWrite(signer, abi, method, ...args);
+  }
+  async execWithin(signer: AbstractSigner, limit: WriteFeeLimit | null, abi: InterfaceAbi, method: string, ...args: unknown[]): Promise<string> {
+    return this._execWriteWithin(signer, limit, abi, method, ...args);
   }
 }
 
@@ -219,8 +222,7 @@ describe('BaseEvmClient speed-ups within a fee limit', () => {
       vi.mocked(provider.getTransactionReceipt).mockResolvedValue(null);
       const sent: TransactionRequest[] = [];
       // First send: max fee 0.011 gwei. One speed-up fits under 0.016 gwei; the next would not.
-      void (client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> })
-        ._execWriteWithin(signerSendingTo(sent, '0x' + '15'.repeat(20)), { maxFeePerGasWei: 16_000_000n }, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n)
+      void client.execWithin(signerSendingTo(sent, '0x' + '15'.repeat(20)), { maxFeePerGasWei: 16_000_000n }, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n)
         .catch(() => undefined);
       // Up to just before the write would be cancelled (120 s).
       await vi.advanceTimersByTimeAsync(110_000);
@@ -242,8 +244,7 @@ describe('BaseEvmClient writes within a fee limit', () => {
     vi.spyOn(provider, 'getTransactionCount').mockResolvedValue(40);
     const sent: TransactionRequest[] = [];
     // Uncapped, the first send would offer 2 x base fee + tip = 0.011 gwei.
-    await (client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> })
-      ._execWriteWithin(signerSendingTo(sent, '0x' + '16'.repeat(20)), { maxFeePerGasWei: 8_000_000n }, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n);
+    await client.execWithin(signerSendingTo(sent, '0x' + '16'.repeat(20)), { maxFeePerGasWei: 8_000_000n }, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n);
     expect(sent).toHaveLength(1);
     expect(BigInt(sent[0]!.maxFeePerGas!)).toBe(8_000_000n);
     expect(BigInt(sent[0]!.maxPriorityFeePerGas!)).toBe(1_000_000n);
@@ -256,8 +257,7 @@ describe('BaseEvmClient writes within a fee limit', () => {
     vi.spyOn(provider, 'getTransactionCount').mockResolvedValue(41);
     const sent: TransactionRequest[] = [];
     // Left unpriced, the signer would fill in its own fees, above the cap.
-    await expect((client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> })
-      ._execWriteWithin(signerSendingTo(sent, '0x' + '17'.repeat(20)), { maxFeePerGasWei: 8_000_000n }, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n))
+    await expect(client.execWithin(signerSendingTo(sent, '0x' + '17'.repeat(20)), { maxFeePerGasWei: 8_000_000n }, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n))
       .rejects.toThrow('fee-capped');
     expect(sent).toHaveLength(0);
   });
@@ -424,9 +424,8 @@ function signerWithHashes(sent: TransactionRequest[], byHash: Map<string, Transa
 }
 
 describe('BaseEvmClient cancels a fee-capped write that cannot mine', () => {
-  const execWithin = (client: TestEvmClient, signer: AbstractSigner, limit: unknown) =>
-    (client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> })
-      ._execWriteWithin(signer, limit, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n)
+  const execWithin = (client: TestEvmClient, signer: AbstractSigner, limit: WriteFeeLimit) =>
+    client.execWithin(signer, limit, ABI as unknown as InterfaceAbi, 'transfer', '0x' + '0a'.repeat(20), 1n)
       .then((hash) => hash, (err: unknown) => err);
 
   /** Base fee 5 Mwei and a 1 Mwei tip, so a capped first send is clamped to the cap; nothing mines yet. */
@@ -577,7 +576,7 @@ describe('BaseEvmClient cancels a fee-capped write that cannot mine', () => {
     }
   });
 
-  it('prices the cancel above the speed-up tip cap when the write was near it', async () => {
+  it('prices the cancel and its bumps above the speed-up tip cap when the write was near it', async () => {
     vi.useFakeTimers();
     try {
       const { client, raiseBaseFee } = stuckClient(62);
@@ -592,6 +591,12 @@ describe('BaseEvmClient cancels a fee-capped write that cannot mine', () => {
       expect(sent).toHaveLength(2);
       // A replacement must raise the tip by at least 10% to be accepted.
       expect(BigInt(sent[1]!.maxPriorityFeePerGas!)).toBeGreaterThanOrEqual(528_000_000n);
+      // The base fee keeps climbing, past the cancel's max fee: the cancel is bumped again.
+      vi.mocked(client.provider.getBlock).mockResolvedValue({ baseFeePerGas: 3_000_000_000n } as never);
+      await vi.advanceTimersByTimeAsync(32_000);
+      expect(sent).toHaveLength(3);
+      expect(sent[2]).toMatchObject({ to: address, nonce: 62 });
+      expect(BigInt(sent[2]!.maxFeePerGas!)).toBeGreaterThan(6_000_000_000n);
     } finally {
       vi.useRealTimers();
     }

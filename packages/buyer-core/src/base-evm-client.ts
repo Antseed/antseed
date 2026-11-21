@@ -418,8 +418,10 @@ export abstract class BaseEvmClient {
     limit: WriteFeeLimit | null = null,
   ): Promise<TransactionReceipt> {
     const owner = {};
-    // The cap holds until the write is cancelled; the cancel is then sped up like any write.
-    let maxFeePerGasWei = limit?.maxFeePerGasWei ?? null;
+    const maxFeePerGasWei = limit?.maxFeePerGasWei ?? null;
+    // Once cancelled, speed-ups bump the cancel past both the fee cap and the speed-up tip cap, or a
+    // cancel priced near that tip could not follow a rising base fee (at most MAX_SPEED_UPS bumps).
+    let cancelled = false;
     const tx = await this._sendBuffered(connected, signerAddress, populated, owner, maxFeePerGasWei);
     const sentAt = Date.now();
     const replaceable = !(connected instanceof NonceManager) && typeof tx.nonce === 'number' && tx.nonce === populated.nonce;
@@ -427,13 +429,15 @@ export abstract class BaseEvmClient {
       atMs: Math.min(sentAt + CAPPED_WRITE_CANCEL_AFTER_MS, limit.cancelByMs ?? Infinity),
       send: async () => {
         const sent = await this._cancel(connected, signerAddress, populated, owner);
-        if (sent) maxFeePerGasWei = null;
+        if (sent) cancelled = true;
         return sent;
       },
     } : undefined;
     return this._waitForReceipt(
       tx,
-      replaceable ? () => this._speedUp(connected, signerAddress, populated, owner, maxFeePerGasWei) : undefined,
+      replaceable
+        ? () => this._speedUp(connected, signerAddress, populated, owner, cancelled ? null : maxFeePerGasWei, cancelled ? null : MAX_SPEED_UP_TIP_WEI)
+        : undefined,
       cancel,
     );
   }
@@ -515,7 +519,7 @@ export abstract class BaseEvmClient {
 
   /**
    * Send `populated` again on the same nonce with fees high enough to replace it (at least 25% more,
-   * and no less than a new tx would pay now). Null when the signer priced it, the tip is at the cap,
+   * and no less than a new tx would pay now). Null when the signer priced it, the tip is at `tipCap`,
    * the replacement would cost more than `maxFeePerGasWei` allows, or the nonce now belongs to a
    * newer operation.
    */
@@ -525,13 +529,14 @@ export abstract class BaseEvmClient {
     populated: TransactionRequest,
     owner: object,
     maxFeePerGasWei: bigint | null,
+    tipCap: bigint | null = MAX_SPEED_UP_TIP_WEI,
   ): Promise<TransactionResponse | null> {
     if (populated.maxPriorityFeePerGas == null || populated.maxFeePerGas == null || populated.nonce == null) return null;
     const key = this._nonceKey(signerAddress);
     const ownerKey = `${key}:${populated.nonce}`;
     // An operation that lost its nonce prices no more replacements (checked again under the lock).
     if (nonceOwners.get(ownerKey) !== owner) return null;
-    const fees = this._replacementFees(populated, await this._feeFields());
+    const fees = this._replacementFees(populated, await this._feeFields(), tipCap);
     if (fees === null || (maxFeePerGasWei !== null && fees.maxFeePerGas > maxFeePerGasWei)) return null;
     const replacement = { ...populated, ...fees };
     return this._withNonceLock(key, async () => {
@@ -544,8 +549,8 @@ export abstract class BaseEvmClient {
 
   /**
    * Fees that replace `populated` on its nonce: the tip doubled (or the current one, if higher) and a
-   * max fee 25% higher (or what a new tx would pay now). A speed-up's tip stops at MAX_SPEED_UP_TIP_WEI
-   * (null once there); a cancel's does not, or a write priced near that tip could never be cancelled.
+   * max fee 25% higher (or what a new tx would pay now). The tip stops at `tipCap` (null once there);
+   * a cancel and its bumps have none, or a write priced near that tip could never be cancelled.
    */
   private _replacementFees(
     populated: TransactionRequest,
