@@ -3,8 +3,7 @@ import pkg from '../../../../package.json' with { type: 'json' }
 import { requireCurrentVerifier } from '../../../verifier/release-check.js'
 import { verifierRuleOverrides } from '../../../verifier/verifier-compat.js'
 import type { Command } from 'commander'
-import { randomBytes } from 'node:crypto'
-import { link, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { canonicalHashBytes32, queryProfileHash, type KbfReferenceV1 } from '@antseed/fingerprints'
 import { modelHash, serviceHash } from '@antseed/node/payments'
@@ -69,6 +68,9 @@ import { DIFF_HOLD_EPOCHS, diffHolds, type DiffHolds } from '../../../verifier/d
 import { auditorRemovedMessage, createAuditorApprovalGate } from '../../../verifier/auditor-approval.js'
 import { asError, normalized } from '../../../verifier/utils.js'
 import { AuditNotStarted } from '../../../verifier/audit-method.js'
+import { testsOfRun } from '../../../verifier/audit-screens.js'
+import { flipsMasterIn } from '../../../verifier/flips-run.js'
+import { bankRouteOracle } from '../../../verifier/reference-oracle.js'
 import {
   classifyVerificationTargetServices,
   loadBuyerProxySnapshot,
@@ -141,15 +143,12 @@ import {
   windowIncludesSeller,
   type AuditWindowV1,
 } from '../../../verifier/audit-window.js'
-import { askReferenceInputTokens, askReferenceReplies, createReferenceRequestLimiter, referenceConcurrencyWarning } from '../../../verifier/model-reference.js'
-import { TOKENIZER_PRECHECK_RULE, createTokenizerPrecheckScreen, describeTokenizerCounts, measureTokenizerReference } from '../../../verifier/tokenizer-precheck.js'
-import { createOutputCapScreen, describeOutputCapSummary } from '../../../verifier/output-cap.js'
-import { OUTPUT_ECHO_RULE, createOutputEchoScreen, outputEchoPrompt } from '../../../verifier/output-echo.js'
-import { createFlipsScreen, flipsSeed, type FlipsProbe, type FlipsUnavailable } from '../../../verifier/flips.js'
-import { FLIPS_RULE, flipsCounts, isValidFlipsPair } from '../../../verifier/flips-score.js'
+import { createReferenceRequestLimiter, referenceConcurrencyWarning } from '../../../verifier/model-reference.js'
+import { describeTokenizerCounts } from '../../../verifier/tokenizer-precheck.js'
+import { describeOutputCapSummary } from '../../../verifier/output-cap.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { auditDecision, closeCallRuleForExtensions, earliestSetTime, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
-import { decidedRecords, resumeMaterialFor, sameConfirmation, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
+import { decidedRecords, recordsOf, resumeMaterialFor, sameConfirmation, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
 import {
   confirmationTargetsByModel,
   describeTallies,
@@ -593,10 +592,10 @@ export async function loadRunConfirmations(input: {
 }
 
 /**
- * Writes what a model's cap or echo reference decided this run (whether the check applies, why, and the reference's
- * own numbers) beside the model's audits, for the run's report and a dry pass. Never fails the run.
+ * Writes what the reference of one of a model's tests decided this run (whether the check applies, why, and the
+ * reference's own numbers) beside the model's audits, for the run's report and a dry pass. Never fails the run.
  */
-async function writeOutputCheckReference(directory: string, model: string, check: 'output-cap' | 'output-echo' | 'flips-first' | 'flips-confirm', record: unknown): Promise<void> {
+async function writeOutputCheckReference(directory: string, model: string, check: string, record: unknown): Promise<void> {
   try {
     await writeJsonAtomic(join(directory, `${check}-reference.json`), { version: 1, kind: 'antseed-verifier-output-check-reference', model, check, record }, true)
   } catch {
@@ -678,110 +677,12 @@ function sameAuditTarget(evidence: ProxyAuditEvidenceV1, result: { peerId: strin
 
 /** The test records an evidence file holds: what a resume or a retry of its audit carries. */
 function evidenceRecords(evidence: ProxyAuditEvidenceV1): StoredCheckRecords {
-  return {
-    ...(evidence.tokenizerPrecheck ? { tokenizerPrecheck: evidence.tokenizerPrecheck } : {}),
-    ...(evidence.outputCap ? { outputCap: evidence.outputCap } : {}),
-    ...(evidence.outputEcho ? { outputEcho: evidence.outputEcho } : {}),
-    ...(evidence.flips ? { flips: evidence.flips } : {}),
-  }
+  return Object.fromEntries(recordsOf(evidence).flatMap(({ check, record }) => (record ? [[check.slot, record]] : [])))
 }
 
-/**
- * The auditor's private FLIPS master for the epoch: 32 random bytes in the epoch's evidence directory, readable by the
- * owner only, made once before any lane. Only the seed derived from it for one model audit and stage (`flipsSeed`) is
- * stored and published, so a publication reveals no other audit's pairs. Made atomically: written in full to a file of
- * its own, then linked into place, so a crash leaves no empty key and a concurrent run's key wins. Throws when the key
- * is unreadable or readable by others.
- */
-export async function flipsMasterFor(evidenceDir: string, epoch: string): Promise<string> {
-  const path = join(epochDirectory(evidenceDir, epoch), 'flips-master.key')
-  const readKey = async (): Promise<string | null> => {
-    const info = await stat(path).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return null
-      throw error
-    })
-    if (!info) return null
-    if ((info.mode & 0o077) !== 0) {
-      throw new Error(`the FLIPS key ${path} is readable by others (mode ${(info.mode & 0o777).toString(8)}): restrict it to its owner (chmod 600) and run again`)
-    }
-    const text = (await readFile(path, 'utf8')).trim()
-    if (!/^[0-9a-f]{64}$/.test(text)) {
-      throw new Error(`the FLIPS key ${path} is unreadable: rename it to start a new key for epoch ${epoch}; checks already published keep their own seeds`)
-    }
-    return text
-  }
-  const stored = await readKey()
-  if (stored) return stored
-  await mkdir(dirname(path), { recursive: true })
-  const temporary = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
-  await writeFile(temporary, `${randomBytes(32).toString('hex')}\n`, { mode: 0o600, flag: 'wx' })
-  try {
-    await link(temporary, path).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== 'EEXIST') throw error
-    })
-  } finally {
-    await unlink(temporary).catch(() => undefined)
-  }
-  const made = await readKey()
-  if (!made) throw new Error(`the FLIPS key for epoch ${epoch} could not be made`)
-  return made
-}
-
-/**
- * Dry run only (`ANTSEED_VERIFIER_FLIPS_PROBE`, JSON): chosen word pairs, a stage for every check, and a fresh-pairs
- * follow-up after each first flag. A probed check is a diagnostic and never counts. A value that cannot be read is no
- * probe, with the reason: it never stops the run.
- */
-export function parseFlipsProbe(raw: string | undefined): { probe: FlipsProbe | null; problem: string | null } {
-  if (!raw) return { probe: null, problem: null }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE is not JSON' }
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE is not an object' }
-  const value = parsed as { pairs?: unknown; stage?: unknown; followUpFirstFlags?: unknown }
-  let pairs: Array<[string, string]> | undefined
-  if (value.pairs !== undefined) {
-    if (!Array.isArray(value.pairs) || value.pairs.length !== FLIPS_RULE.pairsPerCheck
-      || !value.pairs.every((pair) => Array.isArray(pair) && pair.length === 2 && typeof pair[0] === 'string' && typeof pair[1] === 'string'
-        && pair[0].length <= 40 && pair[1].length <= 40 && isValidFlipsPair([pair[0], pair[1]]))) {
-      return { probe: null, problem: `ANTSEED_VERIFIER_FLIPS_PROBE pairs must be ${FLIPS_RULE.pairsPerCheck} pairs of two different words` }
-    }
-    pairs = (value.pairs as string[][]).map((pair) => [pair[0]!, pair[1]!])
-  }
-  if (value.stage !== undefined && value.stage !== 'first' && value.stage !== 'confirm') return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE stage must be first or confirm' }
-  if (value.followUpFirstFlags !== undefined && typeof value.followUpFirstFlags !== 'boolean') return { probe: null, problem: 'ANTSEED_VERIFIER_FLIPS_PROBE followUpFirstFlags must be true or false' }
-  return {
-    probe: {
-      ...(pairs ? { pairs } : {}),
-      ...(value.stage === 'first' || value.stage === 'confirm' ? { stage: value.stage } : {}),
-      ...(value.followUpFirstFlags === true ? { followUpFirstFlags: true } : {}),
-    },
-    problem: null,
-  }
-}
-
-/**
- * The FLIPS status of one model in one run, beside its audits: every stage with no result and why (the reference
- * failed or is unusable, a check failed, the key failed), and the probe when one is on. Best effort, never published.
- */
-function flipsStatusRecorder(path: string, model: string, base: { probe?: FlipsProbe; keyFailed?: string }, warn: (line: string) => void) {
-  const status: { version: 1; kind: 'antseed-verifier-flips-status'; model: string; probe?: FlipsProbe; keyFailed?: string; unavailable: FlipsUnavailable[] } = {
-    version: 1, kind: 'antseed-verifier-flips-status', model, ...base, unavailable: [],
-  }
-  let tail = Promise.resolve()
-  const write = (): void => {
-    tail = tail.then(() => writeJsonAtomic(path, status, true)).catch(() => undefined)
-  }
-  write()
-  return (event: FlipsUnavailable): void => {
-    status.unavailable.push(event)
-    warn(`FLIPS ${model} ${event.stage}: no result (${event.code}): ${event.detail}`)
-    write()
-  }
-}
+// The tests of FLIPS's key and of its probe reach both through this module, the key by the evidence directory.
+export { parseFlipsProbe } from '../../../verifier/flips-run.js'
+export const flipsMasterFor = (evidenceDir: string, epoch: string): Promise<string> => flipsMasterIn(epochDirectory(evidenceDir, epoch), epoch)
 
 export function normalizeVerifierPeerId(value: string): string {
   const normalized = value.trim().replace(/^0x/i, '').toLowerCase()
@@ -1421,30 +1322,31 @@ export async function runVerifierRound(
           buyerProxy: proxy.baseUrl,
           startedAt: startedAtMs,
         })
-        // FLIPS: the auditor's private master for the epoch, made once before any lane (`flipsMasterFor`), and its
-        // address for the draw. While FLIPS does not count, a failure here means no FLIPS this run, never a failed run.
-        const flipsOn = config.verifier?.flips !== false
-        let flipsKeyFailed: string | null = null
-        const flipsMaster = !flipsOn ? null : await flipsMasterFor(evidenceDir, epoch).catch((error: unknown) => {
-          flipsKeyFailed = asError(error).message
-          console.warn(chalk.yellow(`FLIPS: no randomness check this run: ${flipsKeyFailed}`))
-          return null
-        })
-        // A resumed run keeps the seeds of the run it resumes, so an unfinished FLIPS is drawn as before.
-        const flipsRunId = requestedResumeManifest?.runId ?? runId
-        // FLIPS's own limiters: its reference and seller requests never queue with the questions'.
-        const flipsReferenceLimiter = createReferenceRequestLimiter(config.verifier)
-        const flipsSellerLimiter = new ConcurrencyLimiter(config.verifier?.auditMaxConcurrentBatches ?? 24)
-        let flipsAuditor = ''
-        try {
-          flipsAuditor = (await resolveAuditorAddress({ config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor })).address
-        } catch {
-          // The draw keeps its pairs unforeseeable through the seed; the address only sets auditors apart.
-        }
-        const parsedProbe = flipsOn ? parseFlipsProbe(process.env['ANTSEED_VERIFIER_FLIPS_PROBE']) : { probe: null, problem: null }
-        if (parsedProbe.problem) console.warn(chalk.yellow(`FLIPS: probe ignored: ${parsedProbe.problem}`))
-        const flipsProbe = parsedProbe.probe
-        if (flipsProbe) console.warn(chalk.yellow(`FLIPS: dry-run probe on (${JSON.stringify(flipsProbe)}): every FLIPS record is a diagnostic`))
+        // The auditor's address for a test's draw, read once: when a test first asks for it, or below.
+        let auditorOfRun: Promise<string> | null = null
+        const auditorForTests = (): Promise<string> => (auditorOfRun ??= (async () => {
+          try {
+            return (await resolveAuditorAddress({ config: config.verifier, dataDir: globalOptions.dataDir, flag: options.auditor })).address
+          } catch {
+            // The draw keeps its pairs unforeseeable through the seed; the address only sets auditors apart.
+            return ''
+          }
+        })())
+        // Each test's work for the whole run, made once before any lane (`testsOfRun`): a key, limiters of its own.
+        const screensOfModel = await testsOfRun({
+          epoch,
+          epochDir: epochDirectory(evidenceDir, epoch),
+          // A resumed run keeps the seeds of the run it resumes, so a test it left unfinished is drawn as before.
+          runId: requestedResumeManifest?.runId ?? runId,
+          auditor: auditorForTests,
+          ownLimiters: {
+            reference: () => createReferenceRequestLimiter(config.verifier),
+            seller: () => new ConcurrencyLimiter(config.verifier?.auditMaxConcurrentBatches ?? 24),
+          },
+          warn: (line) => console.warn(chalk.yellow(line)),
+        }, config.verifier)
+        // The address is read in every run, also one in which no test asked for it.
+        await auditorForTests()
         // Confirmations assigned to this auditor: which got a target (or are already answered by a
         // result this epoch), and why each of the seller's other peers did not.
         const auditedConfirmations = new Set<string>()
@@ -1762,9 +1664,9 @@ export async function runVerifierRound(
         const concurrencyWarning = enrollmentBudget === null ? null : referenceConcurrencyWarning(config.verifier)
         if (concurrencyWarning) console.warn(chalk.yellow(concurrencyWarning))
         const requestLimiter = enrollmentBudget === null ? null : createReferenceRequestLimiter(config.verifier)
-        // The tokenizer pre-check asks the reference in every run, also one that builds no question set: one
+        // The tests ask the reference in every run, also one that builds no question set: one
         // limiter for the run, so its models' reference asks share the configured cap.
-        const precheckReferenceLimiter = requestLimiter ?? createReferenceRequestLimiter(config.verifier)
+        const testReferenceLimiter = requestLimiter ?? createReferenceRequestLimiter(config.verifier)
         runProgress = new VerifierRunProgress(preparedModels.map(({ model, targets, skipped }) => ({
           model,
           providerCount: targets.length + skipped.length,
@@ -1797,150 +1699,32 @@ export async function runVerifierRound(
 
           // Every seller is asked this epoch's question set; a resumed audit may still use an older reference.
           const referenceSources = new Map<string, KbfReferenceV1>()
-          // The tokenizer pre-check of this model's sellers (`createTokenizerPrecheckScreen`): its probes are
-          // written and measured on the reference once, when the first seller is audited, whose question set
-          // names the bank whose route is asked. Its crowd is every seller of the model the buyer would audit
-          // (`tokenizerPrecheckSellers`), not only the ones this run audits: a retry, a confirmation or a
-          // `--peer` run audits one or two, and they alone could not tell a wrong reference from a wrong seller.
-          const tokenizerPrecheck = config.verifier?.tokenizerPrecheck === false ? null : createTokenizerPrecheckScreen<KbfReferenceV1>({
-            sellers: tokenizerPrecheckSellers(laneProxy.peers, verifierModelServices(config.verifier, model), targetPolicyFor(model)),
-            proxyBaseUrl: laneProxy.baseUrl,
-            responseAuthReader: responseAuthReader!,
-            limiter: batchLimiter,
-            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
-            onUnbacked: (crowd, referenceDelta) => runProgress!.above(() => console.warn(chalk.yellow(crowd.outvoted
-              ? `${model}: ${crowd.largestGroup} sellers sign ${crowd.groupDelta} input tokens for a text the reference counts as ${referenceDelta}, `
-                + `and only ${crowd.agree} sign the reference's count. The reference may not be the model they serve; such a seller is judged on its questions.`
-              : `${model}: a seller signs input tokens that are off the reference's (${referenceDelta}) in every round, but none of the model's `
-                + `${crowd.deltas.length - 1} other seller(s) signs the reference's count (${crowd.measured - 1} could be read). Nothing backs the reference; such a seller is judged on its questions.`,
-            ))),
-            reference: async (settings) => {
-              const reference = await measureTokenizerReference({
-                ask: async (contents, signal) => askReferenceInputTokens({
-                  model,
-                  settings,
-                  contents,
-                  ...(signal ? { signal } : {}),
-                  maxTokens: TOKENIZER_PRECHECK_RULE.maxTokens,
-                  config: config.verifier,
-                  catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
-                  buyerProxyPort: config.buyer.proxyPort,
-                  requestLimiter: precheckReferenceLimiter,
-                }),
-              })
-              const unmeasured = reference.rounds.find((round) => round.delta === null)
-              if (unmeasured) {
-                runProgress!.above(() => console.warn(chalk.yellow(
-                  `${model}: the tokenizer pre-check has no reference this run (${unmeasured.failure}); its sellers are judged on the questions alone`,
-                )))
-              }
-              return reference
-            },
-          })
-          const capMeasureWithin = process.env['ANTSEED_VERIFIER_CAP_MEASURE_WITHIN'] === '1'
-          if (capMeasureWithin) {
-            runProgress!.above(() => console.log(chalk.yellow(`${model}: ANTSEED_VERIFIER_CAP_MEASURE_WITHIN is on: the cap check also measures answers that kept to the limit (a dry pass's diagnostic; it costs reference requests and changes no result)`)))
-          }
-          // The cap check of this model's sellers (`createOutputCapScreen`): whether it applies is decided once, by
-          // the reference measuring a count in words on the route of the seller's question set; each seller's
-          // answers billed over the limit are measured there too.
-          const outputCap = config.verifier?.outputChecks === false ? null : createOutputCapScreen<KbfReferenceV1>({
-            // A dry pass (nothing submitted) also measures answers that kept to the limit, to show the measurement's scale.
-            measureWithin: capMeasureWithin,
-            onReady: (record) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, 'output-cap', record),
-            proxyBaseUrl: laneProxy.baseUrl,
-            responseAuthReader: responseAuthReader!,
-            limiter: batchLimiter,
-            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
-            ask: (settings) => async (contents, signal) => askReferenceInputTokens({
-              model,
-              settings,
-              contents,
-              ...(signal ? { signal } : {}),
-              maxTokens: TOKENIZER_PRECHECK_RULE.maxTokens,
-              config: config.verifier,
-              catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
-              buyerProxyPort: config.buyer.proxyPort,
-              requestLimiter: precheckReferenceLimiter,
-            }),
-            // The model's own reply to a capped request: the check applies only when it keeps the limit.
-            askReply: (settings) => async (prompt, cap, signal) => {
-              const replied = await askReferenceReplies({
-                model,
-                settings,
-                contents: [prompt],
-                ...(signal ? { signal } : {}),
-                maxTokens: cap,
-                config: config.verifier,
-                catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
-                buyerProxyPort: config.buyer.proxyPort,
-                requestLimiter: precheckReferenceLimiter,
-              })
-              const first = replied.results[0]
-              if (!first?.response) throw new Error(first?.failure ?? 'no answer')
-              return { requestBody: first.requestBody, response: first.response, provider: first.provider, oneProvider: replied.oneProvider }
-            },
-          })
-          // The echo check of this model's sellers (`createOutputEchoScreen`): its texts are written and measured on
-          // the reference once, and its crowd is every seller of the model the buyer would audit, as for the pre-check.
-          const outputEcho = config.verifier?.outputChecks === false ? null : createOutputEchoScreen<KbfReferenceV1>({
-            onReady: (record) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, 'output-echo', record),
-            sellers: tokenizerPrecheckSellers(laneProxy.peers, verifierModelServices(config.verifier, model), targetPolicyFor(model)),
-            proxyBaseUrl: laneProxy.baseUrl,
-            responseAuthReader: responseAuthReader!,
-            limiter: batchLimiter,
-            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
-            ask: (settings) => async (texts, signal) => askReferenceReplies({
-              model,
-              settings,
-              contents: texts.map(outputEchoPrompt),
-              ...(signal ? { signal } : {}),
-              maxTokens: OUTPUT_ECHO_RULE.maxTokens,
-              config: config.verifier,
-              catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
-              buyerProxyPort: config.buyer.proxyPort,
-              requestLimiter: precheckReferenceLimiter,
-            }),
-          })
-          // The randomness check of this model's sellers (`createFlipsScreen`): its reference is asked once per stage
-          // and run, on a plain route with the sellers' own body; its pairs come from this model audit's seed.
-          const flipsUnavailable = flipsOn ? flipsStatusRecorder(
-            join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'flips-status.json'),
+          // The screens of this model's tests (`testsOfRun`), each built by its test from what the run hands it here.
+          const screens = screensOfModel({
             model,
-            { ...(flipsProbe && !flipsCounts(model, FLIPS_RULE) ? { probe: flipsProbe } : {}), ...(flipsKeyFailed ? { keyFailed: flipsKeyFailed } : {}) },
-            (line) => runProgress ? runProgress.above(() => console.warn(chalk.yellow(line))) : console.warn(chalk.yellow(line)),
-          ) : null
-          // A probe is a dry-run diagnostic: where FLIPS counts for this model it is refused, never run.
-          const modelProbe = flipsProbe && flipsCounts(model, FLIPS_RULE) ? null : flipsProbe
-          if (flipsProbe && !modelProbe) console.warn(chalk.yellow(`FLIPS: probe refused for ${model}: FLIPS counts for it`))
-          const flips = flipsMaster === null ? null : createFlipsScreen<KbfReferenceV1>({
-            model,
-            auditor: flipsAuditor,
-            epoch,
-            seedFor: (stage) => flipsSeed(flipsMaster, { model, epoch, runId: flipsRunId, stage }),
-            ...(modelProbe ? { probe: modelProbe } : {}),
-            onReady: (reference) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, `flips-${reference.stage}`, reference),
-            ...(flipsUnavailable ? { onUnavailable: flipsUnavailable } : {}),
-            proxyBaseUrl: laneProxy.baseUrl,
-            responseAuthReader: responseAuthReader!,
-            limiter: flipsSellerLimiter,
-            requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
-            // Only a route proven to serve one provider (a pinned peer, or OpenRouter pinned to one) vouches for unnamed answers.
-            ask: (settings) => async (bodies, signal) => {
-              const asked = await askReferenceReplies({
-                model,
-                settings,
-                contents: [],
-                bodies,
-                plainRoute: true,
-                signal,
-                maxTokens: 0,
-                config: config.verifier,
-                catalog: await loadConfiguredVerifierModelCatalog(config.verifier),
-                buyerProxyPort: config.buyer.proxyPort,
-                requestLimiter: flipsReferenceLimiter,
-              })
-              return { ...asked, oneProvider: asked.provenOneProvider }
+            // Every seller of the model the buyer would audit, not only the ones this run audits. Listed when a test
+            // asks for it, as each test listed it for itself.
+            get sellers() {
+              return tokenizerPrecheckSellers(laneProxy.peers, verifierModelServices(config.verifier, model), targetPolicyFor(model))
+            },
+            seller: {
+              proxyBaseUrl: laneProxy.baseUrl,
+              responseAuthReader: responseAuthReader!,
+              limiter: batchLimiter,
+              requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
+            },
+            reference: bankRouteOracle({
+              model,
+              config: config.verifier,
+              catalog: () => loadConfiguredVerifierModelCatalog(config.verifier),
+              buyerProxyPort: config.buyer.proxyPort,
+            }),
+            limiters: { reference: testReferenceLimiter },
+            report: {
+              reference: (check, record) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, check, record),
+              file: (name, content) => writeJsonAtomic(join(modelAuditsDirectory(evidenceDir, epoch, model, runId), name), content, true),
+              warn: (line) => runProgress!.above(() => console.warn(chalk.yellow(line))),
+              note: (line) => runProgress!.above(() => console.log(chalk.yellow(line))),
             },
           })
           // First audits and extra sets share timeouts and concurrency; only where evidence goes differs.
@@ -1959,10 +1743,7 @@ export async function runVerifierRound(
             batchConcurrencyPromotionLatencyMs: config.verifier?.auditConcurrencyPromotionLatencyMs ?? 30_000,
             batchLimiter,
             sellerThinking,
-            ...(tokenizerPrecheck ? { tokenizerPrecheck } : {}),
-            ...(outputCap ? { outputCap } : {}),
-            ...(outputEcho ? { outputEcho } : {}),
-            ...(flips ? { flips } : {}),
+            ...screens,
           })
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
             if (await stopIfAuditorRemoved()) {

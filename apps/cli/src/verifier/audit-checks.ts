@@ -1,18 +1,27 @@
-import { canonicalJsonStringify } from '@antseed/fingerprints'
+import { canonicalJsonStringify, type KbfReferenceV1 } from '@antseed/fingerprints'
 import { auditedServiceNames } from './audited-models.js'
-import type { MethodScreen, OwnScreen, SellerAuditStart } from './audit-method.js'
+import type { MethodEnv, MethodRun, MethodScreen, OwnScreen, OwnScreenFor, SellerAuditStart } from './audit-method.js'
 import {
   FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE, describeFlipsFlag, flipsPaidRequests, isFlipsRecord, isProbeDraw, summarizeFlips, validateFlips,
   type FlipsStage, type FlipsV1,
 } from './flips.js'
+import { flipsForRun } from './flips-run.js'
 import { FLIPS_RULE, flipsCounts, flipsRuleById, type FlipsRule } from './flips-score.js'
-import { describeOutputCapFlag, outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1 } from './output-cap.js'
-import { describeOutputEchoFlag, outputEchoPaidRequests, summarizeOutputEcho, validateOutputEcho, type EchoSellerAskV1, type OutputEchoV1 } from './output-echo.js'
+import {
+  createOutputCapScreen, describeOutputCapFlag, outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1,
+} from './output-cap.js'
+import {
+  OUTPUT_ECHO_RULE, createOutputEchoScreen, describeOutputEchoFlag, outputEchoPaidRequests, outputEchoPrompt, summarizeOutputEcho, validateOutputEcho,
+  type EchoSellerAskV1, type OutputEchoV1,
+} from './output-echo.js'
 import type { PaidRequest, ProxyAuditEvidenceExchangeV1 } from './proxy-evidence.js'
 import { matchesEnrolledService } from './response-auth-reader.js'
 import { sameModelService } from './service-discovery.js'
 import {
+  TOKENIZER_PRECHECK_RULE,
+  createTokenizerPrecheckScreen,
   describeTokenizerMismatch,
+  measureTokenizerReference,
   summarizeTokenizerPrecheck,
   tokenizerPrecheckPaidRequests,
   validateTokenizerPrecheck,
@@ -23,8 +32,8 @@ import {
 /**
  * The checks of a seller audit, behind one description each, so that every rule that reads them (which flagged, which
  * passed, which decided, what ended the audit) is written once over the list instead of once per check. Each check
- * keeps its own file, rule, record and judgement; the list only says how to read what it stored, and how an audit runs
- * it from the check's own screen (`audit-method.ts`).
+ * keeps its own file, rule, record and judgement; the list only says how to read what it stored, how a run builds the
+ * check's own screen for a model, and how an audit runs the check from that screen (`audit-method.ts`).
  */
 
 /**
@@ -192,6 +201,19 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   carriedIsOfAudit?(carried: CheckRecords[Slot], audit: SellerAuditStart): boolean
   /** The test as an audit runs it (`audit-method.ts`), from its own screen for the model and run. */
   screen(own: OwnScreen<Slot>): MethodScreen<Slot>
+  /** The config switch that turns the test off: `verifier.<key>` set to false. Any other value leaves it on. */
+  toggle: { key: 'tokenizerPrecheck' | 'outputChecks' | 'flips' }
+  /**
+   * The test in one run. Called once, before any model lane, and only when the test is switched on: it does the work
+   * its models share (a key, limiters of its own) and gives what builds the test's own screen for one model, which the
+   * audit then runs through `screen`.
+   */
+  forRun(run: MethodRun): OwnScreenFor<Slot> | Promise<OwnScreenFor<Slot>>
+  /**
+   * A line for the operator about one model that does not wait for the test's screen: said for every model of a run,
+   * also with the test switched off.
+   */
+  announce?(env: MethodEnv): void
 }
 
 const stored = (
@@ -229,7 +251,35 @@ export const TOKENS_CHECK: RecordCheck<'tokenizerPrecheck'> = {
     ready: (audit) => precheck.ready(audit.bank),
     check: (audit) => precheck.check(audit.seller, audit.bank, audit.clock),
   }),
+  toggle: { key: 'tokenizerPrecheck' },
+  // The tokenizer pre-check of this model's sellers (`createTokenizerPrecheckScreen`): its probes are
+  // written and measured on the reference once, when the first seller is audited, whose question set
+  // names the bank whose route is asked. Its crowd is every seller of the model the buyer would audit
+  // (`tokenizerPrecheckSellers`), not only the ones this run audits: a retry, a confirmation or a
+  // `--peer` run audits one or two, and they alone could not tell a wrong reference from a wrong seller.
+  forRun: () => ({ model, sellers, seller, reference, limiters, report }) => createTokenizerPrecheckScreen<KbfReferenceV1>({
+    sellers,
+    ...seller,
+    onUnbacked: (crowd, referenceDelta) => report.warn(crowd.outvoted
+      ? `${model}: ${crowd.largestGroup} sellers sign ${crowd.groupDelta} input tokens for a text the reference counts as ${referenceDelta}, `
+        + `and only ${crowd.agree} sign the reference's count. The reference may not be the model they serve; such a seller is judged on its questions.`
+      : `${model}: a seller signs input tokens that are off the reference's (${referenceDelta}) in every round, but none of the model's `
+        + `${crowd.deltas.length - 1} other seller(s) signs the reference's count (${crowd.measured - 1} could be read). Nothing backs the reference; such a seller is judged on its questions.`),
+    reference: async (bank) => {
+      const measured = await measureTokenizerReference({
+        ask: (contents, signal) => reference.inputTokens(bank, contents, { maxTokens: TOKENIZER_PRECHECK_RULE.maxTokens, signal, limiter: limiters.reference }),
+      })
+      const unmeasured = measured.rounds.find((round) => round.delta === null)
+      if (unmeasured) {
+        report.warn(`${model}: the tokenizer pre-check has no reference this run (${unmeasured.failure}); its sellers are judged on the questions alone`)
+      }
+      return measured
+    },
+  }),
 }
+
+/** Dry pass only (`ANTSEED_VERIFIER_CAP_MEASURE_WITHIN=1`): the cap check also measures answers that kept to the limit. */
+const capMeasuresWithin = (): boolean => process.env['ANTSEED_VERIFIER_CAP_MEASURE_WITHIN'] === '1'
 
 export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
   slot: 'outputCap',
@@ -253,6 +303,31 @@ export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
   screen: (cap) => ({
     ready: (audit) => cap.ready(audit.bank),
     check: (audit) => cap.check(audit.seller, audit.bank, audit.thinking, audit.clock),
+  }),
+  toggle: { key: 'outputChecks' },
+  // Said for every model while the dry-pass switch is set, also with the output checks off: the run has always said
+  // it whatever the tests' own switches say.
+  announce({ model, report }) {
+    if (capMeasuresWithin()) {
+      report.note(`${model}: ANTSEED_VERIFIER_CAP_MEASURE_WITHIN is on: the cap check also measures answers that kept to the limit (a dry pass's diagnostic; it costs reference requests and changes no result)`)
+    }
+  },
+  // The cap check of this model's sellers (`createOutputCapScreen`): whether it applies is decided once, by
+  // the reference measuring a count in words on the route of the seller's question set; each seller's
+  // answers billed over the limit are measured there too.
+  forRun: () => ({ seller, reference, limiters, report }) => createOutputCapScreen<KbfReferenceV1>({
+    // A dry pass (nothing submitted) also measures answers that kept to the limit, to show the measurement's scale.
+    measureWithin: capMeasuresWithin(),
+    onReady: (record) => report.reference('output-cap', record),
+    ...seller,
+    ask: (bank) => (contents, signal) => reference.inputTokens(bank, contents, { maxTokens: TOKENIZER_PRECHECK_RULE.maxTokens, signal, limiter: limiters.reference }),
+    // The model's own reply to a capped request: the check applies only when it keeps the limit.
+    askReply: (bank) => async (prompt, cap, signal) => {
+      const replied = await reference.replies(bank, { contents: [prompt], maxTokens: cap }, { signal, limiter: limiters.reference })
+      const first = replied.results[0]
+      if (!first?.response) throw new Error(first?.failure ?? 'no answer')
+      return { requestBody: first.requestBody, response: first.response, provider: first.provider, oneProvider: replied.oneProvider }
+    },
   }),
 }
 
@@ -307,6 +382,15 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
       // Work for the fixed amount alone keeps to the audit's spare time.
       spare: () => audit.spare(),
     }),
+  }),
+  toggle: { key: 'outputChecks' },
+  // The echo check of this model's sellers (`createOutputEchoScreen`): its texts are written and measured on
+  // the reference once, and its crowd is every seller of the model the buyer would audit, as for the pre-check.
+  forRun: () => ({ sellers, seller, reference, limiters, report }) => createOutputEchoScreen<KbfReferenceV1>({
+    onReady: (record) => report.reference('output-echo', record),
+    sellers,
+    ...seller,
+    ask: (bank) => (texts, signal) => reference.replies(bank, { contents: texts.map(outputEchoPrompt), maxTokens: OUTPUT_ECHO_RULE.maxTokens }, { signal, limiter: limiters.reference }),
   }),
 }
 
@@ -421,6 +505,9 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
     // FLIPS can be a diagnostic (recorded only): a write made only for it never stops the audit when it fails.
     bestEffortCheckpoint: true,
   }),
+  toggle: { key: 'flips' },
+  // Its key, its probe and its own limiters once per run, then each model's screen (`flips-run.ts`).
+  forRun: flipsForRun,
 }
 
 /**
