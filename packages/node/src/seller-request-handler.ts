@@ -277,6 +277,21 @@ const ATTEST_RATE_MAX_TRACKED_PEERS = 1024;
  * Extracted from AntseedNode to isolate seller request handling from core
  * node orchestration.
  */
+/**
+ * Per provider, the relayed requests in flight. Each takes one of the
+ * provider's slots, though none passes through it. Kept with the provider
+ * object: its limit is its own, whichever handler admits the request.
+ */
+const relayedInFlight = new WeakMap<Provider, number>();
+
+/**
+ * The provider's slots in use: the requests it is serving itself, and the
+ * relayed ones, which it never sees. Both count against its one limit.
+ */
+function providerSlotsTaken(provider: Provider): number {
+  return provider.getCapacity().current + (relayedInFlight.get(provider) ?? 0);
+}
+
 export class SellerRequestHandler {
   private readonly _deps: SellerRequestHandlerDeps;
   private readonly _providerLoadCounts = new Map<string, number>();
@@ -888,38 +903,26 @@ export class SellerRequestHandler {
           if (atCeiling()) {
             // A top-up mining in the background may lift the ceiling: wait for
             // it (bounded) rather than close a channel that is being extended.
-            // Requests that finish during the wait and the chain read can push
-            // the spend past the ceiling that just landed while the next top-up
-            // is already mining: judge again after each one, within one budget.
-            const topUpDeadline = Date.now() + TOP_UP_WAIT_MS;
-            let topUpLanded = true;
-            while (true) {
-              const ceilingBefore = reserveMax;
-              if (spm.isTopUpRunning(session.sessionId) || spm.isTopUpPendingFor(session.sessionId, spent)) {
-                topUpLanded = await spm.waitForTopUp(session.sessionId, Math.max(0, topUpDeadline - Date.now()), spent);
-              }
-              reserveMax = await spm.refreshReserveMaxFromChain(session.sessionId);
-              // The channel may have closed during the read: never admit work
-              // on a channel that is gone, and judge the others on fresh counters.
-              if (spm.getChannelByPeer(buyerPeerId)?.sessionId !== session.sessionId) {
-                sendSessionExpired('the reserve ceiling check');
-                return;
-              }
-              accepted = spm.getAcceptedCumulative(session.sessionId);
-              spent = spm.getCumulativeSpend(session.sessionId);
-              isBlocked = spm.isChannelBlocked(session.sessionId);
-              if (!topUpLanded || !atCeiling()) break;
-              // Wait again only for a top-up mining now, or for one queued for
-              // the fresh spend right after the ceiling moved; a queued top-up
-              // that did not start is not waited for twice.
-              const nextRunning = spm.isTopUpRunning(session.sessionId);
-              const nextQueued = reserveMax > ceilingBefore && spm.isTopUpPendingFor(session.sessionId, spent);
-              if (!nextRunning && !nextQueued) break;
-              if (Date.now() >= topUpDeadline) {
-                topUpLanded = !nextRunning;
-                break;
-              }
-              debugLog(`[SellerHandler] Still at the ceiling after a top-up for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted} reserveMax=${reserveMax} ceilingBefore=${ceilingBefore} nextRunning=${nextRunning} nextQueued=${nextQueued}) — waiting for the next top-up`);
+            const { topUpLanded, channelChanged } = await this._waitForReserveHeadroom({
+              spm,
+              buyerPeerId,
+              channelId: session.sessionId,
+              counters: () => ({ spent, reserveMax }),
+              atCeiling,
+              refreshCounters: (ceiling) => {
+                reserveMax = ceiling;
+                accepted = spm.getAcceptedCumulative(session.sessionId);
+                spent = spm.getCumulativeSpend(session.sessionId);
+                isBlocked = spm.isChannelBlocked(session.sessionId);
+              },
+              onWaitAgain: ({ ceilingBefore, nextRunning, nextQueued }) => {
+                debugLog(`[SellerHandler] Still at the ceiling after a top-up for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted} reserveMax=${reserveMax} ceilingBefore=${ceilingBefore} nextRunning=${nextRunning} nextQueued=${nextQueued}) — waiting for the next top-up`);
+              },
+            });
+            // The channel may have closed during the wait: never admit work on a channel that is gone.
+            if (channelChanged) {
+              sendSessionExpired('the reserve ceiling check');
+              return;
             }
             if (!topUpLanded && atCeiling()) {
               // Still mining: a short retry, never an exhausted (closing) answer.
@@ -1863,6 +1866,56 @@ export class SellerRequestHandler {
   }
 
   /**
+   * The bounded wait both admission paths give a channel at its reserve
+   * ceiling: a top-up mining in the background may lift it. Requests that
+   * finish during the wait and the chain read can push the spend past the
+   * ceiling that just landed while the next top-up is already mining, so the
+   * channel is judged again after each one, within one budget.
+   *
+   * `counters` is the caller's view of the channel, and `refreshCounters`
+   * updates it with the ceiling just read from the chain. `topUpLanded` is
+   * false when a top-up was still mining at the end of the budget;
+   * `channelChanged` when the channel closed meanwhile, with the counters left
+   * as they were.
+   */
+  private async _waitForReserveHeadroom(wait: {
+    spm: SellerPaymentManager;
+    buyerPeerId: string;
+    channelId: string;
+    counters: () => { spent: bigint; reserveMax: bigint };
+    atCeiling: () => boolean;
+    refreshCounters: (reserveMax: bigint) => void;
+    onWaitAgain?: (next: { ceilingBefore: bigint; nextRunning: boolean; nextQueued: boolean }) => void;
+  }): Promise<{ topUpLanded: boolean; channelChanged: boolean }> {
+    const { spm, buyerPeerId, channelId } = wait;
+    const topUpDeadline = Date.now() + TOP_UP_WAIT_MS;
+    let topUpLanded = true;
+    while (true) {
+      const { spent, reserveMax: ceilingBefore } = wait.counters();
+      if (spm.isTopUpRunning(channelId) || spm.isTopUpPendingFor(channelId, spent)) {
+        topUpLanded = await spm.waitForTopUp(channelId, Math.max(0, topUpDeadline - Date.now()), spent);
+      }
+      const reserveMax = await spm.refreshReserveMaxFromChain(channelId);
+      // The channel may have closed during the read: the others are judged on fresh counters.
+      if (spm.getChannelByPeer(buyerPeerId)?.sessionId !== channelId) return { topUpLanded, channelChanged: true };
+      wait.refreshCounters(reserveMax);
+      if (!topUpLanded || !wait.atCeiling()) break;
+      // Wait again only for a top-up mining now, or for one queued for
+      // the fresh spend right after the ceiling moved; a queued top-up
+      // that did not start is not waited for twice.
+      const nextRunning = spm.isTopUpRunning(channelId);
+      const nextQueued = reserveMax > ceilingBefore && spm.isTopUpPendingFor(channelId, wait.counters().spent);
+      if (!nextRunning && !nextQueued) break;
+      if (Date.now() >= topUpDeadline) {
+        topUpLanded = !nextRunning;
+        break;
+      }
+      wait.onWaitAgain?.({ ceilingBefore, nextRunning, nextQueued });
+    }
+    return { topUpLanded, channelChanged: false };
+  }
+
+  /**
    * The checks a keyed relay request gets before the seller forwards it, as a
    * direct request gets them before routing: an open channel with the earlier
    * requests signed for, reserve headroom for its estimated cost (when
@@ -1907,27 +1960,20 @@ export class SellerRequestHandler {
     if (atCeiling()) {
       // As for a direct request: a top-up mining in the background may lift the
       // ceiling, so wait for it (bounded) rather than close a channel that is
-      // being extended, and judge again after each one, within one budget.
-      const topUpDeadline = Date.now() + TOP_UP_WAIT_MS;
-      let topUpLanded = true;
-      while (true) {
-        const ceilingBefore = reserveMax;
-        if (spm.isTopUpRunning(channelId) || spm.isTopUpPendingFor(channelId, spent)) {
-          topUpLanded = await spm.waitForTopUp(channelId, Math.max(0, topUpDeadline - Date.now()), spent);
-        }
-        reserveMax = await spm.refreshReserveMaxFromChain(channelId);
-        if (closed()) return refuse('the payment channel closed');
-        accepted = spm.getAcceptedCumulative(channelId);
-        spent = spm.getCumulativeSpend(channelId);
-        if (!topUpLanded || !atCeiling()) break;
-        const nextRunning = spm.isTopUpRunning(channelId);
-        const nextQueued = reserveMax > ceilingBefore && spm.isTopUpPendingFor(channelId, spent);
-        if (!nextRunning && !nextQueued) break;
-        if (Date.now() >= topUpDeadline) {
-          topUpLanded = !nextRunning;
-          break;
-        }
-      }
+      // being extended.
+      const { topUpLanded, channelChanged } = await this._waitForReserveHeadroom({
+        spm,
+        buyerPeerId,
+        channelId,
+        counters: () => ({ spent, reserveMax }),
+        atCeiling,
+        refreshCounters: (ceiling) => {
+          reserveMax = ceiling;
+          accepted = spm.getAcceptedCumulative(channelId);
+          spent = spm.getCumulativeSpend(channelId);
+        },
+      });
+      if (channelChanged) return refuse('the payment channel closed');
       // Still mining: a short retry, never an exhausted (closing) answer.
       if (!topUpLanded && atCeiling()) return refuseFor('top_up_pending', 'the payment channel is being extended on-chain; retry shortly');
       // Signatures above the old ceiling were parked until the top-up landed: give them a moment to apply.
@@ -1946,8 +1992,11 @@ export class SellerRequestHandler {
       this._retireRelayChannel(spm, buyerPeerId, channelId);
       return refuseFor('channel_exhausted', reason);
     }
-    // From here to the hold below nothing awaits: a close cannot start in between.
+    // From here to the hold below nothing awaits: a close cannot start in between, and no other request takes the slot.
     if (spm.hasClosingChannel(buyerPeerId)) return refuse('the payment channel is closing; retry shortly');
+    const { provider } = request;
+    // No code: the buyer does not ask this seller again for the request, it goes on to another, as from a busy seller.
+    if (providerSlotsTaken(provider) >= provider.getCapacity().max) return refuse('this seller is serving as many requests as it takes at once; try again later');
     let reservation: BuyerUsageReservation | null = null;
     const limiter = this._deps.sellerBuyerLimiter;
     if (limiter) {
@@ -1956,12 +2005,16 @@ export class SellerRequestHandler {
       if (!admission.admitted) return refuse(`this buyer is over its usage limits; retry in ${admission.retryAfterSeconds} s`);
       reservation = admission.reservation;
     }
-    // As for a direct request: the channel stays open until the request's cost is on it.
+    // As for a direct request: the channel stays open until the request's cost is on it, and the request counts as load.
     spm.beginBillableRequest(request.buyerPeerId);
+    relayedInFlight.set(provider, (relayedInFlight.get(provider) ?? 0) + 1);
+    this.adjustProviderLoad(provider.name, 1);
     return {
       admitted: true,
       channelId,
       finish: (usedTokens) => {
+        relayedInFlight.set(provider, Math.max(0, (relayedInFlight.get(provider) ?? 0) - 1));
+        this.adjustProviderLoad(provider.name, -1);
         spm.endBillableRequest(buyerPeerId);
         reservation?.finish(usedTokens);
       },
@@ -2458,6 +2511,17 @@ export class SellerRequestHandler {
     // upstream's own headers or costs: the body's cost is the seller's price.
     const withHeaders = (response: SerializedHttpResponse): SerializedHttpResponse =>
       ({ ...response, headers: exposedResponseHeaders(response.headers) });
+    // Relayed requests take the provider's slots without passing through it. When they leave
+    // none, the request gets the answer a provider gives at its limit, and is handled as that answer is.
+    if (relayedInFlight.get(provider) && providerSlotsTaken(provider) >= provider.getCapacity().max) {
+      const busy = withHeaders({
+        requestId: request.requestId,
+        statusCode: 429,
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ error: 'Max concurrency reached' })),
+      });
+      return isDownload ? busy : withExposedBody(request, busy, sellerCost);
+    }
     // A video download (a retrieval the router recognized, not just the buyer's header)
     // is the provider's own bytes, hashed as they pass; it carries no usage.
     if (streamCallbacks && provider.handleRequestStream) {

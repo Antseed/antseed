@@ -565,6 +565,18 @@ describe('SellerBlindRelay', () => {
     expect(charges).toEqual([]);
   });
 
+  it('gives back what an admitted request holds, once, when its sidecar ends without an answer', async () => {
+    const finished: number[] = [];
+    const { blind, sidecars, provider } = keyedRelay(TARGET, () => ({ admitted: true, finish: (tokens) => finished.push(tokens) }));
+    const minted = blind.mint(BUYER, 'open-model', provider);
+    (await blind.authorize(BUYER, 's1', minted.credentialId)).open();
+    emit(sidecars[0]!, { type: 'request', ...keyedRequest() });
+    await settle();
+    expect(sidecars[0]!.decisions).toEqual(['admit']);
+    sidecars[0]!.emit('exit', { code: 1, stderr: 'the upstream closed the connection' });
+    expect(finished).toHaveLength(1);
+  });
+
   it('serves only with the sidecar installed and a target named', () => {
     const without = new SellerBlindRelay({ charge: () => {} });
     const provider = { keyedRelayTarget: () => TARGET } as unknown as Provider;
