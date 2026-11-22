@@ -365,13 +365,13 @@ const plugin: AntseedProviderPlugin = {
           allowedServices,
           serviceApiProtocols,
           serviceCapabilities,
-          (service) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service,
+          resolveUpstreamModel,
         )
       : undefined;
     const e2eeAttestation = veniceE2eeAttestation({
       baseUrl,
       apiKey,
-      resolveUpstreamModel: (service) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service,
+      resolveUpstreamModel,
     });
     return new VeniceImageEditProvider(baseProvider, imageEditModelMap ?? {}, announceSpeechVoices, e2eeAttestation);
   },
