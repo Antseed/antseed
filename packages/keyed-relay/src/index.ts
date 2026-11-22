@@ -82,6 +82,8 @@ export interface KeyedRelaySellerStart {
   head: Uint8Array;
   /** The longest request (after the head) the seller holds for its check; 32 MiB if absent. */
   maxRequestBytes?: number;
+  /** How long the upstream may take to end its answer once the request is forwarded; 15 minutes if absent. */
+  responseTimeoutMs?: number;
   /** Tests only: an extra trusted root certificate (PEM). */
   extraRootsPem?: string;
 }
@@ -178,6 +180,7 @@ export class KeyedRelayProcess extends EventEmitter {
       serverName: config.serverName,
       head: Buffer.from(config.head).toString('base64'),
       ...(config.maxRequestBytes !== undefined ? { maxRequestBytes: config.maxRequestBytes } : {}),
+      ...(config.responseTimeoutMs !== undefined ? { responseTimeoutMs: config.responseTimeoutMs } : {}),
       ...(config.extraRootsPem ? { extraRootsPem: config.extraRootsPem } : {}),
     });
   }

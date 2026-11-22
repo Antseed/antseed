@@ -42,6 +42,8 @@ async fn main() {
         Err(error) => {
             // The error goes to stderr for Node; stdout carries only frames.
             let _ = writeln!(std::io::stderr(), "antseed-keyed-relay: {error:#}");
+            // The frames before the error (what a seller relayed) still reach Node.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             std::process::exit(1);
         }
     }

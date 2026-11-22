@@ -39,12 +39,26 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// How long Node may take to admit or refuse the request.
 const ADMIT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the upstream may take to end its answer, unless Node sets another limit.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const REVEAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// The longest request head the seller writes.
 const MAX_HEAD: usize = 8192;
 /// The longest request the seller holds, unless Node sets another limit.
 const DEFAULT_MAX_REQUEST: usize = 32 << 20;
+/// The most bytes of one side's handshake the seller keeps.
+const MAX_HANDSHAKE: usize = 256 * 1024;
+/// An encrypted alert: its two bytes and the record's nonce and tag.
+const ALERT_BODY: usize = RECORD_OVERHEAD + 2;
+/// The most alerts a buyer sends after its request: a warning and its close_notify.
+const MAX_ALERTS: usize = 2;
+
+/// The most application-data records the seller holds for a request of up to `max_request` bytes. A
+/// buyer fills its records, so this is far above what a request needs, and it bounds what tiny
+/// records cost in memory beyond the request's own bytes.
+fn max_request_records(max_request: usize) -> usize {
+    64 + max_request / 4096
+}
 
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -61,7 +75,10 @@ struct HandshakeSide {
 
 impl HandshakeSide {
     /// Takes one record during the handshake; true once this record was the Finished.
-    fn take(&mut self, record: &Record) -> bool {
+    fn take(&mut self, record: &Record) -> Result<bool> {
+        if self.bytes.len() + 5 + record.body.len() > MAX_HANDSHAKE {
+            bail!("the handshake is longer than {MAX_HANDSHAKE} bytes");
+        }
         self.bytes.extend_from_slice(&[record.typ, 3, 3]);
         self.bytes.extend_from_slice(&(record.body.len() as u16).to_be_bytes());
         self.bytes.extend_from_slice(&record.body);
@@ -71,7 +88,7 @@ impl HandshakeSide {
         } else if record.typ == HANDSHAKE && self.seen_ccs {
             self.finished = true;
         }
-        self.finished
+        Ok(self.finished)
     }
 }
 
@@ -113,20 +130,48 @@ struct RequestGate {
     held: Vec<Record>,
     /// Plaintext bytes of the held application-data records: the request so far.
     request_len: usize,
+    /// Application-data records of the request so far.
+    request_records: usize,
+    /// Alerts taken so far, held or forwarded.
+    alerts: usize,
 }
 
 impl RequestGate {
-    /// Takes one record (application data or an alert). `Some` is forwarded now; the rest is held or dropped.
+    /// Takes one record (application data or an alert). `Some` is forwarded now; the rest is held or
+    /// dropped. A record the buyer may not send shuts the gate: nothing of the session goes upstream.
     fn take(&mut self, record: Record, max_request: usize) -> Result<Option<Record>> {
+        let taken = self.check(record, max_request);
+        if taken.is_err() {
+            self.shut();
+        }
+        taken
+    }
+
+    fn check(&mut self, record: Record, max_request: usize) -> Result<Option<Record>> {
+        if self.gate == Gate::Shut {
+            return Ok(None);
+        }
+        // What is held is bounded in bytes and in records, whatever the buyer sends.
+        if record.typ == ALERT {
+            self.alerts += 1;
+            if record.body.len() != ALERT_BODY || self.alerts > MAX_ALERTS {
+                bail!("the buyer sent a malformed alert or more than {MAX_ALERTS} alerts");
+            }
+        }
         match self.gate {
             Gate::Hold => {
                 if record.typ == APPLICATION_DATA {
-                    if record.body.len() < RECORD_OVERHEAD {
-                        bail!("the buyer sent a record too short to be encrypted");
+                    // A buyer never seals an empty record: one would be held at no cost to its request's length.
+                    if record.body.len() <= RECORD_OVERHEAD {
+                        bail!("the buyer sent a record with no request bytes");
                     }
                     self.request_len += record.body.len() - RECORD_OVERHEAD;
+                    self.request_records += 1;
                     if self.request_len > max_request {
                         bail!("the request is longer than {max_request} bytes");
+                    }
+                    if self.request_records > max_request_records(max_request) {
+                        bail!("the request came in more than {} records", max_request_records(max_request));
                     }
                 }
                 self.held.push(record);
@@ -134,7 +179,6 @@ impl RequestGate {
             }
             // The request is what Node checks, or went out as admitted: nothing may follow it but alerts.
             Gate::Sealed | Gate::Open if record.typ != ALERT => {
-                self.shut();
                 bail!("the buyer sent more than the request it revealed");
             }
             Gate::Sealed => {
@@ -172,6 +216,17 @@ impl RequestGate {
     }
 }
 
+/// How the relaying of the answer ended.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnswerEnd {
+    /// The upstream closed: the answer is whole.
+    Upstream,
+    /// The buyer's side ended first.
+    Buyer,
+    /// The upstream held the answer open past the response deadline.
+    Deadline,
+}
+
 /// The plaintext the buyer revealed, as Node gets it: offset in the stream and the bytes.
 fn shown(placed: &[Placed], keystreams: Vec<Vec<u8>>) -> Vec<serde_json::Value> {
     let pieces = placed
@@ -206,6 +261,7 @@ pub async fn run() -> Result<()> {
         bail!("request head length {} is out of range", head.len());
     }
     let max_request = start["maxRequestBytes"].as_u64().map_or(DEFAULT_MAX_REQUEST, |n| n as usize);
+    let response_timeout = start["responseTimeoutMs"].as_u64().map_or(RESPONSE_TIMEOUT, Duration::from_millis);
 
     let (mut session, tls) = PeerSession::open(peer)?;
     session.ctx.io_mut().send(Hello { version: PROTOCOL_VERSION, injected_len: head.len() as u32 }).await?;
@@ -243,7 +299,7 @@ pub async fn run() -> Result<()> {
             }
             for record in parser.push(&buf[..n])? {
                 if let Some(rx) = inject.take() {
-                    let finished = up_shared.lock().await.client.take(&record);
+                    let finished = up_shared.lock().await.client.take(&record)?;
                     up_writer.lock().await.write_all(&raw(&record)).await?;
                     if finished {
                         let _ = client_done_tx.send(true);
@@ -291,7 +347,7 @@ pub async fn run() -> Result<()> {
                 let mut shared = down_shared.lock().await;
                 for record in records {
                     if in_handshake {
-                        if shared.server.take(&record) {
+                        if shared.server.take(&record)? {
                             in_handshake = false;
                             let _ = server_done_tx.send(true);
                         }
@@ -416,15 +472,17 @@ pub async fn run() -> Result<()> {
     out.ctl(json!({ "type": "admitted" }));
 
     // The answer ends when the upstream closes. A buyer whose side ends first
-    // has left, or has read the whole answer: either way no more of it is
-    // relayed, and what was is reported, so the request is still billed.
+    // has left, or has read the whole answer, and an upstream may hold its
+    // answer open past the deadline: either way no more of it is relayed, and
+    // what was is reported, so the request is still billed.
     let mut up = up;
-    let buyer_ended = tokio::select! {
-        _ = tokio::time::timeout(RESPONSE_TIMEOUT, closed.wait_for(|done| *done)) => false,
-        _ = &mut up => true,
+    let end = tokio::select! {
+        ended = tokio::time::timeout(response_timeout, closed.wait_for(|done| *done)) => if ended.is_ok() { AnswerEnd::Upstream } else { AnswerEnd::Deadline },
+        _ = &mut up => AnswerEnd::Buyer,
     };
     up.abort();
-    if buyer_ended {
+    if end != AnswerEnd::Upstream {
+        // Still reading the upstream: stopped, so nothing waits on it.
         down.abort();
     }
     if let Ok(Err(error)) = down.await {
@@ -432,11 +490,15 @@ pub async fn run() -> Result<()> {
     }
 
     let (responses, bytes_up, bytes_down) = {
-        let shared = shared.lock().await;
-        (shared.responses.clone(), shared.bytes_up, shared.bytes_down)
+        let mut shared = shared.lock().await;
+        (std::mem::take(&mut shared.responses), shared.bytes_up, shared.bytes_down)
     };
     let length: usize = responses.iter().map(|r| r.body.len().saturating_sub(RECORD_OVERHEAD)).sum();
     out.ctl(json!({ "type": "responseEnd", "length": length, "bytesUp": bytes_up, "bytesDown": bytes_down }));
+    if end == AnswerEnd::Deadline {
+        // The buyer has no whole answer to reveal the usage of: Node bills what was relayed.
+        bail!("the upstream did not finish its answer in time");
+    }
 
     let request: RevealRequest = tokio::time::timeout(REVEAL_TIMEOUT, session.ctx.io_mut().expect_next())
         .await
@@ -498,6 +560,47 @@ mod tests {
         gate.take(alert(), MAX).unwrap();
         let types: Vec<u8> = gate.open().unwrap().iter().map(|r| r.typ).collect();
         assert_eq!(types, vec![APPLICATION_DATA, ALERT]);
+    }
+
+    #[test]
+    fn rejects_an_application_data_record_with_no_plaintext() {
+        let mut gate = RequestGate::default();
+        assert!(gate.take(data(0), MAX).is_err());
+    }
+
+    #[test]
+    fn holds_a_bounded_number_of_records_for_a_request() {
+        let mut gate = RequestGate::default();
+        // One byte per record: the request stays far under its byte limit.
+        let held = (0..100_000).take_while(|_| gate.take(data(1), MAX).is_ok()).count();
+        assert!(held < 10_000, "held {held} one-byte records");
+    }
+
+    #[test]
+    fn holds_a_bounded_number_of_alerts_before_and_after_the_request_is_sealed() {
+        let mut gate = RequestGate::default();
+        gate.take(data(10), MAX).unwrap();
+        let held = (0..1000).take_while(|_| gate.take(alert(), MAX).is_ok()).count();
+        assert!(held < 1000, "held {held} alerts with the request");
+
+        let mut gate = RequestGate::default();
+        gate.take(data(10), MAX).unwrap();
+        gate.seal(10).unwrap();
+        let held = (0..1000).take_while(|_| gate.take(alert(), MAX).is_ok()).count();
+        assert!(held < 1000, "held {held} alerts after the request was sealed");
+    }
+
+    #[test]
+    fn rejects_an_alert_of_another_size() {
+        let mut gate = RequestGate::default();
+        gate.take(data(10), MAX).unwrap();
+        assert!(gate.take(Record { typ: ALERT, body: vec![9; 16_000] }, MAX).is_err());
+        // The session is over: nothing of it is forwarded.
+        assert!(gate.seal(10).is_err());
+
+        let mut gate = RequestGate::default();
+        gate.take(data(10), MAX).unwrap();
+        assert!(gate.take(Record { typ: ALERT, body: vec![9; RECORD_OVERHEAD] }, MAX).is_err());
     }
 
     #[test]

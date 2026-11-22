@@ -199,6 +199,38 @@ test('a buyer that leaves before the answer ends is still reported to the seller
   }
 });
 
+test('an upstream that never ends its answer is cut off at the response deadline, and what was relayed is reported', { skip: !binary && 'native sidecar not built' }, async () => {
+  const { server, port } = await startUpstream({ stall: true });
+  const seller = KeyedRelayProcess.spawn('seller', binary);
+  const buyer = KeyedRelayProcess.spawn('buyer', binary);
+  try {
+    seller.peer.pipe(buyer.peer);
+    buyer.peer.pipe(seller.peer);
+    seller.startSeller({
+      host: '127.0.0.1', port, serverName: 'localhost', extraRootsPem: CA, responseTimeoutMs: 1_500,
+      head: Buffer.from('POST /x HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer k\r\nConnection: close\r\n'),
+    });
+    buyer.startBuyer({ serverName: 'localhost', extraRootsPem: CA });
+    await buyer.waitFor('ready', 60_000);
+    await sendRequest(buyer, seller, 'Content-Length: 2\r\n\r\n{}', 21, 2);
+    const exited = new Promise((resolve) => seller.once('exit', resolve));
+    seller.admit();
+    await buyer.waitFor('admitted', 30_000);
+
+    // The buyer stays, and the upstream holds the answer open.
+    const end = await seller.waitFor('responseEnd', 10_000);
+    assert.ok(end.length > 0, 'the seller reported the answer bytes it relayed');
+    const exit = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), 5_000))]);
+    assert.ok(exit, 'the seller sidecar was still running 5 s after the response deadline');
+    assert.match(exit.stderr, /did not finish its answer in time/);
+  } finally {
+    seller.kill();
+    buyer.kill();
+    server.close();
+    server.closeAllConnections?.();
+  }
+});
+
 test('a refused request never reaches the upstream, and the buyer learns why', { skip: !binary && 'native sidecar not built' }, async () => {
   const { server, port, requests, received } = await startUpstream();
   try {
