@@ -40,7 +40,7 @@ function makeProvider(): Provider {
   };
 }
 
-function spm(state: { session: boolean; accepted?: bigint; spent?: bigint; reserveMax?: bigint; closing?: 'closes' | 'stays'; topUpRunning?: boolean }) {
+function spm(state: { session: boolean; accepted?: bigint; spent?: bigint; reserveMax?: bigint; closing?: 'closes' | 'stays'; topUpRunning?: boolean; prices?: Record<string, number> }) {
   return {
     hasSession: vi.fn(() => state.session),
     hasClosingChannel: vi.fn(() => state.closing !== undefined),
@@ -57,7 +57,7 @@ function spm(state: { session: boolean; accepted?: bigint; spent?: bigint; reser
     getChannelByPeer: vi.fn(() => (state.session ? { sessionId: '0xchannel', authMax: '1000000' } : null)),
     getAcceptedCumulative: vi.fn(() => state.accepted ?? 0n),
     getCumulativeSpend: vi.fn(() => state.spent ?? 0n),
-    getPaymentRequirements: vi.fn(() => ({ minBudgetPerRequest: '10000', suggestedAmount: '100000', requestId: 'r' })),
+    getPaymentRequirements: vi.fn(() => ({ minBudgetPerRequest: '10000', suggestedAmount: '100000', requestId: 'r', ...state.prices })),
     recordSpend: vi.fn(),
   };
 }
@@ -139,6 +139,19 @@ describe('seller blind relay credential route', () => {
     const waiting = await ask('blind-model', { payments: toppingUp });
     expect(waiting.response.statusCode).toBe(409);
     expect(toppingUp.closeSessionWhenIdle).not.toHaveBeenCalled();
+  });
+
+  it('states the same terms in each 402: the amounts, and the prices only when the seller has them', async () => {
+    const all = { inputUsdPerMillion: 0.6, outputUsdPerMillion: 1.2, cachedInputUsdPerMillion: 0.06 };
+    for (const prices of [undefined, { inputUsdPerMillion: 0.6, outputUsdPerMillion: 1.2 }, all]) {
+      const terms = { error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '100000', ...prices };
+      expect((await ask('blind-model', { payments: spm({ session: false, prices }) })).json).toEqual(terms);
+      const exhausted = await ask('blind-model', { payments: spm({ session: true, accepted: 1000n, spent: 1200n, reserveMax: 1000n, prices }) });
+      expect(exhausted.json).toEqual({
+        ...terms, code: 'channel_exhausted', channelId: '0xchannel',
+        requiredCumulativeAmount: '1200', currentSpent: '1200', currentAcceptedCumulative: '1000', reserveMaxAmount: '1000',
+      });
+    }
   });
 
   it('waits for a channel that is closing: a new channel once it closed, a short retry while it has not', async () => {

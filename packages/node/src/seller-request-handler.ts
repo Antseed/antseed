@@ -284,6 +284,18 @@ const ATTEST_RATE_MAX_TRACKED_PEERS = 1024;
  */
 const relayedInFlight = new WeakMap<Provider, number>();
 
+/** What every 402 body says of a seller's terms; each 402 adds its channel's fields. */
+function paymentRequiredBody(requirements: PaymentRequiredPayload) {
+  return {
+    error: 'payment_required',
+    minBudgetPerRequest: requirements.minBudgetPerRequest,
+    suggestedAmount: requirements.suggestedAmount,
+    ...(requirements.inputUsdPerMillion != null ? { inputUsdPerMillion: requirements.inputUsdPerMillion } : {}),
+    ...(requirements.outputUsdPerMillion != null ? { outputUsdPerMillion: requirements.outputUsdPerMillion } : {}),
+    ...(requirements.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion } : {}),
+  };
+}
+
 /**
  * The provider's slots in use: the requests it is serving itself, and the
  * relayed ones, which it never sees. Both count against its one limit.
@@ -995,9 +1007,7 @@ export class SellerRequestHandler {
               statusCode: 402,
               headers: { "content-type": "application/json" },
               body: new TextEncoder().encode(JSON.stringify({
-                error: 'payment_required',
-                minBudgetPerRequest: requirements.minBudgetPerRequest,
-                suggestedAmount: requirements.suggestedAmount,
+                ...paymentRequiredBody(requirements),
                 requiredCumulativeAmount: requirements.requiredCumulativeAmount,
                 currentSpent: requirements.currentSpent,
                 currentAcceptedCumulative: requirements.currentAcceptedCumulative,
@@ -1010,9 +1020,6 @@ export class SellerRequestHandler {
                   estimatedInputTokens: String(requestCostEstimate?.inputTokens ?? 0),
                   estimatedMaxOutputTokens: String(requestCostEstimate?.maxOutputTokens ?? 0),
                 } : {}),
-                ...(requirements.inputUsdPerMillion != null ? { inputUsdPerMillion: requirements.inputUsdPerMillion } : {}),
-                ...(requirements.outputUsdPerMillion != null ? { outputUsdPerMillion: requirements.outputUsdPerMillion } : {}),
-                ...(requirements.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion } : {}),
               })),
             });
             this._sendPaymentRequiredBestEffort(paymentMux, requirements, buyerPeerId, 'budget-exhausted');
@@ -1848,18 +1855,13 @@ export class SellerRequestHandler {
       statusCode: 402,
       headers: { 'content-type': 'application/json' },
       body: new TextEncoder().encode(JSON.stringify({
-        error: 'payment_required',
-        minBudgetPerRequest: requirements.minBudgetPerRequest,
-        suggestedAmount: requirements.suggestedAmount,
+        ...paymentRequiredBody(requirements),
         requiredCumulativeAmount: requirements.requiredCumulativeAmount,
         currentSpent: requirements.currentSpent,
         currentAcceptedCumulative: requirements.currentAcceptedCumulative,
         channelId,
         ...(requirements.reserveMaxAmount != null ? { reserveMaxAmount: requirements.reserveMaxAmount } : {}),
         code: requirements.code,
-        ...(requirements.inputUsdPerMillion != null ? { inputUsdPerMillion: requirements.inputUsdPerMillion } : {}),
-        ...(requirements.outputUsdPerMillion != null ? { outputUsdPerMillion: requirements.outputUsdPerMillion } : {}),
-        ...(requirements.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion } : {}),
       })),
     });
     this._sendPaymentRequiredBestEffort(paymentMux, requirements, buyerPeerId, 'budget-exhausted');
@@ -2105,14 +2107,7 @@ export class SellerRequestHandler {
     if (baseRequirements) {
       const requirements: PaymentRequiredPayload = baseRequirements;
       debugLog(`[SellerHandler] No payment session for ${buyerPeerId.slice(0, 12)}... — sending 402 + PaymentRequired`);
-      const paymentBody = JSON.stringify({
-        error: 'payment_required',
-        minBudgetPerRequest: requirements.minBudgetPerRequest,
-        suggestedAmount: requirements.suggestedAmount,
-        ...(requirements.inputUsdPerMillion != null ? { inputUsdPerMillion: requirements.inputUsdPerMillion } : {}),
-        ...(requirements.outputUsdPerMillion != null ? { outputUsdPerMillion: requirements.outputUsdPerMillion } : {}),
-        ...(requirements.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion } : {}),
-      });
+      const paymentBody = JSON.stringify(paymentRequiredBody(requirements));
       mux.sendProxyResponse({
         requestId: request.requestId,
         statusCode: 402,

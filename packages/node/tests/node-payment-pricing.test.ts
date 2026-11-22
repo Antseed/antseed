@@ -111,6 +111,20 @@ describe('completed-request seller payments', () => {
     expect(harness.provider.handleRequest).toHaveBeenCalledOnce();
     expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
   });
+  it('states the channel and the terms to a buyer whose reserve is spent, with the prices only when the seller has them', async () => {
+    const all = { inputUsdPerMillion: 10, outputUsdPerMillion: 10, cachedInputUsdPerMillion: 1 };
+    for (const prices of [undefined, { inputUsdPerMillion: 10, outputUsdPerMillion: 10 }, all]) {
+      const harness = setup({ getReserveMax: () => 1000n, getPaymentRequirements: () => ({ minBudgetPerRequest: '10000', suggestedAmount: '1000000', ...prices }) });
+      expect((await harness.send('first')).statusCode).toBe(200);
+      const refused = await harness.send('second');
+      expect(refused.statusCode).toBe(402);
+      expect(JSON.parse(new TextDecoder().decode(refused.body))).toEqual({
+        error: 'payment_required', minBudgetPerRequest: '10000', suggestedAmount: '1000000', ...prices,
+        code: 'channel_exhausted', channelId: 'session-1',
+        requiredCumulativeAmount: '1000', currentSpent: '1000', currentAcceptedCumulative: '1000', reserveMaxAmount: '1000',
+      });
+    }
+  });
   it('does not charge a malformed ranking, so the buyer and seller stay in agreement', async () => {
     const harness = setup();
     vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({ requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode('{}') }));
