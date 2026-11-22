@@ -1586,11 +1586,14 @@ export class BuyerProxy {
       loadQuoteVerifier: loadVerifierQuoteCheck,
     })
     this._blindRelay = config.blindRelay ?? new BlindRelayClient({
-      sendRequest: (peer, request, buyerIdentity) => this._node.sendRequest(peer, request, {
+      sendRequest: (peer, request, buyerIdentity, channelBinding) => this._node.sendRequest(peer, request, {
         signal: AbortSignal.timeout(60_000),
         ...(buyerIdentity ? { buyerIdentity } : {}),
+        ...(channelBinding !== undefined ? { channelBinding } : {}),
       }),
-      openRelayStream: (peer, streamId, credentialId, buyerIdentity) => this._node.openRelayStream(peer, streamId, credentialId, buyerIdentity),
+      openRelayStream: (peer, streamId, credentialId, buyerIdentity, channelBinding) => this._node.openRelayStream(
+        peer, streamId, credentialId, buyerIdentity, channelBinding !== undefined ? { channelBinding } : undefined,
+      ),
       recordRelayedResponse: (peer, relayed, buyerIdentity) => this._node.recordRelayedResponse(peer, relayed, buyerIdentity),
     })
     this._teeControl = new TeeControl(this._teeVerification.sessionId)
@@ -5885,10 +5888,10 @@ export class BuyerProxy {
       ? (peer, request, callbacks, options) => this._blindRelay.send(peer, relayBlind, request, options?.buyerIdentity, {
         onResponseStart: (start) => callbacks.onResponseStart?.(start, { streaming: /text\/event-stream/i.test(start.headers['content-type'] ?? '') }),
         onResponseChunk: (chunk) => callbacks.onResponseChunk?.(chunk),
-      }, options?.signal)
+      }, { signal: options?.signal, channelBinding: options?.channelBinding })
       : (peer, request, callbacks, options) => this._node.sendRequestStream(peer, request, callbacks, options)
     const sendRequest: AntseedNode['sendRequest'] = relayBlind
-      ? (peer, request, options) => this._blindRelay.send(peer, relayBlind, request, options?.buyerIdentity, {}, options?.signal)
+      ? (peer, request, options) => this._blindRelay.send(peer, relayBlind, request, options?.buyerIdentity, {}, { signal: options?.signal, channelBinding: options?.channelBinding })
       : (peer, request, options) => this._node.sendRequest(peer, request, options)
 
     if (DEBUG()) {

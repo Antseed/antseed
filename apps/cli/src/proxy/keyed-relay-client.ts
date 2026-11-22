@@ -43,8 +43,13 @@ export function keyedRequestFields(body: Uint8Array): { fields: Record<string, u
  * seller's cap is lowered to it; with a cap and no limit, the cap is the limit.
  */
 export function keyedRequestBody(body: Uint8Array, model: string, terms: KeyedRequestTerms): KeyedRequestBody {
-  const { fields, asked } = keyedRequestFields(body)
-  let maxTokens = asked
+  return keyedRequestBodyFromFields(keyedRequestFields(body), model, terms)
+}
+
+/** `keyedRequestBody` for a body `keyedRequestFields` already read. */
+export function keyedRequestBodyFromFields(parsed: ReturnType<typeof keyedRequestFields>, model: string, terms: KeyedRequestTerms): KeyedRequestBody {
+  const fields = { ...parsed.fields }
+  let maxTokens = parsed.asked
   if (terms.maxTokens !== undefined) maxTokens = maxTokens === null ? terms.maxTokens : Math.min(maxTokens, terms.maxTokens)
   const stream = fields['stream'] === true
   for (const name of [...KEYED_REQUEST_TAIL_FIELDS, ...Object.keys(terms.pinned ?? {})]) delete fields[name]
@@ -138,22 +143,29 @@ interface BodyPiece {
   length: number
 }
 
-/** The response body without its chunk framing, and where each piece of it sits in the raw response. */
-function responseBody(text: string, bodyStart: number, chunked: boolean): { body: string; pieces: BodyPiece[] } {
-  if (!chunked) return { body: text.slice(bodyStart), pieces: [{ at: 0, rawAt: bodyStart, length: text.length - bodyStart }] }
+/**
+ * The response body without its chunk framing, and where each piece of it
+ * sits in the raw response. `complete` is false for a chunked body that
+ * stopped before its last (empty) chunk: what follows the pieces is then not
+ * known to be framing.
+ */
+function responseBody(text: string, bodyStart: number, chunked: boolean): { body: string; pieces: BodyPiece[]; complete: boolean } {
+  if (!chunked) return { body: text.slice(bodyStart), pieces: [{ at: 0, rawAt: bodyStart, length: text.length - bodyStart }], complete: true }
   const pieces: BodyPiece[] = []
   let body = ''
   for (let at = bodyStart; ;) {
     const lineEnd = text.indexOf('\r\n', at)
     const size = lineEnd < 0 ? null : /^([0-9a-f]+)(?:;.*)?$/i.exec(text.slice(at, lineEnd))
-    const length = size ? Number.parseInt(size[1]!, 16) : 0
+    if (!size) return { body, pieces, complete: false }
+    const length = Number.parseInt(size[1]!, 16)
     const start = lineEnd + 2
-    if (length === 0 || start + length > text.length) break
+    // After the last chunk come trailers, which a chat completions upstream does not send, and the blank line.
+    if (length === 0) return { body, pieces, complete: text.slice(start) === '\r\n' }
+    if (start + length > text.length) return { body, pieces, complete: false }
     pieces.push({ at: body.length, rawAt: start, length })
     body += text.slice(start, start + length)
     at = start + length + 2
   }
-  return { body, pieces }
 }
 
 /** The last `marker` that starts a line of `body` at or before `from`, or -1. */
@@ -172,6 +184,73 @@ function lastUsage(body: string): number {
   return -1
 }
 
+/** Fields of a response that name it and the model that answered: the only text a billing reveal shows. */
+const RESPONSE_LABEL_FIELDS = new Set(['id', 'object', 'model', 'system_fingerprint', 'service_tier', 'obfuscation'])
+const RESPONSE_LABEL_MAX_LENGTH = 256
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Nothing: null, an empty string, or an object or array holding nothing. */
+function blank(value: unknown): boolean {
+  if (value === null || value === '') return true
+  return typeof value === 'object' && Object.values(value as object).every(blank)
+}
+
+/** Numbers, booleans and nulls, alone or in objects and arrays: no text. */
+function figures(value: unknown): boolean {
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') return true
+  return typeof value === 'object' && Object.values(value as object).every(figures)
+}
+
+/** A choice that says how the answer ended and carries none of it. */
+function choiceWithoutAnswer(choice: unknown): boolean {
+  if (!isRecord(choice)) return false
+  return Object.entries(choice).every(([name, value]) => {
+    if (name === 'index') return typeof value === 'number'
+    if (name === 'finish_reason') return value === null || (typeof value === 'string' && /^[a-z_]{1,32}$/i.test(value))
+    if (name === 'delta' || name === 'message') {
+      return isRecord(value) && Object.entries(value).every(([field, part]) => (field === 'role' ? typeof part === 'string' && /^[a-z]{1,16}$/.test(part) : blank(part)))
+    }
+    return blank(value)
+  })
+}
+
+/**
+ * Whether a response object, or the last fields of one, holds nothing of the
+ * answer: usage figures, the response's own labels, and choices that carry no
+ * text. Anything it does not know fails, so a field an upstream adds is never
+ * revealed by default.
+ */
+function withoutAnswer(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return Object.entries(value).every(([name, field]) => {
+    if (name === 'usage') return figures(field)
+    if (name === 'choices') return Array.isArray(field) && field.every(choiceWithoutAnswer)
+    if (typeof field === 'string' && field !== '') return RESPONSE_LABEL_FIELDS.has(name) && field.length <= RESPONSE_LABEL_MAX_LENGTH
+    return figures(field) || blank(field)
+  })
+}
+
+function parsedOrNull(json: string): unknown {
+  try {
+    return JSON.parse(json)
+  } catch {
+    return null
+  }
+}
+
+/** Whether every line of a stream's `tail` is blank, the end marker, or an event without any of the answer. */
+function streamTailWithoutAnswer(tail: string): boolean {
+  return tail.split(/\r\n|\r|\n/).every((line) => {
+    if (line === '') return true
+    if (!line.startsWith('data:')) return false
+    const data = line.slice(5).trim()
+    return data === '[DONE]' || withoutAnswer(parsedOrNull(data))
+  })
+}
+
 /**
  * The response ranges the buyer reveals to the seller for billing, as
  * (offset, length) in the raw response: the status line, and for a success
@@ -179,13 +258,19 @@ function lastUsage(body: string): number {
  * a stream that is the last event with a usage figure, from the `data:` its
  * line starts with, or only the `data: [DONE]` line when no event has one, so
  * the seller sees it was a stream. For one body it is the `"usage":` key
- * onward, unless the answer (`"choices":`) follows it.
+ * onward.
  *
  * Both are found in the body without its chunk framing. There the upstream
  * escapes line breaks and quotes inside JSON strings, so model output can
  * neither start a line with `data:` nor write a `"usage":` key: the reveal
- * never starts inside the answer. An answer in another form than the request
- * asked for reveals the status line only.
+ * never starts inside the answer.
+ *
+ * What would be revealed is then read, and revealed only when it holds none
+ * of the answer (`withoutAnswer`): an upstream that puts the usage on the
+ * event with the answer's last words, or sends more of the answer after it,
+ * reveals the status line only. So does an answer in another form than the
+ * request asked for, and a body that stopped before its end. The seller then
+ * bills within the request it checked.
  */
 export function keyedRevealRanges(raw: Buffer, statusCode: number, stream: boolean): Array<[number, number]> {
   const text = raw.toString('latin1')
@@ -196,13 +281,17 @@ export function keyedRevealRanges(raw: Buffer, statusCode: number, stream: boole
   const headerEnd = text.indexOf('\r\n\r\n')
   if (headerEnd < 0) return ranges
   const chunked = /\r\ntransfer-encoding:[^\r\n]*\bchunked\b/i.test(text.slice(0, headerEnd))
-  const { body, pieces } = responseBody(text, headerEnd + 4, chunked)
+  const { body, pieces, complete } = responseBody(text, headerEnd + 4, chunked)
+  if (!complete) return ranges
   const usageAt = lastUsage(body)
   let at: number
   if (stream) at = usageAt >= 0 ? lastLineStart(body, 'data:', usageAt) : lastLineStart(body, 'data: [DONE]', body.length)
-  else at = usageAt >= 0 && !body.includes('"choices":', usageAt) ? usageAt : -1
+  else at = usageAt
   const piece = pieces.find((candidate) => at >= candidate.at && at < candidate.at + candidate.length)
   if (!piece) return ranges
+  // The body is latin1 here, one character a byte: read what would be revealed as the UTF-8 it is.
+  const tail = Buffer.from(body.slice(at), 'latin1').toString('utf8')
+  if (!(stream ? streamTailWithoutAnswer(tail) : withoutAnswer(parsedOrNull(`{${tail}`)))) return ranges
   const rawAt = piece.rawAt + (at - piece.at)
   ranges.push([rawAt, raw.length - rawAt])
   return ranges

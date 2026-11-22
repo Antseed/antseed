@@ -19,6 +19,7 @@ Published to npm (bin `antseed`). Node, ES modules. The desktop and Nix ship it 
 | Plugins install with `--ignore-scripts`. A trusted verifier pins an exact version; providers never do. | `src/plugins/registry.test.ts`, `src/plugins/loader.test.ts` |
 | A stale "AntSeed Local CA" (same CN, other fingerprint) is classified `stale` and purged on install. | `src/system-proxy/ca-manager.test.ts` (classification only) |
 | No duplicate command names or aliases in the tree. | `src/cli/program.test.ts` |
+| Setting up a seller-blind relay ends: a wall deadline, a small number of credentials a seller may reject, and the request's own cancellation all stop it. A buyer's own fault (stream limit, a changed attested connection) passes through unchanged, so the seller is not blamed. | `src/proxy/blind-relay.test.ts` |
 
 ## Connections
 

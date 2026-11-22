@@ -7175,6 +7175,27 @@ test('lip-synced video creates route only to sellers whose model takes audio_url
   assert.deepEqual(selected, [])
 })
 
+test('a relayed request keeps the attested connection its TEE check bound it to', async () => {
+  const peer = makePeer('b', ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'open-model': ['openai-chat-completions'] } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  const bindings: unknown[] = []
+  ;(proxy as any)._blindRelay = {
+    send: async (_peer: PeerInfo, _service: string, request: { requestId: string }, _identity: unknown, _callbacks: unknown, options?: { channelBinding?: string }) => {
+      bindings.push(options?.channelBinding)
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+    },
+  }
+  const dispatch = (stream: boolean) => (proxy as any)._dispatchToPeer(makeProxyResponse(), {
+    requestId: randomUUID(), method: 'POST', path: '/v1/chat/completions', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'open-model', stream, messages: [{ role: 'user', content: 'Hello' }] })),
+  }, peer, new Map(), 'openai-chat-completions', 'open-model', null, null, true, new AbortController().signal,
+  { teeBinding: 'c'.repeat(64), blindRelayService: 'open-model' })
+  await dispatch(false)
+  await dispatch(true)
+  assert.deepEqual(bindings, ['c'.repeat(64), 'c'.repeat(64)])
+})
+
 test('a seller-blind offer gives zero data access only to a buyer that has the relay sidecar', () => {
   const peer = makePeer('b', ['openai'])
   const offer = { serviceId: 'open-model', categories: ['chat', 'seller-blind'] }

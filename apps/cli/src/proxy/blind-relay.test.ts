@@ -84,6 +84,118 @@ test('credentials that stay busy are the buyer\'s own stream limit', async () =>
   }, undefined), buyerFault(/every relay credential stayed busy/, 'buyer-stream-limit'))
 })
 
+const chat = (requestId = 'r'): SerializedHttpRequest => ({
+  requestId, method: 'POST', path: '/v1/chat/completions', headers: {}, body: new TextEncoder().encode('{"model":"open-model","messages":[]}'),
+})
+const minted = (request: SerializedHttpRequest, fields: object = {}): SerializedHttpResponse => ({
+  requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify({ ...credential, ...fields })),
+})
+/** `work`'s rejection, or a failure when it has not settled within `ms`. */
+const settlesWithin = <T>(work: Promise<T>, ms: number): Promise<T> => Promise.race([
+  work,
+  new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error(`still waiting after ${ms} ms`)), ms)),
+])
+
+test('a request bound to an attested connection gets its credential and its stream on that connection only', async () => {
+  const mints: Array<string | undefined> = []
+  const opens: Array<string | undefined> = []
+  const changed = Object.assign(new Error('not the connection its TEE attestation covered'), { attribution: 'buyer', code: 'buyer-tee-connection-changed' })
+  const client = new BlindRelayClient({
+    sendRequest: async (_peer, request, _identity, channelBinding) => { mints.push(channelBinding); return minted(request, { credentialId: `cred-${mints.length}` }) },
+    openRelayStream: async (_peer, _streamId, _credentialId, _identity, channelBinding) => {
+      opens.push(channelBinding)
+      throw channelBinding === 'session-1' ? changed : new Error('the seller is restarting')
+    },
+    recordRelayedResponse: () => {},
+    keyedRelayBinary: '/never-spawned',
+  })
+  // A request that needs no attestation leaves a credential behind.
+  await assert.rejects(client.send(peer, 'open-model', chat(), undefined), /the seller is restarting/)
+  assert.deepEqual([mints, opens], [[undefined], [undefined]])
+  // The bound request does not use it: its credential comes over the attested connection, and so does its stream.
+  await assert.rejects(client.send(peer, 'open-model', chat(), undefined, {}, { channelBinding: 'session-1' }), (error: unknown) => error === changed)
+  assert.deepEqual(mints, [undefined, 'session-1'])
+  assert.deepEqual(opens, [undefined, 'session-1'])
+})
+
+test('a seller whose credentials cannot be used is given up on, not asked without end', async () => {
+  const endless = (count: number): void => { if (count > 50) throw new Error('asked without end') }
+  // Every credential is about to expire.
+  let asked = 0
+  const expiring = new BlindRelayClient({
+    sendRequest: async (_peer, request) => { endless(++asked); return minted(request, { expiresAt: 10_000 }) },
+    openRelayStream: async () => { throw new Error('unreachable') },
+    recordRelayedResponse: () => {},
+    keyedRelayBinary: '/never-spawned',
+    now: () => 0,
+  })
+  await assert.rejects(expiring.send(peer, 'open-model', chat(), undefined), (error: unknown) => error instanceof BlindRelayError && /about to expire/.test(error.message))
+  assert.equal(asked, 1)
+
+  // The seller forgets every credential it mints.
+  asked = 0
+  const forgetful = new BlindRelayClient({
+    sendRequest: async (_peer, request) => { endless(++asked); return minted(request, { credentialId: `cred-${asked}` }) },
+    openRelayStream: async () => { throw new Error('unknown credential') },
+    recordRelayedResponse: () => {},
+    keyedRelayBinary: '/never-spawned',
+  })
+  await assert.rejects(forgetful.send(peer, 'open-model', chat(), undefined), (error: unknown) => error instanceof BlindRelayError && /no credential a stream opens on/.test(error.message))
+  assert.ok(asked <= 3, `asked for ${asked} credentials`)
+
+  // A seller that refused this buyer is not asked again.
+  asked = 0
+  const refused = new BlindRelayClient({
+    sendRequest: async (_peer, request) => { endless(++asked); return minted(request) },
+    openRelayStream: async () => { throw new Error('this seller no longer relays requests for this buyer') },
+    recordRelayedResponse: () => {},
+    keyedRelayBinary: '/never-spawned',
+  })
+  await assert.rejects(refused.send(peer, 'open-model', chat(), undefined), (error: unknown) => error instanceof BlindRelayError && /no longer relays requests/.test(error.message))
+  assert.equal(asked, 1)
+})
+
+test('a request given up while the relay is set up stops there', async () => {
+  let asked = 0
+  let opened = 0
+  const destroyed: string[] = []
+  let answerMint: (() => void) | null = null
+  let answerOpen: ((stream: Duplex) => void) | null = null
+  const client = new BlindRelayClient({
+    sendRequest: (_peer, request) => { asked += 1; return new Promise((resolve) => { answerMint = () => resolve(minted(request)) }) },
+    openRelayStream: () => { opened += 1; return new Promise((resolve) => { answerOpen = resolve }) },
+    recordRelayedResponse: () => {},
+    keyedRelayBinary: '/never-spawned',
+  })
+  const givenUp = (error: unknown): boolean => error instanceof BlindRelayError && /given up/.test(error.message)
+
+  // Already given up: the seller is asked for nothing.
+  await assert.rejects(settlesWithin(client.send(peer, 'open-model', chat(), undefined, {}, { signal: AbortSignal.abort() }), 500), givenUp)
+  assert.equal(asked, 0)
+
+  // Given up while the seller mints: the request ends, and the credential is kept for the next one.
+  const minting = new AbortController()
+  const first = client.send(peer, 'open-model', chat('r1'), undefined, {}, { signal: minting.signal })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  minting.abort()
+  await assert.rejects(settlesWithin(first, 500), givenUp)
+  answerMint!()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+
+  // Given up while the stream opens: a stream that opens afterwards is closed.
+  const opening = new AbortController()
+  const second = client.send(peer, 'open-model', chat('r2'), undefined, {}, { signal: opening.signal })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.deepEqual([asked, opened], [1, 1])
+  opening.abort()
+  await assert.rejects(settlesWithin(second, 500), givenUp)
+  const late = new PassThrough()
+  late.on('close', () => destroyed.push('late'))
+  answerOpen!(late)
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.deepEqual(destroyed, ['late'])
+})
+
 test('a sidecar that ends before the answer does fails the request', async () => {
   const ended = (events: Array<[string, unknown?]>) => new Promise<Error | null>((resolve) => {
     const sidecar = Object.assign(new EventEmitter(), { writeApp: () => {} })
@@ -187,6 +299,9 @@ test('the reveal follows the body through chunk framing', () => {
   const usage = 'data: {"choices":[],"usage":{"prompt_tokens":5}}\n\ndata: [DONE]\n\n'
   const framed = `${head('Transfer-Encoding: chunked\r\n')}${chunk('data: {"choices":[{"delta":{"content":"secret"}}]}\n\n')}${chunk(usage)}0\r\n\r\n`
   assert.equal(revealedTail(framed, true), `${usage}\r\n0\r\n\r\n`)
+  // A body that stopped before its last chunk: what follows the usage is not known to be framing.
+  assert.equal(revealedTail(framed.slice(0, -5), true), null)
+  assert.equal(revealedTail(`${framed.slice(0, -2)}x-trailer: secret\r\n\r\n`, true), null)
 })
 
 test('an answer in another form than asked, or with the answer after the usage, reveals the status line only', () => {
@@ -197,6 +312,33 @@ test('an answer in another form than asked, or with the answer after the usage, 
   const noUsage = `${head()}data: {"choices":[{"delta":{"content":"secret"}}],"usage":null}\n\ndata: [DONE]\n\n`
   assert.equal(revealedTail(noUsage, true), 'data: [DONE]\n\n')
   assert.equal(revealedTail(`${head()}{"choices":[{"message":{"content":"secret"}}],"usage":null}`, false), null)
+})
+
+test('a usage event that carries part of the answer, or has more of it after, reveals the status line only', () => {
+  const usage = '"usage":{"prompt_tokens":5,"completion_tokens":2}'
+  // The upstream put the usage on the event with the answer's last words.
+  assert.equal(revealedTail(`${head()}data: {"choices":[{"delta":{"content":"secret"}}],${usage}}\n\ndata: [DONE]\n\n`, true), null)
+  assert.equal(revealedTail(`${head()}data: {"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"secret"}}]}}],${usage}}\n\ndata: [DONE]\n\n`, true), null)
+  // More of the answer follows the last usage figure.
+  assert.equal(revealedTail(`${head()}data: {"choices":[],${usage}}\n\ndata: {"choices":[{"delta":{"content":"secret"}}]}\n\ndata: [DONE]\n\n`, true), null)
+  assert.equal(revealedTail(`${head()}data: {"choices":[],${usage}}\n\n: secret\n\ndata: [DONE]\n\n`, true), null)
+  assert.equal(revealedTail(`${head()}data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\ndata: {"choices":[{"delta":{"content":"secret"}}]}\n\n`, true), null)
+  // Text where only figures and the response's own labels belong.
+  assert.equal(revealedTail(`${head()}data: {"choices":[],"usage":{"prompt_tokens":5,"note":"secret"}}\n\ndata: [DONE]\n\n`, true), null)
+  assert.equal(revealedTail(`${head()}data: {"choices":[],"output_text":"secret",${usage}}\n\ndata: [DONE]\n\n`, true), null)
+
+  // One body: the answer after the usage, however the upstream spells the key.
+  assert.equal(revealedTail(`${head()}{${usage},"choices" : [{"message":{"content":"secret"}}]}`, false), null)
+  assert.equal(revealedTail(`${head()}{${usage},"output_text":"secret"}`, false), null)
+  assert.equal(revealedTail(`${head()}{"choices":[{"message":{"content":"hi"},${usage}}]}`, false), null)
+})
+
+test('a last event that says only how the answer ended is revealed with its usage', () => {
+  const usage = '"usage":{"prompt_tokens":5,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":0},"cost":0.01}'
+  const last = `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"org/open-model","system_fingerprint":null,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":"stop"}],${usage}}\n\ndata: [DONE]\n\n`
+  assert.equal(revealedTail(`${head()}data: {"choices":[{"delta":{"content":"secret"}}]}\n\n${last}`, true), last)
+  const body = `${usage},"system_fingerprint":"fp_1","service_tier":"default"}`
+  assert.equal(revealedTail(`${head()}{"choices":[{"message":{"content":"secret"}}],${body}`, false), body)
 })
 
 const keyedBinary = resolveKeyedRelayBinary()
