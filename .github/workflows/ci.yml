@@ -114,9 +114,12 @@ jobs:
       - name: Test the sidecar pair
         run: pnpm --filter @antseed/keyed-relay run test
 
+      # The CLI compiles against the plugins and the tier 3 apps.
+      - *build-tier2
+      - *build-tier3
+
       - name: Test the CLI keyed path
         run: |
-          pnpm run build:tier2
           pnpm --filter=@antseed/cli run build
           node --test apps/cli/dist/proxy/blind-relay.test.js
 
