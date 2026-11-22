@@ -6,6 +6,25 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+## 2026-11-22 — CLI 0.1.257
+
+### Packages
+
+- `@antseed/cli@0.1.257`
+- `@antseed/antseed-verifier@0.1.10`
+- `@antseed/provider-core@0.2.70`
+- `@antseed/provider-alibaba-video@0.1.14`
+- `@antseed/provider-anthropic@0.1.64`
+- `@antseed/provider-claude-code@0.1.64`
+- `@antseed/provider-claude-oauth@0.1.70`
+- `@antseed/provider-fal-image@0.1.10`
+- `@antseed/provider-fal-video@0.1.26`
+- `@antseed/provider-local-llm@0.1.64`
+- `@antseed/provider-openai@0.2.63`
+- `@antseed/provider-openai-responses@0.1.57`
+- `@antseed/provider-typesafe@0.1.16`
+- `@antseed/provider-venice-video@0.1.27`
+
 ### Added
 
 - TEE sellers: seller alerts can now send to Telegram. The bot token may be a hidden secret named `ANTSEED_ALERTS_TELEGRAM_TOKEN` (Secret Manager on Confidential Space, an encrypted variable on dstack; `compose.mjs --alerts-token-secret`). A TEE seller config may no longer point `seller.alerts.telegram.botTokenEnv` at another variable, since alerts send the token to Telegram. Buyers accept such sellers once on this verifier version.
