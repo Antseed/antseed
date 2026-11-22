@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- TEE sellers: seller alerts can now send to Telegram. The bot token may be a hidden secret named `ANTSEED_ALERTS_TELEGRAM_TOKEN` (Secret Manager on Confidential Space, an encrypted variable on dstack; `compose.mjs --alerts-token-secret`). A TEE seller config may no longer point `seller.alerts.telegram.botTokenEnv` at another variable, since alerts send the token to Telegram. Buyers accept such sellers once on this verifier version.
+
 ### Fixed
 
 - Verifiers (CLI): the first `antseed verifier submit` on a data dir no longer reads the KBF audits contract's whole history to find the auditor's own earlier submissions, which could take a long time on a public RPC with no output. It reads only the current epoch, since only an audit of the current epoch can be submitted (issue #1799).
