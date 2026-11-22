@@ -16,7 +16,7 @@ const PROMPT_WORD = 'zebra-prompt-codeword';
 const ANSWER_WORD = 'giraffe-answer-codeword';
 
 /** A TLS 1.2 upstream that records the request and answers an SSE stream with usage; with `stall`, it never ends the answer. */
-function startUpstream({ stall = false } = {}) {
+function startUpstream({ stall = false, endless = false } = {}) {
   const requests = [];
   /** Everything each connection received, complete request or not. */
   const received = [];
@@ -40,7 +40,13 @@ function startUpstream({ stall = false } = {}) {
       for (const chunk of chunks) body += `${Buffer.byteLength(chunk).toString(16)}\r\n${chunk}\r\n`;
       // The end of the body goes out in a TLS record of its own, as upstreams send it.
       socket.write(`HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n${body}`, () => {
-        if (!stall) setTimeout(() => socket.end('0\r\n\r\n'), 20);
+        if (endless) {
+          // An answer that never stops: one event after another, as fast as they are read.
+          const event = `${Buffer.byteLength(chunks[0]).toString(16)}\r\n${chunks[0]}\r\n`;
+          const more = (error) => { if (!error && socket.writable) socket.write(event, more); };
+          socket.on('error', () => {});
+          more();
+        } else if (!stall) setTimeout(() => socket.end('0\r\n\r\n'), 20);
       });
     });
   });
@@ -231,6 +237,46 @@ test('an upstream that never ends its answer is cut off at the response deadline
   }
 });
 
+test('an answer longer than the seller keeps is cut off at that length, and what was relayed is reported', { skip: !binary && 'native sidecar not built' }, async () => {
+  const { server, port } = await startUpstream({ endless: true });
+  const seller = KeyedRelayProcess.spawn('seller', binary);
+  const buyer = KeyedRelayProcess.spawn('buyer', binary);
+  const limit = 256 * 1024;
+  try {
+    let relayed = 0;
+    let atAdmission = null;
+    seller.peer.on('data', (d) => { relayed += d.length; });
+    seller.peer.pipe(buyer.peer);
+    buyer.peer.pipe(seller.peer);
+    // The buyer reads its answer as it comes.
+    buyer.on('app', () => {});
+    seller.startSeller({
+      host: '127.0.0.1', port, serverName: 'localhost', extraRootsPem: CA, maxResponseBytes: limit,
+      head: Buffer.from('POST /x HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer k\r\nConnection: close\r\n'),
+    });
+    buyer.startBuyer({ serverName: 'localhost', extraRootsPem: CA });
+    await buyer.waitFor('ready', 60_000);
+    await sendRequest(buyer, seller, 'Content-Length: 2\r\n\r\n{}', 21, 2);
+    const exited = new Promise((resolve) => seller.once('exit', resolve));
+    atAdmission = relayed;
+    seller.admit();
+
+    // The upstream never stops, and the response deadline is 15 minutes away.
+    const end = await seller.waitFor('responseEnd', 10_000);
+    assert.ok(end.bytesDown > 0 && end.bytesDown <= limit, `the seller reported ${end.bytesDown} answer bytes relayed; it keeps ${limit}`);
+    const exit = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), 5_000))]);
+    assert.ok(exit, 'the seller sidecar was still running 5 s after the answer passed its limit');
+    assert.match(exit.stderr, /answer is longer than the seller keeps/);
+    // What went to the buyer after admission: the answer, and the little the session's messages take.
+    assert.ok(relayed - atAdmission <= limit + 64 * 1024, `${relayed - atAdmission} bytes went to the buyer; the seller keeps ${limit}`);
+  } finally {
+    seller.kill();
+    buyer.kill();
+    server.close();
+    server.closeAllConnections?.();
+  }
+});
+
 test('a refused request never reaches the upstream, and the buyer learns why', { skip: !binary && 'native sidecar not built' }, async () => {
   const { server, port, requests, received } = await startUpstream();
   try {
@@ -303,6 +349,45 @@ test('a seller sidecar whose peer is not reading holds a bounded queue, and its 
     assert.equal((await exited).code, 0);
   } finally {
     delete process.env.FLOOD_BYTES;
+    relay.kill();
+  }
+});
+
+test('a sidecar that exits with its last output still unread reports that output before its exit', { skip: process.platform === 'win32' && 'the stand-in sidecar is a script' }, async () => {
+  const burst = 2 * 1024 * 1024;
+  const tail = 16 * 64;
+  process.env.BURST_BYTES = String(burst);
+  const relay = KeyedRelayProcess.spawn('buyer', new URL('./fixtures/burst-exit-sidecar.mjs', import.meta.url).pathname);
+  try {
+    const order = [];
+    relay.on('event', (event) => order.push(event.type));
+    relay.peer.on('error', (error) => order.push(`peer error: ${error.message}`));
+    const exited = new Promise((resolve) => relay.once('exit', (exit) => {
+      order.push('exit');
+      resolve(exit);
+    }));
+    let received = 0;
+    const burstRead = new Promise((resolve) => relay.peer.on('data', (chunk) => {
+      received += chunk.length;
+      if (received === burst) resolve();
+    }));
+    relay.startBuyer({ serverName: 'localhost' });
+    await burstRead;
+    // The reader falls behind: the sidecar writes the last of its output and exits while none of it is read.
+    const child = relay._child;
+    child.stdout.pause();
+    const childExited = new Promise((resolve) => child.once('exit', resolve));
+    relay.peer.write(Buffer.from('x'));
+    await childExited;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    child.stdout.resume();
+    const exit = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), 5000))]);
+    assert.ok(exit, 'no exit event within 5 s');
+    assert.deepEqual(order, ['responseEnd', 'done', 'exit'], 'the sidecar\'s exit was reported before its last events');
+    assert.equal(received, burst + tail, 'the peer stream ended before the last of the sidecar\'s output');
+    assert.equal(exit.code, 0);
+  } finally {
+    delete process.env.BURST_BYTES;
     relay.kill();
   }
 });

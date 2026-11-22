@@ -89,6 +89,8 @@ export interface KeyedRelaySellerStart {
   maxRequestBytes?: number;
   /** How long the upstream may take to end its answer once the request is forwarded; 15 minutes if absent. */
   responseTimeoutMs?: number;
+  /** The longest answer the seller keeps for the reveal that ends the session, and so the longest it relays; 64 MiB if absent. */
+  maxResponseBytes?: number;
   /** Tests only: an extra trusted root certificate (PEM). */
   extraRootsPem?: string;
 }
@@ -169,7 +171,8 @@ export class KeyedRelayProcess extends EventEmitter {
       if (!this.peer.destroyed) this.peer.push(null);
       this.emit('exit', this._exited);
     };
-    _child.on('exit', ended);
+    // `close` follows the end of stdout and stderr: `exit` can come while the sidecar's last frames are still unread.
+    _child.on('close', (code) => ended(code));
     _child.on('error', (error) => {
       this._stderr += `\n${error.message}`;
       // A sidecar that never started has no exit of its own.
@@ -195,6 +198,7 @@ export class KeyedRelayProcess extends EventEmitter {
       head: Buffer.from(config.head).toString('base64'),
       ...(config.maxRequestBytes !== undefined ? { maxRequestBytes: config.maxRequestBytes } : {}),
       ...(config.responseTimeoutMs !== undefined ? { responseTimeoutMs: config.responseTimeoutMs } : {}),
+      ...(config.maxResponseBytes !== undefined ? { maxResponseBytes: config.maxResponseBytes } : {}),
       ...(config.extraRootsPem ? { extraRootsPem: config.extraRootsPem } : {}),
     });
   }

@@ -46,6 +46,10 @@ const REVEAL_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_HEAD: usize = 8192;
 /// The longest request the seller holds, unless Node sets another limit.
 const DEFAULT_MAX_REQUEST: usize = 32 << 20;
+/// The longest answer the seller keeps, unless Node sets another limit.
+const DEFAULT_MAX_RESPONSE: usize = 64 << 20;
+/// What keeping a record costs beyond its bytes: an upstream may send its answer in tiny records.
+const RECORD_COST: usize = 64;
 /// The most bytes of one side's handshake the seller keeps.
 const MAX_HANDSHAKE: usize = 256 * 1024;
 /// An encrypted alert: its two bytes and the record's nonce and tag.
@@ -225,6 +229,35 @@ enum AnswerEnd {
     Buyer,
     /// The upstream held the answer open past the response deadline.
     Deadline,
+    /// The answer grew past what the seller keeps.
+    Length,
+}
+
+/// The server's application-data records after the handshake. The seller
+/// keeps them all for the reveal that ends the session, so it keeps a bounded
+/// answer and relays no more than it keeps.
+#[derive(Default)]
+struct Answer {
+    records: Vec<Record>,
+    /// What the records cost to keep: their bytes and `RECORD_COST` each.
+    kept: usize,
+    /// The answer passed the limit: no more of it is kept or relayed.
+    cut: bool,
+}
+
+impl Answer {
+    /// Keeps the records of one read from the upstream, all or none. False
+    /// when they take the answer past `max`: the answer ends before them.
+    fn keep(&mut self, records: Vec<Record>, max: usize) -> bool {
+        let cost: usize = records.iter().map(|record| record.body.len() + RECORD_COST).sum();
+        if self.cut || cost > max.saturating_sub(self.kept) {
+            self.cut = true;
+            return false;
+        }
+        self.kept += cost;
+        self.records.extend(records);
+        true
+    }
 }
 
 /// The plaintext the buyer revealed, as Node gets it: offset in the stream and the bytes.
@@ -242,8 +275,7 @@ struct Shared {
     client: HandshakeSide,
     server: HandshakeSide,
     request: RequestGate,
-    /// The server's application-data records after the handshake.
-    responses: Vec<Record>,
+    answer: Answer,
     bytes_up: u64,
     bytes_down: u64,
 }
@@ -262,6 +294,7 @@ pub async fn run() -> Result<()> {
     }
     let max_request = start["maxRequestBytes"].as_u64().map_or(DEFAULT_MAX_REQUEST, |n| n as usize);
     let response_timeout = start["responseTimeoutMs"].as_u64().map_or(RESPONSE_TIMEOUT, Duration::from_millis);
+    let max_response = start["maxResponseBytes"].as_u64().map_or(DEFAULT_MAX_RESPONSE, |n| n as usize);
 
     let (mut session, tls) = PeerSession::open(peer)?;
     session.ctx.io_mut().send(Hello { version: PROTOCOL_VERSION, injected_len: head.len() as u32 }).await?;
@@ -331,7 +364,8 @@ pub async fn run() -> Result<()> {
         Ok::<_, anyhow::Error>(())
     });
 
-    // Upstream → buyer: forward everything; keep the handshake and the response records.
+    // Upstream → buyer: forward everything, up to the answer the seller keeps; keep the handshake
+    // and the response records.
     let down_shared = shared.clone();
     let down = tokio::spawn(async move {
         let mut parser = RecordParser::default();
@@ -345,6 +379,8 @@ pub async fn run() -> Result<()> {
             let records = parser.push(&buf[..n])?;
             {
                 let mut shared = down_shared.lock().await;
+                let mut relayed = 0;
+                let mut answer = Vec::new();
                 for record in records {
                     if in_handshake {
                         if shared.server.take(&record)? {
@@ -352,12 +388,18 @@ pub async fn run() -> Result<()> {
                             let _ = server_done_tx.send(true);
                         }
                     } else {
-                        shared.bytes_down += 5 + record.body.len() as u64;
+                        relayed += 5 + record.body.len() as u64;
                         if record.typ == APPLICATION_DATA {
-                            shared.responses.push(record);
+                            answer.push(record);
                         }
                     }
                 }
+                // Checked before these bytes go to the buyer, so what is
+                // reported as relayed is what was.
+                if !shared.answer.keep(answer, max_response) {
+                    break;
+                }
+                shared.bytes_down += relayed;
             }
             tls_write.write_all(&buf[..n]).await?;
             tls_write.flush().await?;
@@ -485,8 +527,9 @@ pub async fn run() -> Result<()> {
 
     // The answer ends when the upstream closes. A buyer whose side ends first
     // has left, or has read the whole answer, and an upstream may hold its
-    // answer open past the deadline: either way no more of it is relayed, and
-    // what was is reported, so the request is still billed.
+    // answer open past the deadline or send more than the seller keeps: in
+    // each case no more of it is relayed, and what was is reported, so the
+    // request is still billed.
     let mut up = up;
     let end = tokio::select! {
         ended = tokio::time::timeout(response_timeout, closed.wait_for(|done| *done)) => if ended.is_ok() { AnswerEnd::Upstream } else { AnswerEnd::Deadline },
@@ -501,15 +544,20 @@ pub async fn run() -> Result<()> {
         tracing::debug!("relay to the buyer ended: {error}");
     }
 
-    let (responses, bytes_up, bytes_down) = {
+    let (responses, bytes_up, bytes_down, end) = {
         let mut shared = shared.lock().await;
-        (std::mem::take(&mut shared.responses), shared.bytes_up, shared.bytes_down)
+        let end = if shared.answer.cut { AnswerEnd::Length } else { end };
+        (std::mem::take(&mut shared.answer.records), shared.bytes_up, shared.bytes_down, end)
     };
     let length: usize = responses.iter().map(|r| r.body.len().saturating_sub(RECORD_OVERHEAD)).sum();
     out.ctl(json!({ "type": "responseEnd", "length": length, "bytesUp": bytes_up, "bytesDown": bytes_down }));
     if end == AnswerEnd::Deadline {
         // The buyer has no whole answer to reveal the usage of: Node bills what was relayed.
         bail!("the upstream did not finish its answer in time");
+    }
+    if end == AnswerEnd::Length {
+        // The same: the buyer has part of an answer, and Node bills what was relayed.
+        bail!("the upstream's answer is longer than the seller keeps ({max_response} bytes)");
     }
 
     let request: RevealRequest = tokio::time::timeout(REVEAL_TIMEOUT, session.ctx.io_mut().expect_next())
@@ -613,6 +661,39 @@ mod tests {
         let mut gate = RequestGate::default();
         gate.take(data(10), MAX).unwrap();
         assert!(gate.take(Record { typ: ALERT, body: vec![9; RECORD_OVERHEAD] }, MAX).is_err());
+    }
+
+    #[test]
+    fn keeps_an_answer_up_to_its_limit_and_nothing_past_it() {
+        let mut answer = Answer::default();
+        let cost = |plaintext: usize| RECORD_OVERHEAD + plaintext + RECORD_COST;
+        let max = cost(100) + cost(50);
+        assert!(answer.keep(vec![data(100)], max));
+        // The records of one read are kept together or not at all.
+        assert!(!answer.keep(vec![data(10), data(41)], max));
+        assert_eq!(answer.records.len(), 1);
+        // And nothing after the cut, however small.
+        assert!(!answer.keep(vec![data(1)], max));
+        assert!(!answer.keep(Vec::new(), max));
+        assert_eq!(answer.records.len(), 1);
+
+        let mut answer = Answer::default();
+        assert!(answer.keep(vec![data(100)], max));
+        assert!(answer.keep(vec![data(50)], max));
+        assert!(answer.keep(Vec::new(), max));
+        assert_eq!(answer.records.len(), 2);
+    }
+
+    #[test]
+    fn tiny_records_count_for_what_they_cost_to_keep() {
+        let mut answer = Answer::default();
+        let records = |n: usize| (0..n).map(|_| data(1)).collect::<Vec<_>>();
+        let max = 1000 * (RECORD_OVERHEAD + 1);
+        // A thousand one-byte records fit by their bytes, and not by what holding them takes.
+        assert!(!answer.keep(records(1000), max));
+        let mut answer = Answer::default();
+        assert!(answer.keep(records(max / (RECORD_OVERHEAD + 1 + RECORD_COST)), max));
+        assert!(!answer.keep(records(1), max));
     }
 
     #[test]
