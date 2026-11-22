@@ -6,7 +6,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
-## 2026-11-22 — CLI 0.1.257
+## 2026-11-22 — CLI 0.1.257, Desktop 0.2.92
 
 ### Packages
 
@@ -24,6 +24,10 @@ This project uses selective package publishing. Each release entry lists the pub
 - `@antseed/provider-openai-responses@0.1.57`
 - `@antseed/provider-typesafe@0.1.16`
 - `@antseed/provider-venice-video@0.1.27`
+
+### Desktop
+
+- `@antseed/desktop@0.2.92`
 
 ### Added
 
