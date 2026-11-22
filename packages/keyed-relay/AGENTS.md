@@ -32,13 +32,14 @@ The cryptography is a Rust sidecar in `native/` built on TLSNotary's building bl
 | A buyer that leaves mid-answer is still reported: the seller sidecar emits `responseEnd` with what it relayed before it exits. A destroyed peer stream tells the sidecar its peer is gone and stops it only after a grace period, and a seller's handle stays busy until its sidecar has exited. | `test/sidecar.test.mjs`, `packages/node/tests/keyed-relay.test.ts` |
 | A sidecar that cannot start, or that ends before the answer does, ends the request with an error instead of leaving it open. | `test/sidecar.test.mjs`, `apps/cli/src/proxy/blind-relay.test.ts` |
 | The wrapper reports a sidecar's exit only after its stdout and stderr have ended, so every frame it wrote arrives before `exit`; a sidecar that never started still reports its exit. | `test/sidecar.test.mjs` |
+| A sidecar exits only after every frame it queued has been written to its stdout, after an error too: a parent that reads late still gets a seller's `responseEnd`. A parent that is gone does not hold it up, and one that reads nothing holds it up for a bounded time (`frames::Finish`). | `native/src/frames.rs` tests, `test/sidecar.test.mjs` |
 | The published manifest lists the platform package of every platform the binaries workflow builds, at its own version. | `test/platform-packages.test.mjs` |
 | `msg::PROTOCOL_VERSION` changes with any change to what the sidecars send each other; buyer and seller must agree. | review only |
 
 ## Traps
 
 - Local macOS builds: if the linker fails on `arm64e.x1` in the macOS 27 SDK, build with `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk MACOSX_DEPLOYMENT_TARGET=14.0`.
-- Tokio's stdin reader blocks runtime shutdown, so `main` exits the process explicitly.
+- Tokio's stdin reader blocks runtime shutdown, so `main` exits the process explicitly, and an explicit exit drops whatever stdout has not written: `main` waits on `frames::Finish` first.
 - The TLSNotary and mpz revisions must match each other; take them from one TLSNotary release's `Cargo.toml`, and keep `Cargo.lock`.
 - TLS 1.2 only: an upstream that drops TLS 1.2 or AES-128-GCM can't be served this way.
 

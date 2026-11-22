@@ -21,9 +21,15 @@ async fn main() {
         .with_env_filter(std::env::var("ANTSEED_KEYED_RELAY_LOG").unwrap_or_else(|_| "warn".into()))
         .init();
     let role = std::env::args().nth(1);
-    let result = match role.as_deref() {
-        Some("buyer") => buyer::run().await,
-        Some("seller") => seller::run().await,
+    let (result, output) = match role.as_deref() {
+        Some("buyer") => {
+            let (stdio, output) = frames::start();
+            (buyer::run(stdio).await, output)
+        }
+        Some("seller") => {
+            let (stdio, output) = frames::start();
+            (seller::run(stdio).await, output)
+        }
         Some("--version") => {
             println!("antseed-keyed-relay {} protocol {}", env!("CARGO_PKG_VERSION"), msg::PROTOCOL_VERSION);
             return;
@@ -33,19 +39,13 @@ async fn main() {
             std::process::exit(2);
         }
     };
-    // Exit explicitly: the runtime would otherwise wait on the blocking stdin read.
-    match result {
-        Ok(()) => {
-            // Give the stdout writer a moment to flush the last frames.
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            std::process::exit(0);
-        }
-        Err(error) => {
-            // The error goes to stderr for Node; stdout carries only frames.
-            let _ = writeln!(std::io::stderr(), "antseed-keyed-relay: {error:#}");
-            // The frames before the error (what a seller relayed) still reach Node.
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            std::process::exit(1);
-        }
+    // The error goes to stderr for Node; stdout carries only frames.
+    if let Err(error) = &result {
+        let _ = writeln!(std::io::stderr(), "antseed-keyed-relay: {error:#}");
     }
+    // Every frame queued so far reaches Node before the exit: after an error too, a
+    // seller's last event says what it relayed.
+    output.wait().await;
+    // Exit explicitly: the runtime would otherwise wait on the blocking stdin read.
+    std::process::exit(if result.is_ok() { 0 } else { 1 });
 }

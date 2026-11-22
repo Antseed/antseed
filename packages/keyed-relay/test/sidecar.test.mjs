@@ -277,6 +277,46 @@ test('an answer longer than the seller keeps is cut off at that length, and what
   }
 });
 
+test('a seller sidecar that stops while its output is unread still delivers all of it before it exits', { skip: !binary && 'native sidecar not built' }, async () => {
+  const { server, port } = await startUpstream({ endless: true });
+  const seller = KeyedRelayProcess.spawn('seller', binary);
+  const buyer = KeyedRelayProcess.spawn('buyer', binary);
+  const limit = 256 * 1024;
+  try {
+    seller.peer.pipe(buyer.peer);
+    buyer.peer.pipe(seller.peer);
+    buyer.on('app', () => {});
+    seller.startSeller({
+      host: '127.0.0.1', port, serverName: 'localhost', extraRootsPem: CA, maxResponseBytes: limit,
+      head: Buffer.from('POST /x HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer k\r\nConnection: close\r\n'),
+    });
+    buyer.startBuyer({ serverName: 'localhost', extraRootsPem: CA });
+    await buyer.waitFor('ready', 60_000);
+    await sendRequest(buyer, seller, 'Content-Length: 2\r\n\r\n{}', 21, 2);
+    const exited = new Promise((resolve) => seller.once('exit', resolve));
+
+    // The parent falls behind: it reads nothing of the sidecar's output while the answer
+    // passes the limit, far more than a pipe holds, and the sidecar stops.
+    const stdout = seller._child.stdout;
+    stdout.pause();
+    seller.admit();
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    assert.equal(seller._child.exitCode, null, 'the seller sidecar exited with its output still unread');
+    stdout.resume();
+
+    const end = await seller.waitFor('responseEnd', 10_000);
+    assert.ok(end.bytesDown > 0 && end.bytesDown <= limit, `the seller reported ${end.bytesDown} answer bytes relayed; it keeps ${limit}`);
+    const exit = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), 5_000))]);
+    assert.ok(exit, 'the seller sidecar was still running 5 s after its output was read');
+    assert.match(exit.stderr, /answer is longer than the seller keeps/);
+  } finally {
+    seller.kill();
+    buyer.kill();
+    server.close();
+    server.closeAllConnections?.();
+  }
+});
+
 test('a refused request never reaches the upstream, and the buyer learns why', { skip: !binary && 'native sidecar not built' }, async () => {
   const { server, port, requests, received } = await startUpstream();
   try {

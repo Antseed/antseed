@@ -280,8 +280,8 @@ struct Shared {
     bytes_down: u64,
 }
 
-pub async fn run() -> Result<()> {
-    let frames::Stdio { mut ctl, app: _, out, peer } = frames::start();
+pub async fn run(stdio: frames::Stdio) -> Result<()> {
+    let frames::Stdio { mut ctl, app: _, out, peer } = stdio;
     let start = ctl.recv().await.ok_or_else(|| anyhow!("no start message"))?;
     let host = start["host"].as_str().ok_or_else(|| anyhow!("host missing"))?.to_string();
     let port = start["port"].as_u64().unwrap_or(443) as u16;

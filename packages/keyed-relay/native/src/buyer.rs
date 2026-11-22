@@ -163,8 +163,8 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-pub async fn run() -> Result<()> {
-    let frames::Stdio { mut ctl, mut app, out, peer } = frames::start();
+pub async fn run(stdio: frames::Stdio) -> Result<()> {
+    let frames::Stdio { mut ctl, mut app, out, peer } = stdio;
     let start = ctl.recv().await.ok_or_else(|| anyhow!("no start message"))?;
     let server_name = start["serverName"].as_str().ok_or_else(|| anyhow!("serverName missing"))?.to_string();
     // Tests only: an extra trusted root (PEM).
