@@ -196,6 +196,56 @@ test('a request given up while the relay is set up stops there', async () => {
   assert.deepEqual(destroyed, ['late'])
 })
 
+test('a request given up while its sidecar sets up the session ends at once: the sidecar is killed and the stream closed', { skip: process.platform === 'win32' && 'the stand-in sidecar is a script' }, async () => {
+  const givenUp = (error: unknown): boolean => error instanceof BlindRelayError && /given up/.test(error.message)
+  const spawned: KeyedRelayProcess[] = []
+  const spawn = KeyedRelayProcess.spawn
+  KeyedRelayProcess.spawn = (...args: Parameters<typeof spawn>) => {
+    const relay = spawn.apply(KeyedRelayProcess, args)
+    spawned.push(relay)
+    return relay
+  }
+  try {
+    // The sidecar takes its start and never says `ready`: a handshake that hangs.
+    const hanging = (openRelayStream: BlindRelayDeps['openRelayStream']) => new BlindRelayClient({
+      sendRequest: async (_peer, request) => minted(request),
+      openRelayStream,
+      recordRelayedResponse: () => {},
+      keyedRelayBinary: fixtureUrl('silent-sidecar.mjs').pathname,
+    })
+
+    const stream = new PassThrough()
+    const waiting = new AbortController()
+    const first = hanging(async () => stream).send(peer, 'open-model', chat('r1'), undefined, {}, { signal: waiting.signal })
+    for (let waited = 0; spawned.length === 0 && waited < 1000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.equal(spawned.length, 1, 'the sidecar was not started')
+    const sidecar = spawned[0]!
+    assert.equal(sidecar.exited, null)
+    const exited = new Promise<{ code: number | null }>((resolve) => sidecar.once('exit', resolve))
+    waiting.abort()
+    // Not after the 30 s the session may take to set up.
+    await assert.rejects(settlesWithin(first, 1000), givenUp)
+    assert.ok(stream.destroyed, 'the relay stream stayed open')
+    // Killed, not left to notice that its peer is gone.
+    assert.equal((await settlesWithin(exited, 1000)).code, null)
+
+    // Given up just as the stream opened: no sidecar is started for it.
+    const late = new PassThrough()
+    const opening = new AbortController()
+    const second = hanging(() => {
+      const opened = Promise.resolve(late)
+      void opened.then(() => {}).then(() => opening.abort())
+      return opened
+    }).send(peer, 'open-model', chat('r2'), undefined, {}, { signal: opening.signal })
+    await assert.rejects(settlesWithin(second, 1000), givenUp)
+    assert.equal(spawned.length, 1, 'a sidecar was started for a request already given up')
+    assert.ok(late.destroyed, 'the relay stream stayed open')
+  } finally {
+    KeyedRelayProcess.spawn = spawn
+    for (const relay of spawned) relay.kill()
+  }
+})
+
 test('a sidecar that ends before the answer does fails the request', async () => {
   const ended = (events: Array<[string, unknown?]>) => new Promise<Error | null>((resolve) => {
     const sidecar = Object.assign(new EventEmitter(), { writeApp: () => {} })

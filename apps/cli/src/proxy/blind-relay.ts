@@ -13,6 +13,7 @@ import {
   isKeyedRequestTerms,
   keyedRefusalCode,
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
+  RELAY_RESPONSE_WAIT_MS,
   type BlindRelayCredential,
   type FaultAttribution,
   type KeyedRefusalCode,
@@ -43,9 +44,12 @@ const KEYED_READY_TIMEOUT_MS = 30_000
 const KEYED_ADMIT_TIMEOUT_MS = 90_000
 /** How long revealing the billing ranges may take. */
 const KEYED_REVEAL_TIMEOUT_MS = 30_000
-/** As for a request a seller answers itself: how long the answer may take to start, how long it may pause, and how long it may run. */
-const RESPONSE_TIMEOUT_MS = 5 * 60_000
-const STREAM_IDLE_TIMEOUT_MS = 5 * 60_000
+/**
+ * As for a request a seller answers itself: how long the answer may take to start, how long it may pause, and how long it may run.
+ * The first two are the wait the relay stream stays open through with nothing on it (`RELAY_RESPONSE_WAIT_MS`), never longer.
+ */
+const RESPONSE_TIMEOUT_MS = RELAY_RESPONSE_WAIT_MS
+const STREAM_IDLE_TIMEOUT_MS = RELAY_RESPONSE_WAIT_MS
 const MAX_STREAM_DURATION_MS = 30 * 60_000
 /** How long a request waits before it is sent again, after a seller refused it while a channel top-up was mining. */
 const TOP_UP_RETRY_MS = 2_000
@@ -248,11 +252,11 @@ export class BlindRelayClient {
   }
 
   /**
-   * `work`, unless `signal` aborts or `deadline` (on the wall clock) passes
-   * first: the request then fails without waiting for it, and `late` gets a
-   * result that still arrives.
+   * `work`, unless `signal` aborts or `deadline` (on the wall clock, when
+   * there is one) passes first: the request then fails without waiting for
+   * it, and `late` gets a result that still arrives.
    */
-  private _unlessGivenUp<T>(work: Promise<T>, signal: AbortSignal | undefined, deadline: number, late?: (value: T) => void): Promise<T> {
+  private _unlessGivenUp<T>(work: Promise<T>, signal: AbortSignal | undefined, deadline: number | undefined, late?: (value: T) => void): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let settled = false
       const finish = (settle: () => void): void => {
@@ -263,8 +267,10 @@ export class BlindRelayClient {
         settle()
       }
       const onAbort = (): void => finish(() => reject(new BlindRelayError(GIVEN_UP)))
-      const timer = setTimeout(() => finish(() => reject(new BlindRelayError('the seller took too long to set up the relay'))), Math.max(0, deadline - Date.now()))
-      timer.unref()
+      const timer = deadline === undefined
+        ? undefined
+        : setTimeout(() => finish(() => reject(new BlindRelayError('the seller took too long to set up the relay'))), Math.max(0, deadline - Date.now()))
+      timer?.unref()
       signal?.addEventListener('abort', onAbort, { once: true })
       work.then(
         (value) => {
@@ -399,6 +405,8 @@ export class BlindRelayClient {
       stream.destroy()
     }
     try {
+      // Given up as the stream opened: no sidecar is started for it.
+      if (signal?.aborted) throw new BlindRelayError(GIVEN_UP)
       const prepared = keyedRequestBodyFromFields(fields, credential.upstream.model, credential.request)
       sidecar = KeyedRelayProcess.spawn('buyer', binary)
       const relay = sidecar
@@ -410,8 +418,10 @@ export class BlindRelayClient {
         ...(this._deps.keyedRelayExtraRootsPem ? { extraRootsPem: this._deps.keyedRelayExtraRootsPem } : {}),
       })
       try {
-        await relay.waitFor('ready', KEYED_READY_TIMEOUT_MS)
+        // The wait has its own deadline. A request given up meanwhile ends here: the sidecar and the stream close below.
+        await this._unlessGivenUp(relay.waitFor('ready', KEYED_READY_TIMEOUT_MS), signal, undefined)
       } catch (error) {
+        if (error instanceof BlindRelayError) throw error
         // Nothing beyond the seller's head reached the upstream: no request was made.
         throw new BlindRelayError(`the relay did not start (${error instanceof Error ? error.message : String(error)})`)
       }
