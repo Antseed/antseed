@@ -5969,13 +5969,16 @@ export class BuyerProxy {
         // the stream rather than reach the client unreadable.
         const streamDecryptor = e2eeSession ? createStreamDecryptor(e2eeSession) : null
         let decryptQueue: Promise<void> = Promise.resolve()
+        // The first chunk that did not decrypt: the answer was not served, whatever the seller's stream says.
+        const decryptFailures: unknown[] = []
         const enqueueEncryptedChunk = (chunk: SerializedHttpResponseChunk): void => {
           decryptQueue = decryptQueue.then(async () => {
-            if (res.destroyed) return
+            if (decryptFailures.length > 0 || res.destroyed) return
             const data = await streamDecryptor!.push(chunk.data)
             const tail = chunk.done ? await streamDecryptor!.flush() : new Uint8Array()
             writeStreamChunk({ ...chunk, data: tail.length > 0 ? Buffer.concat([data, tail]) : data })
           }).catch((error: unknown) => {
+            decryptFailures.push(error)
             log(`End-to-end decryption failed for peer ${selectedPeer.peerId.slice(0, 12)}...: ${error instanceof Error ? error.message : String(error)}`)
             res.destroy()
           })
@@ -6028,6 +6031,8 @@ export class BuyerProxy {
           ...(teeBinding ? { channelBinding: teeBinding } : {}),
         })
         await decryptQueue
+        // Thrown here, it ends the dispatch as an interrupted answer: no success for the seller or the router.
+        if (decryptFailures.length > 0) throw decryptFailures[0]
 
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
