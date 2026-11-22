@@ -1056,3 +1056,56 @@ export function createOutputEchoScreen<Settings>(input: {
     },
   }
 }
+
+/**
+ * The echo check's block of the rules fingerprint (`RecordCheck.fingerprint`), with the fixed inputs it is judged on
+ * below: a change to its rule, a limit or what the code gives for one of these inputs changes the pinned rules hash.
+ */
+export function outputEchoFingerprint(): Record<string, unknown> {
+  // The echo check: its rule, the request, and what a round and the crowd give for fixed counts (reference 60 and
+  // 360 tokens), so a change to how either is judged changes the hash.
+  return {
+    rule: OUTPUT_ECHO_RULE,
+    crowdTimeLimitMs: ECHO_CROWD_TIME_LIMIT_MS,
+    prompt: outputEchoPrompt('sample text'),
+    rounds: SAMPLE_ECHO_ROUNDS.map((asks) => {
+      const echo = (count: number | null) => ({ request: {} as never, reading: null, reply: { count, reasoning: 0, unusable: count === null ? 'sample' : null } })
+      return judgeEchoRound({
+        short: asks.map(([short]) => echo(short)), long: asks.map(([, long]) => echo(long)),
+        reference: { short: 60, long: 360 }, referenceReasoning: 0, mode: 'plain',
+      }).verdict
+    }),
+    crowd: SAMPLE_ECHO_CROWDS.map(([amount, votes, ownSpread]) => echoCrowdObjection(amount, votes, ownSpread) === null),
+    // Whole judgements, both modes and the fixed-amount gate: each sample is every text asked twice at the given
+    // short and long counts, against three backing sellers at 0 and one at 1.
+    judged: SAMPLE_ECHO_JUDGEMENTS.map(([mode, short, long, reasoning]) => {
+      const echo = (count: number) => ({ request: {} as never, reading: null, reply: { count, reasoning, unusable: null } })
+      const rounds = [0, 1, 2].map(() => {
+        const asks = { short: [echo(short), echo(short)], long: [echo(long), echo(long)] }
+        return { ...asks, ...judgeEchoRound({ ...asks, reference: { short: 60, long: 360 }, referenceReasoning: reasoning, mode }) }
+      })
+      const vote = (value: number) => ({ peerId: `sample-${value}`, short: echo(60), long: echo(360), growth: value, offset: value, reasoning: 0, sentHere: true })
+      const judged = judgeOutputEcho({
+        mode, rounds, precheckMatch: true, referenceReasoning: [reasoning, reasoning, reasoning],
+        reference: [0, 1, 2].map(() => ({ short: { text: 's', count: 60 }, long: { text: 'l', count: 360 } })),
+        crowd: { votes: [vote(0), vote(0), vote(0), vote(1)], incomplete: false },
+      })
+      return [judged.outcome, judged.growth.outcome, judged.fixedAmount.outcome]
+    }),
+  }
+}
+
+/** A seller's short and long counts per ask, against a reference of 60 and 360 tokens. */
+const SAMPLE_ECHO_ROUNDS: ReadonlyArray<ReadonlyArray<readonly [number | null, number | null]>> = [
+  [[60, 360]], [[63, 363]], [[61, 366], [61, 366]], [[61, 366], [60, 360]], [[61, 366], [61, 380]], [[61, 366]], [[null, 360]],
+]
+
+/** Mode, the seller's short and long counts (reference 60 and 360), and the reasoning of each reply. */
+const SAMPLE_ECHO_JUDGEMENTS: ReadonlyArray<readonly ['plain' | 'visible', number, number, number]> = [
+  ['plain', 60, 360, 0], ['plain', 63, 363, 0], ['plain', 60, 460, 0], ['plain', 90, 390, 0], ['visible', 60, 360, 4], ['visible', 60, 460, 4],
+]
+
+/** A flagged amount, the other sellers' votes, the seller's own spread. */
+const SAMPLE_ECHO_CROWDS: ReadonlyArray<readonly [number, ReadonlyArray<number | null>, number]> = [
+  [93, [0, 1, -1, 0], 15], [93, [0, 1], 0], [93, [0, 9, 12, null], 0], [93, [0, 0, 92], 0], [60, [0, 0, 30], 0], [93, [0, 1, -1, 0], 35],
+]

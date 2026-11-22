@@ -1,6 +1,7 @@
 import { randomInt } from 'node:crypto'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
-import { isSafeProbe, signedResponseInputUsage } from '@antseed/node/payments'
+import { encodeHttpResponse } from '@antseed/node'
+import { PROBE_GUARD_RANGES, isSafeProbe, signedResponseInputUsage } from '@antseed/node/payments'
 import type { AuditTaskLimiter } from './audit-concurrency.js'
 import {
   costOfRequests,
@@ -1164,3 +1165,146 @@ export function generateTokenizerProbe(random: RandomInt = randomInt): Tokenizer
   }
   throw new Error('could not write a tokenizer probe the probe guard accepts')
 }
+
+/**
+ * The pre-check's block of the rules fingerprint (`RecordCheck.fingerprint`), with the fixed inputs it is judged on
+ * below: a change to its rule, a limit or what the code gives for one of these inputs changes the pinned rules hash.
+ */
+export function tokenizerPrecheckFingerprint(): Record<string, unknown> {
+  // The pre-check before a seller's questions: its rule and retry limits, the probe guard's table, a probe
+  // written from a fixed sequence (so the probe writer is part of the rules), and what the rule, the reference
+  // agreement, the crowd, the probe guard and the signed-usage reader give for fixed inputs.
+  return {
+    rule: TOKENIZER_PRECHECK_RULE,
+    referenceProbeTries: REFERENCE_PROBE_TRIES,
+    sellerRequestTries: SELLER_REQUEST_TRIES,
+    probeGuardRanges: PROBE_GUARD_RANGES,
+    probes: SAMPLE_PROBE_SEEDS.map((seed) => generateTokenizerProbe(fixedSequence(seed))),
+    judged: SAMPLE_TOKENIZER_ROUNDS.map((rounds) => judgeTokenizerPrecheck(rounds)),
+    referenceDeltas: SAMPLE_REFERENCE_ASKS.map((asks) => referenceDelta(asks).delta),
+    // A pair whose two answers report the same cached amount is kept (tokenizer-precheck-v3); different amounts, one
+    // side only, or no stored cache are not.
+    cacheCancels: [
+      [{ cached_tokens: 64 }, { cached_tokens: 64 }], [{ cached_tokens: 64 }, { cached_tokens: 70 }], [{ cached_tokens: 64 }, undefined], [undefined, undefined],
+    ].map(([base, probed]) => cacheBlocks({
+      base: { cachedInput: base !== undefined, ...(base ? { cache: base } : {}) },
+      probed: { cachedInput: probed !== undefined, ...(probed ? { cache: probed } : {}) },
+    } as never)),
+    cachedReference: referenceDelta([1, 2].map(() => ({
+      baseTokens: 140, probedTokens: 157, cachedInput: true, cache: [{ cached_tokens: 128 }, { cached_tokens: 128 }] as [Record<string, number>, Record<string, number>], providers: ['Provider-A', 'Provider-A'] as [string, string],
+    }))).delta,
+    // Whether a seller off a reference of 119 in every round is a mismatch, next to the model's sellers'
+    // first-round differences: they must back the reference and must not outvote it.
+    crowds: SAMPLE_TOKENIZER_CROWDS.map((deltas) => {
+      const crowd = tokenizerCrowd(deltas, 119)
+      return [crowd.corroborated, crowd.outvoted, tokenizerCrowdObjection(crowd, 119) === null]
+    }),
+    guarded: SAMPLE_PROBE_TEXTS.map((text) => isSafeProbe(text)),
+    signedUsage: SAMPLE_USAGE_BODIES.map((body) => signedResponseInputUsage(encodeHttpResponse({
+      requestId: 'sample', statusCode: 200, headers: {}, body: new TextEncoder().encode(body),
+    }))),
+  }
+}
+
+/**
+ * Pre-check rounds (the reference's difference, then the seller's for each ask) around the tolerance: a match on
+ * the first or the second ask, three rounds off, a match after two rounds off, too few rounds, an ask without a
+ * count, a seller whose two asks disagree, a round without a reference, and counts with cached input (one that
+ * matches, one that is off).
+ */
+const SAMPLE_TOKENIZER_ROUNDS: ReadonlyArray<ReadonlyArray<{ referenceDelta: number | null; sellerDeltas: Array<number | null>; cachedAsks?: boolean[] }>> = [
+  [{ referenceDelta: 100, sellerDeltas: [100] }],
+  [{ referenceDelta: 100, sellerDeltas: [140, 102] }],
+  [{ referenceDelta: 100, sellerDeltas: [103, 104] }, { referenceDelta: 90, sellerDeltas: [87, 86] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
+  [{ referenceDelta: 100, sellerDeltas: [103, 104] }, { referenceDelta: 90, sellerDeltas: [87, 86] }, { referenceDelta: 80, sellerDeltas: [120, 82] }],
+  [{ referenceDelta: 100, sellerDeltas: [140, 140] }, { referenceDelta: 90, sellerDeltas: [130, 130] }],
+  [{ referenceDelta: 100, sellerDeltas: [140, 140] }, { referenceDelta: 90, sellerDeltas: [130, null] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
+  [{ referenceDelta: 100, sellerDeltas: [140, 143] }, { referenceDelta: 90, sellerDeltas: [130, 130] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
+  [{ referenceDelta: 100, sellerDeltas: [140, 140] }, { referenceDelta: 90, sellerDeltas: [130, 130] }, { referenceDelta: 80, sellerDeltas: [120] }],
+  [{ referenceDelta: null, sellerDeltas: [140, 140] }, { referenceDelta: 90, sellerDeltas: [130, 130] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
+  [{ referenceDelta: 100, sellerDeltas: [101], cachedAsks: [true] }],
+  [{ referenceDelta: 100, sellerDeltas: [140, 140], cachedAsks: [false, true] }, { referenceDelta: 90, sellerDeltas: [130, 130] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
+  // One token off in every round, the same way twice: a mismatch only under an exact count (tokenizer-precheck-v2).
+  [{ referenceDelta: 100, sellerDeltas: [101, 101] }, { referenceDelta: 90, sellerDeltas: [91, 91] }, { referenceDelta: 80, sellerDeltas: [81, 81] }],
+  // Two rounds off, then the exact count: a match.
+  [{ referenceDelta: 100, sellerDeltas: [101, 101] }, { referenceDelta: 90, sellerDeltas: [91, 91] }, { referenceDelta: 80, sellerDeltas: [80] }],
+]
+
+/**
+ * Sellers' first-round differences: most on another count, a minority on another count, a tie, two sellers both
+ * off, scattered counts, one seller alone, one seller off with one on the reference's count, one off with the
+ * others unreadable, and two on another count against one on the reference's.
+ */
+const SAMPLE_TOKENIZER_CROWDS: ReadonlyArray<Array<number | null>> = [
+  [132, 132, 133, 132, 119, 120, null],
+  [132, 132, 132, 119, 119, 119, 118],
+  [132, 132, 132, 119, 119, 119],
+  [132, 132],
+  [130, 133, 136, 119],
+  [132],
+  [132, 121],
+  [132, null, null],
+  [132, 132, 119],
+  // One seller off with one on the reference's exact count (tokenizer-precheck-v2: only the exact count backs it).
+  [132, 119],
+]
+
+const referenceAsk = (baseTokens: number | null, probedTokens: number | null, extra: Partial<TokenizerReferenceAskV1> = {}): TokenizerReferenceAskV1 => ({
+  baseTokens, probedTokens, cachedInput: false, providers: ['Provider-A', 'Provider-A'], ...extra,
+})
+
+/**
+ * Reference asks (input tokens for A and for A + B): agreeing, disagreeing, unreadable, not growing, asked once,
+ * with cached input, from two providers, and from an endpoint that names no provider.
+ */
+const SAMPLE_REFERENCE_ASKS: ReadonlyArray<TokenizerReferenceAskV1[]> = [
+  [referenceAsk(26, 143), referenceAsk(26, 143)],
+  [referenceAsk(26, 143), referenceAsk(26, 144)],
+  [referenceAsk(26, 143), referenceAsk(null, 143)],
+  [referenceAsk(26, 26), referenceAsk(26, 26)],
+  [referenceAsk(26, 143)],
+  [referenceAsk(26, 143), referenceAsk(26, 143, { cachedInput: true })],
+  [referenceAsk(26, 143), referenceAsk(26, 143, { providers: ['Provider-A', 'Provider-B'] })],
+  [referenceAsk(26, 143, { providers: [null, null] }), referenceAsk(26, 143, { providers: [null, null] })],
+]
+
+/** Seeds of the probes the fingerprint holds, each written from `fixedSequence`. */
+const SAMPLE_PROBE_SEEDS: readonly number[] = [1, 2, 3, 4]
+
+/** A fixed sequence of picks in place of the probe writer's random ones. */
+export function fixedSequence(seed: number): (max: number) => number {
+  let state = seed >>> 0
+  return (max) => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0
+    return Math.floor((state / 0x1_0000_0000) * max)
+  }
+}
+
+/** Probe text on both sides of the probe guard. */
+const SAMPLE_PROBE_TEXTS: readonly string[] = [
+  ' The reference is ZX-48217-QK and I paid 1,249.50 € on 14 March 2026 😀',
+  ' 예약 번호는 AB-12345-CD 이고 요금은 59,800원 입니다',
+  ' 予約番号は AB-12345-CD で、料金は 9,800円です。',
+  'No leading space',
+  ' it\'s a contraction',
+  ' a <|control|> token',
+  ' ESPAÑA in capitals',
+  ' thumbs up 👍\u{1f3fb}',
+]
+
+/** Signed response bodies the usage reader reads, and ones it refuses. */
+const SAMPLE_USAGE_BODIES: readonly string[] = [
+  '{"usage":{"prompt_tokens":143,"completion_tokens":40}}',
+  '{"usage":{"input_tokens":12,"cache_read_input_tokens":3,"cache_creation_input_tokens":1}}',
+  '{"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4}}}',
+  '{"usage":{"prompt_tokens":15,"prompt_tokens":20}}',
+  '{"usage":{"prompt_tokens":1e3}}',
+  '{"usage":{"prompt_tokens":0,"completion_tokens":0}}',
+  '{"usage":{"prompt_tokens":120,"prompt_tokens_details":{"cached_tokens":108}}}',
+  '{"usage":{"prompt_tokens":802,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":770}}}',
+  '{"choices":[]}',
+  '{"usage":{"prompt_tokens":0,"prompt_tokens_details":{"cached_tokens":12}}}',
+  '{"usage":{"prompt_tokens":123}',
+  'data: {"usage":{"prompt_tokens":15}}',
+  '{"error":{"message":"upstream overloaded"},"usage":{"prompt_tokens":40}}',
+]

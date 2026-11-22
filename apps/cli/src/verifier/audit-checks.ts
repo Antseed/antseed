@@ -2,16 +2,18 @@ import { canonicalJsonStringify, type KbfReferenceV1 } from '@antseed/fingerprin
 import { auditedServiceNames } from './audited-models.js'
 import type { MethodEnv, MethodRun, MethodScreen, OwnScreen, OwnScreenFor, SellerAuditStart } from './audit-method.js'
 import {
-  FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE, describeFlipsFlag, flipsPaidRequests, isFlipsRecord, isProbeDraw, summarizeFlips, validateFlips,
+  FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE, describeFlipsFlag, flipsFingerprint, flipsPaidRequests, isFlipsRecord, isProbeDraw, summarizeFlips,
+  validateFlips,
   type FlipsStage, type FlipsV1,
 } from './flips.js'
 import { flipsForRun } from './flips-run.js'
 import { FLIPS_RULE, flipsCounts, flipsRuleById, type FlipsRule } from './flips-score.js'
 import {
-  createOutputCapScreen, describeOutputCapFlag, outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1,
+  createOutputCapScreen, describeOutputCapFlag, outputCapFingerprint, outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1,
 } from './output-cap.js'
 import {
-  OUTPUT_ECHO_RULE, createOutputEchoScreen, describeOutputEchoFlag, outputEchoPaidRequests, outputEchoPrompt, summarizeOutputEcho, validateOutputEcho,
+  OUTPUT_ECHO_RULE, createOutputEchoScreen, describeOutputEchoFlag, outputEchoFingerprint, outputEchoPaidRequests, outputEchoPrompt, summarizeOutputEcho,
+  validateOutputEcho,
   type EchoSellerAskV1, type OutputEchoV1,
 } from './output-echo.js'
 import type { PaidRequest, ProxyAuditEvidenceExchangeV1 } from './proxy-evidence.js'
@@ -23,6 +25,7 @@ import {
   describeTokenizerMismatch,
   measureTokenizerReference,
   summarizeTokenizerPrecheck,
+  tokenizerPrecheckFingerprint,
   tokenizerPrecheckPaidRequests,
   validateTokenizerPrecheck,
   type TokenizerSellerRequestV1,
@@ -201,8 +204,18 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   carriedIsOfAudit?(carried: CheckRecords[Slot], audit: SellerAuditStart): boolean
   /** The test as an audit runs it (`audit-method.ts`), from its own screen for the model and run. */
   screen(own: OwnScreen<Slot>): MethodScreen<Slot>
-  /** The config switch that turns the test off: `verifier.<key>` set to false. Any other value leaves it on. */
-  toggle: { key: 'tokenizerPrecheck' | 'outputChecks' | 'flips' }
+  /**
+   * The config switch that turns the test off: `verifier.<key>` set to false. Any other value leaves it on. `pinned` is
+   * the value the compat number stands for: a run with the switch set away from it judges by other rules
+   * (`verifierRuleOverrides`).
+   */
+  toggle: { key: 'tokenizerPrecheck' | 'outputChecks' | 'flips'; pinned: boolean }
+  /**
+   * The test's block of the rules fingerprint, held there under its slot's name: its rule, its limits and what its
+   * judge gives for fixed sample inputs, which live with the test. Every test has one, so a rule of any test in the
+   * list is under the pinned hash (`verifierRulesFingerprint`).
+   */
+  fingerprint(): Record<string, unknown>
   /**
    * The test in one run. Called once, before any model lane, and only when the test is switched on: it does the work
    * its models share (a key, limiters of its own) and gives what builds the test's own screen for one model, which the
@@ -251,7 +264,8 @@ export const TOKENS_CHECK: RecordCheck<'tokenizerPrecheck'> = {
     ready: (audit) => precheck.ready(audit.bank),
     check: (audit) => precheck.check(audit.seller, audit.bank, audit.clock),
   }),
-  toggle: { key: 'tokenizerPrecheck' },
+  toggle: { key: 'tokenizerPrecheck', pinned: true },
+  fingerprint: tokenizerPrecheckFingerprint,
   // The tokenizer pre-check of this model's sellers (`createTokenizerPrecheckScreen`): its probes are
   // written and measured on the reference once, when the first seller is audited, whose question set
   // names the bank whose route is asked. Its crowd is every seller of the model the buyer would audit
@@ -304,7 +318,8 @@ export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
     ready: (audit) => cap.ready(audit.bank),
     check: (audit) => cap.check(audit.seller, audit.bank, audit.thinking, audit.clock),
   }),
-  toggle: { key: 'outputChecks' },
+  toggle: { key: 'outputChecks', pinned: true },
+  fingerprint: outputCapFingerprint,
   // Said for every model while the dry-pass switch is set, also with the output checks off: the run has always said
   // it whatever the tests' own switches say.
   announce({ model, report }) {
@@ -383,7 +398,8 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
       spare: () => audit.spare(),
     }),
   }),
-  toggle: { key: 'outputChecks' },
+  toggle: { key: 'outputChecks', pinned: true },
+  fingerprint: outputEchoFingerprint,
   // The echo check of this model's sellers (`createOutputEchoScreen`): its texts are written and measured on
   // the reference once, and its crowd is every seller of the model the buyer would audit, as for the pre-check.
   forRun: () => ({ sellers, seller, reference, limiters, report }) => createOutputEchoScreen<KbfReferenceV1>({
@@ -505,7 +521,12 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
     // FLIPS can be a diagnostic (recorded only): a write made only for it never stops the audit when it fails.
     bestEffortCheckpoint: true,
   }),
-  toggle: { key: 'flips' },
+  toggle: { key: 'flips', pinned: true },
+  fingerprint: () => ({
+    ...flipsFingerprint(),
+    // Counting by a record's own rule: a flips-v1 summary never counts under this build, a flips-v2 one does.
+    countsByRule: ['flips-v1', FLIPS_RULE.id, 'flips-unknown'].map((rule) => FLIPS_CHECK.summaryCounts!({ rule, model: 'claude-opus-5.5', outcome: 'flag' })),
+  }),
   // Its key, its probe and its own limiters once per run, then each model's screen (`flips-run.ts`).
   forRun: flipsForRun,
 }

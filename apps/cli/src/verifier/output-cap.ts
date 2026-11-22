@@ -4,12 +4,14 @@ import { isSafeProbe } from '@antseed/node/payments'
 import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from './output-usage.js'
 import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest, type ProxyAuditExchangeCostV1 } from './proxy-evidence.js'
 import {
+  SIGNED_REQUEST_TRIES,
   askSellerSigned,
   signedExchange,
   type SignedSellerRequestInput,
   type SignedSellerRequestV1,
 } from './signed-seller-request.js'
 import {
+  fixedSequence,
   generateTokenizerProbe,
   measureTokenizerReference,
   referenceDelta,
@@ -537,3 +539,33 @@ export function createOutputCapScreen<Settings>(input: {
     },
   }
 }
+
+/**
+ * The cap check's block of the rules fingerprint (`RecordCheck.fingerprint`), with the fixed inputs it is judged on
+ * below: a change to its rule, a limit or what the code gives for one of these inputs changes the pinned rules hash.
+ */
+export function outputCapFingerprint(): Record<string, unknown> {
+  // The cap check: its rule, a request written from a fixed sequence, and the class and outcome it gives for
+  // fixed answers (billed, itemised reasoning, measured length) on a limit of 16.
+  return {
+    rule: OUTPUT_CAP_RULE,
+    signedRequestTries: SIGNED_REQUEST_TRIES,
+    limit: outputCapLimit(OUTPUT_CAP_RULE, fixedSequence(7)),
+    prompt: outputCapPrompt(fixedSequence(11)).prompt,
+    words: [101, 342, 999].map(numberWords),
+    classes: SAMPLE_CAP_ANSWERS.map(([billed, reasoning, measured]) => classifyCapAnswer({
+      cap: 16, oneAnswer: true, stops: false, billedOutputTokens: billed, estimated: false, reasoningTokens: reasoning,
+      reasoningMarker: reasoning !== null, text: 'x', finished: false, shape: 'chat',
+    }, 16, measured)),
+    judged: SAMPLE_CAP_ASKS.map((classes) => judgeOutputCap(classes.map((entry) => ({ class: entry }))).outcome),
+  }
+}
+
+/** Billed output, itemised reasoning and measured answer length of sample answers on a limit of 16. */
+const SAMPLE_CAP_ANSWERS: ReadonlyArray<readonly [number, number | null, number | null]> = [
+  [16, null, null], [18, null, null], [408, 392, 9], [927, null, 6], [40, null, 30], [60, 10, 33], [927, null, 537], [927, 920, 537],
+]
+
+const SAMPLE_CAP_ASKS: ReadonlyArray<readonly OutputCapClass[]> = [
+  ['within'], ['unread'], ['cap-ignored'], ['cap-ignored', 'within'], ['cap-ignored', 'unread'], ['cap-ignored', 'cap-ignored'],
+]
