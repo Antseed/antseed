@@ -76,6 +76,34 @@ describe('encryptChatCompletionRequest', () => {
       .rejects.toBeInstanceOf(E2eeError);
   });
 
+  it.each([
+    ['reasoning_content', { reasoning_content: 'codeword OSPREY' }],
+    ['reasoning', { reasoning: 'codeword OSPREY' }],
+    ['a refusal', { refusal: 'codeword OSPREY' }],
+    ['a field it does not know', { annotations: [{ type: 'url_citation', title: 'codeword OSPREY' }] }],
+    ['a role it does not know', { role: 'codeword OSPREY' }],
+  ])('fails closed on a history message with %s', async (_label, fields) => {
+    const session = createE2eeSession(model.publicKey);
+    await expect(encryptChatCompletionRequest({
+      messages: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'ok', ...fields }, { role: 'user', content: 'again' }],
+    }, session)).rejects.toBeInstanceOf(E2eeError);
+  });
+
+  it('sends the role and the encrypted content of a message, nothing else', async () => {
+    const session = createE2eeSession(model.publicKey);
+    const out = await encryptChatCompletionRequest({
+      messages: [
+        { role: 'developer', content: 'be brief' },
+        // What a client echoes back from an earlier answer: empty fields beside the text.
+        { role: 'assistant', content: 'ok', name: 'bot', refusal: null, reasoning_content: '', annotations: [], audio: null },
+      ],
+    }, session);
+    const messages = out['messages'] as Array<Record<string, unknown>>;
+    expect(messages.map((m) => Object.keys(m).sort())).toEqual([['content', 'role'], ['content', 'role']]);
+    expect(messages.map((m) => m['role'])).toEqual(['developer', 'assistant']);
+    expect(await Promise.all(messages.map((m) => decryptE2eeText(m['content'] as string, model)))).toEqual(['be brief', 'ok']);
+  });
+
   it('sends the client key the response is sealed to', () => {
     const session = createE2eeSession(model.publicKey);
     const headers = e2eeRequestHeaders(session);

@@ -162,6 +162,15 @@ export function isE2eeHeader(name: string): boolean {
 /** Request fields whose content an E2EE upstream cannot protect, so an E2EE request refuses them. */
 const UNPROTECTED_FIELDS = ['tools', 'functions', 'tool_choice', 'function_call', 'audio', 'prediction'] as const;
 
+/** The roles whose messages are text an E2EE upstream decrypts. */
+const TEXT_ROLES = new Set(['system', 'developer', 'user', 'assistant']);
+
+/** Whether a message field holds nothing: absent, null, or an empty string, list or object. */
+function isEmptyField(value: unknown): boolean {
+  if (value === undefined || value === null || value === '') return true;
+  return typeof value === 'object' && Object.keys(value).length === 0;
+}
+
 function messageText(content: unknown, index: number): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -177,8 +186,9 @@ function messageText(content: unknown, index: number): string {
 
 /**
  * Encrypts every message of an OpenAI Chat Completions request (system, user, assistant and
- * history alike). Fails closed: a request it cannot fully protect (images, audio, tool calls or
- * tool definitions) throws instead of sending anything in plaintext.
+ * history alike) and sends each as its role and that ciphertext only. Fails closed: a request
+ * it cannot fully protect (images, audio, tool calls or tool definitions, a message with
+ * reasoning or any other field that holds a value) throws instead of sending anything in plaintext.
  */
 export async function encryptChatCompletionRequest(
   body: Record<string, unknown>,
@@ -198,8 +208,14 @@ export async function encryptChatCompletionRequest(
     if (message['tool_calls'] !== undefined || message['function_call'] !== undefined || message['role'] === 'tool' || message['role'] === 'function') {
       throw new E2eeError(`Message ${index} is a tool call or result; end-to-end encryption carries text only.`);
     }
-    const { name: _name, ...rest } = message;
-    return { ...rest, content: await encryptE2eeText(messageText(message['content'], index), session.modelPublicKey) };
+    const { role, content, name: _name, ...rest } = message;
+    if (typeof role !== 'string' || !TEXT_ROLES.has(role)) throw new E2eeError(`Message ${index} has a role end-to-end encryption does not carry.`);
+    // Only the role and the encrypted text are sent. Any other field with a value (reasoning, a refusal, annotations) would go in plaintext.
+    const unprotected = Object.keys(rest).find((field) => !isEmptyField(rest[field]));
+    if (unprotected !== undefined) {
+      throw new E2eeError(`End-to-end encryption does not cover \`${unprotected}\` of message ${index}; remove it or turn off zero data access.`);
+    }
+    return { role, content: await encryptE2eeText(messageText(content, index), session.modelPublicKey) };
   }));
   return { ...body, messages };
 }
