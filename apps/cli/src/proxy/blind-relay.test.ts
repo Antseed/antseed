@@ -2,11 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { AddressInfo } from 'node:net'
 import { readFileSync } from 'node:fs'
+import { EventEmitter } from 'node:events'
 import { PassThrough, type Duplex } from 'node:stream'
 import { createServer as tlsCreateServer } from 'node:tls'
-import { RelayMux, SellerBlindRelay, type BlindRelayCharge, type KeyedRequestAdmission, type KeyedRequestDecision, type PeerInfo, type Provider, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
+import { RelayMux, SellerBlindRelay, type BlindRelayCharge, type KeyedRequestAdmission, type KeyedRequestDecision, type PeerInfo, type Provider, type SerializedHttpRequest, type SerializedHttpResponse, type SerializedHttpResponseChunk } from '@antseed/node'
 import { KeyedRelayProcess, resolveKeyedRelayBinary } from '@antseed/keyed-relay'
-import { BlindRelayClient, BlindRelayError } from './blind-relay.js'
+import { BlindRelayClient, BlindRelayError, type BlindRelayCallbacks } from './blind-relay.js'
 import { KeyedPlaintextSocket, keyedRequestBody, keyedRevealRanges } from './keyed-relay-client.js'
 
 const peer = { peerId: 'a'.repeat(40) } as PeerInfo
@@ -18,7 +19,7 @@ const credential = {
 }
 
 /** A client whose seller answers the credential route with `minted`. */
-function clientWith(minted: unknown, openRelayStream: () => Promise<Duplex> = async () => { throw new Error('unreachable') }) {
+function clientWith(minted: unknown, openRelayStream: () => Promise<Duplex> = async () => { throw new Error('unreachable') }, keyedRelayBinary: string | null = '/never-spawned') {
   const asked: SerializedHttpRequest[] = []
   const client = new BlindRelayClient({
     sendRequest: async (_peer, request) => {
@@ -27,12 +28,18 @@ function clientWith(minted: unknown, openRelayStream: () => Promise<Duplex> = as
     },
     openRelayStream,
     recordRelayedResponse: () => {},
-    keyedRelayBinary: null,
+    keyedRelayBinary,
   })
-  const send = (path = '/v1/chat/completions') => client.send(peer, 'open-model', {
-    requestId: 'r', method: 'POST', path, headers: {}, body: new TextEncoder().encode('{"model":"open-model","messages":[]}'),
+  const send = (path = '/v1/chat/completions', body = '{"model":"open-model","messages":[]}') => client.send(peer, 'open-model', {
+    requestId: 'r', method: 'POST', path, headers: {}, body: new TextEncoder().encode(body),
   }, undefined)
-  return { asked, send }
+  return { asked, client, send }
+}
+
+/** An error that says the buyer itself could not send the request: the seller is not counted as failing. */
+const buyerFault = (message: RegExp, code?: string) => (error: unknown): boolean => {
+  const fault = error as { attribution?: string; code?: string; message: string }
+  return fault.attribution === 'buyer' && (code === undefined || fault.code === code) && message.test(fault.message)
 }
 
 test('a credential naming an upstream other than its TLS host is refused', async () => {
@@ -48,14 +55,49 @@ test('a credential without the request path or the terms the seller checks is re
   await assert.rejects(clientWith(noTerms).send(), /malformed credential/)
 })
 
-test('only chat completions are relayed, and nothing is sent without the sidecar', async () => {
+test('a request the relay cannot carry fails as the buyer\'s own, before anything is asked of the seller', async () => {
   const opened: PassThrough[] = []
   const open = async () => { const stream = new PassThrough(); opened.push(stream); return stream }
-  const { send } = clientWith(credential, open)
-  await assert.rejects(send('/v1/embeddings'), (error: unknown) => error instanceof BlindRelayError && error.statusCode === 400 && /relays only \/v1\/chat\/completions/.test(error.message))
-  await assert.rejects(send(), /no keyed-relay sidecar installed/)
-  assert.equal(opened.length, 2)
-  assert.ok(opened.every((stream) => stream.destroyed))
+  const { asked, client, send } = clientWith(credential, open, null)
+  await assert.rejects(send('/v1/embeddings'), buyerFault(/carries only \/v1\/chat\/completions/, 'invalid-request'))
+  await assert.rejects(send(undefined, '{"model":"open-model","messages":[],"n":2}'), buyerFault(/one choice per request/, 'invalid-request'))
+  await assert.rejects(send(undefined, 'not json'), buyerFault(/JSON request body/, 'invalid-request'))
+  // Without the sidecar this buyer can use no seller-blind service: no seller is asked, none is blamed.
+  await assert.rejects(send(), buyerFault(/no keyed-relay sidecar installed/))
+  assert.match(client.unavailable() ?? '', /no keyed-relay sidecar installed/)
+  assert.equal(asked.length, 0)
+  assert.equal(opened.length, 0)
+})
+
+test('credentials that stay busy are the buyer\'s own stream limit', async () => {
+  let now = 0
+  const client = new BlindRelayClient({
+    sendRequest: async (_peer, request) => ({ requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify({ ...credential, credentialId: `cred-${now}`, expiresAt: 600_000 })) }),
+    openRelayStream: async () => { throw new Error('credential busy') },
+    recordRelayedResponse: () => {},
+    keyedRelayBinary: '/sidecar',
+    now: () => now,
+    sleep: async (ms) => { now += ms },
+  })
+  await assert.rejects(client.send(peer, 'open-model', {
+    requestId: 'r', method: 'POST', path: '/v1/chat/completions', headers: {}, body: new TextEncoder().encode('{"model":"open-model","messages":[]}'),
+  }, undefined), buyerFault(/every relay credential stayed busy/, 'buyer-stream-limit'))
+})
+
+test('a sidecar that ends before the answer does fails the request', async () => {
+  const ended = (events: Array<[string, unknown?]>) => new Promise<Error | null>((resolve) => {
+    const sidecar = Object.assign(new EventEmitter(), { writeApp: () => {} })
+    const socket = new KeyedPlaintextSocket(sidecar as never, 0)
+    socket.on('error', resolve)
+    socket.on('end', () => resolve(null))
+    socket.resume()
+    for (const [name, value] of events) sidecar.emit(name, value)
+    setTimeout(() => resolve(new Error('the socket neither ended nor failed')), 200)
+  })
+  const failed = await ended([['app', Buffer.from('HTTP/1.1 200 OK\r\n')], ['exit', { code: 1, stderr: 'the relay stream closed' }]])
+  assert.match(failed?.message ?? 'ended', /the relay ended before the answer did \(the relay stream closed\)/)
+  // After the answer's end, the sidecar's exit is how every request finishes.
+  assert.equal(await ended([['app', Buffer.from('HTTP/1.1 200 OK\r\n')], ['appEnd'], ['exit', { code: 0, stderr: '' }]]), null)
 })
 
 // ── The request and the reveal ──────────────────────────────────
@@ -101,22 +143,67 @@ test('the buyer reveals the status line and the usage to the end, nothing else',
   const sse = Buffer.from('HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\ndata: {"choices":[{"delta":{"content":"secret \\"usage\\": 1"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":5}}\n\ndata: [DONE]\n\n')
   const text = sse.toString()
   const usageEvent = text.lastIndexOf('data: {"choices":[],')
-  assert.deepEqual(keyedRevealRanges(sse, 200), [[0, 15], [usageEvent, sse.length - usageEvent]])
+  assert.deepEqual(keyedRevealRanges(sse, 200, true), [[0, 15], [usageEvent, sse.length - usageEvent]])
   const json = Buffer.from('HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":5}}')
   const at = json.toString().indexOf('"usage":')
-  assert.deepEqual(keyedRevealRanges(json, 200), [[0, 15], [at, json.length - at]])
-  assert.deepEqual(keyedRevealRanges(Buffer.from('HTTP/1.1 401 Unauthorized\r\n\r\n{"usage":{}}'), 401), [[0, 25]])
+  assert.deepEqual(keyedRevealRanges(json, 200, false), [[0, 15], [at, json.length - at]])
+  assert.deepEqual(keyedRevealRanges(Buffer.from('HTTP/1.1 401 Unauthorized\r\n\r\n{"usage":{}}'), 401, false), [[0, 25]])
   // A stream without usage shows only its end marker.
   const bare = Buffer.from('HTTP/1.1 200 OK\r\n\r\ndata: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n')
   const done = bare.toString().lastIndexOf('data: [DONE]')
-  assert.deepEqual(keyedRevealRanges(bare, 200), [[0, 15], [done, bare.length - done]])
+  assert.deepEqual(keyedRevealRanges(bare, 200, true), [[0, 15], [done, bare.length - done]])
+})
+
+const head = (extra = '') => `HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n${extra}\r\n`
+/** The revealed tail of `raw`, or null when only the status line is revealed. */
+function revealedTail(raw: string, stream: boolean): string | null {
+  const ranges = keyedRevealRanges(Buffer.from(raw), 200, stream)
+  assert.deepEqual(ranges[0], [0, 15])
+  assert.ok(ranges.length <= 2)
+  if (ranges.length === 1) return null
+  assert.equal(ranges[1]![0] + ranges[1]![1], Buffer.byteLength(raw))
+  return raw.slice(ranges[1]![0])
+}
+
+test('an answer that says "data:" is not revealed with the usage', () => {
+  // One body: the reveal starts at the usage key, never at text inside the answer.
+  const json = `${head()}{"choices":[{"message":{"content":"the metadata: field is secret"}}],"usage":{"prompt_tokens":5}}`
+  assert.equal(revealedTail(json, false), '"usage":{"prompt_tokens":5}}')
+  // A stream: the reveal starts at the line the usage event starts on.
+  const sse = `${head()}data: {"choices":[{"delta":{"content":"secret"}}]}\n\ndata: {"id":"data: 7","choices":[],"usage":{"prompt_tokens":5}}\n\ndata: [DONE]\n\n`
+  assert.equal(revealedTail(sse, true), 'data: {"id":"data: 7","choices":[],"usage":{"prompt_tokens":5}}\n\ndata: [DONE]\n\n')
+})
+
+test('the reveal follows the body through chunk framing', () => {
+  const chunk = (data: string): string => `${Buffer.byteLength(data).toString(16)}\r\n${data}\r\n`
+  // A chunk boundary inside the answer puts its next words at the start of a line of the raw response.
+  const split = `${head('transfer-encoding: chunked\r\n')}`
+    + chunk('data: {"choices":[{"delta":{"content":"the secret ')
+    + chunk('data: {\\"usage\\": 1} ends here"}}]}\n\ndata: [DO')
+    + chunk('NE]\n\n')
+    + '0\r\n\r\n'
+  assert.equal(revealedTail(split, true), `data: [DO\r\n${chunk('NE]\n\n')}0\r\n\r\n`)
+  // The usage event starts its own chunk: the reveal starts after the chunk's size line.
+  const usage = 'data: {"choices":[],"usage":{"prompt_tokens":5}}\n\ndata: [DONE]\n\n'
+  const framed = `${head('Transfer-Encoding: chunked\r\n')}${chunk('data: {"choices":[{"delta":{"content":"secret"}}]}\n\n')}${chunk(usage)}0\r\n\r\n`
+  assert.equal(revealedTail(framed, true), `${usage}\r\n0\r\n\r\n`)
+})
+
+test('an answer in another form than asked, or with the answer after the usage, reveals the status line only', () => {
+  const json = `${head()}{"choices":[{"message":{"content":"secret"}}],"usage":{"prompt_tokens":5}}`
+  assert.equal(revealedTail(json, true), null)
+  assert.equal(revealedTail(`${head()}{"usage":{"prompt_tokens":5},"choices":[{"message":{"content":"secret"}}]}`, false), null)
+  // A stream that never reports usage carries `"usage":null` on every event: none of them is revealed.
+  const noUsage = `${head()}data: {"choices":[{"delta":{"content":"secret"}}],"usage":null}\n\ndata: [DONE]\n\n`
+  assert.equal(revealedTail(noUsage, true), 'data: [DONE]\n\n')
+  assert.equal(revealedTail(`${head()}{"choices":[{"message":{"content":"secret"}}],"usage":null}`, false), null)
 })
 
 const keyedBinary = resolveKeyedRelayBinary()
 const fixtureUrl = (name: string) => new URL(`../../../../packages/keyed-relay/test/fixtures/${name}`, import.meta.url)
 
 /** A seller-blind relay with real sidecars, a relay mux pair and a local TLS 1.2 upstream. */
-async function keyedStack(admit: (request: KeyedRequestAdmission) => KeyedRequestDecision) {
+async function keyedStack(admit: (request: KeyedRequestAdmission) => KeyedRequestDecision, closeAfterMs = 20) {
   const ca = readFileSync(fixtureUrl('ca.pem'), 'utf8')
   /** Every byte each upstream connection received, and the complete requests among them. */
   const received: string[] = []
@@ -133,8 +220,9 @@ async function keyedStack(admit: (request: KeyedRequestAdmission) => KeyedReques
       // Chunked, with the end of the body in a TLS record of its own, as upstreams send it.
       const events = 'data: {"model":"org/open-model","choices":[{"delta":{"content":"giraffe"}}]}\n\n'
         + 'data: {"model":"org/open-model","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3}}\n\ndata: [DONE]\n\n'
-      socket.write(`HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n${events.length.toString(16)}\r\n${events}\r\n`, () => {
-        setTimeout(() => socket.end('0\r\n\r\n'), 20)
+      const account = 'set-cookie: session=upstream-account\r\nx-ratelimit-remaining-tokens: 999\r\nopenai-organization: seller-org\r\n'
+      socket.write(`HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n${account}transfer-encoding: chunked\r\nconnection: close\r\n\r\n${events.length.toString(16)}\r\n${events}\r\n`, () => {
+        setTimeout(() => socket.write('0\r\n\r\n', () => setTimeout(() => socket.end(), closeAfterMs)), 20)
       })
     })
   })
@@ -175,13 +263,13 @@ async function keyedStack(admit: (request: KeyedRequestAdmission) => KeyedReques
     keyedRelayBinary: keyedBinary,
     keyedRelayExtraRootsPem: ca,
   })
-  const send = (body: unknown) => client.send(peer, 'open-model', {
+  const send = (body: unknown, callbacks: BlindRelayCallbacks = {}) => client.send(peer, 'open-model', {
     requestId: 'keyed-1',
     method: 'POST',
     path: '/v1/chat/completions',
     headers: { 'content-type': 'application/json', authorization: 'Bearer buyer-must-not-send', 'x-cost-header': 'priority' },
     body: new TextEncoder().encode(JSON.stringify(body)),
-  }, undefined)
+  }, undefined, callbacks)
   return { upstream, received, requests, charges, recorded, send }
 }
 
@@ -205,7 +293,7 @@ test('the seller checks the request, adds its key to the buyer\'s TLS session an
     assert.ok(admissions[0]!.inputTokens > 0)
     // Billed from the usage the buyer revealed: 12 in, 3 out.
     for (let i = 0; i < 50 && stack.charges.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20))
-    assert.deepEqual(stack.charges, [{ buyerPeerId: peer.peerId, requestId: 'keyed-1', service: 'open-model', costUsdc: 420n }])
+    assert.deepEqual(stack.charges, [{ buyerPeerId: peer.peerId, requestId: 'keyed-1', service: 'open-model', costUsdc: 420n, usage: { inputTokens: 12, freshInputTokens: 12, cachedInputTokens: 0, outputTokens: 3 } }])
   } finally {
     stack.upstream.close()
   }
@@ -223,6 +311,29 @@ test('a refused request never reaches the upstream and is not charged', { skip: 
     for (const raw of stack.received) assert.ok(!raw.includes('zebra'))
     await new Promise((resolve) => setTimeout(resolve, 100))
     assert.deepEqual(stack.charges, [])
+  } finally {
+    stack.upstream.close()
+  }
+})
+
+test('the client gets the answer when it ends, with only the headers a seller exposes', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
+  // The upstream keeps the connection open for a while after the answer's last byte.
+  const stack = await keyedStack(() => ({ admitted: true }), 600)
+  try {
+    let started: SerializedHttpResponse | null = null
+    let endedAt = 0
+    const response = await stack.send({ model: 'open-model', stream: true, messages: [{ role: 'user', content: 'zebra' }] }, {
+      onResponseStart: (start) => { started = start },
+      onResponseChunk: (chunk: SerializedHttpResponseChunk) => { if (chunk.done) endedAt = Date.now() },
+    })
+    const late = Date.now() - endedAt
+    assert.ok(endedAt > 0 && late < 300, `the answer was handed over ${late} ms after it ended`)
+    // What the upstream says of the seller's account stays out of the buyer's client.
+    assert.deepEqual(response.headers, { 'content-type': 'text/event-stream' })
+    assert.deepEqual(started!.headers, { 'content-type': 'text/event-stream' })
+    // The usage is still revealed and billed once the upstream closes.
+    for (let i = 0; i < 150 && stack.charges.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.deepEqual(stack.charges, [{ buyerPeerId: peer.peerId, requestId: 'keyed-1', service: 'open-model', costUsdc: 420n, usage: { inputTokens: 12, freshInputTokens: 12, cachedInputTokens: 0, outputTokens: 3 } }])
   } finally {
     stack.upstream.close()
   }

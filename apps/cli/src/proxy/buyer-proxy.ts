@@ -1865,10 +1865,14 @@ export class BuyerProxy {
 
   /**
    * An offer in category `e2ee` gives zero data access until its attestation
-   * fails; one in category `seller-blind` gives it through the blind relay.
+   * fails; one in category `seller-blind` gives it through the blind relay,
+   * which this buyer needs its sidecar for.
    */
   private _zeroDataAccessFacts(peer: PeerInfo, offer: NetworkServiceOffer | null): Pick<PolicyPeerFacts, 'zeroDataAccess' | 'zeroDataAccessFailure'> {
-    if (offer && !isE2eeOffer(offer) && isBlindRelayOffer(offer)) return { zeroDataAccess: true }
+    if (offer && !isE2eeOffer(offer) && isBlindRelayOffer(offer)) {
+      const unavailable = this._blindRelay.unavailable()
+      return unavailable ? { zeroDataAccess: false, zeroDataAccessFailure: unavailable } : { zeroDataAccess: true }
+    }
     if (!offer || !isE2eeOffer(offer)) return { zeroDataAccess: false }
     const failure = this._zeroDataAccess.failure(peer.peerId, offer.serviceId)
     return failure ? { zeroDataAccess: false, zeroDataAccessFailure: failure } : { zeroDataAccess: true }

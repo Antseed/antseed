@@ -1,5 +1,5 @@
 import { Duplex } from 'node:stream'
-import type { KeyedRelayProcess } from '@antseed/keyed-relay'
+import type { KeyedRelayExit, KeyedRelayProcess } from '@antseed/keyed-relay'
 import { KEYED_REQUEST_TAIL_FIELDS, keyedRequestTailFields, type KeyedRequestTerms } from '@antseed/node'
 
 /** Request headers the seller writes itself, so the buyer never sends them. */
@@ -14,13 +14,11 @@ export interface KeyedRequestBody {
 }
 
 /**
- * Rewrites a chat completions body for the keyed relay: the fields the seller
- * checks (`keyedRequestTailFields`: the service's model, the token limit, one
- * choice, usage in a stream, the seller's pinned fields) move to the end,
- * where the buyer reveals them, and nowhere else. A token limit above the
- * seller's cap is lowered to it; with a cap and no limit, the cap is the limit.
+ * The fields of a chat completions body the keyed relay can carry, and the
+ * output-token limit it asks for. Throws on a body no seller relays, whatever
+ * its terms: not a JSON object, more than one choice, a malformed limit.
  */
-export function keyedRequestBody(body: Uint8Array, model: string, terms: KeyedRequestTerms): KeyedRequestBody {
+export function keyedRequestFields(body: Uint8Array): { fields: Record<string, unknown>; asked: number | null } {
   let json: unknown
   try {
     json = JSON.parse(new TextDecoder().decode(body))
@@ -34,7 +32,19 @@ export function keyedRequestBody(body: Uint8Array, model: string, terms: KeyedRe
   if (asked !== null && !(typeof asked === 'number' && Number.isSafeInteger(asked) && asked > 0)) {
     throw new Error('the output-token limit must be a positive integer')
   }
-  let maxTokens = asked as number | null
+  return { fields, asked: asked as number | null }
+}
+
+/**
+ * Rewrites a chat completions body for the keyed relay: the fields the seller
+ * checks (`keyedRequestTailFields`: the service's model, the token limit, one
+ * choice, usage in a stream, the seller's pinned fields) move to the end,
+ * where the buyer reveals them, and nowhere else. A token limit above the
+ * seller's cap is lowered to it; with a cap and no limit, the cap is the limit.
+ */
+export function keyedRequestBody(body: Uint8Array, model: string, terms: KeyedRequestTerms): KeyedRequestBody {
+  const { fields, asked } = keyedRequestFields(body)
+  let maxTokens = asked
   if (terms.maxTokens !== undefined) maxTokens = maxTokens === null ? terms.maxTokens : Math.min(maxTokens, terms.maxTokens)
   const stream = fields['stream'] === true
   for (const name of [...KEYED_REQUEST_TAIL_FIELDS, ...Object.keys(terms.pinned ?? {})]) delete fields[name]
@@ -53,7 +63,8 @@ export function keyedRequestBody(body: Uint8Array, model: string, terms: KeyedRe
  * rest (the other headers, the blank line, the body) follows the seller's
  * head. Once `bodyLength` body bytes are written it emits `requestWritten`
  * (`{ headerLength, length }`), for the request reveal. Every response byte
- * is kept, raw, to pick the ranges to reveal for billing.
+ * is kept, raw, to pick the ranges to reveal for billing. It fails when the
+ * sidecar exits before the response ended.
  */
 export class KeyedPlaintextSocket extends Duplex {
   private _head: Buffer | null = Buffer.alloc(0)
@@ -71,7 +82,15 @@ export class KeyedPlaintextSocket extends Duplex {
       this._received.push(data)
       this.push(data)
     })
-    _sidecar.on('appEnd', () => this.push(null))
+    let ended = false
+    _sidecar.on('appEnd', () => {
+      ended = true
+      this.push(null)
+    })
+    // A sidecar that stops mid-answer sends no end: without this the request would never finish.
+    _sidecar.on('exit', (exit: KeyedRelayExit) => {
+      if (!ended) this.destroy(new Error(`the relay ended before the answer did (${exit.stderr || `exit ${exit.code}`})`))
+    })
   }
 
   /** The raw response so far: status line, headers, body with its framing. */
@@ -112,16 +131,63 @@ export class KeyedPlaintextSocket extends Duplex {
   }
 }
 
+/** A run of body bytes: where it sits in the body without chunk framing, and in the raw response. */
+interface BodyPiece {
+  at: number
+  rawAt: number
+  length: number
+}
+
+/** The response body without its chunk framing, and where each piece of it sits in the raw response. */
+function responseBody(text: string, bodyStart: number, chunked: boolean): { body: string; pieces: BodyPiece[] } {
+  if (!chunked) return { body: text.slice(bodyStart), pieces: [{ at: 0, rawAt: bodyStart, length: text.length - bodyStart }] }
+  const pieces: BodyPiece[] = []
+  let body = ''
+  for (let at = bodyStart; ;) {
+    const lineEnd = text.indexOf('\r\n', at)
+    const size = lineEnd < 0 ? null : /^([0-9a-f]+)(?:;.*)?$/i.exec(text.slice(at, lineEnd))
+    const length = size ? Number.parseInt(size[1]!, 16) : 0
+    const start = lineEnd + 2
+    if (length === 0 || start + length > text.length) break
+    pieces.push({ at: body.length, rawAt: start, length })
+    body += text.slice(start, start + length)
+    at = start + length + 2
+  }
+  return { body, pieces }
+}
+
+/** The last `marker` that starts a line of `body` at or before `from`, or -1. */
+function lastLineStart(body: string, marker: string, from: number): number {
+  for (let at = body.lastIndexOf(marker, from); at >= 0; at = body.lastIndexOf(marker, at - 1)) {
+    if (at === 0 || body[at - 1] === '\n' || body[at - 1] === '\r') return at
+  }
+  return -1
+}
+
+/** The last `"usage":` key of `body` that holds an object (a stream says `"usage":null` on the events before its last), or -1. */
+function lastUsage(body: string): number {
+  for (let at = body.lastIndexOf('"usage":'); at >= 0; at = at === 0 ? -1 : body.lastIndexOf('"usage":', at - 1)) {
+    if (/^"usage":\s*\{/.test(body.slice(at, at + 16))) return at
+  }
+  return -1
+}
+
 /**
  * The response ranges the buyer reveals to the seller for billing, as
  * (offset, length) in the raw response: the status line, and for a success
- * the usage figure to the end of the response. That is the last stream event
- * that has one (`data:` ...), or the body from its `"usage":` key; a stream
- * with no usage shows only its `data: [DONE]` end, so the seller sees it was
- * a stream. None can be forged by model output, which the upstream escapes
- * inside JSON strings.
+ * the usage figure to the end of the response. For a request that asked for
+ * a stream that is the last event with a usage figure, from the `data:` its
+ * line starts with, or only the `data: [DONE]` line when no event has one, so
+ * the seller sees it was a stream. For one body it is the `"usage":` key
+ * onward, unless the answer (`"choices":`) follows it.
+ *
+ * Both are found in the body without its chunk framing. There the upstream
+ * escapes line breaks and quotes inside JSON strings, so model output can
+ * neither start a line with `data:` nor write a `"usage":` key: the reveal
+ * never starts inside the answer. An answer in another form than the request
+ * asked for reveals the status line only.
  */
-export function keyedRevealRanges(raw: Buffer, statusCode: number): Array<[number, number]> {
+export function keyedRevealRanges(raw: Buffer, statusCode: number, stream: boolean): Array<[number, number]> {
   const text = raw.toString('latin1')
   const statusEnd = text.indexOf('\r\n')
   if (statusEnd <= 0) return []
@@ -129,14 +195,15 @@ export function keyedRevealRanges(raw: Buffer, statusCode: number): Array<[numbe
   if (statusCode < 200 || statusCode >= 300) return ranges
   const headerEnd = text.indexOf('\r\n\r\n')
   if (headerEnd < 0) return ranges
-  const usageAt = text.lastIndexOf('"usage":')
-  if (usageAt <= headerEnd) {
-    const done = text.lastIndexOf('data: [DONE]')
-    if (done > headerEnd) ranges.push([done, raw.length - done])
-    return ranges
-  }
-  const eventStart = text.lastIndexOf('data:', usageAt)
-  const start = eventStart > headerEnd ? eventStart : usageAt
-  ranges.push([start, raw.length - start])
+  const chunked = /\r\ntransfer-encoding:[^\r\n]*\bchunked\b/i.test(text.slice(0, headerEnd))
+  const { body, pieces } = responseBody(text, headerEnd + 4, chunked)
+  const usageAt = lastUsage(body)
+  let at: number
+  if (stream) at = usageAt >= 0 ? lastLineStart(body, 'data:', usageAt) : lastLineStart(body, 'data: [DONE]', body.length)
+  else at = usageAt >= 0 && !body.includes('"choices":', usageAt) ? usageAt : -1
+  const piece = pieces.find((candidate) => at >= candidate.at && at < candidate.at + candidate.length)
+  if (!piece) return ranges
+  const rawAt = piece.rawAt + (at - piece.at)
+  ranges.push([rawAt, raw.length - rawAt])
   return ranges
 }

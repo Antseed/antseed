@@ -29,6 +29,7 @@ import { parseRetailPrices } from '@antseed/node/retail-prices'
 
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import { TeeVerification } from './tee-verification.js'
+import { BlindRelayClient } from './blind-relay.js'
 import { ConversationStore } from './conversation-store.js'
 import { findFailingServiceOffers, resolvePeerRoutePlan } from './routing.js'
 import {
@@ -7172,4 +7173,26 @@ test('lip-synced video creates route only to sellers whose model takes audio_url
   assert.equal(refused.statusCode, 422)
   assert.match(JSON.parse(refused.body).error.message, /required parameter\(s\): audio_url/)
   assert.deepEqual(selected, [])
+})
+
+test('a seller-blind offer gives zero data access only to a buyer that has the relay sidecar', () => {
+  const peer = makePeer('b', ['openai'])
+  const offer = { serviceId: 'open-model', categories: ['chat', 'seller-blind'] }
+  const facts = (keyedRelayBinary: string | null) => {
+    const proxy = new BuyerProxy({
+      port: 0,
+      dataDir: '/tmp/antseed-test',
+      node: {} as any,
+      blindRelay: new BlindRelayClient({
+        sendRequest: async () => { throw new Error('must not reach a peer') },
+        openRelayStream: async () => { throw new Error('must not reach a peer') },
+        recordRelayedResponse: () => {},
+        keyedRelayBinary,
+      }),
+    })
+    return (proxy as any)._zeroDataAccessFacts(peer, offer)
+  }
+
+  assert.deepEqual(facts('/a/sidecar'), { zeroDataAccess: true })
+  assert.deepEqual(facts(null), { zeroDataAccess: false, zeroDataAccessFailure: 'this buyer has no keyed-relay sidecar installed' })
 })

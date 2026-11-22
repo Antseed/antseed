@@ -3,12 +3,15 @@ import { randomUUID } from 'node:crypto'
 import type { Duplex } from 'node:stream'
 import type { Socket } from 'node:net'
 import { KeyedRelayProcess, resolveKeyedRelayBinary } from '@antseed/keyed-relay'
-import { KeyedPlaintextSocket, keyedRequestBody, keyedRevealRanges, type KeyedRequestBody } from './keyed-relay-client.js'
+import { KeyedPlaintextSocket, keyedRequestBody, keyedRequestFields, keyedRevealRanges } from './keyed-relay-client.js'
 import {
   BLIND_RELAY_CREDENTIAL_PATH,
+  buyerFault,
+  exposedResponseHeaders,
   isBlindRelayOffer,
   isKeyedRequestTerms,
   type BlindRelayCredential,
+  type FaultAttribution,
   type PeerInfo,
   type SerializedHttpRequest,
   type SerializedHttpResponse,
@@ -34,9 +37,13 @@ const KEYED_REVEAL_TIMEOUT_MS = 30_000
 /** The one request the seller writes the head of. */
 const KEYED_REQUEST_PATH = '/v1/chat/completions'
 
-/** Thrown before anything reached the upstream, so the caller may try another seller. */
+/**
+ * Thrown before anything reached the upstream, so the caller may try another
+ * seller. `attribution` is `buyer` when this buyer could send the request to
+ * no seller: the caller then counts no failure against this one.
+ */
 export class BlindRelayError extends Error {
-  constructor(message: string, readonly statusCode = 502) {
+  constructor(message: string, readonly attribution: FaultAttribution = 'unknown') {
     super(message)
     this.name = 'BlindRelayError'
   }
@@ -89,6 +96,7 @@ function flatHeaders(headers: IncomingHttpHeaders): Record<string, string> {
 export class BlindRelayClient {
   private readonly _held = new Map<string, HeldCredential[]>()
   private readonly _minting = new Map<string, Promise<HeldCredential>>()
+  private _resolvedBinary: { path: string | null } | null = null
 
   constructor(private readonly _deps: BlindRelayDeps) {}
 
@@ -98,6 +106,17 @@ export class BlindRelayClient {
 
   private _sleep(ms: number): Promise<void> {
     return this._deps.sleep?.(ms) ?? new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  /** The sidecar binary, looked up once. */
+  private _binary(): string | null {
+    this._resolvedBinary ??= { path: this._deps.keyedRelayBinary === undefined ? resolveKeyedRelayBinary() : this._deps.keyedRelayBinary }
+    return this._resolvedBinary.path
+  }
+
+  /** Why this buyer can use no seller-blind service (it has no sidecar), or null when it can. */
+  unavailable(): string | null {
+    return this._binary() ? null : 'this buyer has no keyed-relay sidecar installed'
   }
 
   private static _key(peer: PeerInfo, service: string, buyerIdentity: string | undefined): string {
@@ -125,7 +144,7 @@ export class BlindRelayClient {
       try {
         reason = (JSON.parse(text) as { error?: { message?: string } }).error?.message ?? reason
       } catch { /* not JSON */ }
-      throw new BlindRelayError(`the seller minted no credential (HTTP ${response.statusCode}: ${reason})`, response.statusCode === 409 ? 503 : 502)
+      throw new BlindRelayError(`the seller minted no credential (HTTP ${response.statusCode}: ${reason})`)
     }
     const credential = JSON.parse(text) as BlindRelayCredential
     if (typeof credential.credentialId !== 'string'
@@ -174,7 +193,8 @@ export class BlindRelayClient {
         }
         continue
       }
-      if (this._now() >= deadline) throw new BlindRelayError('every relay credential stayed busy', 503)
+      // The buyer holds MAX_CREDENTIALS streams to a seller: more requests at once than that is its own limit.
+      if (this._now() >= deadline) throw buyerFault('every relay credential stayed busy', 'buyer-stream-limit')
       await this._sleep(BUSY_RETRY_MS)
     }
   }
@@ -202,21 +222,28 @@ export class BlindRelayClient {
     callbacks: BlindRelayCallbacks = {},
     signal?: AbortSignal,
   ): Promise<SerializedHttpResponse> {
+    // What this buyer cannot send to any seller fails here, before a seller is asked for anything.
+    if (request.path.split('?')[0] !== KEYED_REQUEST_PATH) {
+      throw buyerFault(`the blind relay carries only ${KEYED_REQUEST_PATH}, not ${request.path.split('?')[0]}`, 'invalid-request')
+    }
+    try {
+      keyedRequestFields(request.body)
+    } catch (error) {
+      throw buyerFault(error instanceof Error ? error.message : String(error), 'invalid-request')
+    }
+    const binary = this._binary()
+    if (!binary) throw new BlindRelayError(this.unavailable() ?? '', 'buyer')
     const streamId = request.requestId || randomUUID()
     const { held: { credential }, stream } = await this._openStream(peer, service, streamId, buyerIdentity)
     let sidecar: KeyedRelayProcess | null = null
+    /** Set once the answer is handed over: the billing reveal then ends the sidecar and the stream. */
+    let revealing = false
+    const close = (): void => {
+      sidecar?.kill()
+      stream.destroy()
+    }
     try {
-      if (request.path.split('?')[0] !== KEYED_REQUEST_PATH) {
-        throw new BlindRelayError(`this seller relays only ${KEYED_REQUEST_PATH}, not ${request.path.split('?')[0]}`, 400)
-      }
-      let prepared: KeyedRequestBody
-      try {
-        prepared = keyedRequestBody(request.body, credential.upstream.model, credential.request)
-      } catch (error) {
-        throw new BlindRelayError(error instanceof Error ? error.message : String(error), 400)
-      }
-      const binary = this._deps.keyedRelayBinary === undefined ? resolveKeyedRelayBinary() : this._deps.keyedRelayBinary
-      if (!binary) throw new BlindRelayError('this buyer has no keyed-relay sidecar installed')
+      const prepared = keyedRequestBody(request.body, credential.upstream.model, credential.request)
       sidecar = KeyedRelayProcess.spawn('buyer', binary)
       const relay = sidecar
       stream.pipe(relay.peer)
@@ -259,7 +286,8 @@ export class BlindRelayClient {
         }, (incoming) => {
           started = true
           const statusCode = incoming.statusCode ?? 502
-          const responseHeaders = flatHeaders(incoming.headers)
+          // As from a seller that answers itself: nothing of the seller's upstream account reaches the client.
+          const responseHeaders = exposedResponseHeaders(flatHeaders(incoming.headers))
           callbacks.onResponseStart?.({ requestId: request.requestId, statusCode, headers: responseHeaders, body: new Uint8Array(0) })
           const chunks: Buffer[] = []
           incoming.on('data', (chunk: Buffer) => {
@@ -271,14 +299,17 @@ export class BlindRelayClient {
             // Priced before the reveal, so the seller's charge finds the buyer's own cost.
             this._deps.recordRelayedResponse(peer, { requestId: streamId, service, requestBody: prepared.body, response }, buyerIdentity)
             callbacks.onResponseChunk?.({ requestId: request.requestId, data: new Uint8Array(0), done: true })
+            // The client has its answer; the reveal the seller bills by follows once the upstream closes.
+            revealing = true
             void relay.waitFor('responseEnd', KEYED_REVEAL_TIMEOUT_MS)
               .then(() => {
                 const done = relay.waitFor('done', KEYED_REVEAL_TIMEOUT_MS)
-                relay.reveal(keyedRevealRanges(socket.received, statusCode))
+                relay.reveal(keyedRevealRanges(socket.received, statusCode, prepared.stream))
                 return done
               })
               .catch(() => {})
-              .finally(() => resolve(response))
+              .finally(close)
+            resolve(response)
           })
           incoming.on('error', reject)
         })
@@ -288,8 +319,7 @@ export class BlindRelayClient {
         outgoing.end(Buffer.from(prepared.body))
       })
     } finally {
-      sidecar?.kill()
-      stream.destroy()
+      if (!revealing) close()
     }
   }
 }
