@@ -91,8 +91,30 @@ export interface CheckSummaryOutcomes {
   probe?: true
 }
 
-/** One finding of a check. The echo check has two, every other check one. */
-export interface CheckFinding<Slot extends CheckSlot> {
+/** The findings only a confirmation answers (`ConfirmationOnly`), by id. The same-check decision builds its codes from it. */
+export type ConfirmationOnlyCheckId = 'flips'
+
+/**
+ * On a finding only a confirmation answers: a waiting flag of it is confirmed or cleared only by an audit made as a
+ * confirmation of it. A first look's flag or pass of it answers nothing: it is not sent, and the seller is audited
+ * again as a confirmation (`same-check.ts`). A finding without it is answered by a first look too.
+ */
+export interface ConfirmationOnly {
+  /** What a confirmation of it is made on, as the reason for leaving a first look out says it. The reason is stored. */
+  material: string
+}
+
+/**
+ * One finding of a check. The echo check has two, every other check one. `confirmationOnly` is on the findings of
+ * `ConfirmationOnlyCheckId` and on no other: the compiler holds the list to it.
+ */
+export type CheckFinding<Slot extends CheckSlot> = FindingReadings<Slot> & (
+  | { id: ConfirmationOnlyCheckId; confirmationOnly: ConfirmationOnly }
+  | { id: Exclude<AuditCheckId, ConfirmationOnlyCheckId>; confirmationOnly?: undefined }
+)
+
+/** A finding's name, and how it is read from a record and from a summary. */
+interface FindingReadings<Slot extends CheckSlot> {
   id: AuditCheckId
   subject: CheckSubject
   /** As in a verdict reason: "the cap check". */
@@ -448,6 +470,10 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
       return flipsSummaryCounts(flips) && flips.stage === 'confirm' && flips.outcome === 'inconclusive' && typeof flips.p === 'number'
         && typeof flips.rule === 'string' && flipsRuleById(flips.rule)?.confirmBetweenClears === true
     },
+    // FLIPS answers a waiting FLIPS flag only from a confirmation of FLIPS: its confirm stage (fresh pairs from the other
+    // pool, 40 replies, the confirmation bar). A first look's FLIPS (20 replies, the first bar) neither confirms nor clears
+    // it; the seller is audited again as a confirmation.
+    confirmationOnly: { material: 'fresh pairs, 40 replies' },
   }],
   summarize: summarizeFlips,
   // Recomputed from the replies the seller signed and the reference replies stored with them.
@@ -564,6 +590,18 @@ export const AUDIT_CHECK_IDS: readonly AuditCheckId[] = Object.freeze([
   ...RECORD_CHECKS.flatMap((check) => check.findings.map((finding) => finding.id)),
   QUESTIONS_CHECK.id,
 ])
+
+/** A finding only a confirmation answers, as the same-check decision reads it. */
+export interface ConfirmationOnlyFinding {
+  id: ConfirmationOnlyCheckId
+  label: string
+  confirmationOnly: ConfirmationOnly
+}
+
+/** The findings of the list only a confirmation answers, in attribution order. */
+export const CONFIRMATION_ONLY_FINDINGS: readonly ConfirmationOnlyFinding[] = Object.freeze(RECORD_CHECKS.flatMap((check) => (
+  (check.findings as readonly CheckFinding<CheckSlot>[]).flatMap((finding) => (finding.confirmationOnly ? [finding] : []))
+)))
 
 type QuestionsVerdict = 'SAME' | 'DIFF' | 'UNDETERMINED' | null
 

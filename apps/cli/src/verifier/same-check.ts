@@ -5,7 +5,9 @@ import { VERIFIER_VERDICT, modelHash, serviceHash as hashService, type ModelAudi
 import type { ConfirmationTarget } from './pending-confirmations.js'
 import { AUDIT_CHECK_IDS, describeAuditCheck, flaggingChecks, type AuditCheckId } from './flagging-checks.js'
 import { sanitizeOutcomeSummary } from './outcome-reason.js'
-import { ALL_TESTS_FORMAT, sameConfirmation, validateStoredChecks } from './audit-checks.js'
+import {
+  ALL_TESTS_FORMAT, CONFIRMATION_ONLY_FINDINGS, sameConfirmation, validateStoredChecks, type ConfirmationOnlyCheckId, type ConfirmationOnlyFinding,
+} from './audit-checks.js'
 import { adjudicateQuestions } from './model-audit.js'
 import { proxyAuditEvidenceHash, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import type { SubmissionCandidate } from './submission-delta.js'
@@ -76,10 +78,13 @@ export type SameCheckDecision =
   | { kind: 'exclude'; reason: string; code: SameCheckExcludeCode; confirmation?: SameCheckConfirmationV1 }
   | { kind: 'hold'; reason: string }
 
-/** Why a confirmation is not sent, as a fixed code (the dry run's prepared file carries it). */
+/**
+ * Why a confirmation is not sent, as a fixed code (the dry run's prepared file carries it). The last is one code per
+ * test only a confirmation answers, from the test's id.
+ */
 export type SameCheckExcludeCode =
   | 'diff-names-no-check' | 'confirms-another-report' | 'confirmation-undecided' | 'confirmation-not-fresh'
-  | 'same-check-not-diff' | 'other-test-only' | 'repeated-test-open' | 'flips-not-confirmation'
+  | 'same-check-not-diff' | 'other-test-only' | 'repeated-test-open' | `${ConfirmationOnlyCheckId}-not-confirmation`
 
 /** A candidate as `prepareModelAudits` hands it over: the checks that flagged and passed in its own audit. */
 export type SameCheckCandidate = SubmissionCandidate & {
@@ -145,17 +150,24 @@ export function sameCheckFilter(input: {
   }))
 }
 
-/** The decision for one candidate against every first flag it answers (more than one fails closed: each must agree). */
-export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag[]): SameCheckDecision {
+/**
+ * The decision for one candidate against every first flag it answers (more than one fails closed: each must agree).
+ * `confirmationOnly` is the list's (`CONFIRMATION_ONLY_FINDINGS`); only a test passes its own.
+ */
+export function decide(
+  candidate: SameCheckCandidate,
+  firsts: readonly FirstFlag[],
+  confirmationOnly: readonly ConfirmationOnlyFinding[] = CONFIRMATION_ONLY_FINDINGS,
+): SameCheckDecision {
   const ownChecks = [...candidate.flaggedBy]
-  // FLIPS answers a waiting FLIPS flag only from a confirmation of FLIPS: its confirm stage (fresh pairs from the other
-  // pool, 40 replies, the confirmation bar). A first look's FLIPS (20 replies, the first bar) neither confirms nor clears
-  // it; the seller is audited again as a confirmation.
-  const confirmsFlips = candidate.confirming?.checks.includes('flips') === true
-  const answering = (checks: readonly AuditCheckId[]) => (confirmsFlips ? [...checks] : checks.filter((check) => check !== 'flips'))
+  // A test only a confirmation answers (`ConfirmationOnly`) answers its waiting flag only from an audit made as a
+  // confirmation of it. A first look's result of it neither confirms nor clears the flag; the seller is audited again
+  // as a confirmation. Each such test is taken on its own: these are the ones this audit is not a confirmation of.
+  const unconfirmed = confirmationOnly.filter((finding) => candidate.confirming?.checks.includes(finding.id) !== true)
+  const answering = (checks: readonly AuditCheckId[]) => checks.filter((check) => !unconfirmed.some((finding) => finding.id === check))
   const answeringOwn = answering(ownChecks)
   const answeringPassed = answering(candidate.passedBy)
-  // A score between the bars clears like a pass: only a confirmation of FLIPS has one (`betweenChecks`).
+  // A score between the bars clears like a pass (`betweenChecks`): only a confirmation has one.
   const answeringBetween = answering(candidate.betweenBy ?? [])
   const clearing = [...answeringPassed, ...answeringBetween]
   // A confirmation answers the report it was made for: the tests it repeats and the report's time are the live ones,
@@ -207,13 +219,15 @@ export function decide(candidate: SameCheckCandidate, firsts: readonly FirstFlag
         ? { kind: 'send', confirmation: record(sameCheck) }
         : { kind: 'exclude', code: 'same-check-not-diff', reason: `${describeAuditCheck(sameCheck)} flagged in both audits but this result is not a DIFF`, confirmation: record(sameCheck) }
     }
-    // A first look whose FLIPS flagged or passed where the waiting DIFF's FLIPS flagged: it answers nothing.
-    if (!confirmsFlips && first.checks.includes('flips') && (ownChecks.includes('flips') || candidate.passedBy.includes('flips'))) {
+    // A first look of such a test that flagged or passed where the waiting DIFF's flagged: it answers nothing. With
+    // more than one, the first in attribution order names the code.
+    const unanswered = unconfirmed.find((finding) => first.checks.includes(finding.id) && (ownChecks.includes(finding.id) || candidate.passedBy.includes(finding.id)))
+    if (unanswered) {
       return {
         kind: 'exclude',
-        code: 'flips-not-confirmation',
+        code: `${unanswered.id}-not-confirmation`,
         confirmation: record(null),
-        reason: 'the waiting DIFF was flagged by the randomness check, which only a confirmation of it (fresh pairs, 40 replies) '
+        reason: `the waiting DIFF was flagged by ${unanswered.label}, which only a confirmation of it (${unanswered.confirmationOnly.material}) `
           + 'answers; this first look is not sent, and the seller is audited again as a confirmation',
       }
     }
