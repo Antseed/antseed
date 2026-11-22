@@ -6,7 +6,6 @@ date: 2026-07-17
 description: "We've established a non-profit Foundation to steward the Antseed ecosystem. Here's why, what it holds, and what we're committing to."
 tags: ["foundation", "governance", "ecosystem"]
 keywords: [foundation, antseed]
-image: /og-image.jpg
 ---
 
 ## Why we're building a Foundation
