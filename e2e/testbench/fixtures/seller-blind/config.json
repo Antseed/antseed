@@ -1,0 +1,15 @@
+{
+  "seller": {
+    "providers": {
+      "chat": {
+        "plugin": "openai",
+        "baseUrl": "https://localhost:18443",
+        "apiKeyEnv": "TESTBENCH_UPSTREAM_KEY",
+        "defaults": { "inputUsdPerMillion": 3, "outputUsdPerMillion": 7 },
+        "services": {
+          "blind-chat": { "upstreamModel": "mock-model", "categories": ["chat", "seller-blind"] }
+        }
+      }
+    }
+  }
+}
