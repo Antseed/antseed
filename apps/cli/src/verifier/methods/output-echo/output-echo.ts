@@ -1015,8 +1015,9 @@ export function createOutputEchoScreen<Settings>(input: {
           const key = peerKey(other.peerId)
           const shared = votes.get(key)
           if (shared) return shared.then((vote) => ({ ...vote, sentHere: false }))
-          // Queued asks stop with the crowd's time, so no paid request is left running after it.
-          const pending = askEchoVote(request(other, limit), reference, options.crowdThinking, rule)
+          // Queued asks stop with the crowd's time, and with this audit and its spare time: no paid request is left
+          // running after the check that sent it has returned, where no audit would count its cost.
+          const pending = askEchoVote(request(other, ends), reference, options.crowdThinking, rule)
           votes.set(key, pending)
           void pending.then((vote) => { if (vote.growth === null && votes.get(key) === pending) votes.delete(key) })
           return pending

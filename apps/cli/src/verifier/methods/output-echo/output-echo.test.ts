@@ -457,6 +457,26 @@ test('a fixed-amount candidate whose repeats cannot all be read does not ask the
   assert.deepEqual([judged.needsCrowd, judged.fixedAmount.reason, judged.growth.outcome], [false, 'a repeat of a text could not be read', 'pass'])
 })
 
+test('other sellers asked for a check are not asked again once its audit has stopped', async () => {
+  // A seller that needs the crowd; the audit stops when the first other seller is asked its short text.
+  const network = fakeNetwork({ ...Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])), [PEERS[0]!]: (text) => Math.round(tokens(text) * 1.25) })
+  const audit = new AbortController()
+  const fetchFn: typeof fetch = async (url, init) => {
+    if (new Headers(init?.headers).get('x-antseed-pin-peer') !== PEERS[0]) audit.abort()
+    return network.fetchFn(url, init)
+  }
+  const record = (await screenFor({ ...network, fetchFn }).check({ peerId: PEERS[0]!, service: SERVICE }, null, {
+    thinking: null, crowdThinking: null, precheckMatch: true,
+    clock: { signal: audit.signal, start: () => audit.signal, finish: () => {} },
+  }))!
+  assert.notEqual(record.outcome, 'flag', 'a crowd that was stopped backs nothing')
+  // Time for a request that was not stopped to leave: each other seller's long text would follow its short one.
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  for (const peer of PEERS.slice(1)) {
+    assert.ok((network.asked.get(peer) ?? 0) <= 1, `no request to ${peer} after the audit stopped: its cost would be in no audit`)
+  }
+})
+
 test('work for the fixed amount alone stops when the audit\'s spare time is up, keeps the growth pass, and the audit goes on', async () => {
   const padded = (text: string): number => tokens(text) + 30
   const network = fakeNetwork({ ...Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])), [PEERS[0]!]: padded })
