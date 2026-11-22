@@ -159,8 +159,29 @@ export function isE2eeHeader(name: string): boolean {
   return name.toLowerCase().startsWith('x-venice-tee-');
 }
 
-/** Request fields whose content an E2EE upstream cannot protect, so an E2EE request refuses them. */
-const UNPROTECTED_FIELDS = ['tools', 'functions', 'tool_choice', 'function_call', 'audio', 'prediction'] as const;
+const isFigure = (value: unknown): boolean => typeof value === 'number' && Number.isFinite(value);
+const isSwitch = (value: unknown): boolean => typeof value === 'boolean';
+const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+const REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+
+/**
+ * The request fields beside the messages that an E2EE request sends, each with the shape it must
+ * have. They travel in plaintext, so they are figures, switches and fixed labels, never text of
+ * the buyer's: every other field that holds a value (tool definitions, a structured-output
+ * schema, stop sequences, an end-user id, a vendor extension) is refused.
+ */
+const PLAIN_CONTROLS = new Map<string, (value: unknown) => boolean>([
+  ['model', (value) => typeof value === 'string'],
+  ['stream', isSwitch],
+  ['stream_options', (value) => isPlainObject(value) && Object.entries(value).every(([option, set]) => option === 'include_usage' && isSwitch(set))],
+  ...['temperature', 'top_p', 'top_k', 'min_p', 'max_tokens', 'max_completion_tokens', 'n', 'seed', 'presence_penalty',
+    'frequency_penalty', 'repetition_penalty', 'top_logprobs'].map((field): [string, (value: unknown) => boolean] => [field, isFigure]),
+  ['logprobs', isSwitch],
+  ['reasoning_effort', (value) => typeof value === 'string' && REASONING_EFFORTS.has(value)],
+  // A schema's names, descriptions and constants would travel as they are.
+  ['response_format', (value) => isPlainObject(value) && Object.keys(value).length === 1 && (value['type'] === 'text' || value['type'] === 'json_object')],
+  ['modalities', (value) => Array.isArray(value) && value.every((modality) => modality === 'text')],
+]);
 
 /** The roles whose messages are text an E2EE upstream decrypts. */
 const TEXT_ROLES = new Set(['system', 'developer', 'user', 'assistant']);
@@ -186,18 +207,22 @@ function messageText(content: unknown, index: number): string {
 
 /**
  * Encrypts every message of an OpenAI Chat Completions request (system, user, assistant and
- * history alike) and sends each as its role and that ciphertext only. Fails closed: a request
- * it cannot fully protect (images, audio, tool calls or tool definitions, a message with
- * reasoning or any other field that holds a value) throws instead of sending anything in plaintext.
+ * history alike) and sends each as its role and that ciphertext only, beside the generation
+ * controls of `PLAIN_CONTROLS`. Fails closed: a request it cannot fully protect (images, audio,
+ * tool calls or tool definitions, a structured-output schema, a message or a request with any
+ * other field that holds a value) throws instead of sending anything in plaintext.
  */
 export async function encryptChatCompletionRequest(
   body: Record<string, unknown>,
   session: E2eeSession,
 ): Promise<Record<string, unknown>> {
-  for (const field of UNPROTECTED_FIELDS) {
-    if (body[field] !== undefined && body[field] !== null) {
-      throw new E2eeError(`End-to-end encryption does not cover \`${field}\`; remove it or turn off zero data access.`);
-    }
+  const controls: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(body)) {
+    if (field === 'messages' || isEmptyField(value)) continue;
+    const hasShape = PLAIN_CONTROLS.get(field);
+    if (!hasShape) throw new E2eeError(`End-to-end encryption does not cover \`${field}\`; remove it or turn off zero data access.`);
+    if (!hasShape(value)) throw new E2eeError(`End-to-end encryption does not cover this value of \`${field}\`; change it or turn off zero data access.`);
+    controls[field] = value;
   }
   if (!Array.isArray(body['messages']) || body['messages'].length === 0) {
     throw new E2eeError('An end-to-end encrypted request needs a messages array.');
@@ -217,7 +242,7 @@ export async function encryptChatCompletionRequest(
     }
     return { role, content: await encryptE2eeText(messageText(content, index), session.modelPublicKey) };
   }));
-  return { ...body, messages };
+  return { ...controls, messages };
 }
 
 const ENCRYPTED_FIELDS = ['content', 'reasoning_content', 'reasoning'] as const;

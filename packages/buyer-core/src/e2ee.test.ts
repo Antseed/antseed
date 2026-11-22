@@ -104,6 +104,42 @@ describe('encryptChatCompletionRequest', () => {
     expect(await Promise.all(messages.map((m) => decryptE2eeText(m['content'] as string, model)))).toEqual(['be brief', 'ok']);
   });
 
+  it.each([
+    ['a structured-output schema', { response_format: { type: 'json_schema', json_schema: { name: 'plan', schema: { type: 'object', description: 'codeword OSPREY', properties: { a: { const: 'OSPREY' } } } } } }],
+    ['a response format with a field beside its type', { response_format: { type: 'json_object', note: 'codeword OSPREY' } }],
+    ['stop sequences', { stop: ['codeword OSPREY'] }],
+    ['an end-user id', { user: 'OSPREY' }],
+    ['request metadata', { metadata: { note: 'codeword OSPREY' } }],
+    ['a cache key', { prompt_cache_key: 'OSPREY' }],
+    ['a field it does not know', { vendor_notes: { text: 'codeword OSPREY' } }],
+    ['text where a figure belongs', { temperature: 'codeword OSPREY' }],
+    ['text where a switch belongs', { stream: 'codeword OSPREY' }],
+    ['a reasoning effort it does not know', { reasoning_effort: 'codeword OSPREY' }],
+    ['a stream option it does not know', { stream_options: { include_usage: true, note: 'codeword OSPREY' } }],
+    ['a modality other than text', { modalities: ['text', 'OSPREY'] }],
+    ['a model that is not a name', { model: { name: 'codeword OSPREY' } }],
+  ])('fails closed on %s outside the messages', async (_label, fields) => {
+    const session = createE2eeSession(model.publicKey);
+    await expect(encryptChatCompletionRequest({ model: 'qwen', messages: [{ role: 'user', content: 'hi' }], ...fields }, session))
+      .rejects.toBeInstanceOf(E2eeError);
+  });
+
+  it('sends the generation controls it knows beside the messages, and no empty field', async () => {
+    const session = createE2eeSession(model.publicKey);
+    const controls = {
+      model: 'qwen', stream: true, stream_options: { include_usage: true }, temperature: 0, top_p: 0.9, max_tokens: 10,
+      max_completion_tokens: 10, n: 1, seed: 7, presence_penalty: 0, frequency_penalty: 0.5, logprobs: false,
+      reasoning_effort: 'low', response_format: { type: 'json_object' }, modalities: ['text'],
+    };
+    const out = await encryptChatCompletionRequest({
+      ...controls, messages: [{ role: 'user', content: 'hi' }],
+      // What a client sends for the features it does not use.
+      tools: [], stop: null, metadata: {}, user: '',
+    }, session);
+    const { messages: _messages, ...sent } = out;
+    expect(sent).toEqual(controls);
+  });
+
   it('sends the client key the response is sealed to', () => {
     const session = createE2eeSession(model.publicKey);
     const headers = e2eeRequestHeaders(session);
