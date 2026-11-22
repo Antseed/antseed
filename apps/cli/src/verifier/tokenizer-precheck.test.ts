@@ -681,6 +681,9 @@ test('a stored pre-check whose signed request holds the round\'s text and other 
     ['Messages output config', { model: 'm', messages: [user], output_config: { format: { type: 'json_schema', schema: { type: 'object' } } } }],
     ['MCP servers', { model: 'm', messages: [user], mcp_servers: [{ type: 'url', url: 'https://mcp.example.com', name: 'x' }] }],
     ['a turn with a name', { model: 'm', messages: [{ ...user, name: 'Example User' }] }],
+    // A text part may carry only its type, its text and a cache breakpoint: any other member may be input too.
+    ['a text part with a member besides its text', { model: 'm', messages: [{ role: 'user', content: [{ type: 'text', text, citations: [{ type: 'text', text: 'more input' }] }] }] }],
+    ['a Responses text part with a member besides its text', { model: 'm', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text, annotations: [{ type: 'text', text: 'more input' }] }] }] }],
   ]
   for (const [shape, body] of shapes) assert.throws(() => validateTokenizerPrecheck(asked(body)), refused, shape)
 })
