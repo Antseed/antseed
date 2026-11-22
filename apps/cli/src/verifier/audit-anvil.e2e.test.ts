@@ -32,6 +32,7 @@ import { handoverModelsFor, loadEpochModelAudits } from './audit-handover.js'
 import { chainNow } from './chain-clock.js'
 import { openAuditWindow, readAuditWindow, windowIncludesSeller } from './audit-window.js'
 import { modelAuditEvidencePath } from './model-audit.js'
+import { eventCachePath } from './event-cache.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const RUN_ANVIL_E2E = process.env['ANTSEED_RUN_VERIFIER_ANVIL_E2E'] === '1'
@@ -325,6 +326,14 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
     const reportedA = submit(a, 'a-claude-opus-5.5')
     assert.equal(reportedA.status, 0, reportedA.output)
     assert.match(reportedA.output, /claude-opus-5.5: 1 recorded, 1 waiting for another auditor/)
+    // The first submit of a data dir looks for its own submissions in this epoch's blocks only: the
+    // data dir's cached ModelAudited range starts at the epoch's first block, not at the deployment.
+    const epochFirstBlock = await client.firstBlockAtOrAfter(epochStartedAt, 0)
+    assert.ok(epochFirstBlock > 0, 'the contracts were deployed before the epoch started')
+    const cachedModelAuditsFrom = async (dataDir: string) => (JSON.parse(
+      await readFile(eventCachePath(dataDir, verificationAddress), 'utf8'),
+    ) as { model: { from: number } | null }).model?.from
+    assert.equal(await cachedModelAuditsFrom(a.dataDir), epochFirstBlock)
     assert.match(reportedA.output, /agent 2: DIFF 1\/2/)
     const reportedB = submit(b, 'b-gemini-4-argon')
     assert.equal(reportedB.status, 0, reportedB.output)
@@ -351,6 +360,7 @@ test('two auditors confirm each other\'s DIFFs: one SAME is recorded at once, a 
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
     const confirmedByA = submit(a, 'a-confirm-gemini-4-argon')
     assert.equal(confirmedByA.status, 0, confirmedByA.output)
+    assert.equal(await cachedModelAuditsFrom(a.dataDir), epochFirstBlock, 'also after a submit that checked for its own earlier send')
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 2 })
     assert.equal(await client.isVerified(2n), false)
     assert.equal(await client.isVerified(1n), true)

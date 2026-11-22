@@ -26,6 +26,39 @@ This project uses selective package publishing. Each release entry lists the pub
 - Verifiers (CLI): a model whose thinking no setting turns off is now asked with the setting that thinks least, not with no setting at all (rule `kbf-discovery-least-reasoning-v1`, in `@antseed/fingerprints`), for the reference and for each seller audited. With no setting such a model could think through the whole token limit of a real batch and answer nothing, so no question set could be built for it. A setting that turns thinking off still wins as before. Question writing also stops using its "think a little" fallback once the fallback's first three answers give no list either. The audit rules change, so the verifier compat number goes to 15.
 - Verifiers (CLI): building a question set for a model whose thinking cannot be turned off no longer stalls. Such a model could spend every token of a question-writing request thinking and return no text, so no question was written. Question writing now falls back to a little thinking for it too (asking keeps the recorded setting, as before). A generation round in which no question-writing batch gives a list stops the build at once, instead of paying for more rounds up to the no-progress limit.
 
+## 2026-11-22 — CLI 0.1.257, Desktop 0.2.92
+
+### Packages
+
+- `@antseed/cli@0.1.257`
+- `@antseed/antseed-verifier@0.1.10`
+- `@antseed/provider-core@0.2.70`
+- `@antseed/provider-alibaba-video@0.1.14`
+- `@antseed/provider-anthropic@0.1.64`
+- `@antseed/provider-claude-code@0.1.64`
+- `@antseed/provider-claude-oauth@0.1.70`
+- `@antseed/provider-fal-image@0.1.10`
+- `@antseed/provider-fal-video@0.1.26`
+- `@antseed/provider-local-llm@0.1.64`
+- `@antseed/provider-openai@0.2.63`
+- `@antseed/provider-openai-responses@0.1.57`
+- `@antseed/provider-typesafe@0.1.16`
+- `@antseed/provider-venice-video@0.1.27`
+
+### Desktop
+
+- `@antseed/desktop@0.2.92`
+
+### Added
+
+- TEE sellers: seller alerts can now send to Telegram. The bot token may be a hidden secret named `ANTSEED_ALERTS_TELEGRAM_TOKEN` (Secret Manager on Confidential Space, an encrypted variable on dstack; `compose.mjs --alerts-token-secret`). A TEE seller config may no longer point `seller.alerts.telegram.botTokenEnv` at another variable, since alerts send the token to Telegram. Buyers accept such sellers once on this verifier version.
+
+### Fixed
+
+- Verifiers (CLI): the first `antseed verifier submit` on a data dir no longer reads the KBF audits contract's whole history to find the auditor's own earlier submissions, which could take a long time on a public RPC with no output. It reads only the current epoch, since only an audit of the current epoch can be submitted (issue #1799).
+- Sellers (OpenAI-compatible provider): Venice image models `krea-3`, `kling-v4-text-to-image`, `mai-image-2-7`, `mai-image-2-7-flash`, `minimax-h3-image` and `muse-image` are now announced as image services. Before, they were treated as chat models, and pairing one with an image edit model stopped the provider from loading.
+- Website: shared blog links now show the current site preview image. 18 posts still pinned the old share image in their frontmatter; they now use the site-wide image, and posts with their own cover keep it.
+
 ## 2026-11-20 — CLI 0.1.256, Node 0.2.189, Desktop 0.2.91
 
 ### Packages

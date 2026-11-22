@@ -3,7 +3,9 @@ import test from 'node:test'
 import { verifierVerdict } from '@antseed/node/payments'
 import type { AuditPublicationV1, ModelAuditLedgerEntryV1, ModelAuditLedgerV1, PreparedModelAudit } from '../../../verifier/model-audit.js'
 import { modelAuditEvidencePath } from '../../../verifier/model-audit.js'
-import { earlierAttemptToCheck, sameSellerResults, sendModelAudits, standingSubmissions, withLedgerKey, type SendLoopDeps } from './submit.js'
+import { VerifierEventCache, type RawEventSource } from '../../../verifier/event-cache.js'
+import type { ModelAuditedEvent } from '@antseed/node/payments'
+import { earlierAttemptToCheck, ownEpochSubmissions, sameSellerResults, sendModelAudits, standingSubmissions, withLedgerKey, type SendLoopDeps } from './submit.js'
 
 const audit = (evidenceHash: string): PreparedModelAudit => ({
   key: 'model-a',
@@ -380,4 +382,61 @@ test('send loop: when the chain cannot be read for an earlier attempt, nothing i
   assert.equal(tally.failed, 1)
   assert.equal(tally.submitted, 0)
   assert.match(tally.unsent[0]!, /RPC unavailable/)
+})
+
+test('this auditor\'s own submissions are read from the epoch\'s first block, not from the contract\'s deployment', async () => {
+  const deploymentBlock = 1_000
+  const epochFirstBlock = 40_000
+  const me = '0x' + '1'.repeat(40)
+  const other = '0x' + '2'.repeat(40)
+  const modelA = '0x' + 'aa'.repeat(32)
+  const modelB = '0x' + 'bb'.repeat(32)
+  const submission = (blockNumber: number, auditor: string, modelHash: string, evidenceHash: string): ModelAuditedEvent => ({
+    modelHash, auditor, epoch: 7n, evidenceHash, evidenceUri: '', resultCount: 1, blockNumber, logIndex: 0, transactionHash: '0x01',
+  })
+  const events = [
+    submission(5_000, me, modelA, '0x01'), // an earlier epoch: the contract would reject it now
+    submission(45_000, me, modelA, '0x02'), // this epoch, e.g. sent by an attempt that crashed before recording it
+    submission(46_000, other, modelA, '0x03'),
+    submission(47_000, me, modelB, '0x04'),
+  ]
+  const reads: Array<[number, number]> = []
+  const raw: RawEventSource = {
+    contractAddress: '0x' + '86'.repeat(20),
+    deploymentBlock,
+    async queryServiceAudits() { return [] },
+    async queryModelAudits(_filter, from = deploymentBlock, to = 'latest') {
+      const end = to === 'latest' ? 50_000 : to
+      reads.push([from, end])
+      return events.filter((event) => event.blockNumber >= from && event.blockNumber <= end)
+    },
+    async firstBlockAtOrAfter() { return epochFirstBlock },
+    async latestBlockNumber() { return 50_000 },
+    provider: { getBlock: async (block: number) => ({ timestamp: block * 10, hash: `0x${block.toString(16)}` }) },
+  }
+  const cache = new VerifierEventCache(raw, null)
+  // What `verifier run` and the epoch reads of `submit` leave in the cache: this epoch's window.
+  await cache.modelAudits({}, epochFirstBlock)
+  reads.length = 0
+  const reader = { queryModelAudits: cache.modelAudits.bind(cache) }
+  const noAuditorSetEvents = async () => []
+
+  const mine = await ownEpochSubmissions({ reader, auditor: me, epochFirstBlock, auditorSetEvents: noAuditorSetEvents })
+  const ofModel = await ownEpochSubmissions({ reader, auditor: me, model: modelA, epochFirstBlock, auditorSetEvents: noAuditorSetEvents })
+
+  const older = reads.filter(([from]) => from < epochFirstBlock)
+  assert.deepEqual(older, [], `no ModelAudited read starts before the epoch's first block ${epochFirstBlock} (reads: ${JSON.stringify(reads)})`)
+  assert.equal(cache.stats.modelRanges, 3, 'the warm-up, then only the reorg tail once per lookup')
+  assert.deepEqual(mine.map((event) => event.evidenceHash), ['0x02', '0x04'], 'this epoch\'s submissions of every model are found')
+  assert.deepEqual(ofModel.map((event) => event.evidenceHash), ['0x02'], 'a standing submission of one model is still found')
+
+  // A revocation after it still makes a submission of this epoch stand no longer.
+  const revokedAfter = await ownEpochSubmissions({
+    reader, auditor: me, epochFirstBlock,
+    auditorSetEvents: async () => [
+      { auditor: other, approved: true, blockNumber: 2_000, logIndex: 0, transactionHash: '0x', timestamp: 0 },
+      { auditor: other, approved: false, blockNumber: 46_500, logIndex: 0, transactionHash: '0x', timestamp: 0 },
+    ],
+  })
+  assert.deepEqual(revokedAfter.map((event) => event.evidenceHash), ['0x04'])
 })

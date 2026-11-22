@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [privacy, TEE, security, verification, confidential computing, P2P]
 description: "TEE inference is only as private as your ability to verify it. How Antseed lets buyers cryptographically check a seller's secure hardware before routing a single paid request."
 keywords: [TEE inference, confidential AI, Intel TDX attestation, verify TEE, private AI, remote attestation, NVIDIA confidential computing, Antseed verifier]
-image: /og-image.jpg
 date: 2026-07-31
 ---
 

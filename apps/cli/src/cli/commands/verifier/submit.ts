@@ -392,7 +392,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       const audits = await reuseLedgerEvidence(
         prepared.map((audit) => withLedgerKey(audit, ledger, evidenceDir, manifest.runId)), ledger,
       )
-      const submittedEvidence = await submittedEvidenceHashes(verifierClient, address, auditorSetEvents)
+      // This epoch's first block, where the reads of this auditor's own submissions start (`ownEpochSubmissions`).
+      const epochFirstBlock = await verifierClient.firstBlockAtOrAfter(window.startedAt, verifierClient.deploymentBlock ?? 0)
+      const submittedEvidence = await submittedEvidenceHashes(verifierClient, address, epochFirstBlock, auditorSetEvents)
       const credited = await verifierClient.auditCredits(address, window.epoch)
       let auditorCreditsLeft = limits.perAuditor > credited.auditor ? limits.perAuditor - credited.auditor : 0n
       // Credited audits left per model (KBF's per-model cap counts audits), and what one audit earns.
@@ -532,7 +534,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       // What to run to send what this submit left: the same command, for the same run when one was named.
       const submitAgain = options.runId ? `antseed verifier submit --run-id ${options.runId}` : 'antseed verifier submit'
       const tally = await sendModelAudits(toSubmit, ledger, {
-        findSubmission: (audit) => findSubmission(verifierClient, audit, address, auditorSetEvents),
+        findSubmission: (audit) => findSubmission(verifierClient, audit, address, epochFirstBlock, auditorSetEvents),
         writeEvidence: (audit) => writeModelAuditEvidence(audit),
         publish: publishIpfs ? (audit) => publish(evidenceDir, banksDir, manifest, audit, target, readEpoch) : null,
         writeLedger: (value) => writeModelAuditLedger(ledgerPath, value),
@@ -761,20 +763,36 @@ async function printConfirmations(
   }
 }
 
-/** Evidence hashes this auditor has already submitted on-chain, read from its `ModelAudited` events. */
-/**
- * Evidence this auditor has on-chain that still stands. A submission before the latest auditor
- * revocation does not: the revocation started a new report round everywhere, so its reports no
- * longer count, and when the delta filter (`alreadyOnChainFilter`) selects the same results again,
- * the identical evidence has to be sent again to restore them.
- */
+/** Evidence hashes this auditor has already submitted on-chain this epoch (`ownEpochSubmissions`). */
 async function submittedEvidenceHashes(
   client: VerifierClient,
   auditor: string,
+  epochFirstBlock: number,
   auditorSetEvents: () => Promise<readonly AuditorSetEvent[]>,
 ): Promise<Map<string, ModelAuditedEvent>> {
-  const events = standingSubmissions(await client.queryModelAudits({ auditor }), await auditorSetEvents())
+  const events = await ownEpochSubmissions({ reader: client, auditor, epochFirstBlock, auditorSetEvents })
   return new Map(events.map((event) => [normalized(event.evidenceHash), event]))
+}
+
+/**
+ * This auditor's `ModelAudited` submissions of the current epoch that still stand (of one model when
+ * given). Only blocks from the epoch's first one are read: `submit` sends only runs of the current
+ * epoch, and the contract rejects an audit for any other (`EpochChanged`), so no older event can be a
+ * submission of the evidence sent now. A submission before the latest auditor revocation does not
+ * stand: the revocation started a new report round everywhere, so its reports no longer count, and
+ * when the delta filter (`alreadyOnChainFilter`) selects the same results again, the identical
+ * evidence has to be sent again to restore them.
+ */
+export async function ownEpochSubmissions(input: {
+  reader: Pick<VerifierClient, 'queryModelAudits'>
+  auditor: string
+  model?: string
+  /** The current epoch's first block (`firstBlockAtOrAfter` of its start). */
+  epochFirstBlock: number
+  auditorSetEvents: () => Promise<readonly AuditorSetEvent[]>
+}): Promise<ModelAuditedEvent[]> {
+  const filter = input.model === undefined ? { auditor: input.auditor } : { model: input.model, auditor: input.auditor }
+  return standingSubmissions(await input.reader.queryModelAudits(filter, input.epochFirstBlock), await input.auditorSetEvents())
 }
 
 /** The submissions made after the latest auditor revocation (all of them when there was none). */
@@ -938,12 +956,13 @@ async function findSubmission(
   client: VerifierClient,
   audit: Pick<PreparedModelAudit, 'modelHash' | 'evidenceHash'>,
   auditor: string,
+  epochFirstBlock: number,
   auditorSetEvents: () => Promise<readonly AuditorSetEvent[]>,
 ) {
   // A read that fails is an error, not "not found": sending after a failed check could send twice.
   let events
   try {
-    events = standingSubmissions(await client.queryModelAudits({ model: audit.modelHash, auditor }), await auditorSetEvents())
+    events = await ownEpochSubmissions({ reader: client, auditor, model: audit.modelHash, epochFirstBlock, auditorSetEvents })
   } catch (error) {
     throw new Error(`could not check whether this audit is already on-chain, so it is not sent (${asError(error).message})`)
   }

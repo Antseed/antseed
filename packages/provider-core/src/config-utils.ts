@@ -214,7 +214,7 @@ export function buildServiceApiProtocols(
  * `venice/flux-2-pro` work without treating an unrelated namespace as a model
  * family. Keep generic one-word IDs exact to avoid false positives.
  */
-const IMAGE_MODEL_ID_PATTERN = /^(?:gpt-image-|dall-e(?:-|$)|grok-imagine-image(?:-|$)|venice-sd35$|krea-(?:2-|v2-)|flux-2-|flux-3-image$|hunyuan-image-|ideogram-v4(?:-|$)|imagineart-|luma-uni-|nano-banana-|recraft-v4(?:-|$)|seedream-v[45](?:-|$)|qwen-image(?:-|$)|wan-2-7(?:-pro)?-text-to-image$|lustify-|wai-illustrious$|z-image-|chroma$)/;
+const IMAGE_MODEL_ID_PATTERN = /^(?:gpt-image-|dall-e(?:-|$)|grok-imagine-image(?:-|$)|venice-sd35$|krea-(?:2-|v2-|3(?:-|$))|kling-v4-text-to-image$|mai-image-|minimax-h3-image$|muse-image$|flux-2-|flux-3-image$|hunyuan-image-|ideogram-v4(?:-|$)|imagineart-|luma-uni-|nano-banana-|recraft-v4(?:-|$)|seedream-v[45](?:-|$)|qwen-image(?:-|$)|wan-2-7(?:-pro)?-text-to-image$|lustify-|wai-illustrious$|z-image-|chroma$)/;
 
 export function isImageModelId(model: string): boolean {
   const modelId = model.trim().toLowerCase().split('/').pop() ?? '';
