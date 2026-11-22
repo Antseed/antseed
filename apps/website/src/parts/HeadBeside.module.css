@@ -1,0 +1,8 @@
+/* from 1200px the FAQ's columns, so a list here lines up with the questions under it; one above the other below */
+.rail { display: grid; grid-template-columns: 360px minmax(0, 662px); align-items: start; }
+.head { padding-right: 40px; }
+
+@media (max-width: 1199px) {
+  .rail { grid-template-columns: minmax(0, 1fr); row-gap: 40px; }
+  .head { padding-right: 0; }
+}

@@ -1,0 +1,2 @@
+/* the page's 16px side margin round the first screen */
+.hero { padding: 0 16px; background: var(--site-bg-hero); color: var(--site-ink); }

@@ -38,6 +38,12 @@ describe('isImageModelId', () => {
     'venice-sd35',
     'krea-2-turbo',
     'krea-v2-large',
+    'krea-3',
+    'kling-v4-text-to-image',
+    'mai-image-2-7',
+    'mai-image-2-7-flash',
+    'minimax-h3-image',
+    'muse-image',
     'flux-2-pro',
     'hunyuan-image-v3',
     'ideogram-v4',
@@ -64,6 +70,9 @@ describe('isImageModelId', () => {
     'seedream-chat',
     'acme/chroma-chat',
     'my-flux-2-pro-wrapper',
+    'minimax-h3-image-to-video',
+    'kling-v4-text-to-video',
+    'muse-spark-open',
   ])('does not classify text model %s as an image model', (model) => {
     expect(isImageModelId(model)).toBe(false);
   });

@@ -16,10 +16,11 @@ const { values } = parseArgs({
     config: { type: 'string' },
     env: { type: 'string', multiple: true },
     'rpc-url-secret': { type: 'boolean' },
+    'alerts-token-secret': { type: 'boolean' },
   },
 })
 if (!/@sha256:[0-9a-f]{64}$/.test(values.image ?? '') || !/^[0-9a-f]{40}$/.test(values.peer ?? '') || !values.config) {
-  console.error('usage: node deploy/tee-seller/compose.mjs --image <image@sha256:digest> --peer <40 hex peer id> --config <config.json> [--env KEY=VALUE] [--rpc-url-secret]')
+  console.error('usage: node deploy/tee-seller/compose.mjs --image <image@sha256:digest> --peer <40 hex peer id> --config <config.json> [--env KEY=VALUE] [--rpc-url-secret] [--alerts-token-secret]')
   process.exit(1)
 }
 
@@ -38,6 +39,8 @@ for (const [name, provider] of Object.entries(config.seller?.providers ?? {})) {
   for (const env of names) secrets.add(env)
 }
 if (values['rpc-url-secret']) secrets.add('ANTSEED_BASE_RPC_URL')
+// The Telegram bot token for seller alerts (seller.alerts.telegram.chatId in the config).
+if (values['alerts-token-secret']) secrets.add('ANTSEED_ALERTS_TELEGRAM_TOKEN')
 
 const environment = { ANTSEED_TEE_PEER_ID: values.peer }
 for (const name of secrets) environment[name] = `\${${name}}`

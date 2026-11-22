@@ -9,7 +9,7 @@ import { stakeEligibility } from './stake-eligibility.js';
 import { assertAgentId, assertEpochs, assertPositiveIds, silentReporter, type StepReporter } from './steps.js';
 import { liveWalletPositions, validateWalletRewards } from './indexed-wallet.js';
 import type { LivePositions } from './position-feed.js';
-import { positionActionEpoch, positionActionProblem, type PositionAction } from '../position-actions.js';
+import { describePositionActionProblem, findPositionActionProblem, positionActionEpoch, type PositionAction } from '../position-actions.js';
 import { normalLockStarts, restructureSources, type LineageRow, type LockStartConfig } from './lock-start.js';
 import { poolRevertMessage } from '../pool-errors.js';
 
@@ -242,8 +242,13 @@ async function requireActionState(ctx: AntsContext, list: SellerPoolPosition[], 
   const states = await Promise.all(list.map(async position => {
     const effectiveEpoch = action === 'merge' ? sharedEpoch : positionActionEpoch(action, currentEpoch, [position]);
     const segment = await pools.positionPowerSegmentAt(position.id, effectiveEpoch);
-    const problem = positionActionProblem({ ...position, stakeEndEpoch: segment.normalEndEpoch, maxLocked: segment.maxLockPower > 0n }, action, effectiveEpoch);
-    if (problem) throw new Error(`Position ${position.id}: ${problem}`);
+    const view = { ...position, stakeEndEpoch: segment.normalEndEpoch, maxLocked: segment.maxLockPower > 0n };
+    const problem = findPositionActionProblem(view, action, effectiveEpoch);
+    if (problem) {
+      // Only the restake advice depends on the wallet's transfer state, so it is read only for that problem.
+      const canTransfer = problem.kind === 'no-remaining-lock' && await ctx.antsToken().canTransfer(ctx.address);
+      throw new Error(`Position ${position.id}: ${describePositionActionProblem(problem, canTransfer)}`);
+    }
     return { effectiveEpoch, normalEndEpoch: segment.normalEndEpoch };
   }));
   return states;

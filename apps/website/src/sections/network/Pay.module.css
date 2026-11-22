@@ -1,0 +1,79 @@
+.rail { padding: 120px 0 124px; }
+.head { display: flex; flex-direction: column; align-items: flex-start; padding-inline: var(--site-pad); }
+.pay .heading { text-wrap: balance; }
+
+/* two columns sharing their rows (subgrid), so the titles, lists and buttons start level */
+.paths { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; width: 100%; margin-top: 64px; padding: 0 24px; text-align: left; }
+.path { display: grid; grid-row: span 4; grid-template-rows: subgrid; row-gap: 12px; min-width: 0; }
+.pay .panel {
+  position: relative;
+  margin-bottom: 16px;
+  aspect-ratio: 3 / 2;
+  border-radius: var(--site-radius-card);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06);
+  background-position: 50% 85%;
+}
+
+.coinBox { position: absolute; inset: 0; }
+.coin {
+  position: absolute;
+  left: 50%;
+  top: 9%;
+  width: auto;
+  height: 82%;
+  translate: -50% 0;
+  filter: drop-shadow(0 12px 14px rgba(40, 60, 20, .18));
+  animation: float 3.6s ease-in-out infinite paused;
+}
+.coin.offset { animation-delay: -1.8s; }   /* the two coins float out of step */
+.coin.floating { animation-play-state: running; }
+:global(:root[data-theme='dark']) .coin { filter: drop-shadow(0 0 18px rgba(200, 245, 60, .3)); }
+:global(:root[data-theme='dark']) .coin.cool { filter: drop-shadow(0 0 18px rgba(140, 180, 255, .24)); }
+@keyframes float {
+  0%, 100% { transform: translateY(0) rotate(-3deg); }
+  50% { transform: translateY(-7%) rotate(3deg); }
+}
+
+.title {
+  margin-bottom: 4px;
+  font: 400 26px/30px var(--site-font-pixel);
+  font-variation-settings: 'ELSH' 40;
+  letter-spacing: -1px;
+  color: var(--site-text);
+  text-wrap: balance;
+}
+/* the points: 24 between two, each on about two short lines */
+.pay .features { align-self: start; width: 100%; }
+.pay .feature { padding: 12px 0; color: var(--site-text-body); }
+.pay .feature:first-child { padding-top: 0; }
+.pay .feature:last-child { padding-bottom: 0; }
+.point { display: block; max-width: 380px; text-wrap: balance; }
+.link { color: var(--site-accent); font-weight: 500; }
+.soon { color: var(--site-text-muted); }
+.pay .actions { margin-top: 16px; align-self: start; }
+
+@media (min-width: 1200px) {
+  .pay .rail { padding-block: 124px; }
+  .path > :not(.panel) { margin-inline: 16px; }
+  .pay .features { max-width: calc(100% - 32px); }
+}
+@media (min-width: 761px) {
+  .pay .heading { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
+  .pay .panel { aspect-ratio: 16 / 9; }
+  .title { margin-bottom: 16px; font-size: 32px; line-height: 36px; letter-spacing: -1.07px; }
+}
+@media (max-width: 760px) {
+  .rail { padding: 72px 0; }
+  .paths { grid-template-columns: 1fr; margin-top: 40px; padding: 0 16px; }
+  .path + .path { margin-top: 56px; }
+  .pay .panel { margin-bottom: 8px; }
+  .pay .actions { align-self: stretch; margin-top: 28px; }
+}
+/* touch screens: a 44 tall touch area */
+@media (max-width: 1079px) {
+  .link { position: relative; }
+  .link::after { content: ''; position: absolute; inset: -10px 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .coin { animation: none; }
+}

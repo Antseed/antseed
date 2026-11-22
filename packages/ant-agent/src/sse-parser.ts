@@ -283,7 +283,8 @@ export function parseSSEResponse(
   sseBytes: Uint8Array,
   format: RequestFormat,
 ): Record<string, unknown> {
-  const text = decoder.decode(sseBytes);
+  // SSE lines may end in CRLF, LF or CR; normalize so the parsers can split on LF.
+  const text = decoder.decode(sseBytes).replace(/\r\n?/g, '\n');
 
   // If the body looks like plain JSON (no SSE markers), parse it directly.
   // This handles cases where the provider returns a non-streaming response

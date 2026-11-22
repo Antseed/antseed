@@ -3,7 +3,7 @@ import chalk from 'chalk'
 import Table from 'cli-table3'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { buyerIdentityAddress, buyerIdentityDir, buyerIdentityExists, createBuyerIdentity } from '../../../buyer-identities/store.js'
-import { effectiveKeyLimits } from '../../../gateway/accounting.js'
+import { effectiveKeyLimits, storedVideoHolds, type StoredVideoHolds } from '../../../gateway/accounting.js'
 import { BUDGET_PERIODS, NO_BUDGET_LIMITS, periodStart, type BudgetLimits, type BudgetPeriod } from '../../../gateway/limits.js'
 import { formatUsdc, usdcToDecimalString } from '../../../gateway/money.js'
 import { resolvePolicy } from '../../../gateway/policy-resolver.js'
@@ -71,6 +71,11 @@ function keyJson(store: GatewayStore, key: ApiKeyRecord) {
     expiresAt: isoOrNull(key.expiresAt),
     lastUsedAt: isoOrNull(key.lastUsedAt),
   }
+}
+
+/** `$X (N not yet charged)`, or `$0.00` when no video job holds anything. */
+export function describeVideoHolds(held: StoredVideoHolds): string {
+  return held.videoJobs === 0 ? formatUsdc(0) : `${formatUsdc(held.videoUsdc)} (${held.videoJobs} not yet charged)`
 }
 
 function printSecret(record: ApiKeyRecord, secret: string, verb: string): void {
@@ -208,8 +213,13 @@ export function registerGatewayKeyCommands(gateway: Command): void {
     .option('--json', 'print machine-readable JSON', false)
     .action((id: string, options: { json: boolean }, cmd: Command) => withGateway(cmd, async ({ store, dataDir }) => {
       const record = requireKey(store, id)
+      const held = storedVideoHolds(store, record, Date.now())
       if (options.json) {
-        printJson(keyJson(store, record))
+        printJson({
+          ...keyJson(store, record),
+          videoHeldUsd: usdcToDecimalString(held.videoUsdc),
+          videoJobsHeld: held.videoJobs,
+        })
         return
       }
       const spent = store.spendByPeriod({ keyId: record.id })
@@ -228,6 +238,8 @@ export function registerGatewayKeyCommands(gateway: Command): void {
         const limit = effective[period]
         console.log(`${PERIOD_SPEND_LABELS[period]}: ${formatUsdc(spent[period])}${limit === null ? '' : ` of ${formatUsdc(limit)}`}`)
       }
+      console.log(`Held for video: ${describeVideoHolds(held)}`)
+      console.log(chalk.dim('Requests hold spend too, while they run and for a minute after; the running gateway reports them in GET /v1/key.'))
       console.log(`Admin limits: ${describeLimits(record)}`)
       console.log(`Owner limits: ${describeLimits({ limits: record.ownerLimits })}`)
       console.log(`Requests: ${total.requests} (${total.failedRequests} failed), ${today.requests} today`)

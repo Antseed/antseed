@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [protocol, payments, cryptography, proof-of-delivery, reputation, open-network]
 description: How Antseed's SpendingAuth signature serves as both payment authorization and cryptographic proof of delivery — building an open, verifiable record of what every seller has delivered.
 keywords: [proof of delivery, SpendingAuth, EIP-712, payment protocol, P2P payments, cumulative voucher, payment negotiation, on-chain stats, agentic AI, open network]
-image: /og-image.jpg
 date: 2026-03-27
 ---
 

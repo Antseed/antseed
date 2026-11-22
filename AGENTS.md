@@ -127,7 +127,7 @@ An area's **Ask first** line lists changes to raise before you write them: with 
 | `apps/desktop` (guide) | Electron app |
 | `apps/gateway-console` (guide), `ants` (guide), `payments` (guide) | The gateway's web console; the ANTS staking service and web UI (compiled into the console); the buyer payments portal |
 | `apps/website` (guide) | antseed.com and the docs (Docusaurus). Doc URLs come from frontmatter slugs that other apps link to |
-| `apps/relay` (guide), `network-stats` (guide), `download-proxy` (guide) | Browser-buyer relay; network stats service; installer downloads Worker |
+| `apps/relay` (guide), `download-proxy` (guide) | Browser-buyer relay; installer downloads Worker |
 | `e2e/` (guide), `docs/protocol/` | End-to-end tests and the testbench; protocol spec and plugin templates |
 
 Dependency direction: `protocol` and `api-adapter` ← `buyer-core` ← `node` ← `provider-core` and `router-core` ← `plugins` ← `cli` ← `desktop`. `web-sdk` uses `buyer-core` and `protocol`. Cross-package references use `workspace:*`.

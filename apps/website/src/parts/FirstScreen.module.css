@@ -1,0 +1,132 @@
+/* --figures: the band under the screen, which still shows on the first screen */
+.screen {
+  --figures: 128px;
+  --in: 40px;
+  --rail-width: round(down, min(1312px, 100vw - 2 * var(--site-gutter)), 16px);
+  --edge: calc((100vw - var(--rail-width)) / 2 + var(--in));
+}
+.grid {
+  composes: dots from '../components/dots.module.css';
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  height: clamp(var(--screen-min), calc(100svh - var(--site-nav-height) - var(--figures)), 820px);
+  background: var(--site-surface);
+  isolation: isolate;
+}
+/* the dotted sides only when stacked in the rail: across the whole width they would stick out a pixel */
+.grid::before { z-index: -1; display: none; }
+.text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 56px 40px 56px var(--edge);
+}
+.offer { width: 100%; max-width: var(--text-width, none); }
+.fit .offer { width: auto; }
+.title { text-wrap: balance; }
+.note { font: 400 14px/20px var(--site-font); color: var(--site-text-small); }
+.panel { position: relative; min-height: 0; overflow: hidden; }
+/* a size container, so what is drawn over it can follow the painting's crop */
+.panel .painting { width: 100%; height: 100%; container-type: size; --wash-position: var(--focus, 50% 50%); }
+.rail {
+  composes: dots from '../components/dots.module.css';
+  --dots-top: 2px;
+  --dots-right: 2px;
+  --dots-left: 2px;
+  width: var(--site-rail);
+  margin: 0 auto;
+  background: var(--site-surface);
+  isolation: isolate;
+}
+.rail::before { z-index: -1; }
+
+@media (min-width: 761px) {
+  .offer .long { font-size: 40px; line-height: 40px; letter-spacing: -1.6px; }
+}
+
+/* The offer's spacing under 1200px: --gap-title (eyebrow to title), --gap-sub (title to sub line), --gap-actions (sub line to buttons),
+   from the page's gaps (--side-*, --stacked-*, --phone-*) or the defaults. */
+@media (max-width: 1199px) {
+  .screen {
+    --gap-title: var(--side-title, 16px);
+    --gap-sub: var(--side-sub, 12px);
+    --gap-actions: var(--side-actions, 36px);
+  }
+  .text .offer { --head-gap: var(--gap-title); }
+  .text .offer .sub { margin-top: calc(var(--gap-sub) - var(--gap-title)); }
+  .offer .actions { margin-top: calc(var(--gap-actions) - var(--gap-title)); }
+}
+@media (max-width: 1023px) {
+  .screen { --in: 24px; }
+}
+@media (max-width: 899px) {
+  .screen {
+    --gap-title: var(--stacked-title, var(--side-title, 16px));
+    --gap-sub: var(--stacked-sub, var(--side-sub, 12px));
+    --gap-actions: var(--stacked-actions, var(--side-actions, 36px));
+  }
+  .grid { grid-template-columns: 1fr; height: auto; }
+  .text { padding: 56px var(--edge) 48px; }
+  .panel { aspect-ratio: 1; }
+}
+@media (min-width: 761px) and (max-width: 899px) {
+  .panel { aspect-ratio: var(--tablet-ratio, 1); }
+}
+
+/* stacked inside a rail below 1200: the offer over the painting, the rail's dotted sides round both */
+@media (min-width: 761px) and (max-width: 1199px) {
+  .screen.railStack {
+    --gap-title: var(--stacked-title, 16px);
+    --gap-sub: var(--stacked-sub, 16px);
+    --gap-actions: var(--stacked-actions, 28px);
+  }
+  .railStack.inset .text { padding-bottom: 48px; }
+}
+@media (max-width: 1199px) {
+  .railStack .grid::before { display: block; }
+  .railStack .grid {
+    --dots-left: 2px;
+    --dots-right: 2px;
+    grid-template-columns: 1fr;
+    width: var(--site-rail);
+    height: auto;
+    margin: 0 auto;
+  }
+  .railStack .text { padding: 96px var(--site-pad) 56px; }
+  .railStack .text .offer .sub { max-width: var(--rail-sub-width, 540px); }
+  .railStack .panel { aspect-ratio: var(--rail-ratio, 16 / 9); }
+  .railStack .panel .painting { --wash-position: var(--rail-focus, var(--focus, 50% 50%)); }
+  .inset .grid { padding-bottom: 20px; }
+  .inset .panel { margin: 0 16px; border-radius: var(--site-radius-card); }
+  .largeTablet .offer .title { font-size: 56px; line-height: 54px; }
+  .tightTablet .offer .title { font-size: 45px; line-height: .96; }
+}
+
+@media (max-width: 760px) {
+  .screen {
+    --in: 20px;
+    --gap-title: var(--phone-title, 16px);
+    --gap-sub: var(--phone-sub, 16px);
+    --gap-actions: var(--phone-actions, 28px);
+  }
+  .text { padding-block: 48px 40px; }
+  .offer .long { font-size: 34px; line-height: 36px; }
+  .railStack .text { padding: 72px var(--site-pad) 40px; }
+  .railStack .text .offer .sub { max-width: var(--rail-sub-width, none); }
+  .railStack .panel { aspect-ratio: var(--rail-phone-ratio, 4 / 3); }
+  .railStack .panel .painting { --wash-position: var(--rail-phone-focus, var(--rail-focus, var(--focus, 50% 50%))); }
+  .inset .panel { margin-inline: var(--site-pad); }
+  .largeTablet .offer .title, .tightTablet .offer .title { font-size: 40px; line-height: 40px; }
+  /* as large as lets the longest line hold */
+  .fluidPhone .text { container-type: inline-size; }
+  .fluidPhone .offer .title { font-size: min(40px, 100cqi / 8); line-height: 1; letter-spacing: -1.4px; }
+}
+@media (min-width: 1200px) {
+  .grid { height: calc(100svh - var(--site-nav-height)); }
+  .grid.onPage { background: var(--site-bg); }
+  .text { padding-block: 0; }
+  .panel { margin: 16px 16px 16px 0; border-radius: 16px; }
+  .actions { margin-top: 16px; }
+  .offer .tight { max-width: 544px; font-size: 45px; line-height: .96; }
+}

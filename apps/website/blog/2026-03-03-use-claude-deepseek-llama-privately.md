@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [privacy, anonymous AI, Claude, DeepSeek, Llama, no account]
 description: Want to use frontier AI models without creating an account or handing over your data? Here's how Antseed gives you access to Claude, DeepSeek, Llama, and more. Privately, anonymously, no signup required.
 keywords: [use Claude without account, use DeepSeek privately, Llama anonymous, private AI no signup, AI without API key, Antseed]
-image: /og-image.jpg
 date: 2026-03-03
 ---
 
@@ -117,4 +116,4 @@ No account. No identity. Just the model.
 
 [Get started](/docs/install)
 
-[How the protocol works](/docs/lightpaper)
+[How the protocol works](/docs/overview)

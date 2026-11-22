@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [protocol, model-verification, decentralized-ai, P2P AI, cryptography, fingerprints]
 description: How Antseed turns AI API responses into attributable evidence, then builds toward black-box model fingerprints and a torrent-like public fingerprint swarm.
 keywords: [AI model verification, LLM fingerprinting, ResponseAuth, decentralized AI, P2P AI, KBF, fingerprint swarm, model substitution, shadow APIs]
-image: /og-image.jpg
 date: 2026-06-15
 ---
 

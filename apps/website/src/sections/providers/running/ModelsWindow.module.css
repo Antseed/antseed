@@ -1,0 +1,49 @@
+.window { left: 44px; top: 34px; width: 316px; gap: 6px; padding: 16px; }
+.head, .row { display: flex; align-items: center; justify-content: space-between; }
+.head { height: 26px; font-size: 13px; }
+.head span { font: 400 10.5px/normal var(--site-font-mono); color: var(--scene-muted); }
+.row { height: 36px; font: 400 12px/normal var(--site-font-mono); }
+.model { display: flex; align-items: center; gap: 8px; }
+.off { opacity: .55; }
+
+.box { display: grid; place-items: center; width: 14px; height: 14px; border: 1px solid rgba(10, 26, 18, .28); border-radius: 3px; background: rgba(255, 255, 255, .9); }
+.box.boxOn { border: 0; background: var(--scene-accent); }
+:global(:root[data-theme='dark']) .box { border-color: rgba(190, 228, 170, .36); background: rgba(255, 255, 255, .04); }
+:global(:root[data-theme='dark']) .box.boxOn { background: #4f7a24; }
+
+.price {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: 84px;
+  height: 26px;
+  padding: 0 8px;
+  border: .5px solid var(--scene-field-line);
+  border-radius: 5px;
+  background: var(--scene-field);
+  font: 400 11.5px/normal var(--site-font-mono);
+}
+.price b { font-weight: 400; }
+.price span { font-size: 10.5px; color: var(--scene-muted); }
+.price.priceOn { border: 1px solid var(--scene-accent); box-shadow: var(--scene-ring); }
+.caret { width: 1.2px; height: 13px; background: var(--scene-accent); }
+.blink { animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.go { padding-top: 8px; }
+.go .goButton { height: 30px; padding: 0 14px; }
+.cursor { left: 318px; top: 150px; }
+
+@container (max-width: 359.9px) {
+  .window { left: 12px; width: 256px; padding: 12px; }
+  .memory, .model .logo { display: none; }
+  .price { width: 62px; padding: 0 5px; }
+  .cursor { left: 249px; top: 155px; }
+}
+@container (max-width: 279.9px) {
+  .window { left: 6px; right: 6px; width: auto; padding: 12px 10px; }
+  .row { font-size: 11px; }
+  .row .box { display: none; }
+  .cursor { left: calc(100% - 25px); }
+}
+@media (prefers-reduced-motion: reduce) { .blink { animation: none; } }
