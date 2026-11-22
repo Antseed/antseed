@@ -60,6 +60,11 @@ fn split_ranges(message: &Value, log: &[([u8; 8], usize)]) -> Result<(Vec<Triple
             ranges.push(range);
         }
     }
+    // The seller refuses a larger reveal (`ranges::place`): fail here with the reason.
+    let revealed: usize = triples.iter().map(|(_, _, len)| *len as usize).sum();
+    if triples.len() > ranges::MAX_REVEAL_PIECES || revealed > ranges::MAX_REVEAL_BYTES {
+        bail!("the reveal names {} ranges and {revealed} bytes, more than a seller accepts", triples.len());
+    }
     Ok((triples, ranges))
 }
 

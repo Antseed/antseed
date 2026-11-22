@@ -122,11 +122,11 @@ test('a revealed range that crosses TLS records reaches the seller as one range'
     seller.startSeller({ host: '127.0.0.1', port, serverName: 'localhost', head: Buffer.from('POST /x HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer k\r\nConnection: close\r\n'), extraRootsPem: CA });
     buyer.startBuyer({ serverName: 'localhost', extraRootsPem: CA });
     await buyer.waitFor('ready', 60_000);
-    // A TLS record holds at most 16384 bytes, so a 20000-byte tail spans at least two.
+    // A TLS record holds at most 16384 bytes: the request ends some 7000 bytes into its third, so a 10000-byte tail starts in its second.
     const body = JSON.stringify({ messages: [{ role: 'user', content: 'x'.repeat(40_000) }] });
     const headers = `Content-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n`;
-    const request = await sendRequest(buyer, seller, headers + body, headers.length, 20_000);
-    assert.deepEqual(request.ranges.map((r) => [r.offset, Buffer.from(r.data, 'base64').toString()]), [[0, headers], [headers.length + body.length - 20_000, body.slice(-20_000)]]);
+    const request = await sendRequest(buyer, seller, headers + body, headers.length, 10_000);
+    assert.deepEqual(request.ranges.map((r) => [r.offset, Buffer.from(r.data, 'base64').toString()]), [[0, headers], [headers.length + body.length - 10_000, body.slice(-10_000)]]);
     seller.admit();
     await buyer.waitFor('responseEnd', 30_000);
     buyer.reveal([]);
@@ -282,4 +282,27 @@ test('a sidecar that cannot start reports its exit', async () => {
   assert.equal(exit.code, null);
   assert.match(exit.stderr, /ENOENT/);
   await assert.rejects(relay.waitFor('ready', 1000), /keyed relay ended before "ready": .*ENOENT/);
+});
+
+test('a seller sidecar whose peer is not reading holds a bounded queue, and its events still arrive', { skip: process.platform === 'win32' && 'the stand-in sidecar is a script' }, async () => {
+  const total = 4 * 1024 * 1024;
+  const bound = 256 * 1024;
+  process.env.FLOOD_BYTES = String(total);
+  const relay = KeyedRelayProcess.spawn('seller', new URL('./fixtures/flood-sidecar.mjs', import.meta.url).pathname, { maxPeerQueueBytes: bound });
+  try {
+    // Nothing reads `relay.peer`: a relay stream waiting on a slow buyer.
+    const failed = new Promise((resolve) => relay.peer.once('error', resolve));
+    const exited = new Promise((resolve) => relay.once('exit', resolve));
+    relay.startSeller({ host: '127.0.0.1', port: 1, serverName: 'localhost', head: Buffer.from('x') });
+    const end = await relay.waitFor('responseEnd', 10_000);
+    assert.equal(end.length, total);
+    assert.ok(relay.peer.readableLength <= bound + 64 * 1024, `the wrapper queued ${relay.peer.readableLength} bytes for a peer that reads nothing (bound ${bound})`);
+    assert.match((await failed).message, /not reading/);
+    assert.ok(relay.peer.destroyed);
+    // The sidecar was told its peer is gone and left by itself.
+    assert.equal((await exited).code, 0);
+  } finally {
+    delete process.env.FLOOD_BYTES;
+    relay.kill();
+  }
 });

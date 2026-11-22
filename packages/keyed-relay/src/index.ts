@@ -25,6 +25,11 @@ const APP = 2;
 const MAX_PAYLOAD = 64 * 1024;
 /** How long a sidecar has to report and exit once its peer stream is gone, before it is stopped. */
 const PEER_GONE_GRACE_MS = 2_000;
+/**
+ * The most a seller's sidecar output waits for a peer stream nobody reads (a
+ * buyer slower than the upstream): past it the peer stream ends.
+ */
+export const DEFAULT_MAX_PEER_QUEUE_BYTES = 8 * 1024 * 1024;
 
 const BINARY_NAME = process.platform === 'win32' ? 'antseed-keyed-relay.exe' : 'antseed-keyed-relay';
 
@@ -94,6 +99,15 @@ export interface KeyedRelayBuyerStart {
   extraRootsPem?: string;
 }
 
+export interface KeyedRelaySpawnOptions {
+  /**
+   * The most sidecar output held for the peer stream while nothing reads it;
+   * past it the peer stream is destroyed with an error. A seller's default is
+   * `DEFAULT_MAX_PEER_QUEUE_BYTES`. A buyer's has no bound: its output is its own request.
+   */
+  maxPeerQueueBytes?: number;
+}
+
 export interface KeyedRelayExit {
   code: number | null;
   /** The sidecar's last stderr lines, which carry its error. */
@@ -116,7 +130,7 @@ export class KeyedRelayProcess extends EventEmitter {
   /** The latest event of each type, so a wait started late still sees it. */
   private readonly _seen = new Map<KeyedRelayEvent['type'], KeyedRelayEvent>();
 
-  private constructor(private readonly _child: ChildProcess) {
+  private constructor(private readonly _child: ChildProcess, private readonly _maxPeerQueueBytes: number) {
     super();
     const send = (channel: number, payload: Uint8Array): boolean => this._send(channel, payload);
     const self = this;
@@ -163,9 +177,9 @@ export class KeyedRelayProcess extends EventEmitter {
     });
   }
 
-  static spawn(role: 'buyer' | 'seller', binary: string): KeyedRelayProcess {
+  static spawn(role: 'buyer' | 'seller', binary: string, options: KeyedRelaySpawnOptions = {}): KeyedRelayProcess {
     const child = spawn(binary, [role], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
-    return new KeyedRelayProcess(child);
+    return new KeyedRelayProcess(child, options.maxPeerQueueBytes ?? (role === 'seller' ? DEFAULT_MAX_PEER_QUEUE_BYTES : Infinity));
   }
 
   get exited(): KeyedRelayExit | null {
@@ -300,8 +314,17 @@ export class KeyedRelayProcess extends EventEmitter {
         this.emit('event', event);
       } else if (channel === PEER) {
         if (this.peer.destroyed) continue;
-        if (payload.length === 0) this.peer.push(null);
-        else this.peer.push(Buffer.from(payload));
+        if (payload.length === 0) {
+          this.peer.push(null);
+          continue;
+        }
+        this.peer.push(Buffer.from(payload));
+        // The sidecar's output is read whatever the peer stream takes, so its events
+        // keep arriving. What waits for the peer is bounded here: destroying the
+        // stream tells the sidecar its peer is gone, and later peer output is dropped.
+        if (this.peer.readableLength > this._maxPeerQueueBytes) {
+          this.peer.destroy(new Error('keyed relay: the peer is not reading, and too much output is waiting for it'));
+        }
       } else if (channel === APP) {
         if (payload.length === 0) this.emit('appEnd');
         else this.emit('app', Buffer.from(payload));

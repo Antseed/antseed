@@ -33,6 +33,12 @@ pub fn split(log: &[([u8; 8], usize)], start: usize, len: usize) -> Result<Vec<(
     Ok(out)
 }
 
+/// The most a reveal may name. Each piece costs the seller a keystream circuit before Node has
+/// admitted or billed anything, so the work is bounded here: an honest reveal is a header block, a
+/// status line and the last fields of a body.
+pub const MAX_REVEAL_BYTES: usize = 16 * 1024;
+pub const MAX_REVEAL_PIECES: usize = 64;
+
 /// One revealed piece on the seller's side: where it starts in the stream, and its ciphertext.
 pub struct Placed<'a> {
     pub offset: usize,
@@ -41,7 +47,8 @@ pub struct Placed<'a> {
 
 /// The seller's side of a reveal: checks the buyer's triples against the
 /// records it relayed itself (application data only) and takes each explicit
-/// nonce from those records, never from the buyer.
+/// nonce from those records, never from the buyer. The triples follow one another in the stream
+/// without overlap and stay within `MAX_REVEAL_PIECES` and `MAX_REVEAL_BYTES`.
 pub fn place<'a>(records: &'a [Record], triples: &[Triple]) -> Result<(Vec<RecordRange>, Vec<Placed<'a>>)> {
     let lengths: Vec<usize> = records.iter().map(|r| r.body.len().saturating_sub(RECORD_OVERHEAD)).collect();
     let offsets: Vec<usize> = lengths
@@ -52,13 +59,25 @@ pub fn place<'a>(records: &'a [Record], triples: &[Triple]) -> Result<(Vec<Recor
             Some(start)
         })
         .collect();
+    if triples.len() > MAX_REVEAL_PIECES {
+        bail!("reveal names more than {MAX_REVEAL_PIECES} ranges");
+    }
     let mut ranges = Vec::with_capacity(triples.len());
     let mut placed = Vec::with_capacity(triples.len());
+    let (mut revealed, mut next) = (0usize, 0usize);
     for (index, start, len) in triples {
         let (index, start, len) = (*index as usize, *start as usize, *len as usize);
         let record = records.get(index).ok_or_else(|| anyhow!("reveal names an unknown record"))?;
         if len == 0 || start + len > lengths[index] {
             bail!("reveal range outside its record");
+        }
+        if offsets[index] + start < next {
+            bail!("reveal ranges overlap or are out of order");
+        }
+        next = offsets[index] + start + len;
+        revealed += len;
+        if revealed > MAX_REVEAL_BYTES {
+            bail!("reveal names more than {MAX_REVEAL_BYTES} bytes");
         }
         ranges.push(RecordRange { explicit_nonce: record.body[..8].try_into().unwrap(), start, len });
         placed.push(Placed { offset: offsets[index] + start, ciphertext: &record.body[8 + start..8 + start + len] });
@@ -102,6 +121,28 @@ mod tests {
         assert_eq!(placed[0].ciphertext.len(), 4);
         assert!(place(&records, &[(1, 2, 4)]).is_err());
         assert!(place(&records, &[(2, 0, 1)]).is_err());
+    }
+
+    #[test]
+    fn refuses_a_reveal_that_repeats_overlaps_or_reorders_its_ranges() {
+        let record = |nonce: u8, len: usize| Record { typ: 23, body: [vec![nonce; 8], vec![0xaa; len], vec![0; 16]].concat() };
+        let records = [record(1, 10), record(2, 5)];
+        assert!(place(&records, &[(0, 0, 4), (0, 4, 6), (1, 0, 5)]).is_ok());
+        assert!(place(&records, &[(0, 0, 10), (0, 0, 10)]).is_err(), "the same range twice");
+        assert!(place(&records, &[(0, 0, 6), (0, 5, 2)]).is_err(), "overlapping ranges");
+        assert!(place(&records, &[(1, 0, 5), (0, 0, 10)]).is_err(), "ranges out of order");
+    }
+
+    #[test]
+    fn refuses_a_reveal_of_more_pieces_or_bytes_than_an_honest_one_names() {
+        let record = |nonce: u8, len: usize| Record { typ: 23, body: [vec![nonce; 8], vec![0xaa; len], vec![0; 16]].concat() };
+        let many: Vec<Record> = (0..=MAX_REVEAL_PIECES).map(|i| record(i as u8, 1)).collect();
+        let each: Vec<Triple> = (0..many.len() as u32).map(|i| (i, 0, 1)).collect();
+        assert!(place(&many, &each[..MAX_REVEAL_PIECES]).is_ok());
+        assert!(place(&many, &each).is_err(), "one piece more than the limit");
+        let large = [record(1, MAX_REVEAL_BYTES), record(2, 1)];
+        assert!(place(&large, &[(0, 0, MAX_REVEAL_BYTES as u32)]).is_ok());
+        assert!(place(&large, &[(0, 0, MAX_REVEAL_BYTES as u32), (1, 0, 1)]).is_err(), "one byte more than the limit");
     }
 
     #[test]
