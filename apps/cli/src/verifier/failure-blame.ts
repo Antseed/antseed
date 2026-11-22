@@ -47,7 +47,10 @@ const SELLER_CODES = new Set([
   'stale_model_advertisement',
 ])
 
-export function failureBlame(reason: ReasonLike | null | undefined, text?: string | null): FailureBlame {
+export function failureBlame(reason: ReasonLike | null | undefined, text?: string | null, notStartedBy?: string | null): FailureBlame {
+  // A test that did not start the audit says so with a mark (`AuditNotStarted`): nothing was asked, so the attempt is
+  // the auditor's. A failure written before the mark is read by its text, below.
+  if (notStartedBy) return 'auditor'
   const summary = [reason?.summary ?? '', text ?? ''].join(' ')
   if (AUDITOR_TEXT.some((pattern) => pattern.test(summary))) return 'auditor'
   const code = reason?.code ?? null

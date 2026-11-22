@@ -7,7 +7,7 @@ import {
   type ModelAuditSummaryV1,
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
-import { confirmationCannotDecideOnRetry } from './audit-checks.js'
+import { confirmationCannotDecideOnRetry, type CheckSlot } from './audit-checks.js'
 import { epochRunManifests } from './epoch-overview.js'
 import { latestExtension } from './close-call.js'
 import { finalAuditVerdict, retiredRecheckResult } from './model-audit.js'
@@ -71,6 +71,8 @@ export interface EpochCell {
   lastAttemptAt: number | null
   blame: FailureBlame | null
   reason: string | null
+  /** Set on a failed cell whose audit a test did not start (`ModelVerificationFailure.notStartedBy`): nothing was asked. */
+  notStartedBy?: CheckSlot
   skipCode: string | null
   /** The result submitted for this cell, when there is one. */
   result: ModelVerificationTargetResult | null
@@ -530,7 +532,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
         if (failure.peerId.startsWith('model:')) continue
         const entry = get(summary.model, failure.peerId, manifest.runId)
         switchReport(entry, confirmationReportKey(failure), failure)
-        if (failureBlame(failure.outcomeReason, failure.reason) === 'auditor') {
+        if (failureBlame(failure.outcomeReason, failure.reason, failure.notStartedBy) === 'auditor') {
           entry.auditorAttempts += 1
           entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
           // A confirmation's attempts have their own spacing and limit (as its results do): each one counts.
@@ -584,9 +586,10 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     } else if (entry.failure && (entry.last === 'failure' || !entry.skip)) {
       cell = {
         ...base, runId: entry.failure.runId, state: 'failed', result: null,
-        blame: failureBlame(entry.failure.entry.outcomeReason, entry.failure.entry.reason),
+        blame: failureBlame(entry.failure.entry.outcomeReason, entry.failure.entry.reason, entry.failure.entry.notStartedBy),
         permanent: permanentAuditorFailure(entry.failure.entry.outcomeReason, entry.failure.entry.reason),
         reason: entry.failure.entry.reason,
+        ...(entry.failure.entry.notStartedBy !== undefined ? { notStartedBy: entry.failure.entry.notStartedBy } : {}),
       }
     } else {
       const skip = entry.skip!

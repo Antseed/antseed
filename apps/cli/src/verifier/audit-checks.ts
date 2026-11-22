@@ -1,6 +1,10 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { auditedServiceNames } from './audited-models.js'
-import { describeFlipsFlag, flipsPaidRequests, isFlipsRecord, isProbeDraw, summarizeFlips, validateFlips, type FlipsV1 } from './flips.js'
+import type { MethodScreen, OwnScreen, SellerAuditStart } from './audit-method.js'
+import {
+  FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE, describeFlipsFlag, flipsPaidRequests, isFlipsRecord, isProbeDraw, summarizeFlips, validateFlips,
+  type FlipsStage, type FlipsV1,
+} from './flips.js'
 import { FLIPS_RULE, flipsCounts, flipsRuleById, type FlipsRule } from './flips-score.js'
 import { describeOutputCapFlag, outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1 } from './output-cap.js'
 import { describeOutputEchoFlag, outputEchoPaidRequests, summarizeOutputEcho, validateOutputEcho, type EchoSellerAskV1, type OutputEchoV1 } from './output-echo.js'
@@ -19,7 +23,8 @@ import {
 /**
  * The checks of a seller audit, behind one description each, so that every rule that reads them (which flagged, which
  * passed, which decided, what ended the audit) is written once over the list instead of once per check. Each check
- * keeps its own file, rule, record and judgement; the list only says how to read what it stored.
+ * keeps its own file, rule, record and judgement; the list only says how to read what it stored, and how an audit runs
+ * it from the check's own screen (`audit-method.ts`).
  */
 
 /**
@@ -173,6 +178,20 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
     name: string
     summaryMismatch: string
   }
+  /** When an audit asks the seller this test: before its questions or after them. Inside a phase the order is the list's. */
+  phase: 'before-questions' | 'after-questions'
+  /**
+   * The test asks the seller with the seller's own thinking setting: while one is still to be asked, the audit
+   * discovers that setting although no question batch is left.
+   */
+  asksWithSellerThinking?: true
+  /**
+   * Whether a carried record is this audit's at all, also where the test does not run (no screen, an extra set).
+   * Without it any carried record is.
+   */
+  carriedIsOfAudit?(carried: CheckRecords[Slot], audit: SellerAuditStart): boolean
+  /** The test as an audit runs it (`audit-method.ts`), from its own screen for the model and run. */
+  screen(own: OwnScreen<Slot>): MethodScreen<Slot>
 }
 
 const stored = (
@@ -205,6 +224,11 @@ export const TOKENS_CHECK: RecordCheck<'tokenizerPrecheck'> = {
     name: 'the tokenizer pre-check',
     summaryMismatch: 'the summary\'s tokenizer pre-check is not the one in its evidence',
   },
+  phase: 'before-questions',
+  screen: (precheck) => ({
+    ready: (audit) => precheck.ready(audit.bank),
+    check: (audit) => precheck.check(audit.seller, audit.bank, audit.clock),
+  }),
 }
 
 export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
@@ -224,6 +248,12 @@ export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
     name: 'the cap check',
     summaryMismatch: 'the summary\'s cap check is not the one in its evidence',
   },
+  phase: 'after-questions',
+  asksWithSellerThinking: true,
+  screen: (cap) => ({
+    ready: (audit) => cap.ready(audit.bank),
+    check: (audit) => cap.check(audit.seller, audit.bank, audit.thinking, audit.clock),
+  }),
 }
 
 export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
@@ -264,6 +294,20 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
     name: 'the echo check',
     summaryMismatch: 'the summary\'s echo check is not the one in its evidence',
   },
+  phase: 'after-questions',
+  asksWithSellerThinking: true,
+  screen: (echo) => ({
+    ready: (audit) => echo.ready(audit.bank),
+    check: (audit) => echo.check(audit.seller, audit.bank, {
+      thinking: audit.thinking,
+      // The model's other sellers are asked with the reference's thinking setting.
+      crowdThinking: audit.crowdThinking,
+      precheckMatch: audit.earlier.tokenizerPrecheck?.outcome === 'match',
+      clock: audit.clock,
+      // Work for the fixed amount alone keeps to the audit's spare time.
+      spare: () => audit.spare(),
+    }),
+  }),
 }
 
 /**
@@ -284,6 +328,9 @@ const flipsSummaryCounts = (summary: { model?: unknown; probe?: unknown; rule?: 
   const rule = flipsRuleById(summary.rule)
   return rule !== undefined && flipsCounts(summary.model, rule)
 }
+
+/** FLIPS's stage in an audit: `confirm` only when the audit confirms another auditor's FLIPS flag. */
+const flipsStageOf = (audit: Pick<SellerAuditStart, 'confirming'>): FlipsStage => (audit.confirming.includes('flips') ? 'confirm' : 'first')
 
 export const FLIPS_CHECK: RecordCheck<'flips'> = {
   slot: 'flips',
@@ -334,6 +381,46 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
     name: 'the randomness check',
     summaryMismatch: 'the summary\'s randomness check is not the one in its evidence',
   },
+  // FLIPS last.
+  phase: 'after-questions',
+  // A carried record is kept only for its own stage: a first look's FLIPS never stands for a confirmation of FLIPS, or
+  // the other way round. Without a screen too: a carried record of another stage is not this audit's, so it is not kept.
+  carriedIsOfAudit: (carried, audit) => carried.draw.stage === flipsStageOf(audit),
+  screen: (flips) => ({
+    // The stage's FLIPS reference is decided before the seller is asked anything paid, once per model, stage and run:
+    // where FLIPS counts and it is not whole, the audit is not started (the auditor's attempt, nothing paid), except on the
+    // auditor's last attempt, which runs with FLIPS at no result (never for a report only FLIPS flagged).
+    admit: {
+      decide(audit) {
+        if (flips.referenceDecision) {
+          return flips.referenceDecision(flipsStageOf(audit), audit.seller.service, audit.bank, {
+            lastAuditorAttempt: audit.lastAuditorAttempt,
+            confirming: audit.confirming,
+          })
+        }
+        // Its reference is asked while the questions run: FLIPS then adds only the seller's own time.
+        flips.warm?.(audit.seller.service, audit.bank, flipsStageOf(audit))
+        return 'ready'
+      },
+      notStarted: `${FLIPS_AUDITOR_FAILURE}: ${FLIPS_WAITING_FOR_REFERENCE}`,
+    },
+    // A requested probe is always run: a carried record that is no probe's, or a probe of other settings, is asked
+    // again and not kept.
+    keeps: (carried, audit) => !(carried.draw.stage !== flipsStageOf(audit)
+      // A record of another rule than this build's (an earlier build's, recorded only) is asked again under this one.
+      || (flips.ruleId !== undefined && carried.rule !== flips.ruleId)
+      // A probe's record is a diagnostic: without a probe on, the production FLIPS is asked.
+      || (flips.probing !== true && isProbeDraw(carried.draw))
+      || (flips.probing === true
+        && (!isProbeDraw(carried.draw) || carried.probeSettings !== flips.probeSettings))),
+    check: (audit) => flips.check(audit.seller, audit.bank, {
+      stage: flipsStageOf(audit),
+      clock: audit.clock,
+      signal: audit.clock.signal,
+    }),
+    // FLIPS can be a diagnostic (recorded only): a write made only for it never stops the audit when it fails.
+    bestEffortCheckpoint: true,
+  }),
 }
 
 /**
@@ -447,7 +534,7 @@ export function checkLabel(check: AuditCheckId): string {
  * Each check with its record in these records, in run order. A slot that is absent or stored as null holds no record
  * (`== null` throughout, as the readers before this list did with `?.`): a file of other software may write null.
  */
-function recordsOf(records: StoredCheckRecords): Array<{ check: RecordCheck<CheckSlot>; record: CheckRecords[CheckSlot] | undefined }> {
+export function recordsOf(records: StoredCheckRecords): Array<{ check: RecordCheck<CheckSlot>; record: CheckRecords[CheckSlot] | undefined }> {
   return RECORD_CHECKS.map((check) => ({ check: check as unknown as RecordCheck<CheckSlot>, record: records[check.slot] }))
 }
 

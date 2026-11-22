@@ -172,7 +172,12 @@ function normalizePeer(peerId: string): string {
   return peerId.trim().replace(/^0x/i, '').toLowerCase()
 }
 
-/** A confirmation not started because its FLIPS reference was not whole this run: the auditor's attempt, nothing asked. */
-export function notStartedForReference(cell: Pick<EpochCell, 'state' | 'blame' | 'reason'>): boolean {
-  return cell.state === 'failed' && cell.blame === 'auditor' && (cell.reason ?? '').includes(FLIPS_WAITING_FOR_REFERENCE)
+/**
+ * A confirmation not started because its FLIPS reference was not whole this run: the auditor's attempt, nothing asked.
+ * Read from the mark a test leaves when it does not start an audit (`AuditNotStarted`), or, for a failure written
+ * before that mark, from its text.
+ */
+export function notStartedForReference(cell: Pick<EpochCell, 'state' | 'blame' | 'reason' | 'notStartedBy'>): boolean {
+  return cell.state === 'failed' && cell.blame === 'auditor'
+    && (cell.notStartedBy !== undefined || (cell.reason ?? '').includes(FLIPS_WAITING_FOR_REFERENCE))
 }

@@ -38,16 +38,22 @@ import {
 } from '@antseed/node'
 import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
 import { auditedServiceNames } from './audited-models.js'
-import { ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from './audit-checks.js'
+import {
+  ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, recordsOf, withoutOrphans,
+  type CheckRecords, type CheckSlot, type ConfirmationIdentity, type RecordCheck, type StoredCheckRecords,
+} from './audit-checks.js'
+import { AuditNotStarted, type MethodScreen, type SellerAudit, type SellerAuditStart } from './audit-method.js'
 import { settleAuditVerdict } from './close-call.js'
-import { FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE, flipsCost, flipsRequestCount, isFlipsRecord, isProbeDraw, summarizeFlips, type FlipsScreen, type FlipsSummary, type FlipsV1 } from './flips.js'
+import type { FlipsScreen, FlipsSummary } from './flips.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { kbfAuditBatches } from './kbf-batching.js'
 import {
   addAuditCostSummaries,
+  costOfRequests,
   deriveProxyAuditId,
   parseProxyAuditExchangeCost,
+  requestCountOf,
   summarizeAuditExchangeCosts,
   writeProxyAuditEvidence,
   writeProxyAuditSkipEvidence,
@@ -68,32 +74,10 @@ import {
   type ThinkingDiscoveryProbe,
 } from './thinking-suppression.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
-import {
-  tokenizerPrecheckCost,
-  tokenizerPrecheckRequestCount,
-  summarizeTokenizerPrecheck,
-  type TokenizerPrecheckScreen,
-  type TokenizerPrecheckSummary,
-  type TokenizerPrecheckSeller,
-  type TokenizerPrecheckV1,
-} from './tokenizer-precheck.js'
+import type { TokenizerPrecheckScreen, TokenizerPrecheckSummary, TokenizerPrecheckSeller } from './tokenizer-precheck.js'
 import type { AuditCheckId } from './flagging-checks.js'
-import {
-  outputEchoCost,
-  outputEchoRequestCount,
-  summarizeOutputEcho,
-  type OutputEchoScreen,
-  type OutputEchoSummary,
-  type OutputEchoV1,
-} from './output-echo.js'
-import {
-  outputCapCost,
-  outputCapRequestCount,
-  summarizeOutputCap,
-  type OutputCapScreen,
-  type OutputCapSummary,
-  type OutputCapV1,
-} from './output-cap.js'
+import type { OutputEchoScreen, OutputEchoSummary } from './output-echo.js'
+import type { OutputCapScreen, OutputCapSummary } from './output-cap.js'
 import { advertisedServices, findAdvertisedService } from './service-discovery.js'
 import { mapWithAdaptiveConcurrency, type AuditTaskLimiter } from './audit-concurrency.js'
 import { writeJsonAtomic } from './atomic-files.js'
@@ -461,6 +445,11 @@ export interface ModelVerificationFailure {
   status: 'FAILED'
   reason: string
   outcomeReason?: VerificationOutcomeReasonV1
+  /**
+   * Set when a test did not start the audit (`AuditNotStarted`), to that test's slot: the auditor's attempt, with nothing
+   * asked of the seller. Absent on a failure written before this mark, which is read by its text.
+   */
+  notStartedBy?: CheckSlot
   /** A failed confirmation: the report it was for (`confirmationReportKey`), so the attempt counts for that report. */
   confirming?: AuditCheckId[]
   confirmingReportedAt?: number
@@ -825,40 +814,42 @@ export async function verifyModelTarget(input: {
   const runsTests = !input.extension
   // A carried test judged against an earlier test that is asked now is asked again with it (`withoutOrphans`).
   const carried: StoredCheckRecords = withoutOrphans(input.resume?.records ?? input.carried ?? {})
-  // FLIPS's stage, and its reference asked while the questions run: FLIPS then adds only the seller's own time.
-  const flipsStage = input.confirming?.checks.includes('flips') ? 'confirm' as const : 'first' as const
-  // A carried record is kept only for its own stage: a first look's FLIPS never stands for a confirmation of FLIPS, or
-  // the other way round. A requested probe is always run: a carried record that is no probe's, or a probe of other
-  // settings, is asked again and not kept.
-  const flipsToAsk = runsTests && input.context.flips !== undefined
-    // A record of another rule than this build's (an earlier build's, recorded only) is asked again under this one.
-    && (carried.flips == null || carried.flips.draw.stage !== flipsStage
-      || (input.context.flips.ruleId !== undefined && carried.flips.rule !== input.context.flips.ruleId)
-      // A probe's record is a diagnostic: without a probe on, the production FLIPS is asked.
-      || (input.context.flips.probing !== true && isProbeDraw(carried.flips.draw))
-      || (input.context.flips.probing === true
-        && (!isProbeDraw(carried.flips.draw) || carried.flips.probeSettings !== input.context.flips.probeSettings)))
-  // Without a screen too: a carried record of another stage is not this audit's, so it is not kept.
-  let flips: FlipsV1 | null = flipsToAsk || carried.flips?.draw.stage !== flipsStage ? null : carried.flips ?? null
-  // The stage's FLIPS reference is decided before the seller is asked anything paid, once per model, stage and run:
-  // where FLIPS counts and it is not whole, the audit is not started (the auditor's attempt, nothing paid), except on the
-  // auditor's last attempt, which runs with FLIPS at no result (never for a report only FLIPS flagged).
-  if (flipsToAsk) {
-    const screen = input.context.flips!
-    if (screen.referenceDecision) {
-      const decision = await screen.referenceDecision(flipsStage, input.service, input.reference, {
-        lastAuditorAttempt: input.lastAuditorAttempt === true,
-        confirming: input.confirming?.checks ?? [],
-      })
-      if (decision === 'not-started') throw new Error(`${FLIPS_AUDITOR_FAILURE}: ${FLIPS_WAITING_FOR_REFERENCE}`)
-    } else {
-      screen.warm?.(input.service, input.reference, flipsStage)
-    }
-  }
   const sellerTarget = {
     peerId: input.target.peerId,
     service: input.service,
     serviceAliases: [...input.reference.serviceAliases, ...currentServiceNames(input.reference.referenceModel)],
+  }
+  const auditStart: SellerAuditStart = {
+    seller: sellerTarget,
+    bank: input.reference,
+    confirming: input.confirming?.checks ?? [],
+    lastAuditorAttempt: input.lastAuditorAttempt === true,
+  }
+  /** The audit's test records by slot: those it carries and keeps, then those it finds. */
+  const found: { [Slot in CheckSlot]?: CheckRecords[Slot] } = {}
+  /** Keeps a record a test gave, when it has the test's shape. */
+  const keep = (check: RecordCheck<CheckSlot>, record: CheckRecords[CheckSlot] | null): boolean => {
+    // Only a record every required write can hold: an unwritable diagnostic is dropped, never a failed audit.
+    if (!record || (check.wellFormed && !check.wellFormed(record))) return false
+    ;(found as Record<string, unknown>)[check.slot] = record
+    return true
+  }
+  /** Each test in run order (`RECORD_CHECKS`), with its screen when the seller is still to be asked it in this attempt. */
+  const tests = recordsOf(carried).map(({ check, record }): { check: RecordCheck<CheckSlot>; asking: MethodScreen<CheckSlot> | null } => {
+    const own = runsTests ? input.context[check.slot] : undefined
+    const screen = own == null ? null : check.screen(own)
+    // A carried record stands unless the test's screen says it is asked again (`keeps`); one that is not this audit's
+    // is not kept either way (`carriedIsOfAudit`).
+    if (screen && (record == null || !(screen.keeps?.(record, auditStart) ?? true))) return { check, asking: screen }
+    if (record != null && (check.carriedIsOfAudit?.(record, auditStart) ?? true)) (found as Record<string, unknown>)[check.slot] = record
+    return { check, asking: null }
+  })
+  // Each test still to be asked has its say before the seller is asked anything paid (`MethodScreen.admit`): an audit a
+  // test does not start is the auditor's attempt.
+  for (const { check, asking } of tests) {
+    if (!asking?.admit) continue
+    const answer = asking.admit.decide(auditStart)
+    if ((typeof answer === 'string' ? answer : await answer) === 'not-started') throw new AuditNotStarted(check.slot, asking.admit.notStarted)
   }
   // The seller's clock runs only while one of its requests is out: references and crowds are the auditor's time.
   const clock = () => ({
@@ -866,43 +857,37 @@ export async function verifyModelTarget(input: {
     start: () => deadline.start(),
     finish: (answered: boolean) => deadline.finish(answered),
   })
+  /** The tests finished so far, as the checkpoint and the evidence store them. */
+  const records = (): StoredCheckRecords => inRunOrder(found)
+  /** The tests this attempt ran itself: a carried record was paid for by the attempt that ran it. */
+  const freshRecords = (): StoredCheckRecords => inRunOrder(found, (slot) => found[slot] !== carried[slot])
+  /** What a test is told when it asks the seller, with the seller's own thinking setting once it is discovered. */
+  const sellerAudit = (thinking: SellerAudit['thinking']): SellerAudit => ({
+    ...auditStart,
+    thinking,
+    crowdThinking: kbfTargetThinkingSuppression(input.reference),
+    earlier: records(),
+    clock: clock(),
+    spare: () => deadline.spare(input.context.auditTimeoutMs),
+  })
+  // The references of the tests after the questions are asked together, before the seller is asked anything.
   if (runsTests) {
-    await Promise.all([
-      carried.outputCap == null ? input.context.outputCap?.ready(input.reference) : undefined,
-      carried.outputEcho == null ? input.context.outputEcho?.ready(input.reference) : undefined,
-    ])
+    await Promise.all(tests.map(({ check, asking }) => (check.phase === 'after-questions' ? asking?.ready?.(auditStart) : undefined)))
   }
-  let precheck: TokenizerPrecheckV1 | null = carried.tokenizerPrecheck ?? null
-  const screen = input.context.tokenizerPrecheck
-  if (runsTests && precheck === null && screen) {
+  // A test before the questions waits for its own reference first: the wait is the auditor's, not the seller's.
+  for (const { check, asking } of tests) {
+    if (check.phase !== 'before-questions' || !asking) continue
     try {
-      await screen.ready(input.reference)
-      precheck = await screen.check(sellerTarget, input.reference, clock())
+      await asking.ready?.(auditStart)
+      keep(check, await asking.check(sellerAudit(null)))
     } catch (error) {
       deadline.close()
       throw error
     }
   }
-  let outputCap: OutputCapV1 | null = carried.outputCap ?? null
-  let outputEcho: OutputEchoV1 | null = carried.outputEcho ?? null
-  /** The tests this attempt ran itself: a carried record was paid for by the attempt that ran it. */
-  const freshRecords = (): StoredCheckRecords => ({
-    ...(precheck && precheck !== carried.tokenizerPrecheck ? { tokenizerPrecheck: precheck } : {}),
-    ...(outputCap && outputCap !== carried.outputCap ? { outputCap } : {}),
-    ...(outputEcho && outputEcho !== carried.outputEcho ? { outputEcho } : {}),
-    ...(flips && flips !== carried.flips ? { flips } : {}),
-  })
-  /** The tests finished so far, as the checkpoint and the evidence store them. */
-  const records = (): StoredCheckRecords => ({
-    ...(precheck ? { tokenizerPrecheck: precheck } : {}),
-    ...(outputCap ? { outputCap } : {}),
-    ...(outputEcho ? { outputEcho } : {}),
-    ...(flips ? { flips } : {}),
-  })
   // Discovery runs whenever the seller is still to be asked something with its own thinking setting: a question batch,
   // or a test a retry asks again after every batch was answered.
-  const testsToAsk = runsTests && ((input.context.outputCap !== undefined && carried.outputCap == null)
-    || (input.context.outputEcho !== undefined && carried.outputEcho == null))
+  const testsToAsk = tests.some(({ check, asking }) => asking !== null && check.asksWithSellerThinking === true)
   const discovery = (pending.length > 0 || testsToAsk) && input.context.sellerThinking
     // The pre-check may have started the audit's clock: an audit that ends here stops it.
     ? await sellerThinkingFor(input.context, input.target, input.service, input.reference, sampling).catch((error: unknown) => {
@@ -963,8 +948,8 @@ export async function verifyModelTarget(input: {
   /** The questions ended in a seller failure (its first batch failed): no other test is started in this attempt. */
   let sellerFailed = false
   try {
-    // A pre-check finished before the questions is kept, so an interrupted audit does not ask it again.
-    if (precheck && !carried.tokenizerPrecheck) await persistCheckpoint()
+    // A test finished before the questions is kept, so an interrupted audit does not ask it again.
+    if (tests.some(({ check, asking }) => check.phase === 'before-questions' && asking !== null && found[check.slot] != null)) await persistCheckpoint()
     const executed = await mapWithAdaptiveConcurrency(
       pending,
       input.context.batchConcurrency,
@@ -1040,39 +1025,11 @@ export async function verifyModelTarget(input: {
   const timeIsUp = deadline.controller.signal.aborted
   if (runsTests && !skip && !sellerFailed && !timeIsUp) {
     try {
-      const capScreen = input.context.outputCap
       // The time is checked before each test: one that starts after it ran out could only find nothing.
       const timeLeft = (): boolean => !deadline.controller.signal.aborted
-      if (outputCap === null && capScreen && timeLeft()) {
-        outputCap = await capScreen.check(sellerTarget, input.reference, settings.thinking, clock())
-        if (outputCap) await persistCheckpoint()
-      }
-      const echoScreen = input.context.outputEcho
-      if (outputEcho === null && echoScreen && timeLeft()) {
-        outputEcho = await echoScreen.check(sellerTarget, input.reference, {
-          thinking: settings.thinking,
-          // The model's other sellers are asked with the reference's thinking setting.
-          crowdThinking: kbfTargetThinkingSuppression(input.reference),
-          precheckMatch: precheck?.outcome === 'match',
-          clock: clock(),
-          // Work for the fixed amount alone keeps to the audit's spare time.
-          spare: () => deadline.spare(input.context.auditTimeoutMs),
-        })
-        if (outputEcho) await persistCheckpoint()
-      }
-      // FLIPS last: its stage is `confirm` only when this audit confirms another auditor's FLIPS flag.
-      const flipsScreen = input.context.flips
-      if (flipsToAsk && flipsScreen && timeLeft()) {
-        const asked = await flipsScreen.check(sellerTarget, input.reference, {
-          stage: flipsStage,
-          clock: clock(),
-          signal: deadline.controller.signal,
-        })
-        // Only a record every required write can hold: an unwritable diagnostic is dropped, never a failed audit.
-        if (asked && isFlipsRecord(asked)) {
-          flips = asked
-          await persistCheckpoint({ bestEffort: true })
-        }
+      for (const { check, asking } of tests) {
+        if (check.phase !== 'after-questions' || !asking || !timeLeft()) continue
+        if (keep(check, await asking.check(sellerAudit(settings.thinking)))) await persistCheckpoint(asking.bestEffortCheckpoint ? { bestEffort: true } : {})
       }
     } catch (error) {
       deadline.close()
@@ -1245,29 +1202,37 @@ export async function verifyModelTarget(input: {
     stats: fragment.stats,
     coverageRule: KBF_COVERAGE_RULE.id,
     responseAuthVerified: authenticated,
-    ...(precheck ? { tokenizerPrecheck: summarizeTokenizerPrecheck(precheck) } : {}),
-    ...(outputCap ? { outputCap: summarizeOutputCap(outputCap) } : {}),
-    ...(outputEcho ? { outputEcho: summarizeOutputEcho(outputEcho) } : {}),
-    ...(flips ? { flips: summarizeFlips(flips) } : {}),
+    ...testSummaries(ran),
   })
+}
+
+/** These test records, each under its slot, in run order (`RECORD_CHECKS`); `keep` leaves some out. */
+function inRunOrder(records: StoredCheckRecords, keep: (slot: CheckSlot) => boolean = () => true): StoredCheckRecords {
+  const kept: Record<string, unknown> = {}
+  for (const { check, record } of recordsOf(records)) {
+    if (record != null && keep(check.slot)) kept[check.slot] = record
+  }
+  return kept
+}
+
+/** These test records as an audit's summary carries them, each under its slot, in run order. */
+function testSummaries(records: StoredCheckRecords): Pick<ModelVerificationTargetResult, CheckSlot> {
+  const summaries: Record<string, unknown> = {}
+  for (const { check, record } of recordsOf(records)) {
+    if (record != null) summaries[check.slot] = check.summarize(record)
+  }
+  // Each test's `summarize` gives the summary its slot of the result is typed as.
+  return summaries as Pick<ModelVerificationTargetResult, CheckSlot>
 }
 
 /** What these test records' requests cost, in run order. */
 function testCosts(records: StoredCheckRecords): AuditCostSummaryV1[] {
-  return [
-    ...(records.tokenizerPrecheck ? [tokenizerPrecheckCost(records.tokenizerPrecheck)] : []),
-    ...(records.outputCap ? [outputCapCost(records.outputCap)] : []),
-    ...(records.outputEcho ? [outputEchoCost(records.outputEcho)] : []),
-    ...(records.flips ? [flipsCost(records.flips)] : []),
-  ]
+  return recordsOf(records).flatMap(({ check, record }) => (record == null ? [] : [costOfRequests(check.paid(record))]))
 }
 
 /** The requests these test records sent, counting tries. */
 function testRequestCount(records: StoredCheckRecords): number {
-  return (records.tokenizerPrecheck ? tokenizerPrecheckRequestCount(records.tokenizerPrecheck) : 0)
-    + (records.outputCap ? outputCapRequestCount(records.outputCap) : 0)
-    + (records.outputEcho ? outputEchoRequestCount(records.outputEcho) : 0)
-    + (records.flips ? flipsRequestCount(records.flips) : 0)
+  return recordsOf(records).reduce((total, { check, record }) => total + (record == null ? 0 : requestCountOf(check.paid(record))), 0)
 }
 
 export async function readModelAuditCheckpoints(

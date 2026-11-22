@@ -68,6 +68,7 @@ import { fetchIpfsText } from '@antseed/model-verifier'
 import { DIFF_HOLD_EPOCHS, diffHolds, type DiffHolds } from '../../../verifier/diff-hold.js'
 import { auditorRemovedMessage, createAuditorApprovalGate } from '../../../verifier/auditor-approval.js'
 import { asError, normalized } from '../../../verifier/utils.js'
+import { AuditNotStarted } from '../../../verifier/audit-method.js'
 import {
   classifyVerificationTargetServices,
   loadBuyerProxySnapshot,
@@ -2170,6 +2171,8 @@ export async function runVerifierRound(
                   status: 'FAILED',
                   reason,
                   outcomeReason,
+                  // A test did not start the audit: the mark the planner reads beside the text.
+                  ...(error instanceof AuditNotStarted ? { notStartedBy: error.by } : {}),
                   // A failed confirmation is an attempt on the report it was for.
                   ...(confirmingIdentity ? { confirming: [...confirmingIdentity.checks], ...(confirmingIdentity.reportedAt !== undefined ? { confirmingReportedAt: confirmingIdentity.reportedAt } : {}) } : {}),
                 }
