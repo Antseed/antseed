@@ -326,7 +326,8 @@ export function VprPreferencesView({ onSelectView }: Props) {
           <VprCard className={styles.card}>
             <VprSettingRow
               title="Studio"
-              hint={studioError ?? 'Make a film from a storyboard with a project agent. Each image and clip is quoted in chat before anything is paid for.'}
+              caption="Beta"
+              hint={studioError ?? 'Make a film from a storyboard with a project agent. Each image and clip is quoted in chat before anything is paid for. Studio is a beta feature, so it may still change.'}
               control={(
                 <VprToggle
                   checked={studioOn === true}
