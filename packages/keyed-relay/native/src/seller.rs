@@ -27,9 +27,9 @@ use tokio::{
 
 use crate::{
     frames,
-    msg::{Done, Hello, Injected, PROTOCOL_VERSION, RequestReveal, RequestVerdict, RevealRequest},
+    msg::{Done, Hello, Injected, PROTOCOL_VERSION, RequestReveal, RequestVerdict, RevealRequest, TagAnswer, TagOffer},
     ranges::{self, Placed, RECORD_OVERHEAD},
-    records::{ALERT, ALLOWED_SUITES, APPLICATION_DATA, CHANGE_CIPHER_SPEC, HANDSHAKE, Record, RecordParser, seal_with_keystream, server_hello},
+    records::{ALERT, ALLOWED_SUITES, APPLICATION_DATA, CHANGE_CIPHER_SPEC, HANDSHAKE, Record, RecordParser, SellerRecord, server_hello},
     session::PeerSession,
     zk::{INJECTED_SEQ, KeyProof, Side, verifier_vm},
 };
@@ -401,9 +401,21 @@ pub async fn run() -> Result<()> {
         .verify(&cert_verifier(extra_roots.as_deref())?, now(), &binding.server_ephemeral_key, &ServerName::Dns(dns))
         .map_err(|error| anyhow!("the upstream's certificate or signature did not verify: {error}"))?;
 
-    let injection = proof.prove(&mut vm, &mut session.ctx, None, &transcript).await.context("key proof")?;
-    let record = seal_with_keystream(INJECTED_SEQ, INJECTED_SEQ.to_be_bytes(), &head, &injection.keystream, &injection.tag_mask, &injection.ghash_key)?;
-    inject_tx.send(record).map_err(|_| anyhow!("the relay ended before the record was written"))?;
+    let keystream = proof.prove(&mut vm, &mut session.ctx, None, &transcript).await.context("key proof")?;
+    let record = SellerRecord::new(INJECTED_SEQ, &head, &keystream)?;
+    // The record's tag, without the GHASH key: the buyer answers the offer
+    // with its share and the tag mask, and learns nothing of the record.
+    let (entries, share) = proof.tag_offer(&vm, &record)?;
+    session.ctx.io_mut().send(TagOffer { entries }).await?;
+    let answer: TagAnswer = tokio::time::timeout(HANDSHAKE_TIMEOUT, session.ctx.io_mut().expect_next())
+        .await
+        .map_err(|_| anyhow!("the buyer did not answer the record tag"))?
+        .context("record tag")?;
+    let mut tag = share;
+    for (t, a) in tag.iter_mut().zip(answer.value) {
+        *t ^= a;
+    }
+    inject_tx.send(record.with_tag(&tag)).map_err(|_| anyhow!("the relay ended before the record was written"))?;
     session.ctx.io_mut().send(Injected { seq: INJECTED_SEQ }).await?;
     out.ctl(json!({ "type": "injected" }));
 

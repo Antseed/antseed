@@ -3,13 +3,26 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any change to the sidecar protocol.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Seller → buyer, first: the protocol version and the length of the seller's record.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Hello {
     pub version: u32,
     pub injected_len: u32,
+}
+
+/// Seller → buyer after the key proof: its offer for the tag of its record
+/// (`tag::offer`). Its length follows from `Hello::injected_len`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TagOffer {
+    pub entries: Vec<u8>,
+}
+
+/// Buyer → seller, once: its share of that tag with the record's tag mask added.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TagAnswer {
+    pub value: [u8; 16],
 }
 
 /// Seller → buyer: the seller's record is on the wire; the buyer writes from sequence 2.

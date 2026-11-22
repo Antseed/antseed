@@ -1,13 +1,13 @@
 //! TLS 1.2 record layer pieces: parsing, AES-128-GCM records with explicit
-//! nonces, the handshake facts the seller checks, and the GHASH tag the seller
-//! computes for its own record.
+//! nonces, the handshake facts the seller checks, and the seller's own record:
+//! its ciphertext, the blocks its tag is computed over, and the record itself
+//! once the tag is known (see `tag`).
 
 use aes_gcm::{
     Aes128Gcm, KeyInit, Nonce,
     aead::{AeadInPlace, generic_array::GenericArray},
 };
 use anyhow::{Result, anyhow, bail};
-use ghash::{GHash, universal_hash::UniversalHash};
 
 pub const CHANGE_CIPHER_SPEC: u8 = 20;
 pub const ALERT: u8 = 21;
@@ -112,6 +112,20 @@ impl Direction {
         Ok(out)
     }
 
+    /// The GCM tag mask of the record at the current sequence number: the
+    /// encrypted first counter block. A record with no bytes and no additional
+    /// data has a GHASH of zero, so its tag is the mask.
+    pub fn tag_mask(&self) -> Result<[u8; 16]> {
+        let mut nonce = [0u8; 12];
+        nonce[..4].copy_from_slice(&self.salt);
+        nonce[4..].copy_from_slice(&self.seq.to_be_bytes());
+        let tag = self
+            .cipher
+            .encrypt_in_place_detached(Nonce::from_slice(&nonce), &[], &mut [])
+            .map_err(|_| anyhow!("tag mask failed"))?;
+        Ok(tag.into())
+    }
+
     /// Decrypts and authenticates one record at the current sequence number.
     pub fn open(&mut self, record: &Record) -> Result<Vec<u8>> {
         if record.body.len() < 8 + 16 {
@@ -136,30 +150,55 @@ impl Direction {
     }
 }
 
-/// The seller's record, built from the keystream and the tag mask the proof
-/// gave it and the client GHASH key: the seller never holds the session key.
-pub fn seal_with_keystream(seq: u64, explicit_nonce: [u8; 8], plaintext: &[u8], keystream: &[u8], tag_mask: &[u8; 16], ghash_key: &[u8; 16]) -> Result<Vec<u8>> {
-    if keystream.len() < plaintext.len() {
-        bail!("keystream shorter than the record");
+/// The seller's record, in the pieces it is built from. The seller never
+/// holds the session key or the GHASH key: the proof gives it the keystream of
+/// its bytes, and the tag comes out of the exchange in `tag`.
+pub struct SellerRecord {
+    seq: u64,
+    ciphertext: Vec<u8>,
+}
+
+impl SellerRecord {
+    pub fn new(seq: u64, plaintext: &[u8], keystream: &[u8]) -> Result<Self> {
+        if keystream.len() < plaintext.len() {
+            bail!("keystream shorter than the record");
+        }
+        Ok(Self { seq, ciphertext: plaintext.iter().zip(keystream).map(|(p, k)| p ^ k).collect() })
     }
-    let ciphertext: Vec<u8> = plaintext.iter().zip(keystream).map(|(p, k)| p ^ k).collect();
-    let mut ghash = GHash::new(GenericArray::from_slice(ghash_key));
-    ghash.update_padded(&aad(seq, APPLICATION_DATA, plaintext.len()));
-    ghash.update_padded(&ciphertext);
-    let mut lengths = [0u8; 16];
-    lengths[..8].copy_from_slice(&((13u64) * 8).to_be_bytes());
-    lengths[8..].copy_from_slice(&((ciphertext.len() as u64) * 8).to_be_bytes());
-    ghash.update(&[GenericArray::clone_from_slice(&lengths)]);
-    let mut tag: [u8; 16] = ghash.finalize().into();
-    for (t, m) in tag.iter_mut().zip(tag_mask) {
-        *t ^= m;
+
+    /// How many blocks GHASH reads for a record of `len` bytes: its
+    /// additional data, its ciphertext and the two lengths.
+    pub fn ghash_block_count(len: usize) -> usize {
+        len.div_ceil(16) + 2
     }
-    let mut out = Vec::with_capacity(5 + 8 + ciphertext.len() + 16);
-    out.extend_from_slice(&header(APPLICATION_DATA, 8 + ciphertext.len() + 16));
-    out.extend_from_slice(&explicit_nonce);
-    out.extend_from_slice(&ciphertext);
-    out.extend_from_slice(&tag);
-    Ok(out)
+
+    /// The blocks GHASH reads for this record, in order.
+    pub fn ghash_blocks(&self) -> Vec<[u8; 16]> {
+        let mut blocks = Vec::with_capacity(Self::ghash_block_count(self.ciphertext.len()));
+        let mut first = [0u8; 16];
+        first[..13].copy_from_slice(&aad(self.seq, APPLICATION_DATA, self.ciphertext.len()));
+        blocks.push(first);
+        for chunk in self.ciphertext.chunks(16) {
+            let mut block = [0u8; 16];
+            block[..chunk.len()].copy_from_slice(chunk);
+            blocks.push(block);
+        }
+        let mut lengths = [0u8; 16];
+        lengths[..8].copy_from_slice(&(13u64 * 8).to_be_bytes());
+        lengths[8..].copy_from_slice(&((self.ciphertext.len() as u64) * 8).to_be_bytes());
+        blocks.push(lengths);
+        blocks
+    }
+
+    /// The record on the wire, with the sequence number as its explicit nonce.
+    pub fn with_tag(&self, tag: &[u8; 16]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(5 + 8 + self.ciphertext.len() + 16);
+        out.extend_from_slice(&header(APPLICATION_DATA, 8 + self.ciphertext.len() + 16));
+        out.extend_from_slice(&self.seq.to_be_bytes());
+        out.extend_from_slice(&self.ciphertext);
+        out.extend_from_slice(tag);
+        out
+    }
 }
 
 /// What the seller checks in the plaintext ServerHello.
@@ -224,42 +263,119 @@ fn parse_server_hello(body: &[u8]) -> Result<ServerHelloFacts> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use aes::cipher::BlockEncrypt;
+    use ghash::{GHash, universal_hash::UniversalHash};
+
+    pub(crate) const KEY: [u8; 16] = [7u8; 16];
+    pub(crate) const IV: [u8; 4] = [1, 2, 3, 4];
+    pub(crate) const HEAD: &[u8] = b"POST /v1/chat/completions HTTP/1.1\r\nHost: example.com\r\nAuthorization: Bearer sk-test\r\n";
+
+    fn encrypt(block: [u8; 16]) -> [u8; 16] {
+        let mut block = GenericArray::clone_from_slice(&block);
+        aes::Aes128::new(GenericArray::from_slice(&KEY)).encrypt_block(&mut block);
+        block.into()
+    }
+
+    /// The session's client GHASH key, which the seller must never hold.
+    pub(crate) fn ghash_key() -> [u8; 16] {
+        encrypt([0u8; 16])
+    }
+
+    fn counter_block(seq: u64, counter: u32) -> [u8; 16] {
+        let mut block = [0u8; 16];
+        block[..4].copy_from_slice(&IV);
+        block[4..12].copy_from_slice(&seq.to_be_bytes());
+        block[12..].copy_from_slice(&counter.to_be_bytes());
+        encrypt(block)
+    }
+
+    /// The keystream of a record's bytes: counters 2 and up.
+    pub(crate) fn keystream(seq: u64, len: usize) -> Vec<u8> {
+        (0..len.div_ceil(16)).flat_map(|i| counter_block(seq, 2 + i as u32)).collect()
+    }
+
+    fn ghash(key: &[u8], blocks: &[[u8; 16]]) -> [u8; 16] {
+        let mut ghash = GHash::new(GenericArray::from_slice(key));
+        for block in blocks {
+            ghash.update(&[GenericArray::clone_from_slice(block)]);
+        }
+        ghash.finalize().into()
+    }
 
     #[test]
-    fn keystream_record_matches_aes_gcm() {
-        use aes::cipher::{BlockEncrypt, KeyInit as _};
-        let key = [7u8; 16];
-        let iv = [1u8, 2, 3, 4];
-        let seq = 1u64;
-        let plaintext = b"POST /v1/chat/completions HTTP/1.1\r\nHost: example.com\r\nAuthorization: Bearer sk-test\r\n";
+    fn the_tag_mask_is_the_encrypted_first_counter_block() {
+        let direction = Direction::new(&KEY, &IV, 1).unwrap();
+        assert_eq!(direction.tag_mask().unwrap(), counter_block(1, 1));
+        let direction = Direction::new(&KEY, &IV, 9).unwrap();
+        assert_eq!(direction.tag_mask().unwrap(), counter_block(9, 1));
+    }
 
-        let aes = aes::Aes128::new(GenericArray::from_slice(&key));
-        let block = |counter: u32| {
-            let mut b = [0u8; 16];
-            b[..4].copy_from_slice(&iv);
-            b[4..12].copy_from_slice(&seq.to_be_bytes());
-            b[12..].copy_from_slice(&counter.to_be_bytes());
-            let mut ga = GenericArray::clone_from_slice(&b);
-            aes.encrypt_block(&mut ga);
-            let out: [u8; 16] = ga.into();
-            out
+    #[test]
+    fn the_sellers_record_matches_aes_gcm() {
+        for len in [1usize, 15, 16, 17, 32, HEAD.len()] {
+            let plaintext = &HEAD[..len];
+            let record = SellerRecord::new(1, plaintext, &keystream(1, len)).unwrap();
+            let blocks = record.ghash_blocks();
+            assert_eq!(blocks.len(), SellerRecord::ghash_block_count(len));
+
+            let mut tag = ghash(&ghash_key(), &blocks);
+            for (t, m) in tag.iter_mut().zip(Direction::new(&KEY, &IV, 1).unwrap().tag_mask().unwrap()) {
+                *t ^= m;
+            }
+            let seller = record.with_tag(&tag);
+            let reference = Direction::new(&KEY, &IV, 1).unwrap().seal(APPLICATION_DATA, plaintext).unwrap();
+            assert_eq!(seller, reference, "{len} bytes");
+
+            let records = RecordParser::default().push(&seller).unwrap();
+            assert_eq!(Direction::new(&KEY, &IV, 1).unwrap().open(&records[0]).unwrap(), plaintext);
+        }
+    }
+
+    #[test]
+    fn a_keystream_shorter_than_the_record_is_refused() {
+        assert!(SellerRecord::new(1, HEAD, &keystream(1, HEAD.len())[..HEAD.len() - 1]).is_err());
+    }
+
+    /// The buyer's record after the seller's, as the seller relays it.
+    pub(crate) fn buyer_record() -> Record {
+        let sealed = Direction::new(&KEY, &IV, 2).unwrap().seal(APPLICATION_DATA, b"{\"model\":\"example-model\",\"max_tokens\":16}").unwrap();
+        RecordParser::default().push(&sealed).unwrap().remove(0)
+    }
+
+    /// How many of a relaying seller's attempts at changing the buyer's
+    /// record the upstream would accept: one byte of its ciphertext flipped,
+    /// and the tag recomputed with every 16 bytes of `held` taken as the
+    /// GHASH key.
+    pub(crate) fn accepted_retags(held: &[u8]) -> usize {
+        let record = buyer_record();
+        let (explicit, rest) = record.body.split_at(8);
+        let (ciphertext, tag) = rest.split_at(rest.len() - 16);
+        let mut changed = ciphertext.to_vec();
+        changed[0] ^= 1;
+        let blocks = |ciphertext: &[u8]| {
+            // An all-zero keystream leaves the ciphertext as it is.
+            SellerRecord::new(2, ciphertext, &vec![0u8; ciphertext.len()]).unwrap().ghash_blocks()
         };
-        let mut h = GenericArray::clone_from_slice(&[0u8; 16]);
-        aes.encrypt_block(&mut h);
-        let h: [u8; 16] = h.into();
-        let mask = block(1);
-        let keystream: Vec<u8> = (0..plaintext.len().div_ceil(16)).flat_map(|i| block(2 + i as u32)).collect();
+        let (before, after) = (blocks(ciphertext), blocks(&changed));
+        held.windows(16)
+            .filter(|key| {
+                let mut body = explicit.to_vec();
+                body.extend_from_slice(&changed);
+                body.extend(tag.iter().zip(ghash(key, &before)).zip(ghash(key, &after)).map(|((t, b), a)| t ^ b ^ a));
+                Direction::new(&KEY, &IV, 2).unwrap().open(&Record { typ: record.typ, body }).is_ok()
+            })
+            .count()
+    }
 
-        let seller = seal_with_keystream(seq, seq.to_be_bytes(), plaintext, &keystream, &mask, &h).unwrap();
-        let mut direction = Direction::new(&key, &iv, seq).unwrap();
-        let reference = direction.seal(APPLICATION_DATA, plaintext).unwrap();
-        assert_eq!(seller, reference);
-
-        let mut parser = RecordParser::default();
-        let records = parser.push(&seller).unwrap();
-        let mut reader = Direction::new(&key, &iv, seq).unwrap();
-        assert_eq!(reader.open(&records[0]).unwrap(), plaintext);
+    #[test]
+    fn whoever_holds_the_ghash_key_can_change_a_record() {
+        // Why the seller must never hold it: with the key among what it
+        // holds, the changed record is accepted.
+        let mut held = keystream(1, HEAD.len());
+        assert_eq!(accepted_retags(&held), 0);
+        held.extend_from_slice(&ghash_key());
+        assert_eq!(accepted_retags(&held), 1);
     }
 }

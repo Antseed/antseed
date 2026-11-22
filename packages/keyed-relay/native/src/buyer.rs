@@ -28,7 +28,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     frames,
-    msg::{Done, Hello, Injected, PROTOCOL_VERSION, RequestReveal, RequestVerdict, RevealRequest},
+    msg::{Done, Hello, Injected, PROTOCOL_VERSION, RequestReveal, RequestVerdict, RevealRequest, TagAnswer, TagOffer},
     ranges::{self, Triple},
     records::{ALERT, ALLOWED_SUITES, APPLICATION_DATA, Direction, MAX_PLAINTEXT, RecordParser},
     session::{PeerSession, TlsStream},
@@ -187,9 +187,19 @@ pub async fn run() -> Result<()> {
     let transcript = TlsTranscript::builder().time(now()).tls_sent(&sent).tls_recv(&recv).build()?;
     proof.prove(&mut vm, &mut session.ctx, Some(ms), &transcript).await.context("key proof")?;
 
+    if tx.seq != INJECTED_SEQ {
+        bail!("unexpected record sequence (client {})", tx.seq);
+    }
+    // The tag of the seller's record. Answered once, with the tag mask of the
+    // one sequence number this side never writes: the seller gets that tag and
+    // nothing it could tag another record with.
+    let offer: TagOffer = session.ctx.io_mut().expect_next().await.context("seller tag offer")?;
+    let value = proof.tag_answer(&vm, &offer.entries, &tx.tag_mask()?)?;
+    session.ctx.io_mut().send(TagAnswer { value }).await?;
+
     let injected: Injected = session.ctx.io_mut().expect_next().await.context("seller injection")?;
-    if injected.seq != INJECTED_SEQ || tx.seq != INJECTED_SEQ {
-        bail!("unexpected record sequence (seller {}, client {})", injected.seq, tx.seq);
+    if injected.seq != INJECTED_SEQ {
+        bail!("unexpected record sequence (seller {})", injected.seq);
     }
     // The seller's record took sequence 1.
     tx.seq += 1;

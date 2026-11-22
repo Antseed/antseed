@@ -9,6 +9,7 @@ mod ranges;
 mod records;
 mod seller;
 mod session;
+mod tag;
 mod zk;
 
 use std::io::Write;

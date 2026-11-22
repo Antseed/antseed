@@ -22,6 +22,7 @@ mpz-garble-core = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed
 mpz-memory-core = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88" }
 mpz-ot = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88" }
 mpz-vm-core = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88" }
+mpz-circuits = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88" }
 mpz-zk = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88", features = ["rayon"] }
 serio = { version = "0.2" }
 
@@ -30,6 +31,7 @@ rustls-pki-types = { version = "1.12" }
 webpki-roots = { version = "1.0" }
 aes-gcm = { version = "0.10" }
 ghash = { version = "0.5" }
+blake3 = { version = "1.8" }
 
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "io-util", "io-std", "net", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["compat"] }
@@ -48,3 +50,6 @@ codegen-units = 4
 
 [dev-dependencies]
 aes = { version = "0.8" }
+# The in-process prover and verifier the tag exchange is tested with.
+mpz-common = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88", features = ["test-utils", "ideal"] }
+mpz-ot = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88", features = ["ideal"] }
