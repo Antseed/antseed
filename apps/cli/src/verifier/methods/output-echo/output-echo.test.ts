@@ -22,6 +22,7 @@ import {
   prepareOutputEchoReference,
   describeOutputEchoFlag,
   echoCrowdObjection,
+  outputEchoCost,
   outputEchoRequestCount,
   validateOutputEcho,
   type EchoReferenceAsk,
@@ -475,6 +476,37 @@ test('other sellers asked for a check are not asked again once its audit has sto
   for (const peer of PEERS.slice(1)) {
     assert.ok((network.asked.get(peer) ?? 0) <= 1, `no request to ${peer} after the audit stopped: its cost would be in no audit`)
   }
+})
+
+test('a vote cut off between its two requests keeps the request that had ended in the count and the cost', async () => {
+  // A seller that needs the crowd. Every answer is priced. The audit stops when the first other seller is asked its
+  // long text: that seller's short text was answered and paid, and its vote never comes.
+  const network = fakeNetwork({ ...Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])), [PEERS[0]!]: (text) => Math.round(tokens(text) * 1.25) })
+  const audit = new AbortController()
+  const fetchFn: typeof fetch = async (url, init) => {
+    const peer = new Headers(init?.headers).get('x-antseed-pin-peer')!
+    const reply = await network.fetchFn(url, init)
+    if (peer !== PEERS[0] && network.asked.get(peer) === 2) audit.abort()
+    const headers = new Headers(reply.headers)
+    for (const [name, value] of Object.entries({
+      'x-antseed-input-tokens': '100', 'x-antseed-output-tokens': '10', 'x-antseed-total-tokens': '110',
+      'x-antseed-input-usd-per-million': '1', 'x-antseed-output-usd-per-million': '2', 'x-antseed-estimated-cost-usd': '0.00012',
+    })) headers.set(name, value)
+    return new Response(await reply.text(), { status: reply.status, headers })
+  }
+  const record = (await screenFor({ ...network, fetchFn }).check({ peerId: PEERS[0]!, service: SERVICE }, null, {
+    thinking: null, crowdThinking: null, precheckMatch: true,
+    clock: { signal: audit.signal, start: () => audit.signal, finish: () => {} },
+  }))!
+  assert.equal(record.crowd?.incomplete, true)
+  assert.deepEqual(record.crowd?.votes, [])
+  const cutOff = record.crowd?.cutOff ?? []
+  assert.ok(cutOff.length >= 1, 'the short text that was answered before the stop')
+  assert.ok(cutOff.every((request) => request.requestCount === 1 && request.attemptCosts.length === 1))
+  assert.equal(outputEchoRequestCount(record), 12 + cutOff.length, 'the seller\'s twelve, and each request the stop cut off after it ended')
+  assert.equal(outputEchoCost(record).pricedExchangeCount, 12 + cutOff.length)
+  validateOutputEcho(record, PEERS[0])
+  assert.throws(() => validateOutputEcho({ ...record, crowd: { ...record.crowd!, incomplete: false } }, PEERS[0]))
 })
 
 test('work for the fixed amount alone stops when the audit\'s spare time is up, keeps the growth pass, and the audit goes on', async () => {

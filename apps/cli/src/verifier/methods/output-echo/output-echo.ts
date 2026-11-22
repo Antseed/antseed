@@ -1,6 +1,6 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe } from '@antseed/node/payments'
-import { outputCheckRequestBody, readOutput, requestCarriesPrompt, type OutputReadingV1, type OutputRequestThinking } from '../shared/output-usage.js'
+import { isRecord, outputCheckRequestBody, readOutput, requestCarriesPrompt, type OutputReadingV1, type OutputRequestThinking } from '../shared/output-usage.js'
 import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from '../../proxy-evidence.js'
 import {
   askSellerSigned,
@@ -372,6 +372,11 @@ export interface EchoCrowdV1 {
   votes: EchoCrowdVoteV1[]
   /** Not every other seller answered within the crowd's time, or the audit stopped: nothing is decided. */
   incomplete: boolean
+  /**
+   * Requests of votes this check sent that its stop cut off between the vote's two requests: they had ended, so they
+   * may have been paid, and they are in no vote. Counted in this check's requests and cost. Absent when there is none.
+   */
+  cutOff?: PaidRequest[]
 }
 
 export type OutputEchoOutcome = 'flag' | 'pass' | 'inconclusive'
@@ -755,11 +760,15 @@ export async function askEchoVote(
   reference: OutputEchoReferenceV1,
   thinking: Parameters<typeof outputEchoRequestBody>[0]['thinking'],
   rule: OutputEchoRule = OUTPUT_ECHO_RULE,
+  /** Told each of the vote's two requests as it ends. */
+  onRequest?: (request: SignedSellerRequestV1) => void,
 ): Promise<EchoCrowdVoteV1> {
   const view = referenceView(reference)[0]!
   const mode = reference.mode ?? 'plain'
   const short = await askEcho(input, view.short.text, mode, thinking, rule)
+  onRequest?.(short.request)
   const long = await askEcho(input, view.long.text, mode, thinking, rule)
+  onRequest?.(long.request)
   return echoCrowdVote(input.peerId, short, long, { short: view.short.count, long: view.long.count }, rule)
 }
 
@@ -842,6 +851,14 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
       const again = echoCrowdVote(vote.peerId, short, long, { short: first.short.count, long: first.long.count }, rule, vote.sentHere)
       if (again.growth !== vote.growth || again.offset !== vote.offset || again.reasoning !== vote.reasoning) throw new Error('an echo crowd vote does not follow from its replies')
     }
+    const cutOff: unknown = record.crowd.cutOff
+    if (cutOff !== undefined) {
+      const counted = (entry: unknown): boolean => isRecord(entry) && Number.isSafeInteger(entry['requestCount']) && (entry['requestCount'] as number) >= 1
+        && Array.isArray(entry['attemptCosts'])
+      if (!record.crowd.incomplete || !Array.isArray(cutOff) || cutOff.length === 0 || !cutOff.every(counted)) {
+        throw new Error('an echo crowd stores cut-off requests it cannot have: only a crowd that was stopped has any, each with its tries')
+      }
+    }
   }
   // A check that failed before asking anything is inconclusive with no rounds.
   if (record.rounds.length === 0) {
@@ -885,9 +902,12 @@ export function outputEchoRequestCount(record: OutputEchoV1): number {
   return requestCountOf(outputEchoPaidRequests(record))
 }
 
-/** Every request the echo check paid for, in order: the seller's, then the crowd votes it sent itself. */
+/** Every request the echo check paid for, in order: the seller's, the crowd votes it sent itself, then the requests of votes its stop cut off. */
 export function outputEchoPaidRequests(record: OutputEchoV1): PaidRequest[] {
-  return sentRequests(record).map((request) => ({ requestCount: request.requestIds.length, attemptCosts: request.attemptCosts }))
+  return [
+    ...sentRequests(record).map((request) => ({ requestCount: request.requestIds.length, attemptCosts: request.attemptCosts })),
+    ...(record.crowd?.cutOff ?? []),
+  ]
 }
 
 /** What the echo check's requests cost, the crowd votes it sent included. They are paid for like question batches. */
@@ -1001,13 +1021,18 @@ export function createOutputEchoScreen<Settings>(input: {
         const limit = AbortSignal.timeout(input.crowdTimeLimitMs ?? ECHO_CROWD_TIME_LIMIT_MS)
         const ends = AbortSignal.any([limit, ...(stop ? [stop] : []), ...(sooner ? [sooner] : [])])
         const others = input.sellers.filter((other) => peerKey(other.peerId) !== peerKey(seller.peerId))
+        // For each vote this check sends, its requests that have ended: a vote cut off between its two requests has
+        // paid for the first, which is then counted although there is no vote (`cutOff`).
+        const ended = new Map<Promise<EchoCrowdVoteV1>, SignedSellerRequestV1[]>()
         const asked = others.map((other) => {
           const key = peerKey(other.peerId)
           const shared = votes.get(key)
           if (shared) return shared.then((vote) => ({ ...vote, sentHere: false }))
           // Queued asks stop with the crowd's time, and with this audit and its spare time: no paid request is left
           // running after the check that sent it has returned, where no audit would count its cost.
-          const pending = askEchoVote(request(other, ends), reference, options.crowdThinking, rule)
+          const own: SignedSellerRequestV1[] = []
+          const pending = askEchoVote(request(other, ends), reference, options.crowdThinking, rule, (sent) => { own.push(sent) })
+          ended.set(pending, own)
           votes.set(key, pending)
           void pending.then((vote) => { if (vote.growth === null && votes.get(key) === pending) votes.delete(key) })
           return pending
@@ -1021,7 +1046,12 @@ export function createOutputEchoScreen<Settings>(input: {
         ])
         if (settled === 'late') {
           const done = await Promise.all(asked.map((vote) => Promise.race([vote, Promise.resolve(null)])))
-          return { votes: done.filter((vote): vote is EchoCrowdVoteV1 => vote !== null), incomplete: true }
+          const cutOff = asked.flatMap((vote, index) => (done[index] === null ? ended.get(vote) ?? [] : []))
+            .map((sent): PaidRequest => ({ requestCount: sent.requestIds.length, attemptCosts: [...sent.attemptCosts] }))
+          return {
+            votes: done.filter((vote): vote is EchoCrowdVoteV1 => vote !== null), incomplete: true,
+            ...(cutOff.length > 0 ? { cutOff } : {}),
+          }
         }
         return { votes: settled, incomplete: false }
       }
