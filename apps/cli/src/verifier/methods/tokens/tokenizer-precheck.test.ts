@@ -1174,6 +1174,19 @@ test('a crowd not complete within its time decides nothing, and what it already 
   assert.equal(tokenizerPrecheckCost(record).pricedExchangeCount, 14)
   assert.doesNotThrow(() => validateTokenizerPrecheck(record))
   assert.throws(() => validateTokenizerPrecheck({ ...record, outcome: 'mismatch', reason: null }), /stores the requests of a crowd it does not leave undecided/)
+  // A pair cut off by the crowd's time between its two requests: the first was answered and paid, so it is counted.
+  let halfCalls = 0
+  const half = async (content: string): Promise<number> => {
+    halfCalls += 1
+    if (halfCalls > 1) await new Promise((resolve) => setTimeout(resolve, 200))
+    return OTHER_TOKENIZER(content)
+  }
+  const cut = await market({ off: OTHER_TOKENIZER, backer: MODEL_TOKENIZER, half }, undefined, { crowdTimeLimitMs: 50 }).check('off')
+  assert.equal(cut.outcome, 'inconclusive')
+  assert.equal(cut.crowdRequests!.length, 3, 'the backer\'s pair, and the first request of the pair that was cut off')
+  assert.equal(tokenizerPrecheckRequestCount(cut), 15)
+  assert.equal(tokenizerPrecheckCost(cut).pricedExchangeCount, 15)
+  assert.doesNotThrow(() => validateTokenizerPrecheck(cut))
   // A refused vote in time is only not measured: the crowd is complete, and the backer makes it a mismatch.
   const refused = market({ off: OTHER_TOKENIZER, backer: MODEL_TOKENIZER, gone: () => 'down' }, undefined, { crowdTimeLimitMs: 50 })
   assert.equal((await refused.check('off')).outcome, 'mismatch')

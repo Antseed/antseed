@@ -589,10 +589,17 @@ export async function runTokenizerPrecheck(input: {
 type SellerAskInput = Pick<Parameters<typeof runTokenizerPrecheck>[0],
   'proxyBaseUrl' | 'peerId' | 'service' | 'serviceAliases' | 'responseAuthReader' | 'limiter' | 'requestTimeoutMs' | 'fetchFn' | 'signal' | 'clock'>
 
-/** One ask of a probe's pair: A, then A + B when A gave a count. */
-async function askSellerPair(input: SellerAskInput, rule: TokenizerPrecheckRule, probe: TokenizerProbeV1): Promise<TokenizerSellerAskV1> {
+/** One ask of a probe's pair: A, then A + B when A gave a count. `onRequest` is told each request as it ends. */
+async function askSellerPair(
+  input: SellerAskInput,
+  rule: TokenizerPrecheckRule,
+  probe: TokenizerProbeV1,
+  onRequest?: (request: TokenizerSellerRequestV1) => void,
+): Promise<TokenizerSellerAskV1> {
   const base = await askSeller(input, rule, probe.a)
+  onRequest?.(base)
   const probed = base.signedInputTokens === null ? null : await askSeller(input, rule, probe.a + probe.b)
+  if (probed) onRequest?.(probed)
   return { base, probed, delta: sellerDelta(base, probed) }
 }
 
@@ -678,8 +685,10 @@ export function createTokenizerPrecheckScreen<Settings>(input: {
     ...(stop.signal ? { signal: stop.signal } : {}),
     ...(stop.clock ? { clock: stop.clock } : {}),
   })
-  const askVote = (seller: TokenizerPrecheckSeller, ask: SellerAskInput, probe: TokenizerProbeV1): Promise<Vote> => (
-    askSellerPair(ask, rule, probe).then((answer) => ({ seller, ask: answer }), () => ({ seller, ask: null }))
+  const askVote = (
+    seller: TokenizerPrecheckSeller, ask: SellerAskInput, probe: TokenizerProbeV1, onRequest?: (request: TokenizerSellerRequestV1) => void,
+  ): Promise<Vote> => (
+    askSellerPair(ask, rule, probe, onRequest).then((answer) => ({ seller, ask: answer }), () => ({ seller, ask: null }))
   )
   return {
     ready,
@@ -717,11 +726,18 @@ export function createTokenizerPrecheckScreen<Settings>(input: {
         }
         const askAfresh = async (peer: string, other: TokenizerPrecheckSeller): Promise<Vote> => {
           // The names a seller may sign are the model's, so this seller's stand for all of them.
-          const asked = askVote(other, askInput({ ...other, serviceAliases: other.serviceAliases ?? seller.serviceAliases }, { signal: limit }), probe!)
+          // The requests of this pair that have ended: a pair cut off by the crowd's time between its two requests has
+          // paid for the first, so that one is counted although the pair gave no vote.
+          const ended: TokenizerSellerRequestV1[] = []
+          const asked = askVote(
+            other, askInput({ ...other, serviceAliases: other.serviceAliases ?? seller.serviceAliases }, { signal: limit }), probe!,
+            (request) => { ended.push(request) },
+          )
           votes.set(peer, asked)
           void asked.then((vote) => keepIfMeasured(peer, asked, vote))
           const vote = await inTime(asked)
-          for (const request of vote?.ask ? [vote.ask.base, ...(vote.ask.probed ? [vote.ask.probed] : [])] : []) {
+          const counted = vote === null ? [...ended] : vote.ask ? [vote.ask.base, ...(vote.ask.probed ? [vote.ask.probed] : [])] : []
+          for (const request of counted) {
             requests.push({ requestCount: request.requestIds.length, attemptCosts: request.attemptCosts })
           }
           return vote ?? { seller: other, ask: null }
