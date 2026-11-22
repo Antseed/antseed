@@ -1,12 +1,14 @@
-import { RECORD_CHECKS, type CheckSlot, type RecordCheck } from './audit-checks.js'
+import { RECORD_CHECKS, type CheckScreens, type CheckSlot, type ListedCheck, type RecordCheck } from './audit-checks.js'
 import type { MethodEnv, MethodRun, OwnScreenFor } from './audit-method.js'
-import type { ProxyVerificationContext } from './model-run.js'
 
 /** The tests' switches as a run's config holds them (`verifier.<key>`, `RecordCheck.toggle`). */
 export type MethodSwitches = { readonly [Key in RecordCheck['toggle']['key']]?: boolean }
 
 /** The own screens of one model's tests, each under its slot: the fields of those names in an audit's context. */
-export type OwnScreens = Pick<ProxyVerificationContext, CheckSlot>
+export type OwnScreens = Partial<CheckScreens>
+
+/** One test of a run with what builds its own screen for a model, the two of one slot; `own` is null when the test is off. */
+type TestOfRun<Slot extends CheckSlot = CheckSlot> = { [Each in Slot]: { check: RecordCheck<Each>; own: OwnScreenFor<Each> | null } }[Slot]
 
 /**
  * The tests of one run, from the list (`RECORD_CHECKS`), so that the run names none of them. Called once, before any
@@ -15,18 +17,20 @@ export type OwnScreens = Pick<ProxyVerificationContext, CheckSlot>
  * screens, built in list order from what the run hands each test (`MethodEnv`).
  */
 export async function testsOfRun(run: MethodRun, switches: MethodSwitches | undefined): Promise<(env: MethodEnv) => OwnScreens> {
-  const tests: Array<{ check: RecordCheck<CheckSlot>; own: OwnScreenFor<CheckSlot> | null }> = []
-  for (const check of RECORD_CHECKS as readonly unknown[] as ReadonlyArray<RecordCheck<CheckSlot>>) {
-    tests.push({ check, own: switches?.[check.toggle.key] === false ? null : await check.forRun(run) })
-  }
+  const ofRun = async <Slot extends CheckSlot>(check: ListedCheck<Slot>): Promise<TestOfRun<Slot>> => (
+    { check, own: switches?.[check.toggle.key] === false ? null : await check.forRun(run) }
+  )
+  const tests: TestOfRun[] = []
+  for (const check of RECORD_CHECKS) tests.push(await ofRun(check))
   return (env) => {
-    const screens: Record<string, unknown> = {}
-    for (const { check, own } of tests) {
+    const screens: OwnScreens = {}
+    // Each test builds the screen its slot of the context is typed as.
+    const build = <Slot extends CheckSlot>({ check, own }: TestOfRun<Slot>): void => {
       check.announce?.(env)
       const screen = own?.(env)
       if (screen) screens[check.slot] = screen
     }
-    // Each test builds the screen its slot of the context is typed as.
-    return screens as OwnScreens
+    for (const test of tests) build(test)
+    return screens
   }
 }

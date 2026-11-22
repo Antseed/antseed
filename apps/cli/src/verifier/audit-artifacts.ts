@@ -1,4 +1,5 @@
-import { describeAuditCheck, flaggedSummaryChecks } from './flagging-checks.js'
+import { flagInReport, type CheckSummaries } from './audit-checks.js'
+import { flaggedSummaryChecks } from './flagging-checks.js'
 import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, sep } from 'node:path'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
@@ -12,8 +13,6 @@ import type {
 } from './model-run.js'
 import type { ModelProbeConsensusEvidenceV1 } from './model-consensus-evidence.js'
 import { safeServiceSlug } from './slug.js'
-import { describeTokenizerCounts } from './tokenizer-precheck.js'
-import { describeOutputCapSummary, type OutputCapSummary } from './output-cap.js'
 
 export interface VerifierStatusV1 {
   version: 1
@@ -106,7 +105,8 @@ export interface EpochAuditSummaryV1 {
   reasonCounts?: Record<string, number>
 }
 
-interface SellerAuditReportResult {
+/** One seller's result as a model report reads it from the summary file; the tests' summaries are under their slots. */
+interface SellerAuditReportResult extends Partial<CheckSummaries> {
   peerId: string
   displayName: string | null
   status: string
@@ -129,10 +129,6 @@ interface SellerAuditReportResult {
     pooled: { pValueBinomial: number | null; verdict: string; extendNext?: boolean }
   }
   extensionPending?: { reason: string }
-  tokenizerPrecheck?: { rule: string; outcome: string; sellerTokens?: number[]; modelTokens?: number[] }
-  outputCap?: OutputCapSummary
-  outputEcho?: { rule: string; outcome: string; reason: string; growth?: string; fixedAmount?: string }
-  flips?: { outcome: string; model?: string; probe?: true }
   /** The questions' own verdict and reason, apart from the audit's. */
   questionsStatus?: string
   questionsOutcomeReason?: VerificationOutcomeReasonV1 | null
@@ -444,12 +440,8 @@ function sellerResultReason(
   // Every test that flagged, the questions too when they did (named in the list, their own result after it).
   const flagged = result.status === 'DIFF' ? flaggedSummaryChecks(result) : []
   if (flagged.length === 0) return questions
-  const tests = flagged.map((check) => {
-    if (check === 'tokens' && result.tokenizerPrecheck) return `tokenizer pre-check (${result.tokenizerPrecheck.rule}): ${describeTokenizerCounts(result.tokenizerPrecheck)}`
-    if (check === 'output-cap' && result.outputCap) return `cap check (${result.outputCap.rule}): ${describeOutputCapSummary(result.outputCap)}: the reply limit was ignored`
-    if (check === 'output-echo' && result.outputEcho) return `echo check (${result.outputEcho.rule}): ${result.outputEcho.reason}`
-    return describeAuditCheck(check)
-  })
+  // Each as its test's description says it in a report (`RecordCheck.inReport`), or by its plain name.
+  const tests = flagged.map((check) => flagInReport(check, result))
   const asked = result.questionsStatus ?? (result.parsedProbeCount === 0 ? 'not asked' : result.status)
   return [`flagged by ${tests.join('; and ')}`, `questions ${asked}${questions === '—' ? '' : `: ${questions}`}`].join('; ')
 }

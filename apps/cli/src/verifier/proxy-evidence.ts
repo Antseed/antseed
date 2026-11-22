@@ -16,10 +16,7 @@ import type { StoredResponseAuth } from '@antseed/node'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import { safeServiceSlug } from './slug.js'
 import type { ThinkingDiscoveryAttemptV1, ThinkingDiscoveryStrategy } from './thinking-suppression.js'
-import type { TokenizerPrecheckV1 } from './tokenizer-precheck.js'
-import type { OutputCapV1 } from './output-cap.js'
-import type { OutputEchoV1 } from './output-echo.js'
-import type { FlipsV1 } from './flips.js'
+import type { CheckRecords } from './audit-checks.js'
 import type { AuditCheckId } from './flagging-checks.js'
 
 export type ExportedResponseAuthRecord = Omit<StoredResponseAuth, 'requestPreimage' | 'responsePreimage'>
@@ -138,7 +135,11 @@ export type VerificationSkipCode =
   | 'upstream_credentials_invalid'
   | 'request_profile_incompatible'
 
-export interface ProxyAuditSkipEvidenceV1 {
+/**
+ * The evidence of a seller skipped at a request. Each test that ran before the skipped request is stored under its
+ * slot (`CheckRecords`); a slot is absent when none ran.
+ */
+export interface ProxyAuditSkipEvidenceV1 extends Partial<CheckRecords> {
   version: 1
   kind: 'antseed-buyer-proxy-target-skip'
   evidenceLevel: 'proxy-observation-no-payment-evidence'
@@ -159,14 +160,6 @@ export interface ProxyAuditSkipEvidenceV1 {
     referenceModel: string
   }
   sellerThinking?: SellerThinkingDiscoveryV1
-  /** The tokenizer pre-check that ran before the skipped request; absent when none ran. */
-  tokenizerPrecheck?: TokenizerPrecheckV1
-  /** The cap check that ran before the skipped request; absent when none ran. */
-  outputCap?: OutputCapV1
-  /** The echo check that ran before the skipped request; absent when none ran. */
-  outputEcho?: OutputEchoV1
-  /** The randomness check (FLIPS, `flips.ts`) that ran after the echo check; absent when none ran. */
-  flips?: FlipsV1
   exchange: ProxyAuditEvidenceExchangeV1
   result: {
     status: 'SKIPPED'
@@ -178,7 +171,11 @@ export interface ProxyAuditSkipEvidenceV1 {
   }
 }
 
-export interface ProxyAuditEvidenceV1 {
+/**
+ * The evidence of one seller's audit. Each test's record is stored under its slot, a member of `CheckRecords`, where
+ * each is described; a slot is absent when its test did not run.
+ */
+export interface ProxyAuditEvidenceV1 extends Partial<CheckRecords> {
   version: 1
   kind: 'antseed-buyer-proxy-kbf-audit'
   evidenceLevel: 'proxy-observation-with-verified-response-auth-no-payment-evidence'
@@ -214,23 +211,6 @@ export interface ProxyAuditEvidenceV1 {
   }
   /** Absent on audits that sent the reference's thinking suppression without asking the seller. */
   sellerThinking?: SellerThinkingDiscoveryV1
-  /**
-   * The tokenizer pre-check, the first test (`tokenizer-precheck.ts`); absent when none ran. On a `mismatch` the
-   * verdict is DIFF, and the questions and the later tests still run (`all-tests-v1`).
-   */
-  tokenizerPrecheck?: TokenizerPrecheckV1
-  /**
-   * The cap check that ran after the questions (`output-cap.ts`); absent when none ran or it does not apply to the
-   * model this run. On a `flag` the verdict is DIFF, and the later tests still run.
-   */
-  outputCap?: OutputCapV1
-  /**
-   * The echo check that ran after the cap check (`output-echo.ts`); absent when none ran or it does not apply to the
-   * model this run. On a `flag` the verdict is DIFF, and the later tests still run.
-   */
-  outputEcho?: OutputEchoV1
-  /** The randomness check (FLIPS, `flips.ts`) that ran after the echo check; absent when none ran. */
-  flips?: FlipsV1
   /**
    * Set on an audit that answered another auditor's waiting DIFF: the checks that flagged it there, which ran to
    * their end here.

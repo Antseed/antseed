@@ -4,17 +4,18 @@ import type { MethodEnv, MethodRun, MethodScreen, OwnScreen, OwnScreenFor, Selle
 import {
   FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE, describeFlipsFlag, flipsFingerprint, flipsPaidRequests, isFlipsRecord, isProbeDraw, summarizeFlips,
   validateFlips,
-  type FlipsStage, type FlipsV1,
+  type FlipsScreen, type FlipsStage, type FlipsSummary, type FlipsV1,
 } from './flips.js'
 import { flipsForRun } from './flips-run.js'
 import { FLIPS_RULE, flipsCounts, flipsRuleById, type FlipsRule } from './flips-score.js'
 import {
-  createOutputCapScreen, describeOutputCapFlag, outputCapFingerprint, outputCapPaidRequests, summarizeOutputCap, validateOutputCap, type OutputCapV1,
+  createOutputCapScreen, describeOutputCapFlag, describeOutputCapSummary, outputCapFingerprint, outputCapPaidRequests, summarizeOutputCap, validateOutputCap,
+  type OutputCapScreen, type OutputCapSummary, type OutputCapV1,
 } from './output-cap.js'
 import {
   OUTPUT_ECHO_RULE, createOutputEchoScreen, describeOutputEchoFlag, outputEchoFingerprint, outputEchoPaidRequests, outputEchoPrompt, summarizeOutputEcho,
   validateOutputEcho,
-  type EchoSellerAskV1, type OutputEchoV1,
+  type EchoSellerAskV1, type OutputEchoScreen, type OutputEchoSummary, type OutputEchoV1,
 } from './output-echo.js'
 import type { PaidRequest, ProxyAuditEvidenceExchangeV1 } from './proxy-evidence.js'
 import { matchesEnrolledService } from './response-auth-reader.js'
@@ -22,12 +23,15 @@ import { sameModelService } from './service-discovery.js'
 import {
   TOKENIZER_PRECHECK_RULE,
   createTokenizerPrecheckScreen,
+  describeTokenizerCounts,
   describeTokenizerMismatch,
   measureTokenizerReference,
   summarizeTokenizerPrecheck,
   tokenizerPrecheckFingerprint,
   tokenizerPrecheckPaidRequests,
   validateTokenizerPrecheck,
+  type TokenizerPrecheckScreen,
+  type TokenizerPrecheckSummary,
   type TokenizerSellerRequestV1,
   type TokenizerPrecheckV1,
 } from './tokenizer-precheck.js'
@@ -36,7 +40,8 @@ import {
  * The checks of a seller audit, behind one description each, so that every rule that reads them (which flagged, which
  * passed, which decided, what ended the audit) is written once over the list instead of once per check. Each check
  * keeps its own file, rule, record and judgement; the list only says how to read what it stored, how a run builds the
- * check's own screen for a model, and how an audit runs the check from that screen (`audit-method.ts`).
+ * check's own screen for a model, how an audit runs the check from that screen (`audit-method.ts`), and what the check
+ * says of an audit in a model report and in the run's line.
  */
 
 /**
@@ -69,27 +74,91 @@ export interface CheckReading {
   between?: true
 }
 
-/** The evidence fields that hold a check's record. The names are the stored ones and never change. */
+/**
+ * The evidence fields that hold a check's record. The names are the stored ones and never change.
+ *
+ * A test's slot is named three times, here and in the two interfaces below, once for each thing kept under it: its
+ * record in a seller's evidence, its summary in an audit's result (`CheckSummaries`) and its own screen in an audit's
+ * context (`CheckScreens`). Every other shape with a member per test is built from these three, so a new test adds
+ * its slot to these three and to no other shape.
+ */
 export interface CheckRecords {
+  /**
+   * The tokenizer pre-check, the first test (`tokenizer-precheck.ts`); absent when none ran. On a `mismatch` the
+   * verdict is DIFF, and the questions and the later tests still run (`all-tests-v1`).
+   */
   tokenizerPrecheck: TokenizerPrecheckV1
+  /**
+   * The cap check that ran after the questions (`output-cap.ts`); absent when none ran or it does not apply to the
+   * model this run. On a `flag` the verdict is DIFF, and the later tests still run.
+   */
   outputCap: OutputCapV1
+  /**
+   * The echo check that ran after the cap check (`output-echo.ts`); absent when none ran or it does not apply to the
+   * model this run. On a `flag` the verdict is DIFF, and the later tests still run.
+   */
   outputEcho: OutputEchoV1
+  /** The randomness check (FLIPS, `flips.ts`) that ran after the echo check; absent when none ran. */
   flips: FlipsV1
 }
 export type CheckSlot = keyof CheckRecords
 
 /**
- * What the readings use of a check in an audit's summary. Loose on purpose: the planner reads summaries of earlier
- * runs, and a field it does not find reads as not decided.
+ * Each test's record as an audit's summary carries it (`RecordCheck.summarize`), under the slot's name: the members
+ * of one seller's result (`ModelVerificationTargetResult`). The names are stored in summaries and never change.
  */
-export interface CheckSummaryOutcomes {
-  outcome?: string
-  growth?: string
-  fixedAmount?: string
-  /** FLIPS: the model it was drawn for (whether it counts is the rule's), and whether its pairs were chosen by hand. */
-  model?: string
-  probe?: true
+export interface CheckSummaries {
+  /**
+   * The tokenizer pre-check this audit started with; absent when none ran. On a `mismatch` the status is DIFF;
+   * the questions were asked too, and their own verdict is `questionsStatus`.
+   */
+  tokenizerPrecheck: TokenizerPrecheckSummary
+  /**
+   * The cap check this audit ran after its questions; absent when none ran. On a `flag` the status is DIFF; the
+   * questions' own verdict is `questionsStatus`.
+   */
+  outputCap: OutputCapSummary
+  /** The echo check this audit ran after its cap check; absent when none ran. On a `flag` the status is DIFF. */
+  outputEcho: OutputEchoSummary
+  /** The randomness check (FLIPS) this audit ran last before its verdict; absent when none ran. */
+  flips: FlipsSummary
 }
+
+/**
+ * Each test's own screen for one model in one run, under the slot's name: the members of an audit's context
+ * (`ProxyVerificationContext`) the run hands the audit, which runs the test through `RecordCheck.screen`.
+ */
+export interface CheckScreens {
+  /**
+   * When set, each first audit starts with the tokenizer pre-check (`tokenizer-precheck.ts`). The audited model's
+   * screen for this run (`createTokenizerPrecheckScreen`): its reference is awaited before the seller's clock
+   * starts, and the clock runs only while a pre-check request to the seller is out. A mismatch is a DIFF finding;
+   * the questions and the other tests still run (`all-tests-v1`).
+   */
+  tokenizerPrecheck: Pick<TokenizerPrecheckScreen<KbfReferenceV1>, 'ready' | 'check'>
+  /**
+   * When set, each first audit runs the cap check after its questions (`output-cap.ts`), with the thinking setting
+   * discovered before them: a seller whose delivered answer measures more than twice the reply limit, twice, is DIFF.
+   */
+  outputCap: Pick<OutputCapScreen<KbfReferenceV1>, 'ready' | 'check'>
+  /**
+   * When set, each first audit runs the echo check after the cap check (`output-echo.ts`): a seller that bills
+   * output the model did not write, held against the model's other sellers, is DIFF.
+   */
+  outputEcho: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
+  /** The randomness check of this model's sellers (`flips.ts`); absent when it does not run. */
+  flips: Pick<FlipsScreen<KbfReferenceV1>, 'check'> & Partial<Pick<FlipsScreen<KbfReferenceV1>, 'probing' | 'probeSettings' | 'warm' | 'ruleId' | 'referenceDecision'>>
+}
+
+/** A summary whose every member may be missing, and whose texts may be any text. */
+type Loose<Summary> = { readonly [Key in keyof Summary]?: AnyText<Summary[Key]> }
+type AnyText<Value> = Value extends string ? string : Value
+
+/**
+ * What the readings use of a check in an audit's summary: the slot's own summary (`CheckSummaries`), read loosely.
+ * Loose on purpose: the planner reads summaries of earlier runs, and a field it does not find reads as not decided.
+ */
+export type CheckSummaryOutcomes<Slot extends CheckSlot = CheckSlot> = Loose<CheckSummaries[Slot]>
 
 /** The findings only a confirmation answers (`ConfirmationOnly`), by id. The same-check decision builds its codes from it. */
 export type ConfirmationOnlyCheckId = 'flips'
@@ -122,12 +191,12 @@ interface FindingReadings<Slot extends CheckSlot> {
   /** The finding in a stored record, from the check's own names (a pre-check `mismatch` is a flag). */
   ofRecord(record: CheckRecords[Slot], rules?: ReadingRules): Exclude<CheckOutcome, 'not-run'>
   /** The same finding in an audit's summary, for the planner, which has no evidence at hand. */
-  ofSummary(summary: CheckSummaryOutcomes): Exclude<CheckOutcome, 'not-run'>
+  ofSummary(summary: CheckSummaryOutcomes<Slot>): Exclude<CheckOutcome, 'not-run'>
   /** For a finding that can be recorded only: its judged outcome when it is (then `ofRecord` reads `inconclusive`). */
   recordedOnly?(record: CheckRecords[Slot], rules?: ReadingRules): Exclude<CheckOutcome, 'not-run'> | null
   /** Whether an `inconclusive` finding is a score between the bars that clears like a pass (`CheckReading.between`). */
   betweenOfRecord?(record: CheckRecords[Slot], rules?: ReadingRules): boolean
-  betweenOfSummary?(summary: CheckSummaryOutcomes): boolean
+  betweenOfSummary?(summary: CheckSummaryOutcomes<Slot>): boolean
 }
 
 /**
@@ -182,7 +251,7 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   /** In attribution order. */
   findings: readonly CheckFinding<Slot>[]
   /** The record as an audit's summary carries it; submit compares the two. */
-  summarize(record: CheckRecords[Slot]): unknown
+  summarize(record: CheckRecords[Slot]): CheckSummaries[Slot]
   /** Recomputes the record from the bytes it stores, with the rules that cross records. Throws. */
   validate(record: CheckRecords[Slot], context: StoredAuditContext): void
   /** The earlier tests whose records this one is judged against: it is carried into a retry only with them. */
@@ -193,6 +262,18 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
   paid(record: CheckRecords[Slot]): PaidRequest[]
   /** What a flag of this record found, in plain words, as the audit's verdict reason gives it. */
   describeFlag(record: CheckRecords[Slot]): string
+  /**
+   * A flag of one of the test's findings in a model report's reason, from the test's summary: what the test saw, with
+   * its rule. Null where the report names the finding by its label alone. The report asks only for a finding that
+   * flagged the seller in a DIFF (`flagInReport`).
+   */
+  inReport(finding: AuditCheckId, summary: CheckSummaries[Slot]): string | null
+  /**
+   * What the test adds to the run's line for a finished audit, from its summary: what it saw. Null when it adds
+   * nothing. Not the words of `inReport`, and not its moment: the line does not name the rule, and the test speaks
+   * whenever its own outcome is a flag, whatever the audit's verdict (`testsInRunLine`).
+   */
+  inRunLine(summary: CheckSummaries[Slot]): string | null
   /**
    * Whether the record can affect a verdict at all. A record that cannot (FLIPS while it is recorded only) is a
    * diagnostic: its validation, its binding and its request times stay out of the verdict path.
@@ -277,6 +358,8 @@ export const TOKENS_CHECK: RecordCheck<'tokenizerPrecheck'> = {
   ],
   paid: tokenizerPrecheckPaidRequests,
   describeFlag: describeTokenizerMismatch,
+  inReport: (_finding, summary) => `tokenizer pre-check (${summary.rule}): ${describeTokenizerCounts(summary)}`,
+  inRunLine: (summary) => (summary.outcome === 'mismatch' ? `tokenizer pre-check: ${describeTokenizerCounts(summary)}` : null),
   texts: {
     name: 'the tokenizer pre-check',
     summaryMismatch: 'the summary\'s tokenizer pre-check is not the one in its evidence',
@@ -330,6 +413,8 @@ export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
   requests: (record) => record.asks.map((ask) => stored('audited', ask.request)),
   paid: outputCapPaidRequests,
   describeFlag: describeOutputCapFlag,
+  inReport: (_finding, summary) => `cap check (${summary.rule}): ${describeOutputCapSummary(summary)}: the reply limit was ignored`,
+  inRunLine: (summary) => (summary.outcome === 'flag' ? `cap check: ${describeOutputCapSummary(summary)}` : null),
   texts: {
     name: 'the cap check',
     summaryMismatch: 'the summary\'s cap check is not the one in its evidence',
@@ -402,6 +487,10 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
   paid: outputEchoPaidRequests,
   // The record's overall flag makes the audit DIFF, described by the finding that flagged; the other tests still run.
   describeFlag: describeOutputEchoFlag,
+  // A flag of the growth is given with the record's reason; one of the fixed amount is named by its label alone.
+  inReport: (finding, summary) => (finding === 'output-echo' ? `echo check (${summary.rule}): ${summary.reason}` : null),
+  // The record's overall flag, so a flag of either finding, with the record's one reason.
+  inRunLine: (summary) => (summary.outcome === 'flag' ? `echo check: ${summary.reason}` : null),
   texts: {
     name: 'the echo check',
     summaryMismatch: 'the summary\'s echo check is not the one in its evidence',
@@ -465,11 +554,8 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
     // A confirmation's counting FLIPS scored between its bars, under a rule whose such score clears like a pass.
     betweenOfRecord: (record, rules) => flipsCountsFor(record, rules) && record.draw.stage === 'confirm' && record.outcome === 'inconclusive'
       && record.p !== null && (rules?.flips ?? flipsRuleById(record.rule))?.confirmBetweenClears === true,
-    betweenOfSummary: (summary) => {
-      const flips = summary as { rule?: unknown; stage?: unknown; outcome?: unknown; p?: unknown; model?: unknown; probe?: unknown }
-      return flipsSummaryCounts(flips) && flips.stage === 'confirm' && flips.outcome === 'inconclusive' && typeof flips.p === 'number'
-        && typeof flips.rule === 'string' && flipsRuleById(flips.rule)?.confirmBetweenClears === true
-    },
+    betweenOfSummary: (flips) => flipsSummaryCounts(flips) && flips.stage === 'confirm' && flips.outcome === 'inconclusive' && typeof flips.p === 'number'
+      && typeof flips.rule === 'string' && flipsRuleById(flips.rule)?.confirmBetweenClears === true,
     // FLIPS answers a waiting FLIPS flag only from a confirmation of FLIPS: its confirm stage (fresh pairs from the other
     // pool, 40 replies, the confirmation bar). A first look's FLIPS (20 replies, the first bar) neither confirms nor clears
     // it; the seller is audited again as a confirmation.
@@ -493,6 +579,10 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
   requests: (record) => record.pairs.flatMap((pair) => pair.seller.map((slot) => stored('audited', slot.request))),
   paid: flipsPaidRequests,
   describeFlag: describeFlipsFlag,
+  // A FLIPS flag is named by its label alone in a report, and FLIPS adds nothing to the run's line, where its flag is
+  // named with the other tests that flagged.
+  inReport: () => null,
+  inRunLine: () => null,
   counts: (record) => flipsCountsFor(record),
   summaryCounts: (summary) => typeof summary === 'object' && summary !== null && flipsSummaryCounts(summary as { model?: unknown; probe?: unknown; rule?: unknown }),
   wellFormed: isFlipsRecord,
@@ -565,7 +655,7 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
  * test with no result).
  */
 export function confirmationCannotDecideOnRetry(
-  result: { readonly [Slot in CheckSlot]?: CheckSummaryOutcomes | null } & { status: string; questionsStatus?: string; parsedProbeCount?: number; confirming?: readonly AuditCheckId[] | null },
+  result: { readonly [Slot in CheckSlot]?: CheckSummaryOutcomes<Slot> | null } & { status: string; questionsStatus?: string; parsedProbeCount?: number; confirming?: readonly AuditCheckId[] | null },
 ): boolean {
   const confirming = result.confirming ?? []
   if (confirming.length === 0) return false
@@ -582,6 +672,13 @@ export function confirmationCannotDecideOnRetry(
 
 /** The checks with a record, in run order and attribution order. Never reorder: the order is in the rules hash. */
 export const RECORD_CHECKS = Object.freeze([TOKENS_CHECK, OUTPUT_CAP_CHECK, OUTPUT_ECHO_CHECK, FLIPS_CHECK] as const)
+
+/**
+ * A check of the list with its slot kept: without an argument any check of the list, and in a function over `Slot`
+ * that slot's check, so that what the function takes from the check and puts under the check's slot is held to the
+ * slot's own types (its record, its summary, its screen) with no cast.
+ */
+export type ListedCheck<Slot extends CheckSlot = CheckSlot> = { [Each in Slot]: RecordCheck<Each> }[Slot]
 
 /** The questions have no record field: they are the evidence file itself. A description only. */
 export const QUESTIONS_CHECK = Object.freeze({ id: 'kbf' as const, subject: 'model' as const, label: 'the questions' })
@@ -643,7 +740,7 @@ export function readingsOfEvidence(
  * form of "a batch was sent", which agrees with it on valid evidence and is kept apart from it on purpose.
  */
 export function readingsOfSummary(
-  result: { readonly [Slot in CheckSlot]?: CheckSummaryOutcomes | null } & { status: string; questionsStatus?: string; parsedProbeCount?: number },
+  result: { readonly [Slot in CheckSlot]?: CheckSummaryOutcomes<Slot> | null } & { status: string; questionsStatus?: string; parsedProbeCount?: number },
 ): CheckReading[] {
   const readings: CheckReading[] = []
   for (const check of RECORD_CHECKS) {
@@ -674,6 +771,35 @@ export function checkLabel(check: AuditCheckId): string {
     if (finding) return finding.label
   }
   throw new Error(`unknown audit check ${check}`)
+}
+
+/**
+ * A finding that flagged a seller as a model report's reason names it: what its test saw, from the audit's summary
+ * of the test (`inReport`), or the finding's plain name where the test gives no more or the result holds no summary
+ * of it.
+ */
+export function flagInReport(check: AuditCheckId, result: Partial<CheckSummaries>): string {
+  const said = <Slot extends CheckSlot>(entry: ListedCheck<Slot>): string | null => {
+    const summary = result[entry.slot]
+    return summary && entry.findings.some((finding) => finding.id === check) ? entry.inReport(check, summary) : null
+  }
+  for (const entry of RECORD_CHECKS) {
+    const text = said(entry)
+    if (text !== null) return text
+  }
+  return checkLabel(check)
+}
+
+/** What each test adds to the run's line for one finished audit, in run order (`RecordCheck.inRunLine`). */
+export function testsInRunLine(result: Partial<CheckSummaries>): string[] {
+  const said = <Slot extends CheckSlot>(check: ListedCheck<Slot>): string | null => {
+    const summary = result[check.slot]
+    return summary == null ? null : check.inRunLine(summary)
+  }
+  return RECORD_CHECKS.flatMap((check) => {
+    const text = said(check)
+    return text === null ? [] : [text]
+  })
 }
 
 /**

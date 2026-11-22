@@ -1,8 +1,7 @@
 import type { KbfReferenceV1, KbfThinkingSuppression } from '@antseed/fingerprints'
-import type { AuditCheckId, CheckRecords, CheckSlot, StoredCheckRecords } from './audit-checks.js'
+import type { AuditCheckId, CheckRecords, CheckScreens, CheckSlot, StoredCheckRecords } from './audit-checks.js'
 import type { AuditTaskLimiter } from './audit-concurrency.js'
 import type { ReferenceRequestLimiter } from './model-reference.js'
-import type { ProxyVerificationContext } from './model-run.js'
 import type { ReferenceOracle } from './reference-oracle.js'
 import type { SignedSellerRequestInput } from './signed-seller-request.js'
 import type { TokenizerPrecheckClock } from './tokenizer-precheck.js'
@@ -18,7 +17,7 @@ import type { TokenizerPrecheckClock } from './tokenizer-precheck.js'
 export type SellerClock = TokenizerPrecheckClock
 
 /** A test's own screen for one model in one run, as the run hands it to an audit: the context's field of the slot's name. */
-export type OwnScreen<Slot extends CheckSlot> = NonNullable<ProxyVerificationContext[Slot]>
+export type OwnScreen<Slot extends CheckSlot> = CheckScreens[Slot]
 
 /**
  * What a test is given once per run, before any model lane (`RecordCheck.forRun`): what its models share. A test reads

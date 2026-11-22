@@ -39,12 +39,12 @@ import {
 import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
 import { auditedServiceNames } from './audited-models.js'
 import {
-  ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, recordsOf, withoutOrphans,
-  type CheckRecords, type CheckSlot, type ConfirmationIdentity, type RecordCheck, type StoredCheckRecords,
+  ALL_TESTS_FORMAT, RECORD_CHECKS, earliestAuditorTime, readingsOfEvidence, recordsOf, withoutOrphans,
+  type CheckRecords, type CheckScreens, type CheckSlot, type CheckSummaries, type ConfirmationIdentity, type ListedCheck, type RecordCheck,
+  type StoredCheckRecords,
 } from './audit-checks.js'
 import { AuditNotStarted, type MethodScreen, type SellerAudit, type SellerAuditStart } from './audit-method.js'
 import { settleAuditVerdict } from './close-call.js'
-import type { FlipsScreen, FlipsSummary } from './flips.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { kbfAuditBatches } from './kbf-batching.js'
@@ -74,10 +74,8 @@ import {
   type ThinkingDiscoveryProbe,
 } from './thinking-suppression.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
-import type { TokenizerPrecheckScreen, TokenizerPrecheckSummary, TokenizerPrecheckSeller } from './tokenizer-precheck.js'
+import type { TokenizerPrecheckSeller } from './tokenizer-precheck.js'
 import type { AuditCheckId } from './flagging-checks.js'
-import type { OutputEchoScreen, OutputEchoSummary } from './output-echo.js'
-import type { OutputCapScreen, OutputCapSummary } from './output-cap.js'
 import { advertisedServices, findAdvertisedService } from './service-discovery.js'
 import { mapWithAdaptiveConcurrency, type AuditTaskLimiter } from './audit-concurrency.js'
 import { writeJsonAtomic } from './atomic-files.js'
@@ -216,7 +214,11 @@ export interface BuyerProxySnapshot {
   settings?: RunningBuyerSettings | null
 }
 
-export interface ProxyVerificationContext {
+/**
+ * What a seller's audit runs in. Each test's own screen for the model and run is under its slot, a member of
+ * `CheckScreens`, where each is described; a slot is absent when its test does not run.
+ */
+export interface ProxyVerificationContext extends Partial<CheckScreens> {
   proxy: BuyerProxySnapshot
   evidenceDir: string
   checkpointRootDir?: string
@@ -240,25 +242,6 @@ export interface ProxyVerificationContext {
    * extra sets reuse its discovery. Without it, sellers get the reference's suppression.
    */
   sellerThinking?: Map<string, Promise<SellerThinkingDiscoveryV1>>
-  /**
-   * When set, each first audit starts with the tokenizer pre-check (`tokenizer-precheck.ts`). The audited model's
-   * screen for this run (`createTokenizerPrecheckScreen`): its reference is awaited before the seller's clock
-   * starts, and the clock runs only while a pre-check request to the seller is out. A mismatch is a DIFF finding;
-   * the questions and the other tests still run (`all-tests-v1`).
-   */
-  tokenizerPrecheck?: Pick<TokenizerPrecheckScreen<KbfReferenceV1>, 'ready' | 'check'>
-  /**
-   * When set, each first audit runs the cap check after its questions (`output-cap.ts`), with the thinking setting
-   * discovered before them: a seller whose delivered answer measures more than twice the reply limit, twice, is DIFF.
-   */
-  outputCap?: Pick<OutputCapScreen<KbfReferenceV1>, 'ready' | 'check'>
-  /**
-   * When set, each first audit runs the echo check after the cap check (`output-echo.ts`): a seller that bills
-   * output the model did not write, held against the model's other sellers, is DIFF.
-   */
-  outputEcho?: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
-  /** The randomness check of this model's sellers (`flips.ts`); absent when it does not run. */
-  flips?: Pick<FlipsScreen<KbfReferenceV1>, 'check'> & Partial<Pick<FlipsScreen<KbfReferenceV1>, 'probing' | 'probeSettings' | 'warm' | 'ruleId' | 'referenceDecision'>>
 }
 
 /** What a seller's batch requests carry: its thinking suppression, token budget and timeout. */
@@ -316,7 +299,11 @@ export interface ModelAuditCheckpointV1 {
   updatedAt: string
 }
 
-export interface ModelVerificationTargetResult {
+/**
+ * One seller's result in an audit's summary. Each test's summary is under its slot, a member of `CheckSummaries`,
+ * where each is described; a slot is absent when its test did not run.
+ */
+export interface ModelVerificationTargetResult extends Partial<CheckSummaries> {
   peerId: string
   displayName: string | null
   agentId: string | null
@@ -381,20 +368,6 @@ export interface ModelVerificationTargetResult {
   stats?: FingerprintStats
   /** False when a successful batch lacked verified ResponseAuth (the set's verdict is then UNDETERMINED). */
   responseAuthVerified?: boolean
-  /**
-   * The tokenizer pre-check this audit started with; absent when none ran. On a `mismatch` the status is DIFF;
-   * the questions were asked too, and their own verdict is `questionsStatus`.
-   */
-  tokenizerPrecheck?: TokenizerPrecheckSummary
-  /**
-   * The cap check this audit ran after its questions; absent when none ran. On a `flag` the status is DIFF; the
-   * questions' own verdict is `questionsStatus`.
-   */
-  outputCap?: OutputCapSummary
-  /** The echo check this audit ran after its cap check; absent when none ran. On a `flag` the status is DIFF. */
-  outputEcho?: OutputEchoSummary
-  /** The randomness check (FLIPS) this audit ran last before its verdict; absent when none ran. */
-  flips?: FlipsSummary
   /**
    * Extra set of never-seen probes asked after a close-call first audit; `status` above is then the
    * verdict on both sets pooled.
@@ -1216,13 +1189,14 @@ function inRunOrder(records: StoredCheckRecords, keep: (slot: CheckSlot) => bool
 }
 
 /** These test records as an audit's summary carries them, each under its slot, in run order. */
-function testSummaries(records: StoredCheckRecords): Pick<ModelVerificationTargetResult, CheckSlot> {
-  const summaries: Record<string, unknown> = {}
-  for (const { check, record } of recordsOf(records)) {
+function testSummaries(records: StoredCheckRecords): Partial<CheckSummaries> {
+  const summaries: Partial<CheckSummaries> = {}
+  const add = <Slot extends CheckSlot>(check: ListedCheck<Slot>): void => {
+    const record = records[check.slot]
     if (record != null) summaries[check.slot] = check.summarize(record)
   }
-  // Each test's `summarize` gives the summary its slot of the result is typed as.
-  return summaries as Pick<ModelVerificationTargetResult, CheckSlot>
+  for (const check of RECORD_CHECKS) add(check)
+  return summaries
 }
 
 /** What these test records' requests cost, in run order. */

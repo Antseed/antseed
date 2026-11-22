@@ -144,11 +144,9 @@ import {
   type AuditWindowV1,
 } from '../../../verifier/audit-window.js'
 import { createReferenceRequestLimiter, referenceConcurrencyWarning } from '../../../verifier/model-reference.js'
-import { describeTokenizerCounts } from '../../../verifier/tokenizer-precheck.js'
-import { describeOutputCapSummary } from '../../../verifier/output-cap.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { auditDecision, closeCallRuleForExtensions, earliestSetTime, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
-import { decidedRecords, recordsOf, resumeMaterialFor, sameConfirmation, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
+import { decidedRecords, recordsOf, resumeMaterialFor, sameConfirmation, testsInRunLine, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
 import {
   confirmationTargetsByModel,
   describeTallies,
@@ -1933,9 +1931,7 @@ export async function runVerifierRound(
                   const questionsReason = result.questionsOutcomeReason?.code
                   const parts = [
                     ...(flagged.length > 0 ? [`flagged by ${flagged.map(describeAuditCheck).join(', ')}`] : []),
-                    ...(result.tokenizerPrecheck?.outcome === 'mismatch' ? [`tokenizer pre-check: ${describeTokenizerCounts(result.tokenizerPrecheck)}`] : []),
-                    ...(result.outputCap?.outcome === 'flag' ? [`cap check: ${describeOutputCapSummary(result.outputCap)}`] : []),
-                    ...(result.outputEcho?.outcome === 'flag' ? [`echo check: ${result.outputEcho.reason}`] : []),
+                    ...testsInRunLine(result),
                     `questions ${decision.questionsStatus}${questionsReason ? ` (${questionsReason})` : ''}, ${result.parsedProbeCount}/${result.probeCount} scoreable`,
                     `$${result.cost.estimatedCostUsd.toFixed(6)}`,
                   ]

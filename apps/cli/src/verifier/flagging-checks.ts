@@ -1,4 +1,4 @@
-import { checkLabel, checksWith, readingsOfEvidence, readingsOfSummary, type AuditCheckId } from './audit-checks.js'
+import { checkLabel, checksWith, readingsOfEvidence, readingsOfSummary, type AuditCheckId, type CheckSlot } from './audit-checks.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 
 export { AUDIT_CHECK_IDS, type AuditCheckId } from './audit-checks.js'
@@ -16,7 +16,7 @@ export { AUDIT_CHECK_IDS, type AuditCheckId } from './audit-checks.js'
  * Empty when nothing flagged. In the order of `AUDIT_CHECK_IDS` (`audit-checks.ts`).
  */
 export function flaggingChecks(
-  evidence: Pick<ProxyAuditEvidenceV1, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho' | 'flips' | 'exchanges'>,
+  evidence: Pick<ProxyAuditEvidenceV1, CheckSlot | 'exchanges'>,
   kbfVerdict: 'SAME' | 'DIFF' | 'UNDETERMINED' | null,
 ): AuditCheckId[] {
   return checksWith(readingsOfEvidence(evidence, kbfVerdict), 'flag')
@@ -28,7 +28,7 @@ export function flaggingChecks(
  * Each finding of the echo check passes on its own: a seller that only failed to be a candidate has not passed.
  */
 export function passedChecks(
-  evidence: Pick<ProxyAuditEvidenceV1, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho' | 'flips' | 'exchanges'>,
+  evidence: Pick<ProxyAuditEvidenceV1, CheckSlot | 'exchanges'>,
   kbfVerdict: 'SAME' | 'DIFF' | 'UNDETERMINED' | null,
 ): AuditCheckId[] {
   return checksWith(readingsOfEvidence(evidence, kbfVerdict), 'pass')
@@ -39,7 +39,7 @@ export function passedChecks(
  * confirmation's FLIPS under `confirmBetweenClears`): the same-check decision credits them as passed.
  */
 export function betweenChecks(
-  evidence: Pick<ProxyAuditEvidenceV1, 'tokenizerPrecheck' | 'outputCap' | 'outputEcho' | 'flips' | 'exchanges'>,
+  evidence: Pick<ProxyAuditEvidenceV1, CheckSlot | 'exchanges'>,
   kbfVerdict: 'SAME' | 'DIFF' | 'UNDETERMINED' | null,
 ): AuditCheckId[] {
   return readingsOfEvidence(evidence, kbfVerdict).filter((reading) => reading.between === true).map((reading) => reading.check)
@@ -51,14 +51,7 @@ export function flaggedSummaryChecks(result: Parameters<typeof decidedChecks>[0]
 }
 
 /** The checks an audit's summary shows decided (flagged or passed), for the planner, which has no evidence at hand. */
-export function decidedChecks(result: {
-  status: string
-  parsedProbeCount?: number
-  tokenizerPrecheck?: { outcome: string }
-  outputCap?: { outcome: string }
-  outputEcho?: { growth?: string; fixedAmount?: string }
-  flips?: { outcome: string; model?: string; probe?: true }
-}): AuditCheckId[] {
+export function decidedChecks(result: Parameters<typeof readingsOfSummary>[0]): AuditCheckId[] {
   // A score between the bars that clears like a pass (`CheckReading.between`) decided too.
   const readings = readingsOfSummary(result)
   return [...new Set([...checksWith(readings, 'flag', 'pass'), ...readings.filter((reading) => reading.between === true).map((reading) => reading.check)])]
