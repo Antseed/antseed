@@ -15,8 +15,8 @@ const SECRET_KEY = 'sk-seller-secret-0123456789';
 const PROMPT_WORD = 'zebra-prompt-codeword';
 const ANSWER_WORD = 'giraffe-answer-codeword';
 
-/** A TLS 1.2 upstream that records the request and answers an SSE stream with usage. */
-function startUpstream() {
+/** A TLS 1.2 upstream that records the request and answers an SSE stream with usage; with `stall`, it never ends the answer. */
+function startUpstream({ stall = false } = {}) {
   const requests = [];
   /** Everything each connection received, complete request or not. */
   const received = [];
@@ -40,7 +40,7 @@ function startUpstream() {
       for (const chunk of chunks) body += `${Buffer.byteLength(chunk).toString(16)}\r\n${chunk}\r\n`;
       // The end of the body goes out in a TLS record of its own, as upstreams send it.
       socket.write(`HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n${body}`, () => {
-        setTimeout(() => socket.end('0\r\n\r\n'), 20);
+        if (!stall) setTimeout(() => socket.end('0\r\n\r\n'), 20);
       });
     });
   });
@@ -162,6 +162,43 @@ test('a buyer that reveals nothing leaves the seller with lengths only', { skip:
   }
 });
 
+test('a buyer that leaves before the answer ends is still reported to the seller with what was relayed', { skip: !binary && 'native sidecar not built' }, async () => {
+  const { server, port } = await startUpstream({ stall: true });
+  const seller = KeyedRelayProcess.spawn('seller', binary);
+  const buyer = KeyedRelayProcess.spawn('buyer', binary);
+  try {
+    seller.peer.pipe(buyer.peer);
+    buyer.peer.pipe(seller.peer);
+    seller.startSeller({ host: '127.0.0.1', port, serverName: 'localhost', head: Buffer.from('POST /x HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer k\r\nConnection: close\r\n'), extraRootsPem: CA });
+    buyer.startBuyer({ serverName: 'localhost', extraRootsPem: CA });
+    await buyer.waitFor('ready', 60_000);
+    await sendRequest(buyer, seller, 'Content-Length: 2\r\n\r\n{}', 21, 2);
+    let answer = '';
+    const answered = new Promise((resolve) => buyer.on('app', (data) => {
+      answer += data.toString();
+      if (answer.includes(ANSWER_WORD)) resolve();
+    }));
+    seller.admit();
+    await answered;
+
+    // The buyer goes away with the answer it read, and the relay drops the seller's stream.
+    const exited = new Promise((resolve) => seller.once('exit', resolve));
+    buyer.kill();
+    seller.peer.destroy();
+    const end = await seller.waitFor('responseEnd', 5_000);
+    assert.ok(end.length >= answer.length, `the seller reported ${end.length} answer bytes; the buyer read ${answer.length}`);
+    assert.ok(end.bytesDown > end.length);
+    const exit = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), 5_000))]);
+    assert.ok(exit, 'the seller sidecar was still running 5 s after the buyer left');
+    assert.notEqual(exit.code, 0);
+  } finally {
+    seller.kill();
+    buyer.kill();
+    server.close();
+    server.closeAllConnections?.();
+  }
+});
+
 test('a refused request never reaches the upstream, and the buyer learns why', { skip: !binary && 'native sidecar not built' }, async () => {
   const { server, port, requests, received } = await startUpstream();
   try {
@@ -200,4 +237,17 @@ test('the seller refuses an upstream whose certificate is not trusted', { skip: 
   } finally {
     server.close();
   }
+});
+
+test('a sidecar that cannot start reports its exit', async () => {
+  const relay = KeyedRelayProcess.spawn('buyer', new URL('./fixtures/no-such-sidecar', import.meta.url).pathname);
+  relay.startBuyer({ serverName: 'localhost' });
+  const exit = await Promise.race([
+    new Promise((resolve) => relay.once('exit', resolve)),
+    new Promise((resolve) => setTimeout(() => resolve(null), 2000)),
+  ]);
+  assert.ok(exit, 'no exit event within 2 s');
+  assert.equal(exit.code, null);
+  assert.match(exit.stderr, /ENOENT/);
+  await assert.rejects(relay.waitFor('ready', 1000), /keyed relay ended before "ready": .*ENOENT/);
 });

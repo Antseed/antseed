@@ -97,10 +97,79 @@ enum Gate {
     /// Held: nothing of the request reaches the upstream before Node admits it.
     #[default]
     Hold,
+    /// The request is complete and under Node's check: only alerts may follow it, and they are held too.
+    Sealed,
     /// Admitted and forwarded: only alerts may follow.
     Open,
-    /// Refused: nothing is forwarded.
+    /// Refused, or the buyer sent more than its request: nothing is forwarded.
     Shut,
+}
+
+/// The buyer's records after the seller's, on their way to the upstream.
+#[derive(Default)]
+struct RequestGate {
+    gate: Gate,
+    /// Held until the gate opens.
+    held: Vec<Record>,
+    /// Plaintext bytes of the held application-data records: the request so far.
+    request_len: usize,
+}
+
+impl RequestGate {
+    /// Takes one record (application data or an alert). `Some` is forwarded now; the rest is held or dropped.
+    fn take(&mut self, record: Record, max_request: usize) -> Result<Option<Record>> {
+        match self.gate {
+            Gate::Hold => {
+                if record.typ == APPLICATION_DATA {
+                    if record.body.len() < RECORD_OVERHEAD {
+                        bail!("the buyer sent a record too short to be encrypted");
+                    }
+                    self.request_len += record.body.len() - RECORD_OVERHEAD;
+                    if self.request_len > max_request {
+                        bail!("the request is longer than {max_request} bytes");
+                    }
+                }
+                self.held.push(record);
+                Ok(None)
+            }
+            // The request is what Node checks, or went out as admitted: nothing may follow it but alerts.
+            Gate::Sealed | Gate::Open if record.typ != ALERT => {
+                self.shut();
+                bail!("the buyer sent more than the request it revealed");
+            }
+            Gate::Sealed => {
+                self.held.push(record);
+                Ok(None)
+            }
+            Gate::Open => Ok(Some(record)),
+            Gate::Shut => Ok(None),
+        }
+    }
+
+    /// Closes the request at `length` bytes and returns its application-data records, which the buyer
+    /// reveals parts of. Application data that arrives later is never forwarded: it would reach the
+    /// upstream unchecked.
+    fn seal(&mut self, length: usize) -> Result<Vec<Record>> {
+        if self.gate != Gate::Hold || self.request_len != length {
+            bail!("the buyer sent {} request bytes, not the {length} it revealed", self.request_len);
+        }
+        self.gate = Gate::Sealed;
+        Ok(self.held.iter().filter(|r| r.typ == APPLICATION_DATA).cloned().collect())
+    }
+
+    /// Opens the gate on Node's admission: the held records, to forward in order.
+    fn open(&mut self) -> Result<Vec<Record>> {
+        if self.gate != Gate::Sealed {
+            bail!("the request is not the one Node checked");
+        }
+        self.gate = Gate::Open;
+        Ok(std::mem::take(&mut self.held))
+    }
+
+    fn shut(&mut self) {
+        self.gate = Gate::Shut;
+        self.held.clear();
+    }
 }
 
 /// The plaintext the buyer revealed, as Node gets it: offset in the stream and the bytes.
@@ -117,11 +186,7 @@ fn shown(placed: &[Placed], keystreams: Vec<Vec<u8>>) -> Vec<serde_json::Value> 
 struct Shared {
     client: HandshakeSide,
     server: HandshakeSide,
-    gate: Gate,
-    /// The buyer's records after the seller's, held while the gate is `Hold`.
-    held: Vec<Record>,
-    /// Plaintext bytes of the held application-data records: the request so far.
-    request_len: usize,
+    request: RequestGate,
     /// The server's application-data records after the handshake.
     responses: Vec<Record>,
     bytes_up: u64,
@@ -195,31 +260,14 @@ pub async fn run() -> Result<()> {
                     bail!("the buyer sent a TLS record of type {} after the handshake", record.typ);
                 }
                 let mut state = up_shared.lock().await;
-                match state.gate {
-                    Gate::Hold => {
-                        if record.typ == APPLICATION_DATA {
-                            if record.body.len() < RECORD_OVERHEAD {
-                                bail!("the buyer sent a record too short to be encrypted");
-                            }
-                            state.request_len += record.body.len() - RECORD_OVERHEAD;
-                            if state.request_len > max_request {
-                                bail!("the request is longer than {max_request} bytes");
-                            }
-                            let _ = request_len_tx.send(state.request_len);
-                        }
-                        state.held.push(record);
-                    }
-                    Gate::Open => {
-                        // The request went out as admitted: nothing may follow it but alerts.
-                        if record.typ != ALERT {
-                            bail!("the buyer sent more than the request it revealed");
-                        }
-                        let bytes = raw(&record);
-                        state.bytes_up += bytes.len() as u64;
-                        drop(state);
-                        up_writer.lock().await.write_all(&bytes).await?;
-                    }
-                    Gate::Shut => {}
+                let forward = state.request.take(record, max_request)?;
+                let request_len = state.request.request_len;
+                request_len_tx.send_if_modified(|len| std::mem::replace(len, request_len) != request_len);
+                if let Some(record) = forward {
+                    let bytes = raw(&record);
+                    state.bytes_up += bytes.len() as u64;
+                    drop(state);
+                    up_writer.lock().await.write_all(&bytes).await?;
                 }
             }
         }
@@ -316,13 +364,7 @@ pub async fn run() -> Result<()> {
         .await
         .map_err(|_| anyhow!("the buyer's request did not arrive"))?
         .map_err(|_| anyhow!("the relay ended before the request arrived"))?;
-    let request: Vec<Record> = {
-        let state = shared.lock().await;
-        if state.request_len != length {
-            bail!("the buyer sent {} request bytes, not the {length} it revealed", state.request_len);
-        }
-        state.held.iter().filter(|r| r.typ == APPLICATION_DATA).cloned().collect()
-    };
+    let request = shared.lock().await.request.seal(length)?;
     let (request_ranges, placed) = ranges::place(&request, &reveal.ranges)?;
     if request_ranges.is_empty() {
         bail!("the buyer revealed nothing of its request");
@@ -349,7 +391,7 @@ pub async fn run() -> Result<()> {
     };
     if let Some(reason) = refusal {
         // Nothing of the request ever reaches the upstream.
-        shared.lock().await.gate = Gate::Shut;
+        shared.lock().await.request.shut();
         up.abort();
         down.abort();
         session.ctx.io_mut().send(RequestVerdict { admitted: false, reason: reason.clone() }).await?;
@@ -361,8 +403,7 @@ pub async fn run() -> Result<()> {
         let mut writer = up_write.lock().await;
         let held = {
             let mut state = shared.lock().await;
-            state.gate = Gate::Open;
-            let held = std::mem::take(&mut state.held);
+            let held = state.request.open()?;
             state.bytes_up += held.iter().map(|r| 5 + r.body.len() as u64).sum::<u64>();
             held
         };
@@ -374,10 +415,19 @@ pub async fn run() -> Result<()> {
     session.ctx.io_mut().send(RequestVerdict { admitted: true, reason: String::new() }).await?;
     out.ctl(json!({ "type": "admitted" }));
 
-    let _ = tokio::time::timeout(RESPONSE_TIMEOUT, closed.wait_for(|done| *done)).await;
+    // The answer ends when the upstream closes. A buyer whose side ends first
+    // has left, or has read the whole answer: either way no more of it is
+    // relayed, and what was is reported, so the request is still billed.
+    let mut up = up;
+    let buyer_ended = tokio::select! {
+        _ = tokio::time::timeout(RESPONSE_TIMEOUT, closed.wait_for(|done| *done)) => false,
+        _ = &mut up => true,
+    };
     up.abort();
-    let down_result = down.await;
-    if let Ok(Err(error)) = down_result {
+    if buyer_ended {
+        down.abort();
+    }
+    if let Ok(Err(error)) = down.await {
         tracing::debug!("relay to the buyer ended: {error}");
     }
 
@@ -390,11 +440,73 @@ pub async fn run() -> Result<()> {
 
     let request: RevealRequest = tokio::time::timeout(REVEAL_TIMEOUT, session.ctx.io_mut().expect_next())
         .await
-        .map_err(|_| anyhow!("no reveal from the buyer"))??;
+        .map_err(|_| anyhow!("no reveal from the buyer"))?
+        .context("the buyer left without revealing the answer's usage")?;
     let (response_ranges, placed) = ranges::place(&responses, &request.ranges)?;
     let keystreams = proof.reveal(&mut vm, &mut session.ctx, Side::Server, &response_ranges).await.context("reveal")?;
     out.ctl(json!({ "type": "revealed", "length": length, "ranges": shown(&placed, keystreams) }));
     session.ctx.io_mut().send(Done).await?;
     session.close().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MAX: usize = 1 << 20;
+
+    fn data(plaintext: usize) -> Record {
+        Record { typ: APPLICATION_DATA, body: vec![7; RECORD_OVERHEAD + plaintext] }
+    }
+
+    fn alert() -> Record {
+        Record { typ: ALERT, body: vec![9; RECORD_OVERHEAD + 2] }
+    }
+
+    #[test]
+    fn holds_the_request_until_it_is_admitted() {
+        let mut gate = RequestGate::default();
+        assert!(gate.take(data(10), MAX).unwrap().is_none());
+        assert!(gate.take(data(5), MAX).unwrap().is_none());
+        assert!(gate.seal(14).is_err());
+        assert_eq!(gate.seal(15).unwrap().len(), 2);
+        assert_eq!(gate.open().unwrap().len(), 2);
+        // After the request, only alerts pass.
+        assert_eq!(gate.take(alert(), MAX).unwrap().unwrap().typ, ALERT);
+        assert!(gate.take(data(1), MAX).is_err());
+    }
+
+    #[test]
+    fn forwards_nothing_that_arrives_after_the_request_was_checked() {
+        let mut gate = RequestGate::default();
+        gate.take(data(10), MAX).unwrap();
+        assert_eq!(gate.seal(10).unwrap().len(), 1);
+        // A close_notify may follow the request, and goes out after it.
+        assert!(gate.take(alert(), MAX).unwrap().is_none());
+        // More application data while Node decides is not part of the checked request.
+        assert!(gate.take(data(4), MAX).is_err());
+        // The buyer broke the session: nothing of it reaches the upstream.
+        assert!(gate.open().is_err());
+    }
+
+    #[test]
+    fn forwards_the_checked_request_and_a_closing_alert() {
+        let mut gate = RequestGate::default();
+        gate.take(data(10), MAX).unwrap();
+        gate.seal(10).unwrap();
+        gate.take(alert(), MAX).unwrap();
+        let types: Vec<u8> = gate.open().unwrap().iter().map(|r| r.typ).collect();
+        assert_eq!(types, vec![APPLICATION_DATA, ALERT]);
+    }
+
+    #[test]
+    fn a_refused_request_is_dropped() {
+        let mut gate = RequestGate::default();
+        gate.take(data(10), MAX).unwrap();
+        gate.seal(10).unwrap();
+        gate.shut();
+        assert!(gate.take(data(1), MAX).unwrap().is_none());
+        assert!(gate.open().is_err());
+    }
 }

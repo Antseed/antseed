@@ -9,7 +9,7 @@ The cryptography is a Rust sidecar in `native/` built on TLSNotary's building bl
 - `native/src/zk.rs` — the key proof (PRF and both Finished checks) and the keystream it reveals: the seller record's keystream and tag mask, the client GHASH key, the request ranges the buyer reveals for the seller's check, and at the end the response ranges it reveals for billing.
 - `native/src/seller.rs`, `native/src/buyer.rs` — the two roles; `records.rs` the TLS 1.2 record layer and the seller's record; `ranges.rs` maps stream ranges onto records; `frames.rs` the stdin/stdout framing; `session.rs` the buyer ↔ seller mux.
 - The request check itself is Node's: `checkKeyedRequest` in `packages/node/src/keyed-relay-request.ts`, on the tail `keyedRequestTailFields` (`packages/protocol`) defines and the CLI's `keyedRequestBody` writes.
-- `scripts/platform-package.mjs` and `.github/workflows/keyed-relay-binaries.yml` — the per-platform npm packages the resolver finds.
+- `scripts/platform-package.mjs` and `.github/workflows/keyed-relay-binaries.yml` — the per-platform npm packages the resolver finds. `scripts/declare-platform-packages.mjs` lists them as optional dependencies in the manifest the npm-publish workflow publishes (never in git: a lockfile cannot hold a package npm does not have yet), and fails until the binaries workflow has published them for that version.
 
 | Rule | Enforced by |
 | --- | --- |
@@ -17,10 +17,14 @@ The cryptography is a Rust sidecar in `native/` built on TLSNotary's building bl
 | The buyer never receives the seller's record; nothing secret crosses the relay in plaintext. | `test/sidecar.test.mjs` |
 | Every value the seller gets from the proof is decoded from the ZK VM, never sent by the buyer: a buyer-chosen keystream would let it flip the seller's head. | review only |
 | One request per session: the head ends with `Connection: close` and the credential is never its last header. | `packages/node/tests/keyed-relay.test.ts` |
-| The seller forwards nothing of the buyer's request until Node admits it, then only that request's bytes (alerts after it, no more application data). A refused request never reaches the upstream. | `test/sidecar.test.mjs`, `apps/cli/src/proxy/blind-relay.test.ts` |
+| The seller forwards nothing of the buyer's request until Node admits it, then only that request's bytes (alerts after it, no more application data). A refused request never reaches the upstream. | `native/src/seller.rs` tests, `test/sidecar.test.mjs`, `apps/cli/src/proxy/blind-relay.test.ts` |
 | The seller admits a request only on its full header block (allow-listed headers, a true `Content-Length`) and the canonical last fields, byte for byte. | `packages/node/tests/keyed-relay.test.ts` |
 | The seller bills the revealed usage only from a tail that runs to the end of the response and starts at a `data:` event or the `"usage":` key. | `packages/node/tests/keyed-relay.test.ts` |
 | The seller sidecar hands Node each revealed range whole, joined across the TLS records it spans: an upstream ends a chunked body in a record of its own, and Node bills and checks only a range that runs to the end. | `native/src/ranges.rs` tests, `test/sidecar.test.mjs` |
+| The buyer picks the billing reveal in the body without its chunk framing: from the last usage figure (in a stream, from the `data:` that starts its line) to the end. An answer in another form than the request asked for reveals the status line only. | `apps/cli/src/proxy/blind-relay.test.ts` |
+| A buyer that leaves mid-answer is still reported: the seller sidecar emits `responseEnd` with what it relayed before it exits. A destroyed peer stream tells the sidecar its peer is gone and stops it only after a grace period, and a seller's handle stays busy until its sidecar has exited. | `test/sidecar.test.mjs`, `packages/node/tests/keyed-relay.test.ts` |
+| A sidecar that cannot start, or that ends before the answer does, ends the request with an error instead of leaving it open. | `test/sidecar.test.mjs`, `apps/cli/src/proxy/blind-relay.test.ts` |
+| The published manifest lists the platform package of every platform the binaries workflow builds, at its own version. | `test/platform-packages.test.mjs` |
 | `msg::PROTOCOL_VERSION` changes with any change to what the sidecars send each other; buyer and seller must agree. | review only |
 
 ## Traps

@@ -23,6 +23,8 @@ const PEER = 1;
 const APP = 2;
 /** Largest payload per frame; the sidecar accepts up to 1 MiB. */
 const MAX_PAYLOAD = 64 * 1024;
+/** How long a sidecar has to report and exit once its peer stream is gone, before it is stopped. */
+const PEER_GONE_GRACE_MS = 2_000;
 
 const BINARY_NAME = process.platform === 'win32' ? 'antseed-keyed-relay.exe' : 'antseed-keyed-relay';
 
@@ -65,6 +67,7 @@ export type KeyedRelayEvent =
   | { type: 'admitted' }
   /** Seller: the request was refused, and nothing of it reached the upstream. */
   | { type: 'refused'; reason: string }
+  /** Both: the answer ended, `length` plaintext bytes of it. Seller: also when the buyer left before the upstream ended it, with what was relayed until then. */
   | { type: 'responseEnd'; length: number; bytesUp?: number; bytesDown?: number }
   | { type: 'revealed'; length: number; ranges: KeyedRelayRange[] }
   | { type: 'done' };
@@ -97,14 +100,17 @@ export interface KeyedRelayExit {
 
 /**
  * One sidecar process for one relayed request. `peer` is the byte stream to
- * the other side's sidecar: pipe it to the relay stream. Events: `event`
- * (KeyedRelayEvent), `app` (response bytes, buyer only), `appEnd`, `exit`.
+ * the other side's sidecar: pipe it to the relay stream. Destroying `peer`
+ * says the other side is gone: the sidecar reports what it has and exits, and
+ * is stopped if it has not within a moment; `kill` stops it at once. Events:
+ * `event` (KeyedRelayEvent), `app` (response bytes, buyer only), `appEnd`, `exit`.
  */
 export class KeyedRelayProcess extends EventEmitter {
   readonly peer: Duplex;
   private _stdout = Buffer.alloc(0);
   private _stderr = '';
   private _exited: KeyedRelayExit | null = null;
+  private _stopTimer: ReturnType<typeof setTimeout> | null = null;
   /** The latest event of each type, so a wait started late still sees it. */
   private readonly _seen = new Map<KeyedRelayEvent['type'], KeyedRelayEvent>();
 
@@ -129,7 +135,9 @@ export class KeyedRelayProcess extends EventEmitter {
         callback();
       },
       destroy(error, callback) {
-        self.kill();
+        // The other side is gone. The sidecar is told and stops by itself: a
+        // seller first reports what it relayed, which the request is billed by.
+        self._peerGone();
         callback(error);
       },
     });
@@ -138,13 +146,18 @@ export class KeyedRelayProcess extends EventEmitter {
       this._stderr = (this._stderr + data.toString('utf8')).slice(-4096);
     });
     _child.stdin?.on('error', () => {});
-    _child.on('exit', (code) => {
+    const ended = (code: number | null): void => {
+      if (this._exited) return;
       this._exited = { code, stderr: this._stderr.trim() };
-      this.peer.push(null);
+      if (this._stopTimer) clearTimeout(this._stopTimer);
+      if (!this.peer.destroyed) this.peer.push(null);
       this.emit('exit', this._exited);
-    });
+    };
+    _child.on('exit', ended);
     _child.on('error', (error) => {
       this._stderr += `\n${error.message}`;
+      // A sidecar that never started has no exit of its own.
+      if (_child.pid === undefined) ended(null);
     });
   }
 
@@ -243,6 +256,14 @@ export class KeyedRelayProcess extends EventEmitter {
     if (!this._exited) this._child.kill();
   }
 
+  /** Ends the peer stream towards the sidecar and stops the sidecar if it has not exited shortly after. */
+  private _peerGone(): void {
+    if (this._exited || this._stopTimer) return;
+    this._send(PEER, new Uint8Array(0));
+    this._stopTimer = setTimeout(() => this.kill(), PEER_GONE_GRACE_MS);
+    this._stopTimer.unref();
+  }
+
   private _ctl(message: Record<string, unknown>): void {
     this._send(CTL, Buffer.from(JSON.stringify(message), 'utf8'));
   }
@@ -275,6 +296,7 @@ export class KeyedRelayProcess extends EventEmitter {
         this._seen.set(event.type, event);
         this.emit('event', event);
       } else if (channel === PEER) {
+        if (this.peer.destroyed) continue;
         if (payload.length === 0) this.peer.push(null);
         else this.peer.push(Buffer.from(payload));
       } else if (channel === APP) {
