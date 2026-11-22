@@ -97,14 +97,18 @@ describe('checkConfidentialSpaceClaims', () => {
     expect(check(claims({}, { [CS_SELLER_CONFIG_ENV]: JSON.stringify(http) }))).toMatchObject({ error: expect.stringMatching(/https URL/) })
     const agent = { seller: { ...CONFIG.seller, agentDir: '/var/lib/antseed/agent' } }
     expect(check(claims({}, { [CS_SELLER_CONFIG_ENV]: JSON.stringify(agent) }))).toMatchObject({ error: 'seller.agentDir is not allowed in a TEE seller config' })
+    const alertsVia = (botTokenEnv: string) => JSON.stringify({ seller: { ...CONFIG.seller, alerts: { telegram: { chatId: '1', botTokenEnv } } } })
+    expect(check(claims({}, { [CS_SELLER_CONFIG_ENV]: alertsVia('ANTSEED_ALERTS_TELEGRAM_TOKEN') }))).not.toHaveProperty('error')
+    expect(check(claims({}, { [CS_SELLER_CONFIG_ENV]: alertsVia('VENICE_API_KEY') }))).toMatchObject({ error: expect.stringMatching(/botTokenEnv must be ANTSEED_ALERTS_TELEGRAM_TOKEN/) })
     const withoutConfig = claims()
     delete withoutConfig.submods.container.env_override[CS_SELLER_CONFIG_ENV]
     expect(check(withoutConfig)).toMatchObject({ error: expect.stringMatching(/seller config must be set/) })
   })
 
-  it('only fetches secrets the config names as API keys, or the node identity and RPC URL', () => {
+  it('only fetches secrets the config names as API keys, or the node identity, RPC URL and alerts token', () => {
     const secrets = (s: Record<string, string>) => claims({}, { [CS_SECRETS_ENV]: JSON.stringify({ audience: 'x', secrets: s }) })
     expect(check(secrets({ ANTSEED_BASE_RPC_URL: 'projects/1/secrets/rpc/versions/1' }))).not.toHaveProperty('error')
+    expect(check(secrets({ ANTSEED_ALERTS_TELEGRAM_TOKEN: 'projects/1/secrets/alerts/versions/1' }))).not.toHaveProperty('error')
     expect(check(secrets({ OTHER_API_KEY: 'projects/1/secrets/o/versions/1' }))).toMatchObject({ error: expect.stringMatching(/OTHER_API_KEY is hidden but is not an API key/) })
     expect(check(secrets({ OPENAI_BASE_URL: 'projects/1/secrets/o/versions/1' }))).toMatchObject({ error: expect.stringMatching(/OPENAI_BASE_URL is hidden/) })
     expect(check(secrets({ VENICE_API_KEY: 'https://elsewhere.example/key' }))).toMatchObject({ error: expect.stringMatching(/Secret Manager version/) })

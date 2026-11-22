@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [pricing, Claude, cost, AI infrastructure, P2P, API pricing]
 description: Claude Code pricing breaks even near 351 requests a month. Here is the math, from Anthropic's published rates and 14 million real agent requests.
 keywords: [claude code pricing, claude code cost, claude code pro vs api, claude api pricing, claude opus 5 price, cost per request, prompt caching cost]
-image: /og-image.jpg
 date: 2026-08-11
 ---
 

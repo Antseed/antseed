@@ -11,6 +11,39 @@ This project uses selective package publishing. Each release entry lists the pub
 - Zero data access (CLI, `@antseed/node`, `@antseed/buyer-core`, `@antseed/provider-openai`, Gateway Console): a routing policy can require services the seller cannot read (`requireZeroDataAccess`, **Zero data access only** in the console, `--require-zero-data-access` on `antseed gateway … policy set`, or the per-request header `x-antseed-require-zero-data-access`). The buyer fetches the upstream's TEE attestation through the seller, verifies the TDX quote and its binding to the model key and a fresh nonce itself, then encrypts every message to that key and decrypts the streamed answer; the seller relays ciphertext with its own upstream key. Requests that cannot be fully encrypted (images, audio, tools) are refused instead of sent in plaintext. Sellers offer it on Venice `e2ee-*` models by adding the `e2ee` category to the service; the `openai` provider relays the attestation on a free, rate-limited seller route.
 - Seller-blind relay (`@antseed/keyed-relay`, CLI, `@antseed/node`, `@antseed/protocol`, `@antseed/provider-openai`, Gateway Console): zero data access for upstreams without end-to-end encryption, with the seller's own key. A seller marks a service `seller-blind`; a buyer with a paid-up channel runs TLS to the upstream through a new raw relay stream on the seller, which forwards ciphertext only, and proves the session keys in zero knowledge. The seller then writes the request head with its key as the session's first record, without being able to read the session, and the buyer never sees the key. The seller holds the rest of the request until the buyer has revealed its headers and the body's last fields (model, output-token limit, `n`, usage in a stream, the fields the seller pins) and they pass, with the usual payment checks; the messages stay hidden. After the answer, the buyer reveals only the status line and the usage the seller bills by, and signs for the charge only up to its own price from the usage it read. The cryptography is a Rust sidecar on TLSNotary's building blocks, published per platform as `@antseed/keyed-relay-<platform>-<arch>` and installed with `@antseed/keyed-relay` (or `ANTSEED_KEYED_RELAY_BIN`). An answer the buyer leaves or does not reveal is billed by an estimate within the request the seller checked; relayed requests are charged to the channel that admitted them and metered like direct ones, and the client receives only the response headers a seller exposes. New seller settings `OPENAI_KEYED_RELAY_MAX_TOKENS`, `OPENAI_KEYED_RELAY_MAX_TOKENS_FIELD` and `OPENAI_KEYED_RELAY_PINNED_JSON`.
 
+## 2026-11-22 — CLI 0.1.257, Desktop 0.2.92
+
+### Packages
+
+- `@antseed/cli@0.1.257`
+- `@antseed/antseed-verifier@0.1.10`
+- `@antseed/provider-core@0.2.70`
+- `@antseed/provider-alibaba-video@0.1.14`
+- `@antseed/provider-anthropic@0.1.64`
+- `@antseed/provider-claude-code@0.1.64`
+- `@antseed/provider-claude-oauth@0.1.70`
+- `@antseed/provider-fal-image@0.1.10`
+- `@antseed/provider-fal-video@0.1.26`
+- `@antseed/provider-local-llm@0.1.64`
+- `@antseed/provider-openai@0.2.63`
+- `@antseed/provider-openai-responses@0.1.57`
+- `@antseed/provider-typesafe@0.1.16`
+- `@antseed/provider-venice-video@0.1.27`
+
+### Desktop
+
+- `@antseed/desktop@0.2.92`
+
+### Added
+
+- TEE sellers: seller alerts can now send to Telegram. The bot token may be a hidden secret named `ANTSEED_ALERTS_TELEGRAM_TOKEN` (Secret Manager on Confidential Space, an encrypted variable on dstack; `compose.mjs --alerts-token-secret`). A TEE seller config may no longer point `seller.alerts.telegram.botTokenEnv` at another variable, since alerts send the token to Telegram. Buyers accept such sellers once on this verifier version.
+
+### Fixed
+
+- Verifiers (CLI): the first `antseed verifier submit` on a data dir no longer reads the KBF audits contract's whole history to find the auditor's own earlier submissions, which could take a long time on a public RPC with no output. It reads only the current epoch, since only an audit of the current epoch can be submitted (issue #1799).
+- Sellers (OpenAI-compatible provider): Venice image models `krea-3`, `kling-v4-text-to-image`, `mai-image-2-7`, `mai-image-2-7-flash`, `minimax-h3-image` and `muse-image` are now announced as image services. Before, they were treated as chat models, and pairing one with an image edit model stopped the provider from loading.
+- Website: shared blog links now show the current site preview image. 18 posts still pinned the old share image in their frontmatter; they now use the site-wide image, and posts with their own cover keep it.
+
 ## 2026-11-20 — CLI 0.1.256, Node 0.2.189, Desktop 0.2.91
 
 ### Packages

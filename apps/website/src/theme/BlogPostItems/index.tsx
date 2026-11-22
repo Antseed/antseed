@@ -15,13 +15,11 @@ const PINNED_YEAR = 2090;
 /** Cards in a row: the reveal staggers across one row. */
 const COLUMNS = 3;
 
-/* Every post's frontmatter points at the shared /og-image.jpg — not real
-   cover art. Cards instead use the generated per-post covers in
-   /img/blog/covers (one SVG per slug, drawn in the site palette).
-   A slug listed here keeps its card cover even when the post has its own
-   share image, since wide share images with headline text crop badly in
-   the card; other posts fall back to a real frontmatter image. */
-const DEFAULT_OG_IMAGE = '/og-image.jpg';
+/* Cards use the generated per-post covers in /img/blog/covers (one SVG per
+   slug, drawn in the site palette). A slug listed here keeps its card cover
+   even when the post has its own share image, since wide share images with
+   headline text crop badly in the card; other posts fall back to their
+   frontmatter image. Posts without one share the site-wide og:image. */
 
 const COVER_SLUGS = new Set([
   'buyer-protection',
@@ -47,7 +45,7 @@ const webpOf = (image: string) => image.replace(/\.(png|jpe?g)$/, '.webp');
 function coverFor(permalink: string, frontMatterImage?: string): string {
   const slug = permalink.replace(/\/$/, '').split('/').pop() ?? '';
   if (COVER_SLUGS.has(slug)) return `/img/blog/covers/${slug}.svg`;
-  if (frontMatterImage && frontMatterImage !== DEFAULT_OG_IMAGE) return webpOf(frontMatterImage);
+  if (frontMatterImage) return webpOf(frontMatterImage);
   return '/img/blog/covers/default.svg';
 }
 

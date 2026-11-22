@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [security, privacy, anonymous AI, P2P, TEE, reputation, ANTS]
 description: "How Antseed's security architecture works and what anonymous by design actually means in practice — including where the boundaries are."
 keywords: [Antseed security, anonymous AI, AI privacy architecture, P2P AI network, TEE inference, on-chain reputation, recognized usage, payment channels, model verification]
-image: /og-image.jpg
 date: 2026-07-31
 ---
 
