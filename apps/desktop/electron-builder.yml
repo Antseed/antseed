@@ -148,7 +148,7 @@ mac:
       filter:
         - "bin/darwin-*/**"
   category: public.app-category.developer-tools
-  icon: assets/antseed-dock-icon.png
+  icon: assets/antseed-mac-icon.png
   extendInfo:
     NSMicrophoneUsageDescription: Antseed Desktop uses your microphone to record voice messages for local transcription.
   identity: "Shahaf Antwarg (H3M5BXXQR2)"

@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Desktop (`@antseed/desktop`): the macOS app icon now follows Apple's `824x824`-in-`1024x1024` squircle grid (`assets/antseed-mac-icon.png`) instead of a `928x928` rounded square, and packaged macOS builds no longer overwrite the native bundle Dock icon at launch with `app.dock.setIcon`, so Antseed Desktop matches the size and styling of other apps in the Dock. Windows and Linux icons are unchanged.
+
 ## 2026-11-22 — CLI 0.1.257, Desktop 0.2.92
 
 ### Packages

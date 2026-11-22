@@ -13,6 +13,7 @@ import { desktopInstanceName, desktopUserDataDir, isMultiInstanceDevelopment } f
 import { ASSETS_DIR, RENDERER_INDEX_PATH } from './paths.js';
 import { moveUserDataDir } from './app-rename.js';
 import { moveLegacyBundle, openBundleAfterExit } from './bundle-rename.js';
+import { appIconAssetCandidates } from './dock-icon.js';
 import { IS_SAFE_STORAGE_EXPORT } from './process-role.js';
 import { SAFE_STORAGE_EXPORT_NAME_ENV, SAFE_STORAGE_EXPORT_USER_DATA_ENV } from './safe-storage-export-protocol.js';
 import { isIsolatedProfile, secretStoreSwitches } from './runtime/attach-only.js';
@@ -122,7 +123,7 @@ export function resolveAssetPath(...names: string[]): string | undefined {
   return undefined;
 }
 
-export const APP_ICON_PATH = resolveAssetPath('antseed-dock-icon.png', 'antseed-mark.png');
+export const APP_ICON_PATH = resolveAssetPath(...appIconAssetCandidates(process.platform));
 export const TRAY_ICON_PATH = resolveAssetPath('antseed-mark.png', 'antseed-dock-icon.png');
 
 // Set the internal app name as early as possible — before any safeStorage use,
