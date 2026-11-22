@@ -57,6 +57,7 @@ import {
   type UpdateStatus,
 } from './app-context.js';
 import { MAC_UPDATE_CHANNEL } from './bundle-rename.js';
+import { shouldSetMacDockIcon } from './dock-icon.js';
 import {
   initConnectedApps,
   reconnectAllApps,
@@ -372,7 +373,7 @@ app.whenReady().then(async () => {
     version: app.getVersion(),
     iconPath: APP_ICON_PATH,
   });
-  if (process.platform === 'darwin' && APP_ICON_PATH && app.dock) {
+  if (shouldSetMacDockIcon(process.platform, app.isPackaged) && APP_ICON_PATH && app.dock) {
     app.dock.setIcon(APP_ICON_PATH);
   }
   // Before anything reads an encrypted store under the new name.
