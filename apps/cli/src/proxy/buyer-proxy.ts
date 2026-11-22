@@ -5886,14 +5886,21 @@ export class BuyerProxy {
     }
     // The seller-blind relay stands in for the seller's own request path; payment still goes through the node.
     const relayBlind = blindRelayService
+    // A relayed request sent a second time is billed under a new ID: its spend stays with the request's gateway key and chat turn.
+    const trackRelayAttempt = (request: SerializedHttpRequest) => (billingId: string): void => {
+      this._spendAttribution.trackAttempt(billingId, request.requestId)
+      const conversation = this._requestConversations.get(request.requestId)
+      if (conversation) this._trackRequestConversation(billingId, conversation.convId, request.requestId)
+    }
     const sendRequestStream: AntseedNode['sendRequestStream'] = relayBlind
       ? (peer, request, callbacks, options) => this._blindRelay.send(peer, relayBlind, request, options?.buyerIdentity, {
+        onAttempt: trackRelayAttempt(request),
         onResponseStart: (start) => callbacks.onResponseStart?.(start, { streaming: /text\/event-stream/i.test(start.headers['content-type'] ?? '') }),
         onResponseChunk: (chunk) => callbacks.onResponseChunk?.(chunk),
       }, { signal: options?.signal, channelBinding: options?.channelBinding })
       : (peer, request, callbacks, options) => this._node.sendRequestStream(peer, request, callbacks, options)
     const sendRequest: AntseedNode['sendRequest'] = relayBlind
-      ? (peer, request, options) => this._blindRelay.send(peer, relayBlind, request, options?.buyerIdentity, {}, { signal: options?.signal, channelBinding: options?.channelBinding })
+      ? (peer, request, options) => this._blindRelay.send(peer, relayBlind, request, options?.buyerIdentity, { onAttempt: trackRelayAttempt(request) }, { signal: options?.signal, channelBinding: options?.channelBinding })
       : (peer, request, options) => this._node.sendRequest(peer, request, options)
 
     if (DEBUG()) {

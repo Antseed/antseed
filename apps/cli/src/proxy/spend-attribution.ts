@@ -181,6 +181,13 @@ export class SpendAttributionFeed {
     else this._clearPurpose.run(requestId)
   }
 
+  /** A later attempt of a tracked request, billed under an ID of its own: its spend keeps the request's tag and purpose. */
+  trackAttempt(requestId: string, parentRequestId: string): void {
+    if (!this._db.open) return
+    const parent = this._lookup.get(parentRequestId, this._now() - TAG_RETENTION_MS) as { tag: string; purpose: SpendPurpose | null } | undefined
+    if (parent) this.track(requestId, parent.tag, parent.purpose)
+  }
+
   close(): void {
     if (this._db.open) this._db.close()
   }

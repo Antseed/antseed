@@ -128,6 +128,11 @@ function notSent(message: string): BlindRelayError {
 }
 
 export interface BlindRelayCallbacks {
+  /**
+   * Called before a stream opens under an ID other than the request's (a second attempt's): the seller charges
+   * that attempt under `billingId`, so whoever follows the request's spend follows that ID too.
+   */
+  onAttempt?(billingId: string): void
   onResponseStart?(response: SerializedHttpResponse): void
   onResponseChunk?(chunk: SerializedHttpResponseChunk): void
 }
@@ -369,6 +374,7 @@ export class BlindRelayClient {
       try {
         // A second attempt is a stream of its own, for the seller and for the charge it sends.
         const streamId = attempt === 0 && request.requestId ? request.requestId : randomUUID()
+        if (streamId !== request.requestId) callbacks.onAttempt?.(streamId)
         return await this._sendOnce(target, streamId, request.requestId, fields, binary, callbacks, signal)
       } catch (error) {
         if (!(error instanceof BlindRelayError)) throw error

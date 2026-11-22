@@ -8,7 +8,7 @@ import test, { type TestContext } from 'node:test'
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
 import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
 import { BuyerProxy, type BuyerBalanceReader, type BuyerProxyConfig } from './buyer-proxy.js'
-import { BlindRelayClient } from './blind-relay.js'
+import { BlindRelayClient, BlindRelayError } from './blind-relay.js'
 import { BUYER_IDENTITY_HEADER } from './request-utils.js'
 import { SPEND_ATTRIBUTION_HEADER } from './spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type RouteSelection } from './route-selection.js'
@@ -1444,4 +1444,47 @@ test('a payment this buyer cannot make for a seller-blind request reaches the cl
   assert.equal(res.status, 503, text)
   assert.match(text, /buyer_payments_inactive/)
   assert.equal(asked.length, 1, `asked ${asked.length} sellers`)
+})
+
+test('spend on a seller-blind request sent a second time reaches the gateway key and the conversation of the request', async (t) => {
+  const seller: PeerInfo = {
+    ...makePeer('a', { input: 1, output: 1, trust: 80 }),
+    providerServiceApiProtocols: { openai: { services: { 'open-model': ['openai-chat-completions'] } } },
+    providerServiceCategories: { openai: { services: { 'open-model': ['chat', 'seller-blind'] } } },
+  }
+  const blindRelay = new BlindRelayClient({
+    sendRequest: async () => { throw new Error('no credential is asked for') },
+    openRelayStream: async () => { throw new Error('no stream opens') },
+    recordRelayedResponse: () => {},
+    keyedRelayBinary: '/never-spawned',
+  })
+  const h = await startHarness(t, [seller], { blindRelay })
+  const feed = (h.proxy as any)._spendAttribution
+  const billed: string[] = []
+  // The seller refuses the first stream for a channel it is closing, and bills the second under that stream's own ID.
+  ;(blindRelay as any)._sendOnce = async (_target: unknown, streamId: string, requestId: string) => {
+    billed.push(streamId)
+    if (billed.length === 1) throw new BlindRelayError('channel_exhausted: the payment channel is exhausted', 'unknown', { refusal: 'channel_exhausted' })
+    const spend = { requestId: streamId, sellerPeerId: seller.peerId, amountUsdc: '25000', inputTokens: '12', cachedInputTokens: '0', outputTokens: '3', outputImages: '0' }
+    ;(h.proxy as any)._attributeSpend(spend)
+    feed.record(spend)
+    return { requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"choices":[]}') }
+  }
+  const res = await fetch(`${h.url}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...withPolicy({ requireZeroDataAccess: true }),
+      [SPEND_ATTRIBUTION_HEADER]: 'gw_key1',
+      'x-antseed-chat-session-id': 'thread-relay',
+    },
+    body: JSON.stringify({ model: 'open-model', messages: [{ role: 'user', content: 'Hello' }] }),
+  })
+  assert.equal(res.status, 200, await res.text())
+  assert.equal(billed.length, 2)
+  assert.notEqual(billed[1], billed[0])
+  const events = feed.page(0).events as Array<{ tag: string; requestId: string; amountUsdc: string }>
+  assert.deepEqual(events.map((event) => [event.tag, event.requestId, event.amountUsdc]), [['gw_key1', billed[1], '25000']])
+  const conversation = (h.proxy as any)._conversations.get('antseed-chat:thread-relay')
+  assert.deepEqual([conversation?.spentUsdc, conversation?.requestCount], ['25000', 1])
 })
