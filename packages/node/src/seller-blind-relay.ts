@@ -4,7 +4,7 @@ import { isKeyedRequestTerms, type BlindRelayCredential } from '@antseed/protoco
 import type { KeyedRelayEvent, KeyedRelayProcess } from '@antseed/keyed-relay';
 import type { KeyedRelayTarget, Provider } from './interfaces/seller-provider.js';
 import type { RelayGrant } from './p2p/relay-mux.js';
-import { keyedRelayEstimatedUsage, keyedRelayModelMatches, readKeyedRelayReveal } from './keyed-relay-billing.js';
+import { keyedRelayEstimatedUsage, keyedRelayModelMatches, keyedRelayUnrevealedUsage, readKeyedRelayReveal } from './keyed-relay-billing.js';
 import { checkKeyedRequest, keyedRequestInputTokens } from './keyed-relay-request.js';
 import type { ResponseUsage } from './utils/response-usage.js';
 import { debugLog, debugWarn } from './utils/debug.js';
@@ -38,10 +38,20 @@ export interface KeyedRequestAdmission {
   maxOutputTokens: number | null;
 }
 
-/** The seller's answer to a keyed request: refused, or forwarded with a hold on its estimated usage to finish once it is billed. */
+/** The seller's answer to a keyed request: refused, or forwarded. */
 export type KeyedRequestDecision =
   | { admitted: false; reason: string }
-  | { admitted: true; finish?: (usedTokens: number) => void };
+  | {
+    admitted: true;
+    /** The payment channel the request was checked against: its cost goes there and to no channel that replaces it. */
+    channelId?: string;
+    /**
+     * Ends what the checks hold for the request (its estimated usage, the
+     * channel kept from closing), with the tokens it used. Called once, after
+     * the request is charged or when it ends uncharged.
+     */
+    finish?: (usedTokens: number) => void;
+  };
 
 /** What the seller charges for one relayed request. */
 export interface BlindRelayCharge {
@@ -49,11 +59,40 @@ export interface BlindRelayCharge {
   requestId: string;
   service: string;
   costUsdc: bigint;
+  /** The usage the cost is for. */
+  usage: ResponseUsage;
+  /** The channel that admitted the request. */
+  channelId?: string;
+}
+
+/** One admitted request as it ended, for the seller's metering: charged, failed or never answered. */
+export interface BlindRelayRecord {
+  buyerPeerId: string;
+  requestId: string;
+  provider: Provider;
+  service: string;
+  /** The upstream path the request went to. */
+  path: string;
+  stream: boolean;
+  /** The status the buyer revealed, or null when it revealed none. */
+  statusCode: number | null;
+  /** The usage charged, or null when nothing was. */
+  usage: ResponseUsage | null;
+  /** Whether `usage` is the seller's estimate, not a figure the buyer revealed. */
+  estimated: boolean;
+  costUsdc: bigint;
+  /** Bytes of TLS records relayed each way; zero when the upstream never answered. */
+  bytesUp: number;
+  bytesDown: number;
+  /** From the stream's opening to the sidecar's end. */
+  latencyMs: number;
 }
 
 export interface SellerBlindRelayDeps {
   /** Records the cost on the buyer's channel and asks the buyer to sign for it. */
   charge(charge: BlindRelayCharge): void;
+  /** Meters an admitted request once it has ended. */
+  record?(record: BlindRelayRecord): void;
   /** Starts the seller's sidecar. Absent when it is not installed, and the relay is then off. */
   spawnKeyedRelay?: () => KeyedRelayProcess;
   /** What `usage` costs at the service's token prices, in USDC base units. */
@@ -161,12 +200,15 @@ export class SellerBlindRelay {
    * buyer reveals and the payment checks (`admitKeyedRequest`), so the
    * upstream never sees a request the seller has not bounded. The stream is
    * billed from the usage the buyer reveals at the end; a delivered answer
-   * with no usage shown is billed by an estimate from the bytes relayed,
-   * which the buyer signs only up to its tolerance over the usage it read.
+   * with no usage shown is billed by an estimate within the request the
+   * seller checked (`keyedRelayUnrevealedUsage`), which the buyer signs only
+   * up to its tolerance over the usage it read.
    */
   private _grant(credential: LiveCredential, streamId: string): RelayGrant {
     const { target } = credential;
     let release = (): void => { credential.busy = false; };
+    /** A sidecar is running for the stream: its exit, after the stream is billed, frees the credential. */
+    let live = false;
     const refuseBuyer = (why: string): void => {
       debugWarn(`[BlindRelay] ${streamId.slice(0, 8)} ${why}; refusing ${credential.buyerPeerId.slice(0, 12)}...`);
       this._keyedRefused.add(credential.buyerPeerId);
@@ -174,27 +216,50 @@ export class SellerBlindRelay {
     return {
       open: (): Duplex => {
         const sidecar = this._deps.spawnKeyedRelay!();
-        /** The request as admitted: whether it asked for a stream. */
-        let admitted: { stream: boolean } | null = null;
-        let lengths: { bytesUp: number; bytesDown: number } | null = null;
-        /** Ends the payment checks' hold on the request's estimated usage, with what it used. */
+        live = true;
+        const openedAt = this._now();
+        /** The request as admitted: what the seller checked of it, and the channel it was checked against. */
+        let admitted: { stream: boolean; inputTokens: number; maxTokens: number | null; channelId?: string } | null = null;
+        /** The answer as relayed: its plaintext length and the bytes of TLS records each way. */
+        let lengths: { length: number; bytesUp: number; bytesDown: number } | null = null;
+        /** Ends what the payment checks hold for the request, with the tokens it used. */
         let finishHold = (_usedTokens: number): void => {};
         let ended = false;
         let billed = false;
+        let outcome: Pick<BlindRelayRecord, 'statusCode' | 'usage' | 'estimated' | 'costUsdc'> = { statusCode: null, usage: null, estimated: false, costUsdc: 0n };
+        const estimate = (): ResponseUsage | null => {
+          if (!lengths) return null;
+          if (!admitted) return keyedRelayEstimatedUsage(lengths.bytesUp, lengths.bytesDown);
+          // No byte of an answer was relayed: nothing was delivered.
+          return lengths.length > 0 ? keyedRelayUnrevealedUsage(admitted.inputTokens, lengths.length, admitted.maxTokens) : null;
+        };
         const bill = (usage: ResponseUsage | null, statusCode: number | null): void => {
           if (billed) return;
           billed = true;
+          outcome = { ...outcome, statusCode };
           // A failed request is never charged.
           if (statusCode !== null && statusCode >= 400) return;
-          const used = usage ?? (lengths ? keyedRelayEstimatedUsage(lengths.bytesUp, lengths.bytesDown) : null);
+          const used = usage ?? estimate();
           if (!used) return;
-          finishHold(used.inputTokens + used.outputTokens);
           const costUsdc = this._deps.usageCostUsdc!(credential.provider, credential.service, used);
+          outcome = { statusCode, usage: used, estimated: !usage, costUsdc };
           debugLog(`[BlindRelay] ${streamId.slice(0, 8)} in=${used.inputTokens} out=${used.outputTokens}${usage ? '' : ' (estimated)'}; charging ${costUsdc}`);
-          if (costUsdc > 0n) this._deps.charge({ buyerPeerId: credential.buyerPeerId, requestId: streamId, service: credential.service, costUsdc });
+          if (costUsdc > 0n) {
+            this._deps.charge({
+              buyerPeerId: credential.buyerPeerId,
+              requestId: streamId,
+              service: credential.service,
+              costUsdc,
+              usage: used,
+              ...(admitted?.channelId ? { channelId: admitted.channelId } : {}),
+            });
+          }
+          // After the charge: the hold keeps the channel open until the cost is on it.
+          finishHold(used.inputTokens + used.outputTokens);
         };
         const admit = async (event: Extract<KeyedRelayEvent, { type: 'request' }>): Promise<void> => {
           const check = checkKeyedRequest(event, target.model, target.request);
+          const inputTokens = check.ok ? keyedRequestInputTokens(check.bodyLength) : 0;
           let decision: KeyedRequestDecision = check.ok ? { admitted: true } : { admitted: false, reason: check.reason };
           if (check.ok && this._deps.admitKeyedRequest) {
             try {
@@ -202,7 +267,7 @@ export class SellerBlindRelay {
                 buyerPeerId: credential.buyerPeerId,
                 provider: credential.provider,
                 service: credential.service,
-                inputTokens: keyedRequestInputTokens(check.bodyLength),
+                inputTokens,
                 maxOutputTokens: check.maxTokens,
               });
             } catch (error) {
@@ -228,12 +293,12 @@ export class SellerBlindRelay {
               finish(usedTokens);
             };
           }
-          admitted = { stream: check.stream };
+          admitted = { stream: check.stream, inputTokens, maxTokens: check.maxTokens, ...(decision.channelId ? { channelId: decision.channelId } : {}) };
           sidecar.admit();
         };
         sidecar.on('event', (event: KeyedRelayEvent) => {
           if (event.type === 'request') void admit(event);
-          if (event.type === 'responseEnd') lengths = { bytesUp: event.bytesUp ?? 0, bytesDown: event.bytesDown ?? 0 };
+          if (event.type === 'responseEnd') lengths = { length: event.length, bytesUp: event.bytesUp ?? 0, bytesDown: event.bytesDown ?? 0 };
           if (event.type === 'revealed') {
             const { statusCode, usage, model, streamed } = readKeyedRelayReveal(event);
             // Answers that contradict the checked request mean a field hidden in the body won over the checked
@@ -252,20 +317,42 @@ export class SellerBlindRelay {
           if (lengths) bill(null, null);
           finishHold(0);
           if (exit.code) debugWarn(`[BlindRelay] ${streamId.slice(0, 8)} sidecar: ${exit.stderr || `exit ${exit.code}`}`);
+          const request: { stream: boolean } | null = admitted;
+          if (request) {
+            this._deps.record?.({
+              buyerPeerId: credential.buyerPeerId,
+              requestId: streamId,
+              provider: credential.provider,
+              service: credential.service,
+              path: target.path,
+              stream: request.stream,
+              ...outcome,
+              bytesUp: lengths?.bytesUp ?? 0,
+              bytesDown: lengths?.bytesDown ?? 0,
+              latencyMs: Math.max(0, this._now() - openedAt),
+            });
+          }
+          live = false;
           release();
           release = () => {};
         });
-        sidecar.startSeller({
-          host: target.host,
-          port: target.port,
-          serverName: target.host,
-          head: keyedRelayHead(target),
-          ...(this._deps.maxKeyedRequestBytes !== undefined ? { maxRequestBytes: this._deps.maxKeyedRequestBytes } : {}),
-        });
+        try {
+          sidecar.startSeller({
+            host: target.host,
+            port: target.port,
+            serverName: target.host,
+            head: keyedRelayHead(target),
+            ...(this._deps.maxKeyedRequestBytes !== undefined ? { maxRequestBytes: this._deps.maxKeyedRequestBytes } : {}),
+          });
+        } catch (error) {
+          sidecar.kill();
+          throw error;
+        }
         return sidecar.peer;
       },
       onClose: () => {
-        // The sidecar's exit releases the credential; a stream that never opened releases it here.
+        // A stream that opened is freed by its sidecar's exit, which bills it first; one that never opened is freed here.
+        if (live) return;
         release();
         release = () => {};
       },

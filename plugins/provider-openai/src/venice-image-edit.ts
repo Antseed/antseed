@@ -283,6 +283,8 @@ export class VeniceImageEditProvider implements Provider {
   readonly serviceCapabilities: Provider['serviceCapabilities'];
   readonly maxConcurrency: number;
   serviceCategories?: Provider['serviceCategories'];
+  /** The delegate's keyed relay target: chat requests are relayed as the delegate would serve them. */
+  keyedRelayTarget?: Provider['keyedRelayTarget'];
 
   constructor(
     private readonly delegate: Provider,
@@ -298,6 +300,7 @@ export class VeniceImageEditProvider implements Provider {
     this.serviceCapabilities = delegate.serviceCapabilities;
     this.maxConcurrency = delegate.maxConcurrency;
     this.serviceCategories = delegate.serviceCategories;
+    if (delegate.keyedRelayTarget) this.keyedRelayTarget = (service) => delegate.keyedRelayTarget!(service);
   }
 
   async init(): Promise<void> {

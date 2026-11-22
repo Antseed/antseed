@@ -79,7 +79,7 @@ import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/resp
 import { E2EE_ATTESTATION_PATH, usageForBilling } from '@antseed/buyer-core';
 import { BLIND_RELAY_CREDENTIAL_PATH, BLIND_RELAY_SERVICE_CATEGORY } from '@antseed/protocol/blind-relay';
 import { RelayMux } from './p2p/relay-mux.js';
-import { SellerBlindRelay, type BlindRelayCharge, type KeyedRequestAdmission, type KeyedRequestDecision } from './seller-blind-relay.js';
+import { SellerBlindRelay, type BlindRelayCharge, type BlindRelayRecord, type KeyedRequestAdmission, type KeyedRequestDecision } from './seller-blind-relay.js';
 import { KeyedRelayProcess, resolveKeyedRelayBinary } from '@antseed/keyed-relay';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
@@ -301,6 +301,7 @@ export class SellerRequestHandler {
     const keyedRelayBinary = resolveKeyedRelayBinary();
     this._blindRelay = new SellerBlindRelay({
       charge: (charge) => this._chargeBlindRelay(charge),
+      record: (record) => this._recordBlindRelay(record),
       ...(keyedRelayBinary ? {
         spawnKeyedRelay: () => KeyedRelayProcess.spawn('seller', keyedRelayBinary),
         usageCostUsdc: (provider, service, usage) => computeCostUsdc(
@@ -1808,20 +1809,43 @@ export class SellerRequestHandler {
         return refuse(`the request may cost ${estimate} USDC base units; the locked reserve has ${remaining} left`);
       }
     }
+    // From here to the hold below nothing awaits: a close cannot start in between.
+    if (spm.hasClosingChannel(request.buyerPeerId)) return refuse('the payment channel is closing; retry shortly');
+    let reservation: BuyerUsageReservation | null = null;
     const limiter = this._deps.sellerBuyerLimiter;
-    if (!limiter) return { admitted: true };
-    const tokens = request.inputTokens + (request.maxOutputTokens || DEFAULT_OUTPUT_RESERVATION_TOKENS);
-    const admission = limiter.admit(request.buyerPeerId, request.provider.name, tokens, request.service);
-    if (!admission.admitted) return refuse(`this buyer is over its usage limits; retry in ${admission.retryAfterSeconds} s`);
-    return { admitted: true, finish: (usedTokens) => admission.reservation.finish(usedTokens) };
+    if (limiter) {
+      const tokens = request.inputTokens + (request.maxOutputTokens || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+      const admission = limiter.admit(request.buyerPeerId, request.provider.name, tokens, request.service);
+      if (!admission.admitted) return refuse(`this buyer is over its usage limits; retry in ${admission.retryAfterSeconds} s`);
+      reservation = admission.reservation;
+    }
+    // As for a direct request: the channel stays open until the request's cost is on it.
+    spm.beginBillableRequest(request.buyerPeerId);
+    return {
+      admitted: true,
+      channelId: session.sessionId,
+      finish: (usedTokens) => {
+        spm.endBillableRequest(request.buyerPeerId);
+        reservation?.finish(usedTokens);
+      },
+    };
   }
 
-  /** Records a relayed request's cost on the buyer's channel and asks the buyer to sign for it. */
+  /**
+   * Records a relayed request's cost on the channel that admitted it and asks
+   * the buyer to sign for it. A channel that replaced the admitting one is
+   * never charged, and nothing is once the node closed its connections to stop.
+   */
   private _chargeBlindRelay(charge: BlindRelayCharge): void {
     const spm = this._deps.sellerPaymentManager;
-    const session = spm?.getChannelByPeer(charge.buyerPeerId);
+    const current = spm?.getChannelByPeer(charge.buyerPeerId);
+    const session = current && (charge.channelId === undefined || current.sessionId === charge.channelId) ? current : null;
     const paymentMux = this._paymentMuxes.get(charge.buyerPeerId);
     if (!spm || !session || charge.costUsdc <= 0n) return;
+    if (spm.connectionsClosed) {
+      debugLog(`[SellerHandler] Blind relay cost not billed (connections closed during stop): buyer=${charge.buyerPeerId.slice(0, 12)}... cost=${charge.costUsdc}`);
+      return;
+    }
     spm.recordSpend(session.sessionId, charge.costUsdc);
     const cumulativeSpend = spm.getCumulativeSpend(session.sessionId);
     debugLog(`[SellerHandler] Blind relay cost recorded: buyer=${charge.buyerPeerId.slice(0, 12)}... cost=${charge.costUsdc} cumulative=${cumulativeSpend}`);
@@ -1833,8 +1857,47 @@ export class SellerRequestHandler {
       deposit: session.authMax ?? '0',
       requestId: charge.requestId,
       lastRequestCost: charge.costUsdc.toString(),
+      inputTokens: String(charge.usage.inputTokens),
+      outputTokens: String(charge.usage.outputTokens),
+      cachedInputTokens: String(charge.usage.cachedInputTokens),
+      freshInputTokens: String(charge.usage.freshInputTokens),
       service: charge.service,
     }, charge.buyerPeerId, 'post-response');
+  }
+
+  /**
+   * Meters a relayed request as a direct one is metered. The seller sees none
+   * of its content: the usage is what it charged, and the sizes are the bytes
+   * of TLS records it relayed.
+   */
+  private _recordBlindRelay(record: BlindRelayRecord): void {
+    const tracker = this._deps.sessionTracker;
+    if (!tracker) return;
+    const error = record.statusCode !== null
+      ? null
+      : record.usage ? 'the buyer revealed no status' : 'the relay ended before an answer';
+    void tracker.recordMetering({
+      buyerPeerId: record.buyerPeerId,
+      providerName: record.provider.name,
+      pricing: record.provider.pricing.services?.[record.service] ?? record.provider.pricing.defaults,
+      request: {
+        requestId: record.requestId,
+        method: 'POST',
+        path: record.path,
+        headers: record.stream ? { accept: 'text/event-stream' } : {},
+        body: new Uint8Array(0),
+      },
+      statusCode: record.statusCode ?? 0,
+      latencyMs: record.latencyMs,
+      inputBytes: record.bytesUp,
+      outputBytes: record.bytesDown,
+      responseBody: new Uint8Array(0),
+      providerUsage: record.usage ?? { inputTokens: 0, outputTokens: 0 },
+      service: record.service,
+      ...(error ? { error } : {}),
+    }).catch((err: unknown) => {
+      debugWarn(`[SellerHandler] Blind relay metering failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   /** Answers 402 and sends PaymentRequired, so the buyer opens a payment channel and retries. */

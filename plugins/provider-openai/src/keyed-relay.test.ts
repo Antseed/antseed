@@ -50,4 +50,11 @@ describe('openAiKeyedRelayTarget', () => {
     expect(capped.keyedRelayTarget!('m')!.request).toEqual({ maxTokensField: 'max_tokens', maxTokens: 2048, pinned: { service_tier: 'default' } })
     expect(() => plugin.createProvider({ OPENAI_API_KEY: 'k', OPENAI_BASE_URL: 'https://api.example.com', ANTSEED_ALLOWED_SERVICES: 'm', OPENAI_KEYED_RELAY_MAX_TOKENS: '1.5' })).toThrow('OPENAI_KEYED_RELAY_MAX_TOKENS')
   })
+
+  it('stays on for a Venice upstream, whose provider is wrapped', () => {
+    const venice = plugin.createProvider({ OPENAI_API_KEY: 'k', OPENAI_BASE_URL: 'https://api.venice.ai/api', OPENAI_PROVIDER_FLAVOR: 'venice', ANTSEED_ALLOWED_SERVICES: 'm' })
+    expect(venice.keyedRelayTarget?.('m')).toMatchObject({ host: 'api.venice.ai', path: '/api/v1/chat/completions', model: 'm' })
+    const injecting = plugin.createProvider({ OPENAI_API_KEY: 'k', OPENAI_BASE_URL: 'https://api.venice.ai/api', OPENAI_PROVIDER_FLAVOR: 'venice', ANTSEED_ALLOWED_SERVICES: 'm', OPENAI_BODY_INJECT_JSON: '{"venice_parameters":{"include_venice_system_prompt":false}}' })
+    expect(injecting.keyedRelayTarget).toBeUndefined()
+  })
 })

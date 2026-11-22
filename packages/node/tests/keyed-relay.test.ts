@@ -5,7 +5,7 @@ import type { KeyedRelayEvent, KeyedRelayProcess, KeyedRelaySellerStart } from '
 import { keyedRequestTailFields, type KeyedRequestTerms } from '@antseed/protocol/blind-relay';
 import { keyedRelayEstimatedUsage, keyedRelayModelMatches, readKeyedRelayReveal } from '../src/keyed-relay-billing.js';
 import { checkKeyedRequest } from '../src/keyed-relay-request.js';
-import { SellerBlindRelay, keyedRelayHead, type BlindRelayCharge, type KeyedRequestAdmission, type KeyedRequestDecision } from '../src/seller-blind-relay.js';
+import { SellerBlindRelay, keyedRelayHead, type BlindRelayCharge, type BlindRelayRecord, type KeyedRequestAdmission, type KeyedRequestDecision } from '../src/seller-blind-relay.js';
 import type { KeyedRelayTarget, Provider } from '../src/interfaces/seller-provider.js';
 
 const BUYER = 'aa'.repeat(20);
@@ -158,6 +158,15 @@ describe('keyedRelayModelMatches', () => {
     expect(keyedRelayModelMatches('gpt-4o', 'gpt-4o-mini')).toBe(false);
     expect(keyedRelayModelMatches('org/big-model', 'org/open-model')).toBe(false);
   });
+
+  it('accepts the undated name of a service that names a dated snapshot or the latest one', () => {
+    expect(keyedRelayModelMatches('gpt-4o-mini', 'gpt-4o-mini-2024-07-18')).toBe(true);
+    expect(keyedRelayModelMatches('org/open-model', 'org/open-model-20250101')).toBe(true);
+    expect(keyedRelayModelMatches('open-model-20250101', 'org/open-model-latest')).toBe(true);
+    // A shorter name that is another model, not the same one undated.
+    expect(keyedRelayModelMatches('gpt-4o', 'gpt-4o-mini-2024-07-18')).toBe(false);
+    expect(keyedRelayModelMatches('org/open', 'org/open-model')).toBe(false);
+  });
 });
 
 describe('keyedRelayEstimatedUsage', () => {
@@ -182,9 +191,11 @@ function fakeSidecar() {
 
 function keyedRelay(target: KeyedRelayTarget | null = TARGET, admitKeyedRequest?: (request: KeyedRequestAdmission) => KeyedRequestDecision) {
   const charges: BlindRelayCharge[] = [];
+  const records: BlindRelayRecord[] = [];
   const sidecars: ReturnType<typeof fakeSidecar>[] = [];
   const blind = new SellerBlindRelay({
     charge: (charge) => charges.push(charge),
+    record: (record) => records.push(record),
     spawnKeyedRelay: () => {
       const sidecar = fakeSidecar();
       sidecars.push(sidecar);
@@ -194,7 +205,7 @@ function keyedRelay(target: KeyedRelayTarget | null = TARGET, admitKeyedRequest?
     ...(admitKeyedRequest ? { admitKeyedRequest } : {}),
   });
   const provider = { keyedRelayTarget: () => target } as unknown as Provider;
-  return { blind, charges, sidecars, provider };
+  return { blind, charges, records, sidecars, provider };
 }
 
 const emit = (sidecar: EventEmitter, event: KeyedRelayEvent): boolean => sidecar.emit('event', event);
@@ -224,7 +235,7 @@ describe('SellerBlindRelay', () => {
     emit(sidecars[0]!, { type: 'responseEnd', length: 300, bytesUp: 400, bytesDown: 800 });
     emit(sidecars[0]!, revealed('HTTP/1.1 200 OK', '{"prompt_tokens":12,"completion_tokens":3}'));
     sidecars[0]!.emit('exit', { code: 0, stderr: '' });
-    expect(charges).toEqual([{ buyerPeerId: BUYER, requestId: 'ok', service: 'open-model', costUsdc: 42n }]);
+    expect(charges).toEqual([{ buyerPeerId: BUYER, requestId: 'ok', service: 'open-model', costUsdc: 42n, usage: { inputTokens: 12, freshInputTokens: 12, cachedInputTokens: 0, outputTokens: 3 } }]);
 
     (await blind.authorize(BUYER, 'refused', first.credentialId)).open();
     emit(sidecars[1]!, { type: 'responseEnd', length: 100, bytesUp: 400, bytesDown: 100 });
@@ -239,7 +250,118 @@ describe('SellerBlindRelay', () => {
     (await blind.authorize(BUYER, 'hidden', minted.credentialId)).open();
     emit(sidecars[0]!, { type: 'responseEnd', length: 300, bytesUp: 400, bytesDown: 800 });
     sidecars[0]!.emit('exit', { code: 1, stderr: 'no reveal from the buyer' });
-    expect(charges).toEqual([{ buyerPeerId: BUYER, requestId: 'hidden', service: 'open-model', costUsdc: 100n + 200n * 10n }]);
+    expect(charges).toEqual([{ buyerPeerId: BUYER, requestId: 'hidden', service: 'open-model', costUsdc: 100n + 200n * 10n, usage: { inputTokens: 100, freshInputTokens: 100, cachedInputTokens: 0, outputTokens: 200 } }]);
+  });
+
+  it('bills an admitted answer the buyer never revealed within the request it checked', async () => {
+    const { blind, charges, sidecars, provider } = keyedRelay(TARGET, () => ({ admitted: true }));
+    const minted = blind.mint(BUYER, 'open-model', provider);
+    const request = keyedRequest({ maxTokens: 500 });
+    const headerLength = Buffer.from(request.ranges[0]!.data, 'base64').length;
+    const inputTokens = Math.ceil((request.length - headerLength) / 4);
+
+    // A long answer: the records relayed count the TLS overhead, the headers and the stream's framing, many times its tokens.
+    (await blind.authorize(BUYER, 'long', minted.credentialId)).open();
+    emit(sidecars[0]!, { type: 'request', ...request });
+    await settle();
+    emit(sidecars[0]!, { type: 'responseEnd', length: 100_000, bytesUp: 4_000, bytesDown: 120_000 });
+    sidecars[0]!.emit('exit', { code: 1, stderr: 'no reveal from the buyer' });
+    expect(charges[0]!.usage).toEqual({ inputTokens, freshInputTokens: inputTokens, cachedInputTokens: 0, outputTokens: 500 });
+
+    // A short one: its plaintext length, not the ciphertext relayed.
+    (await blind.authorize(BUYER, 'short', minted.credentialId)).open();
+    emit(sidecars[1]!, { type: 'request', ...request });
+    await settle();
+    emit(sidecars[1]!, { type: 'responseEnd', length: 300, bytesUp: 4_000, bytesDown: 900 });
+    sidecars[1]!.emit('exit', { code: 1, stderr: 'no reveal from the buyer' });
+    expect(charges[1]!.usage).toEqual({ inputTokens, freshInputTokens: inputTokens, cachedInputTokens: 0, outputTokens: 75 });
+    expect(charges).toHaveLength(2);
+
+    // No byte of an answer: the buyer left first, or the upstream never answered. Nothing was delivered to bill.
+    (await blind.authorize(BUYER, 'none', minted.credentialId)).open();
+    emit(sidecars[2]!, { type: 'request', ...request });
+    await settle();
+    emit(sidecars[2]!, { type: 'responseEnd', length: 0, bytesUp: 4_000, bytesDown: 0 });
+    sidecars[2]!.emit('exit', { code: 1, stderr: 'the buyer left' });
+    expect(charges).toHaveLength(2);
+  });
+
+  it('charges the channel that admitted the request, before the hold on it ends', async () => {
+    const order: string[] = [];
+    const { blind, charges, sidecars, provider } = keyedRelay(TARGET, () => ({
+      admitted: true,
+      channelId: '0xadmitting',
+      finish: () => order.push(`finished after ${charges.length} charge(s)`),
+    }));
+    const minted = blind.mint(BUYER, 'open-model', provider);
+    (await blind.authorize(BUYER, 'ok', minted.credentialId)).open();
+    emit(sidecars[0]!, { type: 'request', ...keyedRequest() });
+    await settle();
+    emit(sidecars[0]!, { type: 'responseEnd', length: 300, bytesUp: 400, bytesDown: 800 });
+    emit(sidecars[0]!, revealed('HTTP/1.1 200 OK', '{"prompt_tokens":12,"completion_tokens":3}'));
+    sidecars[0]!.emit('exit', { code: 0, stderr: '' });
+    expect(charges).toEqual([{
+      buyerPeerId: BUYER,
+      requestId: 'ok',
+      service: 'open-model',
+      costUsdc: 42n,
+      channelId: '0xadmitting',
+      usage: { inputTokens: 12, freshInputTokens: 12, cachedInputTokens: 0, outputTokens: 3 },
+    }]);
+    expect(order).toEqual(['finished after 1 charge(s)']);
+  });
+
+  it('reports each admitted request once when it ends: billed, failed or never answered', async () => {
+    const { blind, records, sidecars, provider } = keyedRelay(TARGET, () => ({ admitted: true }));
+    const minted = blind.mint(BUYER, 'open-model', provider);
+    const run = async (id: string, events: KeyedRelayEvent[], stream = true): Promise<void> => {
+      (await blind.authorize(BUYER, id, minted.credentialId)).open();
+      const sidecar = sidecars.at(-1)!;
+      emit(sidecar, { type: 'request', ...keyedRequest({ stream }) });
+      await settle();
+      for (const event of events) emit(sidecar, event);
+      sidecar.emit('exit', { code: 0, stderr: '' });
+    };
+    const end: KeyedRelayEvent = { type: 'responseEnd', length: 300, bytesUp: 400, bytesDown: 800 };
+
+    await run('billed', [end, revealed('HTTP/1.1 200 OK', '{"prompt_tokens":12,"completion_tokens":3}')]);
+    await run('failed', [end, revealed('HTTP/1.1 429 Too Many Requests')], false);
+    await run('hidden', [end]);
+    await run('unanswered', []);
+    expect(records.map((record) => record.requestId)).toEqual(['billed', 'failed', 'hidden', 'unanswered']);
+    expect(records[0]).toMatchObject({
+      buyerPeerId: BUYER, service: 'open-model', provider, path: '/v1/chat/completions', stream: true,
+      statusCode: 200, usage: { inputTokens: 12, outputTokens: 3 }, estimated: false, costUsdc: 42n, bytesUp: 400, bytesDown: 800,
+    });
+    expect(records[0]!.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(records[1]).toMatchObject({ stream: false, statusCode: 429, usage: null, estimated: false, costUsdc: 0n });
+    expect(records[2]).toMatchObject({ statusCode: null, estimated: true, usage: { outputTokens: 75 } });
+    expect(records[2]!.costUsdc).toBeGreaterThan(0n);
+    expect(records[3]).toMatchObject({ statusCode: null, usage: null, costUsdc: 0n, bytesUp: 0, bytesDown: 0 });
+  });
+
+  it('reports nothing for a request it refused', async () => {
+    const { blind, records, sidecars, provider } = keyedRelay(TARGET, () => ({ admitted: false, reason: 'the locked reserve has 0 left' }));
+    const minted = blind.mint(BUYER, 'open-model', provider);
+    (await blind.authorize(BUYER, 'broke', minted.credentialId)).open();
+    emit(sidecars[0]!, { type: 'request', ...keyedRequest() });
+    await settle();
+    sidecars[0]!.emit('exit', { code: 1, stderr: 'refused' });
+    expect(records).toEqual([]);
+  });
+
+  it('keeps a handle busy until its sidecar has ended, so the stream it carried is billed first', async () => {
+    const { blind, sidecars, provider } = keyedRelay();
+    const { credentialId } = blind.mint(BUYER, 'open-model', provider);
+    const grant = await blind.authorize(BUYER, 's1', credentialId);
+    grant.open();
+    // The buyer closed the stream; the sidecar is still ending.
+    grant.onClose?.({ bytesUp: 0, bytesDown: 0 });
+    await expect(blind.authorize(BUYER, 's2', credentialId)).rejects.toThrow('credential busy');
+    sidecars[0]!.emit('exit', { code: 1, stderr: 'the buyer left' });
+    // A stream that never opened has no sidecar to wait for.
+    (await blind.authorize(BUYER, 's3', credentialId)).onClose?.({ bytesUp: 0, bytesDown: 0, error: 'refused' });
+    await expect(blind.authorize(BUYER, 's4', credentialId)).resolves.toBeTruthy();
   });
 
   it('charges nothing when the stream ends before an answer', async () => {

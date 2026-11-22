@@ -127,8 +127,11 @@ describe('seller blind relay credential route', () => {
 });
 
 describe('keyed relay request admission', () => {
-  function admitWith(state: { session?: boolean; accepted: bigint; spent: bigint; reserveMax?: bigint; blocked?: boolean; catchUpTo?: bigint }, deps: Record<string, unknown> = {}) {
+  function admitWith(state: { session?: boolean; accepted: bigint; spent: bigint; reserveMax?: bigint; blocked?: boolean; catchUpTo?: bigint; closing?: boolean }, deps: Record<string, unknown> = {}) {
     const payments = {
+      hasClosingChannel: vi.fn(() => state.closing ?? false),
+      beginBillableRequest: vi.fn(),
+      endBillableRequest: vi.fn(),
       waitForPendingAuths: vi.fn(async () => {}),
       getChannelByPeer: vi.fn(() => (state.session === false ? null : { sessionId: '0xchannel' })),
       getAcceptedCumulative: vi.fn(() => state.accepted),
@@ -150,14 +153,18 @@ describe('keyed relay request admission', () => {
       emit: vi.fn(() => true),
       ...deps,
     } as any);
-    return (maxOutputTokens: number | null = 1000) => (handler as any)._admitKeyedRequest({
+    const admit = (maxOutputTokens: number | null = 1000) => (handler as any)._admitKeyedRequest({
       buyerPeerId: BUYER, provider: makeProvider(), service: 'blind-model', inputTokens: 1000, maxOutputTokens,
     });
+    return Object.assign(admit, { payments });
   }
 
+  /** An admission names the channel it checked and holds a billable request on it until `finish`. */
+  const ADMITTED = { admitted: true, channelId: '0xchannel', finish: expect.any(Function) };
+
   it('admits a paid-up buyer, waiting for a signature that is on its way', async () => {
-    await expect(admitWith({ accepted: 100n, spent: 100n })()).resolves.toEqual({ admitted: true });
-    await expect(admitWith({ accepted: 100n, spent: 500n, catchUpTo: 500n })()).resolves.toEqual({ admitted: true });
+    await expect(admitWith({ accepted: 100n, spent: 100n })()).resolves.toEqual(ADMITTED);
+    await expect(admitWith({ accepted: 100n, spent: 500n, catchUpTo: 500n })()).resolves.toEqual(ADMITTED);
   });
 
   it('refuses no channel, unsigned spend, a blocked or exhausted channel', async () => {
@@ -171,7 +178,29 @@ describe('keyed relay request admission', () => {
     // 1000 in + 1000 out at $1/M each = 2000 USDC base units.
     const admit = admitWith({ accepted: 0n, spent: 0n, reserveMax: 1500n }, { reserveEstimateOverdraftUsdc: 0n });
     await expect(admit(1000)).resolves.toMatchObject({ admitted: false, reason: expect.stringContaining('may cost 2000') });
-    await expect(admit(100)).resolves.toEqual({ admitted: true });
+    await expect(admit(100)).resolves.toEqual(ADMITTED);
+  });
+
+  it('keeps the channel from closing under an admitted request until the request is billed', async () => {
+    const admit = admitWith({ accepted: 0n, spent: 0n });
+    const decision = await admit();
+    expect(admit.payments.beginBillableRequest).toHaveBeenCalledOnce();
+    expect(admit.payments.beginBillableRequest).toHaveBeenCalledWith(BUYER);
+    expect(admit.payments.endBillableRequest).not.toHaveBeenCalled();
+    decision.finish(0);
+    expect(admit.payments.endBillableRequest).toHaveBeenCalledOnce();
+    expect(admit.payments.endBillableRequest).toHaveBeenCalledWith(BUYER);
+
+    // A refused request holds nothing.
+    const refused = admitWith({ accepted: 100n, spent: 500n });
+    await refused();
+    expect(refused.payments.beginBillableRequest).not.toHaveBeenCalled();
+  });
+
+  it('refuses a request while the channel is closing', async () => {
+    const admit = admitWith({ accepted: 0n, spent: 0n, closing: true });
+    await expect(admit()).resolves.toMatchObject({ admitted: false, reason: expect.stringContaining('closing') });
+    expect(admit.payments.beginBillableRequest).not.toHaveBeenCalled();
   });
 
   it('holds the estimate against the buyer limits until the request is billed', async () => {
@@ -183,5 +212,102 @@ describe('keyed relay request admission', () => {
     expect(finish).toHaveBeenCalledWith(42);
     const limited = { admit: vi.fn(() => ({ admitted: false, retryAfterSeconds: 30 })) };
     await expect(admitWith({ accepted: 0n, spent: 0n }, { sellerBuyerLimiter: limited })()).resolves.toMatchObject({ admitted: false, reason: expect.stringContaining('retry in 30 s') });
+  });
+});
+
+describe('relayed request charge and metering', () => {
+  const USAGE = { inputTokens: 120, freshInputTokens: 100, cachedInputTokens: 20, outputTokens: 30 };
+
+  function relayHandler(state: { channel?: string | null; connectionsClosed?: boolean } = {}, sessionTracker: unknown = null) {
+    const payments = {
+      getChannelByPeer: vi.fn(() => (state.channel === null ? null : { sessionId: state.channel ?? '0xchannel', authMax: '1000000' })),
+      recordSpend: vi.fn(),
+      getCumulativeSpend: vi.fn(() => 700n),
+      getAcceptedCumulative: vi.fn(() => 600n),
+      get connectionsClosed() { return state.connectionsClosed ?? false; },
+    };
+    const handler = new SellerRequestHandler({
+      identity: identityFromPrivateKeyHex('11'.repeat(32)),
+      providers: [makeProvider()],
+      sellerPaymentManager: payments as any,
+      sessionTracker: sessionTracker as any,
+      channelsClient: {} as any,
+      announcer: null,
+      emit: vi.fn(() => true),
+    });
+    const conn = { send: vi.fn(), hasRemoteCapability: vi.fn(() => false) };
+    const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() };
+    handler.handleConnection(conn as any, BUYER, paymentMux as any, new VerificationMux(conn as any));
+    const charge = (channelId?: string) => (handler as any)._chargeBlindRelay({
+      buyerPeerId: BUYER, requestId: 'stream-1', service: 'blind-model', costUsdc: 100n, usage: USAGE, ...(channelId ? { channelId } : {}),
+    });
+    return { handler: handler as any, payments, paymentMux, charge };
+  }
+
+  it('charges the admitting channel and reports the usage it billed', () => {
+    const { payments, paymentMux, charge } = relayHandler();
+    charge('0xchannel');
+    expect(payments.recordSpend).toHaveBeenCalledOnce();
+    expect(payments.recordSpend).toHaveBeenCalledWith('0xchannel', 100n);
+    expect(paymentMux.sendNeedAuth).toHaveBeenCalledOnce();
+    expect(paymentMux.sendNeedAuth).toHaveBeenCalledWith({
+      channelId: '0xchannel',
+      requiredCumulativeAmount: '700',
+      currentAcceptedCumulative: '600',
+      deposit: '1000000',
+      requestId: 'stream-1',
+      lastRequestCost: '100',
+      inputTokens: '120',
+      outputTokens: '30',
+      cachedInputTokens: '20',
+      freshInputTokens: '100',
+      service: 'blind-model',
+    });
+  });
+
+  it('charges nothing to a channel that replaced the admitting one, or after the connections closed', () => {
+    const replaced = relayHandler({ channel: '0xnew' });
+    replaced.charge('0xchannel');
+    expect(replaced.payments.recordSpend).not.toHaveBeenCalled();
+    expect(replaced.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
+
+    const stopping = relayHandler({ connectionsClosed: true });
+    stopping.charge('0xchannel');
+    expect(stopping.payments.recordSpend).not.toHaveBeenCalled();
+    expect(stopping.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
+  });
+
+  it('meters a relayed request as it meters a direct one', async () => {
+    const recordMetering = vi.fn(async () => {});
+    const { handler } = relayHandler({}, { recordMetering });
+    const provider = makeProvider();
+    const record = {
+      buyerPeerId: BUYER, requestId: 'stream-1', provider, service: 'blind-model', path: '/v1/chat/completions', stream: true,
+      statusCode: 200 as number | null, usage: USAGE as typeof USAGE | null, estimated: false, costUsdc: 100n, bytesUp: 4000, bytesDown: 9000, latencyMs: 1500,
+    };
+    handler._recordBlindRelay(record);
+    expect(recordMetering).toHaveBeenCalledOnce();
+    expect(recordMetering).toHaveBeenCalledWith({
+      buyerPeerId: BUYER,
+      providerName: 'test-provider',
+      pricing: provider.pricing.defaults,
+      request: { requestId: 'stream-1', method: 'POST', path: '/v1/chat/completions', headers: { accept: 'text/event-stream' }, body: new Uint8Array(0) },
+      statusCode: 200,
+      latencyMs: 1500,
+      inputBytes: 4000,
+      outputBytes: 9000,
+      responseBody: new Uint8Array(0),
+      providerUsage: USAGE,
+      service: 'blind-model',
+    });
+
+    // A failed answer keeps its status and counts no tokens; one that ended with no status shown says so.
+    handler._recordBlindRelay({ ...record, stream: false, statusCode: 429, usage: null, costUsdc: 0n });
+    expect(recordMetering.mock.calls[1]![0]).toMatchObject({ statusCode: 429, request: { headers: {} }, providerUsage: { inputTokens: 0, outputTokens: 0 } });
+    expect(recordMetering.mock.calls[1]![0]).not.toHaveProperty('error');
+    handler._recordBlindRelay({ ...record, statusCode: null, estimated: true });
+    expect(recordMetering.mock.calls[2]![0]).toMatchObject({ statusCode: 0, providerUsage: USAGE, error: expect.stringContaining('no status') });
+    handler._recordBlindRelay({ ...record, statusCode: null, usage: null, costUsdc: 0n });
+    expect(recordMetering.mock.calls[3]![0]).toMatchObject({ statusCode: 0, error: expect.stringContaining('before an answer') });
   });
 });
