@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   decodeRelayClose, decodeRelayData, decodeRelayOpen, decodeRelayStreamId,
-  encodeRelayClose, encodeRelayData, encodeRelayOpen, encodeRelayStreamId, isBlindRelayOffer,
+  encodeRelayClose, encodeRelayData, encodeRelayOpen, encodeRelayStreamId, isBlindRelayOffer, keyedRefusalCode,
 } from './blind-relay.js'
 
 describe('blind relay codecs', () => {
@@ -15,6 +15,13 @@ describe('blind relay codecs', () => {
 
   it('refuses a truncated frame', () => {
     expect(() => decodeRelayOpen(encodeRelayOpen({ streamId: 'abc', credentialId: 'def' }).slice(0, 6))).toThrow(/truncated/)
+  })
+
+  it('reads the code of a refusal the buyer can recover from, also where an error quotes it', () => {
+    expect(keyedRefusalCode('channel_exhausted: the payment channel is exhausted')).toBe('channel_exhausted')
+    expect(keyedRefusalCode('keyed relay ended before "admitted": the seller refused the request: top_up_pending: retry shortly')).toBe('top_up_pending')
+    expect(keyedRefusalCode('the payment channel is closing; retry shortly')).toBeNull()
+    expect(keyedRefusalCode('channel_exhausted')).toBeNull()
   })
 
   it('reads the seller-blind category', () => {

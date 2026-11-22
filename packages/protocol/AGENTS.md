@@ -22,6 +22,7 @@ One module per concern; each is a subpath export in `package.json` and a line in
 | `ZERO_METADATA_HASH`, the SpendingAuth digest, channel id derivation and the v4 and v5 metadata bytes are pinned. Moving any of them breaks open channels. | `src/signatures.test.ts` |
 | A payment payload over 64 KiB throws at the sender instead of being dropped by the peer; metadata lists a bounded number of services and the rest share one overflow entry. | `src/payment-codec.test.ts`, `packages/buyer-core/src/channel-usage-accounting.test.ts` |
 | The frame header is 9 bytes, big-endian. | `src/framing.test.ts` |
+| A relay refusal a buyer can recover from starts with one of `KEYED_REFUSAL_CODES` (`src/blind-relay.ts`); the seller writes the code and the buyer reads it with `keyedRefusalCode`, also where an error quotes the refusal. | `src/blind-relay.test.ts` |
 | Node re-exports these exact implementations, and the browser's `hello` verifies on node. | `packages/web-sdk/src/parity.test.ts` |
 | Environment-free: no `node:*` or Node built-in imports, no `Buffer`, no `process`, file system or sockets, no runtime dependency but `ethers`. | review only |
 

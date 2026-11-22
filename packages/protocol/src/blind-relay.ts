@@ -16,6 +16,21 @@ export const BLIND_RELAY_CREDENTIAL_PATH = '/_antseed/blind/credential' as const
 export const RELAY_DATA_MAX_BYTES = 16 * 1024;
 
 /**
+ * The codes a seller's refusal of a keyed request starts with (`<code>: <why>`)
+ * when the buyer can recover. Nothing of a refused request was forwarded.
+ * `top_up_pending`: the channel is being extended on-chain, so the same
+ * request is retried shortly. `channel_exhausted`: the seller is closing the
+ * channel, so the buyer asks for a new credential, which opens a new channel.
+ */
+export const KEYED_REFUSAL_CODES = ['top_up_pending', 'channel_exhausted'] as const;
+export type KeyedRefusalCode = typeof KEYED_REFUSAL_CODES[number];
+
+/** The recoverable code named anywhere in `text` (a refusal reason, or an error that quotes one), or null. */
+export function keyedRefusalCode(text: string): KeyedRefusalCode | null {
+  return KEYED_REFUSAL_CODES.find((code) => text.includes(`${code}: `)) ?? null;
+}
+
+/**
  * What the seller checks in a request before it forwards it.
  * The buyer reveals its request headers and the body's last fields (built by
  * `keyedRequestTailFields`) to the seller's sidecar, and the seller holds the
