@@ -16,27 +16,11 @@ import { MessageType } from '../types/protocol.js';
 import type { FramedMessage } from '../types/protocol.js';
 import { encodeFrame } from './message-protocol.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
-import { buyerFault } from '../errors.js';
-import type { PeerInfo } from '../types/peer.js';
 
 /** How a buyer opens a relay stream. */
 export interface RelayStreamOptions {
   /** Open the stream only on the connection with this session hash: the one a TEE attestation covered. */
   channelBinding?: string;
-}
-
-/**
- * Fails, as the buyer's own, when `conn` is not the connection
- * `options.channelBinding` names: a connection that replaced the attested
- * one carries no relay stream for a request that needs the attestation.
- */
-export function requireAttestedConnection(conn: Pick<PeerConnection, 'channelBinding'>, peer: PeerInfo, options?: RelayStreamOptions): void {
-  if (options?.channelBinding !== undefined && conn.channelBinding !== options.channelBinding) {
-    throw buyerFault(
-      `Connection to ${peer.peerId.slice(0, 12)}... is not the one its TEE attestation covered; verify the seller again`,
-      'buyer-tee-connection-changed',
-    );
-  }
 }
 
 /**

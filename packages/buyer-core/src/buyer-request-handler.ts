@@ -94,6 +94,24 @@ export interface RequestExecutionOptions {
   channelBinding?: string;
 }
 
+/**
+ * Fails, as the buyer's own, when `conn` is not the connection
+ * `options.channelBinding` names: a connection that replaced the attested
+ * one carries nothing for a request that needs the attestation.
+ */
+export function requireAttestedConnection(
+  conn: Pick<BuyerConnection, 'channelBinding'>,
+  peer: { peerId: string },
+  options?: { channelBinding?: string },
+): void {
+  if (options?.channelBinding !== undefined && conn.channelBinding !== options.channelBinding) {
+    throw buyerFault(
+      `Connection to ${peer.peerId.slice(0, 12)}... is not the one its TEE attestation covered; verify the seller again`,
+      'buyer-tee-connection-changed',
+    );
+  }
+}
+
 export interface BuyerRequestHandlerConfig {
   requestTimeoutMs?: number;
   maxStreamBufferBytes?: number;
@@ -163,12 +181,7 @@ export class BuyerRequestHandler {
 
     const conn = await this._deps.getConnection(peer);
     debugLog(`[BuyerRequest] Connection to ${peer.peerId.slice(0, 12)}... state=${conn.state}`);
-    if (options?.channelBinding !== undefined && conn.channelBinding !== options.channelBinding) {
-      throw buyerFault(
-        `Connection to ${peer.peerId.slice(0, 12)}... is not the one its TEE attestation covered; verify the seller again`,
-        'buyer-tee-connection-changed',
-      );
-    }
+    requireAttestedConnection(conn, peer, options);
     const mux = this._deps.getMux(peer.peerId, conn);
     const verificationMux = this._deps.getVerificationMux(peer.peerId, conn);
     const negotiator = options?.controlPlane ? null : this._deps.negotiator;
