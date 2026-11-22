@@ -321,17 +321,11 @@ export function requestCountOf(requests: readonly PaidRequest[]): number {
 export function summarizeAuditExchangeCosts(
   exchanges: ProxyAuditEvidenceExchangeV1[],
 ): AuditCostSummaryV1 {
-  const costsByExchange = exchanges.map((exchange) => exchange.attemptCosts ?? (exchange.cost ? [exchange.cost] : []))
-  const priced = costsByExchange.flat()
-  return {
-    inputTokens: priced.reduce((total, cost) => total + cost.inputTokens, 0),
-    outputTokens: priced.reduce((total, cost) => total + cost.outputTokens, 0),
-    totalTokens: priced.reduce((total, cost) => total + cost.totalTokens, 0),
-    estimatedCostUsd: priced.reduce((total, cost) => total + cost.estimatedCostUsd, 0),
-    // One exchange can carry several priced attempts (retries), so count exchanges, not attempts.
-    pricedExchangeCount: costsByExchange.filter((costs) => costs.length > 0).length,
-    missingCostExchangeCount: costsByExchange.filter((costs) => costs.length === 0).length,
-  }
+  // One exchange can carry several priced attempts (retries): it is one request, so exchanges are counted, not attempts.
+  return costOfRequests(exchanges.map((exchange) => ({
+    requestCount: 1,
+    attemptCosts: exchange.attemptCosts ?? (exchange.cost ? [exchange.cost] : []),
+  })))
 }
 
 export function parseProxyAuditExchangeCost(

@@ -178,11 +178,6 @@ export function signedExchange(request: SignedSellerRequestV1): { requestBody: U
   }
 }
 
-/** Total cost of the requests' tries. */
-export function signedRequestsCost(requests: readonly SignedSellerRequestV1[]): ProxyAuditExchangeCostV1[] {
-  return requests.flatMap((request) => request.attemptCosts)
-}
-
 function withoutPreimages<T extends { requestPreimage?: unknown; responsePreimage?: unknown }>(
   record: T,
 ): Omit<T, 'requestPreimage' | 'responsePreimage'> {

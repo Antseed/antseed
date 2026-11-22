@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe } from '@antseed/node/payments'
 import { outputCheckRequestBody, readOutput, requestCarriesPrompt, type OutputReadingV1, type OutputRequestThinking } from '../shared/output-usage.js'
-import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest, type ProxyAuditExchangeCostV1 } from '../../proxy-evidence.js'
+import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from '../../proxy-evidence.js'
 import {
   SIGNED_REQUEST_TRIES,
   askSellerSigned,
@@ -398,10 +398,6 @@ export function outputCapRequestCount(record: OutputCapV1): number {
 /** Every request the cap check paid for, in order. */
 export function outputCapPaidRequests(record: OutputCapV1): PaidRequest[] {
   return record.asks.map((ask) => ({ requestCount: ask.request.requestIds.length, attemptCosts: ask.request.attemptCosts }))
-}
-
-export function outputCapCosts(record: OutputCapV1): ProxyAuditExchangeCostV1[] {
-  return record.asks.flatMap((ask) => ask.request.attemptCosts)
 }
 
 /** One plain line for the verdict reason and the report. */

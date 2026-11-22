@@ -13,7 +13,7 @@ import { adjudicateQuestions } from './model-audit.js'
 import { assertQuestionsFromSignedBytes } from './signed-questions.js'
 import { proxyAuditEvidenceHash, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import type { SubmissionCandidate } from './submission-delta.js'
-import { opinionKey } from './third-opinion.js'
+import { latestOtherReports, opinionKey } from './third-opinion.js'
 import { normalized } from './utils.js'
 
 /**
@@ -281,19 +281,7 @@ export function waitingDiffs(
   auditor: string,
   revoked?: ReadonlySet<string>,
 ): Map<string, ServiceAuditedEvent[]> {
-  const me = getAddress(auditor)
-  const latest = new Map<string, Map<string, ServiceAuditedEvent>>()
-  for (const event of events) {
-    const who = getAddress(event.auditor)
-    if (who === me || revoked?.has(who)) continue
-    const key = opinionKey(event.agentId, event.serviceHash, event.modelHash)
-    const byAuditor = latest.get(key) ?? new Map<string, ServiceAuditedEvent>()
-    const current = byAuditor.get(who)
-    if (current && (current.blockNumber > event.blockNumber
-      || (current.blockNumber === event.blockNumber && current.logIndex > event.logIndex))) continue
-    byAuditor.set(who, event)
-    latest.set(key, byAuditor)
-  }
+  const latest = latestOtherReports(events, auditor, revoked)
   const waiting = new Map<string, ServiceAuditedEvent[]>()
   for (const [key, byAuditor] of latest) {
     const diffs = [...byAuditor.values()].filter((event) => event.verdict === VERIFIER_VERDICT.DIFF && event.reports < event.required)
