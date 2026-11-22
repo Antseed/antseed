@@ -208,14 +208,15 @@ export const VerifierConfigSchema = strictObject({
   diffHoldEpochs: z.number().int().min(0).max(4).optional(),
   /**
    * The tokenizer pre-check before a seller's questions (`tokenizer-precheck.ts`): a seller whose signed input
-   * tokens are not the audited model's is DIFF without being asked them. On by default; false audits every
-   * seller on the questions alone. Every auditor must use the same value.
+   * tokens are not the audited model's is DIFF. The questions and the other tests still run (`all-tests-v1`). On by
+   * default; false audits every seller without it. Every auditor must use the same value.
    */
   tokenizerPrecheck: z.boolean().optional(),
   /**
-   * The output-token checks after thinking discovery (`output-cap.ts`): a seller that bills beyond the reply limit
-   * it was given, with an answer that measures more than twice that limit, is DIFF without being asked its
-   * questions. On by default. Every auditor must use the same value.
+   * The output-token checks after a seller's questions, the cap check and the echo check (`output-cap.ts`,
+   * `output-echo.ts`): a seller that bills beyond the reply limit it was given, with an answer that measures more than
+   * twice that limit, or that bills output the model did not write, is DIFF. Every test still runs (`all-tests-v1`).
+   * On by default. Every auditor must use the same value.
    */
   outputChecks: z.boolean().optional(),
   /**

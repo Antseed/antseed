@@ -2,10 +2,10 @@ import { randomBytes } from 'node:crypto'
 import { link, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
-import type { MethodRun, OwnScreenFor } from './audit-method.js'
+import type { MethodRun, OwnScreenFor } from '../../audit-method.js'
 import { createFlipsScreen, flipsSeed, type FlipsProbe, type FlipsUnavailable } from './flips.js'
 import { FLIPS_RULE, flipsCounts, isValidFlipsPair } from './flips-score.js'
-import { asError } from './utils.js'
+import { asError } from '../../utils.js'
 
 /**
  * FLIPS in a `verifier run`: what it makes once per run (its key, its address, its probe, its own limiters) and how it

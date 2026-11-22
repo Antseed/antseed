@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { encodeHttpResponse } from '@antseed/node'
 import { PROBE_GUARD_RANGES, isSafeProbe, signedResponseInputUsage } from '@antseed/node/payments'
-import type { AuditTaskLimiter } from './audit-concurrency.js'
+import type { AuditTaskLimiter } from '../../audit-concurrency.js'
 import {
   costOfRequests,
   requestCountOf,
@@ -10,11 +10,12 @@ import {
   type PaidRequest,
   type ProxyAuditEvidenceExchangeV1,
   type ProxyAuditExchangeCostV1,
-} from './proxy-evidence.js'
-import type { ResponseAuthReader } from './response-auth-reader.js'
-import { requestAsksOnly } from './output-usage.js'
-import { SIGNED_REQUEST_TRIES, sendSignedRequest, signedExchange } from './signed-seller-request.js'
-import { asError } from './utils.js'
+} from '../../proxy-evidence.js'
+import type { ResponseAuthReader } from '../../response-auth-reader.js'
+import type { SellerClock } from '../shared/seller-clock.js'
+import { SIGNED_REQUEST_TRIES, sendSignedRequest, signedExchange } from '../shared/signed-seller-request.js'
+import { requestAsksOnly } from './tokenizer-request.js'
+import { asError } from '../../utils.js'
 
 /**
  * The tokenizer pre-check: a cheap screen `verifier run` runs before a seller's KBF questions.
@@ -223,7 +224,7 @@ export interface TokenizerBackerV1 {
 /**
  * What the model's sellers signed for the first round's text in this run, next to the reference: the check on
  * the reference itself. It is asked when a seller is off the reference in every round, of the model's sellers the
- * buyer would audit (`tokenizerPrecheckSellers`). `corroborated` when at least `corroboratingSellers` of them sign
+ * buyer would audit (`auditableSellers`). `corroborated` when at least `corroboratingSellers` of them sign
  * the reference's count. `outvoted` when at least `outvoteSellers` of them sign one same count that is not the
  * reference's, and they are more than the sellers that sign the reference's.
  */
@@ -495,20 +496,6 @@ export async function measureTokenizerReference(input: {
 export const SELLER_REQUEST_TRIES = SIGNED_REQUEST_TRIES
 
 /**
- * The audited seller's clock (`LazyAuditDeadline` in `model-run.ts`): it runs only while a request to the seller
- * is out, as for question batches, so the auditor's own waiting (the reference, a free request slot, the model's
- * other sellers) is never counted as the seller's silence.
- */
-export interface TokenizerPrecheckClock {
-  /** Aborted when the audit stops: the seller was silent too long, or the audit's longest time is up. */
-  signal: AbortSignal
-  /** A request to the seller goes out; returns the signal it stops on. */
-  start(): AbortSignal
-  /** That request came back; `answered` when the seller answered it. */
-  finish(answered: boolean): void
-}
-
-/**
  * A seller's pre-check: each round's two requests through the buyer proxy, pinned to the seller with the signed
  * bytes captured. A round off the reference is asked once more, so only a count the seller repeats is held
  * against it. The seller is asked nothing unless every round has a reference difference. The check ends when a
@@ -532,7 +519,7 @@ export async function runTokenizerPrecheck(input: {
   /** Stops the check; `clock.signal` when a clock is given. */
   signal?: AbortSignal
   /** The seller's audit clock, run for each request to the seller. */
-  clock?: TokenizerPrecheckClock
+  clock?: SellerClock
   /** The first round's first ask, when it was already sent (`createTokenizerPrecheckScreen`). */
   firstAsk?: TokenizerSellerAskV1
   /**
@@ -637,7 +624,7 @@ export interface TokenizerPrecheckScreen<Settings> {
    */
   ready: (settings: Settings) => Promise<TokenizerPrecheckReferenceV1>
   /** One seller's pre-check; never rejects. */
-  check: (seller: TokenizerPrecheckSeller, settings: Settings, clock?: TokenizerPrecheckClock) => Promise<TokenizerPrecheckV1>
+  check: (seller: TokenizerPrecheckSeller, settings: Settings, clock?: SellerClock) => Promise<TokenizerPrecheckV1>
 }
 
 /**
@@ -652,7 +639,7 @@ export interface TokenizerPrecheckScreen<Settings> {
 export function createTokenizerPrecheckScreen<Settings>(input: {
   /**
    * The crowd: the model's sellers the buyer would audit in this run, whether or not the run audits them
-   * (`tokenizerPrecheckSellers`). One entry per peer; a peer listed twice (two names for the model) is asked and
+   * (`auditableSellers`). One entry per peer; a peer listed twice (two names for the model) is asked and
    * counted once.
    */
   sellers: readonly TokenizerPrecheckSeller[]
@@ -685,7 +672,7 @@ export function createTokenizerPrecheckScreen<Settings>(input: {
     if (tokenizerVote(vote.ask, rule) === null && votes.get(peer) === entry) votes.delete(peer)
   }
   const told = new Set<'outvoted' | 'uncorroborated'>()
-  const askInput = (seller: TokenizerPrecheckSeller, stop: { signal?: AbortSignal; clock?: TokenizerPrecheckClock }): SellerAskInput => ({
+  const askInput = (seller: TokenizerPrecheckSeller, stop: { signal?: AbortSignal; clock?: SellerClock }): SellerAskInput => ({
     proxyBaseUrl: input.proxyBaseUrl, peerId: seller.peerId, service: seller.service, serviceAliases: seller.serviceAliases,
     responseAuthReader: input.responseAuthReader, limiter: input.limiter, requestTimeoutMs: input.requestTimeoutMs, fetchFn: input.fetchFn,
     ...(stop.signal ? { signal: stop.signal } : {}),

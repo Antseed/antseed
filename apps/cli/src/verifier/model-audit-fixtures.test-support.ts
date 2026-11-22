@@ -1,8 +1,8 @@
 // Test support: builds complete verifier runs with genuinely signed seller exchanges.
 import { ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, storedRequestsOf, verdictOf } from './audit-checks.js'
-import { outputCapCost, summarizeOutputCap, type OutputCapV1 } from './output-cap.js'
-import { outputEchoCost, summarizeOutputEcho, type OutputEchoV1 } from './output-echo.js'
-import { flipsCost, summarizeFlips, type FlipsV1 } from './flips.js'
+import { outputCapCost, summarizeOutputCap, type OutputCapV1 } from './methods/output-cap/output-cap.js'
+import { outputEchoCost, summarizeOutputEcho, type OutputEchoV1 } from './methods/output-echo/output-echo.js'
+import { flipsCost, summarizeFlips, type FlipsV1 } from './methods/flips/flips.js'
 import type { AuditCheckId } from './audit-checks.js'
 import { createHash } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -62,7 +62,7 @@ import {
   TOKENIZER_PRECHECK_RULE,
   type TokenizerBackerV1,
   type TokenizerPrecheckV1,
-} from './tokenizer-precheck.js'
+} from './methods/tokens/tokenizer-precheck.js'
 import {
   addAuditCostSummaries,
   emptyAuditCostSummary,

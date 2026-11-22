@@ -1,15 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { decodeHttpRequest, decodeHttpResponse } from '@antseed/node'
-import type { AuditTaskLimiter } from './audit-concurrency.js'
-import { sanitizeOutcomeSummary } from './outcome-reason.js'
+import type { AuditTaskLimiter } from '../../audit-concurrency.js'
+import { sanitizeOutcomeSummary } from '../../outcome-reason.js'
 import {
   parseProxyAuditExchangeCost,
   type ProxyAuditEvidenceExchangeV1,
   type ProxyAuditExchangeCostV1,
-} from './proxy-evidence.js'
-import type { ResponseAuthReader } from './response-auth-reader.js'
-import type { TokenizerPrecheckClock } from './tokenizer-precheck.js'
-import { asError } from './utils.js'
+} from '../../proxy-evidence.js'
+import type { ResponseAuthReader } from '../../response-auth-reader.js'
+import type { SellerClock } from './seller-clock.js'
+import { asError } from '../../utils.js'
 
 /**
  * One request to the audited seller through the buyer proxy, pinned to it, with the bytes it signed
@@ -37,7 +37,7 @@ export interface SignedSellerRequestInput {
   /** Stops the request; no try starts after it. */
   signal?: AbortSignal
   /** The seller's audit clock: it runs only while this request is out. */
-  clock?: TokenizerPrecheckClock
+  clock?: SellerClock
   /** Called each time a try leaves for the seller, after any wait for a slot of the limiter. */
   onSend?: () => void
 }

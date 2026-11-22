@@ -63,7 +63,7 @@ const {
   AUDITOR_FAILURE_ATTEMPTS, CONFIRMATION_ATTEMPTS, CONFIRMATION_RECHECK_SPACING_SECONDS, SELLER_RETRY_SPACING_SECONDS, epochCellKey, loadEpochState, readRetryGiveUps,
   reportCellKey, reportKey,
 } = await import('../../../verifier/epoch-plan.js')
-const { FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE } = await import('../../../verifier/flips.js')
+const { FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE } = await import('../../../verifier/methods/flips/flips.js')
 
 setAuditedModelsForTesting({
   'model-a': { upstreamModel: 'vendor/model-a', contrastModels: [] },

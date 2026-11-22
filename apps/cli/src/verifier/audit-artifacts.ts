@@ -1,5 +1,4 @@
-import { flagInReport, type CheckSummaries } from './audit-checks.js'
-import { flaggedSummaryChecks } from './flagging-checks.js'
+import { flagInReport, flaggedSummaryChecks, type CheckSummaries } from './audit-checks.js'
 import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, sep } from 'node:path'
 import { canonicalJsonStringify } from '@antseed/fingerprints'

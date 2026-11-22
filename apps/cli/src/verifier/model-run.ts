@@ -39,8 +39,8 @@ import {
 import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
 import { auditedServiceNames } from './audited-models.js'
 import {
-  ALL_TESTS_FORMAT, RECORD_CHECKS, earliestAuditorTime, readingsOfEvidence, recordsOf, withoutOrphans,
-  type CheckRecords, type CheckScreens, type CheckSlot, type CheckSummaries, type ConfirmationIdentity, type ListedCheck, type RecordCheck,
+  ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, recordsOf, withoutOrphans,
+  type AuditCheckId, type CheckRecords, type CheckScreens, type CheckSlot, type CheckSummaries, type ConfirmationIdentity, type ListedCheck, type RecordCheck,
   type StoredCheckRecords,
 } from './audit-checks.js'
 import { AuditNotStarted, type MethodScreen, type SellerAudit, type SellerAuditStart } from './audit-method.js'
@@ -74,8 +74,8 @@ import {
   type ThinkingDiscoveryProbe,
 } from './thinking-suppression.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
-import type { TokenizerPrecheckSeller } from './tokenizer-precheck.js'
-import type { AuditCheckId } from './flagging-checks.js'
+import type { TokenizerPrecheckSeller } from './methods/tokens/tokenizer-precheck.js'
+import { METHODS } from './methods/index.js'
 import { advertisedServices, findAdvertisedService } from './service-discovery.js'
 import { mapWithAdaptiveConcurrency, type AuditTaskLimiter } from './audit-concurrency.js'
 import { writeJsonAtomic } from './atomic-files.js'
@@ -571,14 +571,15 @@ export function classifyVerificationTargetServices(
 }
 
 /**
- * The crowd of a model's tokenizer pre-check (`createTokenizerPrecheckScreen`): every peer the buyer sees that it
+ * The model's sellers this run would audit, the crowd of the tests that ask a model's other sellers (the tokenizer
+ * pre-check and the echo check, `MethodEnv.sellers`): every peer the buyer sees that it
  * would audit for the model under the model's own service names, whether or not this run audits it. So a retry,
  * a confirmation, a `--peer` run, and a run in which most sellers are finished, held or judged by another auditor
  * still have the model's other sellers to hold a wrong reference against. A peer the buyer would refuse (priced
  * above the reference, under the reputation floor, without ResponseAuth) is left out: a request to it could
  * only fail. One entry per peer.
  */
-export function tokenizerPrecheckSellers(
+export function auditableSellers(
   peers: readonly PeerInfo[],
   services: readonly string[],
   policy: VerificationTargetPolicy,
@@ -807,7 +808,7 @@ export async function verifyModelTarget(input: {
     ;(found as Record<string, unknown>)[check.slot] = record
     return true
   }
-  /** Each test in run order (`RECORD_CHECKS`), with its screen when the seller is still to be asked it in this attempt. */
+  /** Each test in run order (`METHODS`), with its screen when the seller is still to be asked it in this attempt. */
   const tests = recordsOf(carried).map(({ check, record }): { check: RecordCheck<CheckSlot>; asking: MethodScreen<CheckSlot> | null } => {
     const own = runsTests ? input.context[check.slot] : undefined
     const screen = own == null ? null : check.screen(own)
@@ -1179,7 +1180,7 @@ export async function verifyModelTarget(input: {
   })
 }
 
-/** These test records, each under its slot, in run order (`RECORD_CHECKS`); `keep` leaves some out. */
+/** These test records, each under its slot, in run order (`METHODS`); `keep` leaves some out. */
 function inRunOrder(records: StoredCheckRecords, keep: (slot: CheckSlot) => boolean = () => true): StoredCheckRecords {
   const kept: Record<string, unknown> = {}
   for (const { check, record } of recordsOf(records)) {
@@ -1195,7 +1196,7 @@ function testSummaries(records: StoredCheckRecords): Partial<CheckSummaries> {
     const record = records[check.slot]
     if (record != null) summaries[check.slot] = check.summarize(record)
   }
-  for (const check of RECORD_CHECKS) add(check)
+  for (const check of METHODS) add(check)
   return summaries
 }
 

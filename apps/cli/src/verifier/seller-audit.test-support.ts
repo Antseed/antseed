@@ -8,12 +8,12 @@ import { join } from 'node:path'
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, encodeHttpRequest, encodeHttpResponse, type PeerId, type PeerInfo, type StoredResponseAuth } from '@antseed/node'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
-import type { AuditCheckId } from './flagging-checks.js'
-import type { FlipsScreen } from './flips.js'
+import type { AuditCheckId } from './audit-checks.js'
+import type { FlipsScreen } from './methods/flips/flips.js'
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 import { verifyModelTarget, type ModelVerificationResumeInput, type ModelVerificationTargetResult } from './model-run.js'
-import type { OutputCapScreen } from './output-cap.js'
-import type { OutputEchoScreen } from './output-echo.js'
+import type { OutputCapScreen } from './methods/output-cap/output-cap.js'
+import type { OutputEchoScreen } from './methods/output-echo/output-echo.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
 import {
@@ -23,7 +23,7 @@ import {
   type TokenizerPrecheckReferenceV1,
   type TokenizerProbeV1,
   type TokenizerReferenceAsk,
-} from './tokenizer-precheck.js'
+} from './methods/tokens/tokenizer-precheck.js'
 
 export const PEER_ID = '11'.repeat(20)
 /** Another seller of the model, which counts like the reference. */

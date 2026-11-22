@@ -3,10 +3,10 @@ import { getAddress } from 'ethers'
 import { canonicalHashBytes32 } from '@antseed/fingerprints'
 import { VERIFIER_VERDICT, modelHash, serviceHash as hashService, type ModelAuditedEvent, type ServiceAuditedEvent } from '@antseed/node/payments'
 import type { ConfirmationTarget } from './pending-confirmations.js'
-import { AUDIT_CHECK_IDS, describeAuditCheck, flaggingChecks, type AuditCheckId } from './flagging-checks.js'
 import { sanitizeOutcomeSummary } from './outcome-reason.js'
 import {
-  ALL_TESTS_FORMAT, CONFIRMATION_ONLY_FINDINGS, sameConfirmation, validateStoredChecks, type ConfirmationOnlyCheckId, type ConfirmationOnlyFinding,
+  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, CONFIRMATION_ONLY_FINDINGS, describeAuditCheck, flaggingChecks, sameConfirmation, validateStoredChecks,
+  type AuditCheckId, type ConfirmationOnlyCheckId, type ConfirmationOnlyFinding,
 } from './audit-checks.js'
 import { adjudicateQuestions } from './model-audit.js'
 import { proxyAuditEvidenceHash, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'

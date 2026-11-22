@@ -1,20 +1,298 @@
 import type { KbfReferenceV1, KbfThinkingSuppression } from '@antseed/fingerprints'
-import type { AuditCheckId, CheckRecords, CheckScreens, CheckSlot, StoredCheckRecords } from './audit-checks.js'
 import type { AuditTaskLimiter } from './audit-concurrency.js'
+import type { FlipsScreen, FlipsSummary, FlipsV1 } from './methods/flips/flips.js'
+import type { FlipsRule } from './methods/flips/flips-score.js'
+import type { OutputCapScreen, OutputCapSummary, OutputCapV1 } from './methods/output-cap/output-cap.js'
+import type { OutputEchoScreen, OutputEchoSummary, OutputEchoV1 } from './methods/output-echo/output-echo.js'
+import type { SellerClock } from './methods/shared/seller-clock.js'
+import type { SignedSellerRequestInput } from './methods/shared/signed-seller-request.js'
+import type { TokenizerPrecheckScreen, TokenizerPrecheckSummary, TokenizerPrecheckV1, TokenizerSellerRequestV1 } from './methods/tokens/tokenizer-precheck.js'
 import type { ReferenceRequestLimiter } from './model-reference.js'
+import type { PaidRequest, ProxyAuditEvidenceExchangeV1 } from './proxy-evidence.js'
 import type { ReferenceOracle } from './reference-oracle.js'
-import type { SignedSellerRequestInput } from './signed-seller-request.js'
-import type { TokenizerPrecheckClock } from './tokenizer-precheck.js'
 
 /**
- * How a seller's audit runs one of its tests. `RecordCheck` (`audit-checks.ts`) says how to read what a test stored;
- * these types say what the audit asks of a test while it runs, and what a run gives a test to build its screen from,
- * so that the audit and the run loop over the list of tests instead of naming each one. The questions are not among
- * them: they are the audit itself.
+ * What a test of a seller's audit is, for its own description (`methods/<test>/method.ts`), the list of the
+ * descriptions (`methods/index.ts`) and the rules that read the list (`audit-checks.ts`).
+ *
+ * First the description (`RecordCheck`): how to read what a test stored, with the names its record, its summary and
+ * its screen are kept under. Then how a seller's audit runs a test: what the audit asks of it while it runs, and what
+ * a run gives it to build its screen from, so that the audit and the run loop over the list of tests instead of naming
+ * each one. The questions are not among them: they are the audit itself.
+ *
+ * Every import of this module is a type, so nothing is loaded for it: a description imports it, the list imports the
+ * descriptions and the rules import the list, and no module is reached again on the way.
  */
 
-/** The seller's audit clock, the same for every test: it runs only while a request to the seller is out. */
-export type SellerClock = TokenizerPrecheckClock
+/**
+ * The checks of a seller audit that can end in DIFF, by the name a DIFF is attributed to. A DIFF is recorded on chain
+ * only when a second auditor's check of the same name flags the seller too, on its own fresh material (`same-check.ts`).
+ */
+export type AuditCheckId = 'tokens' | 'output-cap' | 'output-echo' | 'output-offset' | 'flips' | 'kbf'
+
+/** What a check judges: which model answers, or how the seller bills. */
+export type CheckSubject = 'model' | 'billing'
+
+/** A finding as every shared rule reads it. `not-run`: the audit holds no record of the check. */
+export type CheckOutcome = 'flag' | 'pass' | 'inconclusive' | 'not-run'
+
+/**
+ * The evidence fields that hold a check's record. The names are the stored ones and never change.
+ *
+ * A test's slot is named three times, here and in the two interfaces below, once for each thing kept under it: its
+ * record in a seller's evidence, its summary in an audit's result (`CheckSummaries`) and its own screen in an audit's
+ * context (`CheckScreens`). Every other shape with a member per test is built from these three, so a new test adds
+ * its slot to these three and to no other shape.
+ */
+export interface CheckRecords {
+  /**
+   * The tokenizer pre-check, the first test (`tokenizer-precheck.ts`); absent when none ran. On a `mismatch` the
+   * verdict is DIFF, and the questions and the later tests still run (`all-tests-v1`).
+   */
+  tokenizerPrecheck: TokenizerPrecheckV1
+  /**
+   * The cap check that ran after the questions (`output-cap.ts`); absent when none ran or it does not apply to the
+   * model this run. On a `flag` the verdict is DIFF, and the later tests still run.
+   */
+  outputCap: OutputCapV1
+  /**
+   * The echo check that ran after the cap check (`output-echo.ts`); absent when none ran or it does not apply to the
+   * model this run. On a `flag` the verdict is DIFF, and the later tests still run.
+   */
+  outputEcho: OutputEchoV1
+  /** The randomness check (FLIPS, `flips.ts`) that ran after the echo check; absent when none ran. */
+  flips: FlipsV1
+}
+export type CheckSlot = keyof CheckRecords
+
+/**
+ * Each test's record as an audit's summary carries it (`RecordCheck.summarize`), under the slot's name: the members
+ * of one seller's result (`ModelVerificationTargetResult`). The names are stored in summaries and never change.
+ */
+export interface CheckSummaries {
+  /**
+   * The tokenizer pre-check this audit started with; absent when none ran. On a `mismatch` the status is DIFF;
+   * the questions were asked too, and their own verdict is `questionsStatus`.
+   */
+  tokenizerPrecheck: TokenizerPrecheckSummary
+  /**
+   * The cap check this audit ran after its questions; absent when none ran. On a `flag` the status is DIFF; the
+   * questions' own verdict is `questionsStatus`.
+   */
+  outputCap: OutputCapSummary
+  /** The echo check this audit ran after its cap check; absent when none ran. On a `flag` the status is DIFF. */
+  outputEcho: OutputEchoSummary
+  /** The randomness check (FLIPS) this audit ran last before its verdict; absent when none ran. */
+  flips: FlipsSummary
+}
+
+/**
+ * Each test's own screen for one model in one run, under the slot's name: the members of an audit's context
+ * (`ProxyVerificationContext`) the run hands the audit, which runs the test through `RecordCheck.screen`.
+ */
+export interface CheckScreens {
+  /**
+   * When set, each first audit starts with the tokenizer pre-check (`tokenizer-precheck.ts`). The audited model's
+   * screen for this run (`createTokenizerPrecheckScreen`): its reference is awaited before the seller's clock
+   * starts, and the clock runs only while a pre-check request to the seller is out. A mismatch is a DIFF finding;
+   * the questions and the other tests still run (`all-tests-v1`).
+   */
+  tokenizerPrecheck: Pick<TokenizerPrecheckScreen<KbfReferenceV1>, 'ready' | 'check'>
+  /**
+   * When set, each first audit runs the cap check after its questions (`output-cap.ts`), with the thinking setting
+   * discovered before them: a seller whose delivered answer measures more than twice the reply limit, twice, is DIFF.
+   */
+  outputCap: Pick<OutputCapScreen<KbfReferenceV1>, 'ready' | 'check'>
+  /**
+   * When set, each first audit runs the echo check after the cap check (`output-echo.ts`): a seller that bills
+   * output the model did not write, held against the model's other sellers, is DIFF.
+   */
+  outputEcho: Pick<OutputEchoScreen<KbfReferenceV1>, 'ready' | 'check'>
+  /** The randomness check of this model's sellers (`flips.ts`); absent when it does not run. */
+  flips: Pick<FlipsScreen<KbfReferenceV1>, 'check'> & Partial<Pick<FlipsScreen<KbfReferenceV1>, 'probing' | 'probeSettings' | 'warm' | 'ruleId' | 'referenceDecision'>>
+}
+
+/** A summary whose every member may be missing, and whose texts may be any text. */
+type Loose<Summary> = { readonly [Key in keyof Summary]?: AnyText<Summary[Key]> }
+type AnyText<Value> = Value extends string ? string : Value
+
+/**
+ * What the readings use of a check in an audit's summary: the slot's own summary (`CheckSummaries`), read loosely.
+ * Loose on purpose: the planner reads summaries of earlier runs, and a field it does not find reads as not decided.
+ */
+export type CheckSummaryOutcomes<Slot extends CheckSlot = CheckSlot> = Loose<CheckSummaries[Slot]>
+
+/** The findings only a confirmation answers (`ConfirmationOnly`), by id. The same-check decision builds its codes from it. */
+export type ConfirmationOnlyCheckId = 'flips'
+
+/**
+ * On a finding only a confirmation answers: a waiting flag of it is confirmed or cleared only by an audit made as a
+ * confirmation of it. A first look's flag or pass of it answers nothing: it is not sent, and the seller is audited
+ * again as a confirmation (`same-check.ts`). A finding without it is answered by a first look too.
+ */
+export interface ConfirmationOnly {
+  /** What a confirmation of it is made on, as the reason for leaving a first look out says it. The reason is stored. */
+  material: string
+}
+
+/**
+ * One finding of a check. The echo check has two, every other check one. `confirmationOnly` is on the findings of
+ * `ConfirmationOnlyCheckId` and on no other: the compiler holds the list to it.
+ */
+export type CheckFinding<Slot extends CheckSlot> = FindingReadings<Slot> & (
+  | { id: ConfirmationOnlyCheckId; confirmationOnly: ConfirmationOnly }
+  | { id: Exclude<AuditCheckId, ConfirmationOnlyCheckId>; confirmationOnly?: undefined }
+)
+
+/** A finding's name, and how it is read from a record and from a summary. */
+interface FindingReadings<Slot extends CheckSlot> {
+  id: AuditCheckId
+  subject: CheckSubject
+  /** As in a verdict reason: "the cap check". */
+  label: string
+  /** The finding in a stored record, from the check's own names (a pre-check `mismatch` is a flag). */
+  ofRecord(record: CheckRecords[Slot], rules?: ReadingRules): Exclude<CheckOutcome, 'not-run'>
+  /** The same finding in an audit's summary, for the planner, which has no evidence at hand. */
+  ofSummary(summary: CheckSummaryOutcomes<Slot>): Exclude<CheckOutcome, 'not-run'>
+  /** For a finding that can be recorded only: its judged outcome when it is (then `ofRecord` reads `inconclusive`). */
+  recordedOnly?(record: CheckRecords[Slot], rules?: ReadingRules): Exclude<CheckOutcome, 'not-run'> | null
+  /** Whether an `inconclusive` finding is a score between the bars that clears like a pass (`CheckReading.between`). */
+  betweenOfRecord?(record: CheckRecords[Slot], rules?: ReadingRules): boolean
+  betweenOfSummary?(summary: CheckSummaryOutcomes<Slot>): boolean
+}
+
+/**
+ * The rules a reading is taken under, when not the ones the record was judged by: the eval replay and the dry-run
+ * report read FLIPS under a rule that counts it (`counts.default` true, `counts.never` and unmeasured models still
+ * respected), to show what the verdict would be. An audit and submit never pass any.
+ */
+export interface ReadingRules {
+  flips?: FlipsRule
+}
+
+/**
+ * One request a check stored, with whose signature its answer must carry: the audited seller's, or another seller's
+ * of the model (a crowd vote, a backer of the reference), with the service it was asked as when the record names one.
+ */
+export interface StoredRequest {
+  signer: 'audited' | { peerId: string; service?: string }
+  requestIds: readonly string[]
+  responseAuth: ProxyAuditEvidenceExchangeV1['responseAuth'] | null
+}
+
+/** What validating one stored record may read besides the record. */
+export interface StoredAuditContext {
+  /** The seller the evidence is about (`target.peerId`). */
+  auditedPeerId: string
+  /** The other records of the same evidence file: the echo check reads the pre-check's outcome. */
+  records: StoredCheckRecords
+  /** Who reads the record: submit its own audit, or a confirmer the first auditor's (the texts say whose). */
+  reader: 'submit' | 'confirmer'
+  /**
+   * The audit around the record: the tests it confirms and the model its reference is of (from the evidence), and the
+   * epoch and auditor of the report that publishes it (from the caller, which knows them).
+   */
+  audit?: { confirming?: readonly AuditCheckId[]; referenceModel?: string; epoch?: string; auditor?: string }
+}
+
+export type StoredCheckRecords = { readonly [Slot in CheckSlot]?: CheckRecords[Slot] }
+
+/** A check whose result is one field of the seller's evidence: everything but the questions. */
+export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
+  slot: Slot
+  /** In attribution order. */
+  findings: readonly CheckFinding<Slot>[]
+  /** The record as an audit's summary carries it; submit compares the two. */
+  summarize(record: CheckRecords[Slot]): CheckSummaries[Slot]
+  /** Recomputes the record from the bytes it stores, with the rules that cross records. Throws. */
+  validate(record: CheckRecords[Slot], context: StoredAuditContext): void
+  /** The earlier tests whose records this one is judged against: it is carried into a retry only with them. */
+  readsEarlier?: readonly CheckSlot[]
+  /** Every request the record stores, with its signer, grouped by kind (the readers take a set or a minimum, not an order). */
+  requests(record: CheckRecords[Slot]): StoredRequest[]
+  /** Every request the check paid for, in the order its cost is summed. */
+  paid(record: CheckRecords[Slot]): PaidRequest[]
+  /** What a flag of this record found, in plain words, as the audit's verdict reason gives it. */
+  describeFlag(record: CheckRecords[Slot]): string
+  /**
+   * A flag of one of the test's findings in a model report's reason, from the test's summary: what the test saw, with
+   * its rule. Null where the report names the finding by its label alone. The report asks only for a finding that
+   * flagged the seller in a DIFF (`flagInReport`).
+   */
+  inReport(finding: AuditCheckId, summary: CheckSummaries[Slot]): string | null
+  /**
+   * What the test adds to the run's line for a finished audit, from its summary: what it saw. Null when it adds
+   * nothing. Not the words of `inReport`, and not its moment: the line does not name the rule, and the test speaks
+   * whenever its own outcome is a flag, whatever the audit's verdict (`testsInRunLine`).
+   */
+  inRunLine(summary: CheckSummaries[Slot]): string | null
+  /**
+   * Whether the record can affect a verdict at all. A record that cannot (FLIPS while it is recorded only) is a
+   * diagnostic: its validation, its binding and its request times stay out of the verdict path.
+   */
+  counts?(record: CheckRecords[Slot]): boolean
+  /** Whether a summary of it in a published result can affect a verdict; a check with `counts` only. */
+  summaryCounts?(summary: unknown): boolean
+  /** Whether a stored value has the record's shape: a carried or checkpointed record that does not is dropped. */
+  wellFormed?(record: unknown): boolean
+  /** Whether a scheduled retry carries this record; by default when a finding flagged or passed (`decidedRecords`). */
+  carriedByRetry?(record: CheckRecords[Slot]): boolean
+  /** `carriedByRetry` read from the record's summary in a result, for a check with that hook. */
+  summaryCarriedByRetry?(summary: unknown): boolean
+  /** The texts of a stored record that breaks the run's rules. */
+  texts: {
+    /** The check, as an error names it. */
+    name: string
+    summaryMismatch: string
+  }
+  /** When an audit asks the seller this test: before its questions or after them. Inside a phase the order is the list's. */
+  phase: 'before-questions' | 'after-questions'
+  /**
+   * The test asks the seller with the seller's own thinking setting: while one is still to be asked, the audit
+   * discovers that setting although no question batch is left.
+   */
+  asksWithSellerThinking?: true
+  /**
+   * Whether a carried record is this audit's at all, also where the test does not run (no screen, an extra set).
+   * Without it any carried record is.
+   */
+  carriedIsOfAudit?(carried: CheckRecords[Slot], audit: SellerAuditStart): boolean
+  /** The test as an audit runs it (`MethodScreen`), from its own screen for the model and run. */
+  screen(own: OwnScreen<Slot>): MethodScreen<Slot>
+  /**
+   * The config switch that turns the test off: `verifier.<key>` set to false. Any other value leaves it on. `pinned` is
+   * the value the compat number stands for: a run with the switch set away from it judges by other rules
+   * (`verifierRuleOverrides`).
+   */
+  toggle: { key: 'tokenizerPrecheck' | 'outputChecks' | 'flips'; pinned: boolean }
+  /**
+   * The test's block of the rules fingerprint, held there under its slot's name: its rule, its limits and what its
+   * judge gives for fixed sample inputs, which live with the test. Every test has one, so a rule of any test in the
+   * list is under the pinned hash (`verifierRulesFingerprint`).
+   */
+  fingerprint(): Record<string, unknown>
+  /**
+   * The test in one run. Called once, before any model lane, and only when the test is switched on: it does the work
+   * its models share (a key, limiters of its own) and gives what builds the test's own screen for one model, which the
+   * audit then runs through `screen`.
+   */
+  forRun(run: MethodRun): OwnScreenFor<Slot> | Promise<OwnScreenFor<Slot>>
+  /**
+   * A line for the operator about one model that does not wait for the test's screen: said for every model of a run,
+   * also with the test switched off.
+   */
+  announce?(env: MethodEnv): void
+}
+
+/** One request of a record as the readers take it: who must have signed its answer, its tries and its answer's signature. */
+export const stored = (
+  signer: StoredRequest['signer'],
+  request: Pick<TokenizerSellerRequestV1, 'requestIds' | 'responseAuth'>,
+): StoredRequest => ({ signer, requestIds: request.requestIds, responseAuth: request.responseAuth })
+
+/** A test's own word for its outcome as a finding's: its word for a flag, its word for a pass, and no result for any other. */
+export const outcome = (value: string | undefined, flag: string, pass: string): Exclude<CheckOutcome, 'not-run'> =>
+  value === flag ? 'flag' : value === pass ? 'pass' : 'inconclusive'
 
 /** A test's own screen for one model in one run, as the run hands it to an audit: the context's field of the slot's name. */
 export type OwnScreen<Slot extends CheckSlot> = CheckScreens[Slot]

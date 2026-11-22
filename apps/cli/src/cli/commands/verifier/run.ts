@@ -62,20 +62,19 @@ import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelSe
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { alreadyJudgedByOther, otherOpinions, type OtherOpinion } from '../../../verifier/third-opinion.js'
 import { attachFirstFlags, isFreshConfirmation } from '../../../verifier/same-check.js'
-import { describeAuditCheck, flaggedSummaryChecks, localConfirmationDecision } from '../../../verifier/flagging-checks.js'
 import { fetchIpfsText } from '@antseed/model-verifier'
 import { DIFF_HOLD_EPOCHS, diffHolds, type DiffHolds } from '../../../verifier/diff-hold.js'
 import { auditorRemovedMessage, createAuditorApprovalGate } from '../../../verifier/auditor-approval.js'
 import { asError, normalized } from '../../../verifier/utils.js'
 import { AuditNotStarted } from '../../../verifier/audit-method.js'
 import { testsOfRun } from '../../../verifier/audit-screens.js'
-import { flipsMasterIn } from '../../../verifier/flips-run.js'
+import { flipsMasterIn } from '../../../verifier/methods/flips/flips-run.js'
 import { bankRouteOracle } from '../../../verifier/reference-oracle.js'
 import {
   classifyVerificationTargetServices,
   loadBuyerProxySnapshot,
   readModelAuditCheckpoints,
-  tokenizerPrecheckSellers,
+  auditableSellers,
   verifyModelTarget,
   DEFAULT_AUDIT_MAX_TIMEOUT_MS,
   type ModelVerificationFailure,
@@ -146,7 +145,10 @@ import {
 import { createReferenceRequestLimiter, referenceConcurrencyWarning } from '../../../verifier/model-reference.js'
 import { runExtensionRounds, type ExtensionRoundStats } from '../../../verifier/extension-round.js'
 import { auditDecision, closeCallRuleForExtensions, earliestSetTime, extensionSets, latestExtension, settleAuditVerdict } from '../../../verifier/close-call.js'
-import { decidedRecords, recordsOf, resumeMaterialFor, sameConfirmation, testsInRunLine, withoutOrphans, type ConfirmationIdentity, type StoredCheckRecords } from '../../../verifier/audit-checks.js'
+import {
+  decidedRecords, describeAuditCheck, flaggedSummaryChecks, localConfirmationDecision, recordsOf, resumeMaterialFor, sameConfirmation, testsInRunLine, withoutOrphans,
+  type ConfirmationIdentity, type StoredCheckRecords,
+} from '../../../verifier/audit-checks.js'
 import {
   confirmationTargetsByModel,
   describeTallies,
@@ -593,7 +595,7 @@ export async function loadRunConfirmations(input: {
  * Writes what the reference of one of a model's tests decided this run (whether the check applies, why, and the
  * reference's own numbers) beside the model's audits, for the run's report and a dry pass. Never fails the run.
  */
-async function writeOutputCheckReference(directory: string, model: string, check: string, record: unknown): Promise<void> {
+async function writeTestReference(directory: string, model: string, check: string, record: unknown): Promise<void> {
   try {
     await writeJsonAtomic(join(directory, `${check}-reference.json`), { version: 1, kind: 'antseed-verifier-output-check-reference', model, check, record }, true)
   } catch {
@@ -678,8 +680,7 @@ function evidenceRecords(evidence: ProxyAuditEvidenceV1): StoredCheckRecords {
   return Object.fromEntries(recordsOf(evidence).flatMap(({ check, record }) => (record ? [[check.slot, record]] : [])))
 }
 
-// The tests of FLIPS's key and of its probe reach both through this module, the key by the evidence directory.
-export { parseFlipsProbe } from '../../../verifier/flips-run.js'
+// FLIPS's key by the evidence directory, as its tests ask for it.
 export const flipsMasterFor = (evidenceDir: string, epoch: string): Promise<string> => flipsMasterIn(epochDirectory(evidenceDir, epoch), epoch)
 
 export function normalizeVerifierPeerId(value: string): string {
@@ -1703,7 +1704,7 @@ export async function runVerifierRound(
             // Every seller of the model the buyer would audit, not only the ones this run audits. Listed when a test
             // asks for it, as each test listed it for itself.
             get sellers() {
-              return tokenizerPrecheckSellers(laneProxy.peers, verifierModelServices(config.verifier, model), targetPolicyFor(model))
+              return auditableSellers(laneProxy.peers, verifierModelServices(config.verifier, model), targetPolicyFor(model))
             },
             seller: {
               proxyBaseUrl: laneProxy.baseUrl,
@@ -1719,7 +1720,7 @@ export async function runVerifierRound(
             }),
             limiters: { reference: testReferenceLimiter },
             report: {
-              reference: (check, record) => void writeOutputCheckReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, check, record),
+              reference: (check, record) => void writeTestReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, check, record),
               file: (name, content) => writeJsonAtomic(join(modelAuditsDirectory(evidenceDir, epoch, model, runId), name), content, true),
               warn: (line) => runProgress!.above(() => console.warn(chalk.yellow(line))),
               note: (line) => runProgress!.above(() => console.log(chalk.yellow(line))),

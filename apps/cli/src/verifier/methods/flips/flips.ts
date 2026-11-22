@@ -14,16 +14,16 @@ import {
   type FlipsReplyV1,
   type FlipsRule,
 } from './flips-score.js'
-import { ConcurrencyLimiter } from './audit-concurrency.js'
-import { readAnswerText } from './output-usage.js'
-import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from './proxy-evidence.js'
+import { ConcurrencyLimiter } from '../../audit-concurrency.js'
+import { readAnswerText } from '../shared/output-usage.js'
+import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from '../../proxy-evidence.js'
 import {
   SIGNED_REQUEST_TRIES,
   askSellerSigned,
   signedExchange,
   type SignedSellerRequestInput,
   type SignedSellerRequestV1,
-} from './signed-seller-request.js'
+} from '../shared/signed-seller-request.js'
 
 /**
  * FLIPS in the audit (`flips-score.ts` scores it): two word pairs, each asked of the seller `repliesPerPair` times and of

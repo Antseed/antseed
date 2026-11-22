@@ -1,14 +1,14 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe } from '@antseed/node/payments'
-import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from './output-usage.js'
-import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from './proxy-evidence.js'
+import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from '../shared/output-usage.js'
+import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from '../../proxy-evidence.js'
 import {
   askSellerSigned,
   signedExchange,
   type SignedSellerRequestInput,
   type SignedSellerRequestV1,
-} from './signed-seller-request.js'
-import { generateTokenizerProbe } from './tokenizer-precheck.js'
+} from '../shared/signed-seller-request.js'
+import { generateTokenizerProbe } from '../tokens/tokenizer-precheck.js'
 
 /**
  * The echo check, rule `output-echo-v1`: does a seller bill the output tokens the model wrote?
@@ -958,7 +958,7 @@ export interface OutputEchoScreen<Settings> {
 }
 
 export function createOutputEchoScreen<Settings>(input: {
-  /** The model's sellers the buyer would audit this run, the crowd (`tokenizerPrecheckSellers`). */
+  /** The model's sellers the buyer would audit this run, the crowd (`auditableSellers`). */
   sellers: ReadonlyArray<{ peerId: string; service: string; serviceAliases?: readonly string[] }>
   proxyBaseUrl: string
   responseAuthReader: SignedSellerRequestInput['responseAuthReader']

@@ -2,12 +2,12 @@
 // records they make pass the recheck submit makes. Test code only, shared by the check tests and the whole-epoch test.
 import { createResponseAuthPayload, encodeHttpRequest, encodeHttpResponse, encodeResponseAuthSigningPayload } from '@antseed/node'
 import { keccak256, type Wallet } from 'ethers'
-import { ConcurrencyLimiter } from './audit-concurrency.js'
-import { prepareOutputCapReference, runOutputCap, type CapReferenceReply } from './output-cap.js'
-import { createOutputEchoScreen, outputEchoPrompt, type EchoReferenceAsk } from './output-echo.js'
-import type { TokenizerReferenceAsk } from './tokenizer-precheck.js'
-import { drawFlipsPairs, judgeFlips, type FlipsDrawV1, type FlipsV1 } from './flips.js'
-import { FLIPS_RULE, flipsRequestBody, type FlipsPair } from './flips-score.js'
+import { ConcurrencyLimiter } from '../../audit-concurrency.js'
+import { prepareOutputCapReference, runOutputCap, type CapReferenceReply } from '../output-cap/output-cap.js'
+import { createOutputEchoScreen, outputEchoPrompt, type EchoReferenceAsk } from '../output-echo/output-echo.js'
+import type { TokenizerReferenceAsk } from '../tokens/tokenizer-precheck.js'
+import { drawFlipsPairs, judgeFlips, type FlipsDrawV1, type FlipsV1 } from '../flips/flips.js'
+import { FLIPS_RULE, flipsRequestBody, type FlipsPair } from '../flips/flips-score.js'
 
 const bytes = (value: unknown): Uint8Array => new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value))
 

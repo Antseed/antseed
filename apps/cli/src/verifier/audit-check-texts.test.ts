@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  RECORD_CHECKS, checkLabel, flagInReport, testsInRunLine,
+  checkLabel, flagInReport, testsInRunLine,
   type AuditCheckId, type CheckSlot, type CheckSummaries, type ListedCheck,
 } from './audit-checks.js'
+import { METHODS } from './methods/index.js'
 
 /**
  * What a test says of one audit to people is part of its description (`RecordCheck.inReport`, `RecordCheck.inRunLine`),
@@ -60,12 +61,12 @@ test('every test of the list says what a report and the run\'s line say of it, i
     }
     assert.equal(check.inRunLine(said.summary), said.inRunLine, check.slot)
   }
-  for (const check of RECORD_CHECKS) pinned(check)
-  assert.deepEqual(Object.keys(SAID), RECORD_CHECKS.map((check) => check.slot), 'a slot is pinned here that is not in the list')
+  for (const check of METHODS) pinned(check)
+  assert.deepEqual(Object.keys(SAID), METHODS.map((check) => check.slot), 'a slot is pinned here that is not in the list')
 })
 
 test('a report names a flagged finding by what its test saw, or by its label where the test gives no more', () => {
-  for (const check of RECORD_CHECKS) {
+  for (const check of METHODS) {
     for (const finding of check.findings) {
       assert.equal(flagInReport(finding.id, flaggedByAll), SAID[check.slot].inReport[finding.id] ?? finding.label, finding.id)
       // A result that holds no summary of the test, or holds it as null, names the finding by its label.

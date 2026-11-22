@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { assertBoundToSeller, carriedIntoConfirmation, decidedRecords, withoutOrphans, earliestAuditorTime, RECORD_CHECKS, storedRequestsOf, TOKENS_CHECK, verdictOf } from './audit-checks.js'
+import { assertBoundToSeller, carriedIntoConfirmation, decidedRecords, withoutOrphans, earliestAuditorTime, storedRequestsOf, verdictOf } from './audit-checks.js'
+import { METHODS } from './methods/index.js'
+import { TOKENS_CHECK } from './methods/tokens/method.js'
 import { isFreshConfirmation } from './same-check.js'
 import { costOfRequests, requestCountOf } from './proxy-evidence.js'
 import {
@@ -11,10 +13,10 @@ import {
   localConfirmationDecision,
   passedChecks,
   type AuditCheckId,
-} from './flagging-checks.js'
-import { OUTPUT_CAP_RULE, outputCapCost, outputCapRequestCount, summarizeOutputCap } from './output-cap.js'
-import { OUTPUT_ECHO_RULE, outputEchoCost, outputEchoRequestCount, summarizeOutputEcho } from './output-echo.js'
-import { summarizeTokenizerPrecheck, tokenizerPrecheckCost, tokenizerPrecheckRequestCount } from './tokenizer-precheck.js'
+} from './audit-checks.js'
+import { OUTPUT_CAP_RULE, outputCapCost, outputCapRequestCount, summarizeOutputCap } from './methods/output-cap/output-cap.js'
+import { OUTPUT_ECHO_RULE, outputEchoCost, outputEchoRequestCount, summarizeOutputEcho } from './methods/output-echo/output-echo.js'
+import { summarizeTokenizerPrecheck, tokenizerPrecheckCost, tokenizerPrecheckRequestCount } from './methods/tokens/tokenizer-precheck.js'
 
 // Pins what every reader of a check's outcome gives today, for every outcome of every check, so that moving the
 // readers onto one registry of checks changes no verdict, attribution or order.
@@ -232,7 +234,7 @@ test('every check\'s paid requests give its cost and request count, in the order
     rounds: [{ seller: [{ base: { requestIds: ['a', 'b'], attemptCosts: [cost(0.1), cost(0.2)] }, probed: null }] }],
     crowdRequests: [{ requestCount: 1, attemptCosts: [cost(0.3)] }],
   } as never
-  for (const check of RECORD_CHECKS) assert.equal(typeof check.paid, 'function')
+  for (const check of METHODS) assert.equal(typeof check.paid, 'function')
   assert.deepEqual(TOKENS_CHECK.paid(precheck), [
     { requestCount: 2, attemptCosts: [cost(0.1), cost(0.2)] }, { requestCount: 1, attemptCosts: [cost(0.3)] },
   ])

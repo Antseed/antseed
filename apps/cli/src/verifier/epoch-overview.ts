@@ -10,9 +10,9 @@ import {
 import { finalAuditVerdict } from './model-audit.js'
 import { auditDecision, extensionSets, latestExtension } from './close-call.js'
 import { explainInconclusive, explainSkipReason, type PlainReason } from './plain-reason.js'
-import { describeAuditCheck, flaggedSummaryChecks } from './flagging-checks.js'
+import { describeAuditCheck, flaggedSummaryChecks } from './audit-checks.js'
 import { disputeKey } from './pending-confirmations.js'
-import { describeTokenizerCounts } from './tokenizer-precheck.js'
+import { describeTokenizerCounts } from './methods/tokens/tokenizer-precheck.js'
 import { normalized } from './utils.js'
 
 /**

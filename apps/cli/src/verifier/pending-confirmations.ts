@@ -10,7 +10,7 @@ import {
 import { auditorRotationForModel } from './audit-assignment.js'
 import { normalized } from './utils.js'
 import { mapConcurrently } from './audit-concurrency.js'
-import type { AuditCheckId } from './flagging-checks.js'
+import type { AuditCheckId } from './audit-checks.js'
 import { isFreshConfirmation } from './same-check.js'
 
 /** The reads the confirmation helpers need from the KBF audits and results contracts. */

@@ -26,7 +26,7 @@ import {
   verdictTallies,
   waitingReportBlocks,
 } from './pending-confirmations.js'
-import { localConfirmationDecision } from './flagging-checks.js'
+import { localConfirmationDecision } from './audit-checks.js'
 
 const A = getAddress('0x00000000000000000000000000000000000000a1')
 const B = getAddress('0x00000000000000000000000000000000000000b2')

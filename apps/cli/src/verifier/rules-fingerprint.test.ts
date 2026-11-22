@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
-import { RECORD_CHECKS, TOKENS_CHECK, type RecordCheck } from './audit-checks.js'
+import type { RecordCheck } from './audit-checks.js'
+import { METHODS } from './methods/index.js'
+import { TOKENS_CHECK } from './methods/tokens/method.js'
 import { verifierRuleOverrides, verifierRulesFingerprint } from './verifier-compat.js'
 
 /**
@@ -17,7 +19,7 @@ const CROSS_TEST_SAMPLES: Readonly<Record<string, readonly string[]>> = {
 }
 
 test('every test of the list gives its own block of the rules fingerprint, the same one every time', () => {
-  for (const check of RECORD_CHECKS) {
+  for (const check of METHODS) {
     assert.equal(typeof check.fingerprint, 'function', `${check.slot} has no block of the rules fingerprint`)
     const block = check.fingerprint()
     assert.ok(block !== null && typeof block === 'object' && !Array.isArray(block), `${check.slot}'s block is not an object`)
@@ -30,8 +32,8 @@ test('every test of the list gives its own block of the rules fingerprint, the s
 
 test('each test\'s block is in the rules fingerprint under the test\'s slot, with only the samples of rules that cross tests beside it', () => {
   const fingerprint = verifierRulesFingerprint() as Record<string, Record<string, unknown> | undefined>
-  assert.equal(new Set(RECORD_CHECKS.map((check) => check.slot)).size, RECORD_CHECKS.length, 'two tests share a slot')
-  for (const check of RECORD_CHECKS) {
+  assert.equal(new Set(METHODS.map((check) => check.slot)).size, METHODS.length, 'two tests share a slot')
+  for (const check of METHODS) {
     const block = check.fingerprint()
     const held = fingerprint[check.slot]
     assert.ok(held, `the rules fingerprint has no ${check.slot}`)
@@ -44,10 +46,10 @@ test('each test\'s block is in the rules fingerprint under the test\'s slot, wit
 })
 
 test('a test\'s switch set away from the value the compat number stands for is named: once per switch, in the list\'s order', () => {
-  const switches = [...new Map(RECORD_CHECKS.map((check) => [check.toggle.key, check.toggle.pinned] as const))]
+  const switches = [...new Map(METHODS.map((check) => [check.toggle.key, check.toggle.pinned] as const))]
   assert.deepEqual(switches, [['tokenizerPrecheck', true], ['outputChecks', true], ['flips', true]])
   // Tests behind one switch stand for one value of it.
-  for (const check of RECORD_CHECKS) assert.equal(check.toggle.pinned, new Map(switches).get(check.toggle.key), check.slot)
+  for (const check of METHODS) assert.equal(check.toggle.pinned, new Map(switches).get(check.toggle.key), check.slot)
   for (const [key, pinned] of switches) {
     assert.deepEqual(verifierRuleOverrides({ [key]: pinned }), [], key)
     assert.deepEqual(verifierRuleOverrides({ [key]: !pinned }), [`verifier.${key} is ${!pinned}; these rules use ${pinned}`], key)

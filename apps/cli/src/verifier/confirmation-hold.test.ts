@@ -8,7 +8,7 @@ import { VERIFIER_VERDICT, modelHash, serviceHash } from '@antseed/node/payments
 import { MIN_SECONDS_FOR_ANOTHER_ROUND, closeFinishedAuditWindows, openAuditWindow, readAuditWindow } from './audit-window.js'
 import { confirmationHoldReason, confirmationTurnKey, confirmationsHoldingSubmit } from './confirmation-hold.js'
 import { SELLER_RETRY_SPACING_SECONDS, decideRetryGiveUps, loadEpochState, retryGiveUpCells, writeEpochSubmissionManifest, writeRetryGiveUps, type EpochState } from './epoch-plan.js'
-import { FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE } from './flips.js'
+import { FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE } from './methods/flips/flips.js'
 import { opinionKey } from './third-opinion.js'
 import { prepareModelAudits } from './model-audit.js'
 import { FIXTURE_CONFIG, peerIdOf, referenceFixture, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'

@@ -4,9 +4,10 @@ import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
-import { ConcurrencyLimiter } from './audit-concurrency.js'
-import { failureBlame } from './failure-blame.js'
-import { FLIPS_CHECK, readingsOfEvidence, validateCheckRecordsAgainstSummary, verdictOf, withoutOrphans, type AuditCheckId } from './audit-checks.js'
+import { ConcurrencyLimiter } from '../../audit-concurrency.js'
+import { failureBlame } from '../../failure-blame.js'
+import { readingsOfEvidence, validateCheckRecordsAgainstSummary, verdictOf, withoutOrphans, type AuditCheckId } from '../../audit-checks.js'
+import { FLIPS_CHECK } from './method.js'
 import { FLIPS_RULE, FLIPS_RULE_V1, flipsCounts, flipsRequestBody, isValidFlipsPair, type FlipsPair, type FlipsRule } from './flips-score.js'
 import {
   FLIPS_WORDS,
@@ -33,7 +34,7 @@ import {
   type FlipsReferencePairV1,
   type FlipsV1,
 } from './flips.js'
-import type { SignedSellerRequestV1 } from './signed-seller-request.js'
+import type { SignedSellerRequestV1 } from '../shared/signed-seller-request.js'
 
 const PEER = 'ab'.repeat(20)
 const MODEL = 'claude-opus-5.5'
@@ -65,7 +66,7 @@ function signed(body: Record<string, unknown>, reply: unknown, id: string): Sign
 /** Saved checks of the FLIPS eval (`fixtures/flips`), as the scorer's own tests read them. */
 interface Fixture { name: string; replies: number; pairs: Array<{ pair: FlipsPair; reference: Array<{ content: string | null; finishReason: string | null }>; seller: Array<{ content: string | null; finishReason: string | null }> }> }
 const here = dirname(fileURLToPath(import.meta.url))
-const fixturesDir = [join(here, 'fixtures', 'flips'), join(here, '..', '..', 'src', 'verifier', 'fixtures', 'flips')].find((path) => existsSync(path))!
+const fixturesDir = [join(here, 'fixtures', 'flips'), join(here, '..', '..', '..', '..', 'src', 'verifier', 'methods', 'flips', 'fixtures', 'flips')].find((path) => existsSync(path))!
 const fixture = (name: string): Fixture => JSON.parse(readFileSync(join(fixturesDir, `${name}.json`), 'utf8')) as Fixture
 
 /** A stored check made of a saved eval check, under a rule sized to it. */

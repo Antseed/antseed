@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import type { AuditCheckId } from './flagging-checks.js'
+import type { AuditCheckId } from './audit-checks.js'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import {
   AUDITOR_FAILURE_ATTEMPTS,

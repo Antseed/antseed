@@ -109,7 +109,7 @@ export interface FlipsRule {
 
 /**
  * The first rule, recorded only everywhere. A used rule is never edited: stored evidence names its rule by id, and a
- * record counts only as its own rule says (`audit-checks.ts`).
+ * record counts only as its own rule says (`method.ts`).
  *
  * Calibrations: fitted on the eval's honest checks of each size
  * (ln score, Student-t, location = mean, scale = sd · sqrt(1 + 1/n), df = n − 1).

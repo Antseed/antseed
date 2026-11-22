@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { AUDITED_MODELS } from './audited-models.js'
-import { FLIPS_REQUESTS } from './flips-score.js'
+import { FLIPS_REQUESTS } from './methods/flips/flips-score.js'
 import { DEFAULT_CONTRAST_MAX_MODELS } from './model-config.js'
 import { normalized } from './utils.js'
 

@@ -16,8 +16,7 @@ import type { StoredResponseAuth } from '@antseed/node'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import { safeServiceSlug } from './slug.js'
 import type { ThinkingDiscoveryAttemptV1, ThinkingDiscoveryStrategy } from './thinking-suppression.js'
-import type { CheckRecords } from './audit-checks.js'
-import type { AuditCheckId } from './flagging-checks.js'
+import type { AuditCheckId, CheckRecords } from './audit-checks.js'
 
 export type ExportedResponseAuthRecord = Omit<StoredResponseAuth, 'requestPreimage' | 'responsePreimage'>
 

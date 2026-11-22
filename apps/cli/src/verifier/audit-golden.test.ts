@@ -26,9 +26,9 @@ import {
 } from '@antseed/node'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
 import { decidedRecords, type ConfirmationIdentity, type StoredCheckRecords } from './audit-checks.js'
-import { flaggingChecks, passedChecks } from './flagging-checks.js'
-import { createFlipsScreen, flipsSeed } from './flips.js'
-import type { FlipsPair } from './flips-score.js'
+import { flaggingChecks, passedChecks } from './audit-checks.js'
+import { createFlipsScreen, flipsSeed } from './methods/flips/flips.js'
+import type { FlipsPair } from './methods/flips/flips-score.js'
 import { validateAuditMatchesSummary } from './model-audit.js'
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 import {
@@ -36,11 +36,11 @@ import {
   type ModelAuditCheckpointV1, type ModelVerificationResumeInput, type ModelVerificationSkip, type ModelVerificationTargetResult,
   type ProxyVerificationContext,
 } from './model-run.js'
-import { createOutputCapScreen, numberWords } from './output-cap.js'
-import { createOutputEchoScreen, outputEchoPrompt } from './output-echo.js'
+import { createOutputCapScreen, numberWords } from './methods/output-cap/output-cap.js'
+import { createOutputEchoScreen, outputEchoPrompt } from './methods/output-echo/output-echo.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
-import { createTokenizerPrecheckScreen, measureTokenizerReference } from './tokenizer-precheck.js'
+import { createTokenizerPrecheckScreen, measureTokenizerReference } from './methods/tokens/tokenizer-precheck.js'
 
 // A model FLIPS counts for (`flipsCounts`), so a FLIPS flag can decide and a FLIPS reference that is not whole can stop
 // an audit. Every other name here is made up.

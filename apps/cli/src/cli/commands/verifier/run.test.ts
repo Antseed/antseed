@@ -29,9 +29,9 @@ import {
   confirmationPlanKey,
   unauditedConfirmations,
   flipsMasterFor,
-  parseFlipsProbe,
   type ResumeCandidate,
 } from './run.js'
+import { parseFlipsProbe } from '../../../verifier/methods/flips/flips-run.js'
 
 setAuditedModelsForTesting({
   'model-a': { upstreamModel: 'vendor/model-a', contrastModels: [] },

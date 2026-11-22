@@ -36,7 +36,7 @@ import {
   classifyVerificationTargetServices,
   loadBuyerProxySnapshot,
   readModelAuditCheckpoints,
-  tokenizerPrecheckSellers,
+  auditableSellers,
   verifyModelTarget,
   type ModelVerificationResumeInput,
   type ModelVerificationSkip,
@@ -822,7 +822,7 @@ test('the tokenizer pre-check\'s crowd is every peer the buyer would audit for t
     sells(id('b4'), 'other-model'),
   ]
   const policy = { ...targetPolicy, minReputation: 50 }
-  const crowd = tokenizerPrecheckSellers(peers, ['gpt-5.6-sol', 'openai/gpt-5.6-sol'], policy)
+  const crowd = auditableSellers(peers, ['gpt-5.6-sol', 'openai/gpt-5.6-sol'], policy)
   assert.deepEqual(crowd, [
     { peerId: id('a1'), service: 'gpt-5.6-sol' },
     { peerId: id('a2'), service: 'openai/gpt-5.6-sol' },

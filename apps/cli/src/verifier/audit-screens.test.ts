@@ -5,16 +5,16 @@ import { join } from 'node:path'
 import test from 'node:test'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import { ConcurrencyLimiter, type AuditTaskLimiter } from './audit-concurrency.js'
-import { RECORD_CHECKS } from './audit-checks.js'
+import { METHODS } from './methods/index.js'
 import type { MethodEnv, MethodRun } from './audit-method.js'
 import { testsOfRun, type MethodSwitches } from './audit-screens.js'
-import { FLIPS_RULE } from './flips-score.js'
+import { FLIPS_RULE } from './methods/flips/flips-score.js'
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 import { createReferenceRequestLimiter, type ReferenceRequestLimiter } from './model-reference.js'
-import { OUTPUT_ECHO_RULE } from './output-echo.js'
+import { OUTPUT_ECHO_RULE } from './methods/output-echo/output-echo.js'
 import type { ReferenceOracle } from './reference-oracle.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
-import { TOKENIZER_PRECHECK_RULE } from './tokenizer-precheck.js'
+import { TOKENIZER_PRECHECK_RULE } from './methods/tokens/tokenizer-precheck.js'
 
 // FLIPS counts for the first and is recorded only for the second, which the eval never measured.
 const COUNTED = 'deepseek-v4-pro'
@@ -144,7 +144,7 @@ const settled = (): Promise<void> => new Promise((resolve) => setTimeout(resolve
 const bank = referenceFixture(PLAIN)
 
 test('every test has a switch of the config, and the list is the order its screens are built in', () => {
-  assert.deepEqual(RECORD_CHECKS.map((check) => [check.slot, check.toggle.key]), [
+  assert.deepEqual(METHODS.map((check) => [check.slot, check.toggle.key]), [
     ['tokenizerPrecheck', 'tokenizerPrecheck'], ['outputCap', 'outputChecks'], ['outputEcho', 'outputChecks'], ['flips', 'flips'],
   ])
 })

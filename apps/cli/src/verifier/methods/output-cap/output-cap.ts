@@ -1,15 +1,15 @@
 import { randomInt } from 'node:crypto'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe } from '@antseed/node/payments'
-import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from './output-usage.js'
-import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest, type ProxyAuditExchangeCostV1 } from './proxy-evidence.js'
+import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from '../shared/output-usage.js'
+import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest, type ProxyAuditExchangeCostV1 } from '../../proxy-evidence.js'
 import {
   SIGNED_REQUEST_TRIES,
   askSellerSigned,
   signedExchange,
   type SignedSellerRequestInput,
   type SignedSellerRequestV1,
-} from './signed-seller-request.js'
+} from '../shared/signed-seller-request.js'
 import {
   fixedSequence,
   generateTokenizerProbe,
@@ -19,7 +19,7 @@ import {
   type TokenizerPrecheckRule,
   type TokenizerReferenceAsk,
   type TokenizerReferenceRoundV1,
-} from './tokenizer-precheck.js'
+} from '../tokens/tokenizer-precheck.js'
 
 /**
  * The cap check, rule `output-cap-v1`: does a seller bill beyond the reply limit it was given?

@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { flaggingChecks, passedChecks } from './flagging-checks.js'
+import { flaggingChecks, passedChecks } from '../../audit-checks.js'
 import { encodeHttpResponse } from '@antseed/node'
 import { isSafeProbe } from '@antseed/node/payments'
-import { ConcurrencyLimiter } from './audit-concurrency.js'
-import { needsExtension } from './close-call.js'
-import { finalAuditVerdict, validateAuditMatchesSummary } from './model-audit.js'
-import type { ResponseAuthReader } from './response-auth-reader.js'
-import { BACKER_ID, MODEL_TOKENIZER, OTHER_TOKENIZER, PEER_ID, PROBES, PROBE_COUNT, SERVICE, audit, measuredReference, referenceAsk, seller, signedRecord, signedRequestBase64, tokenizer } from './seller-audit.test-support.js'
+import { ConcurrencyLimiter } from '../../audit-concurrency.js'
+import { needsExtension } from '../../close-call.js'
+import { finalAuditVerdict, validateAuditMatchesSummary } from '../../model-audit.js'
+import type { ResponseAuthReader } from '../../response-auth-reader.js'
+import { BACKER_ID, MODEL_TOKENIZER, OTHER_TOKENIZER, PEER_ID, PROBES, PROBE_COUNT, SERVICE, audit, measuredReference, referenceAsk, seller, signedRecord, signedRequestBase64, tokenizer } from '../../seller-audit.test-support.js'
 import {
   TOKENIZER_PRECHECK_RULE,
   TOKENIZER_PRECHECK_RULE_V1,
@@ -27,13 +27,13 @@ import {
   tokenizerPrecheckRequestCount,
   validateTokenizerPrecheck,
   type TokenizerBackerV1,
-  type TokenizerPrecheckClock,
   type TokenizerPrecheckReferenceV1,
   type TokenizerPrecheckRule,
   type TokenizerPrecheckV1,
   type TokenizerReferenceAsk,
   type TokenizerReferenceAskV1,
 } from './tokenizer-precheck.js'
+import type { SellerClock } from '../shared/seller-clock.js'
 
 /**
  * The first-round pair of a seller of the model that counts like the reference, signed by `peerId`: what a
@@ -803,7 +803,7 @@ test('sellers outvote the reference when two or more agree on another count and 
 })
 
 /** A seller's audit clock driven by `signal` alone: what a test's audit deadline looks like to the pre-check. */
-function clockOf(signal: AbortSignal | undefined): TokenizerPrecheckClock | undefined {
+function clockOf(signal: AbortSignal | undefined): SellerClock | undefined {
   return signal ? { signal, start: () => signal, finish: () => undefined } : undefined
 }
 

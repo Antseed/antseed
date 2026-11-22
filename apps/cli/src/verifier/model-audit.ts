@@ -42,12 +42,16 @@ import {
 import { auditDecision, closeCallRule, coverageRuleOf, pooledCloseCallVerdict, stageOneVerdict, type CloseCallRuleId } from './close-call.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
-import { AUDIT_CHECK_IDS, betweenChecks, flaggingChecks, passedChecks, type AuditCheckId } from './flagging-checks.js'
 import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
 import type { AlreadyOnChain, SubmissionCandidate } from './submission-delta.js'
 import { confirmationReportKey } from './epoch-plan.js'
-import { ALL_TESTS_FORMAT, RECORD_CHECKS, auditVerdictReason, earliestAuditorTime, readingsOfEvidence, readingsOfSummary, validateCheckRecordsAgainstSummary, verdictOf, type ReportOfAudit } from './audit-checks.js'
+import {
+  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, auditVerdictReason, betweenChecks, earliestAuditorTime, flaggingChecks, passedChecks, readingsOfEvidence, readingsOfSummary,
+  validateCheckRecordsAgainstSummary, verdictOf,
+  type AuditCheckId, type ReportOfAudit,
+} from './audit-checks.js'
+import { METHODS } from './methods/index.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
@@ -1402,7 +1406,7 @@ export function adjudicateQuestions(input: {
   // test record on it, since tests run on the first set only.
   for (const { evidence: set } of extraSets) {
     if (set.tests !== ALL_TESTS_FORMAT) throw new Error('an extra set does not name the all-tests format')
-    if (RECORD_CHECKS.some((check) => set[check.slot] != null)) throw new Error('an extra set stores a test record; tests run on the first set only')
+    if (METHODS.some((check) => set[check.slot] != null)) throw new Error('an extra set stores a test record; tests run on the first set only')
   }
   if (extraSets.length > 0) {
     if (!rule || extraSets.some(({ record }) => record.rule !== rule.id)) throw new Error('extension without the close-call rule')

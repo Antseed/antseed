@@ -43,7 +43,7 @@ interface Fixture {
 }
 const here = dirname(fileURLToPath(import.meta.url))
 // Next to this file in the source tree; from the CLI's compiled dist/verifier the JSON stays in src/verifier.
-const FIXTURES = [join(here, 'fixtures'), join(here, 'fixtures', 'flips'), join(here, '..', '..', 'src', 'verifier', 'fixtures', 'flips')].find((d) => existsSync(d) && readdirSync(d).some((f) => f.endsWith('.json')))
+const FIXTURES = [join(here, 'fixtures'), join(here, 'fixtures', 'flips'), join(here, '..', '..', '..', '..', 'src', 'verifier', 'methods', 'flips', 'fixtures', 'flips')].find((d) => existsSync(d) && readdirSync(d).some((f) => f.endsWith('.json')))
 const fixtures: Fixture[] = FIXTURES ? readdirSync(FIXTURES).filter((f) => f.endsWith('.json')).sort().map((f) => JSON.parse(readFileSync(join(FIXTURES, f), 'utf8')) as Fixture) : []
 
 test('the rule is frozen and known by its id', () => {

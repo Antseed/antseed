@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { VERIFIER_VERDICT, type VerifierVerdict } from '@antseed/node/payments'
 import {
-  CONFIRMATION_ONLY_FINDINGS, RECORD_CHECKS, type AuditCheckId, type CheckFinding, type ConfirmationOnlyFinding,
+  CONFIRMATION_ONLY_FINDINGS, type AuditCheckId, type CheckFinding, type ConfirmationOnlyFinding,
 } from './audit-checks.js'
+import { METHODS } from './methods/index.js'
 import { decide, type FirstFlag, type SameCheckCandidate, type SameCheckDecision, type SameCheckExcludeCode } from './same-check.js'
 
 const REPORTED_AT = Date.parse('2026-10-07T00:10:00.000Z') / 1_000
@@ -43,7 +44,7 @@ const standIn = (candidate: SameCheckCandidate, ...firsts: FirstFlag[]) => decid
 test('the list marks FLIPS, and no other test, as answered only by a confirmation', () => {
   assert.deepEqual(CONFIRMATION_ONLY_FINDINGS.map((finding) => finding.id), ['flips'])
   assert.deepEqual(CONFIRMATION_ONLY_FINDINGS.map((finding) => finding.confirmationOnly), [{ material: 'fresh pairs, 40 replies' }])
-  const marked = RECORD_CHECKS.flatMap((check) => (check.findings as readonly CheckFinding<'flips'>[]).filter((finding) => finding.confirmationOnly !== undefined))
+  const marked = METHODS.flatMap((check) => (check.findings as readonly CheckFinding<'flips'>[]).filter((finding) => finding.confirmationOnly !== undefined))
   assert.deepEqual(marked.map((finding) => finding.id), ['flips'])
   // The compiler holds the list and the codes to it: another finding cannot carry the mark, FLIPS cannot drop it, and
   // no code exists for a test without it.

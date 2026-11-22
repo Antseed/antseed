@@ -46,13 +46,13 @@ import { DIFF_HOLD_EPOCHS, diffHoldReason, diffHoldResultReason } from './diff-h
 import { DEFAULT_LAYOUT_FILTER_PASSES, REFERENCE_SIZING_ALGORITHM_VERSION } from './model-reference.js'
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
 import { CONFIRMATION_WINDOW_SECONDS, pendingConfirmations, type EpochReport } from './pending-confirmations.js'
-import { AUDIT_CHECK_IDS, type AuditCheckId } from './flagging-checks.js'
 import {
-  ALL_TESTS_FORMAT, RECORD_CHECKS, confirmationCannotDecideOnRetry, decidedRecords, sameConfirmation, verdictOf,
-  type CheckOutcome, type CheckSlot, type ConfirmationIdentity,
+  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, confirmationCannotDecideOnRetry, decidedRecords, sameConfirmation, verdictOf,
+  type AuditCheckId, type CheckOutcome, type CheckSlot, type ConfirmationIdentity,
 } from './audit-checks.js'
-import { FLIPS_RULE } from './flips-score.js'
-import { FLIPS_AUDITOR_FAILURE } from './flips.js'
+import { METHODS } from './methods/index.js'
+import { FLIPS_RULE } from './methods/flips/flips-score.js'
+import { FLIPS_AUDITOR_FAILURE } from './methods/flips/flips.js'
 import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
 import { failureBlame } from './failure-blame.js'
 import {
@@ -100,7 +100,7 @@ const CLOSE_CALL_EXTENSIONS = 2
  */
 export function verifierRuleOverrides(config: VerifierCLIConfig | undefined): string[] {
   // The tests' switches from the list, in its order. Tests behind one switch are one setting, named once.
-  const switches = new Map(RECORD_CHECKS.map((check) => [check.toggle.key, check.toggle.pinned] as const))
+  const switches = new Map(METHODS.map((check) => [check.toggle.key, check.toggle.pinned] as const))
   const pinned = [
     ['closeCallExtensions', config?.closeCallExtensions, CLOSE_CALL_EXTENSIONS],
     ['diffHoldEpochs', config?.diffHoldEpochs, DIFF_HOLD_EPOCHS],
@@ -224,7 +224,7 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
     questions: { selection: EPOCH_QUESTION_SET_METHOD },
     // Each test's own block under its slot's name (`RecordCheck.fingerprint`): its rule, its limits and what its judge
     // gives for fixed inputs, kept with the test. Under the same key, the samples of a rule that crosses tests.
-    ...Object.fromEntries(RECORD_CHECKS.map((check) => [check.slot, { ...check.fingerprint(), ...CROSS_TEST_SAMPLES[check.slot]?.() }])),
+    ...Object.fromEntries(METHODS.map((check) => [check.slot, { ...check.fingerprint(), ...CROSS_TEST_SAMPLES[check.slot]?.() }])),
     // A result that answers another auditor's waiting DIFF: sent as DIFF only when one of these checks flagged in
     // both, as SAME only when a check that flagged there passed here, otherwise not at all; made at least
     // `minDelaySeconds` after that report. What the rule gives for fixed checks (flagged, passed, verdict).
