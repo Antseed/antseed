@@ -1,0 +1,155 @@
+{
+ "asks": [
+  {
+   "cap": 24,
+   "class": "cap-ignored",
+   "measurement": {
+    "a": "Before I send this on, can you confirm the details make sense? I wrote i… (184 characters, sha256 14a3ec8df9d01263)",
+    "b": " three hundred and one, three hundred and two, three hundred and three, … (3411 characters, sha256 2150388ca08b958a)",
+    "reference": {
+     "asks": [
+      {"baseTokens":53,"cachedInput":false,"probedTokens":906,"providers":["maker","maker"]},
+      {"baseTokens":53,"cachedInput":false,"probedTokens":906,"providers":["maker","maker"]}
+     ],
+     "delta": 853,
+     "failure": null
+    }
+   },
+   "prompt": "List every whole number from 320 onward written out in words, comma sepa… (163 characters, sha256 f626eea5018cb97e)",
+   "reading": {
+    "billedOutputTokens": 900,
+    "cap": 24,
+    "estimated": false,
+    "finished": false,
+    "oneAnswer": true,
+    "reasoningMarker": false,
+    "reasoningTokens": null,
+    "shape": "chat",
+    "stops": false,
+    "text": "three hundred and one, three hundred and two, three hundred and three, t… (3410 characters, sha256 eeef1933d895c219)"
+   },
+   "request": {
+    "attemptCosts": [
+     {
+      "estimatedCostUsd": 0.00009,
+      "inputTokens": 30,
+      "inputUsdPerMillion": 1,
+      "outputTokens": 48,
+      "outputUsdPerMillion": 2,
+      "provider": null,
+      "service": null,
+      "tokenSource": null,
+      "totalTokens": 78
+     }
+    ],
+    "failureReason": null,
+    "requestIds": ["<seller: cap ask #1>"],
+    "responseAuth": {
+     "failureReason": null,
+     "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: cap ask #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+     "requestId": "<seller: cap ask #1>",
+     "signedPreimages": {
+      "encoding": "antseed-http-codec-v1",
+      "hashAlgorithm": "keccak256",
+      "requestBase64": {
+       "requestId": "<seller: cap ask #1>",
+       "method": "POST",
+       "path": "/v1/chat/completions",
+       "headers": {},
+       "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"List ev… (296 characters, sha256 d2fbbac751b93f1d)"
+      },
+      "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "responseAuthSigningBase64": "AA==",
+      "responseBase64": {
+       "requestId": "<seller: cap ask #1>",
+       "statusCode": 200,
+       "headers": {},
+       "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (3584 characters, sha256 a39c9b6b5d175f07)"
+      },
+      "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+      "signatureEncoding": "antseed-response-auth-signing-v1"
+     },
+     "status": "verified"
+    },
+    "statusCode": 200
+   }
+  },
+  {
+   "cap": 24,
+   "class": "cap-ignored",
+   "measurement": {
+    "a": "Before I send this on, can you confirm the details make sense? It is abo… (165 characters, sha256 00e0b56a9e067fa4)",
+    "b": " three hundred and one, three hundred and two, three hundred and three, … (3411 characters, sha256 2150388ca08b958a)",
+    "reference": {
+     "asks": [
+      {"baseTokens":49,"cachedInput":false,"probedTokens":901,"providers":["maker","maker"]},
+      {"baseTokens":49,"cachedInput":false,"probedTokens":901,"providers":["maker","maker"]}
+     ],
+     "delta": 852,
+     "failure": null
+    }
+   },
+   "prompt": "Starting at 366, spell out each following number in English words on a s… (158 characters, sha256 09489c7ddd1c034e)",
+   "reading": {
+    "billedOutputTokens": 900,
+    "cap": 24,
+    "estimated": false,
+    "finished": false,
+    "oneAnswer": true,
+    "reasoningMarker": false,
+    "reasoningTokens": null,
+    "shape": "chat",
+    "stops": false,
+    "text": "three hundred and one, three hundred and two, three hundred and three, t… (3410 characters, sha256 eeef1933d895c219)"
+   },
+   "request": {
+    "attemptCosts": [
+     {
+      "estimatedCostUsd": 0.00009,
+      "inputTokens": 30,
+      "inputUsdPerMillion": 1,
+      "outputTokens": 48,
+      "outputUsdPerMillion": 2,
+      "provider": null,
+      "service": null,
+      "tokenSource": null,
+      "totalTokens": 78
+     }
+    ],
+    "failureReason": null,
+    "requestIds": ["<seller: cap ask #2>"],
+    "responseAuth": {
+     "failureReason": null,
+     "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: cap ask #2>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+     "requestId": "<seller: cap ask #2>",
+     "signedPreimages": {
+      "encoding": "antseed-http-codec-v1",
+      "hashAlgorithm": "keccak256",
+      "requestBase64": {
+       "requestId": "<seller: cap ask #2>",
+       "method": "POST",
+       "path": "/v1/chat/completions",
+       "headers": {},
+       "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Startin… (291 characters, sha256 c55525057d5c52ba)"
+      },
+      "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "responseAuthSigningBase64": "AA==",
+      "responseBase64": {
+       "requestId": "<seller: cap ask #2>",
+       "statusCode": 200,
+       "headers": {},
+       "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (3584 characters, sha256 a39c9b6b5d175f07)"
+      },
+      "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+      "signatureEncoding": "antseed-response-auth-signing-v1"
+     },
+     "status": "verified"
+    },
+    "statusCode": 200
+   }
+  }
+ ],
+ "outcome": "flag",
+ "reason": "the delivered answer measured more than 2 times the limit, 2 times",
+ "rule": {"flagFactor":2,"id":"output-cap-v1","maxCap":48,"minCap":16,"referenceAsks":2,"sellerAsks":2,"tolerance":2}
+}

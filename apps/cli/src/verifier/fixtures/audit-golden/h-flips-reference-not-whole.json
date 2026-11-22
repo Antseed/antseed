@@ -1,0 +1,10 @@
+{
+ "scenario": "h-flips-reference-not-whole",
+ "about": "a FLIPS reference that is not whole, where FLIPS counts: the audit is not started and the seller is asked nothing",
+ "asked": ["reference (FLIPS): 80 replies","reference (FLIPS): 11 replies asked again"],
+ "returned": {"failed":"the randomness check could not run on the auditor's side: waiting for it… (161 characters, sha256 57609b679dea8b36)"},
+ "evidence": null,
+ "read": null,
+ "files": [],
+ "lastCheckpoint": null
+}
