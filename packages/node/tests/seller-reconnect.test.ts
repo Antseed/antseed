@@ -92,6 +92,21 @@ describe('seller reconnect — mux-collision regression', () => {
     expect(muxAfterClose).toBe(mux2);
   });
 
+  it('closes and forgets the relay muxes when the node stops', async () => {
+    const node = makeSellerNode();
+    (node as any)._handleIncomingConnection(makeFakeConn(BUYER_PEER_ID));
+    const relayMux = (node as any)._relayMuxes.get(BUYER_PEER_ID);
+    const close = vi.spyOn(relayMux, 'close');
+    (node as any)._sessionTracker.finalizeAllSessions = vi.fn().mockResolvedValue(undefined);
+    (node as any)._sessionTracker.clearTimers = vi.fn();
+    (node as any)._started = true;
+
+    await node.stop();
+
+    expect(close).toHaveBeenCalledOnce();
+    expect((node as any)._relayMuxes.size).toBe(0);
+  });
+
   it('removes the mux when the correct (current) connection closes', () => {
     const node = makeSellerNode();
 

@@ -432,6 +432,22 @@ describe('SellerBlindRelay', () => {
     expect(() => blind.mint(BUYER, 'open-model', provider)).toThrow('no longer relays requests');
   });
 
+  it('lets a refused buyer open no stream on the handles it already holds', async () => {
+    const { blind, sidecars, provider } = keyedRelay();
+    const used = blind.mint(BUYER, 'open-model', provider);
+    const spare = blind.mint(BUYER, 'open-model', provider);
+    (await blind.authorize(BUYER, 'swap', used.credentialId)).open();
+    emit(sidecars[0]!, { type: 'responseEnd', length: 300, bytesUp: 400, bytesDown: 800 });
+    emit(sidecars[0]!, revealed('HTTP/1.1 200 OK', '{"prompt_tokens":5,"completion_tokens":5}', 'org/very-expensive-model'));
+    await expect(blind.authorize(BUYER, 'again-spare', spare.credentialId)).rejects.toThrow('no longer relays requests');
+    sidecars[0]!.emit('exit', { code: 0, stderr: '' });
+    await expect(blind.authorize(BUYER, 'again-used', used.credentialId)).rejects.toThrow('no longer relays requests');
+    expect(sidecars).toHaveLength(1);
+    // Another buyer is served as before.
+    const other = blind.mint(OTHER, 'open-model', provider);
+    await expect(blind.authorize(OTHER, 'other', other.credentialId)).resolves.toBeTruthy();
+  });
+
   it('lets only the buyer a handle was minted for open a stream, and one stream at a time', async () => {
     const { blind, sidecars, provider } = keyedRelay();
     const { credentialId } = blind.mint(BUYER, 'open-model', provider);

@@ -10,7 +10,7 @@ import { MessageType } from "./types/protocol.js";
 import { ProxyMux } from "./proxy/proxy-mux.js";
 import { PaymentMux } from "./p2p/payment-mux.js";
 import { VerificationMux } from "./verification/verification-mux.js";
-import { RelayMux } from "./p2p/relay-mux.js";
+import { RelayMux, requireAttestedConnection, type RelayStreamOptions } from "./p2p/relay-mux.js";
 import type { Duplex } from "node:stream";
 import type { ResponseAuthSink } from "@antseed/buyer-core";
 import type { VerificationSampler } from "./verification/samples.js";
@@ -203,8 +203,9 @@ export class BuyerIdentityContext {
   }
 
   /** Opens a seller-blind relay stream; see AntseedNode.openRelayStream. */
-  async openRelayStream(peer: PeerInfo, streamId: string, credentialId: string): Promise<Duplex> {
+  async openRelayStream(peer: PeerInfo, streamId: string, credentialId: string, options?: RelayStreamOptions): Promise<Duplex> {
     const conn = await this.connect(peer);
+    requireAttestedConnection(conn, peer, options);
     let mux = this._relayMuxes.get(peer.peerId);
     if (!mux) {
       mux = new RelayMux(conn);

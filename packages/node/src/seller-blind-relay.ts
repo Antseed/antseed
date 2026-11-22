@@ -15,6 +15,7 @@ const MAX_CREDENTIALS_PER_BUYER = 4;
 const CREDENTIAL_TTL_MS = 10 * 60_000;
 /** The longest request head the relay writes. */
 const MAX_HEAD_BYTES = 8192;
+const REFUSED_BUYER = 'this seller no longer relays requests for this buyer';
 
 interface LiveCredential {
   id: string;
@@ -134,7 +135,7 @@ export function keyedRelayHead(target: KeyedRelayTarget): Uint8Array {
  */
 export class SellerBlindRelay {
   private readonly _credentials = new Map<string, LiveCredential>();
-  /** Buyers whose request ran another model than the service's: they get no more handles. */
+  /** Buyers whose answer contradicted the request the seller checked: they get no more handles and no stream on one they hold. */
   private readonly _keyedRefused = new Set<string>();
 
   constructor(private readonly _deps: SellerBlindRelayDeps) {}
@@ -165,7 +166,7 @@ export class SellerBlindRelay {
     this._sweep();
     const held = [...this._credentials.values()].filter((c) => c.buyerPeerId === buyerPeerId).length;
     if (held >= MAX_CREDENTIALS_PER_BUYER) throw new Error('too many live credentials; reuse one');
-    if (this._keyedRefused.has(buyerPeerId)) throw new Error('this seller no longer relays requests for this buyer');
+    if (this._keyedRefused.has(buyerPeerId)) throw new Error(REFUSED_BUYER);
     const target = provider.keyedRelayTarget?.(service);
     if (!target) throw new Error(unserved);
     if (!isKeyedRequestTerms(target.request)) throw new Error(`service "${service}" has malformed request terms`);
@@ -184,6 +185,8 @@ export class SellerBlindRelay {
 
   /** Relay authorizer for one buyer's connection. */
   authorize(buyerPeerId: string, streamId: string, credentialId: string): Promise<RelayGrant> {
+    // Whatever handle it names: the handles a refused buyer held are gone.
+    if (this._keyedRefused.has(buyerPeerId)) return Promise.reject(new Error(REFUSED_BUYER));
     const credential = this._credentials.get(credentialId);
     // Another buyer's credential reads as unknown, so ids reveal nothing.
     if (!credential || credential.buyerPeerId !== buyerPeerId) return Promise.reject(new Error('unknown credential'));
@@ -206,12 +209,19 @@ export class SellerBlindRelay {
    */
   private _grant(credential: LiveCredential, streamId: string): RelayGrant {
     const { target } = credential;
-    let release = (): void => { credential.busy = false; };
+    let release = (): void => {
+      credential.busy = false;
+      // A refused buyer's handle opens no further stream: dropped once the stream on it is billed.
+      if (this._keyedRefused.has(credential.buyerPeerId)) this._credentials.delete(credential.id);
+    };
     /** A sidecar is running for the stream: its exit, after the stream is billed, frees the credential. */
     let live = false;
     const refuseBuyer = (why: string): void => {
       debugWarn(`[BlindRelay] ${streamId.slice(0, 8)} ${why}; refusing ${credential.buyerPeerId.slice(0, 12)}...`);
       this._keyedRefused.add(credential.buyerPeerId);
+      for (const [id, held] of this._credentials) {
+        if (held.buyerPeerId === credential.buyerPeerId && !held.busy) this._credentials.delete(id);
+      }
     };
     return {
       open: (): Duplex => {

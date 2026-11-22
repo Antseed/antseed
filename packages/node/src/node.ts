@@ -58,7 +58,7 @@ import { HttpMetadataResolver } from "./discovery/http-metadata-resolver.js";
 import { ProxyMux } from "./proxy/proxy-mux.js";
 import { PaymentMux } from "./p2p/payment-mux.js";
 import { SweepMux } from "./p2p/sweep-mux.js";
-import { RelayMux } from "./p2p/relay-mux.js";
+import { RelayMux, requireAttestedConnection, type RelayStreamOptions } from "./p2p/relay-mux.js";
 import { recordRelayedCost } from "./blind-relay-billing.js";
 import type { Duplex } from "node:stream";
 import { VerificationMux } from "./verification/verification-mux.js";
@@ -940,6 +940,10 @@ export class AntseedNode extends EventEmitter {
       verificationMux.close();
     }
     this._verificationMuxes.clear();
+    for (const relayMux of this._relayMuxes.values()) {
+      relayMux.close();
+    }
+    this._relayMuxes.clear();
     this._decoders.clear();
 
     // Close all connections
@@ -1572,12 +1576,15 @@ export class AntseedNode extends EventEmitter {
   /**
    * Buyer side: opens a seller-blind relay stream on a credential the seller
    * minted for this buyer identity. The stream carries raw bytes; the caller
-   * runs TLS to the credential's upstream through it.
+   * runs TLS to the credential's upstream through it. With a
+   * `channelBinding` the stream opens only on the connection that binding
+   * names, as a request does (`RequestExecutionOptions.channelBinding`).
    */
-  async openRelayStream(peer: PeerInfo, streamId: string, credentialId: string, buyerIdentity?: string): Promise<Duplex> {
+  async openRelayStream(peer: PeerInfo, streamId: string, credentialId: string, buyerIdentity?: string, options?: RelayStreamOptions): Promise<Duplex> {
     const context = this._buyerContext(buyerIdentity);
-    if (context) return context.openRelayStream(peer, streamId, credentialId);
+    if (context) return context.openRelayStream(peer, streamId, credentialId, options);
     const conn = await this._getOrCreateConnection(peer);
+    requireAttestedConnection(conn, peer, options);
     let mux = this._relayMuxes.get(peer.peerId);
     if (!mux) {
       mux = new RelayMux(conn);

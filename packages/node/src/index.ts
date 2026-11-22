@@ -111,7 +111,7 @@ export type { FreeTierLimit, FreeTierLimitStakeTier } from '@antseed/buyer-core'
 export { reconcileStoredChannels, type ChannelReconcileResult, type LivePaymentSessions } from '@antseed/buyer-core';
 export * from '@antseed/buyer-core/e2ee';
 export * from '@antseed/protocol/blind-relay';
-export { RelayMux, type RelayGrant } from './p2p/relay-mux.js';
+export { RelayMux, type RelayGrant, type RelayStreamOptions } from './p2p/relay-mux.js';
 export { SellerBlindRelay, type BlindRelayCharge, type KeyedRequestAdmission, type KeyedRequestDecision } from './seller-blind-relay.js';
 
 // Submodule re-exports (commonly used)

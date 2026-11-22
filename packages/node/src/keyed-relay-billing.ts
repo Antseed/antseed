@@ -1,18 +1,11 @@
+import type { KeyedRelayEvent, KeyedRelayRange } from '@antseed/keyed-relay';
 import { parseResponseUsage, type ResponseUsage } from './utils/response-usage.js';
 
-/** A response range the buyer revealed to the seller over the keyed relay. */
-export interface RevealedRange {
-  /** Byte offset in the raw HTTP response (status line, headers, body with its framing). */
-  offset: number;
-  /** The bytes, base64. */
-  data: string;
-}
+/** A response range the buyer revealed to the seller over the keyed relay: its offset in the raw HTTP response, and its bytes. */
+export type RevealedRange = KeyedRelayRange;
 
-export interface KeyedRelayReveal {
-  /** Length of the whole raw response, which the seller counted from the records it relayed. */
-  length: number;
-  ranges: RevealedRange[];
-}
+/** A reveal as the sidecar reports it: the ranges, and the length of the whole raw response the seller counted from the records it relayed. */
+export type KeyedRelayReveal = Pick<Extract<KeyedRelayEvent, { type: 'revealed' }>, 'length' | 'ranges'>;
 
 /** What the seller learns from a reveal: the status code, the usage and the model that answered, each when shown. */
 export interface KeyedRelayBilling {

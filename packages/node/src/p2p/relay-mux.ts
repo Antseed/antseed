@@ -15,6 +15,28 @@ import { MessageType } from '../types/protocol.js';
 import type { FramedMessage } from '../types/protocol.js';
 import { encodeFrame } from './message-protocol.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
+import { buyerFault } from '../errors.js';
+import type { PeerInfo } from '../types/peer.js';
+
+/** How a buyer opens a relay stream. */
+export interface RelayStreamOptions {
+  /** Open the stream only on the connection with this session hash: the one a TEE attestation covered. */
+  channelBinding?: string;
+}
+
+/**
+ * Fails, as the buyer's own, when `conn` is not the connection
+ * `options.channelBinding` names: a connection that replaced the attested
+ * one carries no relay stream for a request that needs the attestation.
+ */
+export function requireAttestedConnection(conn: Pick<PeerConnection, 'channelBinding'>, peer: PeerInfo, options?: RelayStreamOptions): void {
+  if (options?.channelBinding !== undefined && conn.channelBinding !== options.channelBinding) {
+    throw buyerFault(
+      `Connection to ${peer.peerId.slice(0, 12)}... is not the one its TEE attestation covered; verify the seller again`,
+      'buyer-tee-connection-changed',
+    );
+  }
+}
 
 /**
  * What a seller allows one relay stream to reach, and what it is told when the
@@ -38,11 +60,19 @@ export interface RelayMuxOptions {
   maxStreams?: number;
   /** A stream with no bytes either way for this long is closed. */
   idleTimeoutMs?: number;
+  /** A stream holding more received bytes than this, because its reader fell behind, is closed. */
+  maxBufferedBytes?: number;
 }
 
 const DEFAULT_MAX_STREAMS = 8;
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 const OPEN_TIMEOUT_MS = 30_000;
+/**
+ * A peer sends as fast as the connection carries, whatever the stream's reader
+ * takes: the bytes received and not yet read are bounded here, per stream.
+ */
+const DEFAULT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
+const FELL_BEHIND = 'the relay stream fell behind';
 
 const MESSAGE_TYPE_NAME: Record<number, string> = {
   [MessageType.RelayOpen]: 'RelayOpen',
@@ -163,11 +193,15 @@ export class RelayMux {
     try {
       grant = await this._options.authorize(streamId, credentialId);
     } catch (error) {
-      this._sellerStreams.delete(streamId);
+      if (this._sellerStreams.get(streamId) === stream) this._sellerStreams.delete(streamId);
       return refuse(error instanceof Error ? error.message : String(error));
     }
     stream.grant = grant;
-    if (stream.closed || this._closed) return this._endSellerStream(streamId, 'closed before it opened', false);
+    if (stream.closed) {
+      // The stream ended while the seller was deciding, before there was a grant to tell.
+      return this._closeGrant(stream, 'closed before it opened');
+    }
+    if (this._closed) return this._endSellerStream(streamId, 'closed before it opened', false);
     let socket: Duplex;
     try {
       socket = grant.open();
@@ -206,8 +240,15 @@ export class RelayMux {
     this._clearIdle(streamId);
     stream.socket?.destroy();
     if (notify) this._trySend(MessageType.RelayClose, encodeRelayClose({ streamId, reason }));
+    this._closeGrant(stream, reason);
+  }
+
+  /** Tells a stream's grant, once, that the stream ended. */
+  private _closeGrant(stream: SellerStream, reason: string): void {
+    const grant = stream.grant;
+    stream.grant = null;
     try {
-      stream.grant?.onClose?.({ bytesUp: stream.bytesUp, bytesDown: stream.bytesDown, ...(reason ? { error: reason } : {}) });
+      grant?.onClose?.({ bytesUp: stream.bytesUp, bytesDown: stream.bytesDown, ...(reason ? { error: reason } : {}) });
     } catch (error) {
       debugWarn(`[RelayMux] onClose failed: ${error instanceof Error ? error.message : error}`);
     }
@@ -242,12 +283,15 @@ export class RelayMux {
           seller.bytesUp += data.length;
           this._touch(streamId);
           seller.socket.write(data);
+          if (seller.socket.writableLength > this._maxBuffered()) this._endSellerStream(streamId, FELL_BEHIND, true);
           return true;
         }
         const buyer = this._buyerStreams.get(streamId);
         if (buyer?.opened) {
           this._touch(streamId);
           buyer.duplex.push(data);
+          // Destroying it tells the seller, which stops sending.
+          if (buyer.duplex.readableLength > this._maxBuffered()) buyer.duplex.destroy(new Error(FELL_BEHIND));
         }
         return true;
       }
@@ -283,6 +327,10 @@ export class RelayMux {
       if (stream.open) stream.open.reject(new Error('connection closed'));
       else stream.duplex.destroy(new Error('connection closed'));
     }
+  }
+
+  private _maxBuffered(): number {
+    return this._options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
   }
 
   private _touch(streamId: string): void {
