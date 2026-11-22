@@ -6,6 +6,7 @@ import test from 'node:test'
 import type { AuditCheckId } from './audit-checks.js'
 import { Wallet } from 'ethers'
 import { canonicalHashBytes32, canonicalJsonStringify } from '@antseed/fingerprints'
+import { bytesToHex, encodeResponseAuthSigningPayload, signData } from '@antseed/node'
 import { VERIFIER_VERDICT, serviceHash, type ModelAuditedEvent, type ServiceAuditedEvent, type VerifierVerdict } from '@antseed/node/payments'
 import { flaggingChecks, passedChecks } from './audit-checks.js'
 import { prepareAuditPublication } from './ipfs-publication.js'
@@ -20,6 +21,7 @@ import {
   type PublishedFlagReader,
   type SameCheckCandidate,
 } from './same-check.js'
+import { sellerSignatureProblem, type StoredSignedAnswer } from './seller-signature.js'
 import { sameCheckChanged } from '../cli/commands/verifier/submit.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
@@ -349,6 +351,32 @@ test('first evidence that is not published, altered, about another seller or not
       return decision?.kind === 'hold' ? decision.reason : `not held: ${decision?.kind}`
     })()
     assert.match(relabelReason, /the questions' first look says SAME, but its stored answers give DIFF/)
+    // An answer no seller signed, in a publication whose every hash was rewritten to match: the hashes prove which
+    // files were published, and the confirmer checks the sellers' signatures itself.
+    const forgedReason = async (forge: (auth: StoredSignedAnswer & { record: { signature: string } }) => void): Promise<string> => {
+      const forgedFile = JSON.parse(files.get(sellerPath)!) as { exchanges: Array<{ responseAuth: StoredSignedAnswer & { record: { signature: string } } }> }
+      assert.equal(sellerSignatureProblem(forgedFile.exchanges[0]!.responseAuth), null, 'the fixture seller signs its answers')
+      forge(forgedFile.exchanges[0]!.responseAuth)
+      const forged = structuredClone(evidence)
+      forged.results.find((result) => result.agentId === '2')!.audit.evidenceHash = canonicalHashBytes32(forgedFile)
+      const forgedFiles = new Map(files)
+      forgedFiles.set(sellerPath, canonicalJsonStringify(forgedFile))
+      forgedFiles.set(index.evidencePath, canonicalJsonStringify(forged))
+      return decideWith(reader(forgedFiles, canonicalHashBytes32(forged)))
+    }
+    // The signature of another key over the same record.
+    assert.match(await forgedReason((auth) => {
+      const { signature: _signature, receivedAt: _receivedAt, verified: _verified, verificationError: _verificationError, ...unsigned } = auth.record!
+      auth.record.signature = bytesToHex(signData(randomWallet(), encodeResponseAuthSigningPayload(unsigned)))
+    }), /an answer in the evidence is not authenticated: its signature is not the seller's/)
+    // Another response under the seller's signature.
+    assert.match(await forgedReason((auth) => {
+      auth.signedPreimages!.responseBase64 = Buffer.from('another answer').toString('base64')
+    }), /not authenticated: its stored response is not the one the seller signed/)
+    // A record changed after it was signed.
+    assert.match(await forgedReason((auth) => {
+      auth.record!.statusCode = 201
+    }), /not authenticated: its stored signing bytes are not those of its record/)
     // A path that leaves the publication.
     const escaping = new Map(files)
     escaping.set('publication.json', JSON.stringify({ ...index, evidencePath: `../../${index.evidencePath}` }))

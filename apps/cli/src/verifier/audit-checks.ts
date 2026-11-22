@@ -7,6 +7,7 @@ import type {
 import { METHODS } from './methods/index.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { matchesEnrolledService } from './response-auth-reader.js'
+import { sellerSignatureProblem } from './seller-signature.js'
 import { sameModelService } from './service-discovery.js'
 
 /**
@@ -304,6 +305,27 @@ export function validateStoredChecks(
     if (record == null || !countsTowardVerdict(check, record)) continue
     check.validate(record, context)
     assertBoundToSeller(check.requests(record), seller, check.texts.name)
+  }
+}
+
+/**
+ * Every answer in a seller's evidence that came with a signed record is the seller's own (`sellerSignatureProblem`):
+ * the question batches, and the requests of every test that counts toward the verdict. For a reader of another
+ * auditor's published evidence, whose answers never passed through its own buyer proxy. An answer stored without a
+ * record is no answer to the tests, which read only signed bytes.
+ */
+export function assertSellerSignatures(evidence: Pick<ProxyAuditEvidenceV1, 'exchanges'> & StoredCheckRecords): void {
+  const refuse = (what: string, problem: string | null): void => {
+    if (problem !== null) throw new Error(`${what}: an answer in the evidence is not authenticated: ${problem}`)
+  }
+  for (const exchange of evidence.exchanges) {
+    if (exchange.responseAuth?.record) refuse('the questions', sellerSignatureProblem(exchange.responseAuth))
+  }
+  for (const { check, record } of recordsOf(evidence)) {
+    if (record == null || !countsTowardVerdict(check, record)) continue
+    for (const request of check.requests(record)) {
+      if (request.responseAuth?.record) refuse(check.texts.name, sellerSignatureProblem(request.responseAuth))
+    }
   }
 }
 

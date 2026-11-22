@@ -5,7 +5,8 @@ import { VERIFIER_VERDICT, modelHash, serviceHash as hashService, type ModelAudi
 import type { ConfirmationTarget } from './pending-confirmations.js'
 import { sanitizeOutcomeSummary } from './outcome-reason.js'
 import {
-  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, CONFIRMATION_ONLY_FINDINGS, describeAuditCheck, flaggingChecks, sameConfirmation, validateStoredChecks,
+  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, CONFIRMATION_ONLY_FINDINGS, assertSellerSignatures, describeAuditCheck, flaggingChecks, sameConfirmation,
+  validateStoredChecks,
   type AuditCheckId, type ConfirmationOnlyCheckId, type ConfirmationOnlyFinding,
 } from './audit-checks.js'
 import { adjudicateQuestions } from './model-audit.js'
@@ -465,6 +466,9 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
     if (!Number.isFinite(madeAt) || madeAt > reportedAt + CLOCK_SLACK_SECONDS || madeAt < reportedAt - EVIDENCE_MAX_AGE_SECONDS) {
       throw new Error(`its audit evidence linked for agent ${agentId} was not made in the epoch of its report`)
     }
+    // The hash proves which file was published. That a seller signed the answers in it is checked here, for the
+    // first set's file and for each extra set's: none of them passed through this auditor's buyer proxy.
+    assertSellerSignatures(parsed)
     return parsed
   }
   const results = evidence['results'] as unknown[]
