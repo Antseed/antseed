@@ -45,7 +45,7 @@ A seller list is a named group of providers that a policy allows or blocks in on
 
 The seller forwards the request with its own upstream key and sees only ciphertext. It still sees the model, token counts, timing and message sizes, which it needs for billing. Your buyer decrypts the answer as it streams.
 
-Only text chat completions can be encrypted. A request with images, audio, tools or tool results, or with a message that carries anything beside its role and text (an earlier answer's reasoning, for example), gets `400 zero_data_access_unsupported` instead of being sent in plaintext. Routing services read the whole conversation, so this setting leaves them out. A provider whose attestation fails is skipped for 5 minutes.
+Only text chat completions can be encrypted. A request with images, audio, tools or tool results, with a message that carries anything beside its role and text (an earlier answer's reasoning, for example), or with a request field other than the standard generation settings (a structured-output schema, stop sequences, a user id or metadata, for example), gets `400 zero_data_access_unsupported` instead of being sent in plaintext. Routing services read the whole conversation, so this setting leaves them out. A provider whose attestation fails is skipped for 5 minutes.
 
 A single request can ask for it with the header `x-antseed-require-zero-data-access: 1`, on top of its key's policy.
 

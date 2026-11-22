@@ -32,7 +32,7 @@ Find the error code or symptom, then apply the fix. API errors from the gateway 
 | `409 video_payment_pending` | A video this key downloaded from the seller isn't paid for yet. `error.jobs` lists it. | Retry after the `Retry-After` seconds; the buyer pays for it on its own. |
 | `409 video_jobs_held` | The seller is holding back new videos for this gateway because of videos started with other keys. | Retry later, or use another seller. |
 | `503 buyer_upgrade_required` | A key with limits created a video, and the buyer is too old to check the price against the limit. | Upgrade the buyer to the gateway's version. |
-| `503 routing_policy_unavailable`, `503 buyer_policy_unsupported` | The key has a policy that restricts sellers, and the buyer can't apply it. | Upgrade the buyer to the gateway's version, and run both with the same data dir. |
+| `503 routing_policy_unavailable`, `503 buyer_policy_unsupported` | The key has a policy that restricts sellers or requires zero data access, and the buyer can't apply it. | Upgrade the buyer to the gateway's version, and run both with the same data dir. |
 
 Requests the gateway refuses itself (an invalid key, a disallowed model, a spent budget) are not added to the request log.
 
