@@ -11,9 +11,13 @@ import {
   faultAttributionOf,
   isBlindRelayOffer,
   isKeyedRequestTerms,
+  keyedRefusalCode,
+  ANTSEED_FAULT_ATTRIBUTION_HEADER,
   type BlindRelayCredential,
   type FaultAttribution,
+  type KeyedRefusalCode,
   type PeerInfo,
+  type RelayedResponse,
   type SerializedHttpRequest,
   type SerializedHttpResponse,
   type SerializedHttpResponseChunk,
@@ -39,6 +43,12 @@ const KEYED_READY_TIMEOUT_MS = 30_000
 const KEYED_ADMIT_TIMEOUT_MS = 90_000
 /** How long revealing the billing ranges may take. */
 const KEYED_REVEAL_TIMEOUT_MS = 30_000
+/** As for a request a seller answers itself: how long the answer may take to start, how long it may pause, and how long it may run. */
+const RESPONSE_TIMEOUT_MS = 5 * 60_000
+const STREAM_IDLE_TIMEOUT_MS = 5 * 60_000
+const MAX_STREAM_DURATION_MS = 30 * 60_000
+/** How long a request waits before it is sent again, after a seller refused it while a channel top-up was mining. */
+const TOP_UP_RETRY_MS = 2_000
 /** The one request the seller writes the head of. */
 const KEYED_REQUEST_PATH = '/v1/chat/completions'
 
@@ -48,7 +58,16 @@ const KEYED_REQUEST_PATH = '/v1/chat/completions'
  * no seller: the caller then counts no failure against this one.
  */
 export class BlindRelayError extends Error {
-  constructor(message: string, readonly attribution: FaultAttribution = 'unknown') {
+  constructor(
+    message: string,
+    readonly attribution: FaultAttribution = 'unknown',
+    readonly detail: {
+      /** The seller refused the request for a reason that passes: it is sent once more. */
+      refusal?: KeyedRefusalCode
+      /** The answer to the credential request that is the buyer's own to see: a payment it could not make. */
+      response?: SerializedHttpResponse
+    } = {},
+  ) {
     super(message)
     this.name = 'BlindRelayError'
   }
@@ -64,7 +83,7 @@ export interface BlindRelayDeps {
   openRelayStream(peer: PeerInfo, streamId: string, credentialId: string, buyerIdentity: string | undefined, channelBinding?: string): Promise<Duplex>
   recordRelayedResponse(
     peer: PeerInfo,
-    relayed: { requestId: string; service: string; requestBody: Uint8Array; response: SerializedHttpResponse },
+    relayed: RelayedResponse,
     buyerIdentity: string | undefined,
   ): void
   /** The sidecar binary; defaults to the installed one. Null turns the relay off. */
@@ -73,10 +92,12 @@ export interface BlindRelayDeps {
   keyedRelayExtraRootsPem?: string
   now?: () => number
   sleep?: (ms: number) => Promise<void>
-}
-
-interface HeldCredential {
-  credential: BlindRelayCredential
+  /** How long an admitted request may wait for its answer to start. */
+  responseTimeoutMs?: number
+  /** How long a started answer may pause. */
+  streamIdleTimeoutMs?: number
+  /** How long an answer may run in all. */
+  maxStreamDurationMs?: number
 }
 
 export interface BlindRelaySendOptions {
@@ -95,6 +116,12 @@ interface RelayTarget {
 }
 
 const GIVEN_UP = 'the request was given up while the relay was set up'
+
+/** The error for a request that reached no upstream; `message` quotes the seller's refusal when it refused. */
+function notSent(message: string): BlindRelayError {
+  const refusal = keyedRefusalCode(message)
+  return new BlindRelayError(message, 'unknown', refusal ? { refusal } : {})
+}
 
 export interface BlindRelayCallbacks {
   onResponseStart?(response: SerializedHttpResponse): void
@@ -120,8 +147,8 @@ function flatHeaders(headers: IncomingHttpHeaders): Record<string, string> {
  * seller's charge for it only up to that price.
  */
 export class BlindRelayClient {
-  private readonly _held = new Map<string, HeldCredential[]>()
-  private readonly _minting = new Map<string, Promise<HeldCredential>>()
+  private readonly _held = new Map<string, BlindRelayCredential[]>()
+  private readonly _minting = new Map<string, Promise<BlindRelayCredential>>()
   private _resolvedBinary: { path: string | null } | null = null
 
   constructor(private readonly _deps: BlindRelayDeps) {}
@@ -150,14 +177,14 @@ export class BlindRelayClient {
     return `${peer.peerId.toLowerCase()}|${service}|${buyerIdentity ?? ''}|${channelBinding ?? ''}`
   }
 
-  private _live(key: string): HeldCredential[] {
+  private _live(key: string): BlindRelayCredential[] {
     const now = this._now()
-    const live = (this._held.get(key) ?? []).filter((held) => held.credential.expiresAt - now > MIN_REMAINING_MS)
+    const live = (this._held.get(key) ?? []).filter((held) => held.expiresAt - now > MIN_REMAINING_MS)
     this._held.set(key, live)
     return live
   }
 
-  private async _mint({ peer, service, buyerIdentity, channelBinding }: RelayTarget): Promise<HeldCredential> {
+  private async _mint({ peer, service, buyerIdentity, channelBinding }: RelayTarget): Promise<BlindRelayCredential> {
     const response = await this._deps.sendRequest(peer, {
       requestId: randomUUID(),
       method: 'POST',
@@ -171,7 +198,12 @@ export class BlindRelayClient {
       try {
         reason = (JSON.parse(text) as { error?: { message?: string } }).error?.message ?? reason
       } catch { /* not JSON */ }
-      throw new BlindRelayError(`the seller minted no credential (HTTP ${response.statusCode}: ${reason})`)
+      const message = `the seller minted no credential (HTTP ${response.statusCode}: ${reason})`
+      // What the node could not pay, or refused as the buyer's own: the caller answers with it, as for any other request.
+      if (response.statusCode === 402 || response.headers[ANTSEED_FAULT_ATTRIBUTION_HEADER] === 'buyer') {
+        throw new BlindRelayError(message, 'buyer', { response })
+      }
+      throw new BlindRelayError(message)
     }
     const credential = JSON.parse(text) as BlindRelayCredential
     if (typeof credential.credentialId !== 'string'
@@ -189,11 +221,11 @@ export class BlindRelayClient {
     if (base.protocol !== 'https:' || base.hostname !== credential.upstream.host) {
       throw new BlindRelayError('the credential names an upstream the relay does not reach')
     }
-    return { credential }
+    return credential
   }
 
   /** The credential being minted for `key`, shared by the requests that wait for one. It is held once minted, whoever still waits. */
-  private _minted(key: string, target: RelayTarget): Promise<HeldCredential> {
+  private _minted(key: string, target: RelayTarget): Promise<BlindRelayCredential> {
     let minting = this._minting.get(key)
     if (!minting) {
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -250,7 +282,7 @@ export class BlindRelayClient {
    * idle. It ends within SETUP_TIMEOUT_MS whatever the seller answers, and as
    * soon as `signal` aborts.
    */
-  private async _openStream(target: RelayTarget, streamId: string, signal: AbortSignal | undefined): Promise<{ held: HeldCredential; stream: Duplex }> {
+  private async _openStream(target: RelayTarget, streamId: string, signal: AbortSignal | undefined): Promise<{ credential: BlindRelayCredential; stream: Duplex }> {
     const { peer, buyerIdentity, channelBinding } = target
     const key = BlindRelayClient._key(target)
     const busyDeadline = this._now() + BUSY_WAIT_MS
@@ -262,8 +294,8 @@ export class BlindRelayClient {
       if (this._now() >= setupDeadline) throw new BlindRelayError('the seller took too long to set up the relay')
       for (const held of this._live(key)) {
         try {
-          const opening = this._deps.openRelayStream(peer, streamId, held.credential.credentialId, buyerIdentity, channelBinding)
-          return { held, stream: await this._unlessGivenUp(opening, signal, wallDeadline, (late) => late.destroy()) }
+          const opening = this._deps.openRelayStream(peer, streamId, held.credentialId, buyerIdentity, channelBinding)
+          return { credential: held, stream: await this._unlessGivenUp(opening, signal, wallDeadline, (late) => late.destroy()) }
         } catch (error) {
           // The buyer's own: a stream limit, or a connection other than the attested one. No seller is blamed.
           if (error instanceof BlindRelayError || faultAttributionOf(error) === 'buyer') throw error
@@ -326,8 +358,39 @@ export class BlindRelayClient {
     }
     const binary = this._binary()
     if (!binary) throw new BlindRelayError(this.unavailable() ?? '', 'buyer')
-    const streamId = request.requestId || randomUUID()
-    const { held: { credential }, stream } = await this._openStream({ peer, service, buyerIdentity, channelBinding }, streamId, signal)
+    const target: RelayTarget = { peer, service, buyerIdentity, channelBinding }
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        // A second attempt is a stream of its own, for the seller and for the charge it sends.
+        const streamId = attempt === 0 && request.requestId ? request.requestId : randomUUID()
+        return await this._sendOnce(target, streamId, request.requestId, fields, binary, callbacks, signal)
+      } catch (error) {
+        if (!(error instanceof BlindRelayError)) throw error
+        if (error.detail.response) return { ...error.detail.response, requestId: request.requestId }
+        const { refusal } = error.detail
+        // A refused request reached no upstream, so sending it again is safe. Once: a seller that refuses again is left.
+        if (!refusal || attempt > 0 || signal?.aborted) throw error
+        if (refusal === 'channel_exhausted') {
+          // The seller is closing the channel. A new credential is asked for: the node pays for it on a new channel.
+          this._held.delete(BlindRelayClient._key(target))
+        } else {
+          await this._sleep(TOP_UP_RETRY_MS)
+        }
+      }
+    }
+  }
+
+  private async _sendOnce(
+    target: RelayTarget,
+    streamId: string,
+    requestId: string,
+    fields: ReturnType<typeof keyedRequestFields>,
+    binary: string,
+    callbacks: BlindRelayCallbacks,
+    signal: AbortSignal | undefined,
+  ): Promise<SerializedHttpResponse> {
+    const { peer, service, buyerIdentity } = target
+    const { credential, stream } = await this._openStream(target, streamId, signal)
     let sidecar: KeyedRelayProcess | null = null
     /** Set once the answer is handed over: the billing reveal then ends the sidecar and the stream. */
     let revealing = false
@@ -359,13 +422,30 @@ export class BlindRelayClient {
         'content-length': String(prepared.body.length),
         accept: prepared.stream ? 'text/event-stream' : 'application/json',
       }
+      const responseTimeoutMs = this._deps.responseTimeoutMs ?? RESPONSE_TIMEOUT_MS
+      const streamIdleTimeoutMs = this._deps.streamIdleTimeoutMs ?? STREAM_IDLE_TIMEOUT_MS
+      const maxStreamDurationMs = this._deps.maxStreamDurationMs ?? MAX_STREAM_DURATION_MS
+      /** The wait for the next part of the answer, and the answer's whole run. */
+      let waiting: ReturnType<typeof setTimeout> | undefined
+      let running: ReturnType<typeof setTimeout> | undefined
       return await new Promise<SerializedHttpResponse>((resolve, reject) => {
         let started = false
+        // Past admission the request may have reached the upstream: a plain error, not one that says nothing was sent.
+        const endsWithin = (ms: number, message: string): ReturnType<typeof setTimeout> => {
+          const timer = setTimeout(() => {
+            reject(new Error(`${message} within ${ms} ms`))
+            outgoing.destroy()
+          }, ms)
+          timer.unref()
+          return timer
+        }
         socket.once('requestWritten', ({ headerLength, length }: { headerLength: number; length: number }) => {
           relay.revealRequest(length, [[0, headerLength], [length - prepared.tailLength, prepared.tailLength]])
-          relay.waitFor('admitted', KEYED_ADMIT_TIMEOUT_MS).catch((error: unknown) => {
+          relay.waitFor('admitted', KEYED_ADMIT_TIMEOUT_MS).then(() => {
+            if (!started) waiting = endsWithin(responseTimeoutMs, 'the seller forwarded the request and no answer came')
+          }, (error: unknown) => {
             // The seller holds the request until it admits it: nothing reached the upstream.
-            reject(new BlindRelayError(`the seller did not forward the request (${error instanceof Error ? error.message : String(error)})`))
+            reject(notSent(`the seller did not forward the request (${error instanceof Error ? error.message : String(error)})`))
             outgoing.destroy()
           })
         })
@@ -378,20 +458,25 @@ export class BlindRelayClient {
           ...(signal ? { signal } : {}),
         }, (incoming) => {
           started = true
+          clearTimeout(waiting)
+          waiting = endsWithin(streamIdleTimeoutMs, 'the answer started and no more of it came')
+          running = endsWithin(maxStreamDurationMs, 'the answer did not end')
           const statusCode = incoming.statusCode ?? 502
           // As from a seller that answers itself: nothing of the seller's upstream account reaches the client.
           const responseHeaders = exposedResponseHeaders(flatHeaders(incoming.headers))
-          callbacks.onResponseStart?.({ requestId: request.requestId, statusCode, headers: responseHeaders, body: new Uint8Array(0) })
+          callbacks.onResponseStart?.({ requestId, statusCode, headers: responseHeaders, body: new Uint8Array(0) })
           const chunks: Buffer[] = []
           incoming.on('data', (chunk: Buffer) => {
+            clearTimeout(waiting)
+            waiting = endsWithin(streamIdleTimeoutMs, 'the answer started and no more of it came')
             chunks.push(chunk)
-            callbacks.onResponseChunk?.({ requestId: request.requestId, data: new Uint8Array(chunk), done: false })
+            callbacks.onResponseChunk?.({ requestId, data: new Uint8Array(chunk), done: false })
           })
           incoming.on('end', () => {
-            const response: SerializedHttpResponse = { requestId: request.requestId, statusCode, headers: responseHeaders, body: new Uint8Array(Buffer.concat(chunks)) }
+            const response: SerializedHttpResponse = { requestId, statusCode, headers: responseHeaders, body: new Uint8Array(Buffer.concat(chunks)) }
             // Priced before the reveal, so the seller's charge finds the buyer's own cost.
             this._deps.recordRelayedResponse(peer, { requestId: streamId, service, requestBody: prepared.body, response }, buyerIdentity)
-            callbacks.onResponseChunk?.({ requestId: request.requestId, data: new Uint8Array(0), done: true })
+            callbacks.onResponseChunk?.({ requestId, data: new Uint8Array(0), done: true })
             // The client has its answer; the reveal the seller bills by follows once the upstream closes.
             revealing = true
             void relay.waitFor('responseEnd', KEYED_REVEAL_TIMEOUT_MS)
@@ -407,9 +492,12 @@ export class BlindRelayClient {
           incoming.on('error', reject)
         })
         outgoing.on('error', (error) => {
-          reject(started ? error : new BlindRelayError(`the upstream could not be reached through the relay (${error.message})`))
+          reject(started ? error : notSent(`the upstream could not be reached through the relay (${error.message})`))
         })
         outgoing.end(Buffer.from(prepared.body))
+      }).finally(() => {
+        clearTimeout(waiting)
+        clearTimeout(running)
       })
     } finally {
       if (!revealing) close()

@@ -18,6 +18,14 @@ import { canonicalModelKey } from '@antseed/node/model-identity'
 export const ROUTING_POLICY_HEADER = 'x-antseed-routing-policy'
 /** Shared secret proving the routing policy came from the local gateway. */
 export const GATEWAY_CONTROL_HEADER = 'x-antseed-gateway-auth'
+/**
+ * A buyer that applies `requireZeroDataAccess` says so in its route preview's
+ * `capabilities`. An older buyer decodes a policy with the field and routes
+ * without it, so a gateway sends the requirement only to a buyer that lists this.
+ */
+export const ZERO_DATA_ACCESS_POLICY_CAPABILITY = 'zero-data-access'
+/** The policy requirements this buyer applies beyond the ones every policy-aware buyer does. */
+export const ROUTING_POLICY_CAPABILITIES: readonly string[] = [ZERO_DATA_ACCESS_POLICY_CAPABILITY]
 /** File, relative to the data dir, holding the gateway↔buyer control secret. */
 export const GATEWAY_CONTROL_SECRET_FILE = 'gateway/buyer-control.secret'
 /** Overrides the secret file, e.g. when the buyer and gateway run in separate containers. */

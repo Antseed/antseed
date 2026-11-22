@@ -184,6 +184,7 @@ import {
   GATEWAY_CONTROL_HEADER,
   GATEWAY_CONTROL_SECRET_ENV,
   GATEWAY_CONTROL_SECRET_FILE,
+  ROUTING_POLICY_CAPABILITIES,
   ROUTING_POLICY_HEADER,
   decodePolicyHeader,
   findModelRoute,
@@ -2459,7 +2460,8 @@ export class BuyerProxy {
     // `buyer`: the top level of the chain (hard limits plus routing
     // preferences), so the console can show it (max pricing lives in the
     // router plugin's config).
-    sendJson(res, 200, { model, candidates: await this._routePreview(model, policy), buyer: this._buyerPolicy() })
+    // `capabilities`: the policy requirements this buyer applies that an older one accepts and ignores.
+    sendJson(res, 200, { model, candidates: await this._routePreview(model, policy), buyer: this._buyerPolicy(), capabilities: ROUTING_POLICY_CAPABILITIES })
   }
 
   /** `GET /_antseed/balances?identity=<name>`: on-chain balances of a buyer identity. */

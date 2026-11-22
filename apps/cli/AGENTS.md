@@ -20,6 +20,7 @@ Published to npm (bin `antseed`). Node, ES modules. The desktop and Nix ship it 
 | A stale "AntSeed Local CA" (same CN, other fingerprint) is classified `stale` and purged on install. | `src/system-proxy/ca-manager.test.ts` (classification only) |
 | No duplicate command names or aliases in the tree. | `src/cli/program.test.ts` |
 | Setting up a seller-blind relay ends: a wall deadline, a small number of credentials a seller may reject, and the request's own cancellation all stop it. A buyer's own fault (stream limit, a changed attested connection) passes through unchanged, so the seller is not blamed. | `src/proxy/blind-relay.test.ts` |
+| A relayed request the seller refuses with a code the buyer can recover from (`KEYED_REFUSAL_CODES`) is sent once more, never twice, and nothing of a refused request reached the upstream. A payment the buyer cannot make at the mint reaches the client as it is, and no other seller is asked. An admitted request ends at a deadline: for the first byte, between bytes and for the whole answer. | `src/proxy/blind-relay.test.ts`, `src/proxy/gateway-policy.test.ts` |
 
 ## Connections
 

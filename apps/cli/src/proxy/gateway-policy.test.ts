@@ -8,6 +8,7 @@ import test, { type TestContext } from 'node:test'
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
 import { encodeFreeTierCapabilities } from '@antseed/node/free-tier-program'
 import { BuyerProxy, type BuyerBalanceReader, type BuyerProxyConfig } from './buyer-proxy.js'
+import { BlindRelayClient } from './blind-relay.js'
 import { BUYER_IDENTITY_HEADER } from './request-utils.js'
 import { SPEND_ATTRIBUTION_HEADER } from './spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type RouteSelection } from './route-selection.js'
@@ -257,8 +258,10 @@ test('route-preview shares routing logic and explains ineligible sellers', async
     headers: withPolicy({ minTrustScore: 60, maxInputUsdPerMillion: 5, requireVerified: false }),
   })
   assert.equal(res.status, 200)
-  const body = await res.json() as { model: string; candidates: Array<Record<string, unknown>> }
+  const body = await res.json() as { model: string; candidates: Array<Record<string, unknown>>; capabilities: string[] }
   assert.equal(body.model, 'gpt-5')
+  // What a gateway reads before it sends this buyer a policy that requires zero data access.
+  assert.deepEqual(body.capabilities, ['zero-data-access'])
   const byId = new Map(body.candidates.map((candidate) => [candidate['peerId'], candidate]))
   assert.deepEqual(Object.keys(body.candidates[0]!).sort(), [
     'cachedInputUsdPerMillion', 'displayName', 'eligible', 'health', 'inputUsdPerMillion', 'outputUsdPerMillion', 'peerId', 'rank', 'reasons', 'selection', 'trustScore',
@@ -1407,4 +1410,38 @@ test('a speech request the buyer cannot fund falls back to a free speech seller'
   assert.equal(res.status, 200)
   // The dearest (most trusted) seller refused; the other paid one is skipped; the free one answered.
   assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [dearSpeech.peerId, freeSpeech.peerId])
+})
+
+test('a payment this buyer cannot make for a seller-blind request reaches the client as it is, and no other seller is asked', async (t) => {
+  const blind = (seed: string): PeerInfo => ({
+    ...makePeer(seed, { input: 1, output: 1, trust: 80 }),
+    providerServiceApiProtocols: { openai: { services: { 'open-model': ['openai-chat-completions'] } } },
+    providerServiceCategories: { openai: { services: { 'open-model': ['chat', 'seller-blind'] } } },
+  })
+  const asked: string[] = []
+  const blindRelay = new BlindRelayClient({
+    // The buyer's own node answers the credential request: its payments are not running.
+    sendRequest: async (peer, request) => {
+      asked.push(peer.peerId)
+      return {
+        requestId: request.requestId,
+        statusCode: 503,
+        headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
+        body: Buffer.from(JSON.stringify({ error: 'buyer_payments_inactive', reason: 'payments_not_running', peerId: peer.peerId })),
+      }
+    },
+    openRelayStream: async () => { throw new Error('no stream opens without a credential') },
+    recordRelayedResponse: () => {},
+    keyedRelayBinary: '/never-spawned',
+  })
+  const h = await startHarness(t, [blind('a'), blind('b')], { blindRelay })
+  const res = await fetch(`${h.url}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...withPolicy({ requireZeroDataAccess: true }) },
+    body: JSON.stringify({ model: 'open-model', messages: [{ role: 'user', content: 'Hello' }] }),
+  })
+  const text = await res.text()
+  assert.equal(res.status, 503, text)
+  assert.match(text, /buyer_payments_inactive/)
+  assert.equal(asked.length, 1, `asked ${asked.length} sellers`)
 })

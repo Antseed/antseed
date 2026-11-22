@@ -7,7 +7,7 @@ import { PassThrough, type Duplex } from 'node:stream'
 import { createServer as tlsCreateServer } from 'node:tls'
 import { RelayMux, SellerBlindRelay, type BlindRelayCharge, type KeyedRequestAdmission, type KeyedRequestDecision, type PeerInfo, type Provider, type SerializedHttpRequest, type SerializedHttpResponse, type SerializedHttpResponseChunk } from '@antseed/node'
 import { KeyedRelayProcess, resolveKeyedRelayBinary } from '@antseed/keyed-relay'
-import { BlindRelayClient, BlindRelayError, type BlindRelayCallbacks } from './blind-relay.js'
+import { BlindRelayClient, BlindRelayError, type BlindRelayCallbacks, type BlindRelayDeps } from './blind-relay.js'
 import { KeyedPlaintextSocket, keyedRequestBody, keyedRevealRanges } from './keyed-relay-client.js'
 
 const peer = { peerId: 'a'.repeat(40) } as PeerInfo
@@ -345,13 +345,24 @@ const keyedBinary = resolveKeyedRelayBinary()
 const fixtureUrl = (name: string) => new URL(`../../../../packages/keyed-relay/test/fixtures/${name}`, import.meta.url)
 
 /** A seller-blind relay with real sidecars, a relay mux pair and a local TLS 1.2 upstream. */
-async function keyedStack(admit: (request: KeyedRequestAdmission) => KeyedRequestDecision, closeAfterMs = 20) {
+async function keyedStack(
+  admit: (request: KeyedRequestAdmission) => KeyedRequestDecision,
+  closeAfterMs = 20,
+  /** `silent`: the upstream takes the request and answers nothing. `stalls`: it starts the answer and stops. */
+  options: { upstream?: 'silent' | 'stalls'; deadlines?: Pick<BlindRelayDeps, 'responseTimeoutMs' | 'streamIdleTimeoutMs' | 'maxStreamDurationMs'> } = {},
+) {
   const ca = readFileSync(fixtureUrl('ca.pem'), 'utf8')
   /** Every byte each upstream connection received, and the complete requests among them. */
   const received: string[] = []
   const requests: string[] = []
+  /** Upstream connections that closed. */
+  let closed = 0
+  let mints = 0
+  const waits: number[] = []
   const upstream = tlsCreateServer({ key: readFileSync(fixtureUrl('localhost.key')), cert: readFileSync(fixtureUrl('localhost.pem')), maxVersion: 'TLSv1.2' }, (socket) => {
     const index = received.push('') - 1
+    socket.on('close', () => { closed += 1 })
+    socket.on('error', () => {})
     socket.on('data', (data) => {
       received[index] += data.toString()
       const raw = received[index]!
@@ -359,11 +370,13 @@ async function keyedStack(admit: (request: KeyedRequestAdmission) => KeyedReques
       const length = Number(/content-length: (\d+)/i.exec(raw)?.[1] ?? -1)
       if (end < 0 || length < 0 || raw.length < end + 4 + length) return
       requests.push(raw)
+      if (options.upstream === 'silent') return
       // Chunked, with the end of the body in a TLS record of its own, as upstreams send it.
       const events = 'data: {"model":"org/open-model","choices":[{"delta":{"content":"giraffe"}}]}\n\n'
         + 'data: {"model":"org/open-model","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3}}\n\ndata: [DONE]\n\n'
       const account = 'set-cookie: session=upstream-account\r\nx-ratelimit-remaining-tokens: 999\r\nopenai-organization: seller-org\r\n'
       socket.write(`HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n${account}transfer-encoding: chunked\r\nconnection: close\r\n\r\n${events.length.toString(16)}\r\n${events}\r\n`, () => {
+        if (options.upstream === 'stalls') return
         setTimeout(() => socket.write('0\r\n\r\n', () => setTimeout(() => socket.end(), closeAfterMs)), 20)
       })
     })
@@ -397,6 +410,7 @@ async function keyedStack(admit: (request: KeyedRequestAdmission) => KeyedReques
   const recorded: SerializedHttpResponse[] = []
   const client = new BlindRelayClient({
     sendRequest: async (_peer, request) => {
+      mints += 1
       const minted = seller.mint(peer.peerId, 'open-model', provider)
       return { requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(minted)) }
     },
@@ -404,6 +418,9 @@ async function keyedStack(admit: (request: KeyedRequestAdmission) => KeyedReques
     recordRelayedResponse: (_peer, relayed) => { recorded.push(relayed.response) },
     keyedRelayBinary: keyedBinary,
     keyedRelayExtraRootsPem: ca,
+    // A real, short wait: the seller's handle is busy until its sidecar has exited.
+    sleep: (ms) => { waits.push(ms); return new Promise((resolve) => setTimeout(resolve, 20)) },
+    ...options.deadlines,
   })
   const send = (body: unknown, callbacks: BlindRelayCallbacks = {}) => client.send(peer, 'open-model', {
     requestId: 'keyed-1',
@@ -412,7 +429,7 @@ async function keyedStack(admit: (request: KeyedRequestAdmission) => KeyedReques
     headers: { 'content-type': 'application/json', authorization: 'Bearer buyer-must-not-send', 'x-cost-header': 'priority' },
     body: new TextEncoder().encode(JSON.stringify(body)),
   }, undefined, callbacks)
-  return { upstream, received, requests, charges, recorded, send }
+  return { upstream, received, requests, charges, recorded, send, waits, mints: () => mints, closed: () => closed }
 }
 
 test('the seller checks the request, adds its key to the buyer\'s TLS session and bills the revealed usage', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
@@ -456,6 +473,97 @@ test('a refused request never reaches the upstream and is not charged', { skip: 
   } finally {
     stack.upstream.close()
   }
+})
+
+const zebra = { model: 'open-model', stream: true, messages: [{ role: 'user', content: 'zebra' }] }
+
+test('a request refused for an exhausted channel is sent once more, on a credential minted for the new channel', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
+  let asked = 0
+  const stack = await keyedStack(() => (++asked === 1 ? { admitted: false, reason: 'channel_exhausted: the payment channel is exhausted' } : { admitted: true }))
+  try {
+    const response = await stack.send(zebra)
+    assert.equal(response.statusCode, 200)
+    assert.match(new TextDecoder().decode(response.body), /giraffe/)
+    // The mint is where the seller answers 402 and the node opens the new channel: the held credential is not reused.
+    assert.deepEqual([asked, stack.mints(), stack.requests.length], [2, 2, 1])
+  } finally {
+    stack.upstream.close()
+  }
+})
+
+test('a request refused while a top-up is mining is sent once more after a short wait, on the credential it has', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
+  let asked = 0
+  const stack = await keyedStack(() => (++asked === 1 ? { admitted: false, reason: 'top_up_pending: the payment channel is being extended on-chain; retry shortly' } : { admitted: true }))
+  try {
+    const response = await stack.send(zebra)
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual([asked, stack.mints(), stack.requests.length], [2, 1, 1])
+    assert.ok(stack.waits.includes(2_000), `waited ${stack.waits.join(', ')}`)
+  } finally {
+    stack.upstream.close()
+  }
+})
+
+test('a request refused again after its one retry fails, and nothing of it reached the upstream', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
+  let asked = 0
+  const stack = await keyedStack(() => { asked += 1; return { admitted: false, reason: 'channel_exhausted: the payment channel is exhausted' } })
+  try {
+    await assert.rejects(stack.send(zebra), (error: unknown) => error instanceof BlindRelayError && /channel_exhausted/.test(error.message))
+    assert.deepEqual([asked, stack.requests.length], [2, 0])
+  } finally {
+    stack.upstream.close()
+  }
+})
+
+test('an admitted request the upstream never answers ends at the response deadline, and the relay is closed', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
+  const stack = await keyedStack(() => ({ admitted: true }), 20, { upstream: 'silent', deadlines: { responseTimeoutMs: 400 } })
+  try {
+    // The request may have reached the upstream: not an error another seller is tried on as if nothing was sent.
+    await assert.rejects(settlesWithin(stack.send(zebra), 5_000), (error: unknown) => !(error instanceof BlindRelayError) && /no answer came within 400 ms/.test((error as Error).message))
+    assert.equal(stack.requests.length, 1)
+    for (let i = 0; i < 100 && stack.closed() === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(stack.closed(), 1)
+  } finally {
+    stack.upstream.close()
+  }
+})
+
+test('an answer that stalls after it started ends at the idle deadline, and one that never ends at the stream deadline', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
+  const stalled = await keyedStack(() => ({ admitted: true }), 20, { upstream: 'stalls', deadlines: { streamIdleTimeoutMs: 400 } })
+  try {
+    let started = false
+    await assert.rejects(settlesWithin(stalled.send(zebra, { onResponseStart: () => { started = true } }), 5_000), /no more of it came within 400 ms/)
+    assert.equal(started, true)
+    for (let i = 0; i < 100 && stalled.closed() === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(stalled.closed(), 1)
+  } finally {
+    stalled.upstream.close()
+  }
+  const endless = await keyedStack(() => ({ admitted: true }), 20, { upstream: 'stalls', deadlines: { maxStreamDurationMs: 400 } })
+  try {
+    await assert.rejects(settlesWithin(endless.send(zebra), 5_000), /did not end within 400 ms/)
+  } finally {
+    endless.upstream.close()
+  }
+})
+
+test('a payment failure the buyer\'s own node answers the mint with reaches the caller as it is', async () => {
+  const body = new TextEncoder().encode(JSON.stringify({ error: { type: 'payment_error', code: 'payments_inactive', message: 'Payments are turned off on this buyer.' } }))
+  const answers = (statusCode: number, headers: Record<string, string>) => new BlindRelayClient({
+    sendRequest: async (_peer, request) => ({ requestId: request.requestId, statusCode, headers, body }),
+    openRelayStream: async () => { throw new Error('unreachable') },
+    recordRelayedResponse: () => {},
+    keyedRelayBinary: '/never-spawned',
+  }).send(peer, 'open-model', chat('mine'), undefined)
+
+  const own = await answers(503, { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' })
+  assert.deepEqual([own.requestId, own.statusCode, own.headers['x-antseed-fault-attribution']], ['mine', 503, 'buyer'])
+  assert.deepEqual(own.body, body)
+  // A payment the buyer could not make: the 402 and what it says to do.
+  const unpaid = await answers(402, { 'content-type': 'application/json' })
+  assert.deepEqual([unpaid.statusCode, unpaid.body], [402, body])
+  // The seller's own failure stays an error another seller is tried on.
+  await assert.rejects(answers(503, { 'content-type': 'application/json' }), (error: unknown) => error instanceof BlindRelayError && /minted no credential \(HTTP 503/.test(error.message))
 })
 
 test('the client gets the answer when it ends, with only the headers a seller exposes', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
