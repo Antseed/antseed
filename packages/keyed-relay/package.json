@@ -1,0 +1,29 @@
+{
+  "name": "@antseed/keyed-relay",
+  "version": "0.1.0",
+  "description": "Seller-keyed blind relay: spawns the sidecar that lets a seller add its upstream credential to a TLS session it cannot read",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "prebuild": "node ../../scripts/remove-paths.mjs dist",
+    "build": "tsc",
+    "build:native": "cargo build --release --manifest-path native/Cargo.toml",
+    "test": "node --test test/*.test.mjs",
+    "test:native": "cargo test --release --manifest-path native/Cargo.toml",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "catalog:"
+  }
+}

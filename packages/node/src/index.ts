@@ -15,7 +15,7 @@ export {
   type ResponseAuthEvent,
 } from './node.js';
 export { DEFAULT_BUYER_IDENTITY, isValidBuyerIdentityName } from './buyer-identity-context.js';
-export type { E2eeAttestationResponse, MintedBlindCredential, Provider, ProviderRequestRefusal, ProviderStreamCallbacks, ServiceHealthStatus, UpstreamAccountStatus } from './interfaces/seller-provider.js';
+export type { E2eeAttestationResponse, KeyedRelayTarget, Provider, ProviderRequestRefusal, ProviderStreamCallbacks, ServiceHealthStatus, UpstreamAccountStatus } from './interfaces/seller-provider.js';
 export { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, VIDEO_DOWNLOAD_CHUNK_BYTES, ANTSEED_STREAMING_RESPONSE_HEADER, ANTSEED_REQUIRE_TEE_HEADER, ANTSEED_REQUIRE_ZERO_DATA_ACCESS_HEADER } from './types/http.js';
 export {
   ModelHealthChecker,
@@ -112,7 +112,7 @@ export { reconcileStoredChannels, type ChannelReconcileResult, type LivePaymentS
 export * from '@antseed/buyer-core/e2ee';
 export * from '@antseed/protocol/blind-relay';
 export { RelayMux, type RelayGrant } from './p2p/relay-mux.js';
-export { SellerBlindRelay, blindRelayCostUsdc, type BlindRelayCharge } from './seller-blind-relay.js';
+export { SellerBlindRelay, type BlindRelayCharge, type KeyedRequestAdmission, type KeyedRequestDecision } from './seller-blind-relay.js';
 
 // Submodule re-exports (commonly used)
 export {

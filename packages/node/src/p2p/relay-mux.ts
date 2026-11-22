@@ -1,4 +1,3 @@
-import { connect as netConnect, type Socket } from 'node:net';
 import { Duplex } from 'node:stream';
 import {
   RELAY_DATA_MAX_BYTES,
@@ -17,10 +16,14 @@ import type { FramedMessage } from '../types/protocol.js';
 import { encodeFrame } from './message-protocol.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 
-/** What a seller allows one relay stream to reach, and what it is told when the stream ends. */
+/**
+ * What a seller allows one relay stream to reach, and what it is told when the
+ * stream ends: a local byte stream the seller supplies (the keyed-relay
+ * sidecar, which connects to the upstream itself).
+ */
 export interface RelayGrant {
-  host: string;
-  port: number;
+  /** Supplies the stream's other end. Destroying it ends the stream. */
+  open(): Duplex;
   /** Called once when the stream ends, however it ends. */
   onClose?(stats: { bytesUp: number; bytesDown: number; error?: string }): void;
 }
@@ -35,15 +38,10 @@ export interface RelayMuxOptions {
   maxStreams?: number;
   /** A stream with no bytes either way for this long is closed. */
   idleTimeoutMs?: number;
-  /** Seller side: how long the TCP connect to the upstream may take. */
-  connectTimeoutMs?: number;
-  /** Tests: replaces the TCP connect. */
-  connectImpl?: (host: string, port: number) => Socket;
 }
 
 const DEFAULT_MAX_STREAMS = 8;
 const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
-const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const OPEN_TIMEOUT_MS = 30_000;
 
 const MESSAGE_TYPE_NAME: Record<number, string> = {
@@ -54,7 +52,7 @@ const MESSAGE_TYPE_NAME: Record<number, string> = {
 };
 
 interface SellerStream {
-  socket: Socket | null;
+  socket: Duplex | null;
   grant: RelayGrant | null;
   bytesUp: number;
   bytesDown: number;
@@ -69,9 +67,10 @@ interface BuyerStream {
 
 /**
  * Raw byte streams over a peer connection. The buyer opens a stream naming a
- * credential the seller minted for it; the seller connects to that
- * credential's upstream host (never one the buyer names) and copies bytes both
- * ways. The buyer runs TLS inside the stream, so the seller sees ciphertext.
+ * credential the seller minted for it; the seller joins it to the byte stream
+ * it supplies for that credential (never to a host the buyer names) and copies
+ * bytes both ways. The buyer runs TLS inside the stream, so the seller sees
+ * ciphertext.
  */
 export class RelayMux {
   private readonly _sellerStreams = new Map<string, SellerStream>();
@@ -92,7 +91,7 @@ export class RelayMux {
 
   // ── Buyer side ──────────────────────────────────────────────
 
-  /** Opens a stream to the upstream of `credentialId`; resolves once the seller has connected. */
+  /** Opens a stream on `credentialId`; resolves once the seller has opened its end. */
   openStream(streamId: string, credentialId: string): Promise<Duplex> {
     if (this._closed) return Promise.reject(new Error('connection closed'));
     if (this._buyerStreams.has(streamId)) return Promise.reject(new Error(`relay stream ${streamId} already open`));
@@ -169,16 +168,17 @@ export class RelayMux {
     }
     stream.grant = grant;
     if (stream.closed || this._closed) return this._endSellerStream(streamId, 'closed before it opened', false);
-    const socket = (this._options.connectImpl ?? ((host, port) => netConnect({ host, port })))(grant.host, grant.port);
+    let socket: Duplex;
+    try {
+      socket = grant.open();
+    } catch (error) {
+      return this._endSellerStream(streamId, error instanceof Error ? error.message : String(error), true);
+    }
     stream.socket = socket;
-    socket.setTimeout(this._options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS);
-    socket.once('connect', () => {
-      socket.setTimeout(0);
-      if (stream.closed) return;
-      this._touch(streamId);
-      this._trySend(MessageType.RelayOpened, encodeRelayStreamId(streamId));
-    });
-    socket.once('timeout', () => socket.destroy(new Error('upstream connect timed out')));
+    // The supplied stream is open at once; its end ends the relay stream.
+    socket.once('end', () => this._endSellerStream(streamId, '', true));
+    this._touch(streamId);
+    this._trySend(MessageType.RelayOpened, encodeRelayStreamId(streamId));
     socket.on('data', (data: Buffer) => {
       stream.bytesDown += data.length;
       this._touch(streamId);

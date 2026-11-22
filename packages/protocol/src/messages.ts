@@ -14,8 +14,9 @@ export enum MessageType {
   HttpResponseAck = 0x27,
   HttpRequestCancel = 0x28,
 
-  // Seller-blind relay (0x30-0x3F): raw bytes between the buyer and an
-  // upstream the seller names, for TLS the buyer runs end to end.
+  // Seller-blind relay (0x30-0x3F): raw bytes between the buyer and the
+  // seller's sidecar, for TLS the buyer runs end to end to an upstream the
+  // seller names.
   RelayOpen = 0x30,
   RelayOpened = 0x31,
   RelayData = 0x32,

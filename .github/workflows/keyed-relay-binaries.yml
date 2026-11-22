@@ -1,0 +1,96 @@
+name: Keyed relay binaries
+
+# Builds the seller-keyed blind relay sidecar (packages/keyed-relay/native) for
+# each platform and publishes it as @antseed/keyed-relay-<platform>-<arch> at
+# the version of @antseed/keyed-relay, skipping versions npm already has.
+# resolveKeyedRelayBinary() finds an installed platform package.
+#
+# Requirements: the NPM_TOKEN repo secret (publish rights to the @antseed scope).
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and pack, but do not publish to npm'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, platform: linux, arch: x64, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-24.04-arm, platform: linux, arch: arm64, target: aarch64-unknown-linux-gnu }
+          - { runner: macos-latest, platform: darwin, arch: arm64, target: aarch64-apple-darwin }
+          - { runner: macos-latest, platform: darwin, arch: x64, target: x86_64-apple-darwin }
+          - { runner: windows-latest, platform: win32, arch: x64, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      # rust-toolchain.toml pins the toolchain; add the target to it.
+      - name: Build
+        working-directory: packages/keyed-relay/native
+        shell: bash
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Test
+        if: matrix.platform != 'darwin' || matrix.arch == 'arm64'
+        working-directory: packages/keyed-relay/native
+        shell: bash
+        run: cargo test --release --target ${{ matrix.target }}
+
+      - name: Pack
+        shell: bash
+        run: |
+          ext=""; [ "${{ matrix.platform }}" = "win32" ] && ext=".exe"
+          node packages/keyed-relay/scripts/platform-package.mjs ${{ matrix.platform }} ${{ matrix.arch }} \
+            "packages/keyed-relay/native/target/${{ matrix.target }}/release/antseed-keyed-relay$ext" out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keyed-relay-${{ matrix.platform }}-${{ matrix.arch }}
+          path: out/
+
+  publish:
+    name: Publish
+    needs: build
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Publish what npm does not have
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for dir in out/keyed-relay-*; do
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already on npm"
+            else
+              chmod +x "$dir"/bin/* || true
+              npm publish "$dir" --access public
+            fi
+          done

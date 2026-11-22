@@ -1,0 +1,50 @@
+[package]
+name = "antseed-keyed-relay"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+description = "Seller-keyed blind relay: the seller adds its upstream credential to a TLS session it cannot read"
+
+[[bin]]
+name = "antseed-keyed-relay"
+path = "src/main.rs"
+
+[dependencies]
+# TLSNotary building blocks: the zero-knowledge VM, the TLS 1.2 PRF circuit and the AES circuit.
+tlsn-core = { git = "https://github.com/tlsnotary/tlsn", tag = "v0.1.0-beta.1", features = ["mozilla-certs"] }
+tlsn-cipher = { git = "https://github.com/tlsnotary/tlsn", tag = "v0.1.0-beta.1" }
+tlsn-hmac-sha256 = { git = "https://github.com/tlsnotary/tlsn", tag = "v0.1.0-beta.1" }
+tlsn-mux = { git = "https://github.com/tlsnotary/tlsn-utils", rev = "e2f31e6a30bc5d1641ed6407fb1a38a595e523ce" }
+mpz-common = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88" }
+mpz-core = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88" }
+mpz-garble-core = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88" }
+mpz-memory-core = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88" }
+mpz-ot = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88" }
+mpz-vm-core = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88" }
+mpz-zk = { git = "https://github.com/tlsnotary/mpz2", rev = "23e2cc08ed11ae86d71f72fb968f1273d70c9e88", features = ["rayon"] }
+serio = { version = "0.2" }
+
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+rustls-pki-types = { version = "1.12" }
+webpki-roots = { version = "1.0" }
+aes-gcm = { version = "0.10" }
+ghash = { version = "0.5" }
+
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "io-util", "io-std", "net", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = { version = "0.3" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+base64 = { version = "0.22" }
+anyhow = { version = "1.0" }
+rand = { version = "0.10" }
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+
+[dev-dependencies]
+aes = { version = "0.8" }

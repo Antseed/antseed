@@ -1570,9 +1570,9 @@ export class AntseedNode extends EventEmitter {
   }
 
   /**
-   * Buyer side: opens a seller-blind relay stream to the upstream of a
-   * credential the seller minted for this buyer identity. The stream carries
-   * raw bytes; the caller runs TLS through it.
+   * Buyer side: opens a seller-blind relay stream on a credential the seller
+   * minted for this buyer identity. The stream carries raw bytes; the caller
+   * runs TLS to the credential's upstream through it.
    */
   async openRelayStream(peer: PeerInfo, streamId: string, credentialId: string, buyerIdentity?: string): Promise<Duplex> {
     const context = this._buyerContext(buyerIdentity);

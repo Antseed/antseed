@@ -1,0 +1,400 @@
+//! Seller side: relays the buyer's TLS bytes to the upstream, checks the
+//! handshake it saw (certificate, signature, cipher suite, ALPN), verifies the
+//! buyer's key proof and writes its own record (the request head with the
+//! credential) as sequence 1. It then holds the buyer's request until the
+//! buyer has revealed the parts Node checks (its headers and the body's fixed
+//! tail) and Node admits it, relays ciphertext both ways and, at the end,
+//! decrypts only the response ranges the buyer reveals.
+
+use std::{sync::Arc, time::Duration};
+
+use anyhow::{Context as _, Result, anyhow, bail};
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
+use futures::{AsyncReadExt, AsyncWriteExt};
+use mpz_vm_core::Execute;
+use serde_json::json;
+use serio::{SinkExt, stream::IoStreamExt};
+use tlsn_core::{
+    connection::{DnsName, HandshakeData, ServerName},
+    transcript::TlsTranscript,
+    webpki::{CertificateDer, RootCertStore, ServerCertVerifier},
+};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    net::TcpStream,
+    sync::{Mutex, oneshot, watch},
+};
+
+use crate::{
+    frames,
+    msg::{Done, Hello, Injected, PROTOCOL_VERSION, RequestReveal, RequestVerdict, RevealRequest},
+    ranges::{self, Placed, RECORD_OVERHEAD},
+    records::{ALERT, ALLOWED_SUITES, APPLICATION_DATA, CHANGE_CIPHER_SPEC, HANDSHAKE, Record, RecordParser, seal_with_keystream, server_hello},
+    session::PeerSession,
+    zk::{INJECTED_SEQ, KeyProof, Side, verifier_vm},
+};
+
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the buyer may take to send and reveal its whole request.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// How long Node may take to admit or refuse the request.
+const ADMIT_TIMEOUT: Duration = Duration::from_secs(60);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const REVEAL_TIMEOUT: Duration = Duration::from_secs(120);
+/// The longest request head the seller writes.
+const MAX_HEAD: usize = 8192;
+/// The longest request the seller holds, unless Node sets another limit.
+const DEFAULT_MAX_REQUEST: usize = 32 << 20;
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Tracks one direction's handshake: its bytes up to and including its Finished record.
+#[derive(Default)]
+struct HandshakeSide {
+    bytes: Vec<u8>,
+    records: Vec<Record>,
+    seen_ccs: bool,
+    finished: bool,
+}
+
+impl HandshakeSide {
+    /// Takes one record during the handshake; true once this record was the Finished.
+    fn take(&mut self, record: &Record) -> bool {
+        self.bytes.extend_from_slice(&[record.typ, 3, 3]);
+        self.bytes.extend_from_slice(&(record.body.len() as u16).to_be_bytes());
+        self.bytes.extend_from_slice(&record.body);
+        self.records.push(record.clone());
+        if record.typ == CHANGE_CIPHER_SPEC {
+            self.seen_ccs = true;
+        } else if record.typ == HANDSHAKE && self.seen_ccs {
+            self.finished = true;
+        }
+        self.finished
+    }
+}
+
+fn cert_verifier(extra_roots_pem: Option<&str>) -> Result<ServerCertVerifier> {
+    let mut roots = RootCertStore::mozilla();
+    if let Some(pem) = extra_roots_pem {
+        roots.roots.push(CertificateDer::from_pem_slice(pem.as_bytes()).map_err(|_| anyhow!("extraRootsPem is not a PEM certificate"))?);
+    }
+    ServerCertVerifier::new(&roots).map_err(|error| anyhow!("certificate verifier: {error}"))
+}
+
+fn raw(record: &Record) -> Vec<u8> {
+    let mut out = Vec::with_capacity(5 + record.body.len());
+    out.extend_from_slice(&[record.typ, 3, 3]);
+    out.extend_from_slice(&(record.body.len() as u16).to_be_bytes());
+    out.extend_from_slice(&record.body);
+    out
+}
+
+/// What happens to the buyer's records after the seller's.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Gate {
+    /// Held: nothing of the request reaches the upstream before Node admits it.
+    #[default]
+    Hold,
+    /// Admitted and forwarded: only alerts may follow.
+    Open,
+    /// Refused: nothing is forwarded.
+    Shut,
+}
+
+/// The plaintext the buyer revealed, as Node gets it: offset in the stream and the bytes.
+fn shown(placed: &[Placed], keystreams: Vec<Vec<u8>>) -> Vec<serde_json::Value> {
+    let pieces = placed
+        .iter()
+        .zip(keystreams)
+        .map(|(piece, keystream)| (piece.offset, piece.ciphertext.iter().zip(&keystream).map(|(c, k)| c ^ k).collect()))
+        .collect();
+    ranges::join(pieces).into_iter().map(|(offset, plaintext)| json!({ "offset": offset, "data": B64.encode(plaintext) })).collect()
+}
+
+#[derive(Default)]
+struct Shared {
+    client: HandshakeSide,
+    server: HandshakeSide,
+    gate: Gate,
+    /// The buyer's records after the seller's, held while the gate is `Hold`.
+    held: Vec<Record>,
+    /// Plaintext bytes of the held application-data records: the request so far.
+    request_len: usize,
+    /// The server's application-data records after the handshake.
+    responses: Vec<Record>,
+    bytes_up: u64,
+    bytes_down: u64,
+}
+
+pub async fn run() -> Result<()> {
+    let frames::Stdio { mut ctl, app: _, out, peer } = frames::start();
+    let start = ctl.recv().await.ok_or_else(|| anyhow!("no start message"))?;
+    let host = start["host"].as_str().ok_or_else(|| anyhow!("host missing"))?.to_string();
+    let port = start["port"].as_u64().unwrap_or(443) as u16;
+    let server_name = start["serverName"].as_str().unwrap_or(&host).to_string();
+    let head = B64.decode(start["head"].as_str().ok_or_else(|| anyhow!("head missing"))?).context("head")?;
+    // Tests only: extra trusted roots (PEM) on top of the Mozilla set.
+    let extra_roots = start["extraRootsPem"].as_str().map(str::to_string);
+    if head.is_empty() || head.len() > MAX_HEAD {
+        bail!("request head length {} is out of range", head.len());
+    }
+    let max_request = start["maxRequestBytes"].as_u64().map_or(DEFAULT_MAX_REQUEST, |n| n as usize);
+
+    let (mut session, tls) = PeerSession::open(peer)?;
+    session.ctx.io_mut().send(Hello { version: PROTOCOL_VERSION, injected_len: head.len() as u32 }).await?;
+    let mut vm = verifier_vm();
+    let mut proof = KeyProof::alloc(&mut vm, false, head.len())?;
+    vm.flush(&mut session.ctx).await.context("preprocessing")?;
+
+    let upstream = TcpStream::connect((host.as_str(), port)).await.with_context(|| format!("connect {host}:{port}"))?;
+    upstream.set_nodelay(true)?;
+    let (mut up_read, up_write) = upstream.into_split();
+    // Shared with the admission below, which flushes the held request; whoever
+    // writes holds this lock, so the request goes out before anything after it.
+    let up_write = Arc::new(Mutex::new(up_write));
+    let (mut tls_read, mut tls_write) = tls.split();
+
+    let shared = Arc::new(Mutex::new(Shared::default()));
+    let (client_done_tx, mut client_done) = watch::channel(false);
+    let (server_done_tx, mut server_done) = watch::channel(false);
+    let (inject_tx, inject_rx) = oneshot::channel::<Vec<u8>>();
+    let (closed_tx, mut closed) = watch::channel(false);
+    let (request_len_tx, mut request_len) = watch::channel(0usize);
+
+    // Buyer → upstream: the handshake, then nothing until the seller's record
+    // is written, then nothing of the request until Node admits it.
+    let up_shared = shared.clone();
+    let up_writer = up_write.clone();
+    let up = tokio::spawn(async move {
+        let mut parser = RecordParser::default();
+        let mut buf = vec![0u8; 32 * 1024];
+        let mut inject = Some(inject_rx);
+        loop {
+            let n = tls_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            for record in parser.push(&buf[..n])? {
+                if let Some(rx) = inject.take() {
+                    let finished = up_shared.lock().await.client.take(&record);
+                    up_writer.lock().await.write_all(&raw(&record)).await?;
+                    if finished {
+                        let _ = client_done_tx.send(true);
+                        // Hold the buyer's bytes until the seller's record is on the wire.
+                        let injected = rx.await.map_err(|_| anyhow!("no record to inject"))?;
+                        up_writer.lock().await.write_all(&injected).await?;
+                    } else {
+                        inject = Some(rx);
+                    }
+                    continue;
+                }
+                // Application data and alerts (close_notify) only: no renegotiation.
+                if record.typ != APPLICATION_DATA && record.typ != ALERT {
+                    bail!("the buyer sent a TLS record of type {} after the handshake", record.typ);
+                }
+                let mut state = up_shared.lock().await;
+                match state.gate {
+                    Gate::Hold => {
+                        if record.typ == APPLICATION_DATA {
+                            if record.body.len() < RECORD_OVERHEAD {
+                                bail!("the buyer sent a record too short to be encrypted");
+                            }
+                            state.request_len += record.body.len() - RECORD_OVERHEAD;
+                            if state.request_len > max_request {
+                                bail!("the request is longer than {max_request} bytes");
+                            }
+                            let _ = request_len_tx.send(state.request_len);
+                        }
+                        state.held.push(record);
+                    }
+                    Gate::Open => {
+                        // The request went out as admitted: nothing may follow it but alerts.
+                        if record.typ != ALERT {
+                            bail!("the buyer sent more than the request it revealed");
+                        }
+                        let bytes = raw(&record);
+                        state.bytes_up += bytes.len() as u64;
+                        drop(state);
+                        up_writer.lock().await.write_all(&bytes).await?;
+                    }
+                    Gate::Shut => {}
+                }
+            }
+        }
+        let _ = up_writer.lock().await.shutdown().await;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    // Upstream → buyer: forward everything; keep the handshake and the response records.
+    let down_shared = shared.clone();
+    let down = tokio::spawn(async move {
+        let mut parser = RecordParser::default();
+        let mut buf = vec![0u8; 32 * 1024];
+        let mut in_handshake = true;
+        loop {
+            let n = up_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            let records = parser.push(&buf[..n])?;
+            {
+                let mut shared = down_shared.lock().await;
+                for record in records {
+                    if in_handshake {
+                        if shared.server.take(&record) {
+                            in_handshake = false;
+                            let _ = server_done_tx.send(true);
+                        }
+                    } else {
+                        shared.bytes_down += 5 + record.body.len() as u64;
+                        if record.typ == APPLICATION_DATA {
+                            shared.responses.push(record);
+                        }
+                    }
+                }
+            }
+            tls_write.write_all(&buf[..n]).await?;
+            tls_write.flush().await?;
+        }
+        let _ = tls_write.close().await;
+        let _ = closed_tx.send(true);
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let handshake = async {
+        client_done.wait_for(|done| *done).await.map_err(|_| anyhow!("the buyer left during the handshake"))?;
+        server_done.wait_for(|done| *done).await.map_err(|_| anyhow!("the upstream left during the handshake"))?;
+        Ok::<_, anyhow::Error>(())
+    };
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake).await.map_err(|_| anyhow!("handshake timed out"))??;
+
+    // Check the handshake before anything secret is computed or written.
+    let transcript = {
+        let shared = shared.lock().await;
+        let hello = server_hello(&shared.server.records)?;
+        if !ALLOWED_SUITES.contains(&hello.cipher_suite) {
+            bail!("the upstream chose cipher suite {:#06x}", hello.cipher_suite);
+        }
+        if let Some(alpn) = &hello.alpn {
+            if alpn.as_slice() != b"http/1.1" {
+                bail!("the upstream chose ALPN {:?}, not http/1.1", String::from_utf8_lossy(alpn));
+            }
+        }
+        TlsTranscript::builder().time(now()).tls_sent(&shared.client.bytes).tls_recv(&shared.server.bytes).build()?
+    };
+    let tlsn_core::connection::CertBinding::V1_2(binding) = transcript.certificate_binding() else {
+        bail!("only TLS 1.2 is supported");
+    };
+    let handshake_data = HandshakeData {
+        certs: transcript.server_cert_chain().ok_or_else(|| anyhow!("no certificate chain"))?.to_vec(),
+        sig: transcript.server_signature().ok_or_else(|| anyhow!("no server signature"))?.clone(),
+        binding: transcript.certificate_binding().clone(),
+    };
+    let dns = DnsName::try_from(server_name.as_str()).map_err(|_| anyhow!("invalid server name"))?;
+    handshake_data
+        .verify(&cert_verifier(extra_roots.as_deref())?, now(), &binding.server_ephemeral_key, &ServerName::Dns(dns))
+        .map_err(|error| anyhow!("the upstream's certificate or signature did not verify: {error}"))?;
+
+    let injection = proof.prove(&mut vm, &mut session.ctx, None, &transcript).await.context("key proof")?;
+    let record = seal_with_keystream(INJECTED_SEQ, INJECTED_SEQ.to_be_bytes(), &head, &injection.keystream, &injection.tag_mask, &injection.ghash_key)?;
+    inject_tx.send(record).map_err(|_| anyhow!("the relay ended before the record was written"))?;
+    session.ctx.io_mut().send(Injected { seq: INJECTED_SEQ }).await?;
+    out.ctl(json!({ "type": "injected" }));
+
+    // The buyer names its request's length and reveals parts of it; its
+    // records may still be on their way.
+    let reveal: RequestReveal = tokio::time::timeout(REQUEST_TIMEOUT, session.ctx.io_mut().expect_next())
+        .await
+        .map_err(|_| anyhow!("the buyer revealed no request"))??;
+    let length = usize::try_from(reveal.length).unwrap_or(usize::MAX);
+    if length == 0 || length > max_request {
+        bail!("request length {length} is out of range");
+    }
+    tokio::time::timeout(REQUEST_TIMEOUT, request_len.wait_for(|n| *n >= length))
+        .await
+        .map_err(|_| anyhow!("the buyer's request did not arrive"))?
+        .map_err(|_| anyhow!("the relay ended before the request arrived"))?;
+    let request: Vec<Record> = {
+        let state = shared.lock().await;
+        if state.request_len != length {
+            bail!("the buyer sent {} request bytes, not the {length} it revealed", state.request_len);
+        }
+        state.held.iter().filter(|r| r.typ == APPLICATION_DATA).cloned().collect()
+    };
+    let (request_ranges, placed) = ranges::place(&request, &reveal.ranges)?;
+    if request_ranges.is_empty() {
+        bail!("the buyer revealed nothing of its request");
+    }
+    let keystreams = proof.reveal(&mut vm, &mut session.ctx, Side::Client, &request_ranges).await.context("request reveal")?;
+    out.ctl(json!({ "type": "request", "length": length, "ranges": shown(&placed, keystreams) }));
+    drop(request);
+
+    let decision = tokio::time::timeout(ADMIT_TIMEOUT, async {
+        while let Some(message) = ctl.recv().await {
+            if message["type"] == "admit" || message["type"] == "refuse" {
+                return Some(message);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten();
+    let refusal = match &decision {
+        Some(message) if message["type"] == "admit" => None,
+        Some(message) => Some(message["reason"].as_str().unwrap_or("refused").chars().take(300).collect::<String>()),
+        None => Some("the seller did not decide in time".to_string()),
+    };
+    if let Some(reason) = refusal {
+        // Nothing of the request ever reaches the upstream.
+        shared.lock().await.gate = Gate::Shut;
+        up.abort();
+        down.abort();
+        session.ctx.io_mut().send(RequestVerdict { admitted: false, reason: reason.clone() }).await?;
+        out.ctl(json!({ "type": "refused", "reason": reason }));
+        session.close().await;
+        return Ok(());
+    }
+    {
+        let mut writer = up_write.lock().await;
+        let held = {
+            let mut state = shared.lock().await;
+            state.gate = Gate::Open;
+            let held = std::mem::take(&mut state.held);
+            state.bytes_up += held.iter().map(|r| 5 + r.body.len() as u64).sum::<u64>();
+            held
+        };
+        for record in &held {
+            writer.write_all(&raw(record)).await?;
+        }
+        writer.flush().await?;
+    }
+    session.ctx.io_mut().send(RequestVerdict { admitted: true, reason: String::new() }).await?;
+    out.ctl(json!({ "type": "admitted" }));
+
+    let _ = tokio::time::timeout(RESPONSE_TIMEOUT, closed.wait_for(|done| *done)).await;
+    up.abort();
+    let down_result = down.await;
+    if let Ok(Err(error)) = down_result {
+        tracing::debug!("relay to the buyer ended: {error}");
+    }
+
+    let (responses, bytes_up, bytes_down) = {
+        let shared = shared.lock().await;
+        (shared.responses.clone(), shared.bytes_up, shared.bytes_down)
+    };
+    let length: usize = responses.iter().map(|r| r.body.len().saturating_sub(RECORD_OVERHEAD)).sum();
+    out.ctl(json!({ "type": "responseEnd", "length": length, "bytesUp": bytes_up, "bytesDown": bytes_down }));
+
+    let request: RevealRequest = tokio::time::timeout(REVEAL_TIMEOUT, session.ctx.io_mut().expect_next())
+        .await
+        .map_err(|_| anyhow!("no reveal from the buyer"))??;
+    let (response_ranges, placed) = ranges::place(&responses, &request.ranges)?;
+    let keystreams = proof.reveal(&mut vm, &mut session.ctx, Side::Server, &response_ranges).await.context("reveal")?;
+    out.ctl(json!({ "type": "revealed", "length": length, "ranges": shown(&placed, keystreams) }));
+    session.ctx.io_mut().send(Done).await?;
+    session.close().await;
+    Ok(())
+}

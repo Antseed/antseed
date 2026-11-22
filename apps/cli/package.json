@@ -36,6 +36,7 @@
     "@antseed/connected-apps": "workspace:*",
     "@antseed/fingerprints": "workspace:*",
     "@antseed/gateway-console": "workspace:*",
+    "@antseed/keyed-relay": "workspace:*",
     "@antseed/model-verifier": "workspace:*",
     "@antseed/node": "workspace:*",
     "@antseed/payments": "workspace:*",

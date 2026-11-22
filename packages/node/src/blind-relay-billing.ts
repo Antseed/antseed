@@ -6,7 +6,7 @@ import type { PeerInfo } from './types/peer.js';
  * Buyer side: prices a request answered over the seller-blind relay the way a
  * proxied response is priced, from the usage the buyer read itself and the
  * seller's advertised token prices. The seller's charge for `requestId`, sent
- * after it reads its upstream spend, is signed only up to this cost.
+ * once the buyer has revealed the usage, is signed only up to this cost.
  */
 export function recordRelayedCost(
   negotiator: BuyerPaymentNegotiator,

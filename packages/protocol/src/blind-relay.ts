@@ -1,8 +1,9 @@
 /**
- * Seller-blind relay: the seller mints a short-lived, spend-capped upstream
- * credential for one buyer, and relays raw bytes between that buyer and the
- * upstream host. The buyer runs TLS end to end through the relay, so the
- * seller forwards ciphertext only.
+ * Seller-blind relay: the buyer runs TLS to the upstream end to end through a
+ * raw byte stream on the seller, so the seller forwards ciphertext only. The
+ * seller keeps its own upstream credential and writes it into the buyer's TLS
+ * session as the first record, without being able to read the session (the
+ * `@antseed/keyed-relay` sidecar). The buyer never sees it.
  */
 
 /** The service category a seller announces for a service it serves through the blind relay. */
@@ -14,25 +15,82 @@ export const BLIND_RELAY_CREDENTIAL_PATH = '/_antseed/blind/credential' as const
 /** The most bytes one RelayData frame carries. */
 export const RELAY_DATA_MAX_BYTES = 16 * 1024;
 
-/** What the credential route answers. */
+/**
+ * What the seller checks in a request before it forwards it.
+ * The buyer reveals its request headers and the body's last fields (built by
+ * `keyedRequestTailFields`) to the seller's sidecar, and the seller holds the
+ * request until they pass. The rest of the body stays hidden.
+ */
+export interface KeyedRequestTerms {
+  /** The field the upstream reads the output-token limit from. */
+  maxTokensField: 'max_tokens' | 'max_completion_tokens';
+  /** The most output tokens a request may ask for. Absent: no cap, and a request may name no limit. */
+  maxTokens?: number;
+  /** Further fields the seller fixes, with their values, e.g. `{"service_tier": "default"}`. */
+  pinned?: Record<string, unknown>;
+}
+
+/** Body fields the keyed tail writes itself, which `pinned` may not name. */
+export const KEYED_REQUEST_TAIL_FIELDS: readonly string[] = ['model', 'max_tokens', 'max_completion_tokens', 'n', 'stream', 'stream_options'];
+
+/** The only request headers a keyed request may carry besides the seller's (lowercase). */
+export const KEYED_REQUEST_HEADERS: readonly string[] = ['content-type', 'content-length', 'accept', 'user-agent'];
+
+/** The values a keyed request body ends with. */
+export interface KeyedRequestTail {
+  model: string;
+  /** The output-token limit, or null for none (only when the terms set no cap). */
+  maxTokens: number | null;
+  stream: boolean;
+}
+
+/**
+ * The fields a keyed request body ends with, in this order and exactly these
+ * bytes: `"model":…[,"<limit field>":…],"n":1,"stream":…[,"stream_options":{"include_usage":true}][,pinned…]`.
+ * The body is `{<other fields>,<these>}`, or `{<these>}` with no others. The
+ * buyer writes them last and the seller compares them byte for byte, so a
+ * field hidden earlier in the body loses to them with any upstream that takes
+ * the last copy of a repeated key.
+ */
+export function keyedRequestTailFields(terms: KeyedRequestTerms, tail: KeyedRequestTail): string {
+  const fields: Array<[string, unknown]> = [['model', tail.model]];
+  if (tail.maxTokens !== null) fields.push([terms.maxTokensField, tail.maxTokens]);
+  fields.push(['n', 1], ['stream', tail.stream]);
+  if (tail.stream) fields.push(['stream_options', { include_usage: true }]);
+  for (const [name, value] of Object.entries(terms.pinned ?? {})) fields.push([name, value]);
+  return fields.map(([name, value]) => `${JSON.stringify(name)}:${JSON.stringify(value)}`).join(',');
+}
+
+/** Whether `value` is well-formed keyed request terms. */
+export function isKeyedRequestTerms(value: unknown): value is KeyedRequestTerms {
+  if (typeof value !== 'object' || value === null) return false;
+  const terms = value as Partial<KeyedRequestTerms>;
+  if (terms.maxTokensField !== 'max_tokens' && terms.maxTokensField !== 'max_completion_tokens') return false;
+  if (terms.maxTokens !== undefined && !(Number.isSafeInteger(terms.maxTokens) && terms.maxTokens > 0)) return false;
+  if (terms.pinned === undefined) return true;
+  if (typeof terms.pinned !== 'object' || terms.pinned === null || Array.isArray(terms.pinned)) return false;
+  return Object.keys(terms.pinned).every((name) => !KEYED_REQUEST_TAIL_FIELDS.includes(name));
+}
+
+/** What the credential route answers: a handle only. The upstream credential never leaves the seller. */
 export interface BlindRelayCredential {
-  /** The seller's handle for the credential, named when opening a relay stream. */
+  /** The seller's handle, named when opening a relay stream. */
   credentialId: string;
-  /** The upstream bearer credential. */
-  credential: string;
   upstream: {
-    /** The TLS host the relay connects to; the buyer checks its certificate. */
+    /** The TLS host the seller's sidecar connects to; the buyer checks its certificate. */
     host: string;
     port: number;
     /** The upstream's OpenAI-compatible base URL, e.g. `https://api.example.com/v1/openai`. */
     baseUrl: string;
     /** The upstream model the service maps to; the buyer sends it as `model`. */
     model: string;
+    /** The request path the seller writes; the buyer sends only requests for it. */
+    path: string;
   };
+  /** What the seller checks in each request before forwarding it. */
+  request: KeyedRequestTerms;
   /** Unix milliseconds. */
   expiresAt: number;
-  /** The upstream spend cap of this credential, in USD. */
-  spendLimitUsd: number;
 }
 
 export interface RelayOpenPayload { streamId: string; credentialId: string }

@@ -79,7 +79,8 @@ import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/resp
 import { E2EE_ATTESTATION_PATH, usageForBilling } from '@antseed/buyer-core';
 import { BLIND_RELAY_CREDENTIAL_PATH, BLIND_RELAY_SERVICE_CATEGORY } from '@antseed/protocol/blind-relay';
 import { RelayMux } from './p2p/relay-mux.js';
-import { SellerBlindRelay, type BlindRelayCharge } from './seller-blind-relay.js';
+import { SellerBlindRelay, type BlindRelayCharge, type KeyedRequestAdmission, type KeyedRequestDecision } from './seller-blind-relay.js';
+import { KeyedRelayProcess, resolveKeyedRelayBinary } from '@antseed/keyed-relay';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, describeUpstreamError, isUpstreamAccountError, isUpstreamFailureStatus, isVideoDownloadBusy } from './health/self-health-error.js';
@@ -297,7 +298,21 @@ export class SellerRequestHandler {
 
   constructor(deps: SellerRequestHandlerDeps) {
     this._deps = deps;
-    this._blindRelay = new SellerBlindRelay({ charge: (charge) => this._chargeBlindRelay(charge) });
+    const keyedRelayBinary = resolveKeyedRelayBinary();
+    this._blindRelay = new SellerBlindRelay({
+      charge: (charge) => this._chargeBlindRelay(charge),
+      ...(keyedRelayBinary ? {
+        spawnKeyedRelay: () => KeyedRelayProcess.spawn('seller', keyedRelayBinary),
+        usageCostUsdc: (provider, service, usage) => computeCostUsdc(
+          usage.freshInputTokens,
+          usage.outputTokens,
+          provider.pricing.services?.[service] ?? provider.pricing.defaults,
+          usage.cachedInputTokens,
+        ),
+        admitKeyedRequest: (request) => this._admitKeyedRequest(request),
+        maxKeyedRequestBytes: deps.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
+      } : {}),
+    });
     this._inFlightRequestBytes = new ByteBudget(Math.max(
       deps.maxInFlightRequestBytes ?? DEFAULT_MAX_IN_FLIGHT_REQUEST_BYTES,
       deps.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
@@ -1710,9 +1725,9 @@ export class SellerRequestHandler {
 
   /**
    * Mints a seller-blind relay credential for a buyer with an open payment
-   * channel. Minting is free; each relayed request is charged afterwards by
-   * the change in the credential's upstream spend (`_chargeBlindRelay`). A
-   * buyer whose last relayed charges are not signed for gets no new one.
+   * channel. Minting is free; each relayed request is charged afterwards
+   * (`_chargeBlindRelay`) by the usage the buyer reveals. A buyer whose last
+   * relayed charges are not signed for gets no new one.
    */
   private async _handleBlindCredential(
     mux: ProxyMux,
@@ -1722,8 +1737,7 @@ export class SellerRequestHandler {
   ): Promise<void> {
     const provider = request.method === 'POST' ? this.matchProvider(request) : null;
     const service = provider ? this._extractRequestedService(request) : null;
-    if (!provider || !service || !provider.serviceCategories?.[service]?.includes(BLIND_RELAY_SERVICE_CATEGORY)
-      || !provider.mintBlindCredential || !provider.blindCredentialSpendUsd) {
+    if (!provider || !service || !provider.serviceCategories?.[service]?.includes(BLIND_RELAY_SERVICE_CATEGORY) || !this._blindRelay.servesKeyed(provider)) {
       this._sendJsonError(mux, request.requestId, 404, 'blind_relay_not_supported', 'This service is not served through the blind relay on this peer.');
       return;
     }
@@ -1743,7 +1757,7 @@ export class SellerRequestHandler {
       return;
     }
     try {
-      const credential = await this._blindRelay.mint(buyerPeerId, service, provider);
+      const credential = this._blindRelay.mint(buyerPeerId, service, provider);
       mux.sendProxyResponse({
         requestId: request.requestId,
         statusCode: 200,
@@ -1759,6 +1773,47 @@ export class SellerRequestHandler {
       debugWarn(`[SellerHandler] Blind relay credential for ${service} failed: ${message}`);
       this._sendJsonError(mux, request.requestId, 502, 'blind_relay_mint_failed', `No credential: ${message}`);
     }
+  }
+
+  /**
+   * The checks a keyed relay request gets before the seller forwards it, as a
+   * direct request gets them before routing: an open channel with the earlier
+   * requests signed for, reserve headroom for its estimated cost (when
+   * `reserveEstimateOverdraftUsdc` is set), and the buyer limits.
+   */
+  private async _admitKeyedRequest(request: KeyedRequestAdmission): Promise<KeyedRequestDecision> {
+    const refuse = (reason: string): KeyedRequestDecision => ({ admitted: false, reason });
+    const spm = this._deps.sellerPaymentManager;
+    if (!spm) return refuse('this seller takes no payments');
+    await spm.waitForPendingAuths(request.buyerPeerId);
+    const session = spm.getChannelByPeer(request.buyerPeerId);
+    if (!session) return refuse('no payment channel is open');
+    let spent = spm.getCumulativeSpend(session.sessionId);
+    if (spent > spm.getAcceptedCumulative(session.sessionId)) {
+      // The signature for the last answer may still be on its way.
+      await spm.awaitAcceptedAtLeast(session.sessionId, spent, DEFAULT_CATCH_UP_WAIT_MS);
+      if (spm.getChannelByPeer(request.buyerPeerId)?.sessionId !== session.sessionId) return refuse('the payment channel closed');
+      spent = spm.getCumulativeSpend(session.sessionId);
+      if (spent > spm.getAcceptedCumulative(session.sessionId)) return refuse('sign for the requests already relayed first');
+    }
+    const reserveMax = spm.getEffectiveReserveMax(session.sessionId);
+    if (spm.isChannelBlocked(session.sessionId)) return refuse('the payment channel is blocked');
+    if (reserveMax > 0n && spent >= reserveMax) return refuse('the payment channel is exhausted');
+    const overdraft = this._deps.reserveEstimateOverdraftUsdc;
+    if (overdraft != null && reserveMax > 0n) {
+      const pricing = request.provider.pricing.services?.[request.service] ?? request.provider.pricing.defaults;
+      const estimate = computeCostUsdc(request.inputTokens, request.maxOutputTokens ?? 0, pricing);
+      const remaining = reserveMax - spent;
+      if (estimate > remaining + overdraft) {
+        return refuse(`the request may cost ${estimate} USDC base units; the locked reserve has ${remaining} left`);
+      }
+    }
+    const limiter = this._deps.sellerBuyerLimiter;
+    if (!limiter) return { admitted: true };
+    const tokens = request.inputTokens + (request.maxOutputTokens || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+    const admission = limiter.admit(request.buyerPeerId, request.provider.name, tokens, request.service);
+    if (!admission.admitted) return refuse(`this buyer is over its usage limits; retry in ${admission.retryAfterSeconds} s`);
+    return { admitted: true, finish: (usedTokens) => admission.reservation.finish(usedTokens) };
   }
 
   /** Records a relayed request's cost on the buyer's channel and asks the buyer to sign for it. */

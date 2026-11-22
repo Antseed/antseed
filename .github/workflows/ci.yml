@@ -82,6 +82,44 @@ jobs:
       - name: Test
         run: pnpm --filter '@antseed/cli' run test
 
+  # The seller-keyed blind relay sidecar (Rust): its own tests, then the TypeScript tests that
+  # skip without it: the sidecar pair against a local TLS upstream and the CLI's keyed path.
+  test-keyed-relay:
+    name: Test (keyed relay sidecar)
+    runs-on: ubuntu-latest
+
+    steps:
+      - *checkout
+      - *setup-pnpm
+      - *setup-node
+      - *install
+      - *build-tier0
+      - *build-tier1
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/keyed-relay/native/target
+          key: keyed-relay-${{ runner.os }}-${{ hashFiles('packages/keyed-relay/native/Cargo.lock', 'packages/keyed-relay/native/rust-toolchain.toml') }}
+
+      # rust-toolchain.toml pins the toolchain; rustup installs it on first use.
+      - name: Build and test the sidecar
+        run: |
+          pnpm --filter @antseed/keyed-relay run build:native
+          pnpm --filter @antseed/keyed-relay run test:native
+
+      - name: Test the sidecar pair
+        run: pnpm --filter @antseed/keyed-relay run test
+
+      - name: Test the CLI keyed path
+        run: |
+          pnpm run build:tier2
+          pnpm --filter=@antseed/cli run build
+          node --test apps/cli/dist/proxy/blind-relay.test.js
+
   test-e2e:
     name: Test (e2e)
     runs-on: ubuntu-latest

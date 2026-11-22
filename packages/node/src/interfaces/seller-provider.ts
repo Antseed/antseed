@@ -2,6 +2,7 @@ import type { SerializedHttpRequest, SerializedHttpResponse, SerializedHttpRespo
 import type { ServiceApiProtocol } from '../types/service-api.js';
 import type { ServiceUnitBillingModelsV1 } from '../types/billing.js';
 import type { ServiceCapabilities, ServiceHealth } from '../discovery/peer-metadata.js';
+import type { KeyedRequestTerms } from '@antseed/protocol/blind-relay';
 
 export interface ProviderTokenPricingUsdPerMillion {
   inputUsdPerMillion: number;
@@ -125,46 +126,34 @@ export interface Provider {
   getE2eeAttestation?(service: string, nonce: string): Promise<E2eeAttestationResponse | null>;
 
   /**
-   * Optional minting of a short-lived, spend-capped upstream credential for
-   * one service served through the seller-blind relay (a service in category
-   * `seller-blind`). The credential must be scoped as narrowly as the upstream
-   * allows: the service's upstream model only, a USD spend cap and an expiry
-   * in minutes. The buyer holds it and runs TLS to `upstream.host` through the
-   * seller's relay, so the seller forwards ciphertext only. Returns null when
-   * the service is not served this way.
+   * Optional target for the seller-blind relay (`seller-blind` services). The
+   * seller keeps its own credential: it writes `headers` (with the credential)
+   * into the buyer's TLS session to `host` as the request head, without being
+   * able to read the session, and the buyer never sees them. The seller bills
+   * each request from the usage the buyer reveals, at the service's token
+   * prices. Returns null when the service is not served this way.
    */
-  mintBlindCredential?(service: string): Promise<MintedBlindCredential | null>;
+  keyedRelayTarget?(service: string): KeyedRelayTarget | null;
+}
 
-  /**
-   * Optional read of what a minted credential has spent upstream so far, in
-   * USD at the upstream's prices. The seller bills each relayed request by the
-   * change in this figure, so it must be the upstream's own counter.
-   */
-  blindCredentialSpendUsd?(handle: string): Promise<number>;
-
-  /**
-   * What the seller charges per USD of upstream spend on the blind relay
-   * (default 1). Advertise token prices of about the upstream's times this:
-   * a buyer pays a relayed request at most its tolerance times the cost it
-   * computes from the usage it reads and these advertised prices.
-   */
-  blindRelayPriceMultiplier?: number;
+/** Where and how the seller-blind relay sends one service's requests. */
+export interface KeyedRelayTarget {
+  /** The upstream's TLS host; its certificate must be valid for it. */
+  host: string;
+  port: number;
+  /** The upstream's OpenAI-compatible base URL, e.g. `https://api.example.com/v1`. */
+  baseUrl: string;
+  /** The one request path the seller writes, e.g. `/v1/chat/completions`. */
+  path: string;
+  /** The upstream model the service maps to; the buyer sends it as `model`. */
+  model: string;
+  /** Credential headers the seller adds, e.g. `[['Authorization', 'Bearer ...']]`. Never sent to the buyer. */
+  headers: Array<[string, string]>;
+  /** What the seller checks in each request before forwarding it: the token-limit field and cap, and the fields it pins. */
+  request: KeyedRequestTerms;
 }
 
 /** An upstream attestation response, relayed to the buyer as the upstream sent it. */
-/** A credential a provider minted for the seller-blind relay. */
-export interface MintedBlindCredential {
-  /** The provider's own handle for the credential, for spend reads. Never sent to the buyer. */
-  handle: string;
-  /** The upstream bearer credential the buyer sends. */
-  credential: string;
-  upstream: { host: string; port: number; baseUrl: string; model: string };
-  /** Unix milliseconds. */
-  expiresAt: number;
-  /** The credential's upstream spend cap, in USD. */
-  spendLimitUsd: number;
-}
-
 export interface E2eeAttestationResponse {
   statusCode: number;
   body: Uint8Array;

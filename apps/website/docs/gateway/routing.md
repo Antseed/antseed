@@ -51,13 +51,17 @@ A single request can ask for it with the header `x-antseed-require-zero-data-acc
 
 ### Seller-blind relay
 
-Some upstreams have no end-to-end encryption, but can mint short-lived, spend-capped credentials. A seller marks such a service with the `seller-blind` category ([seller setup](/docs/provide/config#seller-blind-relay-services)), and **Zero data access only** accepts it too. For these, your buyer:
+Some upstreams have no end-to-end encryption. A seller can still sell such a service without reading it, keeping its own upstream key: it marks the service with the `seller-blind` category ([seller setup](/docs/provide/config#seller-blind-relay-services)), and **Zero data access only** accepts it too. For these, your buyer:
 
-1. asks the seller for a credential scoped to the service's upstream model, with a small spend cap and an expiry in minutes;
+1. asks the seller for a handle for the service; it gets no credential;
 2. opens TLS to the upstream itself, through a raw relay stream on the seller, and checks the upstream's certificate;
-3. sends the request with that credential, and reads the usage in the answer to price it.
+3. proves in zero knowledge that it derived the session keys from that handshake, which lets the seller add its key to the session as the first record without being able to read the session. Your buyer never sees the key;
+4. sends the rest of the request itself and reveals its headers and the body's last fields (the model, the output-token limit, usage in a stream), which the seller checks before it forwards any of the request; your messages stay hidden;
+5. after the answer, reveals only the status line and the usage figure so the seller can bill it.
 
-The seller forwards ciphertext only and never sees the conversation, but the upstream does, under its own data policy. The seller charges each relayed request by what the upstream counted for the credential, and your buyer signs for it only up to its own price from the usage it read and the seller's advertised prices. Your buyer learns which upstream serves the model. Only text chat completions go through the relay.
+The seller forwards ciphertext only and never sees the conversation, but the upstream does, under its own data policy. The seller bills the usage your buyer revealed at its advertised token prices, and your buyer signs for it only up to its own price from the usage it read. Your buyer learns which upstream serves the model. Only text chat completions go through the relay. Your buyer moves the checked fields to the end of the body and lowers an output limit above the seller's cap to it.
+
+The relay needs the keyed-relay sidecar (`@antseed/keyed-relay-<platform>-<arch>`, or a binary at `ANTSEED_KEYED_RELAY_BIN`); without it, a request to a `seller-blind` service fails before anything reaches the upstream.
 
 ## Policy levels
 

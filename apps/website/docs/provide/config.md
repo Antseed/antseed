@@ -139,7 +139,7 @@ Your seller then answers buyers' attestation requests for the service for free, 
 
 ### Seller-blind relay services
 
-A service on an upstream without end-to-end encryption can still be sold with zero data access when the upstream mints scoped credentials. Today this works with the `openai` provider on DeepInfra (`OPENAI_BASE_URL` of `https://api.deepinfra.com/v1/openai`). Add the `seller-blind` category to the service:
+A service on an upstream without end-to-end encryption can still be sold with zero data access. You keep your own API key, and the buyer never sees it. It works with the `openai` provider on any HTTPS upstream that accepts TLS 1.2 with AES-128-GCM. Add the `seller-blind` category to the service:
 
 ```json
 "llama-3.1-8b": {
@@ -148,19 +148,28 @@ A service on an upstream without end-to-end encryption can still be sold with ze
 }
 ```
 
-For a buyer with an open payment channel that has signed for its earlier requests, your seller mints a DeepInfra scoped token for the service's upstream model, with a spend cap and an expiry. The buyer then runs TLS to DeepInfra through a raw relay stream on your seller, which connects only to that credential's host, so you forward ciphertext and never see the conversation. After each relayed request your seller reads the token's spend from DeepInfra and charges the buyer that amount times your multiplier. A token is used for one request at a time, so each change in spend belongs to one request.
+A buyer with an open payment channel that has signed for its earlier requests gets a handle for the service from your seller, and at most 4 live handles at a time. The buyer then runs TLS to the upstream through a raw relay stream on your seller, so you forward ciphertext and never see the conversation. Right after the handshake, the buyer proves to your seller in zero knowledge that it derived the session keys from the handshake your seller relayed. The proof also gives your seller the encryption material for one record, and nothing more. Your seller encrypts that record itself: the request line, `Host`, your key and `Connection: close`. It writes the record to the upstream as the first record of the session. The buyer never receives that record, and your seller never holds the session keys. The buyer then sends the rest of the request (its headers and body). Your seller holds it and forwards none of it until it passes a check. The buyer reveals its headers and the last fields of the body, through the same proof, and nothing else of the request:
+
+- Headers: only `Content-Type` (JSON), `Content-Length` (which must match the body) and optionally `Accept` and `User-Agent`.
+- The body's last fields: the service's model, the output-token limit, `"n":1`, `stream`, usage in a stream, and any fields you pin, written in a fixed form.
+
+Your seller then runs the checks a direct request gets: an open payment channel with earlier requests signed for, the reserve headroom for the request's estimated cost (when you set a reserve-estimate overdraft) and your buyer limits. A request that fails is dropped without reaching the upstream, and the buyer is told why. The buyer reads the answer and at the end reveals to your seller only the status line and the usage figure, which your seller checks against the bytes it relayed. Your seller bills that usage at the service's token prices.
+
+The relay needs the keyed-relay sidecar on the seller and on the buyer: the `@antseed/keyed-relay-<platform>-<arch>` package, or a binary at `ANTSEED_KEYED_RELAY_BIN`. Without it, your seller serves no `seller-blind` services. Each request is one TLS session, and the setup adds about 1.5 MB between buyer and seller and a little over a second. Only text chat completions are carried. Know the trade-offs:
+
+- The checked fields work because they come last: an upstream that reads JSON with the last copy of a repeated key, as JavaScript, Python and Go do, uses them even if the buyer hid other values earlier in the body. An upstream that keeps the first copy, or stops at the end of the first JSON object and ignores what follows, could be given other values. Your seller then catches the mismatch afterwards where the answer shows it (another model in a stream, or a JSON answer to a streamed request), bills the request and refuses that buyer any further handles.
+- Set `OPENAI_KEYED_RELAY_MAX_TOKENS` to bound what one request can cost you. A buyer that never signs for its answer is then out at most one request of that size, as with any seller. Without a cap, a request may name no output limit.
+- Fields the upstream charges for that you don't pin stay hidden in the body. Pin them with `OPENAI_KEYED_RELAY_PINNED_JSON`; on `api.openai.com` the standard `service_tier` is pinned by default.
+- A delivered answer whose usage the buyer doesn't reveal is billed by an estimate from the bytes relayed. The buyer signs for it only up to its tolerance over the usage it read.
+- Your seller can't add body fields to a relayed request, so the relay is off when `OPENAI_BODY_INJECT_JSON` (or OpenRouter's `OPENAI_UPSTREAM_PROVIDER`) sets any.
+- The buyer learns which upstream serves the service, and sees your upstream's answers, including errors about your key.
+- A buyer that could also capture your seller's traffic to the upstream could recover your key from it. Set a spend limit and alerts on the key, and rotate it if you suspect misuse.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OPENAI_BLIND_RELAY_SPEND_LIMIT_USD` | `0.10` | The spend cap of each token, in USD |
-| `OPENAI_BLIND_RELAY_TTL_SECONDS` | `600` | How long each token lives (at least 60) |
-| `OPENAI_BLIND_RELAY_PRICE_MULTIPLIER` | `1` | What a relayed request is charged per USD of DeepInfra spend |
-
-Advertise token prices of about DeepInfra's list price times your multiplier: buyers sign a relayed request only up to their tolerance times the price they compute from the usage they read and your advertised prices. Know the trade-offs before you offer it:
-
-- A buyer holds the token, so it can also use it outside the relay. It still can't exceed the cap or the expiry, and your seller bills any extra spend on the buyer's next relayed request, up to the buyer's own price for it. Keep the cap small.
-- A DeepInfra token shows your DeepInfra account id to the buyer, and the buyer learns that the service runs on DeepInfra.
-- A buyer holds at most 4 live tokens with your seller.
+| `OPENAI_KEYED_RELAY_MAX_TOKENS` | no cap | The most output tokens one relayed request may ask for. A buyer request asking for more is lowered to it, and one naming no limit gets it. Keep it at or below the model's output limit. |
+| `OPENAI_KEYED_RELAY_MAX_TOKENS_FIELD` | `max_completion_tokens` on `api.openai.com`, `max_tokens` elsewhere | The body field your upstream reads the output limit from |
+| `OPENAI_KEYED_RELAY_PINNED_JSON` | `{"service_tier":"default"}` on `api.openai.com`, none elsewhere | Body fields every relayed request must end with, as a JSON object |
 
 ### Capabilities
 
