@@ -10,6 +10,7 @@ import {
   type AuditCheckId, type ConfirmationOnlyCheckId, type ConfirmationOnlyFinding,
 } from './audit-checks.js'
 import { adjudicateQuestions } from './model-audit.js'
+import { assertQuestionsFromSignedBytes } from './signed-questions.js'
 import { proxyAuditEvidenceHash, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import type { SubmissionCandidate } from './submission-delta.js'
 import { opinionKey } from './third-opinion.js'
@@ -469,6 +470,9 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
     // The hash proves which file was published. That a seller signed the answers in it is checked here, for the
     // first set's file and for each extra set's: none of them passed through this auditor's buyer proxy.
     assertSellerSignatures(parsed)
+    // And the questions are judged on what those signed answers give, asked of this seller: the stored scores are the
+    // first auditor's own writing.
+    assertQuestionsFromSignedBytes(parsed)
     return parsed
   }
   const results = evidence['results'] as unknown[]

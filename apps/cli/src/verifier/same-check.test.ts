@@ -353,10 +353,16 @@ test('first evidence that is not published, altered, about another seller or not
     assert.match(relabelReason, /the questions' first look says SAME, but its stored answers give DIFF/)
     // An answer no seller signed, in a publication whose every hash was rewritten to match: the hashes prove which
     // files were published, and the confirmer checks the sellers' signatures itself.
-    const forgedReason = async (forge: (auth: StoredSignedAnswer & { record: { signature: string } }) => void): Promise<string> => {
-      const forgedFile = JSON.parse(files.get(sellerPath)!) as { exchanges: Array<{ responseAuth: StoredSignedAnswer & { record: { signature: string } } }> }
+    type SignedAuth = StoredSignedAnswer & { record: NonNullable<StoredSignedAnswer['record']> }
+    type ForgedExchange = { responseAuth: SignedAuth; matches: Array<0 | 1 | null>; answers: Array<number | null> }
+    const resigned = (auth: SignedAuth, signer: Wallet): string => {
+      const { signature: _signature, receivedAt: _receivedAt, verified: _verified, verificationError: _verificationError, ...unsigned } = auth.record
+      return bytesToHex(signData(signer, encodeResponseAuthSigningPayload(unsigned)))
+    }
+    const forgedReason = async (forge: (auth: SignedAuth, exchange: ForgedExchange) => void): Promise<string> => {
+      const forgedFile = JSON.parse(files.get(sellerPath)!) as { exchanges: ForgedExchange[] }
       assert.equal(sellerSignatureProblem(forgedFile.exchanges[0]!.responseAuth), null, 'the fixture seller signs its answers')
-      forge(forgedFile.exchanges[0]!.responseAuth)
+      forge(forgedFile.exchanges[0]!.responseAuth, forgedFile.exchanges[0]!)
       const forged = structuredClone(evidence)
       forged.results.find((result) => result.agentId === '2')!.audit.evidenceHash = canonicalHashBytes32(forgedFile)
       const forgedFiles = new Map(files)
@@ -366,8 +372,7 @@ test('first evidence that is not published, altered, about another seller or not
     }
     // The signature of another key over the same record.
     assert.match(await forgedReason((auth) => {
-      const { signature: _signature, receivedAt: _receivedAt, verified: _verified, verificationError: _verificationError, ...unsigned } = auth.record!
-      auth.record.signature = bytesToHex(signData(randomWallet(), encodeResponseAuthSigningPayload(unsigned)))
+      auth.record.signature = resigned(auth, randomWallet())
     }), /an answer in the evidence is not authenticated: its signature is not the seller's/)
     // Another response under the seller's signature.
     assert.match(await forgedReason((auth) => {
@@ -375,8 +380,21 @@ test('first evidence that is not published, altered, about another seller or not
     }), /not authenticated: its stored response is not the one the seller signed/)
     // A record changed after it was signed.
     assert.match(await forgedReason((auth) => {
-      auth.record!.statusCode = 201
+      auth.record.statusCode = 201
     }), /not authenticated: its stored signing bytes are not those of its record/)
+    // Every signed byte kept, and the scores beside them rewritten: the questions are judged on what the signed
+    // response gives, never on the scores the first auditor stored.
+    assert.match(await forgedReason((_auth, exchange) => {
+      exchange.matches = exchange.matches.map((match) => (match === null ? null : match === 1 ? 0 : 1))
+    }), /the questions: a batch's stored answers are not the ones its signed response gives/)
+    // The same answer signed in full by another peer, a key the first auditor holds: a valid signature, of the wrong
+    // seller.
+    assert.match(await forgedReason((auth) => {
+      const other = randomWallet()
+      auth.record.sellerPeerId = other.address.slice(2).toLowerCase()
+      auth.record.signature = resigned(auth, other)
+      auth.signedPreimages!.responseAuthSigningBase64 = Buffer.from(encodeResponseAuthSigningPayload((({ signature: _signature, receivedAt: _receivedAt, verified: _verified, verificationError: _verificationError, ...unsigned }) => unsigned)(auth.record))).toString('base64')
+    }), /the questions: a reply is not signed by the seller it is stored for/)
     // A path that leaves the publication.
     const escaping = new Map(files)
     escaping.set('publication.json', JSON.stringify({ ...index, evidencePath: `../../${index.evidencePath}` }))
