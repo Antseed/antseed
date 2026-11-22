@@ -61,7 +61,7 @@ Some upstreams have no end-to-end encryption. A seller can still sell such a ser
 
 The seller forwards ciphertext only and never sees the conversation, but the upstream does, under its own data policy. The seller bills the usage your buyer revealed at its advertised token prices, and your buyer signs for it only up to its own price from the usage it read. Your buyer learns which upstream serves the model. Only text chat completions go through the relay. Your buyer moves the checked fields to the end of the body and lowers an output limit above the seller's cap to it.
 
-The relay needs the keyed-relay sidecar (`@antseed/keyed-relay-<platform>-<arch>`, or a binary at `ANTSEED_KEYED_RELAY_BIN`); without it, a request to a `seller-blind` service fails before anything reaches the upstream.
+The relay needs the keyed-relay sidecar (`@antseed/keyed-relay-<platform>-<arch>`, which an npm install of the CLI brings for its platform, or a binary at `ANTSEED_KEYED_RELAY_BIN`); without it, a request to a `seller-blind` service fails before anything reaches the upstream.
 
 ## Policy levels
 
