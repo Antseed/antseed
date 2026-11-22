@@ -118,8 +118,14 @@ export function sameCache(left: Readonly<Record<string, number>> | undefined, ri
   return canonicalJsonStringify(left) === canonicalJsonStringify(right)
 }
 
+/** What `cacheBlocks` reads of a request: whether its answer reports cached input, and the cached amounts. */
+type CacheOfRequest = Pick<TokenizerSellerRequestV1, 'cachedInput' | 'cache'>
+
 /** Whether a seller's pair is left without a measurement by its cache: cached input that does not cancel out. */
-export function cacheBlocks(ask: Pick<TokenizerSellerAskV1, 'base' | 'probed'>, rule: TokenizerPrecheckRule = TOKENIZER_PRECHECK_RULE): boolean {
+export function cacheBlocks(
+  ask: { base: CacheOfRequest; probed?: CacheOfRequest | null },
+  rule: TokenizerPrecheckRule = TOKENIZER_PRECHECK_RULE,
+): boolean {
   if (!ask.base.cachedInput && !ask.probed?.cachedInput) return false
   return !(rule.sameCacheCancels === true && ask.probed !== null && ask.probed !== undefined && sameCache(ask.base.cache, ask.probed.cache))
 }
@@ -1196,7 +1202,7 @@ export function tokenizerPrecheckFingerprint(): Record<string, unknown> {
     ].map(([base, probed]) => cacheBlocks({
       base: { cachedInput: base !== undefined, ...(base ? { cache: base } : {}) },
       probed: { cachedInput: probed !== undefined, ...(probed ? { cache: probed } : {}) },
-    } as never)),
+    })),
     cachedReference: referenceDelta([1, 2].map(() => ({
       baseTokens: 140, probedTokens: 157, cachedInput: true, cache: [{ cached_tokens: 128 }, { cached_tokens: 128 }] as [Record<string, number>, Record<string, number>], providers: ['Provider-A', 'Provider-A'] as [string, string],
     }))).delta,

@@ -1,6 +1,6 @@
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe } from '@antseed/node/payments'
-import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from '../shared/output-usage.js'
+import { outputCheckRequestBody, readOutput, requestCarriesPrompt, type OutputReadingV1, type OutputRequestThinking } from '../shared/output-usage.js'
 import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from '../../proxy-evidence.js'
 import {
   askSellerSigned,
@@ -145,20 +145,12 @@ export function outputEchoPrompt(text: string): string {
 export function outputEchoRequestBody(input: {
   service: string
   text: string
-  thinking?: { overrides?: Record<string, unknown>; assistantPrefill?: string } | null
+  thinking?: OutputRequestThinking | null
   rule?: OutputEchoRule
 }): Record<string, unknown> {
-  const rule = input.rule ?? OUTPUT_ECHO_RULE
-  return {
-    model: input.service,
-    messages: [
-      { role: 'user', content: outputEchoPrompt(input.text) },
-      ...(input.thinking?.assistantPrefill ? [{ role: 'assistant', content: input.thinking.assistantPrefill }] : []),
-    ],
-    ...input.thinking?.overrides,
-    max_tokens: rule.maxTokens,
-    stream: false,
-  }
+  return outputCheckRequestBody({
+    service: input.service, content: outputEchoPrompt(input.text), maxTokens: (input.rule ?? OUTPUT_ECHO_RULE).maxTokens, thinking: input.thinking,
+  })
 }
 
 /** A short text (one probe's sentences) or a long one (`passages` of them), from the pre-check's sentence writers; one line, guard-safe. */
@@ -876,19 +868,17 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
   throw new Error(`the echo check outcome is ${record.outcome}, its rounds give ${judged.outcome}`)
 }
 
-function requestsOf(record: OutputEchoV1): SignedSellerRequestV1[] {
+/** The record's requests in order: the seller's asks and repeats, then those of the crowd votes `counted` keeps (all by default). */
+function requestsOf(record: OutputEchoV1, counted: (vote: EchoCrowdVoteV1) => boolean = () => true): SignedSellerRequestV1[] {
   return [
     ...record.rounds.flatMap((round) => [...round.short, ...round.long, ...(round.repeats ? [round.repeats.short, round.repeats.long] : [])].map((ask) => ask.request)),
-    ...(record.crowd?.votes ?? []).flatMap((vote) => [vote.short.request, vote.long.request]),
+    ...(record.crowd?.votes ?? []).filter(counted).flatMap((vote) => [vote.short.request, vote.long.request]),
   ]
 }
 
 /** The requests this check sent: its own asks and the crowd votes it asked (a shared vote is counted where it was sent). */
 function sentRequests(record: OutputEchoV1): SignedSellerRequestV1[] {
-  return [
-    ...record.rounds.flatMap((round) => [...round.short, ...round.long, ...(round.repeats ? [round.repeats.short, round.repeats.long] : [])].map((ask) => ask.request)),
-    ...(record.crowd?.votes ?? []).filter((vote) => vote.sentHere).flatMap((vote) => [vote.short.request, vote.long.request]),
-  ]
+  return requestsOf(record, (vote) => vote.sentHere)
 }
 
 export function outputEchoRequestCount(record: OutputEchoV1): number {

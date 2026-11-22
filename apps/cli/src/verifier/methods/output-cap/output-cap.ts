@@ -1,7 +1,7 @@
 import { randomInt } from 'node:crypto'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe } from '@antseed/node/payments'
-import { readOutput, requestCarriesPrompt, type OutputReadingV1 } from '../shared/output-usage.js'
+import { outputCheckRequestBody, readOutput, requestCarriesPrompt, type OutputReadingV1, type OutputRequestThinking } from '../shared/output-usage.js'
 import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest, type ProxyAuditExchangeCostV1 } from '../../proxy-evidence.js'
 import {
   SIGNED_REQUEST_TRIES,
@@ -153,19 +153,9 @@ export function outputCapRequestBody(input: {
   service: string
   prompt: string
   cap: number
-  /** The seller's thinking suppression (overrides and an assistant prefill), as for its questions. */
-  thinking?: { overrides?: Record<string, unknown>; assistantPrefill?: string } | null
+  thinking?: OutputRequestThinking | null
 }): Record<string, unknown> {
-  return {
-    model: input.service,
-    messages: [
-      { role: 'user', content: input.prompt },
-      ...(input.thinking?.assistantPrefill ? [{ role: 'assistant', content: input.thinking.assistantPrefill }] : []),
-    ],
-    ...input.thinking?.overrides,
-    max_tokens: input.cap,
-    stream: false,
-  }
+  return outputCheckRequestBody({ service: input.service, content: input.prompt, maxTokens: input.cap, thinking: input.thinking })
 }
 
 /** The measured length of an answer at the reference; null when it was not measured or the measurement does not agree. */

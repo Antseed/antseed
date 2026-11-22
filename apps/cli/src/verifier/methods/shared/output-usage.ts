@@ -255,3 +255,31 @@ export function parseObject(bytes: Uint8Array): Record<string, unknown> | null {
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
+
+/** A seller's thinking suppression (overrides and an assistant prefill), as for its questions. */
+export interface OutputRequestThinking {
+  overrides?: Record<string, unknown>
+  assistantPrefill?: string
+}
+
+/**
+ * The request of an output-token check: one user message, with the seller's thinking suppression as for its
+ * questions. The check's own reply limit is set after the overrides, so no override changes it.
+ */
+export function outputCheckRequestBody(input: {
+  service: string
+  content: string
+  maxTokens: number
+  thinking?: OutputRequestThinking | null
+}): Record<string, unknown> {
+  return {
+    model: input.service,
+    messages: [
+      { role: 'user', content: input.content },
+      ...(input.thinking?.assistantPrefill ? [{ role: 'assistant', content: input.thinking.assistantPrefill }] : []),
+    ],
+    ...input.thinking?.overrides,
+    max_tokens: input.maxTokens,
+    stream: false,
+  }
+}
