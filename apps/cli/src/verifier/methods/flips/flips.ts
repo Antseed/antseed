@@ -1153,7 +1153,11 @@ export function createFlipsScreen<Settings>(input: {
 
 /** Waits for `promise`, or rejects once `signal` aborts. */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(new Error('the randomness check\'s time is up'))
+  if (signal.aborted) {
+    // The promise is left behind here: its own rejection must be handled, or Node ends the process on it.
+    promise.catch(() => undefined)
+    return Promise.reject(new Error('the randomness check\'s time is up'))
+  }
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(new Error('the randomness check\'s time is up'))
     signal.addEventListener('abort', onAbort, { once: true })

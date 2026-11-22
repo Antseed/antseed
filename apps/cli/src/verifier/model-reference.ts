@@ -2884,7 +2884,12 @@ class ReferenceUsageMissingError extends Error {
 /** Waits for `promise`, or rejects once `signal` aborts: a queued task never holds its caller past the abort. */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined, message: string): Promise<T> {
   if (!signal) return promise
-  if (signal.aborted) return Promise.reject(new Error(message))
+  if (signal.aborted) {
+    // The promise is left behind here. Its own rejection (a wait for a slot that the same abort cancels) must be
+    // handled, or Node ends the process on it.
+    promise.catch(() => undefined)
+    return Promise.reject(new Error(message))
+  }
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(new Error(message))
     signal.addEventListener('abort', onAbort, { once: true })

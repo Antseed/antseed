@@ -808,7 +808,11 @@ function peerKey(peerId: string): string {
 
 /** What `promise` gives, or `otherwise` once `signal` is aborted first. A rejection is passed on. */
 function untilAborted<T, U>(promise: Promise<T>, signal: AbortSignal, otherwise: U): Promise<T | U> {
-  if (signal.aborted) return Promise.resolve(otherwise)
+  if (signal.aborted) {
+    // The promise is left behind here: its own rejection must be handled, or Node ends the process on it.
+    promise.catch(() => undefined)
+    return Promise.resolve(otherwise)
+  }
   return new Promise<T | U>((resolve, reject) => {
     const stop = (): void => resolve(otherwise)
     signal.addEventListener('abort', stop, { once: true })

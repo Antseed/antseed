@@ -678,3 +678,34 @@ test('a reference job cancelled while it waits for its slot leaves the queue and
   await limiter.run('model-a', async () => undefined)
   assert.equal(ran, false)
 })
+
+test('a reference asked after its time is up sends nothing, says so for each request, and leaves no rejection unhandled', async () => {
+  // FLIPS asks its unanswered requests again inside the reference's time; when that time has already run out, the ask
+  // is made with a signal that is aborted from the start. An unhandled rejection there ends the whole run.
+  const unhandled: unknown[] = []
+  const onUnhandled = (reason: unknown): void => { unhandled.push(reason) }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const stop = new AbortController()
+    stop.abort()
+    let sent = 0
+    const fetchFn = (async () => {
+      sent += 1
+      return Response.json({ choices: [{ message: { content: 'x' } }] })
+    }) as typeof fetch
+    const body = { messages: [{ role: 'user', content: 'flips' }], max_tokens: 64 }
+    const asked = await askReferenceReplies({
+      model: 'model-a', settings: bankedReference(), contents: [], bodies: [body, body, body],
+      plainRoute: true, maxTokens: 0, fetchFn, signal: stop.signal,
+      config: { ...config, models: { 'model-a': { ...config.models!['model-a'], contrastModels: ['contrast-a'] } } },
+    })
+    assert.equal(sent, 0)
+    assert.deepEqual(asked.results.map((result) => [result.response, result.failure, result.tries]), Array.from({ length: 3 }, () => [null, 'the reference\'s time is up', 1]))
+    // Node reports an unhandled rejection once the microtasks of its turn are done.
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.deepEqual(unhandled.map((reason) => (reason instanceof Error ? reason.message : String(reason))), [])
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+})
