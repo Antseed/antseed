@@ -1,6 +1,7 @@
 import { Duplex } from 'node:stream';
 import {
   RELAY_DATA_MAX_BYTES,
+  RELAY_RESPONSE_WAIT_MS,
   decodeRelayClose,
   decodeRelayData,
   decodeRelayOpen,
@@ -70,7 +71,12 @@ export interface RelayMuxOptions {
 }
 
 const DEFAULT_MAX_STREAMS = 8;
-const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
+/**
+ * Longer than the wait a buyer gives an answer to start or to go on: a stream
+ * that carries nothing meanwhile stays open, and the buyer's deadline ends
+ * the request before the stream's own does.
+ */
+const DEFAULT_IDLE_TIMEOUT_MS = RELAY_RESPONSE_WAIT_MS + 30_000;
 const OPEN_TIMEOUT_MS = 30_000;
 /**
  * A peer sends as fast as the connection carries, whatever the stream's reader

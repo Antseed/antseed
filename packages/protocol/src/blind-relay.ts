@@ -16,6 +16,14 @@ export const BLIND_RELAY_CREDENTIAL_PATH = '/_antseed/blind/credential' as const
 export const RELAY_DATA_MAX_BYTES = 16 * 1024;
 
 /**
+ * How long a buyer waits for a relayed answer to start, and for its next
+ * part once it started. A relay stream carries nothing during that wait, so
+ * neither end closes an idle stream sooner: the buyer's own deadline comes
+ * first, and it ends the request with an answer for the client.
+ */
+export const RELAY_RESPONSE_WAIT_MS = 5 * 60_000;
+
+/**
  * The codes a seller's refusal of a keyed request starts with (`<code>: <why>`)
  * when the buyer can recover. Nothing of a refused request was forwarded.
  * `top_up_pending`: the channel is being extended on-chain, so the same

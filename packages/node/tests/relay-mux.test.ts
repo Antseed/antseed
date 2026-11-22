@@ -1,7 +1,7 @@
 import { Duplex } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FrameDecoder } from '@antseed/protocol/framing';
-import { encodeRelayClose, encodeRelayData, encodeRelayOpen } from '@antseed/protocol/blind-relay';
+import { RELAY_RESPONSE_WAIT_MS, encodeRelayClose, encodeRelayData, encodeRelayOpen } from '@antseed/protocol/blind-relay';
 import { RelayMux, type RelayGrant } from '../src/p2p/relay-mux.js';
 import type { PeerConnection } from '../src/p2p/connection-manager.js';
 import { MessageType } from '../src/types/protocol.js';
@@ -195,6 +195,59 @@ describe('RelayMux', () => {
     const failed = new Promise<string>((resolve) => stream.on('error', (error) => resolve(error.message)));
     buyer.close();
     expect(await failed).toBe('connection closed');
+  });
+});
+
+describe('RelayMux idle streams', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A stream to a seller side that answers only when the test tells it to: an upstream that takes its time. */
+  async function quietStream() {
+    vi.useFakeTimers();
+    const closed: Array<{ error?: string }> = [];
+    const sellerSide: Duplex = new Duplex({ read() {}, write(_chunk, _encoding, callback) { callback(); } });
+    const { buyer } = linked(async () => ({ open: () => sellerSide, onClose: (stats) => closed.push(stats) }));
+    const stream = await buyer.openStream('quiet', 'cred');
+    const received: string[] = [];
+    const failures: string[] = [];
+    stream.on('data', (chunk: Buffer) => received.push(chunk.toString()));
+    stream.on('error', (error) => failures.push(error.message));
+    stream.write('the request');
+    await vi.advanceTimersByTimeAsync(10);
+    return { stream, sellerSide, closed, received, failures };
+  }
+
+  it('keeps a stream open through the whole wait a buyer gives an answer to start', async () => {
+    const { stream, sellerSide, closed, received, failures } = await quietStream();
+    // Longer than two minutes: an upstream that thinks before its first byte.
+    await vi.advanceTimersByTimeAsync(RELAY_RESPONSE_WAIT_MS);
+    expect([stream.destroyed, sellerSide.destroyed, closed, failures]).toEqual([false, false, [], []]);
+    sellerSide.push('the answer');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(received).toEqual(['the answer']);
+  });
+
+  it('keeps a stream open through the whole pause a buyer gives a started answer', async () => {
+    const { stream, sellerSide, closed, received, failures } = await quietStream();
+    sellerSide.push('the answer starts');
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(RELAY_RESPONSE_WAIT_MS);
+    expect([stream.destroyed, sellerSide.destroyed, closed, failures]).toEqual([false, false, [], []]);
+    sellerSide.push(', and ends');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(received).toEqual(['the answer starts', ', and ends']);
+  });
+
+  it('still ends a stream that stays idle past the buyer\'s wait, on both sides', async () => {
+    const { stream, sellerSide, closed, failures } = await quietStream();
+    await vi.advanceTimersByTimeAsync(RELAY_RESPONSE_WAIT_MS + 60_000);
+    expect(stream.destroyed).toBe(true);
+    expect(sellerSide.destroyed).toBe(true);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatch(/idle/);
+    expect(closed).toMatchObject([{ error: 'idle' }]);
   });
 });
 
