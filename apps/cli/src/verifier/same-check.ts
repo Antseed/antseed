@@ -97,8 +97,11 @@ export type SameCheckCandidate = SubmissionCandidate & {
 }
 
 export interface PublishedFlagReader {
-  /** The `ModelAudited` events of `auditor` on `modelHash`. */
-  modelAudits(filter: { model: string; auditor: string }): Promise<ModelAuditedEvent[]>
+  /**
+   * The `ModelAudited` events of `auditor` on `modelHash` from `fromBlock` on. The one looked for is in the
+   * transaction of its report, so the read starts at the report's block, never at the contract's deployment.
+   */
+  modelAudits(filter: { model: string; auditor: string }, fromBlock: number): Promise<ModelAuditedEvent[]>
   /** The text at `<cid>/<path>` on IPFS. */
   fetchText(cidPath: string): Promise<string>
   /** The service's report round on the contract now: a report from an earlier round no longer counts. */
@@ -390,7 +393,7 @@ interface PublishedModelAudit {
 }
 
 async function readPublishedModelAudit(reader: PublishedFlagReader, report: ServiceAuditedEvent): Promise<PublishedModelAudit> {
-  const events = await reader.modelAudits({ model: report.modelHash, auditor: report.auditor })
+  const events = await reader.modelAudits({ model: report.modelHash, auditor: report.auditor }, report.blockNumber)
   const event = events.find((entry) => (
     entry.transactionHash.toLowerCase() === report.transactionHash.toLowerCase()
     && normalized(entry.modelHash) === normalized(report.modelHash)

@@ -541,7 +541,7 @@ export async function loadRunConfirmations(input: {
       revoked,
       now: input.now ?? Math.floor(Date.now() / 1_000),
       reader: {
-        modelAudits: (filter) => client.queryModelAudits(filter),
+        modelAudits: (filter, fromBlock) => client.queryModelAudits(filter, fromBlock),
         // A dry run on a local fork reads it from this machine (`verifier.testPublication`, refused off a local RPC).
         fetchText: (cidPath) => fetchIpfsText(cidPath, testPublication ? { ipfsGateway: testPublication.gatewayUrl } : {}),
         reportRound: (agentId, service) => client.reportRound(agentId, service),

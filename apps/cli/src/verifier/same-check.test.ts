@@ -74,11 +74,14 @@ async function publish(evidenceDir: string, audit: PreparedModelAudit): Promise<
 
 let currentModelHash = ''
 
-function reader(files: Map<string, string>, evidenceHash: string, overrides: Partial<ModelAuditedEvent> = {}): PublishedFlagReader & { fetched: string[] } {
+function reader(files: Map<string, string>, evidenceHash: string, overrides: Partial<ModelAuditedEvent> = {}): PublishedFlagReader & { fetched: string[]; readFrom: number[] } {
   const fetched: string[] = []
+  const readFrom: number[] = []
   return {
     fetched,
-    async modelAudits() {
+    readFrom,
+    async modelAudits(_filter, fromBlock) {
+      readFrom.push(fromBlock)
       return [{
         modelHash: currentModelHash, auditor: first.address, epoch: 7n, evidenceHash,
         evidenceUri: `ipfs://${CID}`, resultCount: 3, blockNumber: 10, logIndex: 0, transactionHash: TX,
@@ -282,6 +285,7 @@ test('the first auditor\'s checks are read from its published evidence, close ca
     assert.equal(decisions[3]?.kind, 'exclude', 'an UNDETERMINED answering a waiting DIFF is never sent')
     assert.equal(decisions[4], null, 'a DIFF with no waiting DIFF to answer is a first look')
     assert.equal(published.fetched.filter((path) => path.endsWith('publication.json')).length, 1, 'the publication is read once per transaction')
+    assert.deepEqual(published.readFrom, [10], 'the model audit is read from its report\'s block, not from the contract\'s deployment')
     // A DIFF that names no check is never sent, first look or not.
     const [invalid] = await filter(audit.modelHash, [candidate(1n, VERIFIER_VERDICT.DIFF, [])])
     assert.match(invalid?.kind === 'exclude' ? invalid.reason : '', /names no check/)

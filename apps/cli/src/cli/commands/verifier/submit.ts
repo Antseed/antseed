@@ -312,7 +312,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
        */
       // Which check flagged in another auditor's waiting DIFF, read from its published evidence (same-check.ts).
       const flagReader: PublishedFlagReader = {
-        modelAudits: (filter) => verifierClient.queryModelAudits(filter),
+        modelAudits: (filter, fromBlock) => verifierClient.queryModelAudits(filter, fromBlock),
         fetchText: (cidPath) => fetchIpfsText(cidPath, testPublication ? { ipfsGateway: testPublication.gatewayUrl } : {}),
         reportRound: (agentId, service) => verifierClient.reportRound(agentId, service),
         blockTimestamp: async (blockNumber) => {
