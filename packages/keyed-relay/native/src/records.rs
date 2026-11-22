@@ -27,6 +27,14 @@ pub struct Record {
     pub body: Vec<u8>,
 }
 
+impl Record {
+    /// Appends the record as it goes on the wire: its header, then its body.
+    pub fn append_wire(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&header(self.typ, self.body.len()));
+        out.extend_from_slice(&self.body);
+    }
+}
+
 /// Splits a byte stream into records as they complete.
 #[derive(Default)]
 pub struct RecordParser {

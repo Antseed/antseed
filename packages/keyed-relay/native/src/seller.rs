@@ -83,9 +83,7 @@ impl HandshakeSide {
         if self.bytes.len() + 5 + record.body.len() > MAX_HANDSHAKE {
             bail!("the handshake is longer than {MAX_HANDSHAKE} bytes");
         }
-        self.bytes.extend_from_slice(&[record.typ, 3, 3]);
-        self.bytes.extend_from_slice(&(record.body.len() as u16).to_be_bytes());
-        self.bytes.extend_from_slice(&record.body);
+        record.append_wire(&mut self.bytes);
         self.records.push(record.clone());
         if record.typ == CHANGE_CIPHER_SPEC {
             self.seen_ccs = true;
@@ -106,9 +104,7 @@ fn cert_verifier(extra_roots_pem: Option<&str>) -> Result<ServerCertVerifier> {
 
 fn raw(record: &Record) -> Vec<u8> {
     let mut out = Vec::with_capacity(5 + record.body.len());
-    out.extend_from_slice(&[record.typ, 3, 3]);
-    out.extend_from_slice(&(record.body.len() as u16).to_be_bytes());
-    out.extend_from_slice(&record.body);
+    record.append_wire(&mut out);
     out
 }
 
