@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Test only: runs this worktree's keyed-relay sidecar and adds the keyed-relay test CA to its start message, so it
-// trusts the local TLS upstream (mock-upstream.mjs). Set as TESTBENCH_KEYED_RELAY_BIN for `stress-seller-blind-relay`.
+// trusts the local TLS upstream (mock-upstream.mjs). Set as TESTBENCH_KEYED_RELAY_BIN for `seller-blind-relay` and `stress-seller-blind-relay`.
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

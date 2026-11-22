@@ -5,9 +5,18 @@
 //
 // The buyer asks for zero data access the way the gateway does: a routing policy authenticated with the control
 // secret, which the topology gives the buyer through its environment.
+import { usageCost } from '../../lib/mock.mjs';
+
 const CONTROL_SECRET = 'testbench-control-secret';
 const POLICY = Buffer.from(JSON.stringify({ requireZeroDataAccess: true })).toString('base64url');
 const CODEWORD = 'giraffe';
+// The local mock upstream (`fixtures/seller-blind/mock-upstream.mjs`) echoes what a prompt puts in double brackets.
+const PROMPT = `Reply with the single word [[${CODEWORD}]] and nothing else.`;
+
+// A local TLS upstream under a test CA needs sidecars that trust it: TESTBENCH_KEYED_RELAY_BIN names such a binary
+// (`fixtures/seller-blind/relay-test-ca.mjs`).
+const relayBin = process.env.TESTBENCH_KEYED_RELAY_BIN;
+const relayEnv = relayBin ? { ANTSEED_KEYED_RELAY_BIN: relayBin } : {};
 
 export const meta = {
   description: 'Seller-blind relay against a real upstream: a zero-data-access chat on a `seller-blind` service is answered streamed and not streamed, the buyer signs exactly the usage the upstream reported at the seller\'s price, and settlement equals what was signed.',
@@ -21,8 +30,8 @@ export const meta = {
 
 export const topology = {
   mode: 'cli',
-  sellers: [{ id: 'seller' }],
-  buyer: { env: { ANTSEED_GATEWAY_CONTROL_SECRET: CONTROL_SECRET } },
+  sellers: [{ id: 'seller', ...(relayBin ? { env: relayEnv } : {}) }],
+  buyer: { env: { ANTSEED_GATEWAY_CONTROL_SECRET: CONTROL_SECRET, ...relayEnv } },
 };
 
 function blindService(tb, sellerId) {
@@ -59,13 +68,14 @@ export async function run(tb) {
     headers: { 'x-antseed-gateway-auth': CONTROL_SECRET, 'x-antseed-routing-policy': POLICY },
     body: {
       model: `${seller.peerId}@${service.id}`,
-      messages: [{ role: 'user', content: `Reply with the single word ${CODEWORD} and nothing else.` }],
+      messages: [{ role: 'user', content: PROMPT }],
       max_tokens: 16,
       stream,
       ...(stream ? { stream_options: { include_usage: true } } : {}),
     },
   });
-  const cost = (usage) => BigInt(usage?.prompt_tokens ?? 0) * BigInt(service.pricing.inputUsdPerMillion) + BigInt(usage?.completion_tokens ?? 0) * BigInt(service.pricing.outputUsdPerMillion);
+  // Rounded for each response, like the seller's metering, so a fractional price per million tokens adds up the same.
+  const cost = (usage) => usageCost(service.pricing, { prompt: usage?.prompt_tokens ?? 0, completion: usage?.completion_tokens ?? 0 });
 
   const plain = await ask(false);
   const plainText = plain.json?.choices?.[0]?.message?.content ?? '';
@@ -80,7 +90,7 @@ export async function run(tb) {
   tb.metric('relayStreamChatMs', stream.latencyMs);
 
   // Without the policy the same service is an ordinary chat: the relay is only for requests that ask for it.
-  const ordinary = await tb.request('/v1/chat/completions', { body: { model: `${seller.peerId}@${service.id}`, messages: [{ role: 'user', content: `Reply with the single word ${CODEWORD} and nothing else.` }], max_tokens: 16 } });
+  const ordinary = await tb.request('/v1/chat/completions', { body: { model: `${seller.peerId}@${service.id}`, messages: [{ role: 'user', content: PROMPT }], max_tokens: 16 } });
   tb.check('the same service still answers an ordinary chat', ordinary.status === 200, { status: ordinary.status, body: ordinary.text.slice(0, 300) });
 
   const expected = cost(plain.json?.usage) + cost(read.usage) + cost(ordinary.json?.usage);

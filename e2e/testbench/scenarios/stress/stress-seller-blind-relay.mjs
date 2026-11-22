@@ -11,6 +11,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Contract, JsonRpcProvider } from 'ethers';
 import { AnvilSigner, minedReceipt } from '../../lib/chain.mjs';
+import { usageCost } from '../../lib/mock.mjs';
 
 const CONTROL_SECRET = 'testbench-control-secret';
 const POLICY = Buffer.from(JSON.stringify({ requireZeroDataAccess: true })).toString('base64url');
@@ -98,7 +99,8 @@ export async function run(tb) {
   const service = blindService(tb, tb.sellers[0].id);
   tb.check('the sellers offer a seller-blind service', service !== null, tb.manifest.topology.sellers[0].providers);
   if (!service) return;
-  const cost = (usage) => BigInt(usage?.prompt_tokens ?? 0) * BigInt(service.pricing.inputUsdPerMillion) + BigInt(usage?.completion_tokens ?? 0) * BigInt(service.pricing.outputUsdPerMillion);
+  // Rounded for each response, like the seller's metering, so a fractional price per million tokens adds up the same.
+  const cost = (usage) => usageCost(service.pricing, { prompt: usage?.prompt_tokens ?? 0, completion: usage?.completion_tokens ?? 0 });
 
   // Seller logs outlive a run, so count this run's lines only.
   const sellerLog = (seller) => join(tb.manifest.dir, 'logs', `seller-${seller.id}.log`);
