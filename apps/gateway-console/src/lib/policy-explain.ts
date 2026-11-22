@@ -37,7 +37,7 @@ export function policySentences(policy: RoutingPolicy | null | undefined, peers:
     out.push(`Never uses ${parts.join(', ')}.`)
   }
   if (p.requireTee) out.push('Only sellers running in a TEE.')
-  if (p.requireZeroDataAccess) out.push('Only services the seller cannot read: every message is encrypted end to end to an attested upstream.')
+  if (p.requireZeroDataAccess) out.push('Only services the seller cannot read: every message is encrypted end to end to an attested upstream, or reaches the upstream through the seller-blind relay.')
   if (p.requireVerified) out.push('Only sellers with a verified domain or GitHub account.')
   if (p.minTrustScore !== undefined) out.push(`Only sellers with trust ${p.minTrustScore} or more.`)
   if (p.minReputation !== undefined) out.push(`Only sellers with reputation ${p.minReputation} or more.`)

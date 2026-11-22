@@ -28,7 +28,7 @@ export function addPolicyOptions(cmd: Command): Command {
     .option('--max-output-price <usd>', 'cap on output price, USD per million tokens')
     .option('--max-cached-input-price <usd>', 'cap on cached input price, USD per million tokens')
     .option('--require-tee', 'only sellers advertising TEE attestation')
-    .option('--require-zero-data-access', 'only services the seller cannot read (end-to-end encrypted to an attested upstream)')
+    .option('--require-zero-data-access', 'only services the seller cannot read (end-to-end encrypted to an attested upstream, or reached through the seller-blind relay)')
     .option('--require-verified', 'only sellers whose responses pass a verifier')
     .option('--prefer-free', 'rank free sellers first')
     .option('--sort <order>', `how eligible sellers are ranked: ${SORTS.join(', ')}`)
