@@ -5,7 +5,7 @@ import type { KeyedRelayEvent, KeyedRelayProcess, KeyedRelaySellerStart } from '
 import { keyedRequestTailFields, type KeyedRequestTerms } from '@antseed/protocol/blind-relay';
 import { keyedRelayEstimatedUsage, keyedRelayModelMatches, readKeyedRelayReveal } from '../src/keyed-relay-billing.js';
 import { checkKeyedRequest } from '../src/keyed-relay-request.js';
-import { SellerBlindRelay, keyedRelayHead, type BlindRelayCharge, type BlindRelayRecord, type KeyedRequestAdmission, type KeyedRequestDecision } from '../src/seller-blind-relay.js';
+import { SellerBlindRelay, keyedRelayHead, type BlindRelayCharge, type BlindRelayRecord, type KeyedRequestAdmission, type KeyedRequestDecision, type SellerBlindRelayDeps } from '../src/seller-blind-relay.js';
 import type { KeyedRelayTarget, Provider } from '../src/interfaces/seller-provider.js';
 
 const BUYER = 'aa'.repeat(20);
@@ -189,7 +189,11 @@ function fakeSidecar() {
   return emitter;
 }
 
-function keyedRelay(target: KeyedRelayTarget | null = TARGET, admitKeyedRequest?: (request: KeyedRequestAdmission) => KeyedRequestDecision) {
+function keyedRelay(
+  target: KeyedRelayTarget | null = TARGET,
+  admitKeyedRequest?: (request: KeyedRequestAdmission) => KeyedRequestDecision | Promise<KeyedRequestDecision>,
+  extra: Partial<SellerBlindRelayDeps> = {},
+) {
   const charges: BlindRelayCharge[] = [];
   const records: BlindRelayRecord[] = [];
   const sidecars: ReturnType<typeof fakeSidecar>[] = [];
@@ -203,6 +207,7 @@ function keyedRelay(target: KeyedRelayTarget | null = TARGET, admitKeyedRequest?
     },
     usageCostUsdc: (_provider, _service, usage) => BigInt(usage.inputTokens + usage.outputTokens * 10),
     ...(admitKeyedRequest ? { admitKeyedRequest } : {}),
+    ...extra,
   });
   const provider = { keyedRelayTarget: () => target } as unknown as Provider;
   return { blind, charges, records, sidecars, provider };
@@ -458,11 +463,106 @@ describe('SellerBlindRelay', () => {
     await expect(blind.authorize(BUYER, 's3', credentialId)).resolves.toBeTruthy();
   });
 
-  it('refuses a fifth live handle for one buyer', () => {
+  it('refuses a fifth handle for one buyer only while its four carry streams', async () => {
     const { blind, provider } = keyedRelay();
-    for (let i = 0; i < 4; i += 1) blind.mint(BUYER, 'open-model', provider);
+    for (let i = 0; i < 4; i += 1) {
+      (await blind.authorize(BUYER, `s${i}`, blind.mint(BUYER, 'open-model', provider).credentialId)).open();
+    }
     expect(() => blind.mint(BUYER, 'open-model', provider)).toThrow('too many live credentials');
     expect(blind.mint(OTHER, 'open-model', provider)).toBeTruthy();
+  });
+
+  it('replaces the oldest idle handle of a buyer at its limit, so a fifth service is served', async () => {
+    const { blind, sidecars, provider } = keyedRelay();
+    const handles = ['a', 'b', 'c', 'd'].map((service) => blind.mint(BUYER, service, provider));
+    // The oldest handle carries a stream: the next oldest is the one replaced.
+    (await blind.authorize(BUYER, 'busy', handles[0]!.credentialId)).open();
+    const fifth = blind.mint(BUYER, 'e', provider);
+    await expect(blind.authorize(BUYER, 'gone', handles[1]!.credentialId)).rejects.toThrow('unknown credential');
+    await expect(blind.authorize(BUYER, 'kept', handles[2]!.credentialId)).resolves.toBeTruthy();
+    await expect(blind.authorize(BUYER, 'new', fifth.credentialId)).resolves.toBeTruthy();
+    sidecars[0]!.emit('exit', { code: 0, stderr: '' });
+    await expect(blind.authorize(BUYER, 'again', handles[0]!.credentialId)).resolves.toBeTruthy();
+  });
+
+  it('counts what each stream holds before its request is forwarded against one shared budget', async () => {
+    const budget = {
+      used: 0,
+      tryReserve(bytes: number) {
+        if (this.used + bytes > 100) return false;
+        this.used += bytes;
+        return true;
+      },
+      release(bytes: number) { this.used -= bytes; },
+    };
+    const { blind, sidecars, provider } = keyedRelay(TARGET, undefined, { requestBytes: budget });
+    const open = async (id: string) => {
+      const grant = await blind.authorize(BUYER, id, blind.mint(BUYER, 'open-model', provider).credentialId);
+      grant.open();
+      return grant;
+    };
+    const first = await open('s1');
+    const second = await open('s2');
+    expect(first.accept!(60)).toBe(true);
+    // The budget is one for all streams: the second has no room while the first holds its bytes.
+    expect(second.accept!(60)).toBe(false);
+    expect(budget.used).toBe(60);
+
+    // Forwarded: the sidecar holds the request no longer, and what follows it is not counted.
+    emit(sidecars[0]!, { type: 'admitted' });
+    expect(budget.used).toBe(0);
+    expect(first.accept!(1000)).toBe(true);
+    expect(budget.used).toBe(0);
+
+    // A refused request and a sidecar that ends early give back what they held.
+    expect(second.accept!(60)).toBe(true);
+    emit(sidecars[1]!, { type: 'refused', reason: 'the locked reserve has 0 left' });
+    expect(budget.used).toBe(0);
+    const third = await open('s3');
+    expect(third.accept!(60)).toBe(true);
+    sidecars[2]!.emit('exit', { code: 1, stderr: 'handshake timed out' });
+    expect(budget.used).toBe(0);
+    for (const sidecar of sidecars.slice(0, 2)) sidecar.emit('exit', { code: 0, stderr: '' });
+    expect(budget.used).toBe(0);
+  });
+
+  it('opens no stream for a buyer the seller blocked after minting, and drops its idle handles', async () => {
+    const blocked = new Set<string>();
+    const { blind, provider } = keyedRelay(TARGET, undefined, { isBuyerBlocked: (buyer) => blocked.has(buyer) });
+    const minted = blind.mint(BUYER, 'open-model', provider);
+    blocked.add(BUYER);
+    await expect(blind.authorize(BUYER, 's1', minted.credentialId)).rejects.toThrow('does not serve your requests');
+    expect(() => blind.mint(BUYER, 'open-model', provider)).toThrow('does not serve your requests');
+    // Unblocked, it asks for a new handle: the old one is gone.
+    blocked.delete(BUYER);
+    await expect(blind.authorize(BUYER, 's2', minted.credentialId)).rejects.toThrow('unknown credential');
+    await expect(blind.authorize(OTHER, 's3', blind.mint(OTHER, 'open-model', provider).credentialId)).resolves.toBeTruthy();
+  });
+
+  it('forwards nothing for a buyer the seller blocked while the payment checks ran', async () => {
+    const blocked = new Set<string>();
+    const finished: number[] = [];
+    let checked!: () => void;
+    const checking = new Promise<void>((resolve) => { checked = resolve; });
+    const { blind, charges, sidecars, provider } = keyedRelay(
+      TARGET,
+      async () => {
+        await checking;
+        return { admitted: true, finish: (tokens) => finished.push(tokens) };
+      },
+      { isBuyerBlocked: (buyer) => blocked.has(buyer) },
+    );
+    const minted = blind.mint(BUYER, 'open-model', provider);
+    (await blind.authorize(BUYER, 's1', minted.credentialId)).open();
+    emit(sidecars[0]!, { type: 'request', ...keyedRequest() });
+    blocked.add(BUYER);
+    checked();
+    await settle();
+    expect(sidecars[0]!.decisions).toEqual([expect.stringContaining('refuse: this seller does not serve your requests')]);
+    // The hold the payment checks took is given back.
+    expect(finished).toEqual([0]);
+    sidecars[0]!.emit('exit', { code: 0, stderr: '' });
+    expect(charges).toEqual([]);
   });
 
   it('serves only with the sidecar installed and a target named', () => {

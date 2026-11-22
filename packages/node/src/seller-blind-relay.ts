@@ -16,6 +16,7 @@ const CREDENTIAL_TTL_MS = 10 * 60_000;
 /** The longest request head the relay writes. */
 const MAX_HEAD_BYTES = 8192;
 const REFUSED_BUYER = 'this seller no longer relays requests for this buyer';
+const BLOCKED_BUYER = 'this seller does not serve your requests';
 
 interface LiveCredential {
   id: string;
@@ -106,6 +107,14 @@ export interface SellerBlindRelayDeps {
   admitKeyedRequest?: (request: KeyedRequestAdmission) => Promise<KeyedRequestDecision> | KeyedRequestDecision;
   /** The longest request body the seller holds for its check. */
   maxKeyedRequestBytes?: number;
+  /**
+   * The seller's budget for request bytes held at once, shared with direct
+   * requests: what a stream sends before its request is forwarded or refused
+   * is reserved from it, and a stream with no room left is closed.
+   */
+  requestBytes?: { tryReserve(bytes: number): boolean; release(bytes: number): void };
+  /** Buyers the seller refuses to serve: asked when a handle is minted, when a stream opens and before a request is forwarded. */
+  isBuyerBlocked?: (buyerPeerId: string) => boolean;
   now?: () => number;
 }
 
@@ -151,6 +160,20 @@ export class SellerBlindRelay {
     }
   }
 
+  /** Drops the handles of `buyerPeerId` that carry no stream. */
+  private _dropIdle(buyerPeerId: string): void {
+    for (const [id, held] of this._credentials) {
+      if (held.buyerPeerId === buyerPeerId && !held.busy) this._credentials.delete(id);
+    }
+  }
+
+  /** Whether the seller refuses to serve `buyerPeerId`; the handles such a buyer holds idle are dropped. */
+  private _blocked(buyerPeerId: string): boolean {
+    if (!this._deps.isBuyerBlocked?.(buyerPeerId)) return false;
+    this._dropIdle(buyerPeerId);
+    return true;
+  }
+
   /** Whether `provider` can serve relay streams here: it names a target and the sidecar is installed. */
   servesKeyed(provider: Provider): boolean {
     return Boolean(provider.keyedRelayTarget && this._deps.spawnKeyedRelay && this._deps.usageCostUsdc);
@@ -164,13 +187,20 @@ export class SellerBlindRelay {
     const unserved = `service "${service}" is not served through the blind relay`;
     if (!this.servesKeyed(provider)) throw new Error(unserved);
     this._sweep();
-    const held = [...this._credentials.values()].filter((c) => c.buyerPeerId === buyerPeerId).length;
-    if (held >= MAX_CREDENTIALS_PER_BUYER) throw new Error('too many live credentials; reuse one');
+    if (this._blocked(buyerPeerId)) throw new Error(BLOCKED_BUYER);
     if (this._keyedRefused.has(buyerPeerId)) throw new Error(REFUSED_BUYER);
     const target = provider.keyedRelayTarget?.(service);
     if (!target) throw new Error(unserved);
     if (!isKeyedRequestTerms(target.request)) throw new Error(`service "${service}" has malformed request terms`);
     keyedRelayHead(target);
+    // A buyer keeps a handle per service it used. At the limit the oldest one carrying no stream makes room
+    // (the buyer asks again for that service), so only streams, not services, are limited.
+    const held = [...this._credentials.values()].filter((c) => c.buyerPeerId === buyerPeerId);
+    if (held.length >= MAX_CREDENTIALS_PER_BUYER) {
+      const idle = held.find((c) => !c.busy);
+      if (!idle) throw new Error('too many live credentials; reuse one');
+      this._credentials.delete(idle.id);
+    }
     const id = randomBytes(16).toString('hex');
     const expiresAt = this._now() + CREDENTIAL_TTL_MS;
     this._credentials.set(id, { id, buyerPeerId, service, provider, target, expiresAt, busy: false });
@@ -185,7 +215,8 @@ export class SellerBlindRelay {
 
   /** Relay authorizer for one buyer's connection. */
   authorize(buyerPeerId: string, streamId: string, credentialId: string): Promise<RelayGrant> {
-    // Whatever handle it names: the handles a refused buyer held are gone.
+    // Whatever handle it names: the handles a blocked or refused buyer held are gone.
+    if (this._blocked(buyerPeerId)) return Promise.reject(new Error(BLOCKED_BUYER));
     if (this._keyedRefused.has(buyerPeerId)) return Promise.reject(new Error(REFUSED_BUYER));
     const credential = this._credentials.get(credentialId);
     // Another buyer's credential reads as unknown, so ids reveal nothing.
@@ -219,14 +250,29 @@ export class SellerBlindRelay {
     const refuseBuyer = (why: string): void => {
       debugWarn(`[BlindRelay] ${streamId.slice(0, 8)} ${why}; refusing ${credential.buyerPeerId.slice(0, 12)}...`);
       this._keyedRefused.add(credential.buyerPeerId);
-      for (const [id, held] of this._credentials) {
-        if (held.buyerPeerId === credential.buyerPeerId && !held.busy) this._credentials.delete(id);
-      }
+      this._dropIdle(credential.buyerPeerId);
+    };
+    /** Bytes reserved from the seller's request budget: what the stream sent while its sidecar holds its request. */
+    let reserved = 0;
+    /** From the stream's opening until its request is forwarded or refused. */
+    let holding = false;
+    const letGo = (): void => {
+      holding = false;
+      if (reserved > 0) this._deps.requestBytes?.release(reserved);
+      reserved = 0;
     };
     return {
+      accept: (bytes: number): boolean => {
+        const budget = this._deps.requestBytes;
+        if (!holding || !budget) return true;
+        if (!budget.tryReserve(bytes)) return false;
+        reserved += bytes;
+        return true;
+      },
       open: (): Duplex => {
         const sidecar = this._deps.spawnKeyedRelay!();
         live = true;
+        holding = true;
         const openedAt = this._now();
         /** The request as admitted: what the seller checked of it, and the channel it was checked against. */
         let admitted: { stream: boolean; inputTokens: number; maxTokens: number | null; channelId?: string } | null = null;
@@ -285,6 +331,11 @@ export class SellerBlindRelay {
               decision = { admitted: false, reason: 'the seller could not check the request' };
             }
           }
+          // The payment checks waited: the seller may have blocked the buyer meanwhile.
+          if (decision.admitted && this._blocked(credential.buyerPeerId)) {
+            decision.finish?.(0);
+            decision = { admitted: false, reason: BLOCKED_BUYER };
+          }
           if (ended) {
             // The sidecar is gone: nothing goes upstream.
             if (decision.admitted) decision.finish?.(0);
@@ -308,6 +359,8 @@ export class SellerBlindRelay {
         };
         sidecar.on('event', (event: KeyedRelayEvent) => {
           if (event.type === 'request') void admit(event);
+          // Forwarded or dropped: the sidecar holds the request no longer.
+          if (event.type === 'admitted' || event.type === 'refused') letGo();
           if (event.type === 'responseEnd') lengths = { length: event.length, bytesUp: event.bytesUp ?? 0, bytesDown: event.bytesDown ?? 0 };
           if (event.type === 'revealed') {
             const { statusCode, usage, model, streamed } = readKeyedRelayReveal(event);
@@ -324,6 +377,7 @@ export class SellerBlindRelay {
         sidecar.on('exit', (exit: { code: number | null; stderr: string }) => {
           // An answer that was delivered but never revealed is still paid for.
           ended = true;
+          letGo();
           if (lengths) bill(null, null);
           finishHold(0);
           if (exit.code) debugWarn(`[BlindRelay] ${streamId.slice(0, 8)} sidecar: ${exit.stderr || `exit ${exit.code}`}`);
@@ -355,6 +409,7 @@ export class SellerBlindRelay {
             ...(this._deps.maxKeyedRequestBytes !== undefined ? { maxRequestBytes: this._deps.maxKeyedRequestBytes } : {}),
           });
         } catch (error) {
+          letGo();
           sidecar.kill();
           throw error;
         }

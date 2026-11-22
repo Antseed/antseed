@@ -46,6 +46,11 @@ export function requireAttestedConnection(conn: Pick<PeerConnection, 'channelBin
 export interface RelayGrant {
   /** Supplies the stream's other end. Destroying it ends the stream. */
   open(): Duplex;
+  /**
+   * Asked before each chunk from the buyer is passed on: false when the seller
+   * has no room to hold `bytes` more, and the stream then closes with that reason.
+   */
+  accept?(bytes: number): boolean;
   /** Called once when the stream ends, however it ends. */
   onClose?(stats: { bytesUp: number; bytesDown: number; error?: string }): void;
 }
@@ -73,6 +78,7 @@ const OPEN_TIMEOUT_MS = 30_000;
  */
 const DEFAULT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 const FELL_BEHIND = 'the relay stream fell behind';
+const NO_ROOM = 'the seller is holding too many request bytes; retry shortly';
 
 const MESSAGE_TYPE_NAME: Record<number, string> = {
   [MessageType.RelayOpen]: 'RelayOpen',
@@ -280,6 +286,10 @@ export class RelayMux {
         const seller = this._sellerStreams.get(streamId);
         if (seller) {
           if (!seller.socket) return true;
+          if (seller.grant?.accept && !seller.grant.accept(data.length)) {
+            this._endSellerStream(streamId, NO_ROOM, true);
+            return true;
+          }
           seller.bytesUp += data.length;
           this._touch(streamId);
           seller.socket.write(data);

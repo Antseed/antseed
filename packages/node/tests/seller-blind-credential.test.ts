@@ -40,15 +40,49 @@ function makeProvider(): Provider {
   };
 }
 
-function spm(state: { session: boolean; accepted?: bigint; spent?: bigint }) {
+function spm(state: { session: boolean; accepted?: bigint; spent?: bigint; reserveMax?: bigint; closing?: 'closes' | 'stays'; topUpRunning?: boolean }) {
   return {
     hasSession: vi.fn(() => state.session),
+    hasClosingChannel: vi.fn(() => state.closing !== undefined),
+    waitForClosingChannel: vi.fn(async () => {
+      if (state.closing !== 'closes') return false;
+      state.session = false;
+      return true;
+    }),
+    getEffectiveReserveMax: vi.fn(() => state.reserveMax ?? 0n),
+    isChannelBlocked: vi.fn(() => false),
+    isTopUpRunning: vi.fn(() => state.topUpRunning ?? false),
+    isTopUpPendingFor: vi.fn(() => false),
+    closeSessionWhenIdle: vi.fn(async () => {}),
     getChannelByPeer: vi.fn(() => (state.session ? { sessionId: '0xchannel', authMax: '1000000' } : null)),
     getAcceptedCumulative: vi.fn(() => state.accepted ?? 0n),
     getCumulativeSpend: vi.fn(() => state.spent ?? 0n),
     getPaymentRequirements: vi.fn(() => ({ minBudgetPerRequest: '10000', suggestedAmount: '100000', requestId: 'r' })),
     recordSpend: vi.fn(),
   };
+}
+
+/** Asks `handler` for a credential as the buyer, on a connection of its own. */
+async function mintOn(handler: SellerRequestHandler, model: string, method = 'POST') {
+  const conn = { send: vi.fn(), hasRemoteCapability: vi.fn(() => false) };
+  const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any;
+  const { mux } = handler.handleConnection(conn as any, BUYER, paymentMux, new VerificationMux(conn as any));
+  await mux.handleFrame({
+    type: MessageType.HttpRequest,
+    messageId: 1,
+    payload: encodeHttpRequest({
+      requestId: 'req-1',
+      method,
+      path: BLIND_RELAY_CREDENTIAL_PATH,
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ model })),
+    }),
+  });
+  const response = conn.send.mock.calls
+    .map(([raw]) => decodeFrame(raw)!.message)
+    .filter((message) => message.type === MessageType.HttpResponse)
+    .map((frame) => decodeHttpResponse(frame.payload))[0]!;
+  return { response, json: JSON.parse(new TextDecoder().decode(response.body)), paymentMux };
 }
 
 async function ask(model: string, options: { payments?: ReturnType<typeof spm> | null; method?: string } = {}) {
@@ -61,25 +95,7 @@ async function ask(model: string, options: { payments?: ReturnType<typeof spm> |
     announcer: null,
     emit: vi.fn(() => true),
   });
-  const conn = { send: vi.fn(), hasRemoteCapability: vi.fn(() => false) };
-  const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any;
-  const { mux } = handler.handleConnection(conn as any, BUYER, paymentMux, new VerificationMux(conn as any));
-  await mux.handleFrame({
-    type: MessageType.HttpRequest,
-    messageId: 1,
-    payload: encodeHttpRequest({
-      requestId: 'req-1',
-      method: options.method ?? 'POST',
-      path: BLIND_RELAY_CREDENTIAL_PATH,
-      headers: { 'content-type': 'application/json' },
-      body: new TextEncoder().encode(JSON.stringify({ model })),
-    }),
-  });
-  const response = conn.send.mock.calls
-    .map(([raw]) => decodeFrame(raw)!.message)
-    .filter((message) => message.type === MessageType.HttpResponse)
-    .map((frame) => decodeHttpResponse(frame.payload))[0]!;
-  return { response, json: JSON.parse(new TextDecoder().decode(response.body)), paymentMux };
+  return mintOn(handler, model, options.method);
 }
 
 describe('seller blind relay credential route', () => {
@@ -109,6 +125,34 @@ describe('seller blind relay credential route', () => {
     expect(json.error.code).toBe('blind_relay_unpaid');
   });
 
+  it('closes a channel whose relayed spend passed its reserve, and asks the buyer to open a new one', async () => {
+    // Spend past the reserve cannot be signed for: "sign first" would leave the buyer stuck.
+    const payments = spm({ session: true, accepted: 1000n, spent: 1200n, reserveMax: 1000n });
+    const { response, json, paymentMux } = await ask('blind-model', { payments });
+    expect(response.statusCode).toBe(402);
+    expect(json).toMatchObject({ error: 'payment_required', code: 'channel_exhausted', channelId: '0xchannel', requiredCumulativeAmount: '1200', currentAcceptedCumulative: '1000', reserveMaxAmount: '1000' });
+    expect(paymentMux.sendPaymentRequired).toHaveBeenCalledOnce();
+    expect(payments.closeSessionWhenIdle).toHaveBeenCalledOnce();
+
+    // With a top-up on its way the channel is kept, and the buyer signs once it lands.
+    const toppingUp = spm({ session: true, accepted: 1000n, spent: 1200n, reserveMax: 1000n, topUpRunning: true });
+    const waiting = await ask('blind-model', { payments: toppingUp });
+    expect(waiting.response.statusCode).toBe(409);
+    expect(toppingUp.closeSessionWhenIdle).not.toHaveBeenCalled();
+  });
+
+  it('waits for a channel that is closing: a new channel once it closed, a short retry while it has not', async () => {
+    const closed = await ask('blind-model', { payments: spm({ session: true, closing: 'closes' }) });
+    expect(closed.response.statusCode).toBe(402);
+    expect(closed.json).not.toHaveProperty('code');
+    expect(closed.paymentMux.sendPaymentRequired).toHaveBeenCalledOnce();
+
+    const closing = await ask('blind-model', { payments: spm({ session: true, closing: 'stays' }) });
+    expect(closing.response.statusCode).toBe(503);
+    expect(closing.response.headers['retry-after']).toBe('2');
+    expect(closing.json.error.code).toBe('channel_closing');
+  });
+
   it('mints nothing on a seller that takes no payments', async () => {
     const { response } = await ask('blind-model', { payments: null });
     expect(response.statusCode).toBe(503);
@@ -127,13 +171,27 @@ describe('seller blind relay credential route', () => {
 });
 
 describe('keyed relay request admission', () => {
-  function admitWith(state: { session?: boolean; accepted: bigint; spent: bigint; reserveMax?: bigint; blocked?: boolean; catchUpTo?: bigint; closing?: boolean }, deps: Record<string, unknown> = {}) {
+  interface ChannelState {
+    session?: boolean; channel?: string; accepted: bigint; spent: bigint; reserveMax?: bigint; blocked?: boolean; catchUpTo?: bigint; closing?: boolean;
+    /** A top-up is mining; `topUp` is what waiting for it does to the channel, and whether it landed. */
+    topUpRunning?: boolean; topUp?: () => boolean;
+  }
+
+  function admitWith(state: ChannelState, deps: Record<string, unknown> = {}) {
     const payments = {
       hasClosingChannel: vi.fn(() => state.closing ?? false),
+      waitForClosingChannel: vi.fn(async () => false),
       beginBillableRequest: vi.fn(),
       endBillableRequest: vi.fn(),
       waitForPendingAuths: vi.fn(async () => {}),
-      getChannelByPeer: vi.fn(() => (state.session === false ? null : { sessionId: '0xchannel' })),
+      hasSession: vi.fn(() => state.session !== false),
+      getChannelByPeer: vi.fn(() => (state.session === false ? null : { sessionId: state.channel ?? '0xchannel', authMax: '1000000' })),
+      getPaymentRequirements: vi.fn(() => ({ minBudgetPerRequest: '10000', suggestedAmount: '100000', requestId: 'r' })),
+      closeSessionWhenIdle: vi.fn(async () => {}),
+      isTopUpRunning: vi.fn(() => state.topUpRunning ?? false),
+      isTopUpPendingFor: vi.fn(() => false),
+      waitForTopUp: vi.fn(async () => state.topUp?.() ?? true),
+      refreshReserveMaxFromChain: vi.fn(async () => state.reserveMax ?? 0n),
       getAcceptedCumulative: vi.fn(() => state.accepted),
       getCumulativeSpend: vi.fn(() => state.spent),
       getEffectiveReserveMax: vi.fn(() => state.reserveMax ?? 0n),
@@ -156,7 +214,7 @@ describe('keyed relay request admission', () => {
     const admit = (maxOutputTokens: number | null = 1000) => (handler as any)._admitKeyedRequest({
       buyerPeerId: BUYER, provider: makeProvider(), service: 'blind-model', inputTokens: 1000, maxOutputTokens,
     });
-    return Object.assign(admit, { payments });
+    return Object.assign(admit, { payments, mint: () => mintOn(handler, 'blind-model') });
   }
 
   /** An admission names the channel it checked and holds a billable request on it until `finish`. */
@@ -179,6 +237,68 @@ describe('keyed relay request admission', () => {
     const admit = admitWith({ accepted: 0n, spent: 0n, reserveMax: 1500n }, { reserveEstimateOverdraftUsdc: 0n });
     await expect(admit(1000)).resolves.toMatchObject({ admitted: false, reason: expect.stringContaining('may cost 2000') });
     await expect(admit(100)).resolves.toEqual(ADMITTED);
+  });
+
+  it('closes a signed-up channel with too little reserve left for the request, and tells the buyer at its next mint to open a new one', async () => {
+    const state: ChannelState = { accepted: 0n, spent: 0n, reserveMax: 1500n };
+    const admit = admitWith(state, { reserveEstimateOverdraftUsdc: 0n });
+    await expect(admit(1000)).resolves.toEqual({ admitted: false, reason: 'channel_exhausted: the request may cost 2000 USDC base units; the locked reserve has 1500 left' });
+    expect(admit.payments.closeSessionWhenIdle).toHaveBeenCalledOnce();
+    expect(admit.payments.closeSessionWhenIdle).toHaveBeenCalledWith(BUYER);
+    expect(admit.payments.beginBillableRequest).not.toHaveBeenCalled();
+
+    // The buyer mints again: the answer is the one a direct request gets on an exhausted channel.
+    const refused = await admit.mint();
+    expect(refused.response.statusCode).toBe(402);
+    expect(refused.json).toMatchObject({ error: 'payment_required', code: 'channel_exhausted', channelId: '0xchannel', reserveMaxAmount: '1500', requiredCumulativeAmount: '0', minBudgetPerRequest: '10000', suggestedAmount: '100000' });
+    expect(refused.paymentMux.sendPaymentRequired).toHaveBeenCalledOnce();
+    expect(refused.paymentMux.sendPaymentRequired).toHaveBeenCalledWith(expect.objectContaining({ code: 'channel_exhausted', channelId: '0xchannel', reserveMaxAmount: '1500' }));
+
+    // On the channel that replaces it the buyer is served again.
+    state.channel = '0xnew';
+    state.reserveMax = 100_000n;
+    expect((await admit.mint()).response.statusCode).toBe(200);
+    await expect(admit(1000)).resolves.toEqual({ ...ADMITTED, channelId: '0xnew' });
+  });
+
+  it('closes an exhausted or a blocked channel the same way', async () => {
+    for (const state of [{ accepted: 1000n, spent: 1000n, reserveMax: 1000n }, { accepted: 0n, spent: 0n, blocked: true }]) {
+      const admit = admitWith(state);
+      await expect(admit()).resolves.toMatchObject({ admitted: false, reason: expect.stringMatching(/^channel_exhausted: /) });
+      expect(admit.payments.closeSessionWhenIdle).toHaveBeenCalledOnce();
+      const { response, json } = await admit.mint();
+      expect(response.statusCode).toBe(402);
+      expect(json.code).toBe('channel_exhausted');
+    }
+  });
+
+  it('closes a channel whose spend passed its reserve instead of asking for a signature it cannot get', async () => {
+    const admit = admitWith({ accepted: 1000n, spent: 1200n, reserveMax: 1000n });
+    await expect(admit()).resolves.toEqual({ admitted: false, reason: 'channel_exhausted: the payment channel is exhausted' });
+    expect(admit.payments.awaitAcceptedAtLeast).not.toHaveBeenCalled();
+    expect(admit.payments.closeSessionWhenIdle).toHaveBeenCalledOnce();
+  });
+
+  it('waits for a top-up that is mining instead of refusing a channel that is being extended', async () => {
+    const state: ChannelState = { accepted: 1000n, spent: 1000n, reserveMax: 1000n, topUpRunning: true };
+    state.topUp = () => {
+      state.reserveMax = 5000n;
+      state.topUpRunning = false;
+      return true;
+    };
+    const admit = admitWith(state, { reserveEstimateOverdraftUsdc: 0n });
+    await expect(admit(1000)).resolves.toEqual(ADMITTED);
+    expect(admit.payments.waitForTopUp).toHaveBeenCalledOnce();
+    expect(admit.payments.closeSessionWhenIdle).not.toHaveBeenCalled();
+  });
+
+  it('refuses for now, and closes nothing, while a top-up is still mining at the end of the wait', async () => {
+    const admit = admitWith({ accepted: 1000n, spent: 1000n, reserveMax: 1000n, topUpRunning: true, topUp: () => false });
+    await expect(admit()).resolves.toMatchObject({ admitted: false, reason: expect.stringMatching(/^top_up_pending: .*retry shortly/) });
+    expect(admit.payments.closeSessionWhenIdle).not.toHaveBeenCalled();
+    expect(admit.payments.beginBillableRequest).not.toHaveBeenCalled();
+    // The channel stays in use: the buyer still mints on it.
+    expect((await admit.mint()).response.statusCode).toBe(200);
   });
 
   it('keeps the channel from closing under an admitted request until the request is billed', async () => {

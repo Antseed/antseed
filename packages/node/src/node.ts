@@ -59,7 +59,7 @@ import { ProxyMux } from "./proxy/proxy-mux.js";
 import { PaymentMux } from "./p2p/payment-mux.js";
 import { SweepMux } from "./p2p/sweep-mux.js";
 import { RelayMux, requireAttestedConnection, type RelayStreamOptions } from "./p2p/relay-mux.js";
-import { recordRelayedCost } from "./blind-relay-billing.js";
+import { recordRelayedCost, type RelayedResponse } from "./blind-relay-billing.js";
 import type { Duplex } from "node:stream";
 import { VerificationMux } from "./verification/verification-mux.js";
 import { DepositRelayer } from "./payments/deposit-relayer.js";
@@ -1600,7 +1600,7 @@ export class AntseedNode extends EventEmitter {
    */
   recordRelayedResponse(
     peer: PeerInfo,
-    relayed: { requestId: string; service: string; requestBody: Uint8Array; response: SerializedHttpResponse },
+    relayed: RelayedResponse,
     buyerIdentity?: string,
   ): void {
     const context = this._buyerContext(buyerIdentity);

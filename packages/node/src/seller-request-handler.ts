@@ -77,7 +77,7 @@ import { parseResponseUsage, type ResponseUsage } from './utils/response-usage.j
 import { exposedResponseHeaders } from './utils/response-headers.js';
 import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/response-body.js';
 import { E2EE_ATTESTATION_PATH, usageForBilling } from '@antseed/buyer-core';
-import { BLIND_RELAY_CREDENTIAL_PATH, BLIND_RELAY_SERVICE_CATEGORY } from '@antseed/protocol/blind-relay';
+import { BLIND_RELAY_CREDENTIAL_PATH, BLIND_RELAY_SERVICE_CATEGORY, type KeyedRefusalCode } from '@antseed/protocol/blind-relay';
 import { RelayMux } from './p2p/relay-mux.js';
 import { SellerBlindRelay, type BlindRelayCharge, type BlindRelayRecord, type KeyedRequestAdmission, type KeyedRequestDecision } from './seller-blind-relay.js';
 import { KeyedRelayProcess, resolveKeyedRelayBinary } from '@antseed/keyed-relay';
@@ -295,13 +295,21 @@ export class SellerRequestHandler {
   private readonly _blindRelay: SellerBlindRelay;
   /** Each buyer's payment mux on its live connection, for blind relay charges that land after a stream closes. */
   private readonly _paymentMuxes = new Map<string, PaymentMux>();
+  /** Per buyer, the channel the relay asked to close because it can serve no more requests on it. */
+  private readonly _relayRetiredChannels = new Map<string, string>();
 
   constructor(deps: SellerRequestHandlerDeps) {
     this._deps = deps;
+    this._inFlightRequestBytes = new ByteBudget(Math.max(
+      deps.maxInFlightRequestBytes ?? DEFAULT_MAX_IN_FLIGHT_REQUEST_BYTES,
+      deps.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
+    ));
     const keyedRelayBinary = resolveKeyedRelayBinary();
     this._blindRelay = new SellerBlindRelay({
       charge: (charge) => this._chargeBlindRelay(charge),
       record: (record) => this._recordBlindRelay(record),
+      requestBytes: this._inFlightRequestBytes,
+      ...(deps.isBuyerBlocked ? { isBuyerBlocked: deps.isBuyerBlocked } : {}),
       ...(keyedRelayBinary ? {
         spawnKeyedRelay: () => KeyedRelayProcess.spawn('seller', keyedRelayBinary),
         usageCostUsdc: (provider, service, usage) => computeCostUsdc(
@@ -314,10 +322,6 @@ export class SellerRequestHandler {
         maxKeyedRequestBytes: deps.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
       } : {}),
     });
-    this._inFlightRequestBytes = new ByteBudget(Math.max(
-      deps.maxInFlightRequestBytes ?? DEFAULT_MAX_IN_FLIGHT_REQUEST_BYTES,
-      deps.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
-    ));
   }
 
   private _allowAttest(buyerPeerId: string): boolean {
@@ -1752,10 +1756,33 @@ export class SellerRequestHandler {
       this._sendMissingSession(mux, paymentMux, request, buyerPeerId, pricing);
       return;
     }
-    const session = spm.getChannelByPeer(buyerPeerId);
-    if (session && spm.getAcceptedCumulative(session.sessionId) < spm.getCumulativeSpend(session.sessionId)) {
-      this._sendJsonError(mux, request.requestId, 409, 'blind_relay_unpaid', 'Sign for the requests already relayed, then ask again.', { 'retry-after': '2' });
+    // As for a direct request: a close in flight ends in a new channel, or in a short retry.
+    if (spm.hasClosingChannel(buyerPeerId)) {
+      if (await spm.waitForClosingChannel(buyerPeerId, CLOSING_CHANNEL_WAIT_MS) && !spm.hasSession(buyerPeerId)) {
+        this._sendMissingSession(mux, paymentMux, request, buyerPeerId, pricing);
+      } else {
+        this._sendJsonError(mux, request.requestId, 503, 'channel_closing', 'Payment channel is closing; retry shortly or open a new channel', { 'retry-after': '2' });
+      }
       return;
+    }
+    const session = spm.getChannelByPeer(buyerPeerId);
+    if (session) {
+      const channelId = session.sessionId;
+      const spent = spm.getCumulativeSpend(channelId);
+      const reserveMax = spm.getEffectiveReserveMax(channelId);
+      if (this._relayRetiredChannels.get(buyerPeerId) !== channelId) this._relayRetiredChannels.delete(buyerPeerId);
+      // Spend past the reserve cannot be signed for: without a top-up on its way the channel is done.
+      const unsignable = reserveMax > 0n && spent > reserveMax
+        && !spm.isTopUpRunning(channelId) && !spm.isTopUpPendingFor(channelId, spent);
+      if (this._relayRetiredChannels.has(buyerPeerId) || spm.isChannelBlocked(channelId) || unsignable) {
+        this._retireRelayChannel(spm, buyerPeerId, channelId);
+        this._sendRelayChannelExhausted(mux, paymentMux, request, buyerPeerId, channelId, pricing);
+        return;
+      }
+      if (spm.getAcceptedCumulative(channelId) < spent) {
+        this._sendJsonError(mux, request.requestId, 409, 'blind_relay_unpaid', 'Sign for the requests already relayed, then ask again.', { 'retry-after': '2' });
+        return;
+      }
     }
     try {
       const credential = this._blindRelay.mint(buyerPeerId, service, provider);
@@ -1777,40 +1804,150 @@ export class SellerRequestHandler {
   }
 
   /**
+   * Starts the close of a channel the relay can serve no more requests on
+   * (blocked, at its reserve ceiling, or with too little reserve left for the
+   * request), once the requests it is serving are billed. The buyer's next
+   * mint is answered with the exhausted 402, so it opens a new channel.
+   */
+  private _retireRelayChannel(spm: SellerPaymentManager, buyerPeerId: string, channelId: string): void {
+    this._relayRetiredChannels.delete(buyerPeerId);
+    this._relayRetiredChannels.set(buyerPeerId, channelId);
+    if (this._relayRetiredChannels.size > 1_024) this._relayRetiredChannels.delete(this._relayRetiredChannels.keys().next().value!);
+    void spm.closeSessionWhenIdle(buyerPeerId).catch((err) => {
+      debugWarn(`[SellerHandler] Failed to close exhausted session: ${err instanceof Error ? err.message : err}`);
+    });
+  }
+
+  /** Answers a mint on a retired channel as a direct request on an exhausted channel is answered. */
+  private _sendRelayChannelExhausted(
+    mux: ProxyMux,
+    paymentMux: PaymentMux,
+    request: SerializedHttpRequest,
+    buyerPeerId: string,
+    channelId: string,
+    requestPricing: Parameters<SellerPaymentManager['getPaymentRequirements']>[2],
+  ): void {
+    const spm = this._deps.sellerPaymentManager!;
+    const spent = spm.getCumulativeSpend(channelId);
+    const reserveMax = spm.getEffectiveReserveMax(channelId);
+    const requirements = {
+      ...spm.getPaymentRequirements(request.requestId, buyerPeerId, requestPricing),
+      requiredCumulativeAmount: spent.toString(),
+      currentSpent: spent.toString(),
+      currentAcceptedCumulative: spm.getAcceptedCumulative(channelId).toString(),
+      channelId,
+      ...(reserveMax > 0n ? { reserveMaxAmount: reserveMax.toString() } : {}),
+      code: PAYMENT_CODE_CHANNEL_EXHAUSTED,
+    };
+    debugLog(`[SellerHandler] Blind relay credential asked on an exhausted channel by ${buyerPeerId.slice(0, 12)}... (spent=${spent} reserveMax=${reserveMax}) — returning 402`);
+    mux.sendProxyResponse({
+      requestId: request.requestId,
+      statusCode: 402,
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({
+        error: 'payment_required',
+        minBudgetPerRequest: requirements.minBudgetPerRequest,
+        suggestedAmount: requirements.suggestedAmount,
+        requiredCumulativeAmount: requirements.requiredCumulativeAmount,
+        currentSpent: requirements.currentSpent,
+        currentAcceptedCumulative: requirements.currentAcceptedCumulative,
+        channelId,
+        ...(requirements.reserveMaxAmount != null ? { reserveMaxAmount: requirements.reserveMaxAmount } : {}),
+        code: requirements.code,
+        ...(requirements.inputUsdPerMillion != null ? { inputUsdPerMillion: requirements.inputUsdPerMillion } : {}),
+        ...(requirements.outputUsdPerMillion != null ? { outputUsdPerMillion: requirements.outputUsdPerMillion } : {}),
+        ...(requirements.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion } : {}),
+      })),
+    });
+    this._sendPaymentRequiredBestEffort(paymentMux, requirements, buyerPeerId, 'budget-exhausted');
+  }
+
+  /**
    * The checks a keyed relay request gets before the seller forwards it, as a
    * direct request gets them before routing: an open channel with the earlier
    * requests signed for, reserve headroom for its estimated cost (when
-   * `reserveEstimateOverdraftUsdc` is set), and the buyer limits.
+   * `reserveEstimateOverdraftUsdc` is set), and the buyer limits. A refusal
+   * the buyer can recover from starts with a code: `top_up_pending` (retry
+   * shortly) or `channel_exhausted` (the channel is closing: mint again, which
+   * opens a new one).
    */
   private async _admitKeyedRequest(request: KeyedRequestAdmission): Promise<KeyedRequestDecision> {
     const refuse = (reason: string): KeyedRequestDecision => ({ admitted: false, reason });
+    const refuseFor = (code: KeyedRefusalCode, why: string): KeyedRequestDecision => refuse(`${code}: ${why}`);
     const spm = this._deps.sellerPaymentManager;
     if (!spm) return refuse('this seller takes no payments');
-    await spm.waitForPendingAuths(request.buyerPeerId);
-    const session = spm.getChannelByPeer(request.buyerPeerId);
+    const { buyerPeerId } = request;
+    await spm.waitForPendingAuths(buyerPeerId);
+    const session = spm.getChannelByPeer(buyerPeerId);
     if (!session) return refuse('no payment channel is open');
-    let spent = spm.getCumulativeSpend(session.sessionId);
-    if (spent > spm.getAcceptedCumulative(session.sessionId)) {
-      // The signature for the last answer may still be on its way.
-      await spm.awaitAcceptedAtLeast(session.sessionId, spent, DEFAULT_CATCH_UP_WAIT_MS);
-      if (spm.getChannelByPeer(request.buyerPeerId)?.sessionId !== session.sessionId) return refuse('the payment channel closed');
-      spent = spm.getCumulativeSpend(session.sessionId);
-      if (spent > spm.getAcceptedCumulative(session.sessionId)) return refuse('sign for the requests already relayed first');
-    }
-    const reserveMax = spm.getEffectiveReserveMax(session.sessionId);
-    if (spm.isChannelBlocked(session.sessionId)) return refuse('the payment channel is blocked');
-    if (reserveMax > 0n && spent >= reserveMax) return refuse('the payment channel is exhausted');
+    const channelId = session.sessionId;
+    const closed = (): boolean => spm.getChannelByPeer(buyerPeerId)?.sessionId !== channelId;
+    let spent = spm.getCumulativeSpend(channelId);
+    let accepted = spm.getAcceptedCumulative(channelId);
+    let reserveMax = spm.getEffectiveReserveMax(channelId);
+    /** Waits for the signature for the last answer, which may still be on its way; false when it did not come. */
+    const signedUp = async (waitMs: number): Promise<boolean> => {
+      // Spend past the reserve cannot be signed for: the ceiling check below judges it.
+      if (spent <= accepted || (reserveMax > 0n && spent > reserveMax)) return true;
+      await spm.awaitAcceptedAtLeast(channelId, spent, waitMs);
+      spent = spm.getCumulativeSpend(channelId);
+      accepted = spm.getAcceptedCumulative(channelId);
+      reserveMax = spm.getEffectiveReserveMax(channelId);
+      return closed() || spent <= accepted || (reserveMax > 0n && spent > reserveMax);
+    };
+    if (!await signedUp(DEFAULT_CATCH_UP_WAIT_MS)) return refuse('sign for the requests already relayed first');
+    if (closed()) return refuse('the payment channel closed');
+
     const overdraft = this._deps.reserveEstimateOverdraftUsdc;
-    if (overdraft != null && reserveMax > 0n) {
-      const pricing = request.provider.pricing.services?.[request.service] ?? request.provider.pricing.defaults;
-      const estimate = computeCostUsdc(request.inputTokens, request.maxOutputTokens ?? 0, pricing);
-      const remaining = reserveMax - spent;
-      if (estimate > remaining + overdraft) {
-        return refuse(`the request may cost ${estimate} USDC base units; the locked reserve has ${remaining} left`);
+    const pricing = request.provider.pricing.services?.[request.service] ?? request.provider.pricing.defaults;
+    const estimate = computeCostUsdc(request.inputTokens, request.maxOutputTokens ?? 0, pricing);
+    const remaining = (): bigint => (reserveMax > spent ? reserveMax - spent : 0n);
+    const estimateExceedsReserve = (): boolean => overdraft != null && reserveMax > 0n && estimate > remaining() + overdraft;
+    const atCeiling = (): boolean => reserveMax > 0n && (accepted >= reserveMax || spent > reserveMax || estimateExceedsReserve());
+    if (atCeiling()) {
+      // As for a direct request: a top-up mining in the background may lift the
+      // ceiling, so wait for it (bounded) rather than close a channel that is
+      // being extended, and judge again after each one, within one budget.
+      const topUpDeadline = Date.now() + TOP_UP_WAIT_MS;
+      let topUpLanded = true;
+      while (true) {
+        const ceilingBefore = reserveMax;
+        if (spm.isTopUpRunning(channelId) || spm.isTopUpPendingFor(channelId, spent)) {
+          topUpLanded = await spm.waitForTopUp(channelId, Math.max(0, topUpDeadline - Date.now()), spent);
+        }
+        reserveMax = await spm.refreshReserveMaxFromChain(channelId);
+        if (closed()) return refuse('the payment channel closed');
+        accepted = spm.getAcceptedCumulative(channelId);
+        spent = spm.getCumulativeSpend(channelId);
+        if (!topUpLanded || !atCeiling()) break;
+        const nextRunning = spm.isTopUpRunning(channelId);
+        const nextQueued = reserveMax > ceilingBefore && spm.isTopUpPendingFor(channelId, spent);
+        if (!nextRunning && !nextQueued) break;
+        if (Date.now() >= topUpDeadline) {
+          topUpLanded = !nextRunning;
+          break;
+        }
       }
+      // Still mining: a short retry, never an exhausted (closing) answer.
+      if (!topUpLanded && atCeiling()) return refuseFor('top_up_pending', 'the payment channel is being extended on-chain; retry shortly');
+      // Signatures above the old ceiling were parked until the top-up landed: give them a moment to apply.
+      if (!await signedUp(PARKED_AUTH_GRACE_MS)) return refuse('sign for the requests already relayed first');
+      if (closed()) return refuse('the payment channel closed');
+    }
+    const blocked = spm.isChannelBlocked(channelId);
+    if (blocked || atCeiling()) {
+      let reason = 'the payment channel is exhausted';
+      if (blocked) {
+        reason = 'the payment channel is blocked';
+      } else if (accepted < reserveMax && spent <= reserveMax) {
+        reason = `the request may cost ${estimate} USDC base units; the locked reserve has ${remaining()} left`;
+      }
+      debugLog(`[SellerHandler] Blind relay request refused for ${buyerPeerId.slice(0, 12)}... (${reason}; spent=${spent} accepted=${accepted} reserveMax=${reserveMax}) — closing the channel`);
+      this._retireRelayChannel(spm, buyerPeerId, channelId);
+      return refuseFor('channel_exhausted', reason);
     }
     // From here to the hold below nothing awaits: a close cannot start in between.
-    if (spm.hasClosingChannel(request.buyerPeerId)) return refuse('the payment channel is closing; retry shortly');
+    if (spm.hasClosingChannel(buyerPeerId)) return refuse('the payment channel is closing; retry shortly');
     let reservation: BuyerUsageReservation | null = null;
     const limiter = this._deps.sellerBuyerLimiter;
     if (limiter) {
@@ -1823,9 +1960,9 @@ export class SellerRequestHandler {
     spm.beginBillableRequest(request.buyerPeerId);
     return {
       admitted: true,
-      channelId: session.sessionId,
+      channelId,
       finish: (usedTokens) => {
-        spm.endBillableRequest(request.buyerPeerId);
+        spm.endBillableRequest(buyerPeerId);
         reservation?.finish(usedTokens);
       },
     };

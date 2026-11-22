@@ -112,6 +112,7 @@ export { reconcileStoredChannels, type ChannelReconcileResult, type LivePaymentS
 export * from '@antseed/buyer-core/e2ee';
 export * from '@antseed/protocol/blind-relay';
 export { RelayMux, type RelayGrant, type RelayStreamOptions } from './p2p/relay-mux.js';
+export type { RelayedResponse } from './blind-relay-billing.js';
 export { SellerBlindRelay, type BlindRelayCharge, type KeyedRequestAdmission, type KeyedRequestDecision } from './seller-blind-relay.js';
 
 // Submodule re-exports (commonly used)

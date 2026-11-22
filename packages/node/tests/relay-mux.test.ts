@@ -143,6 +143,31 @@ describe('RelayMux', () => {
     expect(mux.openStreams).toBe(0);
   });
 
+  it('closes a stream whose grant takes no more bytes, with its reason, before writing them', async () => {
+    const closed: Array<{ error?: string }> = [];
+    const received: number[] = [];
+    const local = new Duplex({ read() {}, write(chunk: Buffer, _encoding, callback) { received.push(chunk.length); callback(); } });
+    let room = 100;
+    const { mux, sent, feed } = sellerAlone(async () => ({
+      open: () => local,
+      accept: (bytes) => {
+        if (bytes > room) return false;
+        room -= bytes;
+        return true;
+      },
+      onClose: (stats) => closed.push(stats),
+    }));
+    await feed(MessageType.RelayOpen, encodeRelayOpen({ streamId: 'full', credentialId: 'cred' }));
+    await feed(MessageType.RelayData, encodeRelayData({ streamId: 'full', data: new Uint8Array(60) }));
+    await feed(MessageType.RelayData, encodeRelayData({ streamId: 'full', data: new Uint8Array(60) }));
+    expect(received).toEqual([60]);
+    expect(local.destroyed).toBe(true);
+    expect(closed).toHaveLength(1);
+    expect(closed[0]!.error).toMatch(/too many request bytes/);
+    expect(sent).toContain(MessageType.RelayClose);
+    expect(mux.openStreams).toBe(0);
+  });
+
   it('closes a stream whose buyer side stops reading, instead of holding what the seller keeps sending', async () => {
     const sellerSide = new Duplex({ read() {}, write(_chunk, _encoding, callback) { callback(); } });
     const ends: { mux?: RelayMux }[] = [{}, {}];
