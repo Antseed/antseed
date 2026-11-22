@@ -238,6 +238,8 @@ export interface GatewayServerOptions {
   controlSecret?: string | null
   /** True while the buyer has not confirmed it applies routing policies (see buyer-policy-probe.ts). */
   buyerPolicyUnsupported?: () => boolean
+  /** True while the buyer has not confirmed it applies the zero data access requirement (see buyer-policy-probe.ts). */
+  buyerZeroDataAccessUnsupported?: () => boolean
   /** Console (`/console`, `/console/api/*`), answered before API-key auth. */
   console?: { handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> } | null
   /** Span exporter; defaults to one reading the observability settings from the store. */
@@ -599,6 +601,11 @@ export class GatewayServer {
     }
     if (route.paid && sellersRestricted && this._options.buyerPolicyUnsupported?.()) {
       sendError(res, 503, 'api_error', 'buyer_policy_unsupported', "The buyer does not apply this API key's routing policy; upgrade it or check the gateway control secret")
+      return { allowed: false }
+    }
+    // A buyer older than the requirement accepts the policy and routes without it.
+    if (route.paid && routed.requireZeroDataAccess && this._options.buyerZeroDataAccessUnsupported?.()) {
+      sendError(res, 503, 'api_error', 'buyer_policy_unsupported', 'The buyer does not apply the zero data access requirement; upgrade it')
       return { allowed: false }
     }
     if (!controlSecret) return { allowed: true, headers: {}, policy }

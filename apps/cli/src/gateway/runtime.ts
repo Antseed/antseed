@@ -210,6 +210,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     console: consoleHandler,
     controlSecret,
     buyerPolicyUnsupported: () => policyProbe.policyUnsupported(),
+    buyerZeroDataAccessUnsupported: () => policyProbe.zeroDataAccessUnsupported(),
     topup,
     store,
     accounting,

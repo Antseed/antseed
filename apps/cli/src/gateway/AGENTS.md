@@ -20,6 +20,7 @@ Started by `antseed gateway start`, `antseed tunnel start` (which the desktop's 
 | Admission counts settled spend plus holds of requests in flight, in UTC calendar periods. A key's cap is the lower of the admins' and the owner's. | `gateway.test.ts` |
 | A capped key fails closed while the buyer is not reporting spend or video commitments cannot be stored. | `gateway.test.ts` |
 | Policies only narrow from the gateway default down to the preset; peer lists are references. | `policy-resolver.test.ts` |
+| A requirement an older buyer would accept and ignore is forwarded only to a buyer whose route preview lists it in `capabilities` (`ROUTING_POLICY_CAPABILITIES`): until then a request that requires zero data access gets `503 buyer_policy_unsupported`. A new requirement of that kind gets a capability too. | `buyer-policy-probe.test.ts` |
 | Key secrets are stored as SHA-256 only; the secret is shown once. The gateway directory is 0700 and its database files 0600. | `store-data.test.ts` (modes); review (hashing) |
 | Concurrent processes opening an old database migrate it exactly once. | `store-data.test.ts` |
 | Client credentials, `x-forwarded-*` and browser context headers are never forwarded to the buyer. | `gateway.test.ts` (credentials, verifier headers); review for the rest |

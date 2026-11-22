@@ -4,7 +4,8 @@ import * as http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER } from '../routing-policy/policy.js'
+import { ANTSEED_REQUIRE_ZERO_DATA_ACCESS_HEADER } from '@antseed/node'
+import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, ZERO_DATA_ACCESS_POLICY_CAPABILITY, decodePolicyHeader } from '../routing-policy/policy.js'
 import { GatewayAccounting } from './accounting.js'
 import { BuyerPolicyProbe, probeBuyerPolicySupport } from './buyer-policy-probe.js'
 import { GatewayServer } from './server.js'
@@ -166,6 +167,73 @@ test('the server refuses paid requests from seller-restricting keys while the bu
     unsupported = false
     assert.equal((await send(restricted.secret)).status, 200)
   } finally {
+    await server.stop()
+    accounting.dispose()
+    await buyer.close()
+    store.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a buyer that applies policies but not the zero data access requirement gets no request that needs it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'antseed-gw-probe-'))
+  const store = new GatewayStore(dir)
+  // A buyer from before the requirement: it previews routes, decodes any policy and routes by the fields it knows.
+  let upgraded = false
+  const forwarded: Array<ReturnType<typeof decodePolicyHeader>> = []
+  const buyer = await listen((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      if (req.url!.startsWith('/_antseed/route-preview')) {
+        const preview = { model: '__probe__', candidates: [], ...(upgraded ? { capabilities: [ZERO_DATA_ACCESS_POLICY_CAPABILITY] } : {}) }
+        return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(preview))
+      }
+      const policy = req.headers[ROUTING_POLICY_HEADER]
+      forwarded.push(typeof policy === 'string' ? decodePolicyHeader(policy) : null)
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{}')
+    })
+  })
+  const accounting = new GatewayAccounting(store, { holdUsdc: 100_000, settleGraceMs: 20 })
+  const probe = new BuyerPolicyProbe({ buyerPort: buyer.port, secret: 'control-secret' })
+  const server = new GatewayServer({
+    store,
+    accounting,
+    buyerPort: buyer.port,
+    identityAddress: async () => null,
+    spendFeedState: () => 'ok' as never,
+    refreshSpendFeed: async () => {},
+    controlSecret: 'control-secret',
+    buyerPolicyUnsupported: () => probe.policyUnsupported(),
+    buyerZeroDataAccessUnsupported: () => probe.zeroDataAccessUnsupported(),
+  })
+  const port = await server.start()
+  const send = (secret: string, headers: Record<string, string> = {}) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json', ...headers },
+    body: JSON.stringify({ model: 'm' }),
+  })
+  try {
+    assert.equal(await probe.start(), 'supported', 'the older buyer applies ordinary policies')
+    const blind = store.createKey({ label: 'z', limits: NO_LIMITS, expiresAt: null, routingPolicy: { requireZeroDataAccess: true } })
+    const tee = store.createKey({ label: 't', limits: NO_LIMITS, expiresAt: null, routingPolicy: { requireTee: true } })
+    const open = store.createKey({ label: 'o', limits: NO_LIMITS, expiresAt: null })
+
+    for (const refused of [await send(blind.secret), await send(open.secret, { [ANTSEED_REQUIRE_ZERO_DATA_ACCESS_HEADER]: 'true' })]) {
+      assert.equal(refused.status, 503)
+      assert.equal(((await refused.json()) as any).error.code, 'buyer_policy_unsupported')
+    }
+    assert.deepEqual(forwarded, [], 'nothing that needs zero data access reaches the older buyer')
+    // What the older buyer does apply still goes through.
+    assert.equal((await send(tee.secret)).status, 200)
+    assert.equal((await send(open.secret)).status, 200)
+    assert.deepEqual(forwarded, [{ requireTee: true }, null])
+
+    upgraded = true
+    await probe.check()
+    assert.equal((await send(blind.secret)).status, 200)
+    assert.deepEqual(forwarded.at(-1), { requireZeroDataAccess: true })
+  } finally {
+    probe.stop()
     await server.stop()
     accounting.dispose()
     await buyer.close()
