@@ -6,6 +6,7 @@ import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidReque
 import {
   SIGNED_REQUEST_TRIES,
   askSellerSigned,
+  assertRequestIdentities,
   signedExchange,
   type SignedSellerRequestInput,
   type SignedSellerRequestV1,
@@ -358,14 +359,12 @@ export function validateOutputCap(record: OutputCapV1): void {
     if (record.outcome !== 'inconclusive') throw new Error('a cap check without asks must be inconclusive')
     return
   }
-  const requestIds = record.asks.flatMap((ask) => ask.request.requestIds)
-  if (new Set(requestIds).size !== requestIds.length) throw new Error('a cap check repeats a request ID: two asks must be two requests')
-  const signedIds = record.asks.flatMap((ask) => (ask.request.responseAuth?.requestId ? [ask.request.responseAuth.requestId] : []))
-  if (new Set(signedIds).size !== signedIds.length) throw new Error('a cap check repeats an authenticated request ID: two asks must be two signed requests')
+  assertRequestIdentities(record.asks.map((ask) => ask.request), {
+    duplicateAttempt: 'a cap check repeats a request ID: two asks must be two requests',
+    duplicateAuthenticated: 'a cap check repeats an authenticated request ID: two asks must be two signed requests',
+    authenticatedNotAttempt: 'a cap check\'s authenticated request is not one of its tries',
+  })
   if (record.asks.length > 1 && new Set(record.asks.map((ask) => ask.prompt)).size !== record.asks.length) throw new Error('a cap check asked the same request twice')
-  if (record.asks.some((ask) => ask.request.responseAuth?.requestId && !ask.request.requestIds.includes(ask.request.responseAuth.requestId))) {
-    throw new Error('a cap check\'s authenticated request is not one of its tries')
-  }
   if (record.asks.length > 1 && record.asks[0]!.class !== 'cap-ignored') throw new Error('a cap check asked again after an answer that did not ignore the limit')
   const cap = record.asks[0]!.cap
   for (const ask of record.asks) {

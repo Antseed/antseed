@@ -4,6 +4,7 @@ import { isRecord, outputCheckRequestBody, readOutput, requestCarriesPrompt, typ
 import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from '../../proxy-evidence.js'
 import {
   askSellerSigned,
+  assertRequestIdentities,
   signedExchange,
   type SignedSellerRequestInput,
   type SignedSellerRequestV1,
@@ -800,13 +801,11 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
     throw new Error('the echo check\'s reference reasoning is not valid')
   }
   if (!Array.isArray(record.rounds) || record.rounds.length > rule.rounds) throw new Error('the echo check has more rounds than its rule')
-  const requestIds = requestsOf(record).flatMap((request) => request.requestIds)
-  if (new Set(requestIds).size !== requestIds.length) throw new Error('an echo check repeats a request ID: every ask must be its own request')
-  const signedIds = requestsOf(record).flatMap((request) => (request.responseAuth?.requestId ? [request.responseAuth.requestId] : []))
-  if (new Set(signedIds).size !== signedIds.length) throw new Error('an echo check repeats an authenticated request ID')
-  if (requestsOf(record).some((request) => request.responseAuth?.requestId && !request.requestIds.includes(request.responseAuth.requestId))) {
-    throw new Error('an echo check\'s authenticated request is not one of its tries')
-  }
+  assertRequestIdentities(requestsOf(record), {
+    duplicateAttempt: 'an echo check repeats a request ID: every ask must be its own request',
+    duplicateAuthenticated: 'an echo check repeats an authenticated request ID',
+    authenticatedNotAttempt: 'an echo check\'s authenticated request is not one of its tries',
+  })
   // A finding the compiled rule does not count can never be stored as a flag or a pass.
   const counted = (finding: 'growth' | 'offset'): boolean => (record.mode === 'visible' ? rule.visibleCounts : true) && (finding === 'offset' ? rule.offsetCounts : true)
   for (const [finding, value] of [['growth', record.growth], ['offset', record.fixedAmount]] as const) {

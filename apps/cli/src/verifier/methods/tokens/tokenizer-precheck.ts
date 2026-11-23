@@ -8,12 +8,11 @@ import {
   requestCountOf,
   type AuditCostSummaryV1,
   type PaidRequest,
-  type ProxyAuditEvidenceExchangeV1,
   type ProxyAuditExchangeCostV1,
 } from '../../proxy-evidence.js'
 import type { ResponseAuthReader } from '../../response-auth-reader.js'
 import type { SellerClock } from '../shared/seller-clock.js'
-import { SIGNED_REQUEST_TRIES, sendSignedRequest, signedExchange } from '../shared/signed-seller-request.js'
+import { SIGNED_REQUEST_TRIES, sendSignedRequest, signedExchange, type SignedSellerRequestV1 } from '../shared/signed-seller-request.js'
 import { requestAsksOnly } from './tokenizer-request.js'
 import { asError } from '../../utils.js'
 
@@ -188,20 +187,14 @@ export interface TokenizerPrecheckReferenceV1 {
   rounds: TokenizerReferenceRoundV1[]
 }
 
-/** One request to the seller, with every try. */
-export interface TokenizerSellerRequestV1 {
-  requestIds: string[]
-  statusCode: number | null
+/** One request to the seller, with every try (`SignedSellerRequestV1`), and what the pre-check reads of its answer. */
+export interface TokenizerSellerRequestV1 extends SignedSellerRequestV1 {
   /** The input tokens in the response the seller signed; null when it has none that can be read. */
   signedInputTokens: number | null
   /** The signed response reports cached input. Its count can match the model's, and is never held against the seller. */
   cachedInput: boolean
   /** The cache members the signed response reports above zero, by path; absent in records from before it was kept. */
   cache?: Record<string, number>
-  attemptCosts: ProxyAuditExchangeCostV1[]
-  /** The ResponseAuth of the last try, with the exact bytes the seller signed. */
-  responseAuth: ProxyAuditEvidenceExchangeV1['responseAuth'] | null
-  failureReason: string | null
 }
 
 /** One ask of a round's pair: the request with A, the request with A + B, and the difference the seller signed. */

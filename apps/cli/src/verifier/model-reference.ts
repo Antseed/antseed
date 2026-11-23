@@ -79,7 +79,7 @@ import {
 import { writeJsonAtomic, writeTextAtomic } from './atomic-files.js'
 import { CandidateWritingPolicy, candidateWritingFallback, isRamblingCandidateAnswer } from './candidate-writing.js'
 import { createDomainHomogeneousKbfBatches, kbfAuditBatches } from './kbf-batching.js'
-import { asError, normalized, sleep } from './utils.js'
+import { asError, normalized, sleep, untilAborted } from './utils.js'
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
 
 export { REFERENCE_BUILDER_VERSION }
@@ -2879,25 +2879,6 @@ class ReferenceUsageMissingError extends Error {
   constructor(model: string, readonly exchange: ReferenceRawExchange) {
     super(`reference endpoint omitted token usage for ${model}`)
   }
-}
-
-/** Waits for `promise`, or rejects once `signal` aborts: a queued task never holds its caller past the abort. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined, message: string): Promise<T> {
-  if (!signal) return promise
-  if (signal.aborted) {
-    // The promise is left behind here. Its own rejection (a wait for a slot that the same abort cancels) must be
-    // handled, or Node ends the process on it.
-    promise.catch(() => undefined)
-    return Promise.reject(new Error(message))
-  }
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new Error(message))
-    signal.addEventListener('abort', onAbort, { once: true })
-    promise.then(
-      (value) => { signal.removeEventListener('abort', onAbort); resolve(value) },
-      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error) },
-    )
-  })
 }
 
 export class ReferenceTimeoutError extends Error {

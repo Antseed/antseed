@@ -187,6 +187,24 @@ export function signedExchange(request: SignedSellerRequestV1): { requestBody: U
   }
 }
 
+/**
+ * The identities of a stored record's requests, for the check that reads it again: no request ID is used twice, no
+ * authenticated request ID is used twice, and each authenticated request is one of its own tries. Throws the message
+ * of the first that fails.
+ */
+export function assertRequestIdentities(
+  requests: readonly SignedSellerRequestV1[],
+  messages: { duplicateAttempt: string; duplicateAuthenticated: string; authenticatedNotAttempt: string },
+): void {
+  const requestIds = requests.flatMap((request) => request.requestIds)
+  if (new Set(requestIds).size !== requestIds.length) throw new Error(messages.duplicateAttempt)
+  const signedIds = requests.flatMap((request) => (request.responseAuth?.requestId ? [request.responseAuth.requestId] : []))
+  if (new Set(signedIds).size !== signedIds.length) throw new Error(messages.duplicateAuthenticated)
+  if (requests.some((request) => request.responseAuth?.requestId && !request.requestIds.includes(request.responseAuth.requestId))) {
+    throw new Error(messages.authenticatedNotAttempt)
+  }
+}
+
 function withoutPreimages<T extends { requestPreimage?: unknown; responsePreimage?: unknown }>(
   record: T,
 ): Omit<T, 'requestPreimage' | 'responsePreimage'> {

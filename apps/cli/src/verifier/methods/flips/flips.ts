@@ -16,6 +16,7 @@ import {
 } from './flips-score.js'
 import { ConcurrencyLimiter } from '../../audit-concurrency.js'
 import { readAnswerText } from '../shared/output-usage.js'
+import { untilAborted } from '../../utils.js'
 import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from '../../proxy-evidence.js'
 import {
   SIGNED_REQUEST_TRIES,
@@ -1037,7 +1038,7 @@ export function createFlipsScreen<Settings>(input: {
       return task()
     }
     return {
-      run: <T>(task: () => Promise<T>) => untilAborted(own.run(started(() => input.limiter.run(started(task)))), signal),
+      run: <T>(task: () => Promise<T>) => untilTimeUp(own.run(started(() => input.limiter.run(started(task)))), signal),
     } as SignedSellerRequestInput['limiter']
   }
   const one = async (
@@ -1049,7 +1050,7 @@ export function createFlipsScreen<Settings>(input: {
   ): Promise<FlipsV1> => {
     const draw = drawOf(kind)
     // The wait for the reference is in FLIPS's time too (a follow-up's is asked only now).
-    const prepared = await untilAborted(referenceFor(kind, seller.service, settings), signal)
+    const prepared = await untilTimeUp(referenceFor(kind, seller.service, settings), signal)
     const problem = flipsReferenceProblem({ draw, service: seller.service, referenceOneProvider: prepared.oneProvider, pairs: prepared.pairs }, rule)
     const stored = {
       rule: rule.id, draw, service: seller.service, referenceUpstream: prepared.upstream, referenceOneProvider: prepared.oneProvider,
@@ -1151,21 +1152,9 @@ export function createFlipsScreen<Settings>(input: {
   }
 }
 
-/** Waits for `promise`, or rejects once `signal` aborts. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) {
-    // The promise is left behind here: its own rejection must be handled, or Node ends the process on it.
-    promise.catch(() => undefined)
-    return Promise.reject(new Error('the randomness check\'s time is up'))
-  }
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new Error('the randomness check\'s time is up'))
-    signal.addEventListener('abort', onAbort, { once: true })
-    promise.then(
-      (value) => { signal.removeEventListener('abort', onAbort); resolve(value) },
-      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error) },
-    )
-  })
+/** Waits for `promise`, or rejects once FLIPS's time is up (`signal`). */
+function untilTimeUp<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return untilAborted(promise, signal, 'the randomness check\'s time is up')
 }
 
 function errorText(error: unknown): string {
