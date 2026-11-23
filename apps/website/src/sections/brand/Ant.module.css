@@ -1,0 +1,14 @@
+.picture { display: grid; place-items: center; height: 720px; }
+.picture img { display: block; width: auto; height: 600px; }
+:global(:root[data-theme='dark']) .picture img { filter: brightness(.84) saturate(.83) contrast(1.12); }
+.rules { display: flex; flex-direction: column; justify-content: center; padding: 0 64px; }
+.rule { padding: 28px 0; }
+.rule + .rule { background: radial-gradient(circle at 1px 1px, var(--site-dot) .85px, #0000 1.25px) 0 0 / 8px 2px repeat-x; }
+.rule h3 { margin: 0; font: 400 18px/27px var(--site-font-pixel); font-variation-settings: 'ELSH' 20; color: var(--site-accent); }
+.rule p { margin: 8px 0 0; font: 400 16px/24px var(--site-font); color: var(--site-text-body); }
+
+@media (max-width: 899px) {
+  .picture { height: 480px; }
+  .picture img { height: 400px; }
+  .rules { padding: 16px 24px; }
+}
