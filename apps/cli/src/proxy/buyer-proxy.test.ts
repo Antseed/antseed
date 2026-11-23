@@ -7260,6 +7260,7 @@ test('a seller-blind offer gives zero data access only to a buyer that has the r
         sendRequest: async () => { throw new Error('must not reach a peer') },
         openRelayStream: async () => { throw new Error('must not reach a peer') },
         recordRelayedResponse: () => {},
+        recordInterruptedRelayedResponse: () => {},
         keyedRelayBinary,
       }),
     })

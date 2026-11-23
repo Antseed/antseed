@@ -47,3 +47,44 @@ export function recordRelayedCost(
   negotiator.bpm.trackRequestService(relayed.requestId, relayed.service);
   negotiator.estimateCostFromResponse(peer, relayed.response, relayed.service, relayed.requestId, relayed.requestBody, unrevealedUsage(relayed) ?? undefined);
 }
+
+/** A relayed request the buyer sent whose answer did not end: it timed out, was given up, or its stream broke. */
+export interface InterruptedRelayedResponse {
+  requestId: string;
+  service: string;
+  /** The body the buyer sent: the seller checked its length. */
+  requestBody: Uint8Array;
+  /** How much of the raw answer reached the buyer: 0 for none, or for a request only just sent. */
+  receivedLength: number;
+  /** The output limit the request ended with, as the seller checked it: null for none. */
+  maxOutputTokens: number | null;
+}
+
+/**
+ * Buyer side: keeps a record of a relayed request from the moment it is sent,
+ * and prices one whose answer did not end. The seller bills what it relayed of
+ * such an answer as it bills any answer it is shown no usage of
+ * (`keyedRelayUnrevealedUsage`), so the buyer prices what reached it the same
+ * way: that charge is then signed, and the seller admits the next request.
+ * The seller cannot see the answer's status, so the buyer does not go by it
+ * either. The record is a cut-off one, paid only when the seller claims it.
+ * With no byte of an answer nothing is priced: a charge for it is signed only
+ * inside the overdraft window, like any claim the buyer cannot check.
+ */
+export function recordInterruptedRelayedCost(
+  negotiator: BuyerPaymentNegotiator,
+  peer: PeerInfo,
+  interrupted: InterruptedRelayedResponse,
+): void {
+  const { requestId, service, requestBody, receivedLength, maxOutputTokens } = interrupted;
+  negotiator.bpm.trackRequestService(requestId, service);
+  negotiator.bpm.recordDeliveredResponse(peer.peerId, requestId, { costUsdc: 0n, cutOff: true });
+  if (receivedLength <= 0) return;
+  negotiator.estimateCostFromPartialResponse(
+    peer,
+    { requestId, body: requestBody },
+    { requestId, statusCode: 200, headers: {}, body: new Uint8Array(0) },
+    service,
+    keyedRelayUnrevealedUsage(keyedRequestInputTokens(requestBody.length), receivedLength, maxOutputTokens),
+  );
+}

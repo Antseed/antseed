@@ -1596,6 +1596,7 @@ export class BuyerProxy {
         peer, streamId, credentialId, buyerIdentity, channelBinding !== undefined ? { channelBinding } : undefined,
       ),
       recordRelayedResponse: (peer, relayed, buyerIdentity) => this._node.recordRelayedResponse(peer, relayed, buyerIdentity),
+      recordInterruptedRelayedResponse: (peer, interrupted, buyerIdentity) => this._node.recordInterruptedRelayedResponse(peer, interrupted, buyerIdentity),
     })
     this._teeControl = new TeeControl(this._teeVerification.sessionId)
     this._port = config.port

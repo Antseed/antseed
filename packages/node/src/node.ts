@@ -60,7 +60,7 @@ import { PaymentMux } from "./p2p/payment-mux.js";
 import { SweepMux } from "./p2p/sweep-mux.js";
 import { RelayMux, type RelayStreamOptions } from "./p2p/relay-mux.js";
 import { requireAttestedConnection } from "@antseed/buyer-core/buyer-request-handler";
-import { recordRelayedCost, type RelayedResponse } from "./blind-relay-billing.js";
+import { recordInterruptedRelayedCost, recordRelayedCost, type InterruptedRelayedResponse, type RelayedResponse } from "./blind-relay-billing.js";
 import type { Duplex } from "node:stream";
 import { VerificationMux } from "./verification/verification-mux.js";
 import { DepositRelayer } from "./payments/deposit-relayer.js";
@@ -1609,6 +1609,23 @@ export class AntseedNode extends EventEmitter {
     const negotiator = context ? context.negotiator : this._buyerNegotiator;
     if (!negotiator) return;
     recordRelayedCost(negotiator, peer, relayed);
+  }
+
+  /**
+   * Buyer side: a relayed request was sent (`receivedLength` 0), or its answer
+   * did not end. Keeps the buyer's record of it (`recordInterruptedRelayedCost`),
+   * so the seller's charge for what it relayed is signed up to the buyer's
+   * own figure for what arrived.
+   */
+  recordInterruptedRelayedResponse(
+    peer: PeerInfo,
+    interrupted: InterruptedRelayedResponse,
+    buyerIdentity?: string,
+  ): void {
+    const context = this._buyerContext(buyerIdentity);
+    const negotiator = context ? context.negotiator : this._buyerNegotiator;
+    if (!negotiator) return;
+    recordInterruptedRelayedCost(negotiator, peer, interrupted);
   }
 
   /**

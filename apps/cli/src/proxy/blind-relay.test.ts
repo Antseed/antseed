@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs'
 import { EventEmitter } from 'node:events'
 import { PassThrough, type Duplex } from 'node:stream'
 import { createServer as tlsCreateServer } from 'node:tls'
-import { RelayMux, SellerBlindRelay, type BlindRelayCharge, type KeyedRequestAdmission, type KeyedRequestDecision, type PeerInfo, type Provider, type RelayedResponse, type SerializedHttpRequest, type SerializedHttpResponse, type SerializedHttpResponseChunk } from '@antseed/node'
+import { RelayMux, SellerBlindRelay, type BlindRelayCharge, type InterruptedRelayedResponse, type KeyedRequestAdmission, type KeyedRequestDecision, type PeerInfo, type Provider, type RelayedResponse, type SerializedHttpRequest, type SerializedHttpResponse, type SerializedHttpResponseChunk } from '@antseed/node'
 import { KeyedRelayProcess, resolveKeyedRelayBinary } from '@antseed/keyed-relay'
 import { BlindRelayClient, BlindRelayError, type BlindRelayCallbacks, type BlindRelayDeps } from './blind-relay.js'
 import { KeyedPlaintextSocket, keyedRequestBody, keyedRevealRanges } from './keyed-relay-client.js'
@@ -28,6 +28,7 @@ function clientWith(minted: unknown, openRelayStream: () => Promise<Duplex> = as
     },
     openRelayStream,
     recordRelayedResponse: () => {},
+    recordInterruptedRelayedResponse: () => {},
     keyedRelayBinary,
   })
   const send = (path = '/v1/chat/completions', body = '{"model":"open-model","messages":[]}') => client.send(peer, 'open-model', {
@@ -75,6 +76,7 @@ test('credentials that stay busy are the buyer\'s own stream limit', async () =>
     sendRequest: async (_peer, request) => ({ requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify({ ...credential, credentialId: `cred-${now}`, expiresAt: 600_000 })) }),
     openRelayStream: async () => { throw new Error('credential busy') },
     recordRelayedResponse: () => {},
+    recordInterruptedRelayedResponse: () => {},
     keyedRelayBinary: '/sidecar',
     now: () => now,
     sleep: async (ms) => { now += ms },
@@ -107,6 +109,7 @@ test('a request bound to an attested connection gets its credential and its stre
       throw channelBinding === 'session-1' ? changed : new Error('the seller is restarting')
     },
     recordRelayedResponse: () => {},
+    recordInterruptedRelayedResponse: () => {},
     keyedRelayBinary: '/never-spawned',
   })
   // A request that needs no attestation leaves a credential behind.
@@ -126,6 +129,7 @@ test('a seller whose credentials cannot be used is given up on, not asked withou
     sendRequest: async (_peer, request) => { endless(++asked); return minted(request, { expiresAt: 10_000 }) },
     openRelayStream: async () => { throw new Error('unreachable') },
     recordRelayedResponse: () => {},
+    recordInterruptedRelayedResponse: () => {},
     keyedRelayBinary: '/never-spawned',
     now: () => 0,
   })
@@ -138,6 +142,7 @@ test('a seller whose credentials cannot be used is given up on, not asked withou
     sendRequest: async (_peer, request) => { endless(++asked); return minted(request, { credentialId: `cred-${asked}` }) },
     openRelayStream: async () => { throw new Error('unknown credential') },
     recordRelayedResponse: () => {},
+    recordInterruptedRelayedResponse: () => {},
     keyedRelayBinary: '/never-spawned',
   })
   await assert.rejects(forgetful.send(peer, 'open-model', chat(), undefined), (error: unknown) => error instanceof BlindRelayError && /no credential a stream opens on/.test(error.message))
@@ -149,6 +154,7 @@ test('a seller whose credentials cannot be used is given up on, not asked withou
     sendRequest: async (_peer, request) => { endless(++asked); return minted(request) },
     openRelayStream: async () => { throw new Error('this seller no longer relays requests for this buyer') },
     recordRelayedResponse: () => {},
+    recordInterruptedRelayedResponse: () => {},
     keyedRelayBinary: '/never-spawned',
   })
   await assert.rejects(refused.send(peer, 'open-model', chat(), undefined), (error: unknown) => error instanceof BlindRelayError && /no longer relays requests/.test(error.message))
@@ -165,6 +171,7 @@ test('a request given up while the relay is set up stops there', async () => {
     sendRequest: (_peer, request) => { asked += 1; return new Promise((resolve) => { answerMint = () => resolve(minted(request)) }) },
     openRelayStream: () => { opened += 1; return new Promise((resolve) => { answerOpen = resolve }) },
     recordRelayedResponse: () => {},
+    recordInterruptedRelayedResponse: () => {},
     keyedRelayBinary: '/never-spawned',
   })
   const givenUp = (error: unknown): boolean => error instanceof BlindRelayError && /given up/.test(error.message)
@@ -211,6 +218,7 @@ test('a request given up while its sidecar sets up the session ends at once: the
       sendRequest: async (_peer, request) => minted(request),
       openRelayStream,
       recordRelayedResponse: () => {},
+      recordInterruptedRelayedResponse: () => {},
       keyedRelayBinary: fixtureUrl('silent-sidecar.mjs').pathname,
     })
 
@@ -462,6 +470,8 @@ async function keyedStack(
   const recorded: SerializedHttpResponse[] = []
   /** Each answer as the buyer handed it over for pricing. */
   const relayed: RelayedResponse[] = []
+  /** Each record the buyer kept of a request it sent: at the send, and again if its answer did not end. */
+  const interrupted: InterruptedRelayedResponse[] = []
   const client = new BlindRelayClient({
     sendRequest: async (_peer, request) => {
       mints += 1
@@ -470,20 +480,21 @@ async function keyedStack(
     },
     openRelayStream: (_peer, streamId, credentialId) => ends[0]!.mux!.openStream(streamId, credentialId),
     recordRelayedResponse: (_peer, answer) => { recorded.push(answer.response); relayed.push(answer) },
+    recordInterruptedRelayedResponse: (_peer, record) => { interrupted.push(record) },
     keyedRelayBinary: keyedBinary,
     keyedRelayExtraRootsPem: ca,
     // A real, short wait: the seller's handle is busy until its sidecar has exited.
     sleep: (ms) => { waits.push(ms); return new Promise((resolve) => setTimeout(resolve, 20)) },
     ...options.deadlines,
   })
-  const send = (body: unknown, callbacks: BlindRelayCallbacks = {}) => client.send(peer, 'open-model', {
+  const send = (body: unknown, callbacks: BlindRelayCallbacks = {}, signal?: AbortSignal) => client.send(peer, 'open-model', {
     requestId: 'keyed-1',
     method: 'POST',
     path: '/v1/chat/completions',
     headers: { 'content-type': 'application/json', authorization: 'Bearer buyer-must-not-send', 'x-cost-header': 'priority' },
     body: new TextEncoder().encode(JSON.stringify(body)),
-  }, undefined, callbacks)
-  return { upstream, received, requests, charges, recorded, relayed, send, waits, mints: () => mints, closed: () => closed }
+  }, undefined, callbacks, { signal })
+  return { upstream, received, requests, charges, recorded, relayed, interrupted, send, waits, mints: () => mints, closed: () => closed }
 }
 
 test('the seller checks the request, adds its key to the buyer\'s TLS session and bills the revealed usage', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
@@ -494,6 +505,8 @@ test('the seller checks the request, adds its key to the buyer\'s TLS session an
     assert.equal(response.statusCode, 200)
     assert.match(new TextDecoder().decode(response.body), /giraffe/)
     assert.equal(stack.recorded.length, 1)
+    // The buyer kept a record of the request from the send, and the answer that ended was priced whole.
+    assert.deepEqual(stack.interrupted.map((record) => [record.requestId, record.receivedLength]), [['keyed-1', 0]])
     // One request: the seller's head with its key, then only the headers the seller relays, and the checked fields last.
     assert.equal(stack.requests.length, 1)
     const sent = stack.requests[0]!
@@ -598,6 +611,70 @@ test('an admitted request the upstream never answers ends at the response deadli
     assert.equal(stack.requests.length, 1)
     for (let i = 0; i < 100 && stack.closed() === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20))
     assert.equal(stack.closed(), 1)
+    // No byte of an answer: the buyer's record prices nothing, and the seller bills nothing.
+    assert.deepEqual(stack.interrupted.map((record) => record.receivedLength), [0, 0])
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.deepEqual(stack.charges, [])
+  } finally {
+    stack.upstream.close()
+  }
+})
+
+/** The seller's charge for the one request of `stack`, once its sidecar has ended. */
+async function chargeOf(stack: Awaited<ReturnType<typeof keyedStack>>): Promise<BlindRelayCharge> {
+  for (let i = 0; i < 250 && stack.charges.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(stack.charges.length, 1, 'the seller billed the answer it relayed')
+  return stack.charges[0]!
+}
+
+/** Checks the buyer's last record of the request prices what the seller billed: the same body, limit and answer length. */
+function assertPricedAsBilled(stack: Awaited<ReturnType<typeof keyedStack>>, charge: BlindRelayCharge): void {
+  const record = stack.interrupted.at(-1)
+  assert.ok(record, 'the buyer kept no record of the answer that did not end')
+  assert.equal(record.requestId, charge.requestId)
+  assert.equal(record.service, 'open-model')
+  assert.ok(record.receivedLength > 0, 'the buyer recorded none of the answer that reached it')
+  // The seller bills what it relayed with no usage shown: the body's length in, the answer's length out.
+  assert.deepEqual(charge.usage, {
+    inputTokens: Math.ceil(record.requestBody.length / 4),
+    freshInputTokens: Math.ceil(record.requestBody.length / 4),
+    cachedInputTokens: 0,
+    outputTokens: Math.min(Math.ceil(record.receivedLength / 4), record.maxOutputTokens!),
+  })
+}
+
+test('an answer that stalls is priced by the buyer as the seller bills it: by what arrived', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
+  const stack = await keyedStack(() => ({ admitted: true }), 20, { upstream: 'stalls', deadlines: { streamIdleTimeoutMs: 400 } })
+  try {
+    await assert.rejects(settlesWithin(stack.send(zebra), 5_000), /no more of it came within 400 ms/)
+    // Recorded before the request failed for its caller: the seller's charge arrives after the stream closes.
+    assert.deepEqual(stack.interrupted.map((record) => record.receivedLength > 0), [false, true])
+    assertPricedAsBilled(stack, await chargeOf(stack))
+    assert.equal(stack.relayed.length, 0)
+  } finally {
+    stack.upstream.close()
+  }
+})
+
+test('an answer its client gives up on is priced by the buyer as the seller bills it: by what arrived', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
+  const stack = await keyedStack(() => ({ admitted: true }), 20, { upstream: 'stalls' })
+  try {
+    const client = new AbortController()
+    // The client leaves once the answer's first words have reached it.
+    await assert.rejects(settlesWithin(stack.send(zebra, { onResponseChunk: () => client.abort() }, client.signal), 5_000))
+    assert.deepEqual(stack.interrupted.map((record) => record.receivedLength > 0), [false, true])
+    assertPricedAsBilled(stack, await chargeOf(stack))
+  } finally {
+    stack.upstream.close()
+  }
+})
+
+test('a request the seller refuses leaves a record that prices nothing', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
+  const stack = await keyedStack(() => ({ admitted: false, reason: 'the locked reserve has 0 left' }))
+  try {
+    await assert.rejects(stack.send(zebra))
+    assert.ok(stack.interrupted.length > 0 && stack.interrupted.every((record) => record.receivedLength === 0), JSON.stringify(stack.interrupted.map((record) => record.receivedLength)))
+    assert.deepEqual(stack.charges, [])
   } finally {
     stack.upstream.close()
   }
@@ -628,6 +705,7 @@ test('a payment failure the buyer\'s own node answers the mint with reaches the 
     sendRequest: async (_peer, request) => ({ requestId: request.requestId, statusCode, headers, body }),
     openRelayStream: async () => { throw new Error('unreachable') },
     recordRelayedResponse: () => {},
+    recordInterruptedRelayedResponse: () => {},
     keyedRelayBinary: '/never-spawned',
   }).send(peer, 'open-model', chat('mine'), undefined)
 

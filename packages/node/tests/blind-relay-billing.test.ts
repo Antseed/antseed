@@ -9,7 +9,7 @@ import { Wallet } from 'ethers';
 import type { KeyedRelayEvent, KeyedRelayProcess } from '@antseed/keyed-relay';
 import { keyedRequestTailFields } from '@antseed/protocol/blind-relay';
 import type { NeedAuthPayload, SpendingAuthPayload } from '@antseed/protocol/messages';
-import { recordRelayedCost } from '../src/blind-relay-billing.js';
+import { recordInterruptedRelayedCost, recordRelayedCost } from '../src/blind-relay-billing.js';
 import type { KeyedRelayReveal } from '../src/keyed-relay-billing.js';
 import { BuyerPaymentManager } from '../src/payments/buyer-payment-manager.js';
 import { BuyerPaymentNegotiator } from '../src/payments/buyer-payment-negotiator.js';
@@ -199,6 +199,90 @@ describe('a relayed answer: what the seller charges and what the buyer signs', (
     expect(charges[0]!.usage).toEqual({ inputTokens, freshInputTokens: inputTokens, cachedInputTokens: 0, outputTokens: MAX_TOKENS });
     // Far past the overdraft window: every charge was verified, none signed on trust.
     expect(spent).toBeGreaterThan(2n * WINDOW);
+  });
+
+  /**
+   * Requests whose answers did not end: the seller's sidecar reports what it relayed and ends with no
+   * reveal, and the buyer holds a record from the moment it sent the request, priced by what reached it.
+   */
+  async function runInterrupted(relayedLength: number, receivedLength: number, requests: number): Promise<{ charges: BlindRelayCharge[]; spent: bigint }> {
+    const charges: BlindRelayCharge[] = [];
+    const sidecars: EventEmitter[] = [];
+    const blind = new SellerBlindRelay({
+      charge: (charge) => charges.push(charge),
+      spawnKeyedRelay: () => {
+        const sidecar = Object.assign(new EventEmitter(), { peer: new PassThrough(), startSeller: () => {}, admit: () => {}, refuse: () => {} });
+        sidecars.push(sidecar);
+        return sidecar as unknown as KeyedRelayProcess;
+      },
+      usageCostUsdc: (_provider, _service, usage) => computeCostUsdc(usage.freshInputTokens, usage.outputTokens, PRICING, usage.cachedInputTokens),
+      admitKeyedRequest: () => ({ admitted: true }),
+    });
+    const minted = blind.mint(buyerPeerId, SERVICE, { keyedRelayTarget: () => TARGET } as unknown as Provider);
+    let spent = 0n;
+    for (let index = 1; index <= requests; index += 1) {
+      const requestId = `interrupted-${index}`;
+      const sent = { requestId, service: SERVICE, requestBody: request().body, maxOutputTokens: MAX_TOKENS };
+      recordInterruptedRelayedCost(negotiator, peer, { ...sent, receivedLength: 0 });
+      (await blind.authorize(buyerPeerId, requestId, minted.credentialId)).open();
+      const sidecar = sidecars.at(-1)!;
+      sidecar.emit('event', { type: 'request', ...request().revealed });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // The buyer prices what reached it, then leaves; the seller's sidecar reports what it relayed and ends.
+      recordInterruptedRelayedCost(negotiator, peer, { ...sent, receivedLength });
+      sidecar.emit('event', { type: 'responseEnd', length: relayedLength, bytesUp: 4_000, bytesDown: relayedLength + 600 });
+      sidecar.emit('exit', { code: 1, stderr: 'the buyer left' });
+      const charge = charges[index - 1];
+      if (!charge) continue;
+      spent += charge.costUsdc;
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId,
+        requestId,
+        requiredCumulativeAmount: spent.toString(),
+        currentAcceptedCumulative: '0',
+        deposit: RESERVE.toString(),
+        lastRequestCost: charge.costUsdc.toString(),
+        inputTokens: charge.usage.inputTokens.toString(),
+        outputTokens: charge.usage.outputTokens.toString(),
+      }, mux);
+      // A seller admits the next relayed request only once the earlier ones are signed for.
+      expect(manager.getCumulativeAmount(sellerPeerId), `signed after interrupted request ${index} of ${requests}; the seller spent ${spent}`).toBe(spent);
+    }
+    return { charges, spent };
+  }
+
+  it('signs the seller\'s charge for every answer that did not end, however many follow', async () => {
+    const { charges, spent } = await runInterrupted(1_600, 1_600, 6);
+    expect(charges).toHaveLength(6);
+    // Billed as an answer shown no usage: the body's length, and what was relayed of the answer.
+    const inputTokens = Math.ceil(request().body.length / 4);
+    expect(charges[0]!.usage).toEqual({ inputTokens, freshInputTokens: inputTokens, cachedInputTokens: 0, outputTokens: 400 });
+    // Far past the overdraft window: every charge was verified, none signed on trust.
+    expect(spent).toBeGreaterThan(WINDOW);
+  });
+
+  it('signs for an answer cut off with part of it still on its way to the buyer', async () => {
+    // The seller relayed a little more than had reached the buyer: within the buyer's cost tolerance.
+    const { spent } = await runInterrupted(1_600, 1_400, 6);
+    expect(spent).toBeGreaterThan(WINDOW);
+  });
+
+  it('owes nothing for a request sent with no byte of an answer, and still signs for the answers that follow', async () => {
+    const { charges } = await runInterrupted(0, 0, 2);
+    expect(charges).toEqual([]);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(0n);
+    await run(answer(false), 2);
+  });
+
+  it('signs nothing above the overdraft window for an answer it holds no byte of', async () => {
+    // A seller that claims an answer the buyer never saw is paid on trust only: once, inside the window.
+    const claimed = 2n * WINDOW;
+    recordInterruptedRelayedCost(negotiator, peer, { requestId: 'unseen', service: SERVICE, requestBody: request().body, receivedLength: 0, maxOutputTokens: MAX_TOKENS });
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'unseen', requiredCumulativeAmount: claimed.toString(), currentAcceptedCumulative: '0', deposit: RESERVE.toString(),
+      lastRequestCost: claimed.toString(), inputTokens: '1', outputTokens: '1',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBeLessThanOrEqual(WINDOW);
   });
 
   it('signs the usage the answer reports when the buyer reveals it', async () => {

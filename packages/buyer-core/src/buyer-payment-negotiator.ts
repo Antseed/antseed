@@ -1125,21 +1125,29 @@ export class BuyerPaymentNegotiator {
    * told, so it may finish the generation and bill it. Record the most it can
    * honestly bill: the prompt plus the output the request allows or, without
    * an output limit, what had arrived. Unit-billed and video requests are
-   * priced only on delivery.
+   * priced only on delivery. With an `agreedUsage` the cost is that usage's:
+   * the figure buyer and seller both hold for an attempt whose seller knows
+   * what it delivered (a relayed answer that did not end).
    */
   estimateCostFromPartialResponse(
     peer: BuyerPeerView,
     request: { requestId: string; body: Uint8Array },
     partial: SerializedHttpResponse,
     service?: string,
+    agreedUsage?: ResponseUsage,
   ): void {
     const billingEntry = this._bpm.getRequestBilling(request.requestId);
     const pricing = billingEntry?.tokenPricing
       ?? this._bpm.getSessionPricing(peer.peerId, service)
         ?? this._peerDefaultPricing(peer);
     if (partial.statusCode >= 400 || !pricing || billingEntry?.unitModel || billingEntry?.requestFacts?.kind === 'video') return;
-    const outputTokens = Math.max(estimateTokensFromBytesSampled(partial.body), requestedMaxOutputTokens(request.body));
-    const costUsdc = computeCostUsdc(estimateTokensFromBytesSampled(request.body), outputTokens, pricing);
+    const costUsdc = agreedUsage
+      ? computeCostUsdc(agreedUsage.freshInputTokens, agreedUsage.outputTokens, pricing, agreedUsage.cachedInputTokens)
+      : computeCostUsdc(
+        estimateTokensFromBytesSampled(request.body),
+        Math.max(estimateTokensFromBytesSampled(partial.body), requestedMaxOutputTokens(request.body)),
+        pricing,
+      );
     debugLog(
       `[BuyerNegotiator] ${peer.peerId.slice(0, 12)}... may bill up to ${costUsdc} for ${request.requestId.slice(0, 8)}, ` +
       `cut off after ${partial.body.length}b`,

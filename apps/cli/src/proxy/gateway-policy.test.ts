@@ -1432,6 +1432,7 @@ test('a payment this buyer cannot make for a seller-blind request reaches the cl
     },
     openRelayStream: async () => { throw new Error('no stream opens without a credential') },
     recordRelayedResponse: () => {},
+    recordInterruptedRelayedResponse: () => {},
     keyedRelayBinary: '/never-spawned',
   })
   const h = await startHarness(t, [blind('a'), blind('b')], { blindRelay })
@@ -1456,6 +1457,7 @@ test('spend on a seller-blind request sent a second time reaches the gateway key
     sendRequest: async () => { throw new Error('no credential is asked for') },
     openRelayStream: async () => { throw new Error('no stream opens') },
     recordRelayedResponse: () => {},
+    recordInterruptedRelayedResponse: () => {},
     keyedRelayBinary: '/never-spawned',
   })
   const h = await startHarness(t, [seller], { blindRelay })

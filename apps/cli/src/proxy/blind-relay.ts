@@ -16,6 +16,7 @@ import {
   RELAY_RESPONSE_WAIT_MS,
   type BlindRelayCredential,
   type FaultAttribution,
+  type InterruptedRelayedResponse,
   type KeyedRefusalCode,
   type PeerInfo,
   type RelayedResponse,
@@ -88,6 +89,15 @@ export interface BlindRelayDeps {
   recordRelayedResponse(
     peer: PeerInfo,
     relayed: RelayedResponse,
+    buyerIdentity: string | undefined,
+  ): void
+  /**
+   * A relayed request the seller may now forward (`receivedLength` 0), or one whose answer did not end:
+   * the buyer's record of it, by which the seller's charge for what it relayed is signed.
+   */
+  recordInterruptedRelayedResponse(
+    peer: PeerInfo,
+    interrupted: InterruptedRelayedResponse,
     buyerIdentity: string | undefined,
   ): void
   /** The sidecar binary; defaults to the installed one. Null turns the relay off. */
@@ -432,6 +442,12 @@ export class BlindRelayClient {
         throw new BlindRelayError(`the relay did not start (${error instanceof Error ? error.message : String(error)})`)
       }
       const socket = new KeyedPlaintextSocket(relay, prepared.body.length)
+      /** Set from the moment the seller may forward the request until its answer has ended and is priced whole. */
+      let unanswered = false
+      // The buyer's record of the request, by which a charge for an answer that does not end is signed.
+      const recordUnanswered = (receivedLength: number): void => this._deps.recordInterruptedRelayedResponse(peer, {
+        requestId: streamId, service, requestBody: prepared.body, receivedLength, maxOutputTokens: prepared.maxTokens,
+      }, buyerIdentity)
       // Only headers the seller relays: anything else would fail its check.
       const headers: Record<string, string> = {
         'content-type': 'application/json',
@@ -456,6 +472,9 @@ export class BlindRelayClient {
           return timer
         }
         socket.once('requestWritten', ({ headerLength, length }: { headerLength: number; length: number }) => {
+          // Kept before the seller can forward the request and bill it: its charge then finds a record, whenever it comes.
+          unanswered = true
+          recordUnanswered(0)
           relay.revealRequest(length, [[0, headerLength], [length - prepared.tailLength, prepared.tailLength]])
           relay.waitFor('admitted', KEYED_ADMIT_TIMEOUT_MS).then(() => {
             if (!started) waiting = endsWithin(responseTimeoutMs, 'the seller forwarded the request and no answer came')
@@ -500,6 +519,7 @@ export class BlindRelayClient {
             this._deps.recordRelayedResponse(peer, {
               requestId: streamId, service, requestBody: prepared.body, response, revealed, maxOutputTokens: prepared.maxTokens,
             }, buyerIdentity)
+            unanswered = false
             callbacks.onResponseChunk?.({ requestId, data: new Uint8Array(0), done: true })
             // The client has its answer; the reveal the seller bills by follows once the upstream closes.
             revealing = true
@@ -522,6 +542,9 @@ export class BlindRelayClient {
       }).finally(() => {
         clearTimeout(waiting)
         clearTimeout(running)
+        // An answer that timed out, broke or was given up: priced by what arrived of it, as the seller bills what it
+        // relayed. Before the stream closes, which is when the seller bills it.
+        if (unanswered) recordUnanswered(socket.received.length)
       })
     } finally {
       if (!revealing) close()
