@@ -26,6 +26,7 @@ import {
   verifyKbf,
   type FingerprintStats,
   type KbfProbe,
+  type MatchVector,
   type KbfReferenceV1,
   type KbfVerdictStats,
 } from '@antseed/fingerprints'
@@ -1381,19 +1382,8 @@ async function executeProxyProbeBatch(
         }
         break
       }
-      const extracted = extractCompletionText(responseBody)
-      // As the reference code does before parsing, `<think>…</think>` blocks are not answers.
-      const completion = extracted === null ? null : stripKbfThinkBlocks(extracted)
-      // A reply cut off at the token limit is not scored: the model was still writing (often
-      // reasoning in the reply), so its numbers are not its answers. It is asked again below.
-      const truncated = isKbfTokenLimitFinishReason(kbfResponseFinishReason(responseText(responseBody)))
-      const answers = completion === null || truncated
-        ? new Array<number | null>(probes.length).fill(null)
-        : parseKbfAnswers(completion, probes.length)
-      const malformedOutput = answers.every((answer) => answer === null)
-      const matches = malformedOutput
-        ? new Array<null>(probes.length).fill(null)
-        : computeMatchVector(answers, probes)
+      // A reply cut off at the token limit scores nothing (`scoreQuestionBatch`); it is asked again below.
+      const { truncated, answers, matches, malformedOutput } = scoreQuestionBatch(responseBody, probes)
       const completedAt = Date.now()
       const returnedRequestId = response.headers.get('x-antseed-request-id')
       const responseAuth = returnedRequestId === requestId
@@ -2178,6 +2168,34 @@ function safeRequestId(body: Uint8Array): string | null {
     return null
   }
   return null
+}
+
+/**
+ * One batch's answers and matches from the bytes of its reply, for the run and for any reader of stored evidence
+ * (`signed-questions.ts`): the one way a reply is scored.
+ * - As the reference code does before parsing, `<think>…</think>` blocks are not answers.
+ * - A reply cut off at the token limit is not scored: the model was still writing (often reasoning in the reply), so
+ *   its numbers are not its answers.
+ * - A reply with no readable answer scores nothing (`malformedOutput`).
+ */
+export function scoreQuestionBatch(responseBody: Uint8Array, probes: readonly KbfProbe[]): {
+  completion: string | null
+  truncated: boolean
+  answers: Array<number | null>
+  matches: MatchVector
+  malformedOutput: boolean
+} {
+  const extracted = extractCompletionText(responseBody)
+  const completion = extracted === null ? null : stripKbfThinkBlocks(extracted)
+  const truncated = isKbfTokenLimitFinishReason(kbfResponseFinishReason(responseText(responseBody)))
+  const answers = completion === null || truncated
+    ? new Array<number | null>(probes.length).fill(null)
+    : parseKbfAnswers(completion, probes.length)
+  const malformedOutput = answers.every((answer) => answer === null)
+  const matches: MatchVector = malformedOutput
+    ? new Array<null>(probes.length).fill(null)
+    : computeMatchVector(answers, [...probes])
+  return { completion, truncated, answers, matches, malformedOutput }
 }
 
 export function extractCompletionText(body: Uint8Array): string | null {

@@ -2,18 +2,13 @@ import {
   THINKING_DISCOVERY_STRATEGIES,
   buildKbfChatRequestBody,
   canonicalJsonStringify,
-  computeMatchVector,
-  isKbfTokenLimitFinishReason,
-  kbfResponseFinishReason,
-  parseKbfAnswers,
-  stripKbfThinkBlocks,
   thinkingStrategyRequest,
   type KbfProbe,
 } from '@antseed/fingerprints'
 import { decodeHttpRequest, decodeHttpResponse } from '@antseed/node'
 import { assertBoundToSeller, sellerBindingOf } from './audit-checks.js'
 import { isRecord, parseObject } from './methods/shared/output-usage.js'
-import { extractCompletionText } from './model-run.js'
+import { scoreQuestionBatch } from './model-run.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 
 /**
@@ -56,13 +51,8 @@ export function assertQuestionsFromSignedBytes(evidence: ProxyAuditEvidenceV1): 
     if (!requestIsQuestionBatch(request, { messages: asked, temperature: evidence.reference.queryProfile.auditTemperature })) {
       refuse('a batch\'s signed request is not the audit\'s request for the questions the batch names')
     }
-    // As the run reads an answer (`model-run.ts`): think blocks are not answers, and a reply cut off at the token limit
-    // or with no readable answer scores nothing.
-    const extracted = extractCompletionText(response)
-    const completion = extracted === null ? null : stripKbfThinkBlocks(extracted)
-    const truncated = isKbfTokenLimitFinishReason(kbfResponseFinishReason(new TextDecoder().decode(response)))
-    const answers = completion === null || truncated ? batch.map(() => null) : parseKbfAnswers(completion, batch.length)
-    const matches = answers.every((answer) => answer === null) ? batch.map(() => null) : computeMatchVector(answers, batch)
+    // Scored by the run's own function, so stored evidence is read exactly as the audit that made it read its replies.
+    const { answers, matches } = scoreQuestionBatch(response, batch)
     if (canonicalJsonStringify(answers) !== canonicalJsonStringify(exchange.answers)
       || canonicalJsonStringify(matches) !== canonicalJsonStringify(exchange.matches)) {
       refuse('a batch\'s stored answers are not the ones its signed response gives')

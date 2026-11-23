@@ -551,7 +551,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           return { transactionHash, blockNumber: receipt?.blockNumber ?? null }
         },
         warn: (line) => console.warn(chalk.yellow(line)),
-        log: (line) => console.log(line.includes('already recorded on-chain') ? chalk.dim(line) : chalk.green(line)),
+        log: (kind, line) => console.log(kind === 'recovered' ? chalk.dim(line) : chalk.green(line)),
         submitAgain,
       })
       const { submitted, recovered, rerun, failed, deferred, held, unsent } = tally
@@ -1108,7 +1108,8 @@ export interface SendLoopDeps {
   /** Sends the audit and reads its receipt. */
   submit: (audit: PreparedModelAudit, evidenceUri: string) => Promise<{ transactionHash: string; blockNumber: number | null }>
   warn: (line: string) => void
-  log: (line: string) => void
+  /** What the loop did for one audit: found it already on chain (`recovered`), or sent it (`submitted`). */
+  log: (kind: 'recovered' | 'submitted', line: string) => void
   /** The command to run to send what this submit left. */
   submitAgain: string
 }
@@ -1203,7 +1204,7 @@ export async function sendModelAudits(
         }
         await deps.writeLedger(ledger)
         tally.recovered += 1
-        deps.log((`${audit.key}: already recorded on-chain; ledger updated`))
+        deps.log('recovered', `${audit.key}: already recorded on-chain; ledger updated`)
         continue
       }
 
@@ -1232,7 +1233,7 @@ export async function sendModelAudits(
       }
       await deps.writeLedger(ledger)
       tally.submitted += 1
-      deps.log((`${audit.key}: submitted ${audit.results.length} seller result(s) (${transactionHash})`))
+      deps.log('submitted', `${audit.key}: submitted ${audit.results.length} seller result(s) (${transactionHash})`)
     } catch (error) {
       if (error instanceof RunInProgressError) {
         // Held, not failed: nothing was published or sent, and the ledger is as it was.

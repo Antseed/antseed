@@ -154,7 +154,12 @@ function partitionRunsByReport(runs: readonly RunSummaries[]): Map<string | null
           if (!run) {
             run = { manifest, summaries: [] }
             ofRun.set(key, run)
-            partitions.set(key, [...partitions.get(key) ?? [], run])
+            let history = partitions.get(key)
+            if (!history) {
+              history = []
+              partitions.set(key, history)
+            }
+            history.push(run)
           }
           run.summaries.push(copy)
         }
