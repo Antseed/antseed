@@ -209,7 +209,7 @@ function keyedRelay(
     ...(admitKeyedRequest ? { admitKeyedRequest } : {}),
     ...extra,
   });
-  const provider = { keyedRelayTarget: () => target } as unknown as Provider;
+  const provider = { keyedRelayTarget: () => target, getCapacity: () => ({ current: 0, max: 100 }) } as unknown as Provider;
   return { blind, charges, records, sidecars, provider };
 }
 
@@ -483,6 +483,41 @@ describe('SellerBlindRelay', () => {
     await expect(blind.authorize(BUYER, 'new', fifth.credentialId)).resolves.toBeTruthy();
     sidecars[0]!.emit('exit', { code: 0, stderr: '' });
     await expect(blind.authorize(BUYER, 'again', handles[0]!.credentialId)).resolves.toBeTruthy();
+  });
+
+  it('opens streams on a provider only up to the requests it serves at once, and starts no sidecar for one more', async () => {
+    const { blind, sidecars } = keyedRelay();
+    const provider = { keyedRelayTarget: () => TARGET, getCapacity: () => ({ current: 0, max: 2 }) } as unknown as Provider;
+    const elsewhere = { keyedRelayTarget: () => TARGET, getCapacity: () => ({ current: 0, max: 2 }) } as unknown as Provider;
+    const THIRD = 'cc'.repeat(20);
+    // Before any request is admitted: a stream runs a sidecar from its opening.
+    (await blind.authorize(BUYER, 's1', blind.mint(BUYER, 'open-model', provider).credentialId)).open();
+    (await blind.authorize(OTHER, 's2', blind.mint(OTHER, 'open-model', provider).credentialId)).open();
+    const third = blind.mint(THIRD, 'open-model', provider);
+    await expect(blind.authorize(THIRD, 's3', third.credentialId)).rejects.toThrow('as many requests as it takes at once');
+    expect(sidecars).toHaveLength(2);
+    // Another provider of the same seller has its own limit.
+    await expect(blind.authorize(THIRD, 's4', blind.mint(THIRD, 'open-model', elsewhere).credentialId)).resolves.toBeTruthy();
+
+    // The refused opening left the handle idle: it opens once a sidecar has ended.
+    sidecars[0]!.emit('exit', { code: 0, stderr: '' });
+    const late = await blind.authorize(THIRD, 's5', third.credentialId);
+    await expect(blind.authorize(BUYER, 's6', blind.mint(BUYER, 'open-model', provider).credentialId)).rejects.toThrow('as many requests as it takes at once');
+    // A stream that ended before it opened ran no sidecar, and holds no place.
+    late.onClose?.({ bytesUp: 0, bytesDown: 0, error: 'closed before it opened' });
+    await expect(blind.authorize(BUYER, 's7', blind.mint(BUYER, 'open-model', provider).credentialId)).resolves.toBeTruthy();
+  });
+
+  it('counts the direct requests a provider is serving against the streams it opens', async () => {
+    const { blind, sidecars } = keyedRelay();
+    let direct = 1;
+    const provider = { keyedRelayTarget: () => TARGET, getCapacity: () => ({ current: direct, max: 2 }) } as unknown as Provider;
+    (await blind.authorize(BUYER, 's1', blind.mint(BUYER, 'open-model', provider).credentialId)).open();
+    const second = blind.mint(OTHER, 'open-model', provider);
+    await expect(blind.authorize(OTHER, 's2', second.credentialId)).rejects.toThrow('as many requests as it takes at once');
+    expect(sidecars).toHaveLength(1);
+    direct = 0;
+    await expect(blind.authorize(OTHER, 's3', second.credentialId)).resolves.toBeTruthy();
   });
 
   it('counts what each stream holds before its request is forwarded against one shared budget', async () => {
