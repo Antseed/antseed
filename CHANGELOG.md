@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Buyers (gateway/CLI): streamed answers from sellers that serve the Anthropic Messages format, requested in OpenAI Chat Completions or Responses format, now carry the seller's cache reads in the final usage chunk. Some Anthropic-compatible upstreams report input and cache-read tokens only in the closing `message_delta` event; those counts were dropped, so `prompt_tokens_details.cached_tokens` was missing and all input looked uncached. Non-streamed answers were not affected.
+
 ## 2026-11-22 — CLI 0.1.257, Desktop 0.2.92
 
 ### Packages
