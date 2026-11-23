@@ -27,7 +27,7 @@ import type { VerifierCLIConfig } from '../config/types.js'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import { failureBlame } from './failure-blame.js'
-import { EXTRA_QUESTIONS_PUBLISHED, isExtraQuestionsPublished, type VerificationOutcomeReasonV1 } from './outcome-reason.js'
+import { EXTRA_QUESTIONS_PUBLISHED, isExtraQuestionsPublished, sanitizeOutcomeSummary, type VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import type { ReferenceUpstreamProvenanceV1 } from './model-reference.js'
 import { windowIncludesSeller, type AuditWindowV1 } from './audit-window.js'
 import {
@@ -95,6 +95,13 @@ export interface ModelAuditSellerResultV1 {
   decisionRule?: CloseCallRuleId
   /** A flagged audit whose close call could not be finished in its run: its questions are undecided. */
   questionsClosed?: true
+  /**
+   * The tests that kept no record for this seller because the run that audited it had none of that test for the model:
+   * the test did not apply to the model, or its reference gave it nothing to judge on. By evidence slot, with the
+   * reason the auditor's run wrote. The auditor's own statement: no seller signed it and no verdict rests on it. A
+   * seller's own skip or failure is not here. Absent when there is none, and on evidence from before it was written.
+   */
+  noRecord?: Array<{ slot: string; reason: string }>
   /** The checks that flagged the seller in this audit (`flaggingChecks`). */
   flaggedBy?: AuditCheckId[]
   /** The checks that ran to a pass in this audit (`passedChecks`). */
@@ -814,7 +821,8 @@ export async function prepareModelAudits(input: {
           exchangeCount: stored.exchangeCount,
         })
       }
-      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, extensionEvidence, extension2Evidence, confirmation }) => ({
+      const withoutRecord = await Promise.all(slice.map(({ result, evidence }) => testsWithoutRecord(result.evidencePath, evidence)))
+      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, extensionEvidence, extension2Evidence, confirmation }, index) => ({
         agentId: agentId.toString(),
         peerId: result.peerId,
         displayName: result.displayName,
@@ -840,6 +848,7 @@ export async function prepareModelAudits(input: {
         ...(result.extension2 && extension2Evidence
           ? { extension2: submittedExtension(result.extension2, extension2Evidence, evidence, evidenceDirectory) }
           : {}),
+        ...(withoutRecord[index]!.length > 0 ? { noRecord: withoutRecord[index]! } : {}),
         flaggedBy: flaggingChecks(evidence, questionsVerdictOf(result)),
         passedBy: passedChecks(evidence, questionsVerdictOf(result)),
         ...(betweenChecks(evidence, questionsVerdictOf(result)).length > 0 ? { betweenBy: betweenChecks(evidence, questionsVerdictOf(result)) } : {}),
@@ -1313,6 +1322,44 @@ export function validateAuditMatchesSummary(
   if ((audit.undecidedConfirmation !== null) !== (result.outcomeReason?.code === 'confirmation_undecided')) {
     throw new Error('the undecided confirmation is not the one its tests give')
   }
+}
+
+/** The longest reason a published `noRecord` entry keeps. */
+const NO_RECORD_REASON_LENGTH = 300
+
+/**
+ * For one seller's evidence: each test of the list without a record there whose own screen wrote, beside the run's
+ * audits, why the model had none of it this run (`RecordCheck.whyNoRecord`). The run's folder is the one that holds
+ * the sellers' folders (`modelAuditSellersDirectory`). Best effort: a file that is missing or cannot be read gives nothing,
+ * and never stops a submit.
+ */
+export async function testsWithoutRecord(
+  evidencePath: string,
+  evidence: ProxyAuditEvidenceV1,
+): Promise<Array<{ slot: string; reason: string }>> {
+  const sellers = dirname(dirname(evidencePath))
+  if (basename(sellers) !== 'sellers') return []
+  const read = async (file: string): Promise<unknown> => {
+    try {
+      return await readJsonIfExists<unknown>(join(dirname(sellers), basename(file)))
+    } catch {
+      return null
+    }
+  }
+  const found: Array<{ slot: string; reason: string }> = []
+  for (const check of METHODS) {
+    if (!check.whyNoRecord || evidence[check.slot] != null) continue
+    let reason: string | null = null
+    try {
+      reason = await check.whyNoRecord(read, { confirming: evidence.confirming !== undefined })
+    } catch {
+      reason = null
+    }
+    if (typeof reason === 'string' && reason.length > 0) {
+      found.push({ slot: check.slot, reason: sanitizeOutcomeSummary(reason).slice(0, NO_RECORD_REASON_LENGTH) })
+    }
+  }
+  return found
 }
 
 /** What an extra set of a close call records about its pooled look, in a summary and in a published result alike. */

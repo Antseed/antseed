@@ -275,3 +275,12 @@ export function outputCheckRequestBody(input: {
     stream: false,
   }
 }
+
+/**
+ * The reason a test's reference wrote for not applying to the model, from the file the run keeps beside the model's
+ * audits (`<check>-reference.json`: `record.applies` false, with `record.reason`); null for any other content.
+ */
+export function referenceDidNotApply(file: unknown): string | null {
+  const record = isRecord(file) && isRecord(file['record']) ? file['record'] : null
+  return record && record['applies'] === false && typeof record['reason'] === 'string' ? record['reason'] : null
+}

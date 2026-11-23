@@ -1,5 +1,6 @@
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import { outcome, stored, type RecordCheck } from '../../audit-method.js'
+import { referenceDidNotApply } from '../shared/output-usage.js'
 import { TOKENIZER_PRECHECK_RULE } from '../tokens/tokenizer-precheck.js'
 import {
   createOutputCapScreen, describeOutputCapFlag, describeOutputCapSummary, outputCapFingerprint, outputCapPaidRequests, summarizeOutputCap, validateOutputCap,
@@ -37,6 +38,7 @@ export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
   }),
   toggle: { key: 'outputChecks', pinned: true },
   fingerprint: outputCapFingerprint,
+  whyNoRecord: async (read) => referenceDidNotApply(await read('output-cap-reference.json')),
   // Said for every model while the dry-pass switch is set, also with the output checks off: the run has always said
   // it whatever the tests' own switches say.
   announce({ model, report }) {

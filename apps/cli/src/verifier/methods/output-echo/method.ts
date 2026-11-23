@@ -1,5 +1,6 @@
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import { outcome, stored, type RecordCheck } from '../../audit-method.js'
+import { referenceDidNotApply } from '../shared/output-usage.js'
 import {
   OUTPUT_ECHO_RULE, createOutputEchoScreen, describeOutputEchoFlag, outputEchoFingerprint, outputEchoPaidRequests, outputEchoPrompt, summarizeOutputEcho,
   validateOutputEcho,
@@ -66,6 +67,7 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
   }),
   toggle: { key: 'outputChecks', pinned: true },
   fingerprint: outputEchoFingerprint,
+  whyNoRecord: async (read) => referenceDidNotApply(await read('output-echo-reference.json')),
   // The echo check of this model's sellers (`createOutputEchoScreen`): its texts are written and measured on
   // the reference once, and its crowd is every seller of the model the buyer would audit, as for the pre-check.
   forRun: () => ({ sellers, seller, reference, limiters, report }) => createOutputEchoScreen<KbfReferenceV1>({

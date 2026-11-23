@@ -115,6 +115,21 @@ function flipsStatusRecorder(
 }
 
 /**
+ * Why a stage's sellers have no FLIPS record, from the run's status file: the run had no FLIPS at all (its key could
+ * not be read), or the stage's reference failed, could not be used, or runs on a route FLIPS does not support. A
+ * seller's own failure is not here: the file says what left the whole model without FLIPS. Null for anything else.
+ */
+export function flipsWithoutRecord(file: unknown, stage: 'first' | 'confirm'): string | null {
+  if (typeof file !== 'object' || file === null || (file as { kind?: unknown }).kind !== 'antseed-verifier-flips-status') return null
+  const status = file as { keyFailed?: unknown; unavailable?: unknown }
+  if (typeof status.keyFailed === 'string') return `no randomness check this run: ${status.keyFailed}`
+  const events = Array.isArray(status.unavailable) ? status.unavailable as Array<Partial<FlipsUnavailable>> : []
+  const reference = events.find((event) => event?.stage === stage && typeof event.detail === 'string'
+    && (event.code === 'reference-failed' || event.code === 'reference-unusable' || event.code === 'route-not-supported'))
+  return reference ? reference.detail! : null
+}
+
+/**
  * FLIPS in one run (`RecordCheck.forRun`). Once, before any lane: the auditor's private master for the epoch
  * (`flipsMasterIn`), its address for the draw, the dry-run probe, and FLIPS's own limiters. While FLIPS does not count,
  * a failure here means no FLIPS this run, never a failed run. Then, for each model, its screen.

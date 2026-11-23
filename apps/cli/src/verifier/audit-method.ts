@@ -272,6 +272,13 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
    */
   fingerprint(): Record<string, unknown>
   /**
+   * Why the test kept no record for a model's sellers in a run, from the files its own screen wrote beside the run's
+   * audits (`read` gives one by name, null when it is not there): the test did not apply to the model, or its
+   * reference gave it nothing to judge on. Null when the test wrote no such reason. For the published result of a
+   * seller without a record of the test (`ModelAuditSellerResultV1.noRecord`); a test that always keeps a record has none.
+   */
+  whyNoRecord?(read: (file: string) => Promise<unknown>, audit: { confirming: boolean }): Promise<string | null>
+  /**
    * The test in one run. Called once, before any model lane, and only when the test is switched on: it does the work
    * its models share (a key, limiters of its own) and gives what builds the test's own screen for one model, which the
    * audit then runs through `screen`.

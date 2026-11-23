@@ -4,7 +4,7 @@ import {
   validateFlips,
   type FlipsStage, type FlipsV1,
 } from './flips.js'
-import { flipsForRun } from './flips-run.js'
+import { flipsForRun, flipsWithoutRecord } from './flips-run.js'
 import { FLIPS_RULE, flipsCounts, flipsRuleById } from './flips-score.js'
 
 /** The randomness check (FLIPS) as the list of tests holds it (`../index.ts`): how its record is read, and how a run and an audit run it. */
@@ -131,6 +131,9 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
     // Counting by a record's own rule: a flips-v1 summary never counts under this build, a flips-v2 one does.
     countsByRule: ['flips-v1', FLIPS_RULE.id, 'flips-unknown'].map((rule) => FLIPS_CHECK.summaryCounts!({ rule, model: 'claude-opus-5.5', outcome: 'flag' })),
   }),
+  // The run's status file (`flips-run.ts`) says why the stage's reference gave FLIPS nothing to judge on, or why there
+  // was no FLIPS at all this run.
+  whyNoRecord: async (read, audit) => flipsWithoutRecord(await read('flips-status.json'), audit.confirming ? 'confirm' : 'first'),
   // Its key, its probe and its own limiters once per run, then each model's screen (`flips-run.ts`).
   forRun: flipsForRun,
 }
