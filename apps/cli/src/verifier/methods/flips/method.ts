@@ -111,7 +111,7 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
     // A requested probe is always run: a carried record that is no probe's, or a probe of other settings, is asked
     // again and not kept.
     keeps: (carried, audit) => !(carried.draw.stage !== flipsStageOf(audit)
-      // A record of another rule than this build's (an earlier build's, recorded only) is asked again under this one.
+      // A record of another rule than this build's is asked again under this one.
       || (flips.ruleId !== undefined && carried.rule !== flips.ruleId)
       // A probe's record is a diagnostic: without a probe on, the production FLIPS is asked.
       || (flips.probing !== true && isProbeDraw(carried.draw))
@@ -128,8 +128,8 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
   toggle: { key: 'flips', pinned: true },
   fingerprint: () => ({
     ...flipsFingerprint(),
-    // Counting by a record's own rule: a flips-v1 summary never counts under this build, a flips-v2 or v3 one does.
-    countsByRule: ['flips-v1', 'flips-v2', FLIPS_RULE.id, 'flips-unknown'].map((rule) => FLIPS_CHECK.summaryCounts!({ rule, model: 'claude-opus-5.5', outcome: 'flag' })),
+    // Counting by a record's own rule: this build's counts, a rule it does not know never does.
+    countsByRule: [FLIPS_RULE.id, 'flips-unknown'].map((rule) => FLIPS_CHECK.summaryCounts!({ rule, model: 'claude-opus-5.5', outcome: 'flag' })),
   }),
   // The run's status file (`flips-run.ts`) says why the stage's reference gave FLIPS nothing to judge on, or why there
   // was no FLIPS at all this run.

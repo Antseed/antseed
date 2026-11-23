@@ -73,7 +73,7 @@
   },
   "sellerThinking": {"record":"sellerThinking-d3c9bcd43acbddbf"},
   "target": {"agentId":"7","displayName":"Example Seller","peerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","service":"deepseek-v4-pro"},
-  "tokenizerPrecheck": {"record":"tokenizerPrecheck-9da9546fca53482b"},
+  "tokenizerPrecheck": {"record":"tokenizerPrecheck-8bafc6e284fbedd8"},
   "version": 1
  },
  "read": null,

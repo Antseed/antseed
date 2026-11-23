@@ -102,10 +102,10 @@
   "stats": {"selfHamming":0,"selfTotal":30,"targetHamming":0,"targetTotal":30,"selfCoverage":1,"targetCoverage":1,"p0Cp99":0.14230410140910577,"pValueBinomial":1},
   "coverageRule": "kbf-coverage-v1",
   "responseAuthVerified": true,
-  "tokenizerPrecheck": {"rule":"tokenizer-precheck-v3","outcome":"mismatch","sellerTokens":[165,169,162],"modelTokens":[103,106,101]},
+  "tokenizerPrecheck": {"rule":"tokenizer-precheck-v1","outcome":"mismatch","sellerTokens":[165,169,162],"modelTokens":[103,106,101]},
   "outputCap": {"rule":"output-cap-v1","outcome":"pass","reason":"the answer was within","asks":[{"cap":24,"billed":24,"measured":null,"class":"within"}]},
   "outputEcho": {
-   "rule": "output-echo-v3",
+   "rule": "output-echo-v1",
    "outcome": "inconclusive",
    "flag": null,
    "growth": "inconclusive",
@@ -115,7 +115,7 @@
    "offset": 68.5
   },
   "flips": {
-   "rule": "flips-v3",
+   "rule": "flips-v1",
    "model": "deepseek-v4-pro",
    "stage": "first",
    "outcome": "pass",
@@ -130,10 +130,10 @@
   "createdAt": "2026-10-07T00:00:00.000Z",
   "evidenceLevel": "proxy-observation-with-verified-response-auth-no-payment-evidence",
   "exchanges": [{"record":"exchange-226f0dfcbaa561da"},{"record":"exchange-ace38a84b86af79b"},{"record":"exchange-2a6d6880d2cc5494"}],
-  "flips": {"record":"flips-889d5c338e050cd5"},
+  "flips": {"record":"flips-dcf32aebfac068a8"},
   "kind": "antseed-buyer-proxy-kbf-audit",
   "outputCap": {"record":"outputCap-77126efd8f3e2bec"},
-  "outputEcho": {"record":"outputEcho-c70d84d63c361128"},
+  "outputEcho": {"record":"outputEcho-306e73240d309984"},
   "reference": {"record":"reference-723f83ee13c8a30f"},
   "result": {
    "cost": {"estimatedCostUsd":0.0169,"inputTokens":8030,"missingCostExchangeCount":0,"outputTokens":5953,"pricedExchangeCount":56,"totalTokens":13983},
@@ -151,7 +151,7 @@
   "sellerThinking": {"record":"sellerThinking-d3c9bcd43acbddbf"},
   "target": {"agentId":"7","displayName":"Example Seller","peerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","service":"deepseek-v4-pro"},
   "tests": "all-tests-v1",
-  "tokenizerPrecheck": {"record":"tokenizerPrecheck-7742b278e9545a55"},
+  "tokenizerPrecheck": {"record":"tokenizerPrecheck-4b8cd064249a59c3"},
   "version": 1
  },
  "read": {"flaggedBy":["tokens"],"passedBy":["output-cap","flips","kbf"],"submit":"accepted"},

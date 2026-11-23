@@ -154,12 +154,12 @@ test('a SAME clears a waiting DIFF of two checks only when both passed here', ()
   assert.equal(decide(candidate(2n, VERIFIER_VERDICT.DIFF, ['output-cap'], []), [two]).kind, 'send')
 })
 
-test('a DIFF that only FLIPS flagged, through the confirmer\'s audit under flips-v2: each FLIPS outcome and what is sent', async () => {
+test('a DIFF that only FLIPS flagged, through the confirmer\'s audit: each FLIPS outcome and what is sent', async () => {
   const { settleAuditVerdict } = await import('./close-call.js')
   const { checksWith, readingsOfSummary } = await import('./audit-checks.js')
   const waiting: FirstFlag = { auditor: first.address, peerId: peerIdOf(sellers[1]!), evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['flips'] }
   const flips = (outcome: 'flag' | 'pass' | 'inconclusive', p: number | null) => ({
-    rule: 'flips-v2', model: 'claude-opus-5.5', stage: 'confirm', outcome, counted: true, p, score: p === null ? null : 4, reason: 'x',
+    rule: 'flips-v1', model: 'claude-opus-5.5', stage: 'confirm', outcome, counted: true, p, score: p === null ? null : 4, reason: 'x',
   })
   // The confirmer's audit: the questions pass unless said otherwise, FLIPS as given; its verdict over every test, then
   // what the same-check decision does with it.
@@ -182,13 +182,13 @@ test('a DIFF that only FLIPS flagged, through the confirmer\'s audit under flips
   assert.deepEqual(confirm(flips('pass', 0.4)), ['SAME', 'send', 'flips'])
   // Passes, but the questions flag: another test's DIFF, never sent; the seller keeps its earlier verdict.
   assert.deepEqual(confirm(flips('pass', 0.4), { questionsStatus: 'DIFF', status: 'DIFF' }), ['DIFF', 'exclude', 'other-test-only'])
-  // Between the bars, with every other repeated test passing: under flips-v2 it clears like a pass and sends SAME,
+  // Between the bars, with every other repeated test passing: it clears like a pass and sends SAME,
   // which records that it cleared between the bars (`confirmBetweenClears`).
   assert.deepEqual(confirm(flips('inconclusive', 0.02)), ['SAME', 'send', 'flips', ['flips']])
   // Between the bars, but the questions flag: another test's DIFF, never sent; the report stays waiting.
   assert.deepEqual(confirm(flips('inconclusive', 0.02), { questionsStatus: 'DIFF', status: 'DIFF' }), ['DIFF', 'exclude', 'other-test-only'])
-  // Under flips-v1 rules (recorded only) a score between the bars clears nothing.
-  assert.deepEqual(confirm({ ...flips('inconclusive', 0.02), rule: 'flips-v1' }), ['UNDETERMINED', 'exclude', 'confirmation-undecided'])
+  // Under a rule this CLI does not know (recorded only) a score between the bars clears nothing.
+  assert.deepEqual(confirm({ ...flips('inconclusive', 0.02), rule: 'flips-v0' }), ['UNDETERMINED', 'exclude', 'confirmation-undecided'])
   // No result (an unusable reference, a profile mismatch, replies without a sequence): undecided, never sent, asked again.
   assert.deepEqual(confirm(flips('inconclusive', null)), ['UNDETERMINED', 'exclude', 'confirmation-undecided'])
   // A first look (not a confirmation of FLIPS) whose first-stage FLIPS flags or passes answers nothing: only the

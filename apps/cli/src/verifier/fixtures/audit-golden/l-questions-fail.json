@@ -71,7 +71,7 @@
   "stats": {"selfHamming":0,"selfTotal":30,"targetHamming":0,"targetTotal":0,"selfCoverage":1,"targetCoverage":0,"p0Cp99":null,"pValueBinomial":null},
   "coverageRule": "kbf-coverage-v1",
   "responseAuthVerified": true,
-  "tokenizerPrecheck": {"rule":"tokenizer-precheck-v3","outcome":"match"}
+  "tokenizerPrecheck": {"rule":"tokenizer-precheck-v1","outcome":"match"}
  },
  "evidence": {
   "buyerProxy": {"baseUrl":"http://127.0.0.1:8390","pid":4242,"statePath":"buyer.state.json"},
@@ -106,7 +106,7 @@
   "sellerThinking": {"record":"sellerThinking-d3c9bcd43acbddbf"},
   "target": {"agentId":"7","displayName":"Example Seller","peerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","service":"deepseek-v4-pro"},
   "tests": "all-tests-v1",
-  "tokenizerPrecheck": {"record":"tokenizerPrecheck-9da9546fca53482b"},
+  "tokenizerPrecheck": {"record":"tokenizerPrecheck-8bafc6e284fbedd8"},
   "version": 1
  },
  "read": {"flaggedBy":[],"passedBy":["tokens"],"submit":"accepted"},

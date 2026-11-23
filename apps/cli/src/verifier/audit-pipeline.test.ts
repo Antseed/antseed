@@ -411,25 +411,25 @@ test('check pipeline: a carried FLIPS of another rule is asked again; a failed F
     referenceUpstream: null, referenceOneProvider: true, pairs: [], reasks: 0, outcome: 'pass', counted: false, score: 1, scoreMax: null, p: 0.4, reason: 'pass',
   })
   const asked: string[] = []
-  const screen = { ruleId: 'flips-v2', check: async () => { asked.push('flips'); return flipsRecord('flips-v2') } }
+  const screen = { ruleId: 'flips-v1', check: async () => { asked.push('flips'); return flipsRecord('flips-v1') } }
   const first = await audit({ usage: MODEL_TOKENIZER })
   const resume = (flips: FlipsV1) => ({
     parentAuditId: first.result.auditId, reservationAuditId: first.result.auditId, parentEvidenceHash: first.result.evidenceHash,
     exchanges: first.evidence.exchanges, records: { tokenizerPrecheck: first.evidence.tokenizerPrecheck!, flips },
   })
-  // A record an earlier build judged under flips-v1 (recorded only) is asked again under this build's rule.
-  const again = await audit({ usage: MODEL_TOKENIZER, flips: screen, resume: resume(flipsRecord('flips-v1')) })
+  // A record judged under another rule than this build's is asked again under this build's rule.
+  const again = await audit({ usage: MODEL_TOKENIZER, flips: screen, resume: resume(flipsRecord('flips-v0')) })
   assert.deepEqual(asked, ['flips'])
-  assert.equal(again.evidence.flips?.rule, 'flips-v2')
+  assert.equal(again.evidence.flips?.rule, 'flips-v1')
   // A record of this build's rule is carried.
-  await audit({ usage: MODEL_TOKENIZER, flips: screen, resume: resume(flipsRecord('flips-v2')) })
+  await audit({ usage: MODEL_TOKENIZER, flips: screen, resume: resume(flipsRecord('flips-v1')) })
   assert.deepEqual(asked, ['flips'])
 
   // The FLIPS reference of this stage is not whole this run, where FLIPS counts: the audit is not started (the auditor's
   // attempt), before the pre-check, the questions or any other paid request.
   let questions = 0
   const failed = {
-    ruleId: 'flips-v2',
+    ruleId: 'flips-v1',
     referenceDecision: async (_stage: unknown, _service: unknown, _settings: unknown, attempt: { lastAuditorAttempt: boolean; confirming: readonly string[] }) => (
       flipsReferenceDecision({ whole: false, counts: true, probing: false, ...attempt })),
     check: async () => { asked.push('failed'); return null },

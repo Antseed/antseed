@@ -4,44 +4,44 @@
   "auditor": "0xe5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
   "epoch": "7",
   "model": "deepseek-v4-pro",
-  "seed": "01c0dd60f4efbb39b64537edf38e9b8af686b9fd2afe2381d08342c898480064",
-  "stage": "first"
+  "seed": "6c0f00a570e7af0e2741968261ad1f4e6719e1ffa7c67978be025875c0611845",
+  "stage": "confirm"
  },
- "outcome": "pass",
- "p": 0.8421651369629677,
+ "outcome": "flag",
+ "p": 5.932996399546659e-8,
  "pairs": [
   {
    "reference": {
     "referenceBatch": {"finishedAt":1791331200000,"startedAt":1791331200000},
     "replies": {
      "list": "40 records: the first and the last are shown",
-     "sha256": "6719ce7a82e010f2",
+     "sha256": "1cada61694e97e9d",
      "first": {
-      "content": "nickel meadow nickel nickel meadow nickel meadow meadow meadow meadow me… (447 characters, sha256 9f9774c7000a1a2a)",
+      "content": "dapple dapple dapple cinder cinder cinder cinder dapple cinder dapple da… (447 characters, sha256 2dd0aacb39ecfe85)",
       "failure": null,
       "finishReason": "stop",
       "provider": "maker",
       "reasoning": false,
       "reasoningTokens": 0,
-      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 7a79fc4f7979b452)",
+      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 f954888d0cc1a922)",
       "thinkBlock": false
      },
      "last": {
-      "content": "meadow meadow nickel meadow meadow nickel nickel nickel nickel meadow me… (447 characters, sha256 9e1264013c5679c1)",
+      "content": "cinder dapple cinder cinder dapple dapple dapple cinder cinder dapple da… (447 characters, sha256 c4ba3d27468e4336)",
       "failure": null,
       "finishReason": "stop",
       "provider": "maker",
       "reasoning": false,
       "reasoningTokens": 0,
-      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 7a79fc4f7979b452)",
+      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 f954888d0cc1a922)",
       "thinkBlock": false
      }
     },
-    "words": ["meadow","nickel"]
+    "words": ["cinder","dapple"]
    },
    "seller": {
-    "list": "10 records: the first and the last are shown",
-    "sha256": "d9fc3d300bac59c4",
+    "list": "20 records: the first and the last are shown",
+    "sha256": "e4a5ccaccdef152a",
     "first": {
      "asks": [
       {
@@ -60,7 +60,7 @@
         }
        ],
        "reason": "scheduled",
-       "requestIds": ["<earlier attempt, seller: FLIPS slot meadow/nickel #1>"],
+       "requestIds": ["<seller: FLIPS slot cinder/dapple #1>"],
        "sentAt": 1791331200000
       }
      ],
@@ -79,32 +79,28 @@
        }
       ],
       "failureReason": null,
-      "requestIds": ["<earlier attempt, seller: FLIPS slot meadow/nickel #1>"],
+      "requestIds": ["<seller: FLIPS slot cinder/dapple #1>"],
       "responseAuth": {
        "failureReason": null,
-       "record": {
-        "advertisedService": "deepseek-v4-pro",
-        "requestId": "<earlier attempt, seller: FLIPS slot meadow/nickel #1>",
-        "sellerPeerId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-       },
-       "requestId": "<earlier attempt, seller: FLIPS slot meadow/nickel #1>",
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: FLIPS slot cinder/dapple #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: FLIPS slot cinder/dapple #1>",
        "signedPreimages": {
         "encoding": "antseed-http-codec-v1",
         "hashAlgorithm": "keccak256",
         "requestBase64": {
-         "requestId": "<earlier attempt, seller: FLIPS slot meadow/nickel #1>",
+         "requestId": "<seller: FLIPS slot cinder/dapple #1>",
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 7a79fc4f7979b452)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 f954888d0cc1a922)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
         "responseBase64": {
-         "requestId": "<earlier attempt, seller: FLIPS slot meadow/nickel #1>",
+         "requestId": "<seller: FLIPS slot cinder/dapple #1>",
          "statusCode": 200,
          "headers": {},
-         "body": "{\"id\":\"reply-meadow-nickel-0\",\"object\":\"chat.completion\",\"choices\":[{\"in… (648 characters, sha256 839b237e53bbe0f8)"
+         "body": "{\"id\":\"reply-cinder-dapple-0\",\"object\":\"chat.completion\",\"choices\":[{\"in… (648 characters, sha256 df5bfb417e1de80b)"
         },
         "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
         "signatureEncoding": "antseed-response-auth-signing-v1"
@@ -132,7 +128,7 @@
         }
        ],
        "reason": "scheduled",
-       "requestIds": ["<earlier attempt, seller: FLIPS slot meadow/nickel #10>"],
+       "requestIds": ["<seller: FLIPS slot cinder/dapple #20>"],
        "sentAt": 1791331200000
       }
      ],
@@ -151,32 +147,28 @@
        }
       ],
       "failureReason": null,
-      "requestIds": ["<earlier attempt, seller: FLIPS slot meadow/nickel #10>"],
+      "requestIds": ["<seller: FLIPS slot cinder/dapple #20>"],
       "responseAuth": {
        "failureReason": null,
-       "record": {
-        "advertisedService": "deepseek-v4-pro",
-        "requestId": "<earlier attempt, seller: FLIPS slot meadow/nickel #10>",
-        "sellerPeerId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-       },
-       "requestId": "<earlier attempt, seller: FLIPS slot meadow/nickel #10>",
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: FLIPS slot cinder/dapple #20>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: FLIPS slot cinder/dapple #20>",
        "signedPreimages": {
         "encoding": "antseed-http-codec-v1",
         "hashAlgorithm": "keccak256",
         "requestBase64": {
-         "requestId": "<earlier attempt, seller: FLIPS slot meadow/nickel #10>",
+         "requestId": "<seller: FLIPS slot cinder/dapple #20>",
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 7a79fc4f7979b452)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 f954888d0cc1a922)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
         "responseBase64": {
-         "requestId": "<earlier attempt, seller: FLIPS slot meadow/nickel #10>",
+         "requestId": "<seller: FLIPS slot cinder/dapple #20>",
          "statusCode": 200,
          "headers": {},
-         "body": "{\"id\":\"reply-meadow-nickel-9\",\"object\":\"chat.completion\",\"choices\":[{\"in… (648 characters, sha256 038042e219d87a20)"
+         "body": "{\"id\":\"reply-cinder-dapple-19\",\"object\":\"chat.completion\",\"choices\":[{\"i… (649 characters, sha256 2671c13a9733a243)"
         },
         "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
         "signatureEncoding": "antseed-response-auth-signing-v1"
@@ -187,40 +179,40 @@
      }
     }
    },
-   "words": ["meadow","nickel"]
+   "words": ["cinder","dapple"]
   },
   {
    "reference": {
     "referenceBatch": {"finishedAt":1791331200000,"startedAt":1791331200000},
     "replies": {
      "list": "40 records: the first and the last are shown",
-     "sha256": "dd24d66a50c0035a",
+     "sha256": "b4a24024367ba8ec",
      "first": {
-      "content": "ember ember ember fjord ember ember ember fjord fjord fjord ember ember … (383 characters, sha256 b5346646301f31ae)",
+      "content": "dune dune cobalt cobalt dune cobalt cobalt dune dune cobalt dune dune du… (379 characters, sha256 701857eaded0560e)",
       "failure": null,
       "finishReason": "stop",
       "provider": "maker",
       "reasoning": false,
       "reasoningTokens": 0,
-      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 a7b18aebce6454a3)",
+      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 9fcd8e94d5e0da8e)",
       "thinkBlock": false
      },
      "last": {
-      "content": "fjord fjord fjord fjord fjord fjord fjord ember fjord fjord ember fjord … (383 characters, sha256 e115c677433eda4c)",
+      "content": "cobalt cobalt cobalt dune dune dune dune cobalt cobalt dune cobalt dune … (385 characters, sha256 3feaf5ef8464ebf1)",
       "failure": null,
       "finishReason": "stop",
       "provider": "maker",
       "reasoning": false,
       "reasoningTokens": 0,
-      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 a7b18aebce6454a3)",
+      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 9fcd8e94d5e0da8e)",
       "thinkBlock": false
      }
     },
-    "words": ["ember","fjord"]
+    "words": ["cobalt","dune"]
    },
    "seller": {
-    "list": "10 records: the first and the last are shown",
-    "sha256": "f3bd98b93e35a072",
+    "list": "20 records: the first and the last are shown",
+    "sha256": "bf85a4f36b47b76f",
     "first": {
      "asks": [
       {
@@ -239,7 +231,7 @@
         }
        ],
        "reason": "scheduled",
-       "requestIds": ["<earlier attempt, seller: FLIPS slot ember/fjord #1>"],
+       "requestIds": ["<seller: FLIPS slot cobalt/dune #1>"],
        "sentAt": 1791331200000
       }
      ],
@@ -258,32 +250,28 @@
        }
       ],
       "failureReason": null,
-      "requestIds": ["<earlier attempt, seller: FLIPS slot ember/fjord #1>"],
+      "requestIds": ["<seller: FLIPS slot cobalt/dune #1>"],
       "responseAuth": {
        "failureReason": null,
-       "record": {
-        "advertisedService": "deepseek-v4-pro",
-        "requestId": "<earlier attempt, seller: FLIPS slot ember/fjord #1>",
-        "sellerPeerId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-       },
-       "requestId": "<earlier attempt, seller: FLIPS slot ember/fjord #1>",
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: FLIPS slot cobalt/dune #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: FLIPS slot cobalt/dune #1>",
        "signedPreimages": {
         "encoding": "antseed-http-codec-v1",
         "hashAlgorithm": "keccak256",
         "requestBase64": {
-         "requestId": "<earlier attempt, seller: FLIPS slot ember/fjord #1>",
+         "requestId": "<seller: FLIPS slot cobalt/dune #1>",
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 a7b18aebce6454a3)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 9fcd8e94d5e0da8e)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
         "responseBase64": {
-         "requestId": "<earlier attempt, seller: FLIPS slot ember/fjord #1>",
+         "requestId": "<seller: FLIPS slot cobalt/dune #1>",
          "statusCode": 200,
          "headers": {},
-         "body": "{\"id\":\"reply-ember-fjord-0\",\"object\":\"chat.completion\",\"choices\":[{\"inde… (582 characters, sha256 992a29158647bbff)"
+         "body": "{\"id\":\"reply-cobalt-dune-0\",\"object\":\"chat.completion\",\"choices\":[{\"inde… (642 characters, sha256 ea43a182d5bdbd03)"
         },
         "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
         "signatureEncoding": "antseed-response-auth-signing-v1"
@@ -311,7 +299,7 @@
         }
        ],
        "reason": "scheduled",
-       "requestIds": ["<earlier attempt, seller: FLIPS slot ember/fjord #10>"],
+       "requestIds": ["<seller: FLIPS slot cobalt/dune #20>"],
        "sentAt": 1791331200000
       }
      ],
@@ -330,32 +318,28 @@
        }
       ],
       "failureReason": null,
-      "requestIds": ["<earlier attempt, seller: FLIPS slot ember/fjord #10>"],
+      "requestIds": ["<seller: FLIPS slot cobalt/dune #20>"],
       "responseAuth": {
        "failureReason": null,
-       "record": {
-        "advertisedService": "deepseek-v4-pro",
-        "requestId": "<earlier attempt, seller: FLIPS slot ember/fjord #10>",
-        "sellerPeerId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-       },
-       "requestId": "<earlier attempt, seller: FLIPS slot ember/fjord #10>",
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: FLIPS slot cobalt/dune #20>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: FLIPS slot cobalt/dune #20>",
        "signedPreimages": {
         "encoding": "antseed-http-codec-v1",
         "hashAlgorithm": "keccak256",
         "requestBase64": {
-         "requestId": "<earlier attempt, seller: FLIPS slot ember/fjord #10>",
+         "requestId": "<seller: FLIPS slot cobalt/dune #20>",
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 a7b18aebce6454a3)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 9fcd8e94d5e0da8e)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
         "responseBase64": {
-         "requestId": "<earlier attempt, seller: FLIPS slot ember/fjord #10>",
+         "requestId": "<seller: FLIPS slot cobalt/dune #20>",
          "statusCode": 200,
          "headers": {},
-         "body": "{\"id\":\"reply-ember-fjord-9\",\"object\":\"chat.completion\",\"choices\":[{\"inde… (582 characters, sha256 c114af5cf337e61e)"
+         "body": "{\"id\":\"reply-cobalt-dune-19\",\"object\":\"chat.completion\",\"choices\":[{\"ind… (643 characters, sha256 feaa5ea77384b8e8)"
         },
         "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
         "signatureEncoding": "antseed-response-auth-signing-v1"
@@ -366,17 +350,17 @@
      }
     }
    },
-   "words": ["ember","fjord"]
+   "words": ["cobalt","dune"]
   }
  ],
  "reasks": 0,
- "reason": "scored 0.78 (p 0.842), above 0.1",
- "reasoningCounts": {"referenceReasoningReplies":0,"referenceReasoningTokens":0,"referenceReplies":80,"sellerReasoningReplies":0,"sellerReasoningTokens":0,"sellerReplies":20},
+ "reason": "scored 47.30 (p 5.93e-8), at most the confirm bar 0.001",
+ "reasoningCounts": {"referenceReasoningReplies":0,"referenceReasoningTokens":0,"referenceReplies":80,"sellerReasoningReplies":0,"sellerReasoningTokens":0,"sellerReplies":40},
  "referenceOneProvider": true,
  "referenceUpstream": {"kind":"test"},
- "rule": "flips-v3",
- "score": 0.7775341197144852,
- "scoreMax": 5.572353002177747,
+ "rule": "flips-v1",
+ "score": 47.300484411942186,
+ "scoreMax": 400,
  "service": "deepseek-v4-pro",
  "timing": {"finishedAt":1791331200000,"startedAt":1791331200000}
 }

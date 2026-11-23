@@ -8,7 +8,7 @@ import { ConcurrencyLimiter } from '../../audit-concurrency.js'
 import { failureBlame } from '../../failure-blame.js'
 import { readingsOfEvidence, validateCheckRecordsAgainstSummary, verdictOf, withoutOrphans, type AuditCheckId } from '../../audit-checks.js'
 import { FLIPS_CHECK } from './method.js'
-import { FLIPS_RULE, FLIPS_RULE_V1, FLIPS_RULE_V2, flipsCounts, flipsRequestBody, isValidFlipsPair, type FlipsPair, type FlipsRule } from './flips-score.js'
+import { FLIPS_RULE, flipsCounts, flipsRequestBody, isValidFlipsPair, type FlipsPair, type FlipsRule } from './flips-score.js'
 import {
   FLIPS_WORDS,
   drawFlipsPairs,
@@ -39,6 +39,8 @@ import type { SignedSellerRequestV1 } from '../shared/signed-seller-request.js'
 
 const PEER = 'ab'.repeat(20)
 const MODEL = 'claude-opus-5.5'
+/** The rule with FLIPS recorded only everywhere: judged and stored, never a verdict. */
+const RECORDED_ONLY: FlipsRule = Object.freeze({ ...FLIPS_RULE, counts: Object.freeze({ default: false, never: Object.freeze(['minimax-m3']) }) })
 const bytes = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value))
 const chat = (content: string | null, finish = 'stop', reasoning = 0) => ({
   object: 'chat.completion',
@@ -125,38 +127,30 @@ test('the request is the eval\'s for the model, the same for the seller and the 
   assert.deepEqual([opus['max_tokens'], opus['temperature'], opus['reasoning']], [220, undefined, { effort: 'minimal' }], 'no temperature for Claude')
   const grok = flipsRequestBody('grok-4.7', 'svc', ['amber', 'basin'])
   assert.deepEqual([grok['max_tokens'], grok['temperature']], [900, 1], 'a model that still thinks gets 900')
-  assert.equal(flipsCounts('claude-opus-5.5', FLIPS_RULE_V1), false, 'flips-v1 is recorded only everywhere')
-  assert.equal(flipsCounts('claude-opus-5.5'), true, 'flips-v2 counts')
+  assert.equal(flipsCounts('claude-opus-5.5', RECORDED_ONLY), false, 'a rule that counts nowhere records only')
+  assert.equal(flipsCounts('claude-opus-5.5'), true, 'the rule counts')
   assert.equal(flipsCounts('minimax-m3'), false, 'never for MiniMax M3')
   assert.equal(flipsCounts('a-model-the-eval-never-measured'), false)
 })
 
-test('a saved swap flags at the first bar: recorded only under flips-v1, a DIFF under flips-v2, never for MiniMax M3', () => {
-  // flips-v1: recorded only; the verdict ignores it, and a reading under a counting rule shows what it would be.
-  const v1 = recordOf(fixture('swap-caught-near-threshold'), 'first', undefined, FLIPS_RULE_V1)
-  const judgedV1 = judgeFlips(v1.record, v1.rule)
-  assert.equal(judgedV1.outcome, 'flag')
-  assert.ok(judgedV1.p! <= FLIPS_RULE_V1.bar.first)
-  assert.equal(judgedV1.counted, false)
-  const storedV1 = { ...v1.record, rule: v1.rule.id, referenceUpstream: null, reasks: 0, ...judgedV1 } as FlipsV1
-  const readingsV1 = readingsOfEvidence({ flips: storedV1, exchanges: [{}] }, 'SAME')
-  assert.deepEqual(readingsV1.filter((reading) => reading.check === 'flips').map((reading) => [reading.outcome, reading.recordedOnly]), [['inconclusive', 'flag']])
-  assert.equal(verdictOf(readingsV1, 'SAME').verdict, 'SAME', 'recorded only: the audit verdict ignores it')
-  const counting = { flips: { ...FLIPS_RULE_V1, counts: { default: true, never: ['minimax-m3'] } } }
-  assert.equal(verdictOf(readingsOfEvidence({ flips: storedV1, exchanges: [{}] }, 'SAME', counting), 'SAME').verdict, 'DIFF')
-  // flips-v2: the same replies flag and count.
-  const v2 = recordOf(fixture('swap-caught-near-threshold'))
-  const judged = judgeFlips(v2.record, v2.rule)
+test('a saved swap flags at the first bar and is a DIFF; recorded only where the rule does not count; never for MiniMax M3', () => {
+  const { record, rule } = recordOf(fixture('swap-caught-near-threshold'))
+  const judged = judgeFlips(record, rule)
   assert.equal(judged.outcome, 'flag')
+  assert.ok(judged.p! <= FLIPS_RULE.bar.first)
   assert.equal(judged.counted, true)
-  const stored = { ...v2.record, rule: v2.rule.id, referenceUpstream: null, reasks: 0, ...judged } as FlipsV1
+  const stored = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judged } as FlipsV1
   assert.deepEqual(verdictOf(readingsOfEvidence({ flips: stored, exchanges: [{}] }, 'SAME'), 'SAME'),
     { verdict: 'DIFF', flaggedBy: ['flips'], passedBy: ['kbf'], undecidedConfirmation: null })
+  // Read under a rule that counts nowhere: recorded only, and the verdict ignores it.
+  const recorded = readingsOfEvidence({ flips: stored, exchanges: [{}] }, 'SAME', { flips: RECORDED_ONLY })
+  assert.deepEqual(recorded.filter((reading) => reading.check === 'flips').map((reading) => [reading.outcome, reading.recordedOnly]), [['inconclusive', 'flag']])
+  assert.equal(verdictOf(recorded, 'SAME').verdict, 'SAME', 'recorded only: the audit verdict ignores it')
   const m3 = { ...stored, draw: { ...stored.draw, model: 'minimax-m3' } }
   assert.equal(verdictOf(readingsOfEvidence({ flips: m3, exchanges: [{}] }, 'SAME'), 'SAME').verdict, 'SAME', 'MiniMax M3 never counts')
 })
 
-test('a stored FLIPS counts only under the rule it was judged by, never under this build\'s; a rule this CLI does not know never counts', () => {
+test('a stored FLIPS counts under its rule; a rule this CLI does not know never counts', () => {
   const { record, rule } = recordOf(fixture('swap-caught-near-threshold'))
   const flagged = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judgeFlips(record, rule) } as FlipsV1
   assert.equal(flagged.outcome, 'flag')
@@ -165,12 +159,8 @@ test('a stored FLIPS counts only under the rule it was judged by, never under th
     const flips = readings.find((reading) => reading.check === 'flips')!
     return { outcome: flips.outcome, recordedOnly: flips.recordedOnly ?? null, verdict: verdictOf(readings, 'SAME').verdict }
   }
-  // A flips-v1 record under this build, whose rule counts: recorded only, as it was judged.
-  assert.equal(flipsCounts(flagged.draw.model), true, 'this build\'s rule counts the model')
-  const v1 = { ...flagged, rule: FLIPS_RULE_V1.id }
-  assert.deepEqual(read(v1), { outcome: 'inconclusive', recordedOnly: 'flag', verdict: 'SAME' })
-  assert.equal(FLIPS_CHECK.summaryCounts!({ ...summarizeFlips(v1) }), false, 'nor does its summary')
-  assert.deepEqual(read(flagged), { outcome: 'flag', recordedOnly: null, verdict: 'DIFF' }, 'a flips-v2 record counts')
+  assert.equal(flipsCounts(flagged.draw.model), true, 'the rule counts the model')
+  assert.deepEqual(read(flagged), { outcome: 'flag', recordedOnly: null, verdict: 'DIFF' }, 'a record of the rule counts')
   assert.equal(FLIPS_CHECK.summaryCounts!({ ...summarizeFlips(flagged) }), true)
   // A rule id this CLI does not know: recorded only, whatever this build's rule says.
   const unknown = { ...flagged, rule: 'flips-v999' }
@@ -182,20 +172,18 @@ test('a stored FLIPS counts only under the rule it was judged by, never under th
   assert.equal(read(unknown, counting).verdict, 'DIFF')
 })
 
-test('flips-v2: a host placeholder cut at the token limit shows reasoning, and replies without a sequence are left out up to a share', () => {
+test('a host placeholder cut at the token limit shows reasoning, and replies without a sequence are left out up to a share', () => {
   const PLACEHOLDER = '[No answer: the model spent its entire max_tokens budget on reasoning]'
   const edited = (name: string, change: (saved: Fixture) => void): Fixture => {
     const saved = structuredClone(fixture(name))
     change(saved)
     return saved
   }
-  // Every seller reply is the host's placeholder, cut at the limit: under flips-v1 it was scored as short replies; under
-  // flips-v2 the seller reasons where the reference does not, so there is no result, never a score.
+  // Every seller reply is the host's placeholder, cut at the limit: the seller reasons where the reference does not, so
+  // there is no result, never a score.
   const placeholders = edited('honest-wrapper', (saved) => {
     for (const pair of saved.pairs) pair.seller = pair.seller.map(() => ({ content: PLACEHOLDER, finishReason: 'length' }))
   })
-  const v1 = recordOf(placeholders, 'first', undefined, FLIPS_RULE_V1)
-  assert.equal(judgeFlips(v1.record, v1.rule).outcome, 'flag', 'flips-v1 scores the placeholders as answers')
   const v2 = recordOf(placeholders)
   const judged = judgeFlips(v2.record, v2.rule)
   assert.deepEqual([judged.outcome, judged.p, judged.profileMismatch?.code], ['inconclusive', null, 'seller-reasons'])
@@ -227,9 +215,6 @@ test('flips-v2: a host placeholder cut at the token limit shows reasoning, and r
   // A fixed code the report counts per seller, kept on the record and recomputed by its validation.
   assert.deepEqual(overJudged.noSequence, { code: 'seller-no-sequence', words: fixture('honest-wrapper').pairs[0]!.pair, without: allowed + 1, replies: perPair })
   assert.equal(scored.noSequence, undefined)
-  // flips-v1 still scores them as short replies.
-  const overV1 = recordOf(without(allowed + 1), 'first', undefined, FLIPS_RULE_V1)
-  assert.notEqual(judgeFlips(overV1.record, overV1.rule).p, null)
 
   // The reference too: a pair with more than the share of its replies without a sequence is no reference.
   const referenceCount = fixture('honest-wrapper').pairs[0]!.reference.length
@@ -242,17 +227,15 @@ test('flips-v2: a host placeholder cut at the token limit shows reasoning, and r
   assert.equal(badJudged.noSequence?.code, 'reference-no-sequence')
 })
 
-test('flips-v2: one reference reply over the length limit costs that reply only; flips-v1 voids the reference', () => {
+test('one reference reply over the length limit costs that reply only', () => {
   const long = (pair: FlipsReferencePairV1, index: number) => { if (index === 0) pair.replies[3]!.content = 'amber '.repeat(1_100) }
-  const v1 = recordOf(fixture('swap-caught-near-threshold'), 'first', long, FLIPS_RULE_V1)
-  assert.match(judgeFlips(v1.record, v1.rule).reason, /a reference reply is longer than/)
   const v2 = recordOf(fixture('swap-caught-near-threshold'), 'first', long)
   const judged = judgeFlips(v2.record, v2.rule)
   assert.equal(judged.outcome, 'flag', 'scored on the other replies')
   assert.equal(flipsReferenceProblem({ draw: v2.record.draw, service: v2.record.service, referenceOneProvider: true, pairs: v2.record.pairs.map((pair) => pair.reference) }, v2.rule), null)
 })
 
-test('flips-v2: a seller that returns one stored answer to identical requests gives no result, with the response ids kept', () => {
+test('a seller that returns one stored answer to identical requests gives no result, with the response ids kept', () => {
   const honest = fixture('honest-wrapper')
   const replayed = (count: number) => {
     const saved = structuredClone(honest)
@@ -278,9 +261,6 @@ test('flips-v2: a seller that returns one stored answer to identical requests gi
     if (index === 1) for (let reply = 1; reply < pair.replies.length / 2; reply += 1) pair.replies[reply]!.content = pair.replies[0]!.content
   })
   assert.equal(judgeFlips(alike.record, alike.rule).repeats, undefined)
-  // flips-v1 scores them.
-  const v1 = recordOf(replayed(half), 'first', undefined, FLIPS_RULE_V1)
-  assert.notEqual(judgeFlips(v1.record, v1.rule).p, null)
 })
 
 test('an honest saved check does not flag; between the bar and the pass it decides nothing', () => {
@@ -431,7 +411,7 @@ test('a run asks every scheduled slot, asks again only a slot with no reply, and
   assert.throws(() => validateFlips({ ...record, reasks: FLIPS_REASK_BUDGET + 1 }), /re-asks more slots than its budget/)
   assert.throws(() => validateFlips(edited((slots) => { slots.find((slot) => slot.asks!.length > 1)!.asks![0]!.answered = true })), /asked again after a reply/)
   assert.throws(() => validateFlips(edited((slots) => { slots[3]!.asks![0]!.requestIds = ['other'] })), /asks are not its requests/)
-  // flips-v2 requires every slot's asks: an empty or a dropped trail is refused, never skipped (round-1010 F1).
+  // The rule requires every slot's asks: an empty or a dropped trail is refused, never skipped (round-1010 F1).
   assert.throws(() => validateFlips(edited((slots) => { slots[4]!.asks = [] })), /does not store its asks/)
   assert.throws(() => validateFlips(edited((slots) => { for (const slot of slots) delete slot.asks })), /does not store its asks/)
   // The signed reply is the last ask's own, not one of an earlier ask of the slot (round-1010 F2).
@@ -582,7 +562,7 @@ test('a probe marks every record it asks, and a follow-up of a first flag draws 
 test('a FLIPS that cannot run says why, once per model and stage, and costs the seller nothing', async () => {
   // The reference fails: every seller gets no record, and the reason is reported once.
   const seller = fakeSeller((call) => symbols(['amber', 'basin'], call))
-  const down = screenOf({ seller, rule: FLIPS_RULE_V1, askReference: () => { throw new Error('reference down') } })
+  const down = screenOf({ seller, rule: RECORDED_ONLY, askReference: () => { throw new Error('reference down') } })
   assert.equal(await down.screen.check(SELLER, null, { stage: 'first' }), null)
   assert.equal(await down.screen.check({ ...SELLER, peerId: 'cd'.repeat(20) }, null, { stage: 'first' }), null)
   assert.deepEqual(down.events, [{ stage: 'first', code: 'reference-failed', detail: 'reference down' }])
@@ -604,8 +584,8 @@ test('a FLIPS that cannot run says why, once per model and stage, and costs the 
   const slow = screenOf({ seller, askReference: async () => { slowAsks += 1; await new Promise((resolve) => setTimeout(resolve, 50)) } })
   assert.deepEqual(await Promise.all([1, 2, 3].map(() => slow.screen.referenceDecision!('first', MODEL, null, { lastAuditorAttempt: false, confirming: [] }))), ['ready', 'ready', 'ready'])
   assert.equal(slowAsks, 1)
-  // Recorded only (flips-v1): never waited for, never stops an audit.
-  const recorded = screenOf({ seller, rule: FLIPS_RULE_V1, askReference: () => { throw new Error('reference down') } })
+  // Recorded only: never waited for, never stops an audit.
+  const recorded = screenOf({ seller, rule: RECORDED_ONLY, askReference: () => { throw new Error('reference down') } })
   assert.equal(await recorded.screen.referenceDecision!('first', MODEL, null, { lastAuditorAttempt: false, confirming: [] }), 'ready')
   // The reference answers from two providers: unusable, checked before the seller is asked.
   const mixed = screenOf({ seller, provider: (index) => (index === 5 ? 'other-host' : 'host') })
@@ -676,7 +656,7 @@ test('a carried record without the shape of a FLIPS record is dropped; a FLIPS s
   assert.equal(isFlipsRecord({ rule: 'flips-v1' }), false)
   assert.deepEqual(withoutOrphans({ flips: { rule: 'flips-v1', draw: null } as never }), {})
   const evidence = { target: { peerId: PEER, service: MODEL }, reference: { referenceModel: MODEL } }
-  const summary = { rule: 'flips-v1', model: MODEL, stage: 'first', outcome: 'flag', counted: false, p: 0.001, score: 3, reason: 'x' }
+  const summary = { rule: 'flips-v0', model: MODEL, stage: 'first', outcome: 'flag', counted: false, p: 0.001, score: 3, reason: 'x' }
   assert.doesNotThrow(() => validateCheckRecordsAgainstSummary(evidence as never, { flips: summary }))
   assert.doesNotThrow(() => validateCheckRecordsAgainstSummary(evidence as never, { flips: { ...summary, model: 'minimax-m3' } }))
 })
@@ -684,7 +664,7 @@ test('a carried record without the shape of a FLIPS record is dropped; a FLIPS s
 test('FLIPS\'s time bounds the wait for its reference, an unusable reference is reported once it is ready, and a record keeps what the dry run reads', async () => {
   // The reference never answers: the seller's FLIPS ends at its time limit with no record, and says so.
   const seller = fakeSeller((call) => symbols(['amber', 'basin'], call))
-  const hung = screenOf({ seller, rule: FLIPS_RULE_V1, timeLimitMs: 30, askReference: () => new Promise<never>(() => undefined) })
+  const hung = screenOf({ seller, rule: RECORDED_ONLY, timeLimitMs: 30, askReference: () => new Promise<never>(() => undefined) })
   const began = Date.now()
   assert.equal(await hung.screen.check(SELLER, null, { stage: 'first' }), null)
   assert.ok(Date.now() - began < 2_000)
@@ -732,7 +712,7 @@ test('a stored FLIPS record is bounded and holds real numbers: a slot with a nul
   assert.equal(isFlipsRecord({ ...record, followUp: { ...record, draw: { ...record.draw, probe: true } } }), true)
 })
 
-// --- flips-v3: a second look for a first audit scored between its bars ---
+// --- A second look for a first audit scored between its bars ---
 
 /** A pseudo-random sequence of a pair (xorshift32 from its seed); `bias` in 16ths repeats the last symbol instead. */
 const xorshift = (seed: number, pair: FlipsPair, bias = 0): string => {
@@ -816,10 +796,9 @@ test('a first audit between the bars is judged on 40 replies by its second look,
   assert.doesNotThrow(() => validateFlips(unanswered))
   assert.deepEqual([unanswered.outcome, unanswered.p], ['inconclusive', first.p])
   assert.match(unanswered.reason, /between the bar and the pass; its second look has no result: 1 of 40 scheduled slots got no reply/)
-  // Under flips-v2 the same first look decides nothing, and a stored second look is no record of it.
-  const v2 = judgeFlips({ ...record, secondLook: undefined }, FLIPS_RULE_V2)
-  assert.deepEqual([v2.outcome, v2.p], ['inconclusive', first.p])
-  assert.throws(() => validateFlips({ ...record, rule: FLIPS_RULE_V2.id }), /stores a second look its rule does not have/)
+  // Without a second look in its rule the same first look decides nothing.
+  const withoutSecondLook = judgeFlips({ ...record, secondLook: undefined }, { ...FLIPS_RULE, secondLook: undefined })
+  assert.deepEqual([withoutSecondLook.outcome, withoutSecondLook.p], ['inconclusive', first.p])
 })
 
 test('a stored FLIPS keeps its second look exactly when its first look calls for one', () => {

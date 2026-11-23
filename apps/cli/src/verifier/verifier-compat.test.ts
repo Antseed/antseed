@@ -24,20 +24,7 @@ const RULES_BY_COMPAT: Readonly<Record<number, string>> = {
   2: '0x9e4b0af7ac00fed169980914711f6f73bb3f0e73547627b3ce0df0f191111ddf',
   3: '0x25344c731acc4781b8f3d207794922f1596a7bf842958ea91111fd575aa7a1e5',
   4: '0xc0ebca1ce20148076c6ed5db82d89e1b28c2fc87aa3fd02ba20899150e1b8a0b',
-  5: '0x997f124539dadf245bb8eee8c3b437df9a945e9842ed9f95daa0832e18acb7d9',
-  6: '0x2737cfab7304593d2ac4ffa44d6333384b10b04a1c9028e74278981a47ebdcd8',
-  7: '0x47c7be1b6bf2f890e490f6f14bb4bb84841ed71aad6c8d367ffc099a7a88c1d3',
-  8: '0xaac53c624372ecd4eac0e11907ce1c56b0b234a708b2993880b97a1baa59c63f',
-  9: '0xb46a449becd26d4a2301ccc08e453560c448cc5bae1f5c63b8e9653a4835b006',
-  10: '0x7c6e610eaaf6cf644b9bae6d7ab5473b7a508ce55485caca5554dbc2218cc7cd',
-  11: '0x1c21e29e252155cb8473219f25fbe08f9cc310992713fab548944147c19a630a',
-  12: '0xe095dfb275ce5a885ea3a2edf9dfc0ce1addf6022d767a1a62f94b3c2341f390',
-  13: '0x94bc400cd5faab6af4180e7e9faf65e4f04e504e69777870f5a776d92bdd6836',
-  14: '0xd6511dd4da2686cc94e9b184309a93c5bc21eb52cdf62bb9e57a6ca8bca19bc0',
-  15: '0x0286b3a27cab24a18b23199489d369e33f87ebf6296c8d52f9f9138ef03083aa',
-  16: '0x68aaac7c63c9bbe194db9658d2d35e07242465a879855f4d0416d44d5d9a1115',
-  17: '0x24e45f19dfa27034141c57a4fc2c2fbefb4dfa812de15440e2cf8f62adf52095',
-  18: '0x87f11afb22303382f347872edd8fc813c73a456aafaaf01245c094cc7b980057',
+  5: '0xdc7e5ad6dcaf3b375faf432dc4f3d7d51a2b21ff42e770be225b563419d0c32c',
 }
 
 test('the audit rules match the hash pinned for this verifier compat', () => {
@@ -129,7 +116,7 @@ test('the tokenizer pre-check is part of the rules: turned off it is named, and 
   const { rule } = tokenizerPrecheck
   assert.deepEqual(
     [rule.id, rule.rounds, rule.toleranceTokens, rule.referenceAsks, rule.sellerAsks, rule.outvoteSellers, rule.corroboratingSellers],
-    ['tokenizer-precheck-v3', 3, 0, 2, 2, 2, 1],
+    ['tokenizer-precheck-v1', 3, 0, 2, 2, 2, 1],
   )
   // The retry limits, the probe guard's table and what the probe writer writes are rules too: a change to any of
   // them changes which counts are compared.
@@ -139,7 +126,7 @@ test('the tokenizer pre-check is part of the rules: turned off it is named, and 
   assert.equal(new Set(tokenizerPrecheck.probes.map((probe) => probe.a + probe.b)).size, 4)
   for (const probe of tokenizerPrecheck.probes) assert.ok(isSafeProbe(probe.b), probe.b)
   assert.deepEqual(tokenizerPrecheck.probes, (verifierRulesFingerprint() as { tokenizerPrecheck: { probes: unknown } }).tokenizerPrecheck.probes, 'the same probes every time')
-  // Under tokenizer-precheck-v2 (an exact count): the exact count is a match; a mismatch is three rounds off by even
+  // Under the rule (an exact count): the exact count is a match; a mismatch is three rounds off by even
   // one token, each the same way twice; anything missing, a seller whose two asks are a token or more apart, and a count
   // that is off with the cache in play decide nothing.
   assert.deepEqual(tokenizerPrecheck.judged, [

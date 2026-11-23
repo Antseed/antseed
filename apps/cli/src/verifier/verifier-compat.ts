@@ -323,7 +323,7 @@ const CROSS_TEST_SAMPLES: { readonly [Slot in CheckSlot]?: () => Record<string, 
       return [confirms, outcome, decision.kind, decision.kind === 'exclude' ? decision.code : null]
     })),
     // A confirmation finished at once: only for a counting FLIPS of this rule scored between its bars.
-    oneAttemptStop: [{ rule: FLIPS_RULE.id }, { rule: FLIPS_RULE.id, probe: true }, { rule: 'flips-v1' }, { rule: FLIPS_RULE.id, p: null }].map((summary) => (
+    oneAttemptStop: [{ rule: FLIPS_RULE.id }, { rule: FLIPS_RULE.id, probe: true }, { rule: 'flips-unknown' }, { rule: FLIPS_RULE.id, p: null }].map((summary) => (
       confirmationCannotDecideOnRetry({
         status: 'UNDETERMINED', questionsStatus: 'SAME', parsedProbeCount: 1, confirming: ['flips'],
         flips: { model: 'claude-opus-5.5', stage: 'confirm', outcome: 'inconclusive', counted: true, p: 0.02, score: 4, reason: 'x', ...summary } as never,

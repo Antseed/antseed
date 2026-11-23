@@ -19,7 +19,7 @@ import {
   generateTokenizerProbe,
   measureTokenizerReference,
   referenceDelta,
-  TOKENIZER_PRECHECK_RULE_V1,
+  TOKENIZER_PRECHECK_RULE,
   type TokenizerPrecheckRule,
   type TokenizerReferenceAsk,
   type TokenizerReferenceRoundV1,
@@ -168,10 +168,14 @@ export function measuredTokens(measurement: OutputCapMeasurementV1 | null, rule:
   return referenceDelta(measurement.reference.asks, measurementRule(rule)).delta
 }
 
-/** The pre-check's measurement rule, with this rule's number of reference asks. */
+/**
+ * How the cap check measures an answer at the reference: the pre-check's measurement, with this rule's number of
+ * reference asks, the reference's asks agreeing within 2 tokens and any cached input leaving the answer unmeasured. Its
+ * own values, whatever the pre-check's: an answer is measured the same way when the pre-check's rule changes.
+ */
 function measurementRule(rule: OutputCapRule): TokenizerPrecheckRule {
-  // Pinned to the first token rule: the cap check measures with it as it was measured, whatever the pre-check's own rule.
-  return { ...TOKENIZER_PRECHECK_RULE_V1, referenceAsks: rule.referenceAsks }
+  const { sameCacheCancels: _cancels, ...precheck } = TOKENIZER_PRECHECK_RULE
+  return { ...precheck, toleranceTokens: 2, referenceAsks: rule.referenceAsks }
 }
 
 /**

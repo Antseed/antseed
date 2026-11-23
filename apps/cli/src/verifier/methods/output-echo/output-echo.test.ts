@@ -16,8 +16,6 @@ import {
   ECHO_SET_ASIDE_REASON,
   ECHO_STOPPED_REASON,
   OUTPUT_ECHO_RULE,
-  OUTPUT_ECHO_RULE_V1,
-  OUTPUT_ECHO_RULE_V2,
   outputEchoRequestBody,
   outputEchoRuleById,
   steadyShares,
@@ -140,8 +138,12 @@ test('the crowd must back the reference, measure enough sellers, share nothing, 
   assert.match(echoCrowdObjection(60, [0, 0, 30], 0)!, /not more than 3 times the other sellers' spread \(30\)/)
 })
 
-/** A rule with the fixed-amount finding counted (the shipped rule, `output-echo-v3`, counts it). */
-const COUNTING = { ...OUTPUT_ECHO_RULE, offsetCounts: true }
+/** The rule, which counts the fixed amount. */
+const COUNTING = OUTPUT_ECHO_RULE
+/** The rule with both its counting switches off: the fixed amount and visible-mode findings stored only. */
+const NOT_COUNTED = Object.freeze({ ...OUTPUT_ECHO_RULE, offsetCounts: false, visibleCounts: false })
+/** The rule without asking a text again. */
+const NO_ASK_AGAIN = Object.freeze({ ...OUTPUT_ECHO_RULE, askAgain: undefined })
 
 const judge = (rounds: ReturnType<typeof round>[], crowd: EchoCrowdVoteV1[] | null, options: { precheckMatch?: boolean; incomplete?: boolean; rule?: typeof OUTPUT_ECHO_RULE } = {}) => judgeOutputEcho({
   mode: 'plain', reference: REFERENCE, referenceReasoning: [0, 0, 0], rounds,
@@ -187,11 +189,11 @@ test('a fixed amount is judged on every text asked twice, behind the crowd, and 
   const crowd = [vote(0, 0), vote(0, 3), vote(0, -1)]
   const counted = judge(padded, crowd, { rule: COUNTING })
   assert.deepEqual([counted.outcome, counted.flag, counted.offset.median, counted.fixedAmount.outcome], ['flag', 'offset', 30, 'flag'])
-  // Under the second rule the finding is stored and shown, and decides nothing.
-  const held = judge(padded, crowd, { rule: OUTPUT_ECHO_RULE_V2 })
+  // With its switch off the finding is stored and shown, and decides nothing.
+  const held = judge(padded, crowd, { rule: NOT_COUNTED })
   assert.deepEqual([held.outcome, held.flag, held.fixedAmount.outcome], ['pass', null, 'inconclusive'], 'the growth counts and passes; the fixed amount is only stored')
   assert.match(held.fixedAmount.reason, /^flag, stored and not counted yet: the seller adds 30 tokens/)
-  // The shipped rule (output-echo-v3) counts it.
+  // The rule counts it.
   const shipped = judge(padded, crowd)
   assert.deepEqual([shipped.outcome, shipped.flag, shipped.fixedAmount.outcome], ['flag', 'offset', 'flag'])
   // The lead over the crowd's median must be above 20 tokens: +21 against a crowd at +2 is not enough.
@@ -209,17 +211,17 @@ test('only a seller that kept to the model\'s count passes each finding', () => 
   assert.deepEqual([partly.outcome, partly.growth.outcome], ['inconclusive', 'inconclusive'])
   const honest = judge([round([[60, 360]]), round([[60, 360]]), round([[60, 360]])], null, { rule: COUNTING })
   assert.deepEqual([honest.outcome, honest.growth.outcome, honest.fixedAmount.outcome], ['pass', 'pass', 'pass'])
-  // Under the second rule the fixed amount's pass is stored and clears nothing; the growth's pass counts.
-  const second = judge([round([[60, 360]]), round([[60, 360]]), round([[60, 360]])], null, { rule: OUTPUT_ECHO_RULE_V2 })
+  // With its switch off the fixed amount's pass is stored and clears nothing; the growth's pass counts.
+  const second = judge([round([[60, 360]]), round([[60, 360]]), round([[60, 360]])], null, { rule: NOT_COUNTED })
   assert.deepEqual([second.outcome, second.growth.outcome, second.fixedAmount.outcome], ['pass', 'pass', 'inconclusive'])
   assert.match(second.fixedAmount.reason, /^pass, stored and not counted yet/)
   // The shipped rule counts both: each passes.
   const shipped = judge([round([[60, 360]]), round([[60, 360]]), round([[60, 360]])], null)
   assert.deepEqual([shipped.outcome, shipped.growth.outcome, shipped.fixedAmount.outcome], ['pass', 'pass', 'pass'])
-  // A growth pass with a fixed amount left undecided is no overall pass under it, and was under the second rule.
+  // A growth pass with a fixed amount left undecided is no overall pass; with the switch off it is.
   const varying = [round([[90, 390]]), round([[80, 380]]), round([[90, 390]])]
   assert.deepEqual([judge(varying, null).outcome, judge(varying, null).growth.outcome, judge(varying, null).fixedAmount.outcome], ['inconclusive', 'pass', 'inconclusive'])
-  assert.equal(judge(varying, null, { rule: OUTPUT_ECHO_RULE_V2 }).outcome, 'pass')
+  assert.equal(judge(varying, null, { rule: NOT_COUNTED }).outcome, 'pass')
 })
 
 test('a round that cannot be read or does not repeat decides nothing', () => {
@@ -250,25 +252,14 @@ const tokens = (text: string): number => Math.ceil(text.length / 3)
 
 const honestBilling = (text: string): number => tokens(text)
 
-test('a new audit asks under the third rule, and evidence stored under an earlier rule is judged by its own rule', () => {
-  // The longest text is six passages. Under the first rule's limit a tokenizer that writes it in more than 1,024 tokens
-  // had its echo cut off, at the reference too, so the check did not apply to the model.
-  assert.deepEqual([OUTPUT_ECHO_RULE.id, OUTPUT_ECHO_RULE.maxTokens], ['output-echo-v3', 2048])
-  assert.deepEqual([OUTPUT_ECHO_RULE_V2.id, OUTPUT_ECHO_RULE_V2.maxTokens], ['output-echo-v2', 2048])
-  assert.deepEqual([OUTPUT_ECHO_RULE_V1.id, OUTPUT_ECHO_RULE_V1.maxTokens], ['output-echo-v1', 1024])
-  assert.equal(outputEchoRuleById('output-echo-v1'), OUTPUT_ECHO_RULE_V1)
-  assert.equal(outputEchoRuleById('output-echo-v2'), OUTPUT_ECHO_RULE_V2)
-  assert.equal(outputEchoRuleById('output-echo-v3'), OUTPUT_ECHO_RULE)
-  assert.equal(outputEchoRuleById('output-echo-v4'), undefined)
-  // The second rule differs from the first only in its id and limit: the texts, the rounds and every margin are the first's.
-  assert.deepEqual({ ...OUTPUT_ECHO_RULE_V2, id: 'output-echo-v1', maxTokens: 1024 }, { ...OUTPUT_ECHO_RULE_V1 })
-  // The third counts both parts and asks again once after no signed answer; nothing else differs from the second.
+test('the rule asks under a reply limit of 2,048 tokens, counts both parts and asks again; an unknown rule is not known', () => {
+  // The longest text is six passages: under a limit of 1,024 a tokenizer that writes it in more tokens had its echo cut
+  // off, at the reference too, so the check did not apply to the model.
+  assert.deepEqual([OUTPUT_ECHO_RULE.id, OUTPUT_ECHO_RULE.maxTokens], ['output-echo-v1', 2048])
   assert.deepEqual([OUTPUT_ECHO_RULE.offsetCounts, OUTPUT_ECHO_RULE.visibleCounts, OUTPUT_ECHO_RULE.askAgain], [true, true, { waitMs: 5_000 }])
-  assert.deepEqual([OUTPUT_ECHO_RULE_V2.offsetCounts, OUTPUT_ECHO_RULE_V2.visibleCounts, OUTPUT_ECHO_RULE_V2.askAgain], [false, false, undefined])
-  const { askAgain: _again, ...third } = OUTPUT_ECHO_RULE
-  assert.deepEqual({ ...third, id: 'output-echo-v2', offsetCounts: false, visibleCounts: false }, { ...OUTPUT_ECHO_RULE_V2 })
+  assert.equal(outputEchoRuleById('output-echo-v1'), OUTPUT_ECHO_RULE)
+  assert.equal(outputEchoRuleById('output-echo-v2'), undefined)
   assert.equal(outputEchoRequestBody({ service: 'model-a', text: 'x' })['max_tokens'], 2048)
-  assert.equal(outputEchoRequestBody({ service: 'model-a', text: 'x', rule: OUTPUT_ECHO_RULE_V1 })['max_tokens'], 1024)
 })
 
 test('an honest seller passes on six requests, and the model\'s other sellers are not asked', async () => {
@@ -289,7 +280,7 @@ test('a seller that bills a quarter more output is flagged once three other sell
   assert.equal(record.crowd?.votes.length, 3)
   assert.equal(outputEchoRequestCount(record), 12 + 6, 'three rounds asked twice, two requests to each other seller')
   validateOutputEcho(record, PEERS[0])
-  assert.match(describeOutputEchoFlag(record), /^echo check \(output-echo-v3\): the seller's output grows \d+ or more tokens faster than the model's/)
+  assert.match(describeOutputEchoFlag(record), /^echo check \(output-echo-v1\): the seller's output grows \d+ or more tokens faster than the model's/)
   const altered = structuredClone(record)
   altered.rounds[0]!.short[0]!.reply = { ...altered.rounds[0]!.short[0]!.reply, count: 1 }
   assert.throws(() => validateOutputEcho(altered, PEERS[0]), /reading differs from the signed bytes/)
@@ -317,13 +308,9 @@ test('a seller that bills a quarter more output is flagged once three other sell
   assert.equal(unknown.outcome, 'inconclusive')
 })
 
-test('a seller that adds the same 30 tokens to every reply is found, asked every text twice, stored without counting under the second rule and flagged under the third; a crowd that does the same is a relay', async () => {
+test('a seller that adds the same 30 tokens to every reply is found, asked every text twice, and flagged; a crowd that does the same is a relay', async () => {
   const padded = (text: string): number => tokens(text) + 30
   const alone = fakeNetwork({ ...Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])), [PEERS[0]!]: padded })
-  const second = (await screenFor(alone, echoReference, PEERS, { rule: OUTPUT_ECHO_RULE_V2 }).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true }))!
-  assert.deepEqual([second.outcome, second.flag, second.offset], ['pass', null, { median: 30, fixed: true }])
-  assert.match(second.fixedAmount.reason, /^flag, stored and not counted yet/)
-  validateOutputEcho(second, PEERS[0])
   const record = (await screenFor(alone).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true }))!
   assert.deepEqual([record.outcome, record.flag, record.offset, record.growth.outcome], ['flag', 'offset', { median: 30, fixed: true }, 'pass'])
   assert.match(record.fixedAmount.reason, /^the seller adds 30 tokens to every reply/)
@@ -435,12 +422,7 @@ test('a fixed-amount candidate\'s repeats never change the growth verdict', () =
 
 test('the recheck refuses findings a record cannot have, and repeated authenticated asks', async () => {
   const network = fakeNetwork(Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])))
-  // Under the second rule the fixed amount never counts, so it can never be stored as a pass.
-  const second = (await screenFor(network, echoReference, PEERS, { rule: OUTPUT_ECHO_RULE_V2 }).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true }))!
-  const credited = structuredClone(second)
-  credited.fixedAmount = { outcome: 'pass', reason: 'x' }
-  assert.throws(() => validateOutputEcho(credited, PEERS[0]), /offset is not counted under its rule/)
-  // Under the third it counts, and a stored outcome must still follow from the rounds.
+  // A stored outcome must follow from the rounds.
   const record = (await screenFor(network).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true }))!
   assert.equal(record.fixedAmount.outcome, 'pass')
   const flagged = structuredClone(record)
@@ -486,9 +468,9 @@ test('the rounds\' gaps must differ by at least 4 to 3, or the check does not ap
 test('a stop after the growth was decided keeps it; a candidate that needed the crowd is stopped', () => {
   const pass = { outcome: 'pass' as const, reason: 'the seller bills the model\'s growth' }
   const candidate = { outcome: 'inconclusive' as const, reason: 'a candidate' }
-  const kept = stoppedEcho({ growth: pass, fixedAmount: candidate }, { growth: pass, fixedAmount: { outcome: 'inconclusive', reason: 'x' } }, 'plain', OUTPUT_ECHO_RULE_V2)
+  const kept = stoppedEcho({ growth: pass, fixedAmount: candidate }, { growth: pass, fixedAmount: { outcome: 'inconclusive', reason: 'x' } }, 'plain', NOT_COUNTED)
   assert.deepEqual([kept.outcome, kept.growth, kept.fixedAmount.reason], ['pass', pass, ECHO_STOPPED_REASON])
-  // Under the third rule the fixed amount counts: the growth's pass is kept, and the check as a whole decides nothing.
+  // Where the fixed amount counts, the growth's pass is kept, and the check as a whole decides nothing.
   const third = stoppedEcho({ growth: pass, fixedAmount: candidate }, { growth: pass, fixedAmount: { outcome: 'inconclusive', reason: 'x' } }, 'plain')
   assert.deepEqual([third.outcome, third.growth, third.fixedAmount.reason], ['inconclusive', pass, ECHO_STOPPED_REASON])
   const cut = stoppedEcho({ growth: candidate, fixedAmount: candidate }, { growth: { outcome: 'flag', reason: 'x' }, fixedAmount: candidate }, 'plain')
@@ -598,7 +580,7 @@ test('an answer that had arrived when the check stopped, its ResponseAuth still 
 test('work for the fixed amount alone stops when the audit\'s spare time is up, keeps the growth pass, and the audit goes on', async () => {
   const padded = (text: string): number => tokens(text) + 30
   const network = fakeNetwork({ ...Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])), [PEERS[0]!]: padded })
-  let spare = new AbortController()
+  const spare = new AbortController()
   const audit = new AbortController()
   const fetchFn: typeof fetch = async (url, init) => {
     const reply = await network.fetchFn(url, init)
@@ -606,35 +588,27 @@ test('work for the fixed amount alone stops when the audit\'s spare time is up, 
     if (network.asked.get(PEERS[0]!) === 12) spare.abort()
     return reply
   }
-  const check = (rule?: typeof OUTPUT_ECHO_RULE) => screenFor({ ...network, fetchFn }, echoReference, PEERS, rule ? { rule } : {}).check({ peerId: PEERS[0]!, service: SERVICE }, null, {
+  const third = (await screenFor({ ...network, fetchFn }).check({ peerId: PEERS[0]!, service: SERVICE }, null, {
     thinking: null, crowdThinking: null, precheckMatch: true, spare: () => spare.signal,
     clock: { signal: audit.signal, start: () => audit.signal, finish: () => {} },
-  })
-  const record = (await check(OUTPUT_ECHO_RULE_V2))!
+  }))!
+  // The growth's pass is kept; the fixed amount counts and was set aside, so the whole is no pass.
   assert.equal(audit.signal.aborted, false)
-  assert.deepEqual([record.outcome, record.growth.outcome, record.fixedAmount.reason], ['pass', 'pass', ECHO_SET_ASIDE_REASON])
-  assert.match(record.reason, /^the seller bills the model's growth; the rest was set aside so that the questions keep their time$/)
-  assert.equal(record.crowd, null)
-  assert.equal(network.asked.get(PEERS[1]!), undefined)
-  validateOutputEcho(record, PEERS[0])
-  // Under the third rule the growth's pass is kept the same way; the fixed amount counts, so the whole is no pass.
-  network.asked.clear()
-  spare = new AbortController()
-  const third = (await check())!
   assert.deepEqual([third.outcome, third.growth.outcome, third.fixedAmount.reason, third.reason], ['inconclusive', 'pass', ECHO_SET_ASIDE_REASON, ECHO_SET_ASIDE_REASON])
+  assert.equal(third.crowd, null)
   assert.equal(network.asked.get(PEERS[1]!), undefined)
   validateOutputEcho(third, PEERS[0])
 })
 
-// --- output-echo-v3: a model counted on its visible answer counts, and an ask with no signed answer is asked again ---
+// --- A model counted on its visible answer counts, and an ask with no signed answer is asked again ---
 
-test('a model counted on its visible answer is judged under the third rule; the second rule only stored it', () => {
+test('a model counted on its visible answer is judged; with the switch off it is only stored', () => {
   const visible = (rule?: typeof OUTPUT_ECHO_RULE) => judgeOutputEcho({
     mode: 'visible', reference: REFERENCE, referenceReasoning: [0, 0, 0], precheckMatch: true, crowd: null,
     rounds: [0, 1, 2].map(() => round([[60, 360], [60, 360]], 'visible')),
     ...(rule ? { rule } : {}),
   })
-  const second = visible(OUTPUT_ECHO_RULE_V2)
+  const second = visible(NOT_COUNTED)
   assert.deepEqual([second.outcome, second.growth.outcome], ['inconclusive', 'inconclusive'])
   assert.match(second.growth.reason, /^pass, stored and not counted yet/)
   const third = visible()
@@ -677,8 +651,8 @@ test('an ask with no signed answer after a 5xx is asked once more after a short 
   assert.equal(asked.request.requestIds.length, 3, 'both asks\' tries are paid for and kept with the one ask')
   assert.equal(outputEchoRequestCount(record), 6 + 2)
   validateOutputEcho(record, PEERS[0])
-  // Under the second rule the same seller leaves the round unusable, and the check has no result.
-  const second = (await seller.check(OUTPUT_ECHO_RULE_V2))!
+  // Without asking again the same seller leaves the round unusable, and the check has no result.
+  const second = (await seller.check(NO_ASK_AGAIN))!
   assert.deepEqual(seller.waits, [2_000])
   assert.deepEqual([second.outcome, second.reason], ['inconclusive', 'growth: a round was unusable; fixed amount: a round was unusable'])
   assert.equal(second.rounds[1]!.short[0]!.askedAgain, undefined)

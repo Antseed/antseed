@@ -40,7 +40,7 @@ import {
  * - A slot with no reply at all after a failure that can pass (a 429, a 5xx, a timeout, no ResponseAuth) is asked again
  *   within a budget; a refusal (any other 4xx) gives the same answer and is not. An empty, filtered or short reply is
  *   never asked again: it counts as the rule says.
- * - Under a rule with a second look (`flips-v3`), a first audit scored between its bars asks each pair 10 more times and
+ * - Under a rule with a second look, a first audit scored between its bars asks each pair 10 more times and
  *   is judged on all its replies (`judgeFlips`).
  * - A check with a slot still unanswered, a reference pair from more than one provider, a reference request the route
  *   changed, or a seller that thinks where the reference does not, has no result.
@@ -1023,7 +1023,7 @@ export interface FlipsUnavailable {
 export interface FlipsScreen<Settings> {
   /** A dry-run probe is on: a carried record that is not a probe's is asked again. */
   probing: boolean
-  /** The rule this screen asks by: a carried record of another rule (an earlier build's) is asked again. */
+  /** The rule this screen asks by: a carried record of another rule is asked again. */
   ruleId: string
   /**
    * The decision on a stage's reference, made once per model, stage and run before any seller of it is asked anything

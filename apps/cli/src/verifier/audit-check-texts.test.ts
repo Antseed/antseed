@@ -16,8 +16,8 @@ import { METHODS } from './methods/index.js'
 /** One flagged summary per test, with what the test says of it: per finding in a report, and in the run's line. */
 const SAID: { readonly [Slot in CheckSlot]: { summary: CheckSummaries[Slot]; inReport: Partial<Record<AuditCheckId, string | null>>; inRunLine: string | null } } = {
   tokenizerPrecheck: {
-    summary: { rule: 'tokenizer-precheck-v3', outcome: 'mismatch', sellerTokens: [193, 176, 176], modelTokens: [141, 130, 145] },
-    inReport: { tokens: 'tokenizer pre-check (tokenizer-precheck-v3): signed 193/176/176 input tokens where the model counts 141/130/145' },
+    summary: { rule: 'tokenizer-precheck-v1', outcome: 'mismatch', sellerTokens: [193, 176, 176], modelTokens: [141, 130, 145] },
+    inReport: { tokens: 'tokenizer pre-check (tokenizer-precheck-v1): signed 193/176/176 input tokens where the model counts 141/130/145' },
     inRunLine: 'tokenizer pre-check: signed 193/176/176 input tokens where the model counts 141/130/145',
   },
   outputCap: {
@@ -38,7 +38,7 @@ const SAID: { readonly [Slot in CheckSlot]: { summary: CheckSummaries[Slot]; inR
     inRunLine: 'echo check: the seller\'s output grows faster than the model\'s',
   },
   flips: {
-    summary: { rule: 'flips-v2', model: 'deepseek-v4-pro', stage: 'first', outcome: 'flag', counted: true, p: 0.0001, score: 9.1, reason: 'scored 9.10 (p 0.000), below 0.002' },
+    summary: { rule: 'flips-v1', model: 'deepseek-v4-pro', stage: 'first', outcome: 'flag', counted: true, p: 0.0001, score: 9.1, reason: 'scored 9.10 (p 0.000), below 0.002' },
     // FLIPS keeps its bare label in a report and adds nothing to the run's line.
     inReport: { flips: null },
     inRunLine: null,
@@ -86,7 +86,7 @@ test('the run\'s line holds each test\'s part in run order, only for a test whos
   assert.deepEqual(testsInRunLine({ tokenizerPrecheck: null, outputCap: null, outputEcho: null, flips: null } as never), [])
   // A test that passed or did not decide adds nothing.
   assert.deepEqual(testsInRunLine({
-    tokenizerPrecheck: { rule: 'tokenizer-precheck-v3', outcome: 'match' },
+    tokenizerPrecheck: { rule: 'tokenizer-precheck-v1', outcome: 'match' },
     outputCap: { ...SAID.outputCap.summary, outcome: 'pass' },
     outputEcho: { ...SAID.outputEcho.summary, outcome: 'inconclusive' },
     flips: { ...SAID.flips.summary, outcome: 'pass' },
@@ -94,5 +94,5 @@ test('the run\'s line holds each test\'s part in run order, only for a test whos
   // The echo check speaks on its record's flag, also when only the fixed amount flagged.
   assert.deepEqual(testsInRunLine({ outputEcho: { ...SAID.outputEcho.summary, flag: 'offset', growth: 'pass' } }), [SAID.outputEcho.inRunLine])
   // A pre-check mismatch stored without its counts is still said.
-  assert.deepEqual(testsInRunLine({ tokenizerPrecheck: { rule: 'tokenizer-precheck-v3', outcome: 'mismatch' } }), ['tokenizer pre-check: its signed input tokens are not the model\'s'])
+  assert.deepEqual(testsInRunLine({ tokenizerPrecheck: { rule: 'tokenizer-precheck-v1', outcome: 'mismatch' } }), ['tokenizer pre-check: its signed input tokens are not the model\'s'])
 })

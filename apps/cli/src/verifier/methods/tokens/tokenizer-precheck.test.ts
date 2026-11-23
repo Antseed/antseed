@@ -10,8 +10,6 @@ import type { ResponseAuthReader } from '../../response-auth-reader.js'
 import { BACKER_ID, MODEL_TOKENIZER, OTHER_TOKENIZER, PEER_ID, PROBES, PROBE_COUNT, SERVICE, audit, measuredReference, referenceAsk, seller, signedRecord, signedRequestBase64, tokenizer } from '../../seller-audit.test-support.js'
 import {
   TOKENIZER_PRECHECK_RULE,
-  TOKENIZER_PRECHECK_RULE_V1,
-  TOKENIZER_PRECHECK_RULE_V2,
   cacheBlocks,
   createTokenizerPrecheckScreen,
   describeTokenizerMismatch,
@@ -85,37 +83,42 @@ const asked = (baseTokens: number | null, probedTokens: number | null, extra: Pa
   baseTokens, probedTokens, cachedInput: false, providers: ['Provider-A', 'Provider-A'], ...extra,
 })
 
+/** The rule with a tolerance of 2 tokens, to test how a tolerance is applied (the rule counts exactly). */
+const TOLERANT = Object.freeze({ ...TOKENIZER_PRECHECK_RULE, toleranceTokens: 2 })
+/** The rule without keeping a pair whose two answers report the same cached amount. */
+const WITHOUT_SAME_CACHE = Object.freeze({ ...TOKENIZER_PRECHECK_RULE, sameCacheCancels: undefined })
+
 test('a round is off only when the seller is asked twice, is off the reference both times and agrees with itself', () => {
-  // The first rule's tolerance of 2 tokens (`tokenizer-precheck-v1`, kept for stored evidence).
-  const judgeTokenizerRoundV1 = (input: Parameters<typeof judgeTokenizerRound>[0]) => judgeTokenizerRound(input, TOKENIZER_PRECHECK_RULE_V1)
-  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [100] }), 'match')
-  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [102] }), 'match')
-  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [98] }), 'match')
-  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [103] }), 'unmeasured', 'one ask off proves nothing yet')
-  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [140, 101] }), 'match', 'the second ask counted like the model')
-  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [140, 140] }), 'off')
-  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [140, 142] }), 'off', 'its asks may differ by the tolerance')
-  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [140, 143] }), 'unstable')
-  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [125, 64] }), 'unstable')
-  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [140, null] }), 'unmeasured')
-  assert.equal(judgeTokenizerRoundV1({ referenceDelta: 100, sellerDeltas: [] }), 'unmeasured')
-  assert.equal(judgeTokenizerRoundV1({ referenceDelta: null, sellerDeltas: [140, 140] }), 'unmeasured')
+  // Under a tolerance of 2 tokens.
+  const judgeTolerantRound = (input: Parameters<typeof judgeTokenizerRound>[0]) => judgeTokenizerRound(input, TOLERANT)
+  assert.equal(judgeTolerantRound({ referenceDelta: 100, sellerDeltas: [100] }), 'match')
+  assert.equal(judgeTolerantRound({ referenceDelta: 100, sellerDeltas: [102] }), 'match')
+  assert.equal(judgeTolerantRound({ referenceDelta: 100, sellerDeltas: [98] }), 'match')
+  assert.equal(judgeTolerantRound({ referenceDelta: 100, sellerDeltas: [103] }), 'unmeasured', 'one ask off proves nothing yet')
+  assert.equal(judgeTolerantRound({ referenceDelta: 100, sellerDeltas: [140, 101] }), 'match', 'the second ask counted like the model')
+  assert.equal(judgeTolerantRound({ referenceDelta: 100, sellerDeltas: [140, 140] }), 'off')
+  assert.equal(judgeTolerantRound({ referenceDelta: 100, sellerDeltas: [140, 142] }), 'off', 'its asks may differ by the tolerance')
+  assert.equal(judgeTolerantRound({ referenceDelta: 100, sellerDeltas: [140, 143] }), 'unstable')
+  assert.equal(judgeTolerantRound({ referenceDelta: 100, sellerDeltas: [125, 64] }), 'unstable')
+  assert.equal(judgeTolerantRound({ referenceDelta: 100, sellerDeltas: [140, null] }), 'unmeasured')
+  assert.equal(judgeTolerantRound({ referenceDelta: 100, sellerDeltas: [] }), 'unmeasured')
+  assert.equal(judgeTolerantRound({ referenceDelta: null, sellerDeltas: [140, 140] }), 'unmeasured')
 })
 
 test('a seller is a mismatch only when every round of the rule is off', () => {
-  // The first rule's tolerance of 2 tokens (`tokenizer-precheck-v1`, kept for stored evidence).
-  const judgeTokenizerPrecheckV1 = (input: Parameters<typeof judgeTokenizerPrecheck>[0]) => judgeTokenizerPrecheck(input, TOKENIZER_PRECHECK_RULE_V1)
+  // Under a tolerance of 2 tokens.
+  const judgeTolerantPrecheck = (input: Parameters<typeof judgeTokenizerPrecheck>[0]) => judgeTokenizerPrecheck(input, TOLERANT)
   const off = { referenceDelta: 100, sellerDeltas: [140, 140] }
-  assert.equal(judgeTokenizerPrecheckV1([off, off, off]), 'mismatch')
-  assert.equal(judgeTokenizerPrecheckV1([off, off, { referenceDelta: 100, sellerDeltas: [140, 102] }]), 'match', 'within the tolerance once is a match')
-  assert.equal(judgeTokenizerPrecheckV1([off, off, { referenceDelta: 100, sellerDeltas: [103, 104] }]), 'mismatch', 'one past the tolerance is off')
-  assert.equal(judgeTokenizerPrecheckV1([off, off]), 'inconclusive', 'two rounds prove nothing')
-  assert.equal(judgeTokenizerPrecheckV1([off, off, { referenceDelta: 100, sellerDeltas: [140, null] }]), 'inconclusive')
-  assert.equal(judgeTokenizerPrecheckV1([off, off, { referenceDelta: 100, sellerDeltas: [140, 90] }]), 'inconclusive', 'counts that change between asks')
-  assert.equal(judgeTokenizerPrecheckV1([off, off, { referenceDelta: null, sellerDeltas: [140, 140] }]), 'inconclusive')
+  assert.equal(judgeTolerantPrecheck([off, off, off]), 'mismatch')
+  assert.equal(judgeTolerantPrecheck([off, off, { referenceDelta: 100, sellerDeltas: [140, 102] }]), 'match', 'within the tolerance once is a match')
+  assert.equal(judgeTolerantPrecheck([off, off, { referenceDelta: 100, sellerDeltas: [103, 104] }]), 'mismatch', 'one past the tolerance is off')
+  assert.equal(judgeTolerantPrecheck([off, off]), 'inconclusive', 'two rounds prove nothing')
+  assert.equal(judgeTolerantPrecheck([off, off, { referenceDelta: 100, sellerDeltas: [140, null] }]), 'inconclusive')
+  assert.equal(judgeTolerantPrecheck([off, off, { referenceDelta: 100, sellerDeltas: [140, 90] }]), 'inconclusive', 'counts that change between asks')
+  assert.equal(judgeTolerantPrecheck([off, off, { referenceDelta: null, sellerDeltas: [140, 140] }]), 'inconclusive')
   // In the order the run asks: a round that decides nothing ends the check, whatever a later round would say.
-  assert.equal(judgeTokenizerPrecheckV1([{ referenceDelta: 100, sellerDeltas: [140, 90] }, { referenceDelta: 100, sellerDeltas: [100] }]), 'inconclusive')
-  assert.equal(judgeTokenizerPrecheckV1([]), 'inconclusive')
+  assert.equal(judgeTolerantPrecheck([{ referenceDelta: 100, sellerDeltas: [140, 90] }, { referenceDelta: 100, sellerDeltas: [100] }]), 'inconclusive')
+  assert.equal(judgeTolerantPrecheck([]), 'inconclusive')
 })
 
 test('the reference has a difference only when every ask is readable, grows with the follow-up and agrees', () => {
@@ -488,7 +491,7 @@ test('a count with cached input can match the model, and is never held against t
   // A gateway that leaves the cached part out of its count: where the cache ends moves with the text, so the
   // difference is off by a little every time, the same way when asked again.
   // It reports the part it left out, which moves with the text: the two answers of a pair report different cached
-  // amounts, so the cache does not cancel out (`sameCache`) even under tokenizer-precheck-v3.
+  // amounts, so the cache does not cancel out (`sameCache`).
   const netOfCache = seller({ usage: (content) => cached(MODEL_TOKENIZER(content) - Math.round(content.length / 12), Math.round(content.length / 12)) })
   const undecided = await precheck(netOfCache)
   assert.equal(undecided.outcome, 'inconclusive')
@@ -516,7 +519,7 @@ test('a count with cached input can match the model, and is never held against t
   assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [140, 140], cachedAsks: [false, true] }), 'unmeasured')
   assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [140, 140], cachedAsks: [false, false] }), 'off')
   assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [100], cachedAsks: [true] }), 'match', 'a count with cached input that is the model\'s matches')
-  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [99], cachedAsks: [true] }, TOKENIZER_PRECHECK_RULE_V1), 'match', 'within the first rule\'s tolerance too')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [99], cachedAsks: [true] }, TOLERANT), 'match', 'within a tolerance too')
 })
 
 test('a response signed without usage, or with a zero count, decides nothing after one more try', async () => {
@@ -777,13 +780,10 @@ test('a pre-check DIFF holds the signed pair of another seller on the reference\
 
 // ── the model's sellers against the reference ────────────────────────────────────────────────────
 
-test('tokenizer-precheck-v2 counts exactly: one token off is off, two asks one token apart are unstable, and only the exact count backs the reference', () => {
-  assert.equal(TOKENIZER_PRECHECK_RULE_V2.id, 'tokenizer-precheck-v2')
-  assert.equal(tokenizerPrecheckRuleById('tokenizer-precheck-v1'), TOKENIZER_PRECHECK_RULE_V1, 'a used rule stays known, so its records are judged as they were')
-  assert.equal(tokenizerPrecheckRuleById('tokenizer-precheck-v2'), TOKENIZER_PRECHECK_RULE_V2)
-  const { id: _v2, toleranceTokens, ...restV2 } = TOKENIZER_PRECHECK_RULE_V2
-  const { id: _v1, toleranceTokens: toleranceV1, ...restV1 } = TOKENIZER_PRECHECK_RULE_V1
-  assert.deepEqual([restV2, toleranceV1, toleranceTokens], [restV1, 2, 0], 'v2 is v1 with an exact count, nothing else')
+test('the rule counts exactly: one token off is off, two asks one token apart are unstable, and only the exact count backs the reference', () => {
+  assert.deepEqual([TOKENIZER_PRECHECK_RULE.id, TOKENIZER_PRECHECK_RULE.toleranceTokens, TOKENIZER_PRECHECK_RULE.sameCacheCancels], ['tokenizer-precheck-v1', 0, true])
+  assert.equal(tokenizerPrecheckRuleById('tokenizer-precheck-v1'), TOKENIZER_PRECHECK_RULE)
+  assert.equal(tokenizerPrecheckRuleById('tokenizer-precheck-v2'), undefined, 'an id this CLI does not know')
   assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [100] }), 'match')
   assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [101] }), 'unmeasured', 'one token off is no match: it is asked again')
   assert.equal(judgeTokenizerRound({ referenceDelta: 100, sellerDeltas: [101, 101] }), 'off')
@@ -798,23 +798,21 @@ test('tokenizer-precheck-v2 counts exactly: one token off is off, two asks one t
   assert.equal(tokenizerCrowd([132, 132, 119], 119).outvoted, true)
 })
 
-test('a seller one token off the model: a match under tokenizer-precheck-v1, a mismatch under v2; a v1 record is still judged by v1', async () => {
+test('a seller one token off the model is a mismatch; a tolerance of 2 tokens would have let it match', async () => {
   const oneOff = () => seller({ usage: (content) => 1 + MODEL_TOKENIZER(content) + (content.length > 40 ? 1 : 0) })
-  const v1 = await precheck(oneOff(), undefined, { rule: TOKENIZER_PRECHECK_RULE_V1 })
-  assert.deepEqual([v1.rule.id, v1.outcome], ['tokenizer-precheck-v1', 'match'])
-  // Stored, it is judged again by its own rule, not this build's exact one.
-  assert.doesNotThrow(() => validateTokenizerPrecheck(v1))
-  const v2 = await precheck(oneOff())
-  assert.deepEqual([v2.rule.id, v2.outcome], [TOKENIZER_PRECHECK_RULE.id, 'mismatch'])
-  assert.doesNotThrow(() => validateTokenizerPrecheck(v2))
+  const tolerant = await precheck(oneOff(), undefined, { rule: TOLERANT })
+  assert.equal(tolerant.outcome, 'match')
+  const exact = await precheck(oneOff())
+  assert.deepEqual([exact.rule.id, exact.outcome], [TOKENIZER_PRECHECK_RULE.id, 'mismatch'])
+  assert.doesNotThrow(() => validateTokenizerPrecheck(exact))
 })
 
 test('sellers outvote the reference when two or more agree on another count and outnumber those on the reference\'s', () => {
   const crowd = (deltas: Array<number | null>) => {
-    const { deltas: _deltas, requests: _requests, backers: _backers, ...tally } = tokenizerCrowd(deltas, 119, TOKENIZER_PRECHECK_RULE_V1)
+    const { deltas: _deltas, requests: _requests, backers: _backers, ...tally } = tokenizerCrowd(deltas, 119, TOLERANT)
     return tally
   }
-  // Under the first rule's tolerance of 2 tokens (`tokenizer-precheck-v1`). The reference endpoint counts 119; thirteen sellers sign 132, two sign the reference's count.
+  // Under a tolerance of 2 tokens. The reference endpoint counts 119; thirteen sellers sign 132, two sign the reference's count.
   assert.deepEqual(crowd([...new Array<number>(13).fill(132), 119, 120, null, 740]), { measured: 16, agree: 2, largestGroup: 13, groupDelta: 132, corroborated: true, outvoted: true })
   // Sellers within the tolerance of each other are one group.
   assert.equal(crowd([131, 132, 133, 119]).outvoted, true)
@@ -831,7 +829,7 @@ test('sellers outvote the reference when two or more agree on another count and 
   assert.deepEqual(crowd([132]), { measured: 1, agree: 0, largestGroup: 1, groupDelta: 132, corroborated: false, outvoted: false })
   assert.deepEqual(crowd([null, null]), { measured: 0, agree: 0, largestGroup: 0, groupDelta: null, corroborated: false, outvoted: false })
   // The stored differences are in ascending order with the unreadable ones last, so no seller can be told by its place.
-  assert.deepEqual(tokenizerCrowd([132, null, 119, 121], 119, TOKENIZER_PRECHECK_RULE_V1).deltas, [119, 121, 132, null])
+  assert.deepEqual(tokenizerCrowd([132, null, 119, 121], 119, TOLERANT).deltas, [119, 121, 132, null])
 })
 
 /** A seller's audit clock driven by `signal` alone: what a test's audit deadline looks like to the pre-check. */
@@ -1112,11 +1110,7 @@ test('a crowd vote whose pair reports cached input that does not cancel neither 
   assert.deepEqual([outvoting.requests('copy1'), outvoting.requests('honest')], [4, 2])
 })
 
-test('tokenizer-precheck-v3: a pair whose two answers report the same cached amount is kept, for the reference, the seller and the crowd', async () => {
-  assert.equal(TOKENIZER_PRECHECK_RULE.id, 'tokenizer-precheck-v3')
-  const { id: _v3, sameCacheCancels, ...restV3 } = TOKENIZER_PRECHECK_RULE
-  const { id: _v2, ...restV2 } = TOKENIZER_PRECHECK_RULE_V2
-  assert.deepEqual([restV3, sameCacheCancels], [restV2, true], 'v3 is v2 that keeps a same-cache pair, nothing else')
+test('a pair whose two answers report the same cached amount is kept, for the reference, the seller and the crowd', async () => {
   // The pair helper: equal, non-empty cache members cancel; one side only, or different amounts, do not.
   const ask = (baseCache: Record<string, number> | undefined, probedCache: Record<string, number> | undefined) => ({
     base: { cachedInput: baseCache !== undefined, ...(baseCache ? { cache: baseCache } : {}) },
@@ -1124,19 +1118,19 @@ test('tokenizer-precheck-v3: a pair whose two answers report the same cached amo
   }) as never
   assert.equal(cacheBlocks(ask(undefined, undefined)), false, 'no cache, nothing to block')
   assert.equal(cacheBlocks(ask({ cached_tokens: 64 }, { cached_tokens: 64 })), false, 'the same amount cancels')
-  assert.equal(cacheBlocks(ask({ cached_tokens: 64 }, { cached_tokens: 64 }), TOKENIZER_PRECHECK_RULE_V2), true, 'not under v2')
+  assert.equal(cacheBlocks(ask({ cached_tokens: 64 }, { cached_tokens: 64 }), WITHOUT_SAME_CACHE), true, 'not without the rule\'s same-cache part')
   assert.equal(cacheBlocks(ask({ cached_tokens: 64 }, { cached_tokens: 70 })), true)
   assert.equal(cacheBlocks(ask({ cached_tokens: 64 }, undefined)), true)
   assert.equal(cacheBlocks({ base: { cachedInput: true }, probed: { cachedInput: true } } as never), true, 'a record from before the cache was kept never cancels')
-  // The reference: every answer reports the same cached amount, which the count includes. v3 measures it; v2 does not.
+  // The reference: every answer reports the same cached amount, which the count includes. The rule measures it; without its same-cache part it does not.
   const sameCached = (count = MODEL_TOKENIZER): TokenizerReferenceAsk => async (contents) => ({
     upstream: { name: 'referenceEndpoint' },
     results: contents.map((content) => ({ inputTokens: 7 + count(content), cachedInput: true, cache: { 'prompt_tokens_details.cached_tokens': 512 }, failure: null })),
   })
   const reference = await measureTokenizerReference({ ask: sameCached(), probes: PROBES })
-  assert.ok(reference.rounds.every((round) => round.delta !== null), 'measured under v3')
-  const v2Reference = await measureTokenizerReference({ ask: sameCached(), probes: PROBES, rule: TOKENIZER_PRECHECK_RULE_V2 })
-  assert.ok(v2Reference.rounds.every((round) => round.delta === null && /cached input/.test(round.failure ?? '')), 'no measurement under v2')
+  assert.ok(reference.rounds.every((round) => round.delta !== null), 'measured')
+  const withoutSameCache = await measureTokenizerReference({ ask: sameCached(), probes: PROBES, rule: WITHOUT_SAME_CACHE })
+  assert.ok(withoutSameCache.rounds.every((round) => round.delta === null && /cached input/.test(round.failure ?? '')), 'no measurement without it')
   // A seller on another tokenizer whose answers report the same cached amount: off in every round, a mismatch once the
   // model's other sellers back the reference, also with a cache of their own.
   const cachedUsage = (tokens: number) => ({ prompt_tokens: tokens, prompt_tokens_details: { cached_tokens: 512 } })

@@ -46,9 +46,10 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
     const echoFlag = (await echoScreenFor(fakeEchoNetwork({ ...honest, [peer(3)]: (text) => Math.round(tokens(text) * 1.25) }), echoReference, [peer(3), ...crowd])
       .check({ peerId: peer(3), service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true }))!
     assert.deepEqual([capFlag.outcome, echoFlag.outcome], ['flag', 'flag'])
-    // FLIPS is recorded only: a first pass, a first flag of a probe with its 40-reply follow-up, a reasoning mismatch.
+    // FLIPS recorded only (a rule this CLI does not know): a first pass, a first flag of a probe with its 40-reply
+    // follow-up, a reasoning mismatch.
     const flips = (stage: 'first' | 'confirm', outcome: FlipsV1['outcome'], p: number | null, extra: Partial<FlipsV1> = {}): FlipsV1 => ({
-      rule: 'flips-v1', draw: { auditor: auditor.address, model: MODEL, epoch: EPOCH, seed: '00', stage, ...(extra.draw ?? {}) }, service: SERVICE,
+      rule: 'flips-v0', draw: { auditor: auditor.address, model: MODEL, epoch: EPOCH, seed: '00', stage, ...(extra.draw ?? {}) }, service: SERVICE,
       referenceUpstream: null, referenceOneProvider: true, pairs: [], reasks: 0, outcome, counted: false,
       score: p === null ? null : -Math.log10(p) * 2, scoreMax: null, p, reason: outcome, ...extra,
     } as FlipsV1)
@@ -100,7 +101,7 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
     // reports, an hour after them.
     const reportedAt = Date.parse('2026-10-07T00:30:00.000Z') / 1_000
     // A seller that is no random source: nearly every symbol the pair's first word, the two others placed by the slot so
-    // no reply repeats another. Under flips-v2 it flags at either stage's bar.
+    // no reply repeats another. It flags at either stage's bar.
     const flipsOf = (agent: number, stage: 'first' | 'confirm') => signedFlipsRecord({
       draw: { auditor: auditor.address, model: MODEL, epoch: EPOCH, seed: `${stage}-${agent}`, stage }, service: SERVICE, peerId: peer(agent),
       seller: wallets[agent - 1]!, buyer: auditor.address,

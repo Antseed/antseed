@@ -67,49 +67,35 @@ export interface TokenizerPrecheckRule {
   /** Reply limit of every request. Lower limits cut reasoning models off before they report usage. */
   maxTokens: number
   /**
-   * A pair whose two answers (A, and A + B) report the same cached amount is kept (`tokenizer-precheck-v3`): the cache
-   * cancels out of the difference, whether the count includes it or leaves it out. Without it any cached input leaves
-   * the pair without a measurement, which leaves a model whose reference always reports cached input without a test.
+   * A pair whose two answers (A, and A + B) report the same cached amount is kept: the cache cancels out of the
+   * difference, whether the count includes it or leaves it out. Without it any cached input leaves the pair without a
+   * measurement, which leaves a model whose reference always reports cached input without a test.
    */
   sameCacheCancels?: true
 }
 
-/** The first rule, a tolerance of 2 tokens. A used rule is never edited: stored evidence names its rule by id. */
-export const TOKENIZER_PRECHECK_RULE_V1: TokenizerPrecheckRule = Object.freeze({
+/**
+ * The rule (`tokenizer-precheck-v1`): an exact count (`toleranceTokens` 0), three rounds, and a pair whose two answers
+ * report the same cached amount kept (`sameCacheCancels`). A swap is often off the model's count by one or two tokens on
+ * a short text, so a tolerance would let it through. Every round must be off for a mismatch, and the model's other
+ * sellers must back the reference. The same tolerance applies throughout: a seller whose two asks of one text sign
+ * counts one token apart is unstable (hidden input that varies), so the round decides nothing; and a crowd seller backs
+ * the reference only by signing its exact count. A pair whose answers report different cached amounts, or one only,
+ * decides nothing.
+ */
+export const TOKENIZER_PRECHECK_RULE: TokenizerPrecheckRule = Object.freeze({
   id: 'tokenizer-precheck-v1',
   rounds: 3,
-  toleranceTokens: 2,
+  toleranceTokens: 0,
   referenceAsks: 2,
   sellerAsks: 2,
   outvoteSellers: 2,
   corroboratingSellers: 1,
   maxTokens: 64,
-})
-
-/**
- * The rule new audits use: `tokenizer-precheck-v1` with an exact count (`toleranceTokens` 0). A swap is often off the
- * model's count by one or two tokens on a short text, which a tolerance of 2 let through. Every round must still be off
- * for a mismatch, and the model's other sellers must still back the reference. The same tolerance applies throughout:
- * a seller whose two asks of one text sign counts one token apart is unstable (hidden input that varies), so the round
- * decides nothing; and a crowd seller backs the reference only by signing its exact count.
- */
-export const TOKENIZER_PRECHECK_RULE_V2: TokenizerPrecheckRule = Object.freeze({
-  ...TOKENIZER_PRECHECK_RULE_V1,
-  id: 'tokenizer-precheck-v2',
-  toleranceTokens: 0,
-})
-
-/**
- * The rule new audits use: `tokenizer-precheck-v2` (an exact count) that keeps a pair whose two answers report the same
- * cached amount (`sameCacheCancels`). A pair whose answers report different amounts, or one only, still decides nothing.
- */
-export const TOKENIZER_PRECHECK_RULE: TokenizerPrecheckRule = Object.freeze({
-  ...TOKENIZER_PRECHECK_RULE_V2,
-  id: 'tokenizer-precheck-v3',
   sameCacheCancels: true,
 })
 
-const RULES: ReadonlyMap<string, TokenizerPrecheckRule> = new Map([TOKENIZER_PRECHECK_RULE_V1, TOKENIZER_PRECHECK_RULE_V2, TOKENIZER_PRECHECK_RULE].map((rule) => [rule.id, rule]))
+const RULES: ReadonlyMap<string, TokenizerPrecheckRule> = new Map([TOKENIZER_PRECHECK_RULE].map((rule) => [rule.id, rule]))
 
 /** Two answers' cache members, equal and not empty: the same cached amount, which cancels out of their difference. */
 export function sameCache(left: Readonly<Record<string, number>> | undefined, right: Readonly<Record<string, number>> | undefined): boolean {
@@ -1202,7 +1188,7 @@ export function tokenizerPrecheckFingerprint(): Record<string, unknown> {
     probes: SAMPLE_PROBE_SEEDS.map((seed) => generateTokenizerProbe(fixedSequence(seed))),
     judged: SAMPLE_TOKENIZER_ROUNDS.map((rounds) => judgeTokenizerPrecheck(rounds)),
     referenceDeltas: SAMPLE_REFERENCE_ASKS.map((asks) => referenceDelta(asks).delta),
-    // A pair whose two answers report the same cached amount is kept (tokenizer-precheck-v3); different amounts, one
+    // A pair whose two answers report the same cached amount is kept; different amounts, one
     // side only, or no stored cache are not.
     cacheCancels: [
       [{ cached_tokens: 64 }, { cached_tokens: 64 }], [{ cached_tokens: 64 }, { cached_tokens: 70 }], [{ cached_tokens: 64 }, undefined], [undefined, undefined],
@@ -1244,7 +1230,7 @@ const SAMPLE_TOKENIZER_ROUNDS: ReadonlyArray<ReadonlyArray<{ referenceDelta: num
   [{ referenceDelta: null, sellerDeltas: [140, 140] }, { referenceDelta: 90, sellerDeltas: [130, 130] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
   [{ referenceDelta: 100, sellerDeltas: [101], cachedAsks: [true] }],
   [{ referenceDelta: 100, sellerDeltas: [140, 140], cachedAsks: [false, true] }, { referenceDelta: 90, sellerDeltas: [130, 130] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
-  // One token off in every round, the same way twice: a mismatch only under an exact count (tokenizer-precheck-v2).
+  // One token off in every round, the same way twice: a mismatch only under an exact count.
   [{ referenceDelta: 100, sellerDeltas: [101, 101] }, { referenceDelta: 90, sellerDeltas: [91, 91] }, { referenceDelta: 80, sellerDeltas: [81, 81] }],
   // Two rounds off, then the exact count: a match.
   [{ referenceDelta: 100, sellerDeltas: [101, 101] }, { referenceDelta: 90, sellerDeltas: [91, 91] }, { referenceDelta: 80, sellerDeltas: [80] }],
@@ -1265,7 +1251,7 @@ const SAMPLE_TOKENIZER_CROWDS: ReadonlyArray<Array<number | null>> = [
   [132, 121],
   [132, null, null],
   [132, 132, 119],
-  // One seller off with one on the reference's exact count (tokenizer-precheck-v2: only the exact count backs it).
+  // One seller off with one on the reference's exact count (only the exact count backs it).
   [132, 119],
 ]
 

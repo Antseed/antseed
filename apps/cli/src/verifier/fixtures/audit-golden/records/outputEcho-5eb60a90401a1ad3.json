@@ -6,7 +6,7 @@
  "mode": "plain",
  "offset": {"fixed":true,"median":0},
  "outcome": "pass",
- "precheckMatch": false,
+ "precheckMatch": true,
  "reason": "growth: the seller bills the model's growth; fixed amount: the seller adds 0 tokens or fewer",
  "reference": [
   {
@@ -417,7 +417,7 @@
   "askAgain": {"waitMs":5000},
   "growthFloor": 20,
   "growthShare": 0.1,
-  "id": "output-echo-v3",
+  "id": "output-echo-v1",
   "longPassages": [3,4,6],
   "maxTokens": 2048,
   "minBackers": 2,

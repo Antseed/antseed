@@ -191,7 +191,7 @@ test('the echo check\'s summary, cost and request count are pinned, with the cro
     ] },
   } as never
   assert.deepEqual(summarizeOutputEcho(record), {
-    rule: 'output-echo-v3', outcome: 'flag', flag: 'growth', growth: 'flag', fixedAmount: 'inconclusive',
+    rule: 'output-echo-v1', outcome: 'flag', flag: 'growth', growth: 'flag', fixedAmount: 'inconclusive',
     reason: 'grows with the text', growths: [[120, 130], [null]], offset: 7,
   })
   assert.equal(outputEchoRequestCount(record), 6 + 2)

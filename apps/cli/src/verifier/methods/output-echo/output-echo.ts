@@ -16,7 +16,7 @@ import { generateTokenizerProbe } from '../tokens/tokenizer-precheck.js'
 import { peerComparisonKey } from '../../utils.js'
 
 /**
- * The echo check (rules `output-echo-v1` to `-v3`): does a seller bill the output tokens the model wrote?
+ * The echo check, rule `output-echo-v1`: does a seller bill the output tokens the model wrote?
  *
  * The seller repeats a short and a long text word for word, in three rounds. The output tokens it signs are
  * compared with this epoch's reference for the same texts. Two findings are judged apart, each with its own
@@ -37,7 +37,7 @@ import { peerComparisonKey } from '../../utils.js'
  * the implementation: honest 0 flags; a 20% over-bill flagged in every decided check.
  */
 export interface OutputEchoRule {
-  id: 'output-echo-v1' | 'output-echo-v2' | 'output-echo-v3'
+  id: 'output-echo-v1'
   /** Rounds of one short and one long text. */
   rounds: number
   /** Tokens within which two counts of one text are the same (a seller's two asks; a crowd vote's two texts). */
@@ -77,18 +77,20 @@ export interface OutputEchoRule {
   visibleCounts: boolean
   /**
    * An ask of the audited seller with no signed answer after a failure that can pass (a timeout, a 429, a 5xx, no
-   * ResponseAuth) is asked once more after `waitMs`, before its round is judged (`output-echo-v3` on). A refusal, a
+   * ResponseAuth) is asked once more after `waitMs`, before its round is judged. A refusal, a
    * changed text or a reply that shows reasoning is an answer and is not asked again. The crowd's votes are not.
    */
   askAgain?: { waitMs: number }
 }
 
 /**
- * The first rule. Its reply limit of 1,024 tokens cut off the longest text (six passages) on a tokenizer that writes
- * it in more tokens than that: the reference then had no whole echo, and the check did not apply to the model at all
- * (in a dry run, every Claude model and MiMo). Kept so that evidence stored under it is judged by it.
+ * The rule (`output-echo-v1`). The reply limit of 2,048 tokens echoes the longest text (six passages) whole on every
+ * audited model's tokenizer, also with the reasoning a model counted on its visible answer writes before it; a limit of
+ * 1,024 cut it off on some tokenizers, at the reference too, so the check did not apply to those models. Both parts
+ * count: the fixed amount (`offsetCounts`) and every finding of a model counted on its visible answer (`visibleCounts`).
+ * An ask with no signed answer is asked once more (`askAgain`).
  */
-export const OUTPUT_ECHO_RULE_V1: OutputEchoRule = Object.freeze({
+export const OUTPUT_ECHO_RULE: OutputEchoRule = Object.freeze({
   id: 'output-echo-v1',
   rounds: 3,
   tolerance: 2,
@@ -97,7 +99,7 @@ export const OUTPUT_ECHO_RULE_V1: OutputEchoRule = Object.freeze({
   minGap: 150,
   longPassages: [3, 4, 6],
   minGapRatio: 4 / 3,
-  maxTokens: 1024,
+  maxTokens: 2048,
   growthFloor: 20,
   growthShare: 0.1,
   offsetFloor: 20,
@@ -105,31 +107,12 @@ export const OUTPUT_ECHO_RULE_V1: OutputEchoRule = Object.freeze({
   minSpread: 2,
   minOthers: 3,
   minBackers: 2,
-  offsetCounts: false,
-  visibleCounts: false,
-})
-
-/**
- * The rule of a new audit: the first rule with a reply limit of 2,048 tokens, so the longest text is echoed whole on
- * every audited model's tokenizer, also with the reasoning a model counted on its visible answer writes before it.
- * The texts, the rounds and every margin are the first rule's.
- */
-export const OUTPUT_ECHO_RULE_V2: OutputEchoRule = Object.freeze({ ...OUTPUT_ECHO_RULE_V1, id: 'output-echo-v2', maxTokens: 2048 })
-
-/**
- * The rule of a new audit: the second rule with both its parts counted, the fixed amount and every finding of a model
- * counted on its visible answer (`offsetCounts`, `visibleCounts`), and an ask with no signed answer asked once more
- * (`askAgain`). The texts, the rounds, the reply limit and every margin are the second rule's.
- */
-export const OUTPUT_ECHO_RULE: OutputEchoRule = Object.freeze({
-  ...OUTPUT_ECHO_RULE_V2,
-  id: 'output-echo-v3',
   offsetCounts: true,
   visibleCounts: true,
   askAgain: Object.freeze({ waitMs: 5_000 }),
 })
 
-const RULES: ReadonlyMap<string, OutputEchoRule> = new Map([OUTPUT_ECHO_RULE_V1, OUTPUT_ECHO_RULE_V2, OUTPUT_ECHO_RULE].map((rule) => [rule.id, rule]))
+const RULES: ReadonlyMap<string, OutputEchoRule> = new Map([OUTPUT_ECHO_RULE].map((rule) => [rule.id, rule]))
 
 /** The rule stored evidence was judged by; undefined for an id this CLI does not know. */
 export function outputEchoRuleById(id: string): OutputEchoRule | undefined {

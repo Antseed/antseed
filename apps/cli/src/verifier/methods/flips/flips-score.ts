@@ -83,7 +83,7 @@ export interface FlipsRule {
    */
   counts: { default: boolean; never: readonly string[] }
   /**
-   * Replies that hold no sequence (`flips-v2` on; a rule without it scores them as short replies). A reply with fewer
+   * Replies that hold no sequence (a rule without it scores them as short replies). A reply with fewer
    * symbols of its pair than `below` holds none: it is left out of the sample on both sides, and a pair where more
    * than `maxShare` of one side's replies hold none has no result. A reply cut at the token limit that holds none spent
    * its budget reasoning (a host's placeholder text, say), so it shows reasoning for the profile. The check's size,
@@ -91,22 +91,22 @@ export interface FlipsRule {
    */
   noSequence?: { below: number; maxShare: number }
   /**
-   * Repeated replies (`flips-v2` on): a seller that returns one stored answer to several identical requests gives no
+   * Repeated replies: a seller that returns one stored answer to several identical requests gives no
    * sample of the model. A pair has no result when the seller has at least `minReplies` replies with a sequence and at
    * least `sellerShare` of them repeat another one exactly, while under `referenceShare` of the reference's do (a
    * reference repeats a sequence in up to a quarter of its replies on its own).
    */
   repeats?: { sellerShare: number; referenceShare: number; minReplies: number }
-  /** Every seller slot stores its asks (`FlipsSellerSlotV1.asks`), so its trail is checked (`flips-v2` on). */
+  /** Every seller slot stores its asks (`FlipsSellerSlotV1.asks`), so its trail is checked. */
   asksRequired?: true
   /**
    * A confirmation of a FLIPS flag whose FLIPS is scored between its bars (above the confirmation bar, at most
-   * `passAbove`) clears that flag like a pass, when every other test it repeats passed (`flips-v2` on): a score between
+   * `passAbove`) clears that flag like a pass, when every other test it repeats passed: a score between
    * the bars is no swap by the confirmation's own bar. A FLIPS with no result still clears nothing.
    */
   confirmBetweenClears?: true
   /**
-   * A second look (`flips-v3` on): a first audit's check scored between its bars (above the first bar, at most
+   * A second look: a first audit's check scored between its bars (above the first bar, at most
    * `passAbove`) asks each pair `morePerPair` more times and is judged on all its replies, with the calibration for that
    * size, against `bar`; above `passAbove` it passes. A second look with no result leaves the first look's score.
    */
@@ -114,13 +114,21 @@ export interface FlipsRule {
 }
 
 /**
- * The first rule, recorded only everywhere. A used rule is never edited: stored evidence names its rule by id, and a
- * record counts only as its own rule says (`method.ts`).
+ * The rule (`flips-v1`). FLIPS counts toward the verdict, except for MiniMax M3, whose honest sellers on another host
+ * than the reference's score like a swap, and for a model the eval never measured.
  *
- * Calibrations: fitted on the eval's honest checks of each size
- * (ln score, Student-t, location = mean, scale = sd · sqrt(1 + 1/n), df = n − 1).
+ * - Calibrations: fitted on the eval's honest checks of each size (ln score, Student-t, location = mean,
+ *   scale = sd · sqrt(1 + 1/n), df = n − 1).
+ * - Bars: 0.2% on a first audit (at 0.5% the eval flagged one honest check on its first audit, one the confirmation
+ *   passed; at 0.2% none on its test half) and 0.1% on a confirmation. A pass needs p above 10%: on the eval's 40-reply
+ *   checks no swap that FLIPS flags on its first audit passes there, and 90% of honest checks do.
+ * - Replies that hold no sequence are left out (`noSequence`: a host's placeholder text, say, is no answer to score),
+ *   and repeated replies give no result (`repeats`).
+ * - A first audit scored between its bars takes a second look: 10 more replies per pair, judged on all 40 with the
+ *   40-reply calibration. Its bar of 0.1% was set by an offline replay of the eval's honest checks: of the honest
+ *   40-reply checks whose first 20 replies scored between the bars, none scores at or below it; the nearest is 0.13%.
  */
-export const FLIPS_RULE_V1: FlipsRule = Object.freeze({
+export const FLIPS_RULE: FlipsRule = Object.freeze({
   id: 'flips-v1',
   symbols: 64,
   example: Object.freeze([0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 0] as const),
@@ -138,42 +146,13 @@ export const FLIPS_RULE_V1: FlipsRule = Object.freeze({
     Object.freeze({ replies: 20, location: 0.32852323817245566, scale: 0.5777006307374379, degreesOfFreedom: 596, honestChecks: 597 }),
     Object.freeze({ replies: 40, location: 0.32894647048005327, scale: 0.6468710574807611, degreesOfFreedom: 250, honestChecks: 251 }),
   ]),
-  // The eval replay's best pair of bars (0.5% on the first audit, 0.1% on the confirmation). A pass needs p above 10%:
-  // on the eval's 40-reply checks no swap that FLIPS flags on its first audit passes there, and 90% of honest checks do. FLIPS is recorded only everywhere until the dry run meets its conditions, and never counts
-  // for MiniMax M3, whose honest sellers on another host than the reference's score like a swap.
-  bar: Object.freeze({ first: 0.005, confirm: 0.001 }),
+  bar: Object.freeze({ first: 0.002, confirm: 0.001 }),
   passAbove: 0.1,
-  counts: Object.freeze({ default: false, never: Object.freeze(['minimax-m3']) }),
-})
-
-/**
- * `flips-v1` with FLIPS counting (never for MiniMax M3, nor for a model the eval never measured), replies that hold no
- * sequence left out (`noSequence`: a host's placeholder text, say, is no answer to score) and repeated replies giving
- * no result (`repeats`). Pass and calibrations are v1's.
- */
-export const FLIPS_RULE_V2: FlipsRule = Object.freeze({
-  ...FLIPS_RULE_V1,
-  id: 'flips-v2',
   counts: Object.freeze({ default: true, never: Object.freeze(['minimax-m3']) }),
   noSequence: Object.freeze({ below: 8, maxShare: 0.2 }),
-  // A first bar of 0.2% (v1: 0.5%): at 0.5% the eval flagged one honest check on its first audit (one the confirmation
-  // passed); at 0.2% none on its test half. The confirmation bar stays 0.1%.
-  bar: Object.freeze({ first: 0.002, confirm: 0.001 }),
   repeats: Object.freeze({ sellerShare: 0.5, referenceShare: 0.25, minReplies: 4 }),
   asksRequired: true,
   confirmBetweenClears: true,
-})
-
-/**
- * The rule new audits use: `flips-v2` with a second look for a first audit scored between its bars: 10 more replies per
- * pair, judged on all 40 with the 40-reply calibration. Its bar of 0.1% (the confirmation's) was set by an offline
- * replay of the eval's honest checks: of the honest 40-reply checks whose first 20 replies scored between the bars,
- * none scores at or below it, so no honest check the eval holds is flagged by the second look; the nearest is 0.13%.
- * Everything else is v2's.
- */
-export const FLIPS_RULE: FlipsRule = Object.freeze({
-  ...FLIPS_RULE_V2,
-  id: 'flips-v3',
   secondLook: Object.freeze({ morePerPair: 10, bar: 0.001 }),
 })
 
@@ -244,7 +223,7 @@ export function flipsCounts(model: string, rule: FlipsRule = FLIPS_RULE): boolea
   return rule.counts.default && !rule.counts.never.includes(model.toLowerCase()) && flipsRequestFor(model).measured
 }
 
-const RULES: ReadonlyMap<string, FlipsRule> = new Map([FLIPS_RULE_V1, FLIPS_RULE_V2, FLIPS_RULE].map((rule) => [rule.id, rule]))
+const RULES: ReadonlyMap<string, FlipsRule> = new Map([FLIPS_RULE].map((rule) => [rule.id, rule]))
 
 /** The rule stored evidence was judged by; undefined for an id this CLI does not know. */
 export function flipsRuleById(id: string): FlipsRule | undefined {
