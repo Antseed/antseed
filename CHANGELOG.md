@@ -11,6 +11,38 @@ This project uses selective package publishing. Each release entry lists the pub
 - Zero data access (CLI, `@antseed/node`, `@antseed/buyer-core`, `@antseed/provider-openai`, Gateway Console): a routing policy can require services the seller cannot read (`requireZeroDataAccess`, **Zero data access only** in the console, `--require-zero-data-access` on `antseed gateway … policy set`, or the per-request header `x-antseed-require-zero-data-access`). The buyer fetches the upstream's TEE attestation through the seller, verifies the TDX quote and its binding to the model key and a fresh nonce itself, then encrypts every message to that key and decrypts the streamed answer; the seller relays ciphertext with its own upstream key. Requests that cannot be fully encrypted (images, audio, tools, a message with a field beside its role and text, such as an earlier answer's reasoning, or a request field other than the standard generation settings, such as a structured-output schema, stop sequences or a user id) are refused instead of sent in plaintext. A gateway sends a request that requires zero data access only to a buyer that applies the requirement, and in a form an older buyer refuses; with an older buyer it answers `503 buyer_policy_unsupported`. Sellers offer it on Venice `e2ee-*` models by adding the `e2ee` category to the service; the `openai` provider relays the attestation on a free, rate-limited seller route.
 - Seller-blind relay (`@antseed/keyed-relay`, CLI, `@antseed/node`, `@antseed/protocol`, `@antseed/provider-openai`, Gateway Console): zero data access for upstreams without end-to-end encryption, with the seller's own key. A seller marks a service `seller-blind`; a buyer with a paid-up channel runs TLS to the upstream through a new raw relay stream on the seller, which forwards ciphertext only, and proves the session keys in zero knowledge. The seller then writes the request head with its key as the session's first record, without being able to read the session, and the buyer never sees the key. The seller holds the rest of the request until the buyer has revealed its headers and the body's last fields (model, output-token limit, `n`, usage in a stream, the fields the seller pins) and they pass, with the usual payment checks; the messages stay hidden. After the answer, the buyer reveals only the status line and the usage the seller bills by, and only when that part of the answer holds none of its text; it signs for the charge only up to its own price from the usage it read, or, for an answer whose usage it could not reveal, from the estimate the seller bills by, which it works out from its own request and answer. A request that needs the seller's TEE check is relayed only on the connection the check covered. The cryptography is a Rust sidecar on TLSNotary's building blocks, published per platform as `@antseed/keyed-relay-<platform>-<arch>` and installed with `@antseed/keyed-relay` (or `ANTSEED_KEYED_RELAY_BIN`). An answer the buyer leaves or does not reveal is billed by an estimate within the request the seller checked, and the buyer signs for an answer that did not end (a deadline, a broken stream, a client that left) by the same estimate from what reached it, so its next relayed request is admitted; relayed requests are charged to the channel that admitted them and metered like direct ones, and the client receives only the response headers a seller exposes. A request on a channel that can no longer pay for it is sent once more after the top-up or on a new channel, and an admitted request that gets no answer ends at a deadline (5 minutes to start, 5 minutes between bytes, 30 minutes in all). A relayed request takes one of the provider's concurrent-request slots like a direct one, and an answer longer than 64 MiB is cut off at that length and billed by an estimate from what was relayed. A seller ends a session whose buyer stops in the middle of a proof step after 2 minutes, and asks a buyer with unsigned relayed charges for the signature, then waits a few seconds for it, before it refuses that buyer a new credential. A buyer asks for its credential from the provider its route selected, and relays a pinned seller-blind service even while its seller announces it as failing. New seller settings `OPENAI_KEYED_RELAY_MAX_TOKENS`, `OPENAI_KEYED_RELAY_MAX_TOKENS_FIELD` and `OPENAI_KEYED_RELAY_PINNED_JSON`.
 
+### Changed
+
+- Website: `llms.txt` now opens with the current positioning (the open intelligence network), the mission, the vision and the three value props. It gains a list of who can provide, with Colony and Diem Antseed as examples of a pool serving as one provider, a model verification section (results, the effect on routing and `antseed verifier check`), a list of the agent skills, an ANTS section on liquid inference that gathers the staking and rewards pages, and links to the site's pages. It also links the "Test your seller before going live" doc, and no longer calls `/network/` a live view of peers and models.
+
+### Fixed
+
+- Node: DHT nodes now forget a peer 20–40 minutes after its last announcement. Every node used to keep each announcement forever, while a node answers a lookup with at most 100 of the peers it stores for a topic, so peers that had stopped or moved piled up next to the live ones: discovery spent most of its time fetching metadata from dead endpoints, and a lookup could miss live sellers. A peer that keeps announcing, at the current 5-minute interval or the older 15-minute one, stays listed. The DHT bootstrap nodes and other long-running peers apply this once they run the new version. `DHTNodeConfig.peerRecordMaxAgeMs` sets the lifetime (default 30 minutes).
+
+## 2026-11-23 — CLI 0.1.258, Node 0.2.190, Desktop 0.2.93
+
+### Packages
+
+- `@antseed/cli@0.1.258`
+- `@antseed/node@0.2.190`
+- `@antseed/api-adapter@0.1.67`
+- `@antseed/buyer-core@0.1.54`
+- `@antseed/web-sdk@0.1.48`
+- `@antseed/provider-alibaba-video@0.1.15`
+- `@antseed/provider-fal-image@0.1.11`
+- `@antseed/provider-fal-video@0.1.27`
+- `@antseed/provider-venice-video@0.1.28`
+- `@antseed/payments@0.1.117`
+- `@antseed/ants@0.1.75`
+
+### Desktop
+
+- `@antseed/desktop@0.2.93`
+
+### Fixed
+
+- Buyers (gateway/CLI): streamed answers from sellers that serve the Anthropic Messages format, requested in OpenAI Chat Completions or Responses format, now carry the seller's cache reads in the final usage chunk. Some Anthropic-compatible upstreams report input and cache-read tokens only in the closing `message_delta` event; those counts were dropped, so `prompt_tokens_details.cached_tokens` was missing and all input looked uncached. Non-streamed answers were not affected.
+
 ## 2026-11-22 — CLI 0.1.257, Desktop 0.2.92
 
 ### Packages
