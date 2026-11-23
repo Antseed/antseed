@@ -1033,6 +1033,51 @@ describe('createStreamingAdapter anthropic to chat', () => {
     expect(events.filter((event) => event.data === '[DONE]')).toHaveLength(1);
   });
 
+  it('reports cache reads that arrive only in message_delta in the final chat usage chunk', () => {
+    const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-chat-completions', '');
+    const events = relayStreamForTest(adapter, [
+      'event: message_start\n'
+      + 'data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet","usage":{"input_tokens":0,"output_tokens":0}}}\n\n',
+      ANTHROPIC_STREAM_FRAMES[1]!,
+      'event: message_delta\n'
+      + 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":100,"cache_read_input_tokens":9000,"output_tokens":50}}\n\n',
+      ANTHROPIC_STREAM_FRAMES[3]!,
+    ]);
+
+    const usage = events
+      .filter((event) => event.data !== '[DONE]')
+      .map((event) => (JSON.parse(event.data) as { usage?: unknown }).usage)
+      .filter(Boolean)
+      .pop();
+    expect(usage).toEqual({
+      prompt_tokens: 9100,
+      completion_tokens: 50,
+      total_tokens: 9150,
+      prompt_tokens_details: { cached_tokens: 9000 },
+    });
+  });
+
+  it('keeps message_start cache reads when message_delta reports only output tokens', () => {
+    const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-chat-completions', '');
+    const events = relayStreamForTest(adapter, [
+      'event: message_start\n'
+      + 'data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet","usage":{"input_tokens":100,"cache_read_input_tokens":9000,"output_tokens":1}}}\n\n',
+      ...ANTHROPIC_STREAM_FRAMES.slice(1),
+    ]);
+
+    const usage = events
+      .filter((event) => event.data !== '[DONE]')
+      .map((event) => (JSON.parse(event.data) as { usage?: unknown }).usage)
+      .filter(Boolean)
+      .pop();
+    expect(usage).toEqual({
+      prompt_tokens: 9100,
+      completion_tokens: 2,
+      total_tokens: 9102,
+      prompt_tokens_details: { cached_tokens: 9000 },
+    });
+  });
+
   it('still finishes a stream that ends without message_stop', () => {
     const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-chat-completions', '');
     const events = relayStreamForTest(adapter, ANTHROPIC_STREAM_FRAMES.slice(0, 3));

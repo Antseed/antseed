@@ -271,7 +271,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
             ? data.delta as Record<string, unknown>
             : {};
           finishReason = anthropicStopReasonToCanonical(delta.stop_reason);
-          usage = mergeOutputUsage(usage, extractUsage({ usage: data.usage }));
+          // Some Anthropic-compatible upstreams report input and cache reads only here, not in message_start.
+          usage = mergeUsage(usage, extractUsage({ usage: data.usage }));
           continue;
         }
 
@@ -998,10 +999,6 @@ function mergeUsage(previous: TokenUsage, next: TokenUsage): TokenUsage {
     freshInputTokens: input.freshInputTokens,
     cachedInputTokens: input.cachedInputTokens,
   };
-}
-
-function mergeOutputUsage(previous: TokenUsage, next: TokenUsage): TokenUsage {
-  return { ...previous, outputTokens: next.outputTokens > 0 ? next.outputTokens : previous.outputTokens };
 }
 
 function openAIChatUsage(usage: TokenUsage): Record<string, unknown> {
