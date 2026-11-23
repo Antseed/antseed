@@ -589,6 +589,55 @@ describe('chat controller', () => {
     expect(uiState.chatActiveConversation).toBeNull();
   });
 
+  it.each(['full', 'manual'] as const)('a new chat\'s first message runs with the model\'s saved %s permission, even while it is still being read', async (saved) => {
+    // The saved mode arrives late, as it can over IPC: the send must not go out with the reset to manual.
+    const read = deferred<void>();
+    const chatPermissionModeGet = vi.fn(async (modelId: string) => {
+      await read.promise;
+      return { ok: true, mode: modelId === 'model-a' ? saved : 'manual' };
+    });
+    const chatAiSendStream = vi.fn(async () => ({ ok: true }));
+    const { api } = setup(undefined, { chatPermissionModeGet, chatAiSendStream });
+    await api.refreshChatConversations();
+    api.sendMessage('first message');
+    await tick(20);
+    read.resolve();
+    await waitFor(() => chatAiSendStream.mock.calls.length === 1);
+    const [convId, , modelId, , permissionMode] = chatAiSendStream.mock.calls[0] as unknown as [string, string, string, unknown, string];
+    expect({ convId, modelId, permissionMode }).toEqual({ convId: 'conv-3', modelId: 'model-a', permissionMode: saved });
+  });
+
+  it('a permission the user picks while the saved one is still being read is the one the run goes out with', async () => {
+    const read = deferred<void>();
+    const chatAiSendStream = vi.fn(async () => ({ ok: true }));
+    const { api, uiState } = setup(undefined, {
+      chatPermissionModeGet: async () => { await read.promise; return { ok: true, mode: 'manual' }; },
+      chatPermissionModeSet: async () => ({ ok: true }),
+      chatAiSendStream,
+    });
+    await api.refreshChatConversations();
+    await api.openConversation('conv-a');
+    api.setChatPermissionMode('full');
+    api.sendMessage('hello');
+    await tick(20);
+    read.resolve();
+    await waitFor(() => chatAiSendStream.mock.calls.length === 1);
+    expect((chatAiSendStream.mock.calls[0] as unknown[])[4]).toBe('full');
+    expect(uiState.chatPermissionMode).toBe('full');
+  });
+
+  it('a new chat\'s first message runs with approval when the model\'s saved permission cannot be read', async () => {
+    const chatAiSendStream = vi.fn(async () => ({ ok: true }));
+    const { api } = setup(undefined, {
+      chatPermissionModeGet: async () => { throw new Error('ipc down'); },
+      chatAiSendStream,
+    });
+    await api.refreshChatConversations();
+    api.sendMessage('first message');
+    await waitFor(() => chatAiSendStream.mock.calls.length === 1);
+    expect((chatAiSendStream.mock.calls[0] as unknown[])[4]).toBe('manual');
+  });
+
   it('sends both first messages when a second new chat is sent while the first is still being made', async () => {
     const conversations = [conv('conv-a', 'model-a'), conv('conv-b', 'model-b')];
     const creations: Array<{ resolve: () => void }> = [];
