@@ -3,6 +3,8 @@ declare module "bittorrent-dht" {
 
   interface DHTOptions {
     bootstrap?: string[];
+    /** Ms an announced peer is kept; 0 or unset keeps it forever. */
+    maxAge?: number;
   }
 
   class DHT extends EventEmitter {
