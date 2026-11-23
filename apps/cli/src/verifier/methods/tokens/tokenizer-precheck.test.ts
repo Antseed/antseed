@@ -18,6 +18,7 @@ import {
   generateTokenizerProbe,
   judgeTokenizerPrecheck,
   judgeTokenizerRound,
+  REFERENCE_ROUTE_AMBIGUOUS,
   measureTokenizerReference,
   referenceDelta,
   runTokenizerPrecheck,
@@ -143,6 +144,37 @@ test('a reference that reports cached input, or answers from two providers, has 
   // A stored ask without the two fields is not taken for a clean one.
   const bare = { baseTokens: 26, probedTokens: 143 } as unknown as TokenizerReferenceAskV1
   assert.equal(referenceDelta([bare, bare]).delta, null)
+})
+
+test('a route that may serve several providers and names none in a round measures nothing, though it agrees with itself', async () => {
+  // Every answer agrees and names no provider. On a route known to serve one host that is a measurement; on one that
+  // may serve several (a router not pinned to one), A and A + B could come from two deployments.
+  const unnamed = (oneProvider: boolean | undefined) => async (contents: readonly string[]) => ({
+    upstream: null, ...(oneProvider === undefined ? {} : { oneProvider }),
+    results: contents.map((content) => ({ inputTokens: MODEL_TOKENIZER(content), cachedInput: false, provider: null, failure: null })),
+  })
+  const probes = PROBES.slice(0, 3)
+  const several = await measureTokenizerReference({ ask: unnamed(false), probes })
+  assert.deepEqual(several.rounds.map((round) => [round.delta, round.ambiguous, round.failure]),
+    probes.map(() => [null, true, REFERENCE_ROUTE_AMBIGUOUS]))
+  for (const oneProvider of [true, undefined]) {
+    const one = await measureTokenizerReference({ ask: unnamed(oneProvider), probes })
+    assert.deepEqual(one.rounds.map((round) => [round.delta, round.ambiguous]), probes.map(({ a, b }) => [MODEL_TOKENIZER(a + b) - MODEL_TOKENIZER(a), undefined]), String(oneProvider))
+  }
+  // Named answers on such a route are judged as before: one provider measures.
+  const named = await measureTokenizerReference({
+    ask: async (contents) => ({ upstream: null, oneProvider: false, results: contents.map((content) => ({ inputTokens: MODEL_TOKENIZER(content), cachedInput: false, provider: 'Provider-A', failure: null })) }),
+    probes,
+  })
+  assert.ok(named.rounds.every((round) => round.delta !== null && round.ambiguous === undefined))
+  // Stored: a round marked ambiguous has no difference, whatever its asks give; a round marked so that claims one is refused.
+  const asked = await precheck(seller({ usage: OTHER_TOKENIZER }), several)
+  const seller_ = asked
+  assert.equal(seller_.outcome, 'inconclusive')
+  assert.doesNotThrow(() => validateTokenizerPrecheck(seller_))
+  const claimed = structuredClone(seller_)
+  claimed.rounds[0]!.reference.delta = MODEL_TOKENIZER(claimed.rounds[0]!.a + claimed.rounds[0]!.b) - MODEL_TOKENIZER(claimed.rounds[0]!.a)
+  assert.throws(() => validateTokenizerPrecheck(claimed), /the reference difference does not follow from its asks/)
 })
 
 test('a probe the reference reports cached input for is replaced like a refused one', async () => {

@@ -14,7 +14,7 @@ import type { ResponseAuthReader } from '../../response-auth-reader.js'
 import type { SellerClock } from '../shared/seller-clock.js'
 import { SIGNED_REQUEST_TRIES, sendSignedRequest, signedExchange, type SignedSellerRequestV1 } from '../shared/signed-seller-request.js'
 import { requestAsksOnly } from './tokenizer-request.js'
-import { asError } from '../../utils.js'
+import { asError, peerComparisonKey } from '../../utils.js'
 
 /**
  * The tokenizer pre-check: a cheap screen `verifier run` runs before a seller's KBF questions.
@@ -171,6 +171,12 @@ export interface TokenizerReferenceAskV1 {
 /** The reference's measurement of one probe. */
 export interface TokenizerReferenceRoundV1 {
   asks: TokenizerReferenceAskV1[]
+  /**
+   * The reference's route may serve several providers (`oneProvider` false) and none of the round's answers names
+   * one: its asks cannot be shown to come from one host, so the round has no difference whatever they agree on.
+   * Absent otherwise, and on records from before it was kept.
+   */
+  ambiguous?: true
   /**
    * B's length in the reference model's tokenizer: the difference every ask gave. Null when they are not all
    * readable, growing, free of cached input, from one provider and equal (`referenceDelta`).
@@ -424,6 +430,9 @@ export type TokenizerReferenceAsk = (contents: readonly string[], signal?: Abort
   results: ReadonlyArray<{ inputTokens: number | null; cachedInput?: boolean; cache?: Readonly<Record<string, number>>; provider?: string | null; failure: string | null }>
 }>
 
+/** Why a round of a route that may serve several providers, whose answers name none, has no reference difference. */
+export const REFERENCE_ROUTE_AMBIGUOUS = 'the reference\'s route may serve several providers and names none'
+
 /** Probes written for one round before it is left without a reference difference. */
 export const REFERENCE_PROBE_TRIES = 3
 
@@ -470,9 +479,17 @@ export async function measureTokenizerReference(input: {
           providers: [base?.provider ?? null, probed?.provider ?? null],
         }
       })
-      const judged = referenceDelta(asks, rule)
+      // A route that may serve several providers and names none in this round's answers leaves their host unknown: two
+      // deployments can each agree with themselves on different counts, so the round is not measured.
+      const ambiguous = asked.oneProvider === false && asks.every((entry) => entry.providers.every((provider) => provider === null))
+      const judged = ambiguous ? { delta: null, failure: REFERENCE_ROUTE_AMBIGUOUS } : referenceDelta(asks, rule)
       const failed = asked.results.find((result) => result.failure)
-      const round = { asks, delta: judged.delta, failure: judged.delta === null ? failed?.failure ?? judged.failure : null }
+      const round: TokenizerReferenceRoundV1 = {
+        asks,
+        ...(ambiguous ? { ambiguous: true as const } : {}),
+        delta: judged.delta,
+        failure: judged.delta === null ? (ambiguous ? judged.failure : failed?.failure ?? judged.failure) : null,
+      }
       if (asked.results.length > 0 && asked.results.every((result) => result.cachedInput === true)) allCached.add(round)
       return round
     } catch (error) {
@@ -827,7 +844,7 @@ async function askSeller(
 
 /** A peer ID as the pre-check compares them: without `0x`, in lower case. */
 function peerKey(peerId: string): string {
-  return peerId.replace(/^0x/i, '').toLowerCase()
+  return peerComparisonKey(peerId)
 }
 
 /** What `promise` gives, or `otherwise` once `signal` is aborted first. A rejection is passed on. */
@@ -951,7 +968,8 @@ export function validateTokenizerPrecheck(record: TokenizerPrecheckV1, auditedPe
   const judged = record.rounds.map((round, index): TokenizerRoundDeltas => {
     const where = `tokenizer pre-check round ${index + 1}`
     if (!isSafeProbe(round.b)) throw new Error(`${where} compares text the probe guard refuses`)
-    const reference = referenceDelta(round.reference.asks, rule).delta
+    // A round marked ambiguous measures nothing; otherwise the stored difference follows from the stored asks.
+    const reference = round.reference.ambiguous === true ? null : referenceDelta(round.reference.asks, rule).delta
     if (reference !== round.reference.delta) throw new Error(`${where}: the reference difference does not follow from its asks`)
     if (round.seller.length > rule.sellerAsks) throw new Error(`${where}: the seller was asked more often than the rule allows`)
     for (const ask of round.seller) {

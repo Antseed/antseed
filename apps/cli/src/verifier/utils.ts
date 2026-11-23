@@ -31,3 +31,8 @@ export function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undef
     )
   })
 }
+
+/** A seller's peer id as the verifier compares it: lower case, without `0x`. It does not trim. */
+export function peerComparisonKey(peerId: string): string {
+  return peerId.toLowerCase().replace(/^0x/, '')
+}
