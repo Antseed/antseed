@@ -103,8 +103,9 @@ export function readKeyedRelayReveal(reveal: KeyedRelayReveal): KeyedRelayBillin
 /**
  * The usage a keyed-relay request is billed by when the buyer revealed none
  * for a delivered answer: an estimate from the bytes relayed each way, at
- * about four bytes a token. The buyer signs the charge only up to its
- * tolerance over the usage it read itself.
+ * about four bytes a token, for a request no payment check admitted. The
+ * buyer signs the charge only up to its tolerance over its own price for the
+ * answer.
  */
 export function keyedRelayEstimatedUsage(bytesUp: number, bytesDown: number): ResponseUsage {
   const inputTokens = Math.ceil(Math.max(0, bytesUp) / 4);
@@ -119,7 +120,9 @@ export function keyedRelayEstimatedUsage(bytesUp: number, bytesDown: number): Re
  * length (`responseLength`: status line, headers, body with its framing) at
  * about four bytes a token, never over the output limit the request ended
  * with. The bytes relayed would overstate it many times: they count TLS
- * record overhead and a stream's event framing.
+ * record overhead and a stream's event framing. The buyer holds all three
+ * figures and prices such an answer by this same function
+ * (`recordRelayedCost`), so it signs what the seller charges.
  */
 export function keyedRelayUnrevealedUsage(inputTokens: number, responseLength: number, maxOutputTokens: number | null): ResponseUsage {
   const answered = Math.ceil(Math.max(0, responseLength) / 4);

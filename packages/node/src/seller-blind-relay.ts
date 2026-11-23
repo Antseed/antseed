@@ -235,8 +235,8 @@ export class SellerBlindRelay {
    * upstream never sees a request the seller has not bounded. The stream is
    * billed from the usage the buyer reveals at the end; a delivered answer
    * with no usage shown is billed by an estimate within the request the
-   * seller checked (`keyedRelayUnrevealedUsage`), which the buyer signs only
-   * up to its tolerance over the usage it read.
+   * seller checked (`keyedRelayUnrevealedUsage`), which the buyer prices the
+   * same way from its own request and answer (`recordRelayedCost`).
    */
   private _grant(credential: LiveCredential, streamId: string): RelayGrant {
     const { target } = credential;

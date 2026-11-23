@@ -1595,9 +1595,10 @@ export class AntseedNode extends EventEmitter {
   }
 
   /**
-   * Buyer side: a request answered over the blind relay. Prices it from the
-   * usage in `response` and the seller's advertised prices, so the seller's
-   * charge for `requestId` is signed only up to that cost.
+   * Buyer side: a request answered over the blind relay. Prices it at the
+   * seller's advertised prices by the usage the seller will bill it by
+   * (`recordRelayedCost`), so the seller's charge for `requestId` is signed
+   * only up to that cost.
    */
   recordRelayedResponse(
     peer: PeerInfo,

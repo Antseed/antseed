@@ -2,6 +2,8 @@
 // and this one costs nothing. Its certificate is the keyed-relay test fixture's, signed by that test CA.
 // usage: node mock-upstream.mjs [port] [expected bearer key]
 // HTTPS on 127.0.0.1 and ::1 at <port> (default 18443); plain-HTTP stats on 127.0.0.1 at <port + 1> (GET /stats).
+// A prompt with `[[usage-with-answer]]` gets a streamed answer whose usage sits on the event with its last words,
+// as some upstreams send it, and a few fixed tokens of usage for a long answer.
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
@@ -15,6 +17,9 @@ const expectedKey = process.argv[3] ?? process.env.TESTBENCH_UPSTREAM_KEY ?? 'sk
 const FIRST_BYTE_MS = Number(process.env.MOCK_FIRST_BYTE_MS ?? 250);
 const CHUNK_GAP_MS = Number(process.env.MOCK_CHUNK_GAP_MS ?? 60);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const USAGE_WITH_ANSWER = 'usage-with-answer';
+/** About 2,000 bytes of answer text. */
+const LONG_ANSWER = ' giraffe'.repeat(250);
 
 const seen = [];
 let inFlight = 0;
@@ -47,7 +52,10 @@ async function answer(req, res) {
   const marker = /\[\[([^\]]+)\]\]/.exec(prompt)?.[1] ?? null;
   const digest = createHash('sha256').update(raw).digest();
   const cap = Number(body.max_tokens ?? body.max_completion_tokens ?? 64);
-  const usage = { prompt_tokens: 20 + (digest.readUInt16BE(0) % 900), completion_tokens: 1 + (digest.readUInt16BE(2) % Math.max(1, Math.min(cap, 400))) };
+  const usageWithAnswer = marker === USAGE_WITH_ANSWER && Boolean(body.stream);
+  const usage = usageWithAnswer
+    ? { prompt_tokens: 12, completion_tokens: 3 }
+    : { prompt_tokens: 20 + (digest.readUInt16BE(0) % 900), completion_tokens: 1 + (digest.readUInt16BE(2) % Math.max(1, Math.min(cap, 400))) };
   usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
   Object.assign(entry, { marker, stream: Boolean(body.stream), model: body.model, usage, bodyKeys: Object.keys(body) });
   inFlight += 1;
@@ -63,8 +71,12 @@ async function answer(req, res) {
         res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { content: word }, finish_reason: null }] })}\n\n`);
         await sleep(CHUNK_GAP_MS);
       }
-      res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
-      res.write(`data: ${JSON.stringify({ ...base, choices: [], usage })}\n\n`);
+      if (usageWithAnswer) {
+        res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { content: LONG_ANSWER }, finish_reason: 'stop' }], usage })}\n\n`);
+      } else {
+        res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ ...base, choices: [], usage })}\n\n`);
+      }
       res.write('data: [DONE]\n\n');
       await sleep(20);
       res.end();

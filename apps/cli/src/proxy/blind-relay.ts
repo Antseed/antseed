@@ -490,8 +490,16 @@ export class BlindRelayClient {
           })
           incoming.on('end', () => {
             const response: SerializedHttpResponse = { requestId, statusCode, headers: responseHeaders, body: new Uint8Array(Buffer.concat(chunks)) }
-            // Priced before the reveal, so the seller's charge finds the buyer's own cost.
-            this._deps.recordRelayedResponse(peer, { requestId: streamId, service, requestBody: prepared.body, response }, buyerIdentity)
+            // Priced before the reveal, so the seller's charge finds the buyer's own cost: by what the reveal will show the seller.
+            const raw = socket.received
+            const revealed = {
+              length: raw.length,
+              ranges: keyedRevealRanges(raw, statusCode, prepared.stream)
+                .map(([offset, length]) => ({ offset, data: raw.subarray(offset, offset + length).toString('base64') })),
+            }
+            this._deps.recordRelayedResponse(peer, {
+              requestId: streamId, service, requestBody: prepared.body, response, revealed, maxOutputTokens: prepared.maxTokens,
+            }, buyerIdentity)
             callbacks.onResponseChunk?.({ requestId, data: new Uint8Array(0), done: true })
             // The client has its answer; the reveal the seller bills by follows once the upstream closes.
             revealing = true

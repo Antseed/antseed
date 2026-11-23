@@ -36,7 +36,7 @@ import { peerIdToAddress } from '@antseed/protocol/peer-id';
 import { debugLog, debugWarn } from './debug.js';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
 import { SellerAuthorizationError } from './seller-address-resolver.js';
-import { parseResponseUsage } from './response-usage.js';
+import { parseResponseUsage, type ResponseUsage } from './response-usage.js';
 import { usageForBilling } from './estimated-usage.js';
 import { computeCostUsdc, estimateTokensFromBytesSampled, type ServicePricing } from './pricing.js';
 import { formatUsdc } from './usdc-utils.js';
@@ -1154,6 +1154,8 @@ export class BuyerPaymentNegotiator {
     requestId?: string,
     /** The body the request was sent with: a chat answer with no usage figure is priced by the same estimate the seller bills. */
     requestBody?: Uint8Array,
+    /** The usage buyer and seller both bill the response by, when it is not the one the response reports (a relayed answer the seller is shown no usage of). */
+    agreedUsage?: ResponseUsage,
   ): void {
     // Post-response cost estimation feeds the next SpendingAuth. Token pricing
     // stays on computeCostUsdc; image unit billing is an optional surcharge.
@@ -1203,6 +1205,7 @@ export class BuyerPaymentNegotiator {
       this._bpm.recordObservedUnitUsage(requestId, unitBilling.usage);
     }
     const usage = unitBilling?.tokenUsage
+      ?? agreedUsage
       ?? (requestBody ? usageForBilling(requestBody, response).usage : parseResponseUsage(response.body));
     const pricing = billingEntry?.tokenPricing
       ?? this._bpm.getSessionPricing(peer.peerId, service)

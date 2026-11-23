@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs'
 import { EventEmitter } from 'node:events'
 import { PassThrough, type Duplex } from 'node:stream'
 import { createServer as tlsCreateServer } from 'node:tls'
-import { RelayMux, SellerBlindRelay, type BlindRelayCharge, type KeyedRequestAdmission, type KeyedRequestDecision, type PeerInfo, type Provider, type SerializedHttpRequest, type SerializedHttpResponse, type SerializedHttpResponseChunk } from '@antseed/node'
+import { RelayMux, SellerBlindRelay, type BlindRelayCharge, type KeyedRequestAdmission, type KeyedRequestDecision, type PeerInfo, type Provider, type RelayedResponse, type SerializedHttpRequest, type SerializedHttpResponse, type SerializedHttpResponseChunk } from '@antseed/node'
 import { KeyedRelayProcess, resolveKeyedRelayBinary } from '@antseed/keyed-relay'
 import { BlindRelayClient, BlindRelayError, type BlindRelayCallbacks, type BlindRelayDeps } from './blind-relay.js'
 import { KeyedPlaintextSocket, keyedRequestBody, keyedRevealRanges } from './keyed-relay-client.js'
@@ -398,8 +398,8 @@ const fixtureUrl = (name: string) => new URL(`../../../../packages/keyed-relay/t
 async function keyedStack(
   admit: (request: KeyedRequestAdmission) => KeyedRequestDecision,
   closeAfterMs = 20,
-  /** `silent`: the upstream takes the request and answers nothing. `stalls`: it starts the answer and stops. */
-  options: { upstream?: 'silent' | 'stalls'; deadlines?: Pick<BlindRelayDeps, 'responseTimeoutMs' | 'streamIdleTimeoutMs' | 'maxStreamDurationMs'> } = {},
+  /** `silent`: the upstream takes the request and answers nothing. `stalls`: it starts the answer and stops. `usageWithAnswer`: the usage is on the event with the answer's last words. */
+  options: { upstream?: 'silent' | 'stalls' | 'usageWithAnswer'; deadlines?: Pick<BlindRelayDeps, 'responseTimeoutMs' | 'streamIdleTimeoutMs' | 'maxStreamDurationMs'> } = {},
 ) {
   const ca = readFileSync(fixtureUrl('ca.pem'), 'utf8')
   /** Every byte each upstream connection received, and the complete requests among them. */
@@ -422,8 +422,10 @@ async function keyedStack(
       requests.push(raw)
       if (options.upstream === 'silent') return
       // Chunked, with the end of the body in a TLS record of its own, as upstreams send it.
-      const events = 'data: {"model":"org/open-model","choices":[{"delta":{"content":"giraffe"}}]}\n\n'
-        + 'data: {"model":"org/open-model","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3}}\n\ndata: [DONE]\n\n'
+      const events = options.upstream === 'usageWithAnswer'
+        ? 'data: {"model":"org/open-model","choices":[{"delta":{"content":"giraffe"}}],"usage":{"prompt_tokens":12,"completion_tokens":3}}\n\ndata: [DONE]\n\n'
+        : 'data: {"model":"org/open-model","choices":[{"delta":{"content":"giraffe"}}]}\n\n'
+          + 'data: {"model":"org/open-model","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3}}\n\ndata: [DONE]\n\n'
       const account = 'set-cookie: session=upstream-account\r\nx-ratelimit-remaining-tokens: 999\r\nopenai-organization: seller-org\r\n'
       socket.write(`HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n${account}transfer-encoding: chunked\r\nconnection: close\r\n\r\n${events.length.toString(16)}\r\n${events}\r\n`, () => {
         if (options.upstream === 'stalls') return
@@ -458,6 +460,8 @@ async function keyedStack(
   ends[1]!.mux = new RelayMux(conn(0) as never, { authorize: (streamId, credentialId) => seller.authorize(peer.peerId, streamId, credentialId) })
 
   const recorded: SerializedHttpResponse[] = []
+  /** Each answer as the buyer handed it over for pricing. */
+  const relayed: RelayedResponse[] = []
   const client = new BlindRelayClient({
     sendRequest: async (_peer, request) => {
       mints += 1
@@ -465,7 +469,7 @@ async function keyedStack(
       return { requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(minted)) }
     },
     openRelayStream: (_peer, streamId, credentialId) => ends[0]!.mux!.openStream(streamId, credentialId),
-    recordRelayedResponse: (_peer, relayed) => { recorded.push(relayed.response) },
+    recordRelayedResponse: (_peer, answer) => { recorded.push(answer.response); relayed.push(answer) },
     keyedRelayBinary: keyedBinary,
     keyedRelayExtraRootsPem: ca,
     // A real, short wait: the seller's handle is busy until its sidecar has exited.
@@ -479,7 +483,7 @@ async function keyedStack(
     headers: { 'content-type': 'application/json', authorization: 'Bearer buyer-must-not-send', 'x-cost-header': 'priority' },
     body: new TextEncoder().encode(JSON.stringify(body)),
   }, undefined, callbacks)
-  return { upstream, received, requests, charges, recorded, send, waits, mints: () => mints, closed: () => closed }
+  return { upstream, received, requests, charges, recorded, relayed, send, waits, mints: () => mints, closed: () => closed }
 }
 
 test('the seller checks the request, adds its key to the buyer\'s TLS session and bills the revealed usage', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
@@ -503,6 +507,27 @@ test('the seller checks the request, adds its key to the buyer\'s TLS session an
     // Billed from the usage the buyer revealed: 12 in, 3 out.
     for (let i = 0; i < 50 && stack.charges.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20))
     assert.deepEqual(stack.charges, [{ buyerPeerId: peer.peerId, requestId: 'keyed-1', service: 'open-model', costUsdc: 420n, usage: { inputTokens: 12, freshInputTokens: 12, cachedInputTokens: 0, outputTokens: 3 } }])
+  } finally {
+    stack.upstream.close()
+  }
+})
+
+test('an answer whose usage the buyer cannot reveal is billed by the three figures the buyer prices it by', { skip: !keyedBinary && 'keyed-relay sidecar not built' }, async () => {
+  const stack = await keyedStack(() => ({ admitted: true }), 20, { upstream: 'usageWithAnswer' })
+  try {
+    const response = await stack.send({ model: 'open-model', stream: true, max_tokens: 5000, messages: [{ role: 'user', content: 'zebra' }] })
+    assert.match(new TextDecoder().decode(response.body), /giraffe/)
+    for (let i = 0; i < 50 && stack.charges.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 20))
+    // The usage shares its event with the answer, so the buyer shows the status line only.
+    const [answer] = stack.relayed
+    assert.deepEqual(answer!.revealed.ranges.map((range) => range.offset), [0])
+    assert.match(Buffer.from(answer!.revealed.ranges[0]!.data, 'base64').toString(), /^HTTP\/1\.1 200 OK$/)
+    assert.equal(answer!.maxOutputTokens, 1000)
+    // The seller bills the request's length and the answer's, within the output limit: the figures the buyer handed over.
+    const inputTokens = Math.ceil(answer!.requestBody.length / 4)
+    const outputTokens = Math.min(Math.ceil(answer!.revealed.length / 4), 1000)
+    assert.ok(outputTokens > 3 && outputTokens < 1000, `output ${outputTokens}`)
+    assert.deepEqual(stack.charges.map((charge) => charge.usage), [{ inputTokens, freshInputTokens: inputTokens, cachedInputTokens: 0, outputTokens }])
   } finally {
     stack.upstream.close()
   }

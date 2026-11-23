@@ -11,6 +11,8 @@ export interface KeyedRequestBody {
   /** Bytes at the end of `body` the seller checks: its last fields and the closing brace. */
   tailLength: number
   stream: boolean
+  /** The output-token limit those fields name, or null for none. */
+  maxTokens: number | null
 }
 
 /**
@@ -57,7 +59,7 @@ export function keyedRequestBodyFromFields(parsed: ReturnType<typeof keyedReques
   const rest = JSON.stringify(fields)
   const text = rest === '{}' ? `{${last}}` : `${rest.slice(0, -1)},${last}}`
   const tail = rest === '{}' ? text : `,${last}}`
-  return { body: new TextEncoder().encode(text), tailLength: Buffer.byteLength(tail), stream }
+  return { body: new TextEncoder().encode(text), tailLength: Buffer.byteLength(tail), stream, maxTokens }
 }
 
 /**
