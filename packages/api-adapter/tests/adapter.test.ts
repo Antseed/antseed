@@ -1078,6 +1078,69 @@ describe('createStreamingAdapter anthropic to chat', () => {
     });
   });
 
+  it('keeps message_start cache reads when message_delta repeats fresh input without cache fields', () => {
+    const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-chat-completions', '');
+    const events = relayStreamForTest(adapter, [
+      'event: message_start\n'
+      + 'data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet","usage":{"input_tokens":100,"cache_read_input_tokens":9000,"output_tokens":1}}}\n\n',
+      ANTHROPIC_STREAM_FRAMES[1]!,
+      'event: message_delta\n'
+      + 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":50}}\n\n',
+      ANTHROPIC_STREAM_FRAMES[3]!,
+    ]);
+
+    const usage = events
+      .filter((event) => event.data !== '[DONE]')
+      .map((event) => (JSON.parse(event.data) as { usage?: unknown }).usage)
+      .filter(Boolean)
+      .pop();
+    expect(usage).toEqual({
+      prompt_tokens: 9100,
+      completion_tokens: 50,
+      total_tokens: 9150,
+      prompt_tokens_details: { cached_tokens: 9000 },
+    });
+  });
+
+  it('lets message_delta replace message_start cache reads with an explicit zero', () => {
+    const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-chat-completions', '');
+    const events = relayStreamForTest(adapter, [
+      'event: message_start\n'
+      + 'data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet","usage":{"input_tokens":100,"cache_read_input_tokens":9000,"output_tokens":1}}}\n\n',
+      ANTHROPIC_STREAM_FRAMES[1]!,
+      'event: message_delta\n'
+      + 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":9100,"cache_read_input_tokens":0,"output_tokens":50}}\n\n',
+      ANTHROPIC_STREAM_FRAMES[3]!,
+    ]);
+
+    const usage = events
+      .filter((event) => event.data !== '[DONE]')
+      .map((event) => (JSON.parse(event.data) as { usage?: unknown }).usage)
+      .filter(Boolean)
+      .pop();
+    expect(usage).toEqual({ prompt_tokens: 9100, completion_tokens: 50, total_tokens: 9150 });
+  });
+
+  it('carries cache reads reported only in message_delta into the Responses usage', () => {
+    const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-responses', '');
+    const events = relayStreamForTest(adapter, [
+      'event: message_start\n'
+      + 'data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet","usage":{"input_tokens":0,"output_tokens":0}}}\n\n',
+      ANTHROPIC_STREAM_FRAMES[1]!,
+      'event: message_delta\n'
+      + 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":100,"cache_read_input_tokens":9000,"output_tokens":50}}\n\n',
+      ANTHROPIC_STREAM_FRAMES[3]!,
+    ]);
+
+    const completed = events.find((event) => event.event === 'response.completed');
+    expect((JSON.parse(completed!.data) as { response: { usage: unknown } }).response.usage).toEqual({
+      input_tokens: 9100,
+      output_tokens: 50,
+      total_tokens: 9150,
+      input_tokens_details: { cached_tokens: 9000 },
+    });
+  });
+
   it('still finishes a stream that ends without message_stop', () => {
     const adapter = createStreamAdapterForTest('anthropic-messages', 'openai-chat-completions', '');
     const events = relayStreamForTest(adapter, ANTHROPIC_STREAM_FRAMES.slice(0, 3));

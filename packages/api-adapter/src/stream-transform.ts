@@ -179,6 +179,9 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
   let usage: TokenUsage = ZERO_USAGE;
+  // Raw Messages usage fields seen so far. message_delta may repeat some fields and omit others,
+  // so fields it leaves out keep their message_start values instead of reading as zero.
+  let rawUsage: Record<string, unknown> = {};
   let finishReason: string | null = null;
   let responseStarted = false;
   // A relay ends every stream with an empty final chunk, after message_stop has already finished the response.
@@ -225,7 +228,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
             : {};
           if (typeof message.id === 'string') responseId = message.id;
           if (typeof message.model === 'string') responseModel = message.model;
-          usage = extractUsage({ usage: message.usage });
+          rawUsage = usageFields(message.usage);
+          usage = extractUsage({ usage: rawUsage });
           emitStart(emitted);
           continue;
         }
@@ -272,7 +276,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
             : {};
           finishReason = anthropicStopReasonToCanonical(delta.stop_reason);
           // Some Anthropic-compatible upstreams report input and cache reads only here, not in message_start.
-          usage = mergeUsage(usage, extractUsage({ usage: data.usage }));
+          rawUsage = { ...rawUsage, ...usageFields(data.usage) };
+          usage = extractUsage({ usage: rawUsage });
           continue;
         }
 
@@ -987,6 +992,12 @@ function objectValue(value: unknown): Record<string, unknown> {
 /** Whether a usage reported any input, fresh or cached (a cache hit can come with a zero prompt count). */
 function reportsInput(usage: TokenUsage): boolean {
   return usage.inputTokens > 0 || usage.cachedInputTokens > 0;
+}
+
+/** The usage fields an event actually reported; absent or null fields are left out so they don't overwrite earlier ones. */
+function usageFields(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([, field]) => field !== undefined && field !== null));
 }
 
 function mergeUsage(previous: TokenUsage, next: TokenUsage): TokenUsage {
