@@ -6,7 +6,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
-## 2026-11-23 — CLI 0.1.258, Node 0.2.190
+## 2026-11-23 — CLI 0.1.258, Node 0.2.190, Desktop 0.2.93
 
 ### Packages
 
@@ -21,6 +21,10 @@ This project uses selective package publishing. Each release entry lists the pub
 - `@antseed/provider-venice-video@0.1.28`
 - `@antseed/payments@0.1.117`
 - `@antseed/ants@0.1.75`
+
+### Desktop
+
+- `@antseed/desktop@0.2.93`
 
 ### Fixed
 
