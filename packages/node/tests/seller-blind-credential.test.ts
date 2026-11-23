@@ -3,6 +3,7 @@ import { identityFromPrivateKeyHex } from '../src/p2p/identity.js';
 import { decodeFrame } from '../src/p2p/message-protocol.js';
 import { decodeHttpResponse, encodeHttpRequest } from '../src/proxy/request-codec.js';
 import { SellerRequestHandler } from '../src/seller-request-handler.js';
+import { ConnectionState } from '../src/types/connection.js';
 import { MessageType } from '../src/types/protocol.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import { VerificationMux } from '../src/verification/index.js';
@@ -64,26 +65,39 @@ function spm(state: { session: boolean; accepted?: bigint; spent?: bigint; reser
   };
 }
 
-/** Asks `handler` for a credential as the buyer, on a connection of its own. */
-async function mintOn(handler: SellerRequestHandler, model: string, method = 'POST') {
-  const conn = { send: vi.fn(), hasRemoteCapability: vi.fn(() => false) };
-  const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any;
-  const { mux } = handler.handleConnection(conn as any, BUYER, paymentMux, new VerificationMux(conn as any));
+/** A connection of the buyer's to `handler`, with the payment mux the seller asks for signatures on; `close` ends it. */
+function connect(handler: SellerRequestHandler) {
+  const listeners: Array<(state: ConnectionState) => void> = [];
+  const conn = {
+    send: vi.fn(),
+    hasRemoteCapability: vi.fn(() => false),
+    on: vi.fn((event: string, listener: (state: ConnectionState) => void) => { if (event === 'stateChange') listeners.push(listener); }),
+  };
+  const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() };
+  const { mux } = handler.handleConnection(conn as any, BUYER, paymentMux as any, new VerificationMux(conn as any));
+  return { conn, mux, paymentMux, requests: 0, close: () => listeners.forEach((listener) => listener(ConnectionState.Closed)) };
+}
+
+/** Asks `handler` for a credential as the buyer, on a connection of its own unless `link` is one it already has. */
+async function mintOn(handler: SellerRequestHandler, model: string, method = 'POST', link = connect(handler), headers: Record<string, string> = {}) {
+  const { conn, mux, paymentMux } = link;
+  const requestId = `req-${++link.requests}`;
   await mux.handleFrame({
     type: MessageType.HttpRequest,
-    messageId: 1,
+    messageId: link.requests,
     payload: encodeHttpRequest({
-      requestId: 'req-1',
+      requestId,
       method,
       path: BLIND_RELAY_CREDENTIAL_PATH,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...headers },
       body: new TextEncoder().encode(JSON.stringify({ model })),
     }),
   });
   const response = conn.send.mock.calls
     .map(([raw]) => decodeFrame(raw)!.message)
     .filter((message) => message.type === MessageType.HttpResponse)
-    .map((frame) => decodeHttpResponse(frame.payload))[0]!;
+    .map((frame) => decodeHttpResponse(frame.payload))
+    .find((answer) => answer.requestId === requestId)!;
   return { response, json: JSON.parse(new TextDecoder().decode(response.body)), paymentMux };
 }
 
@@ -113,6 +127,26 @@ describe('seller blind relay credential route', () => {
     const { response, json } = await ask('plain-model');
     expect(response.statusCode).toBe(404);
     expect(json.error.code).toBe('blind_relay_not_supported');
+  });
+
+  it('mints from the provider the buyer names, where several serve the model and not all of them seller-blind', async () => {
+    const plain: Provider = { ...makeProvider(), name: 'plain-provider', serviceCategories: { 'blind-model': ['chat'] }, keyedRelayTarget: undefined };
+    const handler = new SellerRequestHandler({
+      identity: identityFromPrivateKeyHex('11'.repeat(32)),
+      providers: [plain, makeProvider()],
+      sellerPaymentManager: spm({ session: true }) as any,
+      sessionTracker: null,
+      channelsClient: {} as any,
+      announcer: null,
+      emit: vi.fn(() => true),
+    });
+    const named = await mintOn(handler, 'blind-model', 'POST', undefined, { 'x-antseed-provider': 'test-provider' });
+    expect(named.response.statusCode).toBe(200);
+    expect(named.json.upstream.model).toBe('org/blind-model');
+    // With no provider named the seller picks the first that serves the model, which is not the seller-blind one.
+    const unnamed = await mintOn(handler, 'blind-model');
+    expect(unnamed.response.statusCode).toBe(404);
+    expect(unnamed.json.error.code).toBe('blind_relay_not_supported');
   });
 
   it('asks a buyer with no channel to open one', async () => {
@@ -215,6 +249,8 @@ describe('keyed relay request admission', () => {
         if (state.catchUpTo !== undefined) state.accepted = state.catchUpTo;
         return state.accepted >= state.spent;
       }),
+      recordSpend: vi.fn((_channelId: string, cost: bigint) => { state.spent += cost; }),
+      connectionsClosed: false,
     };
     const handler = new SellerRequestHandler({
       identity: identityFromPrivateKeyHex('11'.repeat(32)),
@@ -229,7 +265,12 @@ describe('keyed relay request admission', () => {
     const admit = (maxOutputTokens: number | null = 1000) => (handler as any)._admitKeyedRequest({
       buyerPeerId: BUYER, provider: makeProvider(), service: 'blind-model', inputTokens: 1000, maxOutputTokens,
     });
-    return Object.assign(admit, { payments, mint: () => mintOn(handler, 'blind-model') });
+    return Object.assign(admit, {
+      payments,
+      handler,
+      connect: () => connect(handler),
+      mint: (link?: ReturnType<typeof connect>) => mintOn(handler, 'blind-model', 'POST', link),
+    });
   }
 
   /** An admission names the channel it checked and holds a billable request on it until `finish`. */
@@ -254,6 +295,65 @@ describe('keyed relay request admission', () => {
     expect(refused.response.statusCode).toBe(409);
     expect(refused.json.error.code).toBe('blind_relay_unpaid');
     expect(unpaid.payments.awaitAcceptedAtLeast).toHaveBeenCalledOnce();
+  });
+
+  it('asks a buyer for the signature it owes before it waits for it, at a mint and at a request', async () => {
+    const owed = { channelId: '0xchannel', requiredCumulativeAmount: '500', currentAcceptedCumulative: '100', deposit: '1000000' };
+    // A relayed answer is charged while its buyer is away: there is no connection to ask for the signature on.
+    const state: ChannelState = { accepted: 100n, spent: 100n };
+    const admit = admitWith(state);
+    const gone = admit.connect();
+    gone.close();
+    (admit.handler as any)._chargeBlindRelay({
+      buyerPeerId: BUYER, requestId: 'stream-1', service: 'blind-model', costUsdc: 400n, channelId: '0xchannel',
+      usage: { inputTokens: 300, freshInputTokens: 300, cachedInputTokens: 0, outputTokens: 100 },
+    });
+    expect(state.spent).toBe(500n);
+    expect(gone.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
+
+    // The buyer is back and signs only when asked. Its next mint asks, then waits: the signature arrives in time.
+    const signsWhenAsked = (link: ReturnType<typeof connect>, channel: ChannelState) =>
+      link.paymentMux.sendNeedAuth.mockImplementation((asked: { requiredCumulativeAmount: string }) => { channel.catchUpTo = BigInt(asked.requiredCumulativeAmount); });
+    const back = admit.connect();
+    signsWhenAsked(back, state);
+    const minted = await admit.mint(back);
+    expect(back.paymentMux.sendNeedAuth.mock.calls, 'the mint asks once, for the channel and not for a request').toEqual([[owed]]);
+    expect(minted.response.statusCode, 'the mint goes through once the buyer signed').toBe(200);
+
+    // A request on a credential the buyer still holds asks the same way.
+    const held: ChannelState = { accepted: 100n, spent: 500n };
+    const admitHeld = admitWith(held);
+    const link = admitHeld.connect();
+    signsWhenAsked(link, held);
+    await expect(admitHeld(), 'the request is admitted once the buyer signed').resolves.toEqual(ADMITTED);
+    expect(link.paymentMux.sendNeedAuth.mock.calls, 'the admission asks once').toEqual([[owed]]);
+  });
+
+  it('asks for an owed signature once for each amount on a connection, and never for spend past the reserve', async () => {
+    const state: ChannelState = { accepted: 100n, spent: 500n };
+    const admit = admitWith(state);
+    const link = admit.connect();
+    await expect(admit()).resolves.toMatchObject({ admitted: false, reason: expect.stringContaining('sign for') });
+    expect((await admit.mint(link)).response.statusCode).toBe(409);
+    await expect(admit()).resolves.toMatchObject({ admitted: false });
+    expect(link.paymentMux.sendNeedAuth, 'a buyer that does not sign is asked once').toHaveBeenCalledOnce();
+
+    // A larger amount is asked for again, and so is the same amount on a new connection: the first prompt may have been lost with the old one.
+    state.spent = 600n;
+    await expect(admit()).resolves.toMatchObject({ admitted: false });
+    expect(link.paymentMux.sendNeedAuth).toHaveBeenCalledTimes(2);
+    expect(link.paymentMux.sendNeedAuth).toHaveBeenLastCalledWith(expect.objectContaining({ requiredCumulativeAmount: '600' }));
+    link.close();
+    const again = admit.connect();
+    expect((await admit.mint(again)).response.statusCode).toBe(409);
+    expect(again.paymentMux.sendNeedAuth.mock.calls).toEqual([[expect.objectContaining({ requiredCumulativeAmount: '600' })]]);
+
+    // Spend the reserve cannot cover is not asked for: the channel closes instead.
+    const past = admitWith({ accepted: 1000n, spent: 1200n, reserveMax: 1000n });
+    const pastLink = past.connect();
+    await expect(past()).resolves.toMatchObject({ admitted: false, reason: expect.stringMatching(/^channel_exhausted: /) });
+    expect((await past.mint(pastLink)).response.statusCode).toBe(402);
+    expect(pastLink.paymentMux.sendNeedAuth).not.toHaveBeenCalled();
   });
 
   it('judges the channel as it is after the wait for a signature: closed, or replaced by a new one', async () => {
