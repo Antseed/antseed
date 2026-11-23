@@ -419,6 +419,8 @@ export function referenceDelta(
  */
 export type TokenizerReferenceAsk = (contents: readonly string[], signal?: AbortSignal) => Promise<{
   upstream: unknown
+  /** Whether the route serves one provider, where the asker knows (`ReferenceOracle.inputTokens`): the cap check reads it. */
+  oneProvider?: boolean
   results: ReadonlyArray<{ inputTokens: number | null; cachedInput?: boolean; cache?: Readonly<Record<string, number>>; provider?: string | null; failure: string | null }>
 }>
 

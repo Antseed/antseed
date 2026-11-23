@@ -242,7 +242,7 @@ async function measureAnswer(ask: TokenizerReferenceAsk, b: string, rule: Output
   let ambiguous = false
   const measured = await measureTokenizerReference({
     ask: async (contents, signal) => {
-      const asked = await ask(contents, signal) as Awaited<ReturnType<TokenizerReferenceAsk>> & { oneProvider?: boolean }
+      const asked = await ask(contents, signal)
       if (asked.oneProvider === false && asked.results.every((result) => !result.provider)) ambiguous = true
       return asked
     },

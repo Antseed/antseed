@@ -177,14 +177,6 @@ function signsOutputCount(usage: unknown): boolean {
   return present.length > 0 && present.every((key) => Number.isInteger(usage[key]) && (usage[key] as number) >= 0)
 }
 
-/** Every string inside a JSON value, depth first. */
-export function stringsOf(value: unknown): string[] {
-  if (typeof value === 'string') return [value]
-  if (Array.isArray(value)) return value.flatMap(stringsOf)
-  if (isRecord(value)) return Object.values(value).flatMap(stringsOf)
-  return []
-}
-
 /** The texts of the user turns of a request, in each API shape the buyer proxy translates to. */
 function userTexts(body: Record<string, unknown> | null): string[] {
   if (!body) return []
