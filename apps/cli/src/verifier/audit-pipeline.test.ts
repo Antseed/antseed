@@ -551,7 +551,7 @@ test('a confirmation resumed from a real checkpoint or retry file reuses only ba
       const decision = decide({
         agentId: 1n, serviceHash: '0x00', verdict: VERIFIER_VERDICT.DIFF, auditedAt: earliestAuditorTime([resumed.evidence])!,
         flaggedBy, passedBy: passedChecks(resumed.evidence, resumed.result.questionsStatus!), confirming: resumed.evidence.confirming!,
-      }, [{ auditor: '0x00', evidenceUri: 'ipfs://x', evidenceHash: '0x00', reportedAt, checks: ['tokens'] }])
+      }, [{ auditor: '0x00', peerId: 'aa'.repeat(20), evidenceUri: 'ipfs://x', evidenceHash: '0x00', reportedAt, checks: ['tokens'] }])
       assert.equal(decision.kind, 'send')
       // Outside a confirmation nothing is filtered; --resume-run, with no live report, uses the candidate's own.
       assert.equal(resumeMaterialFor(candidate, null, fresh).exchanges.length, all.length)

@@ -630,6 +630,7 @@ export async function prepareModelAudits(input: {
     if (input.sameCheck) {
       const decisions = await input.sameCheck(modelHash(referenceModel), candidatesOf().map((candidate, index) => ({
         ...candidate,
+        peerId: accepted[index]!.evidence.target.peerId,
         flaggedBy: flaggingChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
         passedBy: passedChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
         betweenBy: betweenChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),

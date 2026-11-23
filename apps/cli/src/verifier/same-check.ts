@@ -90,6 +90,11 @@ export type SameCheckExcludeCode =
 
 /** A candidate as `prepareModelAudits` hands it over: the checks that flagged and passed in its own audit. */
 export type SameCheckCandidate = SubmissionCandidate & {
+  /**
+   * The seller address this audit was made of (`target.peerId`): the one this auditor's own buyer bound to the agent
+   * on-chain. Published evidence about the agent counts only when it is about this address (`sameCheckFilter`).
+   */
+  peerId?: string
   flaggedBy: readonly AuditCheckId[]
   passedBy: readonly AuditCheckId[]
   /** Checks scored between their bars where such a score clears like a pass (`betweenChecks`); none when absent. */
@@ -115,6 +120,8 @@ export interface PublishedFlagReader {
 /** The first auditor's flag on one seller, read from its published evidence and checked. */
 export interface FirstFlag {
   auditor: string
+  /** The seller address the first auditor's evidence is about (`target.peerId`), as published. */
+  peerId: string
   evidenceUri: string
   evidenceHash: string
   reportedAt: number
@@ -148,11 +155,24 @@ export function sameCheckFilter(input: {
       const live = reports.filter((report) => report.round === round)
       if (live.length === 0) return null
       firsts = await Promise.all(live.map((report) => readFirst(report, candidate.agentId, candidate.serviceHash)))
+      // The publication says which agent its evidence is about, and its signatures are bound to the seller address it
+      // names. Which address is the agent's is not the publication's to say: it is the one this auditor's own buyer
+      // bound to the agent on-chain and audited. Evidence about any other address is not evidence about this seller.
+      const own = candidate.peerId === undefined ? null : peerAddress(candidate.peerId)
+      if (own === null || firsts.some((first) => peerAddress(first.peerId) !== own)) {
+        throw new Error(`its evidence for agent ${candidate.agentId} is about another seller address than the one this auditor audited as that agent`)
+      }
     } catch (error) {
       return { kind: 'hold', reason: holdReason(error) }
     }
     return decide(candidate, firsts)
   }))
+}
+
+/** A seller address as hex without a prefix, in lower case; null when it is not one. */
+function peerAddress(peerId: string): string | null {
+  const hex = peerId.toLowerCase().replace(/^0x/, '')
+  return /^[0-9a-f]{40}$/.test(hex) ? hex : null
 }
 
 /**
@@ -312,9 +332,10 @@ export function firstFlagReader(reader: PublishedFlagReader): (report: ServiceAu
       }
       flag = (async () => {
         const published = await audit
-        const checks = await published.checksOf(agentId, serviceHash)
+        const { checks, peerId } = await published.checksOf(agentId, serviceHash)
         return {
           auditor: getAddress(report.auditor),
+          peerId,
           evidenceUri: published.evidenceUri,
           evidenceHash: published.evidenceHash,
           reportedAt: await reader.blockTimestamp(report.blockNumber),
@@ -379,7 +400,8 @@ const CLOCK_SLACK_SECONDS = 60 * 60
 interface PublishedModelAudit {
   evidenceUri: string
   evidenceHash: string
-  checksOf(agentId: bigint, serviceHash: string): Promise<AuditCheckId[]>
+  /** The checks that flagged the seller, and the seller address the evidence is about (`target.peerId`). */
+  checksOf(agentId: bigint, serviceHash: string): Promise<{ checks: AuditCheckId[]; peerId: string }>
 }
 
 async function readPublishedModelAudit(reader: PublishedFlagReader, report: ServiceAuditedEvent): Promise<PublishedModelAudit> {
@@ -475,12 +497,22 @@ async function readPublishedModelAudit(reader: PublishedFlagReader, report: Serv
       if (!result) throw new Error(`its evidence has no result for agent ${agentId} on this service`)
       if (result['verdict'] !== 'DIFF') throw new Error(`its evidence gives agent ${agentId} ${String(result['verdict'])}, not DIFF`)
       const first = await sellerEvidence(result['audit'], agentId, serviceHash, result['referenceId'])
+      if (typeof result['peerId'] !== 'string' || normalized(result['peerId']) !== normalized(first.target.peerId)) {
+        throw new Error(`its result for agent ${agentId} names another seller address than its audit evidence is about`)
+      }
       // Every flag is recomputed from the stored records, as `verifier submit` checks its own.
       if (first.tests !== ALL_TESTS_FORMAT) throw new Error('its evidence does not name the all-tests format')
       validateStoredChecks(first, 'confirmer', { epoch: event.epoch.toString(), auditor: getAddress(event.auditor) })
-      const checks = flaggingChecks(first, await questionsVerdict(result, first, (audit, referenceId) => sellerEvidence(audit, agentId, serviceHash, referenceId)))
+      const checks = flaggingChecks(first, await questionsVerdict(result, first, async (audit, referenceId) => {
+        // An extra set is about the seller address the first set is about, or it is another seller's answers.
+        const extra = await sellerEvidence(audit, agentId, serviceHash, referenceId)
+        if (normalized(extra.target.peerId) !== normalized(first.target.peerId)) {
+          throw new Error(`its extra question set for agent ${agentId} is about another seller address than its first set`)
+        }
+        return extra
+      }))
       if (checks.length === 0) throw new Error(`its evidence for agent ${agentId} shows no check that flagged`)
-      return checks
+      return { checks, peerId: first.target.peerId }
     },
   }
 }

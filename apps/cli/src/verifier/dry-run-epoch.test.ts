@@ -125,7 +125,7 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
     await closeFinishedAuditWindows({ evidenceDir, epoch: EPOCH, state, secondsLeftInEpoch: 86_400, recovering: new Set((await recoveringFirstLooks(state)).keys()) })
     assert.equal((await readAuditWindow(evidenceDir, EPOCH, WINDOWED))?.state, 'closed')
     const manifest = await writeEpochSubmissionManifest(evidenceDir, state)
-    const flipsReport: FirstFlag = { auditor: '0x' + '0c'.repeat(20), evidenceUri: 'ipfs://flips', evidenceHash: '0x' + '01'.repeat(32), reportedAt, checks: ['flips'] }
+    const flipsReport: FirstFlag = { auditor: '0x' + '0c'.repeat(20), peerId: 'aa'.repeat(20), evidenceUri: 'ipfs://flips', evidenceHash: '0x' + '01'.repeat(32), reportedAt, checks: ['flips'] }
     const confirmation = { auditor: '0x' + '0b'.repeat(20), evidenceUri: 'ipfs://example', evidenceHash: '0x' + '00'.repeat(32), reportedAt, firstChecks: ['kbf'], ownChecks: ['kbf'], sameCheck: 'kbf' }
     const prepared = await prepareModelAudits({
       evidenceDir, banksDir, manifest, auditor: auditor.address, config: FIXTURE_CONFIG,

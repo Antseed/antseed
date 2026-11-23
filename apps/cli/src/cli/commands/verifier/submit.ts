@@ -663,6 +663,7 @@ export async function sameCheckChanged(
 ): Promise<string | null> {
   const decisions = await filter(modelHash, results.map((result) => ({
     agentId: BigInt(result.agentId),
+    peerId: result.peerId,
     serviceHash: result.serviceHash,
     verdict: verifierVerdict(result.verdict),
     auditedAt: result.auditedAt ?? 0,

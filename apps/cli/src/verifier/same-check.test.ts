@@ -11,7 +11,7 @@ import { VERIFIER_VERDICT, serviceHash, type ModelAuditedEvent, type ServiceAudi
 import { flaggingChecks, passedChecks } from './audit-checks.js'
 import { prepareAuditPublication } from './ipfs-publication.js'
 import { modelAuditUpstreams, prepareModelAudits, writeModelAuditEvidence, type PreparedModelAudit } from './model-audit.js'
-import { FIXTURE_CONFIG, referenceFixture, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
+import { FIXTURE_CONFIG, peerIdOf, referenceFixture, writeSignedAuditRun, type FixtureAudit } from './model-audit-fixtures.test-support.js'
 import {
   CONFIRMATION_MIN_DELAY_SECONDS,
   attachFirstFlags,
@@ -116,7 +116,7 @@ const candidate = (
   flaggedBy: SameCheckCandidate['flaggedBy'],
   passedBy: SameCheckCandidate['passedBy'] = [],
   auditedAt = REPORTED_AT + CONFIRMATION_MIN_DELAY_SECONDS,
-): SameCheckCandidate => ({ agentId, serviceHash: serviceHash(MODEL), verdict, auditedAt, flaggedBy, passedBy })
+): SameCheckCandidate => ({ agentId, peerId: peerIdOf(sellers[Number(agentId) - 1]!), serviceHash: serviceHash(MODEL), verdict, auditedAt, flaggedBy, passedBy })
 
 /** A first auditor that flagged agent 2 by its pre-check, agent 3 by the questions and agent 4 by a close call's extra sets; agent 1 SAME. */
 async function firstAuditor(directory: string) {
@@ -144,7 +144,7 @@ test('the checks that flagged and passed are read from the evidence alone', () =
 })
 
 test('a SAME clears a waiting DIFF of two checks only when both passed here', () => {
-  const two: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['output-cap', 'kbf'] }
+  const two: FirstFlag = { auditor: first.address, peerId: peerIdOf(sellers[1]!), evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['output-cap', 'kbf'] }
   // The cap check has no result here and the questions pass: one check left open clears nothing.
   const open = decide(candidate(2n, VERIFIER_VERDICT.SAME, [], ['kbf']), [two])
   assert.equal(open.kind, 'exclude')
@@ -157,7 +157,7 @@ test('a SAME clears a waiting DIFF of two checks only when both passed here', ()
 test('a DIFF that only FLIPS flagged, through the confirmer\'s audit under flips-v2: each FLIPS outcome and what is sent', async () => {
   const { settleAuditVerdict } = await import('./close-call.js')
   const { checksWith, readingsOfSummary } = await import('./audit-checks.js')
-  const waiting: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['flips'] }
+  const waiting: FirstFlag = { auditor: first.address, peerId: peerIdOf(sellers[1]!), evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['flips'] }
   const flips = (outcome: 'flag' | 'pass' | 'inconclusive', p: number | null) => ({
     rule: 'flips-v2', model: 'claude-opus-5.5', stage: 'confirm', outcome, counted: true, p, score: p === null ? null : 4, reason: 'x',
   })
@@ -204,7 +204,7 @@ test('a DIFF that only FLIPS flagged, through the confirmer\'s audit under flips
 })
 
 test('the final reread before sending keeps a FLIPS confirmation\'s identity: a confirmation is sent as prepared, an untagged first look and a changed report are held', async () => {
-  const waiting: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['flips'] }
+  const waiting: FirstFlag = { auditor: first.address, peerId: peerIdOf(sellers[1]!), evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['flips'] }
   const auditedAt = REPORTED_AT + CONFIRMATION_MIN_DELAY_SECONDS
   const filter = (firsts: FirstFlag[]) => async (_model: string, candidates: readonly SameCheckCandidate[]) => candidates.map((candidate) => decide(candidate, firsts))
   // As prepared: a confirmation of FLIPS whose confirm-stage FLIPS flagged, with the decision it stores.
@@ -224,7 +224,7 @@ test('the final reread before sending keeps a FLIPS confirmation\'s identity: a 
 })
 
 test('a confirmation is credited only to the report it was made for: the same tests and the same report time', () => {
-  const two: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['output-cap', 'kbf'] }
+  const two: FirstFlag = { auditor: first.address, peerId: peerIdOf(sellers[1]!), evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['output-cap', 'kbf'] }
   const confirming = (identity: { checks: AuditCheckId[]; reportedAt?: number }) => ({ ...candidate(2n, VERIFIER_VERDICT.DIFF, ['output-cap'], []), confirming: identity })
   assert.equal(decide(confirming({ checks: ['kbf', 'output-cap'], reportedAt: REPORTED_AT }), [two]).kind, 'send')
   for (const other of [{ checks: ['output-cap', 'kbf'] as AuditCheckId[], reportedAt: REPORTED_AT - 1 }, { checks: ['output-cap'] as AuditCheckId[], reportedAt: REPORTED_AT }, { checks: ['output-cap', 'kbf'] as AuditCheckId[] }]) {
@@ -237,7 +237,7 @@ test('a confirmation is credited only to the report it was made for: the same te
 })
 
 test('a result answering a waiting DIFF is sent only when the same check flagged, or a check that flagged passed', () => {
-  const tokens: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['tokens'] }
+  const tokens: FirstFlag = { auditor: first.address, peerId: peerIdOf(sellers[1]!), evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['tokens'] }
   const confirm = decide(candidate(2n, VERIFIER_VERDICT.DIFF, ['tokens']), [tokens])
   assert.deepEqual(confirm, {
     kind: 'send',
@@ -408,6 +408,16 @@ test('first evidence that is not published, altered, about another seller or not
       auth.record.signature = resigned(auth, other)
       auth.signedPreimages!.responseAuthSigningBase64 = Buffer.from(encodeResponseAuthSigningPayload((({ signature: _signature, receivedAt: _receivedAt, verified: _verified, verificationError: _verificationError, ...unsigned }) => unsigned)(auth.record))).toString('base64')
     }), /the questions: a reply is not signed by the seller it is stored for/)
+    // Evidence about another seller address than the one this auditor's own buyer bound to the agent and audited: the
+    // publication names the agent, and which address is the agent's is not the publication's to say.
+    const aboutAnother = async (peerId: string | undefined): Promise<string> => {
+      const [decision] = await sameCheckFilter({ events: [report(2n, VERIFIER_VERDICT.DIFF)], auditor: second.address, reader: reader(files, audit.evidenceHash) })(
+        audit.modelHash, [{ ...candidate(2n, VERIFIER_VERDICT.DIFF, ['tokens']), peerId }],
+      )
+      return decision?.kind === 'hold' ? decision.reason : `not held: ${decision?.kind}`
+    }
+    assert.match(await aboutAnother(peerIdOf(randomWallet())), /its evidence for agent 2 is about another seller address than the one this auditor audited as that agent/)
+    assert.match(await aboutAnother(undefined), /about another seller address/, 'a result that names no seller address binds to no published evidence')
     // A path that leaves the publication.
     const escaping = new Map(files)
     escaping.set('publication.json', JSON.stringify({ ...index, evidencePath: `../../${index.evidencePath}` }))
@@ -504,7 +514,7 @@ test('with its evidence not published, submit sends no DIFF and says why', async
 })
 
 test('an UNDETERMINED answering a waiting DIFF is never sent, whether another check flagged or none decided', () => {
-  const kbf: FirstFlag = { auditor: first.address, evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['kbf'] }
+  const kbf: FirstFlag = { auditor: first.address, peerId: peerIdOf(sellers[1]!), evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['kbf'] }
   const otherFlagged = decide(candidate(2n, VERIFIER_VERDICT.UNDETERMINED, ['tokens']), [kbf])
   assert.equal(otherFlagged.kind, 'exclude')
   assert.match(otherFlagged.kind === 'exclude' ? otherFlagged.reason : '', /another check \(the token-count pre-check\) flagged and the questions, which flagged the waiting DIFF, did not decide; nothing is sent/)

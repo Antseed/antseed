@@ -12,7 +12,7 @@ const REPORTED_AT = Date.parse('2026-10-07T00:10:00.000Z') / 1_000
 const AUDITED_AT = REPORTED_AT + 2 * 60 * 60
 
 const waiting = (...checks: AuditCheckId[]): FirstFlag => ({
-  auditor: `0x${'a'.repeat(40)}`, evidenceUri: 'ipfs://bafyexample', evidenceHash: `0x${'1'.repeat(64)}`, reportedAt: REPORTED_AT, checks,
+  auditor: `0x${'a'.repeat(40)}`, peerId: 'aa'.repeat(20), evidenceUri: 'ipfs://bafyexample', evidenceHash: `0x${'1'.repeat(64)}`, reportedAt: REPORTED_AT, checks,
 })
 
 /** One audit's result: a first look, or with `confirming` a confirmation of those tests for the waiting report. */

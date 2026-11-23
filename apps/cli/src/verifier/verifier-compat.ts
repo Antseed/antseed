@@ -233,12 +233,12 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       minDelaySeconds: CONFIRMATION_MIN_DELAY_SECONDS,
       decisions: SAMPLE_CONFIRMATIONS.map(([firstChecks, flaggedBy, passedBy, verdict]) => decide(
         { agentId: 1n, serviceHash: '0x00', verdict: verifierVerdict(verdict), auditedAt: 10_000 + CONFIRMATION_MIN_DELAY_SECONDS, flaggedBy, passedBy },
-        [{ auditor: '0x00', evidenceUri: 'ipfs://sample', evidenceHash: '0x00', reportedAt: 10_000, checks: firstChecks }],
+        [{ auditor: '0x00', peerId: '00'.repeat(20), evidenceUri: 'ipfs://sample', evidenceHash: '0x00', reportedAt: 10_000, checks: firstChecks }],
       ).kind),
       // A confirmation is credited only to the report it names: its tests and the report's time.
       identity: SAMPLE_CONFIRMATION_IDENTITIES.map(([named]) => decide(
         { agentId: 1n, serviceHash: '0x00', verdict: verifierVerdict('DIFF'), auditedAt: 10_000 + CONFIRMATION_MIN_DELAY_SECONDS, flaggedBy: ['output-cap'], passedBy: [], confirming: named },
-        [{ auditor: '0x00', evidenceUri: 'ipfs://sample', evidenceHash: '0x00', reportedAt: 100, checks: ['output-cap', 'kbf'] }],
+        [{ auditor: '0x00', peerId: '00'.repeat(20), evidenceUri: 'ipfs://sample', evidenceHash: '0x00', reportedAt: 100, checks: ['output-cap', 'kbf'] }],
       ).kind),
     },
     // The audit's verdict over every test (rule `all-tests-v1`): every test runs and none ends the audit; any flag is a
@@ -319,7 +319,7 @@ const CROSS_TEST_SAMPLES: { readonly [Slot in CheckSlot]?: () => Record<string, 
         flaggedBy: outcome === 'flag' ? ['flips'] : [], passedBy: outcome === 'pass' ? ['flips', 'kbf'] : ['kbf'],
         ...(outcome === 'between' ? { betweenBy: ['flips'] } : {}),
         ...(confirms ? { confirming: { checks: ['flips'], reportedAt: 1 } } : {}),
-      }, [{ auditor: '0x00', evidenceUri: 'ipfs://x', evidenceHash: '0x00', reportedAt: 1, checks: ['flips'] }])
+      }, [{ auditor: '0x00', peerId: '00'.repeat(20), evidenceUri: 'ipfs://x', evidenceHash: '0x00', reportedAt: 1, checks: ['flips'] }])
       return [confirms, outcome, decision.kind, decision.kind === 'exclude' ? decision.code : null]
     })),
     // A confirmation finished at once: only for a counting FLIPS of this rule scored between its bars.
