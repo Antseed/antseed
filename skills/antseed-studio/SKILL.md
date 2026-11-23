@@ -56,15 +56,17 @@ The bracket line names the item, its ids, its files and, for a clip that is play
 - **A note on a clip or image** (what to change at a moment): look at that file (a frame at that moment, with `ffmpeg`, when it is a clip), then propose what to change: what stays, what is remade, and the price. Some changes are free in the app (a shorter clip with "End clip here", another version or image from the library); say so instead of quoting a render.
 - **A change to the track** ("make it 8 seconds", "call this shot The chase", "extend into the next one"): deliver it as an edit (below). Edits are free and the user can undo them.
 
-For an image, quote one image with the image model and its listed price (the higher one when the catalog lists a range), make it at the track's aspect ratio with `fit_frame` (`references/requests.md`, Frame shape), keep the look of the neighbouring shots (edit from one of them with `/v1/images/edits` when the model takes image input), and deliver it.
+For an image, quote one image with the image model and its listed price (the higher one when the catalog lists a range), make it at the track's aspect ratio with `fit_frame` (`references/requests.md`, Frame shape), and deliver it. Generate each image fresh from its own prompt with `/v1/images/generations`: every shot shows something new, and the scene's world line and the same style words keep the shots looking like one film. Use `/v1/images/edits` from a neighbouring shot only when the user asks for the same subject or framing, and then say in the prompt what must change.
 
 ## Planning a film
 
-When the user describes a film and the track is empty or nearly so, propose the shots first: a numbered list of titles with one line each, the length of each clip, and one estimated total for all images and clips, with the models you would use. Nothing is made at this step. After a yes to the plan, add the shots as edits (`add-anchor` with `title` and `prompt`, below) so they appear on the storyboard; then quote and make the images, one at a time, and the clips after them, each after its own yes unless the user approved the plan's total for exactly those items.
+When the user describes a film and the track is empty or nearly so, propose the shots first: a numbered list of titles with one line each and the length of each clip. Then quote the images exactly, as their own line: "Images: <n> × <model> at $<price> = $<total>." Give the clips an estimate only, since each needs Cut or Extend chosen first: "Clips, later: about $<total> with <model>." End with "Say yes to put the shots on the storyboard and make the images." Nothing is made at this step.
+
+A yes to that plan covers the shots and exactly those images: add the shots as edits (`add-anchor` with `title` and `prompt`, below) so they appear on the storyboard, then make and deliver the images one at a time, without asking again. Say when each one is on the storyboard, and the total when all are. Then ask the user to choose Cut or Extend on the marker after each clip (the **?** between two shots), and quote the clips after that; each clip needs its own yes.
 
 ## Delivering a file
 
-When a file is saved, write a small JSON file into `deliveries/` (create the folder if it is missing). The app reads it within a second or two, puts the file on the track as the version in use, keeps the earlier versions in the library, and moves the delivery to `deliveries/done/`.
+When a file is saved, write a small JSON file into `deliveries/` (create the folder if it is missing). Name the file exactly as it was saved, extension included (a model may return a `.jpg` for a `.png` you asked for): check with `ls` first. The app reads it within a second or two, puts the file on the track as the version in use, keeps the earlier versions in the library, and moves the delivery to `deliveries/done/`.
 
 ```bash
 mkdir -p deliveries
@@ -103,6 +105,7 @@ Do not call `show_media` for files you deliver and do not open them: the app sho
 
 ## Rules
 
+- Talk to the user in the app's words: "Shot 3 · The Heist", "Clip 3→4", the model's name and dollars. Never show ids (`a3`, `c4`), file paths, JSON, commands or what a command printed; the chat hides your tool calls, and the storyboard shows the files.
 - Say prices in dollars, to the cent. Never start a paid step without a yes to its price in this chat.
 - One paid thing at a time, so a problem costs one output and not six.
 - When a video fails, say the seller's reason and what it cost, and ask before trying again. A clip with a job file is waited for, never created again.
