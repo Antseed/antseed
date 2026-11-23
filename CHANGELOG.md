@@ -12,6 +12,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Node: DHT nodes now forget a peer 20–40 minutes after its last announcement. Every node used to keep each announcement forever, while a node answers a lookup with at most 100 of the peers it stores for a topic, so peers that had stopped or moved piled up next to the live ones: discovery spent most of its time fetching metadata from dead endpoints, and a lookup could miss live sellers. A peer that keeps announcing, at the current 5-minute interval or the older 15-minute one, stays listed. The DHT bootstrap nodes and other long-running peers apply this once they run the new version. `DHTNodeConfig.peerRecordMaxAgeMs` sets the lifetime (default 30 minutes).
 - Node: the incremental discovery sweep (`findAllExhaustive` with a progress callback, used by buyers' background discovery) fetches each endpoint's metadata once per sweep instead of again for every topic that lists it, and looks up the next DHT topic while metadata is still being fetched instead of waiting for each topic's slowest endpoint. Sweeps finish sooner and make far fewer metadata requests.
 
 ## 2026-11-23 — CLI 0.1.258, Node 0.2.190, Desktop 0.2.93
