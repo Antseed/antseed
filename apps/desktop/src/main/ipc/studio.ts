@@ -6,6 +6,7 @@ import { normalizeServiceId } from '../chat/normalize.js';
 import {
   createStudioProject,
   getStudioProject,
+  getStudioProjectSummary,
   listStudioProjects,
   setStudioProjectConversation,
   STUDIO_DIR,
@@ -81,10 +82,10 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
 
   handle('studio:project-chat', async (payload: { id?: unknown; model?: unknown } | undefined) => {
     const id = typeof payload?.id === 'string' ? payload.id : '';
-    const detail = await getStudioProject(id);
+    const summary = await getStudioProjectSummary(id);
     const folder = studioProjectDir(id);
-    if (!detail || !folder) return { ok: false, error: 'Project not found.' };
-    const existing = detail.project.conversationId;
+    if (!summary || !folder) return { ok: false, error: 'Project not found.' };
+    const existing = summary.conversationId;
     if (existing && await engine.hasConversation(existing)) return { ok: true, conversationId: existing };
     const model = normalizeServiceId(payload?.model);
     if (!model) return { ok: true, conversationId: null };
@@ -96,7 +97,7 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
   handle('studio:open-folder', async (payload: { id?: unknown } | undefined) => {
     const id = typeof payload?.id === 'string' ? payload.id : '';
     const folder = studioProjectDir(id);
-    if (!folder || !(await getStudioProject(id))) return { ok: false, error: 'Project not found.' };
+    if (!folder || !(await getStudioProjectSummary(id))) return { ok: false, error: 'Project not found.' };
     const failure = await shell.openPath(folder);
     return failure ? { ok: false, error: failure } : { ok: true };
   });
