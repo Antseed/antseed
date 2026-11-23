@@ -845,3 +845,25 @@ test('an image delivered under a wrong name is not counted, so delivering it aga
   assert.equal(track.anchors[0]!.image, 'stills/a1.jpg');
   assert.equal(sumStudioCost(track.spent), 0.0165);
 });
+
+test('Undo keeps each delivery read together, even two of the same file around an edit it takes back', async (t) => {
+  const tmp = await mkdtemp(path.join(tmpdir(), 'studio-same-file-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const root = path.join(tmp, 'studio');
+  await mkdir(root);
+  const { id } = await createStudioProject('Same file', root);
+  const dir = path.join(root, id);
+  await editStudioTrack(dir, { type: 'add-anchor', index: 0, title: 'Anthill' });
+  const [first, second] = (await editStudioTrack(dir, { type: 'add-anchor', index: 1, scene: 'continue', title: 'Tunnel' })).track.anchors.map((anchor) => anchor.id);
+  await mkdir(path.join(dir, 'stills'));
+  await writeFile(path.join(dir, 'stills/x.png'), 'x');
+  await mkdir(path.join(dir, 'deliveries'));
+  // One read takes all three: the same image for both shots, with an edit the user can undo between them.
+  await writeFile(path.join(dir, 'deliveries/1-img.json'), JSON.stringify({ anchor: first, file: 'stills/x.png', usd: null, model: 'Example image model' }));
+  await writeFile(path.join(dir, 'deliveries/2-edit.json'), JSON.stringify({ edit: { type: 'title', anchor: first, title: 'The Anthill' } }));
+  await writeFile(path.join(dir, 'deliveries/3-img.json'), JSON.stringify({ anchor: second, file: 'stills/x.png', usd: null, model: 'Example image model' }));
+  assert.deepEqual(await ingestStudioDeliveries(dir, 9), []);
+  const track = (await editStudioTrack(dir, { type: 'undo' })).track;
+  assert.equal(track.anchors[0]!.title, 'Anthill', 'undo takes back the edit');
+  assert.deepEqual(track.anchors.map((anchor) => anchor.image), ['stills/x.png', 'stills/x.png'], 'and keeps both images delivered');
+});

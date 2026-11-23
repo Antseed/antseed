@@ -156,6 +156,11 @@ export async function getStudioProjectBoard(id: string, root: string = STUDIO_DI
   return (await readBoard(id, root)).board;
 }
 
+/** Whether a project is there, read from its small project file alone. */
+export async function studioProjectExists(id: string, root: string = STUDIO_DIR): Promise<boolean> {
+  return isStudioProjectId(id) && (await readProjectFile(id, root)) !== null;
+}
+
 /** The project's name, chat and cover, without reading its media library. */
 export async function getStudioProjectSummary(id: string, root: string = STUDIO_DIR): Promise<StudioProjectSummary | null> {
   if (!isStudioProjectId(id)) return null;

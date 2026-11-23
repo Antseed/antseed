@@ -13,11 +13,11 @@ import {
   applyTrackEdit,
   emptyStudioTrack,
   exportCheck,
+  isStudioAgentEditRequest,
   isUserOnlyStudioEdit,
   libraryUseOf,
   MAX_INGESTED,
   parseStudioAgentEdit,
-  studioAgentEditProblem,
   parseStudioDelivery,
   parseStudioTrack,
   STUDIO_DELIVERIES_DIR,
@@ -467,14 +467,14 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
             }
           }
         } else if (!delivery) {
-          if (studioAgentEditProblem(raw)) [subject, outcome] = ['A change the agent asked for', 'could not be made'];
+          if (isStudioAgentEditRequest(raw)) [subject, outcome] = ['A change the agent asked for', 'could not be made'];
           if (isUserOnlyStudioEdit(raw)) problem = 'only you can do that, here in the app';
         } else if (!media.has(delivery.file)) problem = 'its file was not found in the project';
         // An old storyboard not yet opened in the editor has no track to place it on: it waits in the inbox.
         else if (!track) continue;
         else {
           const seconds = delivery.kind === 'clip' ? await probeSeconds(path.join(dir, delivery.file)) : null;
-          const next = applyStudioDelivery(track, delivery, seconds, now);
+          const next = applyStudioDelivery(track, delivery, seconds, now, { key: read.key });
           if (next) {
             track = next;
             applied = true;

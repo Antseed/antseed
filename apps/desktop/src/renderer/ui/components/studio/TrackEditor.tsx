@@ -78,6 +78,9 @@ export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }
   useEffect(() => () => { mounted.current = false; }, []);
   // The file on disk wins whenever it changes, for example after the agent delivers a clip.
   useEffect(() => { setTrack(detail.track); }, [detail.track]);
+  // Play stops once nothing is left to play (an Undo can take the last clip away), so no later clip starts on its own.
+  const hasPlayable = track.anchors.some((anchor) => anchor.clip?.use);
+  useEffect(() => { if (playing && !hasPlayable) setPlaying(false); }, [playing, hasPlayable]);
 
   const url = (file: string) => studioFileUrl(projectId, file, detail.files[file]);
   const selected = selection ? track.anchors.find((anchor) => anchor.id === selection.anchor) ?? null : null;
@@ -185,7 +188,6 @@ export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }
   const runtime = trackRuntime(track);
   const spent = sumStudioCost(track.spent);
   const notices = [...(detail.trackError ? [`${detail.trackError}.`] : []), ...detail.notices];
-  const canPlay = track.anchors.some((anchor) => anchor.clip?.use);
   // Trim and export run ffmpeg, which the desktop does not ship.
   const toolsMissing = detail.mediaTools ? null : STUDIO_MEDIA_TOOLS_MISSING;
   const exportBlocker = toolsMissing ?? check.blockers[0] ?? null;
@@ -209,7 +211,7 @@ export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }
           ) : null}
         </p>
         <div className={styles.actions}>
-        <IconButton label={playing ? 'Stop' : 'Play the film'} disabled={!canPlay} onClick={() => setPlaying(!playing)}>
+        <IconButton label={playing ? 'Stop' : 'Play the film'} disabled={!hasPlayable && !playing} onClick={() => setPlaying(!playing)}>
           <HugeiconsIcon icon={playing ? StopIcon : PlayIcon} size={16} strokeWidth={1.8} />
         </IconButton>
         <IconButton

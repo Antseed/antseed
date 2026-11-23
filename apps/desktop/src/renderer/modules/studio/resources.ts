@@ -33,9 +33,10 @@ export function studioProjectResource(id: string): CachedResource<StudioProjectD
 
 /**
  * What a poll shows: the project as read, or, when its board or track could not be read, the last
- * project read whole with the current errors, so a bad read never empties the storyboard on screen.
+ * project read whole, so a bad read never empties the storyboard on screen. What is read apart from
+ * the board and track (the errors, the notices, the project's name) is always the current one.
  */
 export function keepReadable(last: StudioProjectDetail | null, next: StudioProjectDetail): StudioProjectDetail {
   if ((!next.boardError && !next.trackError) || !last) return next;
-  return { ...last, boardError: next.boardError, trackError: next.trackError };
+  return { ...last, project: next.project, boardError: next.boardError, trackError: next.trackError, notices: next.notices, mediaTools: next.mediaTools };
 }

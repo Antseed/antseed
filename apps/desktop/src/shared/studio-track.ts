@@ -345,19 +345,11 @@ function finite(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-const AGENT_EDIT_TYPES = new Set(['title', 'anchor-prompt', 'clip', 'then', 'scene', 'add-anchor', 'move-anchor', 'remove-anchor', 'use-version', 'aspect']);
 const USER_ONLY_EDIT_TYPES = new Set(['undo', 'export', 'trim', 'reset-trim', 'import', 'convert', 'request', 'set-image', 'add-version', 'dismiss-notices']);
 
-/** Why an {"edit": ...} delivery was not taken, or null when it is not an edit at all. */
-export function studioAgentEditProblem(raw: unknown): string | null {
-  const item = record(record(raw)?.['edit']);
-  if (!item) return null;
-  const type = typeof item['type'] === 'string' ? item['type'].slice(0, 40) : '';
-  if (!type) return 'asks for an edit without a type';
-  if (USER_ONLY_EDIT_TYPES.has(type)) return `asks for "${type}", which only the user can do in the app`;
-  if (!AGENT_EDIT_TYPES.has(type)) return `asks for "${type}", which is not an edit`;
-  if ('anchor' in item && !id(item['anchor'])) return `names anchor ${JSON.stringify(item['anchor']).slice(0, 40)}, which is not an anchor id from track.json`;
-  return `has a "${type}" edit with a missing or invalid field`;
+/** Whether a delivery is an {"edit": ...}, whether or not the edit is one the app takes. */
+export function isStudioAgentEditRequest(raw: unknown): boolean {
+  return record(record(raw)?.['edit']) !== null;
 }
 
 /** Whether the agent asked for an edit only the user may make (Undo, a trim, an export...). */
@@ -855,8 +847,10 @@ function clipInputs(track: StudioTrack, index: number): ClipInputs {
  * A clip is recorded as made from the images it says it was made from, else the ones it was
  * asked for with in the editor (or `options.inputs`, on Undo), and only failing both from the
  * track's images now: an image replaced while it was being made leaves it out of date.
+ * `options.key` names the delivery for Undo; deliveries read together share `now`, so the inbox
+ * gives each its own.
  */
-export function applyStudioDelivery(source: StudioTrack, delivery: StudioDelivery, length: number | null, now: number, options: { record?: boolean; inputs?: ClipInputs } = {}): StudioTrack | null {
+export function applyStudioDelivery(source: StudioTrack, delivery: StudioDelivery, length: number | null, now: number, options: { record?: boolean; inputs?: ClipInputs; key?: string } = {}): StudioTrack | null {
   const log = options.record ?? true;
   // A length a read would drop is not kept now either.
   const duration = seconds(length);
@@ -878,7 +872,7 @@ export function applyStudioDelivery(source: StudioTrack, delivery: StudioDeliver
     clip.requestedAt = null;
     clip.requested = null;
   }
-  if (log) track.delivered = [...track.delivered, { key: `${String(now)}:${delivery.file}`, at: now, seconds: duration, delivery, ...(inputs ? { inputs } : {}) }].slice(-MAX_DELIVERED);
+  if (log) track.delivered = [...track.delivered, { key: options.key ?? `${String(now)}:${delivery.file}`, at: now, seconds: duration, delivery, ...(inputs ? { inputs } : {}) }].slice(-MAX_DELIVERED);
   if (log && delivery.usd !== null) {
     const label = delivery.kind === 'image' ? `${anchorName(track, delivery.anchor)} image` : clipName(track, track.anchors.find((entry) => entry.clip?.id === delivery.clip)!.id);
     track.spent.push({ label, detail: delivery.model, usd: delivery.usd });

@@ -12,6 +12,7 @@ import {
   setStudioProjectConversation,
   STUDIO_DIR,
   studioProjectDir,
+  studioProjectExists,
 } from '../studio/store.js';
 import { setStudioPreviewEnabled, STUDIO_PREVIEW_OFF, studioPreviewEnabled } from '../studio/preview.js';
 import { errorResult } from './results.js';
@@ -48,7 +49,7 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
     const id = typeof payload?.id === 'string' ? payload.id : '';
     const edit = payload?.edit;
     // Only what the edit needs: the project must exist, and only Convert reads its storyboard.
-    if (!edit || typeof edit !== 'object' || typeof edit.type !== 'string' || !(await getStudioProjectSummary(id))) return { ok: false, error: 'Project not found.' };
+    if (!edit || typeof edit !== 'object' || typeof edit.type !== 'string' || !(await studioProjectExists(id))) return { ok: false, error: 'Project not found.' };
     if (edit.type === 'dismiss-notices') {
       // No track: the editor keeps the one it shows, even when track.json cannot be read just now.
       notices.delete(id);
@@ -100,7 +101,7 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
   handle('studio:open-folder', async (payload: { id?: unknown } | undefined) => {
     const id = typeof payload?.id === 'string' ? payload.id : '';
     const folder = studioProjectDir(id);
-    if (!folder || !(await getStudioProjectSummary(id))) return { ok: false, error: 'Project not found.' };
+    if (!folder || !(await studioProjectExists(id))) return { ok: false, error: 'Project not found.' };
     const failure = await shell.openPath(folder);
     return failure ? { ok: false, error: failure } : { ok: true };
   });

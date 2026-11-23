@@ -20,3 +20,14 @@ it('shows a project with an unreadable track as read when nothing was read befor
   const unreadable = detail({ track: emptyStudioTrack(), trackError: 'track.json could not be read' });
   expect(keepReadable(null, unreadable)).toBe(unreadable);
 });
+
+it('shows the current notices and project name while the track cannot be read', () => {
+  const film = detail({ project: { id: 'p1', name: 'Old name' } as StudioProjectDetail['project'], notices: ['An old note.'], track: parseStudioTrack({ anchors: [{ id: 'a1' }] }) });
+  const unreadable = detail({ project: { id: 'p1', name: 'New name' } as StudioProjectDetail['project'], notices: ['A new note.'], track: emptyStudioTrack(), trackError: 'track.json could not be read' });
+  const shown = keepReadable(film, unreadable);
+  expect(shown.track?.anchors.map((anchor) => anchor.id)).toEqual(['a1']);
+  expect(shown.notices).toEqual(['A new note.']);
+  expect(shown.project.name).toBe('New name');
+  // Dismissed while the track was unreadable: the old notes do not come back.
+  expect(keepReadable(film, { ...unreadable, notices: [] }).notices).toEqual([]);
+});
