@@ -311,8 +311,8 @@ export class SellerRequestHandler {
   private readonly _providerIds = new Map<string, string>();
   /** The service each request in flight is priced and billed as: read once, since a body can be large. */
   private readonly _requestedServices = new WeakMap<SerializedHttpRequest, RequestedService>();
-  /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
-  private readonly _catchUpPrompted = new Map<string, bigint>();
+  /** Per channel: the highest spend a catch-up NeedAuth was already sent for and the connection it went out on, so waiting requests ask once. */
+  private readonly _catchUpPrompted = new Map<string, { spent: bigint; on: WeakRef<PaymentMux> }>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
   /** The provider and service pairs already reported as sending no usage figure; each is reported once. */
   private readonly _usageMissingReported = new Set<string>();
@@ -847,22 +847,8 @@ export class SellerRequestHandler {
             // completed) it hides the round-trip latency from the buyer.
             // Ask for the catch-up now instead of only after the wait: after a
             // restart (or a lost NeedAuth) nothing else would prompt the buyer,
-            // and every parked request would end in a 402. Once per spend level,
-            // and only for spend the reserve can cover (beyond it the channel is closed below).
-            const signable = reserveMax <= 0n || spent <= reserveMax;
-            if (signable && spent > (this._catchUpPrompted.get(session.sessionId) ?? 0n)) {
-              this._catchUpPrompted.delete(session.sessionId);
-              this._catchUpPrompted.set(session.sessionId, spent);
-              if (this._catchUpPrompted.size > 1_024) this._catchUpPrompted.delete(this._catchUpPrompted.keys().next().value!);
-              // A channel-level prompt: no requestId, since it is not about the
-              // request that is waiting (its cost is not known yet).
-              this._sendNeedAuthBestEffort(paymentMux, {
-                channelId: session.sessionId,
-                requiredCumulativeAmount: spent.toString(),
-                currentAcceptedCumulative: accepted.toString(),
-                deposit: session.authMax ?? '0',
-              }, buyerPeerId, 'catch-up-before-wait');
-            }
+            // and every parked request would end in a 402.
+            this._promptCatchUp(paymentMux, buyerPeerId, session, { spent, accepted, reserveMax });
             // Other requests can finish while this one is parked: re-read the
             // spend after each catch-up and keep waiting, within one budget,
             // so an auth for the earlier spend never releases newer unpaid work.
@@ -1798,7 +1784,9 @@ export class SellerRequestHandler {
           // A buyer hands an answer to its client before it signs for it, so
           // the signature for the last one may be on its way. Wait for it
           // once, as request admission does, then judge the channel as it is
-          // by then: it may have closed or been replaced meanwhile.
+          // by then: it may have closed or been replaced meanwhile. Ask for
+          // it first: a charge recorded while the buyer was away asked nobody.
+          this._promptCatchUp(paymentMux, buyerPeerId, session, { spent, accepted: spm.getAcceptedCumulative(channelId), reserveMax });
           await spm.awaitAcceptedAtLeast(channelId, spent, DEFAULT_CATCH_UP_WAIT_MS);
           return this._handleBlindCredential(mux, paymentMux, request, buyerPeerId, true);
         }
@@ -1956,6 +1944,8 @@ export class SellerRequestHandler {
     const signedUp = async (waitMs: number): Promise<boolean> => {
       // Spend past the reserve cannot be signed for: the ceiling check below judges it.
       if (spent <= accepted || (reserveMax > 0n && spent > reserveMax)) return true;
+      // Asked for first, as at a mint: nothing else asks a buyer that was away when the charge was recorded.
+      this._promptCatchUp(this._paymentMuxes.get(buyerPeerId), buyerPeerId, session, { spent, accepted, reserveMax });
       await spm.awaitAcceptedAtLeast(channelId, spent, waitMs);
       spent = spm.getCumulativeSpend(channelId);
       accepted = spm.getAcceptedCumulative(channelId);
@@ -2587,6 +2577,33 @@ export class SellerRequestHandler {
     }
     const response = withHeaders(await provider.handleRequest(request));
     return isDownload ? response : withExposedBody(request, response, sellerCost);
+  }
+
+  /**
+   * Asks a buyer to sign for spend it has not signed for, before a request
+   * waits for that signature. Once per spend level on a connection (a prompt
+   * sent on an earlier one may be lost with it), and only for spend the
+   * reserve can cover: beyond it the channel closes instead. A channel-level
+   * prompt: no requestId, since it is not about the request that is waiting.
+   */
+  private _promptCatchUp(
+    paymentMux: PaymentMux | undefined,
+    buyerPeerId: string,
+    session: { sessionId: string; authMax?: string | null },
+    { spent, accepted, reserveMax }: { spent: bigint; accepted: bigint; reserveMax: bigint },
+  ): void {
+    if (!paymentMux || spent <= accepted || (reserveMax > 0n && spent > reserveMax)) return;
+    const prompted = this._catchUpPrompted.get(session.sessionId);
+    if (prompted && spent <= prompted.spent && prompted.on.deref() === paymentMux) return;
+    this._catchUpPrompted.delete(session.sessionId);
+    this._catchUpPrompted.set(session.sessionId, { spent, on: new WeakRef(paymentMux) });
+    if (this._catchUpPrompted.size > 1_024) this._catchUpPrompted.delete(this._catchUpPrompted.keys().next().value!);
+    this._sendNeedAuthBestEffort(paymentMux, {
+      channelId: session.sessionId,
+      requiredCumulativeAmount: spent.toString(),
+      currentAcceptedCumulative: accepted.toString(),
+      deposit: session.authMax ?? '0',
+    }, buyerPeerId, 'catch-up-before-wait');
   }
 
   private _sendNeedAuthBestEffort(
