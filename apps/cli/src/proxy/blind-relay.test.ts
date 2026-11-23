@@ -121,6 +121,21 @@ test('a request bound to an attested connection gets its credential and its stre
   assert.deepEqual(opens, [undefined, 'session-1'])
 })
 
+test('a credential is asked of the provider the request names, and one provider\'s credential is never used for another', async () => {
+  const mints: Array<string | undefined> = []
+  const client = new BlindRelayClient({
+    sendRequest: async (_peer, request) => { mints.push(request.headers['x-antseed-provider']); return minted(request, { credentialId: `cred-${mints.length}` }) },
+    openRelayStream: async () => { throw new Error('the seller is restarting') },
+    recordRelayedResponse: () => {},
+    recordInterruptedRelayedResponse: () => {},
+    keyedRelayBinary: '/never-spawned',
+  })
+  // The first request leaves a credential behind, which a request to another provider of the same seller does not use.
+  await assert.rejects(client.send(peer, 'open-model', chat(), undefined, {}, { provider: 'first' }), /the seller is restarting/)
+  await assert.rejects(client.send(peer, 'open-model', chat(), undefined, {}, { provider: 'second' }), /the seller is restarting/)
+  assert.deepEqual(mints, ['first', 'second'])
+})
+
 test('a seller whose credentials cannot be used is given up on, not asked without end', async () => {
   const endless = (count: number): void => { if (count > 50) throw new Error('asked without end') }
   // Every credential is about to expire.

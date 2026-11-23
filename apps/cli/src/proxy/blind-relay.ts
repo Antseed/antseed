@@ -119,11 +119,14 @@ export interface BlindRelaySendOptions {
   signal?: AbortSignal
   /** The connection the seller's TEE attestation covered: the credential and the stream use that connection only. */
   channelBinding?: string
+  /** The seller's provider the route selected: the credential is asked of it, where a seller would otherwise pick among the providers that serve the model. */
+  provider?: string
 }
 
 /** Who a request is for, and over which connection: what a held credential is good for. */
 interface RelayTarget {
   peer: PeerInfo
+  provider: string | undefined
   service: string
   buyerIdentity: string | undefined
   channelBinding: string | undefined
@@ -191,9 +194,12 @@ export class BlindRelayClient {
     return this._binary() ? null : 'this buyer has no keyed-relay sidecar installed'
   }
 
-  /** Credentials are held per connection binding too: one minted on another connection is never used for a bound request. */
-  private static _key({ peer, service, buyerIdentity, channelBinding }: RelayTarget): string {
-    return `${peer.peerId.toLowerCase()}|${service}|${buyerIdentity ?? ''}|${channelBinding ?? ''}`
+  /**
+   * Credentials are held per provider, since each has its own upstream and terms, and per connection binding too:
+   * one minted on another connection is never used for a bound request.
+   */
+  private static _key({ peer, provider, service, buyerIdentity, channelBinding }: RelayTarget): string {
+    return `${peer.peerId.toLowerCase()}|${provider?.toLowerCase() ?? ''}|${service}|${buyerIdentity ?? ''}|${channelBinding ?? ''}`
   }
 
   private _live(key: string): BlindRelayCredential[] {
@@ -203,12 +209,12 @@ export class BlindRelayClient {
     return live
   }
 
-  private async _mint({ peer, service, buyerIdentity, channelBinding }: RelayTarget): Promise<BlindRelayCredential> {
+  private async _mint({ peer, provider, service, buyerIdentity, channelBinding }: RelayTarget): Promise<BlindRelayCredential> {
     const response = await this._deps.sendRequest(peer, {
       requestId: randomUUID(),
       method: 'POST',
       path: BLIND_RELAY_CREDENTIAL_PATH,
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(provider ? { 'x-antseed-provider': provider } : {}) },
       body: new TextEncoder().encode(JSON.stringify({ model: service })),
     }, buyerIdentity, channelBinding)
     const text = new TextDecoder().decode(response.body)
@@ -366,7 +372,7 @@ export class BlindRelayClient {
     callbacks: BlindRelayCallbacks = {},
     options: BlindRelaySendOptions = {},
   ): Promise<SerializedHttpResponse> {
-    const { signal, channelBinding } = options
+    const { signal, channelBinding, provider } = options
     // What this buyer cannot send to any seller fails here, before a seller is asked for anything.
     if (request.path.split('?')[0] !== KEYED_REQUEST_PATH) {
       throw buyerFault(`the blind relay carries only ${KEYED_REQUEST_PATH}, not ${request.path.split('?')[0]}`, 'invalid-request')
@@ -379,7 +385,7 @@ export class BlindRelayClient {
     }
     const binary = this._binary()
     if (!binary) throw new BlindRelayError(this.unavailable() ?? '', 'buyer')
-    const target: RelayTarget = { peer, service, buyerIdentity, channelBinding }
+    const target: RelayTarget = { peer, provider, service, buyerIdentity, channelBinding }
     for (let attempt = 0; ; attempt += 1) {
       try {
         // A second attempt is a stream of its own, for the seller and for the charge it sends.
