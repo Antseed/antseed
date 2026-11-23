@@ -50,7 +50,7 @@
   "correctRate": 1,
   "requestCount": 23,
   "cost": {"inputTokens":3080,"outputTokens":2845,"totalTokens":5925,"estimatedCostUsd":0.006130000000000001,"pricedExchangeCount":25,"missingCostExchangeCount":0},
-  "cumulativeCost": {"inputTokens":3080,"outputTokens":2845,"totalTokens":5925,"estimatedCostUsd":0.006130000000000001,"pricedExchangeCount":25,"missingCostExchangeCount":0},
+  "cumulativeCost": {"inputTokens":4870,"outputTokens":4353,"totalTokens":9223,"estimatedCostUsd":0.01072,"pricedExchangeCount":34,"missingCostExchangeCount":0},
   "evidencePath": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/evidence.json",
   "evidenceHash": "<the hash of the evidence file>",
   "firstRequestAt": 1791331200,
@@ -93,7 +93,7 @@
   "result": {
    "cost": {"estimatedCostUsd":0.006130000000000001,"inputTokens":3080,"missingCostExchangeCount":0,"outputTokens":2845,"pricedExchangeCount":25,"totalTokens":5925},
    "coverageRule": "kbf-coverage-v1",
-   "cumulativeCost": {"estimatedCostUsd":0.006130000000000001,"inputTokens":3080,"missingCostExchangeCount":0,"outputTokens":2845,"pricedExchangeCount":25,"totalTokens":5925},
+   "cumulativeCost": {"estimatedCostUsd":0.01072,"inputTokens":4870,"missingCostExchangeCount":0,"outputTokens":4353,"pricedExchangeCount":34,"totalTokens":9223},
    "matchVector": [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
    "matchVectorHash": "sha256:4a65f551310ca2e4b60668f309a3529fc9b7c5c6125dda60aa6b3cc359466d15",
    "outcomeReason": null,

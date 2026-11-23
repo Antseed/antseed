@@ -38,7 +38,8 @@ import {
 } from './model-run.js'
 import { createOutputCapScreen, numberWords } from './methods/output-cap/output-cap.js'
 import { createOutputEchoScreen, outputEchoPrompt } from './methods/output-echo/output-echo.js'
-import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
+import { summarizeAuditExchangeCosts, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
+import { METHODS } from './methods/index.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
 import { createTokenizerPrecheckScreen, measureTokenizerReference } from './methods/tokens/tokenizer-precheck.js'
 
@@ -864,7 +865,19 @@ scenario('f-resume-after-cap-check', 'a resume from the checkpoint written after
   const attempt = await earlier(t, network, { auditId: 'audit-f-earlier' })
   const checkpoint = attempt.checkpoints.find((written) => written.records.outputCap && !written.records.outputEcho)!
   assert.equal(checkpoint.exchanges.length, 3)
-  await expect(network, await audit(t, network, { auditId: 'audit-f-cap', resume: resumeFrom(checkpoint) }))
+  const resumed = await audit(t, network, { auditId: 'audit-f-cap', resume: resumeFrom(checkpoint) })
+  // The attempt's cost counts what it sent itself; the cumulative cost counts everything its evidence holds: the
+  // reused question batches, and the carried pre-check and cap check too.
+  const priced = (requests: ReadonlyArray<{ attemptCosts: readonly unknown[] }>) => requests.filter((request) => request.attemptCosts.length > 0).length
+  const carriedPriced = summarizeAuditExchangeCosts(checkpoint.exchanges).pricedExchangeCount
+    + METHODS.reduce((total, check) => {
+      const record = checkpoint.records[check.slot]
+      return record == null ? total : total + priced((check as unknown as { paid(record: unknown): Array<{ attemptCosts: readonly unknown[] }> }).paid(record))
+    }, 0)
+  assert.ok(carriedPriced > checkpoint.exchanges.length, 'the carried tests were paid for')
+  const returned = resumed.returned as ModelVerificationTargetResult
+  assert.equal(returned.cumulativeCost!.pricedExchangeCount - returned.cost.pricedExchangeCount, carriedPriced)
+  await expect(network, resumed)
 })
 
 scenario('g-skipped-after-flag', 'a seller skipped at its first question batch after its pre-check flagged: the flag stands, and nothing more is asked', async (t, expect) => {

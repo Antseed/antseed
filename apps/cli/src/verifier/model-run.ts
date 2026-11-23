@@ -846,173 +846,156 @@ export async function verifyModelTarget(input: {
     clock: clock(),
     spare: () => deadline.spare(input.context.auditTimeoutMs),
   })
-  // The references of the tests after the questions are asked together, before the seller is asked anything.
-  if (runsTests) {
-    await Promise.all(tests.map(({ check, asking }) => (check.phase === 'after-questions' ? asking?.ready?.(auditStart) : undefined)))
-  }
-  // A test before the questions waits for its own reference first: the wait is the auditor's, not the seller's.
-  for (const { check, asking } of tests) {
-    if (check.phase !== 'before-questions' || !asking) continue
-    try {
+  // The live audit, from the tests' references to the last test: the deadline's timers end with it, on every way out.
+  const live = await (async () => {
+    // The references of the tests after the questions are asked together, before the seller is asked anything.
+    if (runsTests) {
+      await Promise.all(tests.map(({ check, asking }) => (check.phase === 'after-questions' ? asking?.ready?.(auditStart) : undefined)))
+    }
+    // A test before the questions waits for its own reference first: the wait is the auditor's, not the seller's.
+    for (const { check, asking } of tests) {
+      if (check.phase !== 'before-questions' || !asking) continue
       await asking.ready?.(auditStart)
       keep(check, await asking.check(sellerAudit(null)))
-    } catch (error) {
-      deadline.close()
-      throw error
     }
-  }
-  // Discovery runs whenever the seller is still to be asked something with its own thinking setting: a question batch,
-  // or a test a retry asks again after every batch was answered.
-  const testsToAsk = tests.some(({ check, asking }) => asking !== null && check.asksWithSellerThinking === true)
-  const discovery = (pending.length > 0 || testsToAsk) && input.context.sellerThinking
-    // The pre-check may have started the audit's clock: an audit that ends here stops it.
-    ? await sellerThinkingFor(input.context, input.target, input.service, input.reference, sampling).catch((error: unknown) => {
-      deadline.close()
-      throw error
-    })
-    : null
-  const settings = sellerRequestSettings(input.context, input.reference, discovery?.record ?? null)
-  const sellerThinkingEvidence = discovery
-    ? { sellerThinking: discovery.fresh ? discovery.record : { ...discovery.record, reused: true as const } }
-    : {}
-  const discoveryCost = discovery?.fresh ? summarizeDiscoveryCosts(discovery.record.attempts) : null
-  let checkpointTail = Promise.resolve()
-  let checkpointFailure: Error | null = null
-  /** `bestEffort`: a write made only for a diagnostic (FLIPS) never stops the audit when it fails. */
-  const persistCheckpoint = async (options: { bestEffort?: boolean } = {}): Promise<void> => {
-    const snapshot = [...exchangeByBatch.values()].sort((left, right) => left.batchIndex - right.batchIndex)
-    const checkpoint: ModelAuditCheckpointV1 = {
-      version: 2,
-      kind: 'antseed-verifier-audit-checkpoint',
-      auditId,
-      parentAuditId: input.resume?.parentAuditId ?? null,
-      reservationAuditId: input.resume?.reservationAuditId ?? auditId,
-      ...(input.extension ? { extension: true as const } : {}),
-      ...(confirmingIdentity ? { confirming: confirmingIdentity } : {}),
-      runId: input.checkpointIdentity?.runId ?? '',
-      epoch: input.checkpointIdentity?.epoch ?? '',
-      model: input.checkpointIdentity?.model ?? input.reference.referenceModel,
-      targetPeerId: input.target.peerId,
-      service: input.service,
-      referenceId: input.reference.referenceId,
-      queryProfileHash: queryProfileHash(input.reference.queryProfile),
-      probeIds: input.reference.probes.map((probe) => probe.id),
-      exchanges: snapshot,
-      records: records(),
-      updatedAt: new Date().toISOString(),
-    }
-    const path = join(input.context.checkpointRootDir ?? input.context.evidenceDir, '.checkpoints', `${auditId}.json`)
-    checkpointTail = checkpointTail.then(async () => {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        try {
-          await (input.context.writeCheckpoint ?? writeJsonAtomic)(path, checkpoint)
-          return
-        } catch (error) {
-          if (attempt === 1 && options.bestEffort) return
-          if (attempt === 1) {
-            checkpointFailure = new Error(`audit stopped: checkpoint could not be persisted at ${path}; resume from the last durable checkpoint`, { cause: error })
-            deadline.controller.abort()
-            throw checkpointFailure
+    // Discovery runs whenever the seller is still to be asked something with its own thinking setting: a question batch,
+    // or a test a retry asks again after every batch was answered.
+    const testsToAsk = tests.some(({ check, asking }) => asking !== null && check.asksWithSellerThinking === true)
+    const discovery = (pending.length > 0 || testsToAsk) && input.context.sellerThinking
+      ? await sellerThinkingFor(input.context, input.target, input.service, input.reference, sampling)
+      : null
+    const settings = sellerRequestSettings(input.context, input.reference, discovery?.record ?? null)
+    const sellerThinkingEvidence = discovery
+      ? { sellerThinking: discovery.fresh ? discovery.record : { ...discovery.record, reused: true as const } }
+      : {}
+    const discoveryCost = discovery?.fresh ? summarizeDiscoveryCosts(discovery.record.attempts) : null
+    let checkpointTail = Promise.resolve()
+    let checkpointFailure: Error | null = null
+    /** `bestEffort`: a write made only for a diagnostic (FLIPS) never stops the audit when it fails. */
+    const persistCheckpoint = async (options: { bestEffort?: boolean } = {}): Promise<void> => {
+      const snapshot = [...exchangeByBatch.values()].sort((left, right) => left.batchIndex - right.batchIndex)
+      const checkpoint: ModelAuditCheckpointV1 = {
+        version: 2,
+        kind: 'antseed-verifier-audit-checkpoint',
+        auditId,
+        parentAuditId: input.resume?.parentAuditId ?? null,
+        reservationAuditId: input.resume?.reservationAuditId ?? auditId,
+        ...(input.extension ? { extension: true as const } : {}),
+        ...(confirmingIdentity ? { confirming: confirmingIdentity } : {}),
+        runId: input.checkpointIdentity?.runId ?? '',
+        epoch: input.checkpointIdentity?.epoch ?? '',
+        model: input.checkpointIdentity?.model ?? input.reference.referenceModel,
+        targetPeerId: input.target.peerId,
+        service: input.service,
+        referenceId: input.reference.referenceId,
+        queryProfileHash: queryProfileHash(input.reference.queryProfile),
+        probeIds: input.reference.probes.map((probe) => probe.id),
+        exchanges: snapshot,
+        records: records(),
+        updatedAt: new Date().toISOString(),
+      }
+      const path = join(input.context.checkpointRootDir ?? input.context.evidenceDir, '.checkpoints', `${auditId}.json`)
+      checkpointTail = checkpointTail.then(async () => {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            await (input.context.writeCheckpoint ?? writeJsonAtomic)(path, checkpoint)
+            return
+          } catch (error) {
+            if (attempt === 1 && options.bestEffort) return
+            if (attempt === 1) {
+              checkpointFailure = new Error(`audit stopped: checkpoint could not be persisted at ${path}; resume from the last durable checkpoint`, { cause: error })
+              deadline.controller.abort()
+              throw checkpointFailure
+            }
           }
         }
-      }
-    })
-    await checkpointTail
-  }
-  /** The seller was skipped while its questions were asked (it refused them, its key is gone, ...). */
-  let skip: VerificationSkipSignal | null = null
-  /** The questions ended in a seller failure (its first batch failed): no other test is started in this attempt. */
-  let sellerFailed = false
-  try {
-    // A test finished before the questions is kept, so an interrupted audit does not ask it again.
-    if (tests.some(({ check, asking }) => check.phase === 'before-questions' && asking !== null && found[check.slot] != null)) await persistCheckpoint()
-    const executed = await mapWithAdaptiveConcurrency(
-      pending,
-      input.context.batchConcurrency,
-      async ({ probes, batchIndex }, _pendingIndex, control) => input.context.batchLimiter.run(async () => {
-        if (checkpointFailure) throw checkpointFailure
-        let answered = false
-        let exchange: ProxyAuditEvidenceExchangeV1
-        try {
-          exchange = await executeProxyProbeBatch(
-          { ...input.context, signal: deadline.start(), describeDeadline: () => deadline.describe() },
-          input.target,
-          input.service,
-          input.reference,
-          probes,
-          batchIndex,
-          settings,
-          control.reduceToOne,
-          sampling,
-          )
-          answered = exchange.status === 'succeeded'
-        } finally {
-          deadline.finish(answered)
-        }
-        exchangeByBatch.set(batchIndex, exchange)
-        await persistCheckpoint()
-        if (batchIndex === 0 && exchange.status === 'failed' && exchange.outcomeReason?.retryable) {
-          throw new VerificationTerminalTransientSignal(exchange)
-        }
-        return exchange
-      }),
-      (exchange) => exchange.status === 'succeeded'
-        && exchange.responseAuth.status === 'verified'
-        && exchange.timing.responseLatencyMs <= input.context.batchConcurrencyPromotionLatencyMs,
-    )
-    for (const exchange of executed) exchangeByBatch.set(exchange.batchIndex, exchange)
-  } catch (error) {
-    if (error instanceof VerificationTerminalTransientSignal) {
-      sellerFailed = true
-      exchangeByBatch.set(error.exchange.batchIndex, error.exchange)
-      for (const { probes, batchIndex } of pending) {
-        if (!exchangeByBatch.has(batchIndex)) {
-          exchangeByBatch.set(batchIndex, notAttemptedExchange(
-            input.context,
+      })
+      await checkpointTail
+    }
+    /** The seller was skipped while its questions were asked (it refused them, its key is gone, ...). */
+    let skip: VerificationSkipSignal | null = null
+    /** The questions ended in a seller failure (its first batch failed): no other test is started in this attempt. */
+    let sellerFailed = false
+    try {
+      // A test finished before the questions is kept, so an interrupted audit does not ask it again.
+      if (tests.some(({ check, asking }) => check.phase === 'before-questions' && asking !== null && found[check.slot] != null)) await persistCheckpoint()
+      const executed = await mapWithAdaptiveConcurrency(
+        pending,
+        input.context.batchConcurrency,
+        async ({ probes, batchIndex }, _pendingIndex, control) => input.context.batchLimiter.run(async () => {
+          if (checkpointFailure) throw checkpointFailure
+          let answered = false
+          let exchange: ProxyAuditEvidenceExchangeV1
+          try {
+            exchange = await executeProxyProbeBatch(
+            { ...input.context, signal: deadline.start(), describeDeadline: () => deadline.describe() },
             input.target,
             input.service,
+            input.reference,
             probes,
             batchIndex,
             settings,
-            error.exchange.outcomeReason!,
-          ))
+            control.reduceToOne,
+            sampling,
+            )
+            answered = exchange.status === 'succeeded'
+          } finally {
+            deadline.finish(answered)
+          }
+          exchangeByBatch.set(batchIndex, exchange)
+          await persistCheckpoint()
+          if (batchIndex === 0 && exchange.status === 'failed' && exchange.outcomeReason?.retryable) {
+            throw new VerificationTerminalTransientSignal(exchange)
+          }
+          return exchange
+        }),
+        (exchange) => exchange.status === 'succeeded'
+          && exchange.responseAuth.status === 'verified'
+          && exchange.timing.responseLatencyMs <= input.context.batchConcurrencyPromotionLatencyMs,
+      )
+      for (const exchange of executed) exchangeByBatch.set(exchange.batchIndex, exchange)
+    } catch (error) {
+      if (error instanceof VerificationTerminalTransientSignal) {
+        sellerFailed = true
+        exchangeByBatch.set(error.exchange.batchIndex, error.exchange)
+        for (const { probes, batchIndex } of pending) {
+          if (!exchangeByBatch.has(batchIndex)) {
+            exchangeByBatch.set(batchIndex, notAttemptedExchange(
+              input.context,
+              input.target,
+              input.service,
+              probes,
+              batchIndex,
+              settings,
+              error.exchange.outcomeReason!,
+            ))
+          }
         }
+        await persistCheckpoint()
+      } else if (error instanceof VerificationSkipSignal) {
+        skip = error
+      } else {
+        throw error
       }
-      await persistCheckpoint().catch((persistError: unknown) => {
-        deadline.close()
-        throw persistError
-      })
-    } else if (error instanceof VerificationSkipSignal) {
-      skip = error
-    } else {
-      deadline.close()
-      throw error
     }
-  }
-  const flaggedSoFar = (): boolean => readingsOfEvidence({ ...records(), exchanges: [] }, null).some((reading) => reading.outcome === 'flag')
-  if (skip && !flaggedSoFar()) {
-    // A skip with no flag is today's skip: the seller is not audited this run, and what ran before is paid for.
-    deadline.close()
-    return writeSkip(skip)
-  }
-  // The other output tests, after the questions, unless the seller was skipped (a flag stands through a skip: the
-  // audit is a DIFF with its questions unfinished, and nothing more is asked of the seller), or the questions ended in
-  // a seller failure or on the time limit: a test started then could only find nothing, and a retry asks it again.
-  const timeIsUp = deadline.controller.signal.aborted
-  if (runsTests && !skip && !sellerFailed && !timeIsUp) {
-    try {
+    // The other output tests, after the questions, unless the seller was skipped (a flag stands through a skip: the
+    // audit is a DIFF with its questions unfinished, and nothing more is asked of the seller), or the questions ended in
+    // a seller failure or on the time limit: a test started then could only find nothing, and a retry asks it again.
+    const timeIsUp = deadline.controller.signal.aborted
+    if (runsTests && !skip && !sellerFailed && !timeIsUp) {
       // The time is checked before each test: one that starts after it ran out could only find nothing.
       const timeLeft = (): boolean => !deadline.controller.signal.aborted
       for (const { check, asking } of tests) {
         if (check.phase !== 'after-questions' || !asking || !timeLeft()) continue
         if (keep(check, await asking.check(sellerAudit(settings.thinking)))) await persistCheckpoint(asking.bestEffortCheckpoint ? { bestEffort: true } : {})
       }
-    } catch (error) {
-      deadline.close()
-      throw error
     }
-  }
-  deadline.close()
+    return { sellerThinkingEvidence, discoveryCost, skip }
+  })().finally(() => deadline.close())
+  const { sellerThinkingEvidence, discoveryCost, skip } = live
+  const flaggedSoFar = (): boolean => readingsOfEvidence({ ...records(), exchanges: [] }, null).some((reading) => reading.outcome === 'flag')
+  // A skip with no flag is today's skip: the seller is not audited this run, and what ran before is paid for.
+  if (skip && !flaggedSoFar()) return writeSkip(skip)
 
   /** The skip evidence, with what ran before the seller was skipped (hoisted: used above). */
   async function writeSkip(error: VerificationSkipSignal): Promise<ModelVerificationSkip> {
@@ -1106,14 +1089,14 @@ export async function verifyModelTarget(input: {
     ? withBatchCounts(skip.outcomeReason, 1, batches.length)
     : questionsVerdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
   const ran = records()
-  // Tests and discovery are paid for like batches, so the audit that sent them counts them; carried tests were paid
-  // for by the attempt that ran them.
+  // Tests and discovery are paid for like batches. This attempt's cost counts what it sent itself: a carried test was
+  // paid for by the attempt that ran it. The cumulative cost is that of everything the evidence holds, as for the
+  // question batches a resume reuses: carried tests included.
   const fresh = freshRecords()
-  const extraCosts = [...testCosts(fresh), discoveryCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
-  const withExtras = (summary: AuditCostSummaryV1) => addAuditCostSummaries(summary, ...extraCosts)
-  const cumulativeCost = withExtras(summarizeAuditExchangeCosts(exchanges))
+  const costs = (records: StoredCheckRecords) => [...testCosts(records), discoveryCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
+  const cumulativeCost = addAuditCostSummaries(summarizeAuditExchangeCosts(exchanges), ...costs(ran))
   const newBatchIndexes = new Set(pending.map((entry) => entry.batchIndex))
-  const cost = withExtras(summarizeAuditExchangeCosts(exchanges.filter((exchange) => newBatchIndexes.has(exchange.batchIndex))))
+  const cost = addAuditCostSummaries(summarizeAuditExchangeCosts(exchanges.filter((exchange) => newBatchIndexes.has(exchange.batchIndex))), ...costs(fresh))
   const correctProbeCount = matchVector.filter((entry) => entry === 1).length
   const incorrectProbeCount = matchVector.filter((entry) => entry === 0).length
   const parsedProbeCount = correctProbeCount + incorrectProbeCount
