@@ -4,7 +4,8 @@
  "asked": [
   "reference (FLIPS): 80 replies",
   "reference (cap): its own answer to a request with a limit of 16",
-  "reference (cap): input tokens of 4 texts",
+  "reference (cap): input tokens of 2 texts",
+  "reference (cap): input tokens of 2 texts",
   "reference (echo): echo of text 1 (short), 2 asks",
   "reference (echo): echo of text 2 (long), 2 asks",
   "reference (echo): echo of text 3 (short), 2 asks",

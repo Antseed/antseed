@@ -1,7 +1,7 @@
 import { randomInt } from 'node:crypto'
 import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { isSafeProbe } from '@antseed/node/payments'
-import { outputCheckRequestBody, readOutput, requestCarriesPrompt, type OutputReadingV1, type OutputRequestThinking } from '../shared/output-usage.js'
+import { outputCheckRequestBody, parseObject, readOutput, requestCarriesPrompt, type OutputReadingV1, type OutputRequestThinking } from '../shared/output-usage.js'
 import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from '../../proxy-evidence.js'
 import {
   SIGNED_REQUEST_RETRY_WAIT,
@@ -33,7 +33,8 @@ import {
  * flag rests on what the seller delivered under its signature: its visible answer, measured in the
  * model's tokenizer at this epoch's reference (A, then A + answer, as the tokenizer pre-check measures
  * text), must be more than twice the limit, and again when asked again. An honest engine stops at the
- * limit, so its answer measures the limit or less.
+ * limit, so its answer measures the limit or less. The check applies to a model only when its own host keeps the
+ * lowest limit and shows that a measured answer means what it says (`prepareOutputCapReference`).
  *
  * Every constant is here, frozen, with its source. Inconclusive never flags.
  */
@@ -48,8 +49,20 @@ export interface OutputCapRule {
   flagFactor: number
   /** Times the seller is asked when the first answer is a flag: every one must flag. */
   sellerAsks: number
-  /** Times the reference measures an answer: every measurement must agree. The pre-check's. */
+  /** Times the reference measures an answer, each after its own fresh message: every measurement must agree. The pre-check's. */
   referenceAsks: number
+  /**
+   * The reply limit of the reference's second answer, asked only when its answer at `minCap` shows fewer than `minCap`
+   * tokens of answer (a model that reasons through the lowest limit): the scale is checked on that answer instead.
+   * Chosen as the smallest limit at which every model seen reasoning through the lowest one still left an answer.
+   */
+  scaleCap: number
+  /**
+   * Billed tokens a reference reply may carry beyond its measured answer (a host's fixed framing per reply), for the scale
+   * only. At most 6: an answer of `minCap` tokens measured `tolerance` above them then overstates its length at most
+   * (minCap + tolerance) / (minCap - framingTokens) = 1.8 times, below `flagFactor`. Chosen above the overheads seen.
+   */
+  framingTokens: number
 }
 
 export const OUTPUT_CAP_RULE: OutputCapRule = Object.freeze({
@@ -60,6 +73,8 @@ export const OUTPUT_CAP_RULE: OutputCapRule = Object.freeze({
   flagFactor: 2,
   sellerAsks: 2,
   referenceAsks: 2,
+  scaleCap: 512,
+  framingTokens: 6,
 })
 
 export function outputCapRuleById(id: string): OutputCapRule | undefined {
@@ -81,11 +96,15 @@ export function outputCapRuleById(id: string): OutputCapRule | undefined {
  */
 export type OutputCapClass = 'unread' | 'within' | 'reasoning-outside-cap' | 'reasoning-unmeasured' | 'unexplained' | 'over-cap' | 'cap-ignored'
 
-/** The reference's measurement of one delivered answer: A, then A + answer. */
+/** The reference's measurement of one delivered answer: A, then A + answer, with a fresh A for each ask. */
 export interface OutputCapMeasurementV1 {
   /** The route may serve several providers and named none: the measurement's host is unknown, so it measures nothing. */
   ambiguous?: true
-  a: string
+  /**
+   * The message measured before the answer, one per reference ask, each fresh: two asks never send the same text, so a
+   * host's prefix cache cannot answer the second from the first.
+   */
+  a: string[]
   /** The answer as measured: a space, then the visible text. */
   b: string
   reference: TokenizerReferenceRoundV1
@@ -123,6 +142,21 @@ export interface OutputCapReferenceV1 {
   measurement: OutputCapMeasurementV1 | null
   /** The reference's own reply to the capped request: the limit, what it billed and itemised, and what its answer measures (shown in a dry pass). */
   ownReply: { cap: number; billed: number | null; reasoning: number | null; measured: number | null } | null
+  /**
+   * The answer the scale was checked on: the reply at `minCap` (`limit`), or the second reply at `scaleCap` (`scale`) when
+   * the first showed too little answer. Null when the check stopped before it got to the scale.
+   */
+  scale: {
+    from: 'limit' | 'scale'
+    cap: number
+    billed: number | null
+    reasoning: number | null
+    measured: number | null
+    /** The second reply's measurement; the first reply's is `measurement`. */
+    measurement: OutputCapMeasurementV1 | null
+  } | null
+  /** The body of each request the reference was asked for a reply, in order, as sent: it shows the setting the reference got. */
+  requests: unknown[]
 }
 
 /** The reference's reply to one capped request: the request sent and the answer's bytes; null when it could not be asked. */
@@ -242,9 +276,17 @@ export function judgeOutputCap(asks: readonly Pick<OutputCapAskV1, 'class'>[], r
   return { outcome: 'flag', reason: `the delivered answer measured more than ${rule.flagFactor} times the limit, ${rule.sellerAsks} times` }
 }
 
-/** Measures `b` at the reference after a fresh `a`; the measurement is kept whatever it gives. */
+/**
+ * Measures `b` at the reference, each of the rule's asks after its own fresh `a` (A, then A + b): no two asks send the
+ * same text, so a host that caches a prompt's prefix cannot answer the second ask from the first. The asks must agree,
+ * as one round of the pre-check's asks must. The measurement is kept whatever it gives.
+ */
 async function measureAnswer(ask: TokenizerReferenceAsk, b: string, rule: OutputCapRule): Promise<OutputCapMeasurementV1> {
-  const a = generateTokenizerProbe().a
+  const a: string[] = []
+  while (a.length < rule.referenceAsks) {
+    const fresh = generateTokenizerProbe().a
+    if (!a.includes(fresh)) a.push(fresh)
+  }
   // A route that may serve several providers and names none leaves the measurement's host unknown: no measurement.
   let ambiguous = false
   const measured = await measureTokenizerReference({
@@ -253,64 +295,132 @@ async function measureAnswer(ask: TokenizerReferenceAsk, b: string, rule: Output
       if (asked.oneProvider === false && asked.results.every((result) => !result.provider)) ambiguous = true
       return asked
     },
-    probes: [{ a, b }],
-    rule: measurementRule(rule),
+    // One probe per A, asked once each, sent together; then judged as one round.
+    probes: a.map((text) => ({ a: text, b })),
+    rule: { ...measurementRule(rule), referenceAsks: 1 },
   })
-  const round = measured.rounds[0]!
+  const asks = measured.rounds.flatMap((round) => round.asks)
+  const judged = referenceDelta(asks, measurementRule(rule))
+  // A probe that gave nothing keeps its own reason (no usage, a failed request), as one round of the pre-check does.
+  const failure = judged.delta === null ? (measured.rounds.find((round) => round.delta === null)?.failure ?? judged.failure) : null
+  const round: TokenizerReferenceRoundV1 = { asks, delta: judged.delta, failure }
   return ambiguous
     ? { ambiguous: true, a, b, reference: { ...round, delta: null, failure: 'the reference\'s route may serve several providers and names none' } }
     : { a, b, reference: round }
 }
 
+/** Tokens of answer a reply was billed for: billed output minus itemised reasoning. */
+function billedAnswer(reading: ReadableOutput): number {
+  return reading.billedOutputTokens - (reading.reasoningTokens ?? 0)
+}
+
 /**
- * Whether the cap check applies to the model this epoch: the reference must measure a count in words
- * cleanly (two equal measurements from one provider, no cached input). Never rejects.
+ * Which reply of the reference its scale is checked on: its reply at the lowest limit (`limit`) when that was billed for
+ * at least `minCap` tokens of answer, or else a second reply at `scaleCap` (`scale`).
+ */
+export function capScaleFrom(billed: number, reasoning: number | null, rule: OutputCapRule = OUTPUT_CAP_RULE): 'limit' | 'scale' {
+  return billed - (reasoning ?? 0) >= rule.minCap ? 'limit' : 'scale'
+}
+
+/**
+ * Whether the scale holds: an answer measured at the reference is at most `tolerance` above and at most `framingTokens`
+ * below what the host billed for it, on an answer of at least `minCap` billed tokens. A seller's measured answer then
+ * means what it says: an honest answer that stops at the limit cannot measure over `flagFactor` times it.
+ */
+export function capScaleHolds(billedForAnswer: number, measured: number, rule: OutputCapRule = OUTPUT_CAP_RULE): boolean {
+  return billedForAnswer >= rule.minCap && measured <= billedForAnswer + rule.tolerance && measured >= billedForAnswer - rule.framingTokens
+}
+
+/**
+ * Whether the cap check applies to the model this epoch. The reference answers the count at the lowest limit a seller can
+ * draw, and its host must keep it. Its answer must then show the measurement's scale: the answer, measured the way a
+ * seller's is (two equal measurements from one provider, no cached input), is what the host billed for it
+ * (`capScaleHolds`). A model that reasons through the lowest limit shows too little answer for that, so the reference
+ * answers once more at `scaleCap` and the scale is checked there. Never rejects.
  */
 export async function prepareOutputCapReference(input: { ask: TokenizerReferenceAsk; askReply: CapReferenceReply; rule?: OutputCapRule }): Promise<OutputCapReferenceV1> {
   const rule = input.rule ?? OUTPUT_CAP_RULE
   // The lowest limit a seller can draw: a host with a floor above twice it would have its honest sellers flagged, and
   // declines here instead.
   const cap = rule.minCap
-  const { prompt } = outputCapPrompt()
-  const notApplying = (why: string, measurement: OutputCapMeasurementV1 | null, ownReply: OutputCapReferenceV1['ownReply']): OutputCapReferenceV1 => ({
-    rule, upstream: null, applies: false, measurement, ownReply, reason: `${why}, so the cap check does not apply to the model this run`,
+  const requests: unknown[] = []
+  const starts: number[] = []
+  let measurement: OutputCapMeasurementV1 | null = null
+  let ownReply: OutputCapReferenceV1['ownReply'] = { cap, billed: null, reasoning: null, measured: null }
+  let scale: OutputCapReferenceV1['scale'] = null
+  const notApplying = (why: string): OutputCapReferenceV1 => ({
+    rule, upstream: null, applies: false, measurement, ownReply, scale, requests, reason: `${why}, so the cap check does not apply to the model this run`,
   })
-  let replied: Awaited<ReturnType<CapReferenceReply>>
-  let failure: string | null = null
-  try {
-    replied = await input.askReply(prompt, cap)
-  } catch (error) {
-    replied = null
-    failure = (error instanceof Error ? error.message : String(error)).slice(0, 300)
+  // One reply of the reference to the count, from a start of its own, under `limit`: its reading, or why there is none.
+  const replyAt = async (limit: number, what: string): Promise<{ reading: ReadableOutput } | { why: string }> => {
+    let drawn = outputCapPrompt()
+    while (starts.includes(drawn.start)) drawn = outputCapPrompt()
+    starts.push(drawn.start)
+    let replied: Awaited<ReturnType<CapReferenceReply>>
+    let failure: string | null = null
+    try {
+      replied = await input.askReply(drawn.prompt, limit)
+    } catch (error) {
+      replied = null
+      failure = (error instanceof Error ? error.message : String(error)).slice(0, 300)
+    }
+    if (replied) requests.push(parseObject(replied.requestBody))
+    if (replied && replied.oneProvider === false && !replied.provider) return { why: 'the reference\'s route may serve several providers and names none' }
+    const reading = replied ? readOutput(replied.requestBody, replied.response) : null
+    if (reading && reading.cap !== null && reading.cap > limit) return { why: `the reference's route raises the reply limit to ${reading.cap}` }
+    if (!readable(reading, limit)) return { why: `${what} could not be read${failure ? ` (${failure})` : ''}` }
+    return { reading }
   }
-  if (replied && replied.oneProvider === false && !replied.provider) {
-    return notApplying('the reference\'s route may serve several providers and names none', null, { cap, billed: null, reasoning: null, measured: null })
+  const first = await replyAt(cap, 'the reference\'s own answer to a capped request')
+  if ('why' in first) return notApplying(first.why)
+  const { billedOutputTokens: billed, reasoningTokens: reasoning } = first.reading
+  ownReply = { cap, billed, reasoning, measured: null }
+  const answer = billedAnswer(first.reading)
+  // Its answer is measured when it was billed over the limit (does the host keep it?), or when the scale is checked on it.
+  const scaleHere = capScaleFrom(billed, reasoning, rule) === 'limit'
+  if (billed > cap + rule.tolerance || scaleHere) {
+    const b = answerToMeasure(first.reading, cap, rule, true)
+    if (!b) return notApplying('the reference\'s own answer could not be measured')
+    measurement = await measureAnswer(input.ask, b, rule)
+    const measured = measuredTokens(measurement, rule)
+    ownReply = { cap, billed, reasoning, measured }
+    if (measured === null) return notApplying(`the reference could not measure its own answer (${measurement.reference.failure ?? 'no difference'})`)
+    // The model's own host keeps the limit: what an honest seller passing the request through delivers.
+    if (billed > cap + rule.tolerance && measured > rule.flagFactor * cap) {
+      return notApplying(`the model's own host billed ${billed} on a limit of ${cap} with an answer of ${measured}`)
+    }
   }
-  const reading = replied ? readOutput(replied.requestBody, replied.response) : null
-  if (reading && reading.cap !== null && reading.cap > cap) {
-    return notApplying(`the reference's route raises the reply limit to ${reading.cap}`, null, { cap, billed: null, reasoning: null, measured: null })
+  if (scaleHere) {
+    const measured = ownReply.measured!
+    scale = { from: 'limit', cap, billed, reasoning, measured, measurement: null }
+    if (!capScaleHolds(answer, measured, rule)) return notApplying(`the reference's own answer measures ${measured} where it billed ${answer} for it`)
+    return { rule, upstream: null, applies: true, measurement, ownReply, scale, requests, reason: `the reference kept a limit of ${cap} (billed ${billed}) and its answer measures ${measured}` }
   }
-  if (!readable(reading, cap)) {
-    return notApplying(`the reference's own answer to a capped request could not be read${failure ? ` (${failure})` : ''}`, null, { cap, billed: null, reasoning: null, measured: null })
+  // Reasoned through the lowest limit: the scale is checked on a reply with room for an answer.
+  const second = await replyAt(rule.scaleCap, `the reference's answer at a limit of ${rule.scaleCap}`)
+  const firstShowed = `the reference kept a limit of ${cap} (billed ${billed}) with ${answer} tokens of answer`
+  if ('why' in second) return notApplying(`${firstShowed}, and ${second.why}`)
+  const shown = second.reading
+  const scaleAnswer = billedAnswer(shown)
+  scale = { from: 'scale', cap: rule.scaleCap, billed: shown.billedOutputTokens, reasoning: shown.reasoningTokens, measured: null, measurement: null }
+  if (scaleAnswer < rule.minCap) {
+    return notApplying(`${firstShowed}, and ${scaleAnswer} at a limit of ${rule.scaleCap}: too little answer to check the measurement's scale on`)
   }
-  const billed = reading.billedOutputTokens
-  const reasoning = reading.reasoningTokens
-  const b = answerToMeasure(reading, cap, rule, true)
-  if (!b) return notApplying('the reference\'s own answer could not be measured', null, { cap, billed, reasoning, measured: null })
-  const measurement = await measureAnswer(input.ask, b, rule)
-  const measured = measuredTokens(measurement, rule)
-  const ownReply = { cap, billed, reasoning, measured }
-  if (measured === null) return notApplying(`the reference could not measure its own answer (${measurement.reference.failure ?? 'no difference'})`, measurement, ownReply)
-  // The model's own host keeps the limit: what an honest seller passing the request through delivers.
-  if (billed > cap + rule.tolerance && measured > rule.flagFactor * cap) {
-    return notApplying(`the model's own host billed ${billed} on a limit of ${cap} with an answer of ${measured}`, measurement, ownReply)
+  const b = answerToMeasure(shown, rule.scaleCap, rule, true)
+  if (!b) return notApplying(`${firstShowed}, and its answer at a limit of ${rule.scaleCap} could not be measured`)
+  const scaleMeasurement = await measureAnswer(input.ask, b, rule)
+  const measured = measuredTokens(scaleMeasurement, rule)
+  scale = { ...scale, measured, measurement: scaleMeasurement }
+  if (measured === null) {
+    return notApplying(`${firstShowed}, and the reference could not measure its answer at a limit of ${rule.scaleCap} (${scaleMeasurement.reference.failure ?? 'no difference'})`)
   }
-  // The scale: the answer measures what the host billed for it, so a seller's measured answer means what it says.
-  const visible = billed - (reasoning ?? 0)
-  if (Math.abs(measured - visible) > rule.tolerance) {
-    return notApplying(`the reference's own answer measures ${measured} where it billed ${visible} for it`, measurement, ownReply)
+  if (!capScaleHolds(scaleAnswer, measured, rule)) {
+    return notApplying(`${firstShowed}, and its answer at a limit of ${rule.scaleCap} measures ${measured} where it billed ${scaleAnswer} for it`)
   }
-  return { rule, upstream: null, applies: true, measurement, ownReply, reason: `the reference kept a limit of ${cap} (billed ${billed}) and its answer measures ${measured}` }
+  return {
+    rule, upstream: null, applies: true, measurement, ownReply, scale, requests,
+    reason: `${firstShowed}, and at a limit of ${rule.scaleCap} its answer measures ${measured} where it billed ${scaleAnswer} for it`,
+  }
 }
 
 /** Runs the cap check on one seller. Never rejects: a failure is an inconclusive outcome. */
@@ -495,7 +605,7 @@ export function createOutputCapScreen<Settings>(input: {
   let prepared: Promise<OutputCapReferenceV1> | null = null
   const ready = (settings: Settings): Promise<OutputCapReferenceV1> => {
     prepared ??= Promise.resolve().then(() => prepareOutputCapReference({ ask: input.ask(settings), askReply: input.askReply(settings), rule })).catch((error: unknown): OutputCapReferenceV1 => ({
-      rule, upstream: null, applies: false, measurement: null, ownReply: null,
+      rule, upstream: null, applies: false, measurement: null, ownReply: null, scale: null, requests: [],
       reason: `the reference could not be asked (${error instanceof Error ? error.message : String(error)}), so the cap check does not apply this run`,
     })).then((reference) => {
       try { input.onReady?.(reference) } catch { /* a report is never a reason to fail the check */ }
@@ -555,8 +665,21 @@ export function outputCapFingerprint(): Record<string, unknown> {
       reasoningMarker: reasoning !== null, text: 'x', finished: false, shape: 'chat',
     }, 16, measured)),
     judged: SAMPLE_CAP_ASKS.map((classes) => judgeOutputCap(classes.map((entry) => ({ class: entry }))).outcome),
+    // The reference's scale: which of its replies it is checked on, and whether it holds, for fixed answers.
+    scaleFrom: SAMPLE_CAP_REFERENCE_REPLIES.map(([billed, reasoning]) => capScaleFrom(billed, reasoning)),
+    scaleHolds: SAMPLE_CAP_SCALES.map(([billedForAnswer, measured]) => capScaleHolds(billedForAnswer, measured)),
   }
 }
+
+/** Billed output and itemised reasoning of sample reference replies at the lowest limit. */
+const SAMPLE_CAP_REFERENCE_REPLIES: ReadonlyArray<readonly [number, number | null]> = [
+  [16, null], [16, 0], [16, 16], [16, 14], [10, 0], [408, 392], [921, 905],
+]
+
+/** Billed tokens of answer and measured length of sample reference answers. */
+const SAMPLE_CAP_SCALES: ReadonlyArray<readonly [number, number]> = [
+  [16, 16], [16, 18], [16, 19], [16, 10], [16, 9], [2, 1], [403, 398], [403, 397], [403, 396], [403, 405], [403, 406],
+]
 
 /** Billed output, itemised reasoning and measured answer length of sample answers on a limit of 16. */
 const SAMPLE_CAP_ANSWERS: ReadonlyArray<readonly [number, number | null, number | null]> = [

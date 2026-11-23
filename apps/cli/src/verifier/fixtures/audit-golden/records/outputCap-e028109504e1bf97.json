@@ -4,12 +4,15 @@
    "cap": 24,
    "class": "cap-ignored",
    "measurement": {
-    "a": "Before I send this on, can you confirm the details make sense? I wrote i… (184 characters, sha256 14a3ec8df9d01263)",
+    "a": [
+     "Before I send this on, can you confirm the details make sense? I wrote i… (184 characters, sha256 14a3ec8df9d01263)",
+     "Quick question about something from last week, can you help me check it?… (175 characters, sha256 79422235d2e379df)"
+    ],
     "b": " three hundred and one, three hundred and two, three hundred and three, … (3411 characters, sha256 2150388ca08b958a)",
     "reference": {
      "asks": [
       {"baseTokens":53,"cachedInput":false,"probedTokens":906,"providers":["maker","maker"]},
-      {"baseTokens":53,"cachedInput":false,"probedTokens":906,"providers":["maker","maker"]}
+      {"baseTokens":51,"cachedInput":false,"probedTokens":904,"providers":["maker","maker"]}
      ],
      "delta": 853,
      "failure": null
@@ -78,18 +81,21 @@
    "cap": 24,
    "class": "cap-ignored",
    "measurement": {
-    "a": "Before I send this on, can you confirm the details make sense? It is abo… (165 characters, sha256 00e0b56a9e067fa4)",
+    "a": [
+     "Could you look over these notes and tell me if anything seems wrong? The… (159 characters, sha256 3edd8c4dd3d9a21e)",
+     "I am planning the next few days and want to make sure I have this right.… (179 characters, sha256 993274089d942f6f)"
+    ],
     "b": " three hundred and one, three hundred and two, three hundred and three, … (3411 characters, sha256 2150388ca08b958a)",
     "reference": {
      "asks": [
-      {"baseTokens":49,"cachedInput":false,"probedTokens":901,"providers":["maker","maker"]},
-      {"baseTokens":49,"cachedInput":false,"probedTokens":901,"providers":["maker","maker"]}
+      {"baseTokens":47,"cachedInput":false,"probedTokens":900,"providers":["maker","maker"]},
+      {"baseTokens":52,"cachedInput":false,"probedTokens":905,"providers":["maker","maker"]}
      ],
-     "delta": 852,
+     "delta": 853,
      "failure": null
     }
    },
-   "prompt": "Starting at 366, spell out each following number in English words on a s… (158 characters, sha256 09489c7ddd1c034e)",
+   "prompt": "Starting at 817, spell out each following number in English words on a s… (158 characters, sha256 8b81bd00f9244023)",
    "reading": {
     "billedOutputTokens": 900,
     "cap": 24,
@@ -130,7 +136,7 @@
        "method": "POST",
        "path": "/v1/chat/completions",
        "headers": {},
-       "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Startin… (291 characters, sha256 c55525057d5c52ba)"
+       "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Startin… (291 characters, sha256 87f8909c826c5a1a)"
       },
       "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
       "responseAuthSigningBase64": "AA==",
@@ -151,5 +157,5 @@
  ],
  "outcome": "flag",
  "reason": "the delivered answer measured more than 2 times the limit, 2 times",
- "rule": {"flagFactor":2,"id":"output-cap-v1","maxCap":48,"minCap":16,"referenceAsks":2,"sellerAsks":2,"tolerance":2}
+ "rule": {"flagFactor":2,"framingTokens":6,"id":"output-cap-v1","maxCap":48,"minCap":16,"referenceAsks":2,"scaleCap":512,"sellerAsks":2,"tolerance":2}
 }

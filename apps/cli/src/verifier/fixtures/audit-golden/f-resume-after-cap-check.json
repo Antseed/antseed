@@ -94,7 +94,7 @@
   "exchanges": [{"record":"exchange-92917074ff69d159"},{"record":"exchange-e201705da1fc36a4"},{"record":"exchange-6fa4fab12d4743cc"}],
   "flips": {"record":"flips-88018d3747157191"},
   "kind": "antseed-buyer-proxy-kbf-audit",
-  "outputCap": {"record":"outputCap-eb55d3464bdd05c4"},
+  "outputCap": {"record":"outputCap-a60347f14b8c26ca"},
   "outputEcho": {"record":"outputEcho-5eb60a90401a1ad3"},
   "reference": {"record":"reference-723f83ee13c8a30f"},
   "result": {

@@ -26,6 +26,8 @@ import {
   type CapReferenceReply,
   type OutputCapV1,
   answerToMeasure,
+  capScaleFrom,
+  capScaleHolds,
   classifyCapAnswer,
   judgeOutputCap,
   numberWords,
@@ -266,7 +268,8 @@ test('the screen measures the reference once for every seller of the model', asy
     proxyBaseUrl: 'http://127.0.0.1:1', responseAuthReader: seller.responseAuthReader, limiter: new ConcurrencyLimiter(1), fetchFn: seller.fetchFn, ask: () => counting, askReply: () => keptReply,
   })
   await Promise.all([screen.check({ peerId: PEER, service: SERVICE }, null, null), screen.check({ peerId: PEER, service: SERVICE }, null, null)])
-  assert.equal(asked, 1, 'within the limit: only the reference test asked the reference')
+  // The reference test's one measurement asks once per fresh message (A, then A + answer each time).
+  assert.equal(asked, OUTPUT_CAP_RULE.referenceAsks, 'within the limit: only the reference test asked the reference')
 })
 
 test('a cap record of every outcome, written to its evidence file, passes the check submit makes', async () => {
@@ -461,4 +464,144 @@ test('the cap reference says when its route raises the reply limit, and keeps th
   assert.match((await prepareOutputCapReference({ ask: wordReference, askReply: raised })).reason, /route raises the reply limit to 1024/)
   const failing: CapReferenceReply = async () => { throw new Error('upstream answered 503') }
   assert.match((await prepareOutputCapReference({ ask: wordReference, askReply: failing })).reason, /could not be read \(upstream answered 503\)/)
+})
+
+// --- The reference's scale on a model that reasons through the lowest limit ---
+
+/** `count` words of one token each at `wordReference`. */
+const plain = (count: number): string => Array.from({ length: count }, () => 'one').join(' ')
+
+/** The reference's replies, by limit and call; every limit it is asked at is captured. */
+function referenceReplies(reply: (cap: number, call: number) => { text: string; billed: number; reasoning?: number }) {
+  const limits: number[] = []
+  const askReply: CapReferenceReply = async (prompt, cap) => {
+    limits.push(cap)
+    const { text, billed, reasoning } = reply(cap, limits.length)
+    return {
+      requestBody: bytes({ messages: [{ role: 'user', content: prompt }], max_tokens: cap, reasoning: { effort: 'minimal' }, stream: false }),
+      response: chat(text, { prompt_tokens: 20, completion_tokens: billed, ...(reasoning !== undefined ? { completion_tokens_details: { reasoning_tokens: reasoning } } : {}) }),
+      provider: 'maker', oneProvider: true,
+    }
+  }
+  return { askReply, limits }
+}
+
+test('a model that reasons through the lowest limit shows its scale on a second reply at a larger limit, and the check applies', async () => {
+  // All 16 tokens billed as reasoning at the lowest limit; at the larger limit some reasoning, then a long answer.
+  const reference = referenceReplies((cap) => (cap === OUTPUT_CAP_RULE.minCap ? { text: '', billed: cap, reasoning: cap } : { text: plain(400), billed: cap, reasoning: cap - 400 }))
+  const record = await prepareOutputCapReference({ ask: wordReference, askReply: reference.askReply })
+  assert.equal(record.applies, true, record.reason)
+  assert.deepEqual(reference.limits, [OUTPUT_CAP_RULE.minCap, OUTPUT_CAP_RULE.scaleCap])
+  assert.deepEqual(record.ownReply, { cap: 16, billed: 16, reasoning: 16, measured: null })
+  assert.equal(record.measurement, null, 'an answer of nothing within the limit is not measured')
+  assert.deepEqual({ ...record.scale, measurement: undefined }, { from: 'scale', cap: 512, billed: 512, reasoning: 112, measured: 400, measurement: undefined })
+  assert.equal(measuredTokens(record.scale!.measurement!), 400)
+  assert.match(record.reason, /kept a limit of 16 \(billed 16\) with 0 tokens of answer, and at a limit of 512 its answer measures 400 where it billed 400 for it/)
+  // The request of each reply is kept, with the setting the reference was sent.
+  assert.deepEqual(record.requests.map((body) => [(body as Record<string, unknown>)['max_tokens'], (body as Record<string, unknown>)['reasoning']]), [
+    [16, { effort: 'minimal' }], [512, { effort: 'minimal' }],
+  ])
+  const prompts = record.requests.map((body) => ((body as { messages: Array<{ content: string }> }).messages[0]!.content))
+  assert.notEqual(prompts[0], prompts[1], 'the second reply counts from another start')
+})
+
+test('a host that bills a few tokens per reply beyond its answer keeps the scale, within the framing allowance only', async () => {
+  // Billed 5 tokens of answer more than the answer measures, at any length: a fixed framing, not a scale error.
+  const framed = (extra: number) => referenceReplies((cap) => (cap === OUTPUT_CAP_RULE.minCap ? { text: '', billed: cap, reasoning: cap } : { text: plain(398), billed: cap, reasoning: cap - 398 - extra }))
+  assert.equal((await prepareOutputCapReference({ ask: wordReference, askReply: framed(5).askReply })).applies, true)
+  assert.equal((await prepareOutputCapReference({ ask: wordReference, askReply: framed(6).askReply })).applies, true)
+  const beyond = await prepareOutputCapReference({ ask: wordReference, askReply: framed(7).askReply })
+  assert.equal(beyond.applies, false)
+  assert.match(beyond.reason, /its answer at a limit of 512 measures 398 where it billed 405 for it/)
+  // An answer that measures more than billed is held to the tolerance, as before.
+  const over = await prepareOutputCapReference({ ask: wordReference, askReply: referenceReplies((cap) => (cap === 16 ? { text: '', billed: 16, reasoning: 16 } : { text: plain(406), billed: cap, reasoning: cap - 403 })).askReply })
+  assert.equal(over.applies, false)
+  assert.match(over.reason, /measures 406 where it billed 403/)
+})
+
+test('the scale holds from the framing allowance below to the tolerance above, on an answer of at least the lowest limit', () => {
+  assert.deepEqual(
+    [[16, 16], [16, 18], [16, 19], [16, 10], [16, 9], [2, 1], [15, 15], [403, 398], [403, 397], [403, 396], [403, 405], [403, 406]].map(([billed, measured]) => capScaleHolds(billed!, measured!)),
+    [true, true, false, true, false, false, false, true, true, false, true, false],
+  )
+  // The allowance keeps a passing scale below the flag: an honest answer at the limit cannot measure over twice it.
+  const { minCap, tolerance, framingTokens, flagFactor } = OUTPUT_CAP_RULE
+  assert.ok((minCap + tolerance) / (minCap - framingTokens) < flagFactor)
+  assert.deepEqual([[16, null], [16, 0], [16, 16], [16, 14], [10, 0], [408, 392], [921, 905]].map(([billed, reasoning]) => capScaleFrom(billed!, reasoning ?? null)), [
+    'limit', 'limit', 'scale', 'scale', 'scale', 'limit', 'limit',
+  ])
+})
+
+test('a reply at the lowest limit that shows its answer is enough: the reference is not asked again', async () => {
+  const reference = referenceReplies((cap) => ({ text: plain(cap), billed: cap, reasoning: 0 }))
+  const record = await prepareOutputCapReference({ ask: wordReference, askReply: reference.askReply })
+  assert.equal(record.applies, true)
+  assert.deepEqual(reference.limits, [OUTPUT_CAP_RULE.minCap])
+  assert.deepEqual(record.scale, { from: 'limit', cap: 16, billed: 16, reasoning: 0, measured: 16, measurement: null })
+  assert.equal(record.requests.length, 1)
+})
+
+test('a host that bills a fixed few tokens on a short answer at the lowest limit applies', async () => {
+  // Billed 16 for an answer that measures 12: 4 tokens of framing, inside the allowance.
+  const record = await prepareOutputCapReference({ ask: wordReference, askReply: referenceReplies(() => ({ text: plain(12), billed: 16, reasoning: 0 })).askReply })
+  assert.equal(record.applies, true, record.reason)
+  assert.equal(record.scale?.from, 'limit')
+  assert.equal(record.ownReply?.measured, 12)
+})
+
+test('a reply at the lowest limit with only a token or two of answer does not show the scale: the reference answers again', async () => {
+  const reference = referenceReplies((cap) => (cap === 16 ? { text: plain(1), billed: 16, reasoning: 14 } : { text: plain(300), billed: cap, reasoning: cap - 300 }))
+  const record = await prepareOutputCapReference({ ask: wordReference, askReply: reference.askReply })
+  assert.deepEqual(reference.limits, [16, 512])
+  assert.equal(record.applies, true)
+  assert.equal(record.scale?.from, 'scale')
+})
+
+test('a second reply that is all reasoning, cannot be read, or cannot be measured leaves the check off, with its reason', async () => {
+  const allReasoning = await prepareOutputCapReference({ ask: wordReference, askReply: referenceReplies((cap) => ({ text: '', billed: cap, reasoning: cap })).askReply })
+  assert.equal(allReasoning.applies, false)
+  assert.match(allReasoning.reason, /with 0 tokens of answer, and 0 at a limit of 512: too little answer to check the measurement's scale on, so the cap check does not apply/)
+  assert.deepEqual(allReasoning.scale, { from: 'scale', cap: 512, billed: 512, reasoning: 512, measured: null, measurement: null })
+  const { askReply: firstOnly } = referenceReplies(() => ({ text: '', billed: 16, reasoning: 16 }))
+  const failing: CapReferenceReply = async (prompt, cap) => {
+    if (cap === OUTPUT_CAP_RULE.scaleCap) throw new Error('upstream answered 503')
+    return firstOnly(prompt, cap)
+  }
+  const failed = await prepareOutputCapReference({ ask: wordReference, askReply: failing })
+  assert.equal(failed.applies, false)
+  assert.match(failed.reason, /and the reference's answer at a limit of 512 could not be read \(upstream answered 503\)/)
+  const cached: TokenizerReferenceAsk = async (contents) => ({ upstream: null, results: contents.map((content) => ({ inputTokens: content.length, cachedInput: true, provider: 'maker', failure: null })) })
+  const unmeasured = await prepareOutputCapReference({ ask: cached, askReply: referenceReplies((cap) => (cap === 16 ? { text: '', billed: 16, reasoning: 16 } : { text: plain(300), billed: cap, reasoning: cap - 300 })).askReply })
+  assert.equal(unmeasured.applies, false)
+  assert.match(unmeasured.reason, /could not measure its answer at a limit of 512 \(the reference reported cached input\)/)
+})
+
+/**
+ * A reference that counts one token per word and caches every text it has been sent: a text sent again reports cached
+ * input, as a host with a prefix cache does for an identical prompt.
+ */
+function cachingReference(): TokenizerReferenceAsk {
+  const seen = new Set<string>()
+  return async (contents) => ({
+    upstream: { kind: 'test' },
+    results: contents.map((content) => {
+      const cachedInput = seen.has(content)
+      seen.add(content)
+      return { inputTokens: 10 + content.trim().split(/\s+/).length, cachedInput, provider: 'maker', failure: null }
+    }),
+  })
+}
+
+test('each measurement ask sends its own fresh message, so a host that caches repeated prompts still measures the answer', async () => {
+  const record = await runOn(fakeSeller(() => ({ text: words(120), billed: 900 })), cachingReference())
+  assert.equal(record.outcome, 'flag', 'measured despite the cache: the limit was ignored twice')
+  for (const ask of record.asks) {
+    assert.equal(ask.measurement!.a.length, OUTPUT_CAP_RULE.referenceAsks)
+    assert.equal(new Set(ask.measurement!.a).size, OUTPUT_CAP_RULE.referenceAsks, 'a fresh message for every ask')
+    assert.equal(ask.measurement!.reference.asks.length, OUTPUT_CAP_RULE.referenceAsks)
+  }
+  validateOutputCap(record)
+  // The reference's own measurement of its scale answer gets through the same cache.
+  const reference = await prepareOutputCapReference({ ask: cachingReference(), askReply: referenceReplies((cap) => (cap === 16 ? { text: '', billed: 16, reasoning: 16 } : { text: plain(300), billed: cap, reasoning: cap - 300 })).askReply })
+  assert.equal(reference.applies, true, reference.reason)
 })

@@ -66,5 +66,5 @@
  ],
  "outcome": "pass",
  "reason": "the answer was within",
- "rule": {"flagFactor":2,"id":"output-cap-v1","maxCap":48,"minCap":16,"referenceAsks":2,"sellerAsks":2,"tolerance":2}
+ "rule": {"flagFactor":2,"framingTokens":6,"id":"output-cap-v1","maxCap":48,"minCap":16,"referenceAsks":2,"scaleCap":512,"sellerAsks":2,"tolerance":2}
 }

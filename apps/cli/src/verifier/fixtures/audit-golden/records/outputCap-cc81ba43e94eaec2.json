@@ -45,7 +45,7 @@
        "method": "POST",
        "path": "/v1/chat/completions",
        "headers": {},
-       "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"List ev… (287 characters, sha256 7e650c1bf129f926)"
+       "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"List ev… (263 characters, sha256 38bffea8b90ac30d)"
       },
       "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
       "responseAuthSigningBase64": "AA==",
@@ -66,5 +66,5 @@
  ],
  "outcome": "pass",
  "reason": "the answer was within",
- "rule": {"flagFactor":2,"id":"output-cap-v1","maxCap":48,"minCap":16,"referenceAsks":2,"sellerAsks":2,"tolerance":2}
+ "rule": {"flagFactor":2,"framingTokens":6,"id":"output-cap-v1","maxCap":48,"minCap":16,"referenceAsks":2,"scaleCap":512,"sellerAsks":2,"tolerance":2}
 }

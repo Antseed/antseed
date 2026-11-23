@@ -4,7 +4,8 @@
  "asked": [
   "reference (FLIPS): 80 replies",
   "reference (cap): its own answer to a request with a limit of 16",
-  "reference (cap): input tokens of 4 texts",
+  "reference (cap): input tokens of 2 texts",
+  "reference (cap): input tokens of 2 texts",
   "reference (echo): echo of text 1 (short), 2 asks",
   "reference (echo): echo of text 2 (long), 2 asks",
   "reference (echo): echo of text 3 (short), 2 asks",
@@ -61,7 +62,7 @@
   "evidenceLevel": "proxy-observation-with-verified-response-auth-no-payment-evidence",
   "exchanges": [{"record":"exchange-226f0dfcbaa561da"},{"record":"exchange-ace38a84b86af79b"},{"record":"exchange-2a6d6880d2cc5494"}],
   "kind": "antseed-buyer-proxy-kbf-audit",
-  "outputCap": {"record":"outputCap-355902c47255c641"},
+  "outputCap": {"record":"outputCap-768266b3bc01b1dc"},
   "reference": {"record":"reference-723f83ee13c8a30f"},
   "result": {
    "cost": {"estimatedCostUsd":0.00257,"inputTokens":2080,"missingCostExchangeCount":1,"outputTokens":265,"pricedExchangeCount":7,"totalTokens":2345},
