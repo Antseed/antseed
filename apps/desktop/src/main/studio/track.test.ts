@@ -226,7 +226,7 @@ test('trim, deliveries, undo and export work on real files', async (t) => {
   await writeFile(path.join(dir, 'deliveries/bad.json'), JSON.stringify({ clip: 'c99', file: 'clips/missing.mp4' }));
   const notices = await ingestStudioDeliveries(dir, 5);
   assert.equal(notices.length, 1);
-  assert.match(notices[0]!, /bad\.json/);
+  assert.equal(notices[0], 'A clip the agent made could not be placed: its file was not found in the project.');
   assert.deepEqual((await readdir(path.join(dir, 'deliveries/done'))), ['5-one.json']);
   let detail = await getStudioProject(id, root);
   track = detail!.track!;
@@ -251,7 +251,7 @@ test('trim, deliveries, undo and export work on real files', async (t) => {
 
   // A delivery with a cost but no place on the track still counts as spent.
   await writeFile(path.join(dir, 'deliveries/lost.json'), JSON.stringify({ clip: 'c77', file: 'clips/c1-v1.mp4', usd: 0.5 }));
-  assert.match((await ingestStudioDeliveries(dir, 6))[0]!, /clip c77, which is no longer on the track/);
+  assert.match((await ingestStudioDeliveries(dir, 6))[0]!, /^A clip the agent made could not be placed: its clip is no longer on the storyboard\.$/);
   track = (await getStudioProject(id, root))!.track!;
   assert.deepEqual(track.spent.map((line) => line.label), ['Clip 1→2', 'Not placed: clips/c1-v1.mp4']);
 
@@ -322,9 +322,9 @@ test('edits the agent delivers apply in order, each one undoable, and a refused 
   await deliver('6-unknown.json', { type: 'title', anchor: 'zz99', title: 'x' });
   const notices = await ingestStudioDeliveries(dir, 9);
   assert.equal(notices.length, 3);
-  assert.match(notices[0]!, /4-too-long\.json asks for an edit the track refused \(Choose a length from 1 to 30 seconds\.\)/);
-  assert.match(notices[1]!, /5-undo\.json asks for "undo", which only the user can do in the app/);
-  assert.match(notices[2]!, /6-unknown\.json names anchor "zz99", which is not an anchor id from track\.json/);
+  assert.match(notices[0]!, /^A change the agent asked for could not be made: Choose a length from 1 to 30 seconds\.$/);
+  assert.match(notices[1]!, /^A change the agent asked for could not be made: only you can do that, here in the app\.$/);
+  assert.match(notices[2]!, /^A change the agent asked for could not be made: the app could not read it\.$/);
   let track = (await getStudioProject(id, root))!.track!;
   assert.deepEqual(track.anchors.map((anchor) => anchor.title), ['Welcome to Los Antgeles', 'The hero swaggers in']);
   assert.equal(track.anchors[1]!.prompt, 'The hero ant walks in');
@@ -760,7 +760,7 @@ test('a delivery that would grow the track past what a read takes is set aside, 
   await writeFile(path.join(dir, 'deliveries/image.json'), JSON.stringify({ anchor: 'a1', file: 'stills/a.png', usd: 0.04, model: 'Example image model' }));
   const notices = await ingestStudioDeliveries(dir, 9);
   assert.equal(notices.length, 1);
-  assert.match(notices[0]!, /deliveries\/image\.json would make the track larger than the app can read back\. It was moved to deliveries\/failed\./);
+  assert.match(notices[0]!, /^The image for Shot 1 could not be placed: the project would grow larger than the app can open\.$/);
   assert.deepEqual(await readFile(path.join(dir, 'track.json')), before, 'track.json is untouched');
   assert.equal((await readStudioTrack(dir))!.anchors[0]!.image, null);
   assert.deepEqual(await readdir(path.join(dir, 'deliveries/failed')), ['9-image.json']);
@@ -820,4 +820,28 @@ test('a file delivered to a storyboard not yet opened in the editor waits in the
   const track = (await readStudioTrack(dir))!;
   assert.equal(track.anchors[0]!.image, 'stills/b.png');
   assert.equal(sumStudioCost(track.spent), 0.04);
+});
+
+test('an image delivered under a wrong name is not counted, so delivering it again under its own name counts it once', async (t) => {
+  const tmp = await mkdtemp(path.join(tmpdir(), 'studio-wrong-name-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const root = path.join(tmp, 'studio');
+  await mkdir(root);
+  const { id } = await createStudioProject('Wrong name', root);
+  const dir = path.join(root, id);
+  await editStudioTrack(dir, { type: 'add-anchor', index: 0, title: 'Anthill' });
+  await mkdir(path.join(dir, 'stills'));
+  await writeFile(path.join(dir, 'stills/a1.jpg'), 'x');
+  await mkdir(path.join(dir, 'deliveries'));
+  // Saved as .jpg, delivered as .png.
+  await writeFile(path.join(dir, 'deliveries/img.json'), JSON.stringify({ anchor: 'a1', file: 'stills/a1.png', usd: 0.0165, model: 'Example image model' }));
+  const notices = await ingestStudioDeliveries(dir, 7);
+  // The user reads which shot and why, never a path.
+  assert.deepEqual(notices, ['The image for Shot 1 could not be placed: its file was not found in the project.']);
+  assert.equal(sumStudioCost((await readStudioTrack(dir))!.spent), 0);
+  await writeFile(path.join(dir, 'deliveries/img-again.json'), JSON.stringify({ anchor: 'a1', file: 'stills/a1.jpg', usd: 0.0165, model: 'Example image model' }));
+  assert.deepEqual(await ingestStudioDeliveries(dir, 8), []);
+  const track = (await readStudioTrack(dir))!;
+  assert.equal(track.anchors[0]!.image, 'stills/a1.jpg');
+  assert.equal(sumStudioCost(track.spent), 0.0165);
 });

@@ -360,6 +360,12 @@ export function studioAgentEditProblem(raw: unknown): string | null {
   return `has a "${type}" edit with a missing or invalid field`;
 }
 
+/** Whether the agent asked for an edit only the user may make (Undo, a trim, an export...). */
+export function isUserOnlyStudioEdit(raw: unknown): boolean {
+  const type = record(record(raw)?.['edit'])?.['type'];
+  return typeof type === 'string' && USER_ONLY_EDIT_TYPES.has(type);
+}
+
 /** An edit the agent announced in deliveries/<name>.json as {"edit": {...}}; anything else is refused. */
 export function parseStudioAgentEdit(raw: unknown): StudioAgentEdit | null {
   const item = record(record(raw)?.['edit']);

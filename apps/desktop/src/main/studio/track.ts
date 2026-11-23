@@ -7,10 +7,13 @@ import { promisify } from 'node:util';
 import { STUDIO_BOARD_FILE, STUDIO_MEDIA_TOOLS_MISSING, studioBoardFiles, studioMediaKind, type StudioBoard } from '../../shared/studio.js';
 import {
   addStudioExport,
+  anchorName,
+  clipName,
   applyStudioDelivery,
   applyTrackEdit,
   emptyStudioTrack,
   exportCheck,
+  isUserOnlyStudioEdit,
   libraryUseOf,
   MAX_INGESTED,
   parseStudioAgentEdit,
@@ -23,6 +26,7 @@ import {
   TrackEditError,
   undoTo,
   type IngestRecord,
+  type StudioDelivery,
   type StudioEditResult,
   type StudioLibraryItem,
   type StudioTrack,
@@ -294,6 +298,15 @@ function trackFiles(media: Map<string, number>, seconds: Map<string, number | nu
   return { has: (file) => media.has(file), seconds: (file) => seconds.get(file) ?? null };
 }
 
+/** What a delivery is for, in the storyboard's words: "The image for Shot 2", "Clip 1→2". */
+function deliverySubject(track: StudioTrack, delivery: StudioDelivery): string {
+  if (delivery.kind === 'image') {
+    return track.anchors.some((anchor) => anchor.id === delivery.anchor) ? `The image for ${anchorName(track, delivery.anchor)}` : 'An image the agent made';
+  }
+  const anchor = track.anchors.find((entry) => entry.clip?.id === delivery.clip);
+  return anchor ? clipName(track, anchor.id) : 'A clip the agent made';
+}
+
 /** Applies one edit to a project's track, one edit at a time across all projects. */
 export function editStudioTrack(dir: string, edit: TrackEdit, options: { picked?: string[]; board?: StudioBoard } = {}): Promise<StudioEditResult> {
   return queue.run(async () => {
@@ -415,7 +428,10 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
     for (const name of names) {
       const before = track;
       let applied = false;
-      let problem = 'could not be read';
+      // The notice is for the user: it names the shot or clip and says why in plain words, never a path.
+      let subject = 'Something the agent delivered';
+      let problem = 'the app could not read it';
+      let outcome = 'could not be placed';
       let key: string | null = null;
       // An edit the user asked for in chat is undoable like the user's own; a delivered file is not an edit of the user's, so Undo never takes it away.
       let undoable = false;
@@ -427,14 +443,18 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
         const raw = read.raw;
         const agentEdit = taken ? null : parseStudioAgentEdit(raw);
         const delivery = taken || agentEdit ? null : parseStudioDelivery(raw);
-        if (delivery) await addNamedFiles(dir, media, [delivery.file]);
+        if (delivery) {
+          await addNamedFiles(dir, media, [delivery.file]);
+          subject = track ? deliverySubject(track, delivery) : `The ${delivery.kind} the agent made`;
+        }
+        if (agentEdit) [subject, outcome] = ['A change the agent asked for', 'could not be made'];
         if (taken) {
           // Saved to the track on an earlier read, which could not move it: only the move is left.
           applied = taken.applied;
-          problem = 'was not placed on the track';
+          problem = 'it had no place on the storyboard';
         } else if (agentEdit) {
           if (!track) {
-            problem = 'is an edit, and this project is still an old storyboard: open it in the editor first';
+            problem = 'open this storyboard in the editor first';
           } else {
             // Only the edit's own refusal sets it aside; a failure to save it leaves it in the inbox.
             try {
@@ -443,11 +463,13 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
               applied = true;
               undoable = true;
             } catch (err) {
-              problem = `asks for an edit the track refused (${err instanceof Error ? err.message : String(err)})`;
+              problem = err instanceof Error ? err.message : String(err);
             }
           }
-        } else if (!delivery) problem = studioAgentEditProblem(raw) ?? 'is not a clip, image or edit delivery';
-        else if (!media.has(delivery.file)) problem = `names ${delivery.file}, which is not in the project folder`;
+        } else if (!delivery) {
+          if (studioAgentEditProblem(raw)) [subject, outcome] = ['A change the agent asked for', 'could not be made'];
+          if (isUserOnlyStudioEdit(raw)) problem = 'only you can do that, here in the app';
+        } else if (!media.has(delivery.file)) problem = 'its file was not found in the project';
         // An old storyboard not yet opened in the editor has no track to place it on: it waits in the inbox.
         else if (!track) continue;
         else {
@@ -457,11 +479,12 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
             track = next;
             applied = true;
           } else {
-            problem = `is for ${delivery.kind === 'clip' ? `clip ${delivery.clip}` : `anchor ${delivery.anchor}`}, which is no longer on the track`;
+            problem = `its ${delivery.kind === 'clip' ? 'clip' : 'shot'} is no longer on the storyboard`;
           }
         }
-        // What the agent paid for is spent even when the file has no place on the track.
-        if (!applied && delivery && delivery.usd !== null && track) {
+        // What the agent paid for is spent even when the file has no place on the track. A file that
+        // is not there was named wrong: the agent delivers it again, and that delivery counts what it cost.
+        if (!applied && delivery && delivery.usd !== null && track && media.has(delivery.file)) {
           // A file's path may be longer than a cost label takes.
           track = { ...track, spent: [...track.spent, { label: `Not placed: ${delivery.file}`.slice(0, 120), detail: delivery.model, usd: delivery.usd }] };
         }
@@ -478,10 +501,10 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
           // Taking it in would leave a track no read takes back: it is set aside and the track stays as it was.
           track = before;
           applied = false;
-          problem = 'would make the track larger than the app can read back';
+          problem = 'the project would grow larger than the app can open';
         }
       }
-      if (!applied) notices.push(`${STUDIO_DELIVERIES_DIR}/${name} ${problem}. It was moved to ${STUDIO_DELIVERIES_DIR}/failed.`);
+      if (!applied) notices.push(`${subject} ${outcome}: ${problem.replace(/\.$/, '')}.`);
       await mediaDir(dir, `${STUDIO_DELIVERIES_DIR}/${applied ? 'done' : 'failed'}`);
       await rename(path.join(inbox, name), path.join(inbox, applied ? 'done' : 'failed', `${String(now)}-${name}`));
     }
