@@ -29,6 +29,26 @@ This project uses selective package publishing. Each release entry lists the pub
 - Verifiers (CLI): a model whose thinking no setting turns off is now asked with the setting that thinks least, not with no setting at all (rule `kbf-discovery-least-reasoning-v1`, in `@antseed/fingerprints`), for the reference and for each seller audited. With no setting such a model could think through the whole token limit of a real batch and answer nothing, so no question set could be built for it. A setting that turns thinking off still wins as before. Question writing also stops using its "think a little" fallback once the fallback's first three answers give no list either. The audit rules change, so the verifier compat number goes to 15.
 - Verifiers (CLI): building a question set for a model whose thinking cannot be turned off no longer stalls. Such a model could spend every token of a question-writing request thinking and return no text, so no question was written. Question writing now falls back to a little thinking for it too (asking keeps the recorded setting, as before). A generation round in which no question-writing batch gives a list stops the build at once, instead of paying for more rounds up to the no-progress limit.
 
+## 2026-11-23 — CLI 0.1.258, Node 0.2.190
+
+### Packages
+
+- `@antseed/cli@0.1.258`
+- `@antseed/node@0.2.190`
+- `@antseed/api-adapter@0.1.67`
+- `@antseed/buyer-core@0.1.54`
+- `@antseed/web-sdk@0.1.48`
+- `@antseed/provider-alibaba-video@0.1.15`
+- `@antseed/provider-fal-image@0.1.11`
+- `@antseed/provider-fal-video@0.1.27`
+- `@antseed/provider-venice-video@0.1.28`
+- `@antseed/payments@0.1.117`
+- `@antseed/ants@0.1.75`
+
+### Fixed
+
+- Buyers (gateway/CLI): streamed answers from sellers that serve the Anthropic Messages format, requested in OpenAI Chat Completions or Responses format, now carry the seller's cache reads in the final usage chunk. Some Anthropic-compatible upstreams report input and cache-read tokens only in the closing `message_delta` event; those counts were dropped, so `prompt_tokens_details.cached_tokens` was missing and all input looked uncached. Non-streamed answers were not affected.
+
 ## 2026-11-22 — CLI 0.1.257, Desktop 0.2.92
 
 ### Packages
