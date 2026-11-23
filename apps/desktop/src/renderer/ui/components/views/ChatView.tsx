@@ -1118,6 +1118,7 @@ export function ChatView({ onSelectView, embedded = false, emptyHint, context = 
                       conversationId={snap.chatActiveConversation || undefined}
                       searchQuery={isSearchMatch ? messageSearchQuery : undefined}
                       searchActive={isActiveSearchMatch}
+                      quietWork={embedded}
                     />
                     {privacyLines.has(key) ? (
                       <PrivacyDivider
@@ -1137,6 +1138,7 @@ export function ChatView({ onSelectView, embedded = false, emptyHint, context = 
                 streaming
                 onOpenPreview={openPreview}
                 conversationId={snap.chatActiveConversation || undefined}
+                quietWork={embedded}
               />
             ) : null}
             {imageRequestInProgress ? (

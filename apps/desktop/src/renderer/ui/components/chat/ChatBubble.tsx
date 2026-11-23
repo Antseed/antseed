@@ -435,6 +435,19 @@ function ToolModal({ item, onClose }: { item: ToolRenderItem; onClose: () => voi
   );
 }
 
+/** A chat for people, not code (Studio's): it says the agent is working while a tool runs, and never shows the commands. */
+function QuietToolGroup({ blocks }: { blocks: ContentBlock[] }) {
+  if (!blocks.some((block) => block.status === 'running')) return null;
+  return (
+    <div className="tool-group streaming status-running" role="status">
+      <div className="tool-group-summary-bar">
+        <span className="tool-group-summary-text">Working…</span>
+        <span className="thinking-dots" aria-hidden="true"><span /><span /><span /></span>
+      </div>
+    </div>
+  );
+}
+
 function ToolGroupView({ blocks, onOpenPreview }: { blocks: ContentBlock[]; onOpenPreview?: (url: string) => void }) {
   const [manualToggle, setManualToggle] = useState<boolean | null>(null);
   const [modalItem, setModalItem] = useState<ToolRenderItem | null>(null);
@@ -622,6 +635,7 @@ function renderAssistantBlocks(
   highlightQuery?: string,
   activeHighlight?: boolean,
   blockUnsafePaymentInstructions = false,
+  quietWork = false,
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
   let toolGroup: ContentBlock[] = [];
@@ -629,6 +643,11 @@ function renderAssistantBlocks(
 
   const flushThinkingGroup = (): void => {
     if (thinkingGroup.length === 0) return;
+    // A quiet chat keeps the agent's reasoning to itself: it names ids and files the user never needs.
+    if (quietWork) {
+      thinkingGroup = [];
+      return;
+    }
     const first = thinkingGroup[0];
     const index = blocks.indexOf(first);
     nodes.push(renderBlock(
@@ -647,13 +666,13 @@ function renderAssistantBlocks(
   const flushToolGroup = (): void => {
     if (toolGroup.length === 0) return;
     const groupKey = `${messagePrefix}-tool-group-${nodes.length}-${String(toolGroup[0]?.id || toolGroup[0]?.tool_use_id || '')}`;
-    nodes.push(
+    nodes.push(quietWork ? <QuietToolGroup key={groupKey} blocks={toolGroup} /> : (
       <ToolGroupView
         key={groupKey}
         blocks={toolGroup}
         onOpenPreview={onOpenPreview}
-      />,
-    );
+      />
+    ));
     // Skill-driven media: a running video job shows the generation
     // placeholder, and show_media results render inline as generated files.
     if (toolGroup.some(isRunningVideoGenerationTool)) {
@@ -969,9 +988,11 @@ type ChatBubbleProps = {
   conversationId?: string;
   searchQuery?: string;
   searchActive?: boolean;
+  /** Show that the agent is working, not the commands it runs or its reasoning: for a chat beside something people make, like a Studio project. */
+  quietWork?: boolean;
 };
 
-export function ChatBubble({ message, streaming = false, onOpenPreview, conversationId, searchQuery, searchActive }: ChatBubbleProps) {
+export function ChatBubble({ message, streaming = false, onOpenPreview, conversationId, searchQuery, searchActive, quietWork = false }: ChatBubbleProps) {
   const metaParts = useMemo(() => buildChatMetaParts(message), [message]);
   const hasStreamingBlocks = useMemo(
     () =>
@@ -992,7 +1013,7 @@ export function ChatBubble({ message, streaming = false, onOpenPreview, conversa
   const content = useMemo(() => {
     if (message.role === 'assistant') {
       if (Array.isArray(message.content)) {
-        return renderAssistantBlocks(message.content as ContentBlock[], isStreamingBubble, messagePrefix, onOpenPreview, conversationId, searchQuery, searchActive, true);
+        return renderAssistantBlocks(message.content as ContentBlock[], isStreamingBubble, messagePrefix, onOpenPreview, conversationId, searchQuery, searchActive, true, quietWork);
       }
       return <MarkdownContent text={String(message.content)} highlightQuery={searchQuery} activeHighlight={searchActive} blockUnsafePaymentInstructions />;
     }
@@ -1013,7 +1034,7 @@ export function ChatBubble({ message, streaming = false, onOpenPreview, conversa
     }
 
     return <div className="chat-bubble-content">{JSON.stringify(message.content)}</div>;
-  }, [message, isStreamingBubble, messagePrefix, onOpenPreview, conversationId, searchQuery, searchActive]);
+  }, [message, isStreamingBubble, messagePrefix, onOpenPreview, conversationId, searchQuery, searchActive, quietWork]);
 
   const bubbleMeta =
     metaParts.length > 0 && !isStreamingBubble ? (
