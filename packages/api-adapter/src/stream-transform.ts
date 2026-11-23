@@ -996,8 +996,7 @@ function reportsInput(usage: TokenUsage): boolean {
 
 /** The usage fields an event actually reported; absent or null fields are left out so they don't overwrite earlier ones. */
 function usageFields(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([, field]) => field !== undefined && field !== null));
+  return Object.fromEntries(Object.entries(objectValue(value)).filter(([, field]) => field !== undefined && field !== null));
 }
 
 function mergeUsage(previous: TokenUsage, next: TokenUsage): TokenUsage {
