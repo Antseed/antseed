@@ -517,10 +517,10 @@ export class BlindRelayClient {
             const response: SerializedHttpResponse = { requestId, statusCode, headers: responseHeaders, body: new Uint8Array(Buffer.concat(chunks)) }
             // Priced before the reveal, so the seller's charge finds the buyer's own cost: by what the reveal will show the seller.
             const raw = socket.received
+            const ranges = keyedRevealRanges(raw, statusCode, prepared.stream)
             const revealed = {
               length: raw.length,
-              ranges: keyedRevealRanges(raw, statusCode, prepared.stream)
-                .map(([offset, length]) => ({ offset, data: raw.subarray(offset, offset + length).toString('base64') })),
+              ranges: ranges.map(([offset, length]) => ({ offset, data: raw.subarray(offset, offset + length).toString('base64') })),
             }
             this._deps.recordRelayedResponse(peer, {
               requestId: streamId, service, requestBody: prepared.body, response, revealed, maxOutputTokens: prepared.maxTokens,
@@ -532,7 +532,8 @@ export class BlindRelayClient {
             void relay.waitFor('responseEnd', KEYED_REVEAL_TIMEOUT_MS)
               .then(() => {
                 const done = relay.waitFor('done', KEYED_REVEAL_TIMEOUT_MS)
-                relay.reveal(keyedRevealRanges(socket.received, statusCode, prepared.stream))
+                // The same ranges unless more bytes came with the upstream's close.
+                relay.reveal(socket.receivedLength === raw.length ? ranges : keyedRevealRanges(socket.received, statusCode, prepared.stream))
                 return done
               })
               .catch(() => {})
