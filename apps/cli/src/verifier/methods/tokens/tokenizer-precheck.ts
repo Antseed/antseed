@@ -12,7 +12,7 @@ import {
 } from '../../proxy-evidence.js'
 import type { ResponseAuthReader } from '../../response-auth-reader.js'
 import type { SellerClock } from '../shared/seller-clock.js'
-import { SIGNED_REQUEST_TRIES, sendSignedRequest, signedExchange, type SignedSellerRequestV1 } from '../shared/signed-seller-request.js'
+import { SIGNED_REQUEST_TRIES, sendSignedRequest, signedExchange, type SignedSellerRequestInput, type SignedSellerRequestV1 } from '../shared/signed-seller-request.js'
 import { requestAsksOnly } from './tokenizer-request.js'
 import { asError, peerComparisonKey } from '../../utils.js'
 
@@ -522,22 +522,9 @@ export const SELLER_REQUEST_TRIES = SIGNED_REQUEST_TRIES
  * sellers are asked (`crowd`): it is a mismatch when they back the reference, and nothing is decided when they do
  * not, when there is nobody to ask, or when the audit stopped meanwhile. Never rejects.
  */
-export async function runTokenizerPrecheck(input: {
-  proxyBaseUrl: string
-  peerId: string
-  service: string
-  /** Other names the seller may sign for the service. */
-  serviceAliases?: readonly string[]
+export async function runTokenizerPrecheck(input: SellerAskInput & {
   reference: TokenizerPrecheckReferenceV1
-  responseAuthReader: ResponseAuthReader
-  limiter: AuditTaskLimiter
   rule?: TokenizerPrecheckRule
-  requestTimeoutMs?: number
-  fetchFn?: typeof fetch
-  /** Stops the check; `clock.signal` when a clock is given. */
-  signal?: AbortSignal
-  /** The seller's audit clock, run for each request to the seller. */
-  clock?: SellerClock
   /** The first round's first ask, when it was already sent (`createTokenizerPrecheckScreen`). */
   firstAsk?: TokenizerSellerAskV1
   /**
@@ -604,8 +591,7 @@ export async function runTokenizerPrecheck(input: {
 }
 
 /** What a request to a seller needs. */
-type SellerAskInput = Pick<Parameters<typeof runTokenizerPrecheck>[0],
-  'proxyBaseUrl' | 'peerId' | 'service' | 'serviceAliases' | 'responseAuthReader' | 'limiter' | 'requestTimeoutMs' | 'fetchFn' | 'signal' | 'clock'>
+type SellerAskInput = Omit<SignedSellerRequestInput, 'onSend'>
 
 /**
  * One ask of a probe's pair: A, then A + B when A gave a count. `onRecord` is told each request's record before its
@@ -974,8 +960,10 @@ export function validateTokenizerPrecheck(record: TokenizerPrecheckV1, auditedPe
     if (round.seller.length > rule.sellerAsks) throw new Error(`${where}: the seller was asked more often than the rule allows`)
     for (const ask of round.seller) {
       for (const [request, content] of askedTexts(ask, round)) {
-        if (!signedAsStored(request)) throw new Error(`${where}: the seller's input tokens are not the ones in its signed responses`)
-        if (!signedFor(request, content)) throw new Error(`${where}: the seller's signed request is not the round's text`)
+        // The signed response read once, for both checks.
+        const usage = signedUsage(request)
+        if (!signedAsStored(request, usage)) throw new Error(`${where}: the seller's input tokens are not the ones in its signed responses`)
+        if (!signedFor(request, content, usage)) throw new Error(`${where}: the seller's signed request is not the round's text`)
       }
       if (sellerDelta(ask.base, ask.probed) !== ask.delta) throw new Error(`${where}: the seller's difference does not follow from its signed responses`)
     }
@@ -1037,16 +1025,14 @@ function askedTexts(ask: Pick<TokenizerSellerAskV1, 'base' | 'probed'>, probe: T
  * seller signed with that response: so a count is the one the seller signed for the text the record compares, never one
  * it signed for another prompt. A request whose signed response gives neither measures nothing.
  */
-function signedFor(request: TokenizerSellerRequestV1, content: string): boolean {
-  const usage = signedUsage(request)
+function signedFor(request: TokenizerSellerRequestV1, content: string, usage: ReturnType<typeof signedUsage>): boolean {
   if (usage.inputTokens === null && !usage.cachedInput) return true
   const exchange = signedExchange(request)
   return exchange !== null && requestAsksOnly(exchange.requestBody, content)
 }
 
 /** Whether a stored request's count and cache flag are the ones its kept signed response gives. */
-function signedAsStored(request: TokenizerSellerRequestV1): boolean {
-  const signed = signedUsage(request)
+function signedAsStored(request: TokenizerSellerRequestV1, signed: ReturnType<typeof signedUsage>): boolean {
   // A stored cache is the signed one; a record from before it was kept has none, and then never cancels.
   const cacheAsSigned = request.cache === undefined || canonicalJsonStringify(request.cache) === canonicalJsonStringify(signed.cache)
   return signed.inputTokens === request.signedInputTokens && signed.cachedInput === request.cachedInput && cacheAsSigned
@@ -1082,8 +1068,9 @@ function validateTokenizerBackers(
     if (!ask?.probed) throw new Error(`${where} has no signed pair`)
     if (cacheBlocks(ask, rule)) throw new Error(`${where}: its response reports cached input`)
     for (const [request, content] of askedTexts(ask, probe)) {
-      if (!signedAsStored(request)) throw new Error(`${where}: its input tokens are not the ones in its signed responses`)
-      if (!signedFor(request, content)) throw new Error(`${where}: its signed request is not the first round's text`)
+      const usage = signedUsage(request)
+      if (!signedAsStored(request, usage)) throw new Error(`${where}: its input tokens are not the ones in its signed responses`)
+      if (!signedFor(request, content, usage)) throw new Error(`${where}: its signed request is not the first round's text`)
       const signer = request.responseAuth?.record?.sellerPeerId
       if (typeof signer !== 'string' || peerKey(signer) !== peerKey(backer.peerId)) throw new Error(`${where}: its responses are not signed by it`)
       for (const id of request.requestIds) {
