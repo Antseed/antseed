@@ -290,8 +290,16 @@ export function applyRetryGiveUps(
   /** The seller key of a cell key (report cells hold the report after it). */
   sellerOf: (key: string) => string = (key) => key,
 ): void {
+  // The cells' keys by seller, once: `applyRetryGiveUp` replaces values and adds or removes no key.
+  const keysBySeller = new Map<string, string[]>()
+  for (const key of cells.keys()) {
+    const seller = sellerOf(key)
+    const keys = keysBySeller.get(seller)
+    if (keys) keys.push(key)
+    else keysBySeller.set(seller, [key])
+  }
   for (const entry of entries) {
-    for (const key of [...cells.keys()].filter((candidate) => sellerOf(candidate) === epochCellKey(entry.model, entry.peerId))) {
+    for (const key of keysBySeller.get(epochCellKey(entry.model, entry.peerId)) ?? []) {
       applyRetryGiveUp(cells, key, entry)
     }
   }

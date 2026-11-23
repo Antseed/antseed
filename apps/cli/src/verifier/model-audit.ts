@@ -47,7 +47,7 @@ import { safeServiceSlug } from './slug.js'
 import type { AlreadyOnChain, SubmissionCandidate } from './submission-delta.js'
 import { confirmationReportKey } from './epoch-plan.js'
 import {
-  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, auditVerdictReason, betweenChecks, earliestAuditorTime, flaggingChecks, passedChecks, readingsOfEvidence, readingsOfSummary,
+  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, auditVerdictReason, checksWith, earliestAuditorTime, readingsOfEvidence, readingsOfSummary,
   validateCheckRecordsAgainstSummary, verdictOf,
   type AuditCheckId, type ReportOfAudit,
 } from './audit-checks.js'
@@ -464,7 +464,6 @@ export async function prepareModelAudits(input: {
       /** The confirmation decision on this row (`sameCheck`), applied once one row per seller is chosen. */
       decision?: SameCheckDecision
     }> = []
-    const seen = new Set<string>()
     let referenceModel: string | null = null
     for (let result of summary.results) {
       const exclude = (reason: string, code: string): void => {
@@ -601,7 +600,6 @@ export async function prepareModelAudits(input: {
       }
       // Another report's own result, marked so where the epoch submission offers it (never by its position): it goes
       // through the checks, and one row per seller is chosen with the confirmation decision.
-      const duplicateKey = `${agentId}:${serviceHash(result.service)}`
       const alternate = result.offeredAsAlternate === true
       let owner: string
       try {
@@ -614,7 +612,6 @@ export async function prepareModelAudits(input: {
         exclude(`self-audit: the auditor owns seller agent ${agentId}`, 'self-audit')
         continue
       }
-      seen.add(duplicateKey)
       accepted.push({ agentId, result, evidence, extensionEvidence, extension2Evidence, ...(alternate ? { alternate: true as const } : {}) })
     }
 
@@ -635,16 +632,21 @@ export async function prepareModelAudits(input: {
     }
     // The confirmation decision of every row first: the choice of one row per seller depends on it.
     if (input.sameCheck) {
-      const decisions = await input.sameCheck(modelHash(referenceModel), candidatesOf().map((candidate, index) => ({
-        ...candidate,
-        peerId: accepted[index]!.evidence.target.peerId,
-        flaggedBy: flaggingChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
-        passedBy: passedChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
-        betweenBy: betweenChecks(accepted[index]!.evidence, questionsVerdictOf(accepted[index]!.result)),
-        // Freshness is the earliest request used, on the auditor's clock, over the first set and its extra sets (0: none).
-        auditedAt: earliestAuditorTime([accepted[index]!.evidence, accepted[index]!.extensionEvidence, accepted[index]!.extension2Evidence]) ?? 0,
-        ...(accepted[index]!.evidence.confirming ? { confirming: accepted[index]!.evidence.confirming } : {}),
-      })))
+      const decisions = await input.sameCheck(modelHash(referenceModel), candidatesOf().map((candidate, index) => {
+        const entry = accepted[index]!
+        // The tests' readings of this evidence once: the three lists come from them.
+        const readings = readingsOfEvidence(entry.evidence, questionsVerdictOf(entry.result))
+        return {
+          ...candidate,
+          peerId: entry.evidence.target.peerId,
+          flaggedBy: checksWith(readings, 'flag'),
+          passedBy: checksWith(readings, 'pass'),
+          betweenBy: readings.filter((reading) => reading.between === true).map((reading) => reading.check),
+          // Freshness is the earliest request used, on the auditor's clock, over the first set and its extra sets (0: none).
+          auditedAt: earliestAuditorTime([entry.evidence, entry.extensionEvidence, entry.extension2Evidence]) ?? 0,
+          ...(entry.evidence.confirming ? { confirming: entry.evidence.confirming } : {}),
+        }
+      }))
       for (const [index, entry] of accepted.entries()) {
         const decision = decisions[index]
         if (decision) entry.decision = decision
