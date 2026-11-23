@@ -4,7 +4,8 @@
  "asked": [
   "reference (FLIPS): 80 replies",
   "reference (cap): its own answer to a request with a limit of 16",
-  "reference (cap): input tokens of 4 texts",
+  "reference (cap): input tokens of 2 texts",
+  "reference (cap): input tokens of 2 texts",
   "reference (echo): echo of text 1 (short), 2 asks",
   "reference (echo): echo of text 2 (long), 2 asks",
   "reference (echo): echo of text 3 (short), 2 asks",
@@ -102,7 +103,7 @@
   "exchanges": [{"record":"exchange-92917074ff69d159"},{"record":"exchange-ae89654546028a5a"},{"record":"exchange-435db33b3bb45c36"}],
   "flips": {"record":"flips-88018d3747157191"},
   "kind": "antseed-buyer-proxy-kbf-audit",
-  "outputCap": {"record":"outputCap-77126efd8f3e2bec"},
+  "outputCap": {"record":"outputCap-41f02a2300d822e6"},
   "outputEcho": {"record":"outputEcho-5eb60a90401a1ad3"},
   "reference": {"record":"reference-723f83ee13c8a30f"},
   "result": {

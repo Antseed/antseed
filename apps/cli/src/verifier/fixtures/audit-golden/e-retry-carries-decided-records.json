@@ -87,7 +87,7 @@
   "exchanges": [{"record":"exchange-226f0dfcbaa561da"},{"record":"exchange-ace38a84b86af79b"},{"record":"exchange-2a6d6880d2cc5494"}],
   "flips": {"record":"flips-88018d3747157191"},
   "kind": "antseed-buyer-proxy-kbf-audit",
-  "outputCap": {"record":"outputCap-eb55d3464bdd05c4"},
+  "outputCap": {"record":"outputCap-a60347f14b8c26ca"},
   "outputEcho": {"record":"outputEcho-1e5ba4bacb95d376"},
   "reference": {"record":"reference-723f83ee13c8a30f"},
   "result": {
