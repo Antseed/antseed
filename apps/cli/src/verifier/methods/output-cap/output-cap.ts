@@ -308,7 +308,6 @@ export async function prepareOutputCapReference(input: { ask: TokenizerReference
 
 /** Runs the cap check on one seller. Never rejects: a failure is an inconclusive outcome. */
 export async function runOutputCap(input: SignedSellerRequestInput & {
-  reference: OutputCapReferenceV1
   ask: TokenizerReferenceAsk
   thinking?: Parameters<typeof outputCapRequestBody>[0]['thinking']
   rule?: OutputCapRule
@@ -512,7 +511,6 @@ export function createOutputCapScreen<Settings>(input: {
         ...(input.requestTimeoutMs !== undefined ? { requestTimeoutMs: input.requestTimeoutMs } : {}),
         ...(input.fetchFn ? { fetchFn: input.fetchFn } : {}),
         ...(clock ? { clock, signal: clock.signal } : {}),
-        reference,
         ask: input.ask(settings),
         thinking,
         rule,

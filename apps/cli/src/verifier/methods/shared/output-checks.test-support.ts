@@ -3,7 +3,7 @@
 import { createResponseAuthPayload, encodeHttpRequest, encodeHttpResponse, encodeResponseAuthSigningPayload } from '@antseed/node'
 import { keccak256, type Wallet } from 'ethers'
 import { ConcurrencyLimiter } from '../../audit-concurrency.js'
-import { prepareOutputCapReference, runOutputCap, type CapReferenceReply } from '../output-cap/output-cap.js'
+import { runOutputCap, type CapReferenceReply } from '../output-cap/output-cap.js'
 import { createOutputEchoScreen, outputEchoPrompt, type EchoReferenceAsk } from '../output-echo/output-echo.js'
 import type { TokenizerReferenceAsk } from '../tokens/tokenizer-precheck.js'
 import { drawFlipsPairs, judgeFlips, type FlipsDrawV1, type FlipsV1 } from '../flips/flips.js'
@@ -79,11 +79,10 @@ export const wordReference: TokenizerReferenceAsk = async (contents) => ({
 })
 
 export const runCapOn = async (seller: ReturnType<typeof fakeCapSeller>, ask: TokenizerReferenceAsk = wordReference, peerId = PEER) => {
-  const reference = await prepareOutputCapReference({ askReply: keptReply, ask })
   return runOutputCap({
     proxyBaseUrl: 'http://127.0.0.1:1', peerId, service: SERVICE,
     responseAuthReader: seller.responseAuthReader, limiter: new ConcurrencyLimiter(1), fetchFn: seller.fetchFn,
-    reference, ask, thinking: null,
+    ask, thinking: null,
   })
 }
 

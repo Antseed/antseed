@@ -282,7 +282,7 @@ test('a cap record of every outcome, written to its evidence file, passes the ch
   // A dry pass's record: an answer within the limit, measured too.
   const measuredWithin = await runOutputCap({
     proxyBaseUrl: 'http://127.0.0.1:1', peerId: peerOf(3), service: SERVICE, ...(() => { const seller = fakeSeller((cap) => ({ text: words(Math.floor(cap / 3)), billed: cap })); return { responseAuthReader: seller.responseAuthReader, fetchFn: seller.fetchFn } })(),
-    limiter: new ConcurrencyLimiter(1), reference: await prepareOutputCapReference({ askReply: keptReply, ask: wordReference }), ask: wordReference, thinking: null, measureWithin: true,
+    limiter: new ConcurrencyLimiter(1), ask: wordReference, thinking: null, measureWithin: true,
   })
   assert.notEqual(measuredWithin.asks[0]!.measurement, null)
   assert.deepEqual(Object.entries(records).map(([name, record]) => [name, record.outcome]), [['pass', 'pass'], ['flag', 'flag'], ['inconclusive', 'inconclusive']])
@@ -372,11 +372,10 @@ test('a check that fails is an inconclusive record, which rechecks at submit', (
 
 test('a dry pass measures answers that kept to the limit too, and the record still rechecks', async () => {
   const seller = fakeSeller((cap) => ({ text: words(Math.floor(cap / 3)), billed: cap }))
-  const reference = await prepareOutputCapReference({ askReply: keptReply, ask: wordReference })
   const record = await runOutputCap({
     proxyBaseUrl: 'http://127.0.0.1:1', peerId: PEER, service: SERVICE,
     responseAuthReader: seller.responseAuthReader, limiter: new ConcurrencyLimiter(1), fetchFn: seller.fetchFn,
-    reference, ask: wordReference, thinking: null, measureWithin: true,
+    ask: wordReference, thinking: null, measureWithin: true,
   })
   assert.equal(record.asks[0]!.class, 'within')
   assert.notEqual(measuredTokens(record.asks[0]!.measurement), null)

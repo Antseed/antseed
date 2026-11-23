@@ -822,7 +822,13 @@ export async function prepareModelAudits(input: {
         })
       }
       const withoutRecord = await Promise.all(slice.map(({ result, evidence }) => testsWithoutRecord(result.evidencePath, evidence)))
-      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, extensionEvidence, extension2Evidence, confirmation }, index) => ({
+      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, extensionEvidence, extension2Evidence, confirmation }, index) => {
+        // The tests' readings of this evidence once: the audit's verdict, and each list of the row, come from them.
+        const questions = questionsVerdictOf(result)
+        const readings = readingsOfEvidence(evidence, questions)
+        const audit = verdictOf(readings, questions, evidence.confirming?.checks)
+        const betweenBy = readings.filter((reading) => reading.between === true).map((reading) => reading.check)
+        return {
         agentId: agentId.toString(),
         peerId: result.peerId,
         displayName: result.displayName,
@@ -830,9 +836,7 @@ export async function prepareModelAudits(input: {
         serviceHash: serviceHash(result.service),
         verdict: result.status,
         // The audit's reason: what each test that flagged found, or the questions' own reason.
-        verdictReason: auditVerdictReason(evidence, verdictOf(
-          readingsOfEvidence(evidence, questionsVerdictOf(result)), questionsVerdictOf(result), evidence.confirming?.checks,
-        ), evidence.result.verdictReason),
+        verdictReason: auditVerdictReason(evidence, audit, evidence.result.verdictReason),
         outcomeReason: evidence.result.outcomeReason ?? result.outcomeReason ?? null,
         referenceId: evidence.reference.referenceId,
         stats: evidence.result.stats,
@@ -849,16 +853,17 @@ export async function prepareModelAudits(input: {
           ? { extension2: submittedExtension(result.extension2, extension2Evidence, evidence, evidenceDirectory) }
           : {}),
         ...(withoutRecord[index]!.length > 0 ? { noRecord: withoutRecord[index]! } : {}),
-        flaggedBy: flaggingChecks(evidence, questionsVerdictOf(result)),
-        passedBy: passedChecks(evidence, questionsVerdictOf(result)),
-        ...(betweenChecks(evidence, questionsVerdictOf(result)).length > 0 ? { betweenBy: betweenChecks(evidence, questionsVerdictOf(result)) } : {}),
-        questionsVerdict: questionsVerdictOf(result),
+        flaggedBy: audit.flaggedBy,
+        passedBy: audit.passedBy,
+        ...(betweenBy.length > 0 ? { betweenBy } : {}),
+        questionsVerdict: questions,
         ...(result.decisionRule ? { decisionRule: result.decisionRule } : {}),
         ...(result.closeCallClosed ? { questionsClosed: true as const } : {}),
         auditedAt: earliestAuditorTime([evidence, extensionEvidence, extension2Evidence]) ?? 0,
         ...(confirmation ? { confirmation } : {}),
         ...(evidence.confirming ? { confirming: { checks: [...evidence.confirming.checks], ...(evidence.confirming.reportedAt !== undefined ? { reportedAt: evidence.confirming.reportedAt } : {}) } } : {}),
-      }))
+        }
+      })
       const evidence: ModelAuditEvidenceV1 = {
         version: 1,
         kind: 'antseed-verifier-model-audit-evidence',
