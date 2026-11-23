@@ -815,7 +815,7 @@ function clockOf(signal: AbortSignal | undefined): SellerClock | undefined {
 function market(
   sellers: Record<string, (content: string) => number | null | 'down' | Record<string, unknown> | Promise<number | null | 'down'>>,
   listed?: Array<{ peerId: string; service: string }>,
-  options: { crowdTimeLimitMs?: number } = {},
+  options: { crowdTimeLimitMs?: number; authDelayMs?: Record<string, number> } = {},
 ) {
   const peers = Object.keys(sellers)
   const signed = new Map<string, number | null | Record<string, unknown>>()
@@ -845,6 +845,9 @@ function market(
   }
   const responseAuthReader: ResponseAuthReader = {
     async waitForVerified(input) {
+      // A seller whose ResponseAuth comes late: its answer has arrived and is priced before it is authenticated.
+      const delay = options.authDelayMs?.[input.sellerPeerId]
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
       const tokens = signed.get(input.requestId)
       const usage = tokens === null || tokens === undefined ? {} : { usage: typeof tokens === 'number' ? { prompt_tokens: tokens } : tokens }
       return {
@@ -1168,10 +1171,12 @@ test('a crowd not complete within its time decides nothing, and what it already 
   assert.equal(record.outcome, 'inconclusive')
   assert.match(record.reason!, /^not every other seller of the model answered within 50ms, and the ones that did not could outvote the reference$/)
   assert.equal(record.crowd, undefined)
-  // The backer's pair was answered and paid: it stays in the count and the cost.
-  assert.equal(record.crowdRequests!.length, 2)
-  assert.equal(tokenizerPrecheckRequestCount(record), 14)
+  // The backer's pair was answered and paid: it stays in the count and the cost. The two late sellers' first requests
+  // were sent and not answered in time: they are counted as sent, with no cost known.
+  assert.equal(record.crowdRequests!.length, 4)
+  assert.equal(tokenizerPrecheckRequestCount(record), 16)
   assert.equal(tokenizerPrecheckCost(record).pricedExchangeCount, 14)
+  assert.equal(tokenizerPrecheckCost(record).missingCostExchangeCount, 2)
   assert.doesNotThrow(() => validateTokenizerPrecheck(record))
   assert.throws(() => validateTokenizerPrecheck({ ...record, outcome: 'mismatch', reason: null }), /stores the requests of a crowd it does not leave undecided/)
   // A pair cut off by the crowd's time between its two requests: the first was answered and paid, so it is counted.
@@ -1183,10 +1188,18 @@ test('a crowd not complete within its time decides nothing, and what it already 
   }
   const cut = await market({ off: OTHER_TOKENIZER, backer: MODEL_TOKENIZER, half }, undefined, { crowdTimeLimitMs: 50 }).check('off')
   assert.equal(cut.outcome, 'inconclusive')
-  assert.equal(cut.crowdRequests!.length, 3, 'the backer\'s pair, and the first request of the pair that was cut off')
-  assert.equal(tokenizerPrecheckRequestCount(cut), 15)
-  assert.equal(tokenizerPrecheckCost(cut).pricedExchangeCount, 15)
+  assert.equal(cut.crowdRequests!.length, 4, 'the backer\'s pair, and both requests of the pair that was cut off')
+  assert.equal(tokenizerPrecheckRequestCount(cut), 16)
+  assert.equal(tokenizerPrecheckCost(cut).pricedExchangeCount, 15, 'the first request of the pair was answered and priced; the second was still out')
   assert.doesNotThrow(() => validateTokenizerPrecheck(cut))
+  // An answer that had arrived when the crowd's time ran out, its ResponseAuth still awaited: it was paid for, so its
+  // cost is counted although the request had not ended.
+  const awaited = await market({ off: OTHER_TOKENIZER, backer: MODEL_TOKENIZER, slow: OTHER_TOKENIZER }, undefined, { crowdTimeLimitMs: 50, authDelayMs: { slow: 300 } }).check('off')
+  assert.equal(awaited.outcome, 'inconclusive')
+  assert.equal(awaited.crowdRequests!.length, 3, 'the backer\'s pair, and the request whose answer had arrived')
+  assert.equal(tokenizerPrecheckCost(awaited).pricedExchangeCount, 15)
+  assert.equal(tokenizerPrecheckCost(awaited).missingCostExchangeCount, 0)
+  assert.doesNotThrow(() => validateTokenizerPrecheck(awaited))
   // A refused vote in time is only not measured: the crowd is complete, and the backer makes it a mismatch.
   const refused = market({ off: OTHER_TOKENIZER, backer: MODEL_TOKENIZER, gone: () => 'down' }, undefined, { crowdTimeLimitMs: 50 })
   assert.equal((await refused.check('off')).outcome, 'mismatch')

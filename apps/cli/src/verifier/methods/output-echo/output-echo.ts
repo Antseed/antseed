@@ -373,8 +373,9 @@ export interface EchoCrowdV1 {
   /** Not every other seller answered within the crowd's time, or the audit stopped: nothing is decided. */
   incomplete: boolean
   /**
-   * Requests of votes this check sent that its stop cut off between the vote's two requests: they had ended, so they
-   * may have been paid, and they are in no vote. Counted in this check's requests and cost. Absent when there is none.
+   * Requests of votes this check sent that its stop cut off, each with its tries and the costs known at the stop (an
+   * answer that had arrived is priced, also while its ResponseAuth was still awaited). They are in no vote, and
+   * counted in this check's requests and cost. Absent when there is none.
    */
   cutOff?: PaidRequest[]
 }
@@ -633,8 +634,11 @@ function readAsk(request: SignedSellerRequestV1, text: string, mode: EchoMode): 
 }
 
 /** Asks the seller one text and reads it. */
-async function askEcho(input: SignedSellerRequestInput, text: string, mode: EchoMode, thinking: Parameters<typeof outputEchoRequestBody>[0]['thinking'], rule: OutputEchoRule): Promise<EchoSellerAskV1> {
-  const request = await askSellerSigned(input, outputEchoRequestBody({ service: input.service, text, thinking: thinking ?? null, rule }))
+async function askEcho(
+  input: SignedSellerRequestInput, text: string, mode: EchoMode, thinking: Parameters<typeof outputEchoRequestBody>[0]['thinking'], rule: OutputEchoRule,
+  onRecord?: (record: SignedSellerRequestV1) => void,
+): Promise<EchoSellerAskV1> {
+  const request = await askSellerSigned(input, outputEchoRequestBody({ service: input.service, text, thinking: thinking ?? null, rule }), onRecord)
   return readAsk(request, text, mode)
 }
 
@@ -760,15 +764,13 @@ export async function askEchoVote(
   reference: OutputEchoReferenceV1,
   thinking: Parameters<typeof outputEchoRequestBody>[0]['thinking'],
   rule: OutputEchoRule = OUTPUT_ECHO_RULE,
-  /** Told each of the vote's two requests as it ends. */
-  onRequest?: (request: SignedSellerRequestV1) => void,
+  /** Told the record of each of the vote's two requests before its first try (`askSellerSigned`). */
+  onRecord?: (record: SignedSellerRequestV1) => void,
 ): Promise<EchoCrowdVoteV1> {
   const view = referenceView(reference)[0]!
   const mode = reference.mode ?? 'plain'
-  const short = await askEcho(input, view.short.text, mode, thinking, rule)
-  onRequest?.(short.request)
-  const long = await askEcho(input, view.long.text, mode, thinking, rule)
-  onRequest?.(long.request)
+  const short = await askEcho(input, view.short.text, mode, thinking, rule, onRecord)
+  const long = await askEcho(input, view.long.text, mode, thinking, rule, onRecord)
   return echoCrowdVote(input.peerId, short, long, { short: view.short.count, long: view.long.count }, rule)
 }
 
@@ -1021,8 +1023,8 @@ export function createOutputEchoScreen<Settings>(input: {
         const limit = AbortSignal.timeout(input.crowdTimeLimitMs ?? ECHO_CROWD_TIME_LIMIT_MS)
         const ends = AbortSignal.any([limit, ...(stop ? [stop] : []), ...(sooner ? [sooner] : [])])
         const others = input.sellers.filter((other) => peerKey(other.peerId) !== peerKey(seller.peerId))
-        // For each vote this check sends, its requests that have ended: a vote cut off between its two requests has
-        // paid for the first, which is then counted although there is no vote (`cutOff`).
+        // For each vote this check sends, the records of its requests, filling as tries leave and answers come back: a
+        // vote the stop cuts off has no vote, and what it sent is still counted, with the costs known by then (`cutOff`).
         const ended = new Map<Promise<EchoCrowdVoteV1>, SignedSellerRequestV1[]>()
         const asked = others.map((other) => {
           const key = peerKey(other.peerId)
@@ -1047,6 +1049,7 @@ export function createOutputEchoScreen<Settings>(input: {
         if (settled === 'late') {
           const done = await Promise.all(asked.map((vote) => Promise.race([vote, Promise.resolve(null)])))
           const cutOff = asked.flatMap((vote, index) => (done[index] === null ? ended.get(vote) ?? [] : []))
+            .filter((sent) => sent.requestIds.length > 0)
             .map((sent): PaidRequest => ({ requestCount: sent.requestIds.length, attemptCosts: [...sent.attemptCosts] }))
           return {
             votes: done.filter((vote): vote is EchoCrowdVoteV1 => vote !== null), incomplete: true,

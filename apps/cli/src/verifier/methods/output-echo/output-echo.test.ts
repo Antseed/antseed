@@ -501,12 +501,49 @@ test('a vote cut off between its two requests keeps the request that had ended i
   assert.equal(record.crowd?.incomplete, true)
   assert.deepEqual(record.crowd?.votes, [])
   const cutOff = record.crowd?.cutOff ?? []
-  assert.ok(cutOff.length >= 1, 'the short text that was answered before the stop')
-  assert.ok(cutOff.every((request) => request.requestCount === 1 && request.attemptCosts.length === 1))
-  assert.equal(outputEchoRequestCount(record), 12 + cutOff.length, 'the seller\'s twelve, and each request the stop cut off after it ended')
-  assert.equal(outputEchoCost(record).pricedExchangeCount, 12 + cutOff.length)
+  const priced = cutOff.filter((request) => request.attemptCosts.length > 0)
+  assert.ok(priced.length >= 1, 'the short text that was answered before the stop')
+  assert.ok(cutOff.every((request) => request.requestCount === 1))
+  assert.equal(outputEchoRequestCount(record), 12 + cutOff.length, 'the seller\'s twelve, and each request the stop cut off')
+  assert.equal(outputEchoCost(record).pricedExchangeCount, 12 + priced.length)
   validateOutputEcho(record, PEERS[0])
   assert.throws(() => validateOutputEcho({ ...record, crowd: { ...record.crowd!, incomplete: false } }, PEERS[0]))
+})
+
+test('an answer that had arrived when the check stopped, its ResponseAuth still awaited, keeps its cost', async () => {
+  // Every other seller answers its short text at once, priced, and its ResponseAuth comes late. The audit stops
+  // meanwhile: no request has ended, and each answer was paid for.
+  const network = fakeNetwork({ ...Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])), [PEERS[0]!]: (text) => Math.round(tokens(text) * 1.25) })
+  const audit = new AbortController()
+  const fetchFn: typeof fetch = async (url, init) => {
+    const reply = await network.fetchFn(url, init)
+    const headers = new Headers(reply.headers)
+    for (const [name, value] of Object.entries({
+      'x-antseed-input-tokens': '100', 'x-antseed-output-tokens': '10', 'x-antseed-total-tokens': '110',
+      'x-antseed-input-usd-per-million': '1', 'x-antseed-output-usd-per-million': '2', 'x-antseed-estimated-cost-usd': '0.00012',
+    })) headers.set(name, value)
+    return new Response(await reply.text(), { status: reply.status, headers })
+  }
+  const responseAuthReader: typeof network.responseAuthReader = {
+    ...network.responseAuthReader,
+    async waitForVerified(input) {
+      if (input.sellerPeerId !== PEERS[0]) {
+        setTimeout(() => audit.abort(), 20)
+        await new Promise((resolve) => setTimeout(resolve, 300))
+      }
+      return network.responseAuthReader.waitForVerified(input)
+    },
+  }
+  const record = (await screenFor({ ...network, fetchFn, responseAuthReader }).check({ peerId: PEERS[0]!, service: SERVICE }, null, {
+    thinking: null, crowdThinking: null, precheckMatch: true,
+    clock: { signal: audit.signal, start: () => audit.signal, finish: () => {} },
+  }))!
+  assert.equal(record.crowd?.incomplete, true)
+  const cutOff = record.crowd?.cutOff ?? []
+  assert.equal(cutOff.length, PEERS.length - 1, 'one request to each other seller')
+  assert.ok(cutOff.every((request) => request.requestCount === 1 && request.attemptCosts.length === 1), 'each answer had arrived and is priced')
+  assert.equal(outputEchoCost(record).pricedExchangeCount, 12 + cutOff.length)
+  validateOutputEcho(record, PEERS[0])
 })
 
 test('work for the fixed amount alone stops when the audit\'s spare time is up, keeps the growth pass, and the audit goes on', async () => {

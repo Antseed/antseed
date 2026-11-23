@@ -595,17 +595,18 @@ export async function runTokenizerPrecheck(input: {
 type SellerAskInput = Pick<Parameters<typeof runTokenizerPrecheck>[0],
   'proxyBaseUrl' | 'peerId' | 'service' | 'serviceAliases' | 'responseAuthReader' | 'limiter' | 'requestTimeoutMs' | 'fetchFn' | 'signal' | 'clock'>
 
-/** One ask of a probe's pair: A, then A + B when A gave a count. `onRequest` is told each request as it ends. */
+/**
+ * One ask of a probe's pair: A, then A + B when A gave a count. `onRecord` is told each request's record before its
+ * first try: it fills as tries leave and answers come back.
+ */
 async function askSellerPair(
   input: SellerAskInput,
   rule: TokenizerPrecheckRule,
   probe: TokenizerProbeV1,
-  onRequest?: (request: TokenizerSellerRequestV1) => void,
+  onRecord?: (record: TokenizerSellerRequestV1) => void,
 ): Promise<TokenizerSellerAskV1> {
-  const base = await askSeller(input, rule, probe.a)
-  onRequest?.(base)
-  const probed = base.signedInputTokens === null ? null : await askSeller(input, rule, probe.a + probe.b)
-  if (probed) onRequest?.(probed)
+  const base = await askSeller(input, rule, probe.a, onRecord)
+  const probed = base.signedInputTokens === null ? null : await askSeller(input, rule, probe.a + probe.b, onRecord)
   return { base, probed, delta: sellerDelta(base, probed) }
 }
 
@@ -692,9 +693,9 @@ export function createTokenizerPrecheckScreen<Settings>(input: {
     ...(stop.clock ? { clock: stop.clock } : {}),
   })
   const askVote = (
-    seller: TokenizerPrecheckSeller, ask: SellerAskInput, probe: TokenizerProbeV1, onRequest?: (request: TokenizerSellerRequestV1) => void,
+    seller: TokenizerPrecheckSeller, ask: SellerAskInput, probe: TokenizerProbeV1, onRecord?: (record: TokenizerSellerRequestV1) => void,
   ): Promise<Vote> => (
-    askSellerPair(ask, rule, probe, onRequest).then((answer) => ({ seller, ask: answer }), () => ({ seller, ask: null }))
+    askSellerPair(ask, rule, probe, onRecord).then((answer) => ({ seller, ask: answer }), () => ({ seller, ask: null }))
   )
   return {
     ready,
@@ -732,8 +733,9 @@ export function createTokenizerPrecheckScreen<Settings>(input: {
         }
         const askAfresh = async (peer: string, other: TokenizerPrecheckSeller): Promise<Vote> => {
           // The names a seller may sign are the model's, so this seller's stand for all of them.
-          // The requests of this pair that have ended: a pair cut off by the crowd's time between its two requests has
-          // paid for the first, so that one is counted although the pair gave no vote.
+          // The records of this pair's requests, filling as tries leave and answers come back: a pair the crowd's time
+          // cuts off gave no vote, and what it sent is still counted, with the costs known by then (an answer that had
+          // arrived is priced, also while its ResponseAuth was still awaited).
           const ended: TokenizerSellerRequestV1[] = []
           const asked = askVote(
             other, askInput({ ...other, serviceAliases: other.serviceAliases ?? seller.serviceAliases }, { signal: limit }), probe!,
@@ -742,9 +744,12 @@ export function createTokenizerPrecheckScreen<Settings>(input: {
           votes.set(peer, asked)
           void asked.then((vote) => keepIfMeasured(peer, asked, vote))
           const vote = await inTime(asked)
-          const counted = vote === null ? [...ended] : vote.ask ? [vote.ask.base, ...(vote.ask.probed ? [vote.ask.probed] : [])] : []
+          const counted = vote === null
+            ? ended.filter((request) => request.requestIds.length > 0)
+            : vote.ask ? [vote.ask.base, ...(vote.ask.probed ? [vote.ask.probed] : [])] : []
           for (const request of counted) {
-            requests.push({ requestCount: request.requestIds.length, attemptCosts: request.attemptCosts })
+            // A copy: the record of a request that was cut off can still fill after this.
+            requests.push({ requestCount: request.requestIds.length, attemptCosts: [...request.attemptCosts] })
           }
           return vote ?? { seller: other, ask: null }
         }
@@ -797,10 +802,12 @@ async function askSeller(
   input: SellerAskInput,
   rule: TokenizerPrecheckRule,
   content: string,
+  onRecord?: (record: TokenizerSellerRequestV1) => void,
 ): Promise<TokenizerSellerRequestV1> {
   const record: TokenizerSellerRequestV1 = {
     requestIds: [], statusCode: null, signedInputTokens: null, cachedInput: false, attemptCosts: [], responseAuth: null, failureReason: null,
   }
+  onRecord?.(record)
   const body = new TextEncoder().encode(JSON.stringify({
     model: input.service,
     messages: [{ role: 'user', content }],

@@ -157,8 +157,17 @@ export async function sendSignedRequest<SellerRequest extends SignedSellerReques
 }
 
 /** Sends `body` to `/v1/chat/completions` of the buyer proxy; any verified signed answer is enough. Never rejects. */
-export async function askSellerSigned(input: SignedSellerRequestInput, body: Record<string, unknown>): Promise<SignedSellerRequestV1> {
+export async function askSellerSigned(
+  input: SignedSellerRequestInput,
+  body: Record<string, unknown>,
+  /**
+   * Told the request's record before its first try. The record fills as tries leave and answers come back, so a
+   * caller that stops waiting can still read the tries sent and the costs known by then.
+   */
+  onRecord?: (record: SignedSellerRequestV1) => void,
+): Promise<SignedSellerRequestV1> {
   const record: SignedSellerRequestV1 = { requestIds: [], statusCode: null, attemptCosts: [], responseAuth: null, failureReason: null }
+  onRecord?.(record)
   return sendSignedRequest(input, new TextEncoder().encode(JSON.stringify(body)), record)
 }
 
