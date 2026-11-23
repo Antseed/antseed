@@ -105,7 +105,7 @@
   "tokenizerPrecheck": {"rule":"tokenizer-precheck-v3","outcome":"mismatch","sellerTokens":[165,169,162],"modelTokens":[103,106,101]},
   "outputCap": {"rule":"output-cap-v1","outcome":"pass","reason":"the answer was within","asks":[{"cap":24,"billed":24,"measured":null,"class":"within"}]},
   "outputEcho": {
-   "rule": "output-echo-v2",
+   "rule": "output-echo-v3",
    "outcome": "inconclusive",
    "flag": null,
    "growth": "inconclusive",
@@ -115,7 +115,7 @@
    "offset": 68.5
   },
   "flips": {
-   "rule": "flips-v2",
+   "rule": "flips-v3",
    "model": "deepseek-v4-pro",
    "stage": "first",
    "outcome": "pass",
@@ -130,10 +130,10 @@
   "createdAt": "2026-10-07T00:00:00.000Z",
   "evidenceLevel": "proxy-observation-with-verified-response-auth-no-payment-evidence",
   "exchanges": [{"record":"exchange-226f0dfcbaa561da"},{"record":"exchange-ace38a84b86af79b"},{"record":"exchange-2a6d6880d2cc5494"}],
-  "flips": {"record":"flips-273ec7428a70bd33"},
+  "flips": {"record":"flips-889d5c338e050cd5"},
   "kind": "antseed-buyer-proxy-kbf-audit",
   "outputCap": {"record":"outputCap-77126efd8f3e2bec"},
-  "outputEcho": {"record":"outputEcho-de10af369e3cae4a"},
+  "outputEcho": {"record":"outputEcho-c70d84d63c361128"},
   "reference": {"record":"reference-723f83ee13c8a30f"},
   "result": {
    "cost": {"estimatedCostUsd":0.0169,"inputTokens":8030,"missingCostExchangeCount":0,"outputTokens":5953,"pricedExchangeCount":56,"totalTokens":13983},

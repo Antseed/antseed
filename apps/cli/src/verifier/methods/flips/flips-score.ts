@@ -105,6 +105,12 @@ export interface FlipsRule {
    * the bars is no swap by the confirmation's own bar. A FLIPS with no result still clears nothing.
    */
   confirmBetweenClears?: true
+  /**
+   * A second look (`flips-v3` on): a first audit's check scored between its bars (above the first bar, at most
+   * `passAbove`) asks each pair `morePerPair` more times and is judged on all its replies, with the calibration for that
+   * size, against `bar`; above `passAbove` it passes. A second look with no result leaves the first look's score.
+   */
+  secondLook?: { morePerPair: number; bar: number }
 }
 
 /**
@@ -141,11 +147,11 @@ export const FLIPS_RULE_V1: FlipsRule = Object.freeze({
 })
 
 /**
- * The rule new audits use: `flips-v1` with FLIPS counting (never for MiniMax M3, nor for a model the eval never
- * measured), replies that hold no sequence left out (`noSequence`: a host's placeholder text, say, is no answer to
- * score) and repeated replies giving no result (`repeats`). Bars, pass and calibrations are v1's.
+ * `flips-v1` with FLIPS counting (never for MiniMax M3, nor for a model the eval never measured), replies that hold no
+ * sequence left out (`noSequence`: a host's placeholder text, say, is no answer to score) and repeated replies giving
+ * no result (`repeats`). Pass and calibrations are v1's.
  */
-export const FLIPS_RULE: FlipsRule = Object.freeze({
+export const FLIPS_RULE_V2: FlipsRule = Object.freeze({
   ...FLIPS_RULE_V1,
   id: 'flips-v2',
   counts: Object.freeze({ default: true, never: Object.freeze(['minimax-m3']) }),
@@ -156,6 +162,19 @@ export const FLIPS_RULE: FlipsRule = Object.freeze({
   repeats: Object.freeze({ sellerShare: 0.5, referenceShare: 0.25, minReplies: 4 }),
   asksRequired: true,
   confirmBetweenClears: true,
+})
+
+/**
+ * The rule new audits use: `flips-v2` with a second look for a first audit scored between its bars: 10 more replies per
+ * pair, judged on all 40 with the 40-reply calibration. Its bar of 0.1% (the confirmation's) was set by an offline
+ * replay of the eval's honest checks: of the honest 40-reply checks whose first 20 replies scored between the bars,
+ * none scores at or below it, so no honest check the eval holds is flagged by the second look; the nearest is 0.13%.
+ * Everything else is v2's.
+ */
+export const FLIPS_RULE: FlipsRule = Object.freeze({
+  ...FLIPS_RULE_V2,
+  id: 'flips-v3',
+  secondLook: Object.freeze({ morePerPair: 10, bar: 0.001 }),
 })
 
 /**
@@ -225,7 +244,7 @@ export function flipsCounts(model: string, rule: FlipsRule = FLIPS_RULE): boolea
   return rule.counts.default && !rule.counts.never.includes(model.toLowerCase()) && flipsRequestFor(model).measured
 }
 
-const RULES: ReadonlyMap<string, FlipsRule> = new Map([FLIPS_RULE_V1, FLIPS_RULE].map((rule) => [rule.id, rule]))
+const RULES: ReadonlyMap<string, FlipsRule> = new Map([FLIPS_RULE_V1, FLIPS_RULE_V2, FLIPS_RULE].map((rule) => [rule.id, rule]))
 
 /** The rule stored evidence was judged by; undefined for an id this CLI does not know. */
 export function flipsRuleById(id: string): FlipsRule | undefined {

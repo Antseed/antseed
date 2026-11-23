@@ -4,7 +4,7 @@ import { createResponseAuthPayload, encodeHttpRequest, encodeHttpResponse, encod
 import { keccak256, type Wallet } from 'ethers'
 import { ConcurrencyLimiter } from '../../audit-concurrency.js'
 import { runOutputCap, type CapReferenceReply } from '../output-cap/output-cap.js'
-import { createOutputEchoScreen, outputEchoPrompt, type EchoReferenceAsk } from '../output-echo/output-echo.js'
+import { createOutputEchoScreen, outputEchoPrompt, type EchoReferenceAsk, type OutputEchoRule } from '../output-echo/output-echo.js'
 import type { TokenizerReferenceAsk } from '../tokens/tokenizer-precheck.js'
 import { drawFlipsPairs, judgeFlips, type FlipsDrawV1, type FlipsV1 } from '../flips/flips.js'
 import { FLIPS_RULE, flipsRequestBody, type FlipsPair } from '../flips/flips-score.js'
@@ -145,10 +145,15 @@ export const echoReference: EchoReferenceAsk = async (texts) => ({
   })),
 })
 
-export const echoScreenFor = (network: ReturnType<typeof fakeEchoNetwork>, ask: EchoReferenceAsk = echoReference, peers: readonly string[] = PEERS) => createOutputEchoScreen<null>({
+export const echoScreenFor = (
+  network: ReturnType<typeof fakeEchoNetwork>, ask: EchoReferenceAsk = echoReference, peers: readonly string[] = PEERS,
+  options: { rule?: OutputEchoRule; wait?: (ms: number, signal: AbortSignal | undefined) => Promise<void> } = {},
+) => createOutputEchoScreen<null>({
   sellers: peers.map((peerId) => ({ peerId, service: SERVICE })),
   proxyBaseUrl: 'http://127.0.0.1:1', responseAuthReader: network.responseAuthReader, limiter: new ConcurrencyLimiter(4),
   fetchFn: network.fetchFn, ask: () => ask,
+  ...(options.rule ? { rule: options.rule } : {}),
+  ...(options.wait ? { wait: options.wait } : {}),
 })
 
 /**

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import {
   FLIPS_RULE,
   FLIPS_RULE_V1,
+  FLIPS_RULE_V2,
   FLIPS_STATISTICS,
   flipsCalibrationFor,
   flipsPrompt,
@@ -47,13 +48,14 @@ const FIXTURES = [join(here, 'fixtures'), join(here, 'fixtures', 'flips'), join(
 const fixtures: Fixture[] = FIXTURES ? readdirSync(FIXTURES).filter((f) => f.endsWith('.json')).sort().map((f) => JSON.parse(readFileSync(join(FIXTURES, f), 'utf8')) as Fixture) : []
 
 test('the rule is frozen and known by its id', () => {
-  assert.equal(FLIPS_RULE.id, 'flips-v2')
-  assert.equal(flipsRuleById('flips-v2'), FLIPS_RULE)
+  assert.equal(FLIPS_RULE.id, 'flips-v3')
+  assert.equal(flipsRuleById('flips-v3'), FLIPS_RULE)
+  assert.equal(flipsRuleById('flips-v2'), FLIPS_RULE_V2, 'a used rule stays known, so its records are judged as they were')
   assert.equal(flipsRuleById('flips-v1'), FLIPS_RULE_V1, 'a used rule stays known, so its records are judged as they were')
   assert.equal(flipsRuleById('flips-v0'), undefined)
-  assert.ok(Object.isFrozen(FLIPS_RULE) && Object.isFrozen(FLIPS_RULE_V1))
+  assert.ok(Object.isFrozen(FLIPS_RULE) && Object.isFrozen(FLIPS_RULE_V2) && Object.isFrozen(FLIPS_RULE_V1))
   // flips-v2 is flips-v1 with counting and replies without a sequence left out; nothing else changed.
-  const { id: _v2, counts: countsV2, noSequence, repeats, asksRequired, confirmBetweenClears, bar, ...restV2 } = FLIPS_RULE
+  const { id: _v2, counts: countsV2, noSequence, repeats, asksRequired, confirmBetweenClears, bar, ...restV2 } = FLIPS_RULE_V2
   const { id: _v1, counts: countsV1, noSequence: noneV1, repeats: repeatsV1, asksRequired: asksV1, confirmBetweenClears: clearsV1, bar: barV1, ...restV1 } = FLIPS_RULE_V1
   assert.deepEqual([asksV1, asksRequired], [undefined, true])
   assert.deepEqual([clearsV1, confirmBetweenClears], [undefined, true])
@@ -62,6 +64,14 @@ test('the rule is frozen and known by its id', () => {
   assert.deepEqual([countsV1, countsV2], [{ default: false, never: ['minimax-m3'] }, { default: true, never: ['minimax-m3'] }])
   assert.deepEqual([noneV1, noSequence], [undefined, { below: 8, maxShare: 0.2 }])
   assert.deepEqual([repeatsV1, repeats], [undefined, { sellerShare: 0.5, referenceShare: 0.25, minReplies: 4 }])
+  // flips-v3 is flips-v2 with a second look between the bars: 10 more replies per pair, the bar 0.1%; nothing else changed.
+  const { id: _v3, secondLook, ...restV3 } = FLIPS_RULE
+  const { id: _v2again, ...restOfV2 } = FLIPS_RULE_V2
+  assert.deepEqual(secondLook, { morePerPair: 10, bar: 0.001 })
+  assert.equal(FLIPS_RULE_V2.secondLook, undefined)
+  assert.deepEqual(restV3, restOfV2)
+  // The second look's replies are a size the rule has a calibration for: the first look's and 10 more per pair, two pairs.
+  assert.ok(flipsCalibrationFor((FLIPS_RULE.repliesPerPair.first + secondLook!.morePerPair) * FLIPS_RULE.pairsPerCheck))
   assert.ok(Object.isFrozen(FLIPS_RULE.calibrations))
   assert.equal(FLIPS_STATISTICS.length, 27)
   assert.equal(FLIPS_RULE.example.length, 16)

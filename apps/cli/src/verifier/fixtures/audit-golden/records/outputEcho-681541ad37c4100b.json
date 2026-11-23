@@ -1,13 +1,13 @@
 {
  "crowd": null,
- "fixedAmount": {"outcome":"inconclusive","reason":"pass, stored and not counted yet: the seller adds 0 tokens or fewer"},
+ "fixedAmount": {"outcome":"pass","reason":"the seller adds 0 tokens or fewer"},
  "flag": null,
  "growth": {"outcome":"pass","reason":"the seller bills the model's growth"},
  "mode": "plain",
  "offset": {"fixed":true,"median":0},
  "outcome": "pass",
  "precheckMatch": true,
- "reason": "growth: the seller bills the model's growth; fixed amount: pass, stored … (126 characters, sha256 87b257ba148432d4)",
+ "reason": "growth: the seller bills the model's growth; fixed amount: the seller adds 0 tokens or fewer",
  "reference": [
   {
    "long": {"count":400,"text":"Invoice BL-94185-KE for 9,413.40 dollars is still open, budget code 85-3… (1199 characters, sha256 4d8d47cadb5a5d10)"},
@@ -414,9 +414,10 @@
   }
  ],
  "rule": {
+  "askAgain": {"waitMs":5000},
   "growthFloor": 20,
   "growthShare": 0.1,
-  "id": "output-echo-v2",
+  "id": "output-echo-v3",
   "longPassages": [3,4,6],
   "maxTokens": 2048,
   "minBackers": 2,
@@ -424,13 +425,13 @@
   "minGapRatio": 1.3333333333333333,
   "minOthers": 3,
   "minSpread": 2,
-  "offsetCounts": false,
+  "offsetCounts": true,
   "offsetFloor": 20,
   "referenceAsks": 2,
   "rounds": 3,
   "spreadFactor": 3,
   "textTries": 3,
   "tolerance": 2,
-  "visibleCounts": false
+  "visibleCounts": true
  }
 }

@@ -8,7 +8,7 @@ import { ConcurrencyLimiter } from '../../audit-concurrency.js'
 import { failureBlame } from '../../failure-blame.js'
 import { readingsOfEvidence, validateCheckRecordsAgainstSummary, verdictOf, withoutOrphans, type AuditCheckId } from '../../audit-checks.js'
 import { FLIPS_CHECK } from './method.js'
-import { FLIPS_RULE, FLIPS_RULE_V1, flipsCounts, flipsRequestBody, isValidFlipsPair, type FlipsPair, type FlipsRule } from './flips-score.js'
+import { FLIPS_RULE, FLIPS_RULE_V1, FLIPS_RULE_V2, flipsCounts, flipsRequestBody, isValidFlipsPair, type FlipsPair, type FlipsRule } from './flips-score.js'
 import {
   FLIPS_WORDS,
   drawFlipsPairs,
@@ -23,6 +23,7 @@ import {
   flipsSeed,
   flipsPool,
   isFlipsRecord,
+  flipsSecondLookDue,
   judgeFlips,
   readFlipsAnswer,
   summarizeFlips,
@@ -344,17 +345,21 @@ test('no result for a partial sample, a mixed reference, a changed request, a se
   assert.match(reason(undefined, (record) => {
     record.pairs[0]!.seller[2]!.request = signed(flipsRequestBody(MODEL, MODEL, record.pairs[0]!.words), chat(`${record.pairs[0]!.words[0]} `.repeat(1300)), 'long')
   }), /longer than 6000 characters/)
-  assert.match(reason(undefined, (record) => { record.pairs[1]!.seller[2]!.request = { ...record.pairs[1]!.seller[2]!.request, responseAuth: null } }), /a scheduled slot has no reply/)
+  assert.match(reason(undefined, (record) => { record.pairs[1]!.seller[2]!.request = { ...record.pairs[1]!.seller[2]!.request, responseAuth: null } }), /^1 of 20 scheduled slots got no reply/)
 })
 
 /** A seller behind the buyer proxy that answers FLIPS requests; `fail` decides which calls get no reply at all. */
-function fakeSeller(answer: (call: number, pair: FlipsPair) => string, fail: (call: number) => boolean = () => false) {
+function fakeSeller(answer: (call: number, pair: FlipsPair) => string, fail: (call: number) => boolean | number = () => false) {
   const signedBytes = new Map<string, { request: Uint8Array; response: Uint8Array }>()
   let calls = 0
   const fetchFn: typeof fetch = async (_url, init) => {
     const call = ++calls
     const requestId = new Headers(init?.headers).get('x-antseed-request-id')!
-    if (fail(call)) return Response.json({ error: { message: 'upstream unavailable' } }, { status: 503, headers: { 'x-antseed-request-id': requestId } })
+    const failed = fail(call)
+    if (typeof failed === 'number') {
+      return Response.json({ error: { message: 'reasoning_effort \'minimal\' is not supported' } }, { status: failed, headers: { 'x-antseed-request-id': requestId } })
+    }
+    if (failed) return Response.json({ error: { message: 'upstream unavailable' } }, { status: 503, headers: { 'x-antseed-request-id': requestId } })
     const asked = JSON.parse(new TextDecoder().decode(init!.body as Uint8Array)) as { messages: Array<{ content: string }> }
     const reply = chat(answer(call, asked.messages[0]!.content.match(/\{(\w+), (\w+)\}/)!.slice(1) as unknown as FlipsPair))
     signedBytes.set(requestId, {
@@ -444,6 +449,29 @@ test('a run asks every scheduled slot, asks again only a slot with no reply, and
   const withEmpty = await stored(empty)
   assert.equal(withEmpty.reasks, 0)
   assert.equal(empty.calls(), FLIPS_RULE.repliesPerPair.first * FLIPS_RULE.pairsPerCheck)
+})
+
+test('a refusal (an HTTP 4xx other than 429) is not asked again, and the reason names it', async () => {
+  const slots = FLIPS_RULE.repliesPerPair.first * FLIPS_RULE.pairsPerCheck
+  // Every request refused: one try each, no re-ask, and the check says the seller refused them, with the status and text.
+  const refusing = fakeSeller(() => 'unused', () => 400)
+  const refused = await stored(refusing)
+  assert.equal(refusing.calls(), slots)
+  assert.equal(refused.reasks, 0)
+  assert.equal(refused.outcome, 'inconclusive')
+  assert.match(refused.reason, /^the seller refused 20 of 20 requests \(HTTP 400: .*reasoning_effort 'minimal' is not supported/)
+  assert.doesNotThrow(() => validateFlips(refused))
+  // Three refused, one rate limited on both its tries (its second try waits, so it is call 21): only the rate-limited
+  // slot is asked again, and the reason names the refusals.
+  const mixed = fakeSeller((call) => symbols(['amber', 'basin'], call), (call) => (call <= 3 ? 400 : call === 4 || call === slots + 1 ? 429 : false))
+  const record = await stored(mixed)
+  assert.equal(record.reasks, 1)
+  const asks = record.pairs.flatMap((pair) => pair.seller).map((slot) => slot.asks!.map((entry) => entry.answered))
+  assert.equal(asks.filter((trail) => trail.length === 1 && !trail[0]).length, 3, 'the refused slots are asked once')
+  assert.equal(asks.filter((trail) => trail.length === 2 && !trail[0] && trail[1]).length, 1, 'the rate-limited slot is asked again')
+  assert.equal(record.p, null)
+  assert.match(record.reason, /^the seller refused 3 of 20 requests \(HTTP 400: /)
+  assert.doesNotThrow(() => validateFlips(record))
 })
 
 test('the finish reason is read in each API\'s own terms', () => {
@@ -702,4 +730,160 @@ test('a stored FLIPS record is bounded and holds real numbers: a slot with a nul
   for (let level = 0; level < 20_000; level += 1) nested = { ...record, followUp: nested }
   assert.equal(isFlipsRecord(nested), false)
   assert.equal(isFlipsRecord({ ...record, followUp: { ...record, draw: { ...record.draw, probe: true } } }), true)
+})
+
+// --- flips-v3: a second look for a first audit scored between its bars ---
+
+/** A pseudo-random sequence of a pair (xorshift32 from its seed); `bias` in 16ths repeats the last symbol instead. */
+const xorshift = (seed: number, pair: FlipsPair, bias = 0): string => {
+  let state = (seed + 1) * 2_654_435_761 >>> 0
+  let last = 0
+  return Array.from({ length: 64 }, () => {
+    state ^= state << 13; state >>>= 0
+    state ^= state >>> 17
+    state ^= state << 5; state >>>= 0
+    const symbol = (state & 15) < bias ? last : (state >>> 4) & 1
+    last = symbol
+    return pair[symbol]
+  }).join(' ')
+}
+
+/**
+ * A first audit with a second look, of fixed sequences: the reference's 40 replies per pair, the seller's first 10 and
+ * 10 more per pair from `seller` (its seeds chosen so that the first look scores between the bars), and `second` to
+ * write a second-look reply instead. Its pairs are chosen as a probe's are, so it rechecks under the shipped rule.
+ */
+function betweenRecord(seller: { bias: number; offset: number }, second: (pair: FlipsPair, pairIndex: number, slot: number) => string | null = () => null): FlipsV1 {
+  const chosen: FlipsPair[] = [['amber', 'basin'], ['cobalt', 'dune']]
+  const draw: FlipsDrawV1 = { auditor: '0x00', model: MODEL, epoch: '7', seed: '00', stage: 'first', pairs: chosen }
+  const reply = (pairIndex: number, slot: number, pair: FlipsPair) => xorshift(1_000 + seller.offset * 37 + pairIndex * 7 + slot * 3, pair, seller.bias)
+  const slotOf = (pair: FlipsPair, pairIndex: number, slot: number, content: string, sentAt: number) => {
+    const id = `look-${pairIndex}-${slot}`
+    const request = signed(flipsRequestBody(MODEL, MODEL, pair), { id, ...chat(content) }, id)
+    return { request, asks: [{ reason: 'scheduled' as const, sentAt, requestIds: [id], attemptCosts: [...request.attemptCosts], answered: true }] }
+  }
+  const pairs = chosen.map((pair, pairIndex) => ({
+    words: pair,
+    reference: {
+      words: pair,
+      replies: Array.from({ length: FLIPS_RULE.referenceRepliesPerPair }, (_, index) => ({
+        content: xorshift(index + pairIndex * 50, pair), finishReason: 'stop', provider: 'host', reasoning: false, thinkBlock: false, failure: null,
+        request: JSON.stringify(flipsRequestBody(MODEL, MODEL, pair)),
+      })),
+    },
+    seller: Array.from({ length: 10 }, (_, slot) => slotOf(pair, pairIndex, slot, reply(pairIndex, slot, pair), 1_000 + slot)),
+  }))
+  const more = chosen.map((pair, pairIndex) => Array.from({ length: 10 }, (_, index) => (
+    slotOf(pair, pairIndex, 10 + index, second(pair, pairIndex, index) ?? reply(pairIndex, 10 + index, pair), 2_000 + index))))
+  const stored = { rule: FLIPS_RULE.id, draw, service: MODEL, referenceUpstream: null, referenceOneProvider: true, pairs, reasks: 0, secondLook: { seller: more, reasks: 0 } }
+  return { ...stored, ...judgeFlips(stored) }
+}
+/** Sellers whose first look scores between the bars: on all 40 replies one stays between, the other passes. */
+const STAYS_BETWEEN = { bias: 1, offset: 57 }
+const PASSES_ON_40 = { bias: 0, offset: 7 }
+
+test('a first audit between the bars is judged on 40 replies by its second look, against the second look\'s bar', () => {
+  const record = betweenRecord(STAYS_BETWEEN)
+  const first = judgeFlips({ ...record, secondLook: undefined })
+  // The first look alone is between the bars: it calls for a second look.
+  assert.equal(first.outcome, 'inconclusive')
+  assert.ok(first.p! > FLIPS_RULE.bar.first && first.p! <= FLIPS_RULE.passAbove)
+  assert.equal(flipsSecondLookDue(first, 'first', FLIPS_RULE), true)
+  // On all 40 replies the honest check stays above the second look's bar: no flag, still between, with the 40-reply p.
+  assert.equal(record.outcome, 'inconclusive')
+  assert.notEqual(record.p, first.p)
+  assert.ok(record.p! > FLIPS_RULE.secondLook!.bar)
+  assert.match(record.reason, /^second look, 40 replies: scored .* between the bar and the pass \(first look: scored/)
+  assert.doesNotThrow(() => validateFlips(record))
+  assert.equal(flipsRequestCount(record), 40, 'the second look\'s slots are paid for and counted')
+  assert.equal(FLIPS_CHECK.requests(record).length, 40, 'and bound to the seller like the first look\'s')
+  // A seller whose 10 more replies per pair are another source (long runs of one word, no two alike) is flagged by the
+  // second look.
+  const flagged = betweenRecord(STAYS_BETWEEN, (pair, pairIndex, slot) => xorshift(9_000 + pairIndex * 100 + slot, pair, 13))
+  assert.equal(flagged.outcome, 'flag')
+  assert.match(flagged.reason, /^second look, 40 replies: scored .* at most the second look's bar 0\.001/)
+  assert.doesNotThrow(() => validateFlips(flagged))
+  // One that keeps to the model's randomness on all 40 replies passes.
+  const passed = betweenRecord(PASSES_ON_40)
+  assert.ok(judgeFlips({ ...passed, secondLook: undefined }).p! <= FLIPS_RULE.passAbove)
+  assert.equal(passed.outcome, 'pass')
+  assert.doesNotThrow(() => validateFlips(passed))
+  // A second look with no result leaves the first look's score and says why.
+  const unansweredSlot = structuredClone(record)
+  unansweredSlot.secondLook!.seller[1]![3]!.request.responseAuth = null
+  unansweredSlot.secondLook!.seller[1]![3]!.asks![0]!.answered = false
+  const unanswered = { ...unansweredSlot, ...judgeFlips(unansweredSlot) }
+  assert.doesNotThrow(() => validateFlips(unanswered))
+  assert.deepEqual([unanswered.outcome, unanswered.p], ['inconclusive', first.p])
+  assert.match(unanswered.reason, /between the bar and the pass; its second look has no result: 1 of 40 scheduled slots got no reply/)
+  // Under flips-v2 the same first look decides nothing, and a stored second look is no record of it.
+  const v2 = judgeFlips({ ...record, secondLook: undefined }, FLIPS_RULE_V2)
+  assert.deepEqual([v2.outcome, v2.p], ['inconclusive', first.p])
+  assert.throws(() => validateFlips({ ...record, rule: FLIPS_RULE_V2.id }), /stores a second look its rule does not have/)
+})
+
+test('a stored FLIPS keeps its second look exactly when its first look calls for one', () => {
+  const record = betweenRecord(STAYS_BETWEEN)
+  assert.throws(() => validateFlips({ ...record, secondLook: undefined, ...judgeFlips({ ...record, secondLook: undefined }) }), /between its bars does not store its second look/)
+  // A first look that flags calls for none.
+  const { record: swap } = recordOf(fixture('swap-same-maker-caught'), 'first')
+  const flagged = judgeFlips(swap, { ...FLIPS_RULE, referenceRepliesPerPair: 20 })
+  assert.equal(flagged.outcome, 'flag')
+  assert.equal(flipsSecondLookDue(flagged, 'first', FLIPS_RULE), false)
+  assert.equal(flipsSecondLookDue({ outcome: 'inconclusive', p: 0.05 }, 'confirm', FLIPS_RULE), false, 'a confirmation has its own size and bar')
+  assert.equal(flipsSecondLookDue({ outcome: 'inconclusive', p: null }, 'first', FLIPS_RULE), false, 'no score is no close call')
+  // Its slots keep to the rule: 10 per pair, request IDs used once across both looks, re-asks counted and in budget.
+  const edited = (change: (copy: FlipsV1) => void): FlipsV1 => {
+    const copy = structuredClone(record)
+    change(copy)
+    return copy
+  }
+  assert.throws(() => validateFlips(edited((copy) => { copy.secondLook!.seller[0]!.push(structuredClone(copy.secondLook!.seller[1]![0]!)) })), /counted more than once|other slots than its rule asks/)
+  assert.throws(() => validateFlips(edited((copy) => { copy.secondLook!.seller.pop() })), /other slots than its rule asks/)
+  assert.throws(() => validateFlips(edited((copy) => { copy.secondLook!.seller[1]![0]!.request.requestIds = [...copy.pairs[0]!.seller[0]!.request.requestIds] })), /counted more than once/)
+  assert.throws(() => validateFlips(edited((copy) => { copy.secondLook!.reasks = 1 })), /second look's re-asks are not the ones its slots store/)
+  assert.throws(() => validateFlips(edited((copy) => { copy.reasks = 3; copy.secondLook!.reasks = 2 })), /re-asks more slots than its budget/)
+  assert.ok(isFlipsRecord(record))
+  assert.equal(isFlipsRecord({ ...record, secondLook: { seller: 'x', reasks: 0 } }), false)
+})
+
+test('a run asks the second look only between the bars: 10 more per pair, judged on all 40, within one re-ask budget', async () => {
+  // A rule under which every scored first look is between its bars (and so is its second look), sized as the shipped one.
+  const between: FlipsRule = { ...FLIPS_RULE, bar: { first: 1e-300, confirm: 1e-300 }, passAbove: 1, secondLook: { morePerPair: 10, bar: 1e-300 } }
+  const slots = FLIPS_RULE.repliesPerPair.first * FLIPS_RULE.pairsPerCheck
+  const seller = fakeSeller((call, pair) => xorshift(call + 500, pair))
+  const draw: FlipsDrawV1 = { auditor: '0xA1', model: MODEL, epoch: '32', seed: 'cd'.repeat(32), stage: 'first' }
+  let referenceCall = 0
+  const reference = await prepareFlipsReference({
+    model: MODEL, service: MODEL, stage: 'first', pairs: drawFlipsPairs(draw), rule: between,
+    ask: async (bodies) => ({
+      upstream: { kind: 'test' }, oneProvider: true,
+      results: bodies.map((body) => {
+        const pair = ((body['messages'] as Array<{ content: string }>)[0]!.content.match(/\{(\w+), (\w+)\}/)!.slice(1)) as unknown as FlipsPair
+        return { requestBody: bytes(body), response: { statusCode: 200, body: bytes(chat(xorshift(++referenceCall, pair))) }, provider: null, failure: null }
+      }),
+    }),
+  })
+  const run = (rule: FlipsRule, answers: ReturnType<typeof fakeSeller>) => runFlips({
+    seller: { proxyBaseUrl: 'http://127.0.0.1:1', responseAuthReader: answers.responseAuthReader, limiter: new ConcurrencyLimiter(4), fetchFn: answers.fetchFn, peerId: PEER, service: MODEL },
+    draw, reference, rule,
+  })
+  const record = await run(between, seller)
+  assert.equal(seller.calls(), 2 * slots, 'the first look\'s 20, then 10 more per pair')
+  assert.deepEqual(record.secondLook!.seller.map((list) => list.length), [10, 10])
+  assert.ok(record.secondLook!.seller.flat().every((slot) => slot.asks?.length === 1 && slot.asks[0]!.reason === 'scheduled'))
+  assert.equal(record.outcome, 'inconclusive')
+  assert.notEqual(record.p, null)
+  assert.match(record.reason, /^second look, 40 replies: /)
+  assert.deepEqual(judgeFlips(record, between), judgeFlips({ ...record }, between), 'its judgement follows from what it stores')
+  assert.equal(flipsRequestCount(record), 2 * slots)
+  // Under a rule without a second look the same seller is asked its first look only.
+  const once = fakeSeller((call, pair) => xorshift(call + 500, pair))
+  const v2 = await run({ ...between, secondLook: undefined }, once)
+  assert.equal(once.calls(), slots)
+  assert.equal(v2.secondLook, undefined)
+  // The second look's re-asks share the one budget with the first look's: here the first look spends all of it.
+  const failing = fakeSeller((call, pair) => xorshift(call + 500, pair), (call) => call <= 2 * FLIPS_REASK_BUDGET || (call > slots + 2 * FLIPS_REASK_BUDGET && call <= slots + 4 * FLIPS_REASK_BUDGET))
+  const spent = await run(between, failing)
+  assert.ok(spent.reasks + (spent.secondLook?.reasks ?? 0) <= FLIPS_REASK_BUDGET)
 })

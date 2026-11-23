@@ -22,6 +22,7 @@ import {
   SIGNED_REQUEST_TRIES,
   askSellerSigned,
   signedExchange,
+  signedRequestFailure,
   type SignedSellerRequestInput,
   type SignedSellerRequestV1,
 } from '../shared/signed-seller-request.js'
@@ -36,10 +37,13 @@ import {
  *   a seller cannot compute the pairs in advance.
  * - The seller and the reference get the same body, the eval's for the model (`FLIPS_REQUESTS`). The reference is
  *   asked once per model, stage and run, shortly before its sellers, as in the eval.
- * - A slot with no reply at all (no answer, no ResponseAuth) is asked again within a budget; an empty, filtered or short
- *   reply is never asked again: it counts as the rule says. A check with a slot still unanswered, a reference pair from
- *   more than one provider, a reference request the route changed, or a seller that thinks where the reference does
- *   not, has no result.
+ * - A slot with no reply at all after a failure that can pass (a 429, a 5xx, a timeout, no ResponseAuth) is asked again
+ *   within a budget; a refusal (any other 4xx) gives the same answer and is not. An empty, filtered or short reply is
+ *   never asked again: it counts as the rule says.
+ * - Under a rule with a second look (`flips-v3`), a first audit scored between its bars asks each pair 10 more times and
+ *   is judged on all its replies (`judgeFlips`).
+ * - A check with a slot still unanswered, a reference pair from more than one provider, a reference request the route
+ *   changed, or a seller that thinks where the reference does not, has no result.
  */
 
 /**
@@ -205,6 +209,12 @@ export interface FlipsV1 {
   scoreMax: number | null
   p: number | null
   reason: string
+  /**
+   * The second look of a first audit scored between its bars (`FlipsRule.secondLook`): the slots asked of each pair on
+   * top of its first ones. The record's outcome, score and p are then those of all its replies; a second look with no
+   * result leaves the first look's.
+   */
+  secondLook?: FlipsSecondLookV1
   /** Dry run only: the confirmation-stage sample on fresh pairs that followed a first flag. A diagnostic. */
   followUp?: FlipsV1
   /** Dry run only: why the follow-up of a first flag has no record; the first flag stands. */
@@ -224,6 +234,13 @@ export interface FlipsV1 {
   noSequence?: FlipsNoSequence
   /** No result because the seller repeats its replies on a pair (`repeats`): a finding of its own for the report. */
   repeats?: FlipsRepeats
+}
+
+/** The more slots of a second look, per pair in the record's pair order, and the slots of them asked again. */
+export interface FlipsSecondLookV1 {
+  seller: FlipsSellerSlotV1[][]
+  /** Slots of the second look asked again because they got no reply; within the check's one budget, with `reasks`. */
+  reasks: number
 }
 
 /** A pair whose seller replies repeat one another, with the response ids those replies carry. */
@@ -358,6 +375,11 @@ export function isFlipsRecord(value: unknown, depth = 0): value is FlipsV1 {
   const mismatch = record.profileMismatch as Record<string, unknown> | undefined
   const countsOk = (numbers: Record<string, unknown> | undefined): boolean => numbers === undefined || (typeof numbers === 'object' && numbers !== null
     && Object.entries(numbers).every(([key, number]) => key === 'code' || key === 'diagnosticScoreIgnoringProfile' || bounded(number, FLIPS_MAX_STORED.totalTokens)))
+  const second = record.secondLook as Partial<FlipsSecondLookV1> | undefined
+  const secondOk = second === undefined || (typeof second === 'object' && second !== null && Array.isArray(second.seller)
+    && second.seller.length <= FLIPS_MAX_STORED.pairs
+    && second.seller.every((slots) => Array.isArray(slots) && slots.length <= FLIPS_MAX_STORED.sellerSlots && slots.every(slotOk))
+    && Number.isSafeInteger(second.reasks) && bounded(second.reasks, FLIPS_REASK_BUDGET))
   const shapeOk = typeof record.rule === 'string' && typeof record.service === 'string' && typeof record.outcome === 'string'
     && typeof draw === 'object' && draw !== null && typeof draw.model === 'string' && typeof draw.epoch === 'string'
     && typeof draw.auditor === 'string' && typeof draw.seed === 'string' && (draw.stage === 'first' || draw.stage === 'confirm')
@@ -366,7 +388,7 @@ export function isFlipsRecord(value: unknown, depth = 0): value is FlipsV1 {
       && Array.isArray(pair.seller) && pair.seller.length <= FLIPS_MAX_STORED.sellerSlots && pair.seller.every(slotOk)
       && Array.isArray(pair.reference?.replies) && pair.reference.replies.length <= FLIPS_MAX_STORED.referenceReplies && pair.reference.replies.every(replyOk)
     ))
-    && countsOk(counts) && countsOk(mismatch) && noSequenceOk && repeatsOk
+    && countsOk(counts) && countsOk(mismatch) && noSequenceOk && repeatsOk && secondOk
     && (record.followUp === undefined || isFlipsRecord(record.followUp, depth + 1))
   if (!shapeOk || depth > 0) return shapeOk
   // The record goes into files whose hash must not fail: it must be canonical JSON, every number finite.
@@ -508,16 +530,60 @@ export function flipsReferenceProblem(
   return null
 }
 
-/** The judgement of a FLIPS check from what it stores: outcome, counting, score, p and why. Pure. */
+/**
+ * Why a check's slots have no reply, across the whole check: the requests the seller refused (an HTTP 4xx other than
+ * 429, which it answers the same way when asked again), with the first refusal's status and text, and the rest that
+ * got no reply after every ask.
+ */
+function describeUnanswered(slots: readonly FlipsSellerSlotV1[]): string {
+  const unanswered = slots.filter((slot) => signedExchange(slot.request) === null)
+  const refused = unanswered.filter((slot) => signedRequestFailure(slot.request) === 'refused')
+  const other = unanswered.filter((slot) => signedRequestFailure(slot.request) !== 'refused')
+  const detail = (slot: FlipsSellerSlotV1 | undefined): string => (slot?.request.failureReason ?? 'no reply').replace(/^the seller answered /, '')
+  const refusals = refused.length > 0 ? `the seller refused ${refused.length} of ${slots.length} requests (${detail(refused[0])})` : null
+  const rest = other.length > 0
+    ? `${refusals ? `${other.length} more slot${other.length === 1 ? '' : 's'}` : `${other.length} of ${slots.length} scheduled slots`} got no reply (${detail(other[0])})`
+    : null
+  return [refusals, rest].filter((part) => part !== null).join(', and ')
+}
+
+type FlipsJudged = Pick<FlipsV1, 'outcome' | 'counted' | 'score' | 'scoreMax' | 'p' | 'reason' | 'profileMismatch' | 'reasoningCounts' | 'noSequence' | 'repeats'>
+
+/**
+ * The judgement of a FLIPS check from what it stores: outcome, counting, score, p and why. Under a rule with a second
+ * look, a first audit scored between its bars is judged on all its replies, its first and its second look's, against
+ * the second look's bar; a second look with no result (a slot unanswered, say) leaves the first look's judgement. Pure.
+ */
 export function judgeFlips(
-  record: Pick<FlipsV1, 'draw' | 'service' | 'referenceOneProvider' | 'pairs'>,
+  record: Pick<FlipsV1, 'draw' | 'service' | 'referenceOneProvider' | 'pairs'> & Pick<Partial<FlipsV1>, 'secondLook'>,
   rule: FlipsRule = FLIPS_RULE,
-): Pick<FlipsV1, 'outcome' | 'counted' | 'score' | 'scoreMax' | 'p' | 'reason' | 'profileMismatch' | 'reasoningCounts' | 'noSequence' | 'repeats'> {
+): FlipsJudged {
+  const stage = record.draw.stage
+  const first = judgeLook(record, rule, { replies: rule.repliesPerPair[stage], bar: rule.bar[stage], barName: `the ${stage} bar` })
+  if (!flipsSecondLookDue(first, stage, rule) || !record.secondLook) return first
+  const more = rule.secondLook!.morePerPair
+  const pairs = record.pairs.map((pair, index) => ({ ...pair, seller: [...pair.seller, ...(record.secondLook!.seller[index] ?? [])] }))
+  const replies = rule.repliesPerPair[stage] + more
+  const second = judgeLook({ ...record, pairs }, rule, { replies, bar: rule.secondLook!.bar, barName: 'the second look\'s bar' })
+  if (second.p === null) return { ...first, reason: `${first.reason}; its second look has no result: ${second.reason}` }
+  return { ...second, reason: `second look, ${replies * rule.pairsPerCheck} replies: ${second.reason} (first look: ${first.reason})` }
+}
+
+/** Whether a judged first audit calls for a second look under its rule: scored between its bars. */
+export function flipsSecondLookDue(judged: Pick<FlipsV1, 'outcome' | 'p'>, stage: FlipsStage, rule: FlipsRule): boolean {
+  return rule.secondLook !== undefined && stage === 'first' && judged.outcome === 'inconclusive' && judged.p !== null
+}
+
+/** One look of a check: `replies` seller slots per pair, judged with the calibration of that size against `bar`. */
+function judgeLook(
+  record: Pick<FlipsV1, 'draw' | 'service' | 'referenceOneProvider' | 'pairs'>,
+  rule: FlipsRule,
+  look: { replies: number; bar: number; barName: string },
+): FlipsJudged {
   // A dry run's probe is a diagnostic: it never counts.
   const counted = flipsCounts(record.draw.model, rule) && !isProbeDraw(record.draw)
   const none = (reason: string) => ({ outcome: 'inconclusive' as const, counted, score: null, scoreMax: null, p: null, reason })
-  const stage = record.draw.stage
-  const replies = rule.repliesPerPair[stage]
+  const replies = look.replies
   if (record.pairs.length !== rule.pairsPerCheck) return none(`${record.pairs.length} word pairs, the rule asks ${rule.pairsPerCheck}`)
   const problem = flipsReferenceProblem({ draw: record.draw, service: record.service, referenceOneProvider: record.referenceOneProvider, pairs: record.pairs.map((pair) => pair.reference) }, rule)
   if (problem) {
@@ -531,7 +597,7 @@ export function judgeFlips(
     if (pair.seller.length !== replies) return none(`${label}: ${pair.seller.length} seller slots, the stage asks ${replies}`)
     const expected = requestShape(flipsRequestBody(record.draw.model, record.service, pair.words, rule))
     const answers = pair.seller.map(sellerAnswer)
-    if (answers.some((answer) => answer === null)) return none(`${label}: a scheduled slot has no reply`)
+    if (answers.some((answer) => answer === null)) return none(describeUnanswered(record.pairs.flatMap((entry) => entry.seller)))
     const signed = answers as NonNullable<(typeof answers)[number]>[]
     // A signed answer with no readable text is never dropped from the sample: the check has no result.
     if (signed.some((answer) => answer.reply.content === null)) return none(`${label}: a signed answer has no readable text`)
@@ -612,9 +678,9 @@ export function judgeFlips(
   const judged = judgeFlipsCheck(samples, rule, scheduled)
   if (judged.outcome !== 'scored' || judged.p === null || judged.score === null) return { ...none(judged.reasons.join('; ') || 'no score'), reasoningCounts }
   const p = judged.p
-  const outcome: FlipsOutcome = p <= rule.bar[stage] ? 'flag' : p > rule.passAbove ? 'pass' : 'inconclusive'
+  const outcome: FlipsOutcome = p <= look.bar ? 'flag' : p > rule.passAbove ? 'pass' : 'inconclusive'
   const reason = outcome === 'flag'
-    ? `scored ${judged.score.toFixed(2)} (p ${p.toExponential(2)}), at most the ${stage} bar ${rule.bar[stage]}`
+    ? `scored ${judged.score.toFixed(2)} (p ${p.toExponential(2)}), at most ${look.barName} ${look.bar}`
     : outcome === 'pass'
       ? `scored ${judged.score.toFixed(2)} (p ${p.toFixed(3)}), above ${rule.passAbove}`
       : `scored ${judged.score.toFixed(2)} (p ${p.toFixed(4)}), between the bar and the pass`
@@ -636,10 +702,15 @@ export function describeFlipsFlag(record: Pick<FlipsV1, 'rule' | 'reason'>): str
 /** Every seller request FLIPS paid for, in slot order. */
 export function flipsPaidRequests(record: FlipsV1): PaidRequest[] {
   return [
-    ...record.pairs.flatMap((pair) => pair.seller.map((slot) => ({ requestCount: slot.request.requestIds.length, attemptCosts: slot.request.attemptCosts }))),
+    ...flipsSellerSlots(record).map((slot) => ({ requestCount: slot.request.requestIds.length, attemptCosts: slot.request.attemptCosts })),
     // A dry run's follow-up is paid for by the same audit.
     ...(record.followUp ? flipsPaidRequests(record.followUp) : []),
   ]
+}
+
+/** Every seller slot of a check in order: each pair's, then its second look's, pair by pair. */
+export function flipsSellerSlots(record: Pick<FlipsV1, 'pairs' | 'secondLook'>): FlipsSellerSlotV1[] {
+  return [...record.pairs.flatMap((pair) => pair.seller), ...(record.secondLook?.seller.flat() ?? [])]
 }
 
 export function flipsCost(record: FlipsV1): AuditCostSummaryV1 {
@@ -665,21 +736,36 @@ export function validateFlips(record: FlipsV1): void {
     throw new Error('a FLIPS reference pair is not the pair it is stored with')
   }
   const ids = new Set<string>()
-  for (const pair of record.pairs) {
-    for (const slot of pair.seller) {
-      for (const id of slot.request.requestIds) {
-        if (ids.has(id)) throw new Error('a FLIPS request is counted more than once')
-        ids.add(id)
-      }
+  for (const slot of flipsSellerSlots(record)) {
+    for (const id of slot.request.requestIds) {
+      if (ids.has(id)) throw new Error('a FLIPS request is counted more than once')
+      ids.add(id)
     }
+  }
+  // A second look is stored exactly when its rule and the first look call for one: never under a rule without it,
+  // and always for a first audit scored between its bars, so no record leaves out the look that would decide it.
+  const second = record.secondLook
+  if (second !== undefined && !rule.secondLook) throw new Error('a FLIPS check stores a second look its rule does not have')
+  if (rule.secondLook) {
+    const due = flipsSecondLookDue(judgeFlips({ ...record, secondLook: undefined }, rule), record.draw.stage, rule)
+    if (due && !second) throw new Error('a FLIPS check scored between its bars does not store its second look')
+    if (!due && second) throw new Error('a FLIPS check stores a second look its first look does not call for')
+    if (second && (second.seller.length !== record.pairs.length || second.seller.some((slots) => slots.length > rule.secondLook!.morePerPair))) {
+      throw new Error('a FLIPS second look holds other slots than its rule asks')
+    }
+  }
+  if (second && (!Number.isInteger(second.reasks) || second.reasks < 0 || record.reasks + second.reasks > FLIPS_REASK_BUDGET)) {
+    throw new Error('a FLIPS check re-asks more slots than its budget')
   }
   // Re-asks keep to the budget, and, where the asks are stored, each one follows an ask that got no reply.
   if (!Number.isInteger(record.reasks) || record.reasks < 0 || record.reasks > FLIPS_REASK_BUDGET) throw new Error('a FLIPS check re-asks more slots than its budget')
-  const slots = record.pairs.flatMap((pair) => pair.seller)
+  const slots = flipsSellerSlots(record)
   // A record of a rule that requires them stores the asks of every slot: a record without them never skips the trail.
   if (rule.asksRequired && slots.some((slot) => !Array.isArray(slot.asks) || slot.asks.length === 0)) throw new Error('a FLIPS slot does not store its asks')
   if (slots.some((slot) => slot.asks !== undefined)) {
-    let reasked = 0
+    // Re-asks of the first look's slots are `reasks`, those of the second look's its own.
+    const reaskedOf = (list: readonly FlipsSellerSlotV1[]): number => list.reduce((total, slot) => total + Math.max(0, (slot.asks?.length ?? 1) - 1), 0)
+    if (second && reaskedOf(second.seller.flat()) !== second.reasks) throw new Error('a FLIPS second look\'s re-asks are not the ones its slots store')
     for (const slot of slots) {
       const asks = slot.asks
       if (!asks || asks.length === 0 || asks[0]!.reason !== 'scheduled') throw new Error('a FLIPS slot does not start with its scheduled ask')
@@ -687,7 +773,6 @@ export function validateFlips(record: FlipsV1): void {
         if (asks[index]!.reason !== 'no-reply' || asks[index - 1]!.answered) throw new Error('a FLIPS slot was asked again after a reply')
         if (asks[index]!.sentAt < asks[index - 1]!.sentAt) throw new Error('a FLIPS slot\'s asks are out of order')
       }
-      reasked += asks.length - 1
       if (canonicalJsonStringify(asks.flatMap((entry) => entry.requestIds)) !== canonicalJsonStringify(slot.request.requestIds)
         || canonicalJsonStringify(asks.flatMap((entry) => entry.attemptCosts)) !== canonicalJsonStringify(slot.request.attemptCosts)) {
         throw new Error('a FLIPS slot\'s asks are not its requests')
@@ -699,7 +784,7 @@ export function validateFlips(record: FlipsV1): void {
         throw new Error('a FLIPS slot\'s signed reply is not its last ask\'s')
       }
     }
-    if (reasked !== record.reasks) throw new Error('a FLIPS check\'s re-asks are not the ones its slots store')
+    if (reaskedOf(record.pairs.flatMap((pair) => pair.seller)) !== record.reasks) throw new Error('a FLIPS check\'s re-asks are not the ones its slots store')
   }
   if (record.followUp) {
     validateFlips(record.followUp)
@@ -825,7 +910,7 @@ export const FLIPS_AUDITOR_FAILURE = 'the randomness check could not run on the 
 /** The detail of `FLIPS_AUDITOR_FAILURE` for a stage's reference not whole this run: what the run and the report show. */
 export const FLIPS_WAITING_FOR_REFERENCE = 'waiting for its reference: it was not whole this run, so the audit was not started and nothing was paid'
 
-/** Slots asked again in one check, at most: only slots that got no reply at all. */
+/** Slots asked again in one check, at most: only slots that got no reply at all after a failure that can pass. */
 export const FLIPS_REASK_BUDGET = 4
 
 /** The most a stored FLIPS record holds: any more is no record of this build. */
@@ -863,20 +948,18 @@ export async function runFlips(input: {
     const entry: FlipsSlotAskV1 = { reason, sentAt: sentAt ?? now(), requestIds: [...request.requestIds], attemptCosts: [...request.attemptCosts], answered: answered(request) }
     return { request, entry }
   }
-  const pairs: FlipsPairV1[] = await Promise.all(input.reference.pairs.map(async (reference) => ({
-    words: reference.words,
-    reference,
-    seller: await Promise.all(Array.from({ length: replies }, async () => {
-      const first = await asked(reference.words, 'scheduled')
-      return { request: first.request, asks: [first.entry] }
-    })),
-  })))
-  let reasks = 0
-  for (const pair of pairs) {
-    for (const slot of pair.seller) {
-      while (!answered(slot.request) && reasks < FLIPS_REASK_BUDGET && !input.seller.signal?.aborted) {
-        reasks += 1
-        const again = await asked(pair.words, 'no-reply')
+  const scheduled = (words: FlipsPair, count: number): Promise<FlipsSellerSlotV1[]> => Promise.all(Array.from({ length: count }, async () => {
+    const first = await asked(words, 'scheduled')
+    return { request: first.request, asks: [first.entry] }
+  }))
+  // The slots with no reply after a failure that can pass are asked again, one at a time, within `budget` re-asks; a
+  // refusal (an HTTP 4xx other than 429) gives the same answer and is not. Returns the re-asks made.
+  const askAgain = async (words: FlipsPair, slots: readonly FlipsSellerSlotV1[], budget: number): Promise<number> => {
+    let made = 0
+    for (const slot of slots) {
+      while (signedRequestFailure(slot.request) === 'may-pass' && made < budget && !input.seller.signal?.aborted) {
+        made += 1
+        const again = await asked(words, 'no-reply')
         // The tries of a slot are paid for and counted, so they stay with it, each ask in order.
         slot.request = {
           ...again.request,
@@ -886,7 +969,15 @@ export async function runFlips(input: {
         slot.asks = [...slot.asks ?? [], again.entry]
       }
     }
+    return made
   }
+  const pairs: FlipsPairV1[] = await Promise.all(input.reference.pairs.map(async (reference) => ({
+    words: reference.words,
+    reference,
+    seller: await scheduled(reference.words, replies),
+  })))
+  let reasks = 0
+  for (const pair of pairs) reasks += await askAgain(pair.words, pair.seller, FLIPS_REASK_BUDGET - reasks)
   const stored = {
     rule: rule.id,
     draw: input.draw,
@@ -896,7 +987,16 @@ export async function runFlips(input: {
     pairs,
     reasks,
   }
-  return { ...stored, ...judgeFlips(stored, rule) }
+  const first = judgeFlips(stored, rule)
+  if (!flipsSecondLookDue(first, input.draw.stage, rule)) return { ...stored, ...first }
+  // Between the bars on a first audit: each pair is asked its second look's slots, and the check is judged on all its
+  // replies. The re-asks of both looks share the one budget. A second look the audit's time cuts short has no result,
+  // and the first look's score stands.
+  const more = await Promise.all(pairs.map((pair) => scheduled(pair.words, rule.secondLook!.morePerPair)))
+  let secondReasks = 0
+  for (const [index, pair] of pairs.entries()) secondReasks += await askAgain(pair.words, more[index]!, FLIPS_REASK_BUDGET - reasks - secondReasks)
+  const secondLook: FlipsSecondLookV1 = { seller: more, reasks: secondReasks }
+  return { ...stored, secondLook, ...judgeFlips({ ...stored, secondLook }, rule) }
 }
 
 /** How long one seller's FLIPS may take, its seller slots at a time, and the reference's own limit. */
@@ -1175,6 +1275,9 @@ export function flipsFingerprint(): Record<string, unknown> {
     pools: [flipsPool('first'), flipsPool('confirm')],
     draw: (['first', 'confirm'] as const).map((stage) => drawFlipsPairs({ auditor: '0x00', model: 'sample', epoch: '1', seed: flipsSeed('00', { model: 'sample', epoch: '1', runId: 'r', stage }), stage })),
     reaskBudget: FLIPS_REASK_BUDGET,
+    // Which first looks call for a second look: a first audit scored between its bars, and nothing else.
+    secondLookDue: ([['inconclusive', 0.05, 'first'], ['inconclusive', null, 'first'], ['flag', 0.001, 'first'], ['pass', 0.5, 'first'], ['inconclusive', 0.05, 'confirm']] as const)
+      .map(([outcome, p, stage]) => flipsSecondLookDue({ outcome, p }, stage, FLIPS_RULE)),
     reasoningShare: FLIPS_REASONING_SHARE,
     replyMaxChars: FLIPS_REPLY_MAX_CHARS,
     // A follow-up draw leaves out its first check's pairs.

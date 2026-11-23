@@ -374,7 +374,7 @@
  "reasoningCounts": {"referenceReasoningReplies":0,"referenceReasoningTokens":0,"referenceReplies":80,"sellerReasoningReplies":0,"sellerReasoningTokens":0,"sellerReplies":20},
  "referenceOneProvider": true,
  "referenceUpstream": {"kind":"test"},
- "rule": "flips-v2",
+ "rule": "flips-v3",
  "score": 0.7775341197144852,
  "scoreMax": 5.572353002177747,
  "service": "deepseek-v4-pro",

@@ -1,13 +1,13 @@
 {
  "crowd": null,
- "fixedAmount": {"outcome":"inconclusive","reason":"pass, stored and not counted yet: the seller adds 0 tokens or fewer"},
+ "fixedAmount": {"outcome":"pass","reason":"the seller adds 0 tokens or fewer"},
  "flag": null,
  "growth": {"outcome":"pass","reason":"the seller bills the model's growth"},
  "mode": "plain",
  "offset": {"fixed":true,"median":0},
  "outcome": "pass",
- "precheckMatch": true,
- "reason": "growth: the seller bills the model's growth; fixed amount: pass, stored … (126 characters, sha256 87b257ba148432d4)",
+ "precheckMatch": false,
+ "reason": "growth: the seller bills the model's growth; fixed amount: the seller adds 0 tokens or fewer",
  "reference": [
   {
    "long": {"count":400,"text":"Invoice BL-94185-KE for 9,413.40 dollars is still open, budget code 85-3… (1199 characters, sha256 4d8d47cadb5a5d10)"},
@@ -57,20 +57,16 @@
        }
       ],
       "failureReason": null,
-      "requestIds": ["<earlier attempt, seller: echo round 1 long #1>"],
+      "requestIds": ["<seller: echo round 1 long #1>"],
       "responseAuth": {
        "failureReason": null,
-       "record": {
-        "advertisedService": "deepseek-v4-pro",
-        "requestId": "<earlier attempt, seller: echo round 1 long #1>",
-        "sellerPeerId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-       },
-       "requestId": "<earlier attempt, seller: echo round 1 long #1>",
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 1 long #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 1 long #1>",
        "signedPreimages": {
         "encoding": "antseed-http-codec-v1",
         "hashAlgorithm": "keccak256",
         "requestBase64": {
-         "requestId": "<earlier attempt, seller: echo round 1 long #1>",
+         "requestId": "<seller: echo round 1 long #1>",
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
@@ -79,7 +75,7 @@
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
         "responseBase64": {
-         "requestId": "<earlier attempt, seller: echo round 1 long #1>",
+         "requestId": "<seller: echo round 1 long #1>",
          "statusCode": 200,
          "headers": {},
          "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (1372 characters, sha256 dbb6a48c245fb8f4)"
@@ -123,20 +119,16 @@
        }
       ],
       "failureReason": null,
-      "requestIds": ["<earlier attempt, seller: echo round 1 short #1>"],
+      "requestIds": ["<seller: echo round 1 short #1>"],
       "responseAuth": {
        "failureReason": null,
-       "record": {
-        "advertisedService": "deepseek-v4-pro",
-        "requestId": "<earlier attempt, seller: echo round 1 short #1>",
-        "sellerPeerId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-       },
-       "requestId": "<earlier attempt, seller: echo round 1 short #1>",
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 1 short #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 1 short #1>",
        "signedPreimages": {
         "encoding": "antseed-http-codec-v1",
         "hashAlgorithm": "keccak256",
         "requestBase64": {
-         "requestId": "<earlier attempt, seller: echo round 1 short #1>",
+         "requestId": "<seller: echo round 1 short #1>",
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
@@ -145,7 +137,7 @@
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
         "responseBase64": {
-         "requestId": "<earlier attempt, seller: echo round 1 short #1>",
+         "requestId": "<seller: echo round 1 short #1>",
          "statusCode": 200,
          "headers": {},
          "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (584 characters, sha256 51fd98667a057ceb)"
@@ -194,20 +186,16 @@
        }
       ],
       "failureReason": null,
-      "requestIds": ["<earlier attempt, seller: echo round 2 long #1>"],
+      "requestIds": ["<seller: echo round 2 long #1>"],
       "responseAuth": {
        "failureReason": null,
-       "record": {
-        "advertisedService": "deepseek-v4-pro",
-        "requestId": "<earlier attempt, seller: echo round 2 long #1>",
-        "sellerPeerId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-       },
-       "requestId": "<earlier attempt, seller: echo round 2 long #1>",
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 2 long #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 2 long #1>",
        "signedPreimages": {
         "encoding": "antseed-http-codec-v1",
         "hashAlgorithm": "keccak256",
         "requestBase64": {
-         "requestId": "<earlier attempt, seller: echo round 2 long #1>",
+         "requestId": "<seller: echo round 2 long #1>",
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
@@ -216,7 +204,7 @@
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
         "responseBase64": {
-         "requestId": "<earlier attempt, seller: echo round 2 long #1>",
+         "requestId": "<seller: echo round 2 long #1>",
          "statusCode": 200,
          "headers": {},
          "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (1727 characters, sha256 b43b264592064942)"
@@ -260,20 +248,16 @@
        }
       ],
       "failureReason": null,
-      "requestIds": ["<earlier attempt, seller: echo round 2 short #1>"],
+      "requestIds": ["<seller: echo round 2 short #1>"],
       "responseAuth": {
        "failureReason": null,
-       "record": {
-        "advertisedService": "deepseek-v4-pro",
-        "requestId": "<earlier attempt, seller: echo round 2 short #1>",
-        "sellerPeerId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-       },
-       "requestId": "<earlier attempt, seller: echo round 2 short #1>",
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 2 short #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 2 short #1>",
        "signedPreimages": {
         "encoding": "antseed-http-codec-v1",
         "hashAlgorithm": "keccak256",
         "requestBase64": {
-         "requestId": "<earlier attempt, seller: echo round 2 short #1>",
+         "requestId": "<seller: echo round 2 short #1>",
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
@@ -282,7 +266,7 @@
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
         "responseBase64": {
-         "requestId": "<earlier attempt, seller: echo round 2 short #1>",
+         "requestId": "<seller: echo round 2 short #1>",
          "statusCode": 200,
          "headers": {},
          "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (572 characters, sha256 2896d2546be69537)"
@@ -331,20 +315,16 @@
        }
       ],
       "failureReason": null,
-      "requestIds": ["<earlier attempt, seller: echo round 3 long #1>"],
+      "requestIds": ["<seller: echo round 3 long #1>"],
       "responseAuth": {
        "failureReason": null,
-       "record": {
-        "advertisedService": "deepseek-v4-pro",
-        "requestId": "<earlier attempt, seller: echo round 3 long #1>",
-        "sellerPeerId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-       },
-       "requestId": "<earlier attempt, seller: echo round 3 long #1>",
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 3 long #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 3 long #1>",
        "signedPreimages": {
         "encoding": "antseed-http-codec-v1",
         "hashAlgorithm": "keccak256",
         "requestBase64": {
-         "requestId": "<earlier attempt, seller: echo round 3 long #1>",
+         "requestId": "<seller: echo round 3 long #1>",
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
@@ -353,7 +333,7 @@
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
         "responseBase64": {
-         "requestId": "<earlier attempt, seller: echo round 3 long #1>",
+         "requestId": "<seller: echo round 3 long #1>",
          "statusCode": 200,
          "headers": {},
          "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (2543 characters, sha256 fc2592325f41464b)"
@@ -397,20 +377,16 @@
        }
       ],
       "failureReason": null,
-      "requestIds": ["<earlier attempt, seller: echo round 3 short #1>"],
+      "requestIds": ["<seller: echo round 3 short #1>"],
       "responseAuth": {
        "failureReason": null,
-       "record": {
-        "advertisedService": "deepseek-v4-pro",
-        "requestId": "<earlier attempt, seller: echo round 3 short #1>",
-        "sellerPeerId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-       },
-       "requestId": "<earlier attempt, seller: echo round 3 short #1>",
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 3 short #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 3 short #1>",
        "signedPreimages": {
         "encoding": "antseed-http-codec-v1",
         "hashAlgorithm": "keccak256",
         "requestBase64": {
-         "requestId": "<earlier attempt, seller: echo round 3 short #1>",
+         "requestId": "<seller: echo round 3 short #1>",
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
@@ -419,7 +395,7 @@
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
         "responseBase64": {
-         "requestId": "<earlier attempt, seller: echo round 3 short #1>",
+         "requestId": "<seller: echo round 3 short #1>",
          "statusCode": 200,
          "headers": {},
          "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (609 characters, sha256 ad7f9bfbe34b7e7e)"
@@ -438,9 +414,10 @@
   }
  ],
  "rule": {
+  "askAgain": {"waitMs":5000},
   "growthFloor": 20,
   "growthShare": 0.1,
-  "id": "output-echo-v2",
+  "id": "output-echo-v3",
   "longPassages": [3,4,6],
   "maxTokens": 2048,
   "minBackers": 2,
@@ -448,13 +425,13 @@
   "minGapRatio": 1.3333333333333333,
   "minOthers": 3,
   "minSpread": 2,
-  "offsetCounts": false,
+  "offsetCounts": true,
   "offsetFloor": 20,
   "referenceAsks": 2,
   "rounds": 3,
   "spreadFactor": 3,
   "textTries": 3,
   "tolerance": 2,
-  "visibleCounts": false
+  "visibleCounts": true
  }
 }

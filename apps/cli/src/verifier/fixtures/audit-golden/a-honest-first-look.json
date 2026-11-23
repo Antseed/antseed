@@ -83,17 +83,17 @@
   "tokenizerPrecheck": {"rule":"tokenizer-precheck-v3","outcome":"match"},
   "outputCap": {"rule":"output-cap-v1","outcome":"pass","reason":"the answer was within","asks":[{"cap":24,"billed":24,"measured":null,"class":"within"}]},
   "outputEcho": {
-   "rule": "output-echo-v2",
+   "rule": "output-echo-v3",
    "outcome": "pass",
    "flag": null,
    "growth": "pass",
-   "fixedAmount": "inconclusive",
-   "reason": "growth: the seller bills the model's growth; fixed amount: pass, stored … (126 characters, sha256 87b257ba148432d4)",
+   "fixedAmount": "pass",
+   "reason": "growth: the seller bills the model's growth; fixed amount: the seller adds 0 tokens or fewer",
    "growths": [[0],[0],[0]],
    "offset": 0
   },
   "flips": {
-   "rule": "flips-v2",
+   "rule": "flips-v3",
    "model": "deepseek-v4-pro",
    "stage": "first",
    "outcome": "pass",
@@ -108,10 +108,10 @@
   "createdAt": "2026-10-07T00:00:00.000Z",
   "evidenceLevel": "proxy-observation-with-verified-response-auth-no-payment-evidence",
   "exchanges": [{"record":"exchange-226f0dfcbaa561da"},{"record":"exchange-ace38a84b86af79b"},{"record":"exchange-2a6d6880d2cc5494"}],
-  "flips": {"record":"flips-273ec7428a70bd33"},
+  "flips": {"record":"flips-889d5c338e050cd5"},
   "kind": "antseed-buyer-proxy-kbf-audit",
   "outputCap": {"record":"outputCap-77126efd8f3e2bec"},
-  "outputEcho": {"record":"outputEcho-36089cee20e30f3f"},
+  "outputEcho": {"record":"outputEcho-681541ad37c4100b"},
   "reference": {"record":"reference-723f83ee13c8a30f"},
   "result": {
    "cost": {"estimatedCostUsd":0.01072,"inputTokens":4870,"missingCostExchangeCount":0,"outputTokens":4353,"pricedExchangeCount":34,"totalTokens":9223},
@@ -132,7 +132,7 @@
   "tokenizerPrecheck": {"record":"tokenizerPrecheck-9da9546fca53482b"},
   "version": 1
  },
- "read": {"flaggedBy":[],"passedBy":["tokens","output-cap","output-echo","flips","kbf"],"submit":"accepted"},
+ "read": {"flaggedBy":[],"passedBy":["tokens","output-cap","output-echo","output-offset","flips","kbf"],"submit":"accepted"},
  "files": [
   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/README.md",
   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/evidence.json",

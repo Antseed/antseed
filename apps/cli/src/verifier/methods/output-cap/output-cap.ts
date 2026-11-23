@@ -4,7 +4,10 @@ import { isSafeProbe } from '@antseed/node/payments'
 import { outputCheckRequestBody, readOutput, requestCarriesPrompt, type OutputReadingV1, type OutputRequestThinking } from '../shared/output-usage.js'
 import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from '../../proxy-evidence.js'
 import {
+  SIGNED_REQUEST_RETRY_WAIT,
   SIGNED_REQUEST_TRIES,
+  signedRequestFailure,
+  signedRetryWaitMs,
   askSellerSigned,
   assertRequestIdentities,
   signedExchange,
@@ -533,6 +536,13 @@ export function outputCapFingerprint(): Record<string, unknown> {
   return {
     rule: OUTPUT_CAP_RULE,
     signedRequestTries: SIGNED_REQUEST_TRIES,
+    // The shared request helper's wait before a second try after a 429 or a 5xx, and which failures can pass when
+    // asked again (FLIPS and the echo check ask again only those).
+    signedRequestRetryWait: SIGNED_REQUEST_RETRY_WAIT,
+    signedRetryWaits: ['3', '120', 'soon', null].map((header) => signedRetryWaitMs(header, 0)),
+    signedRequestFailures: ([[400, 'the seller answered HTTP 400'], [429, 'the seller answered HTTP 429'], [503, 'the seller answered HTTP 503'],
+      [null, 'request failed: timeout'], [200, 'the answer has no verified ResponseAuth'], [null, 'the audit was stopped']] as const)
+      .map(([statusCode, failureReason]) => signedRequestFailure({ requestIds: ['r'], statusCode, attemptCosts: [], responseAuth: null, failureReason })),
     limit: outputCapLimit(OUTPUT_CAP_RULE, fixedSequence(7)),
     prompt: outputCapPrompt(fixedSequence(11)).prompt,
     words: [101, 342, 999].map(numberWords),

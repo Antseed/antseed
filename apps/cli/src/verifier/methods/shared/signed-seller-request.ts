@@ -40,11 +40,46 @@ export interface SignedSellerRequestInput {
   clock?: SellerClock
   /** Called each time a try leaves for the seller, after any wait for a slot of the limiter. */
   onSend?: () => void
+  /**
+   * Waits `ms` before the next try, or until `signal` fires (`SIGNED_REQUEST_RETRY_WAIT`). Tests pass a fake clock;
+   * by default a timer.
+   */
+  wait?: (ms: number, signal: AbortSignal | undefined) => Promise<void>
 }
 
 /** Times one request is sent before it counts as failed: the pre-check's and the output checks' alike. */
 export const SIGNED_REQUEST_TRIES = 2
 const SIGNED_REQUEST_TIMEOUT_MS = 60_000
+
+/**
+ * The wait before the next try after a 429 or a 5xx: the seller's `Retry-After`, at most `maxMs`, or `defaultMs` when it
+ * sends none (or one that does not parse). It is the auditor's wait, off the seller's clock and outside the limiter,
+ * and it ends with the audit's stop signal and the seller's clock.
+ */
+export const SIGNED_REQUEST_RETRY_WAIT = Object.freeze({ defaultMs: 2_000, maxMs: 10_000 })
+
+/** The wait before the next try for an answer's `Retry-After` header (seconds or an HTTP date). */
+export function signedRetryWaitMs(retryAfter: string | null, now: number = Date.now()): number {
+  const value = retryAfter?.trim() ?? ''
+  const seconds = /^\d+(\.\d+)?$/.test(value) ? Number(value) * 1_000 : null
+  const date = seconds === null && value ? Date.parse(value) : Number.NaN
+  const asked = seconds ?? (Number.isFinite(date) ? Math.max(0, date - now) : null)
+  return asked === null ? SIGNED_REQUEST_RETRY_WAIT.defaultMs : Math.min(SIGNED_REQUEST_RETRY_WAIT.maxMs, Math.round(asked))
+}
+
+/** A timer that ends early when `signal` fires; never rejects. */
+export function waitUnlessStopped(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  if (ms <= 0 || signal?.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal?.addEventListener('abort', done, { once: true })
+  })
+}
 
 /** What a caller of `sendSignedRequest` adds to each try: its own fields of the record and when an answer is enough. */
 export interface SignedRequestHooks<SellerRequest extends SignedSellerRequestV1> {
@@ -62,7 +97,8 @@ export interface SignedRequestHooks<SellerRequest extends SignedSellerRequestV1>
  * signed captured, tried up to `SIGNED_REQUEST_TRIES` times. It runs the seller's clock only while a try is out, from
  * when it leaves the limiter to its ResponseAuth, counts every try's cost (an answer after the audit was stopped too,
  * which then measures nothing), asks again after a 429, a 5xx, an answer without this request's ID or without a
- * verified ResponseAuth, and stops at any other 4xx. Never rejects: a failure is in `failureReason`.
+ * verified ResponseAuth, and stops at any other 4xx. After a 429 or a 5xx it waits first (`SIGNED_REQUEST_RETRY_WAIT`),
+ * so a seller that is busy for a moment gets that moment. Never rejects: a failure is in `failureReason`.
  */
 export async function sendSignedRequest<SellerRequest extends SignedSellerRequestV1>(
   input: SignedSellerRequestInput,
@@ -71,7 +107,17 @@ export async function sendSignedRequest<SellerRequest extends SignedSellerReques
   hooks: SignedRequestHooks<SellerRequest> = {},
 ): Promise<SellerRequest> {
   const timeoutMs = Math.min(input.requestTimeoutMs ?? SIGNED_REQUEST_TIMEOUT_MS, SIGNED_REQUEST_TIMEOUT_MS)
+  // Set by a try answered 429 or 5xx: how long to wait before the next one.
+  let waitMs = 0
   for (let attempt = 1; attempt <= SIGNED_REQUEST_TRIES; attempt += 1) {
+    if (waitMs > 0) {
+      const stops = [...(input.signal ? [input.signal] : []), ...(input.clock ? [input.clock.signal] : [])]
+      const stop = stops.length > 0 ? AbortSignal.any(stops) : undefined
+      await (input.wait ?? waitUnlessStopped)(waitMs, stop)
+      waitMs = 0
+      // The seller's clock stopped the audit during the wait: no try starts after it.
+      if (input.clock?.signal.aborted && !input.signal?.aborted) break
+    }
     if (input.signal?.aborted) {
       record.failureReason = 'the audit was stopped'
       break
@@ -115,6 +161,7 @@ export async function sendSignedRequest<SellerRequest extends SignedSellerReques
         record.failureReason = `the seller answered HTTP ${response.status}${detail ? `: ${detail}` : ''}`
         // Any other 4xx is the seller refusing the request; asking again gives the same answer.
         if (response.status !== 429 && response.status < 500) break
+        if (attempt < SIGNED_REQUEST_TRIES) waitMs = signedRetryWaitMs(response.headers.get('retry-after'))
         continue
       }
       if (response.headers.get('x-antseed-request-id') !== requestId) {
@@ -169,6 +216,19 @@ export async function askSellerSigned(
   const record: SignedSellerRequestV1 = { requestIds: [], statusCode: null, attemptCosts: [], responseAuth: null, failureReason: null }
   onRecord?.(record)
   return sendSignedRequest(input, new TextEncoder().encode(JSON.stringify(body)), record)
+}
+
+/**
+ * Why a request has no verified signed answer, by whether asking it again can change that: `refused` for an answer the
+ * seller gave and would give again (HTTP 4xx other than 429), `stopped` for an audit that stopped it, `may-pass` for
+ * a failure that can pass (a 429, a 5xx, a timeout or a lost connection, an answer without this request's ID or
+ * without a verified ResponseAuth); null when it has its verified signed answer.
+ */
+export function signedRequestFailure(request: SignedSellerRequestV1): 'refused' | 'stopped' | 'may-pass' | null {
+  if (signedExchange(request) !== null) return null
+  if (request.failureReason === 'the audit was stopped') return 'stopped'
+  const status = request.statusCode
+  return status !== null && status >= 400 && status < 500 && status !== 429 ? 'refused' : 'may-pass'
 }
 
 /**

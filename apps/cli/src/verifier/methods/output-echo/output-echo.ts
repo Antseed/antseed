@@ -3,9 +3,12 @@ import { isSafeProbe } from '@antseed/node/payments'
 import { isRecord, outputCheckRequestBody, readOutput, requestCarriesPrompt, type OutputReadingV1, type OutputRequestThinking } from '../shared/output-usage.js'
 import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from '../../proxy-evidence.js'
 import {
+  SIGNED_REQUEST_TRIES,
   askSellerSigned,
   assertRequestIdentities,
   signedExchange,
+  signedRequestFailure,
+  waitUnlessStopped,
   type SignedSellerRequestInput,
   type SignedSellerRequestV1,
 } from '../shared/signed-seller-request.js'
@@ -13,7 +16,7 @@ import { generateTokenizerProbe } from '../tokens/tokenizer-precheck.js'
 import { peerComparisonKey } from '../../utils.js'
 
 /**
- * The echo check, rule `output-echo-v1`: does a seller bill the output tokens the model wrote?
+ * The echo check (rules `output-echo-v1` to `-v3`): does a seller bill the output tokens the model wrote?
  *
  * The seller repeats a short and a long text word for word, in three rounds. The output tokens it signs are
  * compared with this epoch's reference for the same texts. Two findings are judged apart, each with its own
@@ -34,7 +37,7 @@ import { peerComparisonKey } from '../../utils.js'
  * the implementation: honest 0 flags; a 20% over-bill flagged in every decided check.
  */
 export interface OutputEchoRule {
-  id: 'output-echo-v1' | 'output-echo-v2'
+  id: 'output-echo-v1' | 'output-echo-v2' | 'output-echo-v3'
   /** Rounds of one short and one long text. */
   rounds: number
   /** Tokens within which two counts of one text are the same (a seller's two asks; a crowd vote's two texts). */
@@ -72,6 +75,12 @@ export interface OutputEchoRule {
   offsetCounts: boolean
   /** The same for any finding of a model counted on its visible answer (`visible` mode). */
   visibleCounts: boolean
+  /**
+   * An ask of the audited seller with no signed answer after a failure that can pass (a timeout, a 429, a 5xx, no
+   * ResponseAuth) is asked once more after `waitMs`, before its round is judged (`output-echo-v3` on). A refusal, a
+   * changed text or a reply that shows reasoning is an answer and is not asked again. The crowd's votes are not.
+   */
+  askAgain?: { waitMs: number }
 }
 
 /**
@@ -105,9 +114,22 @@ export const OUTPUT_ECHO_RULE_V1: OutputEchoRule = Object.freeze({
  * every audited model's tokenizer, also with the reasoning a model counted on its visible answer writes before it.
  * The texts, the rounds and every margin are the first rule's.
  */
-export const OUTPUT_ECHO_RULE: OutputEchoRule = Object.freeze({ ...OUTPUT_ECHO_RULE_V1, id: 'output-echo-v2', maxTokens: 2048 })
+export const OUTPUT_ECHO_RULE_V2: OutputEchoRule = Object.freeze({ ...OUTPUT_ECHO_RULE_V1, id: 'output-echo-v2', maxTokens: 2048 })
 
-const RULES: ReadonlyMap<string, OutputEchoRule> = new Map([OUTPUT_ECHO_RULE_V1, OUTPUT_ECHO_RULE].map((rule) => [rule.id, rule]))
+/**
+ * The rule of a new audit: the second rule with both its parts counted, the fixed amount and every finding of a model
+ * counted on its visible answer (`offsetCounts`, `visibleCounts`), and an ask with no signed answer asked once more
+ * (`askAgain`). The texts, the rounds, the reply limit and every margin are the second rule's.
+ */
+export const OUTPUT_ECHO_RULE: OutputEchoRule = Object.freeze({
+  ...OUTPUT_ECHO_RULE_V2,
+  id: 'output-echo-v3',
+  offsetCounts: true,
+  visibleCounts: true,
+  askAgain: Object.freeze({ waitMs: 5_000 }),
+})
+
+const RULES: ReadonlyMap<string, OutputEchoRule> = new Map([OUTPUT_ECHO_RULE_V1, OUTPUT_ECHO_RULE_V2, OUTPUT_ECHO_RULE].map((rule) => [rule.id, rule]))
 
 /** The rule stored evidence was judged by; undefined for an id this CLI does not know. */
 export function outputEchoRuleById(id: string): OutputEchoRule | undefined {
@@ -352,9 +374,15 @@ export async function prepareOutputEchoReference(input: {
 
 /** One ask of a text to the seller. */
 export interface EchoSellerAskV1 {
+  /** Every try of the ask, the first ask's and the one asked again (`askedAgain`) alike; the signed answer is the last try's. */
   request: SignedSellerRequestV1
   reading: OutputReadingV1 | null
   reply: EchoReplyV1
+  /**
+   * The ask was asked once more (`OutputEchoRule.askAgain`) because its first ask had no signed answer after a failure
+   * that can pass: that first ask's tries (the first of `request.requestIds`), its status and why it failed.
+   */
+  askedAgain?: { requestIds: string[]; statusCode: number | null; failureReason: string }
 }
 
 /** One round: the seller's asks of the short and the long text, and what they give. */
@@ -650,13 +678,61 @@ function readAsk(request: SignedSellerRequestV1, text: string, mode: EchoMode): 
   return { request, reading, reply }
 }
 
-/** Asks the seller one text and reads it. */
+/**
+ * Asks the seller one text and reads it. With `again` (the audited seller's own asks) and a rule that asks again, an ask
+ * with no signed answer after a failure that can pass is asked once more after the rule's wait, unless the audit
+ * stopped; the wait is off the seller's clock and ends with the audit.
+ */
 async function askEcho(
   input: SignedSellerRequestInput, text: string, mode: EchoMode, thinking: Parameters<typeof outputEchoRequestBody>[0]['thinking'], rule: OutputEchoRule,
   onRecord?: (record: SignedSellerRequestV1) => void,
+  again = false,
 ): Promise<EchoSellerAskV1> {
-  const request = await askSellerSigned(input, outputEchoRequestBody({ service: input.service, text, thinking: thinking ?? null, rule }), onRecord)
-  return readAsk(request, text, mode)
+  const body = outputEchoRequestBody({ service: input.service, text, thinking: thinking ?? null, rule })
+  const first = await askSellerSigned(input, body, onRecord)
+  const stops = [...(input.signal ? [input.signal] : []), ...(input.clock ? [input.clock.signal] : [])]
+  const stopped = () => stops.some((signal) => signal.aborted)
+  if (!again || !rule.askAgain || signedRequestFailure(first) !== 'may-pass' || stopped()) return readAsk(first, text, mode)
+  await (input.wait ?? waitUnlessStopped)(rule.askAgain.waitMs, stops.length > 0 ? AbortSignal.any(stops) : undefined)
+  if (stopped()) return readAsk(first, text, mode)
+  const second = await askSellerSigned(input, body, onRecord)
+  // Both asks' tries are paid for and counted, so they stay with the one ask, in order; the answer is the second's.
+  const request: SignedSellerRequestV1 = {
+    ...second,
+    requestIds: [...first.requestIds, ...second.requestIds],
+    attemptCosts: [...first.attemptCosts, ...second.attemptCosts],
+  }
+  return {
+    ...readAsk(request, text, mode),
+    askedAgain: { requestIds: [...first.requestIds], statusCode: first.statusCode, failureReason: first.failureReason ?? 'no signed answer' },
+  }
+}
+
+/**
+ * Whether a stored ask keeps to its rule's asks: a first ask of at most `SIGNED_REQUEST_TRIES` tries, and, only where
+ * the rule asks again (and never for a crowd vote), one more ask after a first ask that had no signed answer after a
+ * failure that can pass, whose tries come first and hold none of the signed answer's. Throws.
+ */
+function assertAskKept(ask: EchoSellerAskV1, rule: OutputEchoRule, mayAskAgain: boolean): void {
+  const ids = ask.request.requestIds
+  const again = ask.askedAgain
+  if (again === undefined) {
+    if (ids.length > SIGNED_REQUEST_TRIES) throw new Error('an echo ask has more tries than its rule allows')
+    return
+  }
+  if (!rule.askAgain || !mayAskAgain) throw new Error('an echo ask was asked again, which its rule does not allow here')
+  const firstIds = again.requestIds
+  if (!Array.isArray(firstIds) || firstIds.length === 0 || firstIds.length > SIGNED_REQUEST_TRIES || ids.length <= firstIds.length
+    || ids.length - firstIds.length > SIGNED_REQUEST_TRIES || firstIds.some((id, index) => ids[index] !== id)) {
+    throw new Error('an echo ask asked again does not store its first ask\'s tries first')
+  }
+  const signedId = ask.request.responseAuth?.requestId
+  if (typeof signedId === 'string' && firstIds.includes(signedId)) throw new Error('an echo ask asked again keeps its first ask\'s answer')
+  // The first ask had no signed answer, for a failure that can pass: not a refusal, not a stop.
+  const first: SignedSellerRequestV1 = { requestIds: firstIds, statusCode: again.statusCode ?? null, attemptCosts: [], responseAuth: null, failureReason: again.failureReason }
+  if (typeof again.failureReason !== 'string' || signedRequestFailure(first) !== 'may-pass') {
+    throw new Error('an echo ask was asked again after a failure that cannot pass')
+  }
 }
 
 function referenceView(reference: OutputEchoReferenceV1): OutputEchoV1['reference'] {
@@ -698,7 +774,8 @@ export function stoppedEcho(
 
 /**
  * Runs the echo check on one seller. A round is asked once, and again when it is over (always twice in `visible`
- * mode, and every text twice for a fixed-amount candidate). The crowd is asked only when the seller could be
+ * mode, and every text twice for a fixed-amount candidate). Under a rule that asks again, an ask with no signed answer
+ * after a failure that can pass is asked once more first (`askEcho`). The crowd is asked only when the seller could be
  * flagged. Nothing is decided once the audit has stopped. Never rejects.
  */
 export async function runOutputEcho(input: SignedSellerRequestInput & {
@@ -725,13 +802,13 @@ export async function runOutputEcho(input: SignedSellerRequestInput & {
     short, long, reference: { short: view[index]!.short.count, long: view[index]!.long.count }, referenceReasoning: referenceReasoning[index]!, mode, rule,
   })
   for (const [index, texts] of view.entries()) {
-    const short = [await askEcho(input, texts.short.text, mode, input.thinking, rule)]
-    const long = [await askEcho(input, texts.long.text, mode, input.thinking, rule)]
+    const short = [await askEcho(input, texts.short.text, mode, input.thinking, rule, undefined, true)]
+    const long = [await askEcho(input, texts.long.text, mode, input.thinking, rule, undefined, true)]
     let judged = judgeRound(index, short, long)
     const firstGrowth = judged.growths[0] ?? null
     if (firstGrowth !== null && (mode === 'visible' || firstGrowth > judged.tolerance)) {
-      short.push(await askEcho(input, texts.short.text, mode, input.thinking, rule))
-      long.push(await askEcho(input, texts.long.text, mode, input.thinking, rule))
+      short.push(await askEcho(input, texts.short.text, mode, input.thinking, rule, undefined, true))
+      long.push(await askEcho(input, texts.long.text, mode, input.thinking, rule, undefined, true))
       judged = judgeRound(index, short, long)
     }
     rounds.push({ short, long, ...judged })
@@ -756,8 +833,8 @@ export async function runOutputEcho(input: SignedSellerRequestInput & {
       if (round.short.length >= 2 && round.long.length >= 2) continue
       if (spare?.aborted) break
       round.repeats = {
-        short: await askEcho(extraInput, view[index]!.short.text, mode, input.thinking, rule),
-        long: await askEcho(extraInput, view[index]!.long.text, mode, input.thinking, rule),
+        short: await askEcho(extraInput, view[index]!.short.text, mode, input.thinking, rule, undefined, true),
+        long: await askEcho(extraInput, view[index]!.long.text, mode, input.thinking, rule, undefined, true),
       }
     }
     judged = judge()
@@ -846,6 +923,7 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
     const repeats = round.repeats ? [[[round.repeats.short], texts.short.text], [[round.repeats.long], texts.long.text]] as const : []
     for (const [asks, text] of [[round.short, texts.short.text], [round.long, texts.long.text], ...repeats] as const) {
       for (const ask of asks) {
+        assertAskKept(ask, rule, true)
         reread(ask, text)
         signedBy(ask, auditedPeerId, 'the audited seller')
       }
@@ -861,6 +939,8 @@ export function validateOutputEcho(record: OutputEchoV1, auditedPeerId?: string)
     for (const vote of record.crowd.votes) {
       if (typeof vote.peerId !== 'string' || peers.has(peerKey(vote.peerId))) throw new Error('an echo crowd vote is the audited seller\'s, or a second vote of one seller')
       peers.add(peerKey(vote.peerId))
+      assertAskKept(vote.short, rule, false)
+      assertAskKept(vote.long, rule, false)
       const short = reread(vote.short, first.short.text)
       const long = reread(vote.long, first.long.text)
       signedBy(vote.short, vote.peerId, 'a crowd seller')
@@ -999,6 +1079,8 @@ export function createOutputEchoScreen<Settings>(input: {
   referenceTimeLimitMs?: number
   /** Told the reference record once it is prepared (the run writes it beside the model's audits). */
   onReady?: (reference: OutputEchoReferenceV1) => void
+  /** The waits between asks (`SignedSellerRequestInput.wait`); tests pass a fake clock. */
+  wait?: SignedSellerRequestInput['wait']
 }): OutputEchoScreen<Settings> {
   const rule = input.rule ?? OUTPUT_ECHO_RULE
   let prepared: Promise<OutputEchoReferenceV1> | null = null
@@ -1026,6 +1108,7 @@ export function createOutputEchoScreen<Settings>(input: {
     limiter: input.limiter,
     ...(input.requestTimeoutMs !== undefined ? { requestTimeoutMs: input.requestTimeoutMs } : {}),
     ...(input.fetchFn ? { fetchFn: input.fetchFn } : {}),
+    ...(input.wait ? { wait: input.wait } : {}),
     ...(signal ? { signal } : {}),
   })
   return {

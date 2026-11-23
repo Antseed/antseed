@@ -91,17 +91,17 @@
    "asks": [{"cap":24,"billed":900,"measured":853,"class":"cap-ignored"},{"cap":24,"billed":900,"measured":852,"class":"cap-ignored"}]
   },
   "outputEcho": {
-   "rule": "output-echo-v2",
+   "rule": "output-echo-v3",
    "outcome": "pass",
    "flag": null,
    "growth": "pass",
-   "fixedAmount": "inconclusive",
-   "reason": "growth: the seller bills the model's growth; fixed amount: pass, stored … (126 characters, sha256 87b257ba148432d4)",
+   "fixedAmount": "pass",
+   "reason": "growth: the seller bills the model's growth; fixed amount: the seller adds 0 tokens or fewer",
    "growths": [[0],[0],[0]],
    "offset": 0
   },
   "flips": {
-   "rule": "flips-v2",
+   "rule": "flips-v3",
    "model": "deepseek-v4-pro",
    "stage": "first",
    "outcome": "pass",
@@ -116,10 +116,10 @@
   "createdAt": "2026-10-07T00:00:00.000Z",
   "evidenceLevel": "proxy-observation-with-verified-response-auth-no-payment-evidence",
   "exchanges": [{"record":"exchange-226f0dfcbaa561da"},{"record":"exchange-ace38a84b86af79b"},{"record":"exchange-2a6d6880d2cc5494"}],
-  "flips": {"record":"flips-273ec7428a70bd33"},
+  "flips": {"record":"flips-889d5c338e050cd5"},
   "kind": "antseed-buyer-proxy-kbf-audit",
   "outputCap": {"record":"outputCap-61ed6642fddef78e"},
-  "outputEcho": {"record":"outputEcho-36089cee20e30f3f"},
+  "outputEcho": {"record":"outputEcho-681541ad37c4100b"},
   "reference": {"record":"reference-723f83ee13c8a30f"},
   "result": {
    "cost": {"estimatedCostUsd":0.01081,"inputTokens":4900,"missingCostExchangeCount":0,"outputTokens":4401,"pricedExchangeCount":35,"totalTokens":9301},
@@ -140,7 +140,7 @@
   "tokenizerPrecheck": {"record":"tokenizerPrecheck-9da9546fca53482b"},
   "version": 1
  },
- "read": {"flaggedBy":["output-cap"],"passedBy":["tokens","output-echo","flips","kbf"],"submit":"accepted"},
+ "read": {"flaggedBy":["output-cap"],"passedBy":["tokens","output-echo","output-offset","flips","kbf"],"submit":"accepted"},
  "files": [
   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/README.md",
   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/evidence.json",

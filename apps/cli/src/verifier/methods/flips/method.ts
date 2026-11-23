@@ -1,6 +1,6 @@
 import { outcome, stored, type ReadingRules, type RecordCheck, type SellerAuditStart } from '../../audit-method.js'
 import {
-  FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE, describeFlipsFlag, flipsFingerprint, flipsPaidRequests, isFlipsRecord, isProbeDraw, summarizeFlips,
+  FLIPS_AUDITOR_FAILURE, FLIPS_WAITING_FOR_REFERENCE, describeFlipsFlag, flipsFingerprint, flipsPaidRequests, flipsSellerSlots, isFlipsRecord, isProbeDraw, summarizeFlips,
   validateFlips,
   type FlipsStage, type FlipsV1,
 } from './flips.js'
@@ -64,7 +64,7 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
     const auditor = context.audit?.auditor
     if (auditor !== undefined && auditor.toLowerCase() !== record.draw.auditor.toLowerCase()) throw new Error('the randomness check was drawn for another auditor')
   },
-  requests: (record) => record.pairs.flatMap((pair) => pair.seller.map((slot) => stored('audited', slot.request))),
+  requests: (record) => flipsSellerSlots(record).map((slot) => stored('audited', slot.request)),
   paid: flipsPaidRequests,
   describeFlag: describeFlipsFlag,
   // A FLIPS flag is named by its label alone in a report, and FLIPS adds nothing to the run's line, where its flag is
@@ -128,8 +128,8 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
   toggle: { key: 'flips', pinned: true },
   fingerprint: () => ({
     ...flipsFingerprint(),
-    // Counting by a record's own rule: a flips-v1 summary never counts under this build, a flips-v2 one does.
-    countsByRule: ['flips-v1', FLIPS_RULE.id, 'flips-unknown'].map((rule) => FLIPS_CHECK.summaryCounts!({ rule, model: 'claude-opus-5.5', outcome: 'flag' })),
+    // Counting by a record's own rule: a flips-v1 summary never counts under this build, a flips-v2 or v3 one does.
+    countsByRule: ['flips-v1', 'flips-v2', FLIPS_RULE.id, 'flips-unknown'].map((rule) => FLIPS_CHECK.summaryCounts!({ rule, model: 'claude-opus-5.5', outcome: 'flag' })),
   }),
   // The run's status file (`flips-run.ts`) says why the stage's reference gave FLIPS nothing to judge on, or why there
   // was no FLIPS at all this run.
