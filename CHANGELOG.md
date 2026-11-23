@@ -10,6 +10,30 @@ This project uses selective package publishing. Each release entry lists the pub
 
 - Desktop Studio, a beta feature that is off until it is turned on in **Settings → Preview**, edits a film as a storyboard of titled shots, each an anchor image, with a clip between each pair, kept in a local project. The video sits above the storyboard; there is no settings panel: select a shot or a clip and tell the project agent in chat what it should be, and the selection travels with the message as a chip naming the exact item, file and moment. Every clip ends in a Cut or an Extend that the producer chooses on the marker after it, a clip's length is dragged on the storyboard, and the + at the end continues the scene or starts a new one. Trimming a clip sets its new end frame, which can become the next shot; replacing an image offers to remake the clips made from it; earlier images and clips stay in the project library and can be put back. The agent plans shots, renames them and changes lengths through edits the producer can undo, and quotes every image and clip before anything is paid for. Export joins the clips on the computer. Trimming and export use ffmpeg and ffprobe, which the desktop does not include: without them on the computer, **End clip here** and **Export** are off and say so. Storyboards made before open in the editor with their titles kept and their clips kept as Cuts. Scenes show as named bands on the storyboard. A clip that no longer fits (made from a replaced image, or made for a Cut where the film now extends, including one delivered after its images changed while it was being made) is greyed with the reason and an Update button that asks the agent for a new one, quoted first. The film plays from clip to clip without a gap, a message sent with a selection keeps its chip in the chat, and a project's chat opened from the sidebar opens in Studio. A chip removed from the message stays off until a shot or a clip is selected again, and an edit or a delivery that would grow a project's track past what the app can read back is refused with a note, leaving the track as it was.
 
+## 2026-11-23 — CLI 0.1.258, Node 0.2.190, Desktop 0.2.93
+
+### Packages
+
+- `@antseed/cli@0.1.258`
+- `@antseed/node@0.2.190`
+- `@antseed/api-adapter@0.1.67`
+- `@antseed/buyer-core@0.1.54`
+- `@antseed/web-sdk@0.1.48`
+- `@antseed/provider-alibaba-video@0.1.15`
+- `@antseed/provider-fal-image@0.1.11`
+- `@antseed/provider-fal-video@0.1.27`
+- `@antseed/provider-venice-video@0.1.28`
+- `@antseed/payments@0.1.117`
+- `@antseed/ants@0.1.75`
+
+### Desktop
+
+- `@antseed/desktop@0.2.93`
+
+### Fixed
+
+- Buyers (gateway/CLI): streamed answers from sellers that serve the Anthropic Messages format, requested in OpenAI Chat Completions or Responses format, now carry the seller's cache reads in the final usage chunk. Some Anthropic-compatible upstreams report input and cache-read tokens only in the closing `message_delta` event; those counts were dropped, so `prompt_tokens_details.cached_tokens` was missing and all input looked uncached. Non-streamed answers were not affected.
+
 ## 2026-11-22 — CLI 0.1.257, Desktop 0.2.92
 
 ### Packages
