@@ -27,7 +27,7 @@ use tokio::{
 
 use crate::{
     frames,
-    msg::{Done, Hello, Injected, PROTOCOL_VERSION, RequestReveal, RequestVerdict, RevealRequest, TagAnswer, TagOffer},
+    msg::{Done, Hello, Injected, MAX_INJECTED_HEAD_BYTES, PROTOCOL_VERSION, RequestReveal, RequestVerdict, RevealRequest, TagAnswer, TagOffer},
     ranges::{self, Placed, RECORD_OVERHEAD},
     records::{ALERT, ALLOWED_SUITES, APPLICATION_DATA, CHANGE_CIPHER_SPEC, HANDSHAKE, Record, RecordParser, SellerRecord, server_hello},
     session::{PeerSession, stop},
@@ -44,8 +44,6 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const REVEAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long the buyer may take over one step of a proof, unless Node sets another limit.
 const PROOF_TIMEOUT: Duration = Duration::from_secs(120);
-/// The longest request head the seller writes.
-const MAX_HEAD: usize = 8192;
 /// The longest request the seller holds, unless Node sets another limit.
 const DEFAULT_MAX_REQUEST: usize = 32 << 20;
 /// The longest answer the seller keeps, unless Node sets another limit.
@@ -294,7 +292,7 @@ pub async fn run(stdio: frames::Stdio) -> Result<()> {
     let head = B64.decode(start["head"].as_str().ok_or_else(|| anyhow!("head missing"))?).context("head")?;
     // Tests only: extra trusted roots (PEM) on top of the Mozilla set.
     let extra_roots = start["extraRootsPem"].as_str().map(str::to_string);
-    if head.is_empty() || head.len() > MAX_HEAD {
+    if head.is_empty() || head.len() > MAX_INJECTED_HEAD_BYTES {
         bail!("request head length {} is out of range", head.len());
     }
     let max_request = start["maxRequestBytes"].as_u64().map_or(DEFAULT_MAX_REQUEST, |n| n as usize);

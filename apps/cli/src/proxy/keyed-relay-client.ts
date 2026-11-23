@@ -76,6 +76,7 @@ export function keyedRequestBodyFromFields(parsed: ReturnType<typeof keyedReques
 export class KeyedPlaintextSocket extends Duplex {
   private _head: Buffer | null = Buffer.alloc(0)
   private _received: Buffer[] = []
+  private _receivedLength = 0
   private _written = 0
   /** Bytes of the header block this socket forwarded (its headers and the blank line); -1 until known. */
   headerLength = -1
@@ -87,6 +88,7 @@ export class KeyedPlaintextSocket extends Duplex {
     super()
     _sidecar.on('app', (data: Buffer) => {
       this._received.push(data)
+      this._receivedLength += data.length
       this.push(data)
     })
     let ended = false
@@ -103,6 +105,11 @@ export class KeyedPlaintextSocket extends Duplex {
   /** The raw response so far: status line, headers, body with its framing. */
   get received(): Buffer {
     return Buffer.concat(this._received)
+  }
+
+  /** How many bytes of it arrived, without joining them. */
+  get receivedLength(): number {
+    return this._receivedLength
   }
 
   override _read(): void {}

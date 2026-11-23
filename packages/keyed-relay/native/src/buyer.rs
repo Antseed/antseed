@@ -28,7 +28,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     frames,
-    msg::{Done, Hello, Injected, PROTOCOL_VERSION, RequestReveal, RequestVerdict, RevealRequest, TagAnswer, TagOffer},
+    msg::{Done, Hello, Injected, MAX_INJECTED_HEAD_BYTES, PROTOCOL_VERSION, RequestReveal, RequestVerdict, RevealRequest, TagAnswer, TagOffer},
     ranges::{self, Triple},
     records::{ALERT, ALLOWED_SUITES, APPLICATION_DATA, Direction, MAX_PLAINTEXT, RecordParser},
     session::{PeerSession, TlsStream, stop},
@@ -175,7 +175,7 @@ pub async fn run(stdio: frames::Stdio) -> Result<()> {
     if hello.version != PROTOCOL_VERSION {
         bail!("seller speaks keyed-relay protocol {}, this buyer {}", hello.version, PROTOCOL_VERSION);
     }
-    if hello.injected_len == 0 || hello.injected_len > 8192 {
+    if hello.injected_len == 0 || hello.injected_len as usize > MAX_INJECTED_HEAD_BYTES {
         bail!("seller record length {} is out of range", hello.injected_len);
     }
 

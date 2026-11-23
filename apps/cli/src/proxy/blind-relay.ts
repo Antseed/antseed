@@ -550,7 +550,7 @@ export class BlindRelayClient {
         clearTimeout(running)
         // An answer that timed out, broke or was given up: priced by what arrived of it, as the seller bills what it
         // relayed. Before the stream closes, which is when the seller bills it.
-        if (unanswered) recordUnanswered(socket.received.length)
+        if (unanswered) recordUnanswered(socket.receivedLength)
       })
     } finally {
       if (!revealing) close()

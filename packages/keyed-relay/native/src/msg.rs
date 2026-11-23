@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 /// Bumped on any change to the sidecar protocol.
 pub const PROTOCOL_VERSION: u32 = 3;
 
+/// The longest request head the seller writes, and the longest the buyer accepts in `Hello`.
+pub const MAX_INJECTED_HEAD_BYTES: usize = 8192;
+
 /// Seller → buyer, first: the protocol version and the length of the seller's record.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Hello {
