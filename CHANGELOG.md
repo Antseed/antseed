@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Node: the incremental discovery sweep (`findAllExhaustive` with a progress callback, used by buyers' background discovery) fetches each endpoint's metadata once per sweep instead of again for every topic that lists it, and looks up the next DHT topic while metadata is still being fetched instead of waiting for each topic's slowest endpoint. Sweeps finish sooner and make far fewer metadata requests.
+
 ## 2026-11-23 — CLI 0.1.258, Node 0.2.190, Desktop 0.2.93
 
 ### Packages
