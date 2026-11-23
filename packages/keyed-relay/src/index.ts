@@ -91,6 +91,8 @@ export interface KeyedRelaySellerStart {
   responseTimeoutMs?: number;
   /** The longest answer the seller keeps for the reveal that ends the session, and so the longest it relays; 64 MiB if absent. */
   maxResponseBytes?: number;
+  /** How long the buyer may take over one step of a proof (preprocessing, the key proof, each reveal); 2 minutes if absent. */
+  proofTimeoutMs?: number;
   /** Tests only: an extra trusted root certificate (PEM). */
   extraRootsPem?: string;
 }
@@ -199,6 +201,7 @@ export class KeyedRelayProcess extends EventEmitter {
       ...(config.maxRequestBytes !== undefined ? { maxRequestBytes: config.maxRequestBytes } : {}),
       ...(config.responseTimeoutMs !== undefined ? { responseTimeoutMs: config.responseTimeoutMs } : {}),
       ...(config.maxResponseBytes !== undefined ? { maxResponseBytes: config.maxResponseBytes } : {}),
+      ...(config.proofTimeoutMs !== undefined ? { proofTimeoutMs: config.proofTimeoutMs } : {}),
       ...(config.extraRootsPem ? { extraRootsPem: config.extraRootsPem } : {}),
     });
   }

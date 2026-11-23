@@ -237,6 +237,120 @@ test('an upstream that never ends its answer is cut off at the response deadline
   }
 });
 
+const HEAD = 'POST /x HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer k\r\nConnection: close\r\n';
+const REQUEST = 'Content-Length: 2\r\n\r\n{}';
+
+/**
+ * A seller and a buyer sidecar on one upstream. The buyer's bytes reach the
+ * seller through a gate that can close: a buyer that stays connected and
+ * sends no more of a proof.
+ */
+function gatedPair(port, sellerOptions = {}) {
+  const seller = KeyedRelayProcess.spawn('seller', binary);
+  const buyer = KeyedRelayProcess.spawn('buyer', binary);
+  let passed = 0;
+  let limit = Infinity;
+  seller.peer.pipe(buyer.peer);
+  buyer.peer.on('data', (data) => {
+    const part = data.subarray(0, Math.max(0, Math.min(data.length, limit - passed)));
+    passed += part.length;
+    if (part.length > 0) seller.peer.write(part);
+  });
+  const events = [];
+  seller.on('event', (event) => events.push(event.type));
+  const exited = new Promise((resolve) => seller.once('exit', resolve));
+  seller.startSeller({ host: '127.0.0.1', port, serverName: 'localhost', extraRootsPem: CA, head: Buffer.from(HEAD), ...sellerOptions });
+  buyer.startBuyer({ serverName: 'localhost', extraRootsPem: CA });
+  return { seller, buyer, events, exited, passed: () => passed, stopAfter: (bytes) => { limit = passed + bytes; } };
+}
+
+/** One relayed request from start to end. `at` is called as the buyer starts each reveal and as the seller has it. */
+async function relayOnce({ seller, buyer }, at = {}) {
+  await buyer.waitFor('ready', 60_000);
+  const shown = seller.waitFor('request', 30_000);
+  buyer.writeApp(Buffer.from(REQUEST));
+  buyer.revealRequest(REQUEST.length, [[0, 21], [REQUEST.length - 2, 2]]);
+  at.requestReveal?.();
+  await shown;
+  at.requestShown?.();
+  let response = Buffer.alloc(0);
+  buyer.on('app', (data) => { response = Buffer.concat([response, data]); });
+  seller.admit();
+  await buyer.waitFor('responseEnd', 30_000);
+  const revealed = seller.waitFor('revealed', 30_000);
+  buyer.reveal([[0, response.indexOf('\r\n')]]);
+  at.reveal?.();
+  await revealed;
+  at.revealed?.();
+}
+
+const closeUpstream = (server) => { server.close(); server.closeAllConnections?.(); };
+
+test('a buyer that takes no part in the proof ends the seller\'s session at the proof deadline', { skip: !binary && 'native sidecar not built' }, async () => {
+  const { server, port } = await startUpstream();
+  const seller = KeyedRelayProcess.spawn('seller', binary);
+  try {
+    // Connected, and silent: nothing is ever written to the seller's peer stream.
+    seller.peer.resume();
+    const exited = new Promise((resolve) => seller.once('exit', resolve));
+    seller.startSeller({ host: '127.0.0.1', port, serverName: 'localhost', extraRootsPem: CA, head: Buffer.from(HEAD), proofTimeoutMs: 1_000 });
+    const exit = await Promise.race([exited, new Promise((resolve) => setTimeout(() => resolve(null), 5_000))]);
+    assert.ok(exit, 'the seller sidecar was still running 5 s after a 1 s proof deadline');
+    assert.match(exit.stderr, /the buyer did not finish the preprocessing in time/);
+  } finally {
+    seller.kill();
+    closeUpstream(server);
+  }
+});
+
+test('a buyer that stops in the middle of a proof ends the seller\'s session at the proof deadline', { skip: !binary && 'native sidecar not built' }, async () => {
+  // How many bytes the buyer sends for each reveal, from a session that runs to its end.
+  const sizes = {};
+  {
+    const { server, port } = await startUpstream();
+    const pair = gatedPair(port);
+    try {
+      let mark = 0;
+      await relayOnce(pair, {
+        requestReveal: () => { mark = pair.passed(); },
+        requestShown: () => { sizes.request = pair.passed() - mark; },
+        reveal: () => { mark = pair.passed(); },
+        revealed: () => { sizes.response = pair.passed() - mark; },
+      });
+    } finally {
+      pair.seller.kill();
+      pair.buyer.kill();
+      closeUpstream(server);
+    }
+  }
+  assert.ok(sizes.request > 64 && sizes.response > 64, `the buyer sent ${sizes.request} and ${sizes.response} bytes for its reveals`);
+
+  const phases = [
+    // The upstream has the buyer's handshake: the key proof is next, and none of it arrives.
+    { step: 'key proof', stop: (pair, server) => server.once('secureConnection', () => pair.stopAfter(0)) },
+    // The buyer's request and what it reveals of it arrive, with half of the proof.
+    { step: 'request reveal', stop: () => {}, at: (pair) => ({ requestReveal: () => pair.stopAfter(Math.floor(sizes.request / 2)) }) },
+    { step: 'reveal of the answer', stop: () => {}, at: (pair) => ({ reveal: () => pair.stopAfter(Math.floor(sizes.response / 2)) }), billed: true },
+  ];
+  for (const phase of phases) {
+    const { server, port } = await startUpstream();
+    const pair = gatedPair(port, { proofTimeoutMs: 1_000 });
+    try {
+      phase.stop(pair, server);
+      relayOnce(pair, phase.at?.(pair)).catch(() => {});
+      const exit = await Promise.race([pair.exited, new Promise((resolve) => setTimeout(() => resolve(null), 8_000))]);
+      assert.ok(exit, `${phase.step}: the seller sidecar was still running 8 s into a session with a 1 s proof deadline (it got as far as ${pair.events.at(-1) ?? 'nothing'})`);
+      assert.match(exit.stderr, new RegExp(`the buyer did not finish the ${phase.step} in time`));
+      // An answer that was relayed is reported before the session ends, so it is still billed.
+      assert.equal(pair.events.includes('responseEnd'), phase.billed === true, `${phase.step}: the seller reported ${pair.events.join(', ')}`);
+    } finally {
+      pair.seller.kill();
+      pair.buyer.kill();
+      closeUpstream(server);
+    }
+  }
+});
+
 test('an answer longer than the seller keeps is cut off at that length, and what was relayed is reported', { skip: !binary && 'native sidecar not built' }, async () => {
   const { server, port } = await startUpstream({ endless: true });
   const seller = KeyedRelayProcess.spawn('seller', binary);

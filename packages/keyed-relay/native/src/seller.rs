@@ -42,6 +42,8 @@ const ADMIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the upstream may take to end its answer, unless Node sets another limit.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const REVEAL_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long the buyer may take over one step of a proof, unless Node sets another limit.
+const PROOF_TIMEOUT: Duration = Duration::from_secs(120);
 /// The longest request head the seller writes.
 const MAX_HEAD: usize = 8192;
 /// The longest request the seller holds, unless Node sets another limit.
@@ -276,6 +278,13 @@ struct Shared {
     bytes_down: u64,
 }
 
+/// One step of a proof, under a deadline. Each step waits on the buyer's part
+/// in it, and a buyer that stays connected and sends no more of it would hold
+/// the session, and what the seller keeps for it, open.
+async fn proof_step<T>(limit: Duration, step: &str, work: impl Future<Output = T>) -> Result<T> {
+    tokio::time::timeout(limit, work).await.map_err(|_| anyhow!("the buyer did not finish the {step} in time"))
+}
+
 pub async fn run(stdio: frames::Stdio) -> Result<()> {
     let frames::Stdio { mut ctl, app: _, out, peer } = stdio;
     let start = ctl.recv().await.ok_or_else(|| anyhow!("no start message"))?;
@@ -291,12 +300,13 @@ pub async fn run(stdio: frames::Stdio) -> Result<()> {
     let max_request = start["maxRequestBytes"].as_u64().map_or(DEFAULT_MAX_REQUEST, |n| n as usize);
     let response_timeout = start["responseTimeoutMs"].as_u64().map_or(RESPONSE_TIMEOUT, Duration::from_millis);
     let max_response = start["maxResponseBytes"].as_u64().map_or(DEFAULT_MAX_RESPONSE, |n| n as usize);
+    let proof_timeout = start["proofTimeoutMs"].as_u64().map_or(PROOF_TIMEOUT, Duration::from_millis);
 
     let (mut session, tls) = PeerSession::open(peer)?;
     session.ctx.io_mut().send(Hello { version: PROTOCOL_VERSION, injected_len: head.len() as u32 }).await?;
     let mut vm = verifier_vm();
     let mut proof = KeyProof::alloc(&mut vm, false, head.len())?;
-    vm.flush(&mut session.ctx).await.context("preprocessing")?;
+    proof_step(proof_timeout, "preprocessing", vm.flush(&mut session.ctx)).await?.context("preprocessing")?;
 
     let upstream = TcpStream::connect((host.as_str(), port)).await.with_context(|| format!("connect {host}:{port}"))?;
     upstream.set_nodelay(true)?;
@@ -439,7 +449,7 @@ pub async fn run(stdio: frames::Stdio) -> Result<()> {
         .verify(&cert_verifier(extra_roots.as_deref())?, now(), &binding.server_ephemeral_key, &ServerName::Dns(dns))
         .map_err(|error| anyhow!("the upstream's certificate or signature did not verify: {error}"))?;
 
-    let keystream = proof.prove(&mut vm, &mut session.ctx, None, &transcript).await.context("key proof")?;
+    let keystream = proof_step(proof_timeout, "key proof", proof.prove(&mut vm, &mut session.ctx, None, &transcript)).await?.context("key proof")?;
     let record = SellerRecord::new(INJECTED_SEQ, &head, &keystream)?;
     // The record's tag, without the GHASH key: the buyer answers the offer
     // with its share and the tag mask, and learns nothing of the record.
@@ -475,7 +485,9 @@ pub async fn run(stdio: frames::Stdio) -> Result<()> {
     if request_ranges.is_empty() {
         bail!("the buyer revealed nothing of its request");
     }
-    let keystreams = proof.reveal(&mut vm, &mut session.ctx, Side::Client, &request_ranges).await.context("request reveal")?;
+    let keystreams = proof_step(proof_timeout, "request reveal", proof.reveal(&mut vm, &mut session.ctx, Side::Client, &request_ranges))
+        .await?
+        .context("request reveal")?;
     out.ctl(json!({ "type": "request", "length": length, "ranges": shown(&placed, keystreams) }));
     drop(request);
 
@@ -561,7 +573,10 @@ pub async fn run(stdio: frames::Stdio) -> Result<()> {
         .map_err(|_| anyhow!("no reveal from the buyer"))?
         .context("the buyer left without revealing the answer's usage")?;
     let (response_ranges, placed) = ranges::place(&responses, &request.ranges)?;
-    let keystreams = proof.reveal(&mut vm, &mut session.ctx, Side::Server, &response_ranges).await.context("reveal")?;
+    // The answer's length is reported by now: a buyer that stops here is billed for what was relayed.
+    let keystreams = proof_step(proof_timeout, "reveal of the answer", proof.reveal(&mut vm, &mut session.ctx, Side::Server, &response_ranges))
+        .await?
+        .context("reveal")?;
     out.ctl(json!({ "type": "revealed", "length": length, "ranges": shown(&placed, keystreams) }));
     session.ctx.io_mut().send(Done).await?;
     session.close().await;
