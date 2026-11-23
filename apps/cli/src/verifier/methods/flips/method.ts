@@ -133,7 +133,8 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
   }),
   // The run's status file (`flips-run.ts`) says why the stage's reference gave FLIPS nothing to judge on, or why there
   // was no FLIPS at all this run.
-  whyNoRecord: async (read, audit) => flipsWithoutRecord(await read('flips-status.json'), audit.confirming ? 'confirm' : 'first'),
+  // The stage is the audit's own (`flipsStageOf`): a confirmation of another test asks FLIPS as a first look.
+  whyNoRecord: async (read, audit) => flipsWithoutRecord(await read('flips-status.json'), flipsStageOf(audit)),
   // Its key, its probe and its own limiters once per run, then each model's screen (`flips-run.ts`).
   forRun: flipsForRun,
 }

@@ -1356,7 +1356,7 @@ export async function testsWithoutRecord(
     if (!check.whyNoRecord || evidence[check.slot] != null) continue
     let reason: string | null = null
     try {
-      reason = await check.whyNoRecord(read, { confirming: evidence.confirming !== undefined })
+      reason = await check.whyNoRecord(read, { confirming: evidence.confirming?.checks ?? [] })
     } catch {
       reason = null
     }

@@ -276,8 +276,9 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
    * audits (`read` gives one by name, null when it is not there): the test did not apply to the model, or its
    * reference gave it nothing to judge on. Null when the test wrote no such reason. For the published result of a
    * seller without a record of the test (`ModelAuditSellerResultV1.noRecord`); a test that always keeps a record has none.
+   * `audit.confirming` are the tests the audit confirms, none on a first look: a test with stages reads its own stage from it.
    */
-  whyNoRecord?(read: (file: string) => Promise<unknown>, audit: { confirming: boolean }): Promise<string | null>
+  whyNoRecord?(read: (file: string) => Promise<unknown>, audit: { confirming: readonly AuditCheckId[] }): Promise<string | null>
   /**
    * The test in one run. Called once, before any model lane, and only when the test is switched on: it does the work
    * its models share (a key, limiters of its own) and gives what builds the test's own screen for one model, which the

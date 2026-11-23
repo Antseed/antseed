@@ -41,8 +41,16 @@ test('a test without a record names the reason its own reference wrote for the m
       { slot: 'outputEcho', reason: 'the reference did not echo cleanly (the reference\'s echo is not usable (not finished)), so the echo check does not apply to the model this run' },
       { slot: 'flips', reason: 'the reference answered 8 of its 80 requests after asking the rest again' },
     ])
-    // A confirmation reads the confirmation stage's reference.
+    // A confirmation of FLIPS reads the confirmation stage's reference.
     assert.deepEqual((await testsWithoutRecord(evidencePath, evidence({ confirming: { checks: ['flips'] } }))).find((entry) => entry.slot === 'flips'),
+      { slot: 'flips', reason: 'the confirmation\'s reference failed' })
+    // A confirmation of another test asks FLIPS as a first look, so it names the first stage's reference, also among
+    // several tests confirmed.
+    for (const checks of [['output-cap'], ['tokens', 'kbf']]) {
+      assert.deepEqual((await testsWithoutRecord(evidencePath, evidence({ confirming: { checks } }))).find((entry) => entry.slot === 'flips'),
+        { slot: 'flips', reason: 'the reference answered 8 of its 80 requests after asking the rest again' }, checks.join(' and '))
+    }
+    assert.deepEqual((await testsWithoutRecord(evidencePath, evidence({ confirming: { checks: ['output-cap', 'flips'] } }))).find((entry) => entry.slot === 'flips'),
       { slot: 'flips', reason: 'the confirmation\'s reference failed' })
     // A test that kept a record has no entry, whatever its reference file says.
     assert.deepEqual((await testsWithoutRecord(evidencePath, evidence({ outputCap: {}, flips: {} }))).map((entry) => entry.slot), ['outputEcho'])
