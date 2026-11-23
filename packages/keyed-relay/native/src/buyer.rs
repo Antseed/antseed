@@ -31,7 +31,7 @@ use crate::{
     msg::{Done, Hello, Injected, PROTOCOL_VERSION, RequestReveal, RequestVerdict, RevealRequest, TagAnswer, TagOffer},
     ranges::{self, Triple},
     records::{ALERT, ALLOWED_SUITES, APPLICATION_DATA, Direction, MAX_PLAINTEXT, RecordParser},
-    session::{PeerSession, TlsStream},
+    session::{PeerSession, TlsStream, stop},
     zk::{INJECTED_SEQ, KeyProof, RecordRange, Side, prover_vm},
 };
 
@@ -291,7 +291,8 @@ pub async fn run(stdio: frames::Stdio) -> Result<()> {
             }
         }
     }
-    writer.abort();
+    // Gone before the session closes: a stream dropped while the mux closes can cost a queued frame.
+    stop(writer).await;
     out.app(Vec::new());
     out.ctl(json!({ "type": "responseEnd", "length": length }));
 

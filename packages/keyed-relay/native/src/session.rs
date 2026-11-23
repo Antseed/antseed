@@ -91,3 +91,75 @@ impl PeerSession {
         let _ = tokio::time::timeout(Duration::from_secs(5), self.driver).await;
     }
 }
+
+/// Stops a task that holds one of a session's streams, and returns once the task is gone. A session is
+/// closed only after every such task has ended: a stream dropped on another thread while the mux closes
+/// can make the mux skip a frame that is still queued, and the peer never gets the session's last message.
+pub async fn stop<T>(task: JoinHandle<T>) {
+    task.abort();
+    let _ = task.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::{AsyncReadExt, AsyncWriteExt};
+    use serio::{SinkExt, stream::IoStreamExt};
+
+    use super::*;
+
+    /// One session in which the seller refuses the request: it stops the two tasks that relay the TLS
+    /// bytes, sends one last message and closes. Returns whether the buyer got that message.
+    async fn refused_session() -> bool {
+        let (a, b) = tokio::io::duplex(64 * 1024);
+        let (mut seller, tls) = PeerSession::open(a).unwrap();
+        let (mut buyer, _buyer_tls) = PeerSession::open(b).unwrap();
+        seller.ctx.io_mut().send(1u32).await.unwrap();
+        let first: u32 = buyer.ctx.io_mut().expect_next().await.unwrap();
+        assert_eq!(first, 1);
+
+        let (mut tls_read, mut tls_write) = tls.split();
+        tls_write.write_all(b"handshake").await.unwrap();
+        let up = tokio::spawn(async move {
+            let mut buf = [0u8; 64];
+            let _ = tls_read.read(&mut buf).await;
+            std::future::pending::<()>().await;
+        });
+        let down = tokio::spawn(async move {
+            let _held = tls_write;
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+
+        stop(up).await;
+        stop(down).await;
+        seller.ctx.io_mut().send(2u32).await.unwrap();
+        seller.close().await;
+        let last: Result<u32, _> = buyer.ctx.io_mut().expect_next().await;
+        last.ok() == Some(2)
+    }
+
+    /// The last message is the buyer's only word of why its request was refused, so it must arrive in
+    /// every session. Many sessions at once, as a busy seller has them: the loss this guards against
+    /// needs a stream dropped on one thread while the mux closes on another.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn the_last_message_before_a_close_arrives_when_the_relaying_tasks_were_stopped() {
+        let workers: usize = std::env::var("SESSION_CLOSE_WORKERS").ok().and_then(|n| n.parse().ok()).unwrap_or(16);
+        let rounds: usize = std::env::var("SESSION_CLOSE_ROUNDS").ok().and_then(|n| n.parse().ok()).unwrap_or(20_000);
+        let runs = (0..workers).map(|_| {
+            tokio::spawn(async move {
+                let mut lost = 0usize;
+                for _ in 0..rounds {
+                    if !refused_session().await {
+                        lost += 1;
+                    }
+                }
+                lost
+            })
+        });
+        let mut lost = 0usize;
+        for run in runs.collect::<Vec<_>>() {
+            lost += run.await.unwrap();
+        }
+        assert_eq!(lost, 0, "the last message was lost in {lost} of {} sessions", workers * rounds);
+    }
+}

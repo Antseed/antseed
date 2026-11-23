@@ -30,7 +30,7 @@ use crate::{
     msg::{Done, Hello, Injected, PROTOCOL_VERSION, RequestReveal, RequestVerdict, RevealRequest, TagAnswer, TagOffer},
     ranges::{self, Placed, RECORD_OVERHEAD},
     records::{ALERT, ALLOWED_SUITES, APPLICATION_DATA, CHANGE_CIPHER_SPEC, HANDSHAKE, Record, RecordParser, SellerRecord, server_hello},
-    session::PeerSession,
+    session::{PeerSession, stop},
     zk::{INJECTED_SEQ, KeyProof, Side, verifier_vm},
 };
 
@@ -510,8 +510,9 @@ pub async fn run(stdio: frames::Stdio) -> Result<()> {
     if let Some(reason) = refusal {
         // Nothing of the request ever reaches the upstream.
         shared.lock().await.request.shut();
-        up.abort();
-        down.abort();
+        // Both gone before the session closes, or the buyer may never get the verdict.
+        stop(up).await;
+        stop(down).await;
         session.ctx.io_mut().send(RequestVerdict { admitted: false, reason: reason.clone() }).await?;
         out.ctl(json!({ "type": "refused", "reason": reason }));
         session.close().await;
@@ -543,7 +544,10 @@ pub async fn run(stdio: frames::Stdio) -> Result<()> {
         ended = tokio::time::timeout(response_timeout, closed.wait_for(|done| *done)) => if ended.is_ok() { AnswerEnd::Upstream } else { AnswerEnd::Deadline },
         _ = &mut up => AnswerEnd::Buyer,
     };
-    up.abort();
+    if end != AnswerEnd::Buyer {
+        // Still waiting on the buyer: stopped, and gone before the session closes.
+        stop(up).await;
+    }
     if end != AnswerEnd::Upstream {
         // Still reading the upstream: stopped, so nothing waits on it.
         down.abort();
