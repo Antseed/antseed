@@ -58,6 +58,8 @@ function spm(state: { session: boolean; accepted?: bigint; spent?: bigint; reser
     getAcceptedCumulative: vi.fn(() => state.accepted ?? 0n),
     getCumulativeSpend: vi.fn(() => state.spent ?? 0n),
     getPaymentRequirements: vi.fn(() => ({ minBudgetPerRequest: '10000', suggestedAmount: '100000', requestId: 'r', ...state.prices })),
+    waitForPendingAuths: vi.fn(async () => {}),
+    awaitAcceptedAtLeast: vi.fn(async () => (state.accepted ?? 0n) >= (state.spent ?? 0n)),
     recordSpend: vi.fn(),
   };
 }
@@ -236,6 +238,36 @@ describe('keyed relay request admission', () => {
   it('admits a paid-up buyer, waiting for a signature that is on its way', async () => {
     await expect(admitWith({ accepted: 100n, spent: 100n })()).resolves.toEqual(ADMITTED);
     await expect(admitWith({ accepted: 100n, spent: 500n, catchUpTo: 500n })()).resolves.toEqual(ADMITTED);
+  });
+
+  it('mints for a buyer whose signature for the last answer is on its way, and refuses one whose signature does not come', async () => {
+    const catchingUp = admitWith({ accepted: 100n, spent: 500n, catchUpTo: 500n });
+    const minted = await catchingUp.mint();
+    expect(minted.response.statusCode).toBe(200);
+    expect(minted.json.credentialId).toMatch(/^[0-9a-f]{32}$/);
+    expect(catchingUp.payments.waitForPendingAuths).toHaveBeenCalledWith(BUYER);
+    expect(catchingUp.payments.awaitAcceptedAtLeast).toHaveBeenCalledWith('0xchannel', 500n, 5_000);
+
+    // One bounded wait, then the refusal a buyer that owes gets.
+    const unpaid = admitWith({ accepted: 100n, spent: 500n });
+    const refused = await unpaid.mint();
+    expect(refused.response.statusCode).toBe(409);
+    expect(refused.json.error.code).toBe('blind_relay_unpaid');
+    expect(unpaid.payments.awaitAcceptedAtLeast).toHaveBeenCalledOnce();
+  });
+
+  it('judges the channel as it is after the wait for a signature: closed, or replaced by a new one', async () => {
+    const closed: ChannelState = { accepted: 100n, spent: 500n };
+    const closing = admitWith(closed);
+    closing.payments.awaitAcceptedAtLeast.mockImplementation(async () => { closed.session = false; return false; });
+    const reopened = await closing.mint();
+    expect(reopened.response.statusCode).toBe(402);
+    expect(reopened.paymentMux.sendPaymentRequired).toHaveBeenCalledOnce();
+
+    const replaced: ChannelState = { accepted: 100n, spent: 500n };
+    const replacing = admitWith(replaced);
+    replacing.payments.awaitAcceptedAtLeast.mockImplementation(async () => { Object.assign(replaced, { channel: '0xnext', accepted: 0n, spent: 0n }); return false; });
+    expect((await replacing.mint()).response.statusCode).toBe(200);
   });
 
   it('refuses no channel, unsigned spend, a blocked or exhausted channel', async () => {

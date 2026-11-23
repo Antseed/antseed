@@ -1742,13 +1742,15 @@ export class SellerRequestHandler {
    * Mints a seller-blind relay credential for a buyer with an open payment
    * channel. Minting is free; each relayed request is charged afterwards
    * (`_chargeBlindRelay`) by the usage the buyer reveals. A buyer whose last
-   * relayed charges are not signed for gets no new one.
+   * relayed charges are not signed for gets no new one, once its signature
+   * had a short time to arrive (`waitedForSignature`: that wait is over).
    */
   private async _handleBlindCredential(
     mux: ProxyMux,
     paymentMux: PaymentMux,
     request: SerializedHttpRequest,
     buyerPeerId: string,
+    waitedForSignature = false,
   ): Promise<void> {
     const provider = request.method === 'POST' ? this.matchProvider(request) : null;
     const service = provider ? this._extractRequestedService(request) : null;
@@ -1775,6 +1777,8 @@ export class SellerRequestHandler {
       }
       return;
     }
+    // A signature that is being checked right now counts.
+    await spm.waitForPendingAuths(buyerPeerId);
     const session = spm.getChannelByPeer(buyerPeerId);
     if (session) {
       const channelId = session.sessionId;
@@ -1790,6 +1794,14 @@ export class SellerRequestHandler {
         return;
       }
       if (spm.getAcceptedCumulative(channelId) < spent) {
+        if (!waitedForSignature) {
+          // A buyer hands an answer to its client before it signs for it, so
+          // the signature for the last one may be on its way. Wait for it
+          // once, as request admission does, then judge the channel as it is
+          // by then: it may have closed or been replaced meanwhile.
+          await spm.awaitAcceptedAtLeast(channelId, spent, DEFAULT_CATCH_UP_WAIT_MS);
+          return this._handleBlindCredential(mux, paymentMux, request, buyerPeerId, true);
+        }
         this._sendJsonError(mux, request.requestId, 409, 'blind_relay_unpaid', 'Sign for the requests already relayed, then ask again.', { 'retry-after': '2' });
         return;
       }
