@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Changed
+
+- Website: `llms.txt` now opens with the current positioning (the open intelligence network), the mission, the vision and the three value props. It gains a list of who can provide, with Colony and Diem Antseed as examples of a pool serving as one provider, a model verification section (results, the effect on routing and `antseed verifier check`), a list of the agent skills, an ANTS section on liquid inference that gathers the staking and rewards pages, and links to the site's pages. It also links the "Test your seller before going live" doc, and no longer calls `/network/` a live view of peers and models.
+
 ### Fixed
 
 - Node: DHT nodes now forget a peer 20–40 minutes after its last announcement. Every node used to keep each announcement forever, while a node answers a lookup with at most 100 of the peers it stores for a topic, so peers that had stopped or moved piled up next to the live ones: discovery spent most of its time fetching metadata from dead endpoints, and a lookup could miss live sellers. A peer that keeps announcing, at the current 5-minute interval or the older 15-minute one, stays listed. The DHT bootstrap nodes and other long-running peers apply this once they run the new version. `DHTNodeConfig.peerRecordMaxAgeMs` sets the lifetime (default 30 minutes).
