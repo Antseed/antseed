@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import type { StudioProjectSummary } from '../../../shared/studio.js';
-import { openConversationWhereItBelongs, holdSend, studioProjectForConversation, type ConversationRoute } from './open-project';
+import { openConversationWhereItBelongs, holdSend, navigationTurns, studioProjectForConversation, type ConversationRoute } from './open-project';
 
 const project = (id: string, conversationId: string | null) => ({ id, conversationId }) as StudioProjectSummary;
 
@@ -74,4 +74,15 @@ test('a clip request waiting on its edit goes to the chat it was asked in, or no
   where = 'conv-a';
   hidden.send('remake clip 5');
   assert.deepEqual(sent, ['remake clip 4'], 'a request started off screen is not sent');
+});
+
+test('New Chat drops a sidebar chat whose project lookup is still pending, even without a change of view', async () => {
+  const navigation = navigationTurns();
+  const picked = route(null, navigation.turn());
+  const opening = openConversationWhereItBelongs('conv-1', picked.value);
+  // The user presses New Chat while already in Chat, before the project list is read again.
+  navigation.advance();
+  picked.finish([project('harbor-film', 'conv-1')]);
+  await opening;
+  assert.deepEqual(picked.calls, ['reload']);
 });

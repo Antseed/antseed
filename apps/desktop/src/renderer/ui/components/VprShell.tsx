@@ -11,7 +11,7 @@ import { homeProgress } from '../../modules/app/home-progress';
 import { gatewayResource, privacyResource, usePrivacySwitch } from '../../modules/app/vpr-resources';
 import { useCachedResource } from '../../modules/app/cached-resource';
 import { useStudioPreview } from '../../modules/studio/preview';
-import { openConversationWhereItBelongs, openStudioProject } from '../../modules/studio/open-project';
+import { navigationTurns, openConversationWhereItBelongs, openStudioProject } from '../../modules/studio/open-project';
 import { studioProjectsResource } from '../../modules/studio/resources';
 import { navViews, type NavView } from './viewRegistry';
 import { ChatListPanel } from './ChatListPanel';
@@ -130,11 +130,16 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
     [onSelectView, onNavigateBack],
   );
 
+  // Each chat picked, each New Chat and each change of view is a newer choice: a project lookup still pending for an older one is dropped.
+  const [navigation] = useState(navigationTurns);
+  useEffect(() => { navigation.advance(); }, [activeView, navigation]);
+
   // Until the first prompt, new chats start from Home's big chat box.
   const startNewChat = useCallback(() => {
+    navigation.advance();
     actions.startNewChat();
     onSelectView(homeProgress.get().firstPromptAt === null ? 'home' : 'chat');
-  }, [actions, onSelectView]);
+  }, [actions, navigation, onSelectView]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -147,13 +152,9 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [startNewChat]);
 
-  // Each chat picked and each change of view is a newer choice: a project lookup still pending for an older one is dropped.
-  const navigation = useRef(0);
-  useEffect(() => { navigation.current += 1; }, [activeView]);
-
   // A Studio project's chat opens in its project, with the storyboard beside it.
   const openConversation = useCallback((id: string) => {
-    const turn = ++navigation.current;
+    const current = navigation.turn();
     if (studioOn !== true) {
       void actions.openConversation(id);
       onSelectView('chat');
@@ -162,12 +163,12 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
     void openConversationWhereItBelongs(id, {
       known: studioProjectsResource.getSnapshot().data,
       reload: () => studioProjectsResource.reload(),
-      current: () => turn === navigation.current,
+      current,
       activate: (conversationId) => { void actions.openConversation(conversationId); },
       openProject: openStudioProject,
       selectView: onSelectView,
     });
-  }, [actions, onSelectView, studioOn]);
+  }, [actions, navigation, onSelectView, studioOn]);
   const goHome = useCallback(() => onSelectView('home'), [onSelectView]);
   // A remote gateway pays from its own wallet: Add funds opens its console's
   // Wallet page, never this computer's checkout.

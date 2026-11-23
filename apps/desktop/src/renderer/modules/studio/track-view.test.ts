@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseStudioTrack } from '../../../shared/studio-track.js';
-import { clipRequestMessage, composerContext, filmClipKey, filmIndex, filmPlayers, formatTimecode, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
+import { clipPlayerKey, clipRequestMessage, composerContext, filmClipKey, filmIndex, filmPlayers, formatTimecode, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
 
 const track = parseStudioTrack({
   aspectRatio: '16:9',
@@ -131,4 +131,12 @@ it('keeps a removed chip off when a poll hands the editor the same selection wit
   expect(composerContext(offer(parseStudioTrack(JSON.parse(JSON.stringify(track))), selection), dismissed)).toBeNull();
   // Selecting the same shot again is a new selection, and its chip comes back.
   expect(composerContext(offer(track, { anchor: 'a1', clip: false }), dismissed)?.label).toBe('Shot 1 · Harbor at dusk');
+});
+
+it('gives two clips that play the same file their own players', () => {
+  const one = { id: 'c1', use: 'clips/shared.mp4' };
+  const two = { id: 'c2', use: 'clips/shared.mp4' };
+  expect(clipPlayerKey(one)).not.toBe(clipPlayerKey(two));
+  // Another version of the same clip is a new player too.
+  expect(clipPlayerKey(one)).not.toBe(clipPlayerKey({ id: 'c1', use: 'clips/other.mp4' }));
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -764,4 +764,31 @@ test('a delivery that would grow the track past what a read takes is set aside, 
   assert.deepEqual(await readFile(path.join(dir, 'track.json')), before, 'track.json is untouched');
   assert.equal((await readStudioTrack(dir))!.anchors[0]!.image, null);
   assert.deepEqual(await readdir(path.join(dir, 'deliveries/failed')), ['9-image.json']);
+});
+
+test('a file the scan does not reach is still found when a delivery or an edit names it, but never one outside the project', async (t) => {
+  const tmp = await mkdtemp(path.join(tmpdir(), 'studio-deep-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const root = path.join(tmp, 'studio');
+  await mkdir(root);
+  const { id } = await createStudioProject('Deep files', root);
+  const dir = path.join(root, id);
+  await editStudioTrack(dir, { type: 'add-anchor', index: 0 });
+  await editStudioTrack(dir, { type: 'add-anchor', index: 1 });
+  // Five folders deep: past where the library scan stops.
+  const deep = 'stills/one/two/three/four/a.png';
+  await mkdir(path.join(dir, path.dirname(deep)), { recursive: true });
+  await writeFile(path.join(dir, deep), 'x');
+  await mkdir(path.join(dir, 'deliveries'), { recursive: true });
+  await writeFile(path.join(dir, 'deliveries/image.json'), JSON.stringify({ anchor: 'a1', file: deep, usd: 0.04, model: 'Example image model' }));
+  assert.deepEqual(await ingestStudioDeliveries(dir, 7), []);
+  assert.equal((await readStudioTrack(dir))!.anchors[0]!.image, deep);
+  // An edit naming it works too, and the track still reads it once the delivery is done.
+  const { track } = await editStudioTrack(dir, { type: 'set-image', anchor: 'a2', file: deep });
+  assert.equal(track.anchors[1]!.image, deep);
+  // A link that leads outside the project folder is not a project file.
+  const outside = path.join(tmp, 'outside.png');
+  await writeFile(outside, 'x');
+  await symlink(outside, path.join(dir, 'stills/one/two/three/four/escape.png'));
+  await assert.rejects(editStudioTrack(dir, { type: 'set-image', anchor: 'a2', file: 'stills/one/two/three/four/escape.png' }));
 });

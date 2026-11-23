@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ActionMenu, Button, IconButton, Modal, Segmented, TextField } from '@antseed/ui';
+import { ActionMenu, Button, ConfirmDialog, IconButton, Modal, Segmented, TextField } from '@antseed/ui';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { MoreHorizontalIcon, PlayIcon, StopIcon, Undo02Icon } from '@hugeicons/core-free-icons';
 import { STUDIO_MEDIA_TOOLS_MISSING, studioMediaKind, sumStudioCost, type StudioProjectDetail } from '../../../../shared/studio.js';
@@ -25,7 +25,7 @@ import {
   type TrackEdit,
 } from '../../../../shared/studio-track.js';
 import { formatStudioUsd, studioFileUrl } from '../../../modules/studio/board-view';
-import { clipRequestMessage, formatSeconds, formatTimecode, selectionContext, type TrackSelection } from '../../../modules/studio/track-view';
+import { clipPlayerKey, clipRequestMessage, formatSeconds, formatTimecode, selectionContext, type TrackSelection } from '../../../modules/studio/track-view';
 import type { HeldSend } from '../../../modules/studio/open-project';
 import type { ChatContext } from '../views/ChatView';
 import { FilmPlayer } from './FilmPlayer';
@@ -326,15 +326,15 @@ export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }
         />
       ) : null}
 
-      {confirmExport ? (
-        <Modal isOpen onClose={() => setConfirmExport(false)} title="Export with earlier clips?" size="sm">
-          <p className={styles.dialogText}>{check.stale.join(', ')} {check.stale.length === 1 ? 'is' : 'are'} out of date: made from an image you have since replaced, or made for a Cut where the film now extends. The export uses {check.stale.length === 1 ? 'it' : 'them'} as {check.stale.length === 1 ? 'it is' : 'they are'}.</p>
-          <div className={styles.dialogActions}>
-            <Button variant="ghost" onClick={() => setConfirmExport(false)}>Cancel</Button>
-            <Button onClick={() => { setConfirmExport(false); void exportFilm(); }}>Export as it is</Button>
-          </div>
-        </Modal>
-      ) : null}
+      <ConfirmDialog
+        isOpen={confirmExport}
+        onClose={() => setConfirmExport(false)}
+        title="Export with earlier clips?"
+        body={`${check.stale.join(', ')} ${check.stale.length === 1 ? 'is' : 'are'} out of date: made from an image you have since replaced, or made for a Cut where the film now extends. The export uses ${check.stale.length === 1 ? 'it' : 'them'} as ${check.stale.length === 1 ? 'it is' : 'they are'}.`}
+        tone="primary"
+        confirmLabel="Export as it is"
+        onConfirm={() => { setConfirmExport(false); void exportFilm(); }}
+      />
     </div>
   );
 }
@@ -473,7 +473,7 @@ function Preview({ track, selected, selection, playing, busy, url, onStop, onSel
     <figure className={styles.stage}>
       <div className={styles.preview} style={frame}>
         <video
-          key={clip.use}
+          key={clipPlayerKey(clip)}
           ref={video}
           className={styles.media}
           src={url(clip.use)}

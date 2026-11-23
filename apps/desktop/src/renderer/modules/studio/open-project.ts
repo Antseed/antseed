@@ -66,3 +66,19 @@ export function holdSend(where: () => string | null | false, send: (text: string
   const still = () => at !== false && where() === at;
   return { still, send: (text) => { if (still()) send(text); } };
 }
+
+/**
+ * The user's choices in order: each chat picked, each New Chat and each change
+ * of view is newer. `turn` starts a choice and returns whether it is still the
+ * latest, so a project lookup still pending for an older one is dropped.
+ */
+export function navigationTurns(): { advance: () => void; turn: () => () => boolean } {
+  let latest = 0;
+  return {
+    advance: () => { latest += 1; },
+    turn: () => {
+      const at = ++latest;
+      return () => at === latest;
+    },
+  };
+}

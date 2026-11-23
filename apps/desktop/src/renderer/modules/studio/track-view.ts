@@ -203,3 +203,8 @@ export function splitStudioMessage(message: string): { label: string; context: s
   const selection = splitStudioContext(message);
   return splitClipRequest(selection ? selection.rest : message) ?? selection;
 }
+
+/** The clip's player: each clip gets its own, even when two clips play the same file, so selecting another starts it from 0:00. */
+export function clipPlayerKey(clip: { id: string; use: string | null }): string {
+  return `${clip.id}:${clip.use ?? ''}`;
+}

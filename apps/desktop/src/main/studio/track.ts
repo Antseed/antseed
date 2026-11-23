@@ -4,7 +4,7 @@ import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, stat, writ
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { STUDIO_BOARD_FILE, STUDIO_MEDIA_TOOLS_MISSING, studioMediaKind, type StudioBoard } from '../../shared/studio.js';
+import { STUDIO_BOARD_FILE, STUDIO_MEDIA_TOOLS_MISSING, studioBoardFiles, studioMediaKind, type StudioBoard } from '../../shared/studio.js';
 import {
   addStudioExport,
   applyStudioDelivery,
@@ -115,6 +115,37 @@ async function saveTrack(dir: string, track: StudioTrack, previous: StudioTrack 
   const json = trackJson(track);
   if (previous) await writeAtomic(dir, HISTORY_FILE, historyJson([...await readHistory(dir), previous]));
   await writeAtomic(dir, STUDIO_TRACK_FILE, json);
+}
+
+/** A file inside the project folder, by its project path: its real path and time, or null when it is missing or leads outside the folder. */
+export async function resolveProjectFile(dir: string, relative: string): Promise<{ file: string; modifiedAt: number } | null> {
+  try {
+    const [realDir, realFile] = await Promise.all([realpath(dir), realpath(path.join(dir, relative))]);
+    const within = path.relative(realDir, realFile);
+    if (!within || within.startsWith('..') || path.isAbsolute(within)) return null;
+    const info = await stat(realFile);
+    return info.isFile() ? { file: realFile, modifiedAt: info.mtimeMs } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Every file the track uses or used, and the files an edit, a delivery or a storyboard names. */
+function namedFiles(track: StudioTrack | null, extra: readonly unknown[]): string[] {
+  const used = track ? libraryUseOf(track) : null;
+  return [...(used?.inUse ?? []), ...(used?.earlier ?? []), ...extra.filter((file): file is string => typeof file === 'string')];
+}
+
+/**
+ * The library scan stops at its depth and count limits, so it never decides that a file is missing:
+ * each file the track or a request names that the scan did not reach is looked up on its own.
+ */
+async function addNamedFiles(dir: string, media: Map<string, number>, files: readonly string[]): Promise<void> {
+  for (const file of new Set(files)) {
+    if (media.has(file) || !studioMediaKind(file)) continue;
+    const found = await resolveProjectFile(dir, file);
+    if (found) media.set(file, found.modifiedAt);
+  }
 }
 
 /** Every picture and video in the project folder, so nothing made for the project is ever out of reach. */
@@ -260,6 +291,7 @@ export function editStudioTrack(dir: string, edit: TrackEdit, options: { picked?
     const previous = await readStudioTrack(dir);
     const current = previous ?? emptyStudioTrack();
     const media = await scanStudioMedia(dir);
+    await addNamedFiles(dir, media, namedFiles(current, ['file' in edit ? edit.file : null, ...(edit.type === 'convert' && options.board ? studioBoardFiles(options.board) : [])]));
     const seconds = new Map<string, number | null>();
     switch (edit.type) {
       case 'undo': {
@@ -369,6 +401,7 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
     let track = onDisk ?? (await exists(path.join(dir, STUDIO_BOARD_FILE)) ? null : emptyStudioTrack());
     let saved = onDisk;
     const media = await scanStudioMedia(dir);
+    await addNamedFiles(dir, media, namedFiles(track, []));
     const notices: string[] = [];
     for (const name of names) {
       const before = track;
@@ -385,6 +418,7 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
         const raw = read.raw;
         const agentEdit = taken ? null : parseStudioAgentEdit(raw);
         const delivery = taken || agentEdit ? null : parseStudioDelivery(raw);
+        if (delivery) await addNamedFiles(dir, media, [delivery.file]);
         if (taken) {
           // Saved to the track on an earlier read, which could not move it: only the move is left.
           applied = taken.applied;
@@ -395,6 +429,7 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
           } else {
             // Only the edit's own refusal sets it aside; a failure to save it leaves it in the inbox.
             try {
+              await addNamedFiles(dir, media, namedFiles(null, ['file' in agentEdit ? agentEdit.file : null]));
               track = applyTrackEdit(track, agentEdit, trackFiles(media, new Map()));
               applied = true;
               undoable = true;

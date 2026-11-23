@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ANTSEED_HOME_DIR } from '../chat/paths.js';
 import {
@@ -15,7 +15,7 @@ import {
   type StudioProjectSummary,
 } from '../../shared/studio.js';
 import { emptyStudioTrack, STUDIO_DELIVERIES_DIR, STUDIO_TRACK_FILE, type StudioTrack } from '../../shared/studio-track.js';
-import { readStudioTrack, scanStudioMedia, studioCanUndo, studioLibrary, studioMediaTools } from './track.js';
+import { readStudioTrack, resolveProjectFile, scanStudioMedia, studioCanUndo, studioLibrary, studioMediaTools } from './track.js';
 
 export const STUDIO_DIR = path.join(ANTSEED_HOME_DIR, 'studio');
 
@@ -76,17 +76,7 @@ async function readBoard(id: string, root: string): Promise<{ board: StudioBoard
 export async function resolveStudioFile(id: string, filePath: unknown, root: string = STUDIO_DIR): Promise<string | null> {
   const relative = normalizeStudioPath(filePath);
   if (!isStudioProjectId(id) || !relative || !studioMediaKind(relative)) return null;
-  try {
-    const [realProject, realFile] = await Promise.all([
-      realpath(projectDir(id, root)),
-      realpath(path.join(projectDir(id, root), relative)),
-    ]);
-    const within = path.relative(realProject, realFile);
-    if (!within || within.startsWith('..') || path.isAbsolute(within)) return null;
-    return (await stat(realFile)).isFile() ? realFile : null;
-  } catch {
-    return null;
-  }
+  return (await resolveProjectFile(projectDir(id, root), relative))?.file ?? null;
 }
 
 async function fileVersion(id: string, file: string, root: string): Promise<number | null> {
@@ -158,6 +148,12 @@ export async function listStudioProjects(root: string = STUDIO_DIR): Promise<Stu
     .filter((project) => project !== null)
     .map((project) => project.summary)
     .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+/** The project's name, chat and cover, without reading its media library. */
+export async function getStudioProjectSummary(id: string, root: string = STUDIO_DIR): Promise<StudioProjectSummary | null> {
+  if (!isStudioProjectId(id)) return null;
+  return (await readProject(id, root))?.summary ?? null;
 }
 
 export async function getStudioProject(id: string, root: string = STUDIO_DIR): Promise<StudioProjectDetail | null> {

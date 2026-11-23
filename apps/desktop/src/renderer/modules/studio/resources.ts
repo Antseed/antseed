@@ -21,11 +21,21 @@ export function studioProjectResource(id: string): CachedResource<StudioProjectD
       async load() {
         const result = await window.antseedDesktop?.studioGet?.(id);
         if (!result?.ok || !result.data) throw new Error(result?.error ?? 'Could not read this project');
-        if (!result.data.boardError) lastReadable = result.data;
-        return result.data.boardError && lastReadable ? { ...lastReadable, boardError: result.data.boardError } : result.data;
+        const shown = keepReadable(lastReadable, result.data);
+        if (!result.data.boardError && !result.data.trackError) lastReadable = result.data;
+        return shown;
       },
     });
     projectResources.set(id, resource);
   }
   return resource;
+}
+
+/**
+ * What a poll shows: the project as read, or, when its board or track could not be read, the last
+ * project read whole with the current errors, so a bad read never empties the storyboard on screen.
+ */
+export function keepReadable(last: StudioProjectDetail | null, next: StudioProjectDetail): StudioProjectDetail {
+  if ((!next.boardError && !next.trackError) || !last) return next;
+  return { ...last, boardError: next.boardError, trackError: next.trackError };
 }
