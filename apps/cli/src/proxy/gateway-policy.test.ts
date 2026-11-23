@@ -1490,3 +1490,72 @@ test('spend on a seller-blind request sent a second time reaches the gateway key
   const conversation = (h.proxy as any)._conversations.get('antseed-chat:thread-relay')
   assert.deepEqual([conversation?.spentUsdc, conversation?.requestCount], ['25000', 1])
 })
+
+/** A relay client whose credential requests are recorded and answered as from a buyer whose payments are not running. */
+function recordingBlindRelay(): { blindRelay: BlindRelayClient; mints: Array<{ peerId: string; provider: string | undefined }> } {
+  const mints: Array<{ peerId: string; provider: string | undefined }> = []
+  const blindRelay = new BlindRelayClient({
+    sendRequest: async (peer, request) => {
+      mints.push({ peerId: peer.peerId, provider: request.headers['x-antseed-provider'] })
+      return {
+        requestId: request.requestId,
+        statusCode: 503,
+        headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
+        body: Buffer.from(JSON.stringify({ error: 'buyer_payments_inactive', reason: 'payments_not_running', peerId: peer.peerId })),
+      }
+    },
+    openRelayStream: async () => { throw new Error('no stream opens without a credential') },
+    recordRelayedResponse: () => {},
+    recordInterruptedRelayedResponse: () => {},
+    keyedRelayBinary: '/never-spawned',
+  })
+  return { blindRelay, mints }
+}
+
+test('a seller-blind credential is asked of the provider the route selected, not of the first that serves the model', async (t) => {
+  // Two providers of one seller serve the model, and only the second serves it seller-blind.
+  const seller: PeerInfo = {
+    ...makePeer('a', { input: 1, output: 1, trust: 80 }),
+    providers: ['openai', 'second'],
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } }, second: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } },
+    providerServiceApiProtocols: {
+      openai: { services: { 'open-model': ['openai-chat-completions'] } },
+      second: { services: { 'open-model': ['openai-chat-completions'] } },
+    },
+    providerServiceCategories: {
+      openai: { services: { 'open-model': ['chat'] } },
+      second: { services: { 'open-model': ['chat', 'seller-blind'] } },
+    },
+  }
+  const { blindRelay, mints } = recordingBlindRelay()
+  const h = await startHarness(t, [seller], { blindRelay })
+  const res = await fetch(`${h.url}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-antseed-provider': 'second', ...withPolicy({ requireZeroDataAccess: true }) },
+    body: JSON.stringify({ model: 'open-model', messages: [{ role: 'user', content: 'Hello' }] }),
+  })
+  await res.text()
+  assert.deepEqual(mints, [{ peerId: seller.peerId, provider: 'second' }])
+})
+
+test('a pinned seller-blind service whose seller announces it as failing is still reached over the relay', async (t) => {
+  const seller: PeerInfo = {
+    ...makePeer('a', { input: 1, output: 1, trust: 80 }),
+    providerServiceApiProtocols: { openai: { services: { 'open-model': ['openai-chat-completions'] } } },
+    providerServiceCategories: { openai: { services: { 'open-model': ['chat', 'seller-blind'] } } },
+    providerServiceHealth: { openai: { services: { 'open-model': {
+      status: 'failing', checkedAt: 1_793_328_180_000, source: 'probe', failingSince: 1_793_327_880_000, consecutiveFailures: 3, reason: 'timeout',
+    } } } },
+  }
+  const { blindRelay, mints } = recordingBlindRelay()
+  const h = await startHarness(t, [seller], { blindRelay })
+  // The other way to a zero-data-access service: an attestation of an upstream key, which this service has none of.
+  ;(h.proxy as any)._zeroDataAccess.session = async () => { throw new Error('no attested upstream key for a seller-blind service') }
+  const res = await fetch(`${h.url}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...withPolicy({ requireZeroDataAccess: true }) },
+    body: JSON.stringify({ model: `${seller.peerId}@open-model`, messages: [{ role: 'user', content: 'Hello' }] }),
+  })
+  const text = await res.text()
+  assert.deepEqual(mints.map((mint) => mint.peerId), [seller.peerId], `HTTP ${res.status} ${text}`)
+})
