@@ -5,6 +5,8 @@ import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import type { MethodRun, OwnScreenFor } from '../../audit-method.js'
 import { createFlipsScreen, flipsSeed, type FlipsProbe, type FlipsUnavailable } from './flips.js'
 import { FLIPS_RULE, flipsCounts, isValidFlipsPair } from './flips-score.js'
+import { FLIPS_THINKING } from './flips-thinking.js'
+import { resolveThinking } from '../../audit-thinking.js'
 import { asError } from '../../utils.js'
 
 /**
@@ -180,6 +182,8 @@ export async function flipsForRun(run: MethodRun): Promise<OwnScreenFor<'flips'>
         const asked = await reference.replies(bank, { bodies }, { signal, limiter: referenceLimiter })
         return { ...asked, oneProvider: asked.provenOneProvider }
       },
+      // The genuine model with its bank's setting where that reached 0 reasoning tokens, else the eval's switch.
+      referenceThinking: (bank) => resolveThinking(FLIPS_THINKING, { model, bank, discovery: null }).reference,
     })
   }
 }

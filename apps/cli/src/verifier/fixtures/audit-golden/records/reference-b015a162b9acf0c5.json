@@ -1,0 +1,67 @@
+{
+ "probes": {
+  "list": "30 records: the first and the last are shown",
+  "sha256": "9023d4bb3a645de9",
+  "first": {
+   "consensus": 1,
+   "domain": "test",
+   "id": "deepseek-v4-pro-probe-1",
+   "name": "probe 1",
+   "range": [0,1000],
+   "template": "The deepseek-v4-pro test value 1 is ___.",
+   "tolerance": {"mode":"absolute","value":0}
+  },
+  "last": {
+   "consensus": 30,
+   "domain": "test",
+   "id": "deepseek-v4-pro-probe-30",
+   "name": "probe 30",
+   "range": [0,1000],
+   "template": "The deepseek-v4-pro test value 30 is ___.",
+   "tolerance": {"mode":"absolute","value":0}
+  }
+ },
+ "queryProfile": {
+  "apiProtocol": "openai-chat-completions",
+  "auditTemperature": 0,
+  "contrastTemperature": 0,
+  "enrollmentTemperatures": [0,0.7,0.7],
+  "generationSettings": {"responseFormat":"text","seed":null,"topP":1},
+  "maxTokensPerRequest": 160,
+  "parserVersion": "kbf-numeric-lines-v3",
+  "probesPerRequest": 10,
+  "promptVariantsHash": "sha256:a9729cc7c2401f41d7dedcc1b78bceb7d0a6392afc03804457443df1d773b032",
+  "requestTimeoutMs": 120000,
+  "selfTestTemperature": 0,
+  "upstreamModel": "upstream-deepseek-v4-pro",
+  "version": 2
+ },
+ "queryProfileHash": "sha256:c93b51d211dcb303025b8edad3a0731fc4c7906eb3c0c8c7392301cf1cdd8e30",
+ "referenceId": "sha256:08e5c8d360a921331701d80037550a32bca7fc6afb0a2886068fab1b76dcf501",
+ "referenceModel": "deepseek-v4-pro",
+ "selfTest": {
+  "coverage": 1,
+  "errorRate": 0,
+  "hamming": 0,
+  "outcomes": {
+   "list": "30 records: the first and the last are shown",
+   "sha256": "1aeeae269e7e9392",
+   "first": {"answers":[1],"matches":[1],"probeId":"deepseek-v4-pro-probe-1"},
+   "last": {"answers":[30],"matches":[1],"probeId":"deepseek-v4-pro-probe-30"}
+  },
+  "total": 30
+ },
+ "statisticalPower": 0.2910431843129079,
+ "statisticalPowerEvidence": {
+  "alpha": 0.05,
+  "alternativeMismatchRate": 0.24230410140910577,
+  "clopperPearsonConfidence": 0.99,
+  "criticalMismatchCount": 9,
+  "p0UpperBound": 0.14230410140910577,
+  "power": 0.2910431843129079,
+  "probeCount": 30,
+  "selfHamming": 0,
+  "selfTotal": 30,
+  "test": "one-sided-binomial"
+ }
+}

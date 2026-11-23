@@ -291,16 +291,22 @@ test('the FLIPS dry-run probe is read once for the run, refused where FLIPS coun
     const plain = envFor(PLAIN)
     const probed = screensOf(plain.env).flips!
     assert.deepEqual([probed.probing, probed.probeSettings, probed.ruleId], [true, JSON.stringify(probe), FLIPS_RULE.id])
-    // Where FLIPS counts the probe is refused: the run's own line, and a production FLIPS.
     const counted = envFor(COUNTED)
     const production = screensOf(counted.env).flips!
-    assert.deepEqual([production.probing, production.probeSettings], [false, null])
-    assert.deepEqual(made.warned.slice(1), [`FLIPS: probe refused for ${COUNTED}: FLIPS counts for it`])
+    if (FLIPS_RULE.counts.default) {
+      // Where FLIPS counts the probe is refused: the run's own line, and a production FLIPS.
+      assert.deepEqual([production.probing, production.probeSettings], [false, null])
+      assert.deepEqual(made.warned.slice(1), [`FLIPS: probe refused for ${COUNTED}: FLIPS counts for it`])
+    } else {
+      // While FLIPS is recorded only (until a dry run) it counts for no model, so the probe runs for every model.
+      assert.deepEqual([production.probing, production.probeSettings], [true, JSON.stringify(probe)])
+      assert.deepEqual(made.warned.slice(1), [])
+    }
     assert.deepEqual([plain.warned, counted.warned], [[], []])
     await settled()
     // The status file names the probe only where it runs.
     assert.deepEqual(plain.files[0]![1], { version: 1, kind: 'antseed-verifier-flips-status', model: PLAIN, probe, unavailable: [] })
-    assert.deepEqual(counted.files[0]![1], { version: 1, kind: 'antseed-verifier-flips-status', model: COUNTED, unavailable: [] })
+    assert.deepEqual(counted.files[0]![1], { version: 1, kind: 'antseed-verifier-flips-status', model: COUNTED, ...(FLIPS_RULE.counts.default ? {} : { probe }), unavailable: [] })
   }))
   await withEnvironment({ ANTSEED_VERIFIER_FLIPS_PROBE: '{nope' }, () => withRun(async (made) => {
     const screens = (await testsOfRun(made.run, undefined))(envFor(PLAIN).env)

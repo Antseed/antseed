@@ -1,0 +1,157 @@
+{
+ "attempts": [
+  {
+   "answersOnly": true,
+   "attemptCosts": [
+    {
+     "estimatedCostUsd": 0.00037,
+     "inputTokens": 310,
+     "inputUsdPerMillion": 1,
+     "outputTokens": 40,
+     "outputUsdPerMillion": 2,
+     "provider": null,
+     "service": null,
+     "tokenSource": null,
+     "totalTokens": 350
+    }
+   ],
+   "billedOutputTokens": 90,
+   "maxTokens": 800,
+   "reasoningShown": false,
+   "reasoningTokens": 50,
+   "requestIds": ["<seller: thinking discovery #1>"],
+   "status": null,
+   "strategy": "reasoning-effort-none",
+   "truncated": false,
+   "validAnswers": 10
+  },
+  {
+   "answersOnly": true,
+   "attemptCosts": [
+    {
+     "estimatedCostUsd": 0.00037,
+     "inputTokens": 310,
+     "inputUsdPerMillion": 1,
+     "outputTokens": 40,
+     "outputUsdPerMillion": 2,
+     "provider": null,
+     "service": null,
+     "tokenSource": null,
+     "totalTokens": 350
+    }
+   ],
+   "billedOutputTokens": 60,
+   "maxTokens": 800,
+   "reasoningShown": false,
+   "reasoningTokens": 20,
+   "requestIds": ["<seller: thinking discovery #2>"],
+   "status": null,
+   "strategy": "reasoning-effort-minimal",
+   "truncated": false,
+   "validAnswers": 10
+  },
+  {
+   "answersOnly": true,
+   "attemptCosts": [
+    {
+     "estimatedCostUsd": 0.00037,
+     "inputTokens": 310,
+     "inputUsdPerMillion": 1,
+     "outputTokens": 40,
+     "outputUsdPerMillion": 2,
+     "provider": null,
+     "service": null,
+     "tokenSource": null,
+     "totalTokens": 350
+    }
+   ],
+   "billedOutputTokens": 80,
+   "maxTokens": 800,
+   "reasoningShown": false,
+   "reasoningTokens": 40,
+   "requestIds": ["<seller: thinking discovery #3>"],
+   "status": null,
+   "strategy": "disable-thinking",
+   "truncated": false,
+   "validAnswers": 10
+  },
+  {
+   "answersOnly": true,
+   "attemptCosts": [
+    {
+     "estimatedCostUsd": 0.00037,
+     "inputTokens": 310,
+     "inputUsdPerMillion": 1,
+     "outputTokens": 40,
+     "outputUsdPerMillion": 2,
+     "provider": null,
+     "service": null,
+     "tokenSource": null,
+     "totalTokens": 350
+    }
+   ],
+   "billedOutputTokens": 100,
+   "maxTokens": 800,
+   "reasoningShown": false,
+   "reasoningTokens": 60,
+   "requestIds": ["<seller: thinking discovery #4>"],
+   "status": null,
+   "strategy": "enable-thinking-false",
+   "truncated": false,
+   "validAnswers": 10
+  },
+  {
+   "answersOnly": true,
+   "attemptCosts": [
+    {
+     "estimatedCostUsd": 0.00037,
+     "inputTokens": 310,
+     "inputUsdPerMillion": 1,
+     "outputTokens": 40,
+     "outputUsdPerMillion": 2,
+     "provider": null,
+     "service": null,
+     "tokenSource": null,
+     "totalTokens": 350
+    }
+   ],
+   "billedOutputTokens": 110,
+   "maxTokens": 800,
+   "reasoningShown": false,
+   "reasoningTokens": 70,
+   "requestIds": ["<seller: thinking discovery #5>"],
+   "status": null,
+   "strategy": "prefill",
+   "truncated": false,
+   "validAnswers": 10
+  },
+  {
+   "answersOnly": true,
+   "attemptCosts": [
+    {
+     "estimatedCostUsd": 0.00037,
+     "inputTokens": 310,
+     "inputUsdPerMillion": 1,
+     "outputTokens": 40,
+     "outputUsdPerMillion": 2,
+     "provider": null,
+     "service": null,
+     "tokenSource": null,
+     "totalTokens": 350
+    }
+   ],
+   "billedOutputTokens": 130,
+   "maxTokens": 800,
+   "reasoningShown": false,
+   "reasoningTokens": 90,
+   "requestIds": ["<seller: thinking discovery #6>"],
+   "status": null,
+   "strategy": "bare",
+   "truncated": false,
+   "validAnswers": 10
+  }
+ ],
+ "maxTokens": 160,
+ "method": "kbf-reference-code-2026-09-30",
+ "strategy": "reasoning-effort-minimal"
+}

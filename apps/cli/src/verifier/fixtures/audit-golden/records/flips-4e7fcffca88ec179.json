@@ -1,5 +1,5 @@
 {
- "counted": true,
+ "counted": false,
  "draw": {
   "auditor": "0xe5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
   "epoch": "7",
@@ -41,7 +41,7 @@
    },
    "seller": {
     "list": "10 records: the first and the last are shown",
-    "sha256": "d9fc3d300bac59c4",
+    "sha256": "0cc591656fd08843",
     "first": {
      "asks": [
       {
@@ -96,7 +96,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 7a79fc4f7979b452)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (531 characters, sha256 723b645b94d96b63)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -168,7 +168,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 7a79fc4f7979b452)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (531 characters, sha256 723b645b94d96b63)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -220,7 +220,7 @@
    },
    "seller": {
     "list": "10 records: the first and the last are shown",
-    "sha256": "f3bd98b93e35a072",
+    "sha256": "ea2d4fd4b276dcb4",
     "first": {
      "asks": [
       {
@@ -275,7 +275,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 a7b18aebce6454a3)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (513 characters, sha256 3ca33e2b62b280ba)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -347,7 +347,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 a7b18aebce6454a3)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (513 characters, sha256 3ca33e2b62b280ba)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -378,5 +378,9 @@
  "score": 0.7775341197144852,
  "scoreMax": 5.572353002177747,
  "service": "deepseek-v4-pro",
+ "thinking": {
+  "reference": {"overrides":{"reasoning":{"enabled":false}},"source":"fixed","strategy":null},
+  "seller": {"overrides":{"reasoning":{"effort":"minimal"}},"source":"discovery","strategy":"reasoning-effort-minimal"}
+ },
  "timing": {"finishedAt":1791331200000,"startedAt":1791331200000}
 }

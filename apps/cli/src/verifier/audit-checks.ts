@@ -4,6 +4,7 @@ import type {
   AuditCheckId, CheckFinding, CheckOutcome, CheckRecords, CheckSlot, CheckSubject, CheckSummaries, CheckSummaryOutcomes, ConfirmationOnly,
   ConfirmationOnlyCheckId, ReadingRules, RecordCheck, StoredAuditContext, StoredCheckRecords, StoredRequest,
 } from './audit-method.js'
+import type { TestThinking } from './audit-thinking.js'
 import { METHODS } from './methods/index.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { matchesEnrolledService } from './response-auth-reader.js'
@@ -87,7 +88,29 @@ export function confirmationCannotDecideOnRetry(
 export type ListedCheck<Slot extends CheckSlot = CheckSlot> = { [Each in Slot]: RecordCheck<Each> }[Slot]
 
 /** The questions have no record field: they are the evidence file itself. A description only. */
-export const QUESTIONS_CHECK = Object.freeze({ id: 'kbf' as const, subject: 'model' as const, label: 'the questions' })
+/**
+ * The questions, as the readings name them, with their thinking declaration: the first in the one list of what each
+ * test sends (`THINKING_DECLARATIONS`). The questions set the pattern every test follows (`audit-thinking.ts`): as the
+ * KBF reference code does, each endpoint is asked with its own discovered setting, the seller with its discovery's and
+ * the reference with its bank's; the answers are compared, so the two may differ. The questions' own ways of asking a
+ * batch stay theirs: a batch refused for its setting is sent again without it (`omittedThinkingSuppression`), and a
+ * seller nothing stops thinking gets fifty times the tokens (`bare-expanded`).
+ */
+export const QUESTIONS_CHECK = Object.freeze({
+  id: 'kbf' as const,
+  subject: 'model' as const,
+  label: 'the questions',
+  thinking: Object.freeze({
+    needs: Object.freeze({ seller: 'own', reference: 'bank' }),
+    why: 'as the KBF reference code: each endpoint with its own discovered setting; the answers are compared, so the two sides may differ',
+  }) as TestThinking,
+})
+
+/** Every test's thinking declaration, in run order: the questions first, then the tests with a record (`METHODS`). */
+export const THINKING_DECLARATIONS: ReadonlyArray<{ test: AuditCheckId | CheckSlot; thinking: TestThinking }> = Object.freeze([
+  { test: QUESTIONS_CHECK.id, thinking: QUESTIONS_CHECK.thinking },
+  ...METHODS.map((check) => ({ test: check.slot, thinking: check.thinking as TestThinking })),
+])
 
 export const AUDIT_CHECK_IDS: readonly AuditCheckId[] = Object.freeze([
   ...METHODS.flatMap((check) => check.findings.map((finding) => finding.id)),

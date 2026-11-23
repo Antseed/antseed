@@ -6,6 +6,7 @@ import {
 } from './flips.js'
 import { flipsForRun, flipsWithoutRecord } from './flips-run.js'
 import { FLIPS_RULE, flipsCounts, flipsRuleById } from './flips-score.js'
+import { FLIPS_THINKING } from './flips-thinking.js'
 
 /** The randomness check (FLIPS) as the list of tests holds it (`../index.ts`): how its record is read, and how a run and an audit run it. */
 
@@ -87,6 +88,7 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
   },
   // FLIPS last.
   phase: 'after-questions',
+  thinking: FLIPS_THINKING,
   // A carried record is kept only for its own stage: a first look's FLIPS never stands for a confirmation of FLIPS, or
   // the other way round. Without a screen too: a carried record of another stage is not this audit's, so it is not kept.
   carriedIsOfAudit: (carried, audit) => carried.draw.stage === flipsStageOf(audit),
@@ -119,6 +121,8 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
         && (!isProbeDraw(carried.draw) || carried.probeSettings !== flips.probeSettings))),
     check: (audit) => flips.check(audit.seller, audit.bank, {
       stage: flipsStageOf(audit),
+      // The seller's own discovered setting (`FLIPS_THINKING`).
+      sellerThinking: audit.thinking.seller,
       clock: audit.clock,
       signal: audit.clock.signal,
     }),

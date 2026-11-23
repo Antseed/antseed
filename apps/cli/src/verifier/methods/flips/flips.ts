@@ -5,6 +5,7 @@ import {
   FLIPS_REQUESTS,
   FLIPS_RULE,
   flipsCounts,
+  flipsFixedSetting,
   flipsRequestBody,
   flipsRuleById,
   holdsNoSequence,
@@ -15,6 +16,7 @@ import {
   type FlipsRule,
 } from './flips-score.js'
 import { ConcurrencyLimiter } from '../../audit-concurrency.js'
+import { isAllowedSetting, requestCarries, strategySetting, type ThinkingSetting } from '../../audit-thinking.js'
 import { readAnswerText } from '../shared/output-usage.js'
 import { untilAborted } from '../../utils.js'
 import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from '../../proxy-evidence.js'
@@ -160,6 +162,16 @@ export interface FlipsReferenceV1 {
   pairs: FlipsReferencePairV1[]
   /** How the reference was asked: requests sent counting tries, rate-limit answers among them, and seconds taken. */
   asked?: { tries: number; rateLimited: number; seconds: number }
+  /** The thinking setting every reference request carried (`FLIPS_THINKING`): its bank's, or the eval's switch. */
+  thinking: ThinkingSetting
+}
+
+/** The thinking setting each side's requests carried (`FLIPS_THINKING`). */
+export interface FlipsThinkingV1 {
+  /** The seller's own discovered setting, or the bank's when its discovery failed. */
+  seller: ThinkingSetting
+  /** The bank's setting where the bank's discovery reached 0 reasoning tokens with it; else the eval's switch. */
+  reference: ThinkingSetting
 }
 
 /** One scheduled slot of the seller: its signed request, or null when it never got a reply within the budget. */
@@ -198,6 +210,11 @@ export interface FlipsV1 {
   service: string
   referenceUpstream: unknown
   referenceOneProvider: boolean
+  /**
+   * The thinking setting each side's requests carried. Every record an audit stores has it (`validateFlips`); a record
+   * without it (an eval replay's) is read as the eval's switch on both sides, the body it was asked with.
+   */
+  thinking?: FlipsThinkingV1
   pairs: FlipsPairV1[]
   /** Slots asked again because they got no reply at all. */
   reasks: number
@@ -500,9 +517,10 @@ function repeatShare(texts: readonly string[]): number {
  * both pairs (a named one, or a route pinned to one), and every slot asked exactly the sellers' body. Null when usable.
  */
 export function flipsReferenceProblem(
-  reference: { draw: FlipsDrawV1; service: string; referenceOneProvider: boolean; pairs: readonly FlipsReferencePairV1[] },
+  reference: { draw: FlipsDrawV1; service: string; referenceOneProvider: boolean; pairs: readonly FlipsReferencePairV1[]; thinking?: ThinkingSetting },
   rule: FlipsRule = FLIPS_RULE,
 ): string | null {
+  const thinking = reference.thinking ?? flipsFixedSetting(reference.draw.model)
   if (reference.pairs.length !== rule.pairsPerCheck) return `${reference.pairs.length} word pairs, the rule asks ${rule.pairsPerCheck}`
   for (const pair of reference.pairs) {
     const label = `${pair.words[0]}/${pair.words[1]}`
@@ -512,7 +530,8 @@ export function flipsReferenceProblem(
     if (pair.replies.some((reply) => reply.thinkBlock === true)) return `${label}: a reference reply writes its reasoning into its answer`
     // Under a rule with `noSequence` an over-long reply is left out like one without a sequence (`referenceLeftOut`).
     if (!rule.noSequence && pair.replies.some((reply) => (reply.content?.length ?? 0) > FLIPS_REPLY_MAX_CHARS)) return `${label}: a reference reply is longer than ${FLIPS_REPLY_MAX_CHARS} characters`
-    const expected = requestShape(flipsRequestBody(reference.draw.model, reference.service, pair.words, rule))
+    if (pair.replies.some((reply) => !requestCarries(parseJson(reply.request), thinking))) return `${label}: a reference request does not carry its thinking setting`
+    const expected = requestShape(flipsRequestBody(reference.draw.model, reference.service, pair.words, rule, thinking))
     if (pair.replies.some((reply) => requestShape(parseJson(reply.request)) !== expected)) return `${label}: the reference was not asked the sellers' request`
   }
   const providers = new Set(reference.pairs.flatMap((pair) => pair.replies.map((reply) => reply.provider)))
@@ -555,7 +574,7 @@ type FlipsJudged = Pick<FlipsV1, 'outcome' | 'counted' | 'score' | 'scoreMax' | 
  * the second look's bar; a second look with no result (a slot unanswered, say) leaves the first look's judgement. Pure.
  */
 export function judgeFlips(
-  record: Pick<FlipsV1, 'draw' | 'service' | 'referenceOneProvider' | 'pairs'> & Pick<Partial<FlipsV1>, 'secondLook'>,
+  record: Pick<FlipsV1, 'draw' | 'service' | 'referenceOneProvider' | 'pairs'> & Pick<Partial<FlipsV1>, 'secondLook' | 'thinking'>,
   rule: FlipsRule = FLIPS_RULE,
 ): FlipsJudged {
   const stage = record.draw.stage
@@ -569,6 +588,11 @@ export function judgeFlips(
   return { ...second, reason: `second look, ${replies * rule.pairsPerCheck} replies: ${second.reason} (first look: ${first.reason})` }
 }
 
+/** The thinking setting of each side of a record: its own, or the eval's switch on both sides for a record without one. */
+export function flipsThinkingOf(record: Pick<FlipsV1, 'draw'> & Pick<Partial<FlipsV1>, 'thinking'>): FlipsThinkingV1 {
+  return record.thinking ?? { seller: flipsFixedSetting(record.draw.model), reference: flipsFixedSetting(record.draw.model) }
+}
+
 /** Whether a judged first audit calls for a second look under its rule: scored between its bars. */
 export function flipsSecondLookDue(judged: Pick<FlipsV1, 'outcome' | 'p'>, stage: FlipsStage, rule: FlipsRule): boolean {
   return rule.secondLook !== undefined && stage === 'first' && judged.outcome === 'inconclusive' && judged.p !== null
@@ -576,7 +600,7 @@ export function flipsSecondLookDue(judged: Pick<FlipsV1, 'outcome' | 'p'>, stage
 
 /** One look of a check: `replies` seller slots per pair, judged with the calibration of that size against `bar`. */
 function judgeLook(
-  record: Pick<FlipsV1, 'draw' | 'service' | 'referenceOneProvider' | 'pairs'>,
+  record: Pick<FlipsV1, 'draw' | 'service' | 'referenceOneProvider' | 'pairs'> & Pick<Partial<FlipsV1>, 'thinking'>,
   rule: FlipsRule,
   look: { replies: number; bar: number; barName: string },
 ): FlipsJudged {
@@ -585,7 +609,8 @@ function judgeLook(
   const none = (reason: string) => ({ outcome: 'inconclusive' as const, counted, score: null, scoreMax: null, p: null, reason })
   const replies = look.replies
   if (record.pairs.length !== rule.pairsPerCheck) return none(`${record.pairs.length} word pairs, the rule asks ${rule.pairsPerCheck}`)
-  const problem = flipsReferenceProblem({ draw: record.draw, service: record.service, referenceOneProvider: record.referenceOneProvider, pairs: record.pairs.map((pair) => pair.reference) }, rule)
+  const thinking = flipsThinkingOf(record)
+  const problem = flipsReferenceProblem({ draw: record.draw, service: record.service, referenceOneProvider: record.referenceOneProvider, pairs: record.pairs.map((pair) => pair.reference), thinking: thinking.reference }, rule)
   if (problem) {
     // The reference's own replies without a sequence keep their code beside the reason.
     const withoutSequence = noSequenceOf('reference', record.pairs.map((pair) => pair.reference), rule)
@@ -595,7 +620,7 @@ function judgeLook(
   for (const pair of record.pairs) {
     const label = `${pair.words[0]}/${pair.words[1]}`
     if (pair.seller.length !== replies) return none(`${label}: ${pair.seller.length} seller slots, the stage asks ${replies}`)
-    const expected = requestShape(flipsRequestBody(record.draw.model, record.service, pair.words, rule))
+    const expected = requestShape(flipsRequestBody(record.draw.model, record.service, pair.words, rule, thinking.seller))
     const answers = pair.seller.map(sellerAnswer)
     if (answers.some((answer) => answer === null)) return none(describeUnanswered(record.pairs.flatMap((entry) => entry.seller)))
     const signed = answers as NonNullable<(typeof answers)[number]>[]
@@ -603,6 +628,7 @@ function judgeLook(
     if (signed.some((answer) => answer.reply.content === null)) return none(`${label}: a signed answer has no readable text`)
     if (signed.some((answer) => answer.thinkBlock)) return none(`${label}: a seller answer writes its reasoning into its text`)
     if (signed.some((answer) => answer.reply.content!.length > FLIPS_REPLY_MAX_CHARS)) return none(`${label}: a seller answer is longer than ${FLIPS_REPLY_MAX_CHARS} characters`)
+    if (signed.some((answer) => !requestCarries(answer.requestBody, thinking.seller))) return none(`${label}: a seller request does not carry its thinking setting`)
     if (signed.some((answer) => requestShape(answer.requestBody) !== expected)) return none(`${label}: a seller request is not the reference's`)
     read.push({ pair, answers: signed })
   }
@@ -728,6 +754,14 @@ export function flipsRequestCount(record: FlipsV1): number {
 export function validateFlips(record: FlipsV1): void {
   const rule = flipsRuleById(record.rule)
   if (!rule) throw new Error(`unknown FLIPS rule ${record.rule}`)
+  // Each side's setting is one its declaration allows (`FLIPS_THINKING`): the seller's own discovered setting, or its
+  // bank's when its discovery failed; the reference's bank setting, or the eval's switch for the model. The judge below
+  // holds every signed seller request and every stored reference request to them (`requestCarries`).
+  if (!record.thinking) throw new Error('a FLIPS check does not name the thinking setting of its requests')
+  if (!isAllowedSetting(record.thinking.seller, { discovery: true, bank: true })) throw new Error('a FLIPS check names a seller thinking setting its rule does not allow')
+  if (!isAllowedSetting(record.thinking.reference, { bank: true, fixed: flipsFixedSetting(record.draw.model) })) {
+    throw new Error('a FLIPS check names a reference thinking setting its rule does not allow')
+  }
   const drawn = drawFlipsPairs(record.draw, rule)
   if (canonicalJsonStringify(drawn) !== canonicalJsonStringify(record.pairs.map((pair) => pair.words))) {
     throw new Error('the FLIPS pairs are not the ones its draw gives')
@@ -829,10 +863,12 @@ export async function prepareFlipsReference(input: {
   }>
   rule?: FlipsRule
   now?: () => number
+  /** The setting every reference request carries (`FLIPS_THINKING`). */
+  thinking: ThinkingSetting
 }): Promise<FlipsReferenceV1> {
   const rule = input.rule ?? FLIPS_RULE
   const now = input.now ?? Date.now
-  const bodies = input.pairs.flatMap((pair) => Array.from({ length: rule.referenceRepliesPerPair }, () => flipsRequestBody(input.model, input.service, pair, rule)))
+  const bodies = input.pairs.flatMap((pair) => Array.from({ length: rule.referenceRepliesPerPair }, () => flipsRequestBody(input.model, input.service, pair, rule, input.thinking)))
   const startedAt = now()
   const first = await input.ask(bodies)
   // A reference request that got no reply at all is an outage on the auditor's side, never a sample. The requests with
@@ -863,6 +899,7 @@ export async function prepareFlipsReference(input: {
   const decoder = new TextDecoder()
   return {
     stage: input.stage,
+    thinking: input.thinking,
     upstream: asked.upstream,
     oneProvider: asked.oneProvider,
     asked: {
@@ -930,6 +967,8 @@ export async function runFlips(input: {
   seller: Omit<SignedSellerRequestInput, 'peerId' | 'service' | 'serviceAliases'> & { peerId: string; service: string; serviceAliases?: readonly string[] }
   draw: FlipsDrawV1
   reference: FlipsReferenceV1
+  /** The setting every seller request carries: the seller's own (`FLIPS_THINKING`). */
+  sellerThinking: ThinkingSetting
   rule?: FlipsRule
   now?: () => number
 }): Promise<FlipsV1> {
@@ -937,7 +976,7 @@ export async function runFlips(input: {
   const replies = rule.repliesPerPair[input.draw.stage]
   const ask = (pair: FlipsPair, onSend: () => void) => askSellerSigned(
     { ...input.seller, serviceAliases: input.seller.serviceAliases ?? [], onSend } as SignedSellerRequestInput,
-    flipsRequestBody(input.draw.model, input.seller.service, pair, rule),
+    flipsRequestBody(input.draw.model, input.seller.service, pair, rule, input.sellerThinking),
   )
   const answered = (request: SignedSellerRequestV1): boolean => signedExchange(request) !== null
   const now = input.now ?? Date.now
@@ -984,6 +1023,7 @@ export async function runFlips(input: {
     service: input.seller.service,
     referenceUpstream: input.reference.upstream,
     referenceOneProvider: input.reference.oneProvider,
+    thinking: { seller: input.sellerThinking, reference: input.reference.thinking },
     pairs,
     reasks,
   }
@@ -1040,6 +1080,8 @@ export interface FlipsScreen<Settings> {
     settings: Settings,
     options: {
       stage: FlipsStage
+      /** The seller's own thinking setting (`FLIPS_THINKING`, resolved by the audit). */
+      sellerThinking: ThinkingSetting
       clock?: SignedSellerRequestInput['clock']
       signal?: AbortSignal
     },
@@ -1061,6 +1103,8 @@ export function createFlipsScreen<Settings>(input: {
   requestTimeoutMs?: number
   fetchFn?: typeof fetch
   ask: (settings: Settings) => (bodies: readonly Record<string, unknown>[], signal: AbortSignal) => ReturnType<Parameters<typeof prepareFlipsReference>[0]['ask']>
+  /** The setting the reference is asked with for a question set's bank (`FLIPS_THINKING`, `resolveThinking`). */
+  referenceThinking: (settings: Settings) => ThinkingSetting
   rule?: FlipsRule
   probe?: FlipsProbe
   onReady?: (reference: FlipsReferenceV1) => void
@@ -1108,7 +1152,7 @@ export function createFlipsScreen<Settings>(input: {
       const draw = drawOf(kind)
       reference = prepareFlipsReference({
         model: input.model, service, stage: draw.stage, pairs: drawFlipsPairs(draw, rule),
-        ask: (bodies) => input.ask(settings)(bodies, signal), rule,
+        ask: (bodies) => input.ask(settings)(bodies, signal), rule, thinking: input.referenceThinking(settings),
       }).then((prepared) => {
         try {
           input.onReady?.(prepared)
@@ -1116,7 +1160,7 @@ export function createFlipsScreen<Settings>(input: {
           // Storing the reference beside the audits is best effort.
         }
         // Checked as soon as it is ready, so an unusable reference is reported even when no seller reaches FLIPS.
-        const problem = flipsReferenceProblem({ draw, service, referenceOneProvider: prepared.oneProvider, pairs: prepared.pairs }, rule)
+        const problem = flipsReferenceProblem({ draw, service, referenceOneProvider: prepared.oneProvider, pairs: prepared.pairs, thinking: prepared.thinking }, rule)
         if (problem) unavailable({ stage: kind, code: problem === FLIPS_ROUTE_NOT_SUPPORTED ? 'route-not-supported' : 'reference-unusable', detail: problem })
         return prepared
       })
@@ -1150,9 +1194,10 @@ export function createFlipsScreen<Settings>(input: {
     const draw = drawOf(kind)
     // The wait for the reference is in FLIPS's time too (a follow-up's is asked only now).
     const prepared = await untilTimeUp(referenceFor(kind, seller.service, settings), signal)
-    const problem = flipsReferenceProblem({ draw, service: seller.service, referenceOneProvider: prepared.oneProvider, pairs: prepared.pairs }, rule)
+    const problem = flipsReferenceProblem({ draw, service: seller.service, referenceOneProvider: prepared.oneProvider, pairs: prepared.pairs, thinking: prepared.thinking }, rule)
     const stored = {
       rule: rule.id, draw, service: seller.service, referenceUpstream: prepared.upstream, referenceOneProvider: prepared.oneProvider,
+      thinking: { seller: options.sellerThinking, reference: prepared.thinking },
     }
     if (problem) {
       // The reference is checked before the seller is asked: an unusable one costs the seller nothing.
@@ -1176,6 +1221,7 @@ export function createFlipsScreen<Settings>(input: {
       },
       draw,
       reference: prepared,
+      sellerThinking: options.sellerThinking,
       rule,
     })
   }
@@ -1275,6 +1321,9 @@ export function flipsFingerprint(): Record<string, unknown> {
     pools: [flipsPool('first'), flipsPool('confirm')],
     draw: (['first', 'confirm'] as const).map((stage) => drawFlipsPairs({ auditor: '0x00', model: 'sample', epoch: '1', seed: flipsSeed('00', { model: 'sample', epoch: '1', runId: 'r', stage }), stage })),
     reaskBudget: FLIPS_REASK_BUDGET,
+    // Each side's own thinking setting in a FLIPS body (`FLIPS_THINKING`): the eval's switch, a discovered field, a prefill.
+    bodies: [flipsFixedSetting('sample'), strategySetting('disable-thinking'), strategySetting('prefill'), strategySetting('bare')]
+      .map((thinking) => flipsRequestBody('kimi-k3', 'svc', ['amber', 'basin'], FLIPS_RULE, thinking)),
     // Which first looks call for a second look: a first audit scored between its bars, and nothing else.
     secondLookDue: ([['inconclusive', 0.05, 'first'], ['inconclusive', null, 'first'], ['flag', 0.001, 'first'], ['pass', 0.5, 'first'], ['inconclusive', 0.05, 'confirm']] as const)
       .map(([outcome, p, stage]) => flipsSecondLookDue({ outcome, p }, stage, FLIPS_RULE)),

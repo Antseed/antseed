@@ -1,5 +1,6 @@
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import { outcome, stored, type RecordCheck } from '../../audit-method.js'
+import { asSuppression } from '../../audit-thinking.js'
 import { referenceDidNotApply } from '../shared/output-usage.js'
 import {
   OUTPUT_ECHO_RULE, createOutputEchoScreen, describeOutputEchoFlag, outputEchoFingerprint, outputEchoPaidRequests, outputEchoPrompt, summarizeOutputEcho,
@@ -52,13 +53,16 @@ export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
     summaryMismatch: 'the summary\'s echo check is not the one in its evidence',
   },
   phase: 'after-questions',
-  asksWithSellerThinking: true,
+  thinking: {
+    needs: { seller: 'own', reference: 'bank', crowd: 'reference' },
+    why: 'the seller as for its questions; the reference and the model\'s other sellers with the bank\'s setting',
+  },
   screen: (echo) => ({
     ready: (audit) => echo.ready(audit.bank),
     check: (audit) => echo.check(audit.seller, audit.bank, {
-      thinking: audit.thinking,
+      thinking: asSuppression(audit.thinking.seller),
       // The model's other sellers are asked with the reference's thinking setting.
-      crowdThinking: audit.crowdThinking,
+      crowdThinking: audit.thinking.crowd && asSuppression(audit.thinking.crowd),
       precheckMatch: audit.earlier.tokenizerPrecheck?.outcome === 'match',
       clock: audit.clock,
       // Work for the fixed amount alone keeps to the audit's spare time.

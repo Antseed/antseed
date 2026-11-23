@@ -1,0 +1,62 @@
+{
+ "attempts": [
+  {
+   "attemptCosts": [],
+   "failure": "{\"error\":{\"message\":\"this thinking setting is not supported\"}}",
+   "maxTokens": 800,
+   "reasoningTokens": null,
+   "requestIds": ["<seller: thinking discovery #1>"],
+   "status": 400,
+   "strategy": "reasoning-effort-none",
+   "validAnswers": null
+  },
+  {
+   "attemptCosts": [],
+   "failure": "{\"error\":{\"message\":\"this thinking setting is not supported\"}}",
+   "maxTokens": 800,
+   "reasoningTokens": null,
+   "requestIds": ["<seller: thinking discovery #2>"],
+   "status": 400,
+   "strategy": "reasoning-effort-minimal",
+   "validAnswers": null
+  },
+  {
+   "attemptCosts": [],
+   "failure": "{\"error\":{\"message\":\"this thinking setting is not supported\"}}",
+   "maxTokens": 800,
+   "reasoningTokens": null,
+   "requestIds": ["<seller: thinking discovery #3>"],
+   "status": 400,
+   "strategy": "disable-thinking",
+   "validAnswers": null
+  },
+  {
+   "answersOnly": true,
+   "attemptCosts": [
+    {
+     "estimatedCostUsd": 0.00037,
+     "inputTokens": 310,
+     "inputUsdPerMillion": 1,
+     "outputTokens": 40,
+     "outputUsdPerMillion": 2,
+     "provider": null,
+     "service": null,
+     "tokenSource": null,
+     "totalTokens": 350
+    }
+   ],
+   "billedOutputTokens": 40,
+   "maxTokens": 800,
+   "reasoningShown": false,
+   "reasoningTokens": 0,
+   "requestIds": ["<seller: thinking discovery #4>"],
+   "status": null,
+   "strategy": "enable-thinking-false",
+   "truncated": false,
+   "validAnswers": 10
+  }
+ ],
+ "maxTokens": 160,
+ "method": "kbf-reference-code-2026-09-30",
+ "strategy": "enable-thinking-false"
+}

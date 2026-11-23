@@ -19,6 +19,7 @@ Published to npm (bin `antseed`). Node, ES modules. The desktop and Nix ship it 
 | Plugins install with `--ignore-scripts`. A trusted verifier pins an exact version; providers never do. | `src/plugins/registry.test.ts`, `src/plugins/loader.test.ts` |
 | A stale "AntSeed Local CA" (same CN, other fingerprint) is classified `stale` and purged on install. | `src/system-proxy/ca-manager.test.ts` (classification only) |
 | No duplicate command names or aliases in the tree. | `src/cli/program.test.ts` |
+| Every verifier test, the questions included, declares the thinking setting each side of its requests needs (`thinking` on `RecordCheck` and `QUESTIONS_CHECK`, `src/verifier/audit-thinking.ts`) and never carries its own setting table or discovery. The audit resolves it from thinking discovery (the seller's per run, the reference's from its bank), so every test asks without thinking the same way and the settings are in the rules hash. A table of fixed bodies (FLIPS's eval switch) is only a declared fallback. | `src/verifier/audit-thinking.test.ts` (a test without a declaration does not typecheck) |
 
 ## Connections
 

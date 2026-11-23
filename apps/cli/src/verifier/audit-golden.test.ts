@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import test, { type TestContext } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { THINKING_DISCOVERY_PROBES, canonicalHashBytes32, type KbfReferenceV1 } from '@antseed/fingerprints'
+import { THINKING_DISCOVERY_PROBES, canonicalHashBytes32, computeReferenceId, type KbfReferenceV1 } from '@antseed/fingerprints'
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, decodeHttpRequest, decodeHttpResponse, encodeHttpRequest, encodeHttpResponse,
   type PeerId, type PeerInfo,
@@ -28,6 +28,8 @@ import { ConcurrencyLimiter } from './audit-concurrency.js'
 import { decidedRecords, type ConfirmationIdentity, type StoredCheckRecords } from './audit-checks.js'
 import { flaggingChecks, passedChecks } from './audit-checks.js'
 import { createFlipsScreen, flipsSeed } from './methods/flips/flips.js'
+import { FLIPS_THINKING } from './methods/flips/flips-thinking.js'
+import { resolveThinking } from './audit-thinking.js'
 import type { FlipsPair } from './methods/flips/flips-score.js'
 import { validateAuditMatchesSummary } from './model-audit.js'
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
@@ -58,6 +60,24 @@ const PROXY = 'http://127.0.0.1:8390'
 const NOW = Date.parse('2026-10-07T00:00:00.000Z')
 /** Thirty questions: three batches, so a checkpoint can hold some of them. */
 const REFERENCE = referenceFixture(MODEL, 30)
+/**
+ * The same question set from a bank whose own discovery found the reference's setting (`reasoning.effort: "none"`,
+ * answered at 0 reasoning tokens): what a seller whose discovery failed is sent, the crowd's setting, and the setting
+ * the reference's FLIPS sample follows where the rule says so.
+ */
+const REFERENCE_WITH_SETTING: KbfReferenceV1 = (() => {
+  const value: KbfReferenceV1 = structuredClone(REFERENCE)
+  value.generator.params = {
+    ...value.generator.params,
+    referenceEndpointRequest: { reasoningStrategy: 'reasoning-effort-none', requestOverrides: { reasoning: { effort: 'none' } }, requestOmissions: [] },
+    thinkingDiscovery: {
+      version: 1, method: 'kbf-reference-code-2026-09-30', contrasts: {},
+      target: { model: MODEL, strategy: 'reasoning-effort-none', attempts: [{ strategy: 'reasoning-effort-none', maxTokens: 800, status: null, validAnswers: 10, reasoningTokens: 0, answersOnly: true, truncated: false }] },
+    },
+  }
+  value.referenceId = computeReferenceId(value)
+  return value
+})()
 
 // The audit draws from `crypto.randomInt` with no way to pass a seed: the prompt variant of each question batch, the
 // cap check's prompt and limit, the texts the cap and echo checks write. Here each part of an audit draws from its own
@@ -133,7 +153,29 @@ interface Seller {
   questions: 'answered' | 'key-deleted' | 'unavailable'
   /** A request with a reply limit is never answered: it ends when the audit stops. */
   cappedHangs: boolean
+  /**
+   * Its answer to a thinking-discovery request, by the setting the request carries (`discoverySetting`): the reasoning
+   * tokens it bills beside the ten answers, a refusal, or only `answers` of the ten answered.
+   */
+  discovery: (setting: string) => { reasoning: number } | { status: number } | { answers: number }
 }
+
+/** The thinking setting a discovery request carries, by the strategy's name (`thinkingStrategyRequest`). */
+function discoverySetting(body: Record<string, unknown>): string {
+  const reasoning = body['reasoning'] as { effort?: string; enabled?: boolean } | undefined
+  if (reasoning?.effort) return `reasoning-effort-${reasoning.effort}`
+  if (reasoning?.enabled === false) return 'reasoning-enabled-false'
+  if ((body['thinking'] as { type?: string } | undefined)?.type === 'disabled') return 'disable-thinking'
+  if (body['enable_thinking'] === false) return 'enable-thinking-false'
+  const messages = body['messages'] as Array<{ role: string }>
+  if (messages.at(-1)?.role === 'assistant') return 'prefill'
+  return (body['max_tokens'] as number) > 800 ? 'bare-expanded' : 'bare'
+}
+
+/** A seller's discovery answers from a table by setting, with `otherwise` for every setting the table does not name. */
+const discoveryBy = (table: Record<string, ReturnType<Seller['discovery']>>, otherwise: ReturnType<Seller['discovery']>): Seller['discovery'] => (
+  (setting) => table[setting] ?? otherwise
+)
 
 const HONEST: Seller = {
   inputTokens,
@@ -142,6 +184,8 @@ const HONEST: Seller = {
   sequence: (pair, slot) => randomSequence(pair, `seller ${pair.join('/')} ${slot}`),
   questions: 'answered',
   cappedHangs: false,
+  // It ignores the first setting (it still reasons) and keeps the second.
+  discovery: discoveryBy({ 'reasoning-effort-none': { reasoning: 12 } }, { reasoning: 0 }),
 }
 
 /** What each request costs, by kind: unlike amounts, so a sum shows which were added and in which order. */
@@ -283,9 +327,11 @@ class Network {
         return answered(chat(values.map((value, index) => `(${index + 1}) ${value}`).join('\n'), 'stop', { prompt_tokens: 420, completion_tokens: 55 }))
       }
       case 'discovery': {
-        // The seller ignores the first setting (it still reasons) and keeps the second.
-        const reasoning = (body['reasoning'] as { effort?: string } | undefined)?.effort === 'none' ? 12 : 0
-        const facts = THINKING_DISCOVERY_PROBES.map((probe, index) => `(${index + 1}) ${probe.consensus}`).join('\n')
+        const given = seller.discovery(discoverySetting(body))
+        if ('status' in given) return answered({ error: { message: 'this thinking setting is not supported' } }, given.status)
+        const answers = 'answers' in given ? given.answers : THINKING_DISCOVERY_PROBES.length
+        const reasoning = 'reasoning' in given ? given.reasoning : 0
+        const facts = THINKING_DISCOVERY_PROBES.slice(0, answers).map((probe, index) => `(${index + 1}) ${probe.consensus}`).join('\n')
         return answered(chat(facts, 'stop', { prompt_tokens: 310, completion_tokens: 40 + reasoning, completion_tokens_details: { reasoning_tokens: reasoning } }))
       }
       case 'pre-check':
@@ -434,6 +480,8 @@ interface AuditInput {
   lastAuditorAttempt?: true
   /** The seller's idle limit; short in the scenario whose audit runs out of time. */
   auditTimeoutMs?: number
+  /** The question set's bank, when not `REFERENCE`. */
+  reference?: KbfReferenceV1
 }
 
 interface Observed {
@@ -483,6 +531,8 @@ function contextFor(network: Network, evidenceDir: string, input: AuditInput, ch
     ...proxy, model: MODEL, auditor: AUDITOR, epoch: EPOCH, limiter: new ConcurrencyLimiter(4),
     seedFor: (stage) => flipsSeed('a made-up master of the epoch', { model: MODEL, epoch: EPOCH, runId: RUN_ID, stage }),
     ask: () => network.sequences,
+    // As the run does: the reference with its bank's setting where that reached 0 reasoning tokens, else the eval's.
+    referenceThinking: (bank) => resolveThinking(FLIPS_THINKING, { model: MODEL, bank, discovery: null }).reference,
   })
   return {
     proxy: { baseUrl: PROXY, statePath: join(evidenceDir, 'buyer.state.json'), pid: 4242, peers: [] },
@@ -554,7 +604,7 @@ async function audit(t: TestContext, network: Network, input: AuditInput): Promi
       context: contextFor(network, evidenceDir, input, checkpoints),
       target: auditedPeer(),
       service: SERVICE,
-      reference: REFERENCE,
+      reference: input.reference ?? REFERENCE,
       auditId: input.auditId,
       checkpointIdentity: { runId: RUN_ID, epoch: EPOCH, model: MODEL },
       ...(input.confirming ? { confirming: input.confirming } : {}),
@@ -833,7 +883,7 @@ scenario('c-precheck-mismatch-backed-by-crowd', 'a seller off the reference\'s t
   await expect(network, await audit(t, network, { auditId: 'audit-c' }))
 })
 
-scenario('d-confirm-flips-flag', 'a confirmation of a FLIPS flag asks FLIPS at the confirmation stage, and repeats the flag', async (t, expect) => {
+scenario('d-confirm-flips-flag', 'a confirmation of a FLIPS flag asks FLIPS at the confirmation stage; while FLIPS is recorded only, its flag is stored and the confirmation stays undecided', async (t, expect) => {
   const network = new Network(sellerThat(STUCK))
   await expect(network, await audit(t, network, { auditId: 'audit-d-flips', confirming: report('flips') }))
 })
@@ -890,7 +940,7 @@ scenario('g-skipped-no-flag', 'a seller skipped at its first question batch with
   await expect(network, await audit(t, network, { auditId: 'audit-g-skip' }))
 })
 
-scenario('h-flips-reference-not-whole', 'a FLIPS reference that is not whole, where FLIPS counts: the audit is not started and the seller is asked nothing', async (t, expect) => {
+scenario('h-flips-reference-not-whole', 'a FLIPS reference that is not whole: while FLIPS is recorded only it holds no audit back, and the audit runs without FLIPS', async (t, expect) => {
   const network = new Network(HONEST, { flipsReference: 'holes' })
   await expect(network, await audit(t, network, { auditId: 'audit-h' }))
 })
@@ -929,6 +979,68 @@ scenario('m-carried-echo-without-its-precheck', 'a carried echo check whose pre-
   const network = new Network(HONEST)
   const { tokenizerPrecheck: _precheck, ...carried } = recordsOf(await earlier(t, network, { auditId: 'audit-m-earlier' }))
   await expect(network, await audit(t, network, { auditId: 'audit-m', carried }))
+})
+
+// One honest seller per outcome of its thinking discovery: what each test sends it (its setting is in every line of
+// `asked`, and its bytes in every stored request). Written before the tests took their setting from one declaration,
+// so that change is held to the bytes each outcome sent before it.
+
+const refused = { status: 400 } as const
+scenario('n1-discovery-effort-none', 'discovery keeps `reasoning.effort: "none"` at 0 reasoning tokens', async (t, expect) => {
+  const network = new Network(sellerThat({ discovery: discoveryBy({}, { reasoning: 0 }) }))
+  await expect(network, await audit(t, network, { auditId: 'audit-n1' }))
+})
+
+scenario('n2-discovery-thinking-disabled', 'the effort settings are refused, and discovery keeps `thinking: {type: "disabled"}`', async (t, expect) => {
+  const network = new Network(sellerThat({ discovery: discoveryBy({ 'reasoning-effort-none': refused, 'reasoning-effort-minimal': refused }, { reasoning: 0 }) }))
+  await expect(network, await audit(t, network, { auditId: 'audit-n2' }))
+})
+
+scenario('n3-discovery-enable-thinking-false', 'the effort settings and `thinking` are refused, and discovery keeps `enable_thinking: false`', async (t, expect) => {
+  const network = new Network(sellerThat({
+    discovery: discoveryBy({ 'reasoning-effort-none': refused, 'reasoning-effort-minimal': refused, 'disable-thinking': refused }, { reasoning: 0 }),
+  }))
+  await expect(network, await audit(t, network, { auditId: 'audit-n3' }))
+})
+
+scenario('n4-discovery-prefill', 'every request field is accepted and ignored, and discovery keeps the `<think></think>` prefill', async (t, expect) => {
+  const network = new Network(sellerThat({ discovery: discoveryBy({ prefill: { reasoning: 0 }, bare: { reasoning: 0 } }, { reasoning: 30 }) }))
+  await expect(network, await audit(t, network, { auditId: 'audit-n4' }))
+})
+
+scenario('n5-discovery-bare', 'every thinking field is refused and the prefill is ignored: discovery keeps `bare`, which does not reason', async (t, expect) => {
+  const network = new Network(sellerThat({ discovery: discoveryBy({ prefill: { reasoning: 30 }, bare: { reasoning: 0 } }, refused) }))
+  await expect(network, await audit(t, network, { auditId: 'audit-n5' }))
+})
+
+scenario('n6-discovery-least-reasoning', 'nothing turns thinking off: discovery keeps the setting that reasoned least (`kbf-discovery-least-reasoning-v1`)', async (t, expect) => {
+  const network = new Network(sellerThat({
+    discovery: discoveryBy({
+      'reasoning-effort-none': { reasoning: 50 }, 'reasoning-effort-minimal': { reasoning: 20 }, 'disable-thinking': { reasoning: 40 },
+      'enable-thinking-false': { reasoning: 60 }, prefill: { reasoning: 70 }, bare: { reasoning: 90 },
+    }, { reasoning: 80 }),
+  }))
+  await expect(network, await audit(t, network, { auditId: 'audit-n6' }))
+})
+
+scenario('n7-discovery-bare-expanded', 'no setting answers enough questions in the usual budget: discovery keeps `bare` with fifty times the tokens', async (t, expect) => {
+  const network = new Network(sellerThat({ discovery: discoveryBy({ 'bare-expanded': { reasoning: 2_000 } }, { answers: 2 }) }))
+  await expect(network, await audit(t, network, { auditId: 'audit-n7' }))
+})
+
+scenario('n8-discovery-failed-bank-setting', 'the seller refuses every discovery request: it is sent the setting its question set\'s bank found', async (t, expect) => {
+  const network = new Network(sellerThat({ discovery: discoveryBy({}, refused) }))
+  await expect(network, await audit(t, network, { auditId: 'audit-n8', reference: REFERENCE_WITH_SETTING }))
+})
+
+scenario('n9-echo-crowd-bank-setting', 'an over-billing seller from a bank with a setting: the crowd is asked with the bank\'s setting, the seller with its own', async (t, expect) => {
+  const network = new Network(sellerThat(OVERBILLED))
+  await expect(network, await audit(t, network, { auditId: 'audit-n9', reference: REFERENCE_WITH_SETTING }))
+})
+
+scenario('n10-discovery-only-enabled-false', 'only `reasoning: {enabled: false}`, a setting FLIPS sends, turns thinking off; every other setting reasons a little', async (t, expect) => {
+  const network = new Network(sellerThat({ discovery: discoveryBy({ 'reasoning-enabled-false': { reasoning: 0 }, bare: { reasoning: 45 } }, { reasoning: 30 }) }))
+  await expect(network, await audit(t, network, { auditId: 'audit-n10' }))
 })
 
 test('audit golden: every stored record is named by a scenario', async () => {

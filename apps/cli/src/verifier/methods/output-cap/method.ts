@@ -1,5 +1,6 @@
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import { outcome, stored, type RecordCheck } from '../../audit-method.js'
+import { asSuppression } from '../../audit-thinking.js'
 import { referenceDidNotApply } from '../shared/output-usage.js'
 import { TOKENIZER_PRECHECK_RULE } from '../tokens/tokenizer-precheck.js'
 import {
@@ -31,10 +32,13 @@ export const OUTPUT_CAP_CHECK: RecordCheck<'outputCap'> = {
     summaryMismatch: 'the summary\'s cap check is not the one in its evidence',
   },
   phase: 'after-questions',
-  asksWithSellerThinking: true,
+  thinking: {
+    needs: { seller: 'own', reference: 'bank' },
+    why: 'the seller as for its questions; the reference with its bank\'s setting, on the route the bank was enrolled on',
+  },
   screen: (cap) => ({
     ready: (audit) => cap.ready(audit.bank),
-    check: (audit) => cap.check(audit.seller, audit.bank, audit.thinking, audit.clock),
+    check: (audit) => cap.check(audit.seller, audit.bank, asSuppression(audit.thinking.seller), audit.clock),
   }),
   toggle: { key: 'outputChecks', pinned: true },
   fingerprint: outputCapFingerprint,

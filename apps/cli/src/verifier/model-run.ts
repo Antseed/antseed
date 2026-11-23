@@ -9,7 +9,6 @@ import {
   KBF_OPTIONAL_SAMPLING_FIELDS,
   buildKbfChatRequestBody,
   isKbfThinkingSuppressionRejection,
-  kbfTargetThinkingSuppression,
   type KbfThinkingSuppression,
   canonicalHashBytes32,
   isKbfSamplingFieldRejection,
@@ -37,11 +36,12 @@ import {
 import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
 import { auditedServiceNames } from './audited-models.js'
 import {
-  ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, recordsOf, withoutOrphans,
+  ALL_TESTS_FORMAT, QUESTIONS_CHECK, earliestAuditorTime, readingsOfEvidence, recordsOf, withoutOrphans,
   type AuditCheckId, type CheckRecords, type CheckScreens, type CheckSlot, type CheckSummaries, type ConfirmationIdentity, type ListedCheck, type RecordCheck,
   type StoredCheckRecords,
 } from './audit-checks.js'
 import { AuditNotStarted, type MethodScreen, type SellerAudit, type SellerAuditStart } from './audit-method.js'
+import { asSuppression, needsSellerDiscovery, resolveThinking } from './audit-thinking.js'
 import { settleAuditVerdict } from './close-call.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
@@ -68,7 +68,6 @@ import {
   THINKING_DISCOVERY_TIMEOUT_MS,
   ThinkingDiscoveryError,
   discoverThinkingSuppression,
-  thinkingStrategyRequest,
   type ThinkingDiscoveryProbe,
 } from './thinking-suppression.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
@@ -837,11 +836,13 @@ export async function verifyModelTarget(input: {
   const records = (): StoredCheckRecords => inRunOrder(found)
   /** The tests this attempt ran itself: a carried record was paid for by the attempt that ran it. */
   const freshRecords = (): StoredCheckRecords => inRunOrder(found, (slot) => found[slot] !== carried[slot])
-  /** What a test is told when it asks the seller, with the seller's own thinking setting once it is discovered. */
-  const sellerAudit = (thinking: SellerAudit['thinking']): SellerAudit => ({
+  /**
+   * What a test is told when it asks the seller: the settings its declaration gives (`resolveThinking`), with the
+   * seller's own discovery once it has run.
+   */
+  const sellerAudit = (check: RecordCheck<CheckSlot>, discovered: SellerThinkingDiscoveryV1 | null): SellerAudit => ({
     ...auditStart,
-    thinking,
-    crowdThinking: kbfTargetThinkingSuppression(input.reference),
+    thinking: resolveThinking(check.thinking, { model: input.reference.referenceModel, bank: input.reference, discovery: discovered }),
     earlier: records(),
     clock: clock(),
     spare: () => deadline.spare(input.context.auditTimeoutMs),
@@ -856,12 +857,13 @@ export async function verifyModelTarget(input: {
     for (const { check, asking } of tests) {
       if (check.phase !== 'before-questions' || !asking) continue
       await asking.ready?.(auditStart)
-      keep(check, await asking.check(sellerAudit(null)))
+      keep(check, await asking.check(sellerAudit(check, null)))
     }
-    // Discovery runs whenever the seller is still to be asked something with its own thinking setting: a question batch,
-    // or a test a retry asks again after every batch was answered.
-    const testsToAsk = tests.some(({ check, asking }) => asking !== null && check.asksWithSellerThinking === true)
-    const discovery = (pending.length > 0 || testsToAsk) && input.context.sellerThinking
+    // Discovery runs whenever the seller is still to be asked something whose declaration needs its own setting: a
+    // question batch (the questions' declaration, `QUESTIONS_CHECK`), or a test a retry asks again after every batch was
+    // answered. One list says it for every test (`THINKING_DECLARATIONS`).
+    const stillToAsk = [...(pending.length > 0 ? [QUESTIONS_CHECK.thinking] : []), ...tests.flatMap(({ check, asking }) => (asking !== null ? [check.thinking] : []))]
+    const discovery = stillToAsk.some(needsSellerDiscovery) && input.context.sellerThinking
       ? await sellerThinkingFor(input.context, input.target, input.service, input.reference, sampling)
       : null
     const settings = sellerRequestSettings(input.context, input.reference, discovery?.record ?? null)
@@ -987,7 +989,7 @@ export async function verifyModelTarget(input: {
       const timeLeft = (): boolean => !deadline.controller.signal.aborted
       for (const { check, asking } of tests) {
         if (check.phase !== 'after-questions' || !asking || !timeLeft()) continue
-        if (keep(check, await asking.check(sellerAudit(settings.thinking)))) await persistCheckpoint(asking.bestEffortCheckpoint ? { bestEffort: true } : {})
+        if (keep(check, await asking.check(sellerAudit(check, discovery?.record ?? null)))) await persistCheckpoint(asking.bestEffortCheckpoint ? { bestEffort: true } : {})
       }
     }
     return { sellerThinkingEvidence, discoveryCost, skip }
@@ -1689,15 +1691,9 @@ function sellerRequestSettings(
     maxTokens: reference.queryProfile.maxTokensPerRequest,
     requestTimeoutMs: context.requestTimeoutMs,
   }
-  if (!discovery || discovery.strategy === null) return { ...base, thinking: kbfTargetThinkingSuppression(reference) }
-  const request = thinkingStrategyRequest(discovery.strategy)
-  const thinking = Object.keys(request.overrides).length === 0 && !request.assistantPrefill
-    ? null
-    : {
-      strategy: discovery.strategy,
-      overrides: request.overrides,
-      ...(request.assistantPrefill ? { assistantPrefill: request.assistantPrefill } : {}),
-    }
+  // The questions' setting, from their declaration: the seller's discovered one, or the bank's when it has none.
+  const thinking = asSuppression(resolveThinking(QUESTIONS_CHECK.thinking, { model: reference.referenceModel, bank: reference, discovery }).seller)
+  if (!discovery || discovery.strategy === null) return { ...base, thinking }
   return {
     ...base,
     thinking,

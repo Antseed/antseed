@@ -7,7 +7,8 @@ import { runOutputCap, type CapReferenceReply } from '../output-cap/output-cap.j
 import { createOutputEchoScreen, outputEchoPrompt, type EchoReferenceAsk, type OutputEchoRule } from '../output-echo/output-echo.js'
 import type { TokenizerReferenceAsk } from '../tokens/tokenizer-precheck.js'
 import { drawFlipsPairs, judgeFlips, type FlipsDrawV1, type FlipsV1 } from '../flips/flips.js'
-import { FLIPS_RULE, flipsRequestBody, type FlipsPair } from '../flips/flips-score.js'
+import { FLIPS_RULE, flipsFixedSetting, flipsRequestBody, type FlipsPair } from '../flips/flips-score.js'
+import { strategySetting } from '../../audit-thinking.js'
 
 const bytes = (value: unknown): Uint8Array => new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value))
 
@@ -180,16 +181,19 @@ export function signedFlipsRecord(input: {
     }).join(' ')
   }
   const perPair = FLIPS_RULE.repliesPerPair[input.draw.stage]
+  // Each side with its own setting (`FLIPS_THINKING`): the seller its discovered one, the reference the eval's switch.
+  const thinking = { seller: strategySetting('reasoning-effort-none'), reference: flipsFixedSetting(input.draw.model) }
   const attemptCosts = [{ inputTokens: 60, outputTokens: 130, totalTokens: 190, estimatedCostUsd: 0.0001 }]
   const pairs = drawFlipsPairs(input.draw).map((words, pairIndex) => {
-    const body = flipsRequestBody(input.draw.model, input.service, words)
+    const body = flipsRequestBody(input.draw.model, input.service, words, FLIPS_RULE, thinking.seller)
+    const referenceBody = flipsRequestBody(input.draw.model, input.service, words, FLIPS_RULE, thinking.reference)
     return {
       words,
       reference: {
         words,
         replies: Array.from({ length: FLIPS_RULE.referenceRepliesPerPair }, (_, index) => ({
           content: sequence(index + pairIndex * 100, words), finishReason: 'stop', provider: 'host', reasoning: false, thinkBlock: false, failure: null,
-          request: JSON.stringify(body),
+          request: JSON.stringify(referenceBody),
         })),
       },
       seller: Array.from({ length: perPair }, (_, slot) => {
@@ -226,6 +230,6 @@ export function signedFlipsRecord(input: {
       }),
     }
   })
-  const stored = { rule: FLIPS_RULE.id, draw: input.draw, service: input.service, referenceUpstream: null, referenceOneProvider: true, pairs, reasks: 0 }
+  const stored = { rule: FLIPS_RULE.id, draw: input.draw, service: input.service, referenceUpstream: null, referenceOneProvider: true, thinking, pairs, reasks: 0 }
   return { ...stored, ...judgeFlips(stored as never) } as unknown as FlipsV1
 }

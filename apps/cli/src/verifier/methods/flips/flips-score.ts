@@ -1,3 +1,5 @@
+import type { ThinkingSetting } from '../../audit-thinking.js'
+
 /**
  * FLIPS: a randomness check of a seller's model.
  *
@@ -114,8 +116,10 @@ export interface FlipsRule {
 }
 
 /**
- * The rule (`flips-v1`). FLIPS counts toward the verdict, except for MiniMax M3, whose honest sellers on another host
- * than the reference's score like a swap, and for a model the eval never measured.
+ * The rule (`flips-v1`). FLIPS is recorded only (`counts.default` false): judged, stored and shown, and no verdict
+ * reads it, until one dry run has shown how honest sellers score when each side is asked with its own discovered
+ * thinking switch (`flips-thinking.ts`). When it counts, it still never counts for MiniMax M3, whose honest sellers on
+ * another host than the reference's score like a swap, nor for a model the eval never measured.
  *
  * - Calibrations: fitted on the eval's honest checks of each size (ln score, Student-t, location = mean,
  *   scale = sd · sqrt(1 + 1/n), df = n − 1).
@@ -148,7 +152,9 @@ export const FLIPS_RULE: FlipsRule = Object.freeze({
   ]),
   bar: Object.freeze({ first: 0.002, confirm: 0.001 }),
   passAbove: 0.1,
-  counts: Object.freeze({ default: true, never: Object.freeze(['minimax-m3']) }),
+  // Recorded only, until a dry run has shown how honest sellers score with each side on its own discovered switch
+  // (`FLIPS_THINKING`): the calibration and the bars were fitted with the eval's one body on both sides.
+  counts: Object.freeze({ default: false, never: Object.freeze(['minimax-m3']) }),
   noSequence: Object.freeze({ below: 8, maxShare: 0.2 }),
   repeats: Object.freeze({ sellerShare: 0.5, referenceShare: 0.25, minReplies: 4 }),
   asksRequired: true,
@@ -157,11 +163,12 @@ export const FLIPS_RULE: FlipsRule = Object.freeze({
 })
 
 /**
- * How each audited model, and each model the eval measured that may become one, is asked, exactly as the eval asked it: the seller and the
- * reference get the same body, because the calibration never saw temperature or the thinking parameter vary between
- * them. `reasoning` is the lowest setting the model accepted with no reasoning tokens; `maxTokens` is 220, or 900 for a
- * model that still thinks; Claude and GPT models were sent no temperature, every other model temperature 1. A model
- * missing here was never measured: it is asked like the plain models, and FLIPS is recorded only for it.
+ * How each audited model, and each model the eval measured that may become one, was asked in the eval: one body for the
+ * seller and the reference. `maxTokens` is 220, or 900 for a model that still thinks; Claude and GPT models were sent no
+ * temperature, every other model temperature 1: FLIPS keeps both. `reasoning` is the switch the eval sent, the lowest
+ * the model accepted with no reasoning tokens. FLIPS sends it no longer to a seller, which gets its own discovered
+ * switch, and to the reference only where its bank's switch still thinks (`flips-thinking.ts`). A model missing here was
+ * never measured: it is asked like the plain models, and FLIPS never counts for it.
  */
 export interface FlipsRequestSettings {
   reasoning: Readonly<Record<string, unknown>>
@@ -202,15 +209,26 @@ export function flipsRequestFor(model: string): { settings: FlipsRequestSettings
   return settings ? { settings, measured: true } : { settings: UNMEASURED, measured: false }
 }
 
-/** The body of every FLIPS request of a model, the seller's and the reference's alike. */
-export function flipsRequestBody(model: string, service: string, pair: FlipsPair, rule: FlipsRule = FLIPS_RULE): Record<string, unknown> {
+/** The eval's reasoning switch for the model, as a thinking setting: FLIPS's fixed body (`TestThinking.fixed`). */
+export function flipsFixedSetting(model: string): ThinkingSetting {
+  return { source: 'fixed', strategy: null, overrides: { reasoning: { ...flipsRequestFor(model).settings.reasoning } } }
+}
+
+/**
+ * The body of a FLIPS request of a model: the eval's prompt, reply limit and temperature, with one side's thinking
+ * setting (its fields, and its prefill as an assistant turn). With the fixed setting it is the eval's body exactly.
+ */
+export function flipsRequestBody(model: string, service: string, pair: FlipsPair, rule: FlipsRule = FLIPS_RULE, thinking: ThinkingSetting = flipsFixedSetting(model)): Record<string, unknown> {
   const { settings } = flipsRequestFor(model)
   return {
     model: service,
-    messages: [{ role: 'user', content: flipsPrompt(pair, rule) }],
+    messages: [
+      { role: 'user', content: flipsPrompt(pair, rule) },
+      ...(thinking.assistantPrefill ? [{ role: 'assistant', content: thinking.assistantPrefill }] : []),
+    ],
     max_tokens: settings.maxTokens,
     ...(settings.temperature ? { temperature: 1 } : {}),
-    reasoning: { ...settings.reasoning },
+    ...structuredClone(thinking.overrides),
     stream: false,
   }
 }

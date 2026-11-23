@@ -39,6 +39,10 @@ export const TOKENS_CHECK: RecordCheck<'tokenizerPrecheck'> = {
     summaryMismatch: 'the summary\'s tokenizer pre-check is not the one in its evidence',
   },
   phase: 'before-questions',
+  thinking: {
+    needs: { seller: 'bare', reference: 'bank', crowd: 'bare' },
+    why: 'it reads input counts only, as the difference A+B minus A: no setting changes an input count, and the request may carry no thinking field',
+  },
   screen: (precheck) => ({
     ready: (audit) => precheck.ready(audit.bank),
     check: (audit) => precheck.check(audit.seller, audit.bank, audit.clock),

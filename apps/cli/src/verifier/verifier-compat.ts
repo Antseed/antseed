@@ -47,10 +47,11 @@ import { DEFAULT_LAYOUT_FILTER_PASSES, REFERENCE_SIZING_ALGORITHM_VERSION } from
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
 import { CONFIRMATION_WINDOW_SECONDS, pendingConfirmations, type EpochReport } from './pending-confirmations.js'
 import {
-  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, confirmationCannotDecideOnRetry, decidedRecords, sameConfirmation, verdictOf,
+  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, THINKING_DECLARATIONS, confirmationCannotDecideOnRetry, decidedRecords, sameConfirmation, verdictOf,
   type AuditCheckId, type CheckOutcome, type CheckSlot, type ConfirmationIdentity,
 } from './audit-checks.js'
 import { METHODS } from './methods/index.js'
+import { resolveThinking } from './audit-thinking.js'
 import { FLIPS_RULE } from './methods/flips/flips-score.js'
 import { FLIPS_AUDITOR_FAILURE } from './methods/flips/flips.js'
 import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
@@ -218,6 +219,10 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       // How thinking discovery chooses a setting, for the reference and for every seller audited.
       thinkingDiscoveryRule: THINKING_DISCOVERY_RULE,
     },
+    // What each test's requests carry, side by side, from its declaration (`audit-thinking.ts`): the questions first,
+    // then the tests with a record. With what the declarations give for fixed banks and discoveries, so a change to how
+    // a setting is chosen shows here, not only a change to a declaration.
+    thinking: thinkingFingerprint(),
     parsed: SAMPLE_REPLIES.map(([reply, count]) => parseKbfAnswers(stripKbfThinkBlocks(reply), count)),
     scored: SAMPLE_SCORES.map(([answer, domain, consensus]) => scoreKbfAnswer(answer, sampleProbe(domain, consensus))),
     verdicts: sampleVerdicts(),
@@ -474,4 +479,25 @@ function sampleVerdicts(): unknown {
       closeCallRuleForExtensions(2) ?? undefined, coverageRule,
     ).verdict),
   }
+}
+
+/** The tests' thinking declarations in the rules fingerprint, and what they resolve to for fixed sample inputs. */
+function thinkingFingerprint(): unknown {
+  const bank = (strategy: string, overrides: Record<string, unknown>, reasoningTokens: number) => ({
+    queryProfile: {} as never,
+    generator: {
+      name: 'sample', version: '1', verifierKind: 'kbf' as const,
+      params: {
+        referenceEndpointRequest: { reasoningStrategy: strategy, requestOverrides: overrides, requestOmissions: [] },
+        thinkingDiscovery: { version: 1, method: 'kbf-reference-code-2026-09-30', contrasts: {}, target: { model: 'sample', strategy, attempts: [{ strategy, maxTokens: 800, status: null, validAnswers: 10, reasoningTokens, answersOnly: true, truncated: false }] } },
+      },
+    },
+  }) as unknown as Parameters<typeof resolveThinking>[1]['bank']
+  const banks = [bank('reasoning-effort-minimal', { reasoning: { effort: 'minimal' } }, 0), bank('bare', {}, 574)]
+  const discoveries = [{ strategy: 'reasoning-effort-none' as const }, { strategy: 'bare-expanded' as const }, { strategy: null }, null]
+  return THINKING_DECLARATIONS.map(({ test, thinking }) => ({
+    test,
+    needs: thinking.needs,
+    resolved: banks.flatMap((sampleBank) => discoveries.map((discovery) => resolveThinking(thinking, { model: 'kimi-k3', bank: sampleBank, discovery }))),
+  }))
 }

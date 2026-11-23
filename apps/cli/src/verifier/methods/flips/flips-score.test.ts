@@ -52,7 +52,8 @@ test('the rule is frozen and known by its id', () => {
   assert.ok(Object.isFrozen(FLIPS_RULE))
   // Counting (never MiniMax M3), the bars, replies without a sequence left out, repeats, the asks trail, a confirmation
   // between its bars clearing, and the second look between the bars.
-  assert.deepEqual(FLIPS_RULE.counts, { default: true, never: ['minimax-m3'] })
+  // Recorded only until a dry run has shown how honest sellers score with each side on its own thinking switch.
+  assert.deepEqual(FLIPS_RULE.counts, { default: false, never: ['minimax-m3'] })
   assert.deepEqual([FLIPS_RULE.bar, FLIPS_RULE.passAbove], [{ first: 0.002, confirm: 0.001 }, 0.1])
   assert.deepEqual([FLIPS_RULE.noSequence, FLIPS_RULE.repeats], [{ below: 8, maxShare: 0.2 }, { sellerShare: 0.5, referenceShare: 0.25, minReplies: 4 }])
   assert.deepEqual([FLIPS_RULE.asksRequired, FLIPS_RULE.confirmBetweenClears], [true, true])

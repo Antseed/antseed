@@ -1,4 +1,5 @@
-import type { KbfReferenceV1, KbfThinkingSuppression } from '@antseed/fingerprints'
+import type { KbfReferenceV1 } from '@antseed/fingerprints'
+import type { ResolvedThinking, TestThinking } from './audit-thinking.js'
 import type { AuditTaskLimiter } from './audit-concurrency.js'
 import type { FlipsScreen, FlipsSummary, FlipsV1 } from './methods/flips/flips.js'
 import type { FlipsRule } from './methods/flips/flips-score.js'
@@ -197,8 +198,31 @@ export interface StoredAuditContext {
 
 export type StoredCheckRecords = { readonly [Slot in CheckSlot]?: CheckRecords[Slot] }
 
-/** A check whose result is one field of the seller's evidence: everything but the questions. */
-export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
+/**
+ * A check whose result is one field of the seller's evidence: everything but the questions. Its phase and its thinking
+ * declaration go together: a test asked before the questions is asked before the seller's discovery, so it cannot
+ * need the seller's own setting, and the compiler refuses one that says it does.
+ */
+export type RecordCheck<Slot extends CheckSlot = CheckSlot> = RecordCheckBody<Slot> & (
+  | {
+    /** Asked before the questions: before thinking discovery, so never with the seller's own setting. */
+    phase: 'before-questions'
+    thinking: TestThinking<'bare' | 'fixed'>
+  }
+  | {
+    /** Asked after the questions. Inside a phase the order is the list's. */
+    phase: 'after-questions'
+    /**
+     * What the test's requests carry on each side (`audit-thinking.ts`). Required: a test declares its need and never
+     * carries a setting table or a discovery of its own. While a test still to be asked needs the seller's own setting,
+     * the audit discovers it, also when no question batch is left.
+     */
+    thinking: TestThinking
+  }
+)
+
+/** Everything of a `RecordCheck` but its phase and its thinking declaration. */
+export interface RecordCheckBody<Slot extends CheckSlot = CheckSlot> {
   slot: Slot
   /** In attribution order. */
   findings: readonly CheckFinding<Slot>[]
@@ -245,13 +269,6 @@ export interface RecordCheck<Slot extends CheckSlot = CheckSlot> {
     name: string
     summaryMismatch: string
   }
-  /** When an audit asks the seller this test: before its questions or after them. Inside a phase the order is the list's. */
-  phase: 'before-questions' | 'after-questions'
-  /**
-   * The test asks the seller with the seller's own thinking setting: while one is still to be asked, the audit
-   * discovers that setting although no question batch is left.
-   */
-  asksWithSellerThinking?: true
   /**
    * Whether a carried record is this audit's at all, also where the test does not run (no screen, an extra set).
    * Without it any carried record is.
@@ -378,10 +395,11 @@ export interface SellerAuditStart {
 
 /** What a test is told when it asks the seller: the audit as it stands at that moment. */
 export interface SellerAudit extends SellerAuditStart {
-  /** The seller's own thinking setting. Known after discovery, so a test before the questions is given null. */
-  thinking: KbfThinkingSuppression | null
-  /** The setting the model's other sellers are asked with: the reference's. */
-  crowdThinking: KbfThinkingSuppression | null
+  /**
+   * The settings the test's requests carry, from its declaration (`RecordCheck.thinking`, `resolveThinking`): the
+   * seller's own once discovery has run, the reference's from the bank, and the crowd's.
+   */
+  thinking: ResolvedThinking
   /** The records the audit holds so far, for a test judged against an earlier one (`RecordCheck.readsEarlier`). */
   earlier: StoredCheckRecords
   /** The seller's clock: references and crowds are the auditor's time, not the seller's. */

@@ -1,12 +1,11 @@
 import {
-  THINKING_DISCOVERY_STRATEGIES,
   buildKbfChatRequestBody,
   canonicalJsonStringify,
-  thinkingStrategyRequest,
   type KbfProbe,
 } from '@antseed/fingerprints'
 import { decodeHttpRequest, decodeHttpResponse } from '@antseed/node'
 import { assertBoundToSeller, sellerBindingOf } from './audit-checks.js'
+import { isDiscoveryMember, isDiscoveryPrefill } from './audit-thinking.js'
 import { isRecord, parseObject } from './methods/shared/output-usage.js'
 import { scoreQuestionBatch } from './question-scoring.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
@@ -60,18 +59,6 @@ export function assertQuestionsFromSignedBytes(evidence: ProxyAuditEvidenceV1): 
   }
 }
 
-/** The thinking settings an audit may send with its questions (`thinkingStrategyRequest`): the overrides by member, and the prefills. */
-const THINKING_SETTINGS = THINKING_DISCOVERY_STRATEGIES.map((strategy) => thinkingStrategyRequest(strategy))
-const THINKING_OVERRIDES: ReadonlyMap<string, ReadonlySet<string>> = (() => {
-  const byMember = new Map<string, Set<string>>()
-  for (const setting of THINKING_SETTINGS) {
-    for (const [member, value] of Object.entries(setting.overrides)) {
-      byMember.set(member, (byMember.get(member) ?? new Set()).add(canonicalJsonStringify(value)))
-    }
-  }
-  return byMember
-})()
-const THINKING_PREFILLS: ReadonlySet<string> = new Set(THINKING_SETTINGS.flatMap((setting) => (setting.assistantPrefill ? [setting.assistantPrefill] : [])))
 
 /**
  * The top-level members a question request may carry besides its thinking setting: what the audit sends and what the
@@ -111,7 +98,8 @@ export function requestIsQuestionBatch(
   if (!body) return false
   for (const [member, value] of Object.entries(body)) {
     if (QUESTION_REQUEST_MEMBERS.has(member)) continue
-    if (!THINKING_OVERRIDES.get(member)?.has(canonicalJsonStringify(value))) return false
+    // A thinking setting only as discovery sends one: the questions' declaration is the seller's own (`QUESTIONS_CHECK`).
+    if (!isDiscoveryMember(member, value)) return false
   }
   if (body['temperature'] !== undefined && body['temperature'] !== expected.temperature) return false
   if (body['messages'] !== undefined && body['input'] !== undefined) return false
@@ -136,7 +124,7 @@ export function requestIsQuestionBatch(
     conversation.push([turn['role'] === 'developer' ? 'system' : turn['role'], text])
   }
   const prefilled = conversation.at(-1)?.[0] === 'assistant'
-  if (prefilled && !THINKING_PREFILLS.has(conversation.at(-1)![1])) return false
+  if (prefilled && !isDiscoveryPrefill(conversation.at(-1)![1])) return false
   const asked = prefilled ? conversation.slice(0, -1) : conversation
   return canonicalJsonStringify(asked) === canonicalJsonStringify([...system.map((text) => ['system', text]), ['user', users[0]]])
 }
