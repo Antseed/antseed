@@ -67,7 +67,7 @@ Use it this way:
 - **On the day, before the night.** At night the eye whites are darker than 205 and it finds nothing. Make the night from the fixed day, then check that the night kept the pupils.
 - **Vary a crowd.** Every ant it fixes drifts the same way (left up, right down). Flip some crops horizontally before running it and flip them back after.
 - **Look at the result at 200%.** It can leave the left pupil centred: that ant still fails, so move that pupil yourself. When a pupil overlaps the eye's outline it can leave the old pupil and clip the new one. Closed eyes and sunglasses are out of its reach; round glasses may work, check.
-- **A walk cycle:** one pupil place per eye for every frame, or the eyes jump as it walks (the site's carry sprites, `assets/home/carry/build.py`, `lost()`).
+- **A walk cycle:** one pupil place per eye for every frame, or the eyes jump as it walks (as the site's carry sprites do).
 
 ### Where the site still differs
 
@@ -145,7 +145,7 @@ Ask for an expression in words ("eyes wide open, mouth open in an amazed 'oh!'")
 ## Never
 
 - A realistic insect, mandibles, jointed or six legs, four legs, legs under the abdomen.
-- A second ant design. The earlier slim ant (long jointed limbs, crossed arms, a smirk or a snarl; the site's `assets/home/ant-1.png`, `ant-2.png`, `ant-3.png`) is retired.
+- A second ant design. The earlier slim ant (long jointed limbs, crossed arms, a smirk or a snarl) is retired.
 - Centred, focused pupils on an ant that is not acting; two passive ants gazing at each other.
 - The blue orb, or anything on its head but a role's prop.
 - Sunglasses at night; a cool or heroic look.

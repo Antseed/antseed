@@ -611,7 +611,7 @@ Alternate painting sides from one duo to the next. Keep one H1 per page.
 
 ## Imagery and assets
 
-- Paintings: `assets/paintings/<name>-day.webp` and `<name>-night.webp`, always both, the same size, set as `--wash` / `--wash-d`. Use the site's (`static/site/assets/home/vignettes/vNN-*.webp`, `assets/colony/*`, `assets/network/*`, the footer's `assets/home/footer/meadow-loop-*-poster.webp`) or make a new one with `@watercolour.md`: the style read from the homepage hero, the references in `refs/`, the prompts, and a checklist every painting must pass. A night is an edit of its day, never a darkened copy.
+- Paintings: `assets/paintings/<name>-day.webp` and `<name>-night.webp`, always both, the same size, set as `--wash` / `--wash-d`. Use the site's (`static/site/assets/paintings/<name>-*.webp`, `assets/colony/*`, `assets/network/*`, the footer's `assets/home/footer/meadow-loop-*-poster.webp`) or make a new one with `@watercolour.md`: the style read from the homepage hero, the references in `refs/`, the prompts, and a checklist every painting must pass. A night is an edit of its day, never a darkened copy.
 - The ant: `@mascot.md`. Every ant looks a bit lost: divergent eyes by default and on every passive ant; only an ant busy with an action may look at it. Check each ant in each try; `tools/derp-eyes.py` sets the lost look on one cropped head at a time.
 - Logo: `logo/antseed-logo-nav.svg` (nav and footer, 95.3464 × 33, black; `invert(.93)` at night); `logo/antseed-lockup-black.svg` / `-near-white.svg`, `logo/antseed-mark-*.svg`, `logo/favicon.svg`, `logo/antseed-avatar-400.svg`. Never redraw, recolour or place the logo on a painting.
 

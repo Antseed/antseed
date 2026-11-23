@@ -52,8 +52,8 @@ export const WATERCOLOURS: readonly Background[] = [
   watercolour('pond', 'Pond', PAINTINGS.pond),
 ];
 
-/** The painting the prompt below reproduces. */
-export const MEADOW = watercolour('meadow', 'Meadow', {day: '/site/assets/hero/meadow-day.webp', night: '/site/assets/hero/meadow-night.webp'});
+/** What the example prompt painted: a reference for the style, not a picture to reuse. */
+export const STYLE_REFERENCE = `${DIR}/antseed-watercolour-style-reference.webp`;
 
 export const backgroundFiles = (b: Background) => [
   {label: 'Day', href: b.day, name: `${b.prefix}-${b.key}-day.webp`},
