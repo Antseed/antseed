@@ -12,10 +12,17 @@ export function formatSeconds(value: number): string {
 }
 
 export function formatTimecode(value: number): string {
-  const whole = Math.max(0, value);
-  const minutes = Math.floor(whole / 60);
-  const seconds = whole - minutes * 60;
-  return `${String(minutes)}:${seconds.toFixed(1).padStart(4, '0')}`;
+  // Rounded to tenths first, so 59.96 s reads 1:00.0, never 0:60.0.
+  const tenths = Math.round(Math.max(0, value) * 10);
+  const minutes = Math.floor(tenths / 600);
+  return `${String(minutes)}:${((tenths - minutes * 600) / 10).toFixed(1).padStart(4, '0')}`;
+}
+
+/** The selection while its shot (and, for a clip, its clip) is on the track; null once an Undo or a removal took it away. */
+export function liveSelection<T extends TrackSelection>(track: StudioTrack, selection: T | null): T | null {
+  if (!selection) return null;
+  const anchor = track.anchors.find((entry) => entry.id === selection.anchor);
+  return anchor && (!selection.clip || anchor.clip) ? selection : null;
 }
 
 /** A clip as the film plays it: a new version or trim makes it another clip. */

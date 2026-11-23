@@ -125,6 +125,22 @@ test('resolveStudioFile serves media inside the project only', async () => {
   });
 });
 
+test('resolveStudioFile serves nothing from a project folder that is a link out of Studio', async () => {
+  await withRoot(async (root) => {
+    const { id } = await createStudioProject('Lighthouse', root);
+    const dir = path.join(root, id);
+    const outside = await mkdtemp(path.join(tmpdir(), 'studio-outside-'));
+    try {
+      await writeFile(path.join(outside, 'still.png'), 'png');
+      await rm(dir, { recursive: true, force: true });
+      await symlink(outside, dir);
+      assert.equal(await resolveStudioFile(id, 'still.png', root), null);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
+
 test('a project remembers its chat, and a folder knows its project', async () => {
   await withRoot(async (root) => {
     const { id } = await createStudioProject('Lighthouse', root);

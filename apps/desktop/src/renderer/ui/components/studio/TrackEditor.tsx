@@ -25,7 +25,7 @@ import {
   type TrackEdit,
 } from '../../../../shared/studio-track.js';
 import { formatStudioUsd, studioFileUrl } from '../../../modules/studio/board-view';
-import { clipPlayerKey, clipRequestMessage, formatSeconds, formatTimecode, selectionContext, type TrackSelection } from '../../../modules/studio/track-view';
+import { clipPlayerKey, clipRequestMessage, formatSeconds, formatTimecode, liveSelection, selectionContext, type TrackSelection } from '../../../modules/studio/track-view';
 import type { HeldSend } from '../../../modules/studio/open-project';
 import type { ChatContext } from '../views/ChatView';
 import { FilmPlayer } from './FilmPlayer';
@@ -62,7 +62,7 @@ type Props = {
 export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }: Props) {
   const projectId = detail.project.id;
   const [track, setTrack] = useState(detail.track);
-  const [selection, setSelection] = useState<Selection>(null);
+  const [chosen, setSelection] = useState<Selection>(null);
   const [time, setTime] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -83,6 +83,9 @@ export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }
   useEffect(() => { if (playing && !hasPlayable) setPlaying(false); }, [playing, hasPlayable]);
 
   const url = (file: string) => studioFileUrl(projectId, file, detail.files[file]);
+  // A shot an Undo took away is no longer selected, so no control acts on it.
+  const selection = liveSelection(track, chosen);
+  useEffect(() => { if (chosen && !selection) setSelection(null); }, [chosen, selection]);
   const selected = selection ? track.anchors.find((anchor) => anchor.id === selection.anchor) ?? null : null;
   const selectedIndex = selected ? track.anchors.indexOf(selected) : -1;
 

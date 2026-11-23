@@ -2,18 +2,16 @@ import { dialog, ipcMain, shell } from 'electron';
 import type { TrackEdit } from '../../shared/studio-track.js';
 import { editStudioTrack, ingestStudioDeliveries, studioFolder } from '../studio/track.js';
 import type { PiChatEngine } from '../chat/engine-types.js';
-import { normalizeServiceId } from '../chat/normalize.js';
 import {
   createStudioProject,
   getStudioProject,
   getStudioProjectBoard,
-  getStudioProjectSummary,
   listStudioProjects,
-  setStudioProjectConversation,
   STUDIO_DIR,
   studioProjectDir,
   studioProjectExists,
 } from '../studio/store.js';
+import { studioProjectChats } from '../studio/project-chat.js';
 import { setStudioPreviewEnabled, STUDIO_PREVIEW_OFF, studioPreviewEnabled } from '../studio/preview.js';
 import { errorResult } from './results.js';
 
@@ -84,19 +82,10 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
     return detail ? { ok: true, data: { ...detail, notices: notices.get(id) ?? [] } } : { ok: false, error: 'Project not found.' };
   });
 
-  handle('studio:project-chat', async (payload: { id?: unknown; model?: unknown } | undefined) => {
-    const id = typeof payload?.id === 'string' ? payload.id : '';
-    const summary = await getStudioProjectSummary(id);
-    const folder = studioProjectDir(id);
-    if (!summary || !folder) return { ok: false, error: 'Project not found.' };
-    const existing = summary.conversationId;
-    if (existing && await engine.hasConversation(existing)) return { ok: true, conversationId: existing };
-    const model = normalizeServiceId(payload?.model);
-    if (!model) return { ok: true, conversationId: null };
-    const conversation = await engine.createConversation(model, folder);
-    await setStudioProjectConversation(id, conversation.id);
-    return { ok: true, conversationId: conversation.id };
-  });
+  const projectChat = studioProjectChats(engine);
+  handle('studio:project-chat', async (payload: { id?: unknown; model?: unknown } | undefined) => (
+    projectChat(typeof payload?.id === 'string' ? payload.id : '', payload?.model)
+  ));
 
   handle('studio:open-folder', async (payload: { id?: unknown } | undefined) => {
     const id = typeof payload?.id === 'string' ? payload.id : '';

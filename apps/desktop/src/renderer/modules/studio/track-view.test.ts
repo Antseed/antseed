@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseStudioTrack } from '../../../shared/studio-track.js';
-import { clipPlayerKey, clipRequestMessage, composerContext, filmClipKey, filmIndex, filmPlayers, formatTimecode, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
+import { clipPlayerKey, clipRequestMessage, composerContext, filmClipKey, filmIndex, filmPlayers, formatTimecode, liveSelection, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
 
 const track = parseStudioTrack({
   aspectRatio: '16:9',
@@ -139,4 +139,20 @@ it('gives two clips that play the same file their own players', () => {
   expect(clipPlayerKey(one)).not.toBe(clipPlayerKey(two));
   // Another version of the same clip is a new player too.
   expect(clipPlayerKey(one)).not.toBe(clipPlayerKey({ id: 'c1', use: 'clips/other.mp4' }));
+});
+
+it('carries a timecode that rounds up to the next minute', () => {
+  expect(formatTimecode(59.96)).toBe('1:00.0');
+  expect(formatTimecode(119.96)).toBe('2:00.0');
+  expect(formatTimecode(59.94)).toBe('0:59.9');
+  expect(formatTimecode(0)).toBe('0:00.0');
+});
+
+it('drops a selection once its shot leaves the track, as an Undo of the shot does', () => {
+  const track = parseStudioTrack({ anchors: [{ id: 'a1', image: 'stills/a.png', clip: { id: 'c1' } }, { id: 'a3', image: 'stills/b.png' }] });
+  const clip = { anchor: 'a1', clip: true };
+  expect(liveSelection(track, clip)).toBe(clip);
+  expect(liveSelection(track, { anchor: 'a5', clip: true })).toBeNull();
+  expect(liveSelection(track, { anchor: 'a5', clip: false })).toBeNull();
+  expect(liveSelection(track, null)).toBeNull();
 });

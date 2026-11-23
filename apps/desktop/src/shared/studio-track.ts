@@ -462,8 +462,8 @@ export function clipStaleReason(track: StudioTrack, index: number): 'image' | 'e
   if (version.from !== anchor.image) return 'image';
   const next = track.anchors[index + 1];
   if (clip.then !== 'extend' || !next) return null;
-  // The next shot's image is this clip's own end frame (a trim that extends): it lands there by definition.
-  if (next.from?.clip === clip.id && clip.endFrame !== null && clip.endFrame === next.image && clip.end === next.from.at) return null;
+  // A trimmed clip ends on its trim's frame, wherever it was made to land.
+  if (clip.end !== null && clip.endFrame !== null) return clip.endFrame === next.image ? null : 'end';
   if (version.to === null) return 'cut';
   return version.to !== next.image ? 'end' : null;
 }
@@ -537,7 +537,9 @@ export function clipsTouching(track: StudioTrack, anchorId: string, file: string
   const inUse = (anchor: TrackAnchor | undefined) => anchor?.clip?.versions.find((version) => version.file === anchor.clip?.use);
   const previous = track.anchors[index - 1];
   const landing = inUse(previous);
-  if (previous && landing && previous.clip!.then === 'extend' && landing.to !== null && landing.to !== file) touching.push(previous.id);
+  // A trimmed clip lands on its trim's frame, not on the image it was made to end on.
+  const lands = previous?.clip && previous.clip.end !== null && previous.clip.endFrame !== null ? previous.clip.endFrame : landing?.to ?? null;
+  if (previous && landing && previous.clip!.then === 'extend' && lands !== null && lands !== file) touching.push(previous.id);
   const leaving = inUse(track.anchors[index]);
   if (leaving && leaving.from !== null && leaving.from !== file) touching.push(anchorId);
   return touching;

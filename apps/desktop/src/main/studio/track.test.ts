@@ -93,6 +93,25 @@ test('a trim sets a new end frame and needs a decision; Extend makes that frame 
   assert.equal(open.anchors[2]!.image, 'frames/y.png');
 });
 
+test('a trimmed Extend lands on its trim frame, so putting back the image it was made to end on makes it out of date', () => {
+  const base = parseStudioTrack({
+    anchors: [
+      { id: 'a1', image: 'stills/a.png', clip: { id: 'c1', then: 'extend', use: 'clips/one.mp4', versions: [{ file: 'clips/one.mp4', from: 'stills/a.png', to: 'stills/b.png', seconds: 4 }] } },
+      { id: 'a2', image: 'stills/b.png' },
+    ],
+  });
+  assert.equal(clipState(base, 0), 'ready');
+  const trimmed = applyTrackEdit(base, { type: 'trim', anchor: 'a1', end: 2 }, all, { frame: 'frames/f.png' });
+  const extended = applyTrackEdit(trimmed, { type: 'then', anchor: 'a1', then: 'extend' }, all);
+  assert.equal(extended.anchors[1]!.image, 'frames/f.png');
+  assert.equal(clipState(extended, 0), 'ready', 'it ends on its own frame');
+  // Putting the made-for end image back asks first, and leaves the trimmed clip out of date.
+  assert.deepEqual(clipsTouching(extended, 'a2', 'stills/b.png'), ['a1']);
+  const back = applyTrackEdit(extended, { type: 'set-image', anchor: 'a2', file: 'stills/b.png' }, all);
+  assert.equal(clipStaleReason(back, 0), 'end');
+  assert.deepEqual(exportCheck(back).stale, ['Clip 1→2']);
+});
+
 test('resetting a trim that made the next shot\'s image puts the old image back', () => {
   const base = parseStudioTrack({ aspectRatio: '16:9', anchors: [
     { id: 'a1', image: 'stills/a.png', clip: { id: 'c1', then: null, use: 'clips/one.mp4', versions: [{ file: 'clips/one.mp4', from: 'stills/a.png', to: null, seconds: 4 }] } },

@@ -15,7 +15,7 @@ import {
   type StudioProjectSummary,
 } from '../../shared/studio.js';
 import { emptyStudioTrack, STUDIO_DELIVERIES_DIR, STUDIO_TRACK_FILE, type StudioTrack } from '../../shared/studio-track.js';
-import { addTrackFiles, readStudioTrack, resolveProjectFile, scanStudioMedia, studioCanUndo, studioLibrary, studioMediaTools } from './track.js';
+import { addTrackFiles, readStudioTrack, resolveProjectFile, scanStudioMedia, studioCanUndo, studioFolder, studioLibrary, studioMediaTools } from './track.js';
 
 export const STUDIO_DIR = path.join(ANTSEED_HOME_DIR, 'studio');
 
@@ -76,7 +76,9 @@ async function readBoard(id: string, root: string): Promise<{ board: StudioBoard
 export async function resolveStudioFile(id: string, filePath: unknown, root: string = STUDIO_DIR): Promise<string | null> {
   const relative = normalizeStudioPath(filePath);
   if (!isStudioProjectId(id) || !relative || !studioMediaKind(relative)) return null;
-  return (await resolveProjectFile(projectDir(id, root), relative))?.file ?? null;
+  // A project folder that is a link, or leads out of the Studio folder, serves nothing.
+  const dir = await studioFolder(id, root).catch(() => null);
+  return dir ? (await resolveProjectFile(dir, relative))?.file ?? null : null;
 }
 
 async function fileVersion(id: string, file: string, root: string): Promise<number | null> {
