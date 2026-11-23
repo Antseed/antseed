@@ -981,11 +981,7 @@ export async function askReferenceInputTokens(input: {
     try {
       // The wait for a slot ends at the abort too: a request whose measurement has run out leaves the queue, takes no
       // paced slot later, and does not hold its caller.
-      return read((await untilAborted(limiter.run(route.model, async () => {
-        // A request that waited for its slot past the measurement's time is not sent.
-        if (input.signal?.aborted) throw new Error(timeUp)
-        return postChatCompletion(route, body, timeoutMs, fetchFn, input.signal)
-      }, input.signal), input.signal, timeUp)).exchange)
+      return read((await postReferenceAttempt(limiter, route, body, timeoutMs, fetchFn, input.signal, timeUp)).exchange)
     } catch (error) {
       // An answer without text still counted its input.
       if (error instanceof EmptyReferenceResponseError && error.exchange) return read(error.exchange)
@@ -1011,6 +1007,26 @@ export async function askReferenceInputTokens(input: {
 function routeServesOneProvider(route: ReferenceRequestRoute): boolean {
   const router = route.upstream?.type === 'openrouter' || /openrouter\.ai/i.test(route.baseUrl)
   return route.type === 'antseed' || (route.providerRouting?.order.length ?? 0) === 1 || !router
+}
+
+/**
+ * One try of a reference request: it waits for the model's slot, is not sent when `signal` has aborted by then, and
+ * its wait for the slot ends at the abort too (a request whose time has run out leaves the queue, takes no paced slot
+ * later and does not hold its caller). Rejects with `timeUp` then. The callers keep their own reading and retries.
+ */
+function postReferenceAttempt(
+  limiter: ReferenceRequestLimiter,
+  route: ReferenceRequestRoute,
+  body: Parameters<typeof postChatCompletion>[1],
+  timeoutMs: number,
+  fetchFn: typeof fetch,
+  signal: AbortSignal | undefined,
+  timeUp: string,
+): ReturnType<typeof postChatCompletion> {
+  return untilAborted(limiter.run(route.model, async () => {
+    if (signal?.aborted) throw new Error(timeUp)
+    return postChatCompletion(route, body, timeoutMs, fetchFn, signal)
+  }, signal), signal, timeUp)
 }
 
 /** One reply of the reference. */
@@ -1099,10 +1115,7 @@ export async function askReferenceReplies(input: {
     const timeUp = 'the reference\'s time is up'
     try {
       // The wait for a slot (a cooldown can be long) ends at the abort too, not only the request.
-      return read((await untilAborted(limiter.run(route.model, async () => {
-        if (input.signal?.aborted) throw new Error(timeUp)
-        return postChatCompletion(route, body, timeoutMs, fetchFn, input.signal)
-      }, input.signal), input.signal, timeUp)).exchange)
+      return read((await postReferenceAttempt(limiter, route, body, timeoutMs, fetchFn, input.signal, timeUp)).exchange)
     } catch (error) {
       if (error instanceof EmptyReferenceResponseError && error.exchange) return read(error.exchange)
       // On the plain route (FLIPS) an answer without usage is still an answer: its bytes are read, never its billing.

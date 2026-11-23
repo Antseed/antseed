@@ -120,28 +120,52 @@ export function reportCellKey(model: string, peerId: string, report: string): st
  * failures and skips merged on their own (`mergeEpochRuns`), so each has its own result, attempts and spacing.
  */
 export function splitEpochRuns(epoch: string, runs: readonly RunSummaries[]): { ordinary: Map<string, EpochCell>; reports: Map<string, EpochCell> } {
-  const keyOf = (entry: { service?: string; confirming?: readonly string[]; confirmingReportedAt?: number }): string | null => (
-    typeof entry.service === 'string' ? confirmationReportKey(entry as { service: string }) : null
-  )
-  const only = (pick: (key: string | null) => boolean): RunSummaries[] => runs.map(({ manifest, summaries }) => ({
-    manifest,
-    summaries: summaries.map((summary) => ({
-      ...summary,
-      results: (summary.results ?? []).filter((entry) => pick(keyOf(entry))),
-      failures: (summary.failures ?? []).filter((entry) => pick(keyOf(entry))),
-      skipped: (summary.skipped ?? []).filter((entry) => pick(keyOf(entry))),
-    })),
-  }))
-  const keys = new Set(runs.flatMap(({ summaries }) => summaries.flatMap((summary) => (
-    [...summary.results ?? [], ...summary.failures ?? [], ...summary.skipped ?? []].map(keyOf).filter((key): key is string => key !== null)
-  ))))
+  const partitions = partitionRunsByReport(runs)
   const reports = new Map<string, EpochCell>()
-  for (const report of keys) {
-    for (const [key, cell] of mergeEpochRuns(epoch, only((entry) => entry === report))) {
+  for (const [report, history] of partitions) {
+    if (report === null) continue
+    for (const [key, cell] of mergeEpochRuns(epoch, history)) {
       reports.set(`${key}\u0000${report}`, { ...cell, confirmationReport: report })
     }
   }
-  return { ordinary: mergeEpochRuns(epoch, only((entry) => entry === null)), reports }
+  return { ordinary: mergeEpochRuns(epoch, partitions.get(null) ?? []), reports }
+}
+
+/**
+ * The runs' entries by the report each was made for (null: a first look), in one pass: each partition holds the runs
+ * and summaries that have an entry of it, in their order, with those entries in their order. A run or summary without
+ * an entry of a report is not in that report's partition: `mergeEpochRuns` reads entries only.
+ */
+function partitionRunsByReport(runs: readonly RunSummaries[]): Map<string | null, RunSummaries[]> {
+  const keyOf = (entry: { service?: string; confirming?: readonly string[]; confirmingReportedAt?: number }): string | null => (
+    typeof entry.service === 'string' ? confirmationReportKey(entry as { service: string }) : null
+  )
+  const partitions = new Map<string | null, RunSummaries[]>()
+  for (const { manifest, summaries } of runs) {
+    const ofRun = new Map<string | null, RunSummaries>()
+    for (const summary of summaries) {
+      const ofSummary = new Map<string | null, ModelAuditSummaryV1>()
+      const copyFor = (key: string | null): ModelAuditSummaryV1 => {
+        let copy = ofSummary.get(key)
+        if (!copy) {
+          copy = { ...summary, results: [], failures: [], skipped: [] }
+          ofSummary.set(key, copy)
+          let run = ofRun.get(key)
+          if (!run) {
+            run = { manifest, summaries: [] }
+            ofRun.set(key, run)
+            partitions.set(key, [...partitions.get(key) ?? [], run])
+          }
+          run.summaries.push(copy)
+        }
+        return copy
+      }
+      for (const entry of summary.results ?? []) copyFor(keyOf(entry)).results!.push(entry)
+      for (const entry of summary.failures ?? []) copyFor(keyOf(entry)).failures!.push(entry)
+      for (const entry of summary.skipped ?? []) copyFor(keyOf(entry)).skipped!.push(entry)
+    }
+  }
+  return partitions
 }
 
 export function epochCellKey(model: string, peerId: string): string {
