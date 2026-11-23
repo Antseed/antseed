@@ -1,4 +1,5 @@
 import {
+  THINKING_DISCOVERY_STRATEGIES,
   buildKbfChatRequestBody,
   canonicalJsonStringify,
   computeMatchVector,
@@ -6,11 +7,12 @@ import {
   kbfResponseFinishReason,
   parseKbfAnswers,
   stripKbfThinkBlocks,
+  thinkingStrategyRequest,
   type KbfProbe,
 } from '@antseed/fingerprints'
 import { decodeHttpRequest, decodeHttpResponse } from '@antseed/node'
 import { assertBoundToSeller, sellerBindingOf } from './audit-checks.js'
-import { requestCarriesPrompt } from './methods/shared/output-usage.js'
+import { isRecord, parseObject } from './methods/shared/output-usage.js'
 import { extractCompletionText } from './model-run.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 
@@ -20,7 +22,8 @@ import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
  * response are the seller's. Each batch that counts (answered, with a verified ResponseAuth) must be:
  *
  * - the audited seller's: signed by it, for a request of this batch, for the audited service (`assertBoundToSeller`);
- * - asked what the batch says: the signed request carries the prompt of these questions in this wording;
+ * - asked what the batch says and nothing else: the signed request is the audit's own conversation for these questions
+ *   in this wording (`requestIsQuestionBatch`);
  * - scored as the run scores it: the answers parsed from the signed response and matched against the reference are
  *   the stored ones.
  *
@@ -49,10 +52,9 @@ export function assertQuestionsFromSignedBytes(evidence: ProxyAuditEvidenceV1): 
     } catch {
       return refuse('a batch\'s signed bytes cannot be read')
     }
-    const prompt = buildKbfChatRequestBody(evidence.target.service, batch, { maxTokens: 1, variantId: exchange.promptVariantId })
-      .messages.filter((message) => message.role === 'user').at(-1)?.content
-    if (typeof prompt !== 'string' || !requestCarriesPrompt(request, prompt)) {
-      refuse('a batch\'s signed request does not ask the questions the batch names')
+    const asked = buildKbfChatRequestBody(evidence.target.service, batch, { maxTokens: 1, variantId: exchange.promptVariantId }).messages
+    if (!requestIsQuestionBatch(request, { messages: asked, temperature: evidence.reference.queryProfile.auditTemperature })) {
+      refuse('a batch\'s signed request is not the audit\'s request for the questions the batch names')
     }
     // As the run reads an answer (`model-run.ts`): think blocks are not answers, and a reply cut off at the token limit
     // or with no readable answer scores nothing.
@@ -66,4 +68,85 @@ export function assertQuestionsFromSignedBytes(evidence: ProxyAuditEvidenceV1): 
       refuse('a batch\'s stored answers are not the ones its signed response gives')
     }
   }
+}
+
+/** The thinking settings an audit may send with its questions (`thinkingStrategyRequest`): the overrides by member, and the prefills. */
+const THINKING_SETTINGS = THINKING_DISCOVERY_STRATEGIES.map((strategy) => thinkingStrategyRequest(strategy))
+const THINKING_OVERRIDES: ReadonlyMap<string, ReadonlySet<string>> = (() => {
+  const byMember = new Map<string, Set<string>>()
+  for (const setting of THINKING_SETTINGS) {
+    for (const [member, value] of Object.entries(setting.overrides)) {
+      byMember.set(member, (byMember.get(member) ?? new Set()).add(canonicalJsonStringify(value)))
+    }
+  }
+  return byMember
+})()
+const THINKING_PREFILLS: ReadonlySet<string> = new Set(THINKING_SETTINGS.flatMap((setting) => (setting.assistantPrefill ? [setting.assistantPrefill] : [])))
+
+/**
+ * The top-level members a question request may carry besides its thinking setting: what the audit sends and what the
+ * buyer proxy writes when it translates the request to Chat Completions, Messages or Responses. None of them is
+ * input the model reads or a setting that changes how it answers. Any other member (tools, a response schema, a
+ * stored prompt, an earlier response, another sampling setting, ...) may be.
+ */
+const QUESTION_REQUEST_MEMBERS: ReadonlySet<string> = new Set([
+  'model', 'messages', 'input', 'system', 'instructions', 'stream', 'stream_options',
+  'max_tokens', 'max_completion_tokens', 'max_output_tokens', 'temperature', 'metadata', 'user', 'prompt_cache_key',
+])
+const QUESTION_TURN_MEMBERS: ReadonlySet<string> = new Set(['role', 'type', 'content'])
+const QUESTION_PART_MEMBERS: ReadonlySet<string> = new Set(['type', 'text', 'cache_control'])
+
+/** A turn's or the system's content as one text: a string, or one text part. Null for anything else. */
+function oneText(content: unknown): string | null {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content) || content.length !== 1) return null
+  const part: unknown = content[0]
+  return isRecord(part) && Object.keys(part).every((key) => QUESTION_PART_MEMBERS.has(key))
+    && (part['type'] === 'text' || part['type'] === 'input_text' || part['type'] === 'output_text') && typeof part['text'] === 'string'
+    ? part['text'] : null
+}
+
+/**
+ * Whether the request a seller signed is the audit's own request for one batch, in any API shape the buyer proxy
+ * translates to, and nothing more: the batch's system text (a system turn, Messages' `system`, Responses'
+ * `instructions`), then the one user turn with the batch's prompt, then at most the thinking prefill; only known
+ * members; the audit's temperature when one is sent; and a thinking setting only as the audit sends one. A request
+ * that carries the prompt among other instructions or turns is a different question, and its answer is no audit answer.
+ */
+export function requestIsQuestionBatch(
+  requestBody: Uint8Array,
+  expected: { messages: ReadonlyArray<{ role: string; content: string }>; temperature: number },
+): boolean {
+  const body = parseObject(requestBody)
+  if (!body) return false
+  for (const [member, value] of Object.entries(body)) {
+    if (QUESTION_REQUEST_MEMBERS.has(member)) continue
+    if (!THINKING_OVERRIDES.get(member)?.has(canonicalJsonStringify(value))) return false
+  }
+  if (body['temperature'] !== undefined && body['temperature'] !== expected.temperature) return false
+  if (body['messages'] !== undefined && body['input'] !== undefined) return false
+  const system = expected.messages.filter((message) => message.role === 'system').map((message) => message.content)
+  const users = expected.messages.filter((message) => message.role === 'user').map((message) => message.content)
+  if (system.length > 1 || users.length !== 1 || expected.messages.length !== system.length + 1) return false
+  // The conversation as roles and texts, the system text first wherever the shape keeps it.
+  const conversation: Array<[string, string]> = []
+  for (const member of ['system', 'instructions']) {
+    if (body[member] === undefined) continue
+    const text = oneText(body[member])
+    if (text === null) return false
+    conversation.push(['system', text])
+  }
+  const turns: unknown = typeof body['input'] === 'string' ? [{ role: 'user', content: body['input'] }] : body['messages'] ?? body['input']
+  if (!Array.isArray(turns)) return false
+  for (const turn of turns) {
+    if (!isRecord(turn) || Object.keys(turn).some((key) => !QUESTION_TURN_MEMBERS.has(key))) return false
+    if (typeof turn['role'] !== 'string' || (turn['type'] !== undefined && turn['type'] !== 'message')) return false
+    const text = oneText(turn['content'])
+    if (text === null) return false
+    conversation.push([turn['role'] === 'developer' ? 'system' : turn['role'], text])
+  }
+  const prefilled = conversation.at(-1)?.[0] === 'assistant'
+  if (prefilled && !THINKING_PREFILLS.has(conversation.at(-1)![1])) return false
+  const asked = prefilled ? conversation.slice(0, -1) : conversation
+  return canonicalJsonStringify(asked) === canonicalJsonStringify([...system.map((text) => ['system', text]), ['user', users[0]]])
 }
