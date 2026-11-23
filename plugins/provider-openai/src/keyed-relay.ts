@@ -1,7 +1,6 @@
-import { isKeyedRequestTerms, type KeyedRelayTarget, type KeyedRequestTerms } from '@antseed/node';
+import { isKeyedRequestTerms, KEYED_RELAY_REQUEST_PATH, type KeyedRelayTarget, type KeyedRequestTerms } from '@antseed/node';
 
-/** The one request the keyed relay carries. */
-export const KEYED_RELAY_REQUEST_PATH = '/v1/chat/completions';
+export { KEYED_RELAY_REQUEST_PATH };
 
 export interface KeyedRelayTargetOptions {
   /** The seller's upstream base URL, as the relay joins it with request paths. */

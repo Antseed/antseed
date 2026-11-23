@@ -13,6 +13,7 @@ import {
   isKeyedRequestTerms,
   keyedRefusalCode,
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
+  KEYED_RELAY_REQUEST_PATH,
   RELAY_RESPONSE_WAIT_MS,
   type BlindRelayCredential,
   type FaultAttribution,
@@ -54,8 +55,6 @@ const STREAM_IDLE_TIMEOUT_MS = RELAY_RESPONSE_WAIT_MS
 const MAX_STREAM_DURATION_MS = 30 * 60_000
 /** How long a request waits before it is sent again, after a seller refused it while a channel top-up was mining. */
 const TOP_UP_RETRY_MS = 2_000
-/** The one request the seller writes the head of. */
-const KEYED_REQUEST_PATH = '/v1/chat/completions'
 
 /**
  * Thrown before anything reached the upstream, so the caller may try another
@@ -374,8 +373,8 @@ export class BlindRelayClient {
   ): Promise<SerializedHttpResponse> {
     const { signal, channelBinding, provider } = options
     // What this buyer cannot send to any seller fails here, before a seller is asked for anything.
-    if (request.path.split('?')[0] !== KEYED_REQUEST_PATH) {
-      throw buyerFault(`the blind relay carries only ${KEYED_REQUEST_PATH}, not ${request.path.split('?')[0]}`, 'invalid-request')
+    if (request.path.split('?')[0] !== KEYED_RELAY_REQUEST_PATH) {
+      throw buyerFault(`the blind relay carries only ${KEYED_RELAY_REQUEST_PATH}, not ${request.path.split('?')[0]}`, 'invalid-request')
     }
     let fields: ReturnType<typeof keyedRequestFields>
     try {

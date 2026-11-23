@@ -12,6 +12,9 @@ export const BLIND_RELAY_SERVICE_CATEGORY = 'seller-blind' as const;
 /** The seller route that mints a credential: `POST` with `{"model": "<service>"}`. */
 export const BLIND_RELAY_CREDENTIAL_PATH = '/_antseed/blind/credential' as const;
 
+/** The one request the keyed relay carries: the seller writes its head, and the buyer sends nothing else through it. */
+export const KEYED_RELAY_REQUEST_PATH = '/v1/chat/completions' as const;
+
 /** The most bytes one RelayData frame carries. */
 export const RELAY_DATA_MAX_BYTES = 16 * 1024;
 
