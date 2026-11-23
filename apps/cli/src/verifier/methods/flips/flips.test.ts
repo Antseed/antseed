@@ -471,7 +471,7 @@ test('a stored FLIPS is the audit\'s own: the confirmation stage exactly when it
 })
 
 test('an answer is read from its own bytes: without usage, empty only when filtered, a structured refusal is a filtered reply', () => {
-  const read = (answer: unknown) => readFlipsAnswer(new Uint8Array(), { statusCode: 200, body: bytes(answer) })
+  const read = (answer: unknown) => readFlipsAnswer({ statusCode: 200, body: bytes(answer) })
   const { usage: _usage, ...noUsage } = chat('amber basin')
   assert.equal(read(noUsage).reply.content, 'amber basin', 'billing is not reading')
   assert.deepEqual(read(chat(null, 'content_filter')).reply, { content: '', finishReason: 'content_filter' })

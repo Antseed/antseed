@@ -619,13 +619,13 @@ export function judgeOutputEcho(input: {
     // Steady as a share of the gap: a factor keeps its share, a fixed extra on long replies loses it as the gap grows.
     const shares = input.rounds.flatMap((round, index) => round.growths.flatMap((value) => (value === null ? [] : [value / gaps[index]!])))
     const steady = steadyShares(input.rounds.flatMap((round, index) => round.growths.flatMap((value) => (value === null ? [] : [[value, gaps[index]!] as const]))), rule)
-    const objection = !margin
-      ? `the growth is not above ${rule.growthFloor} tokens and ${rule.growthShare * 100}% of the reference's gap in every round`
-      : !steady
-        ? `the growth is not steady as a share of the texts' gaps (from ${(Math.min(...shares) * 100).toFixed(1)}% to ${(Math.max(...shares) * 100).toFixed(1)}%)`
-        : minGrowth <= rule.tolerance + reasoningSeen
-          ? `the growth is not above the ${reasoningSeen} tokens of reasoning seen on these texts`
-          : echoCrowdObjection(minGrowth, input.crowd.votes.map((vote) => vote.growth), 0, rule)
+    // The first objection that holds, in this order.
+    const objection = ((): string | null => {
+      if (!margin) return `the growth is not above ${rule.growthFloor} tokens and ${rule.growthShare * 100}% of the reference's gap in every round`
+      if (!steady) return `the growth is not steady as a share of the texts' gaps (from ${(Math.min(...shares) * 100).toFixed(1)}% to ${(Math.max(...shares) * 100).toFixed(1)}%)`
+      if (minGrowth <= rule.tolerance + reasoningSeen) return `the growth is not above the ${reasoningSeen} tokens of reasoning seen on these texts`
+      return echoCrowdObjection(minGrowth, input.crowd.votes.map((vote) => vote.growth), 0, rule)
+    })()
     growth = objection
       ? notDecided(objection)
       : { outcome: 'flag', reason: `the seller's output grows ${minGrowth} or more tokens faster than the model's from a short to a long reply, in every round, twice` }

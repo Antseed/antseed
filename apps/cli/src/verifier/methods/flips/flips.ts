@@ -438,7 +438,6 @@ export function finishReasonOf(answer: unknown): string | null {
  * answer). `content` is null when the answer has no readable text.
  */
 export function readFlipsAnswer(
-  _requestBody: Uint8Array,
   response: { statusCode: number; body: Uint8Array } | null,
 ): { reply: FlipsReplyV1; reasoning: boolean; thinkBlock: boolean; reasoningTokens: number } {
   const none = { reply: { content: null, finishReason: null }, reasoning: false, thinkBlock: false, reasoningTokens: 0 }
@@ -462,7 +461,7 @@ function sellerAnswer(slot: FlipsSellerSlotV1): { reply: FlipsReplyV1; reasoning
   if (!exchange) return null
   const body = parseJson(exchange.response.body) as { id?: unknown } | null
   const responseId = typeof body?.id === 'string' ? body.id.slice(0, FLIPS_RESPONSE_ID_MAX_CHARS) : null
-  return { ...readFlipsAnswer(exchange.requestBody, exchange.response), requestBody: parseJson(exchange.requestBody), responseId }
+  return { ...readFlipsAnswer(exchange.response), requestBody: parseJson(exchange.requestBody), responseId }
 }
 
 /** A stored response id is cut to this length. */
@@ -794,7 +793,7 @@ export async function prepareFlipsReference(input: {
         ...(Number.isSafeInteger(startedAt) && Number.isSafeInteger(finishedAt) && startedAt >= 0 && finishedAt >= startedAt
           ? { referenceBatch: { startedAt, finishedAt } } : {}),
         replies: results.map((result) => {
-          const answer = readFlipsAnswer(result.requestBody, result.response)
+          const answer = readFlipsAnswer(result.response)
           return {
             ...answer.reply, provider: result.provider, reasoning: answer.reasoning, thinkBlock: answer.thinkBlock, reasoningTokens: answer.reasoningTokens,
             ...(result.tries !== undefined ? { tries: result.tries } : {}), ...(result.rateLimited !== undefined ? { rateLimited: result.rateLimited } : {}),

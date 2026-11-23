@@ -6,6 +6,7 @@ import {
   type ReferenceInputTokensV1,
   type ReferenceRequestLimiter,
   type ReferenceUpstreamProvenanceV1,
+  type ReferenceReply,
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
 
@@ -69,21 +70,7 @@ export type ReferenceReplyAsks =
    */
   | { bodies: readonly Record<string, unknown>[] }
 
-/** One reply of the reference. */
-export interface ReferenceReply {
-  /** What was sent on the wire. */
-  requestBody: Uint8Array
-  /** What was asked: the body as the route made it, before a protocol's own rewrite. */
-  askedBody: Uint8Array
-  /** The answer's status and bytes; null when the request failed. */
-  response: { statusCode: number; body: Uint8Array } | null
-  /** The provider the answer names; null when it names none. */
-  provider: string | null
-  failure: string | null
-  /** Requests sent for this reply, and how many were answered with a rate limit. */
-  tries: number
-  rateLimited: number
-}
+export type { ReferenceReply }
 
 /**
  * The reference as the tests have always asked it: the model on the route its question bank was enrolled on (the
