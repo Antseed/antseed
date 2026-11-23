@@ -1889,6 +1889,21 @@ export class BuyerProxy {
   }
 
   /**
+   * How a request that requires zero data access reaches `serviceId` on `peer`: over the seller-blind relay
+   * when the seller serves it that way, and otherwise encrypted to the upstream key this attests (cached).
+   * A failed attestation throws.
+   */
+  private async _prepareZeroDataAccess(
+    peer: PeerInfo,
+    provider: string | undefined,
+    serviceId: string,
+    buyerIdentity: string | undefined,
+  ): Promise<{ e2eeSession: E2eeSession | null; blindRelayService: string | null }> {
+    if (this._isBlindRelayService(peer, provider, serviceId)) return { e2eeSession: null, blindRelayService: serviceId }
+    return { e2eeSession: await this._zeroDataAccess.session(peer, serviceId, buyerIdentity), blindRelayService: null }
+  }
+
+  /**
    * Checks the TEE attestation of every seller that advertises one, as soon as
    * it is found, so the model list can show which really are TEE sellers and a
    * failing one drops out of Private before anything is sent. Cached, deduped
@@ -5217,11 +5232,11 @@ export class BuyerProxy {
         // Zero data access: attest the upstream key (cached) and encrypt to it; a failure moves on.
         let e2eeSession: E2eeSession | null = null
         let blindRelayService: string | null = null
-        if (requireZeroDataAccess && this._isBlindRelayService(selected.peer, modelPlans.get(selected.peer.peerId)?.provider, selected.serviceId)) {
-          blindRelayService = selected.serviceId
-        } else if (requireZeroDataAccess) {
+        if (requireZeroDataAccess) {
           try {
-            e2eeSession = await this._zeroDataAccess.session(selected.peer, selected.serviceId, selected.request.headers[BUYER_IDENTITY_HEADER])
+            ({ e2eeSession, blindRelayService } = await this._prepareZeroDataAccess(
+              selected.peer, modelPlans.get(selected.peer.peerId)?.provider, selected.serviceId, selected.request.headers[BUYER_IDENTITY_HEADER],
+            ))
           } catch (error) {
             lastVerificationError = `Peer ${selected.peer.peerId.slice(0, 12)}... failed end-to-end encryption attestation (${error instanceof Error ? error.message : String(error)}).`
             log(`${lastVerificationError} Trying the next model peer.`)
@@ -5544,10 +5559,10 @@ export class BuyerProxy {
       if (!pinnedServiceId) {
         return dispatchFailure(502, { 'content-type': 'text/plain' }, `Pinned peer ${short}... names no service to encrypt end to end for.`)
       }
-      if (this._isBlindRelayService(selectedPeer, selectedPlan?.provider, pinnedServiceId)) {
-        blindRelayService = pinnedServiceId
-      } else try {
-        e2eeSession = await this._zeroDataAccess.session(selectedPeer, pinnedServiceId, pinnedRequest.headers[BUYER_IDENTITY_HEADER])
+      try {
+        ({ e2eeSession, blindRelayService } = await this._prepareZeroDataAccess(
+          selectedPeer, selectedPlan?.provider, pinnedServiceId, pinnedRequest.headers[BUYER_IDENTITY_HEADER],
+        ))
       } catch (error) {
         return dispatchFailure(502, { 'content-type': 'text/plain' },
           `Pinned peer ${short}... failed end-to-end encryption attestation (${error instanceof Error ? error.message : String(error)}).`)
@@ -5874,15 +5889,13 @@ export class BuyerProxy {
         requestForPeer = await encryptRequest(requestForPeer, e2eeSession)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        res.writeHead(400, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ error: { type: 'invalid_request_error', code: 'zero_data_access_unsupported', message } }))
+        sendJson(res, 400, { error: { type: 'invalid_request_error', code: 'zero_data_access_unsupported', message } })
         return { done: true }
       }
       log(`Encrypted request end to end for peer ${selectedPeer.peerId.slice(0, 12)}...`)
     }
     if (blindRelayService && (selectedRoutePlan.selection?.targetProtocol ?? requestProtocol) !== 'openai-chat-completions') {
-      res.writeHead(400, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ error: { type: 'invalid_request_error', code: 'zero_data_access_unsupported', message: 'The blind relay carries chat completions only.' } }))
+      sendJson(res, 400, { error: { type: 'invalid_request_error', code: 'zero_data_access_unsupported', message: 'The blind relay carries chat completions only.' } })
       return { done: true }
     }
     // The seller-blind relay stands in for the seller's own request path; payment still goes through the node.
