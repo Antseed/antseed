@@ -6,6 +6,22 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+## 2026-11-23 — CLI 0.1.258, Node 0.2.190
+
+### Packages
+
+- `@antseed/cli@0.1.258`
+- `@antseed/node@0.2.190`
+- `@antseed/api-adapter@0.1.67`
+- `@antseed/buyer-core@0.1.54`
+- `@antseed/web-sdk@0.1.48`
+- `@antseed/provider-alibaba-video@0.1.15`
+- `@antseed/provider-fal-image@0.1.11`
+- `@antseed/provider-fal-video@0.1.27`
+- `@antseed/provider-venice-video@0.1.28`
+- `@antseed/payments@0.1.117`
+- `@antseed/ants@0.1.75`
+
 ### Fixed
 
 - Buyers (gateway/CLI): streamed answers from sellers that serve the Anthropic Messages format, requested in OpenAI Chat Completions or Responses format, now carry the seller's cache reads in the final usage chunk. Some Anthropic-compatible upstreams report input and cache-read tokens only in the closing `message_delta` event; those counts were dropped, so `prompt_tokens_details.cached_tokens` was missing and all input looked uncached. Non-streamed answers were not affected.
