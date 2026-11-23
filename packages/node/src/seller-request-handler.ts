@@ -79,7 +79,7 @@ import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/resp
 import { E2EE_ATTESTATION_PATH, usageForBilling } from '@antseed/buyer-core';
 import { BLIND_RELAY_CREDENTIAL_PATH, BLIND_RELAY_SERVICE_CATEGORY, type KeyedRefusalCode } from '@antseed/protocol/blind-relay';
 import { RelayMux } from './p2p/relay-mux.js';
-import { SellerBlindRelay, type BlindRelayCharge, type BlindRelayRecord, type KeyedRequestAdmission, type KeyedRequestDecision } from './seller-blind-relay.js';
+import { KEYED_RELAY_BUSY, SellerBlindRelay, type BlindRelayCharge, type BlindRelayRecord, type KeyedRequestAdmission, type KeyedRequestDecision } from './seller-blind-relay.js';
 import { KeyedRelayProcess, resolveKeyedRelayBinary } from '@antseed/keyed-relay';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
@@ -2000,7 +2000,7 @@ export class SellerRequestHandler {
     if (spm.hasClosingChannel(buyerPeerId)) return refuse('the payment channel is closing; retry shortly');
     const { provider } = request;
     // No code: the buyer does not ask this seller again for the request, it goes on to another, as from a busy seller.
-    if (providerSlotsTaken(provider) >= provider.getCapacity().max) return refuse('this seller is serving as many requests as it takes at once; try again later');
+    if (providerSlotsTaken(provider) >= provider.getCapacity().max) return refuse(KEYED_RELAY_BUSY);
     let reservation: BuyerUsageReservation | null = null;
     const limiter = this._deps.sellerBuyerLimiter;
     if (limiter) {

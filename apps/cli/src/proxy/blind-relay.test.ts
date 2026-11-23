@@ -465,6 +465,7 @@ async function keyedStack(
       headers: [['Authorization', 'Bearer sk-seller-secret']] as Array<[string, string]>,
       request: { maxTokensField: 'max_tokens' as const, maxTokens: 1000 },
     }),
+    getCapacity: () => ({ current: 0, max: 10 }),
   } as unknown as Provider
   const seller = new SellerBlindRelay({
     charge: (charge) => { charges.push(charge) },

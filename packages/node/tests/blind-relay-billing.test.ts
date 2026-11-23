@@ -177,7 +177,7 @@ describe('a relayed answer: what the seller charges and what the buyer signs', (
       usageCostUsdc: (_provider, _service, usage) => computeCostUsdc(usage.freshInputTokens, usage.outputTokens, PRICING, usage.cachedInputTokens),
       admitKeyedRequest: () => ({ admitted: true }),
     });
-    const minted = blind.mint(buyerPeerId, SERVICE, { keyedRelayTarget: () => TARGET } as unknown as Provider);
+    const minted = blind.mint(buyerPeerId, SERVICE, { keyedRelayTarget: () => TARGET, getCapacity: () => ({ current: 0, max: 10 }) } as unknown as Provider);
     let spent = 0n;
     for (let index = 1; index <= requests; index += 1) {
       const requestId = `relayed-${index}`;
@@ -218,7 +218,7 @@ describe('a relayed answer: what the seller charges and what the buyer signs', (
       usageCostUsdc: (_provider, _service, usage) => computeCostUsdc(usage.freshInputTokens, usage.outputTokens, PRICING, usage.cachedInputTokens),
       admitKeyedRequest: () => ({ admitted: true }),
     });
-    const minted = blind.mint(buyerPeerId, SERVICE, { keyedRelayTarget: () => TARGET } as unknown as Provider);
+    const minted = blind.mint(buyerPeerId, SERVICE, { keyedRelayTarget: () => TARGET, getCapacity: () => ({ current: 0, max: 10 }) } as unknown as Provider);
     let spent = 0n;
     for (let index = 1; index <= requests; index += 1) {
       const requestId = `interrupted-${index}`;

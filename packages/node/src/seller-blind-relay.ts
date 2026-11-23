@@ -17,6 +17,8 @@ const CREDENTIAL_TTL_MS = 10 * 60_000;
 const MAX_HEAD_BYTES = 8192;
 const REFUSED_BUYER = 'this seller no longer relays requests for this buyer';
 const BLOCKED_BUYER = 'this seller does not serve your requests';
+/** Answered to a stream or a request over what its provider serves at once. */
+export const KEYED_RELAY_BUSY = 'this seller is serving as many requests as it takes at once; try again later';
 
 interface LiveCredential {
   id: string;
@@ -146,6 +148,8 @@ export class SellerBlindRelay {
   private readonly _credentials = new Map<string, LiveCredential>();
   /** Buyers whose answer contradicted the request the seller checked: they get no more handles and no stream on one they hold. */
   private readonly _keyedRefused = new Set<string>();
+  /** Streams open on each provider: each runs a sidecar from its opening until that sidecar has ended. */
+  private readonly _streams = new WeakMap<Provider, number>();
 
   constructor(private readonly _deps: SellerBlindRelayDeps) {}
 
@@ -223,6 +227,13 @@ export class SellerBlindRelay {
     if (!credential || credential.buyerPeerId !== buyerPeerId) return Promise.reject(new Error('unknown credential'));
     if (credential.expiresAt <= this._now()) return Promise.reject(new Error('credential expired'));
     if (credential.busy) return Promise.reject(new Error('credential busy'));
+    // A stream starts a sidecar before its request is admitted, so streams are limited where requests are: with the
+    // direct requests in flight, a provider carries at most as many as it serves at once.
+    const { provider } = credential;
+    const { current, max } = provider.getCapacity();
+    const open = this._streams.get(provider) ?? 0;
+    if (current + open >= max) return Promise.reject(new Error(KEYED_RELAY_BUSY));
+    this._streams.set(provider, open + 1);
     credential.busy = true;
     return Promise.resolve(this._grant(credential, streamId));
   }
@@ -242,6 +253,7 @@ export class SellerBlindRelay {
     const { target } = credential;
     let release = (): void => {
       credential.busy = false;
+      this._streams.set(credential.provider, Math.max(0, (this._streams.get(credential.provider) ?? 0) - 1));
       // A refused buyer's handle opens no further stream: dropped once the stream on it is billed.
       if (this._keyedRefused.has(credential.buyerPeerId)) this._credentials.delete(credential.id);
     };
