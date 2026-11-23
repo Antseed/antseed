@@ -25,14 +25,31 @@ export interface DHTNodeConfig {
   lookup?: (host: string, options: { family: 4; all: true }) => Promise<LookupAddress[]>;
   /** Local address to bind the DHT UDP socket to. Default: all interfaces. */
   bindHost?: string;
+  /**
+   * How long this node keeps a peer another node announced to it, in ms.
+   * Default: {@link DEFAULT_PEER_RECORD_MAX_AGE_MS}.
+   */
+  peerRecordMaxAgeMs?: number;
 }
+
+/**
+ * bittorrent-dht keeps announced peers forever unless given a `maxAge`, and
+ * answers each get_peers with at most 100 random stored peers. Every peer that
+ * ever announced a topic (restarted sellers, changed IPs and ports) would stay
+ * listed next to the live ones, so lookups return mostly dead endpoints and can
+ * miss live sellers. A record lives 0.67–1.33 × maxAge after its last announce,
+ * so 30 min keeps peers that reannounce every 15 min (releases before the
+ * 5-min interval) listed while dropping a gone peer within 20–40 min.
+ */
+export const DEFAULT_PEER_RECORD_MAX_AGE_MS = 30 * 60 * 1000;
 
 export const DEFAULT_DHT_CONFIG: Omit<DHTNodeConfig, "peerId"> = {
   port: 6881,
   bootstrapNodes: toBootstrapConfig(OFFICIAL_BOOTSTRAP_NODES),
   // 5 min — short enough that a missed reannounce is recovered well before
-  // most BEP-5 storage nodes expire the value (~30 min). Used to be 15 min,
-  // which sat right at the edge and caused intermittent visibility gaps.
+  // storage nodes expire the record (DEFAULT_PEER_RECORD_MAX_AGE_MS here,
+  // ~30 min on most BEP-5 nodes). Used to be 15 min, which sat right at the
+  // edge and caused intermittent visibility gaps.
   reannounceIntervalMs: 5 * 60 * 1000,
   // 25s — long enough for a cold routing table to fan out and for the DHT
   // to drain its 'peer' events. With 10s we frequently observed lookups
@@ -185,6 +202,7 @@ export class DHTNode {
     return new Promise<void>((resolve, reject) => {
       this.dht = new DHT({
         bootstrap,
+        maxAge: this.config.peerRecordMaxAgeMs ?? DEFAULT_PEER_RECORD_MAX_AGE_MS,
       });
 
       const timeout = setTimeout(() => {

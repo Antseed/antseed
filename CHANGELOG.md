@@ -19,7 +19,6 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
-- Website: `llms.txt` now opens with the current positioning (the open intelligence network), the mission, the vision and the three value props. It gains a list of who can provide, with Colony and Diem Antseed as examples of a pool serving as one provider, a model verification section (results, the effect on routing and `antseed verifier check`), a list of the agent skills, an ANTS section on liquid inference that gathers the staking and rewards pages, and links to the site's pages. It also links the "Test your seller before going live" doc, and no longer calls `/network/` a live view of peers and models.
 - Verifiers (CLI): a question set that leaves too many questions unanswered for an ordinary `DIFF` (under 80% scored, but at least half) is `DIFF` when the answers it does give are decisive on their own: a binomial p-value of at most 1e-6 over at least 50 scored answers (rule `kbf-coverage-v1`, in `@antseed/fingerprints`). This applies to a close call's pooled look too. A seller whose batches fail whole can no longer leave its far-off answers undecided. Each set's evidence names the rule it was decided by, and `verifier submit` and a confirming auditor judge every stored set by the rule it names, so sets from before keep their old verdict. The audit rules change: part of verifier compat 5.
 - Verifiers (CLI): Claude Fable 5.2 is an audited model, and Claude Fable 5.1, its older version, is no longer audited: only the newest version of a model line is. Fable 5.2's reference is Anthropic's own endpoint, and its new banks are built to tell it apart from Claude Sonnet 5.5, GPT-6.1 Sol and GPT-6.1 Terra. It applies from the next epoch's bank. The audited model list is part of the audit rules: part of verifier compat 5.
 - Verifiers (CLI): GPT-6.1 Sol's built-in contrast models now include GPT-6.1 Terra, its cheaper sibling, in place of MiMo v2.6 Pro, so new banks are built to tell the two apart. It applies from the next epoch's bank.
@@ -29,6 +28,28 @@ This project uses selective package publishing. Each release entry lists the pub
 - Verifiers (CLI): `verifier submit` no longer publishes a model's questions while one of your confirmations of that model waits to be audited again. Before, a model whose audit window had closed was sent with its first looks, which retires the model's question set, so the confirmation's next attempt waited for a new set to be built for the model (and none is built with `--no-enroll`). Now the model's results are held, as an open audit window holds them (reason code `confirmation-waiting` in the dry run), with the confirmation's own attempts and spacing, and sent together once it is decided or out of attempts; once the epoch is too near its end for another round, they are sent without it. Only a report that is still your confirmation turn and not settled on-chain holds, and not once a later run of the model passed it over (its turn ended, it was settled, or the run had `--no-confirm`), after three failures on your own side, or when the seller no longer offers the model (a confirmation is now given up then, also when your own first look of the seller is finished). This changes the submit rules: part of verifier compat 5.
 - Verifiers (CLI): a model whose thinking no setting turns off is now asked with the setting that thinks least, not with no setting at all (rule `kbf-discovery-least-reasoning-v1`, in `@antseed/fingerprints`), for the reference and for each seller audited. With no setting such a model could think through the whole token limit of a real batch and answer nothing, so no question set could be built for it. A setting that turns thinking off still wins as before. Question writing also stops using its "think a little" fallback once the fallback's first three answers give no list either. The audit rules change: part of verifier compat 5.
 - Verifiers (CLI): building a question set for a model whose thinking cannot be turned off no longer stalls. Such a model could spend every token of a question-writing request thinking and return no text, so no question was written. Question writing now falls back to a little thinking for it too (asking keeps the recorded setting, as before). A generation round in which no question-writing batch gives a list stops the build at once, instead of paying for more rounds up to the no-progress limit.
+
+## 2026-11-23 — CLI 0.1.259, Node 0.2.191, Desktop 0.2.94
+
+### Packages
+
+- `@antseed/cli@0.1.259`
+- `@antseed/node@0.2.191`
+- `@antseed/payments@0.1.118`
+- `@antseed/ants@0.1.76`
+
+### Desktop
+
+- `@antseed/desktop@0.2.94`
+
+### Changed
+
+- Website: `llms.txt` now opens with the current positioning (the open intelligence network), the mission, the vision and the three value props. It gains a list of who can provide, with Colony and Diem Antseed as examples of a pool serving as one provider, a model verification section (results, the effect on routing and `antseed verifier check`), a list of the agent skills, an ANTS section on liquid inference that gathers the staking and rewards pages, and links to the site's pages. It also links the "Test your seller before going live" doc, and no longer calls `/network/` a live view of peers and models.
+
+### Fixed
+
+- Node: DHT nodes now forget a peer 20–40 minutes after its last announcement. Every node used to keep each announcement forever, while a node answers a lookup with at most 100 of the peers it stores for a topic, so peers that had stopped or moved piled up next to the live ones: discovery spent most of its time fetching metadata from dead endpoints, and a lookup could miss live sellers. A peer that keeps announcing, at the current 5-minute interval or the older 15-minute one, stays listed. The DHT bootstrap nodes and other long-running peers apply this once they run the new version. `DHTNodeConfig.peerRecordMaxAgeMs` sets the lifetime (default 30 minutes).
+- Node: the incremental discovery sweep (`findAllExhaustive` with a progress callback, used by buyers' background discovery) fetches each endpoint's metadata once per sweep instead of again for every topic that lists it, and looks up the next DHT topic while metadata is still being fetched instead of waiting for each topic's slowest endpoint. Sweeps finish sooner and make far fewer metadata requests.
 
 ## 2026-11-23 — CLI 0.1.258, Node 0.2.190, Desktop 0.2.93
 
