@@ -21,7 +21,9 @@ export const GATEWAY_CONTROL_HEADER = 'x-antseed-gateway-auth'
 /**
  * A buyer that applies `requireZeroDataAccess` says so in its route preview's
  * `capabilities`. An older buyer decodes a policy with the field and routes
- * without it, so a gateway sends the requirement only to a buyer that lists this.
+ * without it, so a gateway sends the requirement only to a buyer that lists this,
+ * and in a form an older buyer cannot decode (`encodePolicyHeader`): the buyer
+ * that gets the request may not be the one that answered the preview.
  */
 export const ZERO_DATA_ACCESS_POLICY_CAPABILITY = 'zero-data-access'
 /** The policy requirements this buyer applies beyond the ones every policy-aware buyer does. */
@@ -457,14 +459,32 @@ export function policyAllowsModel(policy: RoutingPolicy | null | undefined, mode
   return policy.allowedModels.some((allowed) => sameRoutingModel(allowed, model))
 }
 
-export function encodePolicyHeader(policy: RoutingPolicy): string {
-  return Buffer.from(JSON.stringify(stripUndefined(policy)), 'utf8').toString('base64url')
+/** The capabilities a buyer needs to apply all of `policy` (see `ROUTING_POLICY_CAPABILITIES`). */
+export function requiredPolicyCapabilities(policy: RoutingPolicy): string[] {
+  return policy.requireZeroDataAccess ? [ZERO_DATA_ACCESS_POLICY_CAPABILITY] : []
 }
 
-/** Returns null for a malformed header; callers must then reject the request rather than route unrestricted. */
+/**
+ * The policy as JSON, base64url. One that needs a capability is a list, the
+ * policy followed by the capabilities it needs: a buyer from before the list
+ * reads only an object, so it refuses the request instead of routing it
+ * without a requirement it does not know.
+ */
+export function encodePolicyHeader(policy: RoutingPolicy): string {
+  const stripped = stripUndefined(policy)
+  const required = requiredPolicyCapabilities(policy)
+  return Buffer.from(JSON.stringify(required.length > 0 ? [stripped, ...required] : stripped), 'utf8').toString('base64url')
+}
+
+/**
+ * Returns null for a malformed header, or one that needs a capability this
+ * buyer lacks; callers must then reject the request rather than route unrestricted.
+ */
 export function decodePolicyHeader(value: string): RoutingPolicy | null {
   try {
-    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as unknown
+    const decoded = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as unknown
+    const [parsed, ...required] = Array.isArray(decoded) ? decoded as unknown[] : [decoded]
+    if (!required.every((capability) => typeof capability === 'string' && ROUTING_POLICY_CAPABILITIES.includes(capability))) return null
     if (!isRoutingPolicy(parsed)) return null
     // The buyer cannot resolve list ids; refuse rather than ignore a restriction.
     if (parsed.allowedPeerLists !== undefined || parsed.blockedPeerLists !== undefined || parsed.allowedPeerGroups !== undefined) return null

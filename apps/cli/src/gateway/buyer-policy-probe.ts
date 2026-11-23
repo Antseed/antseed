@@ -79,6 +79,7 @@ export class BuyerPolicyProbe {
   private _checked = false
   private _confirmedAt: number | null = null
   private _capabilities: readonly string[] = []
+  private _rechecking = false
 
   constructor(private readonly _options: BuyerPolicyProbeOptions) {}
 
@@ -134,6 +135,13 @@ export class BuyerPolicyProbe {
       }
     }
     this._schedule(unanswered ? RETRY_MS : RECHECK_MS)
+  }
+
+  /** Probes now, ahead of the schedule and one at a time: the buyer just answered as another one than the last probe saw. */
+  recheck(): void {
+    if (this._stopped || this._rechecking) return
+    this._rechecking = true
+    void this.check().finally(() => { this._rechecking = false })
   }
 
   stop(): void {

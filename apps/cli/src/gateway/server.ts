@@ -240,6 +240,8 @@ export interface GatewayServerOptions {
   buyerPolicyUnsupported?: () => boolean
   /** True while the buyer has not confirmed it applies the zero data access requirement (see buyer-policy-probe.ts). */
   buyerZeroDataAccessUnsupported?: () => boolean
+  /** Called when the buyer refuses a policy this gateway wrote, so it is probed again without waiting for the next check. */
+  recheckBuyerPolicy?: () => void
   /** Console (`/console`, `/console/api/*`), answered before API-key auth. */
   console?: { handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> } | null
   /** Span exporter; defaults to one reading the observability settings from the store. */
@@ -820,6 +822,10 @@ export class GatewayServer {
         }
         try {
           const error = status >= 400 ? gatewayError ?? parseErrorBody(Buffer.concat(errorChunks), status) : null
+          // A buyer that cannot read this gateway's own policy is not the one the last probe answered for.
+          if (status === 400 && error?.code === 'invalid_routing_policy' && request.policyHeaders[ROUTING_POLICY_HEADER]) {
+            this._options.recheckBuyerPolicy?.()
+          }
           store.finishRequest(tag, { status, buyerRequestId, error })
           if (usage) store.recordResponseUsage(tag, usage)
           if (observability.logContent) store.recordRequestContent(tag, { requestBody: requestContent, responseBody: responseContent })

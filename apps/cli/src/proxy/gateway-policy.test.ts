@@ -188,6 +188,15 @@ test('a malformed authenticated policy is rejected, never routed unrestricted', 
   assert.equal(h.dispatched.length, 0)
 })
 
+test('a policy that needs a capability this buyer does not have is rejected, never routed without it', async (t) => {
+  const h = await startHarness(t, [cheap, pricey])
+  const policy = Buffer.from(JSON.stringify([{ requireTee: false }, 'a-later-requirement'])).toString('base64url')
+  const res = await chat(h, { [GATEWAY_CONTROL_HEADER]: SECRET, [ROUTING_POLICY_HEADER]: policy })
+  assert.equal(res.status, 400)
+  assert.equal(((await res.json()) as any).error.code, 'invalid_routing_policy')
+  assert.equal(h.dispatched.length, 0)
+})
+
 test('a disallowed model is refused with model_not_allowed', async (t) => {
   const h = await startHarness(t, [cheap, pricey])
   const res = await chat(h, withPolicy({ allowedModels: ['other-model'] }))

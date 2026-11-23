@@ -241,3 +241,95 @@ test('a buyer that applies policies but not the zero data access requirement get
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+/** How a buyer from before the zero data access requirement reads a policy header: a JSON object, of which it applies the fields it knows. */
+function olderBuyerPolicy(header: string): Record<string, unknown> | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(Buffer.from(header, 'base64url').toString('utf8'))
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const { requireZeroDataAccess: _unknown, ...known } = parsed as Record<string, unknown>
+  return known
+}
+
+test('a buyer replaced by one from before the zero data access requirement routes nothing that needs it, before the gateway has probed it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'antseed-gw-probe-'))
+  const store = new GatewayStore(dir)
+  let replaced = false
+  let previews = 0
+  const routed: unknown[] = []
+  const buyer = await listen((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      if (req.url!.startsWith('/_antseed/route-preview')) {
+        previews += 1
+        const preview = { model: '__probe__', candidates: [], ...(replaced ? {} : { capabilities: [ZERO_DATA_ACCESS_POLICY_CAPABILITY] }) }
+        return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(preview))
+      }
+      const header = req.headers[ROUTING_POLICY_HEADER]
+      const policy = typeof header !== 'string' ? {} : replaced ? olderBuyerPolicy(header) : decodePolicyHeader(header)
+      if (!policy) {
+        return void res.writeHead(400, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ error: { type: 'invalid_request_error', code: 'invalid_routing_policy', message: 'not a valid routing policy' } }))
+      }
+      routed.push(policy)
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{}')
+    })
+  })
+  const accounting = new GatewayAccounting(store, { holdUsdc: 100_000, settleGraceMs: 20 })
+  const probe = new BuyerPolicyProbe({ buyerPort: buyer.port, secret: 'control-secret' })
+  const server = new GatewayServer({
+    store,
+    accounting,
+    buyerPort: buyer.port,
+    identityAddress: async () => null,
+    spendFeedState: () => 'ok' as never,
+    refreshSpendFeed: async () => {},
+    controlSecret: 'control-secret',
+    buyerPolicyUnsupported: () => probe.policyUnsupported(),
+    buyerZeroDataAccessUnsupported: () => probe.zeroDataAccessUnsupported(),
+    recheckBuyerPolicy: () => probe.recheck(),
+  })
+  const port = await server.start()
+  const send = (secret: string) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'm' }),
+  })
+  try {
+    assert.equal(await probe.start(), 'supported')
+    const blind = store.createKey({ label: 'z', limits: NO_LIMITS, expiresAt: null, routingPolicy: { requireZeroDataAccess: true, requireTee: true } })
+    const tee = store.createKey({ label: 't', limits: NO_LIMITS, expiresAt: null, routingPolicy: { requireTee: true } })
+    assert.equal((await send(blind.secret)).status, 200)
+    assert.deepEqual(routed, [{ requireZeroDataAccess: true, requireTee: true }])
+
+    // An older buyer takes the port, with the same control secret. The gateway still holds the first one's answer.
+    replaced = true
+    assert.equal(probe.zeroDataAccessUnsupported(), false)
+    const refused = await send(blind.secret)
+    const refusal = await refused.text()
+    assert.deepEqual(routed.slice(1), [], 'the older buyer routed a request that requires zero data access without the requirement')
+    assert.equal(refused.status, 400, refusal)
+    assert.match(refusal, /invalid_routing_policy/)
+    // That refusal makes the gateway probe the buyer again, so the next such request is refused by the gateway itself.
+    const probed = previews
+    for (let waited = 0; previews === probed && waited < 2_000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10))
+    for (let waited = 0; !probe.zeroDataAccessUnsupported() && waited < 2_000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10))
+    const next = await send(blind.secret)
+    assert.equal(next.status, 503)
+    assert.equal(((await next.json()) as any).error.code, 'buyer_policy_unsupported')
+    // What the older buyer does apply still reaches it.
+    assert.equal((await send(tee.secret)).status, 200)
+    assert.deepEqual(routed.slice(1), [{ requireTee: true }])
+  } finally {
+    probe.stop()
+    await server.stop()
+    accounting.dispose()
+    await buyer.close()
+    store.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
