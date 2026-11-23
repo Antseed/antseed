@@ -977,12 +977,15 @@ export async function askReferenceInputTokens(input: {
         failure: usage.inputTokens === null ? 'the reference endpoint reported no input tokens' : null,
       }
     }
+    const timeUp = 'the pre-check\'s time for the reference is up'
     try {
-      return read((await limiter.run(route.model, async () => {
+      // The wait for a slot ends at the abort too: a request whose measurement has run out leaves the queue, takes no
+      // paced slot later, and does not hold its caller.
+      return read((await untilAborted(limiter.run(route.model, async () => {
         // A request that waited for its slot past the measurement's time is not sent.
-        if (input.signal?.aborted) throw new Error('the pre-check\'s time for the reference is up')
+        if (input.signal?.aborted) throw new Error(timeUp)
         return postChatCompletion(route, body, timeoutMs, fetchFn, input.signal)
-      })).exchange)
+      }, input.signal), input.signal, timeUp)).exchange)
     } catch (error) {
       // An answer without text still counted its input.
       if (error instanceof EmptyReferenceResponseError && error.exchange) return read(error.exchange)
@@ -1008,6 +1011,22 @@ export async function askReferenceInputTokens(input: {
 function routeServesOneProvider(route: ReferenceRequestRoute): boolean {
   const router = route.upstream?.type === 'openrouter' || /openrouter\.ai/i.test(route.baseUrl)
   return route.type === 'antseed' || (route.providerRouting?.order.length ?? 0) === 1 || !router
+}
+
+/** One reply of the reference. */
+export interface ReferenceReply {
+  /** What was sent on the wire. */
+  requestBody: Uint8Array
+  /** What was asked: the body as the route made it, before a protocol's own rewrite. */
+  askedBody: Uint8Array
+  /** The answer's status and bytes; null when the request failed. */
+  response: { statusCode: number; body: Uint8Array } | null
+  /** The provider the answer names; null when it names none. */
+  provider: string | null
+  failure: string | null
+  /** Requests sent for this reply, and how many were answered with a rate limit. */
+  tries: number
+  rateLimited: number
 }
 
 /**
@@ -1047,18 +1066,7 @@ export async function askReferenceReplies(input: {
    * endpoint may be a router, so its unnamed answers are no one provider's (FLIPS).
    */
   provenOneProvider: boolean
-  results: Array<{
-    /** What was sent on the wire. */
-    requestBody: Uint8Array
-    /** What was asked: the body as the route made it, before a protocol's own rewrite. */
-    askedBody: Uint8Array
-    response: { statusCode: number; body: Uint8Array } | null
-    provider: string | null
-    failure: string | null
-    /** Requests sent for this reply, and how many were answered with a rate limit. */
-    tries: number
-    rateLimited: number
-  }>
+  results: ReferenceReply[]
 }> {
   const endpoint = input.config?.referenceEndpoint
   if (!endpoint) throw new Error('verifier.referenceEndpoint is required')

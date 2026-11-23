@@ -679,6 +679,38 @@ test('a reference job cancelled while it waits for its slot leaves the queue and
   assert.equal(ran, false)
 })
 
+test('input-token requests waiting for a slot when their measurement runs out leave the queue: none is sent, and the next job gets the slot at once', async () => {
+  const limiter = createReferenceRequestLimiter({ referenceMaxConcurrentRequests: 1, referenceMaxConcurrentRequestsPerModel: 1 } as never)
+  // Another job holds the only slot, as a rate-limit cooldown would.
+  let release!: () => void
+  const holding = limiter.run('upstream-a', () => new Promise<void>((resolve) => { release = resolve }))
+  const stop = new AbortController()
+  let sent = 0
+  const fetchFn = (async () => {
+    sent += 1
+    return Response.json({ choices: [{ message: { content: 'x' } }], usage: { prompt_tokens: 9, completion_tokens: 1 } })
+  }) as typeof fetch
+  const asked = askReferenceInputTokens({
+    model: 'model-a', settings: bankedReference(), contents: ['one', 'two', 'three'], maxTokens: 64, fetchFn, requestLimiter: limiter, signal: stop.signal,
+    config: { ...config, models: { 'model-a': { ...config.models!['model-a'], contrastModels: ['contrast-a'] } } },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  stop.abort()
+  // The caller is not held until the slot is free.
+  const settled = await Promise.race([asked, new Promise<'still waiting'>((resolve) => setTimeout(() => resolve('still waiting'), 200))])
+  assert.notEqual(settled, 'still waiting')
+  const { results } = await asked
+  assert.deepEqual(results.map((result) => [result.inputTokens, result.failure]), Array.from({ length: 3 }, () => [null, 'the pre-check\'s time for the reference is up']))
+  release()
+  await holding
+  // The cancelled requests hold no place in the queue: the next job runs at once, and none of them is ever sent.
+  let ran = false
+  await limiter.run('upstream-a', async () => { ran = true })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(ran, true)
+  assert.equal(sent, 0)
+})
+
 test('a reference asked after its time is up sends nothing, says so for each request, and leaves no rejection unhandled', async () => {
   // FLIPS asks its unanswered requests again inside the reference's time; when that time has already run out, the ask
   // is made with a signal that is aborted from the start. An unhandled rejection there ends the whole run.
