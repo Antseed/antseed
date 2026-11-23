@@ -33,7 +33,7 @@ import { generateTokenizerProbe } from '../tokens/tokenizer-precheck.js'
  * the implementation: honest 0 flags; a 20% over-bill flagged in every decided check.
  */
 export interface OutputEchoRule {
-  id: 'output-echo-v1'
+  id: 'output-echo-v1' | 'output-echo-v2'
   /** Rounds of one short and one long text. */
   rounds: number
   /** Tokens within which two counts of one text are the same (a seller's two asks; a crowd vote's two texts). */
@@ -73,7 +73,12 @@ export interface OutputEchoRule {
   visibleCounts: boolean
 }
 
-export const OUTPUT_ECHO_RULE: OutputEchoRule = Object.freeze({
+/**
+ * The first rule. Its reply limit of 1,024 tokens cut off the longest text (six passages) on a tokenizer that writes
+ * it in more tokens than that: the reference then had no whole echo, and the check did not apply to the model at all
+ * (in a dry run, every Claude model and MiMo). Kept so that evidence stored under it is judged by it.
+ */
+export const OUTPUT_ECHO_RULE_V1: OutputEchoRule = Object.freeze({
   id: 'output-echo-v1',
   rounds: 3,
   tolerance: 2,
@@ -94,8 +99,18 @@ export const OUTPUT_ECHO_RULE: OutputEchoRule = Object.freeze({
   visibleCounts: false,
 })
 
+/**
+ * The rule of a new audit: the first rule with a reply limit of 2,048 tokens, so the longest text is echoed whole on
+ * every audited model's tokenizer, also with the reasoning a model counted on its visible answer writes before it.
+ * The texts, the rounds and every margin are the first rule's.
+ */
+export const OUTPUT_ECHO_RULE: OutputEchoRule = Object.freeze({ ...OUTPUT_ECHO_RULE_V1, id: 'output-echo-v2', maxTokens: 2048 })
+
+const RULES: ReadonlyMap<string, OutputEchoRule> = new Map([OUTPUT_ECHO_RULE_V1, OUTPUT_ECHO_RULE].map((rule) => [rule.id, rule]))
+
+/** The rule stored evidence was judged by; undefined for an id this CLI does not know. */
 export function outputEchoRuleById(id: string): OutputEchoRule | undefined {
-  return id === OUTPUT_ECHO_RULE.id ? OUTPUT_ECHO_RULE : undefined
+  return RULES.get(id)
 }
 
 /**

@@ -60,7 +60,7 @@
   "tokenizerPrecheck": {"rule":"tokenizer-precheck-v3","outcome":"match"},
   "outputCap": {"rule":"output-cap-v1","outcome":"pass","reason":"the answer was within","asks":[{"cap":24,"billed":24,"measured":null,"class":"within"}]},
   "outputEcho": {
-   "rule": "output-echo-v1",
+   "rule": "output-echo-v2",
    "outcome": "pass",
    "flag": null,
    "growth": "pass",
@@ -88,7 +88,7 @@
   "flips": {"record":"flips-273ec7428a70bd33"},
   "kind": "antseed-buyer-proxy-kbf-audit",
   "outputCap": {"record":"outputCap-eb55d3464bdd05c4"},
-  "outputEcho": {"record":"outputEcho-d6e32aa842c8da33"},
+  "outputEcho": {"record":"outputEcho-d306b3e50597ee3c"},
   "reference": {"record":"reference-723f83ee13c8a30f"},
   "result": {
    "cost": {"estimatedCostUsd":0.006130000000000001,"inputTokens":3080,"missingCostExchangeCount":0,"outputTokens":2845,"pricedExchangeCount":25,"totalTokens":5925},

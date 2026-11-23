@@ -6,7 +6,7 @@
  "mode": "plain",
  "offset": {"fixed":true,"median":0},
  "outcome": "pass",
- "precheckMatch": true,
+ "precheckMatch": false,
  "reason": "growth: the seller bills the model's growth; fixed amount: pass, stored … (126 characters, sha256 87b257ba148432d4)",
  "reference": [
   {
@@ -31,7 +31,7 @@
     {
      "reading": {
       "billedOutputTokens": 400,
-      "cap": 1024,
+      "cap": 2048,
       "estimated": false,
       "finished": true,
       "oneAnswer": true,
@@ -70,7 +70,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (1418 characters, sha256 9fc8ffdf40e2a912)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (1418 characters, sha256 c1398d186cf9e3a8)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -93,7 +93,7 @@
     {
      "reading": {
       "billedOutputTokens": 137,
-      "cap": 1024,
+      "cap": 2048,
       "estimated": false,
       "finished": true,
       "oneAnswer": true,
@@ -132,7 +132,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (630 characters, sha256 c25c21a7a0560cc8)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (630 characters, sha256 e67d240a1a15e470)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -160,7 +160,7 @@
     {
      "reading": {
       "billedOutputTokens": 518,
-      "cap": 1024,
+      "cap": 2048,
       "estimated": false,
       "finished": true,
       "oneAnswer": true,
@@ -199,7 +199,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (1773 characters, sha256 d67dc527a8c66b7d)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (1773 characters, sha256 1ec380baaee5b558)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -222,7 +222,7 @@
     {
      "reading": {
       "billedOutputTokens": 133,
-      "cap": 1024,
+      "cap": 2048,
       "estimated": false,
       "finished": true,
       "oneAnswer": true,
@@ -261,7 +261,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (618 characters, sha256 2cc2d9e8bd9c9e31)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (618 characters, sha256 b2df2e946709b6af)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -289,7 +289,7 @@
     {
      "reading": {
       "billedOutputTokens": 790,
-      "cap": 1024,
+      "cap": 2048,
       "estimated": false,
       "finished": true,
       "oneAnswer": true,
@@ -328,7 +328,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (2589 characters, sha256 d30e4d72ab763313)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (2589 characters, sha256 4fa2d696803d8887)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -351,7 +351,7 @@
     {
      "reading": {
       "billedOutputTokens": 146,
-      "cap": 1024,
+      "cap": 2048,
       "estimated": false,
       "finished": true,
       "oneAnswer": true,
@@ -390,7 +390,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (655 characters, sha256 56ed262180c1393c)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (655 characters, sha256 4561a4925d4cab18)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -416,9 +416,9 @@
  "rule": {
   "growthFloor": 20,
   "growthShare": 0.1,
-  "id": "output-echo-v1",
+  "id": "output-echo-v2",
   "longPassages": [3,4,6],
-  "maxTokens": 1024,
+  "maxTokens": 2048,
   "minBackers": 2,
   "minGap": 150,
   "minGapRatio": 1.3333333333333333,

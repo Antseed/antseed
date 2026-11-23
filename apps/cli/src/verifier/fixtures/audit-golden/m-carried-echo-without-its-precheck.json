@@ -22,12 +22,12 @@
   "checkpoint 3: tests [tokenizerPrecheck, outputCap, flips], question batches [0 succeeded, 1 succeeded]",
   "seller: question batch 2 #1 (limit 160, {\"temperature\":0,\"reasoning\":{\"effort\":\"minimal\"}})",
   "checkpoint 4: tests [tokenizerPrecheck, outputCap, flips], question batches [0 succeeded, 1 succeeded, 2 succeeded]",
-  "seller: echo round 1 short #1 (limit 1024, {\"reasoning\":{\"effort\":\"minimal\"}})",
-  "seller: echo round 1 long #1 (limit 1024, {\"reasoning\":{\"effort\":\"minimal\"}})",
-  "seller: echo round 2 short #1 (limit 1024, {\"reasoning\":{\"effort\":\"minimal\"}})",
-  "seller: echo round 2 long #1 (limit 1024, {\"reasoning\":{\"effort\":\"minimal\"}})",
-  "seller: echo round 3 short #1 (limit 1024, {\"reasoning\":{\"effort\":\"minimal\"}})",
-  "seller: echo round 3 long #1 (limit 1024, {\"reasoning\":{\"effort\":\"minimal\"}})",
+  "seller: echo round 1 short #1 (limit 2048, {\"reasoning\":{\"effort\":\"minimal\"}})",
+  "seller: echo round 1 long #1 (limit 2048, {\"reasoning\":{\"effort\":\"minimal\"}})",
+  "seller: echo round 2 short #1 (limit 2048, {\"reasoning\":{\"effort\":\"minimal\"}})",
+  "seller: echo round 2 long #1 (limit 2048, {\"reasoning\":{\"effort\":\"minimal\"}})",
+  "seller: echo round 3 short #1 (limit 2048, {\"reasoning\":{\"effort\":\"minimal\"}})",
+  "seller: echo round 3 long #1 (limit 2048, {\"reasoning\":{\"effort\":\"minimal\"}})",
   "checkpoint 5: tests [tokenizerPrecheck, outputCap, outputEcho, flips], question batches [0 succeeded, 1 succeeded, 2 succeeded]"
  ],
  "returned": {
@@ -57,7 +57,7 @@
   "tokenizerPrecheck": {"rule":"tokenizer-precheck-v3","outcome":"match"},
   "outputCap": {"rule":"output-cap-v1","outcome":"pass","reason":"the answer was within","asks":[{"cap":24,"billed":24,"measured":null,"class":"within"}]},
   "outputEcho": {
-   "rule": "output-echo-v1",
+   "rule": "output-echo-v2",
    "outcome": "pass",
    "flag": null,
    "growth": "pass",
@@ -85,7 +85,7 @@
   "flips": {"record":"flips-dc679905057b5410"},
   "kind": "antseed-buyer-proxy-kbf-audit",
   "outputCap": {"record":"outputCap-eb55d3464bdd05c4"},
-  "outputEcho": {"record":"outputEcho-468c4ce9da22af8d"},
+  "outputEcho": {"record":"outputEcho-36089cee20e30f3f"},
   "reference": {"record":"reference-723f83ee13c8a30f"},
   "result": {
    "cost": {"estimatedCostUsd":0.00683,"inputTokens":3640,"missingCostExchangeCount":0,"outputTokens":1705,"pricedExchangeCount":13,"totalTokens":5345},

@@ -16,6 +16,9 @@ import {
   ECHO_SET_ASIDE_REASON,
   ECHO_STOPPED_REASON,
   OUTPUT_ECHO_RULE,
+  OUTPUT_ECHO_RULE_V1,
+  outputEchoRequestBody,
+  outputEchoRuleById,
   steadyShares,
   stoppedEcho,
   echoCrowdVote,
@@ -236,6 +239,20 @@ const tokens = (text: string): number => Math.ceil(text.length / 3)
 
 const honestBilling = (text: string): number => tokens(text)
 
+test('a new audit asks under the wider reply limit, and evidence stored under the first rule is judged by the first rule', () => {
+  // The longest text is six passages. Under the first rule's limit a tokenizer that writes it in more than 1,024 tokens
+  // had its echo cut off, at the reference too, so the check did not apply to the model.
+  assert.deepEqual([OUTPUT_ECHO_RULE.id, OUTPUT_ECHO_RULE.maxTokens], ['output-echo-v2', 2048])
+  assert.deepEqual([OUTPUT_ECHO_RULE_V1.id, OUTPUT_ECHO_RULE_V1.maxTokens], ['output-echo-v1', 1024])
+  assert.equal(outputEchoRuleById('output-echo-v1'), OUTPUT_ECHO_RULE_V1)
+  assert.equal(outputEchoRuleById('output-echo-v2'), OUTPUT_ECHO_RULE)
+  assert.equal(outputEchoRuleById('output-echo-v3'), undefined)
+  // Nothing but the id and the limit differs: the texts, the rounds and every margin are the first rule's.
+  assert.deepEqual({ ...OUTPUT_ECHO_RULE, id: 'output-echo-v1', maxTokens: 1024 }, { ...OUTPUT_ECHO_RULE_V1 })
+  assert.equal(outputEchoRequestBody({ service: 'model-a', text: 'x' })['max_tokens'], 2048)
+  assert.equal(outputEchoRequestBody({ service: 'model-a', text: 'x', rule: OUTPUT_ECHO_RULE_V1 })['max_tokens'], 1024)
+})
+
 test('an honest seller passes on six requests, and the model\'s other sellers are not asked', async () => {
   const network = fakeNetwork(Object.fromEntries(PEERS.map((peer) => [peer, honestBilling])))
   const record = await screenFor(network).check({ peerId: PEERS[0]!, service: SERVICE }, null, { thinking: null, crowdThinking: null, precheckMatch: true })
@@ -254,7 +271,7 @@ test('a seller that bills a quarter more output is flagged once three other sell
   assert.equal(record.crowd?.votes.length, 3)
   assert.equal(outputEchoRequestCount(record), 12 + 6, 'three rounds asked twice, two requests to each other seller')
   validateOutputEcho(record, PEERS[0])
-  assert.match(describeOutputEchoFlag(record), /^echo check \(output-echo-v1\): the seller's output grows \d+ or more tokens faster than the model's/)
+  assert.match(describeOutputEchoFlag(record), /^echo check \(output-echo-v2\): the seller's output grows \d+ or more tokens faster than the model's/)
   const altered = structuredClone(record)
   altered.rounds[0]!.short[0]!.reply = { ...altered.rounds[0]!.short[0]!.reply, count: 1 }
   assert.throws(() => validateOutputEcho(altered, PEERS[0]), /reading differs from the signed bytes/)
