@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Desktop and Gateway Console: replace simplified model logos with the official Claude, DeepSeek, Qwen, Gemini, Mistral, Meta and Grok marks.
+
 ## 2026-11-22 — CLI 0.1.257, Desktop 0.2.92
 
 ### Packages
