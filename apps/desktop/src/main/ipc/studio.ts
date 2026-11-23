@@ -6,6 +6,7 @@ import { normalizeServiceId } from '../chat/normalize.js';
 import {
   createStudioProject,
   getStudioProject,
+  getStudioProjectBoard,
   getStudioProjectSummary,
   listStudioProjects,
   setStudioProjectConversation,
@@ -46,13 +47,14 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
   handle('studio:edit', async (payload: { id?: unknown; edit?: TrackEdit } | undefined) => {
     const id = typeof payload?.id === 'string' ? payload.id : '';
     const edit = payload?.edit;
-    const detail = await getStudioProject(id);
-    if (!detail || !edit || typeof edit !== 'object' || typeof edit.type !== 'string') return { ok: false, error: 'Project not found.' };
-    const dir = await studioFolder(id, STUDIO_DIR);
+    // Only what the edit needs: the project must exist, and only Convert reads its storyboard.
+    if (!edit || typeof edit !== 'object' || typeof edit.type !== 'string' || !(await getStudioProjectSummary(id))) return { ok: false, error: 'Project not found.' };
     if (edit.type === 'dismiss-notices') {
+      // No track: the editor keeps the one it shows, even when track.json cannot be read just now.
       notices.delete(id);
-      return { ok: true, data: { track: detail.track } };
+      return { ok: true };
     }
+    const dir = await studioFolder(id, STUDIO_DIR);
     const picked = edit.type === 'import'
       ? (await dialog.showOpenDialog({
         properties: edit.anchor ? ['openFile'] : ['openFile', 'multiSelections'],
@@ -61,7 +63,8 @@ export function registerStudioIpc(deps: { engine: PiChatEngine }): void {
           : { name: 'Pictures and videos', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'mp4', 'mov', 'm4v', 'webm'] }],
       })).filePaths
       : [];
-    const result = await editStudioTrack(dir, edit, { picked, board: detail.board });
+    const board = edit.type === 'convert' ? await getStudioProjectBoard(id) ?? undefined : undefined;
+    const result = await editStudioTrack(dir, edit, { picked, board });
     return { ok: true, data: result };
   });
 

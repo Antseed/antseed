@@ -143,7 +143,10 @@ export const STUDIO_ASPECT_RATIOS = ['16:9', '9:16', '1:1'] as const;
 /** The longest video, trim or frame time the track keeps; an edit takes no more than a read keeps. */
 export const MAX_MEDIA_SECONDS = 24 * 60 * 60;
 const MAX_ANCHORS = 120;
-const MAX_INGESTED = 200;
+/** The deliveries a track remembers taking in, so one is never taken twice; the oldest go first. */
+export const MAX_INGESTED = 200;
+/** The deliveries a track logs; the oldest go first. */
+const MAX_DELIVERED = 200;
 const MAX_VERSIONS = 64;
 /** The exports a track lists; the oldest go first. */
 const MAX_EXPORTS = 50;
@@ -290,7 +293,7 @@ export function parseStudioTrack(raw: unknown): StudioTrack {
     exports: Array.isArray(item['exports'])
       ? item['exports'].slice(-MAX_EXPORTS).map((entry) => media(entry, 'video')).filter((entry): entry is string => entry !== null)
       : [],
-    delivered: Array.isArray(item['delivered']) ? item['delivered'].slice(-200).flatMap((entry): DeliveryRecord[] => {
+    delivered: Array.isArray(item['delivered']) ? item['delivered'].slice(-MAX_DELIVERED).flatMap((entry): DeliveryRecord[] => {
       const recordEntry = record(entry);
       const delivery = parseStudioDelivery(recordEntry?.['delivery']);
       // A key is the delivery's time and file, and a file's path may take 300 characters.
@@ -869,7 +872,7 @@ export function applyStudioDelivery(source: StudioTrack, delivery: StudioDeliver
     clip.requestedAt = null;
     clip.requested = null;
   }
-  if (log) track.delivered = [...track.delivered, { key: `${String(now)}:${delivery.file}`, at: now, seconds: duration, delivery, ...(inputs ? { inputs } : {}) }].slice(-200);
+  if (log) track.delivered = [...track.delivered, { key: `${String(now)}:${delivery.file}`, at: now, seconds: duration, delivery, ...(inputs ? { inputs } : {}) }].slice(-MAX_DELIVERED);
   if (log && delivery.usd !== null) {
     const label = delivery.kind === 'image' ? `${anchorName(track, delivery.anchor)} image` : clipName(track, track.anchors.find((entry) => entry.clip?.id === delivery.clip)!.id);
     track.spent.push({ label, detail: delivery.model, usd: delivery.usd });

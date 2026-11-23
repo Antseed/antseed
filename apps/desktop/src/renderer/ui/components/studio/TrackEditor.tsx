@@ -100,6 +100,12 @@ export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }
     setSelection(next);
   }
 
+  // Dismiss leaves the track alone: the next read shows the notices gone.
+  async function dismissNotices(): Promise<void> {
+    await window.antseedDesktop?.studioEdit?.(projectId, { type: 'dismiss-notices' })?.catch(() => null);
+    onChanged();
+  }
+
   async function edit(change: TrackEdit): Promise<StudioEditResult | null> {
     setBusy(true);
     setError('');
@@ -240,7 +246,7 @@ export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }
         <Notice key={notice} warning>
           {notice}
           {index === notices.length - 1 && detail.notices.length > 0 ? (
-            <> <Button size="sm" variant="link" className={styles.dismiss} onClick={() => { void edit({ type: 'dismiss-notices' }); }}>Dismiss</Button></>
+            <> <Button size="sm" variant="link" className={styles.dismiss} onClick={() => { void dismissNotices(); }}>Dismiss</Button></>
           ) : null}
         </Notice>
       ))}

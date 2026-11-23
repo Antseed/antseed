@@ -15,7 +15,7 @@ import {
   type StudioProjectSummary,
 } from '../../shared/studio.js';
 import { emptyStudioTrack, STUDIO_DELIVERIES_DIR, STUDIO_TRACK_FILE, type StudioTrack } from '../../shared/studio-track.js';
-import { readStudioTrack, resolveProjectFile, scanStudioMedia, studioCanUndo, studioLibrary, studioMediaTools } from './track.js';
+import { addTrackFiles, readStudioTrack, resolveProjectFile, scanStudioMedia, studioCanUndo, studioLibrary, studioMediaTools } from './track.js';
 
 export const STUDIO_DIR = path.join(ANTSEED_HOME_DIR, 'studio');
 
@@ -150,6 +150,12 @@ export async function listStudioProjects(root: string = STUDIO_DIR): Promise<Stu
     .sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
+/** The project's storyboard from before the track editor, for opening it there, or null when there is no such project. */
+export async function getStudioProjectBoard(id: string, root: string = STUDIO_DIR): Promise<StudioBoard | null> {
+  if (!isStudioProjectId(id) || !(await readProjectFile(id, root))) return null;
+  return (await readBoard(id, root)).board;
+}
+
 /** The project's name, chat and cover, without reading its media library. */
 export async function getStudioProjectSummary(id: string, root: string = STUDIO_DIR): Promise<StudioProjectSummary | null> {
   if (!isStudioProjectId(id)) return null;
@@ -161,6 +167,7 @@ export async function getStudioProject(id: string, root: string = STUDIO_DIR): P
   const project = await readProject(id, root);
   if (!project) return null;
   const media = await scanStudioMedia(projectDir(id, root));
+  await addTrackFiles(projectDir(id, root), media, project.track);
   const files: Record<string, number> = Object.fromEntries(media);
   await Promise.all(studioBoardFiles(project.board).filter((file) => !(file in files)).map(async (file) => {
     const version = await fileVersion(id, file, root);

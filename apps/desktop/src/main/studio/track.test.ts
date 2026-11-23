@@ -786,9 +786,38 @@ test('a file the scan does not reach is still found when a delivery or an edit n
   // An edit naming it works too, and the track still reads it once the delivery is done.
   const { track } = await editStudioTrack(dir, { type: 'set-image', anchor: 'a2', file: deep });
   assert.equal(track.anchors[1]!.image, deep);
+  // The project's library lists it, with a version for its address, though the scan never reached it.
+  const detail = (await getStudioProject(id, root))!;
+  assert.ok(detail.library.some((item) => item.file === deep));
+  assert.equal(typeof detail.files[deep], 'number');
+  // Only under its own name: another spelling is not the same file, even where the folder ignores case.
+  await assert.rejects(editStudioTrack(dir, { type: 'set-image', anchor: 'a2', file: deep.replace('a.png', 'A.png') }));
   // A link that leads outside the project folder is not a project file.
   const outside = path.join(tmp, 'outside.png');
   await writeFile(outside, 'x');
   await symlink(outside, path.join(dir, 'stills/one/two/three/four/escape.png'));
   await assert.rejects(editStudioTrack(dir, { type: 'set-image', anchor: 'a2', file: 'stills/one/two/three/four/escape.png' }));
+});
+
+test('a file delivered to a storyboard not yet opened in the editor waits in the inbox, then goes in once it is', async (t) => {
+  const tmp = await mkdtemp(path.join(tmpdir(), 'studio-board-wait-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const root = path.join(tmp, 'studio');
+  await mkdir(root);
+  const { id } = await createStudioProject('Old storyboard', root);
+  const dir = path.join(root, id);
+  await mkdir(path.join(dir, 'stills'));
+  await writeFile(path.join(dir, 'stills/a.png'), 'x');
+  await writeFile(path.join(dir, 'board.json'), JSON.stringify({ aspectRatio: '16:9', shots: [{ title: 'Harbor', still: 'stills/a.png' }, { title: 'Pier' }] }));
+  await mkdir(path.join(dir, 'deliveries'), { recursive: true });
+  await writeFile(path.join(dir, 'stills/b.png'), 'x');
+  await writeFile(path.join(dir, 'deliveries/image.json'), JSON.stringify({ anchor: 'a1', file: 'stills/b.png', usd: 0.04, model: 'Example image model' }));
+  assert.deepEqual(await ingestStudioDeliveries(dir, 7), []);
+  assert.ok((await readdir(path.join(dir, 'deliveries'))).includes('image.json'), 'it waits in the inbox');
+  const board = (await getStudioProject(id, root))!.board;
+  await editStudioTrack(dir, { type: 'convert' }, { board });
+  assert.deepEqual(await ingestStudioDeliveries(dir, 8), []);
+  const track = (await readStudioTrack(dir))!;
+  assert.equal(track.anchors[0]!.image, 'stills/b.png');
+  assert.equal(sumStudioCost(track.spent), 0.04);
 });

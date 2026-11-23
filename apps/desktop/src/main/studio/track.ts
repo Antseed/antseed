@@ -12,6 +12,7 @@ import {
   emptyStudioTrack,
   exportCheck,
   libraryUseOf,
+  MAX_INGESTED,
   parseStudioAgentEdit,
   studioAgentEditProblem,
   parseStudioDelivery,
@@ -118,22 +119,22 @@ async function saveTrack(dir: string, track: StudioTrack, previous: StudioTrack 
 }
 
 /** A file inside the project folder, by its project path: its real path and time, or null when it is missing or leads outside the folder. */
-export async function resolveProjectFile(dir: string, relative: string): Promise<{ file: string; modifiedAt: number } | null> {
+export async function resolveProjectFile(dir: string, relative: string): Promise<{ file: string; name: string; modifiedAt: number } | null> {
   try {
     const [realDir, realFile] = await Promise.all([realpath(dir), realpath(path.join(dir, relative))]);
     const within = path.relative(realDir, realFile);
     if (!within || within.startsWith('..') || path.isAbsolute(within)) return null;
     const info = await stat(realFile);
-    return info.isFile() ? { file: realFile, modifiedAt: info.mtimeMs } : null;
+    return info.isFile() ? { file: realFile, name: within.split(path.sep).join('/'), modifiedAt: info.mtimeMs } : null;
   } catch {
     return null;
   }
 }
 
-/** Every file the track uses or used, and the files an edit, a delivery or a storyboard names. */
+/** Every file the track uses, used or exported, and the files an edit, a delivery or a storyboard names. */
 function namedFiles(track: StudioTrack | null, extra: readonly unknown[]): string[] {
   const used = track ? libraryUseOf(track) : null;
-  return [...(used?.inUse ?? []), ...(used?.earlier ?? []), ...extra.filter((file): file is string => typeof file === 'string')];
+  return [...(used?.inUse ?? []), ...(used?.earlier ?? []), ...(track?.exports ?? []), ...extra.filter((file): file is string => typeof file === 'string')];
 }
 
 /**
@@ -144,8 +145,14 @@ async function addNamedFiles(dir: string, media: Map<string, number>, files: rea
   for (const file of new Set(files)) {
     if (media.has(file) || !studioMediaKind(file)) continue;
     const found = await resolveProjectFile(dir, file);
-    if (found) media.set(file, found.modifiedAt);
+    // Only under its own name, as the scan lists it: a folder that ignores case or a link would give one file two names.
+    if (found?.name === file) media.set(file, found.modifiedAt);
   }
+}
+
+/** The scanned media, with every file the track names that the scan did not reach, so the library lists all of them. */
+export async function addTrackFiles(dir: string, media: Map<string, number>, track: StudioTrack | null): Promise<void> {
+  await addNamedFiles(dir, media, namedFiles(track, []));
 }
 
 /** Every picture and video in the project folder, so nothing made for the project is ever out of reach. */
@@ -219,7 +226,8 @@ async function ffmpeg(args: string[], options: { timeout: number; maxBuffer?: nu
 /** The video's length, or null when it cannot be read (ffprobe missing, or not a video it knows). */
 async function probeSeconds(file: string): Promise<number | null> {
   try {
-    const { stdout } = await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { timeout: 20_000 });
+    // Only the file itself: a seller made it, and a file can ask for other files or the network.
+    const { stdout } = await run('ffprobe', ['-v', 'error', '-protocol_whitelist', 'file', ...inputFormat(file), '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { timeout: 20_000 });
     const value = Number(stdout.trim());
     return Number.isFinite(value) && value > 0 ? Math.round(value * 100) / 100 : null;
   } catch {
@@ -265,7 +273,8 @@ async function exportFilm(dir: string, track: StudioTrack, media: Map<string, nu
   if (missing) throw new TrackEditError(`${missing.clip!.use!} is missing from the project folder.`);
   const [width, height] = CANVAS[track.aspectRatio] ?? CANVAS['16:9']!;
   const clips = track.anchors.flatMap((anchor) => anchor.clip?.use ? [anchor.clip] : []);
-  const inputs = clips.flatMap((clip) => [...inputFormat(clip.use!), '-i', path.join(dir, clip.use!)]);
+  // The whitelist is an input option: each clip gets its own.
+  const inputs = clips.flatMap((clip) => ['-protocol_whitelist', 'file', ...inputFormat(clip.use!), '-i', path.join(dir, clip.use!)]);
   const parts = clips.map((clip, index) => {
     const trim = clip.end !== null ? `trim=end=${clip.end.toFixed(3)},setpts=PTS-STARTPTS,` : '';
     return `[${String(index)}:v:0]${trim}scale=${String(width)}:${String(height)}:force_original_aspect_ratio=decrease,pad=${String(width)}:${String(height)}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${String(index)}]`;
@@ -274,7 +283,7 @@ async function exportFilm(dir: string, track: StudioTrack, media: Map<string, nu
   await mediaDir(dir, 'exports');
   const relative = `exports/film-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`;
   await ffmpeg([
-    '-nostdin', '-v', 'error', '-protocol_whitelist', 'file', ...inputs,
+    '-nostdin', '-v', 'error', ...inputs,
     '-filter_complex', [...parts, join].join(';'), '-map', '[out]', '-an',
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-movflags', '+faststart', '-n', path.join(dir, relative),
   ], { timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024 });
@@ -439,7 +448,9 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
           }
         } else if (!delivery) problem = studioAgentEditProblem(raw) ?? 'is not a clip, image or edit delivery';
         else if (!media.has(delivery.file)) problem = `names ${delivery.file}, which is not in the project folder`;
-        else if (track) {
+        // An old storyboard not yet opened in the editor has no track to place it on: it waits in the inbox.
+        else if (!track) continue;
+        else {
           const seconds = delivery.kind === 'clip' ? await probeSeconds(path.join(dir, delivery.file)) : null;
           const next = applyStudioDelivery(track, delivery, seconds, now);
           if (next) {
@@ -458,7 +469,7 @@ export function ingestStudioDeliveries(dir: string, now: number = Date.now()): P
         applied = false;
       }
       if (track && track !== saved) {
-        if (key) track = { ...track, ingested: [...track.ingested, { key, applied }].slice(-200) };
+        if (key) track = { ...track, ingested: [...track.ingested, { key, applied }].slice(-MAX_INGESTED) };
         try {
           await saveTrack(dir, track, undoable ? before : null);
           saved = track;
