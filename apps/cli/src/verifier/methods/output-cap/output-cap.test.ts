@@ -399,6 +399,36 @@ test('the prompt is found in requests the buyer proxy translates for a seller on
   }
 })
 
+test('a reference whose counts stay while its cached amount moves measures answers, for itself and for sellers', async () => {
+  // Grok 4.7 on xAI: a cached prompt of the host's own on every answer, and more cached when a text is asked again.
+  // The count includes the cache, so it does not move with it.
+  const seen = new Map<string, number>()
+  const movingCache: TokenizerReferenceAsk = async (contents) => ({
+    upstream: { kind: 'test' },
+    results: contents.map((content) => {
+      const times = (seen.get(content) ?? 0) + 1
+      seen.set(content, times)
+      return { inputTokens: 1240 + content.trim().split(/\s+/).length, cachedInput: true, cache: { 'prompt_tokens_details.cached_tokens': times > 1 ? 1280 : 1152 }, provider: 'xAI', failure: null }
+    }),
+  })
+  const reference = await prepareOutputCapReference({ ask: movingCache, askReply: keptReply })
+  assert.equal(reference.applies, true, reference.reason)
+  assert.equal(reference.ownReply?.measured, reference.ownReply?.cap)
+  // The same cached amount on every answer shows nothing about the count: the answer stays unmeasured.
+  const steadyCache: TokenizerReferenceAsk = async (contents) => ({
+    upstream: { kind: 'test' },
+    results: contents.map((content) => ({ inputTokens: 1240 + content.trim().split(/\s+/).length, cachedInput: true, cache: { 'prompt_tokens_details.cached_tokens': 1152 }, provider: 'xAI', failure: null })),
+  })
+  const steady = await prepareOutputCapReference({ ask: steadyCache, askReply: keptReply })
+  assert.equal(steady.applies, false)
+  assert.match(steady.reason, /could not measure its own answer \(the reference reported cached input\)/)
+  // A seller's long answer is measured on that reference: flagged when it ignores the limit twice, and rechecked at submit.
+  const ignoring = fakeSeller(() => ({ text: words(120), billed: 900 }))
+  const record = await runOn(ignoring, movingCache)
+  assert.equal(record.outcome, 'flag')
+  assert.doesNotThrow(() => validateOutputCap(record))
+})
+
 test('the cap check applies only when the model\'s own host keeps the limit and its answer measures what it billed', async () => {
   const kept = await prepareOutputCapReference({ ask: wordReference, askReply: keptReply })
   assert.equal(kept.applies, true)

@@ -24,7 +24,7 @@ const RULES_BY_COMPAT: Readonly<Record<number, string>> = {
   2: '0x9e4b0af7ac00fed169980914711f6f73bb3f0e73547627b3ce0df0f191111ddf',
   3: '0x25344c731acc4781b8f3d207794922f1596a7bf842958ea91111fd575aa7a1e5',
   4: '0xc0ebca1ce20148076c6ed5db82d89e1b28c2fc87aa3fd02ba20899150e1b8a0b',
-  5: '0xcad8c1e9fb816cd4e23f53982f5455df80567a9e2a94688b4f33783f3b574e3f',
+  5: '0x4b5ef40a081e167fbde6728e12768c56e832b97f2dd66748fe064af2208da421',
 }
 
 test('the audit rules match the hash pinned for this verifier compat', () => {
@@ -133,8 +133,9 @@ test('the tokenizer pre-check is part of the rules: turned off it is named, and 
     'match', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive',
     'inconclusive', 'inconclusive', 'mismatch', 'match',
   ])
-  // A reference with cached input or from two providers has no difference; one that names no provider has.
-  assert.deepEqual(tokenizerPrecheck.referenceDeltas, [117, null, null, null, null, null, null, 117])
+  // A reference with cached input or from two providers has no difference; one that names no provider has, and so
+  // has one whose counts stay while its cached amount moves (unlike one whose count moves with it).
+  assert.deepEqual(tokenizerPrecheck.referenceDeltas, [117, null, null, null, null, null, null, 117, 117, null])
   // For each crowd: whether a seller signs the reference's count, whether the sellers outvote the reference (a
   // group of two or more on one other count, larger than the group on the reference's), and whether a seller
   // off in every round is then a mismatch: only when the reference is backed and not outvoted. Under an exact count a

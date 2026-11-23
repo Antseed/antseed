@@ -170,12 +170,13 @@ export function measuredTokens(measurement: OutputCapMeasurementV1 | null, rule:
 
 /**
  * How the cap check measures an answer at the reference: the pre-check's measurement, with this rule's number of
- * reference asks, the reference's asks agreeing within 2 tokens and any cached input leaving the answer unmeasured. Its
- * own values, whatever the pre-check's: an answer is measured the same way when the pre-check's rule changes.
+ * reference asks, the reference's asks agreeing within 2 tokens, and cached input leaving the answer unmeasured unless
+ * the asks show the count includes it (`cacheShownInCount`: the same counts while the cached amount moves). Its own
+ * values, whatever the pre-check's: an answer is measured the same way when the pre-check's rule changes.
  */
 function measurementRule(rule: OutputCapRule): TokenizerPrecheckRule {
-  const { sameCacheCancels: _cancels, ...precheck } = TOKENIZER_PRECHECK_RULE
-  return { ...precheck, toleranceTokens: 2, referenceAsks: rule.referenceAsks }
+  const { sameCacheCancels: _cancels, cacheShownInCount: _shown, ...precheck } = TOKENIZER_PRECHECK_RULE
+  return { ...precheck, toleranceTokens: 2, referenceAsks: rule.referenceAsks, cacheShownInCount: true }
 }
 
 /**
@@ -264,7 +265,8 @@ async function measureAnswer(ask: TokenizerReferenceAsk, b: string, rule: Output
 
 /**
  * Whether the cap check applies to the model this epoch: the reference must measure a count in words
- * cleanly (two equal measurements from one provider, no cached input). Never rejects.
+ * cleanly (two equal measurements from one provider, no cached input unless the asks show the count includes it).
+ * Never rejects.
  */
 export async function prepareOutputCapReference(input: { ask: TokenizerReferenceAsk; askReply: CapReferenceReply; rule?: OutputCapRule }): Promise<OutputCapReferenceV1> {
   const rule = input.rule ?? OUTPUT_CAP_RULE
@@ -555,8 +557,21 @@ export function outputCapFingerprint(): Record<string, unknown> {
       reasoningMarker: reasoning !== null, text: 'x', finished: false, shape: 'chat',
     }, 16, measured)),
     judged: SAMPLE_CAP_ASKS.map((classes) => judgeOutputCap(classes.map((entry) => ({ class: entry }))).outcome),
+    // How an answer is measured at the reference: clean, with cached input that stays put, and with cached input
+    // that moves while the counts do not.
+    measured: SAMPLE_CAP_MEASUREMENTS.map((cache) => measuredTokens({
+      a: 'a', b: ' b', reference: { delta: null, failure: null, asks: cache.map((pair) => ({
+        baseTokens: 1282, probedTokens: 1298, cachedInput: pair !== null, providers: ['xAI', 'xAI'],
+        ...(pair ? { cache: [{ 'prompt_tokens_details.cached_tokens': pair[0] }, { 'prompt_tokens_details.cached_tokens': pair[1] }] as [Record<string, number>, Record<string, number>] } : {}),
+      })) },
+    })),
   }
 }
+
+/** The cached amounts (A, then A + B) of each reference ask of a sample measurement; null for an ask without cache. */
+const SAMPLE_CAP_MEASUREMENTS: ReadonlyArray<ReadonlyArray<readonly [number, number] | null>> = [
+  [null, null], [[1152, 1152], [1152, 1152]], [[1152, 1152], [1280, 1280]], [[1152, 1152], [1152, 1408]],
+]
 
 /** Billed output, itemised reasoning and measured answer length of sample answers on a limit of 16. */
 const SAMPLE_CAP_ANSWERS: ReadonlyArray<readonly [number, number | null, number | null]> = [

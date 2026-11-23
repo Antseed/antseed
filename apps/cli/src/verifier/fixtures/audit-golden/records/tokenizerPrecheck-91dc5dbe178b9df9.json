@@ -1053,6 +1053,7 @@
   }
  ],
  "rule": {
+  "cacheShownInCount": true,
   "corroboratingSellers": 1,
   "id": "tokenizer-precheck-v1",
   "maxTokens": 64,

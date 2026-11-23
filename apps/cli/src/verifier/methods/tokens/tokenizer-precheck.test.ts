@@ -11,6 +11,7 @@ import { BACKER_ID, MODEL_TOKENIZER, OTHER_TOKENIZER, PEER_ID, PROBES, PROBE_COU
 import {
   TOKENIZER_PRECHECK_RULE,
   cacheBlocks,
+  cacheShownInCount,
   createTokenizerPrecheckScreen,
   describeTokenizerMismatch,
   generateTokenizerProbe,
@@ -1146,6 +1147,56 @@ test('a pair whose two answers report the same cached amount is kept, for the re
   const edited = structuredClone(off)
   edited.rounds[0]!.seller[0]!.base.cache = { 'prompt_tokens_details.cached_tokens': 600 }
   assert.throws(() => validateTokenizerPrecheck(edited), /not the ones in its signed responses/)
+})
+
+test('a reference whose counts stay while its cached amount moves is measured: its count includes the cache', async () => {
+  const cached = (base: number, probed: number) => [{ 'prompt_tokens_details.cached_tokens': base }, { 'prompt_tokens_details.cached_tokens': probed }] as [Record<string, number>, Record<string, number>]
+  const at = (baseTokens: number, probedTokens: number, cache: [Record<string, number>, Record<string, number>]) => asked(baseTokens, probedTokens, { cachedInput: true, cache })
+  // Grok 4.7 on xAI, as stored: a cached prompt of the host's own on every answer, and more of A + B cached when the
+  // text is asked again. The same counts on both asks.
+  const grok = [at(1280, 1417, cached(1152, 1152)), at(1280, 1417, cached(1152, 1408))]
+  assert.equal(cacheShownInCount(grok), true)
+  assert.equal(referenceDelta(grok).delta, 137)
+  // The cache of A moving shows it as well.
+  assert.equal(referenceDelta([at(1289, 1436, cached(1152, 1152)), at(1289, 1436, cached(1280, 1152))]).delta, 147)
+  // Not without the rule's part: the cache does not cancel within the second ask.
+  assert.match(referenceDelta(grok, { ...TOKENIZER_PRECHECK_RULE, cacheShownInCount: undefined }).failure!, /reported cached input/)
+  // A count that leaves the cache out moves with it (here by the 256 more tokens cached): no measurement.
+  assert.equal(cacheShownInCount([at(1280, 1417, cached(1152, 1152)), at(1280, 1161, cached(1152, 1408))]), false)
+  assert.match(referenceDelta([at(1280, 1417, cached(1152, 1152)), at(1280, 1161, cached(1152, 1408))]).failure!, /reported cached input/)
+  // The same uneven cache on both asks shows nothing: a count that leaves it out is shifted the same way on each.
+  assert.equal(cacheShownInCount([at(1280, 1417, cached(1152, 1280)), at(1280, 1417, cached(1152, 1280))]), false)
+  assert.match(referenceDelta([at(1280, 1417, cached(1152, 1280)), at(1280, 1417, cached(1152, 1280))]).failure!, /reported cached input/)
+  // Records without cache amounts, and a single ask, show nothing.
+  assert.equal(cacheShownInCount([asked(26, 143, { cachedInput: true }), asked(26, 143, { cachedInput: true })]), false)
+  assert.equal(cacheShownInCount([grok[0]!]), false)
+  // Two providers are still refused.
+  assert.match(referenceDelta([grok[0]!, { ...grok[1]!, providers: ['xAI', 'Other'] }]).failure!, /more than one provider/)
+
+  // Measured end to end: a host whose hidden prompt is always cached and that caches more of a text asked again.
+  let sent = 0
+  const seen = new Map<string, number>()
+  const movingCache: TokenizerReferenceAsk = async (contents) => ({
+    upstream: { name: 'referenceEndpoint' },
+    results: contents.map((content) => {
+      sent += 1
+      const times = (seen.get(content) ?? 0) + 1
+      seen.set(content, times)
+      return { inputTokens: 1240 + MODEL_TOKENIZER(content), cachedInput: true, cache: { 'prompt_tokens_details.cached_tokens': times > 1 ? 1280 : 1152 }, provider: 'xAI', failure: null }
+    }),
+  })
+  const reference = await measureTokenizerReference({ ask: movingCache, probes: PROBES })
+  assert.deepEqual(reference.rounds.map((round) => round.delta), PROBES.map(({ a, b }) => MODEL_TOKENIZER(a + b) - MODEL_TOKENIZER(a)))
+  assert.equal(sent, PROBES.length * 4, 'each round asked once')
+  // A seller is judged as before: one off the reference with a cache that does not cancel decides nothing.
+  const cachedUsage = (tokens: number, amount: number) => ({ prompt_tokens: tokens, prompt_tokens_details: { cached_tokens: amount } })
+  let asks = 0
+  const off = await precheck(seller({ usage: (content) => cachedUsage(1240 + OTHER_TOKENIZER(content), ++asks % 2 === 0 ? 1280 : 1152) }), reference)
+  assert.equal(off.outcome, 'inconclusive')
+  assert.doesNotThrow(() => validateTokenizerPrecheck(off))
+  const honest = await precheck(seller({ usage: (content) => cachedUsage(1240 + MODEL_TOKENIZER(content), 1152) }), reference)
+  assert.equal(honest.outcome, 'match')
+  assert.doesNotThrow(() => validateTokenizerPrecheck(honest))
 })
 
 test('a seller whose own first ask failed is asked again for a later crowd, and can back the reference then', async () => {

@@ -32,20 +32,16 @@
       ],
       "cachedInput": false,
       "failureReason": null,
-      "requestIds": ["<earlier attempt, seller: pre-check round 1 A #1>"],
+      "requestIds": ["<seller: pre-check round 1 A #1>"],
       "responseAuth": {
        "failureReason": null,
-       "record": {
-        "advertisedService": "deepseek-v4-pro",
-        "requestId": "<earlier attempt, seller: pre-check round 1 A #1>",
-        "sellerPeerId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-       },
-       "requestId": "<earlier attempt, seller: pre-check round 1 A #1>",
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: pre-check round 1 A #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: pre-check round 1 A #1>",
        "signedPreimages": {
         "encoding": "antseed-http-codec-v1",
         "hashAlgorithm": "keccak256",
         "requestBase64": {
-         "requestId": "<earlier attempt, seller: pre-check round 1 A #1>",
+         "requestId": "<seller: pre-check round 1 A #1>",
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
@@ -54,7 +50,7 @@
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
         "responseBase64": {
-         "requestId": "<earlier attempt, seller: pre-check round 1 A #1>",
+         "requestId": "<seller: pre-check round 1 A #1>",
          "statusCode": 200,
          "headers": {},
          "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (172 characters, sha256 a662b56a69fde7da)"
@@ -84,20 +80,16 @@
       ],
       "cachedInput": false,
       "failureReason": null,
-      "requestIds": ["<earlier attempt, seller: pre-check round 1 A+B #1>"],
+      "requestIds": ["<seller: pre-check round 1 A+B #1>"],
       "responseAuth": {
        "failureReason": null,
-       "record": {
-        "advertisedService": "deepseek-v4-pro",
-        "requestId": "<earlier attempt, seller: pre-check round 1 A+B #1>",
-        "sellerPeerId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-       },
-       "requestId": "<earlier attempt, seller: pre-check round 1 A+B #1>",
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: pre-check round 1 A+B #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: pre-check round 1 A+B #1>",
        "signedPreimages": {
         "encoding": "antseed-http-codec-v1",
         "hashAlgorithm": "keccak256",
         "requestBase64": {
-         "requestId": "<earlier attempt, seller: pre-check round 1 A+B #1>",
+         "requestId": "<seller: pre-check round 1 A+B #1>",
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
@@ -106,7 +98,7 @@
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
         "responseBase64": {
-         "requestId": "<earlier attempt, seller: pre-check round 1 A+B #1>",
+         "requestId": "<seller: pre-check round 1 A+B #1>",
          "statusCode": 200,
          "headers": {},
          "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (173 characters, sha256 7501ee3e48e6442d)"
@@ -150,6 +142,7 @@
   }
  ],
  "rule": {
+  "cacheShownInCount": true,
   "corroboratingSellers": 1,
   "id": "tokenizer-precheck-v1",
   "maxTokens": 64,

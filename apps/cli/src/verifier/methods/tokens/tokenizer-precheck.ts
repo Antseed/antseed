@@ -72,16 +72,25 @@ export interface TokenizerPrecheckRule {
    * measurement, which leaves a model whose reference always reports cached input without a test.
    */
   sameCacheCancels?: true
+  /**
+   * The reference only: a round whose asks count A the same and A + B the same while a text's cached amount moves
+   * between the asks is measured, whatever cache its answers report. A count that left the cache out would have moved
+   * with it, so the count includes the cache (`cacheShownInCount`). Without it a host that adds a cached prompt of its
+   * own to every request, and caches more of a text asked again (Grok 4.7 on xAI), leaves most rounds without a
+   * measurement. A seller's count is never judged by it.
+   */
+  cacheShownInCount?: true
 }
 
 /**
- * The rule (`tokenizer-precheck-v1`): an exact count (`toleranceTokens` 0), three rounds, and a pair whose two answers
- * report the same cached amount kept (`sameCacheCancels`). A swap is often off the model's count by one or two tokens on
+ * The rule (`tokenizer-precheck-v1`): an exact count (`toleranceTokens` 0), three rounds, a pair whose two answers
+ * report the same cached amount kept (`sameCacheCancels`), and a reference whose count is shown to include its cache
+ * measured (`cacheShownInCount`). A swap is often off the model's count by one or two tokens on
  * a short text, so a tolerance would let it through. Every round must be off for a mismatch, and the model's other
  * sellers must back the reference. The same tolerance applies throughout: a seller whose two asks of one text sign
  * counts one token apart is unstable (hidden input that varies), so the round decides nothing; and a crowd seller backs
- * the reference only by signing its exact count. A pair whose answers report different cached amounts, or one only,
- * decides nothing.
+ * the reference only by signing its exact count. A seller's pair whose answers report different cached amounts, or one
+ * only, decides nothing.
  */
 export const TOKENIZER_PRECHECK_RULE: TokenizerPrecheckRule = Object.freeze({
   id: 'tokenizer-precheck-v1',
@@ -93,6 +102,7 @@ export const TOKENIZER_PRECHECK_RULE: TokenizerPrecheckRule = Object.freeze({
   corroboratingSellers: 1,
   maxTokens: 64,
   sameCacheCancels: true,
+  cacheShownInCount: true,
 })
 
 const RULES: ReadonlyMap<string, TokenizerPrecheckRule> = new Map([TOKENIZER_PRECHECK_RULE].map((rule) => [rule.id, rule]))
@@ -101,6 +111,18 @@ const RULES: ReadonlyMap<string, TokenizerPrecheckRule> = new Map([TOKENIZER_PRE
 export function sameCache(left: Readonly<Record<string, number>> | undefined, right: Readonly<Record<string, number>> | undefined): boolean {
   if (!left || !right || Object.keys(left).length === 0) return false
   return canonicalJsonStringify(left) === canonicalJsonStringify(right)
+}
+
+/**
+ * Whether a reference's asks show that its count includes its cache: every ask kept its cached amounts, all of them
+ * counted A the same and A + B the same, and the cached amount of A or of A + B moved between them. Equal amounts on
+ * every ask show nothing: a count that leaves the cache out is shifted the same way on each.
+ */
+export function cacheShownInCount(asks: readonly TokenizerReferenceAskV1[]): boolean {
+  if (asks.length < 2 || asks.some((ask) => !ask.cache || ask.baseTokens === null || ask.probedTokens === null)) return false
+  const [first] = asks
+  if (asks.some((ask) => ask.baseTokens !== first!.baseTokens || ask.probedTokens !== first!.probedTokens)) return false
+  return [0, 1].some((answer) => new Set(asks.map((ask) => canonicalJsonStringify(ask.cache![answer]))).size > 1)
 }
 
 /** What `cacheBlocks` reads of a request: whether its answer reports cached input, and the cached amounts. */
@@ -378,8 +400,8 @@ export function tokenizerCrowdObjection(
 
 /**
  * The difference every ask of the reference gave, or null with why there is none. The reference is read like a
- * seller: an ask without a count, with cached input, or whose count for A + B is not above its count for A is no
- * measurement. Its asks must also all come from one provider, since two deployments of a model can each agree
+ * seller: an ask without a count, with cached input that does not cancel and is not shown to be in the count, or whose
+ * count for A + B is not above its count for A is no measurement. Its asks must also all come from one provider, since two deployments of a model can each agree
  * with themselves on different counts.
  */
 export function referenceDelta(
@@ -389,8 +411,9 @@ export function referenceDelta(
   if (asks.length < rule.referenceAsks) return { delta: null, failure: `the reference was asked ${asks.length} of ${rule.referenceAsks} times` }
   if (asks.some((ask) => ask.baseTokens === null || ask.probedTokens === null)) return { delta: null, failure: 'the reference reported no input tokens' }
   // Cached input leaves an ask without a measurement, unless both its answers report the same cached amount and the
-  // rule lets that cancel out (`sameCacheCancels`).
-  if (asks.some((ask) => ask.cachedInput !== false && !(rule.sameCacheCancels === true && sameCache(ask.cache?.[0], ask.cache?.[1])))) {
+  // rule lets that cancel out (`sameCacheCancels`), or the asks show that the count includes the cache (`cacheShownInCount`).
+  const cacheCounted = rule.cacheShownInCount === true && cacheShownInCount(asks)
+  if (!cacheCounted && asks.some((ask) => ask.cachedInput !== false && !(rule.sameCacheCancels === true && sameCache(ask.cache?.[0], ask.cache?.[1])))) {
     return { delta: null, failure: 'the reference reported cached input' }
   }
   const providers = [...new Set(asks.flatMap((ask) => (Array.isArray(ask.providers) ? ask.providers : [undefined])))]
@@ -1272,6 +1295,12 @@ const SAMPLE_REFERENCE_ASKS: ReadonlyArray<TokenizerReferenceAskV1[]> = [
   [referenceAsk(26, 143), referenceAsk(26, 143, { cachedInput: true })],
   [referenceAsk(26, 143), referenceAsk(26, 143, { providers: ['Provider-A', 'Provider-B'] })],
   [referenceAsk(26, 143, { providers: [null, null] }), referenceAsk(26, 143, { providers: [null, null] })],
+  // Cached input that moves between the asks while the counts stay: the count includes the cache.
+  [referenceAsk(26, 143, { cachedInput: true, cache: [{ cached_tokens: 16 }, { cached_tokens: 16 }] }),
+    referenceAsk(26, 143, { cachedInput: true, cache: [{ cached_tokens: 16 }, { cached_tokens: 128 }] })],
+  // ... and while a count moves with it: no measurement.
+  [referenceAsk(26, 143, { cachedInput: true, cache: [{ cached_tokens: 16 }, { cached_tokens: 16 }] }),
+    referenceAsk(26, 31, { cachedInput: true, cache: [{ cached_tokens: 16 }, { cached_tokens: 128 }] })],
 ]
 
 /** Seeds of the probes the fingerprint holds, each written from `fixedSequence`. */
