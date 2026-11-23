@@ -54,7 +54,7 @@ import {
 } from '../../../verifier/pending-confirmations.js'
 import { alreadyOnChainFilter, revocationPositions } from '../../../verifier/submission-delta.js'
 import { opinionKey, thirdOpinionFilter } from '../../../verifier/third-opinion.js'
-import { sameCheckFilter, type PublishedFlagReader } from '../../../verifier/same-check.js'
+import { createPublishedFlagReader, sameCheckFilter } from '../../../verifier/same-check.js'
 import { canonicalJsonStringify, validateKbfReferenceV1 } from '@antseed/fingerprints'
 import { fetchIpfsText } from '@antseed/model-verifier'
 import { verifierVerdict } from '@antseed/node/payments'
@@ -311,16 +311,10 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
        * The reason not to send it now, or null. A failed read is a reason too: the check must not fail open.
        */
       // Which check flagged in another auditor's waiting DIFF, read from its published evidence (same-check.ts).
-      const flagReader: PublishedFlagReader = {
-        modelAudits: (filter, fromBlock) => verifierClient.queryModelAudits(filter, fromBlock),
-        fetchText: (cidPath) => fetchIpfsText(cidPath, testPublication ? { ipfsGateway: testPublication.gatewayUrl } : {}),
-        reportRound: (agentId, service) => verifierClient.reportRound(agentId, service),
-        blockTimestamp: async (blockNumber) => {
-          const block = await verifierClient.provider.getBlock(blockNumber)
-          if (!block) throw new Error(`block ${blockNumber} is unavailable`)
-          return block.timestamp
-        },
-      }
+      const flagReader = createPublishedFlagReader(
+        verifierClient,
+        (cidPath) => fetchIpfsText(cidPath, testPublication ? { ipfsGateway: testPublication.gatewayUrl } : {}),
+      )
       // What this auditor already reported, on the events given: the preparation and the last read before a send use it.
       // The finish times of what this auditor sent from any run here, read once when an older vote needs them.
       let sentTimesRead: Promise<Map<string, Record<string, number>>> | null = null
@@ -332,11 +326,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         reader: {
           reportRound: (agentId, service) => verifierClient.reportRound(agentId, service),
           serviceStatusByHash: (agentId, service) => verifierClient.serviceStatusByHash(agentId, service),
-          blockTimestamp: async (blockNumber) => {
-            const block = await verifierClient.provider.getBlock(blockNumber)
-            if (!block) throw new Error(`block ${blockNumber} is unavailable`)
-            return block.timestamp
-          },
+          blockTimestamp: flagReader.blockTimestamp,
         },
         auditorSetEvents,
         // When the audit behind this auditor's own report finished, by its transaction in this run's ledger or another

@@ -61,7 +61,7 @@ import { findAdvertisedService } from '../../../verifier/service-discovery.js'
 import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
 import { alreadyJudgedByOther, otherOpinions, type OtherOpinion } from '../../../verifier/third-opinion.js'
-import { attachFirstFlags, isFreshConfirmation } from '../../../verifier/same-check.js'
+import { attachFirstFlags, createPublishedFlagReader, isFreshConfirmation } from '../../../verifier/same-check.js'
 import { fetchIpfsText } from '@antseed/model-verifier'
 import { DIFF_HOLD_EPOCHS, diffHolds, type DiffHolds } from '../../../verifier/diff-hold.js'
 import { auditorRemovedMessage, createAuditorApprovalGate } from '../../../verifier/auditor-approval.js'
@@ -540,17 +540,10 @@ export async function loadRunConfirmations(input: {
       auditor: auditor.address,
       revoked,
       now: input.now ?? Math.floor(Date.now() / 1_000),
-      reader: {
-        modelAudits: (filter, fromBlock) => client.queryModelAudits(filter, fromBlock),
-        // A dry run on a local fork reads it from this machine (`verifier.testPublication`, refused off a local RPC).
-        fetchText: (cidPath) => fetchIpfsText(cidPath, testPublication ? { ipfsGateway: testPublication.gatewayUrl } : {}),
-        reportRound: (agentId, service) => client.reportRound(agentId, service),
-        blockTimestamp: async (blockNumber) => {
-          const block = await client.provider.getBlock(blockNumber)
-          if (!block) throw new Error(`block ${blockNumber} is unavailable`)
-          return block.timestamp
-        },
-      },
+      // A dry run on a local fork reads the publication from this machine (`verifier.testPublication`, refused off a local RPC).
+      reader: createPublishedFlagReader(
+        client, (cidPath) => fetchIpfsText(cidPath, testPublication ? { ipfsGateway: testPublication.gatewayUrl } : {}),
+      ),
       log: (line) => console.log(chalk.yellow(line)),
     })
     // When this auditor reported on a seller in a round the contract no longer counts, a local

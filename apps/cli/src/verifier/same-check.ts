@@ -117,6 +117,30 @@ export interface PublishedFlagReader {
   blockTimestamp(blockNumber: number): Promise<number>
 }
 
+/** What `createPublishedFlagReader` reads of the chain: the verifier client gives it. */
+export interface PublishedFlagChain {
+  queryModelAudits(filter: { model: string; auditor: string }, fromBlock: number): Promise<ModelAuditedEvent[]>
+  reportRound(agentId: bigint, serviceHash: string): Promise<number>
+  provider: { getBlock(blockNumber: number): Promise<{ timestamp: number } | null> }
+}
+
+/**
+ * The reader of another auditor's published evidence, for `verifier run` and `verifier submit` alike: the chain through
+ * the verifier client, and the publication through `fetchText` (IPFS, or a dry run's local publication).
+ */
+export function createPublishedFlagReader(chain: PublishedFlagChain, fetchText: PublishedFlagReader['fetchText']): PublishedFlagReader {
+  return {
+    modelAudits: (filter, fromBlock) => chain.queryModelAudits(filter, fromBlock),
+    fetchText,
+    reportRound: (agentId, service) => chain.reportRound(agentId, service),
+    blockTimestamp: async (blockNumber) => {
+      const block = await chain.provider.getBlock(blockNumber)
+      if (!block) throw new Error(`block ${blockNumber} is unavailable`)
+      return block.timestamp
+    },
+  }
+}
+
 /** The first auditor's flag on one seller, read from its published evidence and checked. */
 export interface FirstFlag {
   auditor: string
@@ -528,13 +552,15 @@ async function questionsVerdict(
 ): Promise<'SAME' | 'DIFF' | 'UNDETERMINED' | null> {
   // The questions' own verdict, decided from the seller files by the adjudicator submit uses; the published label must
   // be exactly that, and the published closure is accepted only for a real close call.
-  const extraSets: Array<{ record: Parameters<typeof adjudicateQuestions>[0]['extraSets'][number]['record']; evidence: ProxyAuditEvidenceV1 }> = []
+  type ExtraSet = Parameters<typeof adjudicateQuestions>[0]['extraSets'][number]
+  const extraSets: ExtraSet[] = []
   for (const name of ['extension', 'extension2']) {
     const extension = result[name]
     if (!isRecord(extension)) break
     if (typeof extension['rule'] !== 'string' || !isRecord(extension['pooled'])) throw new Error('its close call names no extension rule or pooled look')
     extraSets.push({
-      record: { rule: extension['rule'], pooled: extension['pooled'] as never },
+      // The published pooled look, as the adjudicator reads it: it checks every figure of it against the evidence.
+      record: { rule: extension['rule'], pooled: extension['pooled'] as ExtraSet['record']['pooled'] },
       evidence: await load(extension['audit'], extension['referenceId']),
     })
   }
