@@ -10,6 +10,7 @@ import {
   type SignedSellerRequestV1,
 } from '../shared/signed-seller-request.js'
 import { generateTokenizerProbe } from '../tokens/tokenizer-precheck.js'
+import { peerComparisonKey } from '../../utils.js'
 
 /**
  * The echo check, rule `output-echo-v1`: does a seller bill the output tokens the model wrote?
@@ -790,7 +791,7 @@ export async function askEchoVote(
   return echoCrowdVote(input.peerId, short, long, { short: view.short.count, long: view.long.count }, rule)
 }
 
-const peerKey = (peerId: string): string => peerId.toLowerCase().replace(/^0x/, '')
+const peerKey = peerComparisonKey
 
 /**
  * Recomputes a stored echo check from the bytes the seller and the crowd signed, as `verifier submit` does before

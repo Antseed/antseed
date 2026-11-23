@@ -946,21 +946,7 @@ export async function askReferenceInputTokens(input: {
   /** Once aborted, no request is tried again: the measurement's time is up. */
   signal?: AbortSignal
 }): Promise<{ upstream: ReferenceUpstreamProvenanceV1; oneProvider: boolean; results: ReferenceInputTokensV1[] }> {
-  const endpoint = input.config?.referenceEndpoint
-  if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
-  const catalog = input.catalog ?? null
-  const modelConfig = resolveVerifierModelConfig(input.config, input.model, catalog)
-  const { route } = bankReferenceRoute({
-    endpoint, modelConfig, settings: input.settings, config: input.config, catalog, buyerProxyPort: input.buyerProxyPort,
-  })
-  // As for calibration: the counts are the bank's reference's only when asked where the bank was enrolled.
-  if (input.settings.provenance && input.settings.provenance.sourceId !== referenceSourceId(endpoint, route)) {
-    throw new Error(`the pre-check would ask ${referenceSourceId(endpoint, route)}, but this bank was enrolled on ${input.settings.provenance.sourceId}`)
-  }
-  const limiter = input.requestLimiter ?? createReferenceRequestLimiter(input.config)
-  const fetchFn = input.fetchFn ?? fetch
-  const timeoutMs = input.timeoutMs ?? input.settings.queryProfile.requestTimeoutMs
-  const retryBaseDelayMs = input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS
+  const { endpoint, route, limiter, fetchFn, timeoutMs, retryBaseDelayMs } = referenceAskEnvironment(input, 'the pre-check')
   const ask = async (content: string): Promise<ReferenceInputTokensV1> => {
     const body = {
       messages: [{ role: 'user', content }],
@@ -1007,6 +993,48 @@ export async function askReferenceInputTokens(input: {
 function routeServesOneProvider(route: ReferenceRequestRoute): boolean {
   const router = route.upstream?.type === 'openrouter' || /openrouter\.ai/i.test(route.baseUrl)
   return route.type === 'antseed' || (route.providerRouting?.order.length ?? 0) === 1 || !router
+}
+
+/**
+ * What both reference asks share: the endpoint, the bank's own route, and the request settings. The route must be the
+ * one the bank was enrolled on: the reference's answers are its own only there (`asker` names the test in the error).
+ */
+function referenceAskEnvironment(input: {
+  model: string
+  settings: KbfReferenceV1
+  config: VerifierCLIConfig | undefined
+  catalog?: VerifierModelCatalog | null
+  buyerProxyPort?: number
+  fetchFn?: typeof fetch
+  requestLimiter?: ReferenceRequestLimiter
+  timeoutMs?: number
+}, asker: string): {
+  endpoint: NonNullable<VerifierCLIConfig['referenceEndpoint']>
+  route: ReferenceRequestRoute
+  limiter: ReferenceRequestLimiter
+  fetchFn: typeof fetch
+  timeoutMs: number
+  retryBaseDelayMs: number
+} {
+  const endpoint = input.config?.referenceEndpoint
+  if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
+  const catalog = input.catalog ?? null
+  const modelConfig = resolveVerifierModelConfig(input.config, input.model, catalog)
+  const { route } = bankReferenceRoute({
+    endpoint, modelConfig, settings: input.settings, config: input.config, catalog, buyerProxyPort: input.buyerProxyPort,
+  })
+  // As for calibration: the answers are the bank's reference's only when asked where the bank was enrolled.
+  if (input.settings.provenance && input.settings.provenance.sourceId !== referenceSourceId(endpoint, route)) {
+    throw new Error(`${asker} would ask ${referenceSourceId(endpoint, route)}, but this bank was enrolled on ${input.settings.provenance.sourceId}`)
+  }
+  return {
+    endpoint,
+    route,
+    limiter: input.requestLimiter ?? createReferenceRequestLimiter(input.config),
+    fetchFn: input.fetchFn ?? fetch,
+    timeoutMs: input.timeoutMs ?? input.settings.queryProfile.requestTimeoutMs,
+    retryBaseDelayMs: input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS,
+  }
 }
 
 /**
@@ -1084,23 +1112,10 @@ export async function askReferenceReplies(input: {
   provenOneProvider: boolean
   results: ReferenceReply[]
 }> {
-  const endpoint = input.config?.referenceEndpoint
-  if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
-  const catalog = input.catalog ?? null
-  const modelConfig = resolveVerifierModelConfig(input.config, input.model, catalog)
-  const { route: bankRoute } = bankReferenceRoute({
-    endpoint, modelConfig, settings: input.settings, config: input.config, catalog, buyerProxyPort: input.buyerProxyPort,
-  })
-  if (input.settings.provenance && input.settings.provenance.sourceId !== referenceSourceId(endpoint, bankRoute)) {
-    throw new Error(`the echo check would ask ${referenceSourceId(endpoint, bankRoute)}, but this bank was enrolled on ${input.settings.provenance.sourceId}`)
-  }
+  const { endpoint, route: bankRoute, limiter, fetchFn, timeoutMs, retryBaseDelayMs } = referenceAskEnvironment(input, 'the echo check')
   const route: ReferenceRequestRoute = input.plainRoute
     ? { ...bankRoute, requestOverrides: {}, requestOmissions: [], assistantPrefill: undefined, minMaxTokens: undefined }
     : bankRoute
-  const limiter = input.requestLimiter ?? createReferenceRequestLimiter(input.config)
-  const fetchFn = input.fetchFn ?? fetch
-  const timeoutMs = input.timeoutMs ?? input.settings.queryProfile.requestTimeoutMs
-  const retryBaseDelayMs = input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS
   const encoder = new TextEncoder()
   const ask = async (content: string, given?: Record<string, unknown>) => {
     const body = given ?? { messages: [{ role: 'user', content }], max_tokens: Math.max(input.maxTokens, route.minMaxTokens ?? 0), stream: false }

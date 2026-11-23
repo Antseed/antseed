@@ -15,18 +15,15 @@ import {
   isKbfSamplingFieldRejection,
   computeMatchVector,
   hasMissingKbfAnswers,
-  parseKbfAnswers,
   queryProfileHash,
   isKbfTokenLimitFinishReason,
   kbfResponseFinishReason,
   reportedReasoningTokens,
   billedOutputTokensOf,
   reasoningShownInReply,
-  stripKbfThinkBlocks,
   verifyKbf,
   type FingerprintStats,
   type KbfProbe,
-  type MatchVector,
   type KbfReferenceV1,
   type KbfVerdictStats,
 } from '@antseed/fingerprints'
@@ -85,7 +82,11 @@ import {
   withBatchCounts,
   type VerificationOutcomeReasonV1,
 } from './outcome-reason.js'
-import { asError, sleep } from './utils.js'
+import { asError, peerComparisonKey, sleep } from './utils.js'
+import { extractCompletionText, scoreQuestionBatch } from './question-scoring.js'
+
+// Kept at their old path for the readers that import them from here.
+export { extractCompletionText, scoreQuestionBatch }
 
 const PROBE_REQUEST_ATTEMPTS = 5
 const PROBE_RETRY_BASE_DELAY_MS = 1_000
@@ -587,7 +588,7 @@ export function auditableSellers(
 ): TokenizerPrecheckSeller[] {
   const sellers = new Map<string, TokenizerPrecheckSeller>()
   for (const peer of peers) {
-    const key = peer.peerId.replace(/^0x/i, '').toLowerCase()
+    const key = peerComparisonKey(peer.peerId)
     if (sellers.has(key)) continue
     const eligibility = classifyVerificationTargetServices(peer, services, policy)
     if (eligibility.eligible) sellers.set(key, { peerId: peer.peerId, service: eligibility.service })
@@ -1523,7 +1524,7 @@ async function sellerThinkingFor(
   sampling: AuditSamplingState,
 ): Promise<{ record: SellerThinkingDiscoveryV1; fresh: boolean }> {
   const cache = context.sellerThinking!
-  const key = `${target.peerId.replace(/^0x/i, '').toLowerCase()}\u0000${service}`
+  const key = `${peerComparisonKey(target.peerId)}\u0000${service}`
   const cached = cache.get(key)
   if (cached) return { record: await cached, fresh: false }
   const discovered = discoverSellerThinking(context, target, service, reference, sampling)
@@ -2170,96 +2171,12 @@ function safeRequestId(body: Uint8Array): string | null {
   return null
 }
 
-/**
- * One batch's answers and matches from the bytes of its reply, for the run and for any reader of stored evidence
- * (`signed-questions.ts`): the one way a reply is scored.
- * - As the reference code does before parsing, `<think>…</think>` blocks are not answers.
- * - A reply cut off at the token limit is not scored: the model was still writing (often reasoning in the reply), so
- *   its numbers are not its answers.
- * - A reply with no readable answer scores nothing (`malformedOutput`).
- */
-export function scoreQuestionBatch(responseBody: Uint8Array, probes: readonly KbfProbe[]): {
-  completion: string | null
-  truncated: boolean
-  answers: Array<number | null>
-  matches: MatchVector
-  malformedOutput: boolean
-} {
-  const extracted = extractCompletionText(responseBody)
-  const completion = extracted === null ? null : stripKbfThinkBlocks(extracted)
-  const truncated = isKbfTokenLimitFinishReason(kbfResponseFinishReason(responseText(responseBody)))
-  const answers = completion === null || truncated
-    ? new Array<number | null>(probes.length).fill(null)
-    : parseKbfAnswers(completion, probes.length)
-  const malformedOutput = answers.every((answer) => answer === null)
-  const matches: MatchVector = malformedOutput
-    ? new Array<null>(probes.length).fill(null)
-    : computeMatchVector(answers, [...probes])
-  return { completion, truncated, answers, matches, malformedOutput }
-}
-
-export function extractCompletionText(body: Uint8Array): string | null {
-  const text = responseText(body)
-  try {
-    return extractCompletionFromJson(JSON.parse(text) as Record<string, unknown>)
-  } catch {
-    return extractCompletionFromSse(text)
-  }
-}
-
 /** Verified responses beat unverified ones; then the attempt with more scoreable answers wins. */
 function isBetterBatchAttempt(candidate: ProxyAuditEvidenceExchangeV1, current: ProxyAuditEvidenceExchangeV1): boolean {
   const verified = (exchange: ProxyAuditEvidenceExchangeV1) => exchange.responseAuth.status === 'verified'
   if (verified(candidate) !== verified(current)) return verified(candidate)
   const scored = (exchange: ProxyAuditEvidenceExchangeV1) => exchange.matches.filter((match) => match !== null).length
   return scored(candidate) > scored(current)
-}
-
-function extractCompletionFromJson(parsed: Record<string, unknown>): string | null {
-  const response = parsed as {
-    choices?: Array<{ message?: { content?: unknown }; text?: unknown }>
-    content?: Array<{ type?: string; text?: unknown }>
-    output?: Array<{ content?: Array<{ type?: string; text?: unknown }> }>
-    output_text?: unknown
-  }
-  const chatContent = response.choices?.[0]?.message?.content
-  if (typeof chatContent === 'string') return chatContent
-  const completionText = response.choices?.[0]?.text
-  if (typeof completionText === 'string') return completionText
-  const anthropicText = response.content?.find((block) => block?.type === 'text')?.text
-  if (typeof anthropicText === 'string') return anthropicText
-  if (typeof response.output_text === 'string') return response.output_text
-  const outputText = response.output
-    ?.flatMap((item) => item.content ?? [])
-    .filter((part) => part.type === 'output_text' && typeof part.text === 'string')
-    .map((part) => part.text as string)
-    .join('')
-  return outputText || null
-}
-
-function extractCompletionFromSse(text: string): string | null {
-  const deltas: string[] = []
-  let completed: string | null = null
-  let done: string | null = null
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.startsWith('data:')) continue
-    const data = line.slice('data:'.length).trim()
-    if (!data || data === '[DONE]') continue
-    try {
-      const event = JSON.parse(data) as Record<string, unknown>
-      if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
-        deltas.push(event.delta)
-      } else if (event.type === 'response.output_text.done' && typeof event.text === 'string') {
-        done = event.text
-      } else if (event.type === 'response.completed' && event.response && typeof event.response === 'object') {
-        completed = extractCompletionFromJson(event.response as Record<string, unknown>)
-      }
-    } catch {
-      continue
-    }
-  }
-  if (deltas.length > 0) return deltas.join('')
-  return completed ?? done
 }
 
 function isProcessAlive(pid: number): boolean {

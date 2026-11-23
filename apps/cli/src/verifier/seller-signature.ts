@@ -1,6 +1,7 @@
 import { encodeResponseAuthSigningPayload, hexToBytes, verifySignature } from '@antseed/node'
 import { keccak256 } from 'ethers'
 import type { ProxyAuditEvidenceExchangeV1 } from './proxy-evidence.js'
+import { peerComparisonKey } from './utils.js'
 
 /** An answer as evidence stores it: the record the seller signed and the exact bytes it signed over. */
 export type StoredSignedAnswer = Pick<ProxyAuditEvidenceExchangeV1['responseAuth'], 'record' | 'signedPreimages'>
@@ -31,7 +32,7 @@ export function sellerSignatureProblem(answer: StoredSignedAnswer): string | nul
     if (Buffer.from(signed).toString('base64') !== signedPreimages.responseAuthSigningBase64) {
       return 'its stored signing bytes are not those of its record'
     }
-    const peerId = record.sellerPeerId.toLowerCase().replace(/^0x/, '')
+    const peerId = peerComparisonKey(record.sellerPeerId)
     return verifySignature(peerId, hexToBytes(signature), signed) ? null : 'its signature is not the seller\'s'
   } catch {
     return 'its signed record cannot be read'

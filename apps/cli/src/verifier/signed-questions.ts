@@ -8,7 +8,7 @@ import {
 import { decodeHttpRequest, decodeHttpResponse } from '@antseed/node'
 import { assertBoundToSeller, sellerBindingOf } from './audit-checks.js'
 import { isRecord, parseObject } from './methods/shared/output-usage.js'
-import { scoreQuestionBatch } from './model-run.js'
+import { scoreQuestionBatch } from './question-scoring.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 
 /**

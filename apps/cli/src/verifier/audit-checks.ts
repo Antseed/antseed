@@ -26,6 +26,7 @@ export type {
   AuditCheckId, CheckFinding, CheckOutcome, CheckRecords, CheckScreens, CheckSlot, CheckSummaries, ConfirmationOnlyCheckId, RecordCheck,
   StoredCheckRecords,
 } from './audit-method.js'
+import { peerComparisonKey } from './utils.js'
 
 /** One finding of one audit, read the same way for every check. */
 export interface CheckReading {
@@ -420,7 +421,7 @@ function serviceOfModel(signed: string, seller: SellerBinding): boolean {
   return [seller.model, ...seller.serviceAliases].some((name) => sameModelService(signed, name))
 }
 
-const peerKey = (peerId: string): string => peerId.toLowerCase().replace(/^0x/, '')
+const peerKey = peerComparisonKey
 
 /**
  * Every verified reply a check stored is the one asked of the seller it is stored for: signed by that seller (the
