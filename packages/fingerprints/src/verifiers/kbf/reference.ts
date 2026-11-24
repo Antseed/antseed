@@ -79,10 +79,13 @@ export interface ReferenceQueryProfileV1 {
  * reasoning tokens is kept (`bare` may think). `bare-expanded` means nothing
  * suppressed thinking, so requests get a much larger token budget instead.
  * `reasoning-effort-minimum-supported` is only found in older references.
+ * `reasoning-effort-low` is never a reference's: a seller is sent it only as the nearest equivalent of a reference's
+ * `reasoning-effort-minimal` it refuses (`THINKING_REFERENCE_EQUIVALENTS`).
  */
 export type ReferenceReasoningStrategy =
   | 'reasoning-effort-none'
   | 'reasoning-effort-minimal'
+  | 'reasoning-effort-low'
   | 'reasoning-effort-minimum-supported'
   | 'disable-thinking'
   | 'enable-thinking-false'

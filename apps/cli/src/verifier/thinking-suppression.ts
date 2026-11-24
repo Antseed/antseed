@@ -8,6 +8,8 @@ export {
   THINKING_DISCOVERY_MAX_TOKENS,
   THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS,
   THINKING_DISCOVERY_PROBES,
+  THINKING_DISCOVERY_RULE,
+  THINKING_DISCOVERY_RULES,
   THINKING_DISCOVERY_STRATEGIES,
   THINKING_DISCOVERY_TIMEOUT_MS,
   THINKING_FALLBACK_MAX_TOKENS,
@@ -19,6 +21,7 @@ export {
   type ThinkingDiscoveryAttemptV1,
   type ThinkingDiscoveryProbe,
   type ThinkingDiscoveryResultV1,
+  type ThinkingDiscoveryRuleId,
   type ThinkingDiscoveryStrategy,
   type ThinkingStrategyRequest,
 } from '@antseed/fingerprints'

@@ -143,8 +143,9 @@ export async function flipsForRun(run: MethodRun): Promise<OwnScreenFor<'flips'>
     run.warn(`FLIPS: no randomness check this run: ${keyFailed}`)
     return null
   })
-  // FLIPS's own limiters: its reference and seller requests never queue with the questions'.
-  const referenceLimiter = run.ownLimiters.reference()
+  // FLIPS's own limiters: its reference and seller requests never queue with the questions'. The reference's is each
+  // model's own (below), so one model's 80 reference requests never wait behind another's inside their time
+  // (`FLIPS_REFERENCE_TIME_LIMIT_MS`).
   const sellerLimiter = run.ownLimiters.seller()
   // Empty when it cannot be read: the seed keeps the pairs unforeseeable, the address only sets auditors apart.
   const auditor = await run.auditor()
@@ -155,6 +156,7 @@ export async function flipsForRun(run: MethodRun): Promise<OwnScreenFor<'flips'>
   // The randomness check of this model's sellers (`createFlipsScreen`): its reference is asked once per stage
   // and run, on a plain route with the sellers' own body; its pairs come from this model audit's seed.
   return ({ model, seller, reference, report }) => {
+    const referenceLimiter = run.ownLimiters.reference()
     const unavailable = flipsStatusRecorder(
       (status) => report.file('flips-status.json', status),
       model,

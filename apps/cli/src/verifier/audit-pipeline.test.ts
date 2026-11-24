@@ -436,7 +436,7 @@ test('check pipeline: a diagnostic FLIPS stops nothing: a failed checkpoint writ
   assert.equal(damaged.evidence.flips?.draw.probe, true)
 })
 
-test('check pipeline: a carried FLIPS of another rule is asked again; a failed FLIPS reference fails the next seller before any paid request', async () => {
+test('check pipeline: a carried FLIPS of another rule is asked again; a FLIPS reference that is not whole leaves FLIPS out and the audit runs', async () => {
   const flipsRecord = (rule: string): FlipsV1 => ({
     rule, draw: { auditor: '0x00', model: MODEL, epoch: '1', seed: '00', stage: 'first' }, service: SERVICE,
     referenceUpstream: null, referenceOneProvider: true, pairs: [], reasks: 0, outcome: 'pass', counted: false, score: 1, scoreMax: null, p: 0.4, reason: 'pass',
@@ -456,26 +456,30 @@ test('check pipeline: a carried FLIPS of another rule is asked again; a failed F
   await audit({ usage: MODEL_TOKENIZER, flips: screen, resume: resume(flipsRecord('flips-v1')) })
   assert.deepEqual(asked, ['flips'])
 
-  // The FLIPS reference of this stage is not whole this run, where FLIPS counts: the audit is not started (the auditor's
-  // attempt), before the pre-check, the questions or any other paid request.
+  // The FLIPS reference of this stage is not whole this run, where FLIPS counts: FLIPS is not active for the model, and
+  // the audit runs with the questions and the other tests, on any attempt. It never holds the model back.
   let questions = 0
   const failed = {
     ruleId: 'flips-v1',
-    referenceDecision: async (_stage: unknown, _service: unknown, _settings: unknown, attempt: { lastAuditorAttempt: boolean; confirming: readonly string[] }) => (
+    referenceDecision: async (_stage: unknown, _service: unknown, _settings: unknown, attempt: { confirming: readonly string[] }) => (
       flipsReferenceDecision({ whole: false, counts: true, probing: false, ...attempt })),
     check: async () => { asked.push('failed'); return null },
   }
-  await assert.rejects(audit({ usage: MODEL_TOKENIZER, flips: failed, onQuestion: () => { questions += 1 } }), (error: Error) => error.message === `${FLIPS_AUDITOR_FAILURE}: ${FLIPS_WAITING_FOR_REFERENCE}`)
-  assert.equal(questions, 0)
-  assert.deepEqual(asked, ['flips'], 'FLIPS was not asked either')
-  // On the auditor's last attempt the audit runs: FLIPS has no result there and the other tests stand.
+  const firstLook = await audit({ usage: MODEL_TOKENIZER, flips: failed, onQuestion: () => { questions += 1 } })
+  assert.ok(questions > 0, 'the questions are asked')
+  assert.equal(firstLook.result.status, 'SAME')
+  assert.equal(firstLook.evidence.flips, undefined)
   const last = await audit({ usage: MODEL_TOKENIZER, flips: failed, lastAuditorAttempt: true })
   assert.equal(last.result.status, 'SAME')
   assert.equal(last.evidence.flips, undefined)
-  // A confirmation of a report only FLIPS flagged is not started even then: without FLIPS it could not decide.
-  await assert.rejects(audit({ usage: MODEL_TOKENIZER, flips: failed, lastAuditorAttempt: true, confirming: ['flips'], confirmingReportedAt: 1 }), (error: Error) => error.message.startsWith(FLIPS_AUDITOR_FAILURE))
-  // One that also repeats the questions runs on the last attempt: the questions can still confirm the report.
-  const both = await audit({ usage: MODEL_TOKENIZER, flips: failed, lastAuditorAttempt: true, confirming: ['kbf', 'flips'], confirmingReportedAt: 1 })
+  // Only a confirmation of a report only FLIPS flagged is not started: without FLIPS it could decide nothing, and nothing
+  // is paid for it.
+  questions = 0
+  await assert.rejects(audit({ usage: MODEL_TOKENIZER, flips: failed, confirming: ['flips'], confirmingReportedAt: 1, onQuestion: () => { questions += 1 } }),
+    (error: Error) => error.message === `${FLIPS_AUDITOR_FAILURE}: ${FLIPS_WAITING_FOR_REFERENCE}`)
+  assert.equal(questions, 0)
+  // One that also repeats the questions runs: the questions can still confirm the report.
+  const both = await audit({ usage: MODEL_TOKENIZER, flips: failed, confirming: ['kbf', 'flips'], confirmingReportedAt: 1 })
   assert.equal(both.evidence.flips, undefined)
 })
 

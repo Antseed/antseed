@@ -3,7 +3,9 @@ import {
   KBF_THINKING_SUPPRESSION_FIELDS,
   THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS,
   THINKING_DISCOVERY_STRATEGIES,
+  THINKING_REFERENCE_EQUIVALENTS,
   canonicalJsonStringify,
+  isReferenceFirstStrategy,
   kbfTargetThinkingSuppression,
   referenceEndpointRequest,
   thinkingStrategyRequest,
@@ -19,7 +21,8 @@ import {
  *
  * The questions (KBF) set the pattern, as the KBF reference code does for every endpoint it queries: thinking discovery
  * finds each endpoint's own setting (`discoverThinkingSuppression`), the seller's once per run, the reference's when its
- * bank is built, and each side is asked with its own. A test declares what each side needs (`TestThinking`); the audit
+ * bank is built, and each side is asked with its own. A seller's discovery tries the reference's setting first
+ * (`referenceDiscoveryStrategy`), so the two sides are asked the same way wherever the seller takes it. A test declares what each side needs (`TestThinking`); the audit
  * resolves it (`resolveThinking`) and hands the test the settings to send; the test's validator holds every signed
  * request to the setting its record names (`assertRequestCarries`). No test carries a setting table or a discovery of
  * its own: a fixed body (`fixed`) is a test's eval-measured fallback, used only where its declaration says so.
@@ -140,6 +143,37 @@ export function bankReachedZero(bank: Pick<KbfReferenceV1, 'queryProfile' | 'gen
   return attemptReachedZero(attempts.at(-1))
 }
 
+/**
+ * The reference's setting, which a seller's discovery tries first (`THINKING_DISCOVERY_RULE`): the strategy the bank's own
+ * discovery chose on the genuine endpoint (`generator.params.thinkingDiscovery.target`), the one its reference was asked
+ * with. Null for a bank without a stored discovery, a `bare` or `bare-expanded` bank, and an older strategy name: the
+ * seller's discovery then runs the order alone.
+ */
+export function referenceDiscoveryStrategy(bank: Pick<KbfReferenceV1, 'queryProfile' | 'generator'>): ThinkingDiscoveryStrategy | null {
+  const strategy = referenceEndpointRequest(bank)?.reasoningStrategy
+  const discovery = bank.generator?.params?.['thinkingDiscovery'] as { target?: { strategy?: unknown } } | undefined
+  if (!discovery?.target || discovery.target.strategy !== strategy || !isReferenceFirstStrategy(strategy)) return null
+  return strategy
+}
+
+/** Whether two settings ask the same way: the same thinking fields with the same values and the same prefill, whatever their source. */
+export function sameRequestSetting(left: ThinkingSetting, right: ThinkingSetting): boolean {
+  const shape = (setting: ThinkingSetting) => canonicalJsonStringify({ overrides: setting.overrides, prefill: setting.assistantPrefill ?? null })
+  return shape(left) === shape(right)
+}
+
+/**
+ * Whether a seller asked with `seller` was asked the way the reference was (`reference`): the same request, or the
+ * nearest equivalent its discovery may send for it (`THINKING_REFERENCE_EQUIVALENTS`: `"low"` for `"minimal"`), from
+ * whatever source the reference's setting came (its bank's, or a test's fixed body that sends the same).
+ */
+export function askedAsReference(seller: ThinkingSetting, reference: ThinkingSetting): boolean {
+  if (sameRequestSetting(seller, reference)) return true
+  return Object.entries(THINKING_REFERENCE_EQUIVALENTS).some(([from, to]) => to !== undefined
+    && sameRequestSetting(reference, strategySetting(from as ThinkingDiscoveryStrategy))
+    && sameRequestSetting(seller, strategySetting(to)))
+}
+
 /** A seller's own setting: its discovery's, or the bank's when it has none (discovery not run, or failed). */
 export function sellerOwnSetting(
   discovery: { strategy: ThinkingDiscoveryStrategy | null } | null,
@@ -191,8 +225,15 @@ export function asSuppression(setting: ThinkingSetting): KbfThinkingSuppression 
 /** The request members a thinking setting can set: what a recheck looks at (`KBF_THINKING_SUPPRESSION_FIELDS`). */
 export const THINKING_MEMBERS: readonly string[] = KBF_THINKING_SUPPRESSION_FIELDS
 
+/** Every strategy a seller's discovery may keep: the order, the reference's nearest equivalents, and `bare-expanded`. */
+const DISCOVERY_STRATEGIES: readonly ThinkingDiscoveryStrategy[] = [
+  ...THINKING_DISCOVERY_STRATEGIES,
+  ...Object.values(THINKING_REFERENCE_EQUIVALENTS).filter((strategy): strategy is ThinkingDiscoveryStrategy => strategy !== undefined),
+  'bare-expanded',
+]
+
 /** The settings discovery may choose, by member and value, and its prefills: what a question batch may carry. */
-const DISCOVERY_SETTINGS = THINKING_DISCOVERY_STRATEGIES.map((strategy) => thinkingStrategyRequest(strategy))
+const DISCOVERY_SETTINGS = DISCOVERY_STRATEGIES.map((strategy) => thinkingStrategyRequest(strategy))
 const KNOWN_MEMBERS: ReadonlyMap<string, ReadonlySet<string>> = (() => {
   const byMember = new Map<string, Set<string>>()
   for (const setting of DISCOVERY_SETTINGS) {
@@ -204,7 +245,7 @@ const KNOWN_MEMBERS: ReadonlyMap<string, ReadonlySet<string>> = (() => {
 })()
 const KNOWN_PREFILLS: ReadonlySet<string> = new Set(DISCOVERY_SETTINGS.flatMap((setting) => (setting.assistantPrefill ? [setting.assistantPrefill] : [])))
 
-/** Whether a request member and its value are one discovery may send (`THINKING_DISCOVERY_STRATEGIES`). */
+/** Whether a request member and its value are one discovery may send (`THINKING_DISCOVERY_STRATEGIES` and the equivalents). */
 export function isDiscoveryMember(member: string, value: unknown): boolean {
   return KNOWN_MEMBERS.get(member)?.has(canonicalJsonStringify(value)) ?? false
 }
@@ -227,7 +268,7 @@ export function isAllowedSetting(setting: unknown, allowed: { fixed?: ThinkingSe
   switch (value.source) {
     case 'discovery':
       return allowed.discovery === true && typeof value.strategy === 'string'
-        && (THINKING_DISCOVERY_STRATEGIES as readonly string[]).concat('bare-expanded').includes(value.strategy)
+        && (DISCOVERY_STRATEGIES as readonly string[]).includes(value.strategy)
         && same(strategySetting(value.strategy as ThinkingDiscoveryStrategy))
     case 'bank':
       return allowed.bank === true && Object.keys(value.overrides).every((member) => THINKING_MEMBERS.includes(member))

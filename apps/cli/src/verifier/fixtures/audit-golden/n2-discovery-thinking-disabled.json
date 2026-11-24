@@ -98,20 +98,20 @@
    "rule": "flips-v1",
    "model": "deepseek-v4-pro",
    "stage": "first",
-   "outcome": "pass",
-   "counted": false,
-   "p": 0.8421651369629677,
-   "score": 0.7775341197144852,
-   "reason": "scored 0.78 (p 0.842), above 0.1"
+   "outcome": "inconclusive",
+   "counted": true,
+   "p": null,
+   "score": null,
+   "reason": "the seller could not be asked the way the reference was: the seller was … (204 characters, sha256 b3c0fb12e3726b89)"
   },
-  "inactive": [{"check":"flips","cause":"rule","reason":"the randomness check is recorded only: its rule does not count it for this model"}]
+  "inactive": []
  },
  "evidence": {
   "buyerProxy": {"baseUrl":"http://127.0.0.1:8390","pid":4242,"statePath":"buyer.state.json"},
   "createdAt": "2026-10-07T00:00:00.000Z",
   "evidenceLevel": "proxy-observation-with-verified-response-auth-no-payment-evidence",
   "exchanges": [{"record":"exchange-d6e06abc898ac78f"},{"record":"exchange-f7250f8172184aba"},{"record":"exchange-527bd5b6eca401e3"}],
-  "flips": {"record":"flips-a80b814f7946d41b"},
+  "flips": {"record":"flips-461e0b04c71a9efa"},
   "kind": "antseed-buyer-proxy-kbf-audit",
   "outputCap": {"record":"outputCap-b7c9405cd14a11c0"},
   "outputEcho": {"record":"outputEcho-f5c98234ea968092"},
@@ -129,7 +129,7 @@
    "verdict": "SAME",
    "verdictReason": null
   },
-  "sellerThinking": {"record":"sellerThinking-ea22d8dd32b8e4d8"},
+  "sellerThinking": {"record":"sellerThinking-354e128c1da158dd"},
   "target": {"agentId":"7","displayName":"Example Seller","peerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","service":"deepseek-v4-pro"},
   "tests": "all-tests-v1",
   "tokenizerPrecheck": {"record":"tokenizerPrecheck-e77b64f88aa89447"},

@@ -12,9 +12,9 @@ import { FLIPS_THINKING } from './flips-thinking.js'
 
 /**
  * Whether a stored FLIPS counts, under the rule it was judged by (its `rule` id) or the FLIPS rule given
- * (`ReadingRules`), from its model: never from the stored flag alone, and never under a later build's rule, so a record
- * judged while FLIPS was recorded only stays so. A rule this CLI does not know, chosen dry-run pairs and a malformed
- * draw never count.
+ * (`ReadingRules`), from its model: never from the stored flag alone. `flips-v1` changed in place from recorded only to
+ * counting, so a `flips-v1` record is read as counting whenever it was judged. A rule this CLI does not know, chosen
+ * dry-run pairs and a malformed draw never count.
  */
 const flipsCountsFor = (record: FlipsV1, rules?: ReadingRules): boolean => {
   if (!isFlipsRecord(record) || isProbeDraw(record.draw)) return false
@@ -99,15 +99,12 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
   carriedIsOfAudit: (carried, audit) => carried.draw.stage === flipsStageOf(audit),
   screen: (flips) => ({
     // The stage's FLIPS reference is decided before the seller is asked anything paid, once per model, stage and run:
-    // where FLIPS counts and it is not whole, the audit is not started (the auditor's attempt, nothing paid), except on the
-    // auditor's last attempt, which runs with FLIPS at no result (never for a report only FLIPS flagged).
+    // where FLIPS counts and it is not whole, FLIPS is not active for the model this run and every audit runs without it;
+    // only a confirmation of a report only FLIPS flagged, which could decide nothing without it, is not started.
     admit: {
       decide(audit) {
         if (flips.referenceDecision) {
-          return flips.referenceDecision(flipsStageOf(audit), audit.seller.service, audit.bank, {
-            lastAuditorAttempt: audit.lastAuditorAttempt,
-            confirming: audit.confirming,
-          })
+          return flips.referenceDecision(flipsStageOf(audit), audit.seller.service, audit.bank, { confirming: audit.confirming })
         }
         // Its reference is asked while the questions run: FLIPS then adds only the seller's own time.
         flips.warm?.(audit.seller.service, audit.bank, flipsStageOf(audit))

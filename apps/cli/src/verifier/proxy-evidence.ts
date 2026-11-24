@@ -15,7 +15,7 @@ import {
 import type { StoredResponseAuth } from '@antseed/node'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import { safeServiceSlug } from './slug.js'
-import type { ThinkingDiscoveryAttemptV1, ThinkingDiscoveryStrategy } from './thinking-suppression.js'
+import type { ThinkingDiscoveryAttemptV1, ThinkingDiscoveryRuleId, ThinkingDiscoveryStrategy } from './thinking-suppression.js'
 import type { AuditCheckId, CheckRecords } from './audit-checks.js'
 
 export type ExportedResponseAuthRecord = Omit<StoredResponseAuth, 'requestPreimage' | 'responsePreimage'>
@@ -93,6 +93,11 @@ export interface SellerThinkingDiscoveryAttemptV1 extends ThinkingDiscoveryAttem
  */
 export interface SellerThinkingDiscoveryV1 {
   method: 'kbf-reference-code-2026-09-30'
+  /**
+   * The discovery rule it was made under (`THINKING_DISCOVERY_RULE`): this build's tries the reference's setting first.
+   * Absent in evidence made before, which was made under `kbf-discovery-least-reasoning-v1`.
+   */
+  rule?: ThinkingDiscoveryRuleId
   /** Strategy this audit's batches use; null when discovery found none and the reference's suppression was sent. */
   strategy: ThinkingDiscoveryStrategy | null
   /** `max_tokens` of each batch request. */

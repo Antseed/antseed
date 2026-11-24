@@ -5,7 +5,7 @@ import type { RecordCheck } from './audit-method.js'
 import { QUESTIONS_CHECK, THINKING_DECLARATIONS } from './audit-checks.js'
 import {
   NO_THINKING_SETTING, asSuppression, assertRequestCarries, bankReachedZero, bankSetting, isAllowedSetting, isDiscoveryMember, needsSellerDiscovery,
-  requestCarries, resolveThinking, strategySetting, type TestThinking, type ThinkingSetting,
+  askedAsReference, referenceDiscoveryStrategy, requestCarries, resolveThinking, sameRequestSetting, strategySetting, type TestThinking, type ThinkingSetting,
 } from './audit-thinking.js'
 import { METHODS } from './methods/index.js'
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
@@ -117,7 +117,9 @@ test('a stored setting is one its side may name, and nothing else', () => {
   assert.equal(isAllowedSetting(strategySetting('reasoning-effort-none'), { bank: true }), false)
   // A strategy's name with other fields than its own.
   assert.equal(isAllowedSetting({ ...strategySetting('reasoning-effort-none'), overrides: { reasoning: { effort: 'low' } } }, all), false)
-  assert.equal(isAllowedSetting({ source: 'discovery', strategy: 'reasoning-effort-low', overrides: { reasoning: { effort: 'low' } } }, all), false)
+  // A strategy discovery never sends; "low" it does, as the nearest equivalent of the reference's "minimal".
+  assert.equal(isAllowedSetting({ source: 'discovery', strategy: 'reasoning-effort-medium', overrides: { reasoning: { effort: 'medium' } } }, all), false)
+  assert.equal(isAllowedSetting(strategySetting('reasoning-effort-low'), all), true)
   // The bank's: thinking members only.
   assert.equal(isAllowedSetting({ source: 'bank', strategy: 'reasoning-effort-none', overrides: { reasoning: { effort: 'none' } } }, all), true)
   assert.equal(isAllowedSetting({ source: 'bank', strategy: null, overrides: { tools: [] } }, all), false)
@@ -131,10 +133,55 @@ test('a question batch may carry exactly the settings discovery chooses from, as
   for (const strategy of THINKING_DISCOVERY_STRATEGIES) {
     for (const [member, value] of Object.entries(thinkingStrategyRequest(strategy).overrides)) assert.equal(isDiscoveryMember(member, value), true, strategy)
   }
-  // FLIPS's eval table holds two switches discovery never tries: a question batch never carries them.
+  // The nearest equivalent of the reference's "minimal" may be sent too; FLIPS's other eval switch never is.
+  assert.equal(isDiscoveryMember('reasoning', { effort: 'low' }), true)
+  assert.equal(isAllowedSetting(strategySetting('reasoning-effort-low'), { discovery: true }), true)
   assert.equal(isDiscoveryMember('reasoning', { enabled: false }), false)
-  assert.equal(isDiscoveryMember('reasoning', { effort: 'low' }), false)
+  assert.equal(isDiscoveryMember('reasoning', { effort: 'medium' }), false)
   assert.equal(isDiscoveryMember('tools', []), false)
+})
+
+test('the reference\'s setting a seller\'s discovery tries first is the strategy its bank\'s discovery chose, and every recheck accepts it', () => {
+  const minimal = bankWith('reasoning-effort-minimal', { reasoning: { effort: 'minimal' } }, 0)
+  assert.equal(referenceDiscoveryStrategy(minimal), 'reasoning-effort-minimal')
+  // Also a least-reasoning pick that still thought: it is what the reference was asked with.
+  assert.equal(referenceDiscoveryStrategy(bankWith('reasoning-effort-minimal', { reasoning: { effort: 'minimal' } }, 70)), 'reasoning-effort-minimal')
+  assert.equal(referenceDiscoveryStrategy(bankWith('prefill', {}, 0)), 'prefill')
+  // None: a bank with no stored discovery, a `bare` or `bare-expanded` bank, an older strategy name, a discovery that is
+  // not the request the bank records.
+  assert.equal(referenceDiscoveryStrategy(PLAIN_BANK), null)
+  assert.equal(referenceDiscoveryStrategy(bankWith('bare', {}, 574)), null)
+  assert.equal(referenceDiscoveryStrategy(bankWith('bare-expanded', {}, 3000)), null)
+  assert.equal(referenceDiscoveryStrategy(bankWith('reasoning-effort-minimum-supported', { reasoning: { effort: 'low' } }, 0)), null)
+  const mismatched = structuredClone(minimal)
+  ;(mismatched.generator.params!['thinkingDiscovery'] as { target: { strategy: string } }).target.strategy = 'disable-thinking'
+  assert.equal(referenceDiscoveryStrategy(mismatched), null)
+  const noDiscovery = structuredClone(minimal)
+  delete noDiscovery.generator.params!['thinkingDiscovery']
+  assert.equal(referenceDiscoveryStrategy(noDiscovery), null, 'a bank from before discovery was stored')
+  // A seller's discovery that kept it: its questions carry it, and the signed-bytes check and the stored-setting check accept it.
+  for (const strategy of THINKING_DISCOVERY_STRATEGIES.filter((name) => name !== 'bare')) {
+    const setting = resolveThinking(QUESTIONS_CHECK.thinking, { model: MODEL, bank: minimal, discovery: { strategy } }).seller
+    for (const [member, value] of Object.entries(setting.overrides)) assert.equal(isDiscoveryMember(member, value), true, strategy)
+    assert.equal(isAllowedSetting(setting, { discovery: true }), true, strategy)
+  }
+  // The same request from discovery and from the bank is the same setting; another one is not.
+  assert.equal(sameRequestSetting(strategySetting('reasoning-effort-minimal'), bankSetting(minimal)), true)
+  assert.equal(sameRequestSetting(strategySetting('reasoning-effort-none'), bankSetting(minimal)), false)
+  assert.equal(sameRequestSetting(strategySetting('prefill'), strategySetting('bare')), false)
+})
+
+test('a seller on "low" was asked the way a reference on "minimal" was, from its bank or a fixed body; nothing else is an equivalent', () => {
+  const minimal = bankWith('reasoning-effort-minimal', { reasoning: { effort: 'minimal' } }, 0)
+  const fixedMinimal: ThinkingSetting = { source: 'fixed', strategy: null, overrides: { reasoning: { effort: 'minimal' } } }
+  for (const reference of [bankSetting(minimal), fixedMinimal, strategySetting('reasoning-effort-minimal')]) {
+    assert.equal(askedAsReference(strategySetting('reasoning-effort-minimal'), reference), true)
+    assert.equal(askedAsReference(strategySetting('reasoning-effort-low'), reference), true)
+    assert.equal(askedAsReference(strategySetting('reasoning-effort-none'), reference), false)
+  }
+  // One way only, and only for "minimal": a seller on "minimal" against a reference on "low", "low" against "none".
+  assert.equal(askedAsReference(strategySetting('reasoning-effort-minimal'), { source: 'fixed', strategy: null, overrides: { reasoning: { effort: 'low' } } }), false)
+  assert.equal(askedAsReference(strategySetting('reasoning-effort-low'), strategySetting('reasoning-effort-none')), false)
 })
 
 test('every test declares its thinking need, in one list with the questions first; none before the questions needs the seller\'s own', () => {

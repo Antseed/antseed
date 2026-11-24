@@ -74,5 +74,6 @@
  "failure": "seller a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 refused every request fo… (259 characters, sha256 97153d9011b11d28)",
  "maxTokens": 160,
  "method": "kbf-reference-code-2026-09-30",
+ "rule": "kbf-discovery-reference-first-v1",
  "strategy": null
 }

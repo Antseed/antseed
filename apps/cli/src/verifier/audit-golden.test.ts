@@ -79,6 +79,30 @@ const REFERENCE_WITH_SETTING: KbfReferenceV1 = (() => {
   return value
 })()
 
+/**
+ * The same question set from a bank whose discovery found `reasoning.effort: "minimal"` at 0 reasoning tokens after its
+ * route refused `"none"` (as Sonnet 5.5's does): the setting a seller's discovery tries first
+ * (`kbf-discovery-reference-first-v1`), and the reference's FLIPS setting.
+ */
+const REFERENCE_MINIMAL: KbfReferenceV1 = (() => {
+  const value: KbfReferenceV1 = structuredClone(REFERENCE)
+  value.generator.params = {
+    ...value.generator.params,
+    referenceEndpointRequest: { reasoningStrategy: 'reasoning-effort-minimal', requestOverrides: { reasoning: { effort: 'minimal' } }, requestOmissions: [] },
+    thinkingDiscovery: {
+      version: 1, method: 'kbf-reference-code-2026-09-30', contrasts: {},
+      target: {
+        model: MODEL, strategy: 'reasoning-effort-minimal', attempts: [
+          { strategy: 'reasoning-effort-none', maxTokens: 800, status: 400, validAnswers: null, reasoningTokens: null, failure: 'reasoning effort none is not supported' },
+          { strategy: 'reasoning-effort-minimal', maxTokens: 800, status: null, validAnswers: 10, reasoningTokens: 0, answersOnly: true, truncated: false },
+        ],
+      },
+    },
+  }
+  value.referenceId = computeReferenceId(value)
+  return value
+})()
+
 // The audit draws from `crypto.randomInt` with no way to pass a seed: the prompt variant of each question batch, the
 // cap check's prompt and limit, the texts the cap and echo checks write. Here each part of an audit draws from its own
 // fixed stream, named by the part (`inPart`), so two parts that run at the same time cannot change each other's
@@ -830,6 +854,11 @@ const UNCAPPED: Partial<Seller> = { capped: () => ({ answer: LONG_ANSWER, billed
 /** A seller whose FLIPS replies are not random. */
 const STUCK: Partial<Seller> = { sequence: stuckSequence }
 const sellerThat = (differs: Partial<Seller>): Seller => ({ ...HONEST, ...differs })
+/**
+ * A seller whose every setting turns thinking off: from a bank with a stored discovery, its own discovery keeps the
+ * reference's setting, so FLIPS asks it as the reference was and is judged.
+ */
+const ASKED_AS_REFERENCE: Partial<Seller> = { discovery: discoveryBy({}, { reasoning: 0 }) }
 
 /** The test records of an audit's evidence file. */
 function recordsOf(observed: Observed): StoredCheckRecords {
@@ -868,9 +897,9 @@ const scenario = (name: string, about: string, run: (t: TestContext, expect: Exp
   test(`audit golden: ${about}`, (t) => run(t, (network, observed) => expectGolden(name, about, network, observed)))
 }
 
-scenario('a-honest-first-look', 'an honest seller\'s first look: every test passes', async (t, expect) => {
-  const network = new Network(HONEST)
-  await expect(network, await audit(t, network, { auditId: 'audit-a' }))
+scenario('a-honest-first-look', 'an honest seller\'s first look, asked with the reference\'s own setting: every test passes', async (t, expect) => {
+  const network = new Network(sellerThat(ASKED_AS_REFERENCE))
+  await expect(network, await audit(t, network, { auditId: 'audit-a', reference: REFERENCE_WITH_SETTING }))
 })
 
 scenario('b-cap-flag', 'a seller that ignores the reply limit is flagged by the cap check, and the other tests still run', async (t, expect) => {
@@ -883,9 +912,9 @@ scenario('c-precheck-mismatch-backed-by-crowd', 'a seller off the reference\'s t
   await expect(network, await audit(t, network, { auditId: 'audit-c' }))
 })
 
-scenario('d-confirm-flips-flag', 'a confirmation of a FLIPS flag asks FLIPS at the confirmation stage; while FLIPS is recorded only, its flag is stored and the confirmation stays undecided', async (t, expect) => {
-  const network = new Network(sellerThat(STUCK))
-  await expect(network, await audit(t, network, { auditId: 'audit-d-flips', confirming: report('flips') }))
+scenario('d-confirm-flips-flag', 'a confirmation of a FLIPS flag asks FLIPS at the confirmation stage, and repeats the flag', async (t, expect) => {
+  const network = new Network(sellerThat({ ...STUCK, ...ASKED_AS_REFERENCE }))
+  await expect(network, await audit(t, network, { auditId: 'audit-d-flips', confirming: report('flips'), reference: REFERENCE_WITH_SETTING }))
 })
 
 scenario('d-confirm-cap-flag', 'a confirmation of a cap flag repeats the flag; its FLIPS is a first look\'s', async (t, expect) => {
@@ -894,12 +923,12 @@ scenario('d-confirm-cap-flag', 'a confirmation of a cap flag repeats the flag; i
 })
 
 scenario('e-retry-carries-decided-records', 'a retry carries the tests that decided and asks none of them again, but a carried FLIPS of the other stage is asked again', async (t, expect) => {
-  const network = new Network(HONEST)
+  const network = new Network(sellerThat(ASKED_AS_REFERENCE))
   // The earlier attempt confirmed a FLIPS flag, so its FLIPS is the confirmation stage's; the retry is a first look.
-  const attempt = await earlier(t, network, { auditId: 'audit-e-earlier', confirming: report('flips') })
+  const attempt = await earlier(t, network, { auditId: 'audit-e-earlier', confirming: report('flips'), reference: REFERENCE_WITH_SETTING })
   const carried = decidedRecords(recordsOf(attempt))
   assert.deepEqual([Object.keys(carried), carried.flips?.draw.stage], [['tokenizerPrecheck', 'outputCap', 'outputEcho', 'flips'], 'confirm'])
-  await expect(network, await audit(t, network, { auditId: 'audit-e', carried }))
+  await expect(network, await audit(t, network, { auditId: 'audit-e', carried, reference: REFERENCE_WITH_SETTING }))
 })
 
 scenario('f-resume-after-first-batch', 'a resume from the checkpoint written after the first question batch: the pre-check and that batch are not asked again', async (t, expect) => {
@@ -940,7 +969,7 @@ scenario('g-skipped-no-flag', 'a seller skipped at its first question batch with
   await expect(network, await audit(t, network, { auditId: 'audit-g-skip' }))
 })
 
-scenario('h-flips-reference-not-whole', 'a FLIPS reference that is not whole: while FLIPS is recorded only it holds no audit back, and the audit runs without FLIPS', async (t, expect) => {
+scenario('h-flips-reference-not-whole', 'a FLIPS reference that is not whole, where FLIPS counts: FLIPS is not active for the model this run, and the audit runs with the other tests', async (t, expect) => {
   const network = new Network(HONEST, { flipsReference: 'holes' })
   await expect(network, await audit(t, network, { auditId: 'audit-h' }))
 })
@@ -1041,6 +1070,23 @@ scenario('n9-echo-crowd-bank-setting', 'an over-billing seller from a bank with 
 scenario('n10-discovery-only-enabled-false', 'only `reasoning: {enabled: false}`, a setting FLIPS sends, turns thinking off; every other setting reasons a little', async (t, expect) => {
   const network = new Network(sellerThat({ discovery: discoveryBy({ 'reasoning-enabled-false': { reasoning: 0 }, bare: { reasoning: 45 } }, { reasoning: 30 }) }))
   await expect(network, await audit(t, network, { auditId: 'audit-n10' }))
+})
+
+// The reference's setting first (`kbf-discovery-reference-first-v1`), from a bank that found `reasoning.effort: "minimal"`.
+
+scenario('o1-discovery-reference-first', 'a seller that takes both effort settings is asked with the reference\'s `"minimal"`, not `"none"`, by every test, and FLIPS is judged', async (t, expect) => {
+  const network = new Network(sellerThat(ASKED_AS_REFERENCE))
+  await expect(network, await audit(t, network, { auditId: 'audit-o1', reference: REFERENCE_MINIMAL }))
+})
+
+scenario('o2-reference-setting-reasons', 'a seller that still reasons with the reference\'s `"minimal"` goes on in the usual order and keeps `"none"`; FLIPS, whose reference is asked with `"minimal"`, has no result', async (t, expect) => {
+  const network = new Network(sellerThat({ discovery: discoveryBy({ 'reasoning-effort-minimal': { reasoning: 20 } }, { reasoning: 0 }) }))
+  await expect(network, await audit(t, network, { auditId: 'audit-o2', reference: REFERENCE_MINIMAL }))
+})
+
+scenario('o3-reference-setting-refused-low', 'a seller that refuses the reference\'s `"minimal"` is asked with `"low"` next, not `"none"`, by every test, and FLIPS judges it as asked the reference\'s way', async (t, expect) => {
+  const network = new Network(sellerThat({ discovery: discoveryBy({ 'reasoning-effort-minimal': refused }, { reasoning: 0 }) }))
+  await expect(network, await audit(t, network, { auditId: 'audit-o3', reference: REFERENCE_MINIMAL }))
 })
 
 test('audit golden: every stored record is named by a scenario', async () => {

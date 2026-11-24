@@ -116,10 +116,9 @@ export interface FlipsRule {
 }
 
 /**
- * The rule (`flips-v1`). FLIPS is recorded only (`counts.default` false): judged, stored and shown, and no verdict
- * reads it, until one dry run has shown how honest sellers score when each side is asked with its own discovered
- * thinking switch (`flips-thinking.ts`). When it counts, it still never counts for MiniMax M3, whose honest sellers on
- * another host than the reference's score like a swap, nor for a model the eval never measured.
+ * The rule (`flips-v1`). FLIPS counts toward the verdict, except for MiniMax M3, whose honest sellers on another host
+ * than the reference's score like a swap, and for a model the eval never measured. A FLIPS DIFF is confirmed like any
+ * other: by a second auditor's FLIPS flag at the confirmation stage.
  *
  * - Calibrations: fitted on the eval's honest checks of each size (ln score, Student-t, location = mean,
  *   scale = sd · sqrt(1 + 1/n), df = n − 1).
@@ -152,9 +151,7 @@ export const FLIPS_RULE: FlipsRule = Object.freeze({
   ]),
   bar: Object.freeze({ first: 0.002, confirm: 0.001 }),
   passAbove: 0.1,
-  // Recorded only, until a dry run has shown how honest sellers score with each side on its own discovered switch
-  // (`FLIPS_THINKING`): the calibration and the bars were fitted with the eval's one body on both sides.
-  counts: Object.freeze({ default: false, never: Object.freeze(['minimax-m3']) }),
+  counts: Object.freeze({ default: true, never: Object.freeze(['minimax-m3']) }),
   noSequence: Object.freeze({ below: 8, maxShare: 0.2 }),
   repeats: Object.freeze({ sellerShare: 0.5, referenceShare: 0.25, minReplies: 4 }),
   asksRequired: true,

@@ -1,5 +1,5 @@
 {
- "counted": false,
+ "counted": true,
  "draw": {
   "auditor": "0xe5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
   "epoch": "7",
@@ -7,8 +7,8 @@
   "seed": "01c0dd60f4efbb39b64537edf38e9b8af686b9fd2afe2381d08342c898480064",
   "stage": "first"
  },
- "outcome": "pass",
- "p": 0.8421651369629677,
+ "outcome": "inconclusive",
+ "p": null,
  "pairs": [
   {
    "reference": {
@@ -354,14 +354,17 @@
   }
  ],
  "reasks": 0,
- "reason": "scored 0.78 (p 0.842), above 0.1",
- "reasoningCounts": {"referenceReasoningReplies":0,"referenceReasoningTokens":0,"referenceReplies":80,"sellerReasoningReplies":0,"sellerReasoningTokens":0,"sellerReplies":20},
+ "reason": "the seller could not be asked the way the reference was: the seller was … (186 characters, sha256 f656225023804bd5)",
  "referenceOneProvider": true,
  "referenceUpstream": {"kind":"test"},
  "rule": "flips-v1",
- "score": 0.7775341197144852,
- "scoreMax": 5.572353002177747,
+ "score": null,
+ "scoreMax": null,
  "service": "deepseek-v4-pro",
- "thinking": {"reference":{"overrides":{"reasoning":{"enabled":false}},"source":"fixed","strategy":null},"seller":{"overrides":{},"source":"discovery","strategy":"bare"}},
+ "thinking": {
+  "discoveryRule": "kbf-discovery-reference-first-v1",
+  "reference": {"overrides":{"reasoning":{"enabled":false}},"source":"fixed","strategy":null},
+  "seller": {"overrides":{},"source":"discovery","strategy":"bare-expanded"}
+ },
  "timing": {"finishedAt":1791331200000,"startedAt":1791331200000}
 }

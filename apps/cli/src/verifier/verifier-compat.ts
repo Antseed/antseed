@@ -1,6 +1,7 @@
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
   THINKING_DISCOVERY_RULE,
+  THINKING_REFERENCE_EQUIVALENTS,
   KBF_COVERAGE_RULE,
   KBF_CALIBRATION_METHOD,
   KBF_CALIBRATION_PASSES,
@@ -220,6 +221,8 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       closeCallExtensions: CLOSE_CALL_EXTENSIONS,
       // How thinking discovery chooses a setting, for the reference and for every seller audited.
       thinkingDiscoveryRule: THINKING_DISCOVERY_RULE,
+      // The nearest equivalent a seller is asked with when it refuses the reference's setting, the whole table.
+      thinkingReferenceEquivalents: THINKING_REFERENCE_EQUIVALENTS,
     },
     // What each test's requests carry, side by side, from its declaration (`audit-thinking.ts`): the questions first,
     // then the tests with a record. With what the declarations give for fixed banks and discoveries, so a change to how

@@ -73,7 +73,7 @@
   "coverageRule": "kbf-coverage-v1",
   "responseAuthVerified": true,
   "tokenizerPrecheck": {"rule":"tokenizer-precheck-v1","outcome":"match"},
-  "inactive": [{"check":"flips","cause":"rule","reason":"the randomness check is recorded only: its rule does not count it for this model"}]
+  "inactive": []
  },
  "evidence": {
   "buyerProxy": {"baseUrl":"http://127.0.0.1:8390","pid":4242,"statePath":"buyer.state.json"},
@@ -105,7 +105,7 @@
    "verdict": "UNDETERMINED",
    "verdictReason": "coverage 0.0000 below minimum 0.5"
   },
-  "sellerThinking": {"record":"sellerThinking-d3c9bcd43acbddbf"},
+  "sellerThinking": {"record":"sellerThinking-1a3aca0a69a05ef8"},
   "target": {"agentId":"7","displayName":"Example Seller","peerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","service":"deepseek-v4-pro"},
   "tests": "all-tests-v1",
   "tokenizerPrecheck": {"record":"tokenizerPrecheck-e77b64f88aa89447"},

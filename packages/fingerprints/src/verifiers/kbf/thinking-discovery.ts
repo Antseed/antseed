@@ -30,7 +30,18 @@ export const THINKING_DISCOVERY_STRATEGIES = [
   'bare',
 ] as const satisfies readonly ReferenceReasoningStrategy[];
 
-export type ThinkingDiscoveryStrategy = typeof THINKING_DISCOVERY_STRATEGIES[number] | 'bare-expanded';
+export type ThinkingDiscoveryStrategy = typeof THINKING_DISCOVERY_STRATEGIES[number] | 'reasoning-effort-low' | 'bare-expanded';
+
+/**
+ * The nearest equivalent of a reference's setting, tried on a seller that refuses the setting itself, before the order
+ * (`THINKING_DISCOVERY_RULE`): the whole table, kept small on purpose. `reasoning.effort: "low"` for `"minimal"` only: on
+ * the genuine models whose reference was asked with `"minimal"`, `"low"` measured as the same request (FLIPS passes
+ * against the `"minimal"` reference as often as a second `"minimal"` sample does, with the same billing and reasoning
+ * tokens), while `"none"` can put a model in another way of answering. Never part of the order itself.
+ */
+export const THINKING_REFERENCE_EQUIVALENTS: Readonly<Partial<Record<ThinkingDiscoveryStrategy, ThinkingDiscoveryStrategy>>> = Object.freeze({
+  'reasoning-effort-minimal': 'reasoning-effort-low',
+});
 
 /** Ten answers at 80 tokens each, as the reference code budgets a ten-question batch. */
 export const THINKING_DISCOVERY_MAX_TOKENS = 80 * 10;
@@ -78,6 +89,7 @@ export function thinkingStrategyRequest(strategy: ThinkingDiscoveryStrategy): Th
   switch (strategy) {
     case 'reasoning-effort-none': return { overrides: { reasoning: { effort: 'none' } } };
     case 'reasoning-effort-minimal': return { overrides: { reasoning: { effort: 'minimal' } } };
+    case 'reasoning-effort-low': return { overrides: { reasoning: { effort: 'low' } } };
     case 'disable-thinking': return { overrides: { thinking: { type: 'disabled' } } };
     case 'enable-thinking-false': return { overrides: { enable_thinking: false } };
     case 'prefill': return { overrides: {}, assistantPrefill: KBF_THINKING_PREFILL };
@@ -120,9 +132,39 @@ export interface ThinkingDiscoveryResultV1 extends ThinkingStrategyRequest {
  * than `bare` did (or `bare` failed): a setting that thinks a little is closer to the reference code's no-thinking answers
  * than one that thinks as long as it likes, and it leaves room for the answer. GLM 5.3 on its maker's endpoint reasoned
  * 70 tokens with `reasoning.effort: "minimal"` and 295 with nothing on the ten test questions, and with nothing it then
- * spent every token of real batches thinking and answered none. Part of the audit rules (the verifier compat fingerprint).
+ * spent every token of real batches thinking and answered none.
+ *
+ * An audited endpoint is first asked with the reference's own setting (`referenceStrategy`: the one its bank's discovery
+ * chose on the genuine endpoint), so it is asked the way the reference was wherever it can be: when that setting answers
+ * cleanly with no reasoning tokens, it is the endpoint's setting. Otherwise the order above runs exactly as before, that
+ * first attempt standing in its own place in the order instead of being sent again. Sonnet 5.5's reference route refuses
+ * `reasoning.effort: "none"` and its bank recorded `"minimal"`; a seller that accepts both is asked with `"minimal"`, as
+ * the reference was. A seller that refuses the reference's setting (an HTTP 4xx other than 429) is next asked with its
+ * nearest equivalent, where the table has one (`THINKING_REFERENCE_EQUIVALENTS`: `"low"` for `"minimal"`), kept on the
+ * same terms; only then does the order run, so such a seller never falls to `"none"` first. A bank without a stored
+ * discovery has no reference setting, and discovery runs the order alone.
+ * Part of the audit rules (the verifier compat fingerprint).
  */
-export const THINKING_DISCOVERY_RULE = 'kbf-discovery-least-reasoning-v1' as const;
+export const THINKING_DISCOVERY_RULE = 'kbf-discovery-reference-first-v1' as const;
+
+/**
+ * Every discovery rule a stored discovery may have been made under, oldest first. `kbf-discovery-least-reasoning-v1` is
+ * this rule without the reference's setting tried first: evidence made before has no `rule` and is read under it.
+ */
+export const THINKING_DISCOVERY_RULES = ['kbf-discovery-least-reasoning-v1', THINKING_DISCOVERY_RULE] as const;
+
+export type ThinkingDiscoveryRuleId = typeof THINKING_DISCOVERY_RULES[number];
+
+/** The rule a stored discovery without a `rule` was made under. */
+export const THINKING_DISCOVERY_LEGACY_RULE: ThinkingDiscoveryRuleId = THINKING_DISCOVERY_RULES[0];
+
+/**
+ * Whether a strategy can be tried first as the reference's setting: one that sets something to turn thinking off, so not
+ * `bare` (the baseline, already last in the order) nor `bare-expanded` or an older reference's strategy name.
+ */
+export function isReferenceFirstStrategy(strategy: unknown): strategy is Exclude<typeof THINKING_DISCOVERY_STRATEGIES[number], 'bare'> {
+  return typeof strategy === 'string' && strategy !== 'bare' && (THINKING_DISCOVERY_STRATEGIES as readonly string[]).includes(strategy);
+}
 
 export type ThinkingDiscoveryProbe = (input: {
   strategy: ThinkingDiscoveryStrategy;
@@ -224,12 +266,29 @@ export function stripKbfThinkBlocks(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 }
 
+/** Whether an attempt turned thinking off: enough answers, 0 reasoning tokens, only the answers, not cut off. */
+function reachedZero(attempt: ThinkingDiscoveryAttemptV1): boolean {
+  return (attempt.validAnswers ?? -1) >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && attempt.reasoningTokens === 0
+    && attempt.answersOnly !== false && attempt.truncated !== true;
+}
+
+/** Whether the endpoint refused the setting: an HTTP 4xx other than 429, with no answer (a 429 or a 5xx is no refusal). */
+function isRefusal(attempt: ThinkingDiscoveryAttemptV1): boolean {
+  return attempt.validAnswers === null && attempt.status !== null && attempt.status >= 400 && attempt.status < 500 && attempt.status !== 429;
+}
+
 export async function discoverThinkingSuppression(input: {
   model: string;
   label: string;
   /** Prefill only applies to OpenAI Chat Completions, as in the reference code. */
   supportsPrefill: boolean;
   probe: ThinkingDiscoveryProbe;
+  /**
+   * The reference's setting, tried before the order (`THINKING_DISCOVERY_RULE`); null or absent for the reference itself
+   * and for a bank without a stored discovery. Ignored unless `isReferenceFirstStrategy`, and a prefill without
+   * `supportsPrefill`.
+   */
+  referenceStrategy?: ThinkingDiscoveryStrategy | null;
   log?: (message: string) => void;
 }): Promise<ThinkingDiscoveryResultV1> {
   const attempts: ThinkingDiscoveryAttemptV1[] = [];
@@ -267,9 +326,37 @@ export async function discoverThinkingSuppression(input: {
     // Nothing marks the pick in the result: a stored setting is read as it is, and its attempts show why it was chosen.
     return { strategy: least.strategy, ...thinkingStrategyRequest(least.strategy), attempts };
   };
+  // The reference's setting first: kept when it turns thinking off here too, else it stands in its own place below.
+  const referenceFirst = isReferenceFirstStrategy(input.referenceStrategy) && (input.referenceStrategy !== 'prefill' || input.supportsPrefill)
+    ? input.referenceStrategy
+    : null;
+  const referenceAttempt = referenceFirst ? await tryOnce(referenceFirst, THINKING_DISCOVERY_MAX_TOKENS) : null;
+  if (referenceFirst && referenceAttempt) {
+    if (reachedZero(referenceAttempt)) {
+      input.log?.(
+        `thinking suppression for ${input.model}: the reference's '${referenceFirst}' works on ${input.label} `
+        + `(${referenceAttempt.validAnswers}/10 parseable, reasoning_tokens=0), so it is asked as the reference was`,
+      );
+      return { strategy: referenceFirst, ...thinkingStrategyRequest(referenceFirst), attempts };
+    }
+    // Refused outright: its nearest equivalent next, on the same terms, before the order can reach a setting further away.
+    const equivalent = isRefusal(referenceAttempt) ? THINKING_REFERENCE_EQUIVALENTS[referenceFirst] : undefined;
+    if (equivalent) {
+      const equivalentAttempt = await tryOnce(equivalent, THINKING_DISCOVERY_MAX_TOKENS);
+      if (reachedZero(equivalentAttempt)) {
+        input.log?.(
+          `thinking suppression for ${input.model}: ${input.label} refuses the reference's '${referenceFirst}' and its nearest `
+          + `equivalent '${equivalent}' works (${equivalentAttempt.validAnswers}/10 parseable, reasoning_tokens=0), so it is used`,
+        );
+        return { strategy: equivalent, ...thinkingStrategyRequest(equivalent), attempts };
+      }
+    }
+    input.log?.(`thinking suppression for ${input.model}: the reference's '${referenceFirst}' does not turn thinking off on ${input.label}; trying each setting in order`);
+  }
   for (const strategy of THINKING_DISCOVERY_STRATEGIES) {
     if (strategy === 'prefill' && !input.supportsPrefill) continue;
-    const attempt = await tryOnce(strategy, THINKING_DISCOVERY_MAX_TOKENS);
+    // The reference's setting was sent first: its answer is read here, in its own place, and not asked again.
+    const attempt = strategy === referenceFirst && referenceAttempt ? referenceAttempt : await tryOnce(strategy, THINKING_DISCOVERY_MAX_TOKENS);
     const valid = attempt.validAnswers ?? -1;
     const cleanReply = attempt.answersOnly !== false && attempt.truncated !== true;
     // `bare` is the no-suppression baseline and may think; a strategy that thought less than it is used instead

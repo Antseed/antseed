@@ -15,7 +15,6 @@ import { closeFinishedWindowsRecovering, recoveringFirstLooks } from './first-lo
 import { dryRunPreparedPath, writeDryRunPrepared } from './epoch-submission-record.js'
 import type { FlipsV1 } from './methods/flips/flips.js'
 import { decide, type FirstFlag, type SameCheckCandidate, type SameCheckDecision } from './same-check.js'
-import { FLIPS_RULE } from './methods/flips/flips-score.js'
 
 const MODEL = 'claude-opus-5.5'
 /** A second model whose audit window holds one seller: its first look's DIFF is damaged, then recovered in the window. */
@@ -108,8 +107,7 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
       seller: wallets[agent - 1]!, buyer: auditor.address,
       reply: (pair, slot) => Array.from({ length: 64 }, (_, index) => pair[index === slot || index === 63 - slot * 2 ? 1 : 0]).join(' '),
     })
-    // Counted only once FLIPS's rule counts again (it is recorded only until a dry run).
-    assert.deepEqual([flipsOf(16, 'confirm').outcome, flipsOf(16, 'confirm').counted, flipsOf(17, 'first').outcome], ['flag', FLIPS_RULE.counts.default, 'flag'])
+    assert.deepEqual([flipsOf(16, 'confirm').outcome, flipsOf(16, 'confirm').counted, flipsOf(17, 'first').outcome], ['flag', true, 'flag'])
     await writeSignedAuditRun({
       evidenceDir, banksDir, runId: 'run-2', epoch: EPOCH, auditor, completedAt: '2026-10-07T02:30:00.000Z', audits: [
         at(11, 'SAME'),
@@ -118,12 +116,8 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
         at(14, 'SAME', { confirming: { checks: ['kbf'], reportedAt } }),
         // Two answers to another auditor's FLIPS-only report, both flagged by a signed FLIPS that counts: a confirmation
         // of FLIPS (the confirm stage) and an untagged first look (the first stage), whose questions pass.
-        // A report only FLIPS flagged and its confirmation: none exists while FLIPS is recorded only (until a dry run),
-        // since no audit's verdict reads FLIPS then. The rows run once FLIPS's rule counts again.
-        ...(FLIPS_RULE.counts.default ? [
-          at(16, 'DIFF', { questionsVerdict: 'SAME', confirming: { checks: ['flips'], reportedAt }, flips: flipsOf(16, 'confirm') }),
-          at(17, 'DIFF', { questionsVerdict: 'SAME', flips: flipsOf(17, 'first') }),
-        ] : []),
+        at(16, 'DIFF', { questionsVerdict: 'SAME', confirming: { checks: ['flips'], reportedAt }, flips: flipsOf(16, 'confirm') }),
+        at(17, 'DIFF', { questionsVerdict: 'SAME', flips: flipsOf(17, 'first') }),
       ],
     })
     const state = await loadEpochState(evidenceDir, EPOCH)
@@ -154,7 +148,7 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
       13: 'send DIFF', 14: 'excluded repeated-test-open', 15: 'send DIFF',
       // A confirmation of FLIPS flagged at the confirm stage: sent as the same-check DIFF. The untagged first look's
       // FLIPS flag answers nothing: not sent, and the seller is audited again as a confirmation.
-      ...(FLIPS_RULE.counts.default ? { 16: 'send DIFF', 17: 'excluded flips-not-confirmation' } : {}),
+      16: 'send DIFF', 17: 'excluded flips-not-confirmation',
     })
     // The cap and the echo flag are sent with the test that flagged them.
     const flaggedBy = Object.fromEntries(prepared.audits.flatMap((entry) => entry.evidence.results.map((result) => [result.agentId, result.flaggedBy])))
@@ -169,13 +163,11 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
     const reread = (report: FirstFlag) => async (_model: string, candidates: readonly SameCheckCandidate[]) => candidates.map((candidate): SameCheckDecision | null => (
       candidate.agentId === 13n && candidate.confirming?.reportedAt === reportedAt ? { kind: 'send', confirmation: confirmation as never }
         : candidate.agentId === 16n ? decide(candidate, [report]) : null))
-    if (FLIPS_RULE.counts.default) {
-      const flipsRow = sentRows.find((row) => row.agentId === '16')!
-      assert.deepEqual([flipsRow.flaggedBy, flipsRow.confirming, flipsRow.confirmation?.sameCheck], [['flips'], { checks: ['flips'], reportedAt }, 'flips'])
-      for (const entry of prepared.audits) assert.equal(await sameCheckChanged(entry.modelHash, entry.evidence.results, reread(flipsReport)), null)
-      const changed = await Promise.all(prepared.audits.map((entry) => sameCheckChanged(entry.modelHash, entry.evidence.results, reread({ ...flipsReport, reportedAt: reportedAt + 60 }))))
-      assert.ok(changed.some((reason) => /confirms another report/.test(reason ?? '')))
-    }
+    const flipsRow = sentRows.find((row) => row.agentId === '16')!
+    assert.deepEqual([flipsRow.flaggedBy, flipsRow.confirming, flipsRow.confirmation?.sameCheck], [['flips'], { checks: ['flips'], reportedAt }, 'flips'])
+    for (const entry of prepared.audits) assert.equal(await sameCheckChanged(entry.modelHash, entry.evidence.results, reread(flipsReport)), null)
+    const changed = await Promise.all(prepared.audits.map((entry) => sameCheckChanged(entry.modelHash, entry.evidence.results, reread({ ...flipsReport, reportedAt: reportedAt + 60 }))))
+    assert.ok(changed.some((reason) => /confirms another report/.test(reason ?? '')))
 
     if (keep) {
       // What the tree holds, for the report's check: the epoch, the model and each agent's seller.

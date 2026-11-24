@@ -16,10 +16,12 @@ import { FLIPS_RULE, flipsCounts, flipsFixedSetting, flipsRequestBody, isValidFl
 import {
   FLIPS_WORDS,
   drawFlipsPairs,
+  FLIPS_NOT_ASKED_AS_REFERENCE,
   FLIPS_ROUTE_NOT_SUPPORTED,
   FLIPS_AUDITOR_FAILURE,
   FLIPS_WAITING_FOR_REFERENCE,
   FLIPS_REASK_BUDGET,
+  FLIPS_REFERENCE_TIME_LIMIT_MS,
   createFlipsScreen,
   finishReasonOf,
   flipsReferenceProblem,
@@ -45,12 +47,14 @@ const PEER = 'ab'.repeat(20)
 const MODEL = 'claude-opus-5.5'
 /** The eval's switch for the model: what the reference gets where its bank's setting still thinks (`FLIPS_THINKING`). */
 const FIXED = flipsFixedSetting(MODEL)
-/** The seller's own discovered setting, as for its questions. */
-const OWN = strategySetting('reasoning-effort-none')
-/** The rule as it will read once a dry run has turned FLIPS on: counting, never for MiniMax M3. */
-const COUNTING: FlipsRule = Object.freeze({ ...FLIPS_RULE, counts: Object.freeze({ default: true, never: Object.freeze(['minimax-m3']) }) })
+/**
+ * The seller's own discovered setting, as for its questions: `reasoning.effort: "minimal"`, the request of the eval's
+ * switch for the model, so the seller is asked as its reference is (`FLIPS_NOT_ASKED_AS_REFERENCE`).
+ */
+const OWN = strategySetting('reasoning-effort-minimal')
 /** The rule with FLIPS recorded only everywhere: judged and stored, never a verdict. */
 const RECORDED_ONLY: FlipsRule = Object.freeze({ ...FLIPS_RULE, counts: Object.freeze({ default: false, never: Object.freeze(['minimax-m3']) }) })
+const COUNTING: FlipsRule = Object.freeze({ ...FLIPS_RULE, counts: Object.freeze({ default: true, never: Object.freeze(['minimax-m3']) }) })
 const bytes = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value))
 const chat = (content: string | null, finish = 'stop', reasoning = 0) => ({
   object: 'chat.completion',
@@ -138,10 +142,7 @@ test('the request is the eval\'s for the model, the same for the seller and the 
   const grok = flipsRequestBody('grok-4.7', 'svc', ['amber', 'basin'])
   assert.deepEqual([grok['max_tokens'], grok['temperature']], [900, 1], 'a model that still thinks gets 900')
   assert.equal(flipsCounts('claude-opus-5.5', RECORDED_ONLY), false, 'a rule that counts nowhere records only')
-  // Recorded only until a dry run has shown how honest sellers score with each side on its own switch.
-  assert.equal(flipsCounts('claude-opus-5.5'), false, 'the rule records only')
-  assert.equal(flipsCounts('claude-opus-5.5', COUNTING), true, 'turned on, it counts')
-  assert.equal(flipsCounts('minimax-m3', COUNTING), false, 'never for MiniMax M3')
+  assert.equal(flipsCounts('claude-opus-5.5'), true, 'the rule counts')
   assert.equal(flipsCounts('minimax-m3'), false, 'never for MiniMax M3')
   assert.equal(flipsCounts('a-model-the-eval-never-measured'), false)
 })
@@ -152,20 +153,14 @@ const flipsAlone = (flips: FlipsV1) => ({
   noRecord: (['tokenizerPrecheck', 'outputCap', 'outputEcho'] as const).map((slot) => ({ slot, reason: 'not run for the model in this sample' })),
 })
 
-test('a saved swap flags at the first bar: recorded only under the rule, a DIFF once FLIPS counts; never for MiniMax M3', () => {
+test('a saved swap flags at the first bar and is a DIFF; recorded only where the rule does not count; never for MiniMax M3', () => {
   const { record, rule } = recordOf(fixture('swap-caught-near-threshold'))
   const judged = judgeFlips(record, rule)
   assert.equal(judged.outcome, 'flag')
   assert.ok(judged.p! <= FLIPS_RULE.bar.first)
-  // Recorded only until a dry run: judged and stored, and the verdict does not read it.
-  assert.equal(judged.counted, false)
+  assert.equal(judged.counted, true)
   const stored = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judged } as FlipsV1
-  const own = readingsOfEvidence(flipsAlone(stored), 'SAME')
-  assert.deepEqual(own.filter((reading) => reading.check === 'flips').map((reading) => [reading.outcome, reading.recordedOnly]), [['inconclusive', 'flag']])
-  assert.equal(verdictOf(own, 'SAME').verdict, 'SAME', 'recorded only: the audit verdict ignores it')
-  // Read as the dry-run report reads it, under the rule turned on: a DIFF.
-  assert.equal(judgeFlips(record, { ...rule, counts: COUNTING.counts }).counted, true)
-  assert.deepEqual(verdictOf(readingsOfEvidence(flipsAlone(stored), 'SAME', { flips: COUNTING }), 'SAME'),
+  assert.deepEqual(verdictOf(readingsOfEvidence(flipsAlone(stored), 'SAME'), 'SAME'),
     { verdict: 'DIFF', flaggedBy: ['flips'], passedBy: ['kbf'], undecidedConfirmation: null })
   // Read under a rule that counts nowhere: recorded only, and the verdict ignores it.
   const recorded = readingsOfEvidence(flipsAlone(stored), 'SAME', { flips: RECORDED_ONLY })
@@ -193,7 +188,7 @@ test('a counted FLIPS is flag-only for the SAME rule: its no result never blocks
   assert.deepEqual(verdictOf(readingsOfEvidence(flipsAlone(flagged), 'SAME', { flips: COUNTING }), 'SAME').verdict, 'DIFF')
 })
 
-test('a stored FLIPS is read under its rule (recorded only until a dry run); a rule this CLI does not know never counts', () => {
+test('a stored FLIPS counts under its rule; a rule this CLI does not know never counts', () => {
   const { record, rule } = recordOf(fixture('swap-caught-near-threshold'))
   const flagged = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judgeFlips(record, rule) } as FlipsV1
   assert.equal(flagged.outcome, 'flag')
@@ -202,10 +197,11 @@ test('a stored FLIPS is read under its rule (recorded only until a dry run); a r
     const flips = readings.find((reading) => reading.check === 'flips')!
     return { outcome: flips.outcome, recordedOnly: flips.recordedOnly ?? null, verdict: verdictOf(readings, 'SAME').verdict }
   }
-  assert.equal(flipsCounts(flagged.draw.model), false, 'the rule records only')
-  assert.deepEqual(read(flagged), { outcome: 'inconclusive', recordedOnly: 'flag', verdict: 'SAME' }, 'a record of the rule is recorded only')
-  assert.equal(FLIPS_CHECK.summaryCounts!({ ...summarizeFlips(flagged) }), false, 'and so is its summary')
-  assert.deepEqual(read(flagged, { flips: COUNTING }), { outcome: 'flag', recordedOnly: null, verdict: 'DIFF' }, 'turned on, it counts')
+  assert.equal(flipsCounts(flagged.draw.model), true, 'the rule counts the model')
+  assert.deepEqual(read(flagged), { outcome: 'flag', recordedOnly: null, verdict: 'DIFF' }, 'a record of the rule counts')
+  assert.equal(FLIPS_CHECK.summaryCounts!({ ...summarizeFlips(flagged) }), true)
+  // Read under a rule that counts nowhere (`ReadingRules`): recorded only.
+  assert.deepEqual(read(flagged, { flips: RECORDED_ONLY }), { outcome: 'inconclusive', recordedOnly: 'flag', verdict: 'SAME' }, 'a rule that counts nowhere records only')
   // A rule id this CLI does not know: recorded only, whatever this build's rule says.
   const unknown = { ...flagged, rule: 'flips-v999' }
   assert.deepEqual(read(unknown), { outcome: 'inconclusive', recordedOnly: 'flag', verdict: 'SAME' })
@@ -617,30 +613,26 @@ test('a FLIPS that cannot run says why, once per model and stage, and costs the 
   assert.equal(await down.screen.check({ ...SELLER, peerId: 'cd'.repeat(20) }, null, { stage: 'first', sellerThinking: OWN }), null)
   assert.deepEqual(down.events, [{ stage: 'first', code: 'reference-failed', detail: 'reference down' }])
   assert.equal(seller.calls(), 0)
-  // Where FLIPS counts, the reference is decided once per stage and run, before any seller pays: not whole, a seller's
-  // audit is not started (the auditor's attempt), except on the auditor's last attempt, which runs without FLIPS, and
-  // never for a confirmation of a report only FLIPS flagged. The check itself never throws.
+  // Where FLIPS counts, the reference is decided once per stage and run, before any seller pays: not whole, FLIPS is not
+  // active for the model this run and every audit runs without it; only a confirmation of a report only FLIPS flagged,
+  // which could decide nothing without it, is not started. The check itself never throws.
   let referenceAsks = 0
-  // The rule turned on (`COUNTING`): this build's records only, so its decision is always `ready` (below).
-  const counted = screenOf({ seller, rule: COUNTING, askReference: () => { referenceAsks += 1; throw new Error('reference down') } })
-  const decide = (lastAuditorAttempt: boolean, confirming: string[] = []) => counted.screen.referenceDecision!('first', MODEL, null, { lastAuditorAttempt, confirming })
-  assert.deepEqual(await Promise.all([decide(false), decide(false), decide(true), decide(true, ['flips']), decide(true, ['kbf', 'flips'])]),
-    ['not-started', 'not-started', 'without-flips', 'not-started', 'without-flips'])
+  const counted = screenOf({ seller, askReference: () => { referenceAsks += 1; throw new Error('reference down') } })
+  const decide = (confirming: string[] = []) => counted.screen.referenceDecision!('first', MODEL, null, { confirming })
+  assert.deepEqual(await Promise.all([decide(), decide(), decide(['flips']), decide(['kbf', 'flips']), decide(['output-cap'])]),
+    ['without-flips', 'without-flips', 'not-started', 'without-flips', 'without-flips'])
   assert.equal(referenceAsks, 1, 'one decision per stage and run: every seller gets the same answer')
   assert.equal(await counted.screen.check(SELLER, null, { stage: 'first', sellerThinking: OWN }), null)
   assert.equal(failureBlame(null, `${FLIPS_AUDITOR_FAILURE}: ${FLIPS_WAITING_FOR_REFERENCE}`), 'auditor', 'never one of the seller\'s attempts')
   assert.equal(seller.calls(), 0)
   // A slow reference that ends whole within its time: every seller waits for the same decision and runs, none fails.
   let slowAsks = 0
-  const slow = screenOf({ seller, rule: COUNTING, askReference: async () => { slowAsks += 1; await new Promise((resolve) => setTimeout(resolve, 50)) } })
-  assert.deepEqual(await Promise.all([1, 2, 3].map(() => slow.screen.referenceDecision!('first', MODEL, null, { lastAuditorAttempt: false, confirming: [] }))), ['ready', 'ready', 'ready'])
+  const slow = screenOf({ seller, askReference: async () => { slowAsks += 1; await new Promise((resolve) => setTimeout(resolve, 50)) } })
+  assert.deepEqual(await Promise.all([1, 2, 3].map(() => slow.screen.referenceDecision!('first', MODEL, null, { confirming: [] }))), ['ready', 'ready', 'ready'])
   assert.equal(slowAsks, 1)
   // Recorded only: never waited for, never stops an audit.
   const recorded = screenOf({ seller, rule: RECORDED_ONLY, askReference: () => { throw new Error('reference down') } })
-  assert.equal(await recorded.screen.referenceDecision!('first', MODEL, null, { lastAuditorAttempt: false, confirming: [] }), 'ready')
-  // This build's rule records only: its reference never stops an audit either.
-  const shipped = screenOf({ seller, askReference: () => { throw new Error('reference down') } })
-  assert.equal(await shipped.screen.referenceDecision!('first', MODEL, null, { lastAuditorAttempt: false, confirming: [] }), 'ready')
+  assert.equal(await recorded.screen.referenceDecision!('first', MODEL, null, { confirming: [] }), 'ready')
   // The reference answers from two providers: unusable, checked before the seller is asked.
   const mixed = screenOf({ seller, provider: (index) => (index === 5 ? 'other-host' : 'host') })
   const record = await mixed.screen.check(SELLER, null, { stage: 'first', sellerThinking: OWN })
@@ -651,6 +643,15 @@ test('a FLIPS that cannot run says why, once per model and stage, and costs the 
   // Unnamed answers on a route not proven to serve one provider are no one provider's.
   const unproven = flipsReferenceProblem({ draw: record!.draw, service: MODEL, referenceOneProvider: false, pairs: record!.pairs.map((pair) => ({ ...pair.reference, replies: pair.reference.replies.map((reply) => ({ ...reply, provider: null })) })) })
   assert.match(unproven!, /one proven provider/)
+})
+
+test('the reference\'s time fits what it asks: both stages\' requests at the default per-model cap and a slow upstream', () => {
+  // 80 requests a stage, 160 when a run confirms FLIPS too, 6 at once (the default per-model cap of FLIPS's own reference
+  // limiter, one per model), at 15 seconds a request: the whole of it inside the reference's time, before its re-ask.
+  const requests = 2 * FLIPS_RULE.pairsPerCheck * FLIPS_RULE.referenceRepliesPerPair
+  const rounds = Math.ceil(requests / 6)
+  assert.equal(requests, 160)
+  assert.ok(rounds * 15_000 <= FLIPS_REFERENCE_TIME_LIMIT_MS - 60_000, `${rounds} rounds of 15 s, a minute left for the re-ask`)
 })
 
 test('a reference request with no reply is an outage, the auditor\'s failure, never an unusable sample that lets SAME out', async () => {
@@ -928,7 +929,7 @@ const signedBody = (slot: FlipsV1['pairs'][number]['seller'][number]): unknown =
 /** A bank's own setting, as the reference gets it where the bank's discovery reached 0 reasoning tokens. */
 const BANK_NONE: ThinkingSetting = { source: 'bank', strategy: 'reasoning-effort-none', overrides: { reasoning: { effort: 'none' } } }
 
-test('each side is asked with its own discovered setting: every seller with its discovery\'s, the reference with its bank\'s', async () => {
+test('each side is asked with its own discovered setting; FLIPS judges a seller asked as its reference, and gives no result for one asked otherwise', async () => {
   const sellers: ThinkingSetting[] = [
     strategySetting('reasoning-effort-none'), strategySetting('disable-thinking'), strategySetting('enable-thinking-false'),
     // A least-reasoning pick, the prefill, no field at all, and the bank's setting for a seller whose discovery failed.
@@ -938,7 +939,7 @@ test('each side is asked with its own discovered setting: every seller with its 
     const record = (await screenOf({ seller: fakeSeller((call, pair) => symbols(pair, call + 40)), referenceThinking: BANK_NONE })
       .screen.check(SELLER, null, { stage: 'first', sellerThinking }))!
     const what = JSON.stringify(sellerThinking)
-    assert.deepEqual(record.thinking, { seller: sellerThinking, reference: BANK_NONE }, what)
+    assert.deepEqual(record.thinking, { seller: sellerThinking, reference: BANK_NONE, discoveryRule: 'kbf-discovery-reference-first-v1' }, what)
     for (const slot of record.pairs.flatMap((pair) => pair.seller)) {
       const body = signedBody(slot) as Record<string, unknown>
       assert.equal(requestCarries(body, sellerThinking), true, what)
@@ -949,9 +950,49 @@ test('each side is asked with its own discovered setting: every seller with its 
     }
     for (const reply of record.pairs.flatMap((pair) => pair.reference.replies)) assert.equal(requestCarries(JSON.parse(reply.request), BANK_NONE), true)
     assert.doesNotThrow(() => validateFlips(record), what)
-    // Judged on the replies whatever the setting: here plain on both sides, so a score.
-    assert.notEqual(record.p, null, what)
+    // Judged on the replies where the seller was asked as the reference was (`effort: "none"` from discovery or from the
+    // bank alike), here plain on both sides, so a score; no result for any other setting, whatever its replies.
+    const asReference = canonicalJsonStringify(sellerThinking.overrides) === canonicalJsonStringify(BANK_NONE.overrides) && !sellerThinking.assistantPrefill
+    if (asReference) assert.notEqual(record.p, null, what)
+    else {
+      assert.deepEqual([record.outcome, record.p, record.score], ['inconclusive', null, null], what)
+      assert.ok(record.reason.startsWith(`${FLIPS_NOT_ASKED_AS_REFERENCE}: `), what)
+    }
   }
+})
+
+test('FLIPS judges a seller on "low" against a reference on "minimal", and gives no result for one on "none"', async () => {
+  // Opus's FLIPS reference: the eval's switch, effort minimal (`FIXED`).
+  const asked = async (sellerThinking: ThinkingSetting) => (await screenOf({ seller: fakeSeller((call, pair) => symbols(pair, call + 40)) })
+    .screen.check(SELLER, null, { stage: 'first', sellerThinking }))!
+  const low = await asked(strategySetting('reasoning-effort-low'))
+  // The setting actually sent is the one recorded, and every signed request carries it.
+  assert.deepEqual(low.thinking!.seller, strategySetting('reasoning-effort-low'))
+  for (const slot of low.pairs.flatMap((pair) => pair.seller)) assert.deepEqual((signedBody(slot) as Record<string, unknown>)['reasoning'], { effort: 'low' })
+  assert.notEqual(low.p, null)
+  assert.ok(!low.reason.startsWith(FLIPS_NOT_ASKED_AS_REFERENCE))
+  assert.doesNotThrow(() => validateFlips(low))
+  const none = await asked(strategySetting('reasoning-effort-none'))
+  assert.deepEqual([none.outcome, none.p], ['inconclusive', null])
+  assert.ok(none.reason.startsWith(`${FLIPS_NOT_ASKED_AS_REFERENCE}: `))
+  assert.doesNotThrow(() => validateFlips(none))
+})
+
+test('a FLIPS stored before discovery tried the reference\'s setting first is judged by its own rule and still validates', async () => {
+  // Today's record of a seller asked with `thinking: {type: "disabled"}` against a reference on `effort: "none"`: no result.
+  const today = (await screenOf({ seller: fakeSeller((call, pair) => symbols(pair, call + 40)), referenceThinking: BANK_NONE })
+    .screen.check(SELLER, null, { stage: 'first', sellerThinking: strategySetting('disable-thinking') }))!
+  assert.ok(today.reason.startsWith(FLIPS_NOT_ASKED_AS_REFERENCE))
+  // The same replies as a build before stored them: no discovery rule named, judged on the replies, a score.
+  const { discoveryRule: _rule, ...before } = today.thinking!
+  const unjudged = { ...today, thinking: before }
+  const stored: FlipsV1 = { ...unjudged, ...judgeFlips(unjudged) }
+  assert.notEqual(stored.p, null)
+  assert.doesNotThrow(() => validateFlips(stored))
+  // Named under the rule before it, the same; under this build's, its stored score no longer follows; an unknown rule never.
+  assert.doesNotThrow(() => validateFlips({ ...stored, thinking: { ...before, discoveryRule: 'kbf-discovery-least-reasoning-v1' } }))
+  assert.throws(() => validateFlips({ ...stored, thinking: { ...before, discoveryRule: 'kbf-discovery-reference-first-v1' } }), /does not follow from its replies/)
+  assert.throws(() => validateFlips({ ...stored, thinking: { ...before, discoveryRule: 'kbf-discovery-later-v9' as never } }), /unknown thinking discovery rule/)
 })
 
 test('the reference takes its bank\'s setting only where the bank\'s discovery reached 0 reasoning tokens; a seller whose discovery failed takes the bank\'s', () => {
@@ -976,8 +1017,9 @@ test('the reference takes its bank\'s setting only where the bank\'s discovery r
 
 test('a stored FLIPS is held to the settings it names: each signed request carries its side\'s, and each side\'s is one its rule allows', async () => {
   const record = (await screenOf({ seller: fakeSeller((call, pair) => symbols(pair, call + 40)), referenceThinking: BANK_NONE })
-    .screen.check(SELLER, null, { stage: 'first', sellerThinking: OWN }))!
+    .screen.check(SELLER, null, { stage: 'first', sellerThinking: strategySetting('reasoning-effort-none') }))!
   assert.doesNotThrow(() => validateFlips(record))
+  assert.notEqual(record.p, null)
   // The record names another setting than its seller's requests carry: no result, and the stored outcome no longer follows.
   const other = { ...record, thinking: { ...record.thinking!, seller: strategySetting('disable-thinking') } }
   assert.match(judgeFlips(other).reason, /a seller request does not carry its thinking setting/)

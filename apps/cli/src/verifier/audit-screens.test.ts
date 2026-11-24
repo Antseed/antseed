@@ -170,14 +170,16 @@ test('a run gives a model the screen of every test, in the list\'s order, and no
 test('a test\'s work for the whole run is done once, before any model, and not at all when it is switched off', async () => {
   await withRun(async (made) => {
     const screensOf = await testsOfRun(made.run, undefined)
-    // FLIPS's key is made, readable by its owner only, with its own two limiters and the auditor's address.
+    // FLIPS's key is made, readable by its owner only, with its own seller limiter and the auditor's address; its
+    // reference limiter is each model's own, so no model's reference waits behind another's.
     const key = join(made.epochDir, 'flips-master.key')
     assert.match((await readFile(key, 'utf8')).trim(), /^[0-9a-f]{64}$/)
     assert.equal((await stat(key)).mode & 0o077, 0)
-    assert.deepEqual([made.ownReference.length, made.ownSeller.length, made.auditorAsked], [1, 1, 1])
+    assert.deepEqual([made.ownReference.length, made.ownSeller.length, made.auditorAsked], [0, 1, 1])
     screensOf(envFor(PLAIN).env)
     screensOf(envFor(COUNTED).env)
-    assert.deepEqual([made.ownReference.length, made.ownSeller.length, made.auditorAsked], [1, 1, 1], 'a model makes none of it again')
+    assert.deepEqual([made.ownReference.length, made.ownSeller.length, made.auditorAsked], [2, 1, 1], 'a model makes only its own reference limiter')
+    assert.notEqual(made.ownReference[0], made.ownReference[1])
     assert.deepEqual(made.warned, [])
     await settled()
   })
@@ -234,16 +236,16 @@ test('the pre-check, the cap check and the echo check ask the reference in the r
     assert.deepEqual(model.reported.map(([check]) => check), ['output-cap', 'output-echo'])
     assert.deepEqual(model.reported.map(([, record]) => (record as { applies: boolean }).applies), [false, false])
 
-    // FLIPS: whole bodies, in the limiter FLIPS made for the run.
+    // FLIPS: whole bodies, in the reference limiter FLIPS made for this model.
     screens.flips!.warm!(PLAIN, bank, 'first')
     await settled()
     const flips = model.asked.splice(0)
     assert.ok(flips.length > 0)
     for (const ask of flips) {
-      assert.deepEqual([ask.kind, ask.bank, ask.contents, ask.maxTokens, ask.limiter], ['replies', bank, undefined, undefined, made.ownReference[0]])
+      assert.deepEqual([ask.kind, ask.bank, ask.contents, ask.maxTokens, ask.limiter], ['replies', bank, undefined, undefined, made.ownReference.at(-1)])
       assert.ok(ask.bodies!.length > 0 && ask.signal instanceof AbortSignal)
     }
-    assert.notEqual(made.ownReference[0], model.shared)
+    assert.notEqual(made.ownReference.at(-1), model.shared)
   })
 })
 
@@ -293,20 +295,14 @@ test('the FLIPS dry-run probe is read once for the run, refused where FLIPS coun
     assert.deepEqual([probed.probing, probed.probeSettings, probed.ruleId], [true, JSON.stringify(probe), FLIPS_RULE.id])
     const counted = envFor(COUNTED)
     const production = screensOf(counted.env).flips!
-    if (FLIPS_RULE.counts.default) {
-      // Where FLIPS counts the probe is refused: the run's own line, and a production FLIPS.
-      assert.deepEqual([production.probing, production.probeSettings], [false, null])
-      assert.deepEqual(made.warned.slice(1), [`FLIPS: probe refused for ${COUNTED}: FLIPS counts for it`])
-    } else {
-      // While FLIPS is recorded only (until a dry run) it counts for no model, so the probe runs for every model.
-      assert.deepEqual([production.probing, production.probeSettings], [true, JSON.stringify(probe)])
-      assert.deepEqual(made.warned.slice(1), [])
-    }
+    // Where FLIPS counts the probe is refused: the run's own line, and a production FLIPS.
+    assert.deepEqual([production.probing, production.probeSettings], [false, null])
+    assert.deepEqual(made.warned.slice(1), [`FLIPS: probe refused for ${COUNTED}: FLIPS counts for it`])
     assert.deepEqual([plain.warned, counted.warned], [[], []])
     await settled()
     // The status file names the probe only where it runs.
     assert.deepEqual(plain.files[0]![1], { version: 1, kind: 'antseed-verifier-flips-status', model: PLAIN, probe, unavailable: [] })
-    assert.deepEqual(counted.files[0]![1], { version: 1, kind: 'antseed-verifier-flips-status', model: COUNTED, ...(FLIPS_RULE.counts.default ? {} : { probe }), unavailable: [] })
+    assert.deepEqual(counted.files[0]![1], { version: 1, kind: 'antseed-verifier-flips-status', model: COUNTED, unavailable: [] })
   }))
   await withEnvironment({ ANTSEED_VERIFIER_FLIPS_PROBE: '{nope' }, () => withRun(async (made) => {
     const screens = (await testsOfRun(made.run, undefined))(envFor(PLAIN).env)

@@ -1,5 +1,5 @@
 {
- "counted": false,
+ "counted": true,
  "draw": {
   "auditor": "0xe5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
   "epoch": "7",
@@ -7,8 +7,8 @@
   "seed": "01c0dd60f4efbb39b64537edf38e9b8af686b9fd2afe2381d08342c898480064",
   "stage": "first"
  },
- "outcome": "pass",
- "p": 0.8421651369629677,
+ "outcome": "inconclusive",
+ "p": null,
  "pairs": [
   {
    "reference": {
@@ -41,7 +41,7 @@
    },
    "seller": {
     "list": "10 records: the first and the last are shown",
-    "sha256": "1db104f8db54980b",
+    "sha256": "1fc8030b819fbad6",
     "first": {
      "asks": [
       {
@@ -92,7 +92,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (522 characters, sha256 3d2d880afd7dd147)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 b74c388ff0088167)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -160,7 +160,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (522 characters, sha256 3d2d880afd7dd147)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 b74c388ff0088167)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -212,7 +212,7 @@
    },
    "seller": {
     "list": "10 records: the first and the last are shown",
-    "sha256": "d270bbd9b02feb30",
+    "sha256": "1b620e589b0d3c66",
     "first": {
      "asks": [
       {
@@ -263,7 +263,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (504 characters, sha256 be224e16675ecbbb)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 0649892fd526d18c)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -331,7 +331,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (504 characters, sha256 be224e16675ecbbb)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 0649892fd526d18c)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -354,17 +354,17 @@
   }
  ],
  "reasks": 0,
- "reason": "scored 0.78 (p 0.842), above 0.1",
- "reasoningCounts": {"referenceReasoningReplies":0,"referenceReasoningTokens":0,"referenceReplies":80,"sellerReasoningReplies":0,"sellerReasoningTokens":0,"sellerReplies":20},
+ "reason": "the seller could not be asked the way the reference was: the seller was … (208 characters, sha256 b5519d4b7938514e)",
  "referenceOneProvider": true,
  "referenceUpstream": {"kind":"test"},
  "rule": "flips-v1",
- "score": 0.7775341197144852,
- "scoreMax": 5.572353002177747,
+ "score": null,
+ "scoreMax": null,
  "service": "deepseek-v4-pro",
  "thinking": {
+  "discoveryRule": "kbf-discovery-reference-first-v1",
   "reference": {"overrides":{"reasoning":{"enabled":false}},"source":"fixed","strategy":null},
-  "seller": {"overrides":{"enable_thinking":false},"source":"discovery","strategy":"enable-thinking-false"}
+  "seller": {"overrides":{"reasoning":{"effort":"none"}},"source":"discovery","strategy":"reasoning-effort-none"}
  },
  "timing": {"finishedAt":1791331200000,"startedAt":1791331200000}
 }

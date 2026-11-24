@@ -41,7 +41,7 @@ import {
   type StoredCheckRecords,
 } from './audit-checks.js'
 import { AuditNotStarted, type MethodScreen, type SellerAudit, type SellerAuditStart } from './audit-method.js'
-import { asSuppression, needsSellerDiscovery, resolveThinking } from './audit-thinking.js'
+import { asSuppression, needsSellerDiscovery, referenceDiscoveryStrategy, resolveThinking } from './audit-thinking.js'
 import { settleAuditVerdict } from './close-call.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
@@ -65,6 +65,7 @@ import {
 } from './proxy-evidence.js'
 import {
   THINKING_DISCOVERY_PROBES,
+  THINKING_DISCOVERY_RULE,
   THINKING_DISCOVERY_TIMEOUT_MS,
   ThinkingDiscoveryError,
   discoverThinkingSuppression,
@@ -1679,10 +1680,13 @@ async function discoverSellerThinking(
       label: `seller ${target.peerId}`,
       // Audits always send OpenAI Chat Completions to the buyer proxy.
       supportsPrefill: true,
+      // The reference's own setting first, so the seller is asked as the reference was wherever it accepts that.
+      referenceStrategy: referenceDiscoveryStrategy(reference),
       probe,
     })
     return {
       method: 'kbf-reference-code-2026-09-30',
+      rule: THINKING_DISCOVERY_RULE,
       strategy: result.strategy,
       maxTokens: Math.max(budget, result.maxTokens ?? 0),
       attempts: withRequests(result.attempts),
@@ -1690,6 +1694,7 @@ async function discoverSellerThinking(
   } catch (error) {
     return {
       method: 'kbf-reference-code-2026-09-30',
+      rule: THINKING_DISCOVERY_RULE,
       strategy: null,
       maxTokens: budget,
       attempts: withRequests(error instanceof ThinkingDiscoveryError ? error.attempts : []),

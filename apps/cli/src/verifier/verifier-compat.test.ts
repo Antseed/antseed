@@ -24,7 +24,7 @@ const RULES_BY_COMPAT: Readonly<Record<number, string>> = {
   2: '0x9e4b0af7ac00fed169980914711f6f73bb3f0e73547627b3ce0df0f191111ddf',
   3: '0x25344c731acc4781b8f3d207794922f1596a7bf842958ea91111fd575aa7a1e5',
   4: '0xc0ebca1ce20148076c6ed5db82d89e1b28c2fc87aa3fd02ba20899150e1b8a0b',
-  5: '0xPENDING',
+  5: '0x3239b397ceeaf9c6fff049309991ddeb565479a8af1d2590be1a753aa155d3dd',
 }
 
 test('the audit rules match the hash pinned for this verifier compat', () => {
