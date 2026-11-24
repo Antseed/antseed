@@ -13,6 +13,7 @@ const pendingUserActions = new Map<string, ReturnType<typeof setTimeout>>();
 const VIEW_SURFACES: Record<ViewName, TelemetryActionSurface> = {
   home: 'home',
   tools: 'apps',
+  studio: 'unknown',
   rewards: 'rewards',
   gateway: 'gateway',
   preferences: 'preferences',

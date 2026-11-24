@@ -22,6 +22,7 @@ import {
   deriveUsage,
 } from './message-projection.js';
 import type { AiConversation, AiConversationSummary } from './conversation-types.js';
+import { studioProjectIdForFolder } from '../studio/store.js';
 
 export const CHAT_SESSIONS_DIR = path.join(CHAT_DATA_DIR, 'sessions');
 export const CHAT_AGENT_DIR = path.join(CHAT_DATA_DIR, 'pi-agent');
@@ -54,6 +55,7 @@ function summarizeConversation(conversation: AiConversation): AiConversationSumm
     totalTokens,
     totalEstimatedCostUsd: deriveCost(conversation.messages),
     ...(conversation.workspacePath ? { workspacePath: conversation.workspacePath } : {}),
+    ...(conversation.studioProjectId ? { studioProjectId: conversation.studioProjectId } : {}),
   };
 }
 
@@ -178,6 +180,7 @@ export class PiConversationStore {
     // SessionManager reads the cwd persisted in the session file; restoration
     // across app restarts depends on that value reflecting the session workspace.
     const sessionCwd = manager.getCwd() || undefined;
+    const studioProjectId = studioProjectIdForFolder(sessionCwd);
     return {
       id: manager.getSessionId(),
       title: manager.getSessionName() || deriveTitle(messages),
@@ -187,6 +190,7 @@ export class PiConversationStore {
       updatedAt,
       usage,
       ...(sessionCwd ? { workspacePath: sessionCwd } : {}),
+      ...(studioProjectId ? { studioProjectId } : {}),
     };
   }
 
@@ -238,8 +242,9 @@ export class PiConversationStore {
     return await this.readConversationFromPath(sessionPath);
   }
 
-  async create(service: string): Promise<AiConversation> {
-    const workspaceDir = await this.ensureWorkspaceDir();
+  async create(service: string, workspaceDir?: string): Promise<AiConversation> {
+    await this.ready;
+    workspaceDir ??= await this.ensureWorkspaceDir();
     const manager = SessionManager.create(workspaceDir, this.sessionsDir);
     manager.appendModelChange(GATEWAY_PROVIDER_ID, normalizeServiceId(service));
     const sessionPath = manager.getSessionFile();

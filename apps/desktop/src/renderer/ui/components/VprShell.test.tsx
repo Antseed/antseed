@@ -8,6 +8,8 @@ import { navViews } from './viewRegistry';
 import { SidebarNavItem, VprShell } from './VprShell';
 
 vi.mock('../hooks/useActions', () => ({ useActions: () => ({}) }));
+const studio = vi.hoisted(() => ({ on: null as boolean | null }));
+vi.mock('../../modules/studio/preview', () => ({ useStudioPreview: () => studio.on }));
 vi.mock('../../modules/app/console-launch', () => ({
   openGatewayConsole: vi.fn(async () => true),
   dismissConsoleLaunchFailure: vi.fn(),
@@ -17,6 +19,7 @@ vi.mock('../../modules/app/console-launch', () => ({
 beforeEach(() => {
   initStore(createInitialUiState());
   vi.mocked(openGatewayConsole).mockClear();
+  studio.on = null;
 });
 
 const gatewayEntry = navViews('bottom').find((entry) => entry.view === 'gateway')!;
@@ -86,4 +89,12 @@ it('renders Home and the main entries as standard nav items, keeping the Apps do
   const apps = buttons.find((button) => button.includes('aria-label="Connect your apps"'));
   expect(apps).toBeDefined();
   expect(apps).not.toContain('aria-current');
+});
+
+it('lists Studio only while it is on in Settings', () => {
+  expect(shell('home')).not.toContain('>Studio</span>');
+  studio.on = false;
+  expect(shell('home')).not.toContain('>Studio</span>');
+  studio.on = true;
+  expect(shell('home')).toContain('>Studio</span>');
 });

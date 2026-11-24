@@ -45,6 +45,7 @@ type ChatConversationSummary = {
   /** Gateway model id the conversation last used. */
   service?: string;
   workspacePath?: string;
+  studioProjectId?: string;
   pinnedAt?: number;
   archivedAt?: number;
   gitBranch?: string;
@@ -112,6 +113,8 @@ export type ChatModuleApi = {
   chooseWorkspace: () => Promise<void>;
   startNewChat: () => void;
   startNewChatOnModel: (modelId: string) => void;
+  openStudioProject: (projectId: string) => Promise<void>;
+  leaveStudioProject: () => void;
   /** Null once the chat is gone; otherwise why it couldn't be deleted (the list is restored). */
   deleteConversation: (convId?: string) => Promise<string | null>;
   renameConversation: (convId: string, newTitle: string) => void;
@@ -297,6 +300,8 @@ export function initChatModule({
   }
   /** A model the new chat was started on by hand (Home's), which the default must not replace. */
   let draftModel: string | null = null;
+  let draftStudioProject: string | null = null;
+  let studioOpenToken = 0;
   /**
    * Bumped whenever the new-chat screen's model is chosen or the draft is
    * replaced: a Private list read that resolves after it must not move the
@@ -995,6 +1000,7 @@ export function initChatModule({
     // still being prepared goes on in the background and doesn't pull the user back.
     newChatDraftVersion += 1;
     shownDraft = 0;
+    draftStudioProject = null;
     const workspacePathAtOpen = uiState.chatWorkspacePath;
     const openToken = ++conversationOpenToken;
     // A slower answer for a chat the user has since left must not replace the current one.
@@ -1045,7 +1051,7 @@ export function initChatModule({
       notifyUiStateChanged();
 
       const convWorkspacePath = conv.workspacePath;
-      if (typeof convWorkspacePath === 'string' && convWorkspacePath.length > 0) {
+      if (typeof convWorkspacePath === 'string' && convWorkspacePath.length > 0 && !conv.studioProjectId) {
         // Held: the chat opened last decides, even one in the workspace already current.
         if (draftsCreating > 0) heldWorkspacePath = convWorkspacePath;
         else if (convWorkspacePath !== workspacePathAtOpen) void restoreWorkspace(convWorkspacePath);
@@ -1075,6 +1081,7 @@ export function initChatModule({
     // A first message still being prepared goes on in the background.
     shownDraft = 0;
     draftModel = null;
+    draftStudioProject = null;
     uiState.chatActiveConversation = null;
     uiState.chatOpeningConversationId = null;
     uiState.chatMessages = [];
@@ -1099,9 +1106,40 @@ export function initChatModule({
     notifyUiStateChanged();
   }
 
+  async function openStudioProject(projectId: string): Promise<void> {
+    if (!bridge?.studioProjectChat) return;
+    const token = ++studioOpenToken;
+    let conversationId: string | null = null;
+    try {
+      const result = await bridge.studioProjectChat(projectId);
+      conversationId = result.ok ? result.conversationId ?? null : null;
+    } catch {
+    }
+    if (token !== studioOpenToken) return;
+    // The main process checked that this conversation exists; the cached list can be stale or failed to load.
+    if (conversationId) {
+      if (uiState.chatActiveConversation !== conversationId) await openConversation(conversationId);
+      return;
+    }
+    if (draftStudioProject === projectId && uiState.chatActiveConversation === null) return;
+    startNewChat();
+    draftStudioProject = projectId;
+  }
+
+  function leaveStudioProject(): void {
+    studioOpenToken += 1;
+    draftStudioProject = null;
+  }
+
+  async function createStudioConversation(projectId: string, modelId: string): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+    const result = await bridge?.studioProjectChat?.(projectId, modelId);
+    if (!result?.ok || !result.conversationId) return { ok: false, error: result?.error ?? 'Could not start the project chat' };
+    return { ok: true, data: { id: result.conversationId } };
+  }
+
   async function createConversationForModel(
     modelId: string,
-    options: { activate: boolean; keepImageModel?: boolean } = { activate: true },
+    options: { activate: boolean; keepImageModel?: boolean; studioProjectId?: string | null } = { activate: true },
   ): Promise<string | null> {
     if (!bridge?.chatAiCreateConversation) return null;
     if (!modelId) {
@@ -1111,7 +1149,9 @@ export function initChatModule({
       return null;
     }
     try {
-      const result = await bridge.chatAiCreateConversation(modelId);
+      const result = options.studioProjectId
+        ? await createStudioConversation(options.studioProjectId, modelId)
+        : await bridge.chatAiCreateConversation(modelId);
       if (result.ok && result.data) {
         const conversationId = getConversationId(result.data);
         if (!conversationId) throw new Error('Conversation created but ID is missing');
@@ -1257,6 +1297,7 @@ export function initChatModule({
       // ids, and a sent chat keeps its model: settle it against the list now.
       applyDefaultModel();
       let writtenWith = uiState.chatSelectedModelId;
+      const studioProjectId = draftStudioProject;
       // What this submission was written with, kept for when the user moves on
       // to another chat: a model chosen there is that chat's, not this one's.
       let submitted = { modelId: writtenWith, chosen: modelChosen(writtenWith) };
@@ -1291,7 +1332,7 @@ export function initChatModule({
               modelId = chooseDefaultChatModel(uiState.chatModels, null) ?? writtenWith;
             }
           }
-          const convId = await createConversationForModel(modelId, { activate: false });
+          const convId = await createConversationForModel(modelId, { activate: false, studioProjectId });
           releaseWorkspace();
           // Stopped while the chat was being made: it stays, empty, and nothing is sent.
           if (!stillDraft()) { stoppedDrafts.delete(draftToken); return; }
@@ -1727,7 +1768,7 @@ export function initChatModule({
         setDraftSending(true);
         const releaseWorkspace = holdWorkspace();
         try {
-          convId = await createConversationForModel(textModelId, { activate: false });
+          convId = await createConversationForModel(textModelId, { activate: false, studioProjectId: draftStudioProject });
         } finally {
           releaseWorkspace();
         }
@@ -2222,6 +2263,8 @@ export function initChatModule({
     chooseWorkspace,
     startNewChat,
     startNewChatOnModel,
+    openStudioProject,
+    leaveStudioProject,
     deleteConversation,
     renameConversation,
     setConversationFlags,

@@ -583,7 +583,7 @@ export function registerPiChatHandlers({
       clearGatewayModelCache();
       lastEntries = [];
     },
-    createConversation: (model) => store.create(model),
+    createConversation: (model, workspaceDir) => store.create(model, workspaceDir),
     hasConversation: async (conversationId) => (await store.get(conversationId)) !== null,
     setConversationModel: (conversationId, model) => store.setModel(conversationId, model),
     getConversationModel: async (conversationId) => (await store.get(conversationId))?.service || null,
