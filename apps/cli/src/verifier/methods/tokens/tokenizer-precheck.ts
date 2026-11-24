@@ -22,14 +22,15 @@ import { asError, peerComparisonKey } from '../../utils.js'
  * A round sends a message A, then A followed by B, to the seller and to the model's reference endpoint. The
  * difference in input tokens is B's length in the tokenizer that ran; the chat template and any hidden system
  * prompt are in both requests and cancel out. A seller whose signed difference is off the reference's in every
- * round, the same way when asked again, is not counting with the model's tokenizer: it serves another model, or
- * signs usage that is not the model's. That is a flag, and the audit's verdict is a DIFF; the questions and the other
- * tests still run beside it (rule `all-tests-v1`), so the evidence holds every test's result.
+ * round, the same way when asked again or below it on every ask, is not counting with the model's tokenizer: it
+ * serves another model, or signs usage that is not the model's. That is a flag, and the audit's verdict is a DIFF;
+ * the questions and the other tests still run beside it (rule `all-tests-v1`), so the evidence holds every test's result.
  *
  * The check only ever adds a DIFF. A match proves little (models of one family share a tokenizer, and a seller
  * can compute the model's count itself), so a match is a pass and decides nothing on its own. Anything
  * unclear decides nothing either: a failed request, no signed usage, a count that changes between two asks of the
- * same text (hidden input that varies), a count that is off while the response reports cached input (upstream
+ * same text (hidden input that varies) unless every ask is below the model's count by a clear margin
+ * (`belowEveryAsk`), a count that is off while the response reports cached input (upstream
  * caches move with every request, and gateways differ in whether a count includes them), a pair whose second
  * count is not above its first, or a reference that cannot be relied on: one that does not agree with itself,
  * reports cached input or answers from two providers.
@@ -80,17 +81,29 @@ export interface TokenizerPrecheckRule {
    * measurement. A seller's count is never judged by it.
    */
   cacheShownInCount?: true
+  /**
+   * A round whose asks sign different differences still counts as off when every one of them is below the reference's
+   * by more than `percent` percent of it and more than `tokens` tokens, and no answer of those asks reports cached input.
+   * Hidden input a host adds is in both requests of a pair and cancels out, so a genuine model's difference only drops
+   * below its count when that input shrinks once B is added: a host that varies it does so both ways, and is below on
+   * every ask of three rounds only by rare chance. Above the reference, counts that move decide nothing (input added
+   * to some requests). Without it a seller whose two asks disagree is never off.
+   */
+  belowEveryAsk?: Readonly<{ percent: number; tokens: number }>
 }
 
 /**
  * The rule (`tokenizer-precheck-v1`): an exact count (`toleranceTokens` 0), three rounds, a pair whose two answers
- * report the same cached amount kept (`sameCacheCancels`), and a reference whose count is shown to include its cache
- * measured (`cacheShownInCount`). A swap is often off the model's count by one or two tokens on
- * a short text, so a tolerance would let it through. Every round must be off for a mismatch, and the model's other
- * sellers must back the reference. The same tolerance applies throughout: a seller whose two asks of one text sign
- * counts one token apart is unstable (hidden input that varies), so the round decides nothing; and a crowd seller backs
- * the reference only by signing its exact count. A seller's pair whose answers report different cached amounts, or one
- * only, decides nothing.
+ * report the same cached amount kept (`sameCacheCancels`), a reference whose count is shown to include its cache
+ * measured (`cacheShownInCount`), and a round whose asks disagree but are all more than 5% and more than 3 tokens
+ * below the reference, without cache, counted as off (`belowEveryAsk`). On the stored dry runs a margin of 10%
+ * would have left out a seller off in every round whose questions also differ, and 15% one of the sellers it is
+ * for; the seller whose questions say the same that 5% adds is below in one round of its many and still needs two
+ * more. A swap is often off the model's count by one or two tokens on a short text, so a tolerance would let it
+ * through. Every round must be off for a mismatch, and the model's other sellers must back the reference. The same
+ * tolerance applies throughout: a seller whose two asks of one text sign counts one token apart is unstable (hidden
+ * input that varies), so the round decides nothing; and a crowd seller backs the reference only by signing its
+ * exact count. A seller's pair whose answers report different cached amounts, or one only, decides nothing.
  */
 export const TOKENIZER_PRECHECK_RULE: TokenizerPrecheckRule = Object.freeze({
   id: 'tokenizer-precheck-v1',
@@ -103,6 +116,7 @@ export const TOKENIZER_PRECHECK_RULE: TokenizerPrecheckRule = Object.freeze({
   maxTokens: 64,
   sameCacheCancels: true,
   cacheShownInCount: true,
+  belowEveryAsk: Object.freeze({ percent: 5, tokens: 3 }),
 })
 
 const RULES: ReadonlyMap<string, TokenizerPrecheckRule> = new Map([TOKENIZER_PRECHECK_RULE].map((rule) => [rule.id, rule]))
@@ -151,8 +165,9 @@ export type TokenizerPrecheckOutcome = 'match' | 'mismatch' | 'inconclusive'
 
 /**
  * One round: `match` when an ask is within the tolerance of the reference; `off` when every ask of the rule is
- * off it and they agree with each other; `unstable` when they are off it and disagree; `unmeasured` when the
- * reference or an ask has no difference, or an ask that is off reports cached input.
+ * off it and they agree with each other, or they disagree and are all below it by the rule's margin without cache
+ * (`belowEveryAsk`); `unstable` when they are off it and disagree otherwise; `unmeasured` when the reference or an ask
+ * has no difference, or an ask that is off reports cached input that does not cancel.
  */
 export type TokenizerRoundVerdict = 'match' | 'off' | 'unstable' | 'unmeasured'
 
@@ -294,8 +309,10 @@ export class TokenizerCrowdIncomplete extends Error {
 export interface TokenizerRoundDeltas {
   referenceDelta: number | null
   sellerDeltas: ReadonlyArray<number | null>
-  /** For each ask, whether one of its responses reports cached input. Absent: none does. */
+  /** For each ask, whether its cache does not cancel out (`cacheBlocks`). Absent: none does. */
   cachedAsks?: ReadonlyArray<boolean>
+  /** For each ask, whether one of its responses reports cached input at all, cancelling or not. Absent: none does. */
+  cacheReported?: ReadonlyArray<boolean>
 }
 
 export function judgeTokenizerRound(
@@ -310,13 +327,30 @@ export function judgeTokenizerRound(
   if (deltas.length < rule.sellerAsks) return 'unmeasured'
   // A count that is off while the cache was in play says nothing about the tokenizer.
   if (round.cachedAsks?.slice(0, rule.sellerAsks).some(Boolean)) return 'unmeasured'
-  return Math.max(...deltas) - Math.min(...deltas) <= rule.toleranceTokens ? 'off' : 'unstable'
+  if (Math.max(...deltas) - Math.min(...deltas) <= rule.toleranceTokens) return 'off'
+  return belowEveryAsk(round, rule) ? 'off' : 'unstable'
+}
+
+/**
+ * Whether every ask of the rule signed a difference below the reference's by more than the rule's margin
+ * (`belowEveryAsk`: more than its percent of the reference's count and more than its tokens), and none of them
+ * reports cached input. Integer arithmetic, so the margin is exact.
+ */
+export function belowEveryAsk(round: TokenizerRoundDeltas, rule: TokenizerPrecheckRule = TOKENIZER_PRECHECK_RULE): boolean {
+  const margin = rule.belowEveryAsk
+  const reference = round.referenceDelta
+  if (!margin || reference === null) return false
+  const asks = round.sellerDeltas.slice(0, rule.sellerAsks)
+  if (asks.length < rule.sellerAsks) return false
+  if (round.cacheReported?.slice(0, rule.sellerAsks).some(Boolean)) return false
+  return asks.every((delta) => delta !== null && reference - delta > margin.tokens && (reference - delta) * 100 > margin.percent * reference)
 }
 
 /**
  * The outcome of the rounds asked, in order, as the run asks them: the first round that matches ends the check
  * as a match, the first that is unstable or unmeasured ends it undecided, and a mismatch needs every round of
- * the rule off. A mismatch here still has to stand against the model's other sellers (`tokenizerCrowdObjection`).
+ * the rule off (the same count twice, or below the reference on every ask). A mismatch here still has to stand
+ * against the model's other sellers (`tokenizerCrowdObjection`).
  */
 export function judgeTokenizerPrecheck(
   rounds: ReadonlyArray<TokenizerRoundDeltas>,
@@ -524,12 +558,13 @@ export const SELLER_REQUEST_TRIES = SIGNED_REQUEST_TRIES
 
 /**
  * A seller's pre-check: each round's two requests through the buyer proxy, pinned to the seller with the signed
- * bytes captured. A round off the reference is asked once more, so only a count the seller repeats is held
- * against it. The seller is asked nothing unless every round has a reference difference. The check ends when a
- * round matches (the seller counts like the model), when a round cannot be measured or the seller's own asks
- * disagree (nothing is decided), or when every round of the rule is off the reference. Then the model's other
- * sellers are asked (`crowd`): it is a mismatch when they back the reference, and nothing is decided when they do
- * not, when there is nobody to ask, or when the audit stopped meanwhile. Never rejects.
+ * bytes captured. A round off the reference is asked once more, so only a count the seller repeats, or counts below
+ * the reference's on every ask (`belowEveryAsk`), are held against it. The seller is asked nothing unless every
+ * round has a reference difference. The check ends when a round matches (the seller counts like the model), when a
+ * round cannot be measured or the seller's own asks disagree otherwise (nothing is decided), or when every round of
+ * the rule is off the reference. Then the model's other sellers are asked (`crowd`): it is a mismatch when they
+ * back the reference, and nothing is decided when they do not, when there is nobody to ask, or when the audit
+ * stopped meanwhile. Never rejects.
  */
 export async function runTokenizerPrecheck(input: SellerAskInput & {
   reference: TokenizerPrecheckReferenceV1
@@ -866,6 +901,8 @@ function roundDeltas(round: TokenizerPrecheckRoundV1, rule: TokenizerPrecheckRul
     sellerDeltas: round.seller.map((ask) => ask.delta),
     // An ask whose cache does not cancel out (`cacheBlocks`): its count is never held against the seller.
     cachedAsks: round.seller.map((ask) => cacheBlocks(ask, rule)),
+    // An ask with any cache reported: never below the reference by `belowEveryAsk`.
+    cacheReported: round.seller.map((ask) => ask.base.cachedInput || ask.probed?.cachedInput === true),
   }
 }
 
@@ -934,13 +971,27 @@ export function describeTokenizerCounts(summary: { sellerTokens?: readonly numbe
     : 'its signed input tokens are not the model\'s'
 }
 
-/** One line for the verdict reason and the run log: what the seller signed in each round next to what the model counts. */
+/**
+ * One line for the verdict reason and the run log: what the seller signed in each round next to what the model counts.
+ * A round whose asks signed different counts is off by `belowEveryAsk`, and the line names each of its counts.
+ */
 export function describeTokenizerMismatch(record: TokenizerPrecheckV1): string {
-  const seller = record.rounds.map((round) => round.seller[0]?.delta ?? '?').join('/')
-  const reference = record.rounds.map((round) => round.reference.delta ?? '?').join('/')
-  return `tokenizer pre-check (${record.rule.id}): the seller signed ${seller} input tokens, each ${record.rule.sellerAsks} times over, `
-    + `for text the model counts as ${reference}: off by more than ${record.rule.toleranceTokens} in every round`
-    + `${record.crowd ? `, while ${record.crowd.agree} of the model's other sellers signed the model's count` : ''}`
+  const crowd = record.crowd ? `, while ${record.crowd.agree} of the model's other sellers signed the model's count` : ''
+  const asks = (round: TokenizerPrecheckRoundV1): Array<number | '?'> => round.seller.map((ask) => ask.delta ?? '?')
+  const moved = (round: TokenizerPrecheckRoundV1): boolean => new Set(asks(round)).size > 1
+  if (!record.rounds.some(moved)) {
+    const seller = record.rounds.map((round) => round.seller[0]?.delta ?? '?').join('/')
+    const reference = record.rounds.map((round) => round.reference.delta ?? '?').join('/')
+    return `tokenizer pre-check (${record.rule.id}): the seller signed ${seller} input tokens, each ${record.rule.sellerAsks} times over, `
+      + `for text the model counts as ${reference}: off by more than ${record.rule.toleranceTokens} in every round${crowd}`
+  }
+  const rounds = record.rounds.map((round, index) => {
+    const reference = round.reference.delta ?? '?'
+    return `round ${index + 1}: ${moved(round)
+      ? `the seller signed ${asks(round).join(' and ')} input tokens where the model counts ${reference}, with no cache: below on every ask`
+      : `the seller signed ${asks(round)[0]} input tokens, each ${record.rule.sellerAsks} times over, where the model counts ${reference}`}`
+  })
+  return `tokenizer pre-check (${record.rule.id}): off the model's count in every round (${rounds.join('; ')})${crowd}`
 }
 
 /**
@@ -996,6 +1047,7 @@ export function validateTokenizerPrecheck(record: TokenizerPrecheckV1, auditedPe
         referenceDelta: judged[index]!.referenceDelta,
         sellerDeltas: judged[index]!.sellerDeltas.slice(0, ask + 1),
         cachedAsks: judged[index]!.cachedAsks?.slice(0, ask + 1),
+        cacheReported: judged[index]!.cacheReported?.slice(0, ask + 1),
       }, rule)
       if (entry.delta === null || verdict === 'match' || verdict === 'unstable' || cacheBlocks(entry, rule)) ended = true
     }
@@ -1238,10 +1290,10 @@ export function tokenizerPrecheckFingerprint(): Record<string, unknown> {
 /**
  * Pre-check rounds (the reference's difference, then the seller's for each ask) around the tolerance: a match on
  * the first or the second ask, three rounds off, a match after two rounds off, too few rounds, an ask without a
- * count, a seller whose two asks disagree, a round without a reference, and counts with cached input (one that
- * matches, one that is off).
+ * count, a seller whose two asks disagree, a round without a reference, counts with cached input (one that
+ * matches, one that is off), and asks that disagree below the reference by the margin and around it.
  */
-const SAMPLE_TOKENIZER_ROUNDS: ReadonlyArray<ReadonlyArray<{ referenceDelta: number | null; sellerDeltas: Array<number | null>; cachedAsks?: boolean[] }>> = [
+const SAMPLE_TOKENIZER_ROUNDS: ReadonlyArray<ReadonlyArray<{ referenceDelta: number | null; sellerDeltas: Array<number | null>; cachedAsks?: boolean[]; cacheReported?: boolean[] }>> = [
   [{ referenceDelta: 100, sellerDeltas: [100] }],
   [{ referenceDelta: 100, sellerDeltas: [140, 102] }],
   [{ referenceDelta: 100, sellerDeltas: [103, 104] }, { referenceDelta: 90, sellerDeltas: [87, 86] }, { referenceDelta: 80, sellerDeltas: [120, 120] }],
@@ -1257,6 +1309,12 @@ const SAMPLE_TOKENIZER_ROUNDS: ReadonlyArray<ReadonlyArray<{ referenceDelta: num
   [{ referenceDelta: 100, sellerDeltas: [101, 101] }, { referenceDelta: 90, sellerDeltas: [91, 91] }, { referenceDelta: 80, sellerDeltas: [81, 81] }],
   // Two rounds off, then the exact count: a match.
   [{ referenceDelta: 100, sellerDeltas: [101, 101] }, { referenceDelta: 90, sellerDeltas: [91, 91] }, { referenceDelta: 80, sellerDeltas: [80] }],
+  // Asks that disagree, below the reference by more than 5% and 3 tokens on every ask in every round: a mismatch.
+  [{ referenceDelta: 187, sellerDeltas: [152, 167] }, { referenceDelta: 100, sellerDeltas: [90, 94] }, { referenceDelta: 80, sellerDeltas: [60, 75] }],
+  // ... one ask within the margin (exactly 5% below), one with cached input, one above: undecided.
+  [{ referenceDelta: 187, sellerDeltas: [152, 167] }, { referenceDelta: 100, sellerDeltas: [90, 95] }],
+  [{ referenceDelta: 187, sellerDeltas: [152, 167], cacheReported: [false, true] }],
+  [{ referenceDelta: 187, sellerDeltas: [152, 197] }],
 ]
 
 /**

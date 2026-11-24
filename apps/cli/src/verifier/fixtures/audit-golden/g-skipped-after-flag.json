@@ -118,7 +118,7 @@
   "sellerThinking": {"record":"sellerThinking-d3c9bcd43acbddbf"},
   "target": {"agentId":"7","displayName":"Example Seller","peerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","service":"deepseek-v4-pro"},
   "tests": "all-tests-v1",
-  "tokenizerPrecheck": {"record":"tokenizerPrecheck-91dc5dbe178b9df9"},
+  "tokenizerPrecheck": {"record":"tokenizerPrecheck-2074035b16a86674"},
   "version": 1
  },
  "read": {"flaggedBy":["tokens"],"passedBy":[],"submit":"accepted"},

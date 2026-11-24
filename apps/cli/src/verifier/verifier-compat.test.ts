@@ -24,7 +24,7 @@ const RULES_BY_COMPAT: Readonly<Record<number, string>> = {
   2: '0x9e4b0af7ac00fed169980914711f6f73bb3f0e73547627b3ce0df0f191111ddf',
   3: '0x25344c731acc4781b8f3d207794922f1596a7bf842958ea91111fd575aa7a1e5',
   4: '0xc0ebca1ce20148076c6ed5db82d89e1b28c2fc87aa3fd02ba20899150e1b8a0b',
-  5: '0xe41b88c5d8194580fdaa6ebb3c8f09794bd5db03937f3b5c86fc8d49919659ff',
+  5: '0x9a77ff6e4276be634d3dc84f1f502144fbcfa3905ce625ce1353ff41d6152c53',
 }
 
 test('the audit rules match the hash pinned for this verifier compat', () => {
@@ -127,11 +127,11 @@ test('the tokenizer pre-check is part of the rules: turned off it is named, and 
   for (const probe of tokenizerPrecheck.probes) assert.ok(isSafeProbe(probe.b), probe.b)
   assert.deepEqual(tokenizerPrecheck.probes, (verifierRulesFingerprint() as { tokenizerPrecheck: { probes: unknown } }).tokenizerPrecheck.probes, 'the same probes every time')
   // Under the rule (an exact count): the exact count is a match; a mismatch is three rounds off by even
-  // one token, each the same way twice; anything missing, a seller whose two asks are a token or more apart, and a count
-  // that is off with the cache in play decide nothing.
+  // one token, each the same way twice, or below the model's count by the margin on every ask; anything missing, a
+  // seller whose two asks are a token or more apart otherwise, and a count that is off with the cache in play decide nothing.
   assert.deepEqual(tokenizerPrecheck.judged, [
     'match', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive',
-    'inconclusive', 'inconclusive', 'mismatch', 'match',
+    'inconclusive', 'inconclusive', 'mismatch', 'match', 'mismatch', 'inconclusive', 'inconclusive', 'inconclusive',
   ])
   // A reference with cached input or from two providers has no difference; one that names no provider has, and so
   // has one whose counts stay while its cached amount moves (unlike one whose count moves with it).

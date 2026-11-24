@@ -1053,6 +1053,7 @@
   }
  ],
  "rule": {
+  "belowEveryAsk": {"percent":5,"tokens":3},
   "cacheShownInCount": true,
   "corroboratingSellers": 1,
   "id": "tokenizer-precheck-v1",
