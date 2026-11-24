@@ -83,6 +83,7 @@ export {
   type RoutingWireProtocol,
 } from '@antseed/protocol/routing';
 export * from '@antseed/protocol/irp';
+export { isReasoningEffort } from '@antseed/protocol/reasoning';
 
 // Types (re-export everything)
 export * from './types/index.js';

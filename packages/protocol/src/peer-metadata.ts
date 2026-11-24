@@ -1,4 +1,5 @@
 import type { PeerId } from './peer-id.js';
+import { isReasoningEffortList } from './reasoning.js';
 import type { PeerOffering } from './capability.js';
 import type { ServiceUnitBillingModelsV1 } from './billing.js';
 import type {
@@ -16,7 +17,7 @@ import {
 } from './service-api.js';
 
 /** Newest metadata version this build signs and understands. */
-export const METADATA_VERSION = 18;
+export const METADATA_VERSION = 19;
 /** Oldest announced metadata version buyers still accept from sellers. */
 export const MIN_SUPPORTED_METADATA_VERSION = 10;
 /**
@@ -59,6 +60,8 @@ export const REFERENCE_VIDEO_PRICING_METADATA_VERSION = 17;
  * services out.
  */
 export const INPUT_IMAGE_PRICING_METADATA_VERSION = 18;
+/** v19: services may announce the reasoning efforts they support. */
+export const REASONING_EFFORTS_METADATA_VERSION = 19;
 export const WELL_KNOWN_SERVICE_CATEGORIES = [
   "privacy",
   "legal",
@@ -128,6 +131,11 @@ export interface ServiceCapabilities {
   outputs?: ServiceCapabilityModality[];
   /** Supports extended thinking / reasoning effort. */
   reasoning?: boolean;
+  /**
+   * Reasoning efforts the service accepts, as the seller's own labels (metadata v19+).
+   * Absent: unknown. Empty: none.
+   */
+  reasoningEfforts?: string[];
   /** Supports tool use / function calling. */
   toolUse?: boolean;
   /** Supports structured output / JSON schema responses. */
@@ -237,6 +245,13 @@ export function validateServiceCapabilityFields(caps: ServiceCapabilities): stri
   const errors: string[] = [];
   if (caps.video !== undefined) errors.push(...validateVideoOptions(caps.video));
   if (caps.speech !== undefined) errors.push(...validateSpeechOptions(caps.speech));
+  if (caps.reasoningEfforts !== undefined) {
+    if (!isReasoningEffortList(caps.reasoningEfforts)) {
+      errors.push('reasoningEfforts must contain at most 32 unique labels of 1 to 64 visible ASCII characters (! to ~, no spaces)');
+    } else if (caps.reasoning === false && caps.reasoningEfforts.length > 0) {
+      errors.push('reasoningEfforts must be empty when reasoning is false');
+    }
+  }
   for (const key of ["contextWindow", "maxOutputTokens"] as const) {
     const value = caps[key];
     if (value === undefined) continue;

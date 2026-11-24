@@ -67,7 +67,8 @@ Custom bootstrap nodes can be supplied and are merged (deduplicated by `host:por
 **Source:** `packages/protocol/src/peer-metadata.ts`
 
 ```
-METADATA_VERSION = 16
+METADATA_VERSION = 19
+REASONING_EFFORTS_METADATA_VERSION = 19
 MIN_SUPPORTED_METADATA_VERSION = 10
 LEGACY_METADATA_VERSION = 12   // served to buyers that do not ask for a version
 METADATA_VERSION_HEADER = "x-antseed-metadata-version"
@@ -80,7 +81,7 @@ METADATA_VERSION_HEADER = "x-antseed-metadata-version"
 | Field       | Type                    | Description                             |
 |-------------|-------------------------|-----------------------------------------|
 | peerId      | PeerId (string)         | 40 hex chars (20-byte EVM address)      |
-| version     | number                  | Supported range is 10 through `METADATA_VERSION` (14) |
+| version     | number                  | Supported range is 10 through `METADATA_VERSION` (19) |
 | displayName | string                  | Optional human-readable node label      |
 | publicAddress | string                | Optional public `host:port` buyers should dial instead of the raw DHT source address |
 | providers   | ProviderAnnouncement[]  | List of provider offerings              |
@@ -220,11 +221,17 @@ Per provider (repeated providerCount times):
   [serviceCapabilityEntryCount : 2 bytes uint16 ]    // v12+
   Per capability entry:
     [service][presenceBits:1][optional uint32 token limits][optional input bitset:1][optional output bitset:1][boolean value bits:1][optional supported parameters]
+    [optional video options][optional speech options (v15+)][optional reasoning efforts (v19+)]
     Presence bits: contextWindow(0), maxOutputTokens(1), inputs(2), reasoning(3),
     toolUse(4), structuredOutput(5), outputs(6), supportedParameters(7).
+    Value bits: reasoning(0), toolUse(1), structuredOutput(2), video options follow(3),
+    speech options follow(4, v15+), reasoning efforts follow(5, v19+).
     Input/output bitsets index into ["text","image","audio","video","pdf"].
     Supported parameters encode as [count:1] then per parameter [len:1][utf8],
     in code-unit sorted order so re-encoding decoded metadata is byte-stable.
+    Reasoning efforts use the same [count:1][len:1][utf8] layout and sort. An empty
+    list sets its value bit with a zero count, so "none" stays distinct from "unknown".
+    See ../reasoning-efforts.md for the labels.
   [serviceHealthEntryCount : 2 bytes uint16 ]        // v13+
   Per health entry (code-unit sorted by service):
     [service][statusId:1][presenceBits:1][checkedAt:8?][sourceId:1?][failingSince:8?]
@@ -280,7 +287,7 @@ Metadata validation is intentionally bounded: buyers accept versions from `MIN_S
 
 The decoder cannot safely ignore unknown newer versions because provider extensions are embedded in the signed binary layout. Metadata v12 widens service and service-map counts from `uint8` to `uint16`; removing optional fields from config does not make a v12 seller emit an older version.
 
-From v13, sellers negotiate the version. A seller signs one document per version it serves (`SERVED_METADATA_VERSIONS`, currently 12 to 16) on every refresh. A buyer sends `x-antseed-metadata-version: <newest version it understands>` on `GET /metadata`; the seller answers with the newest version it signs that is not newer. A buyer that sends no header gets `LEGACY_METADATA_VERSION` (12), so buyers released before negotiation keep working. The v12 document has no health block, so it leaves out services announced as failing (and a provider whose services are all failing), which is how sellers withdrew them before v13.
+From v13, sellers negotiate the version. A seller signs one document per version it serves (`SERVED_METADATA_VERSIONS`, currently 12 to 19) on every refresh. A buyer sends `x-antseed-metadata-version: <newest version it understands>` on `GET /metadata`; the seller answers with the newest version it signs that is not newer. A buyer that sends no header gets `LEGACY_METADATA_VERSION` (12), so buyers released before negotiation keep working. The v12 document has no health block, so it leaves out services announced as failing (and a provider whose services are all failing), which is how sellers withdrew them before v13.
 
 The body (everything except the trailing 65-byte signature) is the data that is signed. `encodeMetadataForSigning()` produces this body without the signature for signing and verification purposes.
 
@@ -310,8 +317,9 @@ The body (everything except the trailing 65-byte signature) is the data that is 
 
 Additional validation rules enforced by `validateMetadata()`:
 
-- `version` must be between `MIN_SUPPORTED_METADATA_VERSION` (10) and `METADATA_VERSION` (14).
+- `version` must be between `MIN_SUPPORTED_METADATA_VERSION` (10) and `METADATA_VERSION` (19).
 - `serviceHealth` requires v13; each entry must reference an announced service and use known status, source and reason codes.
+- `serviceCapabilities.<service>.reasoningEfforts` requires v19: at most 32 unique labels of 1 to 64 visible ASCII characters (`!` to `~`), and empty when the service announces `reasoning: false`.
 - `servicePerformance` requires v14; each entry must reference an announced service, with `requests` and `successRate` in range and integer optional figures within their wire sizes.
 - `peerId` must be exactly 40 lowercase hex characters.
 - `region` must not be empty.
@@ -486,7 +494,7 @@ The `PeerLookup` class orchestrates the full discovery flow:
 The `PeerAnnouncer` class handles the seller-side announcement lifecycle:
 
 1. Build a `PeerMetadata` object from the configured providers, current pricing, current load, and region.
-2. Set `version` to `METADATA_VERSION` (14) and `timestamp` to `Date.now()`, including each provider's live `serviceHealth` and `servicePerformance`.
+2. Set `version` to `METADATA_VERSION` (19) and `timestamp` to `Date.now()`, including each provider's live `serviceHealth` and `servicePerformance`.
 3. Include configured seller contract, verification claims, and peer capabilities when present.
 4. For every served version, build that version's document (`getMetadataCodec(v).fromLatest()`) and encode its body (without signature) via `encodeMetadataForSigning()`.
 5. Sign each body with the seller's secp256k1 private key (via EIP-191 personal_sign).

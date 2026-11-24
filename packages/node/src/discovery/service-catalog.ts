@@ -20,6 +20,8 @@ export type CatalogServiceCapabilities = {
   inputs?: string[];
   outputs?: string[];
   reasoning?: boolean;
+  /** The seller's own reasoning effort labels (metadata v19+). */
+  reasoningEfforts?: string[];
   toolUse?: boolean;
   structuredOutput?: boolean;
   supportedParameters?: string[];

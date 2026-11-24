@@ -7,7 +7,8 @@ import type { PeerMetadata } from '../src/discovery/peer-metadata.js';
 // Every field each version knows. The v10-v12 hashes are of the bytes the
 // codec signed before it was split into per-version files, v13's of the bytes
 // it signed when v14 was added, v14's of the bytes it signed before v15 (speech)
-// was added, and v15's of the bytes it signed when v15 was added: buyers verify
+// was added, v15's of the bytes it signed when v15 was added, and v16-v18's of
+// the bytes they signed when v19 (reasoning efforts) was added: buyers verify
 // those exact bytes, so they must never change.
 const fixture = (version: number): PeerMetadata => {
   const metadata = {
@@ -55,6 +56,10 @@ const fixture = (version: number): PeerMetadata => {
       tts: { inputs: ["text"], outputs: ["audio"], speech: { voices: ["af_sky", "am_adam"], formats: ["mp3", "wav"], customVoices: false } },
     };
   }
+  if (version >= 19) {
+    metadata.providers[0].serviceCapabilities.m1.reasoningEfforts = ["medium", "high", "low"];
+    metadata.providers[0].serviceCapabilities.m2 = { reasoning: true, reasoningEfforts: [] };
+  }
   if (version < 12) {
     metadata.providers = metadata.providers.map((provider: any) => {
       const { serviceCapabilities: _capabilities, ...rest } = provider;
@@ -72,6 +77,10 @@ const GOLDEN_SHA256: Record<number, string> = {
   13: '45e7d04a3a58a03f9781c393002828b8064434c7e741de5eb25896488ebab271',
   14: 'd48dc14ae24fb892f42f8110f570b95dbd2e01280e1e3fef77d372b39926883b',
   15: 'cab523457500cbb9d3967bc65d5a69bf609767aa6987cc853141c62cffe87bfa',
+  16: '6ebdd60ba436f239f101614f2b49edf1f1327637840d04902c8066c0b75ac0f0',
+  17: '625ea49bf482f02259ec87e5a9fc5d9201dc8161f402465f81216baa3f7f6efe',
+  18: 'c1d6da3bd6d583d2c1e5546faad13af66e91ef8380df9d1291c2066199fd18a6',
+  19: '6f878eb25c152a3a8cf16e618334f8e250310caf01c3c5f7114ce932fc47916b',
 };
 
 describe('metadata signing bytes', () => {

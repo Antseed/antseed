@@ -32,22 +32,24 @@ function imageMetadata(): PeerMetadata {
 
 describe('image edit prices by input images in peer metadata', () => {
   it('is v18, served to buyers that ask for it', () => {
-    expect(METADATA_VERSION).toBe(18);
+    expect(METADATA_VERSION).toBeGreaterThanOrEqual(18);
     expect(INPUT_IMAGE_PRICING_METADATA_VERSION).toBe(18);
     expect(SERVED_METADATA_VERSIONS).toContain(18);
     expect(negotiateMetadataVersion(18)).toBe(18);
     expect(negotiateMetadataVersion(17)).toBe(17);
   });
 
-  it('round-trips an input_images match and re-encodes to the same signed bytes', () => {
-    const original = imageMetadata();
-    expect(validateMetadata(original)).toEqual([]);
-    const decoded = decodeMetadata(encodeMetadata(original));
-    expect(decoded.version).toBe(18);
-    const components = decoded.providers[0]!.serviceUnitBillingModels!['gpt-image']!['openai-images']!.components;
-    expect(components[2]!.match).toEqual({ input_images: '2' });
-    expect(encodeMetadataForSigning(decoded)).toEqual(encodeMetadataForSigning(original));
-  });
+  for (const version of [INPUT_IMAGE_PRICING_METADATA_VERSION, METADATA_VERSION]) {
+    it(`round-trips an input_images match in a v${version} document and re-encodes to the same signed bytes`, () => {
+      const original = { ...imageMetadata(), version };
+      expect(validateMetadata(original)).toEqual([]);
+      const decoded = decodeMetadata(encodeMetadata(original));
+      expect(decoded.version).toBe(version);
+      const components = decoded.providers[0]!.serviceUnitBillingModels!['gpt-image']!['openai-images']!.components;
+      expect(components[2]!.match).toEqual({ input_images: '2' });
+      expect(encodeMetadataForSigning(decoded)).toEqual(encodeMetadataForSigning(original));
+    });
+  }
 
   for (const version of [16, 17]) {
     it(`leaves services that price input images out of the v${version} document`, () => {
