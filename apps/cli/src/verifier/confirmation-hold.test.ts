@@ -259,3 +259,21 @@ test('a first look\'s close call still waiting for its extra questions is held w
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('with a dry run\'s verifier.testTiming, a later run passes a confirmation over once the shortened re-check spacing has passed', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-confirmation-hold-timing-'))
+  try {
+    const { evidenceDir, banksDir, auditor, first } = await waitingConfirmation(directory)
+    // A run of the model three minutes after the confirmation's attempt (it starts at 00:05), that audited only A again.
+    await writeSignedAuditRun({
+      evidenceDir, banksDir, runId: 'run-2', epoch: EPOCH, auditor, completedAt: '2026-10-07T00:06:00.000Z',
+      audits: [{ agentId: '1', seller: first, model: MODEL, service: MODEL, verdict: 'SAME', auditSalt: 'again' }],
+    })
+    const state = await loadEpochState(evidenceDir, EPOCH)
+    assert.deepEqual(holding(state), [MODEL], 'by the rules\' 10 minutes, it was not due yet: it still holds')
+    const timed = confirmationsHoldingSubmit({ state, secondsLeftInEpoch: 86_400, stillMine: null, timing: { confirmationRecheckSpacingSeconds: 120 } })
+    assert.deepEqual([...timed.keys()], [], 'due after 2 minutes, so that run passed it over')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

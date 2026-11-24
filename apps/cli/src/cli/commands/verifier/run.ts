@@ -48,6 +48,7 @@ import {
   useVerifierEventCache,
 } from '../../payment-utils.js'
 import { testPublicationFor } from '../../../verifier/test-publication.js'
+import { describeTestTiming, testTimingFor, type TestTimingConfig } from '../../../verifier/test-timing.js'
 import type { AntseedConfig } from '../../../config/types.js'
 import {
   ConcurrencyLimiter,
@@ -468,6 +469,8 @@ export async function loadRunConfirmations(input: {
   /** Auditors approved at the epoch's start, when already loaded. */
   approvedAuditors?: readonly string[]
   now?: number
+  /** A dry run's `verifier.testTiming` (`verifierTestTiming`); without it, the rules' waits. */
+  testTiming?: TestTimingConfig | null
 }): Promise<Map<string, Map<string, ConfirmationTarget>>> {
   if (input.epochWindow.source !== 'onchain' || input.models.length === 0) return new Map()
   let client: ReturnType<typeof createVerifierClient>
@@ -505,6 +508,7 @@ export async function loadRunConfirmations(input: {
       auditors,
       auditedModels: configuredVerifierModels(input.config.verifier),
       models: input.models,
+      timing: input.testTiming,
     }), client, BigInt(input.epochWindow.epoch))
     if (pending.length > 0) {
       const mine = pending.filter((entry) => entry.mine).length
@@ -545,6 +549,7 @@ export async function loadRunConfirmations(input: {
         client, (cidPath) => fetchIpfsText(cidPath, testPublication ? { ipfsGateway: testPublication.gatewayUrl } : {}),
       ),
       log: (line) => console.log(chalk.yellow(line)),
+      timing: input.testTiming,
     })
     // When this auditor reported on a seller in a round the contract no longer counts, a local
     // result only answers the confirmation if its audit finished after the audit behind that report: the ordering
@@ -825,6 +830,16 @@ interface HeldSeller {
 /** The part of a model's plan that the run status counts. */
 type StatusPlan = { targets: readonly unknown[]; skipped: readonly ModelVerificationSkip[] }
 
+/**
+ * A dry run's shortened waits (`verifier.testTiming`), or null without them: refused unless the chain RPC (`rpcUrl`,
+ * else the config's) is on this machine, as `verifier.testPublication` is, so `run`, `watch` and `submit` stop.
+ */
+export function verifierTestTiming(config: AntseedConfig, rpcUrl?: string): TestTimingConfig | null {
+  const timing = config.verifier?.testTiming
+  if (!timing) return null
+  return testTimingFor(timing, requireCryptoConfig(config, rpcUrl ? { rpcUrl } : {}).rpcUrl)
+}
+
 /** One pass over the epoch's remaining work. Returns how much is still left to retry. */
 export async function runVerifierRound(
   modelValue: string | undefined,
@@ -856,6 +871,9 @@ export async function runVerifierRound(
           `verifier.testModels is set: auditing only ${configuredVerifierModels(config.verifier).join(', ')}. For testing only; other auditors must use the same list.`,
         ))
       }
+      // A dry run on a local fork may wait less than the rules (`verifier.testTiming`, refused off a local RPC).
+      const testTiming = verifierTestTiming(config)
+      if (testTiming) console.warn(chalk.yellow(describeTestTiming(testTiming)))
       const resolveEpoch = async (): Promise<AuditEpochWindow> => {
         const resolved = await resolveAuditEpochWindow(() => auditEpochReader(config))
         if (resolved.warning) console.warn(chalk.yellow(resolved.warning))
@@ -965,7 +983,7 @@ export async function runVerifierRound(
       const confirmations = requestedResumeManifest || options.confirm === false
         ? new Map<string, Map<string, ConfirmationTarget>>()
         : await loadRunConfirmations({
-          config, dataDir: globalOptions.dataDir, auditorFlag: options.auditor, epochWindow, approvedAuditors, now: await clock(),
+          config, dataDir: globalOptions.dataDir, auditorFlag: options.auditor, epochWindow, approvedAuditors, now: await clock(), testTiming,
           // An explicit model run confirms only that model's reports; the assigned run confirms
           // every audited model's it is responsible for.
           models: assignedModels ? configuredVerifierModels(config.verifier) : requestedModels,
@@ -1038,7 +1056,7 @@ export async function runVerifierRound(
         const publishedCloseCalls = await publishedCloseCallsOf(epochPendingExtensions, { banksDir, epoch })
         if (peerList) {
           await updateRetryGiveUps({
-            evidenceDir, epoch, peers: peerList.peers, publishedCloseCalls,
+            evidenceDir, epoch, peers: peerList.peers, publishedCloseCalls, timing: testTiming,
             servicesFor: (cell, peer) => {
               const confirmation = confirmationFor(cell.model, peer)
               return [
@@ -1050,7 +1068,8 @@ export async function runVerifierRound(
           })
         }
         await closeFinishedWindowsRecovering({
-          evidenceDir, epoch, state: await loadEpochState(evidenceDir, epoch), secondsLeftInEpoch: epochWindow.endsAt - await clock(),
+          evidenceDir, epoch, state: await loadEpochState(evidenceDir, epoch, testTiming), secondsLeftInEpoch: epochWindow.endsAt - await clock(),
+          timing: testTiming,
         })
         for (const model of models) {
           if (!confirmationOnly.has(model)) auditWindows.set(model, await readAuditWindow(evidenceDir, epoch, model))
@@ -1064,7 +1083,7 @@ export async function runVerifierRound(
         // retried, extended or audited for the first time. `--fresh` and `--resume-run` ignore it.
         const epochState: EpochState | null = options.fresh || requestedResumeManifest
           ? null
-          : await loadEpochState(evidenceDir, epoch)
+          : await loadEpochState(evidenceDir, epoch, testTiming)
         // When each confirmation result's audit finished, from its verified evidence: the planner orders it against
         // this auditor's own report as submit does, and a result without readable evidence answers nothing.
         const reportCellFinishedAt = new Map<EpochCell, number>()
@@ -1085,11 +1104,12 @@ export async function runVerifierRound(
         // A first look whose evidence cannot be read, has no valid date or was written before the all-tests format:
         // submit leaves it out, so its SAME or DIFF would go unsent all epoch. It is audited again within the ordinary
         // attempts, and one written before the all-tests format once beyond them, while its window is open.
-        const recovering = new Set((await recoveringFirstLooks(epochState)).values())
+        const recovering = new Set((await recoveringFirstLooks(epochState, testTiming)).values())
         // With the ordinary retry spacing: a re-audit minutes later counts as the same attempt.
         const planNow = await clock()
+        const sellerRetrySpacing = testTiming?.sellerRetrySpacingSeconds ?? SELLER_RETRY_SPACING_SECONDS
         const unusableFirstLook = (cell: EpochCell): boolean => (
-          recovering.has(cell) && (cell.lastAttemptAt === null || cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS <= planNow)
+          recovering.has(cell) && (cell.lastAttemptAt === null || cell.lastAttemptAt + sellerRetrySpacing <= planNow)
         )
         // A cell whose confirmation attempts were for another report than the one waiting now is no history of this
         // one: its attempts, cooldown and result neither answer nor hold back the live report.
@@ -1142,7 +1162,7 @@ export async function runVerifierRound(
               flagged: flaggedSummaryChecks(cell.result),
             }
             : null
-          return localResultAnswersConfirmation(confirmation, local) ? undefined : confirmation
+          return localResultAnswersConfirmation(confirmation, local, testTiming) ? undefined : confirmation
         }
         // When a confirmation's UNDETERMINED held for another audit may be audited again, or null when
         // the seller has none: attempts are spaced, so one seller outage does not use them all up.
@@ -1151,9 +1171,10 @@ export async function runVerifierRound(
           // A report's result without usable evidence is audited again with the same spacing as an undecided one.
           if (!cell || (!heldForConfirmationRecheck(cell) && !(unusableReportResult(cell) && !reportAttemptsUsed(cell)))) return null
           // From the cell's last attempt (a later failure included), not from the run of its older result.
-          if (cell.lastAttemptAt !== null) return cell.lastAttemptAt + CONFIRMATION_RECHECK_SPACING_SECONDS
+          const recheckSpacing = testTiming?.confirmationRecheckSpacingSeconds ?? CONFIRMATION_RECHECK_SPACING_SECONDS
+          if (cell.lastAttemptAt !== null) return cell.lastAttemptAt + recheckSpacing
           const completedAt = epochState?.manifests.find((manifest) => manifest.runId === cell.runId)?.completedAt
-          return completedAt ? Date.parse(completedAt) / 1_000 + CONFIRMATION_RECHECK_SPACING_SECONDS : null
+          return completedAt ? Date.parse(completedAt) / 1_000 + recheckSpacing : null
         }
         const finished = (model: string, peer: PeerInfo): boolean => (
           isDone(model, peer) && openConfirmationFor(model, peer) === undefined
@@ -1370,7 +1391,7 @@ export async function runVerifierRound(
             // pooled, as submit reads it; a set with no time is not fresh.
             const pendingExtension = waitingExtension && liveIdentity && (
               !waitingIdentity || !sameConfirmation(waitingIdentity, liveIdentity)
-              || !isFreshConfirmation(earliestSetTime(waitingExtension.result), liveIdentity.reportedAt!)
+              || !isFreshConfirmation(earliestSetTime(waitingExtension.result), liveIdentity.reportedAt!, testTiming)
             ) ? undefined : waitingExtension
             const carriedTests = materialFor(carriedTestsByKey, model, peer)
             if (!confirmationKey && peer.onChainAgentId != null) {
@@ -1392,7 +1413,7 @@ export async function runVerifierRound(
             }
             // A seller's one retry waits instead of failing again in the same outage, also
             // when it resumes automatically from this epoch's retry cell. Only --resume-run skips it.
-            const retryDueAt = sellerRetryWaitUntil(epochCellFor(model, peer), Date.now() / 1_000, resumeOnly)
+            const retryDueAt = sellerRetryWaitUntil(epochCellFor(model, peer), Date.now() / 1_000, resumeOnly, testTiming)
             if (retryDueAt !== null) {
               doneCount += 1
               notAudited(`its failed audit is retried from ${new Date(retryDueAt * 1_000).toISOString()}`)
@@ -1547,7 +1568,7 @@ export async function runVerifierRound(
         }
         if (preparedModels.every((entry) => entry.targets.length === 0)) {
           if (epochState && epochState.manifests.length > 0) {
-            printEpochTable(epoch, await loadEpochState(evidenceDir, epoch), runModels.length > 0 ? runModels : models)
+            printEpochTable(epoch, await loadEpochState(evidenceDir, epoch, testTiming), runModels.length > 0 ? runModels : models)
             console.log(chalk.green(`Epoch ${epoch}: nothing left to audit (sellers still skipped are listed above).`))
             console.log(`Next: antseed verifier submit`)
             return { left: 0, secondsLeftInEpoch: epochWindow.endsAt - await clock() }
@@ -1785,7 +1806,7 @@ export async function runVerifierRound(
                 let resume: ModelVerificationResumeInput | undefined
                 // Seconds, as submit reads them; with no report time nothing is fresh.
                 const freshForReport = (at: number | null): boolean => (
-                  confirmingIdentity?.reportedAt !== undefined && isFreshConfirmation(at, confirmingIdentity.reportedAt)
+                  confirmingIdentity?.reportedAt !== undefined && isFreshConfirmation(at, confirmingIdentity.reportedAt, testTiming)
                 )
                 // Into a confirmation only material of an earlier confirmation of the same report and tests, fresh for
                 // it: its test records and its question batches alike (`resumeMaterialFor`).
@@ -2355,6 +2376,8 @@ export async function runVerifierRound(
             modelOrder: models.map((entry) => entry.model),
             models,
             failureCount: status!.failures,
+            // A dry run's shortened waits, so its manifest and its published evidence tell its timing from the rules'.
+            ...(testTiming ? { testTiming } : {}),
           })
           return { completedAt, epochSummary, epochSummaryPath, manifestPath }
         }
@@ -2450,10 +2473,10 @@ export async function runVerifierRound(
           }
         }
         console.log(chalk.dim(`Estimated audit cost: $${status.cost.estimatedCostUsd.toFixed(6)}`))
-        const finalState = await loadEpochState(evidenceDir, epoch)
+        const finalState = await loadEpochState(evidenceDir, epoch, testTiming)
         printEpochTable(epoch, finalState, models)
         for (const window of await closeFinishedWindowsRecovering({
-          evidenceDir, epoch, state: finalState, secondsLeftInEpoch: epochWindow.endsAt - await clock(),
+          evidenceDir, epoch, state: finalState, secondsLeftInEpoch: epochWindow.endsAt - await clock(), timing: testTiming,
         })) {
           console.log(chalk.green(`${window.model}: audit window closed (${window.closeReason}); \`antseed verifier submit\` sends its results`))
         }
@@ -2507,6 +2530,8 @@ export async function updateRetryGiveUps(input: {
   /** Close calls whose extra questions a submit has published (`loadPublishedCloseCalls`), by `pendingExtensionKey`. */
   publishedCloseCalls?: ReadonlyMap<string, PendingExtension>
   nowMs?: number
+  /** A dry run's `verifier.testTiming`; without it, the rules' retry spacing. */
+  timing?: TestTimingConfig | null
 }): Promise<void> {
   const { evidenceDir, epoch } = input
   const nowMs = input.nowMs ?? Date.now()
@@ -2518,14 +2543,15 @@ export async function updateRetryGiveUps(input: {
     }
     console.warn(chalk.yellow('The buyer\'s peer list is out of date, so no seller that stopped listing a model is given up this run.'))
   }
-  const state = await loadEpochState(evidenceDir, epoch)
+  const state = await loadEpochState(evidenceDir, epoch, input.timing)
   const closedModels = new Set((await listAuditWindows(evidenceDir, epoch))
     .filter((window) => window.state === 'closed')
     .map((window) => normalized(window.model)))
   const peers = new Map(input.peers.map((peer) => [peer.peerId.toLowerCase(), peer]))
   // First looks still to be recovered are given up like retries when their seller is gone (`recoveringFirstLooks`).
-  const recovering = new Set((await recoveringFirstLooks(state)).keys())
+  const recovering = new Set((await recoveringFirstLooks(state, input.timing)).keys())
   const { entries, added, restored } = decideRetryGiveUps({
+    timing: input.timing,
     // A confirmation of a seller whose own first look is finished is given up on its report's cell (`retryGiveUpCells`).
     cells: retryGiveUpCells(state),
     recovering: (cell) => recovering.has(epochCellKey(cell.model, cell.peerId)),

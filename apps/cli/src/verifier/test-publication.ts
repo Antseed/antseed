@@ -31,7 +31,8 @@ export function testPublicationFor(config: TestPublicationConfig | undefined, rp
   return config
 }
 
-function isLocalUrl(value: string | undefined): boolean {
+/** Whether a URL is on this machine: 127.0.0.1, localhost or [::1]. */
+export function isLocalUrl(value: string | undefined): boolean {
   if (!value) return false
   try {
     const host = new URL(value).hostname

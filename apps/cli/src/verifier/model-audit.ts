@@ -44,6 +44,7 @@ import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import type { SameCheckCandidate, SameCheckConfirmationV1, SameCheckDecision } from './same-check.js'
 import { safeServiceSlug } from './slug.js'
+import type { TestTimingConfig } from './test-timing.js'
 import type { AlreadyOnChain, SubmissionCandidate } from './submission-delta.js'
 import { confirmationReportKey } from './epoch-plan.js'
 import {
@@ -218,6 +219,11 @@ export interface ModelAuditEvidenceV1 {
   extensionRules?: KbfExtensionRule[]
   results: ModelAuditSellerResultV1[]
   excluded: ExcludedSellerAuditV1[]
+  /**
+   * A dry run's shortened waits (`verifier.testTiming`) from its run manifest, so a reader tells its timing from the
+   * rules'. Absent on every run that waits as the rules say, and so on every audit recorded on Base.
+   */
+  testTiming?: TestTimingConfig
 }
 
 export interface ModelAuditReferenceEvidenceV1 {
@@ -883,6 +889,7 @@ export async function prepareModelAudits(input: {
         ...closeCallRulesEvidence(slice.map(({ result }) => result)),
         results,
         excluded: part === 1 ? excluded : [],
+        ...(input.manifest.testTiming ? { testTiming: { ...input.manifest.testTiming } } : {}),
       }
       audits.push({
         key,

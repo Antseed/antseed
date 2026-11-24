@@ -539,3 +539,25 @@ test('a local confirmation of two flags answers when one flags again or both dec
   assert.equal(localResultAnswersConfirmation(target, { ...later, decided: ['kbf'], flagged: ['kbf'] }), true, 'the questions flagged again')
   assert.equal(localResultAnswersConfirmation(target, { ...later, decided: ['output-cap', 'kbf'], flagged: [] }), true, 'both passed')
 })
+
+test('a dry run\'s verifier.testTiming shortens a confirmer\'s turn and the fresh-material delay; without it the rules\' stand', () => {
+  const auditors = [A, B, C, D]
+  const rotation = auditorRotationForModel('model-a', { auditors, epoch: 7, availableModels: MODELS })
+  const [reporter, confirmer, third] = rotation as [string, string, string, string]
+  const events = [audited({ auditor: reporter, verdict: VERIFIER_VERDICT.DIFF })]
+  const onTurn = (now: number, timing?: { confirmationWindowSeconds: number }) => rotation.filter((auditor) => pendingConfirmations({
+    reports: epochReports(events), epoch: 7, blockTimestamps: new Map([[REPORT_BLOCK, REPORTED_AT]]),
+    now, auditor, auditors, auditedModels: MODELS, timing,
+  })[0]!.mine)
+  // Five minutes after the report: still the first confirmer's turn by the rules, the next one's with a 5-minute turn.
+  assert.deepEqual(onTurn(REPORTED_AT + 300), [confirmer])
+  assert.deepEqual(onTurn(REPORTED_AT + 299, { confirmationWindowSeconds: 300 }), [confirmer])
+  assert.deepEqual(onTurn(REPORTED_AT + 300, { confirmationWindowSeconds: 300 }), [third])
+  assert.deepEqual(onTurn(REPORTED_AT + 300, undefined), [confirmer])
+
+  const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['kbf' as const], firstReportedAt: 10_000 }
+  const local = { service: 'served-a', completedAt: 20_000, firstRequestAt: 10_000 + 120 }
+  assert.equal(localResultAnswersConfirmation(target, local), false, 'two minutes after the report is not fresh by the rules')
+  assert.equal(localResultAnswersConfirmation(target, local, { confirmationMinDelaySeconds: 120 }), true)
+  assert.equal(localResultAnswersConfirmation(target, local, { confirmationWindowSeconds: 120 }), false, 'only the delay it sets is shortened')
+})

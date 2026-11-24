@@ -40,6 +40,10 @@ Published to npm (bin `antseed`). Node, ES modules. The desktop and Nix ship it 
 - The CLI child owns `system-proxy.state.json` and deletes it on shutdown; a host keeps its own file. Never rename `CA_COMMON_NAME`, or the stale-CA purge stops finding old ones (`CERT_SIGNATURE_FAILURE`).
 - A priced seller fails closed when the Base RPC does not answer at start. npm 11 global installs need `--allow-scripts=@antseed/node,better-sqlite3,node-datachannel`.
 
+## Verifier dry runs
+
+A dry run on a local fork can set `verifier.testPublication` (evidence published to a local directory instead of IPFS) and `verifier.testTiming` (shorter waits: `sellerRetrySpacingSeconds`, `confirmationMinDelaySeconds`, `confirmationRecheckSpacingSeconds`, `confirmationWindowSeconds`, each optional, in seconds; `src/verifier/test-timing.ts`). Both apply only while the chain RPC is on this machine (127.0.0.1, localhost or [::1]); with any other RPC, `verifier run`, `watch` and `submit` stop. Test timing is read at run time only: the rules and their hash keep the production waits (30 min, 1 h, 10 min, 12 h). `run` and `watch` print a line naming the shortened waits, and the run manifest and the evidence it publishes record them as `testTiming`. Every auditor in a test must use the same values.
+
 **Ask first:** a new or changed `/_antseed/*` route (both hosts call it); a removed or renamed command or flag, or a changed default (users script them); what the proxy forwards, or to which peer; the plugin install path or flags; a new external in the bundles.
 
 **Prove it:** `pnpm --filter @antseed/cli typecheck` and `pnpm --filter @antseed/cli test` (it builds first; tiers 0 to 3 must be built). One file: `pnpm --filter @antseed/cli build && node --test apps/cli/dist/<path>.test.js`. A change to imports or assets the bundle needs: `pnpm --filter @antseed/cli build:bundle` and `node apps/cli/dist/bundle.mjs --help`.

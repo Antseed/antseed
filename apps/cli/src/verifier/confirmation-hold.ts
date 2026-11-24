@@ -8,6 +8,7 @@ import {
   type EpochCell,
   type EpochState,
 } from './epoch-plan.js'
+import type { TestTimingConfig } from './test-timing.js'
 import { opinionKey } from './third-opinion.js'
 
 /**
@@ -43,11 +44,12 @@ export function confirmationTurnKey(cell: Pick<EpochCell, 'model' | 'agentId' | 
  * is settled, and `--no-confirm` audits none, so no later run will audit it either. A run limited to some sellers or a
  * `--resume-run` repair considered no confirmation.
  */
-function passedOver(cell: EpochCell, manifests: EpochState['manifests']): boolean {
+function passedOver(cell: EpochCell, manifests: EpochState['manifests'], timing: TestTimingConfig | null | undefined): boolean {
+  const spacing = timing?.confirmationRecheckSpacingSeconds ?? CONFIRMATION_RECHECK_SPACING_SECONDS
   const lastAttemptAt = cell.lastAttemptAt
   if (lastAttemptAt === null) return false
   return manifests.some((manifest) => manifest.state !== 'running' && manifest.selection === undefined && manifest.repairOf === undefined
-    && Date.parse(manifest.startedAt) / 1_000 >= lastAttemptAt + CONFIRMATION_RECHECK_SPACING_SECONDS
+    && Date.parse(manifest.startedAt) / 1_000 >= lastAttemptAt + spacing
     && manifest.models.some((entry) => entry.model.toLowerCase() === cell.model.toLowerCase()))
 }
 
@@ -63,12 +65,14 @@ export function confirmationsHoldingSubmit(input: {
   state: Pick<EpochState, 'cells' | 'reportCells' | 'manifests'>
   secondsLeftInEpoch: number
   stillMine: ((cell: EpochCell) => boolean) | null
+  /** A dry run's `verifier.testTiming`; without it, the rules' re-check spacing. */
+  timing?: TestTimingConfig | null
 }): Map<string, EpochCell[]> {
   const held = new Map<string, EpochCell[]>()
   if (input.secondsLeftInEpoch < MIN_SECONDS_FOR_ANOTHER_ROUND) return held
   const sellers = new Set<string>()
   for (const cell of [...input.state.reportCells?.values() ?? [], ...input.state.cells.values()]) {
-    if (!confirmationAwaitingReaudit(cell) || passedOver(cell, input.state.manifests)) continue
+    if (!confirmationAwaitingReaudit(cell) || passedOver(cell, input.state.manifests, input.timing)) continue
     if (input.stillMine && !input.stillMine(cell)) continue
     // One seller once: its report's cell and its latest cell are the same attempt.
     const seller = epochCellKey(cell.model, cell.peerId)

@@ -12,6 +12,7 @@ import { normalized } from './utils.js'
 import { mapConcurrently } from './audit-concurrency.js'
 import type { AuditCheckId } from './audit-checks.js'
 import { isFreshConfirmation } from './same-check.js'
+import type { TestTimingConfig } from './test-timing.js'
 
 /** The reads the confirmation helpers need from the KBF audits and results contracts. */
 export interface EpochReportReader {
@@ -266,6 +267,8 @@ export function pendingConfirmations(input: {
   auditedModels: readonly string[]
   /** Models whose reports are considered; default `auditedModels`. */
   models?: readonly string[]
+  /** A dry run's `verifier.testTiming`; without it, each confirmer has the rules' turn. */
+  timing?: TestTimingConfig | null
 }): PendingConfirmation[] {
   const me = getAddress(input.auditor)
   const modelsByHash = new Map((input.models ?? input.auditedModels).map((model) => [normalized(modelHash(model)), model]))
@@ -296,6 +299,7 @@ export function pendingConfirmations(input: {
       rotation.filter((auditor) => !reported.has(auditor) && !input.revoked?.has(auditor)),
       input.blockTimestamps?.get(waitingSinceBlock(report)),
       input.now,
+      input.timing?.confirmationWindowSeconds ?? CONFIRMATION_WINDOW_SECONDS,
     )
     pending.push({
       model,
@@ -318,10 +322,10 @@ export function pendingConfirmations(input: {
 }
 
 /** Whose turn it is, counted from the first report in chain time; the turns start over after the last candidate. */
-function confirmerOnTurn(candidates: readonly string[], reportedAt: number | undefined, now: number): string | null {
+function confirmerOnTurn(candidates: readonly string[], reportedAt: number | undefined, now: number, windowSeconds: number): string | null {
   if (candidates.length === 0) return null
   const elapsed = reportedAt === undefined ? 0 : Math.max(0, now - reportedAt)
-  return candidates[Math.floor(elapsed / CONFIRMATION_WINDOW_SECONDS) % candidates.length]!
+  return candidates[Math.floor(elapsed / windowSeconds) % candidates.length]!
 }
 
 /** The on-chain reads `dropSettledConfirmations` needs. */
@@ -395,6 +399,8 @@ export function localResultAnswersConfirmation(
     /** The checks it flagged (`flaggedSummaryChecks`). */
     flagged?: readonly AuditCheckId[]
   } | null,
+  /** A dry run's `verifier.testTiming`; without it, the rules' confirmation delay. */
+  timing?: TestTimingConfig | null,
 ): boolean {
   if (!local || normalized(local.service) !== normalized(target.service)) return false
   // It answers when a check this confirmation repeats flagged again (its DIFF goes out), or when every check it
@@ -410,7 +416,7 @@ export function localResultAnswersConfirmation(
   // confirmation is never sent: it answers by its used-up attempts alone, whatever its time, or a confirmation with
   // no timed request would be audited again in every run.
   if (target.firstReportedAt !== undefined && local.decided !== 'undecided-confirmation'
-    && !isFreshConfirmation(local.firstRequestAt, target.firstReportedAt)) return false
+    && !isFreshConfirmation(local.firstRequestAt, target.firstReportedAt, timing)) return false
   return target.ownReportedAt === null || local.completedAt > target.ownReportedAt
 }
 
