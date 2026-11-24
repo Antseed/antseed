@@ -149,7 +149,11 @@ export class RelayMux {
     const stream: BuyerStream = { duplex, opened: false, open: null };
     this._buyerStreams.set(streamId, stream);
     return new Promise<Duplex>((resolve, reject) => {
-      const timer = setTimeout(() => stream.open?.reject(new Error('the seller did not open the relay stream in time')), OPEN_TIMEOUT_MS);
+      const timer = setTimeout(() => {
+        // The seller may have opened its end already: it is told, so it holds nothing for a stream nobody uses.
+        this._trySend(MessageType.RelayClose, encodeRelayClose({ streamId, reason: 'not opened in time' }));
+        stream.open?.reject(new Error('the seller did not open the relay stream in time'));
+      }, OPEN_TIMEOUT_MS);
       stream.open = {
         resolve: () => { clearTimeout(timer); stream.open = null; resolve(duplex); },
         reject: (error) => { clearTimeout(timer); stream.open = null; this._dropBuyerStream(streamId); reject(error); },
