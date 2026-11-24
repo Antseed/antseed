@@ -11,7 +11,7 @@ import {
   type E2eeQuoteVerifier,
   type E2eeSession,
 } from '@antseed/node'
-import type { PeerInfo, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node'
+import type { PeerInfo, SerializedHttpRequest, SerializedHttpResponse, SerializedHttpResponseChunk } from '@antseed/node'
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
 import { importPluginModule } from '../plugins/loader.js'
 
@@ -174,6 +174,43 @@ export function createStreamDecryptor(session: E2eeSession): {
     async flush() {
       const tail = await sse.push(decoder.decode())
       return encoder.encode(tail + await sse.flush())
+    },
+  }
+}
+
+/**
+ * Decrypts a streamed response as its chunks arrive and writes each one in the
+ * order it came, though decryption is async. The first chunk that does not
+ * decrypt ends it: nothing later is written, `onError` hears of it at once and
+ * `drain()` throws it. Nothing more is decrypted once `stopped()` is true.
+ */
+export function createOrderedStreamDecryptor(session: E2eeSession, sink: {
+  write(chunk: SerializedHttpResponseChunk): void
+  stopped(): boolean
+  onError(error: unknown): void
+}): {
+  push(chunk: SerializedHttpResponseChunk): void
+  /** Resolves once every pushed chunk was written; throws the first failure. */
+  drain(): Promise<void>
+} {
+  const decryptor = createStreamDecryptor(session)
+  let queue: Promise<void> = Promise.resolve()
+  const failures: unknown[] = []
+  return {
+    push(chunk) {
+      queue = queue.then(async () => {
+        if (failures.length > 0 || sink.stopped()) return
+        const data = await decryptor.push(chunk.data)
+        const tail = chunk.done ? await decryptor.flush() : new Uint8Array()
+        sink.write({ ...chunk, data: tail.length > 0 ? Buffer.concat([data, tail]) : data })
+      }).catch((error: unknown) => {
+        failures.push(error)
+        sink.onError(error)
+      })
+    },
+    async drain() {
+      await queue
+      if (failures.length > 0) throw failures[0]
     },
   }
 }

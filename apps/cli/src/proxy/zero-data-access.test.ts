@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { SigningKey, computeAddress, getBytes } from 'ethers'
 import { decryptE2eeText, encryptE2eeText, type E2eeQuoteVerifier, type PeerInfo } from '@antseed/node'
-import { ZeroDataAccess, createStreamDecryptor, decryptResponse, encryptRequest, isE2eeOffer } from './zero-data-access.js'
+import { ZeroDataAccess, createOrderedStreamDecryptor, createStreamDecryptor, decryptResponse, encryptRequest, isE2eeOffer } from './zero-data-access.js'
 
 /** Stands in for the upstream TEE behind a seller. */
 const model = new SigningKey(`0x${'22'.repeat(32)}`)
@@ -107,6 +107,63 @@ test('the seller sees only ciphertext, and the buyer reads the answer', async ()
     body: new TextEncoder().encode(JSON.stringify({ choices: [{ message: { role: 'assistant', content: await sealed('hello') } }] })),
   }, session)
   assert.match(new TextDecoder().decode(buffered.body), /"content":"hello"/)
+})
+
+test('a streamed answer is written in the order it came, and stops at the first chunk that does not decrypt', async () => {
+  const { deps } = seller()
+  const session = await new ZeroDataAccess(deps).session(peer, 'private-qwen')
+  const request = await encryptRequest({
+    requestId: 'r1',
+    method: 'POST',
+    path: '/v1/chat/completions',
+    headers: { 'content-type': 'application/json' },
+    body: new TextEncoder().encode(JSON.stringify({ model: 'private-qwen', stream: true, messages: [{ role: 'user', content: 'hello' }] })),
+  }, session)
+  const clientKey = `04${request.headers['x-venice-tee-client-pub-key']!.replace(/^04/, '')}`
+  const event = async (text: string, key = clientKey) =>
+    new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: await encryptE2eeText(text, key) } }] })}\n\n`)
+  const collect = () => {
+    const written: string[] = []
+    const errors: unknown[] = []
+    let stopped = false
+    const stream = createOrderedStreamDecryptor(session, {
+      write: (chunk) => written.push(new TextDecoder().decode(chunk.data)),
+      stopped: () => stopped,
+      onError: (error) => errors.push(error),
+    })
+    return { written, errors, stream, stop: () => { stopped = true } }
+  }
+
+  const whole = collect()
+  // Pushed without waiting, as frames arrive: the longer first chunk must not be overtaken.
+  whole.stream.push({ requestId: 'r1', data: await event('first '.repeat(200)), done: false })
+  whole.stream.push({ requestId: 'r1', data: await event('second'), done: false })
+  whole.stream.push({ requestId: 'r1', data: new TextEncoder().encode('data: [DONE]'), done: true })
+  await whole.stream.drain()
+  assert.equal(whole.written.length, 3)
+  assert.match(whole.written[0]!, /"content":"first first /)
+  assert.match(whole.written[1]!, /"content":"second"/)
+  // The last chunk's unfinished line is flushed with it.
+  assert.equal(whole.written[2], 'data: [DONE]')
+  assert.deepEqual(whole.errors, [])
+
+  // Sealed to another key: the chunk does not decrypt.
+  const other = new SigningKey(`0x${'33'.repeat(32)}`).publicKey.slice(2)
+  const broken = collect()
+  broken.stream.push({ requestId: 'r1', data: await event('readable'), done: false })
+  broken.stream.push({ requestId: 'r1', data: await event('unreadable', other), done: false })
+  broken.stream.push({ requestId: 'r1', data: await event('after'), done: true })
+  await assert.rejects(broken.stream.drain())
+  assert.equal(broken.written.length, 1)
+  assert.match(broken.written[0]!, /"content":"readable"/)
+  assert.equal(broken.errors.length, 1)
+
+  // A client that left: nothing more is decrypted or written.
+  const gone = collect()
+  gone.stop()
+  gone.stream.push({ requestId: 'r1', data: await event('unread'), done: true })
+  await gone.stream.drain()
+  assert.deepEqual([gone.written, gone.errors], [[], []])
 })
 
 test('a request with tool definitions is refused rather than sent in plaintext', async () => {

@@ -172,7 +172,7 @@ import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { parseServiceFreeTierProgram } from '@antseed/node/free-tier-program'
 import { TeeVerification } from './tee-verification.js'
 import { E2eeError, type E2eeSession } from '@antseed/node'
-import { ZeroDataAccess, createStreamDecryptor, decryptResponse, encryptRequest, isE2eeOffer, loadVerifierQuoteCheck } from './zero-data-access.js'
+import { ZeroDataAccess, createOrderedStreamDecryptor, decryptResponse, encryptRequest, isE2eeOffer, loadVerifierQuoteCheck } from './zero-data-access.js'
 import { BlindRelayClient, isBlindRelayOffer } from './blind-relay.js'
 import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
@@ -5988,24 +5988,17 @@ export class BuyerProxy {
             }
           }
         }
-        // Decryption is async; a queue keeps chunks in order. A chunk that fails to decrypt ends
-        // the stream rather than reach the client unreadable.
-        const streamDecryptor = e2eeSession ? createStreamDecryptor(e2eeSession) : null
-        let decryptQueue: Promise<void> = Promise.resolve()
-        // The first chunk that did not decrypt: the answer was not served, whatever the seller's stream says.
-        const decryptFailures: unknown[] = []
-        const enqueueEncryptedChunk = (chunk: SerializedHttpResponseChunk): void => {
-          decryptQueue = decryptQueue.then(async () => {
-            if (decryptFailures.length > 0 || res.destroyed) return
-            const data = await streamDecryptor!.push(chunk.data)
-            const tail = chunk.done ? await streamDecryptor!.flush() : new Uint8Array()
-            writeStreamChunk({ ...chunk, data: tail.length > 0 ? Buffer.concat([data, tail]) : data })
-          }).catch((error: unknown) => {
-            decryptFailures.push(error)
-            log(`End-to-end decryption failed for peer ${selectedPeer.peerId.slice(0, 12)}...: ${error instanceof Error ? error.message : String(error)}`)
-            res.destroy()
-          })
-        }
+        // A chunk that fails to decrypt ends the stream rather than reach the client unreadable.
+        const decryptedStream = e2eeSession
+          ? createOrderedStreamDecryptor(e2eeSession, {
+              write: writeStreamChunk,
+              stopped: () => res.destroyed,
+              onError: (error) => {
+                log(`End-to-end decryption failed for peer ${selectedPeer.peerId.slice(0, 12)}...: ${error instanceof Error ? error.message : String(error)}`)
+                res.destroy()
+              },
+            })
+          : null
         const response = await sendRequestStream(selectedPeer, requestForPeer, {
           onResponseStart: (startResponse: SerializedHttpResponse, metadata: RequestStreamResponseMetadata) => {
             if (!metadata.streaming) return
@@ -6016,7 +6009,7 @@ export class BuyerProxy {
             traceFor(res)?.noteFirstByte(firstFrameAt)
             streamStartBody = startResponse.body
             // An encrypted start body goes through the decrypting queue like any chunk.
-            const startForClient = streamDecryptor ? { ...startResponse, body: new Uint8Array() } : startResponse
+            const startForClient = decryptedStream ? { ...startResponse, body: new Uint8Array() } : startResponse
             const adaptedStartResponse = streamResponseAdapter
               ? streamResponseAdapter.adaptStart(startForClient)
               : startForClient
@@ -6036,14 +6029,14 @@ export class BuyerProxy {
             if (adaptedStartResponse.body.length > 0) {
               res.write(Buffer.from(adaptedStartResponse.body))
             }
-            if (streamDecryptor && startResponse.body.length > 0) {
-              enqueueEncryptedChunk({ requestId: startResponse.requestId, data: startResponse.body, done: false })
+            if (decryptedStream && startResponse.body.length > 0) {
+              decryptedStream.push({ requestId: startResponse.requestId, data: startResponse.body, done: false })
             }
           },
           onResponseChunk: (chunk: SerializedHttpResponseChunk) => {
             if (!streamed) return
             this._markModelActivity()
-            if (streamDecryptor) enqueueEncryptedChunk(chunk)
+            if (decryptedStream) decryptedStream.push(chunk)
             else writeStreamChunk(chunk)
           },
         }, {
@@ -6053,9 +6046,9 @@ export class BuyerProxy {
           ...(buyerIdentity ? { buyerIdentity } : {}),
           ...(teeBinding ? { channelBinding: teeBinding } : {}),
         })
-        await decryptQueue
-        // Thrown here, it ends the dispatch as an interrupted answer: no success for the seller or the router.
-        if (decryptFailures.length > 0) throw decryptFailures[0]
+        // A chunk that did not decrypt: the answer was not served, whatever the seller's stream says. Thrown here,
+        // it ends the dispatch as an interrupted answer: no success for the seller or the router.
+        await decryptedStream?.drain()
 
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
