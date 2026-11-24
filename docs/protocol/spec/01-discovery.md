@@ -231,7 +231,7 @@ Per provider (repeated providerCount times):
     in code-unit sorted order so re-encoding decoded metadata is byte-stable.
     Reasoning efforts use the same [count:1][len:1][utf8] layout and sort. An empty
     list sets its value bit with a zero count, so "none" stays distinct from "unknown".
-    See ../reasoning-efforts.md for the labels.
+    See ../reasoning-efforts.md for the labels and how buyers use them.
   [serviceHealthEntryCount : 2 bytes uint16 ]        // v13+
   Per health entry (code-unit sorted by service):
     [service][statusId:1][presenceBits:1][checkedAt:8?][sourceId:1?][failingSince:8?]

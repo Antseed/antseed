@@ -13,6 +13,8 @@ import { validateServiceMetadata } from './service-metadata.js';
 import { parseHostPort } from './public-address.js';
 import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
 import { sellerAlertsErrors } from './seller-alerts.js';
+import { canonicalModelKey } from '@antseed/node/model-identity';
+import { isReasoningEffortSetting } from '../proxy/default-reasoning-effort.js';
 
 const BUYER_PEER_ID_PATTERN = /^(0x)?[0-9a-fA-F]{40}$/;
 
@@ -400,6 +402,40 @@ function validateBuyerVerification(
   }
 }
 
+const REASONING_EFFORT_VALUE_RULE = 'must be "off" or a reasoning effort label (1-64 visible ASCII characters, no spaces)';
+
+function validateBuyerReasoningEffort(reasoningEffort: unknown, errors: string[]): void {
+  if (!isRecord(reasoningEffort)) {
+    errors.push('buyer.reasoningEffort must be an object with "default" and "models"');
+    return;
+  }
+  if (!isReasoningEffortSetting(reasoningEffort['default'])) {
+    errors.push(`buyer.reasoningEffort.default ${REASONING_EFFORT_VALUE_RULE}`);
+  }
+  const models = reasoningEffort['models'];
+  if (!isRecord(models)) {
+    errors.push('buyer.reasoningEffort.models must be an object of model ids to levels');
+    return;
+  }
+  const seen = new Map<string, string>();
+  for (const [model, level] of Object.entries(models)) {
+    if (model.trim().length === 0) {
+      errors.push('buyer.reasoningEffort.models has an empty model id');
+      continue;
+    }
+    if (!isReasoningEffortSetting(level)) {
+      errors.push(`buyer.reasoningEffort.models.${model} ${REASONING_EFFORT_VALUE_RULE}`);
+    }
+    const key = canonicalModelKey(model);
+    const earlier = seen.get(key);
+    if (earlier !== undefined) {
+      errors.push(`buyer.reasoningEffort.models has two entries for the same model: "${earlier}" and "${model}"`);
+    } else {
+      seen.set(key, model);
+    }
+  }
+}
+
 /**
  * Validate the full config and return all issues.
  */
@@ -429,6 +465,8 @@ export function validateConfig(config: AntseedConfig): string[] {
       errors.push(`buyer.routingPreferences.${key} must contain only 40-character hex peer IDs`);
     }
   }
+
+  validateBuyerReasoningEffort(config.buyer.reasoningEffort, errors);
 
   if (!Number.isInteger(config.buyer.proxyPort) || config.buyer.proxyPort < 1 || config.buyer.proxyPort > 65535) {
     errors.push('buyer.proxyPort must be an integer in range 1-65535');

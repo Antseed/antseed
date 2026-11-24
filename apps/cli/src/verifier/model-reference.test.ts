@@ -685,6 +685,35 @@ test('reference build routes only target requests through a pinned Antseed peer'
   }
 })
 
+test('audit probes ask the buyer for no default effort', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-default-effort-'))
+  const peerId = '34'.repeat(20)
+  const value = config({ upstreams: { 'trusted-seller': { type: 'antseed', peerId } } })
+  value.models![MODEL]!.upstream = {
+    name: 'trusted-seller',
+    model: 'seller-service',
+    pricing: { inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5 },
+  }
+  const requests: Array<{ url: string; headers: Record<string, string>; model: string }> = []
+  const fetchFn: typeof fetch = async (url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    requests.push({ url: String(url), headers: init?.headers as Record<string, string>, model: body.model })
+    const logicalModel = body.model === 'seller-service' ? 'upstream-test' : body.model
+    return response(successfulContent(logicalModel, body.messages.at(-1)?.content ?? ''))
+  }
+  try {
+    await buildModelReference({ model: MODEL, referencesDir: directory, config: value, buyerProxyPort: 8377, fetchFn })
+    const throughBuyer = requests.filter((request) => request.url.startsWith('http://127.0.0.1:8377/'))
+    const direct = requests.filter((request) => !request.url.startsWith('http://127.0.0.1:8377/'))
+    assert.equal(throughBuyer.length > 0, true)
+    assert.equal(throughBuyer.every((request) => request.headers['x-antseed-default-reasoning-effort'] === 'off'), true)
+    // An upstream reached directly never sees a buyer header.
+    assert.equal(direct.every((request) => request.headers['x-antseed-default-reasoning-effort'] === undefined), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('an antseed entry in verifier.upstreams routes target requests to that pinned seller', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-upstream-peer-'))
   const peerId = '34'.repeat(20)

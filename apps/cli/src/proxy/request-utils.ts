@@ -355,7 +355,7 @@ export function overrideRoutedModelInBody(
   return { body: rewritten, headers: updatedHeaders, overridden: true }
 }
 
-function encodeRewrittenJsonBody(
+export function encodeRewrittenJsonBody(
   obj: Record<string, unknown>,
   headers: Record<string, string>,
 ): { body: Uint8Array; headers: Record<string, string> } {

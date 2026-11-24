@@ -8,6 +8,7 @@ import {
 import type {
   HierarchicalPricingConfig,
   AntseedConfig,
+  BuyerReasoningEffortConfig,
   DomainVerificationConfig,
   DomainVerificationMethod,
   GithubVerificationConfig,
@@ -658,6 +659,24 @@ function normalizeBuyerVerification(
   };
 }
 
+// Kept as written when a part has the wrong type, so validateConfig refuses it instead of dropping it.
+function mergeBuyerReasoningEffort(
+  defaults: BuyerReasoningEffortConfig,
+  value: unknown,
+): BuyerReasoningEffortConfig {
+  if (value === undefined) return { default: defaults.default, models: { ...defaults.models } };
+  if (!isRecord(value)) return value as BuyerReasoningEffortConfig;
+  const trimmed = (level: unknown) => (typeof level === 'string' ? level.trim() : level);
+  const models = value['models'] ?? {};
+  return {
+    default: value['default'] === undefined ? defaults.default : trimmed(value['default']),
+    // Keys stay as written, so `config show` prints what the user typed; lookups canonicalize them.
+    models: isRecord(models)
+      ? Object.fromEntries(Object.entries(models).map(([model, level]) => [model, trimmed(level)]))
+      : models,
+  } as BuyerReasoningEffortConfig;
+}
+
 function mergeBuyerConfig(
   defaults: AntseedConfig['buyer'],
   value: unknown
@@ -668,6 +687,7 @@ function mergeBuyerConfig(
       maxPricing: mergeHierarchicalPricing(defaults.maxPricing, undefined),
       minPeerReputation: defaults.minPeerReputation,
       routingPreferences: cloneRoutingPreferences(defaultRoutingPreferences),
+      reasoningEffort: mergeBuyerReasoningEffort(defaults.reasoningEffort, undefined),
       proxyPort: defaults.proxyPort,
       peerRefreshIntervalMs: defaults.peerRefreshIntervalMs,
       metadataFetchTimeoutMs: defaults.metadataFetchTimeoutMs,
@@ -686,6 +706,7 @@ function mergeBuyerConfig(
       defaultRoutingPreferences,
       value['routingPreferences'],
     ),
+    reasoningEffort: mergeBuyerReasoningEffort(defaults.reasoningEffort, value['reasoningEffort']),
     proxyPort: typeof value['proxyPort'] === 'number'
       ? value['proxyPort']
       : defaults.proxyPort,

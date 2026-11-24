@@ -7,6 +7,7 @@ import {
   type NetworkServiceOffer,
   type PeerInfo,
   type SerializedHttpRequest,
+  type ServiceCapabilities,
   type ServiceHealth,
 } from '@antseed/node'
 import { canonicalModelKey } from '@antseed/node/model-identity'
@@ -75,6 +76,25 @@ export function findMissingRequiredParameters(
 
   const supported = new Set(announced.map((parameter) => parameter.trim().toLowerCase()))
   return requiredParameters.filter((parameter) => !supported.has(parameter.toLowerCase()))
+}
+
+/**
+ * What `peer` announces for `service` under `provider`, or undefined when it announces nothing for it.
+ * Only the entry named exactly like `service` counts, not another spelling or letter case of the same model.
+ */
+export function findServiceCapabilities(
+  peer: PeerInfo,
+  provider: string,
+  service: string | null,
+): ServiceCapabilities | undefined {
+  const requested = service?.trim()
+  if (!requested) return undefined
+  const providerKey = Object.keys(peer.providerServiceCapabilities ?? {})
+    .find((key) => key.toLowerCase() === provider.toLowerCase())
+  const services = providerKey ? peer.providerServiceCapabilities?.[providerKey]?.services : undefined
+  if (!services) return undefined
+  const serviceKey = Object.keys(services).find((key) => key.trim() === requested)
+  return serviceKey ? services[serviceKey] : undefined
 }
 
 // `strict` drops peers that don't advertise the requested service; `lenient`

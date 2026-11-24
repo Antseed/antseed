@@ -182,3 +182,44 @@ test('config seller set refuses a cached-input price above the input price, but 
   const services = JSON.parse(readFileSync(path, 'utf-8')).seller.providers.inference.services;
   assert.equal(services['kimi-k2'].pricing.cachedInputUsdPerMillion, 0.01);
 });
+
+test('config buyer set accepts reasoningEffort.default, a per-model key and a JSON models object', async () => {
+  assert.equal(isDynamicKey('buyer.reasoningEffort.models'), true);
+  assert.equal(isDynamicKey('buyer.reasoningEffort.models.kimi-k3'), true);
+  assert.equal(isDynamicKey('buyer.reasoningEffort.typo'), false);
+  const path = join(mkdtempSync(join(tmpdir(), 'config-set-reasoning-')), 'config.json');
+  writeFileSync(path, JSON.stringify({}));
+  await set(path, 'buyer.reasoningEffort.default', 'medium');
+  await set(path, 'buyer.reasoningEffort.models.kimi-k3', 'high');
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf-8')).buyer.reasoningEffort, {
+    default: 'medium',
+    models: { 'kimi-k3': 'high' },
+  });
+  // A model id with a dot needs the JSON form, because key paths split on dots.
+  await set(path, 'buyer.reasoningEffort.models', '{"glm-5.3":"high","example-model":"off"}');
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf-8')).buyer.reasoningEffort.models, {
+    'glm-5.3': 'high',
+    'example-model': 'off',
+  });
+  // A label that looks like a number or a boolean stays a string.
+  await set(path, 'buyer.reasoningEffort.default', '3');
+  await set(path, 'buyer.reasoningEffort.models.kimi-k3', 'false');
+  const stored = JSON.parse(readFileSync(path, 'utf-8')).buyer.reasoningEffort;
+  assert.equal(stored.default, '3');
+  assert.equal(stored.models['kimi-k3'], 'false');
+});
+
+test('config buyer set refuses an invalid reasoning effort', async () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'config-set-reasoning-')), 'config.json');
+  writeFileSync(path, JSON.stringify({ buyer: { reasoningEffort: { default: 'low' } } }));
+  const before = readFileSync(path, 'utf-8');
+  await assert.rejects(
+    set(path, 'buyer.reasoningEffort.default', 'very high'),
+    /buyer\.reasoningEffort\.default must be "off" or a reasoning effort label/,
+  );
+  await assert.rejects(
+    set(path, 'buyer.reasoningEffort.models', '{"model-b":"high","vendor/model-b":"low"}'),
+    /buyer\.reasoningEffort\.models has two entries for the same model/,
+  );
+  assert.equal(readFileSync(path, 'utf-8'), before);
+});
