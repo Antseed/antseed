@@ -574,7 +574,24 @@ test('before a confirmation is audited, the first checks are read and stored; un
     const early = targets()
     await attachFirstFlags(early, { events, auditor: second.address, reader: reader(files, audit.evidenceHash), now: REPORTED_AT + 600, log: () => {} })
     assert.equal(early.get(MODEL)!.has('2'), false, 'younger than an hour: audited by a later run')
+    // A dry run's verifier.testTiming: ten minutes after the report is late enough with a five-minute delay.
+    const timed = targets()
+    await attachFirstFlags(timed, {
+      events, auditor: second.address, reader: reader(files, audit.evidenceHash), now: REPORTED_AT + 600, log: () => {},
+      timing: { confirmationMinDelaySeconds: 300 },
+    })
+    assert.equal(timed.get(MODEL)!.has('2'), true, 'five minutes after the report is fresh with verifier.testTiming')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('a dry run\'s verifier.testTiming shortens the fresh-material delay a confirmation is sent on; without it the rules\' hour stands', () => {
+  const waiting: FirstFlag = { auditor: first.address, peerId: peerIdOf(sellers[2]!), evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['kbf'] }
+  const soon = candidate(3n, VERIFIER_VERDICT.DIFF, ['kbf'], [], REPORTED_AT + 300)
+  const rules = decide(soon, [waiting])
+  assert.equal(rules.kind === 'exclude' && rules.code, 'confirmation-not-fresh')
+  assert.equal(decide(soon, [waiting], undefined, null).kind, 'exclude')
+  assert.equal(decide(soon, [waiting], undefined, { confirmationMinDelaySeconds: 300 }).kind, 'send')
+  assert.equal(decide(soon, [waiting], undefined, { confirmationMinDelaySeconds: 301 }).kind, 'exclude')
 })

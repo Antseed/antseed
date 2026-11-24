@@ -36,7 +36,9 @@ import {
 } from '../../../verifier/model-audit.js'
 import { readVerifierRunManifest, type VerifierRunManifestV1 } from '../../../verifier/audit-artifacts.js'
 import { prepareAuditPublication, publishVerificationToPinata } from '../../../verifier/ipfs-publication.js'
-import { publishVerificationToDirectory, testPublicationFor } from '../../../verifier/test-publication.js'
+import { isLocalUrl, publishVerificationToDirectory, testPublicationFor } from '../../../verifier/test-publication.js'
+import type { TestTimingConfig } from '../../../verifier/test-timing.js'
+import { verifierTestTiming } from './run.js'
 
 /** Where `submit` publishes a model audit's evidence: Pinata (public IPFS), or this machine for a dry run on a fork. */
 type PublicationTarget = { kind: 'pinata'; jwt: string } | { kind: 'local-test'; directory: string }
@@ -153,6 +155,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         strictWhenUnavailable: !options.dryRun,
         warn: (text) => console.warn(chalk.yellow(text)),
       })
+      // A dry run on a local fork may wait less than the rules (`verifier.testTiming`, refused off a local RPC), before the submit lock.
+      const rpcOverride = options.rpcUrl ? String(options.rpcUrl) : undefined
+      const testTiming = verifierTestTiming(config, rpcOverride)
       const evidenceDir = config.verifier?.evidenceDir ?? join(globalOptions.dataDir, 'verifier', 'evidence')
       const banksDir = config.verifier?.banksDir ?? join(globalOptions.dataDir, 'verifier', 'banks')
       // One submit per data dir at a time: the ledger is read once and rewritten after every model, so a
@@ -180,7 +185,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       } else {
         const currentEpoch = (await verifierClient.currentEpochWindow()).epoch
         await warnUnsentPreviousEpoch(evidenceDir, currentEpoch)
-        const merged = await epochSubmissionManifest(evidenceDir, currentEpoch)
+        const merged = await epochSubmissionManifest(evidenceDir, currentEpoch, testTiming)
         manifest = merged?.manifest ?? null
         sourceRunIds = merged?.runIds ?? []
         heldInEpoch = merged?.held ?? []
@@ -205,6 +210,14 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       const testPublication = config.verifier?.testPublication
         ? testPublicationFor(config.verifier.testPublication, requireCryptoConfig(config, options.rpcUrl ? { rpcUrl: String(options.rpcUrl) } : {}).rpcUrl)
         : null
+      // A run that waited less than the rules is never submitted off a local fork, whatever the config says now.
+      if (manifest.testTiming && !testTiming) {
+        const rpcUrl = config.payments?.crypto ? requireCryptoConfig(config, rpcOverride ? { rpcUrl: rpcOverride } : {}).rpcUrl : undefined
+        if (!isLocalUrl(rpcUrl)) {
+          throw new Error(`run ${manifest.runId} waited less than the audit rules (verifier.testTiming), so it is submitted only to a local fork: `
+            + `the chain RPC must be on this machine (127.0.0.1 or localhost), not ${rpcUrl ? new URL(rpcUrl).host : 'the default Base RPC'}`)
+        }
+      }
       const pinataJwt = publishIpfs && !testPublication ? process.env['PINATA_JWT']?.trim() : undefined
       const target: PublicationTarget = testPublication ? { kind: 'local-test', directory: testPublication.directory } : { kind: 'pinata', jwt: pinataJwt ?? '' }
       if (publishIpfs && !testPublication && !pinataJwt) {
@@ -221,12 +234,12 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       ])
       validateRunEpoch(manifest, window)
       const secondsLeftInEpoch = window.endsAt - await chainNow(verifierClient.provider)
-      const epochState = await loadEpochState(evidenceDir, manifest.epoch)
+      const epochState = await loadEpochState(evidenceDir, manifest.epoch, testTiming)
       // Windows whose sellers are all finished (or that the end of the epoch closes) are submitted now.
       if (!options.dryRun) {
         // The same close as \`verifier run\`: a first look still to be recovered keeps its window open.
         for (const closed of await closeFinishedWindowsRecovering({
-          evidenceDir, epoch: manifest.epoch, state: epochState, secondsLeftInEpoch,
+          evidenceDir, epoch: manifest.epoch, state: epochState, secondsLeftInEpoch, timing: testTiming,
         })) console.log(chalk.green(`${closed.model}: audit window closed (${closed.closeReason})`))
       }
       if (!options.dryRun && !approved) {
@@ -271,6 +284,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           auditor: address,
           auditors: approvedAuditorsAt(setEvents, window.startedAt),
           auditedModels: configuredVerifierModels(config.verifier),
+          timing: testTiming,
         }).filter((entry) => entry.mine)
       }
       const readMyConfirmations = async (events: readonly ServiceAuditedEvent[]): Promise<Set<string>> => (
@@ -303,6 +317,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         state: epochState,
         secondsLeftInEpoch,
         stillMine: liveTurns ? (cell) => liveTurns.has(confirmationTurnKey(cell) ?? '') : null,
+        timing: testTiming,
       })
       /**
        * The third-opinion check again, on the events up to now, right before `audit` is sent. Between
@@ -344,7 +359,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       })
       const recheckBeforeSend = (audit: PreparedModelAudit): Promise<string | null> => recheckAuditBeforeSend({
         audit, auditor: address, readEvents: readEpochEvents, readMyConfirmations, revoked,
-        sameCheck: (events) => sameCheckFilter({ events, auditor: address, revoked, reader: flagReader }),
+        sameCheck: (events) => sameCheckFilter({ events, auditor: address, revoked, reader: flagReader, timing: testTiming }),
         alreadyOnChain: (events) => alreadyOnChainFilterFor(events),
       })
       // A dry run marks its file as incomplete first, so a failure below never leaves an older one looking current.
@@ -373,7 +388,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         }).filter,
         // A DIFF that answers another auditor's waiting DIFF is sent as DIFF only when the same check
         // flagged in both audits; which one flagged there is read from its published evidence (same-check.ts).
-        sameCheck: sameCheckFilter({ events: epochEvents, auditor: address, revoked, reader: flagReader }),
+        sameCheck: sameCheckFilter({ events: epochEvents, auditor: address, revoked, reader: flagReader, timing: testTiming }),
         ...(publishIpfs ? {} : {
           unpublishedDiffs: 'a DIFF is sent only with its evidence published: a confirmer reads which check flagged from it, '
             + 'so a DIFF sent with --no-publish-ipfs could never be confirmed',
@@ -571,9 +586,9 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
  * run this epoch (see `writeEpochSubmissionManifest`).
  */
 async function epochSubmissionManifest(
-  evidenceDir: string, epoch: bigint,
+  evidenceDir: string, epoch: bigint, testTiming: TestTimingConfig | null,
 ): Promise<{ manifest: VerifierRunManifestV1; runIds: string[]; held: string[] } | null> {
-  const state = await loadEpochState(evidenceDir, epoch.toString())
+  const state = await loadEpochState(evidenceDir, epoch.toString(), testTiming)
   if (state.manifests.length === 0) return null
   const manifest = await writeEpochSubmissionManifest(evidenceDir, state)
   console.log(chalk.dim(

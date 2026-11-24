@@ -13,6 +13,7 @@ import { adjudicateQuestions } from './model-audit.js'
 import { assertQuestionsFromSignedBytes } from './signed-questions.js'
 import { proxyAuditEvidenceHash, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import type { SubmissionCandidate } from './submission-delta.js'
+import type { TestTimingConfig } from './test-timing.js'
 import { latestOtherReports, opinionKey } from './third-opinion.js'
 import { normalized } from './utils.js'
 
@@ -63,9 +64,11 @@ export const CONFIRMATION_MIN_DELAY_SECONDS = 60 * 60
 /**
  * The one test of "fresh", for the planner and for submit: the audit's earliest request on the auditor's own clock
  * (`earliestAuditorTime`) is at least `CONFIRMATION_MIN_DELAY_SECONDS` after the report it answers. No time is not fresh.
+ * `timing` is a dry run's `verifier.testTiming` (`test-timing.ts`); without it, the rules' delay.
  */
-export function isFreshConfirmation(earliestRequestAt: number | null | undefined, firstReportedAt: number): boolean {
-  return typeof earliestRequestAt === 'number' && earliestRequestAt >= firstReportedAt + CONFIRMATION_MIN_DELAY_SECONDS
+export function isFreshConfirmation(earliestRequestAt: number | null | undefined, firstReportedAt: number, timing?: TestTimingConfig | null): boolean {
+  return typeof earliestRequestAt === 'number'
+    && earliestRequestAt >= firstReportedAt + (timing?.confirmationMinDelaySeconds ?? CONFIRMATION_MIN_DELAY_SECONDS)
 }
 
 /**
@@ -163,6 +166,8 @@ export function sameCheckFilter(input: {
   reader: PublishedFlagReader
   /** Auditors revoked this epoch: their reports no longer count. */
   revoked?: ReadonlySet<string>
+  /** A dry run's `verifier.testTiming`; without it, the rules' confirmation delay. */
+  timing?: TestTimingConfig | null
 }): (modelHash: string, candidates: readonly SameCheckCandidate[]) => Promise<Array<SameCheckDecision | null>> {
   const waiting = waitingDiffs(input.events, input.auditor, input.revoked)
   const readFirst = firstFlagReader(input.reader)
@@ -189,7 +194,7 @@ export function sameCheckFilter(input: {
     } catch (error) {
       return { kind: 'hold', reason: holdReason(error) }
     }
-    return decide(candidate, firsts)
+    return decide(candidate, firsts, CONFIRMATION_ONLY_FINDINGS, input.timing)
   }))
 }
 
@@ -207,6 +212,7 @@ export function decide(
   candidate: SameCheckCandidate,
   firsts: readonly FirstFlag[],
   confirmationOnly: readonly ConfirmationOnlyFinding[] = CONFIRMATION_ONLY_FINDINGS,
+  timing?: TestTimingConfig | null,
 ): SameCheckDecision {
   const ownChecks = [...candidate.flaggedBy]
   // A test only a confirmation answers (`ConfirmationOnly`) answers its waiting flag only from an audit made as a
@@ -254,7 +260,7 @@ export function decide(
       ...(passedCheck ? { passedCheck } : {}),
       ...(clearedBetween && clearedBetween.length > 0 ? { clearedBetween } : {}),
     })
-    if (!isFreshConfirmation(candidate.auditedAt, first.reportedAt)) {
+    if (!isFreshConfirmation(candidate.auditedAt, first.reportedAt, timing)) {
       return {
         kind: 'exclude',
         code: 'confirmation-not-fresh',
@@ -389,6 +395,8 @@ export async function attachFirstFlags(
     /** Unix seconds. */
     now: number
     log: (line: string) => void
+    /** A dry run's `verifier.testTiming`; without it, the rules' confirmation delay. */
+    timing?: TestTimingConfig | null
   },
 ): Promise<void> {
   const readFirst = firstFlagReader(input.reader)
@@ -409,7 +417,7 @@ export async function attachFirstFlags(
           + `(${sanitizeOutcomeSummary(error instanceof Error ? error.message : String(error)).slice(0, 200)}); the next run tries again`)
         continue
       }
-      if (input.now < target.firstReportedAt + CONFIRMATION_MIN_DELAY_SECONDS) {
+      if (input.now < target.firstReportedAt + (input.timing?.confirmationMinDelaySeconds ?? CONFIRMATION_MIN_DELAY_SECONDS)) {
         agents.delete(key)
         input.log(`  ${model}: agent ${target.agentId} is confirmed from an hour after the first report, on fresh material; a later run audits it`)
       }

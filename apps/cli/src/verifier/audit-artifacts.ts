@@ -12,6 +12,7 @@ import type {
 } from './model-run.js'
 import type { ModelProbeConsensusEvidenceV1 } from './model-consensus-evidence.js'
 import { safeServiceSlug } from './slug.js'
+import type { TestTimingConfig } from './test-timing.js'
 
 export interface VerifierStatusV1 {
   version: 1
@@ -77,6 +78,8 @@ export interface VerifierRunManifestV1 {
   modelOrder: string[]
   models: EpochAuditSummaryV1['models']
   failureCount: number
+  /** A dry run's shortened waits (`verifier.testTiming`, only those it set); absent on a run that waits as the rules say. */
+  testTiming?: TestTimingConfig
 }
 
 export interface EpochAuditSummaryV1 {

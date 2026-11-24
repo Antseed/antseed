@@ -1,6 +1,7 @@
 import { closeFinishedAuditWindows, type AuditWindowV1 } from './audit-window.js'
 import { AUDITOR_FAILURE_ATTEMPTS, SELLER_FAILURE_ATTEMPTS, SELLER_RETRY_SPACING_SECONDS, epochCellKey, type EpochCell, type EpochState } from './epoch-plan.js'
 import { auditBeforeAllTests, auditFinishedAt } from './model-audit.js'
+import type { TestTimingConfig } from './test-timing.js'
 
 /**
  * First looks whose result submit would refuse (its evidence cannot be read, has no valid date or was written before
@@ -10,9 +11,13 @@ import { auditBeforeAllTests, auditFinishedAt } from './model-audit.js'
  * one attempt beyond those limits, which no seller or auditor caused: it is recovered while no attempt has finished
  * since its own run. A seller that a completed run of the model, started after its last attempt, did not plan (it no
  * longer offers the model, or another auditor judged it) is no longer waited for: its window would otherwise stay
- * open until the end of the epoch, holding the model's other results.
+ * open until the end of the epoch, holding the model's other results. `timing` is a dry run's `verifier.testTiming`.
  */
-export async function recoveringFirstLooks(state: Pick<EpochState, 'ordinaryCells' | 'manifests'> | null): Promise<Map<string, EpochCell>> {
+export async function recoveringFirstLooks(
+  state: Pick<EpochState, 'ordinaryCells' | 'manifests'> | null,
+  timing?: TestTimingConfig | null,
+): Promise<Map<string, EpochCell>> {
+  const retrySpacing = timing?.sellerRetrySpacingSeconds ?? SELLER_RETRY_SPACING_SECONDS
   const recovering = new Map<string, EpochCell>()
   for (const cell of state?.ordinaryCells?.values() ?? []) {
     // Given up (its seller no longer offers the model, `decideRetryGiveUps`): no longer waited for.
@@ -25,7 +30,7 @@ export async function recoveringFirstLooks(state: Pick<EpochState, 'ordinaryCell
     const lastAttemptAt = cell.lastAttemptAt
     const passedOver = lastAttemptAt !== null && (state?.manifests ?? []).some((manifest) => manifest.runId !== cell.runId
       && manifest.state !== 'running' && manifest.selection === undefined && manifest.repairOf === undefined
-      && Date.parse(manifest.startedAt) / 1_000 >= lastAttemptAt + SELLER_RETRY_SPACING_SECONDS
+      && Date.parse(manifest.startedAt) / 1_000 >= lastAttemptAt + retrySpacing
       // The model ran to its summary in that run: one only planned (a failed build, a run stopped first) passed nobody.
       && manifest.models.some((entry) => entry.model.toLowerCase() === cell.model.toLowerCase())
       // A run that audited the model only for its confirmations never considered its other sellers.
@@ -56,6 +61,9 @@ export async function closeFinishedWindowsRecovering(input: {
   epoch: string
   state: Pick<EpochState, 'cells' | 'manifests' | 'ordinaryCells'>
   secondsLeftInEpoch: number
+  /** A dry run's `verifier.testTiming`. */
+  timing?: TestTimingConfig | null
 }): Promise<AuditWindowV1[]> {
-  return closeFinishedAuditWindows({ ...input, recovering: new Set((await recoveringFirstLooks(input.state)).keys()) })
+  const { timing, ...windows } = input
+  return closeFinishedAuditWindows({ ...windows, recovering: new Set((await recoveringFirstLooks(input.state, timing)).keys()) })
 }

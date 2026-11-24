@@ -254,6 +254,20 @@ export const VerifierConfigSchema = strictObject({
     directory: z.string().min(1),
     gatewayUrl: z.string().url(),
   }).strict().optional(),
+  /**
+   * Testing only: shorter waits for a dry run on a local fork (`test-timing.ts`), each optional: a failed seller's retry
+   * (`sellerRetrySpacingSeconds`, rules 30 minutes), the delay before a confirmation may start
+   * (`confirmationMinDelaySeconds`, 1 hour), an undecided confirmation's next attempt
+   * (`confirmationRecheckSpacingSeconds`, 10 minutes) and a confirmer's turn (`confirmationWindowSeconds`, 12 hours).
+   * Read at run time only: the rules and their hash keep the production values. Refused unless the chain RPC is on this
+   * machine; never set it on a production verifier. Every auditor in a test must use the same values.
+   */
+  testTiming: z.object({
+    sellerRetrySpacingSeconds: positiveIntegerSchema.optional(),
+    confirmationMinDelaySeconds: positiveIntegerSchema.optional(),
+    confirmationRecheckSpacingSeconds: positiveIntegerSchema.optional(),
+    confirmationWindowSeconds: positiveIntegerSchema.optional(),
+  }).strict().optional(),
   referenceMaxRequestsPerBuild: positiveIntegerSchema.optional(),
   referenceBatchRetryCount: z.number().int().min(0, 'must be an integer >= 0').optional(),
   referenceRetryBaseDelayMs: positiveIntegerSchema.optional(),

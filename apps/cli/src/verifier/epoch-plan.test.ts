@@ -772,3 +772,50 @@ test('a confirmation\'s close call carried on through later runs counts one atte
   // A close call that confirms nothing, carried on: counted as before (spaced seller attempts).
   assert.equal(attempts(() => [result('c', 'SAME', { ...grey, ...waiting, auditId: 'first' })]), 3)
 })
+
+test('a dry run\'s verifier.testTiming shortens the seller retry and the re-check spacing; without it the rules\' waits stand', () => {
+  const timing = { sellerRetrySpacingSeconds: 60, confirmationRecheckSpacingSeconds: 30 }
+  const failure = (runId: string, at: string) => run(runId, at, [{
+    model: 'm', results: [result('a', 'UNDETERMINED', { outcomeReason: sellerDown })],
+  }])
+  // Two failures five minutes apart: one attempt by the rules, two once the spacing is a minute.
+  const runs = [failure('r1', '2026-10-28T14:23:00.000Z'), failure('r2', '2026-10-28T14:28:00.000Z')]
+  assert.equal(mergeEpochRuns(EPOCH, runs).get(epochCellKey('m', 'a'))!.attempts, 1)
+  assert.equal(mergeEpochRuns(EPOCH, runs, timing).get(epochCellKey('m', 'a'))!.attempts, 2)
+  assert.equal(splitEpochRuns(EPOCH, runs, timing).ordinary.get(epochCellKey('m', 'a'))!.attempts, 2)
+  const cell = mergeEpochRuns(EPOCH, [runs[0]!]).get(epochCellKey('m', 'a'))!
+  const failedAt = Date.parse('2026-10-28T14:23:00.000Z') / 1_000
+  assert.equal(sellerRetryDueAt(cell), failedAt + SELLER_RETRY_SPACING_SECONDS)
+  assert.equal(sellerRetryDueAt(cell, timing), failedAt + 60)
+  assert.equal(sellerRetryWaitUntil(cell, failedAt + 61, false), failedAt + SELLER_RETRY_SPACING_SECONDS)
+  assert.equal(sellerRetryWaitUntil(cell, failedAt + 61, false, timing), null, 'due a minute after the failure')
+  // A report's attempt that failed on the auditor's side waits the confirmation re-check spacing.
+  const failed = { state: 'failed' as const, action: 'retry' as const, blame: 'auditor' as const, result: null, attempts: 0, lastAttemptAt: 1_000, confirmationReport: 'report' }
+  assert.equal(sellerRetryDueAt(failed), 1_000 + CONFIRMATION_RECHECK_SPACING_SECONDS)
+  assert.equal(sellerRetryDueAt(failed, timing), 1_030)
+  // Only what the test timing sets is shortened.
+  assert.equal(sellerRetryDueAt(failed, { sellerRetrySpacingSeconds: 60 }), 1_000 + CONFIRMATION_RECHECK_SPACING_SECONDS)
+  assert.equal(sellerRetryDueAt(cell, null), failedAt + SELLER_RETRY_SPACING_SECONDS)
+})
+
+test('a dry run\'s verifier.testTiming gives up a gone seller\'s retry once its shortened spacing has passed', () => {
+  const { cell } = retryCell()
+  const decide = (nowSeconds: number, timing?: { sellerRetrySpacingSeconds: number }) => decideRetryGiveUps({
+    cells: [cell], nowSeconds, offersModel: () => false, windowClosed: () => false, timing,
+  })
+  assert.equal(decide(LAST_ATTEMPT + 60).added.length, 0, 'by the rules, not yet due')
+  assert.equal(decide(LAST_ATTEMPT + 60, { sellerRetrySpacingSeconds: 60 }).added.length, 1)
+})
+
+test('the epoch\'s merged submission carries a dry run\'s verifier.testTiming, and none without one', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'epoch-test-timing-'))
+  try {
+    const plain = run('r1', '2026-10-28T12:00:00.000Z', [{ model: 'm', results: [result('a', 'SAME')] }])
+    const state = (manifests: VerifierRunManifestV1[]) => ({ epoch: EPOCH, manifests, cells: new Map<string, EpochCell>() })
+    assert.equal((await writeEpochSubmissionManifest(directory, state([plain.manifest]))).testTiming, undefined)
+    const timed = { ...plain.manifest, runId: 'r2', testTiming: { sellerRetrySpacingSeconds: 60 } }
+    assert.deepEqual((await writeEpochSubmissionManifest(directory, state([plain.manifest, timed]))).testTiming, { sellerRetrySpacingSeconds: 60 })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

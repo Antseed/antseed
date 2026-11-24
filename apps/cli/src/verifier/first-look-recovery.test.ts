@@ -203,3 +203,11 @@ test('submit says what becomes of a result written before the all-tests format: 
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('with a dry run\'s verifier.testTiming, a full run passes a first look over once the shortened retry spacing has passed', async () => {
+  const state = (manifests: VerifierRunManifestV1[]) => ({ ordinaryCells: new Map([[epochCellKey(cell.model, cell.peerId), cell]]), manifests })
+  // A full run five minutes after the last attempt: not due by the rules' 30 minutes, due with a one-minute spacing.
+  const soon = manifest({ startedAt: new Date((LAST_ATTEMPT + 300) * 1_000).toISOString() })
+  assert.equal((await recoveringFirstLooks(state([soon]))).size, 1)
+  assert.equal((await recoveringFirstLooks(state([soon]), { sellerRetrySpacingSeconds: 60 })).size, 0)
+})

@@ -23,6 +23,7 @@ import { normalized } from './utils.js'
 export { failureBlame, type FailureBlame } from './failure-blame.js'
 import { failureBlame, type FailureBlame, type ReasonLike } from './failure-blame.js'
 import { EXTRA_QUESTIONS_PUBLISHED } from './outcome-reason.js'
+import type { TestTimingConfig } from './test-timing.js'
 
 /** Auditor failures that the same configuration repeats on every attempt, so they are not retried. */
 const PERMANENT_AUDITOR_TEXT = [
@@ -119,16 +120,16 @@ export function reportCellKey(model: string, peerId: string, report: string): st
  * The epoch's runs split by the report each entry was made for: first looks apart, and each report's results,
  * failures and skips merged on their own (`mergeEpochRuns`), so each has its own result, attempts and spacing.
  */
-export function splitEpochRuns(epoch: string, runs: readonly RunSummaries[]): { ordinary: Map<string, EpochCell>; reports: Map<string, EpochCell> } {
+export function splitEpochRuns(epoch: string, runs: readonly RunSummaries[], timing?: TestTimingConfig | null): { ordinary: Map<string, EpochCell>; reports: Map<string, EpochCell> } {
   const partitions = partitionRunsByReport(runs)
   const reports = new Map<string, EpochCell>()
   for (const [report, history] of partitions) {
     if (report === null) continue
-    for (const [key, cell] of mergeEpochRuns(epoch, history)) {
+    for (const [key, cell] of mergeEpochRuns(epoch, history, timing)) {
       reports.set(`${key}\u0000${report}`, { ...cell, confirmationReport: report })
     }
   }
-  return { ordinary: mergeEpochRuns(epoch, partitions.get(null) ?? []), reports }
+  return { ordinary: mergeEpochRuns(epoch, partitions.get(null) ?? [], timing), reports }
 }
 
 /**
@@ -208,15 +209,21 @@ export const CONFIRMATION_RECHECK_SPACING_SECONDS = 10 * 60
 /**
  * When a seller or unclear failure may be audited again (seconds), or null when the cell is not
  * such a retry. Confirmation re-checks are spaced by `CONFIRMATION_RECHECK_SPACING_SECONDS` instead.
+ * `timing` is a dry run's `verifier.testTiming` (`test-timing.ts`); without it, the rules' spacing.
  */
-export function sellerRetryDueAt(cell: Pick<EpochCell, 'state' | 'action' | 'blame' | 'result' | 'attempts' | 'lastAttemptAt'> & Partial<Pick<EpochCell, 'confirmationReport'>>): number | null {
+export function sellerRetryDueAt(
+  cell: Pick<EpochCell, 'state' | 'action' | 'blame' | 'result' | 'attempts' | 'lastAttemptAt'> & Partial<Pick<EpochCell, 'confirmationReport'>>,
+  timing?: TestTimingConfig | null,
+): number | null {
   if (cell.action !== 'retry' || cell.lastAttemptAt === null) return null
   // A report's attempt that failed on the auditor's side waits a confirmation's spacing before it is tried again, so
   // it is not tried on every tick; any other failure on the auditor's side is retried at once, as before.
-  if (cell.blame === 'auditor') return cell.confirmationReport !== undefined ? cell.lastAttemptAt + CONFIRMATION_RECHECK_SPACING_SECONDS : null
+  if (cell.blame === 'auditor') {
+    return cell.confirmationReport !== undefined ? cell.lastAttemptAt + (timing?.confirmationRecheckSpacingSeconds ?? CONFIRMATION_RECHECK_SPACING_SECONDS) : null
+  }
   if (cell.state !== 'failed' && cell.state !== 'undetermined') return null
   if (cell.result?.confirmsDiff) return null
-  return cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS
+  return cell.lastAttemptAt + (timing?.sellerRetrySpacingSeconds ?? SELLER_RETRY_SPACING_SECONDS)
 }
 
 /**
@@ -228,9 +235,10 @@ export function sellerRetryWaitUntil(
   cell: Pick<EpochCell, 'state' | 'action' | 'blame' | 'result' | 'attempts' | 'lastAttemptAt'> | undefined,
   nowSeconds: number,
   explicitResume: boolean,
+  timing?: TestTimingConfig | null,
 ): number | null {
   if (!cell || explicitResume) return null
-  const dueAt = sellerRetryDueAt(cell)
+  const dueAt = sellerRetryDueAt(cell, timing)
   return dueAt !== null && dueAt > nowSeconds ? dueAt : null
 }
 
@@ -349,6 +357,8 @@ export function decideRetryGiveUps(input: {
   extraQuestionsPublished?: (cell: EpochCell) => boolean
   /** A first look still to be recovered (`recoveringFirstLooks`): given up like a retry when its seller is gone. */
   recovering?: (cell: EpochCell) => boolean
+  /** A dry run's `verifier.testTiming`; without it, the rules' retry spacing. */
+  timing?: TestTimingConfig | null
 }): { entries: RetryGiveUpV1[]; added: RetryGiveUpV1[]; restored: RetryGiveUpV1[] } {
   const entries: RetryGiveUpV1[] = []
   const added: RetryGiveUpV1[] = []
@@ -385,7 +395,7 @@ export function decideRetryGiveUps(input: {
     const recovery = cell.action === 'done' && input.recovering?.(cell) === true
     if (cell.action !== 'retry' && cell.action !== 'extend' && !recovery) continue
     if (cell.lastAttemptAt === null) continue
-    if (input.nowSeconds < cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS) continue
+    if (input.nowSeconds < cell.lastAttemptAt + (input.timing?.sellerRetrySpacingSeconds ?? SELLER_RETRY_SPACING_SECONDS)) continue
     if (input.offersModel(cell)) continue
     const entry: RetryGiveUpV1 = {
       model: cell.model,
@@ -484,7 +494,8 @@ interface RunSummaries {
  * waiting for its extra questions replaces it only when nothing submittable came after. Failures
  * and skips fill cells without a result.
  */
-export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Map<string, EpochCell> {
+export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[], timing?: TestTimingConfig | null): Map<string, EpochCell> {
+  const retrySpacing = timing?.sellerRetrySpacingSeconds ?? SELLER_RETRY_SPACING_SECONDS
   interface Acc {
     model: string
     peerId: string
@@ -534,7 +545,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     const countSellerAttempt = (entry: Acc, spaced: boolean): void => {
       entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
       if (spaced && finishedAt !== null && entry.countedAt !== null
-        && finishedAt - entry.countedAt < SELLER_RETRY_SPACING_SECONDS) return
+        && finishedAt - entry.countedAt < retrySpacing) return
       entry.attempts += 1
       entry.countedAt = finishedAt ?? entry.countedAt
     }
@@ -649,8 +660,11 @@ async function readSummary(path: string): Promise<ModelAuditSummaryV1 | null> {
   }
 }
 
-/** Every completed run of the epoch, merged into one state per (model, seller). */
-export async function loadEpochState(evidenceDir: string, epoch: string): Promise<EpochState> {
+/**
+ * Every completed run of the epoch, merged into one state per (model, seller). `timing` is a dry run's
+ * `verifier.testTiming`; without it, attempts are spaced as the rules say.
+ */
+export async function loadEpochState(evidenceDir: string, epoch: string, timing?: TestTimingConfig | null): Promise<EpochState> {
   const manifests = await epochRunManifests(evidenceDir, epoch)
   const runs: RunSummaries[] = []
   for (const manifest of manifests) {
@@ -661,8 +675,8 @@ export async function loadEpochState(evidenceDir: string, epoch: string): Promis
     }
     runs.push({ manifest, summaries })
   }
-  const cells = mergeEpochRuns(epoch, runs)
-  const { ordinary, reports } = splitEpochRuns(epoch, runs)
+  const cells = mergeEpochRuns(epoch, runs, timing)
+  const { ordinary, reports } = splitEpochRuns(epoch, runs, timing)
   const giveUps = await readRetryGiveUps(evidenceDir, epoch)
   // A give-up names the seller and its last attempt: it applies to whichever cell holds that attempt.
   applyRetryGiveUps(cells, giveUps)
@@ -873,7 +887,14 @@ export async function writeEpochSubmissionManifest(
     modelOrder: models,
     models: modelEntries,
     failureCount: modelEntries.reduce((total, entry) => total + entry.failureCount, 0),
+    // A dry run's shortened waits, the latest run's that had them, so its published evidence says so too.
+    ...(testTimingOfRuns(manifests) ? { testTiming: testTimingOfRuns(manifests)! } : {}),
   }
+}
+
+/** The shortened waits (`verifier.testTiming`) of the latest of these runs that had them, or undefined. */
+function testTimingOfRuns(manifests: readonly VerifierRunManifestV1[]): TestTimingConfig | undefined {
+  return [...manifests].reverse().find((manifest) => manifest.testTiming !== undefined)?.testTiming
 }
 
 function latestBy<T extends { peerId: string }>(
