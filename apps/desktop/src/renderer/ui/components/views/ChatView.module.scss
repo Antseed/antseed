@@ -190,6 +190,14 @@
    Chat layout
    =================================================================== */
 
+.chat-embedded {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
 .chat-container {
   display: flex;
   flex-direction: row;
@@ -842,3 +850,52 @@
 
 /* Calm notice for a request the gateway could not pay for: amber dot, one
    line, text links — no alert box. */
+
+/* The selection a Studio message is about. */
+.chat-context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 3px 4px 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.chat-context-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex: none;
+}
+
+.chat-context-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-context-remove {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+}

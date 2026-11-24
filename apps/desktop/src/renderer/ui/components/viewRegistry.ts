@@ -5,6 +5,7 @@ import {
   Home01Icon,
   ConnectIcon,
   DashboardSquare01Icon,
+  Film01Icon,
   Settings01Icon,
 } from '@hugeicons/core-free-icons';
 import type { ViewName } from '../types';
@@ -90,11 +91,20 @@ export const VIEW_REGISTRY = {
       nav: { slot: 'main', label: 'Agents & apps', icon: ConnectIcon },
     },
   ),
+  studio: createViewEntry(
+    async () => (await import('./views/StudioView')).StudioView as ComponentType<RoutedViewProps>,
+    {
+      receivesOnSelectView: true,
+      slideIndex: 3,
+      preloadPriority: 'idle',
+      nav: { slot: 'main', label: 'Studio', icon: Film01Icon },
+    },
+  ),
   rewards: createViewEntry(
     async () => (await import('./views/VprRewardsView')).VprRewardsView as ComponentType<RoutedViewProps>,
     {
       receivesOnSelectView: true,
-      slideIndex: 3,
+      slideIndex: 4,
       preloadPriority: 'idle',
       nav: { slot: 'main', label: 'Rewards', icon: AntIcon },
     },
@@ -103,7 +113,7 @@ export const VIEW_REGISTRY = {
     async () => (await import('./views/GatewayView')).GatewayView as ComponentType<RoutedViewProps>,
     {
       receivesOnSelectView: true,
-      slideIndex: 4,
+      slideIndex: 5,
       preloadPriority: 'idle',
       nav: { slot: 'bottom', label: 'Gateway', icon: DashboardSquare01Icon },
     },
@@ -112,14 +122,14 @@ export const VIEW_REGISTRY = {
     async () => (await import('./views/VprPreferencesView')).VprPreferencesView as ComponentType<RoutedViewProps>,
     {
       receivesOnSelectView: true,
-      slideIndex: 5,
+      slideIndex: 6,
       preloadPriority: 'idle',
       nav: { slot: 'bottom', label: 'Settings', icon: Settings01Icon },
     },
   ),
   deposit: createViewEntry(
     async () => (await import('./views/VprDepositView')).VprDepositView as ComponentType<RoutedViewProps>,
-    { receivesOnSelectView: true, slideIndex: 6, preloadPriority: 'idle' },
+    { receivesOnSelectView: true, slideIndex: 7, preloadPriority: 'idle' },
   ),
   chat: createViewEntry(
     async () => (await import('./views/ChatView')).ChatView as ComponentType<RoutedViewProps>,
@@ -133,7 +143,7 @@ export const VIEW_REGISTRY = {
     async () => (await import('./views/VprHelpView')).VprHelpView as ComponentType<RoutedViewProps>,
     {
       receivesOnSelectView: true,
-      slideIndex: 7,
+      slideIndex: 8,
       preloadPriority: 'idle',
     },
   ),
