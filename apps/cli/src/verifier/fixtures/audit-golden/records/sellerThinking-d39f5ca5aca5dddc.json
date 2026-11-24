@@ -1,6 +1,16 @@
 {
  "attempts": [
   {
+   "attemptCosts": [],
+   "failure": "{\"error\":{\"message\":\"this thinking setting is not supported\"}}",
+   "maxTokens": 800,
+   "reasoningTokens": null,
+   "requestIds": ["<seller: thinking discovery #1>"],
+   "status": 400,
+   "strategy": "reasoning-effort-minimal",
+   "validAnswers": null
+  },
+  {
    "answersOnly": true,
    "attemptCosts": [
     {
@@ -19,14 +29,15 @@
    "maxTokens": 800,
    "reasoningShown": false,
    "reasoningTokens": 0,
-   "requestIds": ["<seller: thinking discovery #1>"],
+   "requestIds": ["<seller: thinking discovery #2>"],
    "status": null,
-   "strategy": "reasoning-effort-none",
+   "strategy": "reasoning-effort-low",
    "truncated": false,
    "validAnswers": 10
   }
  ],
  "maxTokens": 160,
  "method": "kbf-reference-code-2026-09-30",
- "strategy": "reasoning-effort-none"
+ "rule": "kbf-discovery-reference-first-v1",
+ "strategy": "reasoning-effort-low"
 }

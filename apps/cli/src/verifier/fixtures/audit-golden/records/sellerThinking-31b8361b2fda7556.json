@@ -1,0 +1,33 @@
+{
+ "attempts": [
+  {
+   "answersOnly": true,
+   "attemptCosts": [
+    {
+     "estimatedCostUsd": 0.00037,
+     "inputTokens": 310,
+     "inputUsdPerMillion": 1,
+     "outputTokens": 40,
+     "outputUsdPerMillion": 2,
+     "provider": null,
+     "service": null,
+     "tokenSource": null,
+     "totalTokens": 350
+    }
+   ],
+   "billedOutputTokens": 40,
+   "maxTokens": 800,
+   "reasoningShown": false,
+   "reasoningTokens": 0,
+   "requestIds": ["<seller: thinking discovery #1>"],
+   "status": null,
+   "strategy": "reasoning-effort-none",
+   "truncated": false,
+   "validAnswers": 10
+  }
+ ],
+ "maxTokens": 160,
+ "method": "kbf-reference-code-2026-09-30",
+ "rule": "kbf-discovery-reference-first-v1",
+ "strategy": "reasoning-effort-none"
+}

@@ -77,7 +77,7 @@
    "verdict": "SAME",
    "verdictReason": null
   },
-  "sellerThinking": {"record":"sellerThinking-d3c9bcd43acbddbf"},
+  "sellerThinking": {"record":"sellerThinking-1a3aca0a69a05ef8"},
   "target": {"agentId":"7","displayName":"Example Seller","peerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","service":"deepseek-v4-pro"},
   "tests": "all-tests-v1",
   "tokenizerPrecheck": {"record":"tokenizerPrecheck-61a1065713db7202"},

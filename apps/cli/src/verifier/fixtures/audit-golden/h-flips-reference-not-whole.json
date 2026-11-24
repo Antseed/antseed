@@ -1,6 +1,6 @@
 {
  "scenario": "h-flips-reference-not-whole",
- "about": "a FLIPS reference that is not whole: while FLIPS is recorded only it hol… (122 characters, sha256 bcea893d70f7c471)",
+ "about": "a FLIPS reference that is not whole, where FLIPS counts: FLIPS is not ac… (140 characters, sha256 7e7cceac768b58f5)",
  "asked": [
   "reference (FLIPS): 80 replies",
   "reference (FLIPS): 11 replies asked again",
@@ -96,7 +96,7 @@
    "verdict": "SAME",
    "verdictReason": null
   },
-  "sellerThinking": {"record":"sellerThinking-d3c9bcd43acbddbf"},
+  "sellerThinking": {"record":"sellerThinking-1a3aca0a69a05ef8"},
   "target": {"agentId":"7","displayName":"Example Seller","peerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","service":"deepseek-v4-pro"},
   "tests": "all-tests-v1",
   "tokenizerPrecheck": {"record":"tokenizerPrecheck-61a1065713db7202"},

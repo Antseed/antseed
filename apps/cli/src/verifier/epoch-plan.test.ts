@@ -29,7 +29,6 @@ import {
 } from './epoch-plan.js'
 import type { ModelVerificationTargetResult } from './model-run.js'
 import { emptyAuditCostSummary } from './proxy-evidence.js'
-import { FLIPS_RULE } from './methods/flips/flips-score.js'
 
 const EPOCH = '28'
 
@@ -429,14 +428,8 @@ test('a confirmation of FLIPS scored between its bars: a SAME, done; with a test
   }
   // FLIPS scored between the bars clears like a pass (`confirmBetweenClears`): the questions SAME, a
   // SAME, and the confirmation is done after one attempt.
-  // While FLIPS is recorded only (until a dry run), its score between the bars clears nothing: the confirmation stays open.
-  if (!FLIPS_RULE.counts.default) {
-    const open = cellOf(['flips'], { flips: flips(0.02) } as Partial<ModelVerificationTargetResult>)
-    assert.deepEqual([open.attempts, open.action], [1, 'retry'])
-  } else {
-    const between = cellOf(['flips'], { flips: flips(0.02) } as Partial<ModelVerificationTargetResult>, false)
-    assert.deepEqual([between.state, between.attempts, between.action, heldForConfirmationRecheck(between)], ['same', 1, 'done', false])
-  }
+  const between = cellOf(['flips'], { flips: flips(0.02) } as Partial<ModelVerificationTargetResult>, false)
+  assert.deepEqual([between.state, between.attempts, between.action, heldForConfirmationRecheck(between)], ['same', 1, 'done', false])
   // FLIPS with no score is asked again: the confirmation stays open within its attempts.
   const noScore = cellOf(['flips'], { flips: flips(null) } as Partial<ModelVerificationTargetResult>)
   assert.deepEqual([noScore.attempts, noScore.action], [1, 'retry'])

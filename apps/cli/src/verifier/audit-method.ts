@@ -251,7 +251,7 @@ export interface RecordCheckBody<Slot extends CheckSlot = CheckSlot> {
    */
   inRunLine(summary: CheckSummaries[Slot]): string | null
   /**
-   * Whether the record can affect a verdict at all. A record that cannot (FLIPS while it is recorded only) is a
+   * Whether the record can affect a verdict at all. A record that cannot (FLIPS where its rule does not count it) is a
    * diagnostic: its validation, its binding and its request times stay out of the verdict path.
    */
   counts?(record: CheckRecords[Slot]): boolean

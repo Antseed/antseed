@@ -1,5 +1,5 @@
 {
- "counted": false,
+ "counted": true,
  "draw": {
   "auditor": "0xe5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
   "epoch": "7",
@@ -7,15 +7,15 @@
   "seed": "01c0dd60f4efbb39b64537edf38e9b8af686b9fd2afe2381d08342c898480064",
   "stage": "first"
  },
- "outcome": "pass",
- "p": 0.8421651369629677,
+ "outcome": "inconclusive",
+ "p": null,
  "pairs": [
   {
    "reference": {
     "referenceBatch": {"finishedAt":1791331200000,"startedAt":1791331200000},
     "replies": {
      "list": "40 records: the first and the last are shown",
-     "sha256": "6719ce7a82e010f2",
+     "sha256": "1589729743b2eb96",
      "first": {
       "content": "nickel meadow nickel nickel meadow nickel meadow meadow meadow meadow me… (447 characters, sha256 9f9774c7000a1a2a)",
       "failure": null,
@@ -23,7 +23,7 @@
       "provider": "maker",
       "reasoning": false,
       "reasoningTokens": 0,
-      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 7a79fc4f7979b452)",
+      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 b74c388ff0088167)",
       "thinkBlock": false
      },
      "last": {
@@ -33,7 +33,7 @@
       "provider": "maker",
       "reasoning": false,
       "reasoningTokens": 0,
-      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 7a79fc4f7979b452)",
+      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 b74c388ff0088167)",
       "thinkBlock": false
      }
     },
@@ -41,7 +41,7 @@
    },
    "seller": {
     "list": "10 records: the first and the last are shown",
-    "sha256": "128467b4bed620d8",
+    "sha256": "e4373f6329dddb60",
     "first": {
      "asks": [
       {
@@ -92,7 +92,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (547 characters, sha256 099cd3d9476493a9)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (531 characters, sha256 723b645b94d96b63)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -160,7 +160,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (547 characters, sha256 099cd3d9476493a9)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (531 characters, sha256 723b645b94d96b63)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -186,7 +186,7 @@
     "referenceBatch": {"finishedAt":1791331200000,"startedAt":1791331200000},
     "replies": {
      "list": "40 records: the first and the last are shown",
-     "sha256": "dd24d66a50c0035a",
+     "sha256": "8cf4bc2407379e18",
      "first": {
       "content": "ember ember ember fjord ember ember ember fjord fjord fjord ember ember … (383 characters, sha256 b5346646301f31ae)",
       "failure": null,
@@ -194,7 +194,7 @@
       "provider": "maker",
       "reasoning": false,
       "reasoningTokens": 0,
-      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 a7b18aebce6454a3)",
+      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 0649892fd526d18c)",
       "thinkBlock": false
      },
      "last": {
@@ -204,7 +204,7 @@
       "provider": "maker",
       "reasoning": false,
       "reasoningTokens": 0,
-      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 a7b18aebce6454a3)",
+      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 0649892fd526d18c)",
       "thinkBlock": false
      }
     },
@@ -212,7 +212,7 @@
    },
    "seller": {
     "list": "10 records: the first and the last are shown",
-    "sha256": "f0d775273372ebaf",
+    "sha256": "af990e7901417f55",
     "first": {
      "asks": [
       {
@@ -263,7 +263,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (529 characters, sha256 28a65e6fb729e866)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (513 characters, sha256 3ca33e2b62b280ba)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -331,7 +331,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (529 characters, sha256 28a65e6fb729e866)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (513 characters, sha256 3ca33e2b62b280ba)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -354,17 +354,17 @@
   }
  ],
  "reasks": 0,
- "reason": "scored 0.78 (p 0.842), above 0.1",
- "reasoningCounts": {"referenceReasoningReplies":0,"referenceReasoningTokens":0,"referenceReplies":80,"sellerReasoningReplies":0,"sellerReasoningTokens":0,"sellerReplies":20},
+ "reason": "the seller could not be asked the way the reference was: the seller was … (235 characters, sha256 ff7cdcca9b2c3dd1)",
  "referenceOneProvider": true,
  "referenceUpstream": {"kind":"test"},
  "rule": "flips-v1",
- "score": 0.7775341197144852,
- "scoreMax": 5.572353002177747,
+ "score": null,
+ "scoreMax": null,
  "service": "deepseek-v4-pro",
  "thinking": {
-  "reference": {"overrides":{"reasoning":{"enabled":false}},"source":"fixed","strategy":null},
-  "seller": {"assistantPrefill":"<think></think>","overrides":{},"source":"discovery","strategy":"prefill"}
+  "discoveryRule": "kbf-discovery-reference-first-v1",
+  "reference": {"overrides":{"reasoning":{"effort":"none"}},"source":"bank","strategy":"reasoning-effort-none"},
+  "seller": {"overrides":{"reasoning":{"effort":"minimal"}},"source":"discovery","strategy":"reasoning-effort-minimal"}
  },
  "timing": {"finishedAt":1791331200000,"startedAt":1791331200000}
 }

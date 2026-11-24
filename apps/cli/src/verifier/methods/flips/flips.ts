@@ -1,5 +1,5 @@
 import { createHash, createHmac } from 'node:crypto'
-import { canonicalJsonStringify, isKbfTokenLimitFinishReason } from '@antseed/fingerprints'
+import { THINKING_DISCOVERY_RULE, THINKING_DISCOVERY_RULES, canonicalJsonStringify, isKbfTokenLimitFinishReason, type ThinkingDiscoveryRuleId } from '@antseed/fingerprints'
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import {
   FLIPS_REQUESTS,
@@ -16,7 +16,7 @@ import {
   type FlipsRule,
 } from './flips-score.js'
 import { ConcurrencyLimiter } from '../../audit-concurrency.js'
-import { isAllowedSetting, requestCarries, strategySetting, type ThinkingSetting } from '../../audit-thinking.js'
+import { askedAsReference, describeSetting, isAllowedSetting, requestCarries, strategySetting, type ThinkingSetting } from '../../audit-thinking.js'
 import { readAnswerText } from '../shared/output-usage.js'
 import { untilAborted } from '../../utils.js'
 import { costOfRequests, requestCountOf, type AuditCostSummaryV1, type PaidRequest } from '../../proxy-evidence.js'
@@ -46,6 +46,9 @@ import {
  *   is judged on all its replies (`judgeFlips`).
  * - A check with a slot still unanswered, a reference pair from more than one provider, a reference request the route
  *   changed, or a seller that thinks where the reference does not, has no result.
+ * - So does a seller asked with another thinking setting than the reference (`FLIPS_NOT_ASKED_AS_REFERENCE`): its
+ *   discovery tries the reference's setting first, then its nearest equivalent (`"low"` for `"minimal"`, which counts as
+ *   the reference's), and a seller that takes neither gives no comparable sample.
  */
 
 /**
@@ -172,6 +175,20 @@ export interface FlipsThinkingV1 {
   seller: ThinkingSetting
   /** The bank's setting where the bank's discovery reached 0 reasoning tokens with it; else the eval's switch. */
   reference: ThinkingSetting
+  /**
+   * The discovery rule the seller's setting was found under (`THINKING_DISCOVERY_RULE`). Under
+   * `kbf-discovery-reference-first-v1` a seller asked otherwise than the reference has no result
+   * (`FLIPS_NOT_ASKED_AS_REFERENCE`). A record without it was made before, when the sides could differ, and is judged so.
+   */
+  discoveryRule?: ThinkingDiscoveryRuleId
+}
+
+/** Why a FLIPS check has no result when the seller's setting is not the reference's. */
+export const FLIPS_NOT_ASKED_AS_REFERENCE = 'the seller could not be asked the way the reference was'
+
+/** Whether a record's sides must be asked the same way: under the reference-first discovery rule, not before it. */
+function asksAsReference(thinking: FlipsThinkingV1): boolean {
+  return thinking.discoveryRule !== undefined && thinking.discoveryRule !== THINKING_DISCOVERY_RULES[0]
 }
 
 /** One scheduled slot of the seller: its signed request, or null when it never got a reply within the budget. */
@@ -632,6 +649,12 @@ function judgeLook(
     if (signed.some((answer) => requestShape(answer.requestBody) !== expected)) return none(`${label}: a seller request is not the reference's`)
     read.push({ pair, answers: signed })
   }
+  // Each side carried the setting it names. The seller's discovery tried the reference's first, then its nearest
+  // equivalent (`"low"` for `"minimal"`); a seller that took neither was asked otherwise, and its sample is not one the
+  // reference's can judge.
+  if (asksAsReference(thinking) && !askedAsReference(thinking.seller, thinking.reference)) {
+    return none(`${FLIPS_NOT_ASKED_AS_REFERENCE}: the seller was asked with ${describeSetting(thinking.seller)}, the reference with ${describeSetting(thinking.reference)}`)
+  }
   // The reasoning profile, across both pairs and in both directions: the seller's must be the reference's. Honest hosts
   // that ignore the reasoning setting land here, and so do swaps that reason where the claimed model does not; each
   // case keeps its own code and the counts of both sides, so the dry run decides on those numbers whether it stays so.
@@ -761,6 +784,11 @@ export function validateFlips(record: FlipsV1): void {
   if (!isAllowedSetting(record.thinking.seller, { discovery: true, bank: true })) throw new Error('a FLIPS check names a seller thinking setting its rule does not allow')
   if (!isAllowedSetting(record.thinking.reference, { bank: true, fixed: flipsFixedSetting(record.draw.model) })) {
     throw new Error('a FLIPS check names a reference thinking setting its rule does not allow')
+  }
+  // Its discovery rule is one this build knows, each judged by its own (`judgeFlips`); none for a record made before.
+  const discoveryRule = record.thinking.discoveryRule
+  if (discoveryRule !== undefined && !(THINKING_DISCOVERY_RULES as readonly string[]).includes(discoveryRule)) {
+    throw new Error(`a FLIPS check names an unknown thinking discovery rule ${String(discoveryRule)}`)
   }
   const drawn = drawFlipsPairs(record.draw, rule)
   if (canonicalJsonStringify(drawn) !== canonicalJsonStringify(record.pairs.map((pair) => pair.words))) {
@@ -930,21 +958,25 @@ export async function prepareFlipsReference(input: {
 /**
  * What a stage's reference means for a seller's audit, decided once per model, stage and run before anything paid:
  * - `ready`: the reference is whole (or FLIPS does not count here): the audit runs.
- * - `not-started`: where FLIPS counts and the reference is not whole after its one re-ask, the audit is not started
- *   (`FLIPS_AUDITOR_FAILURE`, nothing paid): it is the auditor's attempt, never the seller's, and the next run asks again.
- * - `without-flips`: on the auditor's last attempt the audit runs and FLIPS has no result, so the other tests decide.
- *   Never for a confirmation of a report only FLIPS flagged: without FLIPS it could not decide, so it stays not started.
+ * - `without-flips`: where FLIPS counts and the reference is not whole after its one re-ask, FLIPS is not active for the
+ *   model this run: every audit of the stage runs with the questions and the other tests, and FLIPS keeps no record, its
+ *   reason the reference's (`flips-status.json`, `flipsWithoutRecord`). A reference never holds a model back.
+ * - `not-started`: only a confirmation of a report only FLIPS flagged, which could decide nothing without FLIPS: it is
+ *   not started (`FLIPS_AUDITOR_FAILURE`, nothing paid), the auditor's attempt, and the next run asks again.
  */
 export type FlipsReferenceDecision = 'ready' | 'not-started' | 'without-flips'
-export function flipsReferenceDecision(input: { whole: boolean; counts: boolean; probing: boolean; lastAuditorAttempt: boolean; confirming: readonly string[] }): FlipsReferenceDecision {
+export function flipsReferenceDecision(input: { whole: boolean; counts: boolean; probing: boolean; confirming: readonly string[] }): FlipsReferenceDecision {
   if (input.whole || !input.counts || input.probing) return 'ready'
   const onlyFlips = input.confirming.length > 0 && input.confirming.every((check) => check === 'flips')
-  return input.lastAuditorAttempt && !onlyFlips ? 'without-flips' : 'not-started'
+  return onlyFlips ? 'not-started' : 'without-flips'
 }
 
 /** The text an audit not started for its reference fails with: blamed on the auditor (`failure-blame.ts`). */
 export const FLIPS_AUDITOR_FAILURE = 'the randomness check could not run on the auditor\'s side'
-/** The detail of `FLIPS_AUDITOR_FAILURE` for a stage's reference not whole this run: what the run and the report show. */
+/**
+ * The detail of `FLIPS_AUDITOR_FAILURE` for a confirmation of a report only FLIPS flagged whose stage's reference is not
+ * whole this run: what the run and the report show.
+ */
 export const FLIPS_WAITING_FOR_REFERENCE = 'waiting for its reference: it was not whole this run, so the audit was not started and nothing was paid'
 
 /** Slots asked again in one check, at most: only slots that got no reply at all after a failure that can pass. */
@@ -1023,7 +1055,7 @@ export async function runFlips(input: {
     service: input.seller.service,
     referenceUpstream: input.reference.upstream,
     referenceOneProvider: input.reference.oneProvider,
-    thinking: { seller: input.sellerThinking, reference: input.reference.thinking },
+    thinking: { seller: input.sellerThinking, reference: input.reference.thinking, discoveryRule: THINKING_DISCOVERY_RULE },
     pairs,
     reasks,
   }
@@ -1042,8 +1074,15 @@ export async function runFlips(input: {
 /** How long one seller's FLIPS may take, its seller slots at a time, and the reference's own limit. */
 export const FLIPS_TIME_LIMIT_MS = 5 * 60_000
 export const FLIPS_SLOTS_AT_ONCE = 2
-// A whole reference answers well inside this limit; one with holes takes far longer, and is asked again once inside it.
-export const FLIPS_REFERENCE_TIME_LIMIT_MS = 3 * 60_000
+/**
+ * The reference's own limit, from when it is asked to its last answer, its re-ask included. It is sized to what is asked: a
+ * stage's 80 requests, and both stages' 160 when a run confirms FLIPS too, through the model's own FLIPS reference limiter
+ * (`flips-run.ts`) at the default 6 requests at once per model, at 15 seconds a request: 27 rounds take under 7 minutes,
+ * and the re-ask of a few holes the rest. Each model has its own limiter, so no model's reference waits behind
+ * another's. A reference that is still not whole at it leaves FLIPS not active for the model this run
+ * (`flipsReferenceDecision`).
+ */
+export const FLIPS_REFERENCE_TIME_LIMIT_MS = 8 * 60_000
 
 /** Dry run only: chosen pairs, a stage for every check, and a fresh-pairs follow-up after each first flag. */
 export interface FlipsProbe {
@@ -1070,7 +1109,7 @@ export interface FlipsScreen<Settings> {
    * paid (`flipsReferenceDecision`). Where FLIPS counts it waits for the reference (at most `FLIPS_REFERENCE_TIME_LIMIT_MS`);
    * elsewhere it starts it and returns 'ready' at once.
    */
-  referenceDecision?: (stage: FlipsStage, service: string, settings: Settings, audit: { lastAuditorAttempt: boolean; confirming: readonly string[] }) => Promise<FlipsReferenceDecision>
+  referenceDecision?: (stage: FlipsStage, service: string, settings: Settings, audit: { confirming: readonly string[] }) => Promise<FlipsReferenceDecision>
   /** The probe's settings (canonical JSON), null without one: a carried probe of other settings is asked again. */
   probeSettings: string | null
   /** Asks the reference of a stage now, while the questions run; its failure is reported, never thrown. */
@@ -1197,7 +1236,7 @@ export function createFlipsScreen<Settings>(input: {
     const problem = flipsReferenceProblem({ draw, service: seller.service, referenceOneProvider: prepared.oneProvider, pairs: prepared.pairs, thinking: prepared.thinking }, rule)
     const stored = {
       rule: rule.id, draw, service: seller.service, referenceUpstream: prepared.upstream, referenceOneProvider: prepared.oneProvider,
-      thinking: { seller: options.sellerThinking, reference: prepared.thinking },
+      thinking: { seller: options.sellerThinking, reference: prepared.thinking, discoveryRule: THINKING_DISCOVERY_RULE },
     }
     if (problem) {
       // The reference is checked before the seller is asked: an unusable one costs the seller nothing.
@@ -1247,7 +1286,7 @@ export function createFlipsScreen<Settings>(input: {
       }
       if (asked === null) whole = false
       else await asked.then(() => undefined, () => { whole = false })
-      return flipsReferenceDecision({ whole, counts, probing, lastAuditorAttempt: audit.lastAuditorAttempt, confirming: audit.confirming })
+      return flipsReferenceDecision({ whole, counts, probing, confirming: audit.confirming })
     },
     probeSettings,
     warm(service, settings, stage) {
@@ -1346,14 +1385,25 @@ export function flipsFingerprint(): Record<string, unknown> {
     counts: ['minimax-m3', 'claude-opus-5.5', 'unmeasured-model'].map((model) => flipsCounts(model)),
     // What a stage's reference means for an audit, decided once per run before anything paid: run, not started, or run
     // with FLIPS at no result on the auditor's last attempt (never for a report only FLIPS flagged).
-    referenceDecision: [false, true].flatMap((whole) => [false, true].flatMap((counts) => [false, true].flatMap((probing) => [false, true].flatMap((lastAuditorAttempt) => (
-      [[], ['flips'], ['kbf', 'flips']].map((confirming) => flipsReferenceDecision({ whole, counts, probing, lastAuditorAttempt, confirming }))))))),
+    referenceDecision: [false, true].flatMap((whole) => [false, true].flatMap((counts) => [false, true].flatMap((probing) => (
+      [[], ['flips'], ['kbf', 'flips']].map((confirming) => flipsReferenceDecision({ whole, counts, probing, confirming })))))),
     // One judged record through each branch of the judge: placeholders cut at the limit, replies without a sequence on
     // either side, repeated replies, and an over-long reference reply left out.
     judged: SAMPLE_FLIPS_CHECKS.map(([name, edit]) => {
       const judged = judgeFlips(sampleFlipsRecord(edit))
       return [name, judged.outcome, judged.p === null ? null : Number(judged.p.toExponential(6)), judged.noSequence?.code ?? null,
         judged.repeats?.code ?? null, judged.profileMismatch?.code ?? null]
+    }),
+    // A seller asked with another setting than the reference: no result under the reference-first discovery rule, judged
+    // as before under the rule before it. Each pair of sides, by discovery rule (none, the old one, this build's).
+    askedAsReference: ([undefined, ...THINKING_DISCOVERY_RULES] as const).map((discoveryRule) => {
+      const fixed = flipsFixedSetting('claude-opus-5.5')
+      // The eval's switch for the model is effort minimal: the same request from discovery, its nearest equivalent (effort
+      // low), then a different one.
+      return [strategySetting('reasoning-effort-minimal'), strategySetting('reasoning-effort-low'), strategySetting('disable-thinking')].map((seller) => {
+        const judged = judgeFlips({ ...sampleFlipsRecord(() => undefined, seller), thinking: { seller, reference: fixed, ...(discoveryRule ? { discoveryRule } : {}) } })
+        return [discoveryRule ?? null, judged.outcome, judged.reason.startsWith(FLIPS_NOT_ASKED_AS_REFERENCE)]
+      })
     }),
   }
 }
@@ -1369,8 +1419,11 @@ const SAMPLE_FLIPS_CHECKS: ReadonlyArray<readonly [string, FlipsSampleEdit]> = [
   ['an over-long reference reply', (pair, index) => { if (index === 0) pair.reference[0]!.content = 'amber '.repeat(1_100) }],
 ]
 
-/** A first-stage FLIPS check of fixed replies, the seller's signed, edited by one sample, to judge under this build. */
-function sampleFlipsRecord(edit: FlipsSampleEdit): Pick<FlipsV1, 'draw' | 'service' | 'referenceOneProvider' | 'pairs'> {
+/**
+ * A first-stage FLIPS check of fixed replies, the seller's signed, edited by one sample, to judge under this build. The
+ * seller's requests carry `sellerThinking`, the eval's switch by default, as the reference's always do.
+ */
+function sampleFlipsRecord(edit: FlipsSampleEdit, sellerThinking?: ThinkingSetting): Pick<FlipsV1, 'draw' | 'service' | 'referenceOneProvider' | 'pairs'> {
   const model = 'claude-opus-5.5'
   const draw = { auditor: '0x00', model, epoch: '1', seed: '00', stage: 'first' as const }
   // A fixed pseudo-random sequence per reply (xorshift32 from its seed): no two replies of a side repeat.
@@ -1393,6 +1446,7 @@ function sampleFlipsRecord(edit: FlipsSampleEdit): Pick<FlipsV1, 'draw' | 'servi
       }
       edit(replies, pairIndex)
       const body = flipsRequestBody(model, model, words)
+      const sellerBody = sellerThinking ? flipsRequestBody(model, model, words, FLIPS_RULE, sellerThinking) : body
       return {
         words,
         reference: {
@@ -1411,7 +1465,7 @@ function sampleFlipsRecord(edit: FlipsSampleEdit): Pick<FlipsV1, 'draw' | 'servi
                 record: { requestId: id, sellerPeerId: 'sample', advertisedService: model },
                 signedPreimages: {
                   encoding: 'antseed-http-codec-v1', signatureEncoding: 'antseed-response-auth-signing-v1',
-                  requestBase64: Buffer.from(encodeHttpRequest({ requestId: id, method: 'POST', path: '/v1/chat/completions', headers: {}, body: encoder.encode(JSON.stringify(body)) })).toString('base64'),
+                  requestBase64: Buffer.from(encodeHttpRequest({ requestId: id, method: 'POST', path: '/v1/chat/completions', headers: {}, body: encoder.encode(JSON.stringify(sellerBody)) })).toString('base64'),
                   responseBase64: Buffer.from(encodeHttpResponse({ requestId: id, statusCode: 200, headers: {}, body: encoder.encode(JSON.stringify(answer)) })).toString('base64'),
                   responseAuthSigningBase64: 'AA==', requestHash: `0x${'44'.repeat(32)}`, responseHash: `0x${'55'.repeat(32)}`,
                 },

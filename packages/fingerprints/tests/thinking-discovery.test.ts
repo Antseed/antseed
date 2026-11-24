@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   THINKING_DISCOVERY_RULE,
+  THINKING_DISCOVERY_RULES,
+  THINKING_DISCOVERY_STRATEGIES,
   THINKING_FALLBACK_MAX_TOKENS,
+  THINKING_REFERENCE_EQUIVALENTS,
   countDiscoveryAnswers,
   discoverThinkingSuppression,
   isKbfTokenLimitFinishReason,
@@ -36,7 +39,6 @@ describe('thinking discovery helpers', () => {
   });
 
   it('kbf-discovery-least-reasoning-v1: when nothing turns thinking off, the strategy that thought least is used, not bare', async () => {
-    expect(THINKING_DISCOVERY_RULE).toBe('kbf-discovery-least-reasoning-v1');
     // GLM 5.3 on its maker's endpoint in November 2026: effort none refused, every other setting accepted but still thinking.
     const thinking: Record<string, number> = { 'reasoning-effort-minimal': 70, 'disable-thinking': 200, 'enable-thinking-false': 197, prefill: 93, bare: 295 };
     const glm: ThinkingDiscoveryProbe = async ({ strategy }) => strategy === 'reasoning-effort-none'
@@ -114,6 +116,117 @@ describe('thinking discovery helpers', () => {
     const result = await discoverThinkingSuppression({ model: 'm', label: 'endpoint', supportsPrefill: false, probe });
     expect(result.strategy).toBe('reasoning-effort-minimal');
     expect(result.attempts[0]!.validAnswers).toBe(0);
+  });
+
+  describe('kbf-discovery-reference-first-v1: the reference\'s setting is tried first', () => {
+    /** An endpoint that answers every setting from a table: reasoning tokens by strategy, or a refusal. */
+    const endpoint = (table: Record<string, number | 'refused'>, otherwise: number | 'refused' = 0): ThinkingDiscoveryProbe => async ({ strategy }) => {
+      const value = table[strategy] ?? otherwise;
+      return value === 'refused' ? { ok: false, status: 400, failure: `${strategy} is not supported` } : { ok: true, content: ANSWERS, reasoningTokens: value };
+    };
+    const order = (result: { attempts: Array<{ strategy: string }> }) => result.attempts.map((attempt) => attempt.strategy);
+
+    it('is the rule this build records, with the rule before it still known', () => {
+      expect(THINKING_DISCOVERY_RULE).toBe('kbf-discovery-reference-first-v1');
+      expect(THINKING_DISCOVERY_RULES).toEqual(['kbf-discovery-least-reasoning-v1', 'kbf-discovery-reference-first-v1']);
+    });
+
+    it('keeps the reference\'s setting when it answers with 0 reasoning tokens, though an earlier setting would too', async () => {
+      // Sonnet 5.5: its reference route refuses effort none, so its bank recorded minimal; this seller takes both.
+      const logs: string[] = [];
+      const result = await discoverThinkingSuppression({
+        model: 'claude-sonnet-5.5', label: 'seller', supportsPrefill: true, probe: endpoint({}), referenceStrategy: 'reasoning-effort-minimal', log: (line) => logs.push(line),
+      });
+      expect([result.strategy, result.overrides]).toEqual(['reasoning-effort-minimal', { reasoning: { effort: 'minimal' } }]);
+      expect(order(result)).toEqual(['reasoning-effort-minimal']);
+      expect(logs.at(-1)).toMatch(/the reference's 'reasoning-effort-minimal' works on seller/);
+      // Without it the order keeps effort none, as before.
+      expect((await discoverThinkingSuppression({ model: 'm', label: 'seller', supportsPrefill: true, probe: endpoint({}) })).strategy).toBe('reasoning-effort-none');
+    });
+
+    it('goes on in the usual order when the seller refuses the reference\'s setting, without asking it again', async () => {
+      const result = await discoverThinkingSuppression({
+        model: 'm', label: 'seller', supportsPrefill: true, probe: endpoint({ 'disable-thinking': 'refused', 'reasoning-effort-none': 'refused' }), referenceStrategy: 'disable-thinking',
+      });
+      expect(result.strategy).toBe('reasoning-effort-minimal');
+      expect(order(result)).toEqual(['disable-thinking', 'reasoning-effort-none', 'reasoning-effort-minimal']);
+    });
+
+    it('goes on in the usual order when the seller still reasons with the reference\'s setting', async () => {
+      const reasons = await discoverThinkingSuppression({
+        model: 'm', label: 'seller', supportsPrefill: true, probe: endpoint({ 'disable-thinking': 30 }), referenceStrategy: 'disable-thinking',
+      });
+      expect(reasons.strategy).toBe('reasoning-effort-none');
+      expect(order(reasons)).toEqual(['disable-thinking', 'reasoning-effort-none']);
+      // A reply that reasons in the open or stops at the limit is no answer with the reference's setting either.
+      const cutOff: ThinkingDiscoveryProbe = async ({ strategy }) => ({ ok: true, content: ANSWERS, reasoningTokens: 0, truncated: strategy === 'reasoning-effort-minimal' });
+      expect((await discoverThinkingSuppression({ model: 'm', label: 'seller', supportsPrefill: true, probe: cutOff, referenceStrategy: 'reasoning-effort-minimal' })).strategy).toBe('reasoning-effort-none');
+    });
+
+    it('reads the reference\'s attempt in its own place, so the least-reasoning pick is the one the usual order gives', async () => {
+      // GLM 5.3: nothing turns thinking off; minimal thinks least. Tried first or in its place, the same pick and the same
+      // number of requests, minimal sent once.
+      const glm = endpoint({ 'reasoning-effort-none': 'refused', 'reasoning-effort-minimal': 70, 'disable-thinking': 200, 'enable-thinking-false': 197, prefill: 93, bare: 295 });
+      const before = await discoverThinkingSuppression({ model: 'm', label: 'seller', supportsPrefill: true, probe: glm });
+      const first = await discoverThinkingSuppression({ model: 'm', label: 'seller', supportsPrefill: true, probe: glm, referenceStrategy: 'reasoning-effort-minimal' });
+      expect(first.strategy).toBe(before.strategy);
+      expect(first.attempts).toHaveLength(before.attempts.length);
+      expect(order(first).filter((strategy) => strategy === 'reasoning-effort-minimal')).toHaveLength(1);
+      // On a tie the earlier strategy in the order still wins, not the one asked first.
+      const tie = endpoint({ 'reasoning-effort-none': 60, prefill: 60, bare: 500 }, 300);
+      expect((await discoverThinkingSuppression({ model: 'm', label: 'seller', supportsPrefill: true, probe: tie, referenceStrategy: 'prefill' })).strategy).toBe('reasoning-effort-none');
+    });
+
+    it('asks a seller that refuses the reference\'s "minimal" with "low" next, never "none" first, and keeps it at 0 reasoning', async () => {
+      expect(THINKING_REFERENCE_EQUIVALENTS).toEqual({ 'reasoning-effort-minimal': 'reasoning-effort-low' });
+      // A host that refuses "minimal" and takes "low" and "none": "low" is kept, "none" is never sent.
+      const logs: string[] = [];
+      const result = await discoverThinkingSuppression({
+        model: 'claude-sonnet-5.5', label: 'seller', supportsPrefill: true, probe: endpoint({ 'reasoning-effort-minimal': 'refused' }), referenceStrategy: 'reasoning-effort-minimal', log: (line) => logs.push(line),
+      });
+      expect([result.strategy, result.overrides]).toEqual(['reasoning-effort-low', { reasoning: { effort: 'low' } }]);
+      expect(order(result)).toEqual(['reasoning-effort-minimal', 'reasoning-effort-low']);
+      expect(logs.at(-1)).toMatch(/nearest equivalent 'reasoning-effort-low' works/);
+    });
+
+    it('goes on in the usual order when "low" reasons or is refused too, and tries "low" only after a refusal of "minimal"', async () => {
+      const lowReasons = await discoverThinkingSuppression({
+        model: 'm', label: 'seller', supportsPrefill: true, probe: endpoint({ 'reasoning-effort-minimal': 'refused', 'reasoning-effort-low': 25 }), referenceStrategy: 'reasoning-effort-minimal',
+      });
+      expect(lowReasons.strategy).toBe('reasoning-effort-none');
+      expect(order(lowReasons)).toEqual(['reasoning-effort-minimal', 'reasoning-effort-low', 'reasoning-effort-none']);
+      const bothRefused = await discoverThinkingSuppression({
+        model: 'm', label: 'seller', supportsPrefill: true, probe: endpoint({ 'reasoning-effort-minimal': 'refused', 'reasoning-effort-low': 'refused', 'reasoning-effort-none': 'refused' }), referenceStrategy: 'reasoning-effort-minimal',
+      });
+      expect(order(bothRefused)).toEqual(['reasoning-effort-minimal', 'reasoning-effort-low', 'reasoning-effort-none', 'disable-thinking']);
+      // "low" never stands in the least-reasoning pick: nothing turns thinking off, and the pick is the usual order's.
+      const glm = endpoint({ 'reasoning-effort-none': 'refused', 'reasoning-effort-minimal': 'refused', 'reasoning-effort-low': 5, 'disable-thinking': 200, 'enable-thinking-false': 197, prefill: 93, bare: 295 });
+      expect((await discoverThinkingSuppression({ model: 'm', label: 'seller', supportsPrefill: true, probe: glm, referenceStrategy: 'reasoning-effort-minimal' })).strategy).toBe('prefill');
+      // "minimal" answered but reasoned: no refusal, so no "low"; a 429 is no refusal either.
+      expect(order(await discoverThinkingSuppression({ model: 'm', label: 'seller', supportsPrefill: true, probe: endpoint({ 'reasoning-effort-minimal': 30 }), referenceStrategy: 'reasoning-effort-minimal' })))
+        .toEqual(['reasoning-effort-minimal', 'reasoning-effort-none']);
+      const busy: ThinkingDiscoveryProbe = async ({ strategy }) => strategy === 'reasoning-effort-minimal' ? { ok: false, status: 429, failure: 'busy' } : { ok: true, content: ANSWERS, reasoningTokens: 0 };
+      expect(order(await discoverThinkingSuppression({ model: 'm', label: 'seller', supportsPrefill: true, probe: busy, referenceStrategy: 'reasoning-effort-minimal' })))
+        .toEqual(['reasoning-effort-minimal', 'reasoning-effort-none']);
+      // No other setting has an equivalent: a refused "disable-thinking" goes straight to the order.
+      expect(order(await discoverThinkingSuppression({ model: 'm', label: 'seller', supportsPrefill: true, probe: endpoint({ 'disable-thinking': 'refused' }), referenceStrategy: 'disable-thinking' })))
+        .toEqual(['disable-thinking', 'reasoning-effort-none']);
+    });
+
+    it('runs the usual order unchanged without a reference setting: none, bare, bare-expanded, an older name, or a prefill the route cannot send', async () => {
+      const probe = endpoint({ 'reasoning-effort-none': 'refused' });
+      const usual = await discoverThinkingSuppression({ model: 'm', label: 'seller', supportsPrefill: false, probe });
+      expect(order(usual)).toEqual(['reasoning-effort-none', 'reasoning-effort-minimal']);
+      for (const referenceStrategy of [null, undefined, 'bare', 'bare-expanded', 'reasoning-effort-minimum-supported', 'prefill'] as const) {
+        const result = await discoverThinkingSuppression({ model: 'm', label: 'seller', supportsPrefill: false, probe, referenceStrategy: referenceStrategy as never });
+        expect(order(result), String(referenceStrategy)).toEqual(order(usual));
+      }
+      // Every setting that sets something can be tried first.
+      for (const strategy of THINKING_DISCOVERY_STRATEGIES.filter((name) => name !== 'bare')) {
+        const result = await discoverThinkingSuppression({ model: 'm', label: 'seller', supportsPrefill: true, probe: endpoint({}), referenceStrategy: strategy });
+        expect(order(result)).toEqual([strategy]);
+      }
+    });
   });
 
   it('recognises token-limit finish reasons across APIs', () => {

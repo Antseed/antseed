@@ -103,7 +103,7 @@
    "model": "deepseek-v4-pro",
    "stage": "first",
    "outcome": "pass",
-   "counted": false,
+   "counted": true,
    "p": 0.8421651369629677,
    "score": 0.7775341197144852,
    "reason": "scored 0.78 (p 0.842), above 0.1"
@@ -114,7 +114,7 @@
   "createdAt": "2026-10-07T00:00:00.000Z",
   "evidenceLevel": "proxy-observation-with-verified-response-auth-no-payment-evidence",
   "exchanges": [{"record":"exchange-f54f222eb6fa7843"},{"record":"exchange-13d150ec7bcfede0"},{"record":"exchange-dccc4d830aa03559"}],
-  "flips": {"record":"flips-87528c7c1a8d413d"},
+  "flips": {"record":"flips-6d7c57dbb4bba952"},
   "kind": "antseed-buyer-proxy-kbf-audit",
   "outputCap": {"record":"outputCap-0635ebe1e994b733"},
   "outputEcho": {"record":"outputEcho-b2856c07b1481c29"},
@@ -132,13 +132,13 @@
    "verdict": "SAME",
    "verdictReason": null
   },
-  "sellerThinking": {"record":"sellerThinking-c22c7125959bfb23"},
+  "sellerThinking": {"record":"sellerThinking-b3e1fa14314265d7"},
   "target": {"agentId":"7","displayName":"Example Seller","peerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","service":"deepseek-v4-pro"},
   "tests": "all-tests-v1",
   "tokenizerPrecheck": {"record":"tokenizerPrecheck-61a1065713db7202"},
   "version": 1
  },
- "read": {"flaggedBy":[],"passedBy":["tokens","output-cap","output-echo","output-offset","kbf"],"submit":"accepted"},
+ "read": {"flaggedBy":[],"passedBy":["tokens","output-cap","output-echo","output-offset","flips","kbf"],"submit":"accepted"},
  "files": [
   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/README.md",
   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/evidence.json",

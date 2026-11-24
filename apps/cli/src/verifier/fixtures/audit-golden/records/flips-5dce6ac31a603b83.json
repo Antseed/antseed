@@ -1,5 +1,5 @@
 {
- "counted": false,
+ "counted": true,
  "draw": {
   "auditor": "0xe5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
   "epoch": "7",
@@ -15,7 +15,7 @@
     "referenceBatch": {"finishedAt":1791331200000,"startedAt":1791331200000},
     "replies": {
      "list": "40 records: the first and the last are shown",
-     "sha256": "6719ce7a82e010f2",
+     "sha256": "c192bea232f6a32b",
      "first": {
       "content": "nickel meadow nickel nickel meadow nickel meadow meadow meadow meadow me… (447 characters, sha256 9f9774c7000a1a2a)",
       "failure": null,
@@ -23,7 +23,7 @@
       "provider": "maker",
       "reasoning": false,
       "reasoningTokens": 0,
-      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 7a79fc4f7979b452)",
+      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (531 characters, sha256 723b645b94d96b63)",
       "thinkBlock": false
      },
      "last": {
@@ -33,7 +33,7 @@
       "provider": "maker",
       "reasoning": false,
       "reasoningTokens": 0,
-      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (528 characters, sha256 7a79fc4f7979b452)",
+      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (531 characters, sha256 723b645b94d96b63)",
       "thinkBlock": false
      }
     },
@@ -41,7 +41,7 @@
    },
    "seller": {
     "list": "10 records: the first and the last are shown",
-    "sha256": "69aac141f70b7280",
+    "sha256": "f2d90d745dac4741",
     "first": {
      "asks": [
       {
@@ -92,7 +92,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (529 characters, sha256 896433d10ee065b9)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (527 characters, sha256 f2ef05e28fa4a645)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -160,7 +160,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (529 characters, sha256 896433d10ee065b9)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (527 characters, sha256 f2ef05e28fa4a645)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -186,7 +186,7 @@
     "referenceBatch": {"finishedAt":1791331200000,"startedAt":1791331200000},
     "replies": {
      "list": "40 records: the first and the last are shown",
-     "sha256": "dd24d66a50c0035a",
+     "sha256": "a0335ba440ecc242",
      "first": {
       "content": "ember ember ember fjord ember ember ember fjord fjord fjord ember ember … (383 characters, sha256 b5346646301f31ae)",
       "failure": null,
@@ -194,7 +194,7 @@
       "provider": "maker",
       "reasoning": false,
       "reasoningTokens": 0,
-      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 a7b18aebce6454a3)",
+      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (513 characters, sha256 3ca33e2b62b280ba)",
       "thinkBlock": false
      },
      "last": {
@@ -204,7 +204,7 @@
       "provider": "maker",
       "reasoning": false,
       "reasoningTokens": 0,
-      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (510 characters, sha256 a7b18aebce6454a3)",
+      "request": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (513 characters, sha256 3ca33e2b62b280ba)",
       "thinkBlock": false
      }
     },
@@ -212,7 +212,7 @@
    },
    "seller": {
     "list": "10 records: the first and the last are shown",
-    "sha256": "3fc8e2851d3c7a75",
+    "sha256": "b52f4714160482e8",
     "first": {
      "asks": [
       {
@@ -263,7 +263,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (511 characters, sha256 bf3fc648ee35f00a)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (509 characters, sha256 d9d690366cbe68e1)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -331,7 +331,7 @@
          "method": "POST",
          "path": "/v1/chat/completions",
          "headers": {},
-         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (511 characters, sha256 bf3fc648ee35f00a)"
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Give a … (509 characters, sha256 d9d690366cbe68e1)"
         },
         "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
         "responseAuthSigningBase64": "AA==",
@@ -363,8 +363,9 @@
  "scoreMax": 5.572353002177747,
  "service": "deepseek-v4-pro",
  "thinking": {
-  "reference": {"overrides":{"reasoning":{"enabled":false}},"source":"fixed","strategy":null},
-  "seller": {"overrides":{"thinking":{"type":"disabled"}},"source":"discovery","strategy":"disable-thinking"}
+  "discoveryRule": "kbf-discovery-reference-first-v1",
+  "reference": {"overrides":{"reasoning":{"effort":"minimal"}},"source":"bank","strategy":"reasoning-effort-minimal"},
+  "seller": {"overrides":{"reasoning":{"effort":"low"}},"source":"discovery","strategy":"reasoning-effort-low"}
  },
  "timing": {"finishedAt":1791331200000,"startedAt":1791331200000}
 }
