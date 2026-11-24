@@ -170,12 +170,25 @@ export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }
     if (added) select({ anchor: added.id, clip: false });
   }
 
+  /**
+   * The user moved on before the request reached the chat: the clips are no longer marked as asked for,
+   * so Update shows again. Sent even after the editor closed.
+   */
+  function withdraw(asked: StudioTrack, anchorIds: string[]) {
+    const at = asked.anchors.find((anchor) => anchor.id === anchorIds[0])?.clip?.requestedAt;
+    if (at) void window.antseedDesktop?.studioEdit?.(projectId, { type: 'withdraw-request', clips: anchorIds, at })?.catch(() => null);
+  }
+
   /** Update asks the project agent to remake out-of-date clips. It quotes in chat first, as for every clip. */
   async function updateClips(anchorIds: string[]) {
     if (!canSend || anchorIds.length === 0) return;
     const request = beginSend();
     const asked = await edit({ type: 'request', clips: anchorIds, images: [] });
     if (!asked) return;
+    if (!request.still()) {
+      withdraw(asked.track, anchorIds);
+      return;
+    }
     request.send(clipRequestMessage(asked.track, anchorIds));
     if (!mounted.current) return;
     // The selection goes with the reply to the quote, so it names this clip, or nothing for several.
@@ -270,6 +283,10 @@ export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }
             busy={busy}
             url={url}
             onStop={() => setPlaying(false)}
+            onPlayFailed={(anchorId) => {
+              select({ anchor: anchorId, clip: true });
+              setError(`${clipName(track, anchorId)} can't play: its file is missing, or the app can't play its format.`);
+            }}
             onSelect={select}
             onTime={setTime}
             trimBlocker={toolsMissing}
@@ -332,7 +349,8 @@ export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }
             // Moved on meanwhile: the image stays replaced, and no clip is marked as asked for.
             if (!next || !remake || !request.still()) return;
             const asked = await edit({ type: 'request', clips: touching, images: [] });
-            if (asked) request.send(clipRequestMessage(asked.track, touching));
+            if (asked && !request.still()) withdraw(asked.track, touching);
+            else if (asked) request.send(clipRequestMessage(asked.track, touching));
           }}
         />
       ) : null}
@@ -341,7 +359,7 @@ export function TrackEditor({ detail, canSend, beginSend, onContext, onChanged }
         isOpen={confirmExport}
         onClose={() => setConfirmExport(false)}
         title="Export with earlier clips?"
-        body={`${check.stale.join(', ')} ${check.stale.length === 1 ? 'is' : 'are'} out of date: made from an image you have since replaced, or made for a Cut where the film now extends. The export uses ${check.stale.length === 1 ? 'it' : 'them'} as ${check.stale.length === 1 ? 'it is' : 'they are'}.`}
+        body={`${check.stale.join(', ')} ${check.stale.length === 1 ? 'is' : 'are'} out of date: made from an image you have since replaced, or made for a Cut where the film now extends, or the other way round. The export uses ${check.stale.length === 1 ? 'it' : 'them'} as ${check.stale.length === 1 ? 'it is' : 'they are'}.`}
         tone="primary"
         confirmLabel="Export as it is"
         onConfirm={() => { setConfirmExport(false); void exportFilm(); }}
@@ -372,7 +390,7 @@ function EmptyStart({ busy, onUpload, onLibrary }: { busy: boolean; onUpload: ()
 
 // ---------- preview ----------
 
-function Preview({ track, selected, selection, playing, busy, url, onStop, onSelect, onTime, trimBlocker, onTrim, onResetTrim, onUpload, onLibrary, onDropImage, stale, updating, onUpdate }: {
+function Preview({ track, selected, selection, playing, busy, url, onStop, onPlayFailed, onSelect, onTime, trimBlocker, onTrim, onResetTrim, onUpload, onLibrary, onDropImage, stale, updating, onUpdate }: {
   track: StudioTrack;
   selected: TrackAnchor | null;
   selection: Selection;
@@ -380,6 +398,8 @@ function Preview({ track, selected, selection, playing, busy, url, onStop, onSel
   busy: boolean;
   url: (file: string) => string;
   onStop: () => void;
+  /** A clip in the film could not play: playback stops on it. */
+  onPlayFailed: (anchorId: string) => void;
   onSelect: (selection: Selection) => void;
   onTime: (time: number | null) => void;
   /** Why a clip cannot be ended early here, or null. */
@@ -427,6 +447,7 @@ function Preview({ track, selected, selection, playing, busy, url, onStop, onSel
           onStop();
         }}
         onStop={onStop}
+        onFail={(anchor) => onPlayFailed(anchor.id)}
       />
     );
   }
@@ -809,6 +830,7 @@ function staleText(track: StudioTrack, index: number): string {
   switch (clipStaleReason(track, index)) {
     case 'cut': return `Made for a Cut: it doesn't land on ${shot}'s image`;
     case 'end': return `Lands on an earlier image of ${shot}`;
+    case 'extend': return `Made for an Extend: it lands on ${shot}'s image`;
     default: return 'Made from an image you have since replaced';
   }
 }

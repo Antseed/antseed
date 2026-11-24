@@ -129,6 +129,7 @@ export type TrackEdit =
   | { type: 'add-version'; anchor: string; file: string }
   | { type: 'scene'; anchor: string; name: string; world: string }
   | { type: 'request'; clips: string[]; images: string[] }
+  | { type: 'withdraw-request'; clips: string[]; at: number }
   | { type: 'aspect'; aspectRatio: string }
   | { type: 'import'; anchor?: string; index?: number }
   | { type: 'convert' }
@@ -345,7 +346,7 @@ function finite(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-const USER_ONLY_EDIT_TYPES = new Set(['undo', 'export', 'trim', 'reset-trim', 'import', 'convert', 'request', 'set-image', 'add-version', 'dismiss-notices']);
+const USER_ONLY_EDIT_TYPES = new Set(['undo', 'export', 'trim', 'reset-trim', 'import', 'convert', 'request', 'withdraw-request', 'set-image', 'add-version', 'dismiss-notices']);
 
 /** Whether a delivery is an {"edit": ...}, whether or not the edit is one the app takes. */
 export function isStudioAgentEditRequest(raw: unknown): boolean {
@@ -451,17 +452,20 @@ export type ClipState = 'empty' | 'requested' | 'ready' | 'stale';
  * Why the clip in use no longer fits the track, or null when it does:
  * - `image`: it starts from an image the shot has since replaced;
  * - `end`: it is an Extend but lands on another image than the next shot's;
- * - `cut`: it was made for a Cut, with no end frame, and is now an Extend.
- * A Cut takes any clip: one made for an Extend still plays to its end, and the film cuts after it.
+ * - `cut`: it was made for a Cut, with no end frame, and is now an Extend;
+ * - `extend`: it was made for an Extend, landing on the next shot's image, and is now a Cut.
+ *   A trimmed one fits a Cut: its end is the user's own, not the next shot's image.
  */
-export function clipStaleReason(track: StudioTrack, index: number): 'image' | 'end' | 'cut' | null {
+export function clipStaleReason(track: StudioTrack, index: number): 'image' | 'end' | 'cut' | 'extend' | null {
   const anchor = track.anchors[index];
   const clip = anchor?.clip;
   const version = clip?.versions.find((entry) => entry.file === clip.use);
   if (!anchor || !clip || !version || version.from === null) return null;
   if (version.from !== anchor.image) return 'image';
   const next = track.anchors[index + 1];
-  if (clip.then !== 'extend' || !next) return null;
+  if (!next) return null;
+  if (clip.then === 'cut') return version.to !== null && clip.end === null ? 'extend' : null;
+  if (clip.then !== 'extend') return null;
   // A trimmed clip ends on its trim's frame, wherever it was made to land.
   if (clip.end !== null && clip.endFrame !== null) return clip.endFrame === next.image ? null : 'end';
   if (version.to === null) return 'cut';
@@ -652,6 +656,13 @@ export function applyTrackEdit(source: StudioTrack, edit: TrackEdit, files: Trac
         }
       } else if (following) {
         anchor.clip = newClip(track);
+        // The scene's name and world are kept on its first shot: a shot added before it starts the scene,
+        // unless it starts a scene of its own.
+        if (edit.scene === 'new') anchor.clip.then = 'cut';
+        else if (following.id in track.scenes) {
+          track.scenes[anchor.id] = track.scenes[following.id]!;
+          delete track.scenes[following.id];
+        }
       }
       track.anchors.splice(index, 0, anchor);
       break;
@@ -784,6 +795,16 @@ export function applyTrackEdit(source: StudioTrack, edit: TrackEdit, files: Trac
         clip.requested = clipInputs(track, index);
       }
       for (const key of edit.images) findAnchor(track, key).anchor.requestedAt = now;
+      break;
+    }
+    case 'withdraw-request': {
+      // A request the editor marked but never sent: only that one, never a later request for the clip.
+      for (const key of edit.clips) {
+        const clip = track.anchors.find((anchor) => anchor.id === key)?.clip;
+        if (clip?.requestedAt !== edit.at) continue;
+        clip.requestedAt = null;
+        clip.requested = null;
+      }
       break;
     }
     case 'aspect': {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseStudioTrack } from '../../../shared/studio-track.js';
-import { clipPlayerKey, clipRequestMessage, composerContext, filmClipKey, filmIndex, filmPlayers, formatTimecode, liveSelection, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
+import { clipPlayerKey, clipRequestMessage, composerContext, filmClipKey, filmIndex, filmPlayers, formatTimecode, liveSelection, playFailed, selectionContext, splitStudioContext, splitStudioMessage } from './track-view';
 
 const track = parseStudioTrack({
   aspectRatio: '16:9',
@@ -155,4 +155,14 @@ it('drops a selection once its shot leaves the track, as an Undo of the shot doe
   expect(liveSelection(track, { anchor: 'a5', clip: true })).toBeNull();
   expect(liveSelection(track, { anchor: 'a5', clip: false })).toBeNull();
   expect(liveSelection(track, null)).toBeNull();
+});
+
+it('stops the film only on a real play failure, not when a clip is switched or paused before it starts', () => {
+  const abort = new Error('The play() request was interrupted');
+  abort.name = 'AbortError';
+  expect(playFailed(abort)).toBe(false);
+  const unsupported = new Error('The element has no supported sources.');
+  unsupported.name = 'NotSupportedError';
+  expect(playFailed(unsupported)).toBe(true);
+  expect(playFailed('unknown')).toBe(true);
 });

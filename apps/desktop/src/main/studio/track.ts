@@ -378,6 +378,12 @@ export function editStudioTrack(dir: string, edit: TrackEdit, options: { picked?
         await saveTrack(dir, track, previous ?? current);
         return { track };
       }
+      case 'withdraw-request': {
+        // Not a step of the user's: Undo never brings the mark back.
+        const track = applyTrackEdit(current, edit, trackFiles(media, seconds));
+        await saveTrack(dir, track, null);
+        return { track };
+      }
       case 'add-version': {
         if (media.has(edit.file)) seconds.set(edit.file, await probeSeconds(path.join(dir, edit.file)));
         break;

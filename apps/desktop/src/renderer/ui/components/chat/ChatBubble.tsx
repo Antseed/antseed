@@ -626,17 +626,29 @@ export function toolMediaAttachmentBlock(block: ContentBlock): ContentBlock | nu
   };
 }
 
-function renderAssistantBlocks(
-  blocks: ContentBlock[],
-  streaming = false,
-  messagePrefix = '',
-  onOpenPreview?: (url: string) => void,
-  conversationId?: string,
-  highlightQuery?: string,
-  activeHighlight?: boolean,
-  blockUnsafePaymentInstructions = false,
-  quietWork = false,
-): ReactNode[] {
+type AssistantBlockOptions = {
+  streaming?: boolean;
+  messagePrefix?: string;
+  onOpenPreview?: (url: string) => void;
+  conversationId?: string;
+  highlightQuery?: string;
+  activeHighlight?: boolean;
+  blockUnsafePaymentInstructions?: boolean;
+  /** Studio's chat: the agent's commands show as "Working…", and its reasoning stays hidden. */
+  quietWork?: boolean;
+};
+
+function renderAssistantBlocks(blocks: ContentBlock[], options: AssistantBlockOptions = {}): ReactNode[] {
+  const {
+    streaming = false,
+    messagePrefix = '',
+    onOpenPreview,
+    conversationId,
+    highlightQuery,
+    activeHighlight,
+    blockUnsafePaymentInstructions = false,
+    quietWork = false,
+  } = options;
   const nodes: ReactNode[] = [];
   let toolGroup: ContentBlock[] = [];
   let thinkingGroup: ContentBlock[] = [];
@@ -1013,7 +1025,16 @@ export function ChatBubble({ message, streaming = false, onOpenPreview, conversa
   const content = useMemo(() => {
     if (message.role === 'assistant') {
       if (Array.isArray(message.content)) {
-        return renderAssistantBlocks(message.content as ContentBlock[], isStreamingBubble, messagePrefix, onOpenPreview, conversationId, searchQuery, searchActive, true, quietWork);
+        return renderAssistantBlocks(message.content as ContentBlock[], {
+          streaming: isStreamingBubble,
+          messagePrefix,
+          onOpenPreview,
+          conversationId,
+          highlightQuery: searchQuery,
+          activeHighlight: searchActive,
+          blockUnsafePaymentInstructions: true,
+          quietWork,
+        });
       }
       return <MarkdownContent text={String(message.content)} highlightQuery={searchQuery} activeHighlight={searchActive} blockUnsafePaymentInstructions />;
     }

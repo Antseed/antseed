@@ -25,6 +25,11 @@ export function liveSelection<T extends TrackSelection>(track: StudioTrack, sele
   return anchor && (!selection.clip || anchor.clip) ? selection : null;
 }
 
+/** Whether a video's play() failed for real, not because its source changed or it was paused before it started. */
+export function playFailed(error: unknown): boolean {
+  return !(error instanceof Error && error.name === 'AbortError');
+}
+
 /** A clip as the film plays it: a new version or trim makes it another clip. */
 export function filmClipKey(anchor: TrackAnchor): string {
   return `${anchor.id}:${anchor.clip?.use ?? ''}:${String(anchor.clip?.end ?? '')}`;

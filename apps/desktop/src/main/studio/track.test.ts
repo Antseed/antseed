@@ -147,14 +147,48 @@ test('a clip made for a Cut is out of date once its boundary becomes an Extend, 
   assert.equal(clipState(applyTrackEdit(extended, { type: 'then', anchor: 'a1', then: 'cut' }, all), 0), 'ready');
 });
 
-test('a clip made for an Extend still fits when its boundary becomes a Cut', () => {
+test('a clip made for an Extend is out of date once its boundary becomes a Cut, unless it is trimmed', () => {
   const base = parseStudioTrack({ anchors: [{ id: 'a1', image: 'stills/a.png', clip: { id: 'c1', then: 'extend' } }, { id: 'a2', image: 'stills/b.png' }] });
   const delivered = applyStudioDelivery(base, { kind: 'clip', clip: 'c1', file: 'clips/one.mp4', usd: 0.36, model: 'Example' }, 4, 1)!;
   assert.equal(delivered.anchors[0]!.clip!.versions[0]!.to, 'stills/b.png');
-  // It plays to its end and the film cuts after it: nothing to remake.
+  // It still drives into the next shot's image, so the Cut would not show: Update remakes it as a Cut.
   const cut = applyTrackEdit(delivered, { type: 'then', anchor: 'a1', then: 'cut' }, all);
-  assert.equal(clipState(cut, 0), 'ready');
-  assert.equal(clipStaleReason(cut, 0), null);
+  assert.equal(clipState(cut, 0), 'stale');
+  assert.equal(clipStaleReason(cut, 0), 'extend');
+  assert.deepEqual(exportCheck(cut).stale, ['Clip 1→2']);
+  // Back to Extend, it fits again.
+  assert.equal(clipState(applyTrackEdit(cut, { type: 'then', anchor: 'a1', then: 'extend' }, all), 0), 'ready');
+  // A trimmed one ends where the user chose, not on the next shot's image: it fits a Cut.
+  const trimmed = applyTrackEdit(applyTrackEdit(delivered, { type: 'trim', anchor: 'a1', end: 2 }, all, { frame: 'frames/x.png' }), { type: 'then', anchor: 'a1', then: 'cut' }, all);
+  assert.equal(clipState(trimmed, 0), 'ready');
+});
+
+test('a shot added before the first one starts its scene, keeping the scene\'s name and world, unless it starts its own', () => {
+  const named = edit(threeAnchors(), { type: 'scene', anchor: 'a1', name: 'The garden', world: 'Sunny lawn, hot light' });
+  const before = edit(named, { type: 'add-anchor', index: 0, title: 'Opening' });
+  const runs = sceneRuns(before);
+  assert.equal(runs[0]!.anchors[0], before.anchors[0]!.id);
+  assert.deepEqual([runs[0]!.name, runs[0]!.world], ['The garden', 'Sunny lawn, hot light']);
+  // Choosing Extend into the old first shot keeps them one scene, still named.
+  const extended = edit(before, { type: 'then', anchor: before.anchors[0]!.id, then: 'extend' });
+  assert.equal(sceneRuns(extended)[0]!.name, 'The garden');
+  // A shot that starts a scene of its own leaves the old one its name.
+  const own = edit(named, { type: 'add-anchor', index: 0, title: 'Cold open', scene: 'new' });
+  assert.equal(own.anchors[0]!.clip!.then, 'cut');
+  assert.deepEqual(sceneRuns(own).map((run) => run.name), ['', 'The garden', '']);
+});
+
+test('a request the editor never sent is withdrawn, and a later request for the clip is kept', () => {
+  const base = edit(threeAnchors(), { type: 'then', anchor: 'a1', then: 'cut' });
+  const asked = applyTrackEdit(base, { type: 'request', clips: ['a1'], images: [] }, all, { now: 5 });
+  assert.equal(asked.anchors[0]!.clip!.requestedAt, 5);
+  const withdrawn = applyTrackEdit(asked, { type: 'withdraw-request', clips: ['a1'], at: 5 }, all);
+  assert.equal(withdrawn.anchors[0]!.clip!.requestedAt, null);
+  assert.equal(withdrawn.anchors[0]!.clip!.requested, null);
+  const later = applyTrackEdit(asked, { type: 'request', clips: ['a1'], images: [] }, all, { now: 9 });
+  assert.equal(applyTrackEdit(later, { type: 'withdraw-request', clips: ['a1'], at: 5 }, all).anchors[0]!.clip!.requestedAt, 9);
+  // Only the user's editor may withdraw: the agent cannot.
+  assert.equal(parseStudioAgentEdit({ edit: { type: 'withdraw-request', clips: ['a1'], at: 5 } }), null);
 });
 
 test('asking for a clip needs its Cut or Extend first', () => {

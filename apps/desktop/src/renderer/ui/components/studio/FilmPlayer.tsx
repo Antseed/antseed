@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { TrackAnchor } from '../../../../shared/studio-track.js';
-import { filmClipKey, filmIndex, filmPlayers, type FilmPlayback } from '../../../modules/studio/track-view';
+import { filmClipKey, filmIndex, filmPlayers, playFailed, type FilmPlayback } from '../../../modules/studio/track-view';
 import styles from './TrackEditor.module.scss';
 
 /**
@@ -17,9 +17,11 @@ export type FilmPlayerProps = {
   onDone: () => void;
   /** The clip playing left the film (an undo, or a delivery for it): playback stops. */
   onStop: () => void;
+  /** The clip could not play (its file is gone, or the app can't play its format): playback stops. */
+  onFail: (anchor: TrackAnchor) => void;
 };
 
-export function FilmPlayer({ run, frame, url, caption, onDone, onStop }: FilmPlayerProps) {
+export function FilmPlayer({ run, frame, url, caption, onDone, onStop, onFail }: FilmPlayerProps) {
   const players = [useRef<HTMLVideoElement>(null), useRef<HTMLVideoElement>(null)] as const;
   // The clip playing, by key rather than position (the film can change while it plays), and the player showing it.
   const [playback, setPlayback] = useState<FilmPlayback>(() => ({ key: run[0] ? filmClipKey(run[0]) : '', slot: 0 }));
@@ -44,7 +46,7 @@ export function FilmPlayer({ run, frame, url, caption, onDone, onStop }: FilmPla
     }
     // Started here, on the last frame, not after the next render: the next clip is already loaded in the other player.
     const nextSlot = now.slot === 0 ? 1 : 0;
-    void players[nextSlot].current?.play().catch(() => {});
+    void players[nextSlot].current?.play().catch((error: unknown) => { if (playFailed(error)) onFail(next); });
     setPlayback({ key: filmClipKey(next), slot: nextSlot });
   };
 
@@ -59,7 +61,12 @@ export function FilmPlayer({ run, frame, url, caption, onDone, onStop }: FilmPla
     idle?.pause();
     if (idle) idle.currentTime = 0;
     if (!active) return undefined;
-    if (active.paused) void active.play().catch(() => {});
+    // A clip that failed to load while it waited in the other player fails now, when its turn comes.
+    if (active.error) {
+      onFail(current);
+      return undefined;
+    }
+    if (active.paused) void active.play().catch((error: unknown) => { if (playFailed(error)) onFail(current); });
     // Checked every frame: a trimmed clip stops where its trim is, and an untrimmed one
     // hands over on its last frame instead of waiting for the ended event.
     let frameId = requestAnimationFrame(function check() {
@@ -87,6 +94,7 @@ export function FilmPlayer({ run, frame, url, caption, onDone, onStop }: FilmPla
               playsInline
               aria-hidden={!active}
               onEnded={() => { if (active) advance(playback.key); }}
+              onError={() => { if (active && current) onFail(current); }}
             />
           );
         })}
