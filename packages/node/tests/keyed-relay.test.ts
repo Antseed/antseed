@@ -167,6 +167,21 @@ describe('keyedRelayModelMatches', () => {
     expect(keyedRelayModelMatches('gpt-4o', 'gpt-4o-mini-2024-07-18')).toBe(false);
     expect(keyedRelayModelMatches('org/open', 'org/open-model')).toBe(false);
   });
+
+  it('accepts a numbered version of the service\'s model', () => {
+    expect(keyedRelayModelMatches('open-model-002', 'org/open-model')).toBe(true);
+    expect(keyedRelayModelMatches('gpt-4-0613', 'gpt-4')).toBe(true);
+  });
+
+  it('takes a longer name that only starts like the service\'s model for another model', () => {
+    expect(keyedRelayModelMatches('org/open-model-large', 'org/open-model')).toBe(false);
+    expect(keyedRelayModelMatches('open-model-large', 'org/open-model')).toBe(false);
+    expect(keyedRelayModelMatches('gpt-4o-mini-2024-07-18', 'gpt-4o')).toBe(false);
+    expect(keyedRelayModelMatches('org/open-model-large-20250101', 'org/open-model')).toBe(false);
+    // The same when the service names a snapshot.
+    expect(keyedRelayModelMatches('org/open-model-large', 'org/open-model-20250101')).toBe(false);
+    expect(keyedRelayModelMatches('open-model-large-20250101', 'org/open-model-latest')).toBe(false);
+  });
 });
 
 describe('keyedRelayEstimatedUsage', () => {

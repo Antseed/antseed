@@ -203,6 +203,41 @@ describe('RelayMux idle streams', () => {
     vi.useRealTimers();
   });
 
+  it('closes the seller\'s end of a stream the buyer gave up waiting for, once', async () => {
+    vi.useFakeTimers();
+    // A connection whose frames to the buyer wait until the test lets them through.
+    const held: Array<() => void> = [];
+    const toSeller = new FrameDecoder();
+    const toBuyer = new FrameDecoder();
+    const closed: Array<{ error?: string }> = [];
+    const sellerSide: Duplex = new Duplex({ read() {}, write(_chunk, _encoding, callback) { callback(); } });
+    let opened = 0;
+    const seller: RelayMux = new RelayMux({
+      send: (data: Uint8Array) => {
+        const frames = toBuyer.feed(Uint8Array.from(data));
+        held.push(() => { for (const frame of frames) void buyer.handleFrame(frame); });
+      },
+    } as unknown as PeerConnection, { authorize: async () => ({ open: () => { opened += 1; return sellerSide; }, onClose: (stats) => closed.push(stats) }) });
+    const buyer: RelayMux = new RelayMux({
+      send: (data: Uint8Array) => { for (const frame of toSeller.feed(data)) void seller.handleFrame(frame); },
+    } as unknown as PeerConnection);
+
+    const failure = buyer.openStream('slow', 'cred').then(() => null, (error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(10);
+    // The seller opened its end; the buyer has not heard.
+    expect([opened, seller.openStreams, buyer.openStreams]).toEqual([1, 1, 1]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await failure).toMatch(/did not open the relay stream in time/);
+    expect(closed).toMatchObject([{ error: 'not opened in time' }]);
+    expect(sellerSide.destroyed).toBe(true);
+    expect([seller.openStreams, buyer.openStreams]).toEqual([0, 0]);
+    // What the seller sent arrives late and changes nothing.
+    for (const deliver of held.splice(0)) deliver();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(closed).toHaveLength(1);
+    expect(buyer.openStreams).toBe(0);
+  });
+
   /** A stream to a seller side that answers only when the test tells it to: an upstream that takes its time. */
   async function quietStream() {
     vi.useFakeTimers();
