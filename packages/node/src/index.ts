@@ -140,7 +140,7 @@ export {
 } from './p2p/identity-envelope.js';
 export { DHTNode, DEFAULT_DHT_CONFIG } from './discovery/dht-node.js';
 export { MAX_SERVICES_PER_PROVIDER, MAX_SERVICE_NAME_LENGTH } from './discovery/metadata-validator.js';
-export { OFFICIAL_BOOTSTRAP_NODES, mergeBootstrapNodes, toBootstrapConfig } from './discovery/bootstrap.js';
+export { OFFICIAL_BOOTSTRAP_NODES, PUBLIC_FALLBACK_BOOTSTRAP_NODES, mergeBootstrapNodes, toBootstrapConfig } from './discovery/bootstrap.js';
 export {
   WELL_KNOWN_SERVICE_CATEGORIES,
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
