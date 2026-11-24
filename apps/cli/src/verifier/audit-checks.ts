@@ -8,6 +8,7 @@ import type { TestThinking } from './audit-thinking.js'
 import { METHODS } from './methods/index.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { matchesEnrolledService } from './response-auth-reader.js'
+import { AUDIT_TEST_COUNTS, notCountedReason, testCounts } from './audit-test-counts.js'
 import { sanitizeOutcomeSummary } from './outcome-reason.js'
 import { sellerSignatureProblem } from './seller-signature.js'
 import { sameModelService } from './service-discovery.js'
@@ -189,12 +190,16 @@ export function inactiveChecks(evidence: ActiveTestsInput, rules?: ReadingRules)
   for (const { check, record } of recordsOf(evidence)) {
     const entry = record == null ? (evidence.noRecord ?? []).find((candidate) => candidate.slot === check.slot) : undefined
     for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
-      // Counted under the rule the reading is taken by (`ReadingRules`, the record's own by default): a finding that is
-      // recorded only is judged and stored, and decides nothing.
+      // The table of which tests count first (`AUDIT_TEST_COUNTS`): a test it does not count decides nothing anywhere.
+      const tableCounts = testCounts(finding.id, rules?.counts)
+      // Then the test's own rule, under the rule the reading is taken by (`ReadingRules`, the record's own by default): a
+      // finding that is recorded only is judged and stored, and decides nothing.
       const ruleCounts = record != null
         ? (finding.recordedOnly ? safely(() => finding.recordedOnly!(record, rules) === null, false) : countsTowardVerdict(check, record))
         : !(check.countsFor !== undefined && typeof model === 'string' && !safely(() => check.countsFor!(model, rules), true))
-      const cause: InactiveCause | null = !ruleCounts
+      const cause: InactiveCause | null = !tableCounts
+        ? { cause: 'rule', reason: notCountedReason(finding.label) }
+        : !ruleCounts
         ? { cause: 'rule', reason: `${finding.label} is recorded only: its rule does not count it for this model` }
         : record != null ? safely(() => finding.inactiveOfRecord?.(record) ?? null, null)
           : entry ? { cause: 'run', reason: entry.reason } : null
@@ -291,9 +296,12 @@ export function readingsOfEvidence(
   for (const check of METHODS) {
     const record = evidence[check.slot]
     for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
-      const recorded = record == null ? null : finding.recordedOnly?.(record, rules) ?? null
-      const outcome = record == null ? 'not-run' : finding.ofRecord(record, rules)
-      const between = record != null && outcome === 'inconclusive' && finding.betweenOfRecord?.(record, rules) === true
+      // A test the table does not count is read as recorded only: its judged outcome is kept beside, and decides nothing.
+      const counted = testCounts(finding.id, rules?.counts)
+      const judged = record == null ? null : finding.recordedOnly?.(record, rules) ?? finding.ofRecord(record, rules)
+      const recorded = record == null ? null : counted ? finding.recordedOnly?.(record, rules) ?? null : judged
+      const outcome = record == null ? 'not-run' : counted ? finding.ofRecord(record, rules) : 'inconclusive'
+      const between = counted && record != null && outcome === 'inconclusive' && finding.betweenOfRecord?.(record, rules) === true
       const off = inactiveOf(inactive, finding.id)
       readings.push({
         check: finding.id, subject: finding.subject, outcome,
@@ -324,8 +332,10 @@ export function readingsOfSummary(
   for (const check of METHODS) {
     const summary = result[check.slot]
     for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
-      const outcome = summary == null ? 'not-run' : finding.ofSummary(summary)
-      const between = summary != null && outcome === 'inconclusive' && finding.betweenOfSummary?.(summary) === true
+      // A test the table does not count gives neither flag nor pass (`AUDIT_TEST_COUNTS`).
+      const counted = testCounts(finding.id)
+      const outcome = summary == null ? 'not-run' : counted ? finding.ofSummary(summary) : 'inconclusive'
+      const between = counted && summary != null && outcome === 'inconclusive' && finding.betweenOfSummary?.(summary) === true
       const off = recorded ? inactiveOf(recorded, finding.id) : { cause: 'rule' as const, reason: ACTIVE_NOT_RECORDED }
       readings.push({
         check: finding.id, subject: finding.subject, outcome,
@@ -566,14 +576,22 @@ function storedAuditContext(evidence: StoredCheckRecords & StoredAuditTarget, re
   }
 }
 
-/** Whether a record can affect the verdict (`RecordCheck.counts`); a check without that hook always can. */
+/**
+ * Whether a record can affect the verdict: some finding of its test is counted by the table (`AUDIT_TEST_COUNTS`), and
+ * its own rule counts it (`RecordCheck.counts`; a check without that hook always does). A record that cannot is a
+ * diagnostic: its validation, its binding and its request times stay out of the verdict path.
+ */
 function countsTowardVerdict(check: RecordCheck<CheckSlot>, record: CheckRecords[CheckSlot]): boolean {
+  if (!(check.findings as readonly CheckFinding<CheckSlot>[]).some((finding) => testCounts(finding.id))) return false
   try {
     return check.counts?.(record) ?? true
   } catch {
     return false
   }
 }
+
+/** The table of which tests count, for the modules that read it from here (`audit-test-counts.ts` holds it). */
+export { AUDIT_TEST_COUNTS, testCounts }
 
 /** What a seller's evidence says about whom it audited. */
 export interface StoredAuditTarget {
@@ -647,10 +665,11 @@ export function validateCheckRecordsAgainstSummary(
   for (const { check, record } of recordsOf(evidence)) {
     // A diagnostic (a record or a summary that cannot affect the verdict) is neither validated nor compared: it can
     // hold up nothing, also when one side is missing.
-    if (check.counts !== undefined) {
+    const tableCounts = (check.findings as readonly CheckFinding<CheckSlot>[]).some((finding) => testCounts(finding.id))
+    if (check.counts !== undefined || !tableCounts) {
       const recordCounts = record != null && countsTowardVerdict(check, record)
       const summary = result[check.slot]
-      const summaryCounts = summary != null && (() => {
+      const summaryCounts = tableCounts && summary != null && (() => {
         try {
           return check.summaryCounts?.(summary) ?? true
         } catch {

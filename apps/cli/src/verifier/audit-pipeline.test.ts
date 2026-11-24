@@ -384,8 +384,9 @@ test('check pipeline: FLIPS runs last, on the confirmation stage only for a FLIP
   // Whether FLIPS counts is the rule's, never the stored flag's: recorded only as shipped, the verdict is the questions'.
   assert.equal(flagged.result.status, 'SAME')
   assert.deepEqual(flaggingChecks(flagged.evidence, flagged.result.questionsStatus!), [])
-  // Under a rule that counts FLIPS for this model, the same record is a DIFF of FLIPS.
-  const counting = { flips: { ...FLIPS_RULE, counts: { default: true, never: ['minimax-m3'] } } }
+  // Under a table that counts FLIPS (`AUDIT_TEST_COUNTS` does not today) and a rule that counts it for this model, the
+  // same record is a DIFF of FLIPS.
+  const counting = { flips: { ...FLIPS_RULE, counts: { default: true, never: ['minimax-m3'] } }, counts: { flips: true } }
   const readings = readingsOfEvidence({ ...flagged.evidence, flips: { ...flagged.evidence.flips!, draw: { ...flagged.evidence.flips!.draw, model: 'claude-opus-5.5' } } }, 'SAME', counting)
   assert.deepEqual(verdictOf(readings, 'SAME').flaggedBy, ['flips'])
   // A confirmation of a FLIPS flag is the confirmation stage; a confirmation of another test is a first look for FLIPS.

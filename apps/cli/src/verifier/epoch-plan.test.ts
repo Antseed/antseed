@@ -1,3 +1,4 @@
+import { AUDIT_TEST_COUNTS } from './audit-test-counts.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -415,7 +416,7 @@ test('an undecided confirmation keeps an auditor-caused cause, and a report\'s a
   assert.equal(sellerRetryDueAt(failed), null, 'outside a report, as before')
 })
 
-test('a confirmation of FLIPS scored between its bars: a SAME, done; with a test left open it is retried; no score is retried', async () => {
+test('a confirmation of FLIPS scored between its bars: retried while the table does not count FLIPS; no score is retried', async () => {
   const { settleAuditVerdict } = await import('./close-call.js')
   const flips = (p: number | null) => ({
     rule: 'flips-v1', model: 'claude-opus-5.5', stage: 'confirm', outcome: 'inconclusive', counted: true, p, score: p === null ? null : 4, reason: 'x',
@@ -426,10 +427,12 @@ test('a confirmation of FLIPS scored between its bars: a SAME, done; with a test
     return splitEpochRuns(EPOCH, [run('c1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [{ ...settled, confirmingReportedAt: 100 }] }])])
       .reports.get(reportCellKey('m', 'a', reportKey(settled.service, 100, confirming)))!
   }
-  // FLIPS scored between the bars clears like a pass (`confirmBetweenClears`): the questions SAME, a
-  // SAME, and the confirmation is done after one attempt.
-  const between = cellOf(['flips'], { flips: flips(0.02) } as Partial<ModelVerificationTargetResult>, false)
-  assert.deepEqual([between.state, between.attempts, between.action, heldForConfirmationRecheck(between)], ['same', 1, 'done', false])
+  // FLIPS scored between the bars would clear like a pass (`confirmBetweenClears`) where FLIPS counts. While the table of
+  // which tests count does not count it (`AUDIT_TEST_COUNTS`), the score is recorded only: the confirmation is undecided
+  // and asked again within its attempts.
+  assert.equal(AUDIT_TEST_COUNTS.flips, false)
+  const between = cellOf(['flips'], { flips: flips(0.02) } as Partial<ModelVerificationTargetResult>)
+  assert.deepEqual([between.attempts, between.action, heldForConfirmationRecheck(between)], [1, 'retry', true])
   // FLIPS with no score is asked again: the confirmation stays open within its attempts.
   const noScore = cellOf(['flips'], { flips: flips(null) } as Partial<ModelVerificationTargetResult>)
   assert.deepEqual([noScore.attempts, noScore.action], [1, 'retry'])

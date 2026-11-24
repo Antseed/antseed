@@ -266,9 +266,16 @@ export function stripKbfThinkBlocks(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 }
 
-/** Whether an attempt turned thinking off: enough answers, 0 reasoning tokens, only the answers, not cut off. */
-function reachedZero(attempt: ThinkingDiscoveryAttemptV1): boolean {
-  return (attempt.validAnswers ?? -1) >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && attempt.reasoningTokens === 0
+/**
+ * Whether a discovery attempt turned thinking off: enough answers, 0 reasoning tokens, only the answers, not cut off.
+ * The one predicate: discovery decides with it, and a reader of a stored discovery (the verifier's audit, reading a
+ * bank's attempts) reads with it, so the two never drift.
+ */
+export function thinkingAttemptReachedZero(
+  attempt: Pick<ThinkingDiscoveryAttemptV1, 'validAnswers' | 'reasoningTokens' | 'answersOnly' | 'truncated'> | undefined,
+): boolean {
+  return attempt !== undefined
+    && (attempt.validAnswers ?? -1) >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && attempt.reasoningTokens === 0
     && attempt.answersOnly !== false && attempt.truncated !== true;
 }
 
@@ -332,7 +339,7 @@ export async function discoverThinkingSuppression(input: {
     : null;
   const referenceAttempt = referenceFirst ? await tryOnce(referenceFirst, THINKING_DISCOVERY_MAX_TOKENS) : null;
   if (referenceFirst && referenceAttempt) {
-    if (reachedZero(referenceAttempt)) {
+    if (thinkingAttemptReachedZero(referenceAttempt)) {
       input.log?.(
         `thinking suppression for ${input.model}: the reference's '${referenceFirst}' works on ${input.label} `
         + `(${referenceAttempt.validAnswers}/10 parseable, reasoning_tokens=0), so it is asked as the reference was`,
@@ -343,7 +350,7 @@ export async function discoverThinkingSuppression(input: {
     const equivalent = isRefusal(referenceAttempt) ? THINKING_REFERENCE_EQUIVALENTS[referenceFirst] : undefined;
     if (equivalent) {
       const equivalentAttempt = await tryOnce(equivalent, THINKING_DISCOVERY_MAX_TOKENS);
-      if (reachedZero(equivalentAttempt)) {
+      if (thinkingAttemptReachedZero(equivalentAttempt)) {
         input.log?.(
           `thinking suppression for ${input.model}: ${input.label} refuses the reference's '${referenceFirst}' and its nearest `
           + `equivalent '${equivalent}' works (${equivalentAttempt.validAnswers}/10 parseable, reasoning_tokens=0), so it is used`,

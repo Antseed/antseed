@@ -125,7 +125,7 @@
    "score": null,
    "reason": "the seller could not be asked the way the reference was: the seller was … (214 characters, sha256 7c78b3296fec8d40)"
   },
-  "inactive": []
+  "inactive": [{"check":"flips","cause":"rule","reason":"the randomness check is recorded only for now: the audit rules do not count it toward the verdict"}]
  },
  "evidence": {
   "buyerProxy": {"baseUrl":"http://127.0.0.1:8390","pid":4242,"statePath":"buyer.state.json"},

@@ -1,7 +1,7 @@
 import {
   KBF_THINKING_PREFILL,
   KBF_THINKING_SUPPRESSION_FIELDS,
-  THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS,
+  thinkingAttemptReachedZero,
   THINKING_DISCOVERY_STRATEGIES,
   THINKING_REFERENCE_EQUIVALENTS,
   canonicalJsonStringify,
@@ -121,15 +121,6 @@ export function bankSetting(bank: Pick<KbfReferenceV1, 'queryProfile' | 'generat
   }
 }
 
-/** Whether a discovery attempt turned thinking off: enough answers, a clean reply, 0 reasoning tokens. */
-export function attemptReachedZero(attempt: Pick<ThinkingDiscoveryAttemptV1, 'validAnswers' | 'reasoningTokens' | 'answersOnly' | 'truncated'> | undefined): boolean {
-  return attempt !== undefined
-    && (attempt.validAnswers ?? -1) >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS
-    && attempt.reasoningTokens === 0
-    && attempt.answersOnly !== false
-    && attempt.truncated !== true
-}
-
 /**
  * Whether the bank's own discovery reached 0 reasoning tokens with the setting it recorded: its last attempt of that
  * strategy (`generator.params.thinkingDiscovery.target`). False for a bank without a stored discovery.
@@ -140,7 +131,8 @@ export function bankReachedZero(bank: Pick<KbfReferenceV1, 'queryProfile' | 'gen
   const target = discovery?.target
   if (!strategy || !target || target.strategy !== strategy || !Array.isArray(target.attempts)) return false
   const attempts = (target.attempts as ThinkingDiscoveryAttemptV1[]).filter((attempt) => attempt?.strategy === strategy)
-  return attemptReachedZero(attempts.at(-1))
+  // Read with discovery's own predicate (`thinkingAttemptReachedZero`), so the audit and discovery never drift.
+  return thinkingAttemptReachedZero(attempts.at(-1))
 }
 
 /**

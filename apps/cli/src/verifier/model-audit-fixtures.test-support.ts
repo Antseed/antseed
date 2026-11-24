@@ -1,4 +1,5 @@
 // Test support: builds complete verifier runs with genuinely signed seller exchanges.
+import { confirmationUndecidedReason } from './outcome-reason.js'
 import { ALL_TESTS_FORMAT, earliestAuditorTime, inactiveChecks, readingsOfEvidence, storedRequestsOf, verdictOf } from './audit-checks.js'
 import { METHODS } from './methods/index.js'
 import { outputCapCost, summarizeOutputCap, type OutputCapV1 } from './methods/output-cap/output-cap.js'
@@ -323,6 +324,7 @@ export async function writeSignedAuditRun(input: {
         directory: modelAuditSellersDirectory(input.evidenceDir, input.epoch, model, audit.auditSalt ? `${input.runId}-${audit.auditSalt}` : input.runId),
       })
       const { evidence, written, exchanges, matchVector, cost, auditVerdict } = first
+      const undecided = verdictOf(readingsOfEvidence(evidence, evidence.result.verdict), evidence.result.verdict, audit.confirming?.checks ?? null).undecidedConfirmation
       results.push({
         peerId,
         displayName: evidence.target.displayName,
@@ -336,7 +338,8 @@ export async function writeSignedAuditRun(input: {
         ...(audit.confirming ? { confirming: [...audit.confirming.checks], confirmingReportedAt: audit.confirming.reportedAt } : {}),
         // As a real summary: its earliest request on the auditor's clock.
         ...(audit.confirming ? { firstRequestAt: earliestAuditorTime([evidence]) } : {}),
-        outcomeReason: null,
+        // As a run settles it: a confirmation whose repeated tests did not decide says so.
+        outcomeReason: undecided ? confirmationUndecidedReason(undecided, exchanges.length) : null,
         auditId,
         parsedProbeCount: evidence.result.parsedProbeCount,
         probeCount: reference.probes.length,

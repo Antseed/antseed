@@ -1,3 +1,4 @@
+import { AUDIT_TEST_COUNTS } from './audit-test-counts.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -176,21 +177,17 @@ test('a DIFF that only FLIPS flagged, through the confirmer\'s audit: each FLIPS
     return [settled.status, decision.kind, decision.kind === 'exclude' ? decision.code : decision.kind === 'send' ? decision.confirmation.sameCheck ?? decision.confirmation.passedCheck : null,
       ...(decision.kind === 'send' && decision.confirmation.clearedBetween ? [decision.confirmation.clearedBetween] : [])]
   }
-  // Flags at the confirmation bar: a same-check DIFF, sent; with the first report it is recorded (2 of 2).
-  assert.deepEqual(confirm(flips('flag', 0.0005)), ['DIFF', 'send', 'flips'])
-  // Passes above 10% and every other test passes: a SAME, sent; it clears the waiting DIFF.
-  assert.deepEqual(confirm(flips('pass', 0.4)), ['SAME', 'send', 'flips'])
-  // Passes, but the questions flag: another test's DIFF, never sent; the seller keeps its earlier verdict.
-  assert.deepEqual(confirm(flips('pass', 0.4), { questionsStatus: 'DIFF', status: 'DIFF' }), ['DIFF', 'exclude', 'other-test-only'])
-  // Between the bars, with every other repeated test passing: it clears like a pass and sends SAME,
-  // which records that it cleared between the bars (`confirmBetweenClears`).
-  assert.deepEqual(confirm(flips('inconclusive', 0.02)), ['SAME', 'send', 'flips', ['flips']])
-  // Between the bars, but the questions flag: another test's DIFF, never sent; the report stays waiting.
-  assert.deepEqual(confirm(flips('inconclusive', 0.02), { questionsStatus: 'DIFF', status: 'DIFF' }), ['DIFF', 'exclude', 'other-test-only'])
-  // Under a rule this CLI does not know (recorded only) a score between the bars clears nothing.
-  assert.deepEqual(confirm({ ...flips('inconclusive', 0.02), rule: 'flips-v0' }), ['UNDETERMINED', 'exclude', 'confirmation-undecided'])
-  // No result (an unusable reference, a profile mismatch, replies without a sequence): undecided, never sent, asked again.
-  assert.deepEqual(confirm(flips('inconclusive', null)), ['UNDETERMINED', 'exclude', 'confirmation-undecided'])
+  // While the table of which tests count does not count FLIPS (`AUDIT_TEST_COUNTS`), a confirmation of a FLIPS flag can
+  // decide nothing: its flag, its pass and a score between the bars are all recorded only, so the confirmation is
+  // undecided and never sent, whatever the questions say.
+  assert.equal(AUDIT_TEST_COUNTS.flips, false)
+  for (const [summary, extra] of [
+    [flips('flag', 0.0005), {}], [flips('pass', 0.4), {}], [flips('pass', 0.4), { questionsStatus: 'DIFF', status: 'DIFF' }],
+    [flips('inconclusive', 0.02), {}], [flips('inconclusive', 0.02), { questionsStatus: 'DIFF', status: 'DIFF' }],
+    [{ ...flips('inconclusive', 0.02), rule: 'flips-v0' }, {}], [flips('inconclusive', null), {}],
+  ] as const) {
+    assert.deepEqual(confirm(summary as ReturnType<typeof flips>, extra), ['UNDETERMINED', 'exclude', 'confirmation-undecided'], JSON.stringify([summary.outcome, summary.p, extra]))
+  }
   // A first look (not a confirmation of FLIPS) whose first-stage FLIPS flags or passes answers nothing: only the
   // confirmation stage (fresh pairs, 40 replies, the confirmation bar) confirms or clears a FLIPS flag.
   const firstLook = (flaggedBy: AuditCheckId[], passedBy: AuditCheckId[], verdict: VerifierVerdict, checks: AuditCheckId[] = ['flips']) => {

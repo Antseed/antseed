@@ -1,3 +1,4 @@
+import { AUDIT_TEST_COUNTS } from './audit-test-counts.js'
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -108,16 +109,20 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
       reply: (pair, slot) => Array.from({ length: 64 }, (_, index) => pair[index === slot || index === 63 - slot * 2 ? 1 : 0]).join(' '),
     })
     assert.deepEqual([flipsOf(16, 'confirm').outcome, flipsOf(16, 'confirm').counted, flipsOf(17, 'first').outcome], ['flag', true, 'flag'])
+    // FLIPS's own rule counts the model, but the table of which tests count does not count FLIPS today
+    // (`AUDIT_TEST_COUNTS`): both flags are recorded only.
+    assert.equal(AUDIT_TEST_COUNTS.flips, false)
     await writeSignedAuditRun({
       evidenceDir, banksDir, runId: 'run-2', epoch: EPOCH, auditor, completedAt: '2026-10-07T02:30:00.000Z', audits: [
         at(11, 'SAME'),
         { ...at(15, 'DIFF'), model: WINDOWED },
         at(13, 'DIFF', { confirming: { checks: ['kbf'], reportedAt } }),
         at(14, 'SAME', { confirming: { checks: ['kbf'], reportedAt } }),
-        // Two answers to another auditor's FLIPS-only report, both flagged by a signed FLIPS that counts: a confirmation
-        // of FLIPS (the confirm stage) and an untagged first look (the first stage), whose questions pass.
-        at(16, 'DIFF', { questionsVerdict: 'SAME', confirming: { checks: ['flips'], reportedAt }, flips: flipsOf(16, 'confirm') }),
-        at(17, 'DIFF', { questionsVerdict: 'SAME', flips: flipsOf(17, 'first') }),
+        // Two answers to another auditor's FLIPS-only report, both flagged by a signed FLIPS that is recorded only: a
+        // confirmation of FLIPS (the confirm stage), undecided, and an untagged first look (the first stage), whose
+        // questions pass, so it is a SAME.
+        at(16, 'UNDETERMINED', { questionsVerdict: 'SAME', confirming: { checks: ['flips'], reportedAt }, flips: flipsOf(16, 'confirm') }),
+        at(17, 'SAME', { questionsVerdict: 'SAME', flips: flipsOf(17, 'first') }),
       ],
     })
     const state = await loadEpochState(evidenceDir, EPOCH)
@@ -146,9 +151,9 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
       1: 'send SAME', 2: 'send DIFF', 3: 'send DIFF', 4: 'send DIFF', 5: 'send DIFF', 6: 'send SAME', 7: 'send SAME',
       8: 'held close-call-waiting', 9: 'send SAME', 10: 'excluded self-audit', 11: 'send SAME', 12: 'excluded skipped',
       13: 'send DIFF', 14: 'excluded repeated-test-open', 15: 'send DIFF',
-      // A confirmation of FLIPS flagged at the confirm stage: sent as the same-check DIFF. The untagged first look's
-      // FLIPS flag answers nothing: not sent, and the seller is audited again as a confirmation.
-      16: 'send DIFF', 17: 'excluded flips-not-confirmation',
+      // While FLIPS is recorded only, a confirmation of a FLIPS flag can decide nothing: never sent. The untagged first
+      // look's SAME cannot clear the FLIPS report, whose test neither flagged nor passed here: not sent either.
+      16: 'excluded confirmation-undecided', 17: 'excluded repeated-test-open',
     })
     // The cap and the echo flag are sent with the test that flagged them.
     const flaggedBy = Object.fromEntries(prepared.audits.flatMap((entry) => entry.evidence.results.map((result) => [result.agentId, result.flaggedBy])))
@@ -158,15 +163,17 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
     const sentRows = prepared.audits.flatMap((entry) => entry.evidence.results)
     assert.deepEqual(sentRows.find((row) => row.agentId === '13')?.confirming, { checks: ['kbf'], reportedAt })
     assert.equal(sentRows.find((row) => row.agentId === '1')?.confirming, undefined)
-    // The final reread with the real decision: the FLIPS confirmation is sent as prepared (its identity and stage survive
-    // the reread); had the report changed since, it is held and built again.
+    // No FLIPS row is sent, and no row is flagged by FLIPS.
+    assert.equal(sentRows.some((row) => row.agentId === '16' || row.agentId === '17' || (row.flaggedBy ?? []).includes('flips')), false)
+    // The final reread right before sending: the confirmation of the questions is sent as prepared; had its report
+    // changed since, it is held and built again.
+    const kbfReport: FirstFlag = { ...flipsReport, checks: ['kbf'] }
     const reread = (report: FirstFlag) => async (_model: string, candidates: readonly SameCheckCandidate[]) => candidates.map((candidate): SameCheckDecision | null => (
-      candidate.agentId === 13n && candidate.confirming?.reportedAt === reportedAt ? { kind: 'send', confirmation: confirmation as never }
-        : candidate.agentId === 16n ? decide(candidate, [report]) : null))
-    const flipsRow = sentRows.find((row) => row.agentId === '16')!
-    assert.deepEqual([flipsRow.flaggedBy, flipsRow.confirming, flipsRow.confirmation?.sameCheck], [['flips'], { checks: ['flips'], reportedAt }, 'flips'])
-    for (const entry of prepared.audits) assert.equal(await sameCheckChanged(entry.modelHash, entry.evidence.results, reread(flipsReport)), null)
-    const changed = await Promise.all(prepared.audits.map((entry) => sameCheckChanged(entry.modelHash, entry.evidence.results, reread({ ...flipsReport, reportedAt: reportedAt + 60 }))))
+      candidate.agentId !== 13n ? null
+        : report.reportedAt === reportedAt ? { kind: 'send', confirmation: confirmation as never }
+          : { kind: 'exclude', code: 'confirms-another-report', reason: 'this audit confirms another report than the DIFF waiting now; it is not sent, and the seller is audited again' }))
+    for (const entry of prepared.audits) assert.equal(await sameCheckChanged(entry.modelHash, entry.evidence.results, reread(kbfReport)), null)
+    const changed = await Promise.all(prepared.audits.map((entry) => sameCheckChanged(entry.modelHash, entry.evidence.results, reread({ ...kbfReport, reportedAt: reportedAt + 60 }))))
     assert.ok(changed.some((reason) => /confirms another report/.test(reason ?? '')))
 
     if (keep) {

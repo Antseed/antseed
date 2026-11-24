@@ -2780,11 +2780,22 @@ export interface CarriedTests {
 }
 
 /**
+ * The cells both retry-material loaders read (`loadEpochCarriedTests`, `loadEpochRetryCandidates`), in one order: the
+ * first looks' cells, then each report's own, kept apart so a retry resumes the attempt of the report it is for. A state
+ * written before the split holds one map (`cells`), which is read as it is.
+ */
+function retryMaterialCells(state: EpochState): EpochCell[] {
+  return state.reportCells || state.ordinaryCells
+    ? [...state.ordinaryCells?.values() ?? [], ...state.reportCells?.values() ?? []]
+    : [...state.cells.values()]
+}
+
+/**
  * The settled tests of this epoch's retried audits whose questions are not resumed (a close call with an extra set):
  * only the tests that decided (`decidedRecords`), for a fresh audit to carry.
  */
 export async function loadEpochCarriedTests(state: EpochState, models: string[]): Promise<Map<string, CarriedTests>> {
-  const cells = state.reportCells || state.ordinaryCells ? [...state.ordinaryCells?.values() ?? [], ...state.reportCells?.values() ?? []] : [...state.cells.values()]
+  const cells = retryMaterialCells(state)
   return carriedTestsOf(cells
     .filter((cell) => cell.action === 'retry' && cell.result)
     .map((cell) => ({ model: cell.model, result: cell.result! })), models)
@@ -2833,8 +2844,7 @@ export async function loadEpochRetryCandidates(
 ): Promise<Map<string, ResumeCandidate>> {
   const requested = new Set(models.map((model) => model.toLowerCase()))
   const candidates = new Map<string, ResumeCandidate>()
-  // Each report's cell and the first looks' apart: a retry resumes the attempt of the report it is for.
-  const cells = state.reportCells || state.ordinaryCells ? [...state.ordinaryCells?.values() ?? [], ...state.reportCells?.values() ?? []] : [...state.cells.values()]
+  const cells = retryMaterialCells(state)
   for (const cell of cells) {
     if (cell.action !== 'retry' || !cell.result || cell.result.extension) continue
     const decision = auditDecision(cell.result)

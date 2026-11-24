@@ -53,6 +53,7 @@ import {
 } from './audit-checks.js'
 import { OUTPUT_ECHO_RULE } from './methods/output-echo/output-echo.js'
 import { TOKENIZER_PRECHECK_RULE } from './methods/tokens/tokenizer-precheck.js'
+import { AUDIT_TEST_COUNTS, type CountedTestId } from './audit-test-counts.js'
 import { METHODS } from './methods/index.js'
 import { resolveThinking } from './audit-thinking.js'
 import { FLIPS_RULE } from './methods/flips/flips-score.js'
@@ -139,7 +140,11 @@ const EPOCH_SECONDS = 86_400
  * scoring rules give for fixed sample inputs (so a change to their code shows up, not only a change
  * to a constant). A test pins its hash for the current compat number.
  */
-export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Record<string, AuditedModel>> } = {}): unknown {
+export function verifierRulesFingerprint(input: {
+  auditedModels?: Readonly<Record<string, AuditedModel>>
+  /** Only for the test that shows a changed entry changes the hash; the rules are `AUDIT_TEST_COUNTS`. */
+  testCounts?: Readonly<Record<CountedTestId, boolean>>
+} = {}): unknown {
   const models = Object.entries(input.auditedModels ?? AUDITED_MODELS)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, model]) => ({
@@ -228,6 +233,8 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
     // then the tests with a record. With what the declarations give for fixed banks and discoveries, so a change to how
     // a setting is chosen shows here, not only a change to a declaration.
     thinking: thinkingFingerprint(),
+    // Which tests count toward the verdict (`AUDIT_TEST_COUNTS`): the same on every auditor, so no config changes it.
+    testCounts: input.testCounts ?? AUDIT_TEST_COUNTS,
     parsed: SAMPLE_REPLIES.map(([reply, count]) => parseKbfAnswers(stripKbfThinkBlocks(reply), count)),
     scored: SAMPLE_SCORES.map(([answer, domain, consensus]) => scoreKbfAnswer(answer, sampleProbe(domain, consensus))),
     verdicts: sampleVerdicts(),
