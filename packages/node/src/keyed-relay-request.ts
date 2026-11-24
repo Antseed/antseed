@@ -87,19 +87,21 @@ export function checkKeyedRequest(reveal: KeyedRelayReveal, model: string, terms
     return refuse('the request body does not end with the fields the seller checks');
   }
   const limit = parsed[terms.maxTokensField];
-  const maxTokens = limit === undefined ? null : limit;
-  if (typeof parsed['model'] !== 'string' || typeof parsed['stream'] !== 'boolean'
-    || (maxTokens !== null && !(typeof maxTokens === 'number' && Number.isSafeInteger(maxTokens) && maxTokens > 0))) {
+  if (limit !== undefined && !(typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0)) {
     return refuse('the request body does not end with the fields the seller checks');
   }
-  const expected = keyedRequestTailFields(terms, { model: parsed['model'], maxTokens: maxTokens as number | null, stream: parsed['stream'] });
+  const maxTokens: number | null = limit ?? null;
+  if (typeof parsed['model'] !== 'string' || typeof parsed['stream'] !== 'boolean') {
+    return refuse('the request body does not end with the fields the seller checks');
+  }
+  const expected = keyedRequestTailFields(terms, { model: parsed['model'], maxTokens, stream: parsed['stream'] });
   // Byte for byte: no repeated, extra, reordered or escaped keys.
   if (fields !== expected) return refuse('the request body does not end with the fields the seller checks');
   if (parsed['model'] !== model) return refuse(`the request names model "${parsed['model']}", not "${model}"`);
-  if (terms.maxTokens !== undefined && (maxTokens === null || (maxTokens as number) > terms.maxTokens)) {
+  if (terms.maxTokens !== undefined && (maxTokens === null || maxTokens > terms.maxTokens)) {
     return refuse(`the request must ask for at most ${terms.maxTokens} output tokens`);
   }
-  return { ok: true, bodyLength, maxTokens: maxTokens as number | null, stream: parsed['stream'] };
+  return { ok: true, bodyLength, maxTokens, stream: parsed['stream'] };
 }
 
 /** The prompt tokens a keyed request body may hold, for checks before it goes upstream: about four bytes a token. */
