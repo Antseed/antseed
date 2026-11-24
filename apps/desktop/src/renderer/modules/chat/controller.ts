@@ -163,10 +163,9 @@ export function initChatModule({
   let workspaceSwitchToken = 0;
   let conversationOpenToken = 0;
   let permissionRefreshToken = 0;
-  // The model whose saved mode `uiState.chatPermissionMode` holds (null while
-  // it is reset to manual and being read), and the read still out.
+  // The model whose mode `uiState.chatPermissionMode` holds: null while it shows
+  // Ask first only because the saved mode is still being read.
   let permissionModeModelId: string | null = null;
-  let permissionRefresh: { modelId: string; done: Promise<void> } | null = null;
   let desiredWorkspacePath: string | null = uiState.chatWorkspacePath || null;
   // First messages still creating their chat, and the workspace of a chat
   // opened meanwhile, switched to once they're done.
@@ -570,46 +569,23 @@ export function initChatModule({
 
   const normalizePermissionMode = (value: unknown): ChatPermissionMode => (value === 'full' ? 'full' : 'manual');
 
-  function refreshPermissionModeForModel(modelId = uiState.chatSelectedModelId): Promise<void> {
+  async function refreshPermissionModeForModel(modelId = uiState.chatSelectedModelId): Promise<void> {
     const token = ++permissionRefreshToken;
     const id = modelId.trim();
-    // Manual until the saved mode arrives: another model's Full access never carries over.
     uiState.chatPermissionMode = 'manual';
     permissionModeModelId = null;
-    permissionRefresh = null;
     notifyUiStateChanged();
-    if (!id || !bridge?.chatPermissionModeGet) return Promise.resolve();
-    const done = (async () => {
-      try {
-        const result = await bridge.chatPermissionModeGet!(id);
-        if (token !== permissionRefreshToken || id !== uiState.chatSelectedModelId) return;
-        if (result?.ok) {
-          uiState.chatPermissionMode = normalizePermissionMode(result.mode);
-          permissionModeModelId = id;
-          notifyUiStateChanged();
-        }
-      } catch {
-        // Keep the current in-memory value.
-      }
-    })();
-    permissionRefresh = { modelId: id, done };
-    return done;
-  }
-
-  /**
-   * The mode a run on `modelId` goes out with: its saved mode, never the reset
-   * to manual a read still out shows on screen. Manual when it can't be read.
-   */
-  async function permissionModeForSend(modelId: string): Promise<ChatPermissionMode> {
-    const id = modelId.trim();
-    if (permissionRefresh?.modelId === id) await permissionRefresh.done;
-    if (permissionModeModelId === id) return uiState.chatPermissionMode;
-    if (!id || !bridge?.chatPermissionModeGet) return 'manual';
+    if (!id || !bridge?.chatPermissionModeGet) return;
     try {
       const result = await bridge.chatPermissionModeGet(id);
-      return result?.ok ? normalizePermissionMode(result.mode) : 'manual';
+      if (token !== permissionRefreshToken || id !== uiState.chatSelectedModelId) return;
+      if (result?.ok && result.mode) {
+        uiState.chatPermissionMode = normalizePermissionMode(result.mode);
+        permissionModeModelId = id;
+        notifyUiStateChanged();
+      }
     } catch {
-      return 'manual';
+      // Keep the current in-memory value.
     }
   }
 
@@ -617,9 +593,6 @@ export function initChatModule({
     const nextMode = normalizePermissionMode(mode);
     uiState.chatPermissionMode = nextMode;
     const modelId = uiState.chatSelectedModelId;
-    // The user's choice wins over a read still out.
-    permissionRefreshToken += 1;
-    permissionRefresh = null;
     permissionModeModelId = modelId.trim() || null;
     if (modelId) void bridge?.chatPermissionModeSet?.(modelId, nextMode)?.catch(() => undefined);
     notifyUiStateChanged();
@@ -1493,9 +1466,10 @@ export function initChatModule({
       return;
     }
 
-    // A new chat's first send follows its opening, before the model's saved mode has arrived.
-    const permissionMode = await permissionModeForSend(modelId);
-    if (!ownsSend(convId, token)) return;
+    // A new chat's first message is sent before its model's saved mode is read
+    // back. Sending no mode then lets the run use the saved one; the main process
+    // never runs with more access than is saved.
+    const permissionMode = permissionModeModelId === modelId.trim() ? uiState.chatPermissionMode : undefined;
 
     const requestStartedAt = Date.now();
     streamCompletedAtByConversation.delete(convId);
