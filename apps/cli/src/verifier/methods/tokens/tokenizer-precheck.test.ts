@@ -799,6 +799,99 @@ test('the rule counts exactly: one token off is off, two asks one token apart ar
   assert.equal(tokenizerCrowd([132, 132, 119], 119).outvoted, true)
 })
 
+// ── below the model's count on every ask ─────────────────────────────────────────────────────────
+
+/**
+ * A seller whose hidden input adds 50 tokens to A and fewer to A + B, by another amount on each ask (4 tokens less
+ * on the first, `second` less on the second): its difference is below the model's every time, and never the same
+ * twice. With `cached`, every answer reports the same cached amount, which cancels out of each pair.
+ */
+const belowSeller = (options: { second?: number; cached?: boolean; above?: boolean } = {}) => seller({
+  usage: (content, call) => {
+    const probed = PROBES.some((probe) => probe.a + probe.b === content)
+    const shift = probed ? (call % 4 === 0 ? options.second ?? 6 : 4) : 0
+    const tokens = 50 + MODEL_TOKENIZER(content) + (options.above ? shift : -shift)
+    return options.cached ? { prompt_tokens: tokens, completion_tokens: 3, prompt_tokens_details: { cached_tokens: 32 } } : tokens
+  },
+})
+
+test('a seller below the model\'s count on every ask, with no cache, is a mismatch though its counts move', async () => {
+  const record = await precheck(belowSeller())
+  assert.equal(record.outcome, 'mismatch')
+  assert.equal(record.reason, null)
+  for (const round of record.rounds) {
+    assert.deepEqual(round.seller.map((ask) => ask.delta), [round.reference.delta! - 4, round.reference.delta! - 6])
+  }
+  assert.equal(record.crowd!.corroborated, true)
+  assert.doesNotThrow(() => validateTokenizerPrecheck(record))
+  // The reason names each count: the round's asks are not one count signed twice.
+  const [first, second, third] = record.rounds.map((round) => round.reference.delta!)
+  assert.equal(describeTokenizerMismatch(record), 'tokenizer pre-check (tokenizer-precheck-v1): off the model\'s count in every round ('
+    + `round 1: the seller signed ${first! - 4} and ${first! - 6} input tokens where the model counts ${first}, with no cache: below on every ask; `
+    + `round 2: the seller signed ${second! - 4} and ${second! - 6} input tokens where the model counts ${second}, with no cache: below on every ask; `
+    + `round 3: the seller signed ${third! - 4} and ${third! - 6} input tokens where the model counts ${third}, with no cache: below on every ask), `
+    + 'while 1 of the model\'s other sellers signed the model\'s count')
+  // In the words of a round of the dry runs.
+  assert.equal(judgeTokenizerRound({ referenceDelta: 187, sellerDeltas: [152, 167] }), 'off')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 187, sellerDeltas: [128, 130] }), 'off')
+  assert.equal(judgeTokenizerPrecheck([
+    { referenceDelta: 187, sellerDeltas: [152, 167] }, { referenceDelta: 197, sellerDeltas: [141, 141] }, { referenceDelta: 184, sellerDeltas: [128, 130] },
+  ]), 'mismatch')
+})
+
+test('a seller is below on this rule only when every ask is: one at or above the model\'s count is not', async () => {
+  assert.equal(judgeTokenizerRound({ referenceDelta: 187, sellerDeltas: [152, 167] }), 'off')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 187, sellerDeltas: [152, 187] }), 'match', 'an ask on the model\'s count matches')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 187, sellerDeltas: [152, 190] }), 'unstable', 'an ask above')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 193, sellerDeltas: [310, 173] }), 'unstable', 'one above and one below, as a host whose hidden input varies')
+  // A whole run: the second ask of every round signs 2 tokens above the model's.
+  const record = await precheck(belowSeller({ second: -2 }))
+  assert.equal(record.outcome, 'inconclusive')
+  assert.match(record.reason!, /^the seller signed different counts for the same text \(\d+, \d+ where the model counts \d+\), so its hidden input varies$/)
+  assert.deepEqual(record.rounds.map((round) => round.seller.length), [2, 0, 0])
+  assert.doesNotThrow(() => validateTokenizerPrecheck(record))
+  assert.equal((await precheck(belowSeller())).outcome, 'mismatch')
+})
+
+test('a seller below the model\'s count is not off on this rule when its answers report cached input, even a cache that cancels', async () => {
+  // The same cached amount on both answers of each pair: the cache cancels out of the difference, and the pair is kept.
+  const record = await precheck(belowSeller({ cached: true }))
+  assert.equal(record.outcome, 'inconclusive')
+  assert.match(record.reason!, /so its hidden input varies$/)
+  assert.equal(cacheBlocks(record.rounds[0]!.seller[1]!), false)
+  assert.doesNotThrow(() => validateTokenizerPrecheck(record))
+  assert.equal(judgeTokenizerRound({ referenceDelta: 187, sellerDeltas: [152, 167], cacheReported: [false, true] }), 'unstable')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 187, sellerDeltas: [152, 167], cacheReported: [false, false] }), 'off')
+  // A stored record cannot drop the reported cache to turn it into a mismatch.
+  const claimed = structuredClone(record)
+  for (const ask of claimed.rounds[0]!.seller) ask.base.cachedInput = ask.probed!.cachedInput = false
+  assert.throws(() => validateTokenizerPrecheck(claimed), /not the ones in its signed responses/)
+})
+
+test('a seller below the model\'s count by no more than the margin is not off on this rule: more than 5% and more than 3 tokens on every ask', () => {
+  assert.deepEqual(TOKENIZER_PRECHECK_RULE.belowEveryAsk, { percent: 5, tokens: 3 })
+  // 5% of 200 is 10 tokens: 189 is 11 below, 190 is exactly 10.
+  assert.equal(judgeTokenizerRound({ referenceDelta: 200, sellerDeltas: [189, 180] }), 'off')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 200, sellerDeltas: [190, 180] }), 'unstable', 'exactly 5% below is within the margin')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 200, sellerDeltas: [199, 150] }), 'unstable', 'one ask a token below')
+  // On a short text the tokens decide: 4 below 40 is more than 3 tokens, 3 below is not.
+  assert.equal(judgeTokenizerRound({ referenceDelta: 40, sellerDeltas: [36, 30] }), 'off')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 40, sellerDeltas: [37, 30] }), 'unstable')
+  // Without the margin in the rule, counts that move are never off.
+  const without = Object.freeze({ ...TOKENIZER_PRECHECK_RULE, belowEveryAsk: undefined })
+  assert.equal(judgeTokenizerRound({ referenceDelta: 200, sellerDeltas: [189, 180] }, without), 'unstable')
+})
+
+test('a seller above the model\'s count with counts that move never flags: input added to some requests', async () => {
+  assert.equal(judgeTokenizerRound({ referenceDelta: 187, sellerDeltas: [235, 238] }), 'unstable')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 187, sellerDeltas: [359, 357] }), 'unstable')
+  assert.equal(judgeTokenizerRound({ referenceDelta: 187, sellerDeltas: [152, 167] }), 'off', 'the same amounts below are off')
+  const record = await precheck(belowSeller({ above: true }))
+  assert.equal(record.outcome, 'inconclusive')
+  assert.match(record.reason!, /so its hidden input varies$/)
+  assert.deepEqual(record.rounds.map((round) => round.seller.length), [2, 0, 0])
+})
+
 test('a seller one token off the model is a mismatch; a tolerance of 2 tokens would have let it match', async () => {
   const oneOff = () => seller({ usage: (content) => 1 + MODEL_TOKENIZER(content) + (content.length > 40 ? 1 : 0) })
   const tolerant = await precheck(oneOff(), undefined, { rule: TOLERANT })

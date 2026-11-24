@@ -127,11 +127,11 @@ test('the tokenizer pre-check is part of the rules: turned off it is named, and 
   for (const probe of tokenizerPrecheck.probes) assert.ok(isSafeProbe(probe.b), probe.b)
   assert.deepEqual(tokenizerPrecheck.probes, (verifierRulesFingerprint() as { tokenizerPrecheck: { probes: unknown } }).tokenizerPrecheck.probes, 'the same probes every time')
   // Under the rule (an exact count): the exact count is a match; a mismatch is three rounds off by even
-  // one token, each the same way twice; anything missing, a seller whose two asks are a token or more apart, and a count
-  // that is off with the cache in play decide nothing.
+  // one token, each the same way twice, or below the model's count by the margin on every ask; anything missing, a
+  // seller whose two asks are a token or more apart otherwise, and a count that is off with the cache in play decide nothing.
   assert.deepEqual(tokenizerPrecheck.judged, [
     'match', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive', 'inconclusive',
-    'inconclusive', 'inconclusive', 'mismatch', 'match',
+    'inconclusive', 'inconclusive', 'mismatch', 'match', 'mismatch', 'inconclusive', 'inconclusive', 'inconclusive',
   ])
   // A reference with cached input or from two providers has no difference; one that names no provider has, and so
   // has one whose counts stay while its cached amount moves (unlike one whose count moves with it).
