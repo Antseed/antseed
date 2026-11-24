@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import type { MethodRun, OwnScreenFor } from '../../audit-method.js'
 import { createFlipsScreen, flipsSeed, type FlipsProbe, type FlipsUnavailable } from './flips.js'
-import { FLIPS_RULE, flipsCounts, isValidFlipsPair } from './flips-score.js'
+import { FLIPS_RULE, flipsCountsTowardVerdict, isValidFlipsPair } from './flips-score.js'
 import { FLIPS_THINKING } from './flips-thinking.js'
 import { resolveThinking } from '../../audit-thinking.js'
 import { asError } from '../../utils.js'
@@ -160,11 +160,11 @@ export async function flipsForRun(run: MethodRun): Promise<OwnScreenFor<'flips'>
     const unavailable = flipsStatusRecorder(
       (status) => report.file('flips-status.json', status),
       model,
-      { ...(probe && !flipsCounts(model, FLIPS_RULE) ? { probe } : {}), ...(keyFailed ? { keyFailed } : {}) },
+      { ...(probe && !flipsCountsTowardVerdict(model, FLIPS_RULE) ? { probe } : {}), ...(keyFailed ? { keyFailed } : {}) },
       (line) => report.warn(line),
     )
     // A probe is a dry-run diagnostic: where FLIPS counts for this model it is refused, never run.
-    const modelProbe = probe && flipsCounts(model, FLIPS_RULE) ? null : probe
+    const modelProbe = probe && flipsCountsTowardVerdict(model, FLIPS_RULE) ? null : probe
     // Said as the run's own line, not above its progress, as it always was.
     if (probe && !modelProbe) run.warn(`FLIPS: probe refused for ${model}: FLIPS counts for it`)
     if (master === null) return null

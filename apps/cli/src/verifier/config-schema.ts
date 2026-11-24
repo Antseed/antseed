@@ -220,8 +220,9 @@ export const VerifierConfigSchema = strictObject({
    */
   outputChecks: z.boolean().optional(),
   /**
-   * The randomness check (FLIPS, `flips.ts`), last in every audit. On by default; it counts toward the verdict for every
-   * model its rule counts (not MiniMax M3, nor a model the eval never measured). Every auditor must use the same value.
+   * The randomness check (FLIPS, `flips.ts`), last in every audit. On by default. Whether it counts toward the verdict is
+   * not a setting: the table of which tests count (`AUDIT_TEST_COUNTS`) records it only for now. Every auditor must use
+   * the same value.
    */
   flips: z.boolean().optional(),
   /**

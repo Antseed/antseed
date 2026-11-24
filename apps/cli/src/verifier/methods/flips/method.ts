@@ -5,6 +5,7 @@ import {
   type FlipsStage, type FlipsV1,
 } from './flips.js'
 import { flipsForRun, flipsWithoutRecord } from './flips-run.js'
+import { testCounts } from '../../audit-test-counts.js'
 import { FLIPS_RULE, flipsCounts, flipsRuleById } from './flips-score.js'
 import { FLIPS_THINKING } from './flips-thinking.js'
 
@@ -17,6 +18,8 @@ import { FLIPS_THINKING } from './flips-thinking.js'
  * dry-run pairs and a malformed draw never count.
  */
 const flipsCountsFor = (record: FlipsV1, rules?: ReadingRules): boolean => {
+  // The table of which tests count first (`AUDIT_TEST_COUNTS`), then FLIPS's own rule for the model.
+  if (!testCounts('flips', rules?.counts)) return false
   if (!isFlipsRecord(record) || isProbeDraw(record.draw)) return false
   const rule = rules?.flips ?? flipsRuleById(record.rule)
   return rule !== undefined && flipsCounts(record.draw.model, rule)
@@ -24,6 +27,7 @@ const flipsCountsFor = (record: FlipsV1, rules?: ReadingRules): boolean => {
 
 /** Whether a FLIPS summary can affect a verdict: its own rule's for its model, never a probe's or an unknown rule's. */
 const flipsSummaryCounts = (summary: { model?: unknown; probe?: unknown; rule?: unknown }): boolean => {
+  if (!testCounts('flips')) return false
   if (typeof summary.model !== 'string' || summary.probe !== undefined || typeof summary.rule !== 'string') return false
   const rule = flipsRuleById(summary.rule)
   return rule !== undefined && flipsCounts(summary.model, rule)
@@ -74,7 +78,7 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
   inRunLine: () => null,
   counts: (record) => flipsCountsFor(record),
   // For a seller with no FLIPS record: whether this build's rule counts FLIPS for the model at all.
-  countsFor: (model, rules) => flipsCounts(model, rules?.flips ?? FLIPS_RULE),
+  countsFor: (model, rules) => testCounts('flips', rules?.counts) && flipsCounts(model, rules?.flips ?? FLIPS_RULE),
   // Flag-only for the SAME rule: a counted FLIPS flag is a DIFF; its no result (too few usable replies, a reference that
   // is not whole, a seller asked another way than the reference) never blocks a SAME.
   sameNeedsPass: false,

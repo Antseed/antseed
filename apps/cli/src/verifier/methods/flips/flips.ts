@@ -5,6 +5,7 @@ import {
   FLIPS_REQUESTS,
   FLIPS_RULE,
   flipsCounts,
+  flipsCountsTowardVerdict,
   flipsFixedSetting,
   flipsRequestBody,
   flipsRuleById,
@@ -237,7 +238,10 @@ export interface FlipsV1 {
   reasks: number
   /** The judged outcome: a flag at p at most the stage's bar, a pass at p at least `passAbove`. */
   outcome: FlipsOutcome
-  /** Whether it counts toward the verdict (`flipsCounts`); recorded only otherwise. */
+  /**
+   * Whether its own rule counts it for the model (`flipsCounts`). The verdict also reads the table of which tests count
+   * (`AUDIT_TEST_COUNTS`), so a record stored as counted is still recorded only while the table does not count FLIPS.
+   */
   counted: boolean
   score: number | null
   scoreMax: number | null
@@ -1145,6 +1149,11 @@ export function createFlipsScreen<Settings>(input: {
   /** The setting the reference is asked with for a question set's bank (`FLIPS_THINKING`, `resolveThinking`). */
   referenceThinking: (settings: Settings) => ThinkingSetting
   rule?: FlipsRule
+  /**
+   * Whether FLIPS counts toward the verdict here, in place of the table (`AUDIT_TEST_COUNTS`): only for the tests of
+   * the path where it counts. A run never passes it, and no config reaches it.
+   */
+  countsTowardVerdict?: boolean
   probe?: FlipsProbe
   onReady?: (reference: FlipsReferenceV1) => void
   /** Once per model, stage and reason: why a check of it has no result. */
@@ -1269,7 +1278,7 @@ export function createFlipsScreen<Settings>(input: {
     ruleId: rule.id,
     async referenceDecision(stage, service, settings, audit) {
       const kind = probe?.stage ?? stage
-      const counts = flipsCounts(input.model, rule)
+      const counts = input.countsTowardVerdict === undefined ? flipsCountsTowardVerdict(input.model, rule) : input.countsTowardVerdict && flipsCounts(input.model, rule)
       let whole = true
       const asked = (() => {
         try {

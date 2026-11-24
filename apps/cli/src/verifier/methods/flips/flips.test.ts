@@ -12,6 +12,7 @@ import { referenceFixture } from '../../model-audit-fixtures.test-support.js'
 import { failureBlame } from '../../failure-blame.js'
 import { readingsOfEvidence, validateCheckRecordsAgainstSummary, verdictOf, withoutOrphans, type AuditCheckId } from '../../audit-checks.js'
 import { FLIPS_CHECK } from './method.js'
+import { AUDIT_TEST_COUNTS } from '../../audit-test-counts.js'
 import { FLIPS_RULE, flipsCounts, flipsFixedSetting, flipsRequestBody, isValidFlipsPair, type FlipsPair, type FlipsRule } from './flips-score.js'
 import {
   FLIPS_WORDS,
@@ -55,6 +56,8 @@ const OWN = strategySetting('reasoning-effort-minimal')
 /** The rule with FLIPS recorded only everywhere: judged and stored, never a verdict. */
 const RECORDED_ONLY: FlipsRule = Object.freeze({ ...FLIPS_RULE, counts: Object.freeze({ default: false, never: Object.freeze(['minimax-m3']) }) })
 const COUNTING: FlipsRule = Object.freeze({ ...FLIPS_RULE, counts: Object.freeze({ default: true, never: Object.freeze(['minimax-m3']) }) })
+/** A reading taken under a table that counts FLIPS (`ReadingRules.counts`): how FLIPS decides once it counts. */
+const TABLE_COUNTS = Object.freeze({ counts: Object.freeze({ flips: true }) })
 const bytes = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value))
 const chat = (content: string | null, finish = 'stop', reasoning = 0) => ({
   object: 'chat.completion',
@@ -153,21 +156,27 @@ const flipsAlone = (flips: FlipsV1) => ({
   noRecord: (['tokenizerPrecheck', 'outputCap', 'outputEcho'] as const).map((slot) => ({ slot, reason: 'not run for the model in this sample' })),
 })
 
-test('a saved swap flags at the first bar and is a DIFF; recorded only where the rule does not count; never for MiniMax M3', () => {
+test('a saved swap flags at the first bar: recorded only while the table does not count FLIPS, a DIFF once it does; never for MiniMax M3', () => {
   const { record, rule } = recordOf(fixture('swap-caught-near-threshold'))
   const judged = judgeFlips(record, rule)
   assert.equal(judged.outcome, 'flag')
   assert.ok(judged.p! <= FLIPS_RULE.bar.first)
+  // Its own rule counts the model; the table of which tests count does not count FLIPS today.
   assert.equal(judged.counted, true)
+  assert.equal(AUDIT_TEST_COUNTS.flips, false)
   const stored = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judged } as FlipsV1
-  assert.deepEqual(verdictOf(readingsOfEvidence(flipsAlone(stored), 'SAME'), 'SAME'),
+  const today = readingsOfEvidence(flipsAlone(stored), 'SAME')
+  assert.deepEqual(today.filter((reading) => reading.check === 'flips').map((reading) => [reading.outcome, reading.recordedOnly, reading.inactive?.cause]), [['inconclusive', 'flag', 'rule']])
+  assert.deepEqual(verdictOf(today, 'SAME'), { verdict: 'SAME', flaggedBy: [], passedBy: ['kbf'], undecidedConfirmation: null }, 'recorded only: no DIFF')
+  // Read under a table that counts FLIPS: a DIFF.
+  assert.deepEqual(verdictOf(readingsOfEvidence(flipsAlone(stored), 'SAME', TABLE_COUNTS), 'SAME'),
     { verdict: 'DIFF', flaggedBy: ['flips'], passedBy: ['kbf'], undecidedConfirmation: null })
-  // Read under a rule that counts nowhere: recorded only, and the verdict ignores it.
-  const recorded = readingsOfEvidence(flipsAlone(stored), 'SAME', { flips: RECORDED_ONLY })
+  // Read under a rule that counts nowhere: recorded only, and the verdict ignores it, also where the table counts.
+  const recorded = readingsOfEvidence(flipsAlone(stored), 'SAME', { ...TABLE_COUNTS, flips: RECORDED_ONLY })
   assert.deepEqual(recorded.filter((reading) => reading.check === 'flips').map((reading) => [reading.outcome, reading.recordedOnly]), [['inconclusive', 'flag']])
   assert.equal(verdictOf(recorded, 'SAME').verdict, 'SAME', 'recorded only: the audit verdict ignores it')
   const m3 = { ...stored, draw: { ...stored.draw, model: 'minimax-m3' } }
-  assert.equal(verdictOf(readingsOfEvidence(flipsAlone(m3), 'SAME', { flips: COUNTING }), 'SAME').verdict, 'SAME', 'MiniMax M3 never counts')
+  assert.equal(verdictOf(readingsOfEvidence(flipsAlone(m3), 'SAME', { ...TABLE_COUNTS, flips: COUNTING }), 'SAME').verdict, 'SAME', 'MiniMax M3 never counts')
 })
 
 test('a counted FLIPS is flag-only for the SAME rule: its no result never blocks a SAME, its flag is a DIFF', () => {
@@ -178,17 +187,17 @@ test('a counted FLIPS is flag-only for the SAME rule: its no result never blocks
   const judged = judgeFlips(record, { ...rule, counts: COUNTING.counts })
   assert.deepEqual([judged.outcome, judged.counted], ['inconclusive', true])
   const open = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judged } as FlipsV1
-  const readings = readingsOfEvidence(flipsAlone(open), 'SAME', { flips: COUNTING })
+  const readings = readingsOfEvidence(flipsAlone(open), 'SAME', { ...TABLE_COUNTS, flips: COUNTING })
   const flips = readings.find((reading) => reading.check === 'flips')!
   assert.equal(verdictOf(readings, 'SAME').verdict, 'SAME', 'its no result blocks nothing')
   assert.deepEqual([flips.outcome, flips.inactive, flips.flagOnly], ['inconclusive', undefined, true], 'counted, so active; flag-only')
   // The same seller with a counted FLIPS flag: DIFF.
   const swap = recordOf(fixture('swap-caught-near-threshold'))
   const flagged = { ...swap.record, rule: swap.rule.id, referenceUpstream: null, reasks: 0, ...judgeFlips(swap.record, swap.rule) } as FlipsV1
-  assert.deepEqual(verdictOf(readingsOfEvidence(flipsAlone(flagged), 'SAME', { flips: COUNTING }), 'SAME').verdict, 'DIFF')
+  assert.deepEqual(verdictOf(readingsOfEvidence(flipsAlone(flagged), 'SAME', { ...TABLE_COUNTS, flips: COUNTING }), 'SAME').verdict, 'DIFF')
 })
 
-test('a stored FLIPS counts under its rule; a rule this CLI does not know never counts', () => {
+test('a stored FLIPS counts where the table and its rule both say so; a rule this CLI does not know never counts', () => {
   const { record, rule } = recordOf(fixture('swap-caught-near-threshold'))
   const flagged = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judgeFlips(record, rule) } as FlipsV1
   assert.equal(flagged.outcome, 'flag')
@@ -198,17 +207,19 @@ test('a stored FLIPS counts under its rule; a rule this CLI does not know never 
     return { outcome: flips.outcome, recordedOnly: flips.recordedOnly ?? null, verdict: verdictOf(readings, 'SAME').verdict }
   }
   assert.equal(flipsCounts(flagged.draw.model), true, 'the rule counts the model')
-  assert.deepEqual(read(flagged), { outcome: 'flag', recordedOnly: null, verdict: 'DIFF' }, 'a record of the rule counts')
-  assert.equal(FLIPS_CHECK.summaryCounts!({ ...summarizeFlips(flagged) }), true)
+  // The table does not count FLIPS today: recorded only, and its summary decides nothing.
+  assert.deepEqual(read(flagged), { outcome: 'inconclusive', recordedOnly: 'flag', verdict: 'SAME' }, 'recorded only by the table')
+  assert.equal(FLIPS_CHECK.summaryCounts!({ ...summarizeFlips(flagged) }), false)
+  assert.deepEqual(read(flagged, TABLE_COUNTS), { outcome: 'flag', recordedOnly: null, verdict: 'DIFF' }, 'where the table counts it, a record of the rule counts')
   // Read under a rule that counts nowhere (`ReadingRules`): recorded only.
-  assert.deepEqual(read(flagged, { flips: RECORDED_ONLY }), { outcome: 'inconclusive', recordedOnly: 'flag', verdict: 'SAME' }, 'a rule that counts nowhere records only')
+  assert.deepEqual(read(flagged, { ...TABLE_COUNTS, flips: RECORDED_ONLY }), { outcome: 'inconclusive', recordedOnly: 'flag', verdict: 'SAME' }, 'a rule that counts nowhere records only')
   // A rule id this CLI does not know: recorded only, whatever this build's rule says.
   const unknown = { ...flagged, rule: 'flips-v999' }
-  assert.deepEqual(read(unknown), { outcome: 'inconclusive', recordedOnly: 'flag', verdict: 'SAME' })
+  assert.deepEqual(read(unknown, TABLE_COUNTS), { outcome: 'inconclusive', recordedOnly: 'flag', verdict: 'SAME' })
   assert.equal(FLIPS_CHECK.summaryCounts!({ ...summarizeFlips(unknown) }), false, 'nor does its summary')
   assert.equal(FLIPS_CHECK.summaryCounts!({ model: flagged.draw.model, outcome: 'flag' }), false, 'a summary that names no rule never counts')
   // The rule a reading is asked under (the eval replay, the dry-run report) still applies on purpose.
-  const counting = { flips: { ...FLIPS_RULE, counts: { default: true, never: ['minimax-m3'] } } }
+  const counting = { ...TABLE_COUNTS, flips: { ...FLIPS_RULE, counts: { default: true, never: ['minimax-m3'] } } }
   assert.equal(read(unknown, counting).verdict, 'DIFF')
 })
 
@@ -541,6 +552,8 @@ test('an answer is read from its own bytes: without usage, empty only when filte
 function screenOf(options: {
   seller: ReturnType<typeof fakeSeller>
   rule?: FlipsRule
+  /** As if the table counted FLIPS (`countsTowardVerdict`): the path where FLIPS counts. */
+  counting?: boolean
   probe?: Parameters<typeof createFlipsScreen>[0]['probe']
   askReference?: (call: number) => void | Promise<unknown>
   provider?: (index: number) => string | null
@@ -556,6 +569,7 @@ function screenOf(options: {
     model: MODEL, auditor: '0xA1', epoch: '32', seedFor: (stage) => flipsSeed('ab'.repeat(32), { model: MODEL, epoch: '32', runId: 'r', stage }),
     proxyBaseUrl: 'http://127.0.0.1:1', responseAuthReader: options.seller.responseAuthReader as never, limiter: new ConcurrencyLimiter(8),
     fetchFn: options.seller.fetchFn, ...(options.rule ? { rule: options.rule } : {}), ...(options.probe ? { probe: options.probe } : {}),
+    ...(options.counting ? { countsTowardVerdict: true } : {}),
     onUnavailable: (event) => events.push(event),
     ...(options.timeLimitMs ? { timeLimitMs: options.timeLimitMs } : {}),
     ask: () => async (bodies) => {
@@ -613,11 +627,14 @@ test('a FLIPS that cannot run says why, once per model and stage, and costs the 
   assert.equal(await down.screen.check({ ...SELLER, peerId: 'cd'.repeat(20) }, null, { stage: 'first', sellerThinking: OWN }), null)
   assert.deepEqual(down.events, [{ stage: 'first', code: 'reference-failed', detail: 'reference down' }])
   assert.equal(seller.calls(), 0)
+  // Today the table does not count FLIPS: its reference is never waited for, and no audit is held back.
+  const today = screenOf({ seller, askReference: () => { throw new Error('reference down') } })
+  assert.deepEqual(await Promise.all([[], ['flips']].map((confirming) => today.screen.referenceDecision!('first', MODEL, null, { confirming }))), ['ready', 'ready'])
   // Where FLIPS counts, the reference is decided once per stage and run, before any seller pays: not whole, FLIPS is not
   // active for the model this run and every audit runs without it; only a confirmation of a report only FLIPS flagged,
   // which could decide nothing without it, is not started. The check itself never throws.
   let referenceAsks = 0
-  const counted = screenOf({ seller, askReference: () => { referenceAsks += 1; throw new Error('reference down') } })
+  const counted = screenOf({ seller, counting: true, askReference: () => { referenceAsks += 1; throw new Error('reference down') } })
   const decide = (confirming: string[] = []) => counted.screen.referenceDecision!('first', MODEL, null, { confirming })
   assert.deepEqual(await Promise.all([decide(), decide(), decide(['flips']), decide(['kbf', 'flips']), decide(['output-cap'])]),
     ['without-flips', 'without-flips', 'not-started', 'without-flips', 'without-flips'])
@@ -627,7 +644,7 @@ test('a FLIPS that cannot run says why, once per model and stage, and costs the 
   assert.equal(seller.calls(), 0)
   // A slow reference that ends whole within its time: every seller waits for the same decision and runs, none fails.
   let slowAsks = 0
-  const slow = screenOf({ seller, askReference: async () => { slowAsks += 1; await new Promise((resolve) => setTimeout(resolve, 50)) } })
+  const slow = screenOf({ seller, counting: true, askReference: async () => { slowAsks += 1; await new Promise((resolve) => setTimeout(resolve, 50)) } })
   assert.deepEqual(await Promise.all([1, 2, 3].map(() => slow.screen.referenceDecision!('first', MODEL, null, { confirming: [] }))), ['ready', 'ready', 'ready'])
   assert.equal(slowAsks, 1)
   // Recorded only: never waited for, never stops an audit.

@@ -37,6 +37,8 @@ const evidenceOf = (records: Record<string, unknown>, extra: { model?: string; n
   exchanges: [{}],
 }) as ActiveTestsInput & { exchanges: unknown[] }
 const FLIPS_COUNTING = { ...FLIPS_RULE, counts: { default: true, never: ['minimax-m3'] } }
+/** A reading under a table that counts FLIPS and a FLIPS rule that counts it (`ReadingRules`): how FLIPS decides once it counts. */
+const COUNTING_READ = { flips: FLIPS_COUNTING, counts: { flips: true } }
 
 test('a SAME needs every active test passed: one active test with no result makes it UNDETERMINED, naming it', () => {
   const passed = evidenceOf({ tokenizerPrecheck: precheck('match', ALL_ROUNDS), outputCap: cap('pass'), outputEcho: echo('plain', 'pass', 'pass') })
@@ -65,18 +67,18 @@ test('a test that is not active never blocks SAME: switched off by its reference
     outputEcho: echo('visible', 'pass', 'inconclusive', { fixedAmount: 'not judged in visible mode' }),
   }, { model: 'minimax-m3', noRecord: [{ slot: 'outputCap', reason: capOff }] })
   // Read under a FLIPS rule that counts: it still never counts for MiniMax M3.
-  const inactive = inactiveChecks(evidence, { flips: FLIPS_COUNTING })
+  const inactive = inactiveChecks(evidence, COUNTING_READ)
   assert.deepEqual(inactive, [
     { check: 'tokens', cause: 'run', reason: 'no reference to compare with: the reference gave no difference' },
     { check: 'output-cap', cause: 'run', reason: capOff },
     { check: 'output-offset', cause: 'rule', reason: 'the fixed amount is not judged for a model whose reference shows its reasoning: its echoes are counted on the visible answer' },
     { check: 'flips', cause: 'rule', reason: 'the randomness check is recorded only: its rule does not count it for this model' },
   ])
-  assert.equal(verdictOf(readingsOfEvidence(evidence, 'SAME', { flips: FLIPS_COUNTING }), 'SAME').verdict, 'SAME')
+  assert.equal(verdictOf(readingsOfEvidence(evidence, 'SAME', COUNTING_READ), 'SAME').verdict, 'SAME')
   // On a model the counting rule measures, FLIPS is active; it is flag-only, so no FLIPS for the seller blocks nothing.
   const measured = { ...evidence, reference: { referenceModel: 'claude-opus-5.5' } }
-  assert.equal(inactiveChecks(measured, { flips: FLIPS_COUNTING }).some((entry) => entry.check === 'flips'), false)
-  const counted = verdictOf(readingsOfEvidence(measured, 'SAME', { flips: FLIPS_COUNTING }), 'SAME')
+  assert.equal(inactiveChecks(measured, COUNTING_READ).some((entry) => entry.check === 'flips'), false)
+  const counted = verdictOf(readingsOfEvidence(measured, 'SAME', COUNTING_READ), 'SAME')
   assert.deepEqual([counted.verdict, counted.openTests], ['SAME', undefined])
   // A pre-check whose reference measured every round is active: its seller-side no result blocks the SAME.
   const sellerSide = evidenceOf({ tokenizerPrecheck: precheck('inconclusive', ALL_ROUNDS, 'the seller signed different counts for the same text') },
@@ -113,7 +115,7 @@ test('a seller-side no result blocks SAME: an audit whose active cap check gave 
 test('FLIPS is flag-only: counted and with no result beside every other test passed it is SAME; a counted FLIPS flag is DIFF', () => {
   // Every other test passed, FLIPS counts for the model and gave this seller nothing (no record): SAME.
   const passed = evidenceOf({ tokenizerPrecheck: precheck('match', ALL_ROUNDS), outputCap: cap('pass'), outputEcho: echo('plain', 'pass', 'pass') }, { model: 'claude-opus-5.5' })
-  const readings = readingsOfEvidence(passed, 'SAME', { flips: FLIPS_COUNTING })
+  const readings = readingsOfEvidence(passed, 'SAME', COUNTING_READ)
   const flips = readings.find((reading) => reading.check === 'flips')!
   assert.deepEqual([verdictOf(readings, 'SAME').verdict, verdictOf(readings, 'SAME').openTests], ['SAME', undefined])
   assert.deepEqual([flips.outcome, flips.inactive, flips.flagOnly], ['not-run', undefined, true], 'active, flag-only')

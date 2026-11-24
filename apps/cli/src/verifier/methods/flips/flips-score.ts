@@ -1,3 +1,4 @@
+import { testCounts } from '../../audit-test-counts.js'
 import type { ThinkingSetting } from '../../audit-thinking.js'
 
 /**
@@ -236,6 +237,15 @@ export function flipsRequestBody(model: string, service: string, pair: FlipsPair
  */
 export function flipsCounts(model: string, rule: FlipsRule = FLIPS_RULE): boolean {
   return rule.counts.default && !rule.counts.never.includes(model.toLowerCase()) && flipsRequestFor(model).measured
+}
+
+/**
+ * Whether FLIPS counts toward this audit's verdict for the model: where the table of which tests count says so
+ * (`AUDIT_TEST_COUNTS`) and its own rule does (`flipsCounts`). What a run does that depends on FLIPS counting (waiting
+ * for a whole reference, refusing a dry-run probe) reads this; a record's stored `counted` is its own rule's alone.
+ */
+export function flipsCountsTowardVerdict(model: string, rule: FlipsRule = FLIPS_RULE): boolean {
+  return testCounts('flips') && flipsCounts(model, rule)
 }
 
 const RULES: ReadonlyMap<string, FlipsRule> = new Map([FLIPS_RULE].map((rule) => [rule.id, rule]))

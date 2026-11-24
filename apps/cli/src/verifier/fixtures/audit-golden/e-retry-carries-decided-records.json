@@ -78,7 +78,7 @@
    "score": 0.7775341197144852,
    "reason": "scored 0.78 (p 0.842), above 0.1"
   },
-  "inactive": []
+  "inactive": [{"check":"flips","cause":"rule","reason":"the randomness check is recorded only for now: the audit rules do not count it toward the verdict"}]
  },
  "evidence": {
   "buyerProxy": {"baseUrl":"http://127.0.0.1:8390","pid":4242,"statePath":"buyer.state.json"},
@@ -109,7 +109,7 @@
   "tokenizerPrecheck": {"record":"tokenizerPrecheck-af64f71c3a7e425a"},
   "version": 1
  },
- "read": {"flaggedBy":[],"passedBy":["tokens","output-cap","output-echo","output-offset","flips","kbf"],"submit":"accepted"},
+ "read": {"flaggedBy":[],"passedBy":["tokens","output-cap","output-echo","output-offset","kbf"],"submit":"accepted"},
  "files": [
   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/README.md",
   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/evidence.json",

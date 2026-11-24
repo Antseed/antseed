@@ -1,3 +1,4 @@
+import { AUDIT_TEST_COUNTS } from './audit-test-counts.js'
 import assert from 'node:assert/strict'
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -285,7 +286,7 @@ test('a FLIPS key others can read: no FLIPS screen for any model, said once for 
   })
 })
 
-test('the FLIPS dry-run probe is read once for the run, refused where FLIPS counts, and a value that cannot be read is no probe', async () => {
+test('the FLIPS dry-run probe is read once for the run, runs for every model while the table does not count FLIPS, and a value that cannot be read is no probe', async () => {
   const probe = { stage: 'confirm' as const }
   await withEnvironment({ ANTSEED_VERIFIER_FLIPS_PROBE: JSON.stringify(probe) }, () => withRun(async (made) => {
     const screensOf = await testsOfRun(made.run, undefined)
@@ -295,14 +296,16 @@ test('the FLIPS dry-run probe is read once for the run, refused where FLIPS coun
     assert.deepEqual([probed.probing, probed.probeSettings, probed.ruleId], [true, JSON.stringify(probe), FLIPS_RULE.id])
     const counted = envFor(COUNTED)
     const production = screensOf(counted.env).flips!
-    // Where FLIPS counts the probe is refused: the run's own line, and a production FLIPS.
-    assert.deepEqual([production.probing, production.probeSettings], [false, null])
-    assert.deepEqual(made.warned.slice(1), [`FLIPS: probe refused for ${COUNTED}: FLIPS counts for it`])
+    // A probe is refused only where FLIPS counts toward the verdict: its own rule counts this model, but the table of
+    // which tests count does not count FLIPS today (`AUDIT_TEST_COUNTS`), so the probe runs here too.
+    assert.equal(AUDIT_TEST_COUNTS.flips, false)
+    assert.deepEqual([production.probing, production.probeSettings], [true, JSON.stringify(probe)])
+    assert.deepEqual(made.warned.slice(1), [])
     assert.deepEqual([plain.warned, counted.warned], [[], []])
     await settled()
-    // The status file names the probe only where it runs.
+    // The status file names the probe where it runs.
     assert.deepEqual(plain.files[0]![1], { version: 1, kind: 'antseed-verifier-flips-status', model: PLAIN, probe, unavailable: [] })
-    assert.deepEqual(counted.files[0]![1], { version: 1, kind: 'antseed-verifier-flips-status', model: COUNTED, unavailable: [] })
+    assert.deepEqual(counted.files[0]![1], { version: 1, kind: 'antseed-verifier-flips-status', model: COUNTED, probe, unavailable: [] })
   }))
   await withEnvironment({ ANTSEED_VERIFIER_FLIPS_PROBE: '{nope' }, () => withRun(async (made) => {
     const screens = (await testsOfRun(made.run, undefined))(envFor(PLAIN).env)

@@ -1,5 +1,6 @@
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import type { ResolvedThinking, TestThinking } from './audit-thinking.js'
+import type { CountedTestId } from './audit-test-counts.js'
 import type { AuditTaskLimiter } from './audit-concurrency.js'
 import type { FlipsScreen, FlipsSummary, FlipsV1 } from './methods/flips/flips.js'
 import type { FlipsRule } from './methods/flips/flips-score.js'
@@ -190,6 +191,8 @@ export interface InactiveCause {
  */
 export interface ReadingRules {
   flips?: FlipsRule
+  /** Entries of the table of which tests count (`AUDIT_TEST_COUNTS`) to read by instead, for "what if it counted". */
+  counts?: Partial<Record<CountedTestId, boolean>>
 }
 
 /**
