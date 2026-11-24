@@ -75,6 +75,24 @@ test('auditPriceRatio scales the cap', () => {
   assert.match(auditPriceRejection({ inputUsdPerMillion: 2.3, outputUsdPerMillion: 6 }, cap) ?? '', /above the grok-4.7 reference \$2\/\$6 × 1.1/)
 })
 
+test('GPT-6.2 Sol, GPT-6.2 Astra and Gemini 4 Neon are priced from the catalog; models no longer audited have no cap', async () => {
+  const newModels: VerifierModelCatalog = new Map([
+    ['openai/gpt-6.2-sol', { upstreamModel: 'openai/gpt-6.2-sol', pricing: { inputUsdPerMillion: 2, outputUsdPerMillion: 10 }, capabilityRank: 80 }],
+    ['openai/gpt-6.2-astra', { upstreamModel: 'openai/gpt-6.2-astra', pricing: { inputUsdPerMillion: 8, outputUsdPerMillion: 40 }, capabilityRank: 80 }],
+    ['google/gemini-4-neon', { upstreamModel: 'google/gemini-4-neon', pricing: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 }, capabilityRank: 80 }],
+  ])
+  const { caps, unpriced } = await resolveAuditPriceCaps({ referenceEndpoint: endpoint }, ['gpt-6.2-sol', 'openai/gpt-6.2-astra', 'gemini-4-neon'], async () => newModels)
+  assert.deepEqual([...unpriced.keys()], [])
+  assert.deepEqual([...caps.values()].map(describeAuditPriceCap), [
+    'gpt-6.2-sol ≤ $2/$10 per 1M (reference catalog)',
+    'gpt-6.2-astra ≤ $8/$40 per 1M (reference catalog)',
+    'gemini-4-neon ≤ $3/$15 per 1M (reference catalog)',
+  ])
+  for (const retired of ['minimax-m3', 'gemini-3.1-pro-preview', 'gpt-6.1-sol', 'gpt-6-astra']) {
+    assert.throws(() => resolveAuditPriceCap({ referenceEndpoint: endpoint }, retired, newModels), /is not an audited model/, retired)
+  }
+})
+
 test('the run resolves every model, loads the catalog at most once, and reports unpriced models', async () => {
   let loads = 0
   const { caps, unpriced } = await resolveAuditPriceCaps(

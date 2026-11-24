@@ -1382,7 +1382,7 @@ export function flipsFingerprint(): Record<string, unknown> {
       const judged = judgeFlipsCheck(pairs)
       return [judged.outcome, judged.score === null ? null : Number(judged.score.toFixed(9)), judged.p === null ? null : Number(judged.p.toExponential(6))]
     })(),
-    counts: ['minimax-m3', 'claude-opus-5.5', 'unmeasured-model'].map((model) => flipsCounts(model)),
+    counts: ['claude-opus-5.5', 'unmeasured-model'].map((model) => flipsCounts(model)),
     // What a stage's reference means for an audit, decided once per run before anything paid: run, not started, or run
     // with FLIPS at no result on the auditor's last attempt (never for a report only FLIPS flagged).
     referenceDecision: [false, true].flatMap((whole) => [false, true].flatMap((counts) => [false, true].flatMap((probing) => (

@@ -391,7 +391,7 @@ const SAMPLE_CARRIES = [
  */
 const SAMPLE_ACTIVE_EVIDENCE: readonly ActiveTestsInput[] = [
   {
-    reference: { referenceModel: 'minimax-m3' },
+    reference: { referenceModel: 'unmeasured-model' },
     noRecord: [{ slot: 'outputCap', reason: 'the reference\'s own answer could not be measured, so the cap check does not apply to the model this run' }],
   },
   {

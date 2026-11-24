@@ -50,9 +50,9 @@ test('the rule is frozen and known by its id', () => {
   assert.equal(flipsRuleById('flips-v1'), FLIPS_RULE)
   assert.equal(flipsRuleById('flips-v2'), undefined)
   assert.ok(Object.isFrozen(FLIPS_RULE))
-  // Counting (never MiniMax M3), the bars, replies without a sequence left out, repeats, the asks trail, a confirmation
+  // Counting, the bars, replies without a sequence left out, repeats, the asks trail, a confirmation
   // between its bars clearing, and the second look between the bars.
-  assert.deepEqual(FLIPS_RULE.counts, { default: true, never: ['minimax-m3'] })
+  assert.deepEqual(FLIPS_RULE.counts, { default: true })
   assert.deepEqual([FLIPS_RULE.bar, FLIPS_RULE.passAbove], [{ first: 0.002, confirm: 0.001 }, 0.1])
   assert.deepEqual([FLIPS_RULE.noSequence, FLIPS_RULE.repeats], [{ below: 8, maxShare: 0.2 }, { sellerShare: 0.5, referenceShare: 0.25, minReplies: 4 }])
   assert.deepEqual([FLIPS_RULE.asksRequired, FLIPS_RULE.confirmBetweenClears], [true, true])

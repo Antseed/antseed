@@ -12,7 +12,9 @@ import { referenceFixture } from '../../model-audit-fixtures.test-support.js'
 import { failureBlame } from '../../failure-blame.js'
 import { readingsOfEvidence, validateCheckRecordsAgainstSummary, verdictOf, withoutOrphans, type AuditCheckId } from '../../audit-checks.js'
 import { FLIPS_CHECK } from './method.js'
-import { FLIPS_RULE, flipsCounts, flipsFixedSetting, flipsRequestBody, isValidFlipsPair, type FlipsPair, type FlipsRule } from './flips-score.js'
+import { findAuditedModelKey } from '../../audited-models.js'
+import { resolveVerifierCommandModels } from '../../model-config.js'
+import { FLIPS_RULE, flipsCounts, flipsFixedSetting, flipsRequestBody, flipsRequestFor, isValidFlipsPair, type FlipsPair, type FlipsRule } from './flips-score.js'
 import {
   FLIPS_WORDS,
   drawFlipsPairs,
@@ -53,8 +55,8 @@ const FIXED = flipsFixedSetting(MODEL)
  */
 const OWN = strategySetting('reasoning-effort-minimal')
 /** The rule with FLIPS recorded only everywhere: judged and stored, never a verdict. */
-const RECORDED_ONLY: FlipsRule = Object.freeze({ ...FLIPS_RULE, counts: Object.freeze({ default: false, never: Object.freeze(['minimax-m3']) }) })
-const COUNTING: FlipsRule = Object.freeze({ ...FLIPS_RULE, counts: Object.freeze({ default: true, never: Object.freeze(['minimax-m3']) }) })
+const RECORDED_ONLY: FlipsRule = Object.freeze({ ...FLIPS_RULE, counts: Object.freeze({ default: false }) })
+const COUNTING: FlipsRule = Object.freeze({ ...FLIPS_RULE, counts: Object.freeze({ default: true }) })
 const bytes = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(value))
 const chat = (content: string | null, finish = 'stop', reasoning = 0) => ({
   object: 'chat.completion',
@@ -143,7 +145,6 @@ test('the request is the eval\'s for the model, the same for the seller and the 
   assert.deepEqual([grok['max_tokens'], grok['temperature']], [900, 1], 'a model that still thinks gets 900')
   assert.equal(flipsCounts('claude-opus-5.5', RECORDED_ONLY), false, 'a rule that counts nowhere records only')
   assert.equal(flipsCounts('claude-opus-5.5'), true, 'the rule counts')
-  assert.equal(flipsCounts('minimax-m3'), false, 'never for MiniMax M3')
   assert.equal(flipsCounts('a-model-the-eval-never-measured'), false)
 })
 
@@ -153,7 +154,7 @@ const flipsAlone = (flips: FlipsV1) => ({
   noRecord: (['tokenizerPrecheck', 'outputCap', 'outputEcho'] as const).map((slot) => ({ slot, reason: 'not run for the model in this sample' })),
 })
 
-test('a saved swap flags at the first bar and is a DIFF; recorded only where the rule does not count; never for MiniMax M3', () => {
+test('a saved swap flags at the first bar and is a DIFF; recorded only where the rule does not count or the eval never measured the model', () => {
   const { record, rule } = recordOf(fixture('swap-caught-near-threshold'))
   const judged = judgeFlips(record, rule)
   assert.equal(judged.outcome, 'flag')
@@ -166,8 +167,26 @@ test('a saved swap flags at the first bar and is a DIFF; recorded only where the
   const recorded = readingsOfEvidence(flipsAlone(stored), 'SAME', { flips: RECORDED_ONLY })
   assert.deepEqual(recorded.filter((reading) => reading.check === 'flips').map((reading) => [reading.outcome, reading.recordedOnly]), [['inconclusive', 'flag']])
   assert.equal(verdictOf(recorded, 'SAME').verdict, 'SAME', 'recorded only: the audit verdict ignores it')
-  const m3 = { ...stored, draw: { ...stored.draw, model: 'minimax-m3' } }
-  assert.equal(verdictOf(readingsOfEvidence(flipsAlone(m3), 'SAME', { flips: COUNTING }), 'SAME').verdict, 'SAME', 'MiniMax M3 never counts')
+  const unmeasured = { ...stored, draw: { ...stored.draw, model: 'a-model-the-eval-never-measured' } }
+  assert.equal(verdictOf(readingsOfEvidence(flipsAlone(unmeasured), 'SAME', { flips: COUNTING }), 'SAME').verdict, 'SAME', 'never for an unmeasured model')
+})
+
+test('a model no longer audited is refused and has no FLIPS settings; FLIPS on the new models is recorded only', () => {
+  const { record, rule } = recordOf(fixture('swap-caught-near-threshold'))
+  const stored = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judgeFlips(record, rule) } as FlipsV1
+  const storedFor = (model: string) => flipsAlone({ ...stored, draw: { ...stored.draw, model } })
+  for (const model of ['gemini-3.1-pro-preview', 'gpt-6.1-sol', 'gpt-6-astra', 'minimax-m3']) {
+    assert.equal(findAuditedModelKey(model), undefined, `${model} is not audited`)
+    assert.throws(() => resolveVerifierCommandModels(undefined, model, false), /not an audited model/, model)
+    assert.equal(flipsRequestFor(model).measured, false, `${model} keeps no FLIPS settings`)
+  }
+  // The eval never measured GPT-6.2 Sol, GPT-6.2 Astra or Gemini 4 Neon: a FLIPS flag on them is recorded only.
+  for (const model of ['gpt-6.2-sol', 'gpt-6.2-astra', 'gemini-4-neon']) {
+    assert.equal(findAuditedModelKey(model), model)
+    assert.equal(verdictOf(readingsOfEvidence(storedFor(model), 'SAME', { flips: COUNTING }), 'SAME').verdict, 'SAME', `${model} was never measured`)
+  }
+  // A measured audited model still counts under the same rule.
+  assert.equal(verdictOf(readingsOfEvidence(storedFor('gemini-4-argon'), 'SAME', { flips: COUNTING }), 'SAME').verdict, 'DIFF')
 })
 
 test('a counted FLIPS is flag-only for the SAME rule: its no result never blocks a SAME, its flag is a DIFF', () => {
@@ -208,7 +227,7 @@ test('a stored FLIPS counts under its rule; a rule this CLI does not know never 
   assert.equal(FLIPS_CHECK.summaryCounts!({ ...summarizeFlips(unknown) }), false, 'nor does its summary')
   assert.equal(FLIPS_CHECK.summaryCounts!({ model: flagged.draw.model, outcome: 'flag' }), false, 'a summary that names no rule never counts')
   // The rule a reading is asked under (the eval replay, the dry-run report) still applies on purpose.
-  const counting = { flips: { ...FLIPS_RULE, counts: { default: true, never: ['minimax-m3'] } } }
+  const counting = { flips: { ...FLIPS_RULE, counts: { default: true } } }
   assert.equal(read(unknown, counting).verdict, 'DIFF')
 })
 
@@ -577,7 +596,7 @@ const SELLER = { peerId: PEER, service: MODEL }
 
 test('a probe marks every record it asks, and a follow-up of a first flag draws fresh pairs, is paid for, and keeps the flag when it fails', async () => {
   // A stage-only probe is still a probe: it never counts, even under a rule that counts FLIPS for this model.
-  const counting: FlipsRule = { ...FLIPS_RULE, counts: { default: true, never: [] } }
+  const counting: FlipsRule = { ...FLIPS_RULE, counts: { default: true } }
   const staged = await screenOf({ seller: fakeSeller((call) => symbols(['amber', 'basin'], call)), rule: counting, probe: { stage: 'first' } }).screen.check(SELLER, null, { stage: 'first', sellerThinking: OWN })
   assert.equal(staged!.draw.probe, true)
   assert.equal(staged!.counted, false)
@@ -713,7 +732,7 @@ test('a carried record without the shape of a FLIPS record is dropped; a FLIPS s
   const evidence = { target: { peerId: PEER, service: MODEL }, reference: { referenceModel: MODEL } }
   const summary = { rule: 'flips-v0', model: MODEL, stage: 'first', outcome: 'flag', counted: false, p: 0.001, score: 3, reason: 'x' }
   assert.doesNotThrow(() => validateCheckRecordsAgainstSummary(evidence as never, { flips: summary }))
-  assert.doesNotThrow(() => validateCheckRecordsAgainstSummary(evidence as never, { flips: { ...summary, model: 'minimax-m3' } }))
+  assert.doesNotThrow(() => validateCheckRecordsAgainstSummary(evidence as never, { flips: { ...summary, model: 'another-model' } }))
 })
 
 test('FLIPS\'s time bounds the wait for its reference, an unusable reference is reported once it is ready, and a record keeps what the dry run reads', async () => {

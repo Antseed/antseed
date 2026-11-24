@@ -36,7 +36,7 @@ const evidenceOf = (records: Record<string, unknown>, extra: { model?: string; n
   ...(extra.noRecord ? { noRecord: extra.noRecord } : {}),
   exchanges: [{}],
 }) as ActiveTestsInput & { exchanges: unknown[] }
-const FLIPS_COUNTING = { ...FLIPS_RULE, counts: { default: true, never: ['minimax-m3'] } }
+const FLIPS_COUNTING = { ...FLIPS_RULE, counts: { default: true } }
 
 test('a SAME needs every active test passed: one active test with no result makes it UNDETERMINED, naming it', () => {
   const passed = evidenceOf({ tokenizerPrecheck: precheck('match', ALL_ROUNDS), outputCap: cap('pass'), outputEcho: echo('plain', 'pass', 'pass') })
@@ -63,8 +63,8 @@ test('a test that is not active never blocks SAME: switched off by its reference
     tokenizerPrecheck: precheck('inconclusive', [ALL_ROUNDS[0]!, null, ...ALL_ROUNDS.slice(2)], 'no reference to compare with: the reference gave no difference'),
     // Measured on the visible answer: the fixed amount is not judged.
     outputEcho: echo('visible', 'pass', 'inconclusive', { fixedAmount: 'not judged in visible mode' }),
-  }, { model: 'minimax-m3', noRecord: [{ slot: 'outputCap', reason: capOff }] })
-  // Read under a FLIPS rule that counts: it still never counts for MiniMax M3.
+  }, { model: 'gpt-6.2-sol', noRecord: [{ slot: 'outputCap', reason: capOff }] })
+  // Read under a FLIPS rule that counts: it still never counts for GPT-6.2 Sol, which the eval never measured.
   const inactive = inactiveChecks(evidence, { flips: FLIPS_COUNTING })
   assert.deepEqual(inactive, [
     { check: 'tokens', cause: 'run', reason: 'no reference to compare with: the reference gave no difference' },

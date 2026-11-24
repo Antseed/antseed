@@ -185,7 +185,7 @@ export interface InactiveCause {
 
 /**
  * The rules a reading is taken under, when not the ones the record was judged by: the eval replay and the dry-run
- * report read FLIPS under a rule that counts it (`counts.default` true, `counts.never` and unmeasured models still
+ * report read FLIPS under a rule that counts it (`counts.default` true, unmeasured models still
  * respected), to show what the verdict would be. An audit and submit never pass any.
  */
 export interface ReadingRules {

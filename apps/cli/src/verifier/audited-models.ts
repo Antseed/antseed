@@ -7,8 +7,10 @@ import { canonicalModelKey } from '@antseed/node/model-identity'
  * optional per-model settings in `verifier.models`.
  *
  * Only the newest version of each model line is audited: older versions that a newer audited
- * model replaces (Claude Fable 5.1, Sonnet 5, Opus 4.6 and Opus 5, GPT-5.6 Sol, Grok 4.5) are left
- * out, and so are Gemini 3 Flash Preview and DeepSeek V4 Pro 0813.
+ * model replaces (Claude Fable 5.1, Sonnet 5, Opus 4.6 and Opus 5, GPT-5.6 Sol, GPT-6.1 Sol, GPT-6
+ * Astra, Grok 4.5) are left out, and so are Gemini 3 Flash Preview, DeepSeek V4 Pro 0813, and, for
+ * now, Gemini 3.1 Pro Preview and MiniMax M3. A model's line is its name without the version: Gemini
+ * 4 Neon and Gemini 4 Argon are two lines, and both are audited.
  *
  * The key is the service name sellers advertise and the probe-bank directory name
  * (`<dataDir>/verifier/banks/<key>`), so renaming a key orphans its bank.
@@ -61,30 +63,37 @@ export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.fre
     serviceAliases: ['claude-sonnet-5-5', 'sonnet-5.5', 'sonnet-5-5', 'anthropic/claude-sonnet-5.5'],
     contrastModels: ['anthropic/claude-haiku-5.5', 'xiaomi/mimo-v2.6-pro', 'z-ai/glm-5.3'],
   },
-  'gemini-3.1-pro-preview': {
-    upstreamModel: 'google/gemini-3.1-pro-preview',
-    referenceProvider: GOOGLE,
-    serviceAliases: ['gemini-3-1-pro-preview', 'google/gemini-3.1-pro-preview'],
-    contrastModels: ['anthropic/claude-haiku-5.5', 'xiaomi/mimo-v2.6-pro', 'z-ai/glm-5.3'],
-  },
   'gemini-4-argon': {
     upstreamModel: 'google/gemini-4-argon',
     referenceProvider: GOOGLE,
     serviceAliases: ['google/gemini-4-argon'],
     contrastModels: ['anthropic/claude-haiku-5.5', 'xiaomi/mimo-v2.6-pro', 'z-ai/glm-5.3'],
   },
-  'gpt-6-astra': {
-    upstreamModel: 'openai/gpt-6-astra',
+  // Gemini 4 Argon is the cheaper sibling a seller would serve as Gemini 4 Neon. It takes the place of GLM 5.3, one of
+  // Argon's contrasts, which costs about six times MiMo v2.6 Pro per question set. Gemini 4 Carbon, at Argon's price,
+  // is used by no audit's bank yet, so it is left out.
+  'gemini-4-neon': {
+    upstreamModel: 'google/gemini-4-neon',
+    referenceProvider: GOOGLE,
+    serviceAliases: ['google/gemini-4-neon'],
+    contrastModels: ['anthropic/claude-haiku-5.5', 'xiaomi/mimo-v2.6-pro', 'google/gemini-4-argon'],
+  },
+  // GPT-6 Astra is not one of GPT-6.2 Astra's contrast models: it costs more, so no seller gains by serving it. Nor is
+  // GPT-6.2 Sol: the questions could not tell GPT-6.1 Sol from GPT-6 Astra, so it would cost much and catch nothing.
+  'gpt-6.2-astra': {
+    upstreamModel: 'openai/gpt-6.2-astra',
     referenceProvider: OPENAI,
-    serviceAliases: ['openai/gpt-6-astra', 'openai-gpt-6-astra'],
+    serviceAliases: ['openai/gpt-6.2-astra', 'openai-gpt-62-astra'],
     contrastModels: ['anthropic/claude-sonnet-5.5', 'openai/gpt-6.1-terra'],
   },
-  // GPT-6.1 Terra is the cheaper sibling a seller would serve as GPT-6.1 Sol.
-  'gpt-6.1-sol': {
-    upstreamModel: 'openai/gpt-6.1-sol',
+  // GPT-6.1 Terra and GPT-6 Luna are the cheaper siblings a seller would serve as GPT-6.2 Sol. Luna takes the place
+  // of GLM 5.3, which costs about twenty times Luna per question set. GPT-6.1 Sol is not a contrast: it costs the
+  // same, so no seller gains by serving it.
+  'gpt-6.2-sol': {
+    upstreamModel: 'openai/gpt-6.2-sol',
     referenceProvider: OPENAI,
-    serviceAliases: ['openai-gpt-61-sol', 'gpt-61-sol', 'openai/gpt-6.1-sol'],
-    contrastModels: ['anthropic/claude-haiku-5.5', 'z-ai/glm-5.3', 'openai/gpt-6.1-terra'],
+    serviceAliases: ['openai-gpt-62-sol', 'gpt-62-sol', 'openai/gpt-6.2-sol'],
+    contrastModels: ['anthropic/claude-haiku-5.5', 'openai/gpt-6-luna', 'openai/gpt-6.1-terra'],
   },
   'grok-4.7': {
     upstreamModel: 'x-ai/grok-4.7',
@@ -127,12 +136,6 @@ export const AUDITED_MODELS: Readonly<Record<string, AuditedModel>> = Object.fre
     upstreamModel: 'qwen/qwen3.8-27b',
     referenceProvider: ['alibaba'],
     serviceAliases: ['qwen-3-8-27b', 'qwen-3.8-27b', 'qwen3-8-27b', 'qwen/qwen3.8-27b'],
-    contrastModels: ['anthropic/claude-haiku-5.5', 'deepseek/deepseek-v4.1-flash-1017', 'openai/gpt-6-luna'],
-  },
-  'minimax-m3': {
-    upstreamModel: 'minimax/minimax-m3',
-    referenceProvider: ['minimax'],
-    serviceAliases: ['minimax/minimax-m3', 'minimax-m-3'],
     contrastModels: ['anthropic/claude-haiku-5.5', 'deepseek/deepseek-v4.1-flash-1017', 'openai/gpt-6-luna'],
   },
   'mimo-v2.6-pro': {
