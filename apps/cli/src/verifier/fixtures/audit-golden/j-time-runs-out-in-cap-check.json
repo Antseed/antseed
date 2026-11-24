@@ -34,7 +34,7 @@
   "displayName": "Example Seller",
   "agentId": "7",
   "service": "deepseek-v4-pro",
-  "status": "SAME",
+  "status": "UNDETERMINED",
   "questionsStatus": "SAME",
   "outcomeReason": null,
   "questionsOutcomeReason": null,
@@ -54,7 +54,8 @@
   "coverageRule": "kbf-coverage-v1",
   "responseAuthVerified": true,
   "tokenizerPrecheck": {"rule":"tokenizer-precheck-v1","outcome":"match"},
-  "outputCap": {"rule":"output-cap-v1","outcome":"inconclusive","reason":"the answer could not be read","asks":[{"cap":24,"billed":null,"measured":null,"class":"unread"}]}
+  "outputCap": {"rule":"output-cap-v1","outcome":"inconclusive","reason":"the answer could not be read","asks":[{"cap":24,"billed":null,"measured":null,"class":"unread"}]},
+  "inactive": [{"check":"flips","cause":"rule","reason":"the randomness check is recorded only: its rule does not count it for this model"}]
  },
  "evidence": {
   "buyerProxy": {"baseUrl":"http://127.0.0.1:8390","pid":4242,"statePath":"buyer.state.json"},

@@ -20,6 +20,12 @@ export const TOKENS_CHECK: RecordCheck<'tokenizerPrecheck'> = {
     id: 'tokens', subject: 'model', label: 'the token-count pre-check',
     ofRecord: (record) => outcome(record.outcome, 'mismatch', 'match'),
     ofSummary: (summary) => outcome(summary.outcome, 'mismatch', 'match'),
+    // The pre-check's reference gate (`runTokenizerPrecheck`): without a reference difference for every round of its
+    // rule the seller is asked nothing, for every seller of the model alike. `validateTokenizerPrecheck` recomputes each
+    // reference difference from its stored asks, so the gate is read from bytes a reader checks.
+    inactiveOfRecord: (record) => (record.rounds.length >= record.rule.rounds && record.rounds.every((round) => round.reference.delta !== null)
+      ? null
+      : { cause: 'run', reason: record.reason ?? 'no reference to compare with' }),
   }],
   summarize: summarizeTokenizerPrecheck,
   // A pre-check must follow from the signed responses it stores.

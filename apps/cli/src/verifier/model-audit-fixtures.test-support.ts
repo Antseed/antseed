@@ -1,5 +1,6 @@
 // Test support: builds complete verifier runs with genuinely signed seller exchanges.
-import { ALL_TESTS_FORMAT, earliestAuditorTime, readingsOfEvidence, storedRequestsOf, verdictOf } from './audit-checks.js'
+import { ALL_TESTS_FORMAT, earliestAuditorTime, inactiveChecks, readingsOfEvidence, storedRequestsOf, verdictOf } from './audit-checks.js'
+import { METHODS } from './methods/index.js'
 import { outputCapCost, summarizeOutputCap, type OutputCapV1 } from './methods/output-cap/output-cap.js'
 import { outputEchoCost, summarizeOutputEcho, type OutputEchoV1 } from './methods/output-echo/output-echo.js'
 import { flipsCost, summarizeFlips, type FlipsV1 } from './methods/flips/flips.js'
@@ -112,6 +113,12 @@ export interface FixtureAudit {
   confirming?: { checks: AuditCheckId[]; reportedAt: number }
   /** Written as a CLI from before the all-tests format wrote it: the evidence names no `tests` format. */
   beforeAllTests?: true
+  /**
+   * The evidence's `noRecord` entries: the tests its run had none of for the model, which are not active. By default
+   * every test the fixture gives no record, so a seller judged on its questions alone keeps the questions' verdict;
+   * null for none, so a test without a record did not run for the seller and stays active.
+   */
+  noRecord?: Array<{ slot: string; reason: string }> | null
   reference?: KbfReferenceV1
   /**
    * A close-call first audit (`kbf-extension-v1`): `firstWrong` wrong answers on the first set, then
@@ -347,6 +354,7 @@ export async function writeSignedAuditRun(input: {
         ...(evidence.outputCap ? { outputCap: summarizeOutputCap(evidence.outputCap) } : {}),
         ...(evidence.outputEcho ? { outputEcho: summarizeOutputEcho(evidence.outputEcho) } : {}),
         ...(evidence.flips ? { flips: summarizeFlips(evidence.flips) } : {}),
+        inactive: inactiveChecks(evidence),
       })
     }
     const failures = input.failures?.[model] ?? []
@@ -553,6 +561,7 @@ async function closeCallResult(input: {
       evidenceHash: written.written.evidenceHash,
       stats: written.evidence.result.stats,
       responseAuthVerified: true,
+      inactive: inactiveChecks(written.evidence),
     }
   }
   const common = {
@@ -847,6 +856,9 @@ async function writeFixtureEvidence(input: {
     ...(audit.flips ? { flips: audit.flips } : {}),
     ...(audit.confirming ? { confirming: { checks: [...audit.confirming.checks], reportedAt: audit.confirming.reportedAt } } : {}),
     ...(audit.beforeAllTests ? {} : { tests: ALL_TESTS_FORMAT }),
+    ...fixtureNoRecord(audit, {
+      tokenizerPrecheck: tokenizerPrecheck ?? precheckMatch ?? undefined, outputCap: audit.outputCap, outputEcho: audit.outputEcho, flips: audit.flips,
+    }),
     exchanges,
     result: {
       selectedProbeCount: reference.probes.length,
@@ -869,6 +881,14 @@ async function writeFixtureEvidence(input: {
   stampBuyerTimes(evidence, Date.parse(timestamps.completedAt))
   const written = await writeProxyAuditEvidence(input.directory, input.auditId, evidence)
   return { evidence, written, exchanges, matchVector, cost, auditVerdict }
+}
+
+/** The fixture's `noRecord` entries (`FixtureAudit.noRecord`), by default one for each test it gives no record. */
+function fixtureNoRecord(audit: FixtureAudit, records: Record<string, unknown>): { noRecord?: Array<{ slot: string; reason: string }> } {
+  if (audit.noRecord === null) return {}
+  const entries = audit.noRecord ?? METHODS.filter((check) => records[check.slot] == null)
+    .map((check) => ({ slot: check.slot, reason: `the fixture's run had none of ${check.texts.name} for the model` }))
+  return entries.length > 0 ? { noRecord: entries } : {}
 }
 
 /**

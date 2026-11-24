@@ -61,7 +61,7 @@
   "tests": "all-tests-v1",
   "version": 1
  },
- "read": {"flaggedBy":[],"passedBy":["kbf"],"submit":"accepted"},
+ "read": {"flaggedBy":[],"passedBy":["kbf"],"submit":"refused: the summary does not say which tests were active (it was written before the active tests were recorded)"},
  "files": [
   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/README.md",
   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/evidence.json",

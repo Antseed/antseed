@@ -104,8 +104,10 @@ test('decided is read from the summary, every combination: the questions count o
   }
 })
 
-test('the audit\'s verdict: any flag is a DIFF, otherwise the questions\' own; a test with no result blocks nothing', () => {
-  const reading = (check: AuditCheckId, outcome: 'flag' | 'pass' | 'inconclusive' | 'not-run') => ({ check, subject: 'model' as const, outcome })
+test('the audit\'s verdict: any flag is a DIFF; a SAME of the questions stands only when every active test passed', () => {
+  const reading = (check: AuditCheckId, outcome: 'flag' | 'pass' | 'inconclusive' | 'not-run', inactive = false) => ({
+    check, subject: 'model' as const, outcome, ...(inactive ? { inactive: { cause: 'run' as const, reason: 'switched off' } } : {}),
+  })
   const verdict = (readings: ReturnType<typeof reading>[], questions: 'SAME' | 'DIFF' | 'UNDETERMINED', confirming?: AuditCheckId[], pending = false) => {
     const result = verdictOf(readings, questions, confirming, { questionsPending: pending })
     return [result.verdict, result.flaggedBy, result.undecidedConfirmation]
@@ -113,8 +115,11 @@ test('the audit\'s verdict: any flag is a DIFF, otherwise the questions\' own; a
   // A cap flag beside the questions' SAME: a DIFF attributed to the cap check, never to the questions.
   assert.deepEqual(verdict([reading('output-cap', 'flag'), reading('kbf', 'pass')], 'SAME'), ['DIFF', ['output-cap'], null])
   assert.deepEqual(verdict([reading('tokens', 'flag'), reading('output-echo', 'flag'), reading('kbf', 'flag')], 'DIFF'), ['DIFF', ['tokens', 'output-echo', 'kbf'], null])
-  // No flag: the questions decide, and a test with no result never blocks SAME.
-  assert.deepEqual(verdict([reading('tokens', 'inconclusive'), reading('output-cap', 'not-run'), reading('kbf', 'pass')], 'SAME'), ['SAME', [], null])
+  // No flag: an active test with no result, or not run for the seller, leaves the questions' SAME open; a test that is
+  // not active never does.
+  assert.deepEqual(verdict([reading('tokens', 'inconclusive'), reading('output-cap', 'not-run'), reading('kbf', 'pass')], 'SAME'), ['UNDETERMINED', [], null])
+  assert.deepEqual(verdict([reading('tokens', 'inconclusive', true), reading('output-cap', 'not-run', true), reading('kbf', 'pass')], 'SAME'), ['SAME', [], null])
+  assert.deepEqual(verdict([reading('tokens', 'pass'), reading('output-cap', 'pass'), reading('kbf', 'pass')], 'SAME'), ['SAME', [], null])
   assert.deepEqual(verdict([reading('tokens', 'pass'), reading('kbf', 'inconclusive')], 'UNDETERMINED'), ['UNDETERMINED', [], null])
   // A confirmation in which no test it repeats decided is undecided, whatever another test says.
   assert.deepEqual(verdict([reading('output-cap', 'inconclusive'), reading('output-echo', 'flag'), reading('kbf', 'pass')], 'SAME', ['output-cap']),

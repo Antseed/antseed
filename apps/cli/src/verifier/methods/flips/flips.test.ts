@@ -146,6 +146,12 @@ test('the request is the eval\'s for the model, the same for the seller and the 
   assert.equal(flipsCounts('a-model-the-eval-never-measured'), false)
 })
 
+/** Evidence with only FLIPS beside the questions: the run had none of the other tests for the model, so they are not active. */
+const flipsAlone = (flips: FlipsV1) => ({
+  flips, exchanges: [{}],
+  noRecord: (['tokenizerPrecheck', 'outputCap', 'outputEcho'] as const).map((slot) => ({ slot, reason: 'not run for the model in this sample' })),
+})
+
 test('a saved swap flags at the first bar: recorded only under the rule, a DIFF once FLIPS counts; never for MiniMax M3', () => {
   const { record, rule } = recordOf(fixture('swap-caught-near-threshold'))
   const judged = judgeFlips(record, rule)
@@ -154,19 +160,37 @@ test('a saved swap flags at the first bar: recorded only under the rule, a DIFF 
   // Recorded only until a dry run: judged and stored, and the verdict does not read it.
   assert.equal(judged.counted, false)
   const stored = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judged } as FlipsV1
-  const own = readingsOfEvidence({ flips: stored, exchanges: [{}] }, 'SAME')
+  const own = readingsOfEvidence(flipsAlone(stored), 'SAME')
   assert.deepEqual(own.filter((reading) => reading.check === 'flips').map((reading) => [reading.outcome, reading.recordedOnly]), [['inconclusive', 'flag']])
   assert.equal(verdictOf(own, 'SAME').verdict, 'SAME', 'recorded only: the audit verdict ignores it')
   // Read as the dry-run report reads it, under the rule turned on: a DIFF.
   assert.equal(judgeFlips(record, { ...rule, counts: COUNTING.counts }).counted, true)
-  assert.deepEqual(verdictOf(readingsOfEvidence({ flips: stored, exchanges: [{}] }, 'SAME', { flips: COUNTING }), 'SAME'),
+  assert.deepEqual(verdictOf(readingsOfEvidence(flipsAlone(stored), 'SAME', { flips: COUNTING }), 'SAME'),
     { verdict: 'DIFF', flaggedBy: ['flips'], passedBy: ['kbf'], undecidedConfirmation: null })
   // Read under a rule that counts nowhere: recorded only, and the verdict ignores it.
-  const recorded = readingsOfEvidence({ flips: stored, exchanges: [{}] }, 'SAME', { flips: RECORDED_ONLY })
+  const recorded = readingsOfEvidence(flipsAlone(stored), 'SAME', { flips: RECORDED_ONLY })
   assert.deepEqual(recorded.filter((reading) => reading.check === 'flips').map((reading) => [reading.outcome, reading.recordedOnly]), [['inconclusive', 'flag']])
   assert.equal(verdictOf(recorded, 'SAME').verdict, 'SAME', 'recorded only: the audit verdict ignores it')
   const m3 = { ...stored, draw: { ...stored.draw, model: 'minimax-m3' } }
-  assert.equal(verdictOf(readingsOfEvidence({ flips: m3, exchanges: [{}] }, 'SAME', { flips: COUNTING }), 'SAME').verdict, 'SAME', 'MiniMax M3 never counts')
+  assert.equal(verdictOf(readingsOfEvidence(flipsAlone(m3), 'SAME', { flips: COUNTING }), 'SAME').verdict, 'SAME', 'MiniMax M3 never counts')
+})
+
+test('a counted FLIPS is flag-only for the SAME rule: its no result never blocks a SAME, its flag is a DIFF', () => {
+  // Every seller reply is a placeholder cut at the limit: the seller was not asked the way the reference was, so no result.
+  const saved = structuredClone(fixture('honest-wrapper'))
+  for (const pair of saved.pairs) pair.seller = pair.seller.map(() => ({ content: '[No answer: the model spent its entire max_tokens budget on reasoning]', finishReason: 'length' }))
+  const { record, rule } = recordOf(saved)
+  const judged = judgeFlips(record, { ...rule, counts: COUNTING.counts })
+  assert.deepEqual([judged.outcome, judged.counted], ['inconclusive', true])
+  const open = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judged } as FlipsV1
+  const readings = readingsOfEvidence(flipsAlone(open), 'SAME', { flips: COUNTING })
+  const flips = readings.find((reading) => reading.check === 'flips')!
+  assert.equal(verdictOf(readings, 'SAME').verdict, 'SAME', 'its no result blocks nothing')
+  assert.deepEqual([flips.outcome, flips.inactive, flips.flagOnly], ['inconclusive', undefined, true], 'counted, so active; flag-only')
+  // The same seller with a counted FLIPS flag: DIFF.
+  const swap = recordOf(fixture('swap-caught-near-threshold'))
+  const flagged = { ...swap.record, rule: swap.rule.id, referenceUpstream: null, reasks: 0, ...judgeFlips(swap.record, swap.rule) } as FlipsV1
+  assert.deepEqual(verdictOf(readingsOfEvidence(flipsAlone(flagged), 'SAME', { flips: COUNTING }), 'SAME').verdict, 'DIFF')
 })
 
 test('a stored FLIPS is read under its rule (recorded only until a dry run); a rule this CLI does not know never counts', () => {
@@ -174,7 +198,7 @@ test('a stored FLIPS is read under its rule (recorded only until a dry run); a r
   const flagged = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judgeFlips(record, rule) } as FlipsV1
   assert.equal(flagged.outcome, 'flag')
   const read = (stored: FlipsV1, rules?: Parameters<typeof readingsOfEvidence>[2]) => {
-    const readings = readingsOfEvidence({ flips: stored, exchanges: [{}] }, 'SAME', rules)
+    const readings = readingsOfEvidence(flipsAlone(stored), 'SAME', rules)
     const flips = readings.find((reading) => reading.check === 'flips')!
     return { outcome: flips.outcome, recordedOnly: flips.recordedOnly ?? null, verdict: verdictOf(readings, 'SAME').verdict }
   }

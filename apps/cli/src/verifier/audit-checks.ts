@@ -2,12 +2,13 @@ import { canonicalJsonStringify } from '@antseed/fingerprints'
 import { auditedServiceNames } from './audited-models.js'
 import type {
   AuditCheckId, CheckFinding, CheckOutcome, CheckRecords, CheckSlot, CheckSubject, CheckSummaries, CheckSummaryOutcomes, ConfirmationOnly,
-  ConfirmationOnlyCheckId, ReadingRules, RecordCheck, StoredAuditContext, StoredCheckRecords, StoredRequest,
+  ConfirmationOnlyCheckId, InactiveCause, ReadingRules, RecordCheck, StoredAuditContext, StoredCheckRecords, StoredRequest,
 } from './audit-method.js'
 import type { TestThinking } from './audit-thinking.js'
 import { METHODS } from './methods/index.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { matchesEnrolledService } from './response-auth-reader.js'
+import { sanitizeOutcomeSummary } from './outcome-reason.js'
 import { sellerSignatureProblem } from './seller-signature.js'
 import { sameModelService } from './service-discovery.js'
 
@@ -45,7 +46,31 @@ export interface CheckReading {
    * read it, never the score itself.
    */
   between?: true
+  /**
+   * Set on a finding that is not active for the model in this run (`inactiveChecks`): it never blocks a SAME. Absent on
+   * an active one, which must pass for the audit to be SAME (`verdictOf`).
+   */
+  inactive?: InactiveCause
+  /**
+   * Set on a finding of a flag-only test (`RecordCheck.sameNeedsPass` false): its flag counts, and anything else never
+   * blocks a SAME, also while it is active.
+   */
+  flagOnly?: true
 }
+
+/** A test that is not active for a model in a run, with why: as the seller's summary and the published result give it. */
+export interface InactiveTest extends InactiveCause {
+  check: AuditCheckId
+}
+
+/** A seller's own entry for a test that kept no record because the run had none of it for the model (`noRecord`). */
+export interface NoRecordEntry {
+  slot: string
+  reason: string
+}
+
+/** The reason a result from before the active tests were recorded gives each of its tests: today's rule reads them. */
+export const ACTIVE_NOT_RECORDED = 'a result from before the active tests were recorded: only the questions decide a SAME'
 
 /** The seller an audit is about, and the names its model is sold under. */
 export interface SellerBinding {
@@ -137,26 +162,145 @@ const questionsReading = (asked: boolean, verdict: QuestionsVerdict): CheckReadi
   outcome: !asked ? 'not-run' : verdict === 'DIFF' ? 'flag' : verdict === 'SAME' ? 'pass' : 'inconclusive',
 })
 
+/** What `inactiveChecks` reads of a seller's evidence: its test records, its `noRecord` entries and its model. */
+export type ActiveTestsInput = StoredCheckRecords & {
+  noRecord?: readonly NoRecordEntry[] | null
+  reference?: { referenceModel?: string }
+}
+
+/**
+ * The findings that are not active for the seller's model in this run, in attribution order, from its evidence alone,
+ * so the auditor that wrote it, `verifier submit` and any reader of the published evidence get the same list. A
+ * finding is active when its rule counts it for the model and its reference gave it something to judge on:
+ *
+ * - With a record: not active when the record cannot affect a verdict (`RecordCheck.counts`: FLIPS while it is recorded
+ *   only), or when its own gate says so from the record's bytes (`inactiveOfRecord`: the pre-check without a reference
+ *   difference for every round; the echo check's fixed amount in visible mode).
+ * - Without a record: not active when the rule never counts the test for the model (`countsFor`), or when the seller's
+ *   evidence names it in `noRecord`: the run had none of the test for the model (its reference switched it off for the
+ *   whole model, or it did not run for the model). A seller's own failure is never there.
+ *
+ * Every other finding is active: one with no result, or that did not run for this seller, keeps the audit from SAME.
+ * The questions are always active.
+ */
+export function inactiveChecks(evidence: ActiveTestsInput, rules?: ReadingRules): InactiveTest[] {
+  const inactive: InactiveTest[] = []
+  const model = evidence.reference?.referenceModel
+  for (const { check, record } of recordsOf(evidence)) {
+    const entry = record == null ? (evidence.noRecord ?? []).find((candidate) => candidate.slot === check.slot) : undefined
+    for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
+      // Counted under the rule the reading is taken by (`ReadingRules`, the record's own by default): a finding that is
+      // recorded only is judged and stored, and decides nothing.
+      const ruleCounts = record != null
+        ? (finding.recordedOnly ? safely(() => finding.recordedOnly!(record, rules) === null, false) : countsTowardVerdict(check, record))
+        : !(check.countsFor !== undefined && typeof model === 'string' && !safely(() => check.countsFor!(model, rules), true))
+      const cause: InactiveCause | null = !ruleCounts
+        ? { cause: 'rule', reason: `${finding.label} is recorded only: its rule does not count it for this model` }
+        : record != null ? safely(() => finding.inactiveOfRecord?.(record) ?? null, null)
+          : entry ? { cause: 'run', reason: entry.reason } : null
+      if (cause) inactive.push({ check: finding.id, cause: cause.cause, reason: cause.reason })
+    }
+  }
+  return inactive
+}
+
+/** The longest reason a `noRecord` entry keeps. */
+export const NO_RECORD_REASON_LENGTH = 300
+
+/**
+ * The `noRecord` entries of one seller's audit: each test of the list without a record that the run had none of for
+ * the model. A test with no screen for the model this run did not run for it (switched off, or nothing to run it with);
+ * a test with a screen and no record says why from the files its screen wrote beside the run's audits
+ * (`RecordCheck.whyNoRecord`): its reference switched it off for the model. A test that gives no such reason did not run
+ * for this seller (the seller failed, the audit stopped) and has no entry: it stays active. Best effort: a file that is
+ * missing or cannot be read gives nothing.
+ */
+export async function noRecordEntries(input: {
+  records: StoredCheckRecords
+  /** Whether the run had a screen of the test for the model. */
+  screened: (slot: CheckSlot) => boolean
+  read: (file: string) => Promise<unknown>
+  confirming: readonly AuditCheckId[]
+}): Promise<NoRecordEntry[]> {
+  const found: NoRecordEntry[] = []
+  for (const { check, record } of recordsOf(input.records)) {
+    if (record != null) continue
+    let reason: string | null = null
+    try {
+      reason = (await check.whyNoRecord?.(input.read, { confirming: input.confirming })) ?? null
+    } catch {
+      reason = null
+    }
+    if ((typeof reason !== 'string' || reason.length === 0) && !input.screened(check.slot)) {
+      reason = `${check.texts.name} does not run for this model in this run`
+    }
+    if (typeof reason === 'string' && reason.length > 0) {
+      found.push({ slot: check.slot, reason: sanitizeOutcomeSummary(reason).slice(0, NO_RECORD_REASON_LENGTH) })
+    }
+  }
+  return found
+}
+
+/**
+ * A seller's `noRecord` entries as stored evidence must hold them: each a test of the list with no record in the same
+ * evidence, once, with a short reason. Throws otherwise: an entry beside a record would claim a test that ran was off.
+ */
+export function validateNoRecord(evidence: StoredCheckRecords & { noRecord?: unknown }): void {
+  if (evidence.noRecord === undefined) return
+  if (!Array.isArray(evidence.noRecord)) throw new Error('the evidence\'s tests without a record are not a list')
+  const seen = new Set<string>()
+  for (const entry of evidence.noRecord as unknown[]) {
+    const slot = typeof entry === 'object' && entry !== null ? (entry as { slot?: unknown }).slot : undefined
+    const reason = typeof entry === 'object' && entry !== null ? (entry as { reason?: unknown }).reason : undefined
+    const check = METHODS.find((candidate) => candidate.slot === slot)
+    if (!check || typeof reason !== 'string' || reason.length === 0 || reason.length > NO_RECORD_REASON_LENGTH) {
+      throw new Error('the evidence names a test without a record that is not one of the list, or without a reason')
+    }
+    if (seen.has(check.slot)) throw new Error(`the evidence names ${check.texts.name} without a record twice`)
+    seen.add(check.slot)
+    if (evidence[check.slot] != null) throw new Error(`the evidence names ${check.texts.name} without a record beside its record`)
+  }
+}
+
+/** A hook's answer, or the fallback when it throws on a damaged record. */
+function safely<T>(read: () => T, fallback: T): T {
+  try {
+    return read()
+  } catch {
+    return fallback
+  }
+}
+
+const inactiveOf = (inactive: readonly InactiveTest[], check: AuditCheckId): InactiveCause | undefined => {
+  const entry = inactive.find((candidate) => candidate.check === check)
+  return entry ? { cause: entry.cause, reason: entry.reason } : undefined
+}
+
 /**
  * Every finding of one audit, read from its evidence alone, in attribution order. The questions count when a batch
- * was sent, and `kbfVerdict` is theirs after any close-call extra sets.
+ * was sent, and `kbfVerdict` is theirs after any close-call extra sets. A finding that is not active for the model in
+ * this run says so (`inactiveChecks`).
  */
 export function readingsOfEvidence(
-  evidence: { readonly [Slot in CheckSlot]?: CheckRecords[Slot] } & { exchanges: readonly unknown[] },
+  evidence: ActiveTestsInput & { exchanges: readonly unknown[] },
   kbfVerdict: QuestionsVerdict,
   rules?: ReadingRules,
 ): CheckReading[] {
   const readings: CheckReading[] = []
+  const inactive = inactiveChecks(evidence, rules)
   for (const check of METHODS) {
     const record = evidence[check.slot]
     for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
       const recorded = record == null ? null : finding.recordedOnly?.(record, rules) ?? null
       const outcome = record == null ? 'not-run' : finding.ofRecord(record, rules)
       const between = record != null && outcome === 'inconclusive' && finding.betweenOfRecord?.(record, rules) === true
+      const off = inactiveOf(inactive, finding.id)
       readings.push({
         check: finding.id, subject: finding.subject, outcome,
         ...(recorded ? { recordedOnly: recorded } : {}),
         ...(between ? { between: true as const } : {}),
+        ...(off ? { inactive: off } : {}),
+        ...(check.sameNeedsPass === false ? { flagOnly: true as const } : {}),
       })
     }
   }
@@ -166,18 +310,29 @@ export function readingsOfEvidence(
 
 /**
  * Every finding of one audit, read from its summary. The questions count when an answer was scored: the summary's
- * form of "a batch was sent", which agrees with it on valid evidence and is kept apart from it on purpose.
+ * form of "a batch was sent", which agrees with it on valid evidence and is kept apart from it on purpose. Which tests
+ * are active is the summary's `inactive`, its evidence's `inactiveChecks` (submit checks the two agree); a summary
+ * written before it was recorded reads every test but the questions as not active, so it keeps the rule it was made by.
  */
 export function readingsOfSummary(
-  result: { readonly [Slot in CheckSlot]?: CheckSummaryOutcomes<Slot> | null } & { status: string; questionsStatus?: string; parsedProbeCount?: number },
+  result: { readonly [Slot in CheckSlot]?: CheckSummaryOutcomes<Slot> | null } & {
+    status: string; questionsStatus?: string; parsedProbeCount?: number; inactive?: readonly InactiveTest[] | null
+  },
 ): CheckReading[] {
   const readings: CheckReading[] = []
+  const recorded = Array.isArray(result.inactive) ? result.inactive : null
   for (const check of METHODS) {
     const summary = result[check.slot]
     for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
       const outcome = summary == null ? 'not-run' : finding.ofSummary(summary)
       const between = summary != null && outcome === 'inconclusive' && finding.betweenOfSummary?.(summary) === true
-      readings.push({ check: finding.id, subject: finding.subject, outcome, ...(between ? { between: true as const } : {}) })
+      const off = recorded ? inactiveOf(recorded, finding.id) : { cause: 'rule' as const, reason: ACTIVE_NOT_RECORDED }
+      readings.push({
+        check: finding.id, subject: finding.subject, outcome,
+        ...(between ? { between: true as const } : {}),
+        ...(off ? { inactive: off } : {}),
+        ...(check.sameNeedsPass === false ? { flagOnly: true as const } : {}),
+      })
     }
   }
   // The questions' own verdict: an audit's `status` is DIFF when another test flagged, whatever the questions said.
@@ -569,18 +724,28 @@ export interface AuditVerdict {
   passedBy: AuditCheckId[]
   /** Set on a confirmation in which none of the tests it repeats decided: the tests it repeats. */
   undecidedConfirmation: AuditCheckId[] | null
+  /**
+   * Set on an UNDETERMINED whose questions say SAME: the active tests that did not pass (no result, or not run for this
+   * seller), in attribution order. Absent otherwise.
+   */
+  openTests?: AuditCheckId[]
 }
 
 /**
- * The audit's verdict from every test it ran, rule `all-tests-v1` (Alex, 19 November):
+ * The audit's verdict from every test it ran, rule `all-tests-v1` (Alex, 19 November), with a SAME only when every
+ * active test passed (`same-needs-all-active`, Alex, 23 November):
  *
  * - A confirmation (`confirming`, the tests it repeats) in which no repeated test flagged and at least one did not
  *   decide is UNDETERMINED, whatever the other tests say: it is never sent, it counts as an attempt for the report it
  *   answers, and its retry asks only the tests still open. A repeated test that flags again makes it a DIFF at once; a
  *   SAME needs every repeated test decided.
  * - Otherwise any test that flagged makes it DIFF, attributed to every test that flagged.
- * - Otherwise it is the questions' own verdict, SAME or UNDETERMINED, exactly as the questions decide alone. A test
- *   that did not decide (inconclusive, did not apply, could not run) never blocks SAME.
+ * - Otherwise, when the questions say SAME, it is SAME only when every other active test passed (`inactiveChecks`: a
+ *   test whose rule counts it for the model and whose reference gave it something to judge on). An active test with
+ *   no result, or that did not run for this seller, makes it UNDETERMINED (`openTests`). A test that is not active
+ *   (recorded only, switched off for the whole model by its reference) never blocks SAME, and neither does a flag-only
+ *   test (`RecordCheck.sameNeedsPass` false, `CheckReading.flagOnly`: FLIPS), whose flag alone counts.
+ * - Otherwise it is the questions' own verdict, UNDETERMINED.
  *
  * `readings` hold the questions' own finding (`readingsOfEvidence`, `readingsOfSummary`), so `kbf` flags only on the
  * questions' own DIFF. `questions` is their verdict after any close call.
@@ -611,6 +776,10 @@ export function verdictOf(
     if (waits) return { verdict: 'UNDETERMINED', flaggedBy, passedBy, undecidedConfirmation: null }
   }
   if (flaggedBy.length > 0) return { verdict: 'DIFF', flaggedBy, passedBy, undecidedConfirmation: null }
+  // A SAME needs every active test passed: one with no result, or not run for this seller, leaves the audit open.
+  const openTests = readings.filter((reading) => reading.check !== QUESTIONS_CHECK.id && reading.inactive === undefined && reading.flagOnly !== true
+    && reading.outcome !== 'pass' && reading.between !== true).map((reading) => reading.check)
+  if (questions === 'SAME' && openTests.length > 0) return { verdict: 'UNDETERMINED', flaggedBy, passedBy, undecidedConfirmation: null, openTests }
   return { verdict: questions, flaggedBy, passedBy, undecidedConfirmation: null }
 }
 
@@ -620,6 +789,7 @@ export function verdictOf(
  */
 export function auditVerdictReason(records: StoredCheckRecords, audit: AuditVerdict, questionsReason: string | null): string | null {
   if (audit.undecidedConfirmation) return `the test this confirmation must repeat (${audit.undecidedConfirmation.join(', ')}) did not decide`
+  if (audit.openTests && audit.openTests.length > 0) return openTestsReason(records, audit.openTests)
   if (audit.verdict !== 'DIFF') return questionsReason
   const reasons: string[] = []
   for (const { check, record } of recordsOf(records)) {
@@ -627,6 +797,32 @@ export function auditVerdictReason(records: StoredCheckRecords, audit: AuditVerd
   }
   if (audit.flaggedBy.includes('kbf') && questionsReason) reasons.push(questionsReason)
   return reasons.length > 0 ? reasons.join('; ') : questionsReason
+}
+
+/** The longest text of one test in the reason of an open SAME (`openTestsReason`). */
+const OPEN_TEST_REASON_LENGTH = 200
+
+/**
+ * Why an audit whose questions say SAME is UNDETERMINED, in plain words: each active test that did not pass, by name,
+ * with what it found ("the echo check ran and did not decide: a round was under") or that it did not run for the seller.
+ */
+export function openTestsReason(records: StoredCheckRecords, openTests: readonly AuditCheckId[]): string {
+  const parts: string[] = []
+  for (const { check, record } of recordsOf(records)) {
+    for (const finding of check.findings as readonly CheckFinding<CheckSlot>[]) {
+      if (!openTests.includes(finding.id)) continue
+      if (record == null) {
+        parts.push(`${finding.label} did not run for this seller`)
+        continue
+      }
+      const said = safely(() => finding.undecided?.(record) ?? null, null)
+        ?? (typeof (record as { reason?: unknown }).reason === 'string' ? (record as { reason: string }).reason : null)
+      // Clipped and cleaned: a test's reason can quote a seller's error body.
+      const shown = said ? sanitizeOutcomeSummary(said).slice(0, OPEN_TEST_REASON_LENGTH) : ''
+      parts.push(shown ? `${finding.label} ran and did not decide: ${shown}` : `${finding.label} ran and did not decide`)
+    }
+  }
+  return `the questions say SAME, but a SAME needs every active test passed: ${parts.join('; ')}`
 }
 
 /**

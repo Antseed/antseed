@@ -47,9 +47,11 @@ import { DEFAULT_LAYOUT_FILTER_PASSES, REFERENCE_SIZING_ALGORITHM_VERSION } from
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
 import { CONFIRMATION_WINDOW_SECONDS, pendingConfirmations, type EpochReport } from './pending-confirmations.js'
 import {
-  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, THINKING_DECLARATIONS, confirmationCannotDecideOnRetry, decidedRecords, sameConfirmation, verdictOf,
-  type AuditCheckId, type CheckOutcome, type CheckSlot, type ConfirmationIdentity,
+  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, THINKING_DECLARATIONS, confirmationCannotDecideOnRetry, decidedRecords, inactiveChecks, sameConfirmation, verdictOf,
+  type ActiveTestsInput, type AuditCheckId, type CheckOutcome, type CheckSlot, type ConfirmationIdentity,
 } from './audit-checks.js'
+import { OUTPUT_ECHO_RULE } from './methods/output-echo/output-echo.js'
+import { TOKENIZER_PRECHECK_RULE } from './methods/tokens/tokenizer-precheck.js'
 import { METHODS } from './methods/index.js'
 import { resolveThinking } from './audit-thinking.js'
 import { FLIPS_RULE } from './methods/flips/flips-score.js'
@@ -270,11 +272,23 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
     }),
     verdict: {
       format: ALL_TESTS_FORMAT,
-      decisions: SAMPLE_VERDICTS.map(([outcomes, questions, confirming, pending]) => {
-        const readings = outcomes.map(([check, outcome]) => ({ check, subject: 'model' as const, outcome }))
+      // A SAME needs every active test passed (`same-needs-all-active`): an active test with no result, or not run for
+      // the seller, leaves it UNDETERMINED; a test that is not active never blocks it.
+      sameNeedsEveryActiveTest: true,
+      // Which tests a SAME needs passed when active; a flag-only test's flag alone counts (`RecordCheck.sameNeedsPass`).
+      sameNeedsPass: METHODS.map((check) => [check.slot, check.sameNeedsPass !== false]),
+      decisions: SAMPLE_VERDICTS.map(([outcomes, questions, confirming, pending, inactive]) => {
+        const readings = outcomes.map(([check, outcome]) => ({
+          check, subject: 'model' as const, outcome,
+          ...((inactive ?? []).includes(check) ? { inactive: { cause: 'run' as const, reason: 'sample' } } : {}),
+          ...(METHODS.some((entry) => entry.sameNeedsPass === false && entry.findings.some((finding) => finding.id === check)) ? { flagOnly: true as const } : {}),
+        }))
         const verdict = verdictOf(readings, questions, confirming, { questionsPending: pending })
-        return [verdict.verdict, verdict.flaggedBy, verdict.undecidedConfirmation]
+        return [verdict.verdict, verdict.flaggedBy, verdict.undecidedConfirmation, verdict.openTests ?? null]
       }),
+      // Which tests are active (`inactiveChecks`) for fixed evidence: what each test's own gate gives, the rule's
+      // counting and the run's `noRecord` entries.
+      active: SAMPLE_ACTIVE_EVIDENCE.map((evidence) => inactiveChecks(evidence).map((entry) => [entry.check, entry.cause])),
     },
     window: {
       minimumSecondsLeftToOpen: MIN_SECONDS_FOR_ANOTHER_ROUND,
@@ -366,8 +380,35 @@ const SAMPLE_CARRIES = [
 ]
 
 /** Fixed readings for the verdict rule: test outcomes, the questions' verdict, the tests confirmed, questions pending. */
+/**
+ * Seller evidence for the active-tests samples: only what `inactiveChecks` reads (the records' gates, `noRecord`, the
+ * model), so each sample shows one gate. A pre-check without a reference difference for a round; an echo check measured
+ * on the visible answer and one measured plainly; no FLIPS record on a model its rule never counts; a cap check the
+ * run's reference switched off.
+ */
+const SAMPLE_ACTIVE_EVIDENCE: readonly ActiveTestsInput[] = [
+  {
+    reference: { referenceModel: 'minimax-m3' },
+    noRecord: [{ slot: 'outputCap', reason: 'the reference\'s own answer could not be measured, so the cap check does not apply to the model this run' }],
+  },
+  {
+    reference: { referenceModel: 'sample-model' },
+    tokenizerPrecheck: {
+      rule: TOKENIZER_PRECHECK_RULE, outcome: 'inconclusive', reason: 'no reference to compare with: sample',
+      rounds: [{ reference: { delta: 12 } }, { reference: { delta: null } }],
+    },
+    outputEcho: { rule: OUTPUT_ECHO_RULE, mode: 'visible' },
+  } as unknown as ActiveTestsInput,
+  {
+    reference: { referenceModel: 'sample-model' },
+    tokenizerPrecheck: { rule: TOKENIZER_PRECHECK_RULE, outcome: 'match', reason: null, rounds: [{ reference: { delta: 12 } }, { reference: { delta: 14 } }] },
+    outputEcho: { rule: OUTPUT_ECHO_RULE, mode: 'plain' },
+  } as unknown as ActiveTestsInput,
+]
+
+/** Readings and the questions' verdict, the tests a confirmation repeats, a waiting close call, and the tests that are not active. */
 const SAMPLE_VERDICTS: ReadonlyArray<readonly [
-  ReadonlyArray<readonly [AuditCheckId, CheckOutcome]>, 'SAME' | 'DIFF' | 'UNDETERMINED', AuditCheckId[] | null, boolean,
+  ReadonlyArray<readonly [AuditCheckId, CheckOutcome]>, 'SAME' | 'DIFF' | 'UNDETERMINED', AuditCheckId[] | null, boolean, AuditCheckId[]?,
 ]> = [
   [[['tokens', 'pass'], ['output-cap', 'pass'], ['output-echo', 'pass'], ['kbf', 'pass']], 'SAME', null, false],
   [[['tokens', 'inconclusive'], ['output-cap', 'not-run'], ['output-echo', 'inconclusive'], ['kbf', 'pass']], 'SAME', null, false],
@@ -380,6 +421,21 @@ const SAMPLE_VERDICTS: ReadonlyArray<readonly [
   [[['output-cap', 'inconclusive'], ['kbf', 'pass']], 'SAME', ['output-cap', 'kbf'], false],
   [[['output-cap', 'inconclusive'], ['kbf', 'flag']], 'DIFF', ['output-cap', 'kbf'], false],
   [[['output-cap', 'flag'], ['kbf', 'inconclusive']], 'UNDETERMINED', ['kbf'], false],
+  // Every active test passed: SAME; a test that is not active and has no result never blocks it.
+  [[['tokens', 'pass'], ['output-cap', 'not-run'], ['output-echo', 'pass'], ['output-offset', 'inconclusive'], ['flips', 'inconclusive'], ['kbf', 'pass']],
+    'SAME', null, false, ['output-cap', 'output-offset', 'flips']],
+  // An active test with no result, or not run for the seller: UNDETERMINED, naming it.
+  [[['tokens', 'pass'], ['output-cap', 'inconclusive'], ['output-echo', 'pass'], ['kbf', 'pass']], 'SAME', null, false, []],
+  [[['tokens', 'pass'], ['output-cap', 'pass'], ['output-echo', 'not-run'], ['kbf', 'pass']], 'SAME', null, false, []],
+  // A flag is DIFF whatever is active; the questions' own UNDETERMINED stays theirs.
+  [[['tokens', 'pass'], ['output-cap', 'flag'], ['output-echo', 'inconclusive'], ['kbf', 'pass']], 'SAME', null, false, []],
+  [[['tokens', 'inconclusive'], ['kbf', 'inconclusive']], 'UNDETERMINED', null, false, []],
+  // A flag-only test (FLIPS) active and with no result, or not run, beside every other test passed: SAME; its flag: DIFF.
+  [[['tokens', 'pass'], ['output-cap', 'pass'], ['output-echo', 'pass'], ['output-offset', 'pass'], ['flips', 'inconclusive'], ['kbf', 'pass']], 'SAME', null, false, []],
+  [[['tokens', 'pass'], ['output-cap', 'pass'], ['flips', 'not-run'], ['kbf', 'pass']], 'SAME', null, false, []],
+  [[['tokens', 'pass'], ['output-cap', 'pass'], ['flips', 'flag'], ['kbf', 'pass']], 'SAME', null, false, []],
+  // A confirmation whose repeated test passed and whose other active test did not decide: UNDETERMINED.
+  [[['output-cap', 'pass'], ['output-echo', 'inconclusive'], ['kbf', 'pass']], 'SAME', ['output-cap'], false, []],
 ]
 
 const SAMPLE_CONFIRMATIONS: ReadonlyArray<readonly [AuditCheckId[], AuditCheckId[], AuditCheckId[], 'SAME' | 'DIFF' | 'UNDETERMINED']> = [

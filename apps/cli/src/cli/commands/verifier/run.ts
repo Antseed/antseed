@@ -57,7 +57,7 @@ import {
   mapConcurrently,
   mapInLanes,
 } from '../../../verifier/audit-concurrency.js'
-import { acquirePidFileLock, writeJsonAtomic } from '../../../verifier/atomic-files.js'
+import { acquirePidFileLock, readJsonIfExists, writeJsonAtomic } from '../../../verifier/atomic-files.js'
 import { findAdvertisedService } from '../../../verifier/service-discovery.js'
 import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
 import { describeAuditorSource, resolveAuditorAddress } from './auditor-identity.js'
@@ -593,9 +593,13 @@ export async function loadRunConfirmations(input: {
  * Writes what the reference of one of a model's tests decided this run (whether the check applies, why, and the
  * reference's own numbers) beside the model's audits, for the run's report and a dry pass. Never fails the run.
  */
+function testReferenceFile(model: string, check: string, record: unknown): unknown {
+  return { version: 1, kind: 'antseed-verifier-output-check-reference', model, check, record }
+}
+
 async function writeTestReference(directory: string, model: string, check: string, record: unknown): Promise<void> {
   try {
-    await writeJsonAtomic(join(directory, `${check}-reference.json`), { version: 1, kind: 'antseed-verifier-output-check-reference', model, check, record }, true)
+    await writeJsonAtomic(join(directory, `${check}-reference.json`), testReferenceFile(model, check, record), true)
   } catch {
     // The report is best effort.
   }
@@ -1712,6 +1716,9 @@ export async function runVerifierRound(
 
           // Every seller is asked this epoch's question set; a resumed audit may still use an older reference.
           const referenceSources = new Map<string, KbfReferenceV1>()
+          // The side files the tests' screens write beside the model's audits this run, as written: a seller's audit
+          // reads why a test kept no record from them (`RecordCheck.whyNoRecord`) before a write has reached the disk.
+          const runFiles = new Map<string, unknown>()
           // The screens of this model's tests (`testsOfRun`), each built by its test from what the run hands it here.
           const screens = screensOfModel({
             model,
@@ -1734,8 +1741,14 @@ export async function runVerifierRound(
             }),
             limiters: { reference: testReferenceLimiter },
             report: {
-              reference: (check, record) => void writeTestReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, check, record),
-              file: (name, content) => writeJsonAtomic(join(modelAuditsDirectory(evidenceDir, epoch, model, runId), name), content, true),
+              reference: (check, record) => {
+                runFiles.set(`${check}-reference.json`, testReferenceFile(model, check, record))
+                void writeTestReference(modelAuditsDirectory(evidenceDir, epoch, model, runId), model, check, record)
+              },
+              file: (name, content) => {
+                runFiles.set(name, content)
+                return writeJsonAtomic(join(modelAuditsDirectory(evidenceDir, epoch, model, runId), name), content, true)
+              },
               warn: (line) => runProgress!.above(() => console.warn(chalk.yellow(line))),
               note: (line) => runProgress!.above(() => console.log(chalk.yellow(line))),
             },
@@ -1756,6 +1769,7 @@ export async function runVerifierRound(
             batchConcurrencyPromotionLatencyMs: config.verifier?.auditConcurrencyPromotionLatencyMs ?? 30_000,
             batchLimiter,
             sellerThinking,
+            runFile: (name) => (runFiles.has(name) ? Promise.resolve(runFiles.get(name)) : readJsonIfExists<unknown>(join(modelAuditsDirectory(evidenceDir, epoch, model, runId), name)).catch(() => null)),
             ...screens,
           })
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {

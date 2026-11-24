@@ -295,18 +295,19 @@ test('a cap record of every outcome, written to its evidence file, passes the ch
     const banksDir = join(directory, 'banks')
     const auditor = new Wallet(Wallet.createRandom().privateKey)
     // Stored under the seller and the service its replies were signed by and for.
+    // The questions say SAME for each; the cap check with no result keeps its seller from SAME (every active test must pass).
     const seller = (agentId: string, verdict: FixtureAudit['verdict'], outputCap: OutputCapV1): FixtureAudit => ({
-      agentId, seller: wallets[Number(agentId) - 1]!, model: 'model-a', service: SERVICE, verdict, outputCap,
+      agentId, seller: wallets[Number(agentId) - 1]!, model: 'model-a', service: SERVICE, verdict, questionsVerdict: 'SAME', outputCap,
     })
     const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor, audits: [
-      seller('1', 'SAME', records.pass), seller('2', 'DIFF', records.flag), seller('3', 'SAME', records.inconclusive), seller('4', 'SAME', measuredWithin),
+      seller('1', 'SAME', records.pass), seller('2', 'DIFF', records.flag), seller('3', 'UNDETERMINED', records.inconclusive), seller('4', 'SAME', measuredWithin),
     ] })
     const prepared = await prepareModelAudits({
       evidenceDir, banksDir, manifest, auditor: auditor.address,
       resolveAgentOwner: async () => new Wallet(Wallet.createRandom().privateKey).address, config: FIXTURE_CONFIG,
     })
     assert.deepEqual(prepared.excluded, [])
-    assert.deepEqual(prepared.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[1n, VERIFIER_VERDICT.SAME], [2n, VERIFIER_VERDICT.DIFF], [3n, VERIFIER_VERDICT.SAME], [4n, VERIFIER_VERDICT.SAME]])
+    assert.deepEqual(prepared.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[1n, VERIFIER_VERDICT.SAME], [2n, VERIFIER_VERDICT.DIFF], [3n, VERIFIER_VERDICT.UNDETERMINED], [4n, VERIFIER_VERDICT.SAME]])
     assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.flaggedBy), [[], ['output-cap'], [], []])
   } finally {
     await rm(directory, { recursive: true, force: true })

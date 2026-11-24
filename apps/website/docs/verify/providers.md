@@ -30,7 +30,7 @@ A service is not audited when it costs more than the model does upstream, meanin
 
 The bonus and the penalty add up, so 6 SAME services and 1 DIFF give you 108% of your usual points. Your buyers' points and your pool's staker rewards move by the same amount, so a DIFF also costs the buyers and stakers who chose you.
 
-**UNDETERMINED** changes nothing. It usually means your service returned errors, timed out or sent empty answers during the audit.
+**UNDETERMINED** changes nothing. It usually means your service returned errors, timed out or sent empty answers during the audit. A SAME needs every test that counts for the model to pass, so a service whose answers match can still be UNDETERMINED when one of those tests got no usable answer from it, for example a reply that was cut off or reported cached input. The result names the test ([how a verdict is formed](/docs/verify/audits#one-audit)).
 
 A DIFF never affects your USDC: you are still paid for what you served. These are the current Base mainnet settings and the contract owner can change them.
 
