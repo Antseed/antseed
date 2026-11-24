@@ -179,6 +179,8 @@ You can also pin outside the model field:
 
 When several apply, the header wins, then the model prefix, then the session pin.
 
+To set the [default reasoning effort](/docs/buyer-config#default-reasoning-effort) for one request, send `x-antseed-default-reasoning-effort` with a level such as `high`, or `off` to add none. It replaces the buyer's setting for that request only and never reaches the seller. A value that is not a level adds none either. A seller still gets the level only when the list of efforts it announces has it, and nothing changes when the request names its own effort.
+
 ```bash
 antseed network browse                    # peers, services and prices
 antseed network browse --service deepseek # filter by service
@@ -220,8 +222,9 @@ Non-streaming responses carry telemetry headers:
 | `x-antseed-peer-current-load`, `x-antseed-peer-max-concurrency` | Seller's announced load and request limit |
 | `x-antseed-unit-priced` | `1` when the seller charges for this service per unit (an image, a second of video, a speech character), so zero token prices don't make it free; else `0` |
 | `x-antseed-route-selection` | On model-routed requests: why this seller served it, as base64url JSON. See [Which seller served a request](/docs/api/routing#which-seller-served-a-request). |
+| `x-antseed-default-reasoning-effort` | The reasoning effort the buyer added because the request named none; absent when it added nothing. See [Default reasoning effort](/docs/buyer-config#default-reasoning-effort). |
 
-Streaming responses carry only the request id, seller identity, price and route-selection headers, plus `x-antseed-first-token-ms`, because token counts are not known when headers are sent. For authoritative per-channel totals, run `antseed buyer metering`.
+Streaming responses carry only the request id, seller identity, price, route-selection and default reasoning effort headers, plus `x-antseed-first-token-ms`, because token counts are not known when headers are sent. For authoritative per-channel totals, run `antseed buyer metering`.
 
 ## Errors
 

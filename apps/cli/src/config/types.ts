@@ -372,6 +372,8 @@ export interface BuyerCLIConfig {
   minPeerReputation: number;
   /** Model-only auto-routing preferences shared by the proxy and Desktop. */
   routingPreferences: ModelRoutingPreferences;
+  /** The reasoning effort the buyer adds to Chat Completions and Responses requests that name none. */
+  reasoningEffort: BuyerReasoningEffortConfig;
   /** Local proxy listen port */
   proxyPort: number;
   /** How often the buyer refreshes its peer list from the DHT in the background (ms) */
@@ -405,6 +407,14 @@ export interface BuyerCLIConfig {
    * `antseed buyer free-tier share`; each identity sends only its own.
    */
   freeTierDelegations?: FreeTierDelegation[];
+}
+
+/** The reasoning effort the buyer adds to a request that names none. */
+export interface BuyerReasoningEffortConfig {
+  /** Level for every model not listed in `models`: a label such as "low", "medium", "high", or "off". */
+  default: string;
+  /** Level per model id (matched like routing matches models). A listed model ignores `default`; "off" adds nothing for it. */
+  models: Record<string, string>;
 }
 
 export interface BuyerVerifierConfig {

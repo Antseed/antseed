@@ -80,6 +80,7 @@ import { CandidateWritingPolicy, candidateWritingFallback, isRamblingCandidateAn
 import { createDomainHomogeneousKbfBatches, kbfAuditBatches } from './kbf-batching.js'
 import { asError, normalized, sleep } from './utils.js'
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
+import { DEFAULT_REASONING_EFFORT_HEADER, REASONING_EFFORT_OFF } from '../proxy/default-reasoning-effort.js'
 
 export { REFERENCE_BUILDER_VERSION }
 const CANDIDATE_COUNT = 300
@@ -2333,6 +2334,8 @@ async function postChatCompletion(
               : { authorization: `Bearer ${route.apiKey}` }
             : anthropic ? { 'anthropic-version': ANTHROPIC_VERSION } : {}),
           ...(route.peerId ? { 'x-antseed-pin-peer': route.peerId } : {}),
+          // Through the buyer: the reference is the seller's answer to the request as written.
+          ...(route.type === 'antseed' ? { [DEFAULT_REASONING_EFFORT_HEADER]: REASONING_EFFORT_OFF } : {}),
         },
         body: requestBody,
         signal: controller.signal,

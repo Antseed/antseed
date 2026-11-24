@@ -7,6 +7,7 @@ import {
   DEFAULT_BUYER_MAX_STREAM_DURATION_MS,
   DEFAULT_BUYER_METADATA_FETCH_TIMEOUT_MS,
   DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS,
+  DEFAULT_BUYER_REASONING_EFFORT,
   DEFAULT_BUYER_REQUEST_TIMEOUT_MS,
 } from './defaults.js';
 import { configFromObject, loadConfig, saveConfig } from './loader.js';
@@ -122,6 +123,53 @@ test('loadConfig rejects invalid model routing peer ids', async () => {
       );
     },
   );
+});
+
+test('buyer.reasoningEffort defaults to the built-in level and no models', async () => {
+  assert.deepEqual(createDefaultConfig().buyer.reasoningEffort, { default: DEFAULT_BUYER_REASONING_EFFORT, models: {} });
+  await withTempConfig(JSON.stringify({ buyer: {} }), async (configPath) => {
+    const config = await loadConfig(configPath);
+    assert.deepEqual(config.buyer.reasoningEffort, { default: DEFAULT_BUYER_REASONING_EFFORT, models: {} });
+  });
+  assert.deepEqual(configFromObject({}).buyer.reasoningEffort, { default: DEFAULT_BUYER_REASONING_EFFORT, models: {} });
+});
+
+test('buyer.reasoningEffort keeps configured levels and trims them', async () => {
+  await withTempConfig(
+    JSON.stringify({ buyer: { reasoningEffort: { default: ' medium ', models: { 'vendor/model-b': ' high ', 'model-c': 'OFF' } } } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.buyer.reasoningEffort, {
+        default: 'medium',
+        models: { 'vendor/model-b': 'high', 'model-c': 'OFF' },
+      });
+    },
+  );
+});
+
+test('an invalid buyer.reasoningEffort is refused', async () => {
+  const rule = 'must be "off" or a reasoning effort label (1-64 visible ASCII characters, no spaces)';
+  const cases: Array<[unknown, string]> = [
+    ['medium', 'buyer.reasoningEffort must be an object with "default" and "models"'],
+    [{ default: 3 }, `buyer.reasoningEffort.default ${rule}`],
+    [{ default: 'very high' }, `buyer.reasoningEffort.default ${rule}`],
+    [{ default: '\u81ea\u52d5' }, `buyer.reasoningEffort.default ${rule}`],
+    [{ default: 'off', models: ['model-a'] }, 'buyer.reasoningEffort.models must be an object of model ids to levels'],
+    [{ default: 'off', models: { 'model-a': 'very high' } }, `buyer.reasoningEffort.models.model-a ${rule}`],
+    [{ default: 'off', models: { 'model-a': false } }, `buyer.reasoningEffort.models.model-a ${rule}`],
+    [{ default: 'off', models: { 'model-b': 'high', 'vendor/model-b': 'low' } }, 'buyer.reasoningEffort.models has two entries for the same model: "model-b" and "vendor/model-b"'],
+    [{ default: 'off', models: { ' model-b': 'high', 'model-b': 'low' } }, 'buyer.reasoningEffort.models has two entries for the same model: " model-b" and "model-b"'],
+    [{ default: 'off', models: { ' ': 'high' } }, 'buyer.reasoningEffort.models has an empty model id'],
+  ];
+  for (const [reasoningEffort, message] of cases) {
+    await withTempConfig(JSON.stringify({ buyer: { reasoningEffort } }), async (configPath) => {
+      await assert.rejects(
+        () => loadConfig(configPath),
+        (error: Error) => error.message.includes(message),
+        message,
+      );
+    });
+  }
 });
 
 test('loadConfig keeps imageEditModel only on Venice openai and fal-image providers', async () => {

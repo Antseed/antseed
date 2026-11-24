@@ -1357,9 +1357,11 @@ async function auditWithDiscovery(
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-thinking-'))
   const bodies: Array<Record<string, unknown>> = []
+  const headers: Array<{ discovery: boolean; headers: Headers }> = []
   const fetchFn: typeof fetch = async (_url, init) => {
     const body = JSON.parse(new TextDecoder().decode(init!.body as Uint8Array)) as Record<string, unknown>
     bodies.push(body)
+    headers.push({ discovery: isDiscovery(body), headers: new Headers(init?.headers) })
     const requestId = new Headers(init?.headers).get('x-antseed-request-id')!
     if (options.batchDelayMs && !isDiscovery(body)) {
       await new Promise<void>((resolve, reject) => {
@@ -1422,11 +1424,21 @@ async function auditWithDiscovery(
       evidence,
       discoveryBodies: bodies.filter(isDiscovery),
       batchBodies: bodies.filter((body) => !isDiscovery(body)),
+      headers,
     }
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
 }
+
+test('audit probes ask the buyer for no default effort', async () => {
+  const run = await auditWithDiscovery(thinkingSeller)
+  assert.ok(run.headers.some((entry) => entry.discovery), 'discovery probes were sent')
+  assert.ok(run.headers.some((entry) => !entry.discovery), 'audit batches were sent')
+  for (const entry of run.headers) {
+    assert.equal(entry.headers.get('x-antseed-default-reasoning-effort'), 'off')
+  }
+})
 
 test('a seller that thinks whatever it is told is audited with 50x the token budget, as in the KBF reference code', async () => {
   const cache = new Map()

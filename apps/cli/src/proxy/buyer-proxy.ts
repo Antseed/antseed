@@ -114,6 +114,7 @@ import {
   findFailingServiceRoutes,
   findMissingRouteParameters,
   findUnannouncedRequestParameters,
+  findServiceCapabilities,
   findAdvertisedServiceOffer,
   findAdvertisedServiceProtocols,
   findFailingServiceOffers,
@@ -136,6 +137,11 @@ import {
   attachStreamingAntseedHeaders,
 } from './telemetry.js'
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
+import type { BuyerReasoningEffortConfig } from '../config/types.js'
+import {
+  applyDefaultReasoningEffort,
+  DEFAULT_REASONING_EFFORT_HEADER,
+} from './default-reasoning-effort.js'
 import {
   extractConversationIdentity,
   requestClientTool,
@@ -233,10 +239,12 @@ export interface BuyerProxyConfig {
   node: AntseedNode
   /** Data directory used to persist buyer.state.json (discovered peers, session peer pin). */
   dataDir: string
-  /** Config file watched for live buyer.routingPreferences updates. */
+  /** Config file watched for live buyer.routingPreferences and buyer.reasoningEffort updates. */
   configPath?: string
   /** Price + trust preferences used for model-only automatic routing. */
   routingPreferences?: ModelRoutingPreferences
+  /** `buyer.reasoningEffort`; absent adds nothing. Reloaded from `configPath` like routing preferences. */
+  reasoningEffort?: BuyerReasoningEffortConfig
   /** How often to refresh the peer list from DHT in the background (ms). Default: 300000 (5 min) */
   backgroundRefreshIntervalMs?: number
   /**
@@ -1461,6 +1469,7 @@ export class BuyerProxy {
   private _stateWatchDebounce: ReturnType<typeof setTimeout> | null = null
   private _configWatchDebounce: ReturnType<typeof setTimeout> | null = null
   private _routingPreferences: ModelRoutingPreferences | null
+  private _reasoningEffort: BuyerReasoningEffortConfig | null
 
   private _stateWriteChain: Promise<void> = Promise.resolve()
   private readonly _resourceRoutes = new ResourceRoutes()
@@ -1584,6 +1593,9 @@ export class BuyerProxy {
           allowedPeerIds: [...config.routingPreferences.allowedPeerIds],
           blockedPeerIds: [...config.routingPreferences.blockedPeerIds],
         }
+      : null
+    this._reasoningEffort = config.reasoningEffort
+      ? { default: config.reasoningEffort.default, models: { ...config.reasoningEffort.models } }
       : null
     this._now = config.now ?? (() => Date.now())
     this._referencePrices = config.referencePrices ?? createReferencePriceSource()
@@ -2772,12 +2784,15 @@ export class BuyerProxy {
         allowedPeerIds: [...next.allowedPeerIds],
         blockedPeerIds: [...next.blockedPeerIds],
       }
+      const reasoningEffort = config.buyer.reasoningEffort
+      this._reasoningEffort = { default: reasoningEffort.default, models: { ...reasoningEffort.models } }
       // `minPeerReputation` (like max pricing) is not reloaded: the router
       // plugin enforces it with the value it started with, so it applies on
       // restart only, and the proxy keeps the same value to stay in step.
       log(
         `Routing preferences reloaded: minTrust=${next.minTrustScore} maxInput=${next.maxInputUsdPerMillion} `
-        + `preferFree=${next.preferFreePeers} allow=${next.allowedPeerIds.length} block=${next.blockedPeerIds.length}`,
+        + `preferFree=${next.preferFreePeers} allow=${next.allowedPeerIds.length} block=${next.blockedPeerIds.length} `
+        + `reasoningEffort=${reasoningEffort.default} models=${Object.keys(reasoningEffort.models).length}`,
       )
     } catch (err) {
       log(`Routing preferences reload ignored: ${err instanceof Error ? err.message : String(err)}`)
@@ -5665,6 +5680,8 @@ export class BuyerProxy {
     } = {},
   ): Promise<PeerDispatchResult> {
     traceFor(res)?.noteAttempt(selectedPeer.peerId, Date.now())
+    // Only the attempt that adds an effort names it; an earlier seller's must not linger.
+    if (!res.headersSent) res.removeHeader(DEFAULT_REASONING_EFFORT_HEADER)
     const gatewayAutoRoute = gatewayRouted && !pinned
     const selectedRoutePlan = routePlanByPeerId.get(selectedPeer.peerId)
       ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient')
@@ -5701,6 +5718,7 @@ export class BuyerProxy {
       // Legacy desktop builds (pre AntStation → VPR rename) still send this.
       'x-antstation-session-id': _antstationSession,
       'x-antseed-capture-response-auth-preimages': captureResponseAuthPreimages,
+      [DEFAULT_REASONING_EFFORT_HEADER]: defaultEffortHeader,
       ...headersForPeer
     } = serializedReq.headers
     let requestForPeer: SerializedHttpRequest = {
@@ -5714,6 +5732,21 @@ export class BuyerProxy {
     const latencyServiceId = selectedRoutePlan.serviceId ?? requestedService
     if (selectedRoutePlan.serviceId) {
       requestForPeer = withRoutedModel(requestForPeer, selectedRoutePlan.serviceId)
+    }
+    // Added in the client's own format, before translation, so it survives into the seller's.
+    const defaultEffort = applyDefaultReasoningEffort({
+      config: this._reasoningEffort,
+      header: defaultEffortHeader,
+      model: requestedService,
+      requestProtocol,
+      targetProtocol: selectedRoutePlan.selection?.targetProtocol ?? requestProtocol,
+      capabilities: findServiceCapabilities(selectedPeer, selectedRoutePlan.provider, latencyServiceId),
+      request: requestForPeer,
+    })
+    requestForPeer = defaultEffort.request
+    if (defaultEffort.added) {
+      if (!res.headersSent) res.setHeader(DEFAULT_REASONING_EFFORT_HEADER, defaultEffort.added)
+      log(`Default reasoning effort "${defaultEffort.added}" added for peer ${selectedPeer.peerId.slice(0, 12)}...`)
     }
     const clientWantsStreaming = requestWantsStreaming(serializedReq.headers, serializedReq.body)
     let adaptResponse: ((response: SerializedHttpResponse) => SerializedHttpResponse) | null = null

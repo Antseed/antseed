@@ -23,6 +23,7 @@ import { DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, DepositWatcher, reserveBaseUnits } fr
 import { DepositWatchHub } from '../../../proxy/deposit-watch-hub.js'
 import { CachedBuyerChainReader, constantRelayReads } from '../../../proxy/buyer-chain-reader.js'
 import { redact, sharedChainProvider } from '../../../proxy/chain-rpc.js'
+import { isReasoningEffortOff } from '../../../proxy/default-reasoning-effort.js'
 import { resolveBaseRpcUrlOverride } from '../../payment-utils.js'
 import { BuyerIdentityLoader } from '../../../buyer-identities/loader.js'
 import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '../../../plugins/verifier.js'
@@ -431,6 +432,11 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         + `max input=${effectiveBuyerConfig.routingPreferences.maxInputUsdPerMillion} USD/1M, `
         + `prefer free=${effectiveBuyerConfig.routingPreferences.preferFreePeers ? 'yes' : 'no'}`,
       ))
+      const reasoningEffort = effectiveBuyerConfig.reasoningEffort
+      const reasoningEffortOverrides = Object.keys(reasoningEffort.models).length
+      if (!isReasoningEffortOff(reasoningEffort.default) || Object.values(reasoningEffort.models).some((level) => !isReasoningEffortOff(level))) {
+        console.log(chalk.dim(`  default reasoning effort: ${reasoningEffort.default} (${reasoningEffortOverrides} model overrides)`))
+      }
       console.log(chalk.dim(`  peer refresh interval: ${effectiveBuyerConfig.peerRefreshIntervalMs}ms`))
       console.log(chalk.dim(`  metadata fetch timeout: ${effectiveBuyerConfig.metadataFetchTimeoutMs}ms`))
       console.log(chalk.dim(`  request timeout: ${effectiveBuyerConfig.requestTimeoutMs}ms`))
@@ -610,6 +616,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         dataDir: globalOpts.dataDir,
         configPath: globalOpts.config,
         routingPreferences: effectiveBuyerConfig.routingPreferences,
+        reasoningEffort: effectiveBuyerConfig.reasoningEffort,
         minPeerReputation: effectiveBuyerConfig.minPeerReputation,
         maxPricing: effectiveBuyerConfig.maxPricing.defaults,
         maxReserveAmountUsdc: config.payments?.maxReserveAmountUsdc ?? '1000000',

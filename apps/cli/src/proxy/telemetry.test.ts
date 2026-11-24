@@ -3,6 +3,7 @@ import test from 'node:test'
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
 import { ROUTER_PEER_ID_HEADER, withoutRouterHeaders, attachAntseedTelemetryHeaders, attachStreamingAntseedHeaders, computeResponseTelemetry, coveredByFreeAllowance } from './telemetry.js'
 import { ROUTE_SELECTION_HEADER } from './route-selection.js'
+import { DEFAULT_REASONING_EFFORT_HEADER } from './default-reasoning-effort.js'
 
 test('a seller\'s upstream headers never reach the buyer\'s client', () => {
   const fromSeller = {
@@ -21,6 +22,13 @@ test('a seller\'s upstream headers never reach the buyer\'s client', () => {
     'retry-after': '5',
     'x-antseed-input-usd-per-million': '0.44',
   })
+})
+
+test('withoutRouterHeaders drops a seller\'s default effort header', () => {
+  assert.deepEqual(
+    withoutRouterHeaders({ [DEFAULT_REASONING_EFFORT_HEADER]: 'max', 'x-antseed-service': 'm' }),
+    { 'x-antseed-service': 'm' },
+  )
 })
 
 test('a seller cannot set the buyer\'s routing headers', () => {

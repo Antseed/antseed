@@ -462,6 +462,8 @@ export function setConfigValue(config: Record<string, unknown>, key: string, val
   setConfigPath(config, resolveConfigKeyPath(config, key), key, value);
 }
 
+const REASONING_EFFORT_LEVEL_KEY = /^buyer\.reasoningEffort\.(?:default|models\..+)$/;
+
 function setConfigPath(config: Record<string, unknown>, parts: string[], key: string, value: string): void {
   let current: Record<string, unknown> = config;
   for (let i = 0; i < parts.length - 1; i++) {
@@ -492,6 +494,12 @@ function setConfigPath(config: Record<string, unknown>, parts: string[], key: st
     }
   }
 
+  // A reasoning effort label such as `3` or `false` stays a string.
+  if (REASONING_EFFORT_LEVEL_KEY.test(parts.join('.'))) {
+    current[lastKey] = trimmed;
+    return;
+  }
+
   if (trimmed === 'true' || trimmed === 'false') {
     current[lastKey] = trimmed === 'true';
     return;
@@ -511,6 +519,7 @@ function setConfigPath(config: Record<string, unknown>, parts: string[], key: st
  */
 const DYNAMIC_KEY_PREFIXES = [
   'seller.providers.',
+  'buyer.reasoningEffort.models.',
 ];
 
 const DYNAMIC_KEYS = new Set([
@@ -531,6 +540,7 @@ const DYNAMIC_KEYS = new Set([
   'seller.gasRefuel.swapUsdc',
   'seller.gasRefuel.maxUsdcPerDay',
   'seller.gasRefuel.slippageBps',
+  'buyer.reasoningEffort.models',
 ]);
 
 export function isDynamicKey(key: string): boolean {

@@ -36,6 +36,7 @@ import {
 import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
 import { auditedModels, findAuditedModelKey } from './audited-models.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
+import { DEFAULT_REASONING_EFFORT_HEADER, REASONING_EFFORT_OFF } from '../proxy/default-reasoning-effort.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { kbfAuditBatches } from './kbf-batching.js'
 import {
@@ -1279,6 +1280,8 @@ async function discoverSellerThinking(
               'content-type': 'application/json',
               'x-antseed-pin-peer': target.peerId,
               'x-antseed-request-id': requestId,
+              // Audits measure what the seller does with the probe as written.
+              [DEFAULT_REASONING_EFFORT_HEADER]: REASONING_EFFORT_OFF,
             },
             body: new TextEncoder().encode(JSON.stringify(payload)),
             signal: controller.signal,
@@ -1610,6 +1613,8 @@ function buildProxyBatchRequest(
     'content-type': 'application/json',
     'x-antseed-pin-peer': target.peerId,
     'x-antseed-capture-response-auth-preimages': '1',
+    // Audits measure what the seller does with the probe as written.
+    [DEFAULT_REASONING_EFFORT_HEADER]: REASONING_EFFORT_OFF,
   }
   const body = buildKbfProbeRequestBody(
     service, settings.queryProfile, probes, promptVariantId, omitSampling,

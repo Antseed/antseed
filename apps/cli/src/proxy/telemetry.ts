@@ -4,6 +4,7 @@ import { extractUsage, toNonNegativeInt } from '@antseed/api-adapter'
 import { pickProviderForPeer } from './routing.js'
 import { extractRequestedService } from './request-utils.js'
 import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER } from '@antseed/node/free-tier-program'
+import { DEFAULT_REASONING_EFFORT_HEADER } from './default-reasoning-effort.js'
 
 /** Whether the seller marked a response as covered by its free allowance (nothing charged). */
 export function coveredByFreeAllowance(headers: Record<string, string | string[] | undefined>): boolean {
@@ -354,14 +355,23 @@ export const ROUTER_PEER_ID_HEADER = 'x-antseed-router-peer-id'
 export const ROUTER_SERVICE_HEADER = 'x-antseed-router-service'
 export const ROUTER_RANK_HEADER = 'x-antseed-router-rank'
 
-/** Headers only the buyer sets: which router ranked a request, and why routing picked its seller. */
-const BUYER_ROUTING_HEADERS = new Set([ROUTER_PEER_ID_HEADER, ROUTER_SERVICE_HEADER, ROUTER_RANK_HEADER, ROUTE_SELECTION_HEADER])
+/**
+ * Headers only the buyer sets: which router ranked a request, why routing
+ * picked its seller, and which reasoning effort the buyer added.
+ */
+const BUYER_ROUTING_HEADERS = new Set([
+  ROUTER_PEER_ID_HEADER,
+  ROUTER_SERVICE_HEADER,
+  ROUTER_RANK_HEADER,
+  ROUTE_SELECTION_HEADER,
+  DEFAULT_REASONING_EFFORT_HEADER,
+])
 
 /**
  * The seller's headers a buyer passes on to its client: Antseed's own and the
  * generic ones clients act on, without the buyer's routing headers (only the
- * buyer says which router ranked a request and why its seller was picked, so a
- * seller can neither change nor invent that). Anything else a seller relays
+ * buyer says which router ranked a request, why its seller was picked and which
+ * reasoning effort it added, so a seller can neither change nor invent that). Anything else a seller relays
  * from its upstream API, such as that account's usage or session ids, is
  * dropped here too, so sellers on older versions that still pass it on are
  * covered (`isExposedResponseHeader` is the same rule a seller applies).

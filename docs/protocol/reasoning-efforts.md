@@ -36,6 +36,16 @@ When `reasoning` is `false`, the list must be empty or absent. Duplicates and
 malformed labels are refused when the provider's configuration is read and when the
 metadata is validated. No label has a special meaning such as "reasoning off".
 
+## How buyers use it
+
+A buyer that adds a default reasoning effort to a request that names none decides
+per seller: a service gets the effort only if its announced list contains exactly that
+label. A service that announces no list, or an empty one, gets none, and nothing is
+substituted for a label the list lacks. The buyer's word for "add nothing" is `off` in
+any letter case, so a buyer cannot choose a label named `off`.
+
+The buyer never changes an effort the client set. The list does not change routing.
+
 ## Wire format
 
 Metadata v19 (`REASONING_EFFORTS_METADATA_VERSION`) carries the list. In the

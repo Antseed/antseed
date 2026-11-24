@@ -174,6 +174,7 @@ class FakeResponse extends EventEmitter {
   body = ''
   writeHead(statusCode: number) { this.statusCode = statusCode; this.headersSent = true; return this }
   setHeader() { return this }
+  removeHeader() { return this }
   write(chunk: string | Uint8Array) { this.body += Buffer.from(chunk).toString(); return true }
   end(chunk?: string | Uint8Array) {
     if (chunk !== undefined) this.write(chunk)

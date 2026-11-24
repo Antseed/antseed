@@ -29,6 +29,7 @@ Settings resolve in this order: command-line flags, then environment variables, 
 |---|---|---|
 | `buyer.proxyPort` | `8377` | Local proxy port. The proxy always listens on `127.0.0.1`; there is no host setting (see [Reach it from other machines](/docs/api#reach-it-from-other-machines)) |
 | `buyer.routingPreferences` | see below | Automatic routing preferences |
+| `buyer.reasoningEffort` | `off` | Reasoning effort added to requests that name none; see [Default reasoning effort](#default-reasoning-effort) |
 | `buyer.maxPricing` | `100` / `100` USD per million tokens | Hard price caps, see below |
 | `buyer.minPeerReputation` | `0` | Hard minimum reputation (0–100), applied to pinned requests too |
 | `buyer.peerRefreshIntervalMs` | `300000` (5 min) | How often the buyer refreshes peers from the DHT |
@@ -83,6 +84,44 @@ A running buyer reloads valid changes to `routingPreferences` without a restart.
 antseed config buyer set maxPricing.defaults.inputUsdPerMillion 25
 antseed config buyer set maxPricing.defaults.outputUsdPerMillion 75
 ```
+
+## Default reasoning effort
+
+When a request names no reasoning effort, each seller applies its own default, so the same request can get more or less reasoning depending on which seller serves it. `buyer.reasoningEffort` lets the buyer add one instead: a level for every model (`default`) and levels for single models (`models`). `off` adds nothing.
+
+```json
+{
+  "buyer": {
+    "reasoningEffort": {
+      "default": "medium",
+      "models": {
+        "glm-5.3": "high",
+        "kimi-k2.6": "off"
+      }
+    }
+  }
+}
+```
+
+```bash
+antseed config buyer set reasoningEffort.default medium
+antseed config buyer set reasoningEffort.models.kimi-k3 high
+# a model id with a dot needs the JSON form, because key paths split on dots; it replaces every per-model level:
+antseed config buyer set reasoningEffort.models '{"glm-5.3":"high"}'
+```
+
+- A seller gets the level only when it announces the reasoning efforts it accepts for the service ([`reasoningEfforts`](/docs/provide/config#capabilities)) and that list has exactly that level. A seller that announces no list gets no default effort, and neither does one whose list lacks the level: no other level is put in its place, and this setting changes nothing in the request.
+- Only `POST /v1/chat/completions` and `POST /v1/responses` requests get a level, and only when they name no effort.
+- A request that makes its own reasoning choice gets no level added. These fields count as one, with any value: `reasoning_effort`, `thinking`, `enable_thinking`, `thinking_budget`, `thinking_config`, `include_reasoning` and `think` at the top level, `enable_thinking` or `thinking` inside `chat_template_kwargs`, a `reasoning` field on Chat Completions, and on Responses an `effort` in the `reasoning` object or a `reasoning` that is not an object.
+- When the buyer adds a level, it reads the JSON body and writes it out again with the level added. Spacing and key order can change, a key that appears twice keeps only its last value, and a number with more digits than JSON parsers keep (such as a 20-digit `seed`) is rounded. A request the buyer adds no level to is not changed by this setting.
+- A level is 1 to 64 visible ASCII characters with no spaces, matched exactly. `off` in any letter case adds nothing, so a level a seller names `off` can't be chosen.
+- A model listed in `models` ignores `default`. Model ids match the way routing matches them, so `z-ai/glm-5.3` and `glm-5.3` are the same model.
+- The level is decided again for each seller a request is sent to, so a failover seller gets its own answer.
+- Requests to and from Anthropic Messages are not changed.
+
+The response header `x-antseed-default-reasoning-effort` names the level the buyer added; see [the API reference](/docs/api#response-headers).
+
+Changes apply at once; the buyer does not need a restart.
 
 ## Data directory
 

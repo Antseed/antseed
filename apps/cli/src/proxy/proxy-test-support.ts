@@ -34,6 +34,7 @@ export function makeProxyResponse(): {
   writableEnded: boolean
   writeHead: (statusCode: number, headers: Record<string, string>) => unknown
   setHeader: (name: string, value: string) => unknown
+  removeHeader: (name: string) => unknown
   write: (chunk: string | Buffer | Uint8Array) => unknown
   end: (chunk?: string | Buffer | Uint8Array) => unknown
   once: () => unknown
@@ -56,6 +57,10 @@ export function makeProxyResponse(): {
     },
     setHeader(name: string, value: string) {
       pending[name.toLowerCase()] = value
+      return this
+    },
+    removeHeader(name: string) {
+      delete pending[name.toLowerCase()]
       return this
     },
     write(chunk: string | Buffer | Uint8Array) {

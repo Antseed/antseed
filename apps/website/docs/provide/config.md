@@ -135,7 +135,7 @@ Capabilities tell buyers what a service can do. They are hints, not enforced lim
 | `inputs` | string[] | Accepted input modalities: `text`, `image`, `audio`, `video`, `pdf` |
 | `outputs` | string[] | Produced output modalities, same values |
 | `reasoning` | boolean | Supports reasoning effort or extended thinking |
-| `reasoningEfforts` | string[] | Values the service accepts as a request's reasoning effort (`reasoning_effort` on Chat Completions, `reasoning.effort` on Responses), as your upstream's own labels (for example `low`, `medium`, `high`, `max`); at most 32, each 1 to 64 visible ASCII characters with no spaces. An empty list means none, and it must be empty when `reasoning` is `false`. Buyers on metadata before v19 see the service without it |
+| `reasoningEfforts` | string[] | Values the service accepts as a request's reasoning effort (`reasoning_effort` on Chat Completions, `reasoning.effort` on Responses), as your upstream's own labels (for example `low`, `medium`, `high`, `max`); at most 32, each 1 to 64 visible ASCII characters with no spaces. An empty list means none, and it must be empty when `reasoning` is `false`. Buyers on metadata before v19 see the service without it. A buyer adds its [default reasoning effort](/docs/buyer-config#default-reasoning-effort) only to a service whose list has that level, so a service without a list gets none |
 | `toolUse` | boolean | Supports tool calls |
 | `structuredOutput` | boolean | Supports JSON schema responses |
 | `supportedParameters` | string[] | Extra request-body parameters the service accepts, in lowercase snake_case (for example `seed`, `output_format`); at most 32 |

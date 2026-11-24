@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { request as httpRequest, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { invokeProxy, makeProxyRequest, makeProxyResponse } from './proxy-test-support.js'
 import test, { type TestContext } from 'node:test'
@@ -30,7 +32,7 @@ import { parseRetailPrices } from '@antseed/node/retail-prices'
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import { TeeVerification } from './tee-verification.js'
 import { ConversationStore } from './conversation-store.js'
-import { findFailingServiceOffers, resolvePeerRoutePlan } from './routing.js'
+import { findFailingServiceOffers, findServiceCapabilities, resolvePeerRoutePlan } from './routing.js'
 import {
   BuyerProxy,
   classifyFailedAttempt,
@@ -7172,4 +7174,247 @@ test('lip-synced video creates route only to sellers whose model takes audio_url
   assert.equal(refused.statusCode, 422)
   assert.match(JSON.parse(refused.body).error.message, /required parameter\(s\): audio_url/)
   assert.deepEqual(selected, [])
+})
+
+// ── Default reasoning effort ──────────────────────────────────────────────
+
+/** A seller of `model-a` over Chat Completions, announcing `capabilities` for it when given. */
+function makeEffortPeer(seed: string, capabilities?: Record<string, unknown>, reputation = 90): PeerInfo {
+  const peer = makePeer(seed, ['openai'])
+  peer.reputationScore = reputation
+  peer.providerServiceApiProtocols = { openai: { services: { 'model-a': ['openai-chat-completions'] } } }
+  if (capabilities) peer.providerServiceCapabilities = { openai: { services: { 'model-a': capabilities } } }
+  return peer
+}
+
+const LISTS_EFFORTS = { reasoning: true, reasoningEfforts: ['low', 'medium', 'high', 'max'] }
+
+function setReasoningEffort(proxy: BuyerProxy, level: string, models: Record<string, string> = {}): void {
+  ;(proxy as any)._reasoningEffort = { default: level, models }
+}
+
+function sentJson(request: SerializedHttpRequest): Record<string, unknown> {
+  return JSON.parse(Buffer.from(request.body).toString('utf8')) as Record<string, unknown>
+}
+
+/** Answers like `captureProxyRequests`, with the status `statusFor` picks for each request. */
+function answerProxyRequests(
+  proxy: BuyerProxy,
+  statusFor: (peer: PeerInfo, request: SerializedHttpRequest) => number,
+  sent: Array<{ peer: PeerInfo; request: SerializedHttpRequest }>,
+  headers: Record<string, string> = {},
+): void {
+  const answer = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    sent.push({ peer, request })
+    const statusCode = statusFor(peer, request)
+    return {
+      requestId: request.requestId,
+      statusCode,
+      headers: { 'content-type': 'application/json', ...headers },
+      body: Buffer.from(statusCode >= 400 ? '{"error":{"message":"bad request"}}' : '{"choices":[]}'),
+    }
+  }
+  ;(proxy as any)._node.sendRequest = answer
+  ;(proxy as any)._node.sendRequestStream = answer
+}
+
+test('a seller without the level in its list gets the request byte for byte', async () => {
+  const sellers = [undefined, { reasoning: true }, { reasoning: true, reasoningEfforts: ['low', 'high'] }, { reasoning: true, reasoningEfforts: [] }]
+  for (const capabilities of sellers) {
+    const peer = makeEffortPeer('a', capabilities)
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    setReasoningEffort(proxy, 'medium')
+    let sent: SerializedHttpRequest | undefined
+    captureProxyRequests(proxy, (request) => { sent = request })
+    const raw = '{ "messages" : [ ],   "model":"model-a" ,"temperature":0.50 }'
+    const response = await invokeProxy(proxy, makeProxyRequest({ rawBody: raw }))
+    assert.equal(response.statusCode, 200, response.body)
+    assert.equal(Buffer.compare(Buffer.from(sent!.body), Buffer.from(raw)), 0, JSON.stringify(capabilities))
+    assert.equal(response.headers['x-antseed-default-reasoning-effort'], undefined)
+  }
+})
+
+test("a client's own effort reaches the seller unchanged with a default configured", async () => {
+  const peer = makeEffortPeer('a', LISTS_EFFORTS)
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  setReasoningEffort(proxy, 'medium')
+  let sent: SerializedHttpRequest | undefined
+  captureProxyRequests(proxy, (request) => { sent = request })
+  const raw = '{"model":"model-a",  "messages":[],"reasoning_effort":"low"}'
+  const response = await invokeProxy(proxy, makeProxyRequest({ rawBody: raw }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(Buffer.compare(Buffer.from(sent!.body), Buffer.from(raw)), 0)
+  assert.equal(response.headers['x-antseed-default-reasoning-effort'], undefined)
+})
+
+test('the default effort survives translation from responses to chat', async () => {
+  const peer = makeEffortPeer('a', LISTS_EFFORTS)
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  setReasoningEffort(proxy, 'medium')
+  let sent: SerializedHttpRequest | undefined
+  captureProxyRequests(proxy, (request) => { sent = request })
+  const response = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/responses',
+    body: { model: 'model-a', input: 'hello', reasoning: { summary: 'auto' } },
+  }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(sent!.path, '/v1/chat/completions')
+  assert.equal(sentJson(sent!)['reasoning_effort'], 'medium')
+  assert.equal(response.headers['x-antseed-default-reasoning-effort'], 'medium')
+})
+
+test('the default effort is decided again for the failover seller', async () => {
+  const first = makeEffortPeer('a', LISTS_EFFORTS, 95)
+  const second = makeEffortPeer('b', undefined, 80)
+  const proxy = makeBuyerProxyWithPeers([first, second], [first, second], permissiveRouter())
+  setReasoningEffort(proxy, 'medium')
+  const sent: Array<{ peer: PeerInfo; request: SerializedHttpRequest }> = []
+  answerProxyRequests(proxy, (peer) => peer.peerId === first.peerId ? 503 : 200, sent)
+  const original = { model: 'model-a', messages: [] }
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: original }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.deepEqual(sent.map(({ peer }) => peer.peerId), [first.peerId, second.peerId])
+  assert.equal(sentJson(sent[0]!.request)['reasoning_effort'], 'medium')
+  assert.deepEqual(sentJson(sent[1]!.request), original)
+  assert.equal(response.headers['x-antseed-default-reasoning-effort'], undefined)
+})
+
+test('the effort comes from the entry named exactly like the routed service', () => {
+  const peer = makePeer('a', ['openai'])
+  peer.providerServiceCapabilities = { openai: { services: {
+    'vendor/model-a': { reasoning: true, reasoningEfforts: ['high'] },
+    'model-a': { reasoning: true, reasoningEfforts: ['low'] },
+  } } }
+  assert.deepEqual(findServiceCapabilities(peer, 'openai', 'model-a')?.reasoningEfforts, ['low'])
+  assert.deepEqual(findServiceCapabilities(peer, 'openai', ' model-a ')?.reasoningEfforts, ['low'])
+  assert.equal(findServiceCapabilities(peer, 'openai', 'MODEL-A'), undefined, 'another letter case is another entry')
+  assert.deepEqual(findServiceCapabilities(peer, 'openai', 'vendor/model-a')?.reasoningEfforts, ['high'])
+  delete peer.providerServiceCapabilities.openai!.services['model-a']
+  assert.equal(findServiceCapabilities(peer, 'openai', 'model-a'), undefined, 'another spelling of the model is another entry')
+})
+
+test("a streamed answer names the added effort and drops the seller's own header", async () => {
+  const peer = makeEffortPeer('a', LISTS_EFFORTS)
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  setReasoningEffort(proxy, 'medium')
+  let sent: SerializedHttpRequest | undefined
+  ;(proxy as any)._node.sendRequestStream = async (_peer: PeerInfo, request: SerializedHttpRequest, callbacks: {
+    onResponseStart: (response: SerializedHttpResponse, metadata: { streaming: boolean }) => void;
+  }) => {
+    sent = request
+    const start = { requestId: request.requestId, statusCode: 200,
+      headers: { 'content-type': 'text/event-stream', 'x-antseed-default-reasoning-effort': 'max' }, body: Buffer.from('data: [DONE]\n\n') }
+    callbacks.onResponseStart(start, { streaming: true })
+    return start
+  }
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'model-a', messages: [], stream: true } }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(sentJson(sent!)['reasoning_effort'], 'medium')
+  assert.equal(response.headers['x-antseed-default-reasoning-effort'], 'medium')
+})
+
+test('a seller cannot set the default effort header', async () => {
+  const peer = makeEffortPeer('a', LISTS_EFFORTS)
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  setReasoningEffort(proxy, 'off')
+  answerProxyRequests(proxy, () => 200, [], { 'x-antseed-default-reasoning-effort': 'max' })
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'model-a', messages: [] } }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(response.headers['x-antseed-default-reasoning-effort'], undefined)
+})
+
+test('the default effort header never reaches a seller', async () => {
+  const peer = makeEffortPeer('a', LISTS_EFFORTS)
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  setReasoningEffort(proxy, 'medium')
+  let sent: SerializedHttpRequest | undefined
+  captureProxyRequests(proxy, (request) => { sent = request })
+  const response = await invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-antseed-default-reasoning-effort': 'off' },
+    body: { model: 'model-a', messages: [] },
+  }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(sent!.headers['x-antseed-default-reasoning-effort'], undefined)
+  assert.equal('reasoning_effort' in sentJson(sent!), false)
+})
+
+test('a level that is not visible ASCII never reaches a real response header', async () => {
+  // A request header arrives as latin1, so the seller lists exactly what the buyer would read.
+  const fromHeader = Buffer.from('\u81ea\u52d5', 'utf8').toString('latin1')
+  const peer = makeEffortPeer('a', { reasoning: true, reasoningEfforts: ['\u81ea\u52d5', fromHeader, 'max'] })
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  setReasoningEffort(proxy, '\u81ea\u52d5')
+  const sent: SerializedHttpRequest[] = []
+  captureProxyRequests(proxy, (request) => { sent.push(request) })
+  // The proxy's own server, so a thrown header error answers 502 as it does in production.
+  const server = (proxy as any)._server as Server
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const post = (headers: Record<string, string> = {}) => new Promise<{ status: number; headers: Record<string, unknown>; body: string }>((resolve, reject) => {
+    const body = JSON.stringify({ model: 'model-a', messages: [] })
+    const req = httpRequest({
+      host: '127.0.0.1',
+      port: (server.address() as AddressInfo).port,
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)), ...headers },
+    }, (res) => {
+      let text = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk: string) => { text += chunk })
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text }))
+    })
+    req.on('error', reject)
+    req.end(body)
+  })
+  try {
+    const fromConfig = await post()
+    assert.equal(fromConfig.status, 200, fromConfig.body)
+    assert.equal(fromConfig.headers['x-antseed-default-reasoning-effort'], undefined)
+    const viaHeader = await post({ 'x-antseed-default-reasoning-effort': fromHeader })
+    assert.equal(viaHeader.status, 200, viaHeader.body)
+    assert.equal(viaHeader.headers['x-antseed-default-reasoning-effort'], undefined)
+    assert.deepEqual(sent.map((request) => 'reasoning_effort' in sentJson(request)), [false, false])
+
+    const ascii = await post({ 'x-antseed-default-reasoning-effort': 'max' })
+    assert.equal(ascii.status, 200, ascii.body)
+    assert.equal(ascii.headers['x-antseed-default-reasoning-effort'], 'max')
+    assert.equal(sentJson(sent[2]!)['reasoning_effort'], 'max')
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('a config edit changes the default effort without a restart', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-reasoning-effort-'))
+  try {
+    const configPath = join(dir, 'config.json')
+    await writeFile(configPath, JSON.stringify({ buyer: { reasoningEffort: { default: 'low' } } }))
+    const peer = makeEffortPeer('a', LISTS_EFFORTS)
+    const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
+      port: 0,
+      dataDir: dir,
+      configPath,
+      reasoningEffort: { default: 'low', models: {} },
+      node: { router: permissiveRouter() } as any,
+    })
+    ;(proxy as any)._getPeers = async () => [peer]
+    ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+    const sent: SerializedHttpRequest[] = []
+    captureProxyRequests(proxy, (request) => { sent.push(request) })
+    await invokeProxy(proxy, makeProxyRequest({ body: { model: 'model-a', messages: [] } }))
+    assert.equal(sentJson(sent[0]!)['reasoning_effort'], 'low')
+
+    await writeFile(configPath, JSON.stringify({ buyer: { reasoningEffort: { default: 'low', models: { 'model-a': 'high' } } } }))
+    await (proxy as any)._reloadRoutingPreferences()
+    await invokeProxy(proxy, makeProxyRequest({ body: { model: 'model-a', messages: [] } }))
+    assert.equal(sentJson(sent[1]!)['reasoning_effort'], 'high')
+
+    // An invalid file keeps the last valid setting.
+    await writeFile(configPath, JSON.stringify({ buyer: { reasoningEffort: { default: 'low', models: { 'model-a': 3 } } } }))
+    await (proxy as any)._reloadRoutingPreferences()
+    await invokeProxy(proxy, makeProxyRequest({ body: { model: 'model-a', messages: [] } }))
+    assert.equal(sentJson(sent[2]!)['reasoning_effort'], 'high')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })

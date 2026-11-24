@@ -5,6 +5,8 @@ export const DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS = 5 * 60_000;
 export const DEFAULT_BUYER_METADATA_FETCH_TIMEOUT_MS = 1500;
 export const DEFAULT_BUYER_REQUEST_TIMEOUT_MS = 5 * 60_000;
 export const DEFAULT_BUYER_MAX_STREAM_DURATION_MS = 30 * 60_000;
+/** Built-in level when the buyer configured nothing. "off" adds nothing. The one place to change it. */
+export const DEFAULT_BUYER_REASONING_EFFORT = 'off';
 /** Restricted jurisdictions named in the Terms of Use; sellers refuse their IPs unless they opt out. */
 export const DEFAULT_RESTRICTED_COUNTRIES = ['CU', 'IR', 'KP', 'SY', 'RU'];
 
@@ -37,6 +39,7 @@ export function createDefaultConfig(): AntseedConfig {
         allowedPeerIds: [],
         blockedPeerIds: [],
       },
+      reasoningEffort: { default: DEFAULT_BUYER_REASONING_EFFORT, models: {} },
       proxyPort: 8377,
       peerRefreshIntervalMs: DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS,
       metadataFetchTimeoutMs: DEFAULT_BUYER_METADATA_FETCH_TIMEOUT_MS,
