@@ -1,5 +1,8 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DHTNode, DEFAULT_DHT_CONFIG, DEFAULT_PEER_RECORD_MAX_AGE_MS, type DHTNodeConfig } from '../src/discovery/dht-node.js';
+import { DHTNode, DEFAULT_DHT_CONFIG, DEFAULT_PEER_RECORD_MAX_AGE_MS, MAX_KNOWN_NODES, type DHTNodeConfig } from '../src/discovery/dht-node.js';
 import { toPeerId } from '../src/types/peer.js';
 
 const mock = vi.hoisted(() => ({ construct: vi.fn(), warn: vi.fn() }));
@@ -14,6 +17,7 @@ vi.mock('bittorrent-dht', async () => {
         void Promise.resolve().then(() => this.emit('ready'));
       }
       destroy(callback?: () => void): void { callback?.(); }
+      toJSON(): { nodes: unknown[] } { return { nodes: [] }; }
     },
   };
 });
@@ -89,5 +93,34 @@ describe('DHT IPv4 bootstrap resolution', () => {
     ] }).start();
     expect(lookup).toHaveBeenCalledWith('localhost', { family: 4, all: true });
     expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:12345'], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
+  });
+});
+
+describe('saved DHT nodes on start', () => {
+  let dir: string;
+  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'dht-bootstrap-known-')); });
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  it(`adds up to ${MAX_KNOWN_NODES} saved nodes after the bootstrap list, skipping ones already on it`, async () => {
+    const file = join(dir, 'dht-nodes.json');
+    const saved = Array.from({ length: MAX_KNOWN_NODES + 4 }, (_, i) => ({ host: `198.51.100.${i + 1}`, port: 6881 }));
+    await writeFile(file, JSON.stringify({ nodes: [{ host: '192.0.2.1', port: 6881 }, ...saved] }));
+    await makeNode({ knownNodesFile: file, bootstrapNodes: [{ host: '192.0.2.1', port: 6881 }] }).start();
+    const { bootstrap } = mock.construct.mock.calls[0]![0] as { bootstrap: string[] };
+    expect(bootstrap[0]).toBe('192.0.2.1:6881');
+    expect(bootstrap).toHaveLength(1 + MAX_KNOWN_NODES);
+    expect(new Set(bootstrap).size).toBe(bootstrap.length);
+  });
+
+  it('starts from the bootstrap list alone when the file is missing or unreadable', async () => {
+    const malformed = join(dir, 'malformed.json');
+    await writeFile(malformed, '{ not json');
+    for (const knownNodesFile of [join(dir, 'missing.json'), malformed]) {
+      mock.construct.mockClear();
+      await makeNode({ knownNodesFile, bootstrapNodes: [{ host: '192.0.2.1', port: 6881 }] }).start();
+      expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['192.0.2.1:6881'], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
+    }
+    expect(mock.warn).toHaveBeenCalledTimes(1);
+    expect(String(mock.warn.mock.calls[0]![0])).toContain('Ignoring known DHT nodes file');
   });
 });
