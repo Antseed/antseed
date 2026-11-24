@@ -79,6 +79,7 @@ export type AiConversation = {
   updatedAt: number;
   usage: AiUsageTotals;
   workspacePath?: string;
+  studioProjectId?: string;
 };
 
 export type AiConversationSummary = {
@@ -92,6 +93,7 @@ export type AiConversationSummary = {
   totalTokens: number;
   totalEstimatedCostUsd: number;
   workspacePath?: string;
+  studioProjectId?: string;
   /** When the chat was pinned (ms); absent when it isn't. */
   pinnedAt?: number;
   /** When the chat was archived (ms); absent when it isn't. */

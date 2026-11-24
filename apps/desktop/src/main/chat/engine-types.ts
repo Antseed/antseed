@@ -82,7 +82,7 @@ export type ActiveRun = {
  */
 export type PiChatEngine = {
   invalidateModelCatalog(): void;
-  createConversation(model: string): Promise<AiConversation>;
+  createConversation(model: string, workspaceDir?: string): Promise<AiConversation>;
   hasConversation(conversationId: string): Promise<boolean>;
   getConversationModel(conversationId: string): Promise<string | null>;
   setConversationModel(conversationId: string, model: string): Promise<void>;
