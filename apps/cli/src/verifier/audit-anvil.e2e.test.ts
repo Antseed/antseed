@@ -1190,7 +1190,7 @@ test('five auditors: a DIFF passes three missed confirmer turns to the fourth, a
       AUDITOR_PRIVATE_KEY, SECOND_AUDITOR_PRIVATE_KEY, UNAPPROVED_PRIVATE_KEY, FOURTH_AUDITOR_PRIVATE_KEY, FIFTH_AUDITOR_PRIVATE_KEY,
     ].map((key) => new Wallet(`0x${key}`))
     const chain = deployAuditChain(rpcUrl, wallets, 1, schedule)
-    const models = ['claude-opus-5.5', 'gemini-4-argon', 'glm-5.3', 'minimax-m3', 'qwen3.8-27b']
+    const models = ['claude-opus-5.5', 'gemini-4-argon', 'glm-5.3', 'kimi-k3', 'qwen3.8-27b']
     const rotation = { auditors: wallets.map((wallet) => wallet.address), epoch: AUDIT_EPOCH, availableModels: models }
     const byAddress = (address: string) => wallets.find((wallet) => wallet.address === address)!
     const ownModel = (auditor: Wallet) => roundRobinAssignmentFor(auditor.address, rotation).models[0]!

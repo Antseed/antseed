@@ -844,7 +844,7 @@ This is on by default; `--no-enroll` turns it off. A model whose bank isn't read
 is then not audited, and the run audits the others and exits with an error:
 
 ```bash
-antseed --config ./audit-config.json verifier run gpt-6.1-sol --max-enrollment-requests 1000
+antseed --config ./audit-config.json verifier run gpt-6.2-sol --max-enrollment-requests 1000
 ```
 
 The request budget is **per build and round** (2000 unless `--max-enrollment-requests`

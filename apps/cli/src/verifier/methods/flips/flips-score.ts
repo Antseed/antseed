@@ -80,11 +80,10 @@ export interface FlipsRule {
   /** p at or above which a check passes; between the bar and this it decides nothing. Set from the evals. */
   passAbove: number
   /**
-   * Whether a FLIPS result counts toward the audit's verdict: by default, and never for the models listed (a known
-   * split between the reference and honest hosts). A check that does not count is recorded only: its outcome and p
-   * are kept for the report, and the verdict reads it as having no result.
+   * Whether a FLIPS result counts toward the audit's verdict, for a model the eval measured. A check that does not
+   * count is recorded only: its outcome and p are kept for the report, and the verdict reads it as having no result.
    */
-  counts: { default: boolean; never: readonly string[] }
+  counts: { default: boolean }
   /**
    * Replies that hold no sequence (a rule without it scores them as short replies). A reply with fewer
    * symbols of its pair than `below` holds none: it is left out of the sample on both sides, and a pair where more
@@ -117,9 +116,8 @@ export interface FlipsRule {
 }
 
 /**
- * The rule (`flips-v1`). FLIPS counts toward the verdict, except for MiniMax M3, whose honest sellers on another host
- * than the reference's score like a swap, and for a model the eval never measured. A FLIPS DIFF is confirmed like any
- * other: by a second auditor's FLIPS flag at the confirmation stage.
+ * The rule (`flips-v1`). FLIPS counts toward the verdict, except for a model the eval never measured. A FLIPS DIFF is
+ * confirmed like any other: by a second auditor's FLIPS flag at the confirmation stage.
  *
  * - Calibrations: fitted on the eval's honest checks of each size (ln score, Student-t, location = mean,
  *   scale = sd · sqrt(1 + 1/n), df = n − 1).
@@ -152,7 +150,7 @@ export const FLIPS_RULE: FlipsRule = Object.freeze({
   ]),
   bar: Object.freeze({ first: 0.002, confirm: 0.001 }),
   passAbove: 0.1,
-  counts: Object.freeze({ default: true, never: Object.freeze(['minimax-m3']) }),
+  counts: Object.freeze({ default: true }),
   noSequence: Object.freeze({ below: 8, maxShare: 0.2 }),
   repeats: Object.freeze({ sellerShare: 0.5, referenceShare: 0.25, minReplies: 4 }),
   asksRequired: true,
@@ -161,9 +159,10 @@ export const FLIPS_RULE: FlipsRule = Object.freeze({
 })
 
 /**
- * How each audited model, and each model the eval measured that may become one, was asked in the eval: one body for the
- * seller and the reference. `maxTokens` is 220, or 900 for a model that still thinks; Claude and GPT models were sent no
- * temperature, every other model temperature 1: FLIPS keeps both. `reasoning` is the switch the eval sent, the lowest
+ * How each audited model the eval measured was asked in the eval: one body for the seller and the reference. GPT-6.2
+ * Sol, GPT-6.2 Astra and Gemini 4 Neon were never measured and have none. `maxTokens` is 220, or 900 for a model that
+ * still thinks; Claude and GPT models were sent no temperature, every other model
+ * temperature 1: FLIPS keeps both. `reasoning` is the switch the eval sent, the lowest
  * the model accepted with no reasoning tokens. FLIPS sends it no longer to a seller, which gets its own discovered
  * switch, and to the reference only where its bank's switch still thinks (`flips-thinking.ts`). A model missing here was
  * never measured: it is asked like the plain models, and FLIPS never counts for it.
@@ -185,16 +184,12 @@ export const FLIPS_REQUESTS: Readonly<Record<string, FlipsRequestSettings>> = Ob
   'claude-opus-5.5': request(MINIMAL, 220, false),
   'claude-sonnet-5.5': request(MINIMAL, 220, false),
   'deepseek-v4-pro': request(OFF, 220, true),
-  'gemini-3.1-pro-preview': request(LOW, 900, true),
   'gemini-4-argon': request(MINIMAL, 220, true),
   'glm-5.3': request(LOW, 900, true),
-  'gpt-6-astra': request(MINIMAL, 900, false),
-  'gpt-6.1-sol': request(MINIMAL, 900, false),
   'grok-4.7': request(MINIMAL, 900, true),
   'kimi-k3': request(OFF, 220, true),
   'kimi-k3.1-pro': request(OFF, 220, true),
   'mimo-v2.6-pro': request(OFF, 220, true),
-  'minimax-m3': request(OFF, 220, true),
   'qwen3.8-27b': request(OFF, 220, true),
 })
 
@@ -232,11 +227,11 @@ export function flipsRequestBody(model: string, service: string, pair: FlipsPair
 }
 
 /**
- * Whether FLIPS counts toward the verdict for this model (its audited-model key): when the rule counts by default,
- * the model is not one it never counts for, and the eval measured the model.
+ * Whether FLIPS counts toward the verdict for this model (its audited-model key): when the rule counts by default and
+ * the eval measured the model.
  */
 export function flipsCounts(model: string, rule: FlipsRule = FLIPS_RULE): boolean {
-  return rule.counts.default && !rule.counts.never.includes(model.toLowerCase()) && flipsRequestFor(model).measured
+  return rule.counts.default && flipsRequestFor(model).measured
 }
 
 /**
