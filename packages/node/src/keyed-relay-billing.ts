@@ -33,23 +33,25 @@ function lastStreamModel(tail: string): string | null {
   return model;
 }
 
-/** The end of a model id that names one snapshot of it: a date (`-2024-07-18`, `-20240718`, `-0718`) or `-latest`. */
-const MODEL_SNAPSHOT_SUFFIX = /-(?:\d{4}-\d{2}-\d{2}|\d{8}|\d{6}|\d{4}|latest)$/;
+/**
+ * The end of a model id that names one snapshot of it: a date (`-2024-07-18`, `-20240718`, `-0718`), a numbered
+ * version (`-002`) or `-latest`.
+ */
+const MODEL_SNAPSHOT_SUFFIX = /-(?:\d{4}-\d{2}-\d{2}|\d{8}|\d{6}|\d{4}|\d{3}|latest)$/;
 
 /**
- * Whether the model an upstream reports is the one the service maps to,
- * allowing the forms upstreams answer with: a dated snapshot
- * (`gpt-4o-mini-2024-07-18`) or a vendor prefix (`openai/gpt-4o-mini`), and
- * the undated name when the service names the snapshot.
+ * Whether the model an upstream reports is the one the service maps to. The
+ * two are the same name once each is without what upstreams add or drop: a
+ * vendor prefix (`openai/gpt-4o-mini`) and a snapshot suffix
+ * (`gpt-4o-mini-2024-07-18`). Any other ending is another model
+ * (`gpt-4o-mini` is not `gpt-4o`).
  */
 export function keyedRelayModelMatches(reported: string, expected: string): boolean {
-  const a = reported.trim().toLowerCase();
-  const b = expected.trim().toLowerCase();
-  const tail = (id: string): string => id.slice(id.lastIndexOf('/') + 1);
-  if (a === b || a.startsWith(`${b}-`) || tail(a) === tail(b) || tail(a).startsWith(`${tail(b)}-`)) return true;
-  // The service itself names a snapshot (or `-latest`): the same name without that suffix is the same model.
-  const undated = tail(b).replace(MODEL_SNAPSHOT_SUFFIX, '');
-  return undated !== tail(b) && (tail(a) === undated || tail(a).startsWith(`${undated}-`));
+  const name = (id: string): string => {
+    const lower = id.trim().toLowerCase();
+    return lower.slice(lower.lastIndexOf('/') + 1).replace(MODEL_SNAPSHOT_SUFFIX, '');
+  };
+  return name(reported) === name(expected);
 }
 
 /** Drops HTTP/1.1 chunked-transfer framing (size lines) from a response tail. */
