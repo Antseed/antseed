@@ -131,7 +131,8 @@
    "p": 5.932996399546659e-8,
    "score": 47.300484411942186,
    "reason": "scored 47.30 (p 5.93e-8), at most the confirm bar 0.001"
-  }
+  },
+  "inactive": [{"check":"flips","cause":"rule","reason":"the randomness check is recorded only: its rule does not count it for this model"}]
  },
  "evidence": {
   "buyerProxy": {"baseUrl":"http://127.0.0.1:8390","pid":4242,"statePath":"buyer.state.json"},

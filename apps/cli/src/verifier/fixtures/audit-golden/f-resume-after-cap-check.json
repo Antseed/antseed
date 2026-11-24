@@ -85,7 +85,8 @@
    "p": 0.8421651369629677,
    "score": 0.7775341197144852,
    "reason": "scored 0.78 (p 0.842), above 0.1"
-  }
+  },
+  "inactive": [{"check":"flips","cause":"rule","reason":"the randomness check is recorded only: its rule does not count it for this model"}]
  },
  "evidence": {
   "buyerProxy": {"baseUrl":"http://127.0.0.1:8390","pid":4242,"statePath":"buyer.state.json"},

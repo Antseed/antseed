@@ -13,14 +13,24 @@ import {
 export const OUTPUT_ECHO_CHECK: RecordCheck<'outputEcho'> = {
   slot: 'outputEcho',
   // Each finding passes on its own: a seller that only failed to be a candidate has not passed.
+  // Each finding is active as `judgeOutputEcho` counts it, from the record's own rule and mode (the reference's way of
+  // measuring the model this run, which `validateOutputEcho` checks): a finding it never judges or counts is not active.
   findings: [{
     id: 'output-echo', subject: 'billing', label: 'the echo check',
     ofRecord: (record) => outcome(record.growth?.outcome, 'flag', 'pass'),
     ofSummary: (summary) => outcome(summary.growth, 'flag', 'pass'),
+    inactiveOfRecord: (record) => (record.mode === 'visible' && record.rule?.visibleCounts !== true
+      ? { cause: 'rule', reason: 'the echo check is not counted for a model measured on its visible answer' }
+      : null),
+    undecided: (record) => record.growth?.reason ?? null,
   }, {
     id: 'output-offset', subject: 'billing', label: 'the echo check\'s fixed amount',
     ofRecord: (record) => outcome(record.fixedAmount?.outcome, 'flag', 'pass'),
     ofSummary: (summary) => outcome(summary.fixedAmount, 'flag', 'pass'),
+    inactiveOfRecord: (record) => (record.mode === 'visible'
+      ? { cause: 'rule', reason: 'the fixed amount is not judged for a model whose reference shows its reasoning: its echoes are counted on the visible answer' }
+      : record.rule?.offsetCounts !== true ? { cause: 'rule', reason: 'the fixed amount is not counted under the echo check\'s rule' } : null),
+    undecided: (record) => record.fixedAmount?.reason ?? null,
   }],
   summarize: summarizeOutputEcho,
   // Its pre-check anchor (`precheckMatch`) is the pre-check of the same audit.

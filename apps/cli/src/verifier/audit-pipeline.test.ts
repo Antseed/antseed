@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { decidedChecks, flaggingChecks, passedChecks, type AuditCheckId } from './audit-checks.js'
+import { auditVerdictReason, decidedChecks, flaggingChecks, passedChecks, type AuditCheckId } from './audit-checks.js'
 import { storedRequestsOf, validateStoredChecks } from './audit-checks.js'
 import { VERIFIER_VERDICT } from '@antseed/node/payments'
 import { needsExtension } from './close-call.js'
@@ -151,8 +151,12 @@ const capRecord = (outcome: OutputCapV1['outcome']): OutputCapV1 => ({
   asks: [{ cap: 20, class: outcome === 'flag' ? 'over' : 'within', reading: { billedOutputTokens: outcome === 'flag' ? 90 : 12 }, measurement: null, request: standInRequest('cap-1') }],
 } as never)
 
+/**
+ * A stand-in echo record. Without a fixed amount given it is measured on the visible answer, where the fixed amount is
+ * not judged (so not active) and an overall pass needs only the growth, as `judgeOutputEcho` decides; with one, plainly.
+ */
 const echoRecord = (outcome: OutputEchoV1['outcome'], findings: { flag?: OutputEchoV1['flag']; growth?: OutputEchoV1['outcome']; fixedAmount?: OutputEchoV1['outcome'] } = {}): OutputEchoV1 => ({
-  rule: OUTPUT_ECHO_RULE, outcome, flag: findings.flag ?? (outcome === 'flag' ? 'growth' : null), reason: `echo ${outcome}`,
+  rule: OUTPUT_ECHO_RULE, mode: findings.fixedAmount === undefined ? 'visible' : 'plain', outcome, flag: findings.flag ?? (outcome === 'flag' ? 'growth' : null), reason: `echo ${outcome}`,
   growth: { outcome: findings.growth ?? outcome, reason: '' },
   fixedAmount: { outcome: findings.fixedAmount ?? 'inconclusive', reason: '' },
   rounds: [{ growths: [1], short: [{ request: standInRequest('echo-s') }], long: [{ request: standInRequest('echo-l') }] }],
@@ -212,14 +216,41 @@ test('check pipeline: an echo flag is a DIFF beside the questions; the echo chec
   assert.deepEqual(passedChecks(evidence, result.questionsStatus!), ['tokens', 'output-cap', 'kbf'])
 })
 
-test('check pipeline: tests that pass, or have no result, leave the verdict to the questions', async () => {
+test('check pipeline: a SAME of the questions stands only when every active test passed', async () => {
   const passing = await pipeline({ usage: MODEL_TOKENIZER, cap: capRecord('pass'), echo: echoRecord('pass') })
   assert.equal(passing.result.status, 'SAME')
   assert.deepEqual(passedChecks(passing.evidence, 'SAME'), ['tokens', 'output-cap', 'output-echo', 'kbf'])
-  // An undecided test never blocks SAME.
+  // FLIPS has no screen in this run: it did not run for the model, so it is not active; nothing else is off.
+  assert.deepEqual(passing.evidence.noRecord, [{ slot: 'flips', reason: 'the randomness check does not run for this model in this run' }])
+  // Its echo check measured the visible answer, where the fixed amount is not judged: not active either.
+  assert.deepEqual(passing.result.inactive?.map((entry) => [entry.check, entry.cause]), [['output-offset', 'rule'], ['flips', 'rule']])
+  // An active test with no result, and one that gave this seller nothing, keep it from SAME.
   const undecided = await pipeline({ usage: () => 0, cap: capRecord('inconclusive'), echo: null })
-  assert.equal(undecided.result.status, 'SAME')
+  assert.equal(undecided.result.status, 'UNDETERMINED')
+  assert.equal(undecided.result.questionsStatus, 'SAME')
   assert.deepEqual(undecided.result.tokenizerPrecheck, { rule: TOKENIZER_PRECHECK_RULE.id, outcome: 'inconclusive' })
+  assert.equal(undecided.result.outcomeReason, null, 'a finished UNDETERMINED, not a failure: it is not audited again')
+})
+
+test('check pipeline: a test its reference switched off for the model never blocks SAME; the evidence names it with the reference\'s reason', async () => {
+  const reason = 'the reference did not echo cleanly (the reference\'s echo is not usable (not finished)), so the echo check does not apply to the model this run'
+  const capReason = 'the reference\'s own answer could not be measured, so the cap check does not apply to the model this run'
+  const file = (check: string, why: string) => ({ version: 1, kind: 'antseed-verifier-output-check-reference', model: 'model-a', check, record: { applies: false, reason: why } })
+  const runFiles = { 'output-echo-reference.json': file('output-echo', reason), 'output-cap-reference.json': file('output-cap', capReason) }
+  const off = await pipeline({ usage: MODEL_TOKENIZER, cap: null, echo: null, runFiles })
+  assert.equal(off.result.status, 'SAME')
+  assert.deepEqual(off.evidence.noRecord?.filter((entry) => entry.slot !== 'flips'), [{ slot: 'outputCap', reason: capReason }, { slot: 'outputEcho', reason }])
+  assert.deepEqual(off.result.inactive?.filter((entry) => entry.cause === 'run'), [
+    { check: 'output-cap', cause: 'run', reason: capReason }, { check: 'output-echo', cause: 'run', reason }, { check: 'output-offset', cause: 'run', reason },
+  ])
+  assert.doesNotThrow(() => validateAuditMatchesSummary(off.evidence, off.result))
+  // The same seller with the echo check active and nothing from it: UNDETERMINED, its reason naming the test.
+  const on = await pipeline({ usage: MODEL_TOKENIZER, cap: capRecord('pass'), echo: echoRecord('inconclusive', { growth: 'inconclusive', fixedAmount: 'inconclusive' }) })
+  assert.equal(on.result.status, 'UNDETERMINED')
+  const verdict = verdictOf(readingsOfEvidence(on.evidence, 'SAME'), 'SAME')
+  assert.deepEqual(verdict.openTests, ['output-echo', 'output-offset'])
+  assert.equal(auditVerdictReason(on.evidence, verdict, null),
+    'the questions say SAME, but a SAME needs every active test passed: the echo check ran and did not decide; the echo check\'s fixed amount ran and did not decide')
 })
 
 test('check pipeline: a counted fixed amount flags as its own finding', async () => {

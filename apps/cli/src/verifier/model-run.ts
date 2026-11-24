@@ -36,8 +36,8 @@ import {
 import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
 import { auditedServiceNames } from './audited-models.js'
 import {
-  ALL_TESTS_FORMAT, QUESTIONS_CHECK, earliestAuditorTime, readingsOfEvidence, recordsOf, withoutOrphans,
-  type AuditCheckId, type CheckRecords, type CheckScreens, type CheckSlot, type CheckSummaries, type ConfirmationIdentity, type ListedCheck, type RecordCheck,
+  ALL_TESTS_FORMAT, QUESTIONS_CHECK, earliestAuditorTime, inactiveChecks, noRecordEntries, readingsOfEvidence, recordsOf, withoutOrphans,
+  type AuditCheckId, type InactiveTest, type CheckRecords, type CheckScreens, type CheckSlot, type CheckSummaries, type ConfirmationIdentity, type ListedCheck, type RecordCheck,
   type StoredCheckRecords,
 } from './audit-checks.js'
 import { AuditNotStarted, type MethodScreen, type SellerAudit, type SellerAuditStart } from './audit-method.js'
@@ -75,7 +75,7 @@ import type { TokenizerPrecheckSeller } from './methods/tokens/tokenizer-prechec
 import { METHODS } from './methods/index.js'
 import { advertisedServices, findAdvertisedService } from './service-discovery.js'
 import { mapWithAdaptiveConcurrency, type AuditTaskLimiter } from './audit-concurrency.js'
-import { writeJsonAtomic } from './atomic-files.js'
+import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import {
   sanitizeOutcomeSummary,
   withBatchCounts,
@@ -223,6 +223,11 @@ export interface ProxyVerificationContext extends Partial<CheckScreens> {
   proxy: BuyerProxySnapshot
   evidenceDir: string
   checkpointRootDir?: string
+  /**
+   * A side file a test's screen wrote beside the model's audits this run (`MethodEnv.report`), as written; null when
+   * there is none. Without it the file is read from `checkpointRootDir`.
+   */
+  runFile?: (name: string) => Promise<unknown>
   requestTimeoutMs: number
   /** How long a seller audit waits for its next answered batch before it gives up. */
   auditTimeoutMs: number
@@ -327,6 +332,11 @@ export interface ModelVerificationTargetResult extends Partial<CheckSummaries> {
   confirming?: AuditCheckId[]
   /** The chain time of the report it confirms: with `confirming`, which report this is. */
   confirmingReportedAt?: number
+  /**
+   * The tests that are not active for the model in this audit's run, with why (`inactiveChecks` of its evidence): every
+   * other test must pass for a SAME. Absent on a summary written before it, whose verdict only the questions decide.
+   */
+  inactive?: InactiveTest[]
   /**
    * Set by the epoch submission on another report's own result it offers beside the seller's latest: submit sends it
    * only when the confirmation decision sends it for the report waiting now.
@@ -1091,6 +1101,13 @@ export async function verifyModelTarget(input: {
     ? withBatchCounts(skip.outcomeReason, 1, batches.length)
     : questionsVerdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
   const ran = records()
+  // The tests the run had none of for the model (`noRecord`): they are not active, so they never block a SAME.
+  const noRecord = runsTests ? await noRecordEntries({
+    records: ran,
+    screened: (slot) => input.context[slot] != null,
+    read: input.context.runFile ?? ((name) => readJsonIfExists<unknown>(join(input.context.checkpointRootDir ?? input.context.evidenceDir, name)).catch(() => null)),
+    confirming: auditStart.confirming,
+  }) : []
   // Tests and discovery are paid for like batches. This attempt's cost counts what it sent itself: a carried test was
   // paid for by the attempt that ran it. The cumulative cost is that of everything the evidence holds, as for the
   // question batches a resume reuses: carried tests included.
@@ -1108,6 +1125,7 @@ export async function verifyModelTarget(input: {
     ...confirmingEvidence,
     ...sellerThinkingEvidence,
     ...ran,
+    ...(noRecord.length > 0 ? { noRecord } : {}),
     exchanges,
     ...resumeEvidence,
     // The questions' own result: the audit's verdict over every test is derived from it and the test records
@@ -1164,6 +1182,8 @@ export async function verifyModelTarget(input: {
     coverageRule: KBF_COVERAGE_RULE.id,
     responseAuthVerified: authenticated,
     ...testSummaries(ran),
+    // An extra set asks the questions only: its first set's tests are the ones that count (`extension-round.ts`).
+    ...(runsTests ? { inactive: inactiveChecks(evidence) } : {}),
   })
 }
 

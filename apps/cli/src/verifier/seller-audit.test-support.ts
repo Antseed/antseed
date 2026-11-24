@@ -182,6 +182,8 @@ export async function audit(options: {
   writeCheckpoint?: (path: string, value: unknown) => Promise<void>
   /** Thinking discovery already done for sellers in this run. */
   sellerThinking?: Map<string, Promise<unknown>>
+  /** The side files the run's test screens wrote beside the model's audits (`ProxyVerificationContext.runFile`). */
+  runFiles?: Record<string, unknown>
 }) {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-tokenizer-precheck-'))
   const target = seller({ usage: options.usage })
@@ -223,6 +225,7 @@ export async function audit(options: {
         ...(options.outputEcho ? { outputEcho: options.outputEcho } : {}),
         ...(options.flips ? { flips: options.flips } : {}),
         ...(options.writeCheckpoint ? { writeCheckpoint: options.writeCheckpoint } : {}),
+        ...(options.runFiles ? { runFile: async (name: string) => options.runFiles![name] ?? null } : {}),
         ...(options.sellerThinking ? { sellerThinking: options.sellerThinking as never } : {}),
         ...(options.precheck === false ? {} : {
           tokenizerPrecheck: createTokenizerPrecheckScreen({

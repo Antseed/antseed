@@ -220,6 +220,13 @@ export interface ProxyAuditEvidenceV1 extends Partial<CheckRecords> {
    * and the audit's verdict is derived from it and the test records (`audit-checks.ts` `verdictOf`).
    */
   tests?: 'all-tests-v1'
+  /**
+   * The tests that kept no record because the run had none of them for the model (`noRecordEntries`): the test's
+   * reference switched it off for the whole model, or it did not run for the model. By slot, with the reason. These are
+   * not active (`inactiveChecks`), so they never block a SAME. A seller's own failure is never here. Absent when there
+   * is none, and on evidence written before it.
+   */
+  noRecord?: Array<{ slot: string; reason: string }>
   exchanges: ProxyAuditEvidenceExchangeV1[]
   resume?: {
     parentAuditId: string

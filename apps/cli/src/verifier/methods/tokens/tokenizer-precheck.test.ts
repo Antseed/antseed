@@ -1327,7 +1327,10 @@ test('a seller that counts like the model is asked its questions and judged on t
 
 test('the only seller of a model that is off the reference is asked its questions: nothing backs the reference', async () => {
   const { result, evidence, questionRequests, precheckRequests } = await audit({ usage: OTHER_TOKENIZER, backer: false })
-  assert.equal(result.status, 'SAME')
+  // The pre-check is active (its reference measured every round) and decided nothing for this seller: no SAME.
+  assert.equal(result.status, 'UNDETERMINED')
+  assert.equal(result.questionsStatus, 'SAME')
+  assert.deepEqual(result.inactive?.map((entry) => entry.check), ['output-cap', 'output-echo', 'output-offset', 'flips'])
   assert.equal(precheckRequests.length, 12)
   assert.ok(questionRequests.length > 0)
   assert.deepEqual(result.tokenizerPrecheck, { rule: TOKENIZER_PRECHECK_RULE.id, outcome: 'inconclusive' })
@@ -1338,16 +1341,20 @@ test('the only seller of a model that is off the reference is asked its question
 
 test('a signed response with cached input and no count leaves a result that can be submitted', async () => {
   // A cheating seller could otherwise send this once and keep every verdict of its questions from being sent.
+  // It is submitted as UNDETERMINED: the pre-check is active and had no result, and only the seller's SAME is lost.
   const { result, evidence } = await audit({ usage: () => ({ prompt_tokens: 0, completion_tokens: 0, prompt_tokens_details: { cached_tokens: 12 } }) })
-  assert.equal(result.status, 'SAME')
+  assert.equal(result.status, 'UNDETERMINED')
+  assert.equal(result.questionsStatus, 'SAME')
   assert.equal(evidence.tokenizerPrecheck!.outcome, 'inconclusive')
   assert.equal(evidence.tokenizerPrecheck!.rounds[0]!.seller[0]!.base.cachedInput, true)
   assert.doesNotThrow(() => validateAuditMatchesSummary(evidence, result))
 })
 
-test('a pre-check that decides nothing leaves the seller to its questions', async () => {
+test('a pre-check that decides nothing keeps the seller from SAME, and its questions are still asked', async () => {
   const { result, evidence, questionRequests } = await audit({ usage: () => 0 })
-  assert.equal(result.status, 'SAME')
+  assert.equal(result.status, 'UNDETERMINED')
+  assert.equal(result.questionsStatus, 'SAME')
+  assert.doesNotThrow(() => validateAuditMatchesSummary(evidence, result))
   assert.ok(questionRequests.length > 0)
   assert.deepEqual(result.tokenizerPrecheck, { rule: TOKENIZER_PRECHECK_RULE.id, outcome: 'inconclusive' })
   assert.match(evidence.tokenizerPrecheck!.reason!, /could not be read/)

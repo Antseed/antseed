@@ -47,9 +47,9 @@ import { safeServiceSlug } from './slug.js'
 import type { AlreadyOnChain, SubmissionCandidate } from './submission-delta.js'
 import { confirmationReportKey } from './epoch-plan.js'
 import {
-  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, auditVerdictReason, checksWith, earliestAuditorTime, readingsOfEvidence, readingsOfSummary,
-  validateCheckRecordsAgainstSummary, verdictOf,
-  type AuditCheckId, type ReportOfAudit,
+  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, NO_RECORD_REASON_LENGTH, auditVerdictReason, checksWith, earliestAuditorTime, inactiveChecks, readingsOfEvidence,
+  readingsOfSummary, validateCheckRecordsAgainstSummary, validateNoRecord, verdictOf,
+  type AuditCheckId, type InactiveTest, type ReportOfAudit,
 } from './audit-checks.js'
 import { METHODS } from './methods/index.js'
 import { asError, normalized } from './utils.js'
@@ -98,10 +98,20 @@ export interface ModelAuditSellerResultV1 {
   /**
    * The tests that kept no record for this seller because the run that audited it had none of that test for the model:
    * the test did not apply to the model, or its reference gave it nothing to judge on. By evidence slot, with the
-   * reason the auditor's run wrote. The auditor's own statement: no seller signed it and no verdict rests on it. A
-   * seller's own skip or failure is not here. Absent when there is none, and on evidence from before it was written.
+   * reason the auditor's run wrote: the seller's evidence's own `noRecord`, which a reader checks the result against.
+   * The auditor's own statement, as its reference is: no seller signed it. Such a test is not active (`inactive`), so it
+   * can only leave the SAME to the questions, never make one. A seller's own skip or failure is not here. Absent when
+   * there is none.
    */
   noRecord?: Array<{ slot: string; reason: string }>
+  /**
+   * The tests that were not active for the model in the run behind this result, with why (`inactiveChecks` of the
+   * seller's evidence, which any reader recomputes from it): `rule`, the rules do not count it for the model; `run`, the
+   * run had none of it for the model (its reference switched it off, with the reference's reason). Every other test
+   * was active, and the verdict is SAME only when every active test passed. Always set on a result made by this rule;
+   * absent on one from before it, whose SAME only the questions decided.
+   */
+  inactive?: InactiveTest[]
   /** The checks that flagged the seller in this audit (`flaggingChecks`). */
   flaggedBy?: AuditCheckId[]
   /** The checks that ran to a pass in this audit (`passedChecks`). */
@@ -855,6 +865,8 @@ export async function prepareModelAudits(input: {
           ? { extension2: submittedExtension(result.extension2, extension2Evidence, evidence, evidenceDirectory) }
           : {}),
         ...(withoutRecord[index]!.length > 0 ? { noRecord: withoutRecord[index]! } : {}),
+        // Which tests were active, from the seller's evidence (`inactiveChecks`): the verdict above follows from them.
+        inactive: inactiveChecks(evidence),
         flaggedBy: audit.flaggedBy,
         passedBy: audit.passedBy,
         ...(betweenBy.length > 0 ? { betweenBy } : {}),
@@ -1310,6 +1322,13 @@ export function validateAuditMatchesSummary(
   })
   const stageOne = questions.verdict
   if ((result.questionsStatus ?? result.status) !== stageOne && !questions.pending) throw new Error('questions verdict mismatch')
+  // Which tests were active: the evidence's own `noRecord` entries are tests it has no record of, and the summary's
+  // list is the one its evidence gives, so the verdict below is judged on the same active tests as the run's.
+  validateNoRecord(evidence)
+  if (!Array.isArray(result.inactive)) throw new Error('the summary does not say which tests were active (it was written before the active tests were recorded)')
+  if (canonicalHashBytes32(result.inactive) !== canonicalHashBytes32(inactiveChecks(evidence))) {
+    throw new Error('the summary\'s active tests are not the ones its evidence gives')
+  }
   // The audit's verdict, recomputed from the questions and every test record (`verdictOf`, rule `all-tests-v1`).
   const looked = questions.pending ? 'UNDETERMINED' as const : stageOne
   const audit = verdictOf(
@@ -1331,19 +1350,18 @@ export function validateAuditMatchesSummary(
   }
 }
 
-/** The longest reason a published `noRecord` entry keeps. */
-const NO_RECORD_REASON_LENGTH = 300
-
 /**
- * For one seller's evidence: each test of the list without a record there whose own screen wrote, beside the run's
- * audits, why the model had none of it this run (`RecordCheck.whyNoRecord`). The run's folder is the one that holds
- * the sellers' folders (`modelAuditSellersDirectory`). Best effort: a file that is missing or cannot be read gives nothing,
- * and never stops a submit.
+ * For one seller's evidence: each test of the list without a record there that the run had none of for the model. The
+ * evidence's own entries (`ProxyAuditEvidenceV1.noRecord`, written by the audit) when it has them; for evidence from
+ * before they were written, the reasons its tests' screens wrote beside the run's audits (`RecordCheck.whyNoRecord`),
+ * read from the folder that holds the sellers' folders (`modelAuditSellersDirectory`). Best effort: a file that is
+ * missing or cannot be read gives nothing, and never stops a submit.
  */
 export async function testsWithoutRecord(
   evidencePath: string,
   evidence: ProxyAuditEvidenceV1,
 ): Promise<Array<{ slot: string; reason: string }>> {
+  if (Array.isArray(evidence.noRecord)) return evidence.noRecord.map((entry) => ({ slot: entry.slot, reason: entry.reason }))
   const sellers = dirname(dirname(evidencePath))
   if (basename(sellers) !== 'sellers') return []
   const read = async (file: string): Promise<unknown> => {

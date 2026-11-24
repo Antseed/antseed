@@ -240,7 +240,10 @@ export function decide(
         code: 'confirmation-undecided',
         reason: ownChecks.length > 0
           ? `another check (${describeChecks(ownChecks)}) flagged and ${describeChecks(first.checks)}, which flagged the waiting DIFF, did not decide; nothing is sent`
-          : `${describeChecks(first.checks)}, which flagged the waiting DIFF, did not decide in this audit; nothing is sent, so the seller keeps its record`,
+          // Every test that flagged the waiting DIFF passed, and the audit is still open: a SAME needs every active test passed.
+          : first.checks.every((check) => clearing.includes(check))
+            ? `${describeChecks(first.checks)}, which flagged the waiting DIFF, passed here, but another active test did not decide, and a SAME needs every active test passed; nothing is sent, so the seller keeps its record`
+            : `${describeChecks(first.checks)}, which flagged the waiting DIFF, did not decide in this audit; nothing is sent, so the seller keeps its record`,
       }
     }
     const record = (sameCheck: AuditCheckId | null, passedCheck?: AuditCheckId, clearedBetween?: AuditCheckId[]): SameCheckConfirmationV1 => ({

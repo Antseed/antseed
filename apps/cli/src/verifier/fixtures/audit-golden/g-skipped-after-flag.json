@@ -81,7 +81,8 @@
   "stats": {"selfHamming":0,"selfTotal":30,"targetHamming":0,"targetTotal":0,"selfCoverage":1,"targetCoverage":0,"p0Cp99":null,"pValueBinomial":null},
   "coverageRule": "kbf-coverage-v1",
   "responseAuthVerified": true,
-  "tokenizerPrecheck": {"rule":"tokenizer-precheck-v1","outcome":"mismatch","sellerTokens":[165,169,162],"modelTokens":[103,106,101]}
+  "tokenizerPrecheck": {"rule":"tokenizer-precheck-v1","outcome":"mismatch","sellerTokens":[165,169,162],"modelTokens":[103,106,101]},
+  "inactive": [{"check":"flips","cause":"rule","reason":"the randomness check is recorded only: its rule does not count it for this model"}]
  },
  "evidence": {
   "buyerProxy": {"baseUrl":"http://127.0.0.1:8390","pid":4242,"statePath":"buyer.state.json"},

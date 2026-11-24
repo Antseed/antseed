@@ -160,6 +160,27 @@ interface FindingReadings<Slot extends CheckSlot> {
   /** Whether an `inconclusive` finding is a score between the bars that clears like a pass (`CheckReading.between`). */
   betweenOfRecord?(record: CheckRecords[Slot], rules?: ReadingRules): boolean
   betweenOfSummary?(summary: CheckSummaryOutcomes<Slot>): boolean
+  /**
+   * Why the finding is not active for the model in this run although its record is there, from the record's own bytes:
+   * its reference switched it off for the whole model (`cause: 'run'`), or the rule does not count it for the model in
+   * the way the reference answers (`cause: 'rule'`). Null when it is active. A seller-side cause never makes a finding
+   * inactive. Without it a finding with a record is active whenever its test counts (`RecordCheck.counts`).
+   */
+  inactiveOfRecord?(record: CheckRecords[Slot]): InactiveCause | null
+  /** What a record of the finding gives when it did not decide, in plain words; by default the record's `reason`. */
+  undecided?(record: CheckRecords[Slot]): string | null
+}
+
+/**
+ * Why a test is not active for a model in a run (`inactiveChecks`): it can neither block a SAME nor make a DIFF.
+ * - `rule`: the rules do not count it for the model (FLIPS while it is recorded only, a finding not judged in the way
+ *   the model is measured).
+ * - `run`: the auditor's run had none of it for the model: its reference switched it off ("the reference's own answer
+ *   could not be measured", "no reference to compare with"), or the test did not run for the model at all.
+ */
+export interface InactiveCause {
+  cause: 'rule' | 'run'
+  reason: string
 }
 
 /**
@@ -257,6 +278,17 @@ export interface RecordCheckBody<Slot extends CheckSlot = CheckSlot> {
   counts?(record: CheckRecords[Slot]): boolean
   /** Whether a summary of it in a published result can affect a verdict; a check with `counts` only. */
   summaryCounts?(summary: unknown): boolean
+  /**
+   * Whether this build's rule counts the test for a model at all, for a seller of it with no record of the test; a check
+   * with `counts` only. A test the rule never counts for the model is not active for it (`inactiveChecks`).
+   */
+  countsFor?(model: string, rules?: ReadingRules): boolean
+  /**
+   * Whether a SAME needs this test passed when it is active (`verdictOf`). True by default. False for a flag-only test:
+   * its flag makes a DIFF, and its no result, a check that could not run, or one that could not ask the seller the way
+   * the reference was asked never blocks a SAME and never makes an UNDETERMINED. The value is in the rules hash.
+   */
+  sameNeedsPass?: boolean
   /** Whether a stored value has the record's shape: a carried or checkpointed record that does not is dropped. */
   wellFormed?(record: unknown): boolean
   /** Whether a scheduled retry carries this record; by default when a finding flagged or passed (`decidedRecords`). */
@@ -291,8 +323,9 @@ export interface RecordCheckBody<Slot extends CheckSlot = CheckSlot> {
   /**
    * Why the test kept no record for a model's sellers in a run, from the files its own screen wrote beside the run's
    * audits (`read` gives one by name, null when it is not there): the test did not apply to the model, or its
-   * reference gave it nothing to judge on. Null when the test wrote no such reason. For the published result of a
-   * seller without a record of the test (`ModelAuditSellerResultV1.noRecord`); a test that always keeps a record has none.
+   * reference gave it nothing to judge on. Null when the test wrote no such reason. The audit stores it in the seller's
+   * evidence (`ProxyAuditEvidenceV1.noRecord`, `noRecordEntries`): the test is then not active for the seller, so it
+   * never blocks a SAME (`inactiveChecks`). A seller-side cause must give null. A test that always keeps a record has none.
    * `audit.confirming` are the tests the audit confirms, none on a first look: a test with stages reads its own stage from it.
    */
   whyNoRecord?(read: (file: string) => Promise<unknown>, audit: { confirming: readonly AuditCheckId[] }): Promise<string | null>

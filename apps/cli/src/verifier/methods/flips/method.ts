@@ -73,6 +73,11 @@ export const FLIPS_CHECK: RecordCheck<'flips'> = {
   inReport: () => null,
   inRunLine: () => null,
   counts: (record) => flipsCountsFor(record),
+  // For a seller with no FLIPS record: whether this build's rule counts FLIPS for the model at all.
+  countsFor: (model, rules) => flipsCounts(model, rules?.flips ?? FLIPS_RULE),
+  // Flag-only for the SAME rule: a counted FLIPS flag is a DIFF; its no result (too few usable replies, a reference that
+  // is not whole, a seller asked another way than the reference) never blocks a SAME.
+  sameNeedsPass: false,
   summaryCounts: (summary) => typeof summary === 'object' && summary !== null && flipsSummaryCounts(summary as { model?: unknown; probe?: unknown; rule?: unknown }),
   wellFormed: isFlipsRecord,
   // A scored FLIPS is carried whatever its outcome: a p between the bar and the pass is a result, and FLIPS is never

@@ -71,7 +71,8 @@
    "reason": "growth: the seller bills the model's growth; fixed amount: the seller adds 0 tokens or fewer",
    "growths": [[0],[0],[0]],
    "offset": 0
-  }
+  },
+  "inactive": [{"check":"flips","cause":"rule","reason":"the randomness check is recorded only: its rule does not count it for this model"}]
  },
  "evidence": {
   "buyerProxy": {"baseUrl":"http://127.0.0.1:8390","pid":4242,"statePath":"buyer.state.json"},
