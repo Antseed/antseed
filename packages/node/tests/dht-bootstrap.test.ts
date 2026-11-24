@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DHTNode, DEFAULT_DHT_CONFIG, type DHTNodeConfig } from '../src/discovery/dht-node.js';
+import { DHTNode, DEFAULT_DHT_CONFIG, DEFAULT_PEER_RECORD_MAX_AGE_MS, type DHTNodeConfig } from '../src/discovery/dht-node.js';
 import { toPeerId } from '../src/types/peer.js';
 
 const mock = vi.hoisted(() => ({ construct: vi.fn(), warn: vi.fn() }));
@@ -45,6 +45,7 @@ describe('DHT IPv4 bootstrap resolution', () => {
     expect(lookup).toHaveBeenCalledWith('alias.example', { family: 4, all: true });
     expect(mock.construct).toHaveBeenCalledWith({
       bootstrap: ['192.0.2.1:6881', '192.0.2.2:6881', '192.0.2.1:7000'],
+      maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS,
     });
   });
 
@@ -55,13 +56,13 @@ describe('DHT IPv4 bootstrap resolution', () => {
       { host: '64:ff9b::227b:88f0', port: 6881 },
     ] }).start();
     expect(lookup).not.toHaveBeenCalled();
-    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:6881'] });
+    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:6881'], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
   });
 
   it('drops IPv6-only DNS answers', async () => {
     const lookup = vi.fn().mockResolvedValue([{ address: '64:ff9b::227b:88f0', family: 6 }]);
     await makeNode({ lookup }).start();
-    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: [] });
+    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: [], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
   });
 
   it('keeps IPv4 answers when the resolver also returns IPv6', async () => {
@@ -69,7 +70,7 @@ describe('DHT IPv4 bootstrap resolution', () => {
       { address: '64:ff9b::227b:88f0', family: 6 }, ipv4('192.0.2.1'),
     ]);
     await makeNode({ lookup }).start();
-    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['192.0.2.1:6881'] });
+    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['192.0.2.1:6881'], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
   });
 
   it('warns and skips a failed host without rejecting start or losing other bootstraps', async () => {
@@ -78,7 +79,7 @@ describe('DHT IPv4 bootstrap resolution', () => {
       { host: 'missing.example', port: 6881 }, { host: '127.0.0.1', port: 6881 },
     ] }).start()).resolves.toBeUndefined();
     expect(mock.warn).toHaveBeenCalledWith(expect.stringContaining('missing.example'));
-    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:6881'] });
+    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:6881'], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
   });
 
   it('resolves localhost with family 4 for local-test bootstraps', async () => {
@@ -87,6 +88,6 @@ describe('DHT IPv4 bootstrap resolution', () => {
       { host: 'localhost', port: 12345 },
     ] }).start();
     expect(lookup).toHaveBeenCalledWith('localhost', { family: 4, all: true });
-    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:12345'] });
+    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:12345'], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
   });
 });

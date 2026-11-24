@@ -10,6 +10,28 @@ This project uses selective package publishing. Each release entry lists the pub
 
 - Desktop Studio, a beta feature that is off until it is turned on in **Settings → Preview**, edits a film as a storyboard of titled shots, each an anchor image, with a clip between each pair, kept in a local project. The video sits above the storyboard; there is no settings panel: select a shot or a clip and tell the project agent in chat what it should be, and the selection travels with the message as a chip naming the exact item, file and moment. Every clip ends in a Cut or an Extend that the producer chooses on the marker after it, a clip's length is dragged on the storyboard, and the + at the end continues the scene or starts a new one. Trimming a clip sets its new end frame, which can become the next shot; replacing an image offers to remake the clips made from it; earlier images and clips stay in the project library and can be put back. The agent plans shots, renames them and changes lengths through edits the producer can undo, and quotes every image and clip before anything is paid for. Export joins the clips on the computer. Trimming and export use ffmpeg and ffprobe, which the desktop does not include: without them on the computer, **End clip here** and **Export** are off and say so. Storyboards made before open in the editor with their titles kept and their clips kept as Cuts. Scenes show as named bands on the storyboard. A clip that no longer fits (made from a replaced image, or made for a Cut where the film now extends, including one delivered after its images changed while it was being made) is greyed with the reason and an Update button that asks the agent for a new one, quoted first. The film plays from clip to clip without a gap, a message sent with a selection keeps its chip in the chat, and a project's chat opened from the sidebar opens in Studio. A chip removed from the message stays off until a shot or a clip is selected again, and an edit or a delivery that would grow a project's track past what the app can read back is refused with a note, leaving the track as it was.
 
+## 2026-11-23 — CLI 0.1.259, Node 0.2.191, Desktop 0.2.94
+
+### Packages
+
+- `@antseed/cli@0.1.259`
+- `@antseed/node@0.2.191`
+- `@antseed/payments@0.1.118`
+- `@antseed/ants@0.1.76`
+
+### Desktop
+
+- `@antseed/desktop@0.2.94`
+
+### Changed
+
+- Website: `llms.txt` now opens with the current positioning (the open intelligence network), the mission, the vision and the three value props. It gains a list of who can provide, with Colony and Diem Antseed as examples of a pool serving as one provider, a model verification section (results, the effect on routing and `antseed verifier check`), a list of the agent skills, an ANTS section on liquid inference that gathers the staking and rewards pages, and links to the site's pages. It also links the "Test your seller before going live" doc, and no longer calls `/network/` a live view of peers and models.
+
+### Fixed
+
+- Node: DHT nodes now forget a peer 20–40 minutes after its last announcement. Every node used to keep each announcement forever, while a node answers a lookup with at most 100 of the peers it stores for a topic, so peers that had stopped or moved piled up next to the live ones: discovery spent most of its time fetching metadata from dead endpoints, and a lookup could miss live sellers. A peer that keeps announcing, at the current 5-minute interval or the older 15-minute one, stays listed. The DHT bootstrap nodes and other long-running peers apply this once they run the new version. `DHTNodeConfig.peerRecordMaxAgeMs` sets the lifetime (default 30 minutes).
+- Node: the incremental discovery sweep (`findAllExhaustive` with a progress callback, used by buyers' background discovery) fetches each endpoint's metadata once per sweep instead of again for every topic that lists it, and looks up the next DHT topic while metadata is still being fetched instead of waiting for each topic's slowest endpoint. Sweeps finish sooner and make far fewer metadata requests.
+
 ## 2026-11-23 — CLI 0.1.258, Node 0.2.190, Desktop 0.2.93
 
 ### Packages
