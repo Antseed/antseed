@@ -163,6 +163,9 @@ export function initChatModule({
   let workspaceSwitchToken = 0;
   let conversationOpenToken = 0;
   let permissionRefreshToken = 0;
+  // The model whose mode `uiState.chatPermissionMode` holds: null while it shows
+  // Ask first only because the saved mode is still being read.
+  let permissionModeModelId: string | null = null;
   let desiredWorkspacePath: string | null = uiState.chatWorkspacePath || null;
   // First messages still creating their chat, and the workspace of a chat
   // opened meanwhile, switched to once they're done.
@@ -570,6 +573,7 @@ export function initChatModule({
     const token = ++permissionRefreshToken;
     const id = modelId.trim();
     uiState.chatPermissionMode = 'manual';
+    permissionModeModelId = null;
     notifyUiStateChanged();
     if (!id || !bridge?.chatPermissionModeGet) return;
     try {
@@ -577,6 +581,7 @@ export function initChatModule({
       if (token !== permissionRefreshToken || id !== uiState.chatSelectedModelId) return;
       if (result?.ok && result.mode) {
         uiState.chatPermissionMode = normalizePermissionMode(result.mode);
+        permissionModeModelId = id;
         notifyUiStateChanged();
       }
     } catch {
@@ -588,6 +593,7 @@ export function initChatModule({
     const nextMode = normalizePermissionMode(mode);
     uiState.chatPermissionMode = nextMode;
     const modelId = uiState.chatSelectedModelId;
+    permissionModeModelId = modelId.trim() || null;
     if (modelId) void bridge?.chatPermissionModeSet?.(modelId, nextMode)?.catch(() => undefined);
     notifyUiStateChanged();
   }
@@ -1460,13 +1466,18 @@ export function initChatModule({
       return;
     }
 
+    // A new chat's first message is sent before its model's saved mode is read
+    // back. Sending no mode then lets the run use the saved one; the main process
+    // never runs with more access than is saved.
+    const permissionMode = permissionModeModelId === modelId.trim() ? uiState.chatPermissionMode : undefined;
+
     const requestStartedAt = Date.now();
     streamCompletedAtByConversation.delete(convId);
     streamFailedAtByConversation.delete(convId);
     // A newer text message supersedes an image request waiting on funds.
     imageRetryByConversation.delete(convId);
     // `sendId` comes back on the run's done and error events (see `isStaleStreamEvent`).
-    const send = () => bridge.chatAiSendStream!(convId, content || ' ', modelId, attachments, uiState.chatPermissionMode, { ...privacy, sendId: token });
+    const send = () => bridge.chatAiSendStream!(convId, content || ' ', modelId, attachments, permissionMode, { ...privacy, sendId: token });
     try {
       let result = await send();
       // Stopped or replaced meanwhile: its answer is no send's on screen, and
