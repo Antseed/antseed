@@ -330,8 +330,6 @@ export interface NodeRelayerConfig {
   maxInFlight?: number;
   /** Max sweep requests accepted per peer per minute. Default: 6. */
   maxPerPeerPerMinute?: number;
-  /** ETH price in US dollars for the profit estimate. Default: the chain's Chainlink ETH/USD feed. */
-  ethPriceUsd?: number;
 }
 
 export interface NodeVerificationConfig {
@@ -2829,7 +2827,6 @@ export class AntseedNode extends EventEmitter {
             ? { maxPerPeerPerMinute: relayerConfig.maxPerPeerPerMinute }
             : {}),
           ...(payments.ethUsdPriceFeedAddress ? { ethUsdPriceFeedAddress: payments.ethUsdPriceFeedAddress } : {}),
-          ...(relayerConfig?.ethPriceUsd !== undefined ? { ethPriceUsd: relayerConfig.ethPriceUsd } : {}),
         });
         debugLog(`[Node] DepositRelayer initialized (relay=${payments.depositRelayAddress.slice(0, 10)}...)`);
       }

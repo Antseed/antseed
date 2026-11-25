@@ -532,9 +532,6 @@ export interface RelayerCLIConfig {
   maxInFlight?: number;
   /** Max sweep requests accepted per peer per minute. Default: 6. */
   maxPerPeerPerMinute?: number;
-  /** ETH price in US dollars for the profit estimate. Default: the chain's Chainlink ETH/USD feed,
-   *  or a cautious $4,000 when the feed is missing or stale. */
-  ethPriceUsd?: number;
 }
 
 /**

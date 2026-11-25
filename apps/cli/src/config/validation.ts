@@ -657,11 +657,6 @@ export function validateConfig(config: AntseedConfig): string[] {
     if (config.relayer.maxPerPeerPerMinute !== undefined && (!Number.isInteger(config.relayer.maxPerPeerPerMinute) || config.relayer.maxPerPeerPerMinute < 1)) {
       errors.push('relayer.maxPerPeerPerMinute must be an integer >= 1');
     }
-    if (config.relayer.ethPriceUsd !== undefined
-      && (typeof config.relayer.ethPriceUsd !== 'number' || !Number.isFinite(config.relayer.ethPriceUsd)
-        || config.relayer.ethPriceUsd <= 0 || config.relayer.ethPriceUsd > 1_000_000)) {
-      errors.push('relayer.ethPriceUsd must be a number of US dollars above 0 and at most 1000000');
-    }
   }
 
   if (config.telemetry !== undefined) {

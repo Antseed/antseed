@@ -128,20 +128,6 @@ function makeEstimatingClient(opts: {
   return { client, call };
 }
 
-describe('DepositRelayClient.sweep', () => {
-  it('cancels a capped sweep no later than its authorization expires', async () => {
-    const client = new DepositRelayClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: RELAY, evmChainId: 8453 });
-    const exec = vi.spyOn(client as unknown as { _execWriteWithin: (...args: unknown[]) => Promise<string> }, '_execWriteWithin')
-      .mockResolvedValue('0x' + '77'.repeat(32));
-
-    await client.sweep(RELAYER_WALLET, { ...SWEEP_PARAMS, validBefore: 1_800_000_040n }, { maxFeePerGasWei: 183_000_000n });
-    await client.sweep(RELAYER_WALLET, SWEEP_PARAMS);
-
-    expect(exec.mock.calls[0]![1]).toEqual({ maxFeePerGasWei: 183_000_000n, cancelByMs: 1_800_000_030_000 });
-    expect(exec.mock.calls[1]![1]).toBeNull();
-  });
-});
-
 describe('DepositRelayClient.estimateSweepProfit', () => {
   it('prices a sweep at the expected gas cost and the Chainlink ETH price (base fee 25.6 Mwei, ETH $1,652.67)', async () => {
     const { client } = makeEstimatingClient({ feed: { answer: ETH_USD_E8, updatedAt: NOW - 600 } });
@@ -154,7 +140,7 @@ describe('DepositRelayClient.estimateSweepProfit', () => {
       .toEqual({ estGasCostUsdc: 8_998n, profitUsdc: 41_002n });
     expect(estimate.gasPriceWei).toBe(33_000_000n);
     expect(estimate.ethPriceUsdE8).toBe(ETH_USD_E8);
-    // The sweep and its speed-ups stop where the gas would eat the whole fee: 0.05 / (165,000 x $1,652.67) = 183.4 Mwei.
+    // Speed-ups of a stalled sweep stop where the gas would eat the whole fee: 0.05 / (165,000 x $1,652.67) = 183.4 Mwei.
     expect(estimate.maxFeePerGasWei).toBe(183_358_530n);
   });
 
@@ -173,32 +159,13 @@ describe('DepositRelayClient.estimateSweepProfit', () => {
     expect(estimate.estGasCostUsdc).toBe(21_780n);
   });
 
-  it('uses the configured ETH price over the feed', async () => {
-    const { client, call } = makeEstimatingClient({ feed: { answer: ETH_USD_E8, updatedAt: NOW } });
-
-    const estimate = await client.estimateSweepProfit(RELAYER_WALLET, SWEEP_PARAMS, { ethPriceUsd: 2_500.5 });
-
-    expect(estimate.ethPriceUsdE8).toBe(250_050_000_000n);
-    // 33 Mwei x 165,000 gas x $2,500.50
-    expect(estimate.estGasCostUsdc).toBe(13_615n);
-    expect(call).not.toHaveBeenCalled();
-  });
-
-  it('still takes a whole-dollar bigint ETH price over the feed', async () => {
+  it('uses an ETH price the caller passes over the feed', async () => {
     const { client, call } = makeEstimatingClient({ feed: { answer: ETH_USD_E8, updatedAt: NOW } });
 
     const estimate = await client.estimateSweepProfit(RELAYER_WALLET, SWEEP_PARAMS, { ethPriceUsd: 2_500n });
 
     expect(estimate.ethPriceUsdE8).toBe(250_000_000_000n);
     expect(call).not.toHaveBeenCalled();
-  });
-
-  it.each([Number.NaN, 1e-9])('ignores a configured ETH price of %s, which is not a positive price', async (ethPriceUsd) => {
-    const { client } = makeEstimatingClient({ feed: { answer: ETH_USD_E8, updatedAt: NOW } });
-
-    const estimate = await client.estimateSweepProfit(RELAYER_WALLET, SWEEP_PARAMS, { ethPriceUsd });
-
-    expect(estimate.ethPriceUsdE8).toBe(ETH_USD_E8);
   });
 
   it('refuses to price a sweep when the latest block has no base fee', async () => {

@@ -49,9 +49,9 @@ export interface SweepEventConfirmation {
 
 const USD_E8 = 10n ** 8n;
 /**
- * ETH/USD when neither the config nor a fresh Chainlink reading gives one. It is cautious on
- * purpose: a too-high price makes the check stricter (a sweep refused that would have paid), not
- * a sweep accepted at a loss.
+ * ETH/USD when neither the caller nor a fresh Chainlink reading gives one. It is cautious on
+ * purpose: while ETH trades below it, a too-high price makes the check stricter (a sweep refused
+ * that would have paid), not a sweep accepted at a loss.
  */
 const FALLBACK_ETH_PRICE_USD_E8 = 4_000n * USD_E8;
 /** A Chainlink answer older than this, against the latest block's timestamp, is not used. */
@@ -61,8 +61,6 @@ const BASE_FEE_MARGIN_NUM = 5n;
 const BASE_FEE_MARGIN_DEN = 4n;
 /** wei x USD/ETH (8 decimals) → USDC base units (6 decimals): / 1e18 / 1e8 * 1e6. */
 const WEI_USD_E8_TO_USDC = 10n ** 20n;
-/** A capped sweep is cancelled this long before its authorization expires, so it never mines as a revert. */
-const CANCEL_BEFORE_EXPIRY_SECS = 10;
 
 /** Chainlink aggregator; ETH/USD answers with 8 decimals. */
 const CHAINLINK_AGGREGATOR_ABI = [
@@ -89,18 +87,11 @@ export class DepositRelayClient extends BaseEvmClient {
 
   // ─── Relayer Operations ────────────────────────────────────────────
 
-  /**
-   * `opts.maxFeePerGasWei` caps the max fee per gas the sweep and its speed-ups may offer (see
-   * `estimateSweepProfit`). A capped sweep not mined in time, or by shortly before `validBefore`
-   * (after which it could only revert), is cancelled and throws TransactionCancelledError (see
-   * `WriteFeeLimit`).
-   */
+  /** `opts.maxFeePerGasWei` caps what speeding up a stalled sweep may pay (see `estimateSweepProfit`). */
   async sweep(signer: AbstractSigner, params: SweepParams, opts?: { maxFeePerGasWei?: bigint }): Promise<string> {
     return this._execWriteWithin(
       signer,
-      opts?.maxFeePerGasWei !== undefined
-        ? { maxFeePerGasWei: opts.maxFeePerGasWei, cancelByMs: (Number(params.validBefore) - CANCEL_BEFORE_EXPIRY_SECS) * 1_000 }
-        : null,
+      opts?.maxFeePerGasWei ?? null,
       DEPOSIT_RELAY_ABI,
       'sweepDeposit',
       params.from,
@@ -127,7 +118,7 @@ export class DepositRelayClient extends BaseEvmClient {
   async estimateSweepProfit(
     signer: AbstractSigner,
     params: SweepParams,
-    opts?: { ethPriceUsd?: number | bigint; minProfitUsdc?: bigint },
+    opts?: { ethPriceUsd?: bigint; minProfitUsdc?: bigint },
   ): Promise<SweepProfitEstimate> {
     const connected = this._ensureConnected(signer);
     const contract = new Contract(this._contractAddress, DEPOSIT_RELAY_ABI, connected);
@@ -147,7 +138,6 @@ export class DepositRelayClient extends BaseEvmClient {
       this.fee(),
     ]);
 
-    // A capped sweep is never sent without a base fee to price it (BaseEvmClient._sendBuffered).
     const baseFee = block?.baseFeePerGas;
     if (baseFee == null) throw new Error('cannot read the base fee to price the sweep');
     const gasPriceWei = (baseFee * BASE_FEE_MARGIN_NUM) / BASE_FEE_MARGIN_DEN + getBigInt(feeFields.maxPriorityFeePerGas ?? 0);
@@ -171,13 +161,8 @@ export class DepositRelayClient extends BaseEvmClient {
   }
 
   /** ETH/USD with 8 decimals: the override, else a fresh positive Chainlink answer, else the fallback. */
-  private async _ethPriceUsdE8(override: number | bigint | undefined, blockTimestamp: number | undefined): Promise<bigint> {
-    // A bigint is whole dollars, as this option took before; a number may carry cents.
-    if (typeof override === 'bigint' && override > 0n) return override * USD_E8;
-    if (typeof override === 'number' && Number.isFinite(override) && override > 0) {
-      const e8 = BigInt(Math.round(override * 1e8));
-      if (e8 > 0n) return e8;
-    }
+  private async _ethPriceUsdE8(overrideUsd: bigint | undefined, blockTimestamp: number | undefined): Promise<bigint> {
+    if (overrideUsd !== undefined && overrideUsd > 0n) return overrideUsd * USD_E8;
     if (this._ethUsdPriceFeedAddress && blockTimestamp !== undefined) {
       try {
         const feed = new Contract(this._ethUsdPriceFeedAddress, CHAINLINK_AGGREGATOR_ABI, this._provider);

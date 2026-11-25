@@ -38,19 +38,6 @@ test('relayer config validation rejects malformed values', () => {
   assert.ok(errors.some((e) => e.includes('relayer.maxPerPeerPerMinute')));
 });
 
-test('relayer.ethPriceUsd accepts a positive dollar price and rejects anything else', () => {
-  for (const ethPriceUsd of [1652.67, 4000]) {
-    const config = createDefaultConfig();
-    config.relayer = { enabled: true, ethPriceUsd };
-    assert.deepEqual(validateConfig(config), [], `ethPriceUsd ${ethPriceUsd}`);
-  }
-  for (const ethPriceUsd of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_000_000, '2500' as unknown as number]) {
-    const config = createDefaultConfig();
-    config.relayer = { enabled: true, ethPriceUsd };
-    assert.ok(validateConfig(config).some((e) => e.includes('relayer.ethPriceUsd')), `ethPriceUsd ${String(ethPriceUsd)}`);
-  }
-});
-
 test('relayer config accepts valid values including negative min profit', () => {
   const config = createDefaultConfig();
   config.relayer = {
