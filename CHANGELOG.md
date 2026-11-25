@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Buyer proxy (`@antseed/api-adapter`, CLI, gateway, desktop): an answer translated between API standards keeps the count of reasoning tokens the seller reported. A seller's Responses `output_tokens_details.reasoning_tokens`, Chat Completions `completion_tokens_details.reasoning_tokens` or Messages `output_tokens_details.thinking_tokens` reaches the client in its own protocol's field, in JSON answers and at the end of streams. A reported 0 stays 0, and an answer that itemises no count still has none. Before, the count was dropped, so a client could not tell how much of the output was reasoning. The token totals and what is paid are unchanged.
+
 ## 2026-11-25 — CLI 0.1.260, Node 0.2.192, Desktop 0.2.95
 
 ### Packages
