@@ -58,16 +58,16 @@ AntseedVerificationResults ──calls──► AntseedEmissionsGate.claim() (mi
 ## Build
 
 ```bash
-cd packages/node
+cd packages/contracts
 forge build
 ```
 
-Requires [Foundry](https://getfoundry.sh/) and OpenZeppelin contracts (installed via `forge install`).
+Requires [Foundry](https://getfoundry.sh/). OpenZeppelin contracts come from the workspace `node_modules` (`pnpm install` at the repo root; the version is set in `packages/node/package.json`), and `forge-std` is the `lib/forge-std` git submodule.
 
 ## Test
 
 ```bash
-cd packages/node
+cd packages/contracts
 forge test
 ```
 
@@ -319,7 +319,7 @@ Buyer USDC deposit management with dynamic credit limits and seller payouts.
 
 **Buyer operations:**
 - `deposit(address buyer, uint256 amount)` — deposit USDC for a buyer (anyone can call, USDC pulled from msg.sender; pass your own address to deposit for yourself)
-- `withdraw(address buyer, uint256 amount)` — immediate withdrawal (operator-only, sends USDC to buyer)
+- `withdraw(address buyer, uint256 amount)` — immediate withdrawal (operator-only, sends USDC to the operator, never to the buyer)
 - `getBuyerBalance(address)` → available, reserved, lastActivity
 - `getOperator(address)` / `getOperatorNonce(address)` — operator views
 - Seller payouts are transferred directly on `settle()` / `close()` — no separate claim step
@@ -334,11 +334,11 @@ Session lifecycle with EIP-712 ReserveAuth + SpendingAuth. Holds NO USDC — all
 - `settle(bytes32 channelId, uint128 amount, bytes calldata metadata, bytes calldata buyerSig)` — validates SpendingAuth, calls Deposits.chargeAndCreditPayouts(), session stays open
 - `close(bytes32 channelId, uint128 amount, bytes calldata metadata, bytes calldata buyerSig)` — like settle but finalizes session, releases remaining lock
 
-**Timeout (buyer/operator):**
-- `requestClose(bytes32 channelId)` — buyer/operator, anytime while active; starts grace period
-- `withdraw(bytes32 channelId)` — after 15min grace, releases remaining locked funds to buyer deposit
+**Timeout (operator):**
+- `requestClose(bytes32 channelId)` — buyer's operator, anytime while active; starts grace period
+- `withdraw(bytes32 channelId)` — buyer's operator, after 15min grace; releases remaining locked funds to the buyer's deposit balance
 
-**EIP-712 types (domain: name="AntseedChannels", version="7"):**
+**EIP-712 types (domain: name="AntseedChannels", version="1"):**
 ```
 ReserveAuth(bytes32 channelId, uint128 maxAmount, uint256 deadline)
 SpendingAuth(bytes32 channelId, uint256 cumulativeAmount, bytes32 metadataHash)
@@ -822,10 +822,10 @@ owner-configurable emissions parameters as configuration for the standard gate.
 
 | Constant | Default | Description |
 |---|---|---|
-| `MIN_BUYER_DEPOSIT` | 10 USDC | Minimum deposit to participate |
+| `MIN_BUYER_DEPOSIT` | 1 USDC | Minimum deposit into an empty buyer balance |
 | `MIN_SELLER_STAKE` | 10 USDC | Minimum stake to accept sessions |
 | `TIMEOUT_GRACE_PERIOD` | 15 min | Grace period after requestClose before withdraw |
-| `PLATFORM_FEE_BPS` | 500 (5%) | Platform fee in basis points |
+| `PLATFORM_FEE_BPS` | 200 (2%) | Platform fee in basis points |
 | `MAX_PLATFORM_FEE_BPS` | 1000 (10%) | Maximum platform fee |
 
 ### Legacy Emissions Configuration

@@ -11,6 +11,17 @@ type ViewHostProps = {
 // global.scss — the outgoing view unmounts after this delay.
 const VIEW_SLIDE_MS = 300;
 
+// Home and a chat share one composer, so moving between them isn't a slide:
+// the box glides while the field and text fade. The outgoing pane stays until
+// the field has finished fading.
+const COMPOSER_GLIDE_MS = 1000;
+const COMPOSER_GLIDE_EASE = 'cubic-bezier(.2,.7,.2,1)';
+const composerGlideDuration = (to: ViewName): number => (to === 'chat' ? 800 : 450);
+
+function isComposerGlide(from: ViewName, to: ViewName): boolean {
+  return (from === 'home' && to === 'chat') || (from === 'chat' && to === 'home');
+}
+
 // Renderer-lifetime scroll position per view. Views unmount when navigated
 // away from, so drilling into another screen and coming back would otherwise
 // land at the top. Written once when a pane unmounts and restored before
@@ -111,19 +122,39 @@ export function ViewHost({ activeView, onSelectView }: ViewHostProps) {
     if (!slide.previous) return undefined;
     const timer = window.setTimeout(() => {
       setSlide((current) => (current.previous ? { ...current, previous: null } : current));
-    }, VIEW_SLIDE_MS);
+    }, isComposerGlide(slide.previous, slide.view) ? COMPOSER_GLIDE_MS : VIEW_SLIDE_MS);
     return () => window.clearTimeout(timer);
   }, [slide]);
 
   const sliding = slide.previous !== null;
+  const glide = slide.previous !== null && isComposerGlide(slide.previous, slide.view);
+
+  const hostRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (!glide || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const from = hostRef.current?.querySelector('.view-pane-glide-out [data-composer]');
+    const to = hostRef.current?.querySelector('.view-pane-glide-in [data-composer]');
+    if (!from || !to) return;
+    const start = from.getBoundingClientRect();
+    const end = to.getBoundingClientRect();
+    to.animate(
+      [{ transform: `translate(${start.left - end.left}px, ${start.top - end.top}px)` }, { transform: 'none' }],
+      { duration: composerGlideDuration(slide.view), easing: COMPOSER_GLIDE_EASE },
+    );
+  }, [glide, slide.view]);
+
+  const paneIn = glide ? ' view-pane-glide-in' : sliding ? ' view-pane-in' : '';
+  const hostClass = glide
+    ? ` view-host-glide view-host-glide-to-${slide.view}`
+    : sliding ? ` view-host-sliding view-host-${slide.direction}` : '';
 
   return (
-    <section className={`view-host${sliding ? ` view-host-sliding view-host-${slide.direction}` : ''}`}>
+    <section ref={hostRef} className={`view-host${hostClass}`}>
       {slide.previous && (
         <ViewPane
           key={`out-${slide.previous}`}
           view={slide.previous}
-          className="view-pane view-pane-out"
+          className={`view-pane ${glide ? 'view-pane-glide-out' : 'view-pane-out'}`}
           hidden
           onSelectView={onSelectView}
         />
@@ -131,7 +162,7 @@ export function ViewHost({ activeView, onSelectView }: ViewHostProps) {
       <ViewPane
         key={slide.view}
         view={slide.view}
-        className={`view-pane${sliding ? ' view-pane-in' : ''}`}
+        className={`view-pane${paneIn}`}
         onSelectView={onSelectView}
       />
     </section>

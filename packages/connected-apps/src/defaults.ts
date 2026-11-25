@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 /**
- * Built-in "Connected apps" catalog for the AI VPN Connected apps screen.
+ * Built-in "Connected apps" catalog for the Apps screen of Antseed Desktop.
  *
  * These are open-source tools with natively configurable API endpoints, so
  * they can ship publicly with the app and show by default — no MITM proxy or
@@ -93,39 +93,6 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
     },
   },
   {
-    name: 'claude-desktop',
-    displayName: 'Claude',
-    kind: 'config-patch',
-    method: 'Config patch',
-    // The gateway stamps every forwarded request with the claude-desktop
-    // source marker, so this exact slug is the whole identity. No generic
-    // 'claude' entry: it would prefix-match t3code's claude-code/claude-cli
-    // sessions and steal them in first-match-wins attribution.
-    toolSlugs: ['claude-desktop'],
-    domains: [],
-    pathPrefixes: [],
-    // 'open-tool' opens Claude after connect even when it was not running
-    // (restartAppName is both the restart target for a running Claude and
-    // the open-tool launch fallback).
-    appAction: 'open-tool',
-    restartAppName: 'Claude',
-    configPatch: {
-      format: 'claude-desktop',
-      // Claude's normal-profile config: the patch flips deploymentMode to
-      // "3p" here, which makes Claude boot against the Claude-3p profile
-      // directory below, where the Antseed gateway profile is written.
-      // Windows paths are NOT resolved here — Claude has several install
-      // layouts there (classic, MSIX, Nest), so claudeDesktopPatchTargets
-      // derives its own candidate roots on win32 and these apply elsewhere.
-      configPath: '~/Library/Application Support/Claude/claude_desktop_config.json',
-      thirdPartyDir: '~/Library/Application Support/Claude-3p',
-      // Claude talks to the desktop's local Claude gateway (Anthropic-native
-      // model catalog + forwarding to the buyer proxy), not the buyer proxy
-      // directly — see apps/desktop/src/main/connected-apps/claude-desktop-gateway.ts.
-      baseURL: 'http://127.0.0.1:{claudeGatewayPort}',
-    },
-  },
-  {
     name: 'hermes',
     displayName: 'Hermes Agent',
     kind: 'config-patch',
@@ -194,7 +161,7 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
       baseURL: 'http://localhost:{buyerPort}/v1',
       // Pi's OpenAI Responses transport includes prompt_cache_key with the
       // Pi session id. The buyer proxy uses that as the conversation key so
-      // Pi chats show up in AI VPN Recent Chats.
+      // Pi chats show up in Antseed Desktop's recent chats.
       api: 'openai-responses',
       originator: 'pi',
       installProbe: 'pi',
@@ -216,6 +183,28 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
       baseURL: 'http://localhost:{buyerPort}/v1',
       api: 'openai-responses',
       originator: 'gooeypi',
+    },
+  },
+  {
+    name: 'prime-agent',
+    displayName: 'Prime Agent',
+    kind: 'config-patch',
+    method: 'Config patch',
+    toolSlugs: ['prime-agent'],
+    domains: [],
+    pathPrefixes: [],
+    configPatch: {
+      // Prime Agent (Prime Intellect's `prime-agent` CLI) reads pi's
+      // models.json/settings.json schema from ~/.prime/agent on every
+      // platform, in its own files, so it doesn't share pi's provider.
+      format: 'pi',
+      configPath: '~/.prime/agent/models.json',
+      settingsPath: '~/.prime/agent/settings.json',
+      providerKey: 'antseed',
+      baseURL: 'http://localhost:{buyerPort}/v1',
+      api: 'openai-responses',
+      originator: 'prime-agent',
+      installProbe: 'prime-agent',
     },
   },
   {
@@ -282,6 +271,49 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
       providerKey: 'antseed',
       providerName: 'Antseed',
       baseURL: 'http://localhost:{buyerPort}/v1',
+    },
+  },
+];
+
+/**
+ * Apps Antseed no longer connects. Claude Desktop's picker shows only the five
+ * model ids it knows, so it could never offer the network's models; it was
+ * removed rather than half-supported. Kept so a config an earlier version
+ * patched can still be recognised and restored (see the desktop's launch
+ * cleanup).
+ */
+export const RETIRED_APP_PROFILES: readonly Record<string, unknown>[] = [
+  {
+    name: 'claude-desktop',
+    displayName: 'Claude Desktop',
+    kind: 'config-patch',
+    method: 'Config patch',
+    // The gateway stamps every forwarded request with the claude-desktop
+    // source marker, so this exact slug is the whole identity. No generic
+    // 'claude' entry: it would prefix-match t3code's claude-code/claude-cli
+    // sessions and steal them in first-match-wins attribution.
+    toolSlugs: ['claude-desktop'],
+    domains: [],
+    pathPrefixes: [],
+    // 'open-tool' opens Claude after connect even when it was not running
+    // (restartAppName is both the restart target for a running Claude and
+    // the open-tool launch fallback).
+    appAction: 'open-tool',
+    restartAppName: 'Claude',
+    configPatch: {
+      format: 'claude-desktop',
+      // Claude's normal-profile config: the patch flips deploymentMode to
+      // "3p" here, which makes Claude boot against the Claude-3p profile
+      // directory below, where the Antseed gateway profile is written.
+      // Windows paths are NOT resolved here — Claude has several install
+      // layouts there (classic, MSIX, Nest), so claudeDesktopPatchTargets
+      // derives its own candidate roots on win32 and these apply elsewhere.
+      configPath: '~/Library/Application Support/Claude/claude_desktop_config.json',
+      thirdPartyDir: '~/Library/Application Support/Claude-3p',
+      // Claude talks to the desktop's local Claude gateway (Anthropic-native
+      // model catalog + forwarding to the buyer proxy), not the buyer proxy
+      // directly — see apps/desktop/src/main/connected-apps/claude-desktop-gateway.ts.
+      baseURL: 'http://127.0.0.1:{claudeGatewayPort}',
     },
   },
 ];

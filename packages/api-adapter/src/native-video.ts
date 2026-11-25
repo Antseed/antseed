@@ -116,6 +116,17 @@ export const REFERENCE_VIDEO_FIELDS: Record<NativeVideoProtocol, readonly string
   'fal-video': ['reference_video_urls', 'video_urls'],
 };
 
+/**
+ * The inline sources whose length bounds what an upstream bills: the video plugins pass these to
+ * `videoSourceLengthProblem` and `audioSourceLengthProblem`. A seller checks each is spelled exactly.
+ */
+export const VIDEO_SOURCE_FIELDS: readonly string[] = ['video_url', 'audio_url'];
+
+/** Every request field `nativeVideoFacts` reads from a create, beside its service. A seller checks each is spelled exactly. */
+export const VIDEO_CREATE_FIELDS: readonly string[] = [
+  'duration', 'resolution', 'aspect_ratio', 'audio', 'generate_audio', ...new Set(Object.values(REFERENCE_VIDEO_FIELDS).flat()),
+];
+
 /** The announced video options a create's price depends on (a subset of `VideoOptions`). */
 export interface NativeVideoPricedOptions {
   aspectRatios?: readonly string[];
@@ -195,6 +206,13 @@ export function nativeVideoFacts(request: SerializedHttpRequest, parsedBody?: Re
   if (!body) throw new Error('Video submission requires a JSON object');
   const duration = route.protocol === 'fal-video' ? falDuration(body.duration) : veniceDuration(body.duration);
   if (duration === null) throw new Error('Video duration must be a positive integer');
+  // Billing reads only these plain types and prices any other value as absent, which a looser upstream might not.
+  for (const name of ['audio', 'generate_audio']) {
+    if (body[name] !== undefined && body[name] !== null && typeof body[name] !== 'boolean') throw new Error(`Video "${name}" must be true or false`);
+  }
+  for (const name of ['resolution', 'aspect_ratio']) {
+    if (body[name] !== undefined && body[name] !== null && typeof body[name] !== 'string') throw new Error(`Video "${name}" must be text`);
+  }
   const audio = route.protocol === 'fal-video' ? body.generate_audio ?? body.audio : body.audio;
   return {
     protocol: route.protocol, action: route.action,

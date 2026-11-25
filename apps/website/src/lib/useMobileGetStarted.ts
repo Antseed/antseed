@@ -1,7 +1,6 @@
 import {useHistory} from '@docusaurus/router';
 
-/* The viewport where AI VPN CTAs read "Get Started" and reroute — must stay in
-   sync with the 640px breakpoint that swaps the label in custom.css. */
+/* Narrow screens get the /get-started flow. */
 const MOBILE_GET_STARTED_QUERY = '(max-width: 640px)';
 
 /* Primary input is a touchscreen that can't hover — true on phones and
@@ -28,15 +27,16 @@ export function isMobileGetStartedVisitor(): boolean {
   return /Android|iPhone|iPad|Mobi/i.test(navigator.userAgent);
 }
 
-/* On phones (where AI VPN CTAs read "Get Started") download buttons route to
-   the /get-started Telegram flow instead of downloading an installer the
-   device can't run. Desktop keeps the direct download. */
-export function useMobileGetStarted() {
+const GET_STARTED = '/get-started/';
+
+/* On phones, download links route to the /get-started flow instead of downloading an installer the device can't run. Desktop keeps
+   the direct download. */
+export function useMobileGetStarted(): (e: {preventDefault: () => void}) => void {
   const history = useHistory();
-  return (e: {preventDefault: () => void}) => {
+  return (e) => {
     if (isMobileGetStartedVisitor()) {
       e.preventDefault();
-      history.push('/get-started');
+      history.push(GET_STARTED);
     }
   };
 }

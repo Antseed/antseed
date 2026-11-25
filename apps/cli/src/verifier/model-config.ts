@@ -16,10 +16,12 @@ export interface ResolvedVerifierModelConfig extends Omit<VerifierReferenceModel
   service: string
   pricing?: VerifierModelPricingConfig
   contrastModels: string[]
+  /** Where `contrastModels` came from (see `configuredContrastModels`). */
+  contrastSource: VerifierContrastSource
   /**
    * The built-in OpenRouter provider pin (`AuditedModel.referenceProvider`), set only when the
    * verifier configures no `referenceProvider` of its own and the model's reference comes from
-   * OpenRouter. New banks use it; a bank built before keeps the pin it recorded.
+   * OpenRouter. Each epoch's first build uses it; the epoch's later builds keep the pin it recorded.
    */
   defaultReferenceProvider?: { order: string[] }
 }
@@ -128,13 +130,9 @@ export function resolveVerifierModelConfig(
   const entry = findVerifierModel(config, requestedModel)
   if (!entry) throw new Error(`${requestedModel} is not an audited model`)
   const [service, model] = entry
-  const maximum = config?.contrastSelection?.maxModels ?? DEFAULT_CONTRAST_MAX_MODELS
-  const explicit = model.contrastModels?.map((value) => value.trim()).filter(Boolean)
-  if (explicit && explicit.length > maximum) {
-    throw new Error(`verifier model ${service} has more than ${maximum} explicit contrast models`)
-  }
-  const pricing = explicit?.length ? model.pricing : resolveTargetPricing(config, service, model, catalog)
-  const contrastModels = explicit?.length ? explicit : selectAutomaticContrastModels(config, model, pricing!, catalog)
+  const listed = configuredContrastModels(config, service, model)
+  const pricing = listed ? model.pricing : resolveTargetPricing(config, service, model, catalog)
+  const contrastModels = listed?.models ?? selectAutomaticContrastModels(config, model, pricing!, catalog)
   if (contrastModels.length === 0) {
     throw new Error(
       `no contrast models selected for ${service}; check the configured price ratio and intelligence threshold`,
@@ -146,8 +144,35 @@ export function resolveVerifierModelConfig(
     service,
     pricing,
     contrastModels,
+    contrastSource: listed?.source ?? 'automatic',
     ...(defaultReferenceProvider ? { defaultReferenceProvider } : {}),
   }
+}
+
+export type VerifierContrastSource = 'config' | 'built-in' | 'automatic'
+
+/**
+ * A model's contrast models when they are listed rather than picked: `verifier.models.<model>.contrastModels`,
+ * else the built-in list (`AuditedModel.contrastModels`, OpenRouter ids) when contrasts come from the
+ * OpenRouter catalog. Null means they are picked automatically when a bank is built. A bank keeps
+ * the contrasts it was built with either way.
+ */
+export function configuredContrastModels(
+  config: VerifierCLIConfig | undefined,
+  service: string,
+  model: VerifierReferenceModelConfig,
+): { models: string[]; source: Exclude<VerifierContrastSource, 'automatic'> } | null {
+  const explicit = model.contrastModels?.map((value) => value.trim()).filter(Boolean)
+  if (explicit?.length) {
+    const maximum = config?.contrastSelection?.maxModels ?? DEFAULT_CONTRAST_MAX_MODELS
+    if (explicit.length > maximum) {
+      throw new Error(`verifier model ${service} has more than ${maximum} explicit contrast models`)
+    }
+    return { models: explicit, source: 'config' }
+  }
+  const builtIn = auditedModels()[service]?.contrastModels
+  if (builtIn?.length && usesOpenRouterCatalog(config)) return { models: [...builtIn], source: 'built-in' }
+  return null
 }
 
 /**
@@ -168,7 +193,7 @@ export function builtInReferenceProvider(
   return isOpenRouterUrl(config?.referenceEndpoint?.baseUrl) ? { order: [...order] } : undefined
 }
 
-function isOpenRouterUrl(value: string | undefined): boolean {
+export function isOpenRouterUrl(value: string | undefined): boolean {
   if (!value) return false
   try {
     const host = new URL(value).hostname
@@ -234,6 +259,8 @@ function selectAutomaticContrastModels(
   return candidates
     .filter(({ candidate }) => candidate.enabled !== false)
     .filter(({ candidate }) => !normalized(candidate.upstreamModel).endsWith(':batch'))
+    // Free variants hit OpenRouter's daily limit and time out mid-build.
+    .filter(({ candidate }) => !normalized(candidate.upstreamModel).endsWith(':free'))
     .filter(({ candidate }) => normalized(candidate.upstreamModel) !== normalized(model.upstreamModel))
     .filter(({ candidate }) => candidate.capabilityRank >= minimumIntelligenceIndex)
     .map(({ name, candidate }) => ({

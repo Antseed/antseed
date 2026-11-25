@@ -12,21 +12,24 @@ function extensionRank(file) {
   return 2;
 }
 
-export function normalizeMacUpdateChannel(channel) {
+/** `dmg: false` for a channel that carries only the update zips (the bridge build). */
+export function normalizeMacUpdateChannel(channel, { dmg = true } = {}) {
   if (!channel || !Array.isArray(channel.files)) {
-    throw new Error('[release-mac] latest-mac.yml does not contain a files array.');
+    throw new Error('[release-mac] the mac update channel does not contain a files array.');
   }
 
   const files = [...channel.files];
   const requiredArtifacts = [
     ['x64 zip', (file) => !isArm64(file) && /\.zip$/i.test(file.url)],
     ['arm64 zip', (file) => isArm64(file) && /\.zip$/i.test(file.url)],
-    ['x64 dmg', (file) => !isArm64(file) && /\.dmg$/i.test(file.url)],
-    ['arm64 dmg', (file) => isArm64(file) && /\.dmg$/i.test(file.url)],
+    ...(dmg ? [
+      ['x64 dmg', (file) => !isArm64(file) && /\.dmg$/i.test(file.url)],
+      ['arm64 dmg', (file) => isArm64(file) && /\.dmg$/i.test(file.url)],
+    ] : []),
   ];
   const missing = requiredArtifacts.filter(([, matches]) => !files.some(matches)).map(([label]) => label);
   if (missing.length > 0) {
-    throw new Error(`[release-mac] latest-mac.yml is missing: ${missing.join(', ')}`);
+    throw new Error(`[release-mac] the mac update channel is missing: ${missing.join(', ')}`);
   }
 
   files.sort((left, right) => {
@@ -44,8 +47,8 @@ export function normalizeMacUpdateChannel(channel) {
   };
 }
 
-export function normalizeMacUpdateChannelFile(channelPath) {
-  const normalized = normalizeMacUpdateChannel(parse(readFileSync(channelPath, 'utf8')));
+export function normalizeMacUpdateChannelFile(channelPath, options) {
+  const normalized = normalizeMacUpdateChannel(parse(readFileSync(channelPath, 'utf8')), options);
   const document = new Document(normalized);
   // Keep releaseDate a quoted string: emitted plain, an ISO timestamp is
   // resolved to a Date object by js-yaml's default schema on the updater side.
@@ -55,8 +58,8 @@ export function normalizeMacUpdateChannelFile(channelPath) {
   return normalized;
 }
 
-export function prepareMacReleaseArtifacts(releaseDir, channelPath) {
-  const channel = normalizeMacUpdateChannelFile(channelPath);
+export function prepareMacReleaseArtifacts(releaseDir, channelPath, options) {
+  const channel = normalizeMacUpdateChannelFile(channelPath, options);
   const localNames = readdirSync(releaseDir);
   const artifacts = [channelPath];
 

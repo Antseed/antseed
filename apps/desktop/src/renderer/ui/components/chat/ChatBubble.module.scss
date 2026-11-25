@@ -631,7 +631,7 @@
       transition: background 0.1s, border-color 0.1s;
 
       &:hover {
-        background: rgba(31, 216, 122, 0.08);
+        background: rgba(var(--accent-rgb), 0.08);
         border-color: var(--accent);
       }
     }
@@ -1315,4 +1315,26 @@ button.fileAttachment {
 
 .tool-result-msg {
   display: none;
+}
+
+/* The Studio selection a message was sent with, shown as the composer showed it. */
+.context-chip {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  margin: 2px 0 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.context-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

@@ -26,10 +26,6 @@ The dashboard listens on localhost only, and its URL carries a per-session token
 
 Actions that send transactions show progress, transaction links and a final notification in the **Activity** drawer. One signing action runs at a time, and the history is kept under `ants-activity` in the data directory. Run only one signing dashboard per wallet and data directory. If the dashboard restarts mid-action, the action is marked for manual review: check its transaction links and your wallet before retrying, because the dashboard never resubmits on its own.
 
-### From the desktop app
-
-In the desktop app (AI VPN), open **Rewards** and choose **Manage staking ↗** or **Claim rewards ↗**. Both open this dashboard in your system browser, using the desktop app's network and buyer account.
-
 ### From the gateway console
 
 In the [gateway console](/docs/gateway), **Staking** has the **Sellers** and **My positions** pages for the open workspace's buyer account, and staking rewards are on **Rewards** next to the workspace's buyer rewards. Workspace admins and organization admins can open them. The Seller, Network and Addresses pages are only in the standalone dashboard. Connect your own wallet in the page's toolbar to sign: the gateway never signs staking transactions, and each one is recorded in the audit log.

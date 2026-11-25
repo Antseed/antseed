@@ -13,7 +13,7 @@ import {
   USDC_AMOUNT_BUCKETS,
   type EventCatalog,
 } from '@antseed/telemetry'
-import { DEFAULT_APP_PROFILES } from '@antseed/connected-apps/defaults'
+import { DEFAULT_APP_PROFILES, RETIRED_APP_PROFILES } from '@antseed/connected-apps/defaults'
 
 const set = (...values: string[]): ReadonlySet<string> => new Set(values)
 
@@ -60,7 +60,7 @@ export const SELLER_ID_PATTERN = /^[0-9a-f]{40}$/
  * app's name and the tool slugs its requests carry. A new built-in app is
  * reported under its own name with no change here.
  */
-export const CONNECTED_APP_TOOLS: ReadonlyArray<{ readonly name: string; readonly slugs: readonly string[] }> = DEFAULT_APP_PROFILES
+export const CONNECTED_APP_TOOLS: ReadonlyArray<{ readonly name: string; readonly slugs: readonly string[] }> = [...DEFAULT_APP_PROFILES, ...RETIRED_APP_PROFILES]
   .filter((profile) => typeof profile['name'] === 'string')
   .map((profile) => {
     const name = profile['name'] as string

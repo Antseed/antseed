@@ -72,7 +72,7 @@ describe('seller selection explanations', () => {
 
 describe('ranking a preview', () => {
   const candidate = (peerId: string, patch: Partial<RoutePreview['candidates'][number]>): RoutePreview['candidates'][number] => ({
-    peerId, displayName: null, rank: null, eligible: false, reasons: [], inputUsdPerMillion: 1, outputUsdPerMillion: 2, trustScore: 50, selection: null, ...patch,
+    peerId, displayName: null, rank: null, eligible: false, reasons: [], inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: null, trustScore: 50, selection: null, ...patch,
   })
   const preview = (sort: RoutePreview['policy']['sort'], candidates: RoutePreview['candidates']): RoutePreview =>
     ({ model: 'm', policy: sort ? { sort } : {}, sources: [], modelAllowed: true, candidates })

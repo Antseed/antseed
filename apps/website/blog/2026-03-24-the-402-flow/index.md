@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [protocol, payments, P2P, decentralized payments]
 description: How Antseed uses HTTP 402 to trigger fully decentralized payment negotiation — no gateway, no facilitator, just peers settling directly.
 keywords: [HTTP 402, payment negotiation, P2P payments, decentralized payments, EIP-712, cumulative streaming payments, x402, MPP]
-image: /og-image.jpg
 date: 2026-03-27
 ---
 

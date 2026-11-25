@@ -58,7 +58,7 @@ const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
   '.webm': 'video/webm',
 };
 
-async function videoFileResponse(filePath: string, contentType: string, rangeHeader: string | null): Promise<Response> {
+export async function mediaFileResponse(filePath: string, contentType: string, rangeHeader: string | null): Promise<Response> {
   let size: number;
   try {
     size = (await stat(filePath)).size;
@@ -93,18 +93,16 @@ async function videoFileResponse(filePath: string, contentType: string, rangeHea
  * Must be called *before* `app.whenReady()` — Electron requires privileged
  * schemes to be registered at import time.
  */
-export function registerAttachmentScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: ATTACHMENT_SCHEME,
-      privileges: {
-        standard: true,
-        secure: true,
-        supportFetchAPI: true,
-        stream: true,
-      },
+export function registerAttachmentScheme(otherSchemes: readonly string[] = []): void {
+  protocol.registerSchemesAsPrivileged([ATTACHMENT_SCHEME, ...otherSchemes].map((scheme) => ({
+    scheme,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
     },
-  ]);
+  })));
 }
 
 /**
@@ -137,7 +135,7 @@ export async function handleAttachmentRequest(request: Request, rootDir?: string
   }
   const videoMimeType = VIDEO_MIME_BY_EXTENSION[path.extname(resolved).toLowerCase()];
   if (videoMimeType) {
-    return await videoFileResponse(resolved, videoMimeType, request.headers.get('range'));
+    return await mediaFileResponse(resolved, videoMimeType, request.headers.get('range'));
   }
   let response: Response;
   try {

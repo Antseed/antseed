@@ -3,14 +3,15 @@ import assert from 'node:assert/strict';
 
 import {
   describeToolApproval,
+  effectivePermissionMode,
   isToolPermissionAutoAllowed,
   requiresToolApproval,
 } from './tool-policy.js';
 
-const PEER_ID = '0123456789abcdef0123456789abcdef01234567';
+const SCOPE_ID = '0123456789abcdef0123456789abcdef01234567';
 
 function describeBash(command: string) {
-  return describeToolApproval('bash', { command }, PEER_ID);
+  return describeToolApproval('bash', { command }, SCOPE_ID);
 }
 
 test('manual mode gates risky tools and full mode bypasses the approval gate', () => {
@@ -175,4 +176,12 @@ test('network and file-changing commands require explicit non-auto approval', ()
   assert.equal(isToolPermissionAutoAllowed(write.permissionKey), false);
   assert.equal(network.canAlwaysAllow, true);
   assert.equal(write.canAlwaysAllow, true);
+});
+
+test('a run\'s tool permissions are the model\'s saved mode, which a request can lower but not raise', () => {
+  assert.equal(effectivePermissionMode('manual', 'full'), 'manual');
+  assert.equal(effectivePermissionMode('manual', null), 'manual');
+  assert.equal(effectivePermissionMode('full', null), 'full');
+  assert.equal(effectivePermissionMode('full', 'full'), 'full');
+  assert.equal(effectivePermissionMode('full', 'manual'), 'manual');
 });

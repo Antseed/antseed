@@ -147,3 +147,91 @@ describe('unit billing adapters', () => {
     expect(() => estimateUnitRequestCost(completed, imageContext, { units: { completed_requests: 1 } })).toThrow('completed_requests is not supported for openai-images');
   });
 });
+
+describe('streamed image answers', () => {
+  const imageModel: UnitBillingModelV1 = { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] };
+  const capture = (path: string, n?: number) => captureUnitBillingContext({
+    sellerPeerId: 'a'.repeat(40), provider: 'openai', service: 'image', serviceApiProtocol: 'openai-images',
+    request: { requestId: 'r', method: 'POST', path, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ model: 'image', prompt: 'A tree', stream: true, ...(n ? { n } : {}) })) },
+  });
+  /** An answer streamed as OpenAI streams images: an `event:` line, then the event as JSON data. */
+  const stream = (events: Array<Record<string, unknown>>) => ({
+    requestId: 'r', statusCode: 200, headers: { 'content-type': 'text/event-stream' },
+    body: new TextEncoder().encode(events.map((event) => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`).join('')),
+  });
+  const bill = (path: string, events: Array<Record<string, unknown>>, n?: number) => {
+    const captured = capture(path, n);
+    return computeFinalUnitBilling(imageModel, captured.context, stream(events), captured.requestFacts);
+  };
+  const usage = { input_tokens: 50, output_tokens: 4160, total_tokens: 4210 };
+
+  it('bills the final images of a stream, not its partial previews', () => {
+    const billed = bill('/v1/images/generations', [
+      { type: 'image_generation.partial_image', b64_json: 'cGFydA==', partial_image_index: 0 },
+      { type: 'image_generation.partial_image', b64_json: 'cGFydA==', partial_image_index: 1 },
+      { type: 'image_generation.completed', b64_json: 'aW1hZ2U=', usage },
+    ]);
+    expect({ cost: billed.costUsdc, units: billed.usage.units }).toEqual({ cost: 40_000n, units: { output_images: 1 } });
+  });
+
+  it('bills an edit stream the same way', () => {
+    const billed = bill('/v1/images/edits', [
+      { type: 'image_edit.partial_image', b64_json: 'cGFydA==', partial_image_index: 0 },
+      { type: 'image_edit.completed', b64_json: 'aW1hZ2U=', usage },
+    ]);
+    expect(billed.costUsdc).toBe(40_000n);
+  });
+
+  it('bills no more images than the request asked for', () => {
+    const completed = { type: 'image_generation.completed', b64_json: 'aW1hZ2U=' };
+    expect(bill('/v1/images/generations', [completed, completed], 2).costUsdc).toBe(80_000n);
+    expect(bill('/v1/images/generations', [completed, completed, completed], 2).costUsdc).toBe(80_000n);
+  });
+
+  it('bills nothing for a stream that carried no final image', () => {
+    for (const events of [
+      [{ type: 'image_generation.partial_image', b64_json: 'cGFydA==' }],
+      [{ type: 'image_generation.completed', b64_json: '' }],
+      [{ type: 'image_generation.failed', b64_json: 'aW1hZ2U=' }],
+      [{ error: { message: 'The image could not be made' } }],
+    ]) {
+      expect(bill('/v1/images/generations', events).costUsdc, JSON.stringify(events)).toBe(0n);
+    }
+    // Two images as two data lines of one event join into no JSON a client can read: no image.
+    const joined = capture('/v1/images/generations', 2);
+    const twoLines = { requestId: 'r', statusCode: 200, headers: {}, body: new TextEncoder().encode(`event: image_generation.completed\ndata: ${JSON.stringify({ type: 'image_generation.completed', b64_json: 'aW1hZ2U=' })}\ndata: ${JSON.stringify({ type: 'image_generation.completed', b64_json: 'aW1hZ2U=' })}\n\n`) };
+    expect(computeFinalUnitBilling(imageModel, joined.context, twoLines, joined.requestFacts).costUsdc).toBe(0n);
+    // The `event:` line alone names no image: the data has to say what it is.
+    const captured = capture('/v1/images/generations');
+    const named = { requestId: 'r', statusCode: 200, headers: {}, body: new TextEncoder().encode('event: image_generation.completed\ndata: {"b64_json":"aW1hZ2U="}\n\n') };
+    expect(computeFinalUnitBilling(imageModel, captured.context, named, captured.requestFacts).costUsdc).toBe(0n);
+  });
+
+  it('bills no image for an event a client could not read', () => {
+    const completed = JSON.stringify({ type: 'image_generation.completed', b64_json: 'aW1hZ2U=' });
+    for (const [why, text] of [
+      // A client joins the event's data lines into one payload, which is not JSON.
+      ['a final image followed by a line that is not JSON', `event: image_generation.completed\ndata: ${completed}\ndata: not json\n\n`],
+      // A client drops an event the stream ended inside, before its closing blank line.
+      ['a final image the stream ended inside', `event: image_generation.completed\ndata: ${completed}\n`],
+    ]) {
+      const captured = capture('/v1/images/generations');
+      const response = { requestId: 'r', statusCode: 200, headers: {}, body: new TextEncoder().encode(text) };
+      expect(computeFinalUnitBilling(imageModel, captured.context, response, captured.requestFacts).costUsdc, why).toBe(0n);
+    }
+  });
+
+  it('bills the images that arrived before a stream was cut', () => {
+    const billed = bill('/v1/images/generations', [
+      { type: 'image_generation.completed', b64_json: 'aW1hZ2U=' },
+      { type: 'error', error: { message: 'Upstream stream ended early' } },
+    ], 2);
+    expect(billed.costUsdc).toBe(40_000n);
+  });
+
+  it('reads the tokens of a streamed answer', () => {
+    const captured = capture('/v1/images/generations');
+    const measured = extractUnitResponseUsage('openai-images', stream([{ type: 'image_generation.completed', b64_json: 'aW1hZ2U=', usage }]), captured.requestFacts);
+    expect(measured.tokenUsage).toMatchObject({ inputTokens: 50, outputTokens: 4160 });
+  });
+});

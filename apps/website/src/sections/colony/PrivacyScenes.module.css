@@ -1,0 +1,42 @@
+.scene { position: absolute; inset: 0; }
+.glass { position: absolute; }
+.led { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: #98c463; }
+.led.ledOn { background: var(--site-lime); box-shadow: 0 0 8px rgba(200, 245, 60, .6); }
+/* the icons in lime */
+.icon { color: #a6ff3c; }
+
+.from { left: 7%; top: 12%; }
+.cipher {
+  left: 7%; right: 7%; top: 38%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  overflow: hidden;
+  font: 400 11.5px/16px var(--site-font-mono);
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+.scene .cipher { color: #98c463; }
+.to { right: 7%; bottom: 10%; width: 52%; }
+
+.enclave { left: 50%; top: 50%; width: 66%; translate: -50% -50%; }
+.key {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  border: .5px dashed rgba(200, 245, 60, .5);
+  border-radius: 8px;
+  background: rgba(200, 245, 60, .08);
+  font-weight: 500;
+}
+
+.attest { left: 50%; top: 44%; width: 70%; translate: -50% -50%; }
+.verified { right: 8%; bottom: 10%; }
+
+/* one card under another below 1200px: the windows wider, so their lines fit */
+@media (max-width: 1199px) {
+  .from { left: 6%; top: 10%; }
+  .cipher { left: 6%; right: 6%; top: 32%; font-size: 12px; }
+  .to { right: 6%; bottom: 8%; width: 70%; }
+  .enclave { width: 80%; }
+  .attest { top: 42%; width: 88%; }
+  .verified { right: 6%; bottom: 8%; }
+}

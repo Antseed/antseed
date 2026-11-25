@@ -1,9 +1,9 @@
 import { ANTSEED_BUYER_FAULT_ERROR_CODE } from '@antseed/node/types';
 import { FREE_TIER_EXHAUSTED_ERROR_ID, readFreeTierLimit, type FreeTierLimit } from '@antseed/node';
 
-// Note: `payment_required` is part of this union but is intentionally never
-// produced by `classifyChatStreamFailure`. Payment-required stops are emitted
-// via the dedicated `emitPaymentRequiredStreamError` path in pi-chat-engine.
+// Note: `payment_required` is part of this union but is never produced by
+// `classifyChatStreamFailure`; `toGatewayStopReason` maps the gateway's 402s
+// (and insufficient-funds bodies) onto it.
 // This type is also mirrored (for IPC) in:
 //   - apps/desktop/src/main/preload.cts (ChatAiStreamStopReason)
 //   - apps/desktop/src/renderer/types/bridge.ts (ChatAiStreamStopReason)
@@ -472,7 +472,7 @@ export function classifyChatStreamFailure({
  * on the next microtask. Returns whether the retry was cancelled.
  */
 export function cancelFreeTierRetry(reason: ChatStreamStopReason, session: { abortRetry(): void }): boolean {
-  if (!reason.freeTier) return false;
+  if (!reason.freeTier && reason.kind !== 'payment_required') return false;
   queueMicrotask(() => session.abortRetry());
   return true;
 }
@@ -487,4 +487,71 @@ export function formatChatStreamStopForLog(reason: ChatStreamStopReason): string
   }
   parts.push(reason.retryable ? 'retryable' : 'non-retryable');
   return `${parts.join(', ')}: ${reason.message}`;
+}
+
+/** Gateway error identifiers that mean "this key cannot pay for the request". */
+const GATEWAY_FUNDS_ERROR_IDS = new Set([
+  'payment_required',
+  'insufficient_quota',
+  'insufficient_funds',
+  'insufficient_balance',
+  'insufficient_deposits',
+  'spend_limit_reached',
+]);
+
+// "out of Antseed credits": the buyer's and the gateway's own wording, which can arrive without the 402.
+const FUNDS_TEXT = /\binsufficient[ _-]?(?:funds|balance|credits?|quota|deposits)\b|\bpayment[ _-]required\b|\bbalance is too low\b|\bout of Antseed credits\b/i;
+
+export const GATEWAY_FUNDS_MESSAGE = 'Your balance is too low for this request. Add funds and try again.';
+
+/**
+ * Reframes a classified failure for a gateway client. A 402 or an
+ * insufficient-funds body becomes `payment_required` (never retried; the chat
+ * offers "Add funds"), keeping the gateway's own message — it names the spend
+ * limit that was hit. A 401 means the gateway no longer accepts our key.
+ */
+export function toGatewayStopReason(reason: ChatStreamStopReason, rawMessage = ''): ChatStreamStopReason {
+  if (reason.kind === 'aborted' || reason.kind === 'payment_required') return reason;
+  const embedded = rawMessage ? extractEmbeddedErrorBody(rawMessage) : undefined;
+  const fundsErrorId = embedded?.errorId && GATEWAY_FUNDS_ERROR_IDS.has(embedded.errorId) ? embedded.errorId : undefined;
+  const errorIdInText = !fundsErrorId
+    ? [...GATEWAY_FUNDS_ERROR_IDS].find((id) => rawMessage.includes(`"${id}"`))
+    : undefined;
+  if (reason.statusCode === 402 || fundsErrorId || errorIdInText || FUNDS_TEXT.test(rawMessage)) {
+    const errorCode = fundsErrorId ?? errorIdInText ?? reason.errorCode;
+    return {
+      kind: 'payment_required',
+      source: 'billing',
+      retryable: false,
+      // Only a key spend limit keeps the gateway's wording (it names the
+      // limit); the buyer's own out-of-funds text points at the CLI.
+      message: errorCode === 'spend_limit_reached' && embedded?.message ? embedded.message : GATEWAY_FUNDS_MESSAGE,
+      ...(reason.statusCode ? { statusCode: reason.statusCode } : {}),
+      ...(errorCode ? { errorCode } : {}),
+    };
+  }
+  if (reason.statusCode === 401) {
+    return {
+      ...reason,
+      retryable: false,
+      message: 'The gateway rejected the API key (HTTP 401). Check the gateway key in Settings.',
+    };
+  }
+  return reason;
+}
+
+export const REPLY_CUT_OFF_MESSAGE = 'The connection dropped, so this reply may be incomplete. You can ask to continue.';
+
+/**
+ * Text with no output tokens counted: a stream's last chunk, which carries the
+ * usage, may never have come. Only a hint, since some sellers report no usage
+ * at all; the caller checks whether the stream reached its end.
+ */
+export function isReplyCutOff(message: {
+  stopReason: string;
+  content: ReadonlyArray<{ type: string; text?: string }>;
+  usage: { output: number };
+}): boolean {
+  if (message.stopReason !== 'stop' || message.usage.output > 0) return false;
+  return message.content.some((block) => block.type === 'text' && (block.text ?? '').trim().length > 0);
 }

@@ -23,7 +23,7 @@ function run(command, args, options = {}) {
 run('forge', ['test', '--gas-snapshot-check', 'true'], {
   cwd: path.join(repositoryRoot, 'packages/contracts'),
 });
-run('node', ['--test', 'scripts/deploy-contracts.test.mjs']);
+run('node', ['--test', 'scripts/deploy-contracts.test.mjs', 'scripts/verify-contract-bytecode.test.mjs']);
 run('node', ['scripts/validate-contract-deployments.mjs']);
 run('node', ['scripts/verify-contract-bytecode.mjs']);
 if (baseCommit) {

@@ -1,0 +1,19 @@
+.track { display: flex; gap: 12px; margin: 0; padding: 0 12px 0 0; list-style: none; }
+
+/* sliding lanes: two copies, moved by one copy; paused until the flow is on screen ([data-moving]), and under the pointer */
+.slideLane { display: flex; width: max-content; animation: slide var(--duration, 120s) linear infinite paused; }
+.slideLane.reverse { animation-direction: reverse; }
+[data-moving] .slideLane { animation-play-state: running; }
+[data-moving] .slideLane:hover { animation-play-state: paused; }
+@keyframes slide { to { transform: translateX(-50%); } }
+
+/* carried lanes: every card placed by useCarriers; room under the cards for the lowest feet */
+.carryLane { position: relative; height: calc(var(--card-size) + var(--below) + 2 * 6px); }
+.carryLane > .track { position: absolute; inset: 0; padding: 0; }
+.carried { position: absolute; left: 0; top: 6px; will-change: transform; cursor: pointer; }
+
+/* reduced motion: each lane scrolls by hand */
+@media (prefers-reduced-motion: reduce) {
+  .slideLane { width: auto; animation: none; overflow-x: auto; scrollbar-width: none; }
+  .track.copy { display: none; }
+}

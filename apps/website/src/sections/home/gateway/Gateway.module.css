@@ -1,0 +1,3 @@
+/* the film's window centred on the painting */
+.panel { display: grid; place-items: center; padding: 40px 32px; }
+@media (max-width: 899px) { .panel { padding: 28px 16px; } }

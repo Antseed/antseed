@@ -6,9 +6,7 @@ System One models (TypeSafe Jev) are not chat models. A request carries a `state
 
 ## Installation
 
-```bash
-antseed plugin add @antseed/provider-typesafe
-```
+The CLI installs the plugin when you add a provider that uses it (see Usage below).
 
 ## Usage
 

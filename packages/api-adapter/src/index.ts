@@ -1,6 +1,7 @@
 export { createMp4Inspector, type Mp4Facts } from './mp4.js';
 export { isSpeechAudio, inlineAudioSeconds } from './speech-audio.js';
-export { detectNativeVideoProtocol, nativeVideoRoute, nativeVideoAcceptance, nativeVideoDelivered, nativeVideoFacts, videoSourceLengthProblem, audioSourceLengthProblem, VIDEO_MIN_DURATION_RATIO, sendsReferenceVideo, referenceVideoPriceProblem, nativeVideoAttributes, REFERENCE_VIDEO_FIELDS, type NativeVideoPricedOptions, requestService, type NativeVideoRoute, type NativeVideoFacts } from './native-video.js';
+export { base64Bytes } from './data-url.js';
+export { detectNativeVideoProtocol, nativeVideoRoute, nativeVideoAcceptance, nativeVideoDelivered, nativeVideoFacts, videoSourceLengthProblem, audioSourceLengthProblem, VIDEO_MIN_DURATION_RATIO, sendsReferenceVideo, referenceVideoPriceProblem, nativeVideoAttributes, REFERENCE_VIDEO_FIELDS, VIDEO_CREATE_FIELDS, VIDEO_SOURCE_FIELDS, type NativeVideoPricedOptions, requestService, type NativeVideoRoute, type NativeVideoFacts } from './native-video.js';
 
 export {
   renderRequestBodyAsOpenAIChat,
@@ -43,6 +44,17 @@ export {
   parseSseBlock,
   splitSseBlocks,
   type ParsedSseEvent,
+  isDeliveredImageOutput,
+  isImageEditPath,
+  isMultipartFormData,
+  parseMultipartForm,
+  parseFormDataDisposition,
+  IMAGE_EDIT_FILE_FIELDS,
+  headerValue,
+  IMAGE_PRICE_ATTRIBUTES,
+  IMAGE_REQUEST_FIELDS,
+  MAX_MULTIPART_TEXT_FIELD_BYTES,
+  SPEECH_REQUEST_FIELDS,
   extractSpeechRequestFacts,
   speechAudioDelivered,
   type SpeechRequestFacts,

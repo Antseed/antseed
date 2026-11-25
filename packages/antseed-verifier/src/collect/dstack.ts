@@ -8,7 +8,7 @@ import { postUnix } from './unix-http.js'
  * path, and the buyer verifies it unchanged.
  *
  * Wire contract (POST over the socket):
- *   /GetQuote  request { "report_data": "<hex, <=64 bytes>" }  response { "quote": "<hex>", "event_log": "<json>", ... }
+ *   /GetQuote  request { "report_data": "<hex, <=64 bytes>" }  response { "quote": "<hex>", "event_log": "<json>", "vm_config": "<json>", ... }
  *   /Info      request {}  response { "tcb_info": "<json with app_compose>", ... }
  */
 
@@ -50,14 +50,15 @@ async function readAppCompose(socketPath: string): Promise<string | undefined> {
 }
 
 /**
- * The quote plus what a buyer needs to check the app it measured: the agent's event log (a JSON
- * string), which replays RTMR3 to the app's compose hash, and the app-compose.json that hash
- * covers. Either is undefined when the agent does not return it.
+ * The quote plus what a buyer needs to check the app and OS: the agent's event log (a JSON
+ * string), which replays RTMR3 to the app's compose hash, the vm_config string for the local lite
+ * OS check, and the app-compose.json that hash covers. Each is undefined when the agent does not
+ * return it.
  */
 export async function generateDstackAttestation(
   reportData: Uint8Array,
   socketPath?: string,
-): Promise<{ quote: Uint8Array; eventLog?: string; appCompose?: string }> {
+): Promise<{ quote: Uint8Array; eventLog?: string; vmConfig?: string; appCompose?: string }> {
   if (reportData.length !== 64) {
     throw new Error(`reportData must be 64 bytes, got ${reportData.length}`)
   }
@@ -68,15 +69,16 @@ export async function generateDstackAttestation(
     try {
       const { status, body: resp } = await postUnix(sock, '/GetQuote', body, DSTACK_REQUEST)
       if (status !== 200) throw new Error(`dstack GetQuote returned HTTP ${status}`)
-      const parsed = JSON.parse(resp) as { quote?: string; event_log?: unknown }
+      const parsed = JSON.parse(resp) as { quote?: string; event_log?: unknown; vm_config?: unknown }
       if (typeof parsed.quote !== 'string' || parsed.quote.length === 0) {
         throw new Error('dstack GetQuote response missing "quote"')
       }
       const quote = Buffer.from(parsed.quote.replace(/^0x/, ''), 'hex')
       if (quote.length === 0) throw new Error('dstack GetQuote "quote" is not valid hex')
       const eventLog = typeof parsed.event_log === 'string' && parsed.event_log.length > 0 ? parsed.event_log : undefined
+      const vmConfig = typeof parsed.vm_config === 'string' && parsed.vm_config.length > 0 ? parsed.vm_config : undefined
       const appCompose = await readAppCompose(sock)
-      return { quote: new Uint8Array(quote), ...(eventLog ? { eventLog } : {}), ...(appCompose ? { appCompose } : {}) }
+      return { quote: new Uint8Array(quote), ...(eventLog ? { eventLog } : {}), ...(vmConfig ? { vmConfig } : {}), ...(appCompose ? { appCompose } : {}) }
     } catch (err) {
       lastErr = err
       if (isConnError(err)) continue // this socket is not there — try the next candidate

@@ -13,7 +13,7 @@ export function recordRouterUsage(
 ): void {
   if (!client.recordUsage || !conversationKey || signal.aborted || !isCompletionRequestPath(request.path)
     || response.statusCode < 200 || response.statusCode >= 300) return
-  const telemetry = computeResponseTelemetry(request, response.headers, response.body, peer)
+  const telemetry = computeResponseTelemetry(request, response, peer)
   if (telemetry.usage.source !== 'usage' || telemetry.usage.inputTokens <= 0 || !telemetry.pricing.service) return
   try {
     client.recordUsage({

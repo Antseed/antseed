@@ -1,0 +1,49 @@
+/* The burger replaces the bar's links under 1080px (the nav's own breakpoint): a line icon at the footer's stroke in a 44 box. */
+.button {
+  display: none; place-items: center; width: 44px; height: 44px; margin: 0 -10px 0 0; padding: 0; border: 0; border-radius: var(--site-radius-control);
+  background: none; color: var(--site-ink); cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.icon { display: block; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; }
+.button:focus-visible { outline: 2px solid #789f00; outline-offset: -4px; }
+@media (max-width: 1079px) { .button { display: grid; } }
+
+/* The sheet: from the nav's bottom edge to the screen's, on the page's colour; its rows on the logo's line (usePhoneMenu sets both). */
+.sheet {
+  position: fixed; z-index: 60; top: var(--sheet-top, var(--site-nav-height)); right: 0; bottom: 0; left: 0;
+  display: flex; flex-direction: column; gap: 32px; overflow-y: auto; overscroll-behavior: contain;
+  padding: 16px var(--sheet-x, 20px) max(24px, env(safe-area-inset-bottom));
+  background: var(--site-bg); box-shadow: inset 0 1px 0 rgba(10, 26, 18, .08); font-family: var(--site-font);
+}
+.sheet[hidden] { display: none; }
+:global(:root[data-theme='dark']) .sheet { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08); }
+
+/* the links carry their own ink, so they read the same in the sheet and in the docs sidebar */
+.links { --menu-ink: #0a1a12; display: grid; font-family: var(--site-font); }
+:global(:root[data-theme='dark']) .links { --menu-ink: var(--site-ink); }
+.row, .subRow { color: var(--menu-ink); text-decoration: none; -webkit-tap-highlight-color: transparent; }
+.row:hover, .subRow:hover { color: var(--menu-ink); text-decoration: none; }
+.row:active, .subRow:active { opacity: .6; }
+.row:focus-visible, .subRow:focus-visible { outline: 2px solid #789f00; outline-offset: -2px; border-radius: 4px; }
+.row { display: flex; align-items: center; min-height: 52px; font: 500 19px/24px var(--site-font); }
+
+/* Providers' two pages, under its row */
+.sub { display: grid; padding: 0 0 8px 16px; }
+.subRow { display: grid; align-content: center; gap: 2px; min-height: 52px; padding: 6px 0; }
+.subTitle { font: 500 16px/22px var(--site-font); }
+.subText { font: 400 14px/20px var(--site-font); color: var(--site-text-small); }
+
+/* the nav's two buttons, full width at the sheet's foot; a phone has no downloads */
+.actions { display: grid; gap: 12px; margin-top: auto; }
+.actions .action { display: flex; justify-content: center; height: 48px; font-size: 16px; }
+@media (min-width: 761px) { .actions { display: none; } }
+
+/* it arrives from a little above, its rows unrolling one after another; it leaves in a quick fade (CLOSE_MS in usePhoneMenu) */
+@media (prefers-reduced-motion: no-preference) {
+  .sheet:not([hidden]) { animation: arrive .22s cubic-bezier(.2, .8, .2, 1) both; }
+  .sheet:not([hidden]) :is(.row, .subRow, .actions) { animation: unroll .34s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(40ms + var(--i, 9) * 35ms); }
+  .sheet.closing:not([hidden]) { animation: fadeOut .14s ease-in both; }
+  .sheet.closing * { animation: none; }
+}
+@keyframes arrive { from { opacity: 0; translate: 0 -8px; } }
+@keyframes unroll { from { opacity: 0; translate: 0 -6px; } }
+@keyframes fadeOut { to { opacity: 0; } }

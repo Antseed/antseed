@@ -149,7 +149,7 @@
               # pnpm-lock.yaml change (the store no longer matches). After
               # touching the lockfile, regenerate it with:
               #   ./scripts/update-nix-hash.sh
-              hash = "sha256-pR69/iwAsNdVPjstRAVmTIGj/JE+HWd2ZenfL70NxdU=";
+              hash = "sha256-2vYeAF/D1GejiGsyOHC2fzyAQx9GGoDgo/FVqHzzNpM=";
             };
 
             pnpmWorkspaces = [ "@antseed/cli..." ];
@@ -164,6 +164,32 @@
             ] ++ lib.optionals stdenv.isLinux [
               pkgs.autoPatchelfHook
             ];
+
+            # pnpm's hoisted linker sometimes fails in the sandbox with
+            # ERR_PNPM_EEXIST (two copies of one package racing for the same
+            # file); the same install passes when run again. pnpmConfigHook
+            # exits on the first failure, so take it out of the configure hooks
+            # and run it here, up to three times, from a clean tree each time.
+            preConfigure = ''
+              keptHooks=()
+              for hook in "''${postConfigureHooks[@]}"; do
+                [ "$hook" = pnpmConfigHook ] || keptHooks+=("$hook")
+              done
+              postConfigureHooks=("''${keptHooks[@]}")
+            '';
+            postConfigure = ''
+              for attempt in 1 2 3; do
+                if (pnpmConfigHook); then
+                  break
+                fi
+                if [ "$attempt" = 3 ]; then
+                  echo "error: pnpm install failed three times" >&2
+                  exit 1
+                fi
+                echo "pnpm install failed (attempt $attempt of 3); retrying from a clean tree" >&2
+                find . -name node_modules -type d -prune -exec rm -rf {} +
+              done
+            '';
 
             # Shared libraries for the prebuilt native binaries (Linux).
             buildInputs = lib.optionals stdenv.isLinux [

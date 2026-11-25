@@ -1,0 +1,23 @@
+diff --git a/dist/crypto.js b/dist/crypto.js
+index 8d8110ee4234766dc639b4c01b3cc6d6ba980d40..8b89d7c73966de80ee04f0fee840edbc10cb22bd 100644
+--- a/dist/crypto.js
++++ b/dist/crypto.js
+@@ -51,7 +51,7 @@ function verify(data, key, signature, algorithm) {
+     // The try/catch is to work around an issue in Node 14.x where verify throws
+     // an error in some scenarios if the signature is invalid.
+     try {
+-        return crypto_1.default.verify(algorithm, data, key, signature);
++        return crypto_1.default.verify(algorithm ?? defaultDigest(key), data, key, signature);
+     }
+     catch (e) {
+         /* istanbul ignore next */
+@@ -67,3 +67,9 @@ function bufferEqual(a, b) {
+         return false;
+     }
+ }
++// With no digest named, OpenSSL verifies an EC signature over SHA-256;
++// BoringSSL (Electron's Node) throws instead, which failed every check
++// there. Name the digest OpenSSL would use, so both agree.
++function defaultDigest(key) {
++    return key instanceof crypto_1.default.KeyObject && key.asymmetricKeyType === 'ec' ? 'sha256' : undefined;
++}

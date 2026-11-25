@@ -76,6 +76,10 @@ const ORIGINAL_CONFIGS: Record<string, { path: string; content: string }[]> = {
     { path: '~/.pi/agent/models.json', content: '{\n  "providers": {}\n}\n' },
     { path: '~/.pi/agent/settings.json', content: '{\n  "theme": "dark"\n}\n' },
   ],
+  'prime-agent': [
+    { path: '~/.prime/agent/models.json', content: '{\n  "providers": {}\n}\n' },
+    { path: '~/.prime/agent/settings.json', content: '{\n  "theme": "dark"\n}\n' },
+  ],
   crush: [{ path: '~/.config/crush/crush.json', content: '{\n  "options": {},\n  "providers": {}\n}\n' }],
   goose: [{ path: '~/.config/goose/config.yaml', content: 'GOOSE_TEMPERATURE: 0.5\n' }],
   zed: [{ path: '~/.config/zed/settings.json', content: '{\n  "ui_font_size": 16\n}\n' }],
@@ -225,4 +229,12 @@ test('apps connect warns when the buyer has no default route', async () => {
   } finally {
     await rm(ws.home, { recursive: true, force: true })
   }
+})
+
+test('the missing default route warning gives a command, not the desktop chat model', async () => {
+  const { noDefaultRouteWarning } = await import('./index.js')
+  const warning = noDefaultRouteWarning(8377)
+  // Antseed Desktop's chat sends its model with each request and no longer sets the buyer's default route.
+  assert.doesNotMatch(warning, /desktop/i)
+  assert.match(warning, /POST http:\/\/localhost:8377\/_antseed\/route/)
 })

@@ -28,6 +28,11 @@ export interface VerifierClientConfig {
   resultsAddress?: string;
   /** Max blocks per `eth_getLogs` window (defaults to 10k). */
   logQueryChunkBlocks?: number;
+  /**
+   * Longest `submitModelAudit` waits for its transaction to mine before it throws
+   * `ReceiptWaitTimeoutError` (see `BaseEvmClientOptions.receiptWaitLimitMs`). Unset waits until it mines.
+   */
+  receiptWaitLimitMs?: number;
 }
 
 /** Mirrors IAntseedVerificationResults.Verdict. */
@@ -267,6 +272,13 @@ export interface VerifierServiceStatus {
  *
  * The results address is discovered from the KBF contract on first use and cached.
  */
+/**
+ * The verifier reads this epoch's reports before its own submission and again right after it
+ * (`submit`'s confirmation summary), so the second read must not be answered from ethers' 250 ms
+ * cache of the first.
+ */
+const NO_READ_CACHE = { cacheTimeout: -1 } as const;
+
 export class VerifierClient extends BaseEvmClient {
   private _contractInstance: Contract | null = null;
   private _resultsInstance: Promise<Contract> | null = null;
@@ -275,7 +287,10 @@ export class VerifierClient extends BaseEvmClient {
   private readonly _logQueryChunkBlocks: number | undefined;
 
   constructor(config: VerifierClientConfig) {
-    super(config.rpcUrl, config.contractAddress, config.fallbackRpcUrls, config.evmChainId);
+    super(config.rpcUrl, config.contractAddress, config.fallbackRpcUrls, config.evmChainId, {
+      ...NO_READ_CACHE,
+      ...(config.receiptWaitLimitMs === undefined ? {} : { receiptWaitLimitMs: config.receiptWaitLimitMs }),
+    });
     this._config = config;
     this._deploymentBlock = config.deploymentBlock;
     this._logQueryChunkBlocks = config.logQueryChunkBlocks;
@@ -594,7 +609,10 @@ export class VerifierClient extends BaseEvmClient {
     let low = floor;
     let high = await this._provider.getBlockNumber();
     const latest = await this._provider.getBlock(high);
-    if (!latest || latest.timestamp < timestamp) return high;
+    // A head the node cannot return yet (a load-balanced RPC answering from a node behind) is an error,
+    // never "no block is that late yet": a caller may remember the answer as the epoch's first block.
+    if (!latest) throw new Error(`block ${high} (the chain head) is unavailable`);
+    if (latest.timestamp < timestamp) return high;
     while (low < high) {
       const middle = Math.floor((low + high) / 2);
       const block = await this._provider.getBlock(middle);
@@ -635,7 +653,7 @@ export class VerifierClient extends BaseEvmClient {
 /** Sends writes to the results contract on the same provider and nonce scope as the client. */
 class ResultsWriter extends BaseEvmClient {
   constructor(config: VerifierClientConfig, resultsAddress: string) {
-    super(config.rpcUrl, resultsAddress, config.fallbackRpcUrls, config.evmChainId);
+    super(config.rpcUrl, resultsAddress, config.fallbackRpcUrls, config.evmChainId, NO_READ_CACHE);
   }
 
   claimAuditorReward(signer: AbstractSigner, audit: string, epoch: bigint): Promise<string> {
