@@ -103,6 +103,21 @@ const REFERENCE_MINIMAL: KbfReferenceV1 = (() => {
   return value
 })()
 
+/**
+ * The question set from a bank asked on OpenRouter with a provider pin, where the thinking table applies
+ * (`auditThinkingForBank`): DeepSeek V4 Pro's level is `none`, `minimal` where refused, and the bank was asked with it.
+ */
+const REFERENCE_TABLE: KbfReferenceV1 = (() => {
+  const value: KbfReferenceV1 = structuredClone(REFERENCE_WITH_SETTING)
+  value.generator.params = {
+    ...value.generator.params,
+    referenceProvider: { pinned: { order: ['example-host'], allowFallbacks: false }, served: ['Example Host'] },
+    thinkingDiscovery: { ...(value.generator.params['thinkingDiscovery'] as Record<string, unknown>), rule: 'audit-thinking-table-v1' },
+  }
+  value.referenceId = computeReferenceId(value)
+  return value
+})()
+
 // The audit draws from `crypto.randomInt` with no way to pass a seed: the prompt variant of each question batch, the
 // cap check's prompt and limit, the texts the cap and echo checks write. Here each part of an audit draws from its own
 // fixed stream, named by the part (`inPart`), so two parts that run at the same time cannot change each other's
@@ -181,11 +196,12 @@ interface Seller {
    * Its answer to a thinking-discovery request, by the setting the request carries (`discoverySetting`): the reasoning
    * tokens it bills beside the ten answers, a refusal, or only `answers` of the ten answered.
    */
-  discovery: (setting: string) => { reasoning: number } | { status: number } | { answers: number }
+  discovery: (setting: string) => { reasoning: number | null } | { status: number } | { answers: number }
 }
 
 /** The thinking setting a discovery request carries, by the strategy's name (`thinkingStrategyRequest`). */
 function discoverySetting(body: Record<string, unknown>): string {
+  if (typeof body['reasoning_effort'] === 'string') return `chat-reasoning-effort-${body['reasoning_effort']}`
   const reasoning = body['reasoning'] as { effort?: string; enabled?: boolean } | undefined
   if (reasoning?.effort) return `reasoning-effort-${reasoning.effort}`
   if (reasoning?.enabled === false) return 'reasoning-enabled-false'
@@ -356,7 +372,10 @@ class Network {
         const answers = 'answers' in given ? given.answers : THINKING_DISCOVERY_PROBES.length
         const reasoning = 'reasoning' in given ? given.reasoning : 0
         const facts = THINKING_DISCOVERY_PROBES.slice(0, answers).map((probe, index) => `(${index + 1}) ${probe.consensus}`).join('\n')
-        return answered(chat(facts, 'stop', { prompt_tokens: 310, completion_tokens: 40 + reasoning, completion_tokens_details: { reasoning_tokens: reasoning } }))
+        // A seller that reports no reasoning count (`reasoning: null`) bills its output with no itemised reasoning.
+        return answered(chat(facts, 'stop', reasoning === null
+          ? { prompt_tokens: 310, completion_tokens: 90 }
+          : { prompt_tokens: 310, completion_tokens: 40 + reasoning, completion_tokens_details: { reasoning_tokens: reasoning } }))
       }
       case 'pre-check':
         return answered(chat('ok', 'stop', { prompt_tokens: 40 + seller.inputTokens(content), completion_tokens: 3 }))
@@ -1087,6 +1106,24 @@ scenario('o2-reference-setting-reasons', 'a seller that still reasons with the r
 scenario('o3-reference-setting-refused-low', 'a seller that refuses the reference\'s `"minimal"` is asked with `"low"` next, not `"none"`, by every test, and FLIPS judges it as asked the reference\'s way', async (t, expect) => {
   const network = new Network(sellerThat({ discovery: discoveryBy({ 'reasoning-effort-minimal': refused }, { reasoning: 0 }) }))
   await expect(network, await audit(t, network, { auditId: 'audit-o3', reference: REFERENCE_MINIMAL }))
+})
+
+// The thinking table (`audit-thinking-table-v1`), from a bank asked on OpenRouter: the seller is asked with the model's
+// level in Chat Completions' own field by every test, its check only confirms it, and its signed request is kept.
+
+scenario('t1-table-level', 'a seller that takes the table\'s level is asked with `reasoning_effort: "none"` by every test, after one check whose signed request is kept', async (t, expect) => {
+  const network = new Network(sellerThat({ discovery: discoveryBy({}, { reasoning: 0 }) }))
+  await expect(network, await audit(t, network, { auditId: 'audit-t1', reference: REFERENCE_TABLE }))
+})
+
+scenario('t2-table-fallback', 'a seller that refuses the table\'s level is asked with its fallback `"minimal"` by every test, and nothing else is tried', async (t, expect) => {
+  const network = new Network(sellerThat({ discovery: discoveryBy({ 'chat-reasoning-effort-none': refused }, { reasoning: 12 }) }))
+  await expect(network, await audit(t, network, { auditId: 'audit-t2', reference: REFERENCE_TABLE }))
+})
+
+scenario('t3-table-unknown-count', 'a seller whose check reports no reasoning count: the count is unknown, not 0, and the seller keeps the table\'s level', async (t, expect) => {
+  const network = new Network(sellerThat({ discovery: discoveryBy({}, { reasoning: null }) }))
+  await expect(network, await audit(t, network, { auditId: 'audit-t3', reference: REFERENCE_TABLE }))
 })
 
 test('audit golden: every stored record is named by a scenario', async () => {

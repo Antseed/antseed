@@ -28,6 +28,8 @@ import {
 } from '@antseed/fingerprints'
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
+  decodeHttpRequest,
+  decodeHttpResponse,
   trustScore,
   type PeerInfo,
   type StoredResponseAuth,
@@ -41,7 +43,7 @@ import {
   type StoredCheckRecords,
 } from './audit-checks.js'
 import { AuditNotStarted, type MethodScreen, type SellerAudit, type SellerAuditStart } from './audit-method.js'
-import { asSuppression, needsSellerDiscovery, referenceDiscoveryStrategy, resolveThinking } from './audit-thinking.js'
+import { asSuppression, needsSellerDiscovery, referenceDiscoveryStrategy, requestCarries, resolveThinking, type ThinkingSetting } from './audit-thinking.js'
 import { settleAuditVerdict } from './close-call.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
@@ -65,12 +67,18 @@ import {
 } from './proxy-evidence.js'
 import {
   THINKING_DISCOVERY_PROBES,
-  THINKING_DISCOVERY_RULE,
   THINKING_DISCOVERY_TIMEOUT_MS,
+  THINKING_REFERENCE_FIRST_RULE,
+  THINKING_TABLE_RULE,
   ThinkingDiscoveryError,
+  chatStrategyForLevel,
+  checkThinkingSetting,
   discoverThinkingSuppression,
   type ThinkingDiscoveryProbe,
+  type ThinkingStrategyRequest,
 } from './thinking-suppression.js'
+import { auditThinkingForBank } from './audit-thinking-table.js'
+import { readOutput } from './methods/shared/output-usage.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
 import type { TokenizerPrecheckSeller } from './methods/tokens/tokenizer-precheck.js'
 import { METHODS } from './methods/index.js'
@@ -1572,14 +1580,18 @@ async function discoverSellerThinking(
   const url = `${context.proxy.baseUrl}/v1/chat/completions`
   const overall = new AbortController()
   const overallTimer = setTimeout(() => overall.abort(), context.auditTimeoutMs)
-  const sent: Array<Pick<SellerThinkingDiscoveryAttemptV1, 'requestIds' | 'attemptCosts'>> = []
+  const sent: Array<Pick<SellerThinkingDiscoveryAttemptV1, 'requestIds' | 'attemptCosts' | 'signedRequest'>> = []
+  // The audit rules' setting for the model (`THINKING_TABLE_RULE`): the seller is asked with it, never with a chosen one.
+  const table = auditThinkingForBank(reference.referenceModel, reference)
   // A seller that failed every try of DISCOVERY_OUTAGE_STRATEGIES strategies in a row with no answer
   // (transport error or 5xx) is down, not refusing a field: the remaining strategies are not sent,
   // and the batches record the outage.
   let unreachable: { status: number | null; failure: string } | null = null
   let outages = 0
   const probe: ThinkingDiscoveryProbe = async ({ request, maxTokens }) => {
-    const record = { requestIds: [] as string[], attemptCosts: [] as SellerThinkingDiscoveryAttemptV1['attemptCosts'] }
+    const record: Pick<SellerThinkingDiscoveryAttemptV1, 'requestIds' | 'attemptCosts' | 'signedRequest'> = {
+      requestIds: [] as string[], attemptCosts: [] as SellerThinkingDiscoveryAttemptV1['attemptCosts'],
+    }
     sent.push(record)
     if (unreachable) return { ok: false, ...unreachable, failure: `not sent, seller unreachable: ${unreachable.failure}` }
     let failure: { status: number | null; failure: string } = { status: null, failure: 'not attempted' }
@@ -1615,6 +1627,8 @@ async function discoverSellerThinking(
               'content-type': 'application/json',
               'x-antseed-pin-peer': target.peerId,
               'x-antseed-request-id': requestId,
+              // Under the table the seller's signed request is kept, so what it was asked can be checked later.
+              ...(table ? { 'x-antseed-capture-response-auth-preimages': '1' } : {}),
             },
             body: new TextEncoder().encode(JSON.stringify(payload)),
             signal: controller.signal,
@@ -1626,10 +1640,14 @@ async function discoverSellerThinking(
         if (response.ok) {
           outages = 0
           const billed = billedOutputTokensOf(responseText(responseBody))
+          // The reasoning count from the reply the seller signed (its own API's usage, before the proxy translates it
+          // back), else from the proxy's reply; a reply that reports none has an unknown count, never 0.
+          const signed = table ? await signedDiscoveryRequest(context, target, service, reference, requestId, response, request, overall.signal) : null
+          if (signed) record.signedRequest = signed.record
           return {
             ok: true,
             content: extractCompletionText(responseBody),
-            reasoningTokens: reportedReasoningTokens(responseText(responseBody)),
+            reasoningTokens: signed?.reasoningTokens !== undefined ? signed.reasoningTokens : reportedReasoningTokens(responseText(responseBody)),
             truncated: isKbfTokenLimitFinishReason(kbfResponseFinishReason(responseText(responseBody))),
             // Recorded only: reasoning a host shows while itemising none, and what the reply bills.
             reasoningShown: reasoningShownInReply(responseText(responseBody)),
@@ -1672,21 +1690,30 @@ async function discoverSellerThinking(
     ...attempt,
     requestIds: sent[index]?.requestIds ?? [],
     attemptCosts: sent[index]?.attemptCosts ?? [],
+    ...(sent[index]?.signedRequest ? { signedRequest: sent[index]!.signedRequest } : {}),
   }))
   const budget = reference.queryProfile.maxTokensPerRequest
   try {
-    const result = await discoverThinkingSuppression({
-      model: service,
-      label: `seller ${target.peerId}`,
-      // Audits always send OpenAI Chat Completions to the buyer proxy.
-      supportsPrefill: true,
-      // The reference's own setting first, so the seller is asked as the reference was wherever it accepts that.
-      referenceStrategy: referenceDiscoveryStrategy(reference),
-      probe,
-    })
+    const result = table
+      ? await checkThinkingSetting({
+        model: service,
+        label: `seller ${target.peerId}`,
+        probe,
+        primary: chatStrategyForLevel(table.level),
+        fallback: table.fallback ? chatStrategyForLevel(table.fallback) : null,
+      })
+      : await discoverThinkingSuppression({
+        model: service,
+        label: `seller ${target.peerId}`,
+        // Audits always send OpenAI Chat Completions to the buyer proxy.
+        supportsPrefill: true,
+        // The reference's own setting first, so the seller is asked as the reference was wherever it accepts that.
+        referenceStrategy: referenceDiscoveryStrategy(reference),
+        probe,
+      })
     return {
       method: 'kbf-reference-code-2026-09-30',
-      rule: THINKING_DISCOVERY_RULE,
+      rule: table ? THINKING_TABLE_RULE : THINKING_REFERENCE_FIRST_RULE,
       strategy: result.strategy,
       maxTokens: Math.max(budget, result.maxTokens ?? 0),
       attempts: withRequests(result.attempts),
@@ -1694,7 +1721,7 @@ async function discoverSellerThinking(
   } catch (error) {
     return {
       method: 'kbf-reference-code-2026-09-30',
-      rule: THINKING_DISCOVERY_RULE,
+      rule: table ? THINKING_TABLE_RULE : THINKING_REFERENCE_FIRST_RULE,
       strategy: null,
       maxTokens: budget,
       attempts: withRequests(error instanceof ThinkingDiscoveryError ? error.attempts : []),
@@ -1702,6 +1729,46 @@ async function discoverSellerThinking(
     }
   } finally {
     clearTimeout(overallTimer)
+  }
+}
+
+/**
+ * The signed request of one thinking-setting check: the seller's ResponseAuth for it, whether the request it signed
+ * carries the setting it was asked with (`requestCarries`), and the reasoning count of the reply it signed (null when
+ * that reply itemises none: unknown). Undefined `reasoningTokens` when nothing was signed.
+ */
+async function signedDiscoveryRequest(
+  context: ProxyVerificationContext,
+  target: PeerInfo,
+  service: string,
+  reference: KbfReferenceV1,
+  requestId: string,
+  response: Response,
+  request: ThinkingStrategyRequest,
+  signal: AbortSignal,
+): Promise<{ record: NonNullable<SellerThinkingDiscoveryAttemptV1['signedRequest']>; reasoningTokens?: number | null }> {
+  const returned = response.headers.get('x-antseed-request-id')
+  if (returned !== requestId) {
+    return { record: { status: returned ? 'invalid' : 'missing', carriesSetting: null, signedPreimages: null } }
+  }
+  const auth = await context.responseAuthReader.waitForVerified({
+    requestId,
+    sellerPeerId: target.peerId,
+    advertisedService: service,
+    serviceAliases: [...reference.serviceAliases, ...currentServiceNames(reference.referenceModel)],
+    signal,
+  })
+  const preimages = auth.status === 'verified' && auth.signedPreimages ? { ...auth.signedPreimages, hashAlgorithm: 'keccak256' as const } : null
+  if (!preimages) return { record: { status: auth.status, carriesSetting: null, signedPreimages: null } }
+  try {
+    const sent = decodeHttpRequest(Buffer.from(preimages.requestBase64, 'base64'))
+    const answered = decodeHttpResponse(Buffer.from(preimages.responseBase64, 'base64'))
+    const setting: ThinkingSetting = { source: 'discovery', strategy: null, overrides: request.overrides }
+    const carriesSetting = requestCarries(JSON.parse(new TextDecoder().decode(sent.body)), setting)
+    const reading = readOutput(sent.body, { statusCode: answered.statusCode, body: answered.body })
+    return { record: { status: 'verified', carriesSetting, signedPreimages: preimages }, reasoningTokens: reading.reasoningTokens }
+  } catch {
+    return { record: { status: 'verified', carriesSetting: false, signedPreimages: preimages } }
   }
 }
 

@@ -376,6 +376,51 @@ test('reference build discovers thinking suppression like the KBF reference code
   }
 })
 
+test('an audited model the thinking table names is asked with its level on OpenRouter, checked and never chosen; a refusal uses the fallback', async () => {
+  // Gemini 4 Neon: `low`, or `minimal` where refused. The target refuses `low` here, and `minimal` still thinks.
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-thinking-table-'))
+  const NEON = 'gemini-4-neon'
+  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] }, [NEON]: { upstreamModel: 'upstream-test', contrastModels: [] } })
+  const value = config({
+    models: { [NEON]: { contrastModels: ['contrast-test'], pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, referenceProvider: { order: ['Provider-A'] } } },
+  })
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const discovery: Array<Record<string, unknown>> = []
+  const asked: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    if (init?.body === undefined) return new Response('{}', { status: 404 })
+    const body = JSON.parse(String(init.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.map((message) => message.content).join('\n')
+    if (prompt.includes(DISCOVERY_MARKER)) {
+      if (body.model !== 'upstream-test') {
+        return new Response(JSON.stringify({ choices: [{ message: { content: DISCOVERY_ANSWERS } }], usage: { prompt_tokens: 100, completion_tokens: 40, completion_tokens_details: { reasoning_tokens: 0 } } }), { status: 200 })
+      }
+      discovery.push(body)
+      if ((body.reasoning as { effort?: string } | undefined)?.effort === 'low') return new Response(JSON.stringify({ error: { message: 'unsupported effort' } }), { status: 400 })
+      return new Response(JSON.stringify({ choices: [{ message: { content: DISCOVERY_ANSWERS } }], usage: { prompt_tokens: 100, completion_tokens: 340, completion_tokens_details: { reasoning_tokens: 300 } } }), { status: 200 })
+    }
+    if (body.model === 'upstream-test') asked.push(body)
+    return providerResponse(successfulContent(body.model, body.messages.at(-1)?.content ?? ''), body.model === 'upstream-test' ? 'Provider-A' : 'Other')
+  }
+  try {
+    const logs: string[] = []
+    const built = await buildModelReferenceWithoutDiscoveryStub({ model: NEON, referencesDir: directory, config: value, fetchFn, log: (line) => logs.push(line) })
+    // Only the table's level and its fallback were sent: no other setting was tried, though `minimal` still thinks.
+    assert.deepEqual(discovery.map((body) => body.reasoning), [{ effort: 'low' }, { effort: 'minimal' }], logs.join('\n'))
+    assert.deepEqual(referenceEndpointRequest(built.reference), {
+      reasoningStrategy: 'reasoning-effort-minimal', requestOverrides: { reasoning: { effort: 'minimal' } }, requestOmissions: [],
+    })
+    const recorded = built.reference.generator.params.thinkingDiscovery as { rule?: string; target: { attempts: Array<{ strategy: string; reasoningTokens: number | null }> } }
+    assert.equal(recorded.rule, 'audit-thinking-table-v1')
+    assert.deepEqual(recorded.target.attempts.map((attempt) => [attempt.strategy, attempt.reasoningTokens]), [['reasoning-effort-low', null], ['reasoning-effort-minimal', 300]])
+    assert.ok(asked.length > 0)
+    for (const body of asked) assert.deepEqual(body.reasoning, { effort: 'minimal' })
+  } finally {
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('reference build sends target requests to a native Anthropic upstream and records raw exchanges', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-anthropic-'))
   const banksDir = join(directory, 'banks')
@@ -427,8 +472,9 @@ test('reference build sends target requests to a native Anthropic upstream and r
       baseUrl: 'https://api.anthropic.test/v1',
       model: 'claude-test-native',
       protocol: 'anthropic-messages',
-      // The stub accepts the first discovery strategy; the real API refuses it and moves on.
-      request: { overrides: { reasoning: { effort: 'none' } }, omissions: ['top_p'] },
+      // Anthropic's API reports no reasoning count, so no setting is confirmed to turn thinking off (an unknown count is
+      // never 0) and discovery keeps `bare`. Before, the first setting tried read as 0 reasoning tokens and was kept.
+      request: { overrides: {}, omissions: ['top_p'] },
       providerPin: null,
     })
     assert.equal(built.reference.provenance?.sourceId, 'upstream:anthropic-native:anthropic:claude-test-native')
@@ -444,9 +490,12 @@ test('reference build sends target requests to a native Anthropic upstream and r
     }
     assert.equal(document.kind, 'antseed-reference-exchanges')
     assert.equal(exchanges.exchangeCount, document.exchanges.length)
-    // Thinking discovery (one accepted request each for the target and the contrast) is recorded too.
+    // Thinking discovery is recorded too: for the target every setting in the order up to `bare` (no prefill on
+    // Anthropic Messages), as none reports a reasoning count; for the contrast the one it accepts.
     const discovery = document.exchanges.filter((exchange) => exchange.purpose === 'thinking-discovery')
-    assert.equal(discovery.length, 2)
+    assert.deepEqual(discovery.map((exchange) => exchange.protocol).sort(), [
+      'anthropic-messages', 'anthropic-messages', 'anthropic-messages', 'anthropic-messages', 'anthropic-messages', 'openai-chat-completions',
+    ])
     assert.equal(exchanges.exchangeCount, requests.length + discovery.length)
     assert.equal(raw.toString('utf8').includes('secret'), false)
     const anthropicExchange = document.exchanges.find((exchange) => exchange.protocol === 'anthropic-messages'

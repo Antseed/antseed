@@ -21,10 +21,13 @@ import {
   type KbfReferenceCalibrationV1,
   type KbfReferenceV1,
   type ReferenceProbeSelfTestV1,
+  referenceEndpointRequest,
 } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
 import { acquirePidFileLock, readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
+import { auditThinkingForBank } from './audit-thinking-table.js'
+import { thinkingLevelOf } from './thinking-suppression.js'
 import type {
   ReferenceBuildCostV1,
   ReferenceExchangesFileV1,
@@ -1259,6 +1262,29 @@ function assertCurrentBankEnrollment(bank: ProbeBankV1, model: string): void {
     throw new Error(
       `probe bank for ${model} uses reference enrollment ${bank.referenceTemplate.generator.version}; `
       + `archive it and rebuild with enrollment ${REFERENCE_BUILDER_VERSION}`,
+    )
+  }
+  assertBankFollowsThinkingTable(bank, model)
+}
+
+/**
+ * A bank the thinking table applies to (`auditThinkingForBank`: a model it names, asked on OpenRouter) must have been
+ * asked with the table's level or its fallback (`AUDIT_THINKING`): a bank asked another way (a setting discovery chose before the table) measures the model otherwise
+ * than its sellers are asked, so it is rebuilt. A bank with no recorded setting is not checked.
+ */
+export function assertBankFollowsThinkingTable(
+  bank: Pick<ProbeBankV1, 'queryProfile'> & { referenceTemplate: Pick<ProbeBankV1['referenceTemplate'], 'generator'> },
+  model: string,
+): void {
+  const table = auditThinkingForBank(model, bank.referenceTemplate)
+  if (!table) return
+  const strategy = referenceEndpointRequest({ queryProfile: bank.queryProfile, generator: bank.referenceTemplate.generator })?.reasoningStrategy
+  if (strategy === undefined) return
+  const level = thinkingLevelOf(strategy)
+  if (level === null || (level !== table.level && level !== table.fallback)) {
+    throw new Error(
+      `probe bank for ${model} was asked with thinking setting '${strategy}'; the audit rules ask for '${table.level}'`
+      + `${table.fallback ? ` (or '${table.fallback}' where refused)` : ''}: archive it and rebuild`,
     )
   }
 }

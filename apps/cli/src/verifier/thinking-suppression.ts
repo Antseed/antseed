@@ -5,6 +5,15 @@
  * share it; this module keeps the CLI's import path.
  */
 export {
+  CHAT_THINKING_STRATEGIES,
+  THINKING_LEVELS,
+  THINKING_REFERENCE_FIRST_RULE,
+  THINKING_TABLE_RULE,
+  chatStrategyForLevel,
+  checkThinkingSetting,
+  referenceStrategyForLevel,
+  thinkingLevelOf,
+  type ThinkingLevel,
   THINKING_DISCOVERY_MAX_TOKENS,
   THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS,
   THINKING_DISCOVERY_PROBES,
