@@ -196,23 +196,32 @@ describe('provider-openai-responses plugin', () => {
     rmSync(dirname(authFile), { recursive: true, force: true });
   });
 
-  it("sends the seller's user agent upstream, not the buyer's client's", async () => {
+  async function upstreamUserAgent(userAgent: string): Promise<string | undefined> {
     const authFile = writeAuthFile({ tokens: { access_token: makeJwt({ 'https://api.openai.com/auth': { chatgpt_account_id: 'acct-jwt' } }) } });
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'resp_1' }), { status: 200, headers: { 'content-type': 'application/json' } }));
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     const provider = plugin.createProvider({ OPENAI_RESPONSES_AUTH_FILE: authFile, ANTSEED_ALLOWED_SERVICES: 'gpt-5-codex' });
+    try {
+      await provider.handleRequest({
+        requestId: 'req-ua',
+        method: 'POST',
+        path: '/v1/responses',
+        headers: { 'content-type': 'application/json', 'user-agent': userAgent },
+        body: new TextEncoder().encode(JSON.stringify({ model: 'gpt-5-codex', input: 'hello', stream: false })),
+      });
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      return (init.headers as Record<string, string>)['user-agent'];
+    } finally {
+      rmSync(dirname(authFile), { recursive: true, force: true });
+    }
+  }
 
-    await provider.handleRequest({
-      requestId: 'req-ua',
-      method: 'POST',
-      path: '/v1/responses',
-      headers: { 'content-type': 'application/json', 'user-agent': 'Python-urllib/3.12' },
-      body: new TextEncoder().encode(JSON.stringify({ model: 'gpt-5-codex', input: 'hello', stream: false })),
-    });
+  it("sends a Codex buyer's own user agent upstream, since the login is the Codex CLI's", async () => {
+    expect(await upstreamUserAgent('codex_cli_rs/0.1.0 (Mac OS 26.0.0; arm64) xterm')).toBe('codex_cli_rs/0.1.0 (Mac OS 26.0.0; arm64) xterm');
+  });
 
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect((init.headers as Record<string, string>)['user-agent']).toMatch(/^antseed-seller\/\d+\.\d+\.\d+$/);
-    rmSync(dirname(authFile), { recursive: true, force: true });
+  it("sends the seller's user agent for a buyer that is not Codex", async () => {
+    expect(await upstreamUserAgent('Python-urllib/3.12')).toMatch(/^antseed-seller\//);
   });
 
   it('preserves an explicit reasoning profile when relaying to the Codex backend', async () => {

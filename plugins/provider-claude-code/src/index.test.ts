@@ -78,6 +78,11 @@ describe('provider-claude-code plugin', () => {
       expect(headers['user-agent']).toBe('claude-cli/1.0.0 (external, cli)');
     });
 
+    it("sends the seller's user agent for a buyer that is not Claude Code", async () => {
+      const { headers } = await upstreamRequest('claude-haiku-4-5', { 'user-agent': 'Python-urllib/3.12' });
+      expect(headers['user-agent']).toMatch(/^antseed-seller\//);
+    });
+
     it('keeps sampling fields for a model that accepts them', async () => {
       const { body } = await upstreamRequest('claude-haiku-4-5');
       expect(body).toEqual({ model: 'claude-haiku-4-5', temperature: 0.7, top_p: 0.9, top_k: 5 });

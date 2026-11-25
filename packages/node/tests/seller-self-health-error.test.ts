@@ -124,11 +124,15 @@ describe('seller self health error', () => {
     expect(masked.detail).toBe('HTTP 401 token_expired: Token [redacted] has expired');
   });
 
-  it("reports a Cloudflare block as the upstream's bot protection, not the seller's account, and still answers unavailable", async () => {
-    const page = '<!DOCTYPE html><html><head><title>Access denied | api.example.com used Cloudflare to restrict access</title></head><body><h1>Error <span class="cf-error-code">1010</span></h1></body></html>';
+  it("reports a Cloudflare block as Cloudflare's refusal, not the seller's account, and still answers unavailable", async () => {
+    const title = '<!DOCTYPE html><html lang="en-US"><head><title>Access denied | api.example.com used Cloudflare to restrict access</title>';
+    // The seller reads the first 2,000 bytes; on a real page the code comes after a long head.
+    const cutPage = `${title}<style>${'x'.repeat(2_500)}</style></head><body><span class="cf-error-code">1010</span></body></html>`.slice(0, 2_000);
+    const shortPage = `${title}</head><body><h1>Error <span class="cf-error-code">1010</span></h1></body></html>`;
     for (const [headers, body, block] of [
       [{ 'content-type': 'text/plain' }, 'error code: 1010', 'Cloudflare error 1010'],
-      [{ 'content-type': 'text/html' }, page, 'Cloudflare error 1010'],
+      [{ 'content-type': 'text/html' }, shortPage, 'Cloudflare error 1010'],
+      [{ 'content-type': 'text/html' }, cutPage, 'Cloudflare error page'],
     ] as const) {
       const provider = makeProvider('p', 403);
       provider.handleRequest = vi.fn(async (req) => ({
@@ -143,7 +147,7 @@ describe('seller self health error', () => {
       expect(sent).not.toContain('api.example.com');
       expect(events.find(([event]) => event === 'provider:error-masked')?.[1]).toMatchObject({
         reason: 'blocked', statusCode: 503, upstreamStatusCode: 403,
-        detail: `HTTP 403 ${block}: the upstream's bot protection refused the request before it reached the upstream; not an account problem`,
+        detail: `HTTP 403 ${block}: Cloudflare in front of the upstream refused the request before it reached the upstream; not an account problem`,
       });
     }
   });
@@ -163,8 +167,9 @@ describe('seller self health error', () => {
     vi.stubEnv('ANTSEED_CONTENT_FREE_LOGS', '1');
     try {
       expect(describeUpstreamError(403, 'error code: 1020')).toBe(
-        "HTTP 403 Cloudflare error 1020: the upstream's bot protection refused the request before it reached the upstream; not an account problem",
+        "HTTP 403 Cloudflare error 1020: Cloudflare in front of the upstream refused the request before it reached the upstream; not an account problem",
       );
+      expect(describeUpstreamError(403, 'error code: 9999')).toBe('HTTP 403');
     } finally {
       vi.unstubAllEnvs();
     }

@@ -616,6 +616,8 @@ class OpenAIResponsesProvider implements Provider {
         retryOn5xx: 3,
         retryBaseDelayMs: 1000,
         retryStatusCodes: [429],
+        // The login is the Codex CLI's: a Codex buyer's own agent (`codex_cli_rs/...`) goes on as before.
+        forwardClientUserAgent: /^codex/i,
       },
     });
   }

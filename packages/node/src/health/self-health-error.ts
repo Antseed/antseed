@@ -101,17 +101,22 @@ function upstreamErrorMessage(body: string): string {
 }
 
 /**
- * The Cloudflare block behind an upstream 403, when there is one: bot
- * protection in front of the upstream refused the request before it reached
- * the upstream, so it says nothing about the seller's account. Cloudflare
- * answers a script client with `error code: 1010` as text and names the code
- * in `cf-error-code` on its HTML page. A JSON error is the upstream's own,
- * even with Cloudflare in front of it.
+ * The Cloudflare block behind an upstream 403, when there is one: Cloudflare
+ * in front of the upstream refused the request before it reached the upstream
+ * (bot protection, a firewall rule, an IP or country ban), so it says nothing
+ * about the seller's account. Cloudflare answers a script client with
+ * `error code: 1010` as text. Its HTML page says "used Cloudflare to restrict
+ * access" in the title, near the top of the body the seller reads, and its
+ * code further down. A JSON error is the upstream's own, even with Cloudflare
+ * in front of it.
  */
 export function upstreamBotBlock(statusCode: number, body: string): string | null {
   if (statusCode !== 403 || tryParseJsonObject(new TextEncoder().encode(body))) return null;
-  const code = /^\s*error code:\s*(\d{4})\s*$/i.exec(body)?.[1] ?? /class="cf-error-code"[^>]*>\s*(\d{4})\s*</i.exec(body)?.[1];
-  return code ? `Cloudflare error ${code}` : null;
+  const code = /^\s*error code:\s*(1\d{3})\s*$/i.exec(body)?.[1];
+  if (code) return `Cloudflare error ${code}`;
+  if (!/<title>[^<]*used Cloudflare to restrict access/i.test(body)) return null;
+  const pageCode = /cf-error-code[^>]*>\s*(1\d{3})\s*</i.exec(body)?.[1];
+  return pageCode ? `Cloudflare error ${pageCode}` : 'Cloudflare error page';
 }
 
 /**
@@ -121,7 +126,7 @@ export function upstreamBotBlock(statusCode: number, body: string): string | nul
  */
 export function describeUpstreamError(statusCode: number, body: string): string {
   const block = upstreamBotBlock(statusCode, body);
-  if (block) return `HTTP ${statusCode} ${block}: the upstream's bot protection refused the request before it reached the upstream; not an account problem`;
+  if (block) return `HTTP ${statusCode} ${block}: Cloudflare in front of the upstream refused the request before it reached the upstream; not an account problem`;
   const code = upstreamErrorCode(body);
   const head = code ? `HTTP ${statusCode} ${code}` : `HTTP ${statusCode}`;
   if (isContentFreeLogging()) return head;

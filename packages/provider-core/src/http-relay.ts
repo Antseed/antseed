@@ -34,12 +34,12 @@ export interface RelayConfig {
   /** Headers set only when the request does not carry them (any case; a blank value counts as missing). */
   defaultHeaders?: Record<string, string>;
   /**
-   * Send the buyer's client user agent upstream instead of the seller's. Only for an upstream that
-   * reads the client's identity from it, such as Anthropic gating models on the Claude Code version
-   * in `claude-cli/<version>` on a Claude Code login. A public API never sets it: bot protection in
-   * front of it may refuse a buyer's client.
+   * A buyer user agent that matches is sent upstream instead of the seller's; any other buyer user
+   * agent is still dropped. Only for a login that belongs to one client app, whose upstream reads that
+   * app's user agent (Anthropic gates models on the Claude Code version in `claude-cli/<version>`).
+   * A public API never sets it: bot protection in front of it may refuse a buyer's client.
    */
-  forwardClientUserAgent?: boolean;
+  forwardClientUserAgent?: RegExp;
   /**
    * Top-level JSON body fields to drop, given the path sent upstream (no query string) and the
    * model the upstream will see (after alias rewrite and pin). For fields the upstream's own
@@ -429,11 +429,11 @@ export class HttpRelay {
       }
     }
 
-    // Swap auth headers. The buyer's user agent stays behind unless the plugin forwards it: the
-    // seller sends its own, or the one the plugin sets in `extraHeaders` or `defaultHeaders`.
-    const buyerHeaders = this._config.forwardClientUserAgent
-      ? request.headers
-      : Object.fromEntries(Object.entries(request.headers).filter(([key]) => key.toLowerCase() !== 'user-agent'));
+    // Swap auth headers. The buyer's user agent stays behind unless the plugin forwards that client's:
+    // the seller sends its own, or the one the plugin sets in `extraHeaders` or `defaultHeaders`.
+    const forwarded = this._config.forwardClientUserAgent;
+    const buyerHeaders = Object.fromEntries(Object.entries(request.headers)
+      .filter(([key, value]) => key.toLowerCase() !== 'user-agent' || (forwarded?.test(value) ?? false)));
     let swappedRequest = swapAuthHeader({ ...request, headers: buyerHeaders }, effectiveConfig);
     const swappedHeaders = { ...swappedRequest.headers };
     const defaultHeaders = [...Object.entries(this._config.defaultHeaders ?? {}), ['user-agent', SELLER_USER_AGENT] as const];

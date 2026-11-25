@@ -14,8 +14,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
-- Provider plugins: a seller no longer sends the buyer's `User-Agent` to its upstream. The relay sends `antseed-seller/<version>` (the `@antseed/provider-core` version) unless the plugin sets its own user agent. The testing-only `claude-code` plugin still sends the buyer's Claude Code user agent, because Anthropic gates newer models on the Claude Code version in it. An upstream behind bot protection could refuse a buyer's script client (such as `Python-urllib`) with HTTP 403 while other clients on the same model succeeded. This reaches a seller when its provider plugins are republished with the new `@antseed/provider-core`.
-- Node: when an upstream 403 is a Cloudflare block (`error code: 1010`, or Cloudflare's error page), the seller log says the upstream's bot protection refused the request, with reason `blocked` instead of `account`. The buyer still gets the same 503 `upstream_unavailable` answer.
+- Provider plugins: a seller no longer sends the buyer's `User-Agent` to its upstream. The relay sends `antseed-seller/<version>` (the `@antseed/provider-core` version) unless the plugin sets its own user agent. The testing-only `claude-code` and `openai-responses` plugins still send a buyer's own `claude-cli/...` or `codex...` user agent, the app their login belongs to; any other buyer user agent is replaced there too. An upstream behind bot protection could refuse a buyer's script client (such as `Python-urllib`) with HTTP 403 while other clients on the same model succeeded. This reaches a seller when its provider plugins are republished with the new `@antseed/provider-core`.
+- Node: when an upstream 403 is a Cloudflare block (`error code: 1xxx`, or Cloudflare's error page), the seller log says Cloudflare in front of the upstream refused the request, with reason `blocked` instead of `account`. The buyer still gets the same 503 `upstream_unavailable` answer.
 
 ## 2026-11-23 — CLI 0.1.259, Node 0.2.191, Desktop 0.2.94
 

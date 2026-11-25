@@ -82,13 +82,18 @@ describe('HttpRelay user agent', () => {
     expect(sent['user-agent']).toBe('example-seller/2');
   });
 
-  it("forwards the buyer's user agent only when the plugin asks to", async () => {
-    const sent = await relayFrom({ 'user-agent': 'claude-cli/1.0.0 (external, cli)' }, { forwardClientUserAgent: true });
+  it("forwards the buyer's user agent when it is the client the plugin forwards", async () => {
+    const sent = await relayFrom({ 'User-Agent': 'claude-cli/1.0.0 (external, cli)' }, { forwardClientUserAgent: /^claude-cli\// });
     expect(sent['user-agent']).toBe('claude-cli/1.0.0 (external, cli)');
   });
 
+  it("drops any other buyer user agent even when the plugin forwards one client's", async () => {
+    const sent = await relayFrom({ 'user-agent': 'Python-urllib/3.12' }, { forwardClientUserAgent: /^claude-cli\// });
+    expect(sent['user-agent']).toBe(SELLER_UA);
+  });
+
   it("sends the seller's user agent when a forwarding plugin's buyer sent none", async () => {
-    const sent = await relayFrom({}, { forwardClientUserAgent: true });
+    const sent = await relayFrom({}, { forwardClientUserAgent: /^claude-cli\// });
     expect(sent['user-agent']).toBe(SELLER_UA);
   });
 

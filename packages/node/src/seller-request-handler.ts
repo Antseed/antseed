@@ -1157,7 +1157,7 @@ export class SellerRequestHandler {
           const upstreamStatusCode = statusCode;
           let maskedAs: 'account' | 'blocked' | 'self-health' | null = null;
           if (!streamedResponseStarted && isUpstreamAccountError(statusCode, upstreamError)) {
-            // A bot protection block is masked too: the seller's upstream refused the seller, and its page names the upstream.
+            // A Cloudflare block is masked too: it refused the seller's request, and its page names the upstream.
             maskedAs = upstreamBotBlock(statusCode, upstreamError) ? 'blocked' : 'account';
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
             statusCode = response.statusCode;

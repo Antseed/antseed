@@ -77,7 +77,7 @@ const plugin: AntseedProviderPlugin = {
         serviceRewriteMap,
         extraHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
         // Anthropic gates newer models on the Claude Code version in the buyer's `claude-cli/<version>`.
-        forwardClientUserAgent: true,
+        forwardClientUserAgent: /^claude-cli\//,
       },
     });
   },
