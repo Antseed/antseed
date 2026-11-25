@@ -1,4 +1,5 @@
-import type { Provider, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
+import { ANTSEED_STREAMING_RESPONSE_HEADER } from '@antseed/node';
+import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
 
 export class MockOpenAIChatProvider implements Provider {
   readonly name = 'openai';
@@ -63,6 +64,50 @@ export class MockOpenAIChatProvider implements Provider {
 
   getCapacity() {
     return { current: this._active, max: this.maxConcurrency };
+  }
+}
+
+/** Answers a streamed request as an upstream does: text, then a tool call, one SSE frame per chunk. */
+export class MockOpenAIChatStreamProvider extends MockOpenAIChatProvider {
+  async handleRequestStream(
+    req: SerializedHttpRequest,
+    callbacks: ProviderStreamCallbacks,
+  ): Promise<SerializedHttpResponse> {
+    this.requestCount++;
+    this.lastRequest = req;
+    const frame = (body: Record<string, unknown>): string => (
+      `data: ${JSON.stringify({ id: 'chatcmpl_stream_1', object: 'chat.completion.chunk', model: 'gpt-4.1', ...body })}\n\n`
+    );
+    const delta = (value: Record<string, unknown>, finishReason: string | null = null): string => (
+      frame({ choices: [{ index: 0, delta: value, finish_reason: finishReason }] })
+    );
+    const frames = [
+      delta({ role: 'assistant', content: '' }),
+      delta({ content: 'Hello' }),
+      delta({ content: ' world' }),
+      delta({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'write', arguments: '{"path"' } }] }),
+      delta({ tool_calls: [{ index: 0, function: { arguments: ':"a.txt"}' } }] }),
+      delta({}, 'tool_calls'),
+      frame({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 6, total_tokens: 16 } }),
+      'data: [DONE]\n\n',
+    ];
+    const encoder = new TextEncoder();
+    const response = {
+      requestId: req.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    };
+
+    callbacks.onResponseStart({
+      ...response,
+      headers: { ...response.headers, [ANTSEED_STREAMING_RESPONSE_HEADER]: '1' },
+      body: new Uint8Array(0),
+    });
+    for (const data of frames) {
+      await callbacks.onResponseChunk({ requestId: req.requestId, data: encoder.encode(data), done: false });
+    }
+    await callbacks.onResponseChunk({ requestId: req.requestId, data: new Uint8Array(0), done: true });
+    return { ...response, body: encoder.encode(frames.join('')) };
   }
 }
 

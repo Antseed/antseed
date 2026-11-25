@@ -737,7 +737,7 @@ describe('transformResponse chat to responses', () => {
         type: 'message',
         id: 'msg_chatcmpl-stream_1',
         status: 'in_progress',
-        content: [{ type: 'output_text', text: '', annotations: [] }],
+        content: [],
       },
     });
 

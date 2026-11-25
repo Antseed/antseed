@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Buyer proxy (`@antseed/api-adapter`, CLI, gateway, desktop): a streamed `POST /v1/responses` answered by a seller that speaks only OpenAI Chat Completions or Anthropic Messages now sends each text part once. `response.output_item.added` opens the message with empty `content` and `response.content_part.added` adds the part, as OpenAI's own stream does. Before, the message already held the part, so `client.responses.stream()` in the OpenAI Node SDK (7.5.0 and later) failed with `missing content at index 0`. Reading the raw events was not affected.
+
 ## 2026-11-25 — CLI 0.1.260, Node 0.2.192, Desktop 0.2.95
 
 ### Packages

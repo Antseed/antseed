@@ -148,6 +148,109 @@ function parseSseEvents(sseText: string): Array<{ event: string | null; data: st
     });
 }
 
+interface ResponsesStreamPart {
+  type: string;
+  text: string;
+}
+
+interface ResponsesStreamItem {
+  type: string;
+  id: string;
+  status: string;
+  content?: ResponsesStreamPart[];
+  arguments?: string;
+}
+
+interface ResponsesStreamEvent {
+  type: string;
+  output_index: number;
+  content_index: number;
+  item_id: string;
+  item: ResponsesStreamItem;
+  part: ResponsesStreamPart;
+  delta: string;
+  text: string;
+  arguments: string;
+  response: { output: ResponsesStreamItem[]; output_text: string };
+}
+
+/**
+ * Rebuilds a response from a Responses stream under the rules of the OpenAI SDK's `responses.stream()`: an item or
+ * part is added only at the next free index, and every later event names an item and a part that exist. Returns
+ * the items as they were opened, the items as they ended, and the closing event.
+ */
+function replayResponsesStream(sseText: string): {
+  opened: ResponsesStreamItem[];
+  output: ResponsesStreamItem[];
+  completed: ResponsesStreamEvent;
+} {
+  const events = parseSseEvents(sseText)
+    .filter((event) => event.data !== '[DONE]')
+    .map((event) => JSON.parse(event.data) as ResponsesStreamEvent);
+  const opened: ResponsesStreamItem[] = [];
+  const output: ResponsesStreamItem[] = [];
+
+  const append = <T>(list: T[], index: number, value: T, kind: string): void => {
+    if (index !== list.length) throw new Error(`missing ${kind} at index ${index}`);
+    list.push(value);
+  };
+  const itemOf = (event: ResponsesStreamEvent): ResponsesStreamItem => {
+    const item = output[event.output_index];
+    if (!item) throw new Error(`missing output at index ${event.output_index}`);
+    if (item.id !== event.item_id) throw new Error(`expected item_id '${item.id}', got '${event.item_id}'`);
+    return item;
+  };
+  const contentOf = (event: ResponsesStreamEvent): ResponsesStreamPart[] => {
+    const { content } = itemOf(event);
+    if (!content) throw new Error(`missing content at index ${event.content_index}`);
+    return content;
+  };
+  const partOf = (event: ResponsesStreamEvent): ResponsesStreamPart => {
+    const part = contentOf(event)[event.content_index];
+    if (!part) throw new Error(`missing content at index ${event.content_index}`);
+    return part;
+  };
+
+  expect(events[0]?.type).toBe('response.created');
+  for (const event of events.slice(1, -1)) {
+    switch (event.type) {
+      case 'response.output_item.added':
+        opened.push(structuredClone(event.item));
+        append(output, event.output_index, structuredClone(event.item), 'output');
+        break;
+      case 'response.content_part.added':
+        append(contentOf(event), event.content_index, structuredClone(event.part), 'content');
+        break;
+      case 'response.output_text.delta':
+        partOf(event).text += event.delta;
+        break;
+      case 'response.output_text.done':
+        expect(partOf(event).text).toBe(event.text);
+        break;
+      case 'response.content_part.done':
+        expect(partOf(event)).toEqual(event.part);
+        break;
+      case 'response.function_call_arguments.delta':
+        itemOf(event).arguments += event.delta;
+        break;
+      case 'response.function_call_arguments.done':
+        expect(itemOf(event).arguments).toBe(event.arguments);
+        break;
+      case 'response.output_item.done':
+        expect(event.item).toMatchObject({ ...output[event.output_index], status: 'completed' });
+        output[event.output_index] = event.item;
+        break;
+      default:
+        throw new Error(`unexpected event ${event.type}`);
+    }
+  }
+
+  const completed = events.at(-1)!;
+  expect(completed.type).toBe('response.completed');
+  expect(completed.response.output).toEqual(output);
+  return { opened, output, completed };
+}
+
 describe('detectRequestServiceApiProtocol', () => {
   it('identifies model routing independently from TypeSafe and the local routing endpoint', () => {
     expect(detectRequestServiceApiProtocol(makeRequest({ path: '/v1/routing/rank', headers: {} }))).toBe('irp-suggest');
@@ -1974,7 +2077,7 @@ describe('transformResponse chat to responses', () => {
         type: 'message',
         id: 'msg_chatcmpl-stream_1',
         status: 'in_progress',
-        content: [{ type: 'output_text', text: '', annotations: [] }],
+        content: [],
       },
     });
 
@@ -2524,6 +2627,141 @@ describe('createStreamingAdapter chat to responses', () => {
 
     expect(events.some((event) => event.event === 'response.output_text.delta')).toBe(false);
     expect(events.some((event) => event.event === 'response.output_text.done')).toBe(false);
+  });
+});
+
+describe('translated Responses streams', () => {
+  const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
+  const decode = (data: Uint8Array): string => new TextDecoder().decode(data);
+
+  const chatFrames = (withTool: boolean): string[] => {
+    const frame = (body: Record<string, unknown>): string => (
+      `data: ${JSON.stringify({ id: 'chatcmpl-1', model: 'gpt-4.1', ...body })}\n\n`
+    );
+    const delta = (value: Record<string, unknown>, finishReason: string | null = null): string => (
+      frame({ choices: [{ index: 0, delta: value, finish_reason: finishReason }] })
+    );
+    return [
+      delta({ role: 'assistant', content: '' }),
+      delta({ content: 'Hello' }),
+      delta({ content: ' world' }),
+      ...(withTool
+        ? [
+          delta({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'write', arguments: '{"path"' } }] }),
+          delta({ tool_calls: [{ index: 0, function: { arguments: ':"a.txt"}' } }] }),
+        ]
+        : []),
+      delta({}, withTool ? 'tool_calls' : 'stop'),
+      frame({ choices: [], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }),
+      'data: [DONE]\n\n',
+    ];
+  };
+
+  const messagesFrames = (withTool: boolean): string[] => {
+    const frame = (body: Record<string, unknown> & { type: string }): string => (
+      `event: ${body.type}\ndata: ${JSON.stringify(body)}\n\n`
+    );
+    return [
+      frame({ type: 'message_start', message: { id: 'msg_1', model: 'claude-sonnet', usage: { input_tokens: 5, output_tokens: 1 } } }),
+      frame({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+      frame({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } }),
+      frame({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ' world' } }),
+      frame({ type: 'content_block_stop', index: 0 }),
+      ...(withTool
+        ? [
+          frame({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'call_1', name: 'write', input: {} } }),
+          frame({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"path"' } }),
+          frame({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: ':"a.txt"}' } }),
+          frame({ type: 'content_block_stop', index: 1 }),
+        ]
+        : []),
+      frame({ type: 'message_delta', delta: { stop_reason: withTool ? 'tool_use' : 'end_turn' }, usage: { output_tokens: 2 } }),
+      frame({ type: 'message_stop' }),
+    ];
+  };
+
+  const chatBody = (withTool: boolean): Record<string, unknown> => ({
+    id: 'chatcmpl-1',
+    model: 'gpt-4.1',
+    choices: [{
+      index: 0,
+      finish_reason: withTool ? 'tool_calls' : 'stop',
+      message: {
+        role: 'assistant',
+        content: 'Hello world',
+        ...(withTool
+          ? { tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'write', arguments: '{"path":"a.txt"}' } }] }
+          : {}),
+      },
+    }],
+    usage: { prompt_tokens: 5, completion_tokens: 2 },
+  });
+
+  const messagesBody = (withTool: boolean): Record<string, unknown> => ({
+    id: 'msg_1',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-sonnet',
+    content: [
+      { type: 'text', text: 'Hello world' },
+      ...(withTool ? [{ type: 'tool_use', id: 'call_1', name: 'write', input: { path: 'a.txt' } }] : []),
+    ],
+    stop_reason: withTool ? 'tool_use' : 'end_turn',
+    usage: { input_tokens: 5, output_tokens: 2 },
+  });
+
+  /** One SSE frame per chunk, then the empty final chunk a relay ends every stream with. */
+  const streamed = (from: ServiceApiProtocol, frames: string[]): string => {
+    const adapter = createStreamAdapterForTest(from, 'openai-responses', 'fallback');
+    const requestId = 'req-translated-stream';
+    return [
+      ...frames.map((frame) => ({ requestId, data: encode(frame), done: false })),
+      { requestId, data: new Uint8Array(0), done: true },
+    ]
+      .flatMap((chunk) => adapter.adaptChunk(chunk))
+      .map((chunk) => decode(chunk.data))
+      .join('');
+  };
+
+  const renderedFromJson = (from: ServiceApiProtocol, body: Record<string, unknown>): string => decode(
+    adaptResponseForTest(from, 'openai-responses', {
+      requestId: 'req-translated-json',
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: encode(JSON.stringify(body)),
+    }, { fallbackModel: 'fallback', streamRequested: true }).body,
+  );
+
+  describe.each<[string, (withTool: boolean) => string]>([
+    ['a streamed Chat Completions answer', (withTool) => streamed('openai-chat-completions', chatFrames(withTool))],
+    ['a streamed Messages answer', (withTool) => streamed('anthropic-messages', messagesFrames(withTool))],
+    ['a Chat Completions JSON answer', (withTool) => renderedFromJson('openai-chat-completions', chatBody(withTool))],
+    ['a Messages JSON answer', (withTool) => renderedFromJson('anthropic-messages', messagesBody(withTool))],
+  ])('from %s', (_source, render) => {
+    it('opens the message empty and adds its text part once', () => {
+      const { opened, output, completed } = replayResponsesStream(render(false));
+
+      expect(opened).toMatchObject([{ type: 'message', status: 'in_progress', content: [] }]);
+      expect(output).toMatchObject([{
+        type: 'message',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'Hello world', annotations: [] }],
+      }]);
+      expect(completed.response.output_text).toBe('Hello world');
+    });
+
+    it('adds a tool call as the next item after the text', () => {
+      const { opened, output } = replayResponsesStream(render(true));
+
+      expect(opened).toMatchObject([
+        { type: 'message', status: 'in_progress', content: [] },
+        { type: 'function_call', status: 'in_progress', arguments: '' },
+      ]);
+      expect(output).toMatchObject([
+        { type: 'message', status: 'completed', content: [{ type: 'output_text', text: 'Hello world' }] },
+        { type: 'function_call', status: 'completed', call_id: 'call_1', name: 'write', arguments: '{"path":"a.txt"}' },
+      ]);
+    });
   });
 });
 
