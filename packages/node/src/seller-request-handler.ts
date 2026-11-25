@@ -79,7 +79,7 @@ import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/resp
 import { usageForBilling } from '@antseed/buyer-core';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
-import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, describeUpstreamError, isUpstreamAccountError, isUpstreamFailureStatus, isVideoDownloadBusy } from './health/self-health-error.js';
+import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, describeUpstreamError, isUpstreamAccountError, isUpstreamFailureStatus, isVideoDownloadBusy, upstreamBotBlock } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
@@ -1155,11 +1155,12 @@ export class SellerRequestHandler {
           const upstreamError = statusCode >= 400 ? new TextDecoder().decode(upstreamBody.slice(0, 2_000)) : '';
           this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: upstreamError, billable: videoRoute?.action !== 'retrieve' });
           const upstreamStatusCode = statusCode;
-          let maskedAs: 'account' | 'self-health' | null = null;
+          let maskedAs: 'account' | 'blocked' | 'self-health' | null = null;
           if (!streamedResponseStarted && isUpstreamAccountError(statusCode, upstreamError)) {
+            // A bot protection block is masked too: the seller's upstream refused the seller, and its page names the upstream.
+            maskedAs = upstreamBotBlock(statusCode, upstreamError) ? 'blocked' : 'account';
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
             statusCode = response.statusCode;
-            maskedAs = 'account';
           } else if (!streamedResponseStarted && statusCode === 429 && !isVideoDownloadBusy(statusCode, upstreamError)) {
             response = buildUpstreamRateLimitedResponse(request.requestId, requestedModel, takeHeader({ ...response.headers }, 'retry-after'));
           }

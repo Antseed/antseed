@@ -124,6 +124,52 @@ describe('seller self health error', () => {
     expect(masked.detail).toBe('HTTP 401 token_expired: Token [redacted] has expired');
   });
 
+  it("reports a Cloudflare block as the upstream's bot protection, not the seller's account, and still answers unavailable", async () => {
+    const page = '<!DOCTYPE html><html><head><title>Access denied | api.example.com used Cloudflare to restrict access</title></head><body><h1>Error <span class="cf-error-code">1010</span></h1></body></html>';
+    for (const [headers, body, block] of [
+      [{ 'content-type': 'text/plain' }, 'error code: 1010', 'Cloudflare error 1010'],
+      [{ 'content-type': 'text/html' }, page, 'Cloudflare error 1010'],
+    ] as const) {
+      const provider = makeProvider('p', 403);
+      provider.handleRequest = vi.fn(async (req) => ({
+        requestId: req.requestId, statusCode: 403, headers: { ...headers }, body: new TextEncoder().encode(body),
+      }));
+      const events: Array<[string, unknown]> = [];
+      const response = await serve([provider], (event, payload) => { events.push([event, payload]); return true; });
+      // The buyer gets what it gets for any upstream refusal: the page names the seller's upstream.
+      expect(response.statusCode).toBe(503);
+      const sent = new TextDecoder().decode(response.body);
+      expect(JSON.parse(sent).error).toMatchObject({ code: 'upstream_unavailable', service: 'test-model' });
+      expect(sent).not.toContain('api.example.com');
+      expect(events.find(([event]) => event === 'provider:error-masked')?.[1]).toMatchObject({
+        reason: 'blocked', statusCode: 503, upstreamStatusCode: 403,
+        detail: `HTTP 403 ${block}: the upstream's bot protection refused the request before it reached the upstream; not an account problem`,
+      });
+    }
+  });
+
+  it('still reads a JSON 403 from an upstream behind Cloudflare as an account error', async () => {
+    const provider = makeProvider('p', 403);
+    provider.handleRequest = vi.fn(async (req) => ({
+      requestId: req.requestId, statusCode: 403, headers: { 'content-type': 'application/json', server: 'cloudflare', 'cf-ray': 'abc-AMS' },
+      body: new TextEncoder().encode(JSON.stringify({ error: { code: 'unsupported_country_region_territory', message: 'Country not supported' } })),
+    }));
+    const events: Array<[string, unknown]> = [];
+    await serve([provider], (event, payload) => { events.push([event, payload]); return true; });
+    expect(events.find(([event]) => event === 'provider:error-masked')?.[1]).toMatchObject({ reason: 'account', upstreamStatusCode: 403 });
+  });
+
+  it('names the Cloudflare block in content-free mode without the page', async () => {
+    vi.stubEnv('ANTSEED_CONTENT_FREE_LOGS', '1');
+    try {
+      expect(describeUpstreamError(403, 'error code: 1020')).toBe(
+        "HTTP 403 Cloudflare error 1020: the upstream's bot protection refused the request before it reached the upstream; not an account problem",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('reports the upstream error behind a self health error to the seller', async () => {
     const provider = makeProvider('p', 502);
     provider.serviceHealth = { 'test-model': failing };

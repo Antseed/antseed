@@ -18,6 +18,7 @@ The seller's path from a plugin to its upstream: `HttpRelay`, `BaseProvider` aro
 | The relay adds `Bearer` only when `authHeaderName` is exactly `authorization`. Give it a raw key. | `src/http-relay.test.ts` (lowercase only) |
 | A pin lives on the request object, so a copy of a pinned request loses it. | review only |
 | `stripHeaderPrefixes` runs after auth and `extraHeaders`, so it also removes seller-set headers. | review only |
+| The buyer's `User-Agent` never goes upstream. The relay sends `SELLER_USER_AGENT` (`antseed-seller/<provider-core version>`) unless the plugin sets one in `extraHeaders` or `defaultHeaders`. Only `claude-code` sets `forwardClientUserAgent`: Anthropic gates newer models on the Claude Code version in `claude-cli/<version>`. | `src/http-relay-user-agent.test.ts` |
 | `serviceRewriteMap` keys must be lowercase. Only `parseServiceAliasMap` normalizes them. | review only |
 | The relay never follows an upstream redirect unless a plugin sets `redirect: 'follow'`. | `src/http-relay-timeout.test.ts` (307, 308) |
 | Streaming chat completions get `stream_options.include_usage: true` unless the caller set it. Without usage the seller bills zero. | `src/http-relay.test.ts` |

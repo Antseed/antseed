@@ -101,11 +101,27 @@ function upstreamErrorMessage(body: string): string {
 }
 
 /**
+ * The Cloudflare block behind an upstream 403, when there is one: bot
+ * protection in front of the upstream refused the request before it reached
+ * the upstream, so it says nothing about the seller's account. Cloudflare
+ * answers a script client with `error code: 1010` as text and names the code
+ * in `cf-error-code` on its HTML page. A JSON error is the upstream's own,
+ * even with Cloudflare in front of it.
+ */
+export function upstreamBotBlock(statusCode: number, body: string): string | null {
+  if (statusCode !== 403 || tryParseJsonObject(new TextEncoder().encode(body))) return null;
+  const code = /^\s*error code:\s*(\d{4})\s*$/i.exec(body)?.[1] ?? /class="cf-error-code"[^>]*>\s*(\d{4})\s*</i.exec(body)?.[1];
+  return code ? `Cloudflare error ${code}` : null;
+}
+
+/**
  * The upstream error behind a 503 a buyer got, for the seller's own log: the
  * status, the error type and, outside content-free mode, the message with
- * anything token-like redacted.
+ * anything token-like redacted. A Cloudflare block is named as one instead.
  */
 export function describeUpstreamError(statusCode: number, body: string): string {
+  const block = upstreamBotBlock(statusCode, body);
+  if (block) return `HTTP ${statusCode} ${block}: the upstream's bot protection refused the request before it reached the upstream; not an account problem`;
   const code = upstreamErrorCode(body);
   const head = code ? `HTTP ${statusCode} ${code}` : `HTTP ${statusCode}`;
   if (isContentFreeLogging()) return head;

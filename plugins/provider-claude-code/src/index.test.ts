@@ -48,7 +48,7 @@ describe('provider-claude-code plugin', () => {
     });
 
     // The keychain is never read: the token comes from the mocked provider.
-    async function upstreamRequest(model: string): Promise<{ headers: Record<string, string>; body: Record<string, unknown> }> {
+    async function upstreamRequest(model: string, clientHeaders: Record<string, string> = {}): Promise<{ headers: Record<string, string>; body: Record<string, unknown> }> {
       vi.spyOn(ClaudeCodeTokenProvider.prototype, 'getToken').mockResolvedValue('test-access-token');
       vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', { status: 200 }));
@@ -57,7 +57,7 @@ describe('provider-claude-code plugin', () => {
         requestId: 'req-1',
         method: 'POST',
         path: '/v1/messages',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...clientHeaders },
         body: new TextEncoder().encode(JSON.stringify({ model, temperature: 0.7, top_p: 0.9, top_k: 5 })),
       });
       const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -71,6 +71,11 @@ describe('provider-claude-code plugin', () => {
       const { headers, body } = await upstreamRequest('claude-haiku-5-5');
       expect(headers['anthropic-version']).toBe('2023-06-01');
       expect(body).toEqual({ model: 'claude-haiku-5-5' });
+    });
+
+    it("sends the buyer's Claude Code user agent upstream, which Anthropic reads the version from", async () => {
+      const { headers } = await upstreamRequest('claude-haiku-4-5', { 'user-agent': 'claude-cli/1.0.0 (external, cli)' });
+      expect(headers['user-agent']).toBe('claude-cli/1.0.0 (external, cli)');
     });
 
     it('keeps sampling fields for a model that accepts them', async () => {

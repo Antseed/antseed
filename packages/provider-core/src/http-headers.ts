@@ -1,3 +1,11 @@
+import pkg from '../package.json' with { type: 'json' };
+
+/**
+ * The user agent the relay sends upstream unless the plugin sets one. The buyer's is never sent:
+ * it names the buyer's client, and bot protection in front of an upstream may refuse it.
+ */
+export const SELLER_USER_AGENT = `antseed-seller/${pkg.version}`;
+
 const HOP_BY_HOP_HEADERS = new Set([
   'connection', 'expect', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'te', 'trailers', 'transfer-encoding', 'upgrade',

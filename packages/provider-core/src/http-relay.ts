@@ -3,7 +3,7 @@ import type { SerializedHttpRequest, SerializedHttpResponse, SerializedHttpRespo
 import { ANTSEED_STREAMING_RESPONSE_HEADER } from '@antseed/node';
 import { swapAuthHeader, validateRequestService } from './auth-swap.js';
 import Bottleneck from 'bottleneck';
-import { stripRelayRequestHeaders, stripRelayResponseHeaders } from './http-headers.js';
+import { SELLER_USER_AGENT, stripRelayRequestHeaders, stripRelayResponseHeaders } from './http-headers.js';
 import { pinnedUpstreamModel } from './pinned-upstream-model.js';
 
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
@@ -33,6 +33,13 @@ export interface RelayConfig {
   serviceRewriteMap?: Record<string, string>;
   /** Headers set only when the request does not carry them (any case; a blank value counts as missing). */
   defaultHeaders?: Record<string, string>;
+  /**
+   * Send the buyer's client user agent upstream instead of the seller's. Only for an upstream that
+   * reads the client's identity from it, such as Anthropic gating models on the Claude Code version
+   * in `claude-cli/<version>` on a Claude Code login. A public API never sets it: bot protection in
+   * front of it may refuse a buyer's client.
+   */
+  forwardClientUserAgent?: boolean;
   /**
    * Top-level JSON body fields to drop, given the path sent upstream (no query string) and the
    * model the upstream will see (after alias rewrite and pin). For fields the upstream's own
@@ -422,19 +429,22 @@ export class HttpRelay {
       }
     }
 
-    // Swap auth headers
-    let swappedRequest = swapAuthHeader(request, effectiveConfig);
-    if (this._config.defaultHeaders) {
-      const headers = { ...swappedRequest.headers };
-      for (const [name, value] of Object.entries(this._config.defaultHeaders)) {
-        if (getHeader(headers, name).trim().length > 0) continue;
-        for (const key of Object.keys(headers)) {
-          if (key.toLowerCase() === name.toLowerCase()) delete headers[key];
-        }
-        headers[name] = value;
+    // Swap auth headers. The buyer's user agent stays behind unless the plugin forwards it: the
+    // seller sends its own, or the one the plugin sets in `extraHeaders` or `defaultHeaders`.
+    const buyerHeaders = this._config.forwardClientUserAgent
+      ? request.headers
+      : Object.fromEntries(Object.entries(request.headers).filter(([key]) => key.toLowerCase() !== 'user-agent'));
+    let swappedRequest = swapAuthHeader({ ...request, headers: buyerHeaders }, effectiveConfig);
+    const swappedHeaders = { ...swappedRequest.headers };
+    const defaultHeaders = [...Object.entries(this._config.defaultHeaders ?? {}), ['user-agent', SELLER_USER_AGENT] as const];
+    for (const [name, value] of defaultHeaders) {
+      if (getHeader(swappedHeaders, name).trim().length > 0) continue;
+      for (const key of Object.keys(swappedHeaders)) {
+        if (key.toLowerCase() === name.toLowerCase()) delete swappedHeaders[key];
       }
-      swappedRequest = { ...swappedRequest, headers };
+      swappedHeaders[name] = value;
     }
+    swappedRequest = { ...swappedRequest, headers: swappedHeaders };
     const pinnedModel = pinnedUpstreamModel(request);
 
     // Normalize the requested service into the upstream model for both JSON
