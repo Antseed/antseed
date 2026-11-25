@@ -136,11 +136,11 @@ async function firstAuditor(directory: string) {
 test('the checks that flagged and passed are read from the evidence alone', () => {
   const mismatch = { tokenizerPrecheck: { outcome: 'mismatch' } as never, exchanges: [] }
   assert.deepEqual(flaggingChecks(mismatch, 'DIFF'), ['tokens'])
-  assert.deepEqual(flaggingChecks({ outputCap: { outcome: 'flag' } as never, exchanges: [] }, 'DIFF'), ['output-cap'])
+  assert.deepEqual(flaggingChecks({ outputCap: { outcome: 'flag' } as never, exchanges: [] }, 'DIFF'), [], 'the cap check does not count')
   assert.deepEqual(flaggingChecks({ exchanges: [{} as never] }, 'DIFF'), ['kbf'])
   assert.deepEqual(flaggingChecks({ exchanges: [{} as never] }, 'SAME'), [])
   assert.deepEqual(flaggingChecks({ exchanges: [] }, 'DIFF'), [], 'a DIFF with no question asked and no flag names no check')
-  assert.deepEqual(passedChecks({ tokenizerPrecheck: { outcome: 'match' } as never, outputCap: { outcome: 'pass' } as never, exchanges: [{} as never] }, 'SAME'), ['tokens', 'output-cap', 'kbf'])
+  assert.deepEqual(passedChecks({ tokenizerPrecheck: { outcome: 'match' } as never, outputCap: { outcome: 'pass' } as never, exchanges: [{} as never] }, 'SAME'), ['tokens', 'kbf'])
   assert.deepEqual(passedChecks({ tokenizerPrecheck: { outcome: 'inconclusive' } as never, exchanges: [{} as never] }, 'UNDETERMINED'), [])
 })
 
@@ -177,16 +177,17 @@ test('a DIFF that only FLIPS flagged, through the confirmer\'s audit: each FLIPS
     return [settled.status, decision.kind, decision.kind === 'exclude' ? decision.code : decision.kind === 'send' ? decision.confirmation.sameCheck ?? decision.confirmation.passedCheck : null,
       ...(decision.kind === 'send' && decision.confirmation.clearedBetween ? [decision.confirmation.clearedBetween] : [])]
   }
-  // While the table of which tests count does not count FLIPS (`AUDIT_TEST_COUNTS`), a confirmation of a FLIPS flag can
-  // decide nothing: its flag, its pass and a score between the bars are all recorded only, so the confirmation is
-  // undecided and never sent, whatever the questions say.
-  assert.equal(AUDIT_TEST_COUNTS.flips, false)
-  for (const [summary, extra] of [
-    [flips('flag', 0.0005), {}], [flips('pass', 0.4), {}], [flips('pass', 0.4), { questionsStatus: 'DIFF', status: 'DIFF' }],
-    [flips('inconclusive', 0.02), {}], [flips('inconclusive', 0.02), { questionsStatus: 'DIFF', status: 'DIFF' }],
-    [{ ...flips('inconclusive', 0.02), rule: 'flips-v0' }, {}], [flips('inconclusive', null), {}],
+  // While the table of which tests count does not count FLIPS (`AUDIT_TEST_COUNTS`), a confirmation of a FLIPS flag
+  // can neither confirm nor clear it by FLIPS: its flag, its pass and a score between the bars are recorded only. A
+  // confirmation still always sends: SAME when its questions say SAME and nothing that counts flagged, UNDETERMINED when
+  // the questions flag (another test's flag never answers the report as a DIFF).
+  assert.equal(AUDIT_TEST_COUNTS.flips.counts, false)
+  for (const [summary, extra, expected] of [
+    [flips('flag', 0.0005), {}, 'SAME'], [flips('pass', 0.4), {}, 'SAME'], [flips('pass', 0.4), { questionsStatus: 'DIFF', status: 'DIFF' }, 'UNDETERMINED'],
+    [flips('inconclusive', 0.02), {}, 'SAME'], [flips('inconclusive', 0.02), { questionsStatus: 'DIFF', status: 'DIFF' }, 'UNDETERMINED'],
+    [{ ...flips('inconclusive', 0.02), rule: 'flips-v0' }, {}, 'SAME'], [flips('inconclusive', null), {}, 'SAME'],
   ] as const) {
-    assert.deepEqual(confirm(summary as ReturnType<typeof flips>, extra), ['UNDETERMINED', 'exclude', 'confirmation-undecided'], JSON.stringify([summary.outcome, summary.p, extra]))
+    assert.deepEqual(confirm(summary as ReturnType<typeof flips>, extra), [expected, 'send', undefined], JSON.stringify([summary.outcome, summary.p, extra]))
   }
   // A first look (not a confirmation of FLIPS) whose first-stage FLIPS flags or passes answers nothing: only the
   // confirmation stage (fresh pairs, 40 replies, the confirmation bar) confirms or clears a FLIPS flag.
@@ -249,7 +250,7 @@ test('a result answering a waiting DIFF is sent only when the same check flagged
   assert.deepEqual(passed.kind === 'send' ? [passed.confirmation.sameCheck, passed.confirmation.passedCheck] : null, [null, 'tokens'])
   const undecided = decide(candidate(2n, VERIFIER_VERDICT.SAME, [], ['kbf']), [tokens])
   assert.equal(undecided.kind, 'exclude')
-  assert.match(undecided.kind === 'exclude' ? undecided.reason : '', /neither flagged nor passed in this audit/)
+  assert.match(undecided.kind === 'exclude' ? undecided.reason : '', /neither flagged nor passed in this first look/)
   // Fresh material only: made at least an hour after the report it answers.
   const early = decide(candidate(2n, VERIFIER_VERDICT.DIFF, ['tokens'], [], REPORTED_AT + 60), [tokens])
   assert.match(early.kind === 'exclude' ? early.reason : '', /less than an hour after the waiting DIFF/)
@@ -510,13 +511,17 @@ test('with its evidence not published, submit sends no DIFF and says why', async
   }
 })
 
-test('an UNDETERMINED answering a waiting DIFF is never sent, whether another check flagged or none decided', () => {
+test('a confirmation\'s UNDETERMINED is sent, so the waiting DIFF is answered; a first look\'s UNDETERMINED is not', () => {
   const kbf: FirstFlag = { auditor: first.address, peerId: peerIdOf(sellers[1]!), evidenceUri: `ipfs://${CID}`, evidenceHash: '0x1', reportedAt: REPORTED_AT, checks: ['kbf'] }
-  const otherFlagged = decide(candidate(2n, VERIFIER_VERDICT.UNDETERMINED, ['tokens']), [kbf])
-  assert.equal(otherFlagged.kind, 'exclude')
-  assert.match(otherFlagged.kind === 'exclude' ? otherFlagged.reason : '', /another check \(the token-count pre-check\) flagged and the questions, which flagged the waiting DIFF, did not decide; nothing is sent/)
-  const undecided = decide(candidate(2n, VERIFIER_VERDICT.UNDETERMINED, []), [kbf])
-  assert.match(undecided.kind === 'exclude' ? undecided.reason : '', /did not decide in this audit; nothing is sent, so the seller keeps its record/)
+  const confirmation = { confirming: { checks: ['kbf'] as AuditCheckId[], reportedAt: REPORTED_AT } }
+  // The confirmer's questions undecided, with another test flagging or not: UNDETERMINED, sent, never that test's DIFF.
+  for (const flaggedBy of [['tokens'], []] as AuditCheckId[][]) {
+    const sent = decide({ ...candidate(2n, VERIFIER_VERDICT.UNDETERMINED, flaggedBy), ...confirmation }, [kbf])
+    assert.deepEqual(sent.kind === 'send' ? [sent.kind, sent.confirmation.sameCheck, sent.confirmation.ownChecks] : sent, ['send', null, flaggedBy])
+  }
+  // A first look answering the report is not sent: a confirmation of it answers the report.
+  const firstLook = decide(candidate(2n, VERIFIER_VERDICT.UNDETERMINED, []), [kbf])
+  assert.deepEqual(firstLook.kind === 'exclude' ? firstLook.code : firstLook.kind, 'first-look-undetermined')
 })
 
 test('a first auditor\'s seller file about another model, or from another epoch, holds the result back', async () => {

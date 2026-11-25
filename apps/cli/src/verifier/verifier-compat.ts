@@ -53,7 +53,7 @@ import {
 } from './audit-checks.js'
 import { OUTPUT_ECHO_RULE } from './methods/output-echo/output-echo.js'
 import { TOKENIZER_PRECHECK_RULE } from './methods/tokens/tokenizer-precheck.js'
-import { AUDIT_TEST_COUNTS, type CountedTestId } from './audit-test-counts.js'
+import { AUDIT_TEST_COUNTS, testBlocksSame, type AuditTestRule, type CountedTestId } from './audit-test-counts.js'
 import { METHODS } from './methods/index.js'
 import { resolveThinking } from './audit-thinking.js'
 import { FLIPS_RULE } from './methods/flips/flips-score.js'
@@ -143,7 +143,7 @@ const EPOCH_SECONDS = 86_400
 export function verifierRulesFingerprint(input: {
   auditedModels?: Readonly<Record<string, AuditedModel>>
   /** Only for the test that shows a changed entry changes the hash; the rules are `AUDIT_TEST_COUNTS`. */
-  testCounts?: Readonly<Record<CountedTestId, boolean>>
+  testCounts?: Readonly<Record<CountedTestId, Readonly<AuditTestRule>>>
 } = {}): unknown {
   const models = Object.entries(input.auditedModels ?? AUDITED_MODELS)
     .sort(([left], [right]) => left.localeCompare(right))
@@ -285,13 +285,11 @@ export function verifierRulesFingerprint(input: {
       // A SAME needs every active test passed (`same-needs-all-active`): an active test with no result, or not run for
       // the seller, leaves it UNDETERMINED; a test that is not active never blocks it.
       sameNeedsEveryActiveTest: true,
-      // Which tests a SAME needs passed when active; a flag-only test's flag alone counts (`RecordCheck.sameNeedsPass`).
-      sameNeedsPass: METHODS.map((check) => [check.slot, check.sameNeedsPass !== false]),
       decisions: SAMPLE_VERDICTS.map(([outcomes, questions, confirming, pending, inactive]) => {
         const readings = outcomes.map(([check, outcome]) => ({
           check, subject: 'model' as const, outcome,
           ...((inactive ?? []).includes(check) ? { inactive: { cause: 'run' as const, reason: 'sample' } } : {}),
-          ...(METHODS.some((entry) => entry.sameNeedsPass === false && entry.findings.some((finding) => finding.id === check)) ? { flagOnly: true as const } : {}),
+          ...(!testBlocksSame(check) ? { flagOnly: true as const } : {}),
         }))
         const verdict = verdictOf(readings, questions, confirming, { questionsPending: pending })
         return [verdict.verdict, verdict.flaggedBy, verdict.undecidedConfirmation, verdict.openTests ?? null]

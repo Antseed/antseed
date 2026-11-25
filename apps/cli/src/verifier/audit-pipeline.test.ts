@@ -105,22 +105,24 @@ test('submission refuses a verdict its tests and questions do not give', async (
   assert.throws(() => validateAuditMatchesSummary(edit((copy) => { delete copy.tests }), result), /does not name the all-tests format/)
 })
 
-test('a confirmation of a questions DIFF in which the pre-check flags is a DIFF of the pre-check, its questions\' SAME apart', async () => {
-  // The first auditor's questions flagged the seller. Here the pre-check finds a mismatch and the questions pass:
-  // any flag is a DIFF, attributed to the pre-check alone, so the same-check rule sends nothing for it.
+test('a confirmation of a questions DIFF whose questions pass is a SAME, though the pre-check flags here', async () => {
+  // The first auditor's questions flagged the seller. Here the questions pass and the pre-check finds a mismatch: the
+  // repeated test passed, so the confirmation is a SAME that clears the waiting DIFF (Alex, 25 November). The
+  // pre-check's flag is stored, and asked again at the seller's next audit, where it goes the usual two-auditor way.
   const { result, evidence, questionRequests } = await audit({ usage: OTHER_TOKENIZER, confirming: ['kbf'] })
   assert.equal(result.tokenizerPrecheck!.outcome, 'mismatch')
   assert.ok(questionRequests.length > 0)
-  assert.equal(result.status, 'DIFF')
+  assert.equal(result.status, 'SAME')
   assert.equal(result.questionsStatus, 'SAME', 'the questions decide their own verdict: these answers are the model\'s')
   assert.deepEqual(evidence.confirming, { checks: ['kbf'] })
   assert.doesNotThrow(() => validateAuditMatchesSummary(evidence, result))
   assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['tokens'])
   assert.deepEqual(passedChecks(evidence, result.questionsStatus!), ['kbf'])
-  // The same audit outside a confirmation is the same verdict: no test is special any more.
+  // The same audit outside a confirmation is a first look: any counting flag is a DIFF.
   const { confirming: _confirming, ...plain } = evidence
   const { confirming: _checks, ...firstLook } = result
-  assert.doesNotThrow(() => validateAuditMatchesSummary(plain, firstLook))
+  assert.doesNotThrow(() => validateAuditMatchesSummary(plain, { ...firstLook, status: 'DIFF' }))
+  assert.throws(() => validateAuditMatchesSummary(plain, firstLook), /verdict mismatch/)
   // A confirmation of a pre-check DIFF asks its questions too, and repeats the pre-check's flag.
   const tokens = await audit({ usage: OTHER_TOKENIZER, confirming: ['tokens'] })
   assert.equal(tokens.result.status, 'DIFF')
@@ -128,14 +130,14 @@ test('a confirmation of a questions DIFF in which the pre-check flags is a DIFF 
   assert.deepEqual(flaggingChecks(tokens.evidence, tokens.result.questionsStatus!), ['tokens'])
 })
 
-test('a confirmation of a pre-check DIFF whose pre-check did not run is an undecided attempt, never a SAME', async () => {
-  // The check to repeat did not decide, so the questions' SAME is not this confirmation's answer. It is UNDETERMINED
-  // with a reason the epoch plan audits again, and submit sends nothing. Its questions were asked like any audit's.
+test('a confirmation of a pre-check DIFF whose pre-check did not run, with the questions SAME and nothing flagging, is a SAME', async () => {
+  // The check to repeat did not decide, but the questions say SAME and nothing that counts flagged: a SAME, sent, which
+  // clears the waiting DIFF (Alex, 25 November: "if the questions pass and there is no DIFF, call it SAME").
   const { result, evidence, questionRequests } = await audit({ usage: MODEL_TOKENIZER, precheck: false, confirming: ['tokens'] })
   assert.ok(questionRequests.length > 0)
-  assert.equal(result.status, 'UNDETERMINED')
+  assert.equal(result.status, 'SAME')
   assert.equal(result.questionsStatus, 'SAME')
-  assert.equal(result.outcomeReason?.code, 'confirmation_undecided')
+  assert.equal(result.outcomeReason, null)
   assert.equal(needsExtension({ ...result, decisionRule: 'kbf-extension-v2' }), false)
   assert.doesNotThrow(() => validateAuditMatchesSummary(evidence, result))
 })
@@ -194,15 +196,17 @@ async function pipeline(options: Parameters<typeof audit>[0] & { cap?: OutputCap
 }
 
 test('check pipeline: every test runs after any flag, the questions before the cap and echo checks', async () => {
-  const { calls, result, evidence, questionRequests } = await pipeline({ usage: MODEL_TOKENIZER, cap: capRecord('flag'), echo: echoRecord('pass') })
+  const { calls, result, evidence, questionRequests } = await pipeline({ usage: MODEL_TOKENIZER, cap: capRecord('flag'), echo: echoRecord('flag') })
   // The references are measured first, on the auditor's time; the questions keep their place before the other tests.
   assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'questions', 'cap.check', 'echo.check precheckMatch=true'])
   assert.ok(questionRequests.length > 0)
   assert.equal(result.status, 'DIFF')
   assert.equal(result.questionsStatus, 'SAME')
   assert.equal(evidence.result.verdict, 'SAME', 'the evidence\'s result is the questions\' own')
-  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['output-cap'])
-  assert.deepEqual(passedChecks(evidence, result.questionsStatus!), ['tokens', 'output-echo', 'kbf'])
+  // The cap check's flag is stored and shown, and does not count (`AUDIT_TEST_COUNTS`): the DIFF is the echo check's.
+  assert.equal(result.outputCap!.outcome, 'flag')
+  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['output-echo'])
+  assert.deepEqual(passedChecks(evidence, result.questionsStatus!), ['tokens', 'kbf'])
   // Every request is paid for with the audit: the batches, the pre-check's two, the cap check's one, the echo's two.
   assert.equal(result.requestCount, questionRequests.length + 2 + 1 + 2)
   assert.equal(result.cost.pricedExchangeCount, 5)
@@ -213,23 +217,24 @@ test('check pipeline: an echo flag is a DIFF beside the questions; the echo chec
   assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'questions', 'cap.check', 'echo.check precheckMatch=true'])
   assert.equal(result.status, 'DIFF')
   assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['output-echo'])
-  assert.deepEqual(passedChecks(evidence, result.questionsStatus!), ['tokens', 'output-cap', 'kbf'])
+  assert.deepEqual(passedChecks(evidence, result.questionsStatus!), ['tokens', 'kbf'], 'a cap pass does not count either')
 })
 
-test('check pipeline: a SAME of the questions stands only when every active test passed', async () => {
+test('check pipeline: a SAME of the questions stands whenever nothing that counts flagged', async () => {
   const passing = await pipeline({ usage: MODEL_TOKENIZER, cap: capRecord('pass'), echo: echoRecord('pass') })
   assert.equal(passing.result.status, 'SAME')
-  assert.deepEqual(passedChecks(passing.evidence, 'SAME'), ['tokens', 'output-cap', 'output-echo', 'kbf'])
+  assert.deepEqual(passedChecks(passing.evidence, 'SAME'), ['tokens', 'output-echo', 'kbf'])
   // FLIPS has no screen in this run: it did not run for the model, so it is not active; nothing else is off.
   assert.deepEqual(passing.evidence.noRecord, [{ slot: 'flips', reason: 'the randomness check does not run for this model in this run' }])
   // Its echo check measured the visible answer, where the fixed amount is not judged: not active either.
-  assert.deepEqual(passing.result.inactive?.map((entry) => [entry.check, entry.cause]), [['output-offset', 'rule'], ['flips', 'rule']])
-  // An active test with no result, and one that gave this seller nothing, keep it from SAME.
+  // The cap check and FLIPS are not counted by the table.
+  assert.deepEqual(passing.result.inactive?.map((entry) => [entry.check, entry.cause]), [['output-cap', 'rule'], ['output-offset', 'rule'], ['flips', 'rule']])
+  // A test with no result, and one that gave this seller nothing, no longer keep it from SAME (`blocksSame` false).
   const undecided = await pipeline({ usage: () => 0, cap: capRecord('inconclusive'), echo: null })
-  assert.equal(undecided.result.status, 'UNDETERMINED')
+  assert.equal(undecided.result.status, 'SAME')
   assert.equal(undecided.result.questionsStatus, 'SAME')
   assert.deepEqual(undecided.result.tokenizerPrecheck, { rule: TOKENIZER_PRECHECK_RULE.id, outcome: 'inconclusive' })
-  assert.equal(undecided.result.outcomeReason, null, 'a finished UNDETERMINED, not a failure: it is not audited again')
+  assert.equal(undecided.result.outcomeReason, null)
 })
 
 test('check pipeline: a test its reference switched off for the model never blocks SAME; the evidence names it with the reference\'s reason', async () => {
@@ -240,17 +245,18 @@ test('check pipeline: a test its reference switched off for the model never bloc
   const off = await pipeline({ usage: MODEL_TOKENIZER, cap: null, echo: null, runFiles })
   assert.equal(off.result.status, 'SAME')
   assert.deepEqual(off.evidence.noRecord?.filter((entry) => entry.slot !== 'flips'), [{ slot: 'outputCap', reason: capReason }, { slot: 'outputEcho', reason }])
+  // The cap check is not active by the table before its reference's reason is read.
   assert.deepEqual(off.result.inactive?.filter((entry) => entry.cause === 'run'), [
-    { check: 'output-cap', cause: 'run', reason: capReason }, { check: 'output-echo', cause: 'run', reason }, { check: 'output-offset', cause: 'run', reason },
+    { check: 'output-echo', cause: 'run', reason }, { check: 'output-offset', cause: 'run', reason },
   ])
+  assert.equal(off.result.inactive?.find((entry) => entry.check === 'output-cap')?.cause, 'rule')
   assert.doesNotThrow(() => validateAuditMatchesSummary(off.evidence, off.result))
-  // The same seller with the echo check active and nothing from it: UNDETERMINED, its reason naming the test.
+  // The same seller with the echo check active and nothing from it: still SAME, since no test blocks a SAME today.
   const on = await pipeline({ usage: MODEL_TOKENIZER, cap: capRecord('pass'), echo: echoRecord('inconclusive', { growth: 'inconclusive', fixedAmount: 'inconclusive' }) })
-  assert.equal(on.result.status, 'UNDETERMINED')
+  assert.equal(on.result.status, 'SAME')
   const verdict = verdictOf(readingsOfEvidence(on.evidence, 'SAME'), 'SAME')
-  assert.deepEqual(verdict.openTests, ['output-echo', 'output-offset'])
-  assert.equal(auditVerdictReason(on.evidence, verdict, null),
-    'the questions say SAME, but a SAME needs every active test passed: the echo check ran and did not decide; the echo check\'s fixed amount ran and did not decide')
+  assert.equal(verdict.openTests, undefined)
+  assert.equal(auditVerdictReason(on.evidence, verdict, null), null)
 })
 
 test('check pipeline: a counted fixed amount flags as its own finding', async () => {
@@ -263,7 +269,7 @@ test('check pipeline: a pre-check mismatch ends nothing: the questions, the cap 
   const { calls, result, evidence } = await pipeline({ usage: OTHER_TOKENIZER, cap: capRecord('flag'), echo: echoRecord('flag') })
   assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'questions', 'cap.check', 'echo.check precheckMatch=false'])
   assert.equal(result.status, 'DIFF')
-  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['tokens', 'output-cap', 'output-echo'])
+  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['tokens', 'output-echo'], 'the cap flag does not count')
 })
 
 test('check pipeline: a flag stands when the seller is skipped afterwards; with no flag the skip is a skip', async () => {
@@ -327,15 +333,17 @@ test('check pipeline: an extra set of a close call asks questions only', async (
   assert.equal(result.status, 'SAME')
 })
 
-test('check pipeline: a confirmation of the questions\' DIFF runs every test; the flags of others make it a DIFF of theirs', async () => {
+test('check pipeline: a confirmation of the questions\' DIFF runs every test; its questions pass, so it is a SAME whatever another test flagged', async () => {
   const { calls, result, evidence } = await pipeline({ usage: MODEL_TOKENIZER, confirming: ['kbf'], cap: capRecord('flag'), echo: echoRecord('flag') })
   assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'questions', 'cap.check', 'echo.check precheckMatch=true'])
-  assert.equal(result.status, 'DIFF')
+  assert.equal(result.status, 'SAME')
   assert.equal(result.questionsStatus, 'SAME')
-  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['output-cap', 'output-echo'])
+  // The echo check's flag is stored, and asked again at the next audit: only the same test confirms a DIFF.
+  assert.deepEqual(flaggingChecks(evidence, result.questionsStatus!), ['output-echo'])
 })
 
-test('check pipeline: a confirmation of a cap DIFF whose cap check did not decide is an undecided attempt, whatever else flagged', async () => {
+test('check pipeline: a confirmation whose repeated test gives nothing that counts, while another test flags, is an undecided attempt', async () => {
+  // A cap DIFF from before the cap check stopped counting: its repeat can neither flag nor pass now.
   const { result, questionRequests } = await pipeline({ usage: MODEL_TOKENIZER, confirming: ['output-cap'], cap: capRecord('inconclusive'), echo: echoRecord('flag') })
   assert.ok(questionRequests.length > 0)
   assert.equal(result.status, 'UNDETERMINED')
@@ -343,10 +351,11 @@ test('check pipeline: a confirmation of a cap DIFF whose cap check did not decid
   assert.equal(result.questionsStatus, 'SAME')
 })
 
-test('check pipeline: a confirmation of a cap DIFF repeats its flag', async () => {
+test('check pipeline: a confirmation of a cap DIFF no longer repeats its flag: the cap check does not count; the questions\' SAME is sent', async () => {
   const { calls, result } = await pipeline({ usage: MODEL_TOKENIZER, confirming: ['output-cap'], cap: capRecord('flag'), echo: echoRecord('pass') })
   assert.deepEqual(calls, ['cap.ready', 'echo.ready', 'questions', 'cap.check', 'echo.check precheckMatch=true'])
-  assert.equal(result.status, 'DIFF')
+  assert.equal(result.outputCap!.outcome, 'flag')
+  assert.equal(result.status, 'SAME')
 })
 
 test('check pipeline: the cap and echo references and checks are the auditor\'s time, not the seller\'s', async () => {

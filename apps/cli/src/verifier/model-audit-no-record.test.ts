@@ -115,21 +115,20 @@ test('a published seller result carries the evidence\'s own tests without a reco
     const none = await prepare('run-a', {}, {})
     assert.deepEqual(none.noRecord?.map((entry) => entry.slot), ['tokenizerPrecheck', 'outputCap', 'outputEcho', 'flips'])
     assert.deepEqual(none.inactive?.map((entry) => [entry.check, entry.cause]), [
-      ['tokens', 'run'], ['output-cap', 'run'], ['output-echo', 'run'], ['output-offset', 'run'], ['flips', 'rule'],
+      ['tokens', 'run'], ['output-cap', 'rule'], ['output-echo', 'run'], ['output-offset', 'run'], ['flips', 'rule'],
     ])
     assert.equal(none.verdict, 'SAME')
-    // Only the echo check was switched off by its reference: the others are active and did not run for the seller, so it
-    // is UNDETERMINED, and a reason file beside the run for another test changes nothing (the evidence says it).
+    // Only the echo check was switched off by its reference: the pre-check is active and did not run for the seller, which
+    // blocks no SAME; a reason file beside the run for another test changes nothing (the evidence says it).
     const echoOff = await prepare('run-b', {
-      verdict: 'UNDETERMINED', questionsVerdict: 'SAME',
+      verdict: 'SAME', questionsVerdict: 'SAME',
       noRecord: [{ slot: 'outputEcho', reason: 'the reference did not echo cleanly, so the echo check does not apply to the model this run' }],
     }, {
       'output-cap-reference.json': reference('output-cap', { applies: false, reason: 'the reference\'s own answer could not be measured' }),
     })
     assert.deepEqual(echoOff.noRecord, [{ slot: 'outputEcho', reason: 'the reference did not echo cleanly, so the echo check does not apply to the model this run' }])
-    assert.deepEqual(echoOff.inactive?.map((entry) => entry.check), ['output-echo', 'output-offset', 'flips'])
-    assert.equal(echoOff.verdict, 'UNDETERMINED')
-    assert.match(echoOff.verdictReason ?? '', /the token-count pre-check did not run for this seller; the cap check did not run for this seller$/)
+    assert.deepEqual(echoOff.inactive?.map((entry) => entry.check), ['output-cap', 'output-echo', 'output-offset', 'flips'])
+    assert.equal(echoOff.verdict, 'SAME')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

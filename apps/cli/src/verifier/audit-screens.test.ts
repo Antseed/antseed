@@ -298,7 +298,7 @@ test('the FLIPS dry-run probe is read once for the run, runs for every model whi
     const production = screensOf(counted.env).flips!
     // A probe is refused only where FLIPS counts toward the verdict: its own rule counts this model, but the table of
     // which tests count does not count FLIPS today (`AUDIT_TEST_COUNTS`), so the probe runs here too.
-    assert.equal(AUDIT_TEST_COUNTS.flips, false)
+    assert.equal(AUDIT_TEST_COUNTS.flips.counts, false)
     assert.deepEqual([production.probing, production.probeSettings], [true, JSON.stringify(probe)])
     assert.deepEqual(made.warned.slice(1), [])
     assert.deepEqual([plain.warned, counted.warned], [[], []])

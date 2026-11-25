@@ -368,8 +368,8 @@ test('an echo record of every outcome, written to its evidence file, passes the 
     const audits: FixtureAudit[] = [...Object.values(records), stopped].map((record, index) => ({
       // Stored under the service its replies were signed for.
       agentId: String(index + 1), seller: wallets[index]!, model: 'model-a', service: SERVICE,
-      // The questions say SAME; an echo check that decided nothing keeps its seller from SAME (every active test must pass).
-      verdict: record.outcome === 'flag' ? 'DIFF' : record.outcome === 'pass' ? 'SAME' : 'UNDETERMINED', questionsVerdict: 'SAME',
+      // The questions say SAME; an echo flag is a DIFF, and an echo check that decided nothing blocks no SAME.
+      verdict: record.outcome === 'flag' ? 'DIFF' : 'SAME', questionsVerdict: 'SAME',
       outputEcho: record, ...(record.precheckMatch ? { tokenizerMatch: true } : {}),
     }))
     const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor, audits })

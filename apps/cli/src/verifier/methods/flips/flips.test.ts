@@ -164,7 +164,7 @@ test('a saved swap flags at the first bar: recorded only while the table does no
   assert.ok(judged.p! <= FLIPS_RULE.bar.first)
   // Its own rule counts the model; the table of which tests count does not count FLIPS today.
   assert.equal(judged.counted, true)
-  assert.equal(AUDIT_TEST_COUNTS.flips, false)
+  assert.equal(AUDIT_TEST_COUNTS.flips.counts, false)
   const stored = { ...record, rule: rule.id, referenceUpstream: null, reasks: 0, ...judged } as FlipsV1
   const today = readingsOfEvidence(flipsAlone(stored), 'SAME')
   assert.deepEqual(today.filter((reading) => reading.check === 'flips').map((reading) => [reading.outcome, reading.recordedOnly, reading.inactive?.cause]), [['inconclusive', 'flag', 'rule']])

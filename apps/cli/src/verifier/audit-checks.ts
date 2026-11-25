@@ -8,7 +8,7 @@ import type { TestThinking } from './audit-thinking.js'
 import { METHODS } from './methods/index.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { matchesEnrolledService } from './response-auth-reader.js'
-import { AUDIT_TEST_COUNTS, notCountedReason, testCounts } from './audit-test-counts.js'
+import { AUDIT_TEST_COUNTS, notCountedReason, testBlocksSame, testCounts } from './audit-test-counts.js'
 import { sanitizeOutcomeSummary } from './outcome-reason.js'
 import { sellerSignatureProblem } from './seller-signature.js'
 import { sameModelService } from './service-discovery.js'
@@ -53,7 +53,7 @@ export interface CheckReading {
    */
   inactive?: InactiveCause
   /**
-   * Set on a finding of a flag-only test (`RecordCheck.sameNeedsPass` false): its flag counts, and anything else never
+   * Set on a finding of a flag-only test (the table's `blocksSame` false, `AUDIT_TEST_COUNTS`): its flag counts, and anything else never
    * blocks a SAME, also while it is active.
    */
   flagOnly?: true
@@ -308,7 +308,7 @@ export function readingsOfEvidence(
         ...(recorded ? { recordedOnly: recorded } : {}),
         ...(between ? { between: true as const } : {}),
         ...(off ? { inactive: off } : {}),
-        ...(check.sameNeedsPass === false ? { flagOnly: true as const } : {}),
+        ...(!testBlocksSame(finding.id) ? { flagOnly: true as const } : {}),
       })
     }
   }
@@ -341,7 +341,7 @@ export function readingsOfSummary(
         check: finding.id, subject: finding.subject, outcome,
         ...(between ? { between: true as const } : {}),
         ...(off ? { inactive: off } : {}),
-        ...(check.sameNeedsPass === false ? { flagOnly: true as const } : {}),
+        ...(!testBlocksSame(finding.id) ? { flagOnly: true as const } : {}),
       })
     }
   }
@@ -751,20 +751,29 @@ export interface AuditVerdict {
 }
 
 /**
- * The audit's verdict from every test it ran, rule `all-tests-v1` (Alex, 19 November), with a SAME only when every
- * active test passed (`same-needs-all-active`, Alex, 23 November):
+ * The audit's verdict from every test it ran, rule `all-tests-v1` (Alex, 19 November), with the table of how each test
+ * takes part (`AUDIT_TEST_COUNTS`: which tests count, and which a SAME needs passed; Alex, 23 to 25 November). A test the
+ * table does not count reads as neither flag nor pass (`readingsOfEvidence`), so it decides nothing here.
  *
- * - A confirmation (`confirming`, the tests it repeats) in which no repeated test flagged and at least one did not
- *   decide is UNDETERMINED, whatever the other tests say: it is never sent, it counts as an attempt for the report it
- *   answers, and its retry asks only the tests still open. A repeated test that flags again makes it a DIFF at once; a
- *   SAME needs every repeated test decided.
- * - Otherwise any test that flagged makes it DIFF, attributed to every test that flagged.
- * - Otherwise, when the questions say SAME, it is SAME only when every other active test passed (`inactiveChecks`: a
- *   test whose rule counts it for the model and whose reference gave it something to judge on). An active test with
- *   no result, or that did not run for this seller, makes it UNDETERMINED (`openTests`). A test that is not active
- *   (recorded only, switched off for the whole model by its reference) never blocks SAME, and neither does a flag-only
- *   test (`RecordCheck.sameNeedsPass` false, `CheckReading.flagOnly`: FLIPS), whose flag alone counts.
- * - Otherwise it is the questions' own verdict, UNDETERMINED.
+ * A first look:
+ * - any counting test that flagged makes it DIFF, attributed to every test that flagged;
+ * - otherwise it is the questions' own verdict. A SAME needs passed only the active tests whose `blocksSame` is true
+ *   (none today: "if the questions pass and there is no DIFF, call it SAME"); one of those with no result, or not run
+ *   for this seller, makes it UNDETERMINED (`openTests`). A test that is not active, or flag-only (`flagOnly`), never
+ *   blocks a SAME.
+ *
+ * A confirmation (`confirming`, the tests it repeats for another auditor's waiting DIFF) always decides something to
+ * send (Alex, 25 November: "a confirmation must always send a result"), in this order:
+ * 1. a repeated test flags again: DIFF, confirmed by the same test;
+ * 2. every repeated test passed (or, for FLIPS, scored between its bars where that clears): SAME, which clears the
+ *    waiting DIFF, whatever another test found here (its flag is asked again at the seller's next audit, where it goes
+ *    the usual two-auditor way);
+ * 3. the questions say SAME and no counting test flagged: SAME too;
+ * 4. otherwise (another counting test flagged while the repeat did not pass, or nothing decided): UNDETERMINED. It is
+ *    an undecided confirmation (`undecidedConfirmation`): asked again within its attempts, and its last attempt is
+ *    sent, so the waiting DIFF is answered. Another test's flag is never sent as a DIFF that answers this report: the
+ *    contract counts any two DIFF reports, and only the same test confirms a DIFF.
+ * A confirmation of the questions whose close call still waits for its extra set waits with it.
  *
  * `readings` hold the questions' own finding (`readingsOfEvidence`, `readingsOfSummary`), so `kbf` flags only on the
  * questions' own DIFF. `questions` is their verdict after any close call.
@@ -786,16 +795,22 @@ export function verdictOf(
   const passedBy = checksWith(readings, 'pass')
   // A confirmation's FLIPS scored between its bars under a rule whose such score clears like a pass (`between`).
   const clearsBetween = readings.filter((reading) => reading.between === true).map((reading) => reading.check)
-  if (confirming && confirming.length > 0 && !confirming.some((check) => flaggedBy.includes(check))) {
+  if (confirming && confirming.length > 0) {
+    // 1. The same test flags again.
+    if (confirming.some((check) => flaggedBy.includes(check))) return { verdict: 'DIFF', flaggedBy, passedBy, undecidedConfirmation: null }
     // The questions still waiting for an extra set are not undecided yet: the confirmation waits with them.
-    const open = confirming.filter((check) => !passedBy.includes(check) && !clearsBetween.includes(check)
-      && !(check === 'kbf' && options.questionsPending === true))
-    const waits = options.questionsPending === true && confirming.includes('kbf') && !passedBy.includes('kbf')
-    if (open.length > 0) return { verdict: 'UNDETERMINED', flaggedBy, passedBy, undecidedConfirmation: open }
-    if (waits) return { verdict: 'UNDETERMINED', flaggedBy, passedBy, undecidedConfirmation: null }
+    if (options.questionsPending === true && confirming.includes('kbf') && !passedBy.includes('kbf')) {
+      return { verdict: 'UNDETERMINED', flaggedBy, passedBy, undecidedConfirmation: null }
+    }
+    const open = confirming.filter((check) => !passedBy.includes(check) && !clearsBetween.includes(check))
+    // 2. Every repeated test passed; 3. the questions say SAME and nothing that counts flagged.
+    if (open.length === 0 || (questions === 'SAME' && flaggedBy.length === 0)) return { verdict: 'SAME', flaggedBy, passedBy, undecidedConfirmation: null }
+    // 4. Nothing decided, or another test flagged while the repeat did not pass.
+    return { verdict: 'UNDETERMINED', flaggedBy, passedBy, undecidedConfirmation: open }
   }
   if (flaggedBy.length > 0) return { verdict: 'DIFF', flaggedBy, passedBy, undecidedConfirmation: null }
-  // A SAME needs every active test passed: one with no result, or not run for this seller, leaves the audit open.
+  // A SAME needs passed every active test the table says blocks it: one with no result, or not run for this seller,
+  // leaves the audit open. None does today.
   const openTests = readings.filter((reading) => reading.check !== QUESTIONS_CHECK.id && reading.inactive === undefined && reading.flagOnly !== true
     && reading.outcome !== 'pass' && reading.between !== true).map((reading) => reading.check)
   if (questions === 'SAME' && openTests.length > 0) return { verdict: 'UNDETERMINED', flaggedBy, passedBy, undecidedConfirmation: null, openTests }
@@ -809,6 +824,11 @@ export function verdictOf(
 export function auditVerdictReason(records: StoredCheckRecords, audit: AuditVerdict, questionsReason: string | null): string | null {
   if (audit.undecidedConfirmation) return `the test this confirmation must repeat (${audit.undecidedConfirmation.join(', ')}) did not decide`
   if (audit.openTests && audit.openTests.length > 0) return openTestsReason(records, audit.openTests)
+  // A confirmation's SAME beside another test's flag (`verdictOf`, step 2): the flag is asked again at the next audit.
+  if (audit.verdict === 'SAME' && audit.flaggedBy.length > 0) {
+    const others = `${audit.flaggedBy.map(checkLabel).join(' and ')} flagged here, and is asked again at the seller's next audit: a DIFF is confirmed only by the same test`
+    return questionsReason ? `${questionsReason}; ${others}` : others
+  }
   if (audit.verdict !== 'DIFF') return questionsReason
   const reasons: string[] = []
   for (const { check, record } of recordsOf(records)) {

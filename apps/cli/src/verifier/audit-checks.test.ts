@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { assertBoundToSeller, carriedIntoConfirmation, decidedRecords, withoutOrphans, earliestAuditorTime, storedRequestsOf, verdictOf } from './audit-checks.js'
+import { testBlocksSame } from './audit-test-counts.js'
 import { METHODS } from './methods/index.js'
 import { TOKENS_CHECK } from './methods/tokens/method.js'
 import { isFreshConfirmation } from './same-check.js'
@@ -56,8 +57,7 @@ test('flagged and passed are read from each record\'s own outcome, every combina
               const passed: AuditCheckId[] = []
               if (tokens === 'mismatch') flagged.push('tokens')
               if (tokens === 'match') passed.push('tokens')
-              if (cap === 'flag') flagged.push('output-cap')
-              if (cap === 'pass') passed.push('output-cap')
+              // The cap check does not count (`AUDIT_TEST_COUNTS`): stored and shown, never a flag or a pass.
               if (growth === 'flag') flagged.push('output-echo')
               if (growth === 'pass') passed.push('output-echo')
               if (growth && fixedAmount === 'flag') flagged.push('output-offset')
@@ -91,7 +91,7 @@ test('decided is read from the summary, every combination: the questions count o
               }
               const decided: AuditCheckId[] = []
               if (tokens === 'match' || tokens === 'mismatch') decided.push('tokens')
-              if (cap === 'pass' || cap === 'flag') decided.push('output-cap')
+              // The cap check does not count (`AUDIT_TEST_COUNTS`): it never decides.
               if (growth === 'pass' || growth === 'flag') decided.push('output-echo')
               if (growth && (fixedAmount === 'pass' || fixedAmount === 'flag')) decided.push('output-offset')
               if ((parsedProbeCount ?? 0) > 0 && (status === 'SAME' || status === 'DIFF')) decided.push('kbf')
@@ -104,35 +104,38 @@ test('decided is read from the summary, every combination: the questions count o
   }
 })
 
-test('the audit\'s verdict: any flag is a DIFF; a SAME of the questions stands only when every active test passed', () => {
+test('the audit\'s verdict: any counting flag is a DIFF; the questions\' SAME stands when nothing that counts flagged', () => {
+  // As the readers mark them: a test the table does not require for a SAME is flag-only (`blocksSame`, none today).
   const reading = (check: AuditCheckId, outcome: 'flag' | 'pass' | 'inconclusive' | 'not-run', inactive = false) => ({
     check, subject: 'model' as const, outcome, ...(inactive ? { inactive: { cause: 'run' as const, reason: 'switched off' } } : {}),
+    ...(!testBlocksSame(check) ? { flagOnly: true as const } : {}),
   })
   const verdict = (readings: ReturnType<typeof reading>[], questions: 'SAME' | 'DIFF' | 'UNDETERMINED', confirming?: AuditCheckId[], pending = false) => {
     const result = verdictOf(readings, questions, confirming, { questionsPending: pending })
     return [result.verdict, result.flaggedBy, result.undecidedConfirmation]
   }
-  // A cap flag beside the questions' SAME: a DIFF attributed to the cap check, never to the questions.
-  assert.deepEqual(verdict([reading('output-cap', 'flag'), reading('kbf', 'pass')], 'SAME'), ['DIFF', ['output-cap'], null])
+  // An echo flag beside the questions' SAME: a DIFF attributed to the echo check, never to the questions.
+  assert.deepEqual(verdict([reading('output-echo', 'flag'), reading('kbf', 'pass')], 'SAME'), ['DIFF', ['output-echo'], null])
   assert.deepEqual(verdict([reading('tokens', 'flag'), reading('output-echo', 'flag'), reading('kbf', 'flag')], 'DIFF'), ['DIFF', ['tokens', 'output-echo', 'kbf'], null])
-  // No flag: an active test with no result, or not run for the seller, leaves the questions' SAME open; a test that is
-  // not active never does.
-  assert.deepEqual(verdict([reading('tokens', 'inconclusive'), reading('output-cap', 'not-run'), reading('kbf', 'pass')], 'SAME'), ['UNDETERMINED', [], null])
+  // No flag: a test with no result, or not run for the seller, never blocks the questions' SAME today.
+  assert.deepEqual(verdict([reading('tokens', 'inconclusive'), reading('output-echo', 'not-run'), reading('kbf', 'pass')], 'SAME'), ['SAME', [], null])
   assert.deepEqual(verdict([reading('tokens', 'inconclusive', true), reading('output-cap', 'not-run', true), reading('kbf', 'pass')], 'SAME'), ['SAME', [], null])
   assert.deepEqual(verdict([reading('tokens', 'pass'), reading('output-cap', 'pass'), reading('kbf', 'pass')], 'SAME'), ['SAME', [], null])
   assert.deepEqual(verdict([reading('tokens', 'pass'), reading('kbf', 'inconclusive')], 'UNDETERMINED'), ['UNDETERMINED', [], null])
-  // A confirmation in which no test it repeats decided is undecided, whatever another test says.
-  assert.deepEqual(verdict([reading('output-cap', 'inconclusive'), reading('output-echo', 'flag'), reading('kbf', 'pass')], 'SAME', ['output-cap']),
-    ['UNDETERMINED', ['output-echo'], ['output-cap']])
-  assert.deepEqual(verdict([reading('output-cap', 'pass'), reading('kbf', 'pass')], 'SAME', ['output-cap']), ['SAME', [], null], 'a pass of the repeated test decides')
+  // A confirmation whose repeated test did not decide and another counting test flagged: undecided, never that DIFF.
+  assert.deepEqual(verdict([reading('tokens', 'inconclusive'), reading('output-echo', 'flag'), reading('kbf', 'pass')], 'SAME', ['tokens']),
+    ['UNDETERMINED', ['output-echo'], ['tokens']])
+  assert.deepEqual(verdict([reading('tokens', 'pass'), reading('kbf', 'pass')], 'SAME', ['tokens']), ['SAME', [], null], 'a pass of the repeated test decides')
   // A confirmation of the questions whose close call still waits for its extra set is not undecided yet: it waits.
-  assert.deepEqual(verdict([reading('output-cap', 'flag'), reading('kbf', 'inconclusive')], 'UNDETERMINED', ['kbf'], true), ['UNDETERMINED', ['output-cap'], null])
-  assert.deepEqual(verdict([reading('output-cap', 'flag'), reading('kbf', 'inconclusive')], 'UNDETERMINED', ['kbf'], false), ['UNDETERMINED', ['output-cap'], ['kbf']])
+  assert.deepEqual(verdict([reading('output-echo', 'flag'), reading('kbf', 'inconclusive')], 'UNDETERMINED', ['kbf'], true), ['UNDETERMINED', ['output-echo'], null])
+  assert.deepEqual(verdict([reading('output-echo', 'flag'), reading('kbf', 'inconclusive')], 'UNDETERMINED', ['kbf'], false), ['UNDETERMINED', ['output-echo'], ['kbf']])
 })
 
 test('a local result answers a confirmation with the checks it decided, or as an undecided confirmation', () => {
-  const decided = { status: 'DIFF', parsedProbeCount: 0, outputCap: { outcome: 'flag' } }
-  assert.deepEqual(localConfirmationDecision(decided, true), ['output-cap'])
+  const decided = { status: 'DIFF', parsedProbeCount: 0, tokenizerPrecheck: { outcome: 'mismatch' } }
+  assert.deepEqual(localConfirmationDecision(decided, true), ['tokens'])
+  // A cap flag decides nothing: the cap check does not count (`AUDIT_TEST_COUNTS`).
+  assert.deepEqual(localConfirmationDecision({ status: 'SAME', parsedProbeCount: 0, outputCap: { outcome: 'flag' } }, true), [])
   assert.equal(localConfirmationDecision({ ...decided, outcomeReason: { code: 'confirmation_undecided' } }, false), 'undecided-confirmation')
   const undetermined = { status: 'UNDETERMINED', parsedProbeCount: 4 }
   assert.equal(localConfirmationDecision({ ...undetermined, confirmsDiff: true }, true), 'undecided-confirmation')
@@ -283,9 +286,12 @@ test('an audit\'s time for "fresh" is its earliest request on the auditor\'s clo
     requestIds: ['r'], attemptCosts: [],
     responseAuth: { requestId: 'r', status: 'verified', record: { requestId: 'r', receivedAt, responseStartedAt } },
   })
-  const capOnly = (receivedAt: number | undefined, responseStartedAt: number) => ({ exchanges: [], outputCap: { asks: [{ request: reply(receivedAt, responseStartedAt) }] } as never })
+  // An echo check's reply (a test that counts: a test the table does not count gives no time, as a diagnostic).
+  const capOnly = (receivedAt: number | undefined, responseStartedAt: number) => ({ exchanges: [], outputEcho: { rounds: [{ short: [{ request: reply(receivedAt, responseStartedAt) }], long: [] }] } as never })
   // A reply that is not verified gives no time, whatever its local record says.
-  const unverified = { exchanges: [], outputCap: { asks: [{ request: { ...reply(1_000, 1_000), responseAuth: { requestId: 'r', status: 'invalid', record: { requestId: 'r', receivedAt: 1_000 } } } }] } as never }
+  const unverified = { exchanges: [], outputEcho: { rounds: [{ short: [{ request: { ...reply(1_000, 1_000), responseAuth: { requestId: 'r', status: 'invalid', record: { requestId: 'r', receivedAt: 1_000 } } } }], long: [] }] } as never }
+  // A cap check's reply gives none: the cap check does not count.
+  assert.equal(earliestAuditorTime([{ exchanges: [], outputCap: { asks: [{ request: reply(5_000_000, 0) }] } as never }]), null)
   assert.equal(earliestAuditorTime([unverified]), null)
   const afterCutoff = (REPORTED + 3_600) * 1_000
   // A seller that back-dates its signed start time before the report does not make the audit stale.
@@ -306,15 +312,15 @@ test('an audit\'s time for "fresh" is its earliest request on the auditor\'s clo
   assert.equal(isFreshConfirmation(REPORTED + 3_599, REPORTED), false)
 })
 
-test('a confirmation of two flags: a DIFF when one flags again, a SAME only when both passed, undecided otherwise', () => {
+test('a confirmation of two flags: a DIFF when one flags again, a SAME when both passed or the questions say SAME, undecided otherwise', () => {
   const reading = (check: AuditCheckId, outcome: 'flag' | 'pass' | 'inconclusive' | 'not-run') => ({ check, subject: 'model' as const, outcome })
-  const both: AuditCheckId[] = ['output-cap', 'kbf']
-  const judge = (cap: 'flag' | 'pass' | 'inconclusive', kbf: 'flag' | 'pass' | 'inconclusive') => {
-    const result = verdictOf([reading('output-cap', cap), reading('kbf', kbf)], kbf === 'flag' ? 'DIFF' : kbf === 'pass' ? 'SAME' : 'UNDETERMINED', both)
+  const both: AuditCheckId[] = ['tokens', 'kbf']
+  const judge = (tokens: 'flag' | 'pass' | 'inconclusive', kbf: 'flag' | 'pass' | 'inconclusive') => {
+    const result = verdictOf([reading('tokens', tokens), reading('kbf', kbf)], kbf === 'flag' ? 'DIFF' : kbf === 'pass' ? 'SAME' : 'UNDETERMINED', both)
     return [result.verdict, result.undecidedConfirmation]
   }
-  // The cap check has no result here and the questions pass: before, that SAME went out and the cap flag had one try.
-  assert.deepEqual(judge('inconclusive', 'pass'), ['UNDETERMINED', ['output-cap']])
+  // The pre-check has no result here and the questions pass, with nothing that counts flagging: a SAME, which clears.
+  assert.deepEqual(judge('inconclusive', 'pass'), ['SAME', null])
   assert.deepEqual(judge('inconclusive', 'flag'), ['DIFF', null], 'one repeated test flagging again is enough for a DIFF')
   assert.deepEqual(judge('flag', 'inconclusive'), ['DIFF', null])
   assert.deepEqual(judge('pass', 'pass'), ['SAME', null])
@@ -344,16 +350,17 @@ test('a confirmation carries only records of an earlier confirmation that are fr
   const cutoff = 10_000 + 3_600
   const fresh = (time: number | null) => time !== null && time >= cutoff
   const records = { tokenizerPrecheck: precheck(9_000_000), outputCap: cap(20_000_000), outputEcho: echo(20_000_000) }
-  const report = { checks: ['output-cap'] as const, reportedAt: 10_000 }
+  const report = { checks: ['tokens'] as const, reportedAt: 10_000 }
   assert.deepEqual(carriedIntoConfirmation(records, { confirming: null }, report, fresh), {}, 'never a first look\'s records')
   // Only a confirmation of the same report, repeating the same tests: another round's records are asked again.
   assert.deepEqual(carriedIntoConfirmation(records, { confirming: { ...report, reportedAt: 9_000 } }, report, fresh), {}, 'another report')
   assert.deepEqual(carriedIntoConfirmation(records, { confirming: { ...report, checks: ['kbf'] } }, report, fresh), {}, 'other repeated tests')
   assert.deepEqual(carriedIntoConfirmation(records, { confirming: { checks: report.checks } }, report, fresh), {}, 'no report named')
-  // The pre-check is older than the report's cutoff: asked again, and the echo judged against it with it.
-  assert.deepEqual(Object.keys(carriedIntoConfirmation(records, { confirming: report }, report, fresh)), ['outputCap'])
+  // The pre-check is older than the report's cutoff: asked again, and the echo judged against it with it. The cap check
+  // does not count, so its replies give no time and it is never carried: it is asked again.
+  assert.deepEqual(Object.keys(carriedIntoConfirmation(records, { confirming: report }, report, fresh)), [])
   assert.deepEqual(Object.keys(carriedIntoConfirmation({ ...records, tokenizerPrecheck: precheck(20_000_000) }, { confirming: report }, report, fresh)).sort(),
-    ['outputCap', 'outputEcho', 'tokenizerPrecheck'])
+    ['outputEcho', 'tokenizerPrecheck'])
   // An absent pre-check is asked now, so the echo judged without it is asked again too.
   assert.deepEqual(Object.keys(withoutOrphans({ outputEcho: echo(20_000_000), outputCap: cap(20_000_000) })), ['outputCap'])
 })

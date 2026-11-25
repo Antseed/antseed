@@ -416,7 +416,7 @@ test('an undecided confirmation keeps an auditor-caused cause, and a report\'s a
   assert.equal(sellerRetryDueAt(failed), null, 'outside a report, as before')
 })
 
-test('a confirmation of FLIPS scored between its bars: retried while the table does not count FLIPS; no score is retried', async () => {
+test('a confirmation of a FLIPS flag while FLIPS does not count: a SAME, done, when its questions pass; asked again when they are undecided', async () => {
   const { settleAuditVerdict } = await import('./close-call.js')
   const flips = (p: number | null) => ({
     rule: 'flips-v1', model: 'claude-opus-5.5', stage: 'confirm', outcome: 'inconclusive', counted: true, p, score: p === null ? null : 4, reason: 'x',
@@ -427,24 +427,17 @@ test('a confirmation of FLIPS scored between its bars: retried while the table d
     return splitEpochRuns(EPOCH, [run('c1', '2026-10-28T20:00:00.000Z', [{ model: 'm', results: [{ ...settled, confirmingReportedAt: 100 }] }])])
       .reports.get(reportCellKey('m', 'a', reportKey(settled.service, 100, confirming)))!
   }
-  // FLIPS scored between the bars would clear like a pass (`confirmBetweenClears`) where FLIPS counts. While the table of
-  // which tests count does not count it (`AUDIT_TEST_COUNTS`), the score is recorded only: the confirmation is undecided
-  // and asked again within its attempts.
-  assert.equal(AUDIT_TEST_COUNTS.flips, false)
-  const between = cellOf(['flips'], { flips: flips(0.02) } as Partial<ModelVerificationTargetResult>)
-  assert.deepEqual([between.attempts, between.action, heldForConfirmationRecheck(between)], [1, 'retry', true])
-  // FLIPS with no score is asked again: the confirmation stays open within its attempts.
-  const noScore = cellOf(['flips'], { flips: flips(null) } as Partial<ModelVerificationTargetResult>)
-  assert.deepEqual([noScore.attempts, noScore.action], [1, 'retry'])
-  // The questions are undecided too: they are asked again, so the retry can still decide.
+  // While the table of which tests count does not count FLIPS (`AUDIT_TEST_COUNTS`), FLIPS decides nothing here, also a
+  // score between its bars. With the questions SAME and nothing that counts flagging, the confirmation is a SAME
+  // (Alex, 25 November): done after one attempt, and sent, clearing the waiting DIFF.
+  assert.equal(AUDIT_TEST_COUNTS.flips.counts, false)
+  for (const other of [flips(0.02), flips(null), { ...flips(0.02), probe: true }, { ...flips(0.02), rule: 'flips-v9' }]) {
+    const done = cellOf(['flips'], { flips: other } as Partial<ModelVerificationTargetResult>, false)
+    assert.deepEqual([done.state, done.attempts, done.action, heldForConfirmationRecheck(done)], ['same', 1, 'done', false], JSON.stringify(other))
+  }
+  // The questions are undecided too: nothing decided, so it is asked again within its attempts; its last is sent.
   const withQuestions = cellOf(['kbf', 'flips'], { flips: flips(0.02), questionsStatus: 'UNDETERMINED' } as Partial<ModelVerificationTargetResult>)
   assert.deepEqual([withQuestions.attempts, withQuestions.action], [1, 'retry'])
-  // A probe's score or an unknown rule's neither clears nor finishes it: a production ask could still
-  // decide.
-  for (const other of [{ ...flips(0.02), probe: true }, { ...flips(0.02), rule: 'flips-v9' }]) {
-    const open = cellOf(['flips'], { flips: other } as Partial<ModelVerificationTargetResult>)
-    assert.deepEqual([open.attempts, open.action], [1, 'retry'], JSON.stringify(other))
-  }
 })
 
 test('a confirmation whose close-call extension failed is retried; a decided or non-confirming one is done', () => {

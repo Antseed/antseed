@@ -73,7 +73,10 @@
   "coverageRule": "kbf-coverage-v1",
   "responseAuthVerified": true,
   "tokenizerPrecheck": {"rule":"tokenizer-precheck-v1","outcome":"match"},
-  "inactive": [{"check":"flips","cause":"rule","reason":"the randomness check is recorded only for now: the audit rules do not count it toward the verdict"}]
+  "inactive": [
+   {"check":"output-cap","cause":"rule","reason":"the cap check is recorded only for now: the audit rules do not count it toward the verdict"},
+   {"check":"flips","cause":"rule","reason":"the randomness check is recorded only for now: the audit rules do not count it toward the verdict"}
+  ]
  },
  "evidence": {
   "buyerProxy": {"baseUrl":"http://127.0.0.1:8390","pid":4242,"statePath":"buyer.state.json"},
