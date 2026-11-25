@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Buyer proxy (`@antseed/api-adapter`, CLI, gateway, desktop): instructions sent as messages stay instructions when a request is translated for a seller that speaks another protocol. A Chat Completions `developer` message is handled like a `system` message, and a Responses input item with role `developer` or `system` joins the request's instructions, after `instructions` and in the order sent. Wherever they sit among the turns, the seller gets them at the head of the request as its own protocol's system prompt: `system` for Messages, a leading `system` message for Chat Completions, `instructions` for Responses. Only instructions that end a request after an assistant turn, or make up all of it, stay at the end as a user turn, since they are what the model answers.
+
 ## 2026-11-25 — CLI 0.1.260, Node 0.2.192, Desktop 0.2.95
 
 ### Packages

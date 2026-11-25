@@ -433,17 +433,15 @@ export function normalizeOpenAIChatRequestBody(body: Record<string, unknown>): C
     input: [],
   };
 
+  const instructionMessages: InstructionMessage[] = [];
   const messages = Array.isArray(body.messages) ? body.messages : [];
   for (const raw of messages) {
     if (!raw || typeof raw !== 'object') continue;
     const msg = raw as Record<string, unknown>;
     const role = typeof msg.role === 'string' ? msg.role : '';
 
-    if (role === 'system') {
-      const text = textFromContent(msg.content);
-      if (text.length > 0) {
-        request.instructions = request.instructions !== undefined ? `${request.instructions}\n\n${text}` : text;
-      }
+    if (isInstructionRole(role)) {
+      instructionMessages.push({ itemsBefore: request.input.length, content: canonicalContentFromOpenAIChat(msg.content) });
       continue;
     }
 
@@ -480,6 +478,7 @@ export function normalizeOpenAIChatRequestBody(body: Record<string, unknown>): C
       request.input.push({ type: 'message', role, content: canonicalContentFromOpenAIChat(msg.content) });
     }
   }
+  placeInstructionMessages(request, instructionMessages);
 
   // OpenAI replaced `max_tokens` with `max_completion_tokens`; when a client sends both, the newer field wins.
   if (typeof body.max_completion_tokens === 'number') request.maxOutputTokens = body.max_completion_tokens;
@@ -509,10 +508,9 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
     stream: body.stream === true,
     input: [],
   };
-  if (typeof body.instructions === 'string' && body.instructions.length > 0) {
-    request.instructions = body.instructions;
-  }
+  if (typeof body.instructions === 'string') appendInstructions(request, body.instructions);
 
+  const instructionMessages: InstructionMessage[] = [];
   const input = body.input;
   const normalizedInput = Array.isArray(input)
     ? input.map((item) => {
@@ -568,6 +566,11 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
       // function_call from its output.
       if (type !== 'message' && typeof msg.role !== 'string') continue;
 
+      if (isInstructionRole(msg.role)) {
+        instructionMessages.push({ itemsBefore: request.input.length, content: canonicalContentFromOpenAIResponses(msg.content) });
+        continue;
+      }
+
       const role = msg.role === 'assistant' ? 'assistant' : 'user';
       const content = canonicalContentFromOpenAIResponses(msg.content);
       // Non-message items (reasoning, web_search_call, ...) carry no renderable
@@ -577,6 +580,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
       request.input.push({ type: 'message', role, content, ...(phase ? { phase } : {}) });
     }
   }
+  placeInstructionMessages(request, instructionMessages);
 
   if (typeof body.max_output_tokens === 'number') request.maxOutputTokens = body.max_output_tokens;
   if (body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)) {
@@ -883,6 +887,58 @@ function parseToolArguments(args: Record<string, unknown> | string): Record<stri
 
 function modelFromBody(body: Record<string, unknown>): string | null {
   return typeof body.model === 'string' && body.model.trim().length > 0 ? body.model.trim() : null;
+}
+
+function isInstructionRole(role: unknown): boolean {
+  return role === 'system' || role === 'developer';
+}
+
+/** An instruction sent as a message, with the number of conversation items sent before it. */
+interface InstructionMessage {
+  itemsBefore: number;
+  content: CanonicalContentPart[];
+}
+
+/**
+ * Both OpenAI protocols can send instructions as messages, anywhere in the
+ * conversation. For every target the hub keeps them in one string, in the order
+ * sent, at the head of the request: the only place all three protocols can hold
+ * them, since Anthropic's `system` has no position among the turns. An
+ * instruction added mid-session changes that head, which costs one
+ * prompt-cache miss.
+ *
+ * Instructions that end the request after an assistant turn, or make up all of
+ * it, are what the model has to answer. Moved to the head, they would leave no
+ * turn to answer, so they stay at the end as user turns. A message that carries
+ * nothing, such as an empty user message, is no turn to answer.
+ */
+function placeInstructionMessages(request: CanonicalLlmRequest, messages: InstructionMessage[]): void {
+  let end = request.input.length;
+  while (end > 0 && isEmptyMessage(request.input[end - 1])) end -= 1;
+  const last = request.input[end - 1];
+  const answerable = last?.type === 'function_call_output' || (last?.type === 'message' && last.role === 'user');
+  for (const { itemsBefore, content } of messages) {
+    if (itemsBefore < end || answerable) {
+      appendInstructions(request, textFromCanonicalContent(content));
+      continue;
+    }
+    const turn = content.filter(carriesContent);
+    if (turn.length > 0) request.input.push({ type: 'message', role: 'user', content: turn });
+  }
+}
+
+function isEmptyMessage(item: CanonicalInputItem | undefined): boolean {
+  return item?.type === 'message' && !item.content.some(carriesContent);
+}
+
+/** Blank text and an image without a source carry nothing. */
+function carriesContent(part: CanonicalContentPart): boolean {
+  return part.type === 'text' ? part.text.trim().length > 0 : imageUrlFromCanonicalPart(part) !== undefined;
+}
+
+function appendInstructions(request: CanonicalLlmRequest, text: string): void {
+  if (text.trim().length === 0) return;
+  request.instructions = request.instructions !== undefined ? `${request.instructions}\n\n${text}` : text;
 }
 
 function normalizeResponseMessagePhase(value: unknown): CanonicalResponseMessagePhase | undefined {

@@ -239,7 +239,7 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
       const text = Buffer.concat(chunks).toString('utf8');
       const body = text ? JSON.parse(text) : {};
       const path = (request.url ?? '/').split('?')[0];
-      state.requests.push({ method: request.method, path, model: body.model ?? null, stream: Boolean(body.stream), includeUsage: body.stream_options?.include_usage ?? null, at: Date.now() });
+      state.requests.push({ method: request.method, path, model: body.model ?? null, stream: Boolean(body.stream), includeUsage: body.stream_options?.include_usage ?? null, messages: body.messages, at: Date.now() });
       if (request.method === 'GET' && path === '/v1/models') {
         if (state.latencyMs > 0) await sleep(state.latencyMs);
         return json(200, { object: 'list', data: models.map((id) => ({ id, object: 'model', owned_by: 'antseed-testbench' })) });
