@@ -1,0 +1,6 @@
+.short { display: none; }
+
+@media (max-width: 560px) {
+  .long { display: none; }
+  .short { display: inline; }
+}

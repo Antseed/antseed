@@ -1,0 +1,22 @@
+.card { width: min(300px, 72%); }
+
+@media (max-width: 899px) {
+  /* the painting whole: the king and his crown, the sign and the ants */
+  .section .panel { height: auto; aspect-ratio: 1; }
+}
+@media (min-width: 900px) and (max-width: 1199px) {
+  .section .panel { background-position: 75% 50%; }
+}
+@media (max-width: 760px) {
+  .section .text { padding: 64px var(--site-pad) 40px; }
+  .section .head { max-width: 480px; }
+  /* over the sky left of the king, clear of the sign and the ants */
+  .panel .card { top: 5%; left: 44%; translate: -50% 0; width: 58%; gap: 6px; padding: 10px 12px; }
+}
+@media (min-width: 1200px) {
+  .section .rail { box-sizing: border-box; min-height: 0; padding-block: 124px; }
+  .section .text { gap: 24px; }
+  .section .panel { min-height: 560px; }
+  .section .head { gap: 16px; }
+  .section .head .sub { margin-top: 0; line-height: 28px; }
+}

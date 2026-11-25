@@ -85,6 +85,11 @@ type ResolveLookupResultsOptions = {
   metadataPeerId?: string;
   maxResults?: number;
   onResult?: (result: LookupResult) => void | Promise<void>;
+  /**
+   * Endpoints (`host:port`) already fetched earlier in the same sweep. They
+   * are skipped, and the endpoints fetched now are added to the set.
+   */
+  attemptedEndpoints?: Set<string>;
 };
 
 /**
@@ -164,6 +169,13 @@ export class PeerLookup {
     const merged: PeerEndpoint[] = [];
     const partialResults: LookupResult[] = [];
     const sweepStartedAt = Date.now();
+    // Incremental sweeps fetch each endpoint's metadata once, even when the
+    // wildcard and its subnet both return it, and fetch it while the next
+    // topic is looked up: the HTTP fetches don't share the DHT's UDP socket,
+    // so waiting on them only stretched the sweep by every phase's slowest
+    // endpoint.
+    const attemptedEndpoints = new Set<string>();
+    const pendingPartials: Promise<unknown>[] = [];
 
     // Stage 1: wildcard, on its own. Warm the routing table.
     const wildcardStartedAt = Date.now();
@@ -182,12 +194,13 @@ export class PeerLookup {
         phase: "wildcard",
         endpointCount: wildcardEndpoints.length,
       };
-      await this.resolveLookupResults(shuffle(wildcardEndpoints), {
+      pendingPartials.push(this.resolveLookupResults(shuffle(wildcardEndpoints), {
+        attemptedEndpoints,
         onResult: async (result) => {
           partialResults.push(result);
           await onPartial([result], context);
         },
-      });
+      }));
     }
 
     // Stage 2: per-subnet, sequential. Each lookup gets the full operation
@@ -225,23 +238,26 @@ export class PeerLookup {
           subnet,
           endpointCount: subnetEndpoints.length,
         };
-        await this.resolveLookupResults(shuffle(subnetEndpoints), {
+        pendingPartials.push(this.resolveLookupResults(shuffle(subnetEndpoints), {
+          attemptedEndpoints,
           onResult: async (result) => {
             resolvedCount += 1;
             partialResults.push(result);
             await onPartial([result], context);
           },
-        });
-        debugLog(
-          `[PeerLookup] ${mode}: subnet ${subnet}/${SUBNET_COUNT - 1} partial metadata resolved `
-          + `${resolvedCount}/${subnetEndpoints.length} in ${Date.now() - partialStartedAt}ms`,
-        );
+        }).then(() => {
+          debugLog(
+            `[PeerLookup] ${mode}: subnet ${subnet}/${SUBNET_COUNT - 1} partial metadata resolved `
+            + `${resolvedCount}/${subnetEndpoints.length} in ${Date.now() - partialStartedAt}ms`,
+          );
+        }));
       }
       nextStart = (subnet + 1) % SUBNET_COUNT;
     }
     this.nextSubnetStart = nextStart;
 
     if (onPartial) {
+      await Promise.all(pendingPartials);
       const deduped = this.deduplicateResultsByPeerId(partialResults);
       debugLog(
         `[PeerLookup] ${mode}: emitted ${deduped.length} incremental metadata result(s) from `
@@ -297,7 +313,7 @@ export class PeerLookup {
     const metadataPeerId = options?.metadataPeerId;
 
     // Deduplicate endpoints before firing parallel requests
-    const seenEndpoints = new Set<string>();
+    const seenEndpoints = options?.attemptedEndpoints ?? new Set<string>();
     const uniquePeers: PeerEndpoint[] = [];
     for (const peer of peers) {
       const key = `${peer.host.toLowerCase()}:${peer.port}`;
@@ -420,9 +436,15 @@ export class PeerLookup {
   }
 
   async verifyMetadataSignature(metadata: PeerMetadata): Promise<boolean> {
-    const dataToVerify = encodeMetadataForSigning(metadata);
     const signature = hexToBytes(metadata.signature);
-    return verifySignature(metadata.peerId, signature, dataToVerify);
+    // Sellers sign with their host's historical locale-sensitive ordering, so
+    // try that first — unchanged for any seller this build already accepted.
+    if (verifySignature(metadata.peerId, signature, encodeMetadataForSigning(metadata))) return true;
+    // A seller on another locale produced a different but equally valid
+    // ordering of the same document. Reconstruct with deterministic code-unit
+    // order as the compatibility candidate (issue #1678). Both attempts are
+    // genuine ecrecover checks against the expected peer identity.
+    return verifySignature(metadata.peerId, signature, encodeMetadataForSigning(metadata, { serviceOrder: "code-unit" }));
   }
 
   getMetadataFreshness(metadata: PeerMetadata): {

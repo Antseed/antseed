@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { classifyFailureReason, failureHttpStatus, leadingHttpStatus, type FailureSignal } from './failure.js';
 
 // Real error strings seen from the buyer proxy and agent SDKs.
-const OUT_OF_CREDITS = '402 You are out of Antseed credits for this request. Add funds in the Antseed app, or run "antseed buyer deposit <amount>" from the CLI, then retry.';
+const OUT_OF_CREDITS = '402 You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run "antseed buyer deposit <amount>" from the CLI, then retry.';
 const INSUFFICIENT_DEPOSITS = '402 {"error":"payment_required","code":"insufficient_deposits","message":"Deposit more USDC"}';
 const PINNED_UNREACHABLE = '502 Pinned peer 1d90f467689d... is not reachable right now. It may be offline, not announcing, or temporarily unreachable.';
 const P2P_FAILED = '502 P2P request failed: Connection to 1d90f467 failed';

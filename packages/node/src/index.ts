@@ -16,7 +16,7 @@ export {
 } from './node.js';
 export { DEFAULT_BUYER_IDENTITY, isValidBuyerIdentityName } from './buyer-identity-context.js';
 export type { Provider, ProviderRequestRefusal, ProviderStreamCallbacks, ServiceHealthStatus, UpstreamAccountStatus } from './interfaces/seller-provider.js';
-export { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, VIDEO_DOWNLOAD_CHUNK_BYTES, ANTSEED_STREAMING_RESPONSE_HEADER } from './types/http.js';
+export { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, VIDEO_DOWNLOAD_CHUNK_BYTES, ANTSEED_STREAMING_RESPONSE_HEADER, ANTSEED_REQUIRE_TEE_HEADER } from './types/http.js';
 export {
   ModelHealthChecker,
   DEFAULT_HEALTH_CHECK_INTERVAL_MS,
@@ -105,9 +105,11 @@ export {
   type FaultAttribution,
   type AntseedErrorCode,
 } from './errors.js';
+export { VIDEO_JOB_HOLD_CODES, type VideoJobHoldCode } from '@antseed/protocol/messages';
 export { adaptPeerFaultErrorResponse, describeFreeTierLimit, FREE_TIER_EXHAUSTED_ERROR_ID, isFreeTierExhaustedResponse, nextFreeTierStakeTier, readFreeTierLimit, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED } from '@antseed/buyer-core';
 export type { FreeTierLimit, FreeTierLimitStakeTier } from '@antseed/buyer-core';
 export { reconcileStoredChannels, type ChannelReconcileResult, type LivePaymentSessions } from '@antseed/buyer-core';
+export { usageForBilling } from '@antseed/buyer-core';
 
 // Submodule re-exports (commonly used)
 export {
@@ -137,7 +139,7 @@ export {
 } from './p2p/identity-envelope.js';
 export { DHTNode, DEFAULT_DHT_CONFIG } from './discovery/dht-node.js';
 export { MAX_SERVICES_PER_PROVIDER, MAX_SERVICE_NAME_LENGTH } from './discovery/metadata-validator.js';
-export { OFFICIAL_BOOTSTRAP_NODES, mergeBootstrapNodes, toBootstrapConfig } from './discovery/bootstrap.js';
+export { OFFICIAL_BOOTSTRAP_NODES, PUBLIC_FALLBACK_BOOTSTRAP_NODES, mergeBootstrapNodes, toBootstrapConfig } from './discovery/bootstrap.js';
 export {
   WELL_KNOWN_SERVICE_CATEGORIES,
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
@@ -181,6 +183,7 @@ export {
   SPEECH_METADATA_VERSION,
   VIDEO_OPTION_PRICING_METADATA_VERSION,
   REFERENCE_VIDEO_PRICING_METADATA_VERSION,
+  INPUT_IMAGE_PRICING_METADATA_VERSION,
   speechVoiceProblem,
   type PeerMetadata,
   type PeerVerifications,
@@ -224,9 +227,11 @@ export {
   SELF_HEALTH_ERROR_STATUS,
   buildSelfHealthErrorResponse,
   describeServiceHealth,
+  VIDEO_DOWNLOAD_BUSY_CODE,
 } from './health/self-health-error.js';
 export {
   buildNetworkServiceOffers,
+  withServiceCatalogMemo,
   inferServiceProtocol,
   resolveServiceProtocol,
   type BuildNetworkServiceOffersOptions,
@@ -303,6 +308,7 @@ export {
   isContentFreeLogging,
   shouldEmitDebugLine,
 } from './utils/debug.js';
+export { exposedResponseHeaders, isExposedResponseHeader } from './utils/response-headers.js';
 export { withFileLock, type FileLockOptions } from './utils/file-lock.js';
 export {
   signSpendingAuth,
@@ -356,8 +362,8 @@ export { BuyerFreeUsageManager } from './payments/buyer-free-usage-manager.js';
 export type { BuyerFreeUsageConfig } from './payments/buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
-export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
-export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
+export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, FREE_TIER_MOVED_CONVERSATIONS_MODES, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, SellerFreeTierProgramConfig, FreeTierDecision, FreeTierMovedConversationsMode } from './payments/seller-free-tier-limiter.js';
 export { SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
 export type { SellerBuyerLimitsConfig, SellerNewBuyerLimitsConfig } from './payments/seller-buyer-limiter.js';
 export {
@@ -399,7 +405,7 @@ export type { FreeTierDelegation, VerifiedFreeTierDelegation } from './payments/
 export { FreeTierStakeResolver, MAX_FREE_TIER_COUNTED_POSITIONS } from './payments/free-tier-stake-resolver.js';
 export type { FreeTierStakePosition, FreeTierStakeReader, FreeTierStakeResolverOptions, FreeTierStakeStanding } from './payments/free-tier-stake-resolver.js';
 export { SellerPaymentManager } from './payments/seller-payment-manager.js';
-export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
+export type { SellerPaymentConfig, ReserveFailure } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';
 export type { StoredChannel, StoredReceipt } from './payments/channel-store.js';
 export { getChainConfig, resolveChainConfig, DEFAULT_CHAIN_ID, CHAIN_CONFIGS } from './payments/chain-config.js';
@@ -451,6 +457,7 @@ export {
   rankModelRoutes,
   scoreModelRoute,
   type ModelRouteCandidate,
+  type ModelRouteRankingOptions,
   type ModelRoutingPreferences,
   type ScoredModelRoute,
 } from './routing/model-route-ranking.js';
@@ -495,6 +502,7 @@ export {
   MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER,
   VERIFICATION_STATUS_STALE_MAX_MS,
   compareEffectiveModelReputation,
+  rotateEqualReputationHead,
   effectiveModelReputationScore,
   hasLiveDiffVerdict,
   hasLiveSameVerdict,
@@ -553,3 +561,5 @@ export {
   type LoadedProvider,
   type LoadedRouter,
 } from './config/plugin-loader.js'
+export { nextRotationOffset, rotateHead, tiedSellerSignature } from './routing/rotation.js'
+export { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV, portInUse } from './gateway-process.js'

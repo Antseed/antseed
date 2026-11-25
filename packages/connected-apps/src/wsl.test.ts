@@ -61,6 +61,10 @@ test('wslToolProbeCommand checks the binary and every home-relative signal', () 
   assert.ok(command.includes('test -e "$HOME/.local/share/opencode"'));
   assert.ok(wslToolProbeCommand('codex').includes('test -e "$HOME/.codex"'));
   assert.ok(wslToolProbeCommand('droid').includes('test -e "$HOME/.factory"'));
+  const primeAgent = wslToolProbeCommand('prime-agent');
+  assert.ok(primeAgent.startsWith('command -v prime-agent >/dev/null 2>&1'));
+  assert.ok(primeAgent.includes('test -e "$HOME/.prime/agent"'));
+  assert.ok(primeAgent.includes('test -e "$HOME/.local/bin/prime-agent"'));
 });
 
 test('WSL targets file keeps per-tool rows independent and clears when empty', async () => {

@@ -1,40 +1,42 @@
 import { HugeiconsIcon } from '@hugeicons/react';
-import { HierarchyIcon } from '@hugeicons/core-free-icons';
-import { displayModelLabel } from '../../../modules/catalog/model-identity';
-import { shortPeerId } from '../../../modules/routing/tools';
-import { useUiSelector } from '../../hooks/useUiSelector';
+import { AiBrain01Icon } from '@hugeicons/core-free-icons';
+import { splitPinnedModel } from '../../../../shared/pinned-model.js';
 import type { ChatMessage } from './chat-shared';
 import styles from './ChatBubble.module.scss';
 
-const text = (value: unknown): string | null => typeof value === 'string' && value.trim() ? value.trim() : null;
-
-/**
- * Where a reply was routed. A model the user chose names only the seller that served it
- * ("Open Forge"); a model a routing service chose names the model and the seller
- * ("GLM 5.3 Flash · Open Forge"). `peerName` resolves a seller name for replies saved
- * before the name was recorded; a short peer id is the last resort.
- */
-export function routedModelLabel(message: ChatMessage, peerName?: (peerId: string) => string | null): string | null {
+/** The gateway model id that produced an assistant reply, when it was recorded. */
+export function replyModelLabel(message: ChatMessage): string | null {
   if (message.role !== 'assistant') return null;
-  const meta = message.meta ?? {};
-  const value = text(meta.service);
-  const service = value?.split('@').at(-1);
-  const peerId = text(meta.peerId);
-  const seller = text(meta.peerName) ?? (peerId ? peerName?.(peerId) ?? shortPeerId(peerId) : null);
-  if (!text(meta.router)) return seller;
-  if (!service || service === 'antseed') return null;
-  const model = displayModelLabel(service, service);
-  return seller ? `${model} · ${seller}` : model;
+  const service = message.meta?.service;
+  if (typeof service !== 'string' || !service.trim()) return null;
+  const model = splitPinnedModel(service.trim()).modelId;
+  const route = routedTo(message, model);
+  const seller = replySellerLabel(message);
+  const asked = route ? `${model} → ${route}` : model;
+  return seller ? `${asked} · ${seller}` : asked;
 }
 
+/** The model a router picked for the reply, when the seller served one other than the model asked for. */
+function routedTo(message: ChatMessage, asked: string): string | null {
+  const served = message.meta?.servedModel;
+  if (typeof served !== 'string' || !served.trim()) return null;
+  const model = splitPinnedModel(served.trim()).modelId;
+  return model === asked ? null : model;
+}
+
+function replySellerLabel(message: ChatMessage): string | null {
+  const { peerName, peerId } = message.meta ?? {};
+  if (typeof peerName === 'string' && peerName.trim()) return peerName.trim();
+  return typeof peerId === 'string' && peerId.trim() ? peerId.trim().slice(0, 8) : null;
+}
+
+/** Names the model a reply came from (and the one a router picked) and the seller that served it. */
 export function RoutedModelIndicator({ message }: { message: ChatMessage }) {
-  const rows = useUiSelector((state) => state.vprRoutableRows);
-  const label = routedModelLabel(message, (peerId) => {
-    const row = rows.find((candidate) => candidate.peerId === peerId);
-    return row?.peerDisplayName?.trim() || row?.peerLabel?.replace(/\s*\([^)]*\)\s*$/, '').trim() || null;
-  });
-  return label ? <span className={styles.routedModel} title={`Served by ${label}`}>
-    <HugeiconsIcon icon={HierarchyIcon} size={13} aria-hidden="true" />
-    <span>Routed to {label}</span>
-  </span> : null;
+  const label = replyModelLabel(message);
+  return label ? (
+    <span className={styles.routedModel} title={`Answered by ${label}`}>
+      <HugeiconsIcon icon={AiBrain01Icon} size={13} aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+  ) : null;
 }

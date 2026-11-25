@@ -5,8 +5,8 @@ import { HermesBrandIcon } from './HermesBrandIcon';
 /**
  * Vendor brand marks for model, tool and app rows (the desktop app and the gateway console).
  *
- * These render inline as SVG so they inherit `currentColor` where monochrome
- * and pin brand hues where the mark is iconic.
+ * Monochrome glyphs inherit `currentColor`. Bundled artwork retains its
+ * brand colors and can render before the network is available.
  *
  * Resolution is by substring match against a profile `name`, a provider slug,
  * or a model label, so callers can pass whatever identifier they have on hand.
@@ -19,6 +19,7 @@ export type BrandKey =
   | 'opencode'
   | 't3code'
   | 'pi'
+  | 'prime-agent'
   | 'crush'
   | 'goose'
   | 'zed'
@@ -41,32 +42,24 @@ export type BrandKey =
 
 type BrandGlyph = (props: { size: number }) => JSX.Element;
 
-const ANTHROPIC_ORANGE = '#D97757';
 const CRUSH_PINK = '#FF60B8';
 const ZED_BLUE = '#084CCF';
-const DEEPSEEK_BLUE = '#4D6BFE';
 const GLM_BLUE = '#3859FF';
-const GEMINI_BLUE = '#4285F4';
-const MISTRAL_ORANGE = '#FA500F';
-const META_BLUE = '#0668E1';
 const TELEGRAM_BLUE = '#26A5E4';
 const CLOUDFLARE_ICON = new URL('./assets/cloudflare.svg', import.meta.url).href;
 const NGROK_ICON = new URL('./assets/ngrok.svg', import.meta.url).href;
 const T3CODE_ICON = 'data:image/png;base64,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';
 const MINIMAX_ICON = 'data:image/png;base64,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';
 
+function artworkGlyph(src: string): BrandGlyph {
+  return ({ size }) => (
+    <img src={src} alt="" width={size} height={size} style={{ objectFit: 'contain' }} />
+  );
+}
+
 const glyphs: Record<BrandKey, BrandGlyph> = {
-  // Anthropic / Claude — radiating sunburst mark.
-  anthropic: ({ size }) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <g stroke={ANTHROPIC_ORANGE} strokeWidth={2} strokeLinecap="round">
-        <path d="M12 3v18" />
-        <path d="M3 12h18" />
-        <path d="M5.6 5.6l12.8 12.8" />
-        <path d="M18.4 5.6L5.6 18.4" />
-      </g>
-    </svg>
-  ),
+  // Claude sunburst from https://platform.claude.com/docs/en/manage-claude/oauth-apps/branding-samples
+  anthropic: artworkGlyph(new URL('./assets/claude.svg', import.meta.url).href),
   // OpenAI / ChatGPT — official blossom geometry from OpenAI's favicon.
   openai: ({ size }) => (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -109,6 +102,14 @@ const glyphs: Record<BrandKey, BrandGlyph> = {
       />
     </svg>
   ),
+  // Prime Agent — neutral terminal-prompt glyph (no official mark bundled).
+  'prime-agent': ({ size }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="3.5" y="4.5" width="17" height="15" rx="3" stroke="currentColor" strokeWidth={1.7} />
+      <path d="M7.5 9.5 10.5 12l-3 2.5" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12.5 15h4" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" />
+    </svg>
+  ),
   // Crush (Charm) — glamour heart in charm pink.
   crush: ({ size }) => (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -140,27 +141,10 @@ const glyphs: Record<BrandKey, BrandGlyph> = {
       />
     </svg>
   ),
-  // Deepseek — stylized whale.
-  deepseek: ({ size }) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M3 13.5c3.2 0 4.6-1.6 6.2-3.4 1.5-1.7 3-3.4 6.3-3.4 2 0 3.4.7 4.5 1.7-.6 2.1-1.7 3.3-3.2 4-1.9.9-3 .3-4.6 1.2C15.8 15 13.9 17.5 10 17.5c-4 0-7-2-7-4z"
-        fill={DEEPSEEK_BLUE}
-      />
-      <circle cx="16.3" cy="9.4" r="0.9" fill="#fff" />
-    </svg>
-  ),
-  // Qwen — geometric petal mark (used for the default free model).
-  qwen: ({ size }) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M12 2.5l3.4 6h-6.8L12 2.5zM4.2 8.2h6.8l-3.4 6-3.4-6zM13 8.2h6.8l-3.4 6-3.4-6zM8.6 15.5h6.8L12 21.5l-3.4-6z"
-        stroke="currentColor"
-        strokeWidth={1.5}
-        strokeLinejoin="round"
-      />
-    </svg>
-  ),
+  // Publisher artwork from the deepseek-ai/awesome-deepseek-integration brand kit.
+  deepseek: artworkGlyph(new URL('./assets/deepseek.svg', import.meta.url).href),
+  // Qwen symbol from the https://qwen.ai/ site icon.
+  qwen: artworkGlyph(new URL('./assets/qwen.png', import.meta.url).href),
   // Kimi / Moonshot — dark tile with the angular K mark.
   kimi: ({ size }) => (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -186,49 +170,25 @@ const glyphs: Record<BrandKey, BrandGlyph> = {
       />
     </svg>
   ),
-  // Gemini — four-point sparkle.
-  gemini: ({ size }) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M12 2.5c.6 5.3 4.2 8.9 9.5 9.5-5.3.6-8.9 4.2-9.5 9.5-.6-5.3-4.2-8.9-9.5-9.5 5.3-.6 8.9-4.2 9.5-9.5z"
-        fill={GEMINI_BLUE}
-      />
-    </svg>
-  ),
-  // Grok / xAI — slanted cut mark.
+  // Gemini sparkle from the https://gemini.google.com/ site icon.
+  gemini: artworkGlyph(new URL('./assets/gemini.png', import.meta.url).href),
+  // Grok symbol geometry from the https://grok.com/ header.
   grok: ({ size }) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <g stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-        <path d="M5 5l14 14" />
-        <path d="M19 5l-5.6 5.6" />
-      </g>
+    <svg width={size} height={size} viewBox="0 0 34 33" fill="currentColor" aria-hidden="true">
+      <path d="M13.2371 21.0407L24.3186 12.8506C24.8619 12.4491 25.6384 12.6057 25.8973 13.2294C27.2597 16.5185 26.651 20.4712 23.9403 23.1851C21.2297 25.8989 17.4581 26.4941 14.0108 25.1386L10.2449 26.8843C15.6463 30.5806 22.2053 29.6665 26.304 25.5601C29.5551 22.3051 30.562 17.8683 29.6205 13.8673L29.629 13.8758C28.2637 7.99809 29.9647 5.64871 33.449 0.844576C33.5314 0.730667 33.6139 0.616757 33.6964 0.5L29.1113 5.09055V5.07631L13.2343 21.0436" />
+      <path d="M10.9503 23.0313C7.07343 19.3235 7.74185 13.5853 11.0498 10.2763C13.4959 7.82722 17.5036 6.82767 21.0021 8.2971L24.7595 6.55998C24.0826 6.07017 23.215 5.54334 22.2195 5.17313C17.7198 3.31926 12.3326 4.24192 8.67479 7.90126C5.15635 11.4239 4.0499 16.8403 5.94992 21.4622C7.36924 24.9165 5.04257 27.3598 2.69884 29.826C1.86829 30.7002 1.0349 31.5745 0.36364 32.5L10.9474 23.0341" />
     </svg>
   ),
-  // Mistral — chunky orange M.
-  mistral: ({ size }) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M4 19V5h3l5 6 5-6h3v14h-3v-8.6l-5 6-5-6V19H4z"
-        fill={MISTRAL_ORANGE}
-      />
-    </svg>
-  ),
+  // Mistral pixel cat from the https://mistral.ai/ site icon.
+  mistral: artworkGlyph(new URL('./assets/mistral.png', import.meta.url).href),
   // MiniMax — exact favicon served by minimax.io.
   minimax: ({ size }) => (
     <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
       <image width="32" height="32" href={MINIMAX_ICON} />
     </svg>
   ),
-  // Llama / Meta — infinity loop.
-  llama: ({ size }) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M7 8.5c-4.5 0-4.5 7 0 7 4.5 0 5.5-7 10-7 4.5 0 4.5 7 0 7-4.5 0-5.5-7-10-7z"
-        stroke={META_BLUE}
-        strokeWidth={1.8}
-      />
-    </svg>
-  ),
+  // Meta symbol from the https://about.fb.com/ newsroom logo.
+  llama: artworkGlyph(new URL('./assets/meta.png', import.meta.url).href),
   // Telegram — brand-blue disc with the paper-plane knocked out.
   telegram: ({ size }) => (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -291,6 +251,7 @@ const MATCHERS: Array<[BrandKey, RegExp]> = [
   ['hermes', /^(?:hermes(?:-agent)?)(?: hermes(?: agent)?)?$/i],
   ['droid', /(^|[^a-z0-9])(droid|factory)([^a-z0-9]|$)/i],
   ['cursor', /(^|[^a-z0-9])cursor([^a-z0-9]|$)/i],
+  ['prime-agent', /(^|[^a-z0-9])prime[-\s]?agent([^a-z0-9]|$)/i],
   ['anthropic', /(anthropic|claude)/i],
   ['codex', /codex/i],
   ['openai', /(openai|chatgpt|gpt|gpt-)/i],

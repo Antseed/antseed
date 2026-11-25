@@ -6,7 +6,7 @@ import { ANTSEED_WALLETCONNECT_PROJECT_ID, BASE_PUBLIC_RPC_URLS } from '@antseed
 // Benchmarked public Base RPCs in fallback order (see BASE_PUBLIC_RPC_URLS).
 // Users with production traffic should override via an Alchemy/Infura endpoint.
 export const wagmiConfig = getDefaultConfig({
-  appName: 'AntSeed Payments',
+  appName: 'Antseed Payments',
   projectId: ANTSEED_WALLETCONNECT_PROJECT_ID,
   chains: [base],
   transports: {
@@ -22,5 +22,5 @@ export function paymentWalletConfig(config: { evmChainId: number; chainId: strin
       ? defineChain({ id: 31337, name: 'Local Anvil', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [config.rpcUrl] } } })
       : null;
   if (!chain) throw new Error(`Unsupported wallet network: ${config.chainId}`);
-  return getDefaultConfig({ appName: 'AntSeed Payments', projectId: ANTSEED_WALLETCONNECT_PROJECT_ID, chains: [chain], transports: { [chain.id]: http() } });
+  return getDefaultConfig({ appName: 'Antseed Payments', projectId: ANTSEED_WALLETCONNECT_PROJECT_ID, chains: [chain], transports: { [chain.id]: http() } });
 }

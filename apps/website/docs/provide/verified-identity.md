@@ -6,7 +6,7 @@ description: Prove that your seller is run by the owner of a domain or GitHub ac
 
 # Verified identity
 
-You can attach ownership claims for a domain or a GitHub account to your seller. Buyers check each claim against a public proof you publish. Verified claims appear as links next to your seller (in `antseed network browse`, the desktop app and the Gateway Console's Providers page), and the public history of a verified identity, such as a GitHub portfolio or a domain's registration age, feeds the identity part of the buyer's [trust score](/docs/reputation#trust-score).
+You can attach ownership claims for a domain or a GitHub account to your seller. Buyers check each claim against a public proof you publish. Verified claims appear as links next to your seller (in `antseed network browse` and the Gateway Console's Providers page), and the public history of a verified identity, such as a GitHub portfolio or a domain's registration age, feeds the identity part of the buyer's [trust score](/docs/reputation#trust-score).
 
 Claims bind to your **peer ID**: the EVM address of your seller identity key, without the `0x` prefix. If your seller is fronted by a seller contract (`payments.sellerContract`), still use the peer ID in proofs; buyers check the contract relationship separately on-chain.
 

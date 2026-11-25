@@ -104,3 +104,19 @@ export async function readAttachOnlyIdentityHex(dataDir: string): Promise<string
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error(`unexpected identity format (length ${hex.length})`);
   return hex;
 }
+
+/** Names the testbench's own gateway (its URL and a key) for an attach-only desktop. */
+export const ATTACHED_GATEWAY_URL_ENV = 'ANTSEED_DESKTOP_GATEWAY_URL';
+export const ATTACHED_GATEWAY_KEY_ENV = 'ANTSEED_DESKTOP_GATEWAY_KEY';
+
+/**
+ * An attach-only (testbench) desktop may not start a gateway or buyer of its
+ * own, so the testbench runs a gateway on its buyer and names it here; the
+ * desktop then uses it as a remote gateway, without saving it.
+ */
+export function attachedGateway(env: NodeJS.ProcessEnv = process.env): { url: string; key: string } | null {
+  if (!isAttachOnly(env)) return null;
+  const url = env[ATTACHED_GATEWAY_URL_ENV]?.trim().replace(/\/+$/, '');
+  const key = env[ATTACHED_GATEWAY_KEY_ENV]?.trim();
+  return url && key ? { url, key } : null;
+}

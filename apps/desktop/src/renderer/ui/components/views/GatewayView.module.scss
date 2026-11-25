@@ -1,0 +1,101 @@
+/* The Gateway page sits on Home's field with Home's header and cards (see
+   VprHomeView and HomeDashboard styles); this file adds only its own parts. */
+
+/* The `--as-*` tokens of the shared primitives resolve at <body>, which follows
+   the app's theme. Home's field keeps the day palette in a dark theme, so the
+   page maps them again from its own tokens. */
+.view {
+  --as-text-primary: var(--text-primary);
+  --as-text-secondary: var(--text-secondary);
+  --as-text-muted: var(--text-muted);
+  --as-border: var(--border);
+  --as-border-strong: var(--border-strong);
+  --as-bg-surface: var(--bg-card);
+  --as-bg-muted: var(--bg-surface);
+  --as-bg-hover: var(--bg-hover);
+  --as-brand: var(--brand);
+}
+
+/* Doubled classes beat Home's rules whatever the stylesheet order. */
+.page.page {
+  gap: 14px;
+}
+
+.card {
+  margin-top: clamp(4px, 5vh - 12px, 40px);
+}
+
+.uses.uses {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px 24px;
+  padding: 26px 24px 28px;
+}
+
+.use {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.useIcon {
+  margin-bottom: 8px;
+  color: var(--text-primary);
+}
+
+.useTitle {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.useText {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.stepBody.stepBody {
+  gap: 6px;
+}
+
+/* A narrow window stacks the three, each with its icon beside it. */
+@media (max-width: 980px) {
+  .uses.uses {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    padding: 20px 20px 22px;
+  }
+
+  .use {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+    column-gap: 14px;
+    row-gap: 2px;
+  }
+
+  .useIcon {
+    grid-row: span 2;
+    margin: 2px 0 0;
+  }
+
+  .useTitle {
+    font-size: 15px;
+  }
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 22px;
+  padding: 2px 2px 0;
+}
+
+.actionsCentered {
+  justify-content: center;
+}

@@ -454,7 +454,8 @@ export function mapChatModels(body: unknown): ChatModel[] {
       toolUse: Number(coverage['tool_use'] ?? 0) > 0,
       reasoning: Number(coverage['reasoning'] ?? 0) > 0 || offers.some((offer) => offer.reasoning),
       vision: offers.some((offer) => offer.vision),
-      free: offers.some((offer) => offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0 && !offer.freeTier?.base.stakersOnly),
+      free: offers.some((offer) => offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0
+        && (offer.cachedInputUsdPerMillion ?? 0) === 0 && !offer.freeTier?.base.stakersOnly),
       freeForStakers: offers.some((offer) => offer.freeTier?.base.stakersOnly === true),
       tee: offers.some((offer) => offer.tee),
       offers: peers.length,

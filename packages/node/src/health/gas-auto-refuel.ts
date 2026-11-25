@@ -265,16 +265,16 @@ export class GasAutoRefueler {
 }
 
 /** ethers codes for a transaction the node refused before broadcasting it. */
-const NOT_BROADCAST_CODES = new Set(['INSUFFICIENT_FUNDS', 'NONCE_EXPIRED', 'REPLACEMENT_UNDERPRICED']);
+const NOT_BROADCAST_CODES = new Set(['INSUFFICIENT_FUNDS', 'REPLACEMENT_UNDERPRICED']);
 
 /**
  * Whether a swap error proves no USDC left the wallet: it reverted (in gas
- * estimation or on-chain), the node refused to broadcast it, or another tx took
- * its nonce. A timeout or lost RPC response proves nothing.
+ * estimation or on-chain) or the node refused to broadcast it. A timeout, a lost
+ * RPC response, "nonce too low" or a nonce used with no receipt proves nothing:
+ * the swap may have mined.
  */
 export function swapCertainlyNotSpent(err: unknown): boolean {
-  const { code, message } = (err ?? {}) as { code?: unknown; message?: unknown };
+  const { code } = (err ?? {}) as { code?: unknown };
   return code === 'CALL_EXCEPTION'
-    || (typeof code === 'string' && NOT_BROADCAST_CODES.has(code))
-    || message === 'Transaction was dropped or replaced';
+    || (typeof code === 'string' && NOT_BROADCAST_CODES.has(code));
 }

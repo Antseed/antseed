@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [privacy, decentralized-ai, P2P AI, anonymous AI, AI infrastructure]
 description: Venice AI showed the world that people want private, uncensored AI. Antseed is building the open network they and every other AI provider could run on.
 keywords: [private AI network, decentralized AI infrastructure, P2P AI inference, anonymous AI, Venice AI, Antseed]
-image: /og-image.jpg
 date: 2026-03-02
 ---
 
@@ -81,6 +80,6 @@ That's not a niche. That's the next layer of the internet.
 
 Venice built the vision. The rails are next.
 
-[Read the Antseed lightpaper](/docs/lightpaper)
+[How the Antseed protocol works](/docs/overview)
 
 [Get started in one command](/docs/install)

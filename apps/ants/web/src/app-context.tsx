@@ -27,3 +27,8 @@ export function useConfig(): DashboardConfig {
 export function useEpochInfo(): EpochInfo | null {
   return useApp().overview?.epoch ?? null;
 }
+
+/** Wallet ANTS can be staked again only while the wallet can transfer; unknown counts as no. */
+export function useCanTransfer(): boolean {
+  return useApp().overview?.wallet?.canTransfer ?? false;
+}

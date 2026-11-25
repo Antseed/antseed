@@ -1,0 +1,4 @@
+/* on phones the text and the cards sit 20px inside the rail */
+@media (max-width: 760px) {
+  .page { --site-pad: 20px; }
+}

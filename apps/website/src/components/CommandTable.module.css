@@ -32,14 +32,16 @@
 
 tr:hover .copy,
 .copy:focus-visible,
-.copied {
+.copy.copied {
   opacity: 1;
 }
 
 .copy:hover {
-  color: var(--as-heading);
   background: var(--as-white);
   border-color: var(--as-line);
+}
+.copy:not(.copied):hover {
+  color: var(--as-heading);
 }
 
 .copy:focus-visible {
@@ -47,8 +49,7 @@ tr:hover .copy,
   outline-offset: 1px;
 }
 
-.copied,
-.copied:hover {
+.copy.copied {
   color: var(--as-green-deep);
 }
 

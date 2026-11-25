@@ -11,6 +11,19 @@
   flex-shrink: 0;
 }
 
+/* The steady text screen readers hear; the rotating memes stay silent. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .ant {
   display: block;
 }
@@ -44,6 +57,12 @@
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* The 30 s note is a full sentence: let it wrap in a narrow chat. */
+.timer-wrap {
+  min-width: 0;
+  white-space: normal;
 }
 
 @keyframes head-sway {

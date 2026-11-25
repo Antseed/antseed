@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [AI VPN, VPN for AI, private AI, privacy, AI infrastructure]
 description: "An AI VPN does for your AI what a VPN does for browsing, and more. It routes each prompt so no single AI provider ever sees you."
 keywords: [AI VPN for agents, AI VPN, what is an AI VPN, VPN for AI, AI VPN alternative, private AI without a provider]
-image: /og-image.jpg
 date: 2026-08-04
 ---
 

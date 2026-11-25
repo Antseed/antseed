@@ -101,7 +101,7 @@ the dependencies of that code. The list below is a minimum, not the full set:
 - CLI: `apps/cli/src/gateway/`, `apps/cli/src/proxy/` (deposit and chain code),
   `apps/cli/src/cli/commands/payments.ts`, `apps/cli/src/cli/commands/ants/`.
 - Desktop: `apps/desktop/src/main/payments/`, `apps/desktop/src/main/identity.ts`.
-- Web apps: `apps/payments`, `apps/ants`, `apps/diem-staking`, `apps/gateway-console/src/wallet/`.
+- Web apps: `apps/payments`, `apps/ants`, `apps/gateway-console/src/wallet/`.
 - Protocol and wire format: `packages/protocol`, `docs/protocol`.
 
 <a id="one-problem"></a>
@@ -110,10 +110,15 @@ the dependencies of that code. The list below is a minimum, not the full set:
 - Fix one underlying problem per PR. Put unrelated cleanup, formatting or a second fix in its
   own PR.
 - Use a conventional PR title: `fix(buyer-core): ...`, `feat(cli): ...`, `docs: ...`.
+- From a fork, leave "Allow edits by maintainers" ticked. `main` only merges branches that
+  are up to date with it, so a maintainer merges `main` into yours before merging. The PR
+  guard check fails until it is ticked and the check runs again: push a commit, or ask a
+  maintainer to re-run it.
 - Update `CHANGELOG.md` for user-facing changes: add a bullet under `## Unreleased`, in
   `### Added`, `### Changed` or `### Fixed`, that names the affected packages and says what
   changed for users, like the entries already there. If there is no user-facing change, say
-  so in the PR description.
+  so in the PR description. Never add to a dated release section: when a release goes out,
+  maintainers move everything under `## Unreleased` into that release's section.
 
 <a id="evidence"></a>
 ## Evidence
@@ -218,7 +223,7 @@ flow on a local chain, follow "Local Testing" in [CLAUDE.md](CLAUDE.md).
 | Provider and router plugins | `plugins/` |
 | CLI (`antseed`) | `apps/cli` |
 | Desktop app (Electron) | `apps/desktop` |
-| Payments, ANTS staking and DIEM staking web apps | `apps/payments`, `apps/ants`, `apps/diem-staking` |
+| Payments and ANTS staking web apps | `apps/payments`, `apps/ants` |
 | Website and user docs | `apps/website` |
 | Relay, gateway console, network stats, download proxy | other folders in `apps/` |
 | Protocol specification and plugin templates | `docs/protocol` |

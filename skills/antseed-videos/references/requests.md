@@ -4,7 +4,7 @@ Every command uses `curl` and `jq` against the local buyer proxy. Build JSON wit
 
 ```bash
 proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
-auth='authorization: Bearer antseed-desktop'
+auth="authorization: Bearer ${ANTSEED_API_KEY:-antseed-desktop}"
 ```
 
 ## Catalog
@@ -35,10 +35,12 @@ curl -sS --fail-with-body -H "$auth" "$proxy_url/v1/models?type=videos" | jq -r 
      ([.peers[] | "\(.displayName // .peerId[0:8])(\(.reputationScore // 0 | floor))"] | join(" "))]
   | map(tostring) | @tsv'
 
-# One model's offers: protocol, options, pricing.
+# One model's offers: protocol, options, pricing. The catalog entry carries them
+# (the gateway serves only the list, not /v1/models/<id>).
 model_file="$(mktemp)"
-curl -sS --fail-with-body -H "$auth" \
-  "$proxy_url/v1/models/$(jq -rn --arg id "$model" '$id|@uri')" > "$model_file"
+curl -sS --fail-with-body -H "$auth" "$proxy_url/v1/models?type=videos" \
+  | jq -e --arg id "$model" '.data[] | select(.id == $id)' > "$model_file" \
+  || { echo "No video model with id $model" >&2; exit 1; }
 jq '.peers[] | {peerId, protocol, video: .capabilities.video, fields: .capabilities.supportedParameters, price: .unitBillingModels[.protocol].components}' "$model_file"
 
 # Image models for frames: id, inputs, $ per image (low-high), seller count, sellers that take output_format.
@@ -611,6 +613,7 @@ On a failed create or wait, `error.peer_message` carries the seller's reason, in
 - `video_not_delivered` on wait: the seller says the job finished but sends no video. Nothing is charged. Waiting longer or trying the same seller again will most likely fail the same way, so rename the job file to `<name>.failed.job.json` and offer the next seller from the price list; create with it once the user agrees.
 - `404 video_route_not_found` on wait: the buyer has no record of this job (wrong id, or the buyer's record expired). Delete the job file; nothing is charged.
 - `429 video_download_busy`: the buyer runs at most two status checks or downloads at once; the loop keeps waiting.
+- `429 one_off_channel_backoff` on create: too many of this buyer's recent videos on this seller ended unpaid, or too many are starting at once, so it won't open another payment channel yet. Nothing started and nothing is charged. Do not retry in a loop: tell the user the wait the message names and ask before trying again, or offer the next seller.
 - `status: unknown`: the seller is up but could not read the job's state from its video service; the loop keeps polling and stops after 5 minutes of it, keeping the job.
 - `502 status: seller_unreachable`: the seller holding the job could not be reached; the loop retries it, then keeps the job so it can resume later.
 - `502 video_download_failed` without a `status`: the seller started sending the video and the stream broke; the loop retries it.

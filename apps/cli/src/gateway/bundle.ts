@@ -3,7 +3,6 @@ import {
   chmodSync, closeSync, copyFileSync, createReadStream, createWriteStream, existsSync, fstatSync, lstatSync, mkdirSync, openSync,
   readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeSync,
 } from 'node:fs'
-import { connect } from 'node:net'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { PassThrough, type Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -109,15 +108,7 @@ export function snapshotSqlite(source: string, target: string): void {
 }
 
 /** True when something accepts TCP connections on 127.0.0.1:port. */
-export function portInUse(port: number, timeoutMs = 400): Promise<boolean> {
-  return new Promise((resolvePromise) => {
-    const socket = connect({ host: '127.0.0.1', port })
-    const done = (open: boolean) => { socket.destroy(); resolvePromise(open) }
-    socket.setTimeout(timeoutMs, () => done(false))
-    socket.once('connect', () => done(true))
-    socket.once('error', () => done(false))
-  })
-}
+export { portInUse } from '@antseed/node/gateway-process'
 
 function readJson(path: string): Record<string, unknown> | null {
   try {
@@ -222,7 +213,7 @@ export async function exportGatewayBundle(options: ExportOptions): Promise<Expor
   // The default wallet as the buyer loads it: ANTSEED_IDENTITY_HEX (the desktop app's key) wins over identity.key.
   const defaultIdentity = await loadDefaultBuyerIdentity(dataDir).catch(() => ({ identity: null, fromEnv: false }))
   if (!defaultIdentity.fromEnv && !existsSync(join(dataDir, 'identity.key')) && existsSync(join(dataDir, 'identity.enc'))) {
-    throw new Error('The default wallet is encrypted by the Antseed desktop app (identity.enc), which the CLI cannot read. Export its private key from the app, save it as identity.key in the data dir, and try again.')
+    throw new Error('The default wallet is encrypted by Antseed Desktop (identity.enc), which the CLI cannot read. Export its private key from Antseed Desktop, save it as identity.key in the data dir, and try again.')
   }
 
   const warnings: string[] = []

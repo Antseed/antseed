@@ -13,24 +13,105 @@ export function parseResponseUsage(body: Uint8Array): ResponseUsage {
   if (parsed) {
     return extractUsage(parsed);
   }
-  const text = new TextDecoder().decode(body);
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let freshInputTokens = 0;
-  let cachedInputTokens = 0;
-  for (const line of text.split('\n')) {
+  return streamUsage(readStreamEvents(new TextDecoder().decode(body)));
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * Whether an event's usage is marked as the upstream's own early estimate (`estimated: true`), read
+ * from the usage object `extractUsage` counts: `usage`, else `response.usage`, else `message.usage`.
+ */
+function isEstimatedUsage(value: Record<string, unknown>): boolean {
+  const envelope = isObject(value.usage) ? value : isObject(value.response) ? value.response : isObject(value.message) ? value.message : undefined;
+  return isObject(envelope?.usage) && envelope.usage.estimated === true;
+}
+
+/**
+ * The token usage of a stream's events. The input, its fresh part and its cache hits come together
+ * from one report, the one with the most input tokens: an Anthropic `message_start` beats a
+ * `message_delta` that repeats less. Output is the largest count any event reports. A report marked
+ * `estimated` counts only when the stream reports nothing else.
+ */
+export function streamUsage(events: Iterable<StreamEvent>): ResponseUsage {
+  const reports: Array<{ usage: ResponseUsage; estimated: boolean }> = [];
+  for (const event of events) {
+    for (const value of event.values) {
+      if (!isObject(value)) continue;
+      const usage = extractUsage(value);
+      if (usage.inputTokens > 0 || usage.outputTokens > 0) reports.push({ usage, estimated: isEstimatedUsage(value) });
+    }
+  }
+  const final = reports.some((report) => !report.estimated) ? reports.filter((report) => !report.estimated) : reports;
+  const total: ResponseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+  for (const { usage } of final) {
+    if (usage.inputTokens > 0 && usage.inputTokens >= total.inputTokens) {
+      total.inputTokens = usage.inputTokens;
+      total.freshInputTokens = usage.freshInputTokens;
+      total.cachedInputTokens = usage.cachedInputTokens;
+    }
+    total.outputTokens = Math.max(total.outputTokens, usage.outputTokens);
+  }
+  return total;
+}
+
+/** One event of a server-sent event stream: the names its `event:` lines give and the JSON values its data carries. */
+export interface StreamEvent {
+  names: string[];
+  values: unknown[];
+  /** Every data line joined with "\n": the one payload a standard client reads, whether or not it is JSON. */
+  data: string;
+  /** A blank line closed the event. A standard client drops an event the stream ended inside. */
+  closed: boolean;
+}
+
+const NOT_JSON = Symbol('not JSON');
+
+function parseJson(payload: string): unknown {
+  try {
+    return JSON.parse(payload) as unknown;
+  } catch {
+    return NOT_JSON;
+  }
+}
+
+/**
+ * The events of a server-sent event stream, read the same way by the buyer
+ * and the seller. The data lines of one event are joined with "\n" into one
+ * payload, as the SSE spec says. Lines that do not join into JSON are read one
+ * by one: a stream written with no blank lines between its events. Data that
+ * is not JSON, such as `[DONE]`, is left out.
+ */
+export function* readStreamEvents(text: string): Generator<StreamEvent> {
+  let names: string[] = [];
+  let dataLines: string[] = [];
+  let allDataLines: string[] = [];
+  const takeEvent = (closed: boolean): StreamEvent | null => {
+    const joined = dataLines.length > 1 ? parseJson(dataLines.join('\n')) : NOT_JSON;
+    const event = names.length > 0 || dataLines.length > 0
+      ? { names, values: joined === NOT_JSON ? dataLines.map(parseJson).filter((value) => value !== NOT_JSON) : [joined], data: allDataLines.join('\n'), closed }
+      : null;
+    names = [];
+    dataLines = [];
+    allDataLines = [];
+    return event;
+  };
+  const lines = text.split('\n');
+  for (const [index, line] of lines.entries()) {
     const trimmed = line.trim();
+    // What follows the last line break is where the stream ended, not a blank line that closes an event.
+    if (trimmed === '' && index === lines.length - 1) break;
+    if (trimmed === '') {
+      const event = takeEvent(true);
+      if (event) yield event;
+      continue;
+    }
+    if (trimmed.startsWith('event:')) names.push(trimmed.slice(6).trim());
     if (!trimmed.startsWith('data:')) continue;
     const payload = trimmed.slice(5).trim();
-    if (!payload || payload === '[DONE]') continue;
-    try {
-      const event = JSON.parse(payload) as Record<string, unknown>;
-      const usage = extractUsage(event);
-      if (usage.inputTokens > 0) inputTokens = Math.max(inputTokens, usage.inputTokens);
-      if (usage.outputTokens > 0) outputTokens = Math.max(outputTokens, usage.outputTokens);
-      if (usage.freshInputTokens > 0) freshInputTokens = Math.max(freshInputTokens, usage.freshInputTokens);
-      if (usage.cachedInputTokens > 0) cachedInputTokens = Math.max(cachedInputTokens, usage.cachedInputTokens);
-    } catch { /* skip non-JSON lines */ }
+    allDataLines.push(payload);
+    if (payload && payload !== '[DONE]') dataLines.push(payload);
   }
-  return { inputTokens, outputTokens, freshInputTokens, cachedInputTokens };
+  const last = takeEvent(false);
+  if (last) yield last;
 }

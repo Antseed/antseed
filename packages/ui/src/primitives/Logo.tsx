@@ -44,7 +44,9 @@ export interface LogoProps {
 
 export function Logo({ height = 24, className }: LogoProps) {
   return (
-    <svg className={className} height={height} width={(height * 104) / 36} viewBox="0 0 104 36" fill="none" role="img" aria-label="Antseed">
+    // One unit of room past the D, whose right edge sits on x=104: at a
+    // fractional rendered width the last pixel column was clipped.
+    <svg className={className} height={height} width={(height * 105) / 36} viewBox="0 0 105 36" fill="none" role="img" aria-label="Antseed">
       {MARK.map((d) => <path key={d} d={d} fill={BRAND_MARK_COLOR} />)}
       {WORDMARK.map((d) => <path key={d} d={d} fill="currentColor" />)}
     </svg>

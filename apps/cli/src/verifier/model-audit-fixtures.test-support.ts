@@ -1,10 +1,13 @@
 // Test support: builds complete verifier runs with genuinely signed seller exchanges.
-import { mkdir } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { createHash } from 'node:crypto'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import type { Wallet } from 'ethers'
 import { keccak256 } from 'ethers'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
+  KBF_CALIBRATION_METHOD,
+  aggregateKbfSelfTestOutcomes,
   KBF_PROBES_PER_REQUEST,
   canonicalHashBytes32,
   computeBinomialPower,
@@ -33,10 +36,18 @@ import {
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
 import { writeJsonAtomic } from './atomic-files.js'
-import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
+import { createDomainHomogeneousKbfBatches, kbfAuditBatches } from './kbf-batching.js'
 import { buildKbfProbeRequestBody, type ModelVerificationTargetResult } from './model-run.js'
 import { combineExtension } from './extension-round.js'
-import { sellerEpochProbeReferencePath, SELLER_PROBE_SELECTION_METHOD } from './probe-bank.js'
+import {
+  appendModelReferenceToBank,
+  recordEpochQuestionPool,
+  recordEpochSetCalibration,
+  EPOCH_QUESTION_SET_METHOD,
+  epochQuestionSetPath,
+  selectEpochQuestionSet,
+  type EpochQuestionSetV1,
+} from './probe-bank.js'
 import {
   emptyAuditCostSummary,
   summarizeAuditExchangeCosts,
@@ -57,6 +68,8 @@ export interface FixtureAudit {
   verdict: 'SAME' | 'DIFF' | 'UNDETERMINED'
   /** Seller key that actually signs ResponseAuth (defaults to `seller`). */
   signer?: Wallet
+  /** The run flagged the result as a confirmation of another auditor's DIFF. */
+  confirmsDiff?: boolean
   reference?: KbfReferenceV1
   /**
    * A close-call first audit (`kbf-extension-v1`): `firstWrong` wrong answers on the first set, then
@@ -130,11 +143,74 @@ export function referenceFixture(model: string, probeCount = 10): KbfReferenceV1
   return value
 }
 
+/** `referenceFixture` with other questions: ids `<prefix>-<n>` and new text, as a later build writes them. */
+export function freshReferenceFixture(model: string, prefix: string, probeCount = 10): KbfReferenceV1 {
+  const value = referenceFixture(model, probeCount)
+  const ids = new Map(value.probes.map((probe, index) => [probe.id, `${prefix}-${index + 1}`]))
+  value.probes = value.probes.map((probe, index) => ({
+    ...probe, id: ids.get(probe.id)!, name: `${prefix} ${index + 1}`, template: `The ${model} ${prefix} value ${index + 1} is ___.`,
+  }))
+  value.selfTest.outcomes = value.selfTest.outcomes.map((outcome) => ({ ...outcome, probeId: ids.get(outcome.probeId)! }))
+  value.contrasts = value.contrasts.map((contrast) => ({ ...contrast, distinguishingProbeIds: value.probes.map((probe) => probe.id) }))
+  value.referenceId = computeReferenceId(value)
+  return value
+}
+
+const NO_COST = { totalUsdMicros: '0', requestCount: 0, models: [], purposes: [] }
+
+/**
+ * The epoch's question set as `verifier run` makes it: `reference`'s questions are banked in the
+ * epoch's own bank as its build, the set is selected from them in order and calibrated with a clean pass.
+ */
+export async function writeCalibratedEpochSet(input: {
+  banksDir: string
+  model: string
+  epoch: string
+  reference: KbfReferenceV1
+  extensionCount?: number
+}): Promise<EpochQuestionSetV1> {
+  const appended = await appendModelReferenceToBank({
+    banksDir: input.banksDir, model: input.model, epoch: input.epoch, reference: input.reference, cost: NO_COST,
+  })
+  await recordEpochQuestionPool({ banksDir: input.banksDir, model: input.model, epoch: input.epoch, probeIds: appended.addedProbeIds })
+  const selection = await selectEpochQuestionSet({
+    banksDir: input.banksDir, model: input.model, epoch: input.epoch, runId: 'set-run',
+    extensionCount: input.extensionCount ?? 1, config: FIXTURE_CONFIG, shuffle: <T>(values: readonly T[]) => [...values],
+  })
+  if (selection.status !== 'ready') throw new Error(`no question set: ${selection.reason}`)
+  const exchangesPath = join(input.banksDir, `${input.model}-calibration.exchanges.json`)
+  const exchanges = JSON.stringify({ kind: 'antseed-reference-exchanges', exchanges: [] })
+  await writeFile(exchangesPath, exchanges)
+  return recordEpochSetCalibration({
+    banksDir: input.banksDir, model: input.model, epoch: input.epoch, config: FIXTURE_CONFIG, passes: 1, cost: NO_COST,
+    calibrations: [selection.set.reference, ...selection.set.extensions].map((reference) => {
+      const outcomes = reference.probes.map((probe) => ({ probeId: probe.id, answers: [probe.consensus], matches: [1 as const] }))
+      return {
+        version: 1 as const, method: KBF_CALIBRATION_METHOD, passes: 1, ...aggregateKbfSelfTestOutcomes(outcomes),
+        batches: kbfAuditBatches(reference.probes).map((batch, batchIndex) => ({
+          pass: 0, batchIndex, probeIds: batch.probes.map((probe) => probe.id), promptVariantId: 'v1', attempts: 1,
+        })),
+        calibratedAt: '2026-10-07T00:00:00.000Z',
+      }
+    }),
+    exchanges: {
+      path: exchangesPath, sha256: `sha256:${createHash('sha256').update(exchanges).digest('hex')}`, exchangeCount: 0, requestCount: 0,
+      upstream: {
+        name: 'referenceEndpoint', type: 'openai', baseUrl: 'https://reference.test/v1', model: `upstream-${input.model}`,
+        protocol: 'openai-chat-completions', request: { overrides: {}, omissions: [] }, providerPin: null,
+      },
+    },
+  })
+}
+
 export function peerIdOf(wallet: Wallet): string {
   return wallet.address.slice(2).toLowerCase()
 }
 
-/** Writes a completed run (summaries, signed evidence, seller references) and returns its manifest. */
+/**
+ * Writes a completed run (summaries, signed evidence) and returns its manifest. Each audit's reference
+ * is stored as a question set of the epoch (`epochs/<epoch>/fixture-sets/`), where a submit finds it.
+ */
 export async function writeSignedAuditRun(input: {
   evidenceDir: string
   banksDir: string
@@ -157,22 +233,18 @@ export async function writeSignedAuditRun(input: {
     for (const [index, audit] of input.audits.filter((entry) => entry.model === model).entries()) {
       const reference = audit.reference ?? referenceFixture(model)
       const peerId = peerIdOf(audit.seller)
-      const referencePath = sellerEpochProbeReferencePath(input.banksDir, model, input.epoch, peerId)
+      const referencePath = join(dirname(epochQuestionSetPath(input.banksDir, model, input.epoch)), 'fixture-sets', `${peerId}.json`)
       await mkdir(dirname(referencePath), { recursive: true })
       await writeJsonAtomic(referencePath, {
         version: 1,
-        kind: 'antseed-kbf-seller-epoch-probe-reference',
+        kind: 'antseed-kbf-epoch-question-set',
+        method: EPOCH_QUESTION_SET_METHOD,
         model,
         epoch: input.epoch,
-        sellerPeerId: peerId,
         compatibilityHash: `0x${'00'.repeat(32)}`,
-        selection: {
-          method: SELLER_PROBE_SELECTION_METHOD,
-          eligibleProbeCount: reference.probes.length,
-          excludedPreviouslyAssignedProbeCount: 0,
-          allowProbeReuse: false,
-        },
+        candidateProbeCount: reference.probes.length,
         reference,
+        extensions: [],
         createdAt: timestamps.startedAt,
         createdByRunId: input.runId,
       })
@@ -197,6 +269,7 @@ export async function writeSignedAuditRun(input: {
         agentId: audit.agentId,
         service: audit.service,
         status: audit.verdict,
+        ...(audit.confirmsDiff ? { confirmsDiff: true } : {}),
         outcomeReason: null,
         auditId,
         parsedProbeCount: evidence.result.parsedProbeCount,
@@ -396,6 +469,7 @@ async function closeCallResult(input: {
       agentId: audit.agentId,
       service: audit.service,
       status: written.evidence.result.verdict,
+      ...(audit.confirmsDiff ? { confirmsDiff: true } : {}),
       outcomeReason: null,
       auditId,
       parsedProbeCount: correct + incorrect,

@@ -54,7 +54,7 @@ function checkUnattestedTeePeer(buyer: BuyerClient, peers: readonly Peer[], now:
  */
 export async function listNetworkModels(store: GatewayStore, buyer: BuyerClient, now: number, explorerUrl: string | null = null): Promise<NetworkModel[]> {
   const [models, peers] = await Promise.all([
-    buyerJson(buyer, '/v1/models'),
+    buyerJson(buyer, '/v1/models?scope=network'),
     listNetworkPeers(store, buyer, now, explorerUrl).catch((): Peer[] => []),
   ])
   return mapNetworkModels(models, peers)

@@ -1,0 +1,157 @@
+.column {
+  width: 100%;
+  max-width: 1000px;
+  margin: 0 auto;
+  min-width: 0;
+}
+
+.projects {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: none;
+  }
+}
+
+.cover {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  margin-bottom: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  color: var(--text-faint);
+  transition: border-color 0.12s ease;
+
+  img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+}
+
+.project:hover .cover {
+  border-color: var(--border-strong);
+}
+
+.project:focus-visible .cover {
+  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
+}
+
+.projectName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projectMeta {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.form {
+  display: grid;
+  gap: 18px;
+}
+
+.formActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.notice {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-orange, #d98b2b);
+  transform: translateY(-1px);
+}
+
+.split {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  border-top: 1px solid var(--border-light);
+}
+
+.boardPane {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.paneNotice {
+  padding: 20px 24px;
+}
+
+.chatPane {
+  flex: 0 0 clamp(340px, 40%, 480px);
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+}
+
+.legacy {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 20px 24px 0;
+}
+
+// Too narrow for the editor and the chat side by side: the chat goes below the editor.
+@media (max-width: 760px) {
+  .split {
+    flex-direction: column;
+  }
+
+  .boardPane {
+    flex: 1 1 55%;
+  }
+
+  .chatPane {
+    flex: 0 0 45%;
+    border-top: 1px solid var(--border);
+    border-left: none;
+  }
+}

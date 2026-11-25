@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import {
   acquirePidFileLock,
+  LockHeldError,
   readJsonIfExists,
   writeJsonAtomic,
   writeTextAtomic,
@@ -80,6 +81,23 @@ test('PID locks never expose a partly written lock and leave no temporary files'
     assert.equal(current.pid, process.pid)
     await (held[0] as PromiseFulfilledResult<{ release(): Promise<void> }>).value.release()
     assert.deepEqual(await readdir(directory), [])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a held lock says what holds it: a submit publishing evidence holds the run lock for its upload', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-lock-'))
+  const path = join(directory, '.run.lock')
+  try {
+    const lock = await acquirePidFileLock(path, { heldMessage: 'a `verifier submit` is publishing audit evidence; run again when it has finished' })
+    await assert.rejects(acquirePidFileLock(path), (error: unknown) => error instanceof LockHeldError
+      && error.message === `a \`verifier submit\` is publishing audit evidence; run again when it has finished (lock ${path})`)
+    await lock.release()
+    const plain = await acquirePidFileLock(path)
+    await assert.rejects(acquirePidFileLock(path), (error: unknown) => error instanceof LockHeldError
+      && error.message === `verifier run already active (lock ${path})`)
+    await plain.release()
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

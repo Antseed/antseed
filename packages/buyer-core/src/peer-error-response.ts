@@ -3,6 +3,7 @@ import {
   type SerializedHttpResponse,
 } from '@antseed/protocol/http';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
+import { VIDEO_JOB_HOLD_CODES } from '@antseed/protocol/messages';
 import { describeServiceHealth, parseServiceHealth, SELLER_SELF_HEALTH_FAILING_CODE } from '@antseed/protocol/peer-metadata';
 
 const USER_ACTIONABLE_PEER_ERROR_IDS = new Set([
@@ -228,8 +229,12 @@ function describeErrorDetails(details: unknown): string | null {
   return json === '{}' || json === '{"_errors":[]}' ? null : json;
 }
 
+/** A seller's 409 for the buyer's own unsettled video jobs (see VIDEO_JOB_HOLD_CODES): the buyer can act on it. */
+const VIDEO_JOB_HOLD_IDS: ReadonlySet<string> = new Set(Object.values(VIDEO_JOB_HOLD_CODES));
+
 function isUserActionablePeerError(response: SerializedHttpResponse, errorId: string | null): boolean {
   if (response.statusCode === 413 || response.statusCode === 422) return true;
+  if (response.statusCode === 409 && errorId !== null && VIDEO_JOB_HOLD_IDS.has(errorId.toLowerCase())) return true;
   return errorId !== null && USER_ACTIONABLE_PEER_ERROR_IDS.has(errorId.toLowerCase());
 }
 

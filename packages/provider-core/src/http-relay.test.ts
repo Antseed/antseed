@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { HttpRelay, type RelayConfig, type RelayCallbacks } from './http-relay.js';
 import type { SerializedHttpRequest, SerializedHttpResponse, SerializedHttpResponseChunk } from '@antseed/node';
 
@@ -64,6 +64,18 @@ describe('HttpRelay', () => {
     expect((opts.headers as Record<string, string>)['x-api-key']).toBe('sk-test-key');
   });
 
+  it('hands fetch a body it does not rewrite without copying it first', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } }));
+    const relay = new HttpRelay(makeConfig(), { onResponse: () => undefined });
+    const body = new TextEncoder().encode('not json');
+
+    await relay.handleRequest(makeRequest({ headers: { 'content-type': 'text/plain' }, body }));
+
+    const sent = (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as Buffer;
+    expect(sent.buffer).toBe(body.buffer);
+    expect(Buffer.from(sent).toString()).toBe('not json');
+  });
+
   it('rejects disallowed service', async () => {
     const responses: SerializedHttpResponse[] = [];
     const callbacks: RelayCallbacks = {
@@ -127,6 +139,79 @@ describe('HttpRelay', () => {
       new TextDecoder().decode(options.body as Uint8Array),
     ) as Record<string, unknown>;
     expect(upstreamBody).toEqual({ model: 'venice-sd35', prompt: 'A seedling' });
+  });
+
+  it('judges a media request by the path it sends, however the path is written', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ allowedServices: ['venice-sd35'], injectJsonFields: { venice_parameters: { include_venice_system_prompt: false } } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({
+      path: '/v1/./images/generations',
+      body: new TextEncoder().encode(JSON.stringify({ model: 'venice-sd35', prompt: 'A seedling' })),
+    }));
+
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(new TextDecoder().decode(options.body as Uint8Array))).toEqual({ model: 'venice-sd35', prompt: 'A seedling' });
+  });
+
+  it('applies a path rewrite to the path it sends, however the path is written', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ pathRewrite: { '/v1/chat/completions': '/v4/chat/completions' } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({ path: '/v1/./chat/completions' }));
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.example.com/v4/chat/completions');
+  });
+
+  it('matches a path rewrite key exactly, query string included', async () => {
+    fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ pathRewrite: { '/v1/chat/completions?api-version=1': '/v4/chat/completions?api-version=2' } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({ path: '/v1/chat/completions?api-version=1' }));
+    await relay.handleRequest(makeRequest({ path: '/v1/chat/completions?client_version=1' }));
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://api.example.com/v4/chat/completions?api-version=2',
+      'https://api.example.com/v1/chat/completions?client_version=1',
+    ]);
+  });
+
+  it('asks for usage when a path rewrite points at a completions path', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ pathRewrite: { '/generate': '/v1/chat/completions' } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({ path: '/generate', body: new TextEncoder().encode(JSON.stringify({ model: 'claude-sonnet-4-20250514', stream: true })) }));
+
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.example.com/v1/chat/completions');
+    expect(JSON.parse(new TextDecoder().decode(options.body as Uint8Array)).stream_options).toEqual({ include_usage: true });
+  });
+
+  it('asks for usage on a completions path rewritten to one that does not look like it', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const relay = new HttpRelay(
+      makeConfig({ pathRewrite: { '/v1/chat/completions': '/v1/text/chatcompletion_v2' } }),
+      { onResponse: () => undefined },
+    );
+
+    await relay.handleRequest(makeRequest({ path: '/v1/chat/completions', body: new TextEncoder().encode(JSON.stringify({ model: 'claude-sonnet-4-20250514', stream: true })) }));
+
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.example.com/v1/text/chatcompletion_v2');
+    expect(JSON.parse(new TextDecoder().decode(options.body as Uint8Array)).stream_options).toEqual({ include_usage: true });
   });
 
   it('does not inject chat-only fields into speech requests', async () => {
@@ -417,6 +502,35 @@ describe('HttpRelay', () => {
     expect(bodyText).toContain('World');
   });
 
+  it('waits for the chunks that close a stream and drops ones the buyer cannot take', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"text":"Hello"}\n\n'));
+      },
+      pull(controller) {
+        controller.error(new Error('upstream reset'));
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+
+    const events: string[] = [];
+    const relay = new HttpRelay(makeConfig(), {
+      onResponse: () => undefined,
+      onResponseChunk: async (chunk) => {
+        const name = chunk.done ? 'done' : new TextDecoder().decode(chunk.data).includes('event: error') ? 'error' : 'data';
+        events.push(`${name} begins`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        events.push(`${name} ends`);
+        if (name !== 'data') throw new Error('buyer disconnected');
+      },
+    });
+
+    await expect(relay.handleRequest(makeRequest())).resolves.toBeUndefined();
+
+    expect(events).toEqual(['data begins', 'data ends', 'error begins', 'error ends', 'done begins', 'done ends']);
+    expect(relay.getActiveCount()).toBe(0);
+  });
+
   it('allows GET requests through service validation', async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ object: 'list', data: [] }), { status: 200 }));
 
@@ -554,16 +668,89 @@ describe('HttpRelay', () => {
       expect(upstreamBody().stream_options).toEqual({ include_obfuscation: false, include_usage: true });
     });
 
-    it('does not override an explicit include_usage:false (operator escape hatch)', async () => {
+    it('asks for usage even when the caller sets include_usage:false', async () => {
       fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
       const { relay } = relayWith();
       await relay.handleRequest(chatCompletionsRequest({
         model: 'minimax-m2.7-highspeed',
         messages: [{ role: 'user', content: 'hi' }],
         stream: true,
-        stream_options: { include_usage: false },
+        stream_options: { include_usage: false, include_obfuscation: false },
       }));
-      expect(upstreamBody().stream_options).toEqual({ include_usage: false });
+      expect(upstreamBody().stream_options).toEqual({ include_usage: true, include_obfuscation: false });
+    });
+
+    it.each([
+      ['a dot segment', '/v1/./chat/completions'],
+      ['a parent segment', '/x/../v1/chat/completions'],
+      ['an encoded dot segment', '/v1/%2e/chat/completions'],
+      ['backslashes', '/v1\\chat\\completions'],
+      ['no leading slash', 'v1/chat/completions'],
+    ])('asks for usage on a chat path written with %s, and sends the path it decided by', async (_shape, path) => {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const { relay } = relayWith();
+      await relay.handleRequest(makeRequest({
+        path,
+        body: new TextEncoder().encode(JSON.stringify({
+          model: 'minimax-m2.7-highspeed',
+          messages: [{ role: 'user', content: 'hi' }],
+          stream: true,
+        })),
+      }));
+      const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://api.example.com/v1/chat/completions');
+      expect(upstreamBody().stream_options).toEqual({ include_usage: true });
+    });
+
+    it.each([
+      ['no version prefix', '/chat/completions'],
+      ['a deployment prefix', '/openai/deployments/d1/chat/completions'],
+      ['legacy completions', '/v1/completions'],
+      ['a trailing slash', '/v1/chat/completions/'],
+      ['a leading double slash', '//v1/chat/completions'],
+    ])('asks for usage on a completions path with %s', async (_shape, path) => {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const { relay } = relayWith();
+      await relay.handleRequest(makeRequest({
+        path,
+        body: new TextEncoder().encode(JSON.stringify({ model: 'minimax-m2.7-highspeed', stream: true })),
+      }));
+      const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`https://api.example.com${path}`);
+      expect(upstreamBody().stream_options).toEqual({ include_usage: true });
+    });
+
+    it('judges the path alone, not a query string that names a completions path', async () => {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const { relay } = relayWith();
+      await relay.handleRequest(makeRequest({
+        path: '/v1/messages?next=/chat/completions',
+        body: new TextEncoder().encode(JSON.stringify({ model: 'minimax-m2.7-highspeed', messages: [], stream: true })),
+      }));
+      expect(upstreamBody().stream_options).toBeUndefined();
+    });
+
+    it('keeps the query string of a chat path it normalizes', async () => {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const { relay } = relayWith();
+      await relay.handleRequest(makeRequest({
+        path: '/v1/./chat/completions?beta=true',
+        body: new TextEncoder().encode(JSON.stringify({ model: 'minimax-m2.7-highspeed', messages: [], stream: true })),
+      }));
+      const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://api.example.com/v1/chat/completions?beta=true');
+      expect(upstreamBody().stream_options).toEqual({ include_usage: true });
+    });
+
+    it('asks for usage when stream is truthy but not the literal true, as lenient upstreams accept', async () => {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const { relay } = relayWith();
+      await relay.handleRequest(chatCompletionsRequest({
+        model: 'minimax-m2.7-highspeed',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: 1,
+      }));
+      expect(upstreamBody().stream_options).toEqual({ include_usage: true });
     });
 
     it('leaves non-streaming chat-completions requests untouched', async () => {
@@ -647,6 +834,131 @@ describe('HttpRelay', () => {
       // injectJsonFields runs after our default injection and deep-merges,
       // so an explicit operator override of include_usage wins.
       expect(upstreamBody().stream_options).toEqual({ include_usage: false, include_obfuscation: true });
+    });
+  });
+
+  describe('defaultHeaders', () => {
+    async function sentHeaders(headers: Record<string, string>, config?: Partial<RelayConfig>): Promise<Record<string, string>> {
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const relay = new HttpRelay(
+        makeConfig({ defaultHeaders: { 'anthropic-version': '2023-06-01' }, ...config }),
+        { onResponse: () => undefined },
+      );
+      await relay.handleRequest(makeRequest({ headers: { 'content-type': 'application/json', ...headers } }));
+      const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+      return opts.headers as Record<string, string>;
+    }
+
+    it('adds a header the request does not carry', async () => {
+      expect((await sentHeaders({}))['anthropic-version']).toBe('2023-06-01');
+    });
+
+    it('keeps the header the request carries, whatever its case', async () => {
+      const headers = await sentHeaders({ 'Anthropic-Version': '2026-10-21' });
+      expect(headers['Anthropic-Version']).toBe('2026-10-21');
+      expect(headers['anthropic-version']).toBeUndefined();
+    });
+
+    it('replaces a blank header', async () => {
+      const headers = await sentHeaders({ 'Anthropic-Version': ' ' });
+      expect(headers['anthropic-version']).toBe('2023-06-01');
+      expect(headers['Anthropic-Version']).toBeUndefined();
+    });
+
+    it('does not override a header the seller forces', async () => {
+      const headers = await sentHeaders({}, { extraHeaders: { 'anthropic-version': '2024-01-01' } });
+      expect(headers['anthropic-version']).toBe('2024-01-01');
+    });
+  });
+
+  describe('omitJsonFields', () => {
+    const seen: Array<{ path: string; model: string | undefined }> = [];
+    const omitTemperatureForUpstreamB = (request: { path: string; model: string | undefined }) => {
+      seen.push(request);
+      return request.model === 'upstream-b' ? ['temperature', 'top_k'] : [];
+    };
+
+    let warn: MockInstance<typeof console.warn>;
+
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
+    async function sentBody(
+      body: Record<string, unknown>,
+      config?: Partial<RelayConfig>,
+      request?: Partial<SerializedHttpRequest>,
+    ): Promise<Record<string, unknown>> {
+      seen.length = 0;
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+      const relay = new HttpRelay(
+        makeConfig({ allowedServices: [], omitJsonFields: omitTemperatureForUpstreamB, ...config }),
+        { onResponse: () => undefined },
+      );
+      await relay.handleRequest(makeRequest({ body: new TextEncoder().encode(JSON.stringify(body)), ...request }));
+      const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+      return JSON.parse(new TextDecoder().decode(opts.body as Uint8Array)) as Record<string, unknown>;
+    }
+
+    it('drops the named fields and keeps the rest', async () => {
+      const body = await sentBody({ model: 'upstream-b', temperature: 0.2, top_p: 0.9, max_tokens: 8 });
+      expect(body).toEqual({ model: 'upstream-b', top_p: 0.9, max_tokens: 8 });
+      // Only the field that was there is reported.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('dropped temperature (');
+    });
+
+    it('leaves a model it names nothing for untouched, without a log line', async () => {
+      expect(await sentBody({ model: 'upstream-a', temperature: 0.2 })).toEqual({ model: 'upstream-a', temperature: 0.2 });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('judges the model the upstream will see, and the path without its query', async () => {
+      const body = await sentBody(
+        { model: 'announced', temperature: 0.2 },
+        { allowedServices: ['announced'], serviceRewriteMap: { announced: 'upstream-b' } },
+        { path: '/v1/messages?beta=true' },
+      );
+      expect(body).toEqual({ model: 'upstream-b' });
+      expect(seen).toEqual([{ path: '/v1/messages', model: 'upstream-b' }]);
+    });
+
+    it('logs a dropped field once per model', async () => {
+      fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+      const relay = new HttpRelay(
+        makeConfig({ allowedServices: [], omitJsonFields: omitTemperatureForUpstreamB }),
+        { onResponse: () => undefined },
+      );
+      const body = new TextEncoder().encode(JSON.stringify({ model: 'upstream-b', temperature: 0 }));
+      await relay.handleRequest(makeRequest({ requestId: 'a', body }));
+      await relay.handleRequest(makeRequest({ requestId: 'b', body }));
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('quotes the model in the log line and stops logging after 100 models', async () => {
+      fetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+      const relay = new HttpRelay(
+        makeConfig({ allowedServices: [], omitJsonFields: () => ['temperature'] }),
+        { onResponse: () => undefined },
+      );
+      for (let i = 0; i < 105; i += 1) {
+        const body = new TextEncoder().encode(JSON.stringify({ model: `m${i}\nfake log line`, temperature: 0 }));
+        await relay.handleRequest(makeRequest({ requestId: `r${i}`, body }));
+      }
+      expect(warn).toHaveBeenCalledTimes(100);
+      expect(String(warn.mock.calls[0]?.[0])).not.toContain('\n');
+    });
+
+    it('runs before injectJsonFields, so an operator can still set a field', async () => {
+      const body = await sentBody(
+        { model: 'upstream-b', temperature: 0.2 },
+        { injectJsonFields: { temperature: 1 } },
+      );
+      expect(body).toEqual({ model: 'upstream-b', temperature: 1 });
     });
   });
 
@@ -734,6 +1046,26 @@ describe('HttpRelay', () => {
       ]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('kimi-k3.1-pro: primary upstream primary.example.com failed (HTTP 429); trying fallback backup.example.com'));
       expect(relay.getActiveCount()).toBe(0);
+    });
+
+    it('reads the request body as JSON once per upstream it is written for', async () => {
+      const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+      try {
+        const request = kimiRequest();
+        const decodes = () => decode.mock.calls.filter(([input]) => input === request.body).length;
+        fetchMock.mockResolvedValueOnce(ok());
+        const relay = new HttpRelay(kimiConfig(), { onResponse: () => undefined });
+
+        await relay.handleRequest(request);
+        expect(decodes()).toBe(1);
+
+        decode.mockClear();
+        fetchMock.mockResolvedValueOnce(fail(503)).mockResolvedValueOnce(ok());
+        await relay.handleRequest(request);
+        expect(decodes()).toBe(2);
+      } finally {
+        decode.mockRestore();
+      }
     });
 
     it('fails over on network errors', async () => {
@@ -836,6 +1168,27 @@ describe('HttpRelay', () => {
       expect(responses.map((res) => res.statusCode)).toEqual([200]);
       expect(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join('')).toContain('event: error');
       expect(chunks.at(-1)!.done).toBe(true);
+    });
+
+    it('ends a stream cut mid-line or mid-event with an error event of its own', async () => {
+      for (const [streamed, closing] of [['data: {"choices":[{"delta":{"content":"Se', '\n\n'], ['data: {"partial":true}\n', '\n'], ['data: {"partial":true}\n\n', '']] as const) {
+        fetchMock.mockReset();
+        fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(streamed));
+          },
+          // The cut comes on the next read, after the bytes above were delivered.
+          pull(controller) {
+            controller.error(new Error('ECONNRESET'));
+          },
+        }, { highWaterMark: 0 }), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+        const chunks: SerializedHttpResponseChunk[] = [];
+        const relay = new HttpRelay(kimiConfig(), { onResponse: () => {}, onResponseChunk: (chunk) => chunks.push(chunk) });
+
+        await relay.handleRequest(kimiRequest());
+
+        expect(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join('')).toBe(`${streamed}${closing}event: error\ndata: ECONNRESET\n\n`);
+      }
     });
 
     it('only uses a fallback for the services it lists', async () => {

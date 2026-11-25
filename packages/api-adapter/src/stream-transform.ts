@@ -209,6 +209,9 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
   let usage: TokenUsage = ZERO_USAGE;
+  // Raw Messages usage fields seen so far. message_delta may repeat some fields and omit others,
+  // so fields it leaves out keep their message_start values instead of reading as zero.
+  let rawUsage: Record<string, unknown> = {};
   let finishReason: string | null = null;
   let responseStarted = false;
   const toolBlockIndexes = new Map<number, number>();
@@ -267,7 +270,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
             : {};
           if (typeof message.id === 'string') responseId = message.id;
           if (typeof message.model === 'string') responseModel = message.model;
-          usage = extractUsage({ usage: message.usage });
+          rawUsage = usageFields(message.usage);
+          usage = extractUsage({ usage: rawUsage });
           emitStart(emitted);
           continue;
         }
@@ -317,7 +321,9 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
             ? data.delta as Record<string, unknown>
             : {};
           finishReason = anthropicStopReasonToCanonical(delta.stop_reason);
-          usage = mergeOutputUsage(usage, extractUsage({ usage: data.usage }));
+          // Some Anthropic-compatible upstreams report input and cache reads only here, not in message_start.
+          rawUsage = { ...rawUsage, ...usageFields(data.usage) };
+          usage = extractUsage({ usage: rawUsage });
           continue;
         }
 
@@ -542,6 +548,14 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
   let textBlockStarted = false;
   let hadTextBlock = false;
   let openToolIndex: number | null = null;
+  // The open tool block's arguments so far, and the calls that started while
+  // they were still incomplete. Some upstreams interleave parallel calls'
+  // argument chunks; an Anthropic block can't take deltas once stopped, so a
+  // later call waits (start and deltas, in order) until the open one's
+  // arguments are whole JSON, then streams. Calls that arrive one after
+  // another stream as they come.
+  let openToolArguments = '';
+  const heldTools = new Map<number, { start: Extract<CanonicalStreamEvent, { type: 'tool_call_start' }>; deltas: string[] }>();
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
 
@@ -575,6 +589,66 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
     });
   };
 
+  const isWholeJson = (text: string): boolean => {
+    if (text.trim().length === 0) return false;
+    try {
+      JSON.parse(text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const closeOpenTool = (emitted: Array<{ event?: string; data: unknown | string }>): void => {
+    if (openToolIndex === null) return;
+    emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
+    openToolIndex = null;
+    openToolArguments = '';
+  };
+
+  const emitToolDelta = (emitted: Array<{ event?: string; data: unknown | string }>, index: number, partialJson: string): void => {
+    emitted.push({
+      event: 'content_block_delta',
+      data: {
+        type: 'content_block_delta',
+        index: toolBlockIndex(index),
+        delta: { type: 'input_json_delta', partial_json: partialJson },
+      },
+    });
+  };
+
+  const openTool = (emitted: Array<{ event?: string; data: unknown | string }>, event: Extract<CanonicalStreamEvent, { type: 'tool_call_start' }>): void => {
+    emitted.push({
+      event: 'content_block_start',
+      data: {
+        type: 'content_block_start',
+        index: toolBlockIndex(event.index),
+        content_block: {
+          type: 'tool_use',
+          id: event.id || `toolu_${event.index + 1}`,
+          name: event.name || 'tool',
+          input: {},
+        },
+      },
+    });
+    openToolIndex = event.index;
+    openToolArguments = '';
+  };
+
+  /** Streams held calls in order while the open block is done (`all`: every one, at the end of the response). */
+  const releaseHeldTools = (emitted: Array<{ event?: string; data: unknown | string }>, all: boolean): void => {
+    while (heldTools.size > 0 && (all || openToolIndex === null || isWholeJson(openToolArguments))) {
+      const [index, held] = heldTools.entries().next().value!;
+      heldTools.delete(index);
+      closeOpenTool(emitted);
+      openTool(emitted, held.start);
+      for (const delta of held.deltas) {
+        emitToolDelta(emitted, index, delta);
+        openToolArguments += delta;
+      }
+    }
+  };
+
   return {
     render(events, chunk) {
       const emitted: Array<{ event?: string; data: unknown | string }> = [];
@@ -587,10 +661,8 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'text_delta') {
           startMessage(emitted, null);
-          if (openToolIndex !== null) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
-            openToolIndex = null;
-          }
+          releaseHeldTools(emitted, true);
+          closeOpenTool(emitted);
           if (!textBlockStarted) {
             textBlockStarted = true;
             hadTextBlock = true;
@@ -612,45 +684,35 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
             textBlockStarted = false;
           }
-          if (openToolIndex !== null && openToolIndex !== event.index) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
+          if (openToolIndex === event.index || heldTools.has(event.index)) continue;
+          if (openToolIndex !== null && (heldTools.size > 0 || !isWholeJson(openToolArguments))) {
+            heldTools.set(event.index, { start: event, deltas: [] });
+            continue;
           }
-          emitted.push({
-            event: 'content_block_start',
-            data: {
-              type: 'content_block_start',
-              index: toolBlockIndex(event.index),
-              content_block: {
-                type: 'tool_use',
-                id: event.id || `toolu_${event.index + 1}`,
-                name: event.name || 'tool',
-                input: {},
-              },
-            },
-          });
-          openToolIndex = event.index;
+          closeOpenTool(emitted);
+          openTool(emitted, event);
           continue;
         }
 
         if (event.type === 'tool_call_delta') {
           startMessage(emitted, null);
-          emitted.push({
-            event: 'content_block_delta',
-            data: {
-              type: 'content_block_delta',
-              index: toolBlockIndex(event.index),
-              delta: { type: 'input_json_delta', partial_json: event.argumentsDelta },
-            },
-          });
+          const held = heldTools.get(event.index);
+          if (held) {
+            held.deltas.push(event.argumentsDelta);
+            continue;
+          }
+          emitToolDelta(emitted, event.index, event.argumentsDelta);
+          if (event.index === openToolIndex) {
+            openToolArguments += event.argumentsDelta;
+            releaseHeldTools(emitted, false);
+          }
           continue;
         }
 
         if (event.type === 'response_done') {
           startMessage(emitted, null);
-          if (openToolIndex !== null) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
-            openToolIndex = null;
-          }
+          releaseHeldTools(emitted, true);
+          closeOpenTool(emitted);
           if (textBlockStarted) {
             emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
             textBlockStarted = false;
@@ -1016,6 +1078,11 @@ function reportsInput(usage: TokenUsage): boolean {
   return usage.inputTokens > 0 || usage.cachedInputTokens > 0;
 }
 
+/** The usage fields an event actually reported; absent or null fields are left out so they don't overwrite earlier ones. */
+function usageFields(value: unknown): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(objectValue(value)).filter(([, field]) => field !== undefined && field !== null));
+}
+
 function mergeUsage(previous: TokenUsage, next: TokenUsage): TokenUsage {
   // The input counts are one split: take them together from whichever event
   // reported input, so a stale cached or fresh count can't outlive its total.
@@ -1026,10 +1093,6 @@ function mergeUsage(previous: TokenUsage, next: TokenUsage): TokenUsage {
     freshInputTokens: input.freshInputTokens,
     cachedInputTokens: input.cachedInputTokens,
   };
-}
-
-function mergeOutputUsage(previous: TokenUsage, next: TokenUsage): TokenUsage {
-  return { ...previous, outputTokens: next.outputTokens > 0 ? next.outputTokens : previous.outputTokens };
 }
 
 function openAIChatUsage(usage: TokenUsage): Record<string, unknown> {
