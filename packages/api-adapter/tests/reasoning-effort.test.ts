@@ -58,8 +58,12 @@ describe('reasoning effort from an OpenAI client to an Anthropic Messages seller
       }
     });
 
-    it.each(['minimal', 'adaptive'])(`drops ${from} effort %s, a word Messages does not have`, (level) => {
-      expect(reasoningFields(translated(from, MESSAGES, effort(level)))).toEqual({});
+    it(`drops ${from} effort minimal, for which Messages has no word, and puts no other level in its place`, () => {
+      expect(reasoningFields(translated(from, MESSAGES, effort('minimal')))).toEqual({});
+    });
+
+    it.each(['ultra', 'adaptive'])(`copies ${from} effort %s, a word no list here knows, as it does between the OpenAI protocols`, (level) => {
+      expect(reasoningFields(translated(from, MESSAGES, effort(level)))).toEqual({ output_config: { effort: level } });
     });
 
     it(`sends no reasoning field when the ${from} request names no effort`, () => {
@@ -104,8 +108,8 @@ describe('reasoning effort from an Anthropic Messages client to an OpenAI seller
       expect(reasoningFields(translated(MESSAGES, to, fields))).toEqual({});
     });
 
-    it.each(['ultra', 'minimal', 'none', 'HIGH'])(`drops %s, which is no Messages effort word, for a ${to} seller`, (level) => {
-      expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096, output_config: { effort: level } }))).toEqual({});
+    it.each(['ultra', 'adaptive'])(`copies %s, a word no list here knows, for a ${to} seller`, (level) => {
+      expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096, output_config: { effort: level } }))).toEqual(effort(level));
     });
 
     it(`invents no effort from a thinking budget or from adaptive thinking alone for a ${to} seller`, () => {

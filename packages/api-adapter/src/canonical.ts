@@ -27,19 +27,19 @@ export type CanonicalToolChoice =
 export const DEFAULT_ANTHROPIC_MAX_TOKENS = 16_384;
 
 /**
- * The effort words the Messages API documents for `output_config.effort`, all of them words the
- * OpenAI protocols have too. It has no word for "off" (that is `thinking: { type: "disabled" }`)
- * and none for OpenAI's `minimal`. Which of these a model takes is the upstream's to answer,
- * never decided here.
+ * An effort is a word copied between protocols as the client wrote it, as it is between Chat
+ * Completions and Responses: no list of words is kept here, so a new one works the day a vendor
+ * adds it, and which words a model takes is the upstream's to answer. Two words of the OpenAI
+ * protocols need care, because the Messages API says them differently or not at all.
  */
-const ANTHROPIC_EFFORTS: ReadonlySet<string> = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
-/** The effort the OpenAI protocols use for "do not reason". */
+/** "Do not reason": an effort in the OpenAI protocols, the `thinking` switch in the Messages API. */
 const REASONING_OFF = 'none';
+/** The OpenAI protocols' lowest effort, for which the Messages API has no word. */
+const EFFORT_WITHOUT_MESSAGES_WORD = 'minimal';
 
 /**
- * The reasoning effort a Messages request names: one of the Messages API's own words, so nothing
- * else reaches another protocol as an effort. A thinking budget names no effort, and none is made
- * up from it.
+ * The reasoning effort a Messages request names. A thinking budget names no effort, and none is
+ * made up from it.
  *
  * With thinking switched off, no effort is carried at all. Off is the Messages default, which a
  * client may only be restating, so it is not turned into the OpenAI protocols' `none`: that is a
@@ -54,17 +54,17 @@ function reasoningEffortFromAnthropic(body: Record<string, unknown>): string | u
   const config = body.output_config;
   if (!config || typeof config !== 'object' || Array.isArray(config)) return undefined;
   const effort = (config as Record<string, unknown>).effort;
-  return typeof effort === 'string' && ANTHROPIC_EFFORTS.has(effort) ? effort : undefined;
+  return typeof effort === 'string' && effort.length > 0 ? effort : undefined;
 }
 
 /**
- * Writes a reasoning effort in the Messages API's own fields; a word it does not have is left out.
- * `none` is always a client's explicit choice in the OpenAI protocols, so it is carried as the
- * Messages switch for it.
+ * Writes a reasoning effort in the Messages API's own fields. `none` is always a client's explicit
+ * choice in the OpenAI protocols, so it is carried as the Messages switch for it. `minimal` is
+ * left out: no other level is put in its place.
  */
 function assignAnthropicReasoningEffort(body: Record<string, unknown>, effort: string | undefined): void {
   if (effort === REASONING_OFF) body.thinking = { type: 'disabled' };
-  else if (effort !== undefined && ANTHROPIC_EFFORTS.has(effort)) body.output_config = { effort };
+  else if (effort !== undefined && effort !== EFFORT_WITHOUT_MESSAGES_WORD) body.output_config = { effort };
 }
 
 export type CanonicalContentPart =
