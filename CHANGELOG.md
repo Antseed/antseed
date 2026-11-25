@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Buyer proxy (`@antseed/api-adapter`, CLI, gateway, desktop): a streamed answer that is translated for the client, or adapted by the AI VPN's system proxy, is read as the SSE standard defines its lines and fields. The space after a field's colon is optional (`data:{...}` and `data: {...}` are the same line), lines can end in CRLF, LF or CR, and a line with no colon is a field with an empty value. The system proxy also keeps a character whose bytes arrive in two network chunks, which it used to garble.
+
 ## 2026-11-25 — CLI 0.1.260, Node 0.2.192, Desktop 0.2.95
 
 ### Packages

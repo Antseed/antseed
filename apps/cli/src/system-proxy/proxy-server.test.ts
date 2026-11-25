@@ -479,6 +479,189 @@ test('ResponsesSseNormalizer: removes duplicate terminal text payloads', () => {
   assert.ok(output.includes('"item":{"type":"message","id":"agent-node:llm:0","content":[]}'))
 })
 
+test('ConversationSseAdapter: reads SSE lines with no space after the colon', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+  const input = [
+    'data:{"id":"chatcmpl_1","choices":[{"delta":{"content":"hi"},"finish_reason":null}]}',
+    '',
+    'data:{"id":"chatcmpl_1","choices":[{"delta":{},"finish_reason":"stop"}]}',
+    '',
+    'data:[DONE]',
+    '',
+    '',
+  ].join('\n')
+
+  const output = adapter.feed(Buffer.from(input), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.ok(output.includes('"parts":["hi"]'), output)
+  assert.ok(output.includes('"status":"finished_successfully"'), output)
+})
+
+test('ResponsesSseNormalizer: rewrites events with no space after the colon', () => {
+  const normalizer = new ResponsesSseNormalizer({
+    kind: 'responses-sse',
+    stripDataType: true,
+    messageItemId: 'agent-node:llm:0',
+  })
+  const input = [
+    'event:response.output_item.added',
+    'data:{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","content":[]}}',
+    '',
+    '',
+  ].join('\n')
+
+  const output = normalizer.feed(Buffer.from(input), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(
+    output,
+    'event: response.output_item.added\ndata: {"output_index":0,"item":{"type":"message","id":"agent-node:llm:0","content":[]}}\n\n',
+  )
+})
+
+test('ConversationSseAdapter: reads CR line endings', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+  const input = 'data:{"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\r\rdata:[DONE]\r\r'
+
+  const output = adapter.feed(Buffer.from(input), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.ok(output.includes('"parts":["hi"]'), output)
+})
+
+test('ResponsesSseNormalizer: rewrites every event of a stream with CR line endings', () => {
+  const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
+  const input = 'event:a\rdata:{"type":"a","n":1}\r\revent:b\rdata:{"type":"b","n":2}\r\r'
+
+  const output = normalizer.feed(Buffer.from(input), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(output, 'event: a\ndata: {"n":1}\n\nevent: b\ndata: {"n":2}\n\n')
+})
+
+test('ResponsesSseNormalizer: does not read a CRLF split across chunks as two line ends', () => {
+  const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
+
+  assert.deepEqual(normalizer.feed(Buffer.from('event: a\r'), false), [])
+  const output = normalizer.feed(Buffer.from('\ndata: {"type":"a","n":1}\r\n\r\n'), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(output, 'event: a\ndata: {"n":1}\n\n')
+})
+
+test('ConversationSseAdapter: keeps a character split across chunks', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+  const bytes = Buffer.from('data: {"choices":[{"delta":{"content":"✓"}}]}\n\n')
+  const inside = bytes.indexOf(0xe2) + 1
+
+  const output = [...adapter.feed(bytes.subarray(0, inside), false), ...adapter.feed(bytes.subarray(inside), true)]
+    .map((chunk) => chunk.toString('utf8'))
+    .join('')
+  assert.ok(output.includes('"parts":["✓"]'), output)
+})
+
+test('ConversationSseAdapter: skips a byte order mark at the start of the stream', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+  const input = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')])
+
+  const output = adapter.feed(input, true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.ok(output.includes('"parts":["hi"]'), output)
+})
+
+test('ResponsesSseNormalizer: keeps a character split across chunks', () => {
+  const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
+  const bytes = Buffer.from('event: a\ndata: {"type":"a","delta":"✓"}\n\n')
+  const inside = bytes.indexOf(0xe2) + 1
+
+  const output = [...normalizer.feed(bytes.subarray(0, inside), false), ...normalizer.feed(bytes.subarray(inside), true)]
+    .map((chunk) => chunk.toString('utf8'))
+    .join('')
+  assert.equal(output, 'event: a\ndata: {"delta":"✓"}\n\n')
+})
+
+test('ConversationSseAdapter: delivers a complete frame before the stream ends', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+
+  assert.deepEqual(adapter.feed(Buffer.from('data:{"choices":[{"delta":{"content":"hi"}}]}\n'), false), [])
+  const output = adapter.feed(Buffer.from('\n'), false).map((chunk) => chunk.toString('utf8')).join('')
+  assert.ok(output.includes('"parts":["hi"]'), output)
+  assert.equal(output.includes('finished_successfully'), false, output)
+})
+
+test('ConversationSseAdapter: does not read a frame left unfinished when the stream ends', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+
+  const output = adapter.feed(Buffer.from('data:{"choices":[{"delta":{"content":"hi"}}]}\n'), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(output.includes('"parts":["hi"]'), false, output)
+})
+
+test('ResponsesSseNormalizer: delivers a complete frame before the stream ends', () => {
+  const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
+
+  assert.deepEqual(normalizer.feed(Buffer.from('event:a\ndata:{"type":"a","n":1}\n'), false), [])
+  const output = normalizer.feed(Buffer.from('\n'), false).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(output, 'event: a\ndata: {"n":1}\n\n')
+})
+
+test('ConversationSseAdapter: finishes once at [DONE] with no space after the colon', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+
+  const output = adapter
+    .feed(Buffer.from('data:{"choices":[{"delta":{"content":"hi"}}]}\n\ndata:[DONE]\n\n'), false)
+    .map((chunk) => chunk.toString('utf8'))
+    .join('')
+  assert.equal(output.split('"status":"finished_successfully"').length - 1, 1, output)
+})
+
+test('ConversationSseAdapter: finishes at a finish reason with no space after the colon', () => {
+  const adapter = new ConversationSseAdapter({
+    conversationId: 'conv-1',
+    parentMessageId: 'parent-1',
+    userMessageId: 'user-1',
+    assistantMessageId: 'assistant-1',
+  })
+
+  const output = adapter
+    .feed(Buffer.from('data:{"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'), false)
+    .map((chunk) => chunk.toString('utf8'))
+    .join('')
+  assert.equal(output.split('"status":"finished_successfully"').length - 1, 1, output)
+})
+
+test('ResponsesSseNormalizer: passes a frame it cannot name through unchanged', () => {
+  const normalizer = new ResponsesSseNormalizer({ kind: 'responses-sse', stripDataType: true })
+  const input = ': keep-alive\n\ndata:{"type":"unnamed"}\n\ndata: [DONE]\n\n'
+
+  const output = normalizer.feed(Buffer.from(input), true).map((chunk) => chunk.toString('utf8')).join('')
+  assert.equal(output, input)
+})
+
 // ── Integration tests ─────────────────────────────────────────────────────────
 // Tests connect directly to the inner TLS server (innerTlsPort), bypassing the
 // CONNECT tunnel. This keeps tests reliable while covering the critical

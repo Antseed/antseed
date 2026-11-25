@@ -486,29 +486,43 @@ export function mapFinishReasonToAnthropicStopReason(value: unknown): string | n
   return value;
 }
 
-export function parseSseBuffer(buffer: string): { events: ParsedSseEvent[]; remainder: string } {
-  const normalized = buffer.replace(/\r\n/g, '\n');
-  const blocks = normalized.split('\n\n');
-  const remainder = blocks.pop() ?? '';
-  const events: ParsedSseEvent[] = [];
+/**
+ * Splits the decoded text of an SSE stream so far (the decoder removes a byte
+ * order mark) into its complete blocks, each with LF line ends, as the WHATWG
+ * standard frames them. `remainder` goes in front of the next chunk.
+ */
+export function splitSseBlocks(buffer: string): { blocks: string[]; remainder: string } {
+  // A line ends at CRLF, LF or CR.
+  const blocks = buffer.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n\n');
+  const tail = blocks.pop() ?? '';
+  // A CR at the very end has ended its line, but it may be half of a CRLF whose
+  // LF is in the next chunk, so it stays a CR until that chunk arrives.
+  return { blocks, remainder: buffer.endsWith('\r') ? `${tail.slice(0, -1)}\r` : tail };
+}
 
-  for (const block of blocks) {
-    const lines = block.split('\n');
-    let event: string | null = null;
-    const dataLines: string[] = [];
-    for (const line of lines) {
-      if (line.startsWith('event: ')) {
-        event = line.slice('event: '.length);
-      } else if (line.startsWith('data: ')) {
-        dataLines.push(line.slice('data: '.length));
-      }
-    }
-    if (dataLines.length > 0) {
-      events.push({ event, data: dataLines.join('\n') });
+/** Reads one block's fields as the WHATWG standard defines them; null for a block with no data, which is no event. */
+export function parseSseBlock(block: string): ParsedSseEvent | null {
+  let event: string | null = null;
+  const dataLines: string[] = [];
+  for (const line of block.split('\n')) {
+    // The name ends at the first colon, and one space after the colon is not
+    // part of the value. A line with no colon is a name with an empty value.
+    // A comment has an empty name, so like `id` and `retry` it is not read.
+    const colon = line.indexOf(':');
+    const field = colon === -1 ? line : line.slice(0, colon);
+    const value = colon === -1 ? '' : line.slice(colon + 1).replace(/^ /, '');
+    if (field === 'event') {
+      event = value || null;
+    } else if (field === 'data') {
+      dataLines.push(value);
     }
   }
+  return dataLines.length > 0 ? { event, data: dataLines.join('\n') } : null;
+}
 
-  return { events, remainder };
+export function parseSseBuffer(buffer: string): { events: ParsedSseEvent[]; remainder: string } {
+  const { blocks, remainder } = splitSseBlocks(buffer);
+  return { events: blocks.flatMap((block) => parseSseBlock(block) ?? []), remainder };
 }
 
 export function encodeSseEvents(events: Array<{ event?: string; data: unknown | string }>): Uint8Array {

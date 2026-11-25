@@ -60,8 +60,10 @@ export function usageCost(price = {}, { prompt = 0, completion = 0, images = 0 }
  *
  * `random` only seeds the mock: each request draws from its own stream keyed by tag and attempt, so what a request
  * gets does not depend on the order concurrent requests arrive in. The ledger records the drawn `latencyMs`.
+ *
+ * `compactSse` writes SSE lines with no space after the colon (`data:{...}`), which the standard allows.
  */
-export async function startMock({ models, label = 'mock', latencyMs = 0, usage = 'fixed', latencyRangeMs = [50, 3000], outTokens = [100, 4000], fault500Rate = 0, disconnectRate = 0, pricing = {}, random = Math.random }) {
+export async function startMock({ models, label = 'mock', latencyMs = 0, usage = 'fixed', latencyRangeMs = [50, 3000], outTokens = [100, 4000], fault500Rate = 0, disconnectRate = 0, compactSse = false, pricing = {}, random = Math.random }) {
   const png = await readFile(FIXTURE_PNG);
   const state = { latencyMs, faults: { fault500Rate, disconnectRate }, requests: [], deliveries: new Map(), active: 0, maxActive: 0 };
   const known = new Set(models);
@@ -96,7 +98,8 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     const id = `chatcmpl-${tag}`;
     const created = Math.floor(Date.now() / 1000);
     // One Chat Completions stream chunk, for every streamed answer below.
-    const chunk = (choices, usageChunk = null) => `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: body.model, choices, usage: usageChunk })}\n\n`;
+    const dataField = compactSse ? 'data:' : 'data: ';
+    const chunk = (choices, usageChunk = null) => `${dataField}${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: body.model, choices, usage: usageChunk })}\n\n`;
 
     if (tagged && draw() < state.faults.fault500Rate) {
       await sleep(totalMs / 3);
@@ -119,7 +122,7 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
       response.write(chunk([{ index: 0, delta: { tool_calls: [call(`call_${tag}_b`, 'testbench-missing-b.txt')] }, finish_reason: null }]));
       response.write(chunk([{ index: 0, delta: {}, finish_reason: 'tool_calls' }]));
       if (reportsUsage && body.stream_options?.include_usage === true) response.write(chunk([], usageBody));
-      response.end('data: [DONE]\n\n');
+      response.end(`${dataField}[DONE]\n\n`);
       entry.status = 'ok';
       return;
     }
@@ -133,7 +136,7 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
       response.write(chunk([{ index: 0, delta: { role: 'assistant', content: null, tool_calls: [call] }, finish_reason: null }]));
       response.write(chunk([{ index: 0, delta: {}, finish_reason: 'tool_calls' }]));
       if (reportsUsage && body.stream_options?.include_usage === true) response.write(chunk([], usageBody));
-      response.end('data: [DONE]\n\n');
+      response.end(`${dataField}[DONE]\n\n`);
       entry.status = 'ok';
       return;
     }
@@ -168,7 +171,7 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     response.write(chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]));
     // As the OpenAI spec says: a stream carries usage only when the request asks for it.
     if (reportsUsage && body.stream_options?.include_usage === true) response.write(chunk([], usageBody));
-    response.end('data: [DONE]\n\n');
+    response.end(`${dataField}[DONE]\n\n`);
     entry.status = 'ok';
   }
 

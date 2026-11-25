@@ -198,6 +198,7 @@ describe('topology', () => {
     assert.throws(() => normalizeTopology({ sellers: Array.from({ length: MAX_SELLERS + 1 }, (_, i) => ({ id: `s${i}` })) }, source), /At most/);
     assert.throws(() => normalizeTopology({ sellers: [{ id: 'Bad Id' }] }, source), /Invalid seller id/);
     assert.throws(() => normalizeTopology({ sellers: [{ id: 'a', mock: { latencyMs: -1 } }] }, source), /latencyMs/);
+    assert.throws(() => normalizeTopology({ sellers: [{ id: 'a', mock: { compactSse: 'yes' } }] }, source), /compactSse/);
     assert.throws(() => normalizeTopology({ buyer: { peerRefreshIntervalMs: 500 } }, source), /peerRefreshIntervalMs must be 1000-3600000/);
     assert.throws(() => normalizeTopology({ buyer: { peerRefreshIntervalMs: '60000' } }, source), /peerRefreshIntervalMs/);
     assert.throws(() => normalizeTopology({ sellers: [{ id: 'a', providers: { p: { plugin: 'openai', apiKey: 'sk', services: { m: {} } } } }] }, source), /inline secret/);
@@ -228,6 +229,7 @@ describe('topology', () => {
       'chain.blockTimeSec': { chain: { blockTimeSec: 3 } },
       'sellers.0.mock.latencyMs': { sellers: [{ id: 'seller', mock: { latencyMs: 250 } }] },
       'sellers.0.mock.fault500Rate': { sellers: [{ id: 'seller', mock: { fault500Rate: 0.1 } }] },
+      'sellers.0.mock.compactSse': { sellers: [{ id: 'seller', mock: { compactSse: true } }] },
       'sellers.0.env': { sellers: [{ id: 'seller', env: { ANTSEED_DEBUG: '1' } }] },
     };
     for (const [path, topology] of Object.entries(variants)) {
