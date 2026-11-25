@@ -1,6 +1,14 @@
 # Antseed
 
-> Antseed is a peer-to-peer network for AI services. You run a local buyer (or a gateway in front of it) that exposes an OpenAI- and Anthropic-compatible API, discovers sellers on a DHT, routes each request to one of them and pays per request in USDC on Base.
+> Antseed is the open intelligence network. Anyone can provide AI directly to buyers. Providers compete for every request, and you choose who serves you.
+
+- Mission: Give everyone the freedom to access AI by building the world's largest inference liquidity network.
+- Vision: A world where anyone can supply intelligence and everyone can access it.
+- Open access: Anyone can buy. Anyone can provide. An open market for intelligence, without a central gatekeeper.
+- Best available prices: Providers compete for every request. You get the best available price and only pay for what you use.
+- Privacy on your terms: Your choice of provider is your choice of privacy. Stay anonymous by default, or go fully private with secure hardware for your most sensitive work.
+
+How it works: you run a local buyer (or a gateway in front of it) that exposes an OpenAI- and Anthropic-compatible API, discovers sellers on a DHT, routes each request to one of them and pays per request in USDC on Base.
 
 If you are an agent, start here: https://antseed.com/skill.md
 
@@ -54,9 +62,8 @@ antseed gateway service install
 - [Connect agents](https://antseed.com/docs/agents/): Connect Hermes, OpenClaw and other agents through a gateway key, a tunnel or the local proxy.
 - [Tunnels](https://antseed.com/docs/tunnels/): Publish a desktop app or CLI buyer at a public HTTPS endpoint.
 - [Buyer configuration](https://antseed.com/docs/buyer-config/): The buyer config file, routing preferences, data directories and the Base RPC URL.
-- [Staked free tier](https://antseed.com/docs/staked-free-tier/): Lock ANTS in a seller's pool to raise that seller's free-tier rate limit.
 - [Generate videos with an agent](https://antseed.com/docs/videos/): The `antseed-videos` skill, with an approval before every paid step.
-- [Desktop app](https://antseed.com/docs/desktop/): Pick models and sellers, connect local tools, chat and add credits.
+- [Antseed Desktop](https://antseed.com/docs/desktop/): Pick models and sellers, connect local tools, chat and add credits.
 - [Integrations](https://antseed.com/integrations/): Per-tool setup pages. All of them in one agent-readable file: [llms-connect.txt](https://antseed.com/llms-connect.txt)
   - [Claude Code](https://antseed.com/integrations/claude-code/)
   - [OpenAI Codex CLI](https://antseed.com/integrations/codex/)
@@ -68,6 +75,20 @@ antseed gateway service install
   - [Vercel AI SDK](https://antseed.com/integrations/vercel-ai-sdk/)
   - [LangChain (Python)](https://antseed.com/integrations/langchain-python/)
   - [curl / raw HTTP](https://antseed.com/integrations/curl/)
+
+## Agent skills
+
+Skills are in https://github.com/Antseed/antseed/tree/main/skills. Install one with `gh skill install Antseed/antseed <skill>`.
+
+- [join-buyer](https://antseed.com/skill.md): Set up a gateway, create an API key and connect a tool.
+- [join-provider](https://github.com/Antseed/antseed/tree/main/skills/join-provider): Set up a provider with the CLI. It stops for the user's go-ahead before anything that spends ETH or announces the seller.
+- [hermes-antseed](https://github.com/Antseed/antseed/tree/main/skills/hermes-antseed): Switch a running Hermes agent's model backend to Antseed.
+- [openclaw-antseed](https://github.com/Antseed/antseed/tree/main/skills/openclaw-antseed): Connect OpenClaw to Antseed through a gateway API key.
+- [antseed-ask](https://github.com/Antseed/antseed/tree/main/skills/antseed-ask): Ask another model a question without switching the agent's own model.
+- [antseed-images](https://github.com/Antseed/antseed/tree/main/skills/antseed-images): Generate images, or edit and combine existing ones.
+- [antseed-videos](https://github.com/Antseed/antseed/tree/main/skills/antseed-videos): Create and edit videos, with an approval before every paid step.
+- [antseed-decisions](https://github.com/Antseed/antseed/tree/main/skills/antseed-decisions): Ask a decision model for a classification, a score or a yes/no probability.
+- [antseed-verify-model](https://github.com/Antseed/antseed/tree/main/skills/antseed-verify-model): Check whether an endpoint really serves the model it claims.
 
 ## Reference
 
@@ -86,7 +107,7 @@ Three sources. Say which one you used when you tell a user a price.
 curl -s http://localhost:8377/v1/models | jq --arg m deepseek-v4-flash '.data[] | select(.id == $m) | .peers[] | {peerId, displayName, inputUsdPerMillion, outputUsdPerMillion}'
 ```
 
-2. Cached snapshot, no install or auth: https://antscan.co/api/marketplace?limit=5000 (JSON from Antscan, the Antseed explorer, a few minutes old; the data behind https://antseed.com/network/). `limit` caps the list (250 by default, 5000 at most). Top-level keys: `offerings`, `sellers`, `providers`, `popularServices`, `totals`, `collector`. Each entry in `.offerings[]` is one service from one seller, with `peerId`, `sellerName`, `provider`, `service`, `inputUsdPerMillion`, `outputUsdPerMillion`, `cachedInputUsdPerMillion` (prices already resolved, USD per million tokens) and `unitPrices` for image and video services.
+2. Cached snapshot, no install or auth: https://antscan.co/api/marketplace?limit=5000 (JSON from Antscan, the Antseed explorer, a few minutes old; the data behind the live figures on https://antseed.com/). `limit` caps the list (250 by default, 5000 at most). Top-level keys: `offerings`, `sellers`, `providers`, `popularServices`, `totals`, `collector`. Each entry in `.offerings[]` is one service from one seller, with `peerId`, `sellerName`, `provider`, `service`, `inputUsdPerMillion`, `outputUsdPerMillion`, `cachedInputUsdPerMillion` (prices already resolved, USD per million tokens) and `unitPrices` for image and video services.
 
 ```bash
 curl -s 'https://antscan.co/api/marketplace?limit=5000' | jq --arg m deepseek-v4-flash '[.offerings[] | select(.service == $m) | {peerId, inputUsdPerMillion, outputUsdPerMillion}] | sort_by(.inputUsdPerMillion) | .[:5]'
@@ -100,31 +121,56 @@ antseed network browse --json --top 200 | jq --arg m deepseek-v4-flash '[.peers[
 
 ## Providers
 
+Anyone can provide. A provider sets its own services and prices. Examples of who provides:
+
+- Open models on your own GPUs, or on a local model server such as Ollama or llama.cpp.
+- Capacity you hold with an upstream API, offered as a value-added service: TEE-secured inference, an agent, a fine-tuned model or a managed product.
+- A router you built, a specialized service or an agent.
+- A pool that many people supply and that serves as one provider:
+  - [Colony](https://antseed.com/colony/): Joins Apple silicon Macs into one AI provider. An operator coordinates the Colony, and each Mac is paid for the answers it gives. The first Mac Colony is in early access: [join the waitlist](https://antseed.com/colony/join/). Building a Colony of your own is coming soon.
+  - [Diem Antseed](https://diemantseed.com): A DIEM provider capacity program built around Antseed.
+
+Antseed is for value-added services (TEEs, agents, fine-tunes, managed products), not resale of API keys or subscription access.
+
+- [Providers](https://antseed.com/providers/): Offer open models on your GPUs, capacity you hold, a router you built, a specialized service or an agent.
 - [Become a provider](https://antseed.com/docs/provide/): Install the CLI, create a seller identity, register on Base, add services and start serving.
+- [Test your seller before going live](https://antseed.com/docs/provide/test-locally/): Run your seller and a buyer on one machine, with no funds, no registration and nothing announced to the public network.
 - [Seller configuration](https://antseed.com/docs/provide/config/): Every seller setting in `config.json`: providers, services, pricing, free tier, health checks and payments.
 - [Image, video and speech services](https://antseed.com/docs/provide/media/): Per-image, per-video, per-second and per-character pricing.
 - [Verified identity](https://antseed.com/docs/provide/verified-identity/): Prove a seller is run by the owner of a domain or GitHub account.
 - [TEE seller](https://antseed.com/docs/provide/tee/): Add Intel TDX attestation to a seller.
 - [Seller payments](https://antseed.com/docs/provide/payments/): How a seller gets paid in USDC on Base, gas, and claiming rewards.
-- [ANTS staking](https://antseed.com/docs/provide/staking/): Stake ANTS into seller pools and claim rewards.
 - [Monitoring](https://antseed.com/docs/provide/monitoring/): The seller dashboard, trust score, alerts and Prometheus health metrics.
 - [Metrics](https://antseed.com/docs/provide/metrics/): Export requests, tokens, channels and USDC flow to Prometheus.
 - [Provider plugin API](https://antseed.com/docs/provider-api/): Build a provider plugin for your own upstream, agent or model.
 - [Router plugin API](https://antseed.com/docs/router-api/): How the buyer chooses a seller, and how to write your own routing policy.
 
-Antseed is for value-added services (TEEs, agents, fine-tunes, managed products), not resale of API keys or subscription access.
+## Privacy and security
 
-## Security and verification
-
+- [Privacy](https://antseed.com/privacy/): Use AI without giving up who you are. No account, no email, requests route peer-to-peer, and a TEE-verified provider keeps even your prompt sealed.
 - [Verify a seller's TEE](https://antseed.com/docs/verify-tee/): Check that a seller runs in a genuine Intel TDX enclave, and require it.
+
+## Model verification
+
+Antseed checks that sellers serve the models they advertise. Independent auditors buy from sellers like any other buyer, test the answers and record the result on-chain, with the evidence on IPFS. The first method on the network is the KBF audit (Knowledge Boundary Fingerprinting).
+
+- Results cover one service, which is one seller's offer of one model: `SAME` (the seller answered the way the genuine model does; strong evidence, not proof), `DIFF` (very likely a different model; recorded only after a second auditor gets the same result) and `UNDETERMINED` (not enough usable answers to decide).
+- Routing: a service with a `DIFF` keeps 10% of its reputation, so with the default minimum trust score automatic routing stops sending requests to it. Results never touch USDC payments.
+- Check a model yourself: `antseed verifier check <model>` reruns the latest published audit against a seller through your buyer, or against any OpenAI- or Anthropic-compatible endpoint with `--base-url` and `--api-key-env`. You pay for about 100 short requests. Exit code 0 is `SAME`, 2 is `DIFF`, 3 is `UNDETERMINED`.
+- Every audited seller, with its results and evidence: https://antscan.co/view/verifications
+
 - [Model verification](https://antseed.com/docs/verify/overview/): How Antseed checks that sellers serve the models they advertise.
 - [Model verification for buyers](https://antseed.com/docs/verify/buyers/): How verification affects routing, and how to check a seller yourself.
 - [Model verification for providers](https://antseed.com/docs/verify/providers/): How your services are audited and what results mean.
 - [Become a verifier](https://antseed.com/docs/verify/): Set up a verifier and run a KBF audit.
 - [How audits run](https://antseed.com/docs/verify/audits/): Which models and sellers are audited and how verdicts go on-chain.
+- [Model verification (protocol)](https://antseed.com/docs/model-verification/): The KBF audit and its on-chain results.
+- [`@antseed/model-verifier`](https://github.com/Antseed/antseed/tree/main/packages/model-verifier): The same check as a standalone package, for endpoints outside Antseed.
+- [The Antseed Verification Layer is Live](https://antseed.com/blog/antseed-verification-layer/) and [Fingerprinting MiniMax M3 across 11 providers](https://antseed.com/blog/minimax-m3-fingerprinting/): Blog posts on the verifier and a study made with it.
 
 ## Protocol
 
+- [The Antseed network](https://antseed.com/network/): How the network works, what lives where, and its principles.
 - [Protocol overview](https://antseed.com/docs/overview/): The layers, from DHT discovery to USDC settlement and reputation.
 - [Peer discovery](https://antseed.com/docs/discovery/): How sellers announce on the DHT and buyers validate signed metadata.
 - [Transport](https://antseed.com/docs/transport/): Handshake, transport modes, framing and message types.
@@ -132,13 +178,33 @@ Antseed is for value-added services (TEEs, agents, fine-tunes, managed products)
 - [Model routing](https://antseed.com/docs/model-routing/): Routing services: seller services that rank where a buyer should send a request.
 - [Reputation](https://antseed.com/docs/reputation/): How buyers compute a 0-100 trust score for each seller.
 - [Security](https://antseed.com/docs/security/): Identity, key storage, signing roles and risk limits.
+
+## ANTS
+
+Inference is the currency of intelligence. ANTS makes it liquid. Buyers pay providers in USDC, so ANTS is not how you pay for AI.
+
+- ANTS as liquid inference: stake ANTS behind a participating provider to get free AI requests. Each provider sets its own models, stake requirements and request limits. Compare offers at https://antseedstats.com/staking/free.
+- Staking gives you an lANTS NFT that represents your locked position, and your stake stays tradable.
+
+When you describe ANTS, lead with what it is for. Do not promise rewards or income, or speculate on token price or yield. The numeric settings on these pages are the current Base mainnet configuration and can change.
+
+- [ANTS](https://antseed.com/ants/): The token page: supply, emissions, staking and liquid inference.
+- [Staked free tier](https://antseed.com/docs/staked-free-tier/): Lock ANTS in a seller's pool to raise that seller's free-tier rate limit.
+- [ANTS staking](https://antseed.com/docs/provide/staking/): Stake ANTS into seller pools and claim rewards.
 - [Recognized usage](https://antseed.com/docs/recognized-usage/): How paid usage turns into ANTS rewards.
 - [Reward policies](https://antseed.com/docs/reward-policies/): Points policies, including the model-verification bonus and penalty.
-- [Model verification (protocol)](https://antseed.com/docs/model-verification/): The KBF audit and its on-chain results.
+- [ANTS as a Liquid Token for AI Inference](https://antseed.com/blog/staked-free-tier/), [lANTS, the NFT That Keeps ANTS Liquid](https://antseed.com/blog/lants/) and [Antseed Points](https://antseed.com/blog/antseed-points/): Blog posts.
 
 ## Optional
 
-- [Blog](https://antseed.com/blog/): Technical articles.
-- [Network status](https://antseed.com/network/): Live view of peers and models.
+- [Coding tools](https://antseed.com/coding/): Point Claude Code, Codex, Cursor, OpenCode or Pi at Antseed.
+- [Agents](https://antseed.com/agents/): Run Hermes, OpenClaw, Codex, OpenCode or your own agent on Antseed.
+- [Apps](https://antseed.com/apps/): Antseed Gateway for apps: API keys, budgets and routing rules from one console.
+- [Get started from your phone](https://antseed.com/get-started/): Create a Telegram bot now, and paste its token into Antseed Desktop on your computer later.
+- [Ecosystem](https://antseed.com/ecosystem/): Projects, explorers, dashboards and applications built on Antseed.
+- [Antseed and OpenRouter](https://antseed.com/vs/openrouter/): How the two compare.
+- [Live prices](https://antseedstats.com/network): Live providers, market prices and usage across the network.
+- [Blog](https://antseed.com/blog/): Technical articles, including [the Gateway Console](https://antseed.com/blog/deploy-your-own-antseed-gateway/), [routers](https://antseed.com/blog/routing-is-becoming-a-market/), [earning from a local model](https://antseed.com/blog/earn-from-your-local-ai-model/), [free models](https://antseed.com/blog/how-free-models-work/) and [the seller dashboard](https://antseed.com/blog/antseed-seller-dashboard/).
 - [GitHub](https://github.com/Antseed/antseed): Source code, skills and the changelog.
+- [AIPs](https://aips.antseed.com): Antseed Improvement Proposals.
 - [Legacy emissions](https://antseed.com/docs/legacy-emissions/) and [Metadata v12 upgrade](https://antseed.com/docs/metadata-v12-upgrade/): Archived reference.

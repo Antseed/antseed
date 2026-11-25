@@ -35,6 +35,7 @@ export type ViewerAttachment = {
    * relying on Chromium's save-to-disk handling of custom protocols.
    */
   downloadIpc?: { conversationId: string; attachmentId: string };
+  noDownload?: boolean;
   error?: string;
 };
 
@@ -189,7 +190,7 @@ export function AttachmentViewer({ attachment, onClose }: AttachmentViewerProps)
     anchor.remove();
   }, [attachment.downloadIpc, attachment.name, inlineHref]);
 
-  const canDownload = Boolean(attachment.downloadIpc) || Boolean(inlineHref);
+  const canDownload = !attachment.noDownload && (Boolean(attachment.downloadIpc) || Boolean(inlineHref));
 
   const metaParts = [attachment.mimeType, formatSize(attachment.size)].filter(Boolean).join(' · ');
 
