@@ -13,6 +13,7 @@ export type Listing = {
 
 /** Live projects built on or around Antseed, as listed in its directory. */
 export const PROJECTS: readonly Listing[] = [
+  {name: 'antscience.', line: 'Community-funded AI agents take on unsolved Erdős problems through Antseed, and Lean checks every result.', href: 'https://www.antscience.org/', shot: `${SHOTS}/antscience.webp`, alt: 'The antscience.org list of open problems'},
   {name: 'Diem Antseed.', line: 'A DIEM provider capacity program built around Antseed.', href: 'https://diemantseed.com', shot: `${SHOTS}/diem.webp`, alt: 'The diemantseed.com site'},
   {name: 'AntSeedStats.', line: 'The metrics and intelligence layer of the Antseed ecosystem.', href: 'https://antseedstats.com', shot: `${SHOTS}/stats.webp`, alt: 'The antseedstats.com site'},
   {name: 'Antscan.', line: 'An Antseed explorer for Base settlements, service offers, channels, and emissions.', href: 'https://antscan.co/', shot: `${SHOTS}/antscan.webp`, alt: 'The antscan.co site'},
