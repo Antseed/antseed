@@ -1,0 +1,587 @@
+.model-dropdown {
+  position: relative;
+  min-width: 0;
+}
+
+.model-dropdown-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Fixed height: the trigger is the tallest header child, and the chat
+     header pins its min-height to it (see ChatView .page-header). */
+  height: 32px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: var(--surface-chip);
+  cursor: pointer;
+  color: var(--text-muted);
+
+  &:hover {
+    background: var(--surface-chip);
+    border-color: var(--border);
+  }
+
+  &:focus-visible {
+    outline: none;
+    background: var(--bg-hover);
+    border-color: var(--border);
+  }
+
+  /* Only the name gives up room: icons and tags keep their size. */
+  > :not(.model-dropdown-label) {
+    flex: none;
+  }
+}
+
+.model-dropdown-label {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  /* Thin chat header: a long model name must ellipsize instead of pushing
+     into the header's right-side controls. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.model-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 340px;
+  max-height: 380px;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  z-index: 200;
+  padding: 4px;
+}
+
+.model-dropdown-section {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 12px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+
+  &:not(:first-child) {
+    margin-top: 4px;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+  }
+}
+
+.model-dropdown-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--bg-hover);
+    border: none;
+  }
+
+  &:focus-visible {
+    outline: none;
+    background: var(--bg-hover);
+  }
+
+  &.active {
+    background: var(--bg-hover);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+  }
+}
+
+.item-check {
+  flex: none;
+  color: var(--text-primary);
+}
+
+.item-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.item-name-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.item-price {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.item-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.item-sellers {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Small labels, as in the gateway console: green Free, blue TEE, outlined otherwise. */
+.tag {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+.tag-free {
+  border-color: rgba(var(--accent-green-rgb), 0.35);
+  background: rgba(var(--accent-green-rgb), 0.1);
+  color: var(--accent-green);
+}
+
+.tag-tee {
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+
+.tag-brand {
+  border-color: rgba(var(--brand-rgb), 0.35);
+  background: rgba(var(--brand-rgb), 0.12);
+  color: var(--brand);
+}
+
+.item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.model-dropdown-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 9px 12px;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 6px 6px;
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  &:focus-visible {
+    outline: none;
+    background: var(--bg-hover);
+  }
+}
+
+.free-filter {
+  flex: none;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+}
+
+.free-filter-on {
+  border-color: rgba(var(--accent-green-rgb), 0.35);
+  background: rgba(var(--accent-green-rgb), 0.1);
+  color: var(--accent-green);
+}
+
+.model-dropdown-status {
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.model-dropdown-retry {
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Seller picker (ChatSellerPicker): a quieter trigger beside the model. */
+.seller-trigger {
+  gap: 6px;
+  height: 32px;
+  color: var(--text-muted);
+}
+
+.seller-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  max-width: 160px;
+}
+
+.seller-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.seller-warn-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning, #d97706);
+}
+
+.seller-menu {
+  min-width: 320px;
+}
+
+/* A fixed width, so filtering (Free, search) doesn't resize the menu. */
+.model-menu {
+  width: 400px;
+  max-width: calc(100vw - 32px);
+}
+
+/* menuAnchor="container": the wrapper stops being the containing block, so
+   the menu lines up with the positioned ancestor's edges. */
+.anchor-container {
+  position: static;
+}
+
+.menu-full-width {
+  left: 0;
+  right: 0;
+  min-width: 0;
+}
+
+/* Opens upward from a picker that sits under the message box. */
+.menu-above {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.item-disabled {
+  cursor: default;
+  opacity: 0.55;
+
+  &:hover {
+    background: none;
+  }
+}
+
+/* The model picker: search and kind tabs on top, one line per model, and a
+   detail card beside the menu for the row under the pointer. */
+.picker-menu {
+  padding: 0 4px 4px;
+}
+
+.picker-header {
+  // Stays in view while the list scrolls, also when it opens on a model far down.
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 -4px 4px;
+  padding: 8px 8px 0;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+}
+
+.picker-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.picker-search {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  cursor: text;
+
+  &:focus-within {
+    border-color: var(--text-muted);
+  }
+
+  input {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 13px;
+
+    &:focus-visible {
+      outline: none;
+    }
+  }
+}
+
+.picker-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.picker-tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--text-primary);
+  }
+
+  &:focus-visible {
+    outline: none;
+    border-color: var(--border-strong);
+  }
+}
+
+.picker-tab-on {
+  border-color: var(--border-strong);
+  background: var(--surface-chip);
+  color: var(--text-primary);
+}
+
+.picker-tab-count {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-primary);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    outline: none;
+    background: var(--bg-hover);
+  }
+
+  &.active {
+    background: var(--bg-hover);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+  }
+}
+
+.picker-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  color: var(--text-secondary);
+}
+
+.picker-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* A seller's saving against the reference price, after its price. */
+.item-saving {
+  margin-left: 6px;
+  color: var(--accent-green);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Price chips (soft `Badge`s from @antseed/ui) end the row: only their layout and label colour here.
+   A shared minimum width starts each chip at the same place down the list. */
+.picker-prices {
+  display: flex;
+  flex: none;
+  gap: 6px;
+
+  > * {
+    justify-content: flex-start;
+    min-width: 5rem;
+    padding-inline: 0.5rem;
+  }
+}
+
+/* A row's tags, right-aligned just before its price chips. */
+.picker-row-tags {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The tick's place, kept on every row. */
+.picker-check {
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  width: 14px;
+}
+
+.picker-price-label {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.picker-tags {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+/* A narrow menu: a second line carries the row's details. */
+.picker-row-tall {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.picker-name-group {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.picker-inline-details {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Video and decision rows: listed, not picked. */
+.picker-prompt-row {
+  cursor: default;
+
+  &:hover {
+    background: var(--bg-hover);
+  }
+}
+
+.picker-action {
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    outline: none;
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+  }
+}

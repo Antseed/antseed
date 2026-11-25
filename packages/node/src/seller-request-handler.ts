@@ -9,12 +9,23 @@ import type { SellerSessionTracker } from './metering/seller-session-tracker.js'
 import type { PaymentMux } from './p2p/payment-mux.js';
 import type { Identity } from './p2p/identity.js';
 import type { ChannelsClient } from './payments/evm/channels-client.js';
-import type { SellerPaymentManager } from './payments/seller-payment-manager.js';
+import type { SellerPaymentManager, VideoJobHold } from './payments/seller-payment-manager.js';
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
-import type { FreeTierDecision, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
+import type { FreeTierDecision, FreeTierScreenRefusal, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
 import type { BuyerUsageReservation, SellerBuyerLimiter } from './payments/seller-buyer-limiter.js';
 import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER, powerToAntsEpochs } from './payments/free-tier-program.js';
 import { FREE_TIER_DELEGATIONS_HEADER } from './payments/free-tier-delegation.js';
+
+/** A free request screening refused, or one the free tier counted. */
+type FreeTierOutcome =
+  | { kind: 'refused'; refusal: FreeTierScreenRefusal }
+  | { kind: 'counted'; decision: FreeTierDecision };
+
+function describeFreeTierScreenRefusal(refusal: FreeTierScreenRefusal): string {
+  return refusal.reason === 'new_buyer_context'
+    ? `new buyer context inputTokens~${refusal.inputTokens} > ${refusal.maxInputTokens}`
+    : `moved conversation from ${refusal.owner} (${refusal.messages} messages, ~${refusal.tokens} tokens)`;
+}
 
 const FREE_TIER_EXHAUSTED_MESSAGES = {
   address: 'This seller free tier has been exhausted for your buyer address.',
@@ -22,8 +33,9 @@ const FREE_TIER_EXHAUSTED_MESSAGES = {
   stake: 'This seller staked free tier has been exhausted for your stake.',
   stake_required: 'This model is free only for buyers staked on this seller.',
 } as const;
-import { ProxyMux } from './proxy/proxy-mux.js';
+import { ByteBudget, DEFAULT_MAX_UPLOAD_BODY_BYTES, ProxyMux } from './proxy/proxy-mux.js';
 import type { PeerConnection } from './p2p/connection-manager.js';
+import { ConnectionState } from './types/connection.js';
 import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
@@ -33,7 +45,6 @@ import {
   estimateTokensFromBytesSampled,
 } from './payments/pricing.js';
 import { debugLog, debugWarn, isContentFreeLogging } from './utils/debug.js';
-import { buyerFacingResponseHeaders } from './proxy/buyer-response-headers.js';
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
   DEFAULT_FIRST_SIGN_CAP,
@@ -41,12 +52,13 @@ import {
   computeOneOffChannelPlan,
   PAYMENT_CODE_CHANNEL_EXHAUSTED,
   PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED,
+  VIDEO_JOB_HOLD_CODES,
   type OneOffChannelPlan,
   type PaymentRequiredPayload,
 } from './types/protocol.js';
 import { VerificationMux } from './verification/verification-mux.js';
-import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
-import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
+import { createResponseAuthPayload, createStreamingResponseHash, hashRequest } from './verification/response-auth.js';
+import { ANTSEED_STREAMING_RESPONSE_HEADER, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
 import { isServiceHealthFailing, preferHealthyUpstream, serviceHealthOf } from '@antseed/protocol/peer-metadata';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
@@ -61,9 +73,13 @@ import {
   detectRequestServiceApiProtocol,
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
-import { parseResponseUsage } from './utils/response-usage.js';
-import { requestBodyService } from './requested-service.js';
-import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, isUpstreamAccountError, isUpstreamFailureStatus } from './health/self-health-error.js';
+import { parseResponseUsage, type ResponseUsage } from './utils/response-usage.js';
+import { exposedResponseHeaders } from './utils/response-headers.js';
+import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/response-body.js';
+import { usageForBilling } from '@antseed/buyer-core';
+import { isCanonicalRequestPath } from './proxy/request-path.js';
+import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
+import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, describeUpstreamError, isUpstreamAccountError, isUpstreamFailureStatus, isVideoDownloadBusy } from './health/self-health-error.js';
 import type { ServicePerformanceTracker } from './health/service-performance.js';
 import { StreamOutcome } from './health/stream-outcome.js';
 import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
@@ -153,6 +169,13 @@ function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
 /** What a buyer is told when the provider throws; the exception itself stays in the seller's log. */
 const PROVIDER_FAILURE_MESSAGE = 'The seller could not complete the request upstream';
 
+/**
+ * The service a request is priced and billed as, or why it names none: as read from the body, with
+ * the body the seller wrote for its provider, or named by the path, with the buyer's body passed on.
+ */
+type RequestedService = BilledRequestBody | { service: string; contentType?: undefined; body?: undefined };
+
+
 function setTrustedHeader(headers: Record<string, string>, name: string, value: string): void {
   for (const key of Object.keys(headers)) {
     if (key.toLowerCase() === name) delete headers[key];
@@ -196,9 +219,13 @@ export interface SellerRequestHandlerDeps {
   /** Providers are announced by ID, not plugin name (NodeConfig.announceProviderIds). */
   announceProviderIds?: boolean;
   maxUploadBodyBytes?: number;
+  /** Most request body bytes held at once across all buyers. Default: 256 MiB; never below one largest request. */
+  maxInFlightRequestBytes?: number;
   reserveEstimateOverdraftUsdc?: bigint;
   /** Persistent buyer ownership and pending charges for stateful video jobs. Video follow-ups fail closed without it. */
   resourceOwnershipStore?: ResourceOwnershipStore | null;
+  /** Buyers the seller refuses to serve (403 `buyer_blocked`); the free `/v1/models` listing stays open. */
+  isBuyerBlocked?: (buyerPeerId: string) => boolean;
   /** Records how each service served buyers, for the seller to announce. */
   servicePerformance?: ServicePerformanceTracker | null;
   emit: (event: string, ...args: unknown[]) => boolean;
@@ -210,6 +237,12 @@ interface SellerBillingContext {
   requestFacts: BillingRequestFacts;
 }
 
+/**
+ * Most request body bytes a seller holds at once, uploads still arriving included.
+ * A request is held in memory until its response is sent, so this bounds what a
+ * burst of large requests can make the seller allocate.
+ */
+export const DEFAULT_MAX_IN_FLIGHT_REQUEST_BYTES = 256 * 1024 * 1024;
 /** Debounce interval for metadata refresh after load changes. */
 const METADATA_REFRESH_DEBOUNCE_MS = 200;
 /** Time to wait for a catch-up SpendingAuth before returning 402. */
@@ -218,6 +251,8 @@ const DEFAULT_CATCH_UP_WAIT_MS = 5_000;
 const CLOSING_CHANNEL_WAIT_MS = 15_000;
 /** How long a request at the reserve ceiling waits for a running top-up before a retryable answer. */
 const TOP_UP_WAIT_MS = 15_000;
+/** After a top-up lands, how long a request waits for the auths parked behind it to apply. */
+const PARKED_AUTH_GRACE_MS = 1_000;
 /** A request's buyer-limit reservation, its estimated size, and the tokens it is finished with. */
 interface BuyerUsageHold {
   reservation: BuyerUsageReservation | null;
@@ -243,13 +278,23 @@ export class SellerRequestHandler {
   private readonly _providerLoadCounts = new Map<string, number>();
   /** Provider name → its ID (see announcedProviderId). */
   private readonly _providerIds = new Map<string, string>();
+  /** The service each request in flight is priced and billed as: read once, since a body can be large. */
+  private readonly _requestedServices = new WeakMap<SerializedHttpRequest, RequestedService>();
   /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
   private readonly _catchUpPrompted = new Map<string, bigint>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
+  /** The provider and service pairs already reported as sending no usage figure; each is reported once. */
+  private readonly _usageMissingReported = new Set<string>();
   private _metadataRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Request bodies in memory on every connection: uploads still arriving and requests being served. */
+  private readonly _inFlightRequestBytes: ByteBudget;
 
   constructor(deps: SellerRequestHandlerDeps) {
     this._deps = deps;
+    this._inFlightRequestBytes = new ByteBudget(Math.max(
+      deps.maxInFlightRequestBytes ?? DEFAULT_MAX_IN_FLIGHT_REQUEST_BYTES,
+      deps.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
+    ));
   }
 
   private _allowAttest(buyerPeerId: string): boolean {
@@ -284,6 +329,7 @@ export class SellerRequestHandler {
   ): { mux: ProxyMux } {
     const mux = new ProxyMux(conn, {
       maxUploadBodyBytes: this._deps.maxUploadBodyBytes,
+      sharedUploadBudget: this._inFlightRequestBytes,
     });
 
     /** A request's buyer-limit reservation, finished with the tokens it used however the request ends. */
@@ -291,6 +337,7 @@ export class SellerRequestHandler {
       debugLog(`[SellerHandler] Received request: ${request.method} ${request.path} (reqId=${request.requestId.slice(0, 8)})`);
       // Response auth signs the request as the buyer sent it, so keep its headers before removing seller-only ones.
       const wireHeaders = { ...request.headers };
+      let wireBody = request.body;
       // Delegations are for this seller only: no route may pass them on to a provider or prover.
       const delegationsHeader = takeHeader(request.headers, FREE_TIER_DELEGATIONS_HEADER);
 
@@ -301,6 +348,13 @@ export class SellerRequestHandler {
       if (request.method === 'GET' && (pathOnly === '/v1/models' || pathOnly.startsWith('/v1/models/'))) {
         const modelsResponse = this._handleModelsRequest(request);
         mux.sendProxyResponse(modelsResponse);
+        return;
+      }
+
+      if (this._deps.isBuyerBlocked?.(buyerPeerId)) {
+        debugLog(`[SellerHandler] Refusing blocked buyer ${buyerPeerId.slice(0, 12)}... (reqId=${request.requestId.slice(0, 8)})`);
+        this._deps.emit('request:blocked', { buyerPeerId, requestId: request.requestId, path: pathOnly });
+        this._sendJsonError(mux, request.requestId, 403, 'buyer_blocked', 'This seller does not serve your requests.');
         return;
       }
 
@@ -381,31 +435,50 @@ export class SellerRequestHandler {
         return;
       }
 
+      // Everything below bills and routes by this path as written.
+      if (!isCanonicalRequestPath(request.path)) {
+        this._sendJsonError(mux, request.requestId, 400, 'invalid_request_path', 'The request path must be in normal form: no dot segments, empty segments or percent escapes.');
+        return;
+      }
+
       // Match the requested model to one of our published services BEFORE any
       // payment handshake or upstream forwarding. Rejecting unknown/missing
       // models locally avoids reserving payment for something we won't serve
       // and surfaces a clear error instead of an opaque upstream 4xx.
       const provider = this.matchProvider(request);
       if (!provider) {
-        const requestedService = this._extractRequestedService(request);
+        const requested = this._requestedService(request);
         const allServices = this._deps.providers.flatMap((p) => p.services);
-        const errorMessage = requestedService === null
-          ? 'Request must include a "service" or "model" field matching a published service.'
-          : `Service "${requestedService}" is not served by this peer.`;
-        debugWarn(`[SellerHandler] Rejecting: ${errorMessage} available=[${allServices.join(', ')}]`);
+        // A request that names no one service is told why, so a buyer can see what this seller does not accept.
+        const refusal: { code: string; message: string } = requested.service === null
+          ? requested.refusal
+          : { code: 'model_not_found', message: `Service "${requested.service}" is not served by this peer.` };
+        debugWarn(`[SellerHandler] Rejecting: ${refusal.message} available=[${allServices.join(', ')}]`);
         mux.sendProxyResponse({
           requestId: request.requestId,
           statusCode: 400,
           headers: { 'content-type': 'application/json' },
           body: new TextEncoder().encode(JSON.stringify({
             error: {
-              message: errorMessage,
+              message: refusal.message,
               type: 'invalid_request_error',
-              code: requestedService === null ? 'model_required' : 'model_not_found',
+              code: refusal.code,
             },
           })),
         });
         return;
+      }
+
+      // The service this request is priced and billed as, which the provider serves. The provider is
+      // handed the body the seller wrote from what it read, so no reader after it finds other fields.
+      // A matched provider means a service was named, so this always applies.
+      const billed = this._requestedService(request);
+      if (billed.service !== null) {
+        setTrustedHeader(request.headers, 'x-antseed-service', billed.service);
+        if (billed.body) {
+          request.body = billed.body;
+          setTrustedHeader(request.headers, 'content-type', billed.contentType);
+        }
       }
 
       // A request the provider refuses anyway is answered before any payment step.
@@ -430,7 +503,10 @@ export class SellerRequestHandler {
         requestBilling = this._captureSellerBillingContext(provider, request);
         unitBillingModel = requestBilling ? this.resolveProviderUnitBillingModel(provider, requestBilling.context) : undefined;
         const facts = requestBilling?.requestFacts;
-        if (requestBilling && facts?.kind === 'video' && facts.video.action === 'create' && unitBillingModel) this._estimateUnitRequestCostUsdc(requestBilling, unitBillingModel);
+        // Refused before payment when the request names options the model can't price (a video's
+        // duration, an edit's number of input images).
+        const priceUpFront = facts?.kind === 'video' ? facts.video.action === 'create' : facts?.kind === 'image' && facts.image.inputImages !== undefined;
+        if (requestBilling && priceUpFront && unitBillingModel) this._estimateUnitRequestCostUsdc(requestBilling, unitBillingModel);
       } catch (error) {
         this._sendJsonError(mux, request.requestId, 400, 'invalid_billing_request', error instanceof Error ? error.message : String(error));
         return;
@@ -486,19 +562,20 @@ export class SellerRequestHandler {
       let coveredByAllowance = false;
       if (!isFreeService && !videoRoute && freeTierLimiter?.appliesTo(freeTierService, { paid: true })) {
         try {
-          const standing = await freeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader ?? '');
-          const decision = freeTierLimiter.consume({
-            buyerPeerId,
-            service: freeTierService,
-            remoteIp: conn.remoteAddress ?? null,
-            standing,
-            paid: true,
+          const outcome = await this._screenAndConsumeFreeTier(freeTierLimiter, {
+            buyerPeerId, service: freeTierService, delegationsHeader, body: request.body, remoteAddress: conn.remoteAddress, paid: true,
           });
-          coveredByAllowance = decision.allowed;
-          debugLog(
-            `[SellerHandler] Free allowance ${coveredByAllowance ? 'covers' : `does not cover (limitedBy=${decision.limitedBy})`} ` +
-            `${freeTierService} for ${decision.buyerAddress}`,
-          );
+          if (outcome.kind === 'refused') {
+            // A request screening refuses is paid as usual and leaves the allowance untouched.
+            debugLog(`[SellerHandler] Free allowance does not cover ${freeTierService} for ${buyerPeerId.slice(0, 12)}...: screened out`);
+          } else {
+            const { decision } = outcome;
+            coveredByAllowance = decision.allowed;
+            debugLog(
+              `[SellerHandler] Free allowance ${coveredByAllowance ? 'covers' : `does not cover (limitedBy=${decision.limitedBy})`} ` +
+              `${freeTierService} for ${decision.buyerAddress}`,
+            );
+          }
         } catch (err) {
           // Failing to account leaves the request paid: it can only cost the buyer the listed price.
           debugWarn(`[SellerHandler] Free-allowance accounting failed for ${buyerPeerId.slice(0, 12)}..., charging as usual: ${err instanceof Error ? err.message : err}`);
@@ -506,15 +583,10 @@ export class SellerRequestHandler {
       }
       const isServedFree = isFreeService || coveredByAllowance;
       if (isFreeTierRequest && freeTierLimiter?.appliesTo(freeTierService)) {
-        let decision: FreeTierDecision;
+        let outcome: FreeTierOutcome;
         try {
-          // No header means the buyer has no codes any more: '' forgets the remembered ones.
-          const standing = await freeTierLimiter.resolveStanding(buyerPeerId, delegationsHeader ?? '');
-          decision = freeTierLimiter.consume({
-            buyerPeerId,
-            service: freeTierService,
-            remoteIp: conn.remoteAddress ?? null,
-            standing,
+          outcome = await this._screenAndConsumeFreeTier(freeTierLimiter, {
+            buyerPeerId, service: freeTierService, delegationsHeader, body: request.body, remoteAddress: conn.remoteAddress, paid: false,
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -533,6 +605,23 @@ export class SellerRequestHandler {
           });
           return;
         }
+        if (outcome.kind === 'refused') {
+          const { refusal } = outcome;
+          const message = refusal.reason === 'new_buyer_context'
+            ? `This seller serves a new buyer's first ${refusal.requests} free requests up to ${refusal.maxInputTokens} input tokens; `
+              + `this one has about ${refusal.inputTokens}. Start with a shorter conversation, or use a paid model.`
+            : 'This conversation was started from another buyer identity, so this seller does not serve it free here. '
+              + 'Continue it from that identity, or use a paid model.';
+          this._sendJsonError(
+            mux,
+            request.requestId,
+            403,
+            refusal.reason === 'new_buyer_context' ? 'free_tier_new_buyer_context' : 'free_tier_moved_conversation',
+            message,
+          );
+          return;
+        }
+        const { decision } = outcome;
         if (!decision.allowed) {
           const limitedBy = decision.limitedBy ?? 'address';
           const program = decision.program;
@@ -589,8 +678,12 @@ export class SellerRequestHandler {
       if (videoRoute?.action === 'create' && !isFreeService && spm && this._deps.channelsClient) {
         const oneOff = spm.getOneOffChannelForRequest(buyerPeerId, request.requestId);
         if (!oneOff) {
+          // Before the chain reads, and again with the plan: parallel creates can all pass the first check.
+          if (this._sendVideoJobHold(mux, request.requestId, buyerPeerId, spm.videoJobHold(buyerPeerId, request.requestId))) return;
+          if (this._sendOneOffBackoff(mux, request.requestId, buyerPeerId, spm.oneOffRetryAfterSeconds(buyerPeerId, request.requestId))) return;
           const plan = await this._buildOneOffPlan(estimatedRequestCost);
-          spm.registerOneOffPlan(buyerPeerId, request.requestId, plan);
+          if (this._sendVideoJobHold(mux, request.requestId, buyerPeerId, spm.videoJobHold(buyerPeerId, request.requestId))) return;
+          if (this._sendOneOffBackoff(mux, request.requestId, buyerPeerId, spm.registerOneOffPlan(buyerPeerId, request.requestId, plan))) return;
           debugLog(`[SellerHandler] Video create ${request.requestId} needs a one-off channel (price=${estimatedRequestCost})`);
           const requirements = spm.getPaymentRequirements(request.requestId, buyerPeerId, requestPricing);
           mux.sendProxyResponse({
@@ -731,12 +824,29 @@ export class SellerRequestHandler {
             // Other requests can finish while this one is parked: re-read the
             // spend after each catch-up and keep waiting, within one budget,
             // so an auth for the earlier spend never releases newer unpaid work.
-            const deadline = Date.now() + DEFAULT_CATCH_UP_WAIT_MS;
+            let deadline = Date.now() + DEFAULT_CATCH_UP_WAIT_MS;
+            const topUpDeadline = Date.now() + TOP_UP_WAIT_MS;
+            let ceiling = reserveMax;
             let caughtUp = true;
             while (caughtUp && spent > accepted) {
               caughtUp = await spm.awaitAcceptedAtLeast(session.sessionId, spent, Math.max(0, deadline - Date.now()));
               accepted = spm.getAcceptedCumulative(session.sessionId);
               spent = spm.getCumulativeSpend(session.sessionId);
+              // Auths above the ceiling are parked until a top-up lands, and on
+              // a slow chain that can take the whole wait. Wait for a running
+              // one (bounded); once the ceiling has risen, give the parked auths
+              // a moment to apply instead of a 402 for spend the buyer signed.
+              if (!caughtUp && spent > accepted && spent > ceiling && Date.now() < topUpDeadline) {
+                if (spm.isTopUpRunning(session.sessionId)) {
+                  await spm.waitForTopUp(session.sessionId, Math.max(0, topUpDeadline - Date.now()));
+                }
+                const raised = spm.getEffectiveReserveMax(session.sessionId);
+                if (raised > ceiling) {
+                  ceiling = raised;
+                  deadline = Date.now() + PARKED_AUTH_GRACE_MS;
+                  caughtUp = true;
+                }
+              }
             }
             // A channel closed or evicted while parked has its counters reset
             // to zero, which would read as caught up: renegotiate instead.
@@ -902,12 +1012,28 @@ export class SellerRequestHandler {
             return;
           }
 
+          // The connection ended or the session was dropped while this request
+          // waited: don't start work that cannot reach the buyer or be billed.
+          const connectionEnded = conn.state === ConnectionState.Closed || conn.state === ConnectionState.Failed;
+          if (spmAuthorized && (connectionEnded || !spm.hasSession(buyerPeerId))) {
+            sendSessionExpired('the admission checks');
+            return;
+          }
         }
       }
 
+      const buyerSupportsResponseAuth = conn.hasRemoteCapability(CONNECTION_CAPABILITY_RESPONSE_AUTH_V1);
+      // When the provider is handed a body the seller wrote, the buyer's is only needed for the hash
+      // response auth signs: it is hashed here, so both bodies are not held while the request is served.
+      let wireRequestHash: string | undefined;
+      if (wireBody !== request.body) {
+        if (buyerSupportsResponseAuth) wireRequestHash = hashRequest({ ...request, headers: wireHeaders, body: wireBody });
+        wireBody = new Uint8Array(0);
+      }
       const responseAuthRequest: SerializedHttpRequest = {
         ...request,
         headers: wireHeaders,
+        body: wireBody,
       };
 
       // Track active seller session at request start
@@ -929,6 +1055,8 @@ export class SellerRequestHandler {
       const isDownload = videoRoute?.action === 'retrieve' && request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
       let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let heldDoneChunkData: Uint8Array | null = null;
+      /** The last two bytes streamed to the buyer (LF is 10): whether a cut stream left a line or an event open. */
+      let streamTail: number[] = [10, 10];
       let responseStartedAt = startTime;
       // First generated token and in-stream failures of a streamed answer, for the performance this seller announces.
       const streamOutcome = new StreamOutcome();
@@ -940,8 +1068,12 @@ export class SellerRequestHandler {
       let unitCostUsdc = 0n;
       // Hold the channel open for the whole billable span — provider call,
       // spend recording, and NeedAuth — so a buyer-requested close can't land
-      // between serving the request and claiming its cost.
-      const isBillable = !isServedFree && !oneOffChannelId && (spm?.hasSession(buyerPeerId) ?? false);
+      // between serving the request and claiming its cost. The channel is fixed
+      // here: a buyer that disconnects before the answer ends still owes for it.
+      const billedChannelId = !isServedFree && !oneOffChannelId && spm?.hasSession(buyerPeerId)
+        ? spm.getChannelByPeer(buyerPeerId)?.sessionId ?? null
+        : null;
+      const isBillable = billedChannelId !== null;
       if (isBillable && spm!.hasClosingChannel(buyerPeerId)) {
         // A close takes seconds on-chain (a disconnect, an exhausted channel).
         // Let it finish, then ask for a new channel: the buyer opens one and
@@ -973,7 +1105,12 @@ export class SellerRequestHandler {
       this.adjustProviderLoad(provider.name, 1);
       try {
         try {
-          let response = await this._executeRequest(provider, request, {
+          // Token-priced services show the buyer the seller's own price in the body; a per-unit
+          // charge (images, video) is settled on delivery, so no estimate is shown for those. A request
+          // served free (a free service or the free allowance) costs the buyer nothing, and says so.
+          const sellerCost: SellerCost | undefined = unitBillingModel ? undefined
+            : isServedFree ? () => 0 : (usage) => tokenCostUsd(usage, requestPricing);
+          let response = await this._executeRequest(provider, request, sellerCost, {
             signal: isDownload ? mux.downloadSignal(request.requestId) : undefined,
             onResponseStart: (streamResponseStart) => {
               markFreeAllowance(streamResponseStart.headers, coveredByAllowance);
@@ -997,9 +1134,12 @@ export class SellerRequestHandler {
                 heldDoneChunkData = chunk.data;
                 return;
               }
+              if (chunk.data.byteLength > 0) streamTail = [...streamTail, ...chunk.data.subarray(-2)].slice(-2);
               mux.sendProxyChunk(chunk);
+              // A provider that awaits this stops reading its upstream while the buyer is behind.
+              return mux.whenWritable();
             },
-          });
+          }, isDownload);
           if (!streamedResponseStarted) {
             response = { ...response, headers: { ...response.headers } };
             markFreeAllowance(response.headers, coveredByAllowance);
@@ -1014,17 +1154,27 @@ export class SellerRequestHandler {
           const upstreamBody = response.body ?? new Uint8Array(0);
           const upstreamError = statusCode >= 400 ? new TextDecoder().decode(upstreamBody.slice(0, 2_000)) : '';
           this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: upstreamError, billable: videoRoute?.action !== 'retrieve' });
+          const upstreamStatusCode = statusCode;
+          let maskedAs: 'account' | 'self-health' | null = null;
           if (!streamedResponseStarted && isUpstreamAccountError(statusCode, upstreamError)) {
-            debugWarn(`[SellerHandler] Upstream account error: status=${statusCode} provider="${provider.name}" model="${requestedModel}" body=${upstreamError.slice(0, 200)}`);
             response = buildUpstreamUnavailableResponse(request.requestId, requestedModel);
             statusCode = response.statusCode;
-          } else if (!streamedResponseStarted && statusCode === 429) {
+            maskedAs = 'account';
+          } else if (!streamedResponseStarted && statusCode === 429 && !isVideoDownloadBusy(statusCode, upstreamError)) {
             response = buildUpstreamRateLimitedResponse(request.requestId, requestedModel, takeHeader({ ...response.headers }, 'retry-after'));
           }
           const health = serviceHealthOf(provider.serviceHealth, requestedModel);
           if (!streamedResponseStarted && isServiceHealthFailing(health) && isUpstreamFailureStatus(statusCode)) {
             response = buildSelfHealthErrorResponse(request.requestId, requestedModel, health, response);
             statusCode = response.statusCode;
+            maskedAs ??= 'self-health';
+          }
+          if (maskedAs) {
+            // The buyer gets a generic 503; the seller's log keeps what the upstream said.
+            this._deps.emit('provider:error-masked', {
+              provider: provider.name, service: requestedModel, reason: maskedAs, statusCode,
+              upstreamStatusCode, detail: describeUpstreamError(upstreamStatusCode, upstreamError),
+            });
           }
           responseBody = response.body ?? new Uint8Array(0);
           responseForAuth = response;
@@ -1045,7 +1195,14 @@ export class SellerRequestHandler {
             billingUsageReport = unitBilling.billingUsage;
             unitCostUsdc = unitBilling.costUsdc;
           } else {
-            responseUsage = parseResponseUsage(response.body);
+            // An answer delivered without a usage figure is still paid for: it is billed by
+            // estimate, the same one the buyer makes from the same bytes.
+            const billed = isServedFree ? { usage: parseResponseUsage(response.body), estimated: false } : usageForBilling(request.body, response);
+            responseUsage = billed.usage;
+            if (billed.estimated) {
+              debugWarn(`[SellerHandler] No usage figure from provider="${provider.name}" model="${requestedModel}": billing an estimate (in=${responseUsage.inputTokens} out=${responseUsage.outputTokens})`);
+              this._reportUsageMissing(provider.name, requestedModel);
+            }
           }
           debugLog(`[SellerHandler] Raw provider usage: in=${responseUsage.inputTokens} fresh=${responseUsage.freshInputTokens} cached=${responseUsage.cachedInputTokens} out=${responseUsage.outputTokens}`);
           if (!streamedResponseStarted) {
@@ -1073,7 +1230,9 @@ export class SellerRequestHandler {
             responseForAuth = null;
             mux.sendProxyError(request.requestId);
           } else if (streamedResponseStarted) {
-            const errorFrame = new TextEncoder().encode(`event: error\ndata: ${PROVIDER_FAILURE_MESSAGE}\n\n`);
+            // A stream cut mid-line or mid-event is closed first, so the error frame reads as an event of its own.
+            const closing = streamTail[1] !== 10 ? '\n\n' : streamTail[0] !== 10 ? '\n' : '';
+            const errorFrame = new TextEncoder().encode(`${closing}event: error\ndata: ${PROVIDER_FAILURE_MESSAGE}\n\n`);
             responseBody = errorFrame;
             mux.sendProxyChunk({
               requestId: request.requestId,
@@ -1121,6 +1280,13 @@ export class SellerRequestHandler {
             unitCostUsdc = finalBilling.costUsdc;
           }
 
+        // A failed request is never charged: the buyer got an error, not an answer,
+        // even when the error body carries a usage figure or a unit adapter prices it.
+        if (statusCode >= 400) {
+          responseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+          unitCostUsdc = 0n;
+        }
+
         // Record metering
         const finishedAt = Date.now();
         const latencyMs = finishedAt - startTime;
@@ -1153,7 +1319,7 @@ export class SellerRequestHandler {
 
         // Record spend and send NeedAuth with cost data after every request.
         // The buyer validates the cost independently and responds with SpendingAuth.
-        if (!isServedFree && !oneOffChannelId && spm?.hasSession(buyerPeerId)) {
+        if (spm && isBillable) {
           const usage = responseUsage;
           const tokenCostUsdc = computeCostUsdc(
             usage.freshInputTokens,
@@ -1162,8 +1328,14 @@ export class SellerRequestHandler {
             usage.cachedInputTokens,
           );
           const costUsdc = tokenCostUsdc + unitCostUsdc;
-          const session = spm.getChannelByPeer(buyerPeerId);
-          if (session) {
+          // Only the channel that admitted this request, never one that replaced it.
+          const current = spm.getChannelByPeer(buyerPeerId);
+          const session = current?.sessionId === billedChannelId ? current : null;
+          if (session && spm.connectionsClosed) {
+            // The node is stopping and its connections are closed: this
+            // response never reached the buyer, so it is not billed.
+            debugLog(`[SellerHandler] Not billed (connections closed during stop): buyer=${buyerPeerId.slice(0, 12)}... cost=${costUsdc}`);
+          } else if (session) {
             spm.recordSpend(session.sessionId, costUsdc);
             const cumulativeSpend = spm.getCumulativeSpend(session.sessionId);
             debugLog(`[SellerHandler] Cost recorded: buyer=${buyerPeerId.slice(0, 12)}... cost=${costUsdc} cumulative=${cumulativeSpend} (in=${usage.inputTokens} cached=${usage.cachedInputTokens} out=${usage.outputTokens})`);
@@ -1200,8 +1372,6 @@ export class SellerRequestHandler {
           this._closeFailedVideoJob(videoRoute, responseForAuth, buyerPeerId);
         }
 
-        const buyerSupportsResponseAuth = conn.hasRemoteCapability(CONNECTION_CAPABILITY_RESPONSE_AUTH_V1);
-
         if (responseForAuth && buyerSupportsResponseAuth) {
           const channelId = oneOffChannelId ?? spm?.getChannelByPeer(buyerPeerId)?.sessionId ?? null;
           this._sendResponseAuthBestEffort(
@@ -1215,6 +1385,7 @@ export class SellerRequestHandler {
               responseStartedAt,
               responseCompletedAt: Date.now(),
               channelId,
+              requestHash: wireRequestHash,
             },
           );
         }
@@ -1222,16 +1393,26 @@ export class SellerRequestHandler {
         this.adjustProviderLoad(provider.name, -1);
         if (isBillable) spm!.endBillableRequest(buyerPeerId);
         const reportedUsage = responseUsage.freshInputTokens + responseUsage.outputTokens;
-        // A served answer without a usage report (a buyer can turn streaming usage off) counts as its estimate.
+        // A served answer with no usage figure, reported or estimated, counts as what was reserved for it.
         usageHold.tokens = statusCode < 400 && reportedUsage + responseUsage.cachedInputTokens === 0 ? usageHold.estimate : reportedUsage;
       }
     };
     mux.onProxyRequest(async (request: SerializedHttpRequest) => {
+      // The body stays in memory until the response is sent, so it counts until then.
+      const bodyBytes = request.body.length;
+      if (!this._inFlightRequestBytes.tryReserve(bodyBytes)) {
+        this._sendJsonError(
+          mux, request.requestId, 503, 'seller_busy',
+          'Seller is at its limit for request bytes in flight; retry shortly', { 'retry-after': '1' },
+        );
+        return;
+      }
       const usageHold: BuyerUsageHold = { reservation: null, estimate: 0, tokens: 0 };
       try {
         await handleProxyRequest(request, usageHold);
       } finally {
         usageHold.reservation?.finish(usageHold.tokens);
+        this._inFlightRequestBytes.release(bodyBytes);
       }
     });
 
@@ -1351,7 +1532,8 @@ export class SellerRequestHandler {
       : undefined;
     try {
       this._deps.resourceOwnershipStore?.recordAcceptedCreate(route.protocol, resourceId, buyerPeerId.toLowerCase(), charge);
-      if (!charge) this._closeOneOffBestEffort(channelId, 'free video');
+      if (charge) this._deps.sellerPaymentManager?.markOneOffCreateAccepted(charge.channelId);
+      else this._closeOneOffBestEffort(channelId, 'free video');
       return response;
     } catch (err) {
       debugWarn(`[SellerHandler] Failed to record video job ownership: ${err instanceof Error ? err.message : err}`);
@@ -1390,9 +1572,102 @@ export class SellerRequestHandler {
     });
   }
 
+  /** Answers a video create whose buyer must wait for another one-off channel. Returns whether it did. */
+  private _sendOneOffBackoff(mux: ProxyMux, requestId: string, buyerPeerId: string, retryAfterSeconds: number | null): boolean {
+    if (retryAfterSeconds === null) return false;
+    debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... held back from another video channel, retry in ${retryAfterSeconds}s`);
+    this._sendJsonError(mux, requestId, 429, 'one_off_channel_backoff', `This seller is not opening another video payment channel for this buyer yet; retry in ${retryAfterSeconds} seconds`, { 'retry-after': String(retryAfterSeconds) });
+    return true;
+  }
+
+  /**
+   * Answers a video create the buyer's own earlier jobs here hold back, with
+   * what the buyer can do about it and which jobs they are (`error.jobs`, the
+   * IDs the buyer got when it started them). Only this buyer's jobs are
+   * listed. Returns whether it answered.
+   */
+  private _sendVideoJobHold(mux: ProxyMux, requestId: string, buyerPeerId: string, hold: VideoJobHold | null): boolean {
+    if (!hold) return false;
+    debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... held back from another video: ${hold.code}`);
+    const message = hold.code === VIDEO_JOB_HOLD_CODES.openLimit
+      ? `You have ${hold.limit} videos on this seller that are not downloaded yet. Download one before starting another here. Their job IDs are in error.jobs.`
+      : 'A video you downloaded from this seller is not paid for yet. New videos start here once it is paid. Its job ID is in error.jobs.';
+    let jobs: Array<{ id: string; protocol: string }> = [];
+    try {
+      jobs = (this._deps.resourceOwnershipStore?.jobsForChannels(buyerPeerId.toLowerCase(), hold.channelIds) ?? [])
+        .map((job) => ({ id: job.resourceId, protocol: job.protocol }));
+    } catch (err) {
+      debugWarn(`[SellerHandler] Could not list held video jobs: ${err instanceof Error ? err.message : err}`);
+    }
+    mux.sendProxyResponse({
+      requestId,
+      statusCode: 409,
+      headers: { 'content-type': 'application/json', 'retry-after': String(hold.retryAfterSeconds) },
+      body: new TextEncoder().encode(JSON.stringify({ error: { code: hold.code, message, jobs } })),
+    });
+    return true;
+  }
+
   private _sendBuyerUsageLimited(mux: ProxyMux, requestId: string, buyerPeerId: string, provider: string, retryAfterSeconds: number): void {
     debugWarn(`[SellerHandler] Buyer ${buyerPeerId.slice(0, 12)}... over its usage limit on provider "${provider}", retry in ${retryAfterSeconds}s`);
     this._sendJsonError(mux, requestId, 429, 'buyer_usage_limited', 'This buyer has reached its usage limit with this seller; retry later', { 'retry-after': String(retryAfterSeconds) });
+  }
+
+  /**
+   * Tell the operator, once per provider and service, that the upstream sends
+   * no usage figure: its answers are billed by estimate from then on.
+   */
+  private _reportUsageMissing(provider: string, service: string): void {
+    const key = `${provider}\u0000${service}`;
+    if (this._usageMissingReported.has(key)) return;
+    this._usageMissingReported.add(key);
+    this._deps.emit('provider:usage-missing', { provider, service });
+  }
+
+  /**
+   * Resolve the buyer's staked standing, screen a free request, and count it
+   * unless screening refused it. An admitted request is recorded for
+   * conversation matching.
+   */
+  private async _screenAndConsumeFreeTier(
+    limiter: SellerFreeTierLimiter,
+    input: {
+      buyerPeerId: string;
+      service: string;
+      delegationsHeader: string | undefined;
+      body: Uint8Array;
+      remoteAddress: string | null | undefined;
+      paid: boolean;
+    },
+  ): Promise<FreeTierOutcome> {
+    const { buyerPeerId, service } = input;
+    // No header means the buyer has no codes any more: '' forgets the remembered ones.
+    const standing = await limiter.resolveStanding(buyerPeerId, input.delegationsHeader ?? '');
+    // Token estimation and parsing happen only when a check needs them.
+    const screen = limiter.screen({
+      buyerPeerId,
+      service,
+      standing,
+      paid: input.paid,
+      inputTokens: () => estimateTokensFromBytesSampled(input.body),
+      body: () => tryParseJsonObject(input.body),
+    });
+    const ip = input.remoteAddress ?? 'unknown';
+    if (screen.refusal) {
+      debugLog(`[SellerHandler] Free tier refused ${service} for ${buyerPeerId.slice(0, 12)}... ip=${ip}: ${describeFreeTierScreenRefusal(screen.refusal)}`);
+    } else if (screen.wouldRefuse) {
+      debugLog(`[SellerHandler] Free tier would refuse ${service} for ${buyerPeerId.slice(0, 12)}... ip=${ip} (log only): ${describeFreeTierScreenRefusal(screen.wouldRefuse)}`);
+    }
+    if (screen.refusal) return { kind: 'refused', refusal: screen.refusal };
+    const decision = limiter.consume({
+      buyerPeerId,
+      service,
+      remoteIp: input.remoteAddress ?? null,
+      standing,
+      ...(input.paid ? { paid: true } : {}),
+    });
+    if (decision.allowed) screen.served();
+    return { kind: 'counted', decision };
   }
 
   private _sendJsonError(
@@ -1430,7 +1705,7 @@ export class SellerRequestHandler {
     setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
     try {
       const response = await provider.handleRequest(request);
-      return { ...response, requestId: request.requestId, headers: buyerFacingResponseHeaders(response.headers) };
+      return { ...response, requestId: request.requestId, headers: exposedResponseHeaders(response.headers) };
     } catch (error) {
       return failure(503, 'unavailable', `Routing catalog failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1577,13 +1852,32 @@ export class SellerRequestHandler {
   }
 
   private _extractRequestedService(request: SerializedHttpRequest): string | null {
+    return this._requestedService(request).service;
+  }
+
+  private _requestedService(request: SerializedHttpRequest): RequestedService {
+    let requested = this._requestedServices.get(request);
+    if (!requested) {
+      requested = this._readRequestedService(request);
+      this._requestedServices.set(request, requested);
+    }
+    return requested;
+  }
+
+  private _readRequestedService(request: SerializedHttpRequest): RequestedService {
+    const named = (service: string | undefined): RequestedService => (service ? { service } : { service: null, refusal: SERVICE_REQUIRED });
     // Routing protocols whose paths name no service address this seller's single service of that protocol.
     const routingProtocol = routingProtocolForPath(request.path);
     if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
-      return routingServices(this._deps.providers, routingProtocol)[0]?.service ?? null;
+      return named(routingServices(this._deps.providers, routingProtocol)[0]?.service);
     }
-    if (nativeVideoRoute(request)) return requestService(request) ?? null;
-    return requestBodyService(request);
+    const videoRoute = nativeVideoRoute(request);
+    if (videoRoute?.action === 'retrieve') return named(requestService(request));
+    const requested = billedRequestBody(request);
+    // A video create is billed by its `model` alone, so a `service` beside it has to say the same.
+    return videoRoute && requested.service !== null && requested.service !== requestService(request)
+      ? { service: null, refusal: { code: 'model_required', message: 'A video request must name its service in a "model" field.' } }
+      : requested;
   }
 
   private _extractRequestedProvider(request: SerializedHttpRequest): string | null {
@@ -1619,6 +1913,8 @@ export class SellerRequestHandler {
     const requestProtocol = detectRequestServiceApiProtocol(request);
     const selected = selectTargetProtocolForRequest(requestProtocol, candidates);
     if (selected) return selected.targetProtocol;
+    // Not a protocol this service speaks or could be translated to: billing it as one of those would measure nothing it delivered.
+    if (requestProtocol && candidates.length > 0) throw new Error(`Service "${service}" does not offer ${requestProtocol}`);
     if (protocols?.[0]) return protocols[0];
     return billingProtocols[0] ?? "openai-chat-completions";
   }
@@ -1687,16 +1983,12 @@ export class SellerRequestHandler {
     if (isZeroTokenPricing(pricing)) {
       return { cost: 0n, inputTokens: 0, maxOutputTokens: 0 };
     }
-    if (!this._isJsonRequest(request)) {
-      return null;
-    }
-    const body = tryParseJsonObject(request.body);
-    if (!body) {
+    const maxOutputTokens = this._requestedMaxOutputTokens(request);
+    if (maxOutputTokens === null) {
       return null;
     }
 
-    const inputTokens = estimateTokensFromBytesSampled(request.body);
-    const maxOutputTokens = this._extractMaxOutputTokens(body);
+    const inputTokens = this._estimatedPromptTokens(request);
     return {
       cost: computeCostUsdc(inputTokens, maxOutputTokens, pricing),
       inputTokens,
@@ -1717,50 +2009,62 @@ export class SellerRequestHandler {
     if (costEstimate && costEstimate.inputTokens > 0) {
       return costEstimate.inputTokens + (costEstimate.maxOutputTokens || DEFAULT_OUTPUT_RESERVATION_TOKENS);
     }
-    const body = this._isJsonRequest(request) ? tryParseJsonObject(request.body) : null;
-    return estimateTokensFromBytesSampled(request.body) + ((body && this._extractMaxOutputTokens(body)) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+    return this._estimatedPromptTokens(request) + (this._requestedMaxOutputTokens(request) || DEFAULT_OUTPUT_RESERVATION_TOKENS);
   }
 
-  private _extractMaxOutputTokens(body: Record<string, unknown>): number {
-    const candidates = [
-      body["max_tokens"],
-      body["max_completion_tokens"],
-      body["max_output_tokens"],
-      body["maxTokens"],
-      body["maxCompletionTokens"],
-      body["maxOutputTokens"],
-    ];
-
-    for (const value of candidates) {
-      const parsed = this._parsePositiveInteger(value);
-      if (parsed !== null) return parsed;
-    }
-    return 0;
+  /**
+   * The prompt tokens of a request, for checks before it goes upstream. A JSON body the seller wrote
+   * was estimated as it was read, with each inline image counted as a flat allowance: its base64 is
+   * megabytes of body but not of tokens. Any other body counts its bytes.
+   */
+  private _estimatedPromptTokens(request: SerializedHttpRequest): number {
+    const billed = this._requestedServices.get(request);
+    if (billed && billed.service !== null && billed.body === request.body && billed.promptTokens !== undefined) return billed.promptTokens;
+    return estimateTokensFromBytesSampled(request.body);
   }
 
-  private _parsePositiveInteger(value: unknown): number | null {
-    let numeric: number;
-    if (typeof value === 'number') {
-      numeric = value;
-    } else if (typeof value === 'string') {
-      numeric = Number(value);
-    } else {
-      return null;
-    }
-
-    if (!Number.isFinite(numeric) || numeric <= 0) return null;
-    return Math.floor(numeric);
+  /**
+   * The most output tokens a JSON request asks for (0 when it names no limit), or null when its body
+   * is not a JSON object. A body the seller wrote was read for this as it was written; any other is
+   * parsed here.
+   */
+  private _requestedMaxOutputTokens(request: SerializedHttpRequest): number | null {
+    if (!this._isJsonRequest(request)) return null;
+    const billed = this._requestedServices.get(request);
+    if (billed && billed.service !== null && billed.body === request.body && billed.maxOutputTokens !== undefined) return billed.maxOutputTokens;
+    const body = tryParseJsonObject(request.body);
+    return body ? requestedMaxOutputTokens(body) : null;
   }
 
   private async _executeRequest(
     provider: Provider,
     request: SerializedHttpRequest,
+    sellerCost?: SellerCost,
     streamCallbacks?: ProviderStreamCallbacks,
+    isDownload = false,
   ): Promise<SerializedHttpResponse> {
-    // Buyers only ever see the headers buyerFacingResponseHeaders lets through.
+    // Every provider's response goes through here, so no plugin can expose its
+    // upstream's own headers or costs: the body's cost is the seller's price.
+    const withHeaders = (response: SerializedHttpResponse): SerializedHttpResponse =>
+      ({ ...response, headers: exposedResponseHeaders(response.headers) });
+    // A video download (a retrieval the router recognized, not just the buyer's header)
+    // is the provider's own bytes, hashed as they pass; it carries no usage.
     if (streamCallbacks && provider.handleRequestStream) {
-      // A streamed 429 is held back like a buffered one, so its upstream body can be replaced before the buyer sees it.
+      // An event stream is rewritten as it passes. A JSON body can only be rewritten
+      // whole, so it is held back and sent as the returned response instead.
+      let mode = 'passthrough' as 'events' | 'held' | 'passthrough';
+      let events = null as ExposedSseStream | null;
+      // A streamed 429 is held back so its upstream body can be replaced before the buyer sees it.
       let heldRateLimit = false;
+      const sent: Uint8Array[] = [];
+      // A provider that fails mid-stream leaves its last line or event held here: it is sent
+      // (rewritten) before the failure, so the buyer has every byte and the error frame follows them.
+      const sendHeld = (): void => {
+        const rest = events?.flush();
+        if (!rest?.length) return;
+        sent.push(rest);
+        streamCallbacks.onResponseChunk({ requestId: request.requestId, data: rest, done: false });
+      };
       const response = await provider.handleRequestStream(request, {
         ...streamCallbacks,
         onResponseStart: (start) => {
@@ -1768,14 +2072,39 @@ export class SellerRequestHandler {
             heldRateLimit = true;
             return;
           }
-          streamCallbacks.onResponseStart({ ...start, headers: buyerFacingResponseHeaders(start.headers) });
+          if (isDownload) return streamCallbacks.onResponseStart(withHeaders(start));
+          if (contentTypeOf(start.headers).includes('json')) {
+            mode = 'held';
+            return;
+          }
+          if (!isEventStream(request, start)) return streamCallbacks.onResponseStart(withHeaders(start));
+          mode = 'events';
+          events = new ExposedSseStream(sellerCost);
+          const body = start.body?.length ? events.push(start.body) : start.body;
+          if (body?.length) sent.push(body);
+          streamCallbacks.onResponseStart({ ...withHeaders(start), body });
         },
-        onResponseChunk: (chunk) => (heldRateLimit ? undefined : streamCallbacks.onResponseChunk(chunk)),
+        onResponseChunk: (chunk) => {
+          if (heldRateLimit || mode === 'held') return;
+          if (!events) return streamCallbacks.onResponseChunk(chunk);
+          const data = chunk.done ? concatBytes([events.push(chunk.data), events.flush()]) : events.push(chunk.data);
+          sent.push(data);
+          if (!chunk.done && data.length === 0) return;
+          return streamCallbacks.onResponseChunk({ ...chunk, data });
+        },
+      }).catch((err: unknown) => {
+        sendHeld();
+        throw err;
       });
-      return { ...response, headers: buyerFacingResponseHeaders(response.headers) };
+      // The returned body is what the buyer was sent, so usage and payment read the same bytes.
+      if (events) return { ...withHeaders(response), body: concatBytes(sent) };
+      if (isDownload) return withHeaders(response);
+      // Held JSON goes out as one complete response, which a streaming marker would leave the buyer waiting on.
+      const whole = mode === 'held' || heldRateLimit ? withoutStreamingMarker(response) : response;
+      return withExposedBody(request, withHeaders(whole), sellerCost);
     }
-    const response = await provider.handleRequest(request);
-    return { ...response, headers: buyerFacingResponseHeaders(response.headers) };
+    const response = withHeaders(await provider.handleRequest(request));
+    return isDownload ? response : withExposedBody(request, response, sellerCost);
   }
 
   private _sendNeedAuthBestEffort(
@@ -1838,11 +2167,14 @@ export class SellerRequestHandler {
       responseStartedAt: number;
       responseCompletedAt: number;
       channelId: string | null;
+      /** The request's hash, when its body was hashed already and is no longer held. */
+      requestHash?: string;
     },
   ): void {
     try {
       const payload = createResponseAuthPayload({
         request,
+        ...(context.requestHash ? { requestHash: context.requestHash } : {}),
         response,
         buyerPeerId: context.buyerPeerId,
         sellerPeerId: this._deps.identity.peerId,
@@ -1857,4 +2189,61 @@ export class SellerRequestHandler {
       debugWarn(`[SellerHandler] Failed to send ResponseAuth for ${request.requestId.slice(0, 8)}: ${err instanceof Error ? err.message : err}`);
     }
   }
+}
+
+function contentTypeOf(headers: Record<string, string>): string {
+  return headerOf(headers, 'content-type').toLowerCase();
+}
+
+/**
+ * Whether a response is a server-sent event stream: its content type says so,
+ * or it is a successful response without one that its provider marked as
+ * streaming (HttpRelay streams a typeless response to a request it sent
+ * accepting events) or whose request accepts events.
+ */
+function isEventStream(request: SerializedHttpRequest, response: Pick<SerializedHttpResponse, 'statusCode' | 'headers'>): boolean {
+  const contentType = contentTypeOf(response.headers);
+  if (contentType) return contentType.includes('text/event-stream');
+  if (response.statusCode < 200 || response.statusCode >= 300) return false;
+  return headerOf(response.headers, ANTSEED_STREAMING_RESPONSE_HEADER) === '1'
+    || headerOf(request.headers, 'accept').toLowerCase().includes('text/event-stream');
+}
+
+function withoutStreamingMarker(response: SerializedHttpResponse): SerializedHttpResponse {
+  const headers = Object.fromEntries(Object.entries(response.headers).filter(([name]) => name.toLowerCase() !== ANTSEED_STREAMING_RESPONSE_HEADER));
+  return { ...response, headers };
+}
+
+function headerOf(headers: Record<string, string>, name: string): string {
+  return Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1] ?? '';
+}
+
+/** A whole JSON or event-stream response priced at the seller's own cost, without the upstream's. */
+function withExposedBody(request: SerializedHttpRequest, response: SerializedHttpResponse, sellerCost?: SellerCost): SerializedHttpResponse {
+  if (!response.body?.length) return response;
+  if (isEventStream(request, response)) {
+    const events = new ExposedSseStream(sellerCost);
+    return { ...response, body: concatBytes([events.push(response.body), events.flush()]) };
+  }
+  if (!contentTypeOf(response.headers).includes('json')) return response;
+  const body = exposedJsonBody(response.body, sellerCost);
+  return body === response.body ? response : { ...response, body };
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+/** What the seller charges for these tokens, in USD: `computeCostUsdc` before rounding to USDC units. */
+function tokenCostUsd(usage: ResponseUsage, pricing: ProviderTokenPricing): number {
+  const cachedPrice = pricing.cachedInputUsdPerMillion ?? pricing.inputUsdPerMillion;
+  return (usage.freshInputTokens * pricing.inputUsdPerMillion
+    + usage.cachedInputTokens * cachedPrice
+    + usage.outputTokens * pricing.outputUsdPerMillion) / 1_000_000;
 }

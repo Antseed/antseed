@@ -1,187 +1,4 @@
-import { Lexer } from 'marked';
 import { formatUsd } from '../../../core/format';
-
-type LexerToken = {
-  type: string;
-  raw?: string;
-  text?: string;
-  lang?: string;
-  tokens?: LexerToken[];
-  items?: LexerToken[];
-  ordered?: boolean;
-  depth?: number;
-  href?: string;
-  title?: string | null;
-  header?: LexerToken[];
-  rows?: LexerToken[][];
-  align?: Array<'center' | 'left' | 'right' | null>;
-  task?: boolean;
-  checked?: boolean;
-};
-
-function isSafeHref(href: string): boolean {
-  const trimmed = href.trim();
-  if (!trimmed) return false;
-  try {
-    const parsed = new URL(trimmed, 'https://antseed.invalid');
-    const protocol = parsed.protocol.toLowerCase();
-    return protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:';
-  } catch {
-    return false;
-  }
-}
-
-function esc(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function flatInline(tokens: LexerToken[] | undefined): string {
-  if (!tokens?.length) return '';
-  let out = '';
-  for (const t of tokens) {
-    if (t.type === 'br') { out += '<br>'; continue; }
-    if (t.tokens?.length) { out += flatInline(t.tokens); continue; }
-    out += String(t.text ?? t.raw ?? '');
-  }
-  return out;
-}
-
-function inlineHtml(tokens: LexerToken[] | undefined): string {
-  if (!tokens?.length) return '';
-  let out = '';
-  for (const t of tokens) {
-    switch (t.type) {
-      case 'text':
-        out += t.tokens?.length ? inlineHtml(t.tokens) : esc(String(t.text ?? ''));
-        break;
-      case 'escape':
-        out += esc(String(t.text ?? ''));
-        break;
-      case 'strong':
-        out += `<strong>${inlineHtml(t.tokens)}</strong>`;
-        break;
-      case 'em':
-        out += `<em>${inlineHtml(t.tokens)}</em>`;
-        break;
-      case 'del':
-        out += `<del>${inlineHtml(t.tokens)}</del>`;
-        break;
-      case 'codespan':
-        out += `<code class="chat-inline-code">${esc(String(t.text ?? ''))}</code>`;
-        break;
-      case 'br':
-        out += '<br>';
-        break;
-      case 'link': {
-        const href = String(t.href ?? '');
-        const inner = inlineHtml(t.tokens) || esc(href);
-        if (!isSafeHref(href)) {
-          out += `<span class="chat-inline-link-invalid">${inner}</span>`;
-        } else {
-          const titleAttr = t.title ? ` title="${esc(t.title)}"` : '';
-          out += `<a href="${esc(href)}" style="color:var(--accent-blue);text-decoration:underline" target="_blank" rel="noopener noreferrer"${titleAttr}>${inner}</a>`;
-        }
-        break;
-      }
-      case 'image': {
-        const href = String(t.href ?? '');
-        const alt = flatInline(t.tokens) || esc(String(t.text ?? '')) || 'Image';
-        if (!isSafeHref(href)) {
-          out += `<span class="chat-inline-link-invalid">${alt}</span>`;
-        } else {
-          out += `<img src="${esc(href)}" alt="${alt}" class="chat-inline-image">`;
-        }
-        break;
-      }
-      default:
-        out += t.tokens?.length ? inlineHtml(t.tokens) : esc(String(t.text ?? t.raw ?? ''));
-    }
-  }
-  return out;
-}
-
-function listItemHtml(token: LexerToken): string {
-  if (!token.tokens?.length) return esc(String(token.text ?? token.raw ?? ''));
-  const hasBlock = token.tokens.some(
-    (t) => !['paragraph', 'space', 'text', 'strong', 'em', 'codespan', 'link', 'del', 'br'].includes(t.type),
-  );
-  return hasBlock ? blocksHtml(token.tokens) : inlineHtml(token.tokens);
-}
-
-function blocksHtml(tokens: LexerToken[]): string {
-  let out = '';
-  for (const [, t] of tokens.entries()) {
-    switch (t.type) {
-      case 'space':
-        break;
-      case 'paragraph':
-        out += `<p>${inlineHtml(t.tokens)}</p>`;
-        break;
-      case 'text':
-        out += t.tokens?.length ? `<p>${inlineHtml(t.tokens)}</p>` : `<p>${esc(String(t.text ?? ''))}</p>`;
-        break;
-      case 'heading': {
-        const depth = Math.min(Math.max(Number(t.depth) || 1, 1), 6);
-        out += `<h${depth}>${inlineHtml(t.tokens)}</h${depth}>`;
-        break;
-      }
-      case 'code': {
-        const lang = (t.lang ?? '').trim() || 'code';
-        out += `<div class="chat-code-container"><div class="chat-code-header"><span class="code-lang">${esc(lang)}</span></div><pre><code>${esc(String(t.text ?? ''))}</code></pre></div>`;
-        break;
-      }
-      case 'blockquote':
-        out += `<blockquote>${blocksHtml(t.tokens ?? [])}</blockquote>`;
-        break;
-      case 'hr':
-        out += '<hr>';
-        break;
-      case 'list': {
-        const tag = t.ordered ? 'ol' : 'ul';
-        const items = (t.items ?? []).map((item) => {
-          if (item.task) {
-            const checked = item.checked ? ' checked' : '';
-            return `<li class="chat-md-li"><label class="chat-task-item"><input type="checkbox"${checked} disabled>${listItemHtml(item)}</label></li>`;
-          }
-          return `<li class="chat-md-li">${listItemHtml(item)}</li>`;
-        }).join('');
-        out += `<${tag} class="chat-md-list">${items}</${tag}>`;
-        break;
-      }
-      case 'table': {
-        const headerCells = (t.header ?? []).map((cell, ci) => {
-          const align = t.align?.[ci];
-          const alignAttr = align ? ` align="${align}"` : '';
-          const content = cell.tokens?.length ? inlineHtml(cell.tokens) : esc(String(cell.text ?? cell.raw ?? ''));
-          return `<th${alignAttr}>${content}</th>`;
-        }).join('');
-        const bodyRows = (t.rows ?? []).map((row) => {
-          const cells = row.map((cell, ci) => {
-            const align = t.align?.[ci];
-            const alignAttr = align ? ` align="${align}"` : '';
-            const content = cell.tokens?.length ? inlineHtml(cell.tokens) : esc(String(cell.text ?? cell.raw ?? ''));
-            return `<td${alignAttr}>${content}</td>`;
-          }).join('');
-          return `<tr>${cells}</tr>`;
-        }).join('');
-        out += `<div class="chat-table-wrap"><table class="chat-md-table"><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table></div>`;
-        break;
-      }
-      default:
-        if (t.tokens?.length) {
-          out += `<p>${inlineHtml(t.tokens)}</p>`;
-        } else {
-          out += `<p>${esc(String(t.text ?? t.raw ?? ''))}</p>`;
-        }
-    }
-  }
-  return out;
-}
-
-export function renderMarkdownToHtml(text: string): string {
-  const tokens = Lexer.lex(text, { gfm: true, breaks: true }) as LexerToken[];
-  return blocksHtml(tokens);
-}
 
 export type ChatMessage = {
   role: string;
@@ -220,13 +37,6 @@ export type ContentBlock = {
 };
 
 export type AssistantMeta = {
-  peerId: string | null;
-  peerAddress: string | null;
-  peerProviders: string[];
-  peerReputation: number | null;
-  peerCurrentLoad: number | null;
-  peerMaxConcurrency: number | null;
-  routeRequestId: string | null;
   provider: string | null;
   service: string | null;
   inputTokens: number;
@@ -237,31 +47,6 @@ export type AssistantMeta = {
   latencyMs: number;
   outputImages: number;
 };
-
-export const THINKING_PHRASES: readonly string[] = [
-  'Hodl',
-  'Brrrr',
-  'NGMI',
-  'WAGMI',
-  'To the moon',
-  'Wen channel',
-  'gm',
-  'Stacking sats',
-  'Few understand',
-  'LFG',
-  'Probably nothing',
-  'Aping in',
-  'This is the way',
-  'Ser, pls wait',
-  'Number go up',
-  'Diamond hands',
-  'p2p2pinging',
-  'Foraging for tokens',
-  'Pinning to the DHT',
-  'Sharding the prompt',
-];
-
-const myrmecochoryPhrases = THINKING_PHRASES;
 
 export function isImageRequestPhase(phase: string | null | undefined): boolean {
   return phase === 'Generating image' || phase === 'Editing image';
@@ -328,26 +113,9 @@ export function formatCompactNumber(value: unknown): string {
   return String(Math.floor(num));
 }
 
-
-export function getMyrmecochoryLabel(indexBase = 0): string {
-  const index = Math.abs(Math.floor(Number(indexBase) || 0)) % myrmecochoryPhrases.length;
-  return myrmecochoryPhrases[index];
-}
-
-export function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 export function normalizeAssistantMeta(msg: ChatMessage): AssistantMeta | null {
   if (!msg || msg.role !== 'assistant' || !msg.meta || typeof msg.meta !== 'object') return null;
   const meta = msg.meta;
-  const peerId = typeof meta.peerId === 'string' && (meta.peerId as string).trim().length > 0 ? (meta.peerId as string).trim() : null;
-  const peerAddress = typeof meta.peerAddress === 'string' && (meta.peerAddress as string).trim().length > 0 ? (meta.peerAddress as string).trim() : null;
-  const peerProviders = Array.isArray(meta.peerProviders) ? (meta.peerProviders as string[]).map(String).filter(Boolean) : [];
   const provider = typeof meta.provider === 'string' && (meta.provider as string).trim().length > 0 ? (meta.provider as string).trim() : null;
   const service = typeof meta.service === 'string' && (meta.service as string).trim().length > 0 ? (meta.service as string).trim() : null;
   const inputTokens = Math.max(0, Math.floor(Number(meta.inputTokens) || 0));
@@ -358,19 +126,8 @@ export function normalizeAssistantMeta(msg: ChatMessage): AssistantMeta | null {
   const tokenSource = tokenSourceRaw === 'estimated' ? 'estimated' : tokenSourceRaw === 'usage' ? 'usage' : 'unknown';
   const costUsd = Number.isFinite(Number(meta.estimatedCostUsd)) ? Number(meta.estimatedCostUsd) : 0;
   const latencyMs = Number.isFinite(Number(meta.latencyMs)) ? Number(meta.latencyMs) : 0;
-  const peerReputation = Number.isFinite(Number(meta.peerReputation)) ? Number(meta.peerReputation) : null;
-  const peerCurrentLoad = Number.isFinite(Number(meta.peerCurrentLoad)) ? Number(meta.peerCurrentLoad) : null;
-  const peerMaxConcurrency = Number.isFinite(Number(meta.peerMaxConcurrency)) ? Number(meta.peerMaxConcurrency) : null;
-  const routeRequestId = typeof meta.routeRequestId === 'string' && (meta.routeRequestId as string).trim().length > 0 ? (meta.routeRequestId as string).trim() : null;
   const outputImages = Math.max(0, Math.floor(Number(meta.outputImages) || 0));
   return {
-    peerId,
-    peerAddress,
-    peerProviders,
-    peerReputation,
-    peerCurrentLoad,
-    peerMaxConcurrency,
-    routeRequestId,
     provider,
     service,
     inputTokens,
@@ -439,7 +196,6 @@ export function buildChatMetaParts(msg: ChatMessage): string[] {
   const assistantMeta = normalizeAssistantMeta(msg);
 
   if (assistantMeta) {
-    if (assistantMeta.peerId) parts.push(`peer ${assistantMeta.peerId.slice(0, 8)}`);
     if (assistantMeta.outputImages > 0) {
       parts.push(`${assistantMeta.outputImages} ${assistantMeta.outputImages === 1 ? 'image' : 'images'}`);
     }
@@ -454,14 +210,6 @@ export function buildChatMetaParts(msg: ChatMessage): string[] {
     }
     if (assistantMeta.costUsd > 0) parts.push(`$${formatUsd(assistantMeta.costUsd)}`);
     if (assistantMeta.latencyMs > 0) parts.push(`${Math.round(assistantMeta.latencyMs)}ms`);
-    if (assistantMeta.peerReputation !== null) parts.push(`rep ${Math.round(assistantMeta.peerReputation)}`);
-    if (
-      assistantMeta.peerCurrentLoad !== null &&
-      assistantMeta.peerMaxConcurrency !== null &&
-      assistantMeta.peerMaxConcurrency > 0
-    ) {
-      parts.push(`load ${Math.round(assistantMeta.peerCurrentLoad)}/${Math.round(assistantMeta.peerMaxConcurrency)}`);
-    }
   }
 
   return parts;
@@ -485,7 +233,7 @@ export function cloneContentBlock(block: ContentBlock): ContentBlock {
   };
 }
 
-function cloneChatMessage(message: ChatMessage): ChatMessage {
+export function cloneChatMessage(message: ChatMessage): ChatMessage {
   return {
     ...message,
     meta: message.meta ? { ...message.meta } : undefined,

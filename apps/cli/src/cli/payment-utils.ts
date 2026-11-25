@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { withEventCache } from '../verifier/event-cache.js';
 import chalk from 'chalk';
 import {
   DepositsClient,
@@ -408,26 +409,50 @@ export function createLegacyStakingClient(config: AntseedConfig): StakingClient 
   });
 }
 
-const VERIFIER_LOG_QUERY_CHUNK_BLOCKS = 1_000
+/** Blocks per `eth_getLogs` request unless `verifier.logQueryChunkBlocks` says otherwise: every public Base RPC accepts 1,000. */
+export const VERIFIER_LOG_QUERY_CHUNK_BLOCKS = 1_000
+
+let verifierEventCacheDataDir: string | null = null
 
 /**
- * Create a VerifierClient from the CLI config.
+ * Keeps the KBF audits contract's events of every verifier client this process creates in
+ * `<dataDir>/verifier/chain-cache/`, so scans only read new blocks (`verifier/event-cache.ts`).
+ * Called by the verifier commands before they create a client; without it the cache is per process.
+ */
+export function useVerifierEventCache(dataDir: string): void {
+  verifierEventCacheDataDir = dataDir;
+}
+
+/**
+ * Create a VerifierClient from the CLI config. Its `ServiceAudited` and `ModelAudited` queries are
+ * served from the process's event cache (`withEventCache`).
  */
 export function createVerifierClient(config: AntseedConfig, overrides?: CryptoConfigOverrides): VerifierClient {
   const crypto = requireCryptoConfig(config, overrides);
   if (!crypto.verificationContractAddress) {
     throw new Error('No KBF audits contract address configured. Set payments.crypto.verificationContractAddress in your config file.');
   }
-  return new VerifierClient({
+  const client = new VerifierClient({
     rpcUrl: crypto.rpcUrl,
     ...fallbackClientOpts(crypto),
     contractAddress: crypto.verificationContractAddress,
     ...(crypto.verificationResultsAddress ? { resultsAddress: crypto.verificationResultsAddress } : {}),
     evmChainId: crypto.evmChainId,
-    logQueryChunkBlocks: VERIFIER_LOG_QUERY_CHUNK_BLOCKS,
+    logQueryChunkBlocks: config.verifier?.logQueryChunkBlocks ?? VERIFIER_LOG_QUERY_CHUNK_BLOCKS,
+    receiptWaitLimitMs: VERIFIER_RECEIPT_WAIT_LIMIT_MS,
     ...(crypto.verificationDeployBlock !== undefined ? { deploymentBlock: crypto.verificationDeployBlock } : {}),
   });
+  // stderr: commands such as `verifier check --json` print their result on stdout.
+  return withEventCache(client, verifierEventCacheDataDir, (message) => console.error(chalk.dim(message)));
 }
+
+/**
+ * Longest `verifier submit` waits for one audit's transaction to mine. Base mines a block every
+ * 200 ms and a stalled transaction is re-sent with higher fees up to four times in its first two minutes, so one
+ * still pending after 10 minutes is stuck. Without a limit the submit, and the `verifier watch` tick
+ * running it, waited forever. The next submit sends nothing while it is pending.
+ */
+export const VERIFIER_RECEIPT_WAIT_LIMIT_MS = 10 * 60_000
 
 /**
  * Create a DepositRelayClient from the CLI config.

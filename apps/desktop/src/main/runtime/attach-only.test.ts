@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  attachedGateway,
   isAttachOnly,
   isIsolatedProfile,
   machineWideChangesDisabled,
@@ -116,4 +117,11 @@ test('a routing sync keeps the testbench peer allowlist and blocklist', () => {
     buyer: { routingPreferences: { allowedPeerIds: [], blockedPeerIds: [], minTrustScore: 0, preferCheap: true } },
   });
   assert.equal(preserveTestbenchRouting(synced, existing, {}), synced);
+});
+
+test('an attach-only desktop uses the gateway the testbench names; a normal one ignores it', () => {
+  const named = { ANTSEED_DESKTOP_GATEWAY_URL: 'http://127.0.0.1:9900/', ANTSEED_DESKTOP_GATEWAY_KEY: 'sk-test' };
+  assert.deepEqual(attachedGateway({ ANTSEED_DESKTOP_ATTACH_ONLY: '1', ...named }), { url: 'http://127.0.0.1:9900', key: 'sk-test' });
+  assert.equal(attachedGateway(named), null);
+  assert.equal(attachedGateway({ ANTSEED_DESKTOP_ATTACH_ONLY: '1', ANTSEED_DESKTOP_GATEWAY_URL: 'http://127.0.0.1:9900' }), null);
 });

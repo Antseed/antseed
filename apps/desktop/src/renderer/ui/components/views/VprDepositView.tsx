@@ -14,7 +14,11 @@ import {
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { shortAddress } from '../../../core/format';
+import { Button } from '@antseed/ui';
 import { VprCard, VprPage } from '../vpr/VprKit';
+import { gatewayResource } from '../../../modules/app/vpr-resources';
+import { useCachedResource } from '../../../modules/app/cached-resource';
+import { openGatewayConsole } from '../../../modules/app/console-launch';
 import type { DepositWatchStatus } from '../../../types/bridge';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
 import { FundingStatusNotice } from './FundingStatusNotice';
@@ -355,7 +359,34 @@ function explorerTxUrl(chainId: number | undefined, txHash: string): string | nu
  * wallet the main-process sweeper watches. Only pages that need an external
  * wallet signature leave the app.
  */
-export function VprDepositView({ onSelectView }: Props) {
+/**
+ * Add funds for this computer's gateway. A remote gateway pays from its own
+ * wallet, so funding this device's signer wouldn't reach it: the page sends
+ * the user to that gateway's console, and nothing local (deposit watcher,
+ * checkout, address) starts until the gateway is known to be local.
+ */
+export function VprDepositView(props: Props) {
+  const mode = useCachedResource(gatewayResource).data?.status.mode;
+  if (mode === 'local') return <LocalDepositView {...props} />;
+  return (
+    <section className={`view view-vpr-deposit view-pinned-header ${styles.view}`} role="tabpanel">
+      <VprPage title="Add funds" backFallback="home" subtitle={mode === 'remote' ? 'Your remote gateway pays from its own wallet.' : undefined}>
+        {mode === 'remote' ? (
+          <VprCard>
+            <div className={styles.stack}>
+              <p className={styles.methodFootnote}>Add funds in your gateway’s console, under Wallet.</p>
+              <div>
+                <Button variant="brand" onClick={() => { void openGatewayConsole('/wallet'); }}>Open gateway wallet</Button>
+              </div>
+            </div>
+          </VprCard>
+        ) : null}
+      </VprPage>
+    </section>
+  );
+}
+
+function LocalDepositView({ onSelectView }: Props) {
   const actions = useActions();
   const snap = useUiSelector((state) => ({
     total: state.creditsTotalUsdc,
@@ -419,7 +450,7 @@ export function VprDepositView({ onSelectView }: Props) {
   useEffect(() => {
     const bridge = window.antseedDesktop;
     let cancelled = false;
-    void bridge?.depositsWatchStart?.().then((result) => {
+    void bridge?.depositsWatchStart?.()?.then((result) => {
       if (cancelled) return;
       if (result.ok && result.data) {
         setWatchInfo({ address: result.data.address, usdcAddress: result.data.usdcAddress, chainId: result.data.chainId });
@@ -507,12 +538,14 @@ export function VprDepositView({ onSelectView }: Props) {
     // Peer Pay's method was chosen on the chooser; its own step only opens checkout.
     if (providerId !== 'peer-pay') chooseMethod(method);
     setCardNotice(null);
-    void window.antseedDesktop?.paymentsOpenCardProvider?.({ providerId, amountUsdc: amount }).then((result) => {
+    void window.antseedDesktop?.paymentsOpenCardProvider?.({ providerId, amountUsdc: amount })?.then((result) => {
       if (!result.ok) {
         setCardNotice(result.error ?? 'Could not open the payment page.');
       } else {
         noteCheckoutOpened(method);
       }
+    }).catch((err: unknown) => {
+      setCardNotice(err instanceof Error ? err.message : String(err));
     });
   }, [amount, chooseMethod, noteCheckoutOpened]);
 
@@ -626,11 +659,11 @@ export function VprDepositView({ onSelectView }: Props) {
   function renderStage(current: Stage): JSX.Element {
     if (current === 'choose') {
       return (
-        <VprPage title="Add credits" backFallback="credits">
-        <div className={styles.stack}>
+        <VprPage title="Add funds" backFallback="home" subtitle="Add to your balance with a card, a payment app or USDC.">
+        <div className={`${styles.stack} ${styles.chooseStack}`}>
           <BalanceSummaryCard
             values={balanceValues}
-            notice={<FundingStatusNotice status={funding} onManageSessions={() => onSelectView?.('activity')} />}
+            notice={<FundingStatusNotice status={funding} onManageSessions={() => { void window.antseedDesktop?.gatewayOpenConsole?.('/wallet'); }} />}
           />
 
           <div className={styles.primaryMethods}>
@@ -655,6 +688,8 @@ export function VprDepositView({ onSelectView }: Props) {
               </span>
             </button>
             {payPageNotice && <div className={styles.cardNotice} role="alert">{payPageNotice}</div>}
+            {/* Every method funds through the watcher: when it can't start, say why here too. */}
+            {watchError && <div className={styles.cardNotice} role="alert">{watchError}</div>}
 
             <div className={styles.methodGroup}>
               <button
@@ -791,7 +826,7 @@ export function VprDepositView({ onSelectView }: Props) {
 
     if (current === 'peer') {
       return (
-        <VprPage title="Deposit using Peer" onBack={() => goToStage('choose')}>
+        <VprPage title="Deposit using Peer" subtitle="Add to your balance from a bank or payment app." onBack={() => goToStage('choose')}>
           <div className={styles.stack}>
 
             {amountForm}
@@ -819,7 +854,7 @@ export function VprDepositView({ onSelectView }: Props) {
     }
 
     return (
-      <VprPage title="Pay with USDC on Base" onBack={() => goToStage('choose')}>
+      <VprPage title="Pay with USDC on Base" subtitle="Scan the code or copy the address. Credits update automatically." onBack={() => goToStage('choose')}>
         <div className={styles.stack}>
 
           {amountForm}

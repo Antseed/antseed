@@ -68,6 +68,19 @@ describe('native video API contracts', () => {
     expect(() => nativeVideoFacts(request('/api/v1/video/queue', { model: 'video', duration: 'soon' }))).toThrow(/duration/);
   });
 
+  it('refuses priced video options it would read as absent', () => {
+    for (const [path, fields] of [
+      ['/api/v1/video/queue', { audio: 'true' }],
+      ['/fal/v1/video/queue', { generate_audio: 1 }],
+      ['/api/v1/video/queue', { resolution: ['1080p'] }],
+      ['/fal/v1/video/queue', { aspect_ratio: { width: 16 } }],
+    ] as const) {
+      expect(() => nativeVideoFacts(request(path, { model: 'video', ...fields }))).toThrow(/must be/);
+    }
+    expect(nativeVideoFacts(request('/api/v1/video/queue', { model: 'video', audio: true, resolution: '1080p', aspect_ratio: '16:9' }))).toMatchObject({ audio: true, resolution: '1080p', aspectRatio: '16:9' });
+    expect(nativeVideoFacts(request('/fal/v1/video/queue', { model: 'video', generate_audio: null }))).not.toHaveProperty('audio');
+  });
+
   it('routes fal video with the endpoint ID as the service', () => {
     const model = 'fal-ai/kling-video/v2.1/standard/text-to-video';
     const create = request('/fal/v1/video/queue', { model, prompt: 'cat', duration: '5' });

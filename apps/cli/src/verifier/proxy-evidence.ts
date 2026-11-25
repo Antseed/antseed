@@ -6,6 +6,7 @@ import {
   type FingerprintStats,
   type FingerprintVerdict,
   type KbfProbe,
+  type KbfReferenceCalibrationV1,
   type MatchVector,
   type ReferenceProbeSelfTestV1,
   type ReferenceQueryProfileV1,
@@ -191,6 +192,8 @@ export interface ProxyAuditEvidenceV1 {
       errorRate: number
       outcomes?: ReferenceProbeSelfTestV1[]
     }
+    /** The trials `result.stats` takes its limit from; absent on audits judged on the self-test. */
+    calibration?: KbfReferenceCalibrationV1
     probes: KbfProbe[]
   }
   /** Absent on audits that sent the reference's thinking suppression without asking the seller. */

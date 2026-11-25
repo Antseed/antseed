@@ -1,0 +1,53 @@
+/* .button holds the shape and .primary or .ghost the colours, so no two of the button's own classes set the same property; a size
+   only sets the shape's variables. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--button-height, 44px);
+  padding: 0 var(--button-pad, 20px);
+  border-radius: var(--site-radius-control);
+  font: 500 var(--button-font-size, 15px)/var(--button-line, 20px) var(--button-font, var(--site-font));
+  white-space: nowrap;
+  transition: background .15s;
+}
+.button:hover { text-decoration: none; }
+.button:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 2px; }
+
+.primary {
+  background: var(--site-fill);
+  color: var(--button-ink, #fff);
+  box-shadow: 0 3.5px .5px 0 rgba(46, 74, 14, .1), inset 0 -.5px 0 0 rgba(200, 230, 170, .63), inset 0 -2px 1px 0 #3b5e17;
+}
+.primary:hover { background: var(--site-fill-hover); color: var(--button-ink, #fff); }
+
+.ghost {
+  border: 1px solid var(--site-tile-line);
+  background: var(--site-tile);
+  color: var(--site-text);
+  box-shadow: 0 1.5px 0 0 rgba(255, 255, 255, .6), inset 0 -1px 2px 0 rgba(48, 56, 44, .2);
+}
+.ghost:hover { background: var(--site-tile-hover); color: var(--site-text); }
+
+.large { --button-height: 48px; --button-pad: 24px; --button-font-size: 16px; }
+.compact { --button-height: 40px; --button-pad: 12px; --button-font-size: 16px; --button-line: 24px; }
+@media (min-width: 1200px) {
+  .page { --button-height: 40px; --button-pad: 12px; --button-font-size: 16px; --button-line: 24px; }
+}
+.small { --button-height: 36px; --button-pad: 13px; --button-font-size: 14px; --button-font: var(--site-font-ui); --button-ink: #fafafa; }
+
+.disabled { opacity: .45; pointer-events: none; }
+
+:global(:root[data-theme='dark']) .primary { box-shadow: inset 0 -2px 1px 0 #3b5e17; }
+:global(:root[data-theme='dark']) .ghost { box-shadow: inset 0 -1px 1px 0 rgba(0, 0, 0, .2); }
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+@media (max-width: 760px) {
+  .fill { align-self: stretch; }
+  .fill > * { flex: 1 1 auto; }
+}

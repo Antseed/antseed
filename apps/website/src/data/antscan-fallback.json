@@ -1,0 +1,429 @@
+{
+  "readAt": "2026-11-18T12:16:17.976Z",
+  "totals": {
+    "users": 30600,
+    "providers": 294,
+    "requests": 34006447,
+    "tokens": 956151824833,
+    "settledUsd": 401502.958431
+  },
+  "market": {
+    "models": 877,
+    "lanes": {
+      "text": [
+        {
+          "name": "GPT-6 Astra",
+          "logo": "labs/openai.svg",
+          "providers": 30,
+          "price": 0.095,
+          "save": 99
+        },
+        {
+          "name": "DeepSeek V4.1 Flash",
+          "logo": "labs-color/deepseek.svg",
+          "providers": 29,
+          "price": 0.0027,
+          "save": 93
+        },
+        {
+          "name": "GLM 5.3",
+          "logo": "labs/zai.svg",
+          "providers": 28,
+          "price": 0.0075,
+          "save": 89
+        },
+        {
+          "name": "Kimi K3",
+          "logo": "labs/moonshot.svg",
+          "providers": 23,
+          "price": 0.014419944,
+          "save": 92
+        },
+        {
+          "name": "Claude Opus 5.5",
+          "logo": "labs-color/anthropic.svg",
+          "providers": 18,
+          "price": 0.094,
+          "save": 98
+        },
+        {
+          "name": "MiniMax M3",
+          "logo": "labs-color/minimax.svg",
+          "providers": 16,
+          "price": 0.002842902117,
+          "save": 99
+        },
+        {
+          "name": "Gemini 3.8 Flash",
+          "logo": "labs-color/google.svg",
+          "providers": 12,
+          "price": 0.03,
+          "save": 96
+        },
+        {
+          "name": "Qwen3.8 27B",
+          "logo": "labs-color/qwen.svg",
+          "providers": 10,
+          "price": 0.006,
+          "save": 90
+        },
+        {
+          "name": "Grok 4.3",
+          "logo": "labs/xai.svg",
+          "providers": 8,
+          "price": 0.154075999999,
+          "save": 88
+        },
+        {
+          "name": "GPT-6.1 Sol",
+          "logo": "labs/openai.svg",
+          "providers": 29,
+          "price": 0.019,
+          "save": 99
+        },
+        {
+          "name": "DeepSeek V4 Flash",
+          "logo": "labs-color/deepseek.svg",
+          "providers": 23,
+          "price": 0.00511548048,
+          "save": 91
+        },
+        {
+          "name": "GLM 5.3 Flash",
+          "logo": "labs/zai.svg",
+          "providers": 25,
+          "price": 0.00489153,
+          "save": 97
+        },
+        {
+          "name": "Kimi K3.1 Pro",
+          "logo": "labs/moonshot.svg",
+          "providers": 17,
+          "price": 0.098,
+          "save": 59
+        },
+        {
+          "name": "Claude Sonnet 5",
+          "logo": "labs-color/anthropic.svg",
+          "providers": 16,
+          "price": 0.042768,
+          "save": 98
+        },
+        {
+          "name": "MiniMax M2.7",
+          "logo": "labs-color/minimax.svg",
+          "providers": 12,
+          "price": 0.0076308804,
+          "save": 96
+        },
+        {
+          "name": "Gemini 3.1 Pro Preview",
+          "logo": "labs-color/google.svg",
+          "providers": 10,
+          "price": 0.098006436,
+          "save": 95
+        },
+        {
+          "name": "Qwen3.6 27B",
+          "logo": "labs-color/qwen.svg",
+          "providers": 6,
+          "price": 0.038805,
+          "save": 88
+        },
+        {
+          "name": "Grok 4.5",
+          "logo": "labs/xai.svg",
+          "providers": 8,
+          "price": 0.017498145,
+          "save": 99
+        },
+        {
+          "name": "GPT-5.6 Sol",
+          "logo": "labs/openai.svg",
+          "providers": 24,
+          "price": 0.049005,
+          "save": 99
+        },
+        {
+          "name": "DeepSeek V4 Pro",
+          "logo": "labs-color/deepseek.svg",
+          "providers": 19,
+          "price": 0.00683397,
+          "save": 94
+        },
+        {
+          "name": "GLM 5.2",
+          "logo": "labs/zai.svg",
+          "providers": 21,
+          "price": 0.0013365,
+          "save": 81
+        },
+        {
+          "name": "Kimi K2.6",
+          "logo": "labs/moonshot.svg",
+          "providers": 11,
+          "price": 0.020652500583,
+          "save": 97
+        },
+        {
+          "name": "Claude Haiku 5.5",
+          "logo": "labs-color/anthropic.svg",
+          "providers": 15,
+          "price": 0.008111828,
+          "save": 92
+        },
+        {
+          "name": "MiniMax M2.5",
+          "logo": "labs-color/minimax.svg",
+          "providers": 11,
+          "price": 0.007210823,
+          "save": 98
+        }
+      ],
+      "image": [
+        {
+          "name": "GPT Image 2",
+          "logo": "labs/openai.svg",
+          "providers": 7,
+          "price": 0.003,
+          "save": null
+        },
+        {
+          "name": "Flux 2 Pro",
+          "logo": "labs/bfl.svg",
+          "providers": 4,
+          "price": 0.015,
+          "save": null
+        },
+        {
+          "name": "Nano Banana Pro",
+          "logo": "labs-color/google.svg",
+          "providers": 4,
+          "price": 0.027225,
+          "save": null
+        },
+        {
+          "name": "Grok Imagine Image 2.0",
+          "logo": "labs/xai.svg",
+          "providers": 3,
+          "price": 0.03465,
+          "save": null
+        },
+        {
+          "name": "Qwen Image",
+          "logo": "labs-color/qwen.svg",
+          "providers": 3,
+          "price": 0.015,
+          "save": null
+        },
+        {
+          "name": "Recraft V4",
+          "logo": "labs/recraft.svg",
+          "providers": 3,
+          "price": 0.025,
+          "save": null
+        },
+        {
+          "name": "Ideogram V4",
+          "logo": "labs/ideogram.svg",
+          "providers": 2,
+          "price": 0.03,
+          "save": null
+        },
+        {
+          "name": "MiniMax H3 Image",
+          "logo": "labs-color/minimax.svg",
+          "providers": 2,
+          "price": 0.0198,
+          "save": null
+        },
+        {
+          "name": "Seedream V4",
+          "logo": "labs-color/bytedance.svg",
+          "providers": 2,
+          "price": 0.025,
+          "save": null
+        },
+        {
+          "name": "Venice SD3.5",
+          "logo": "labs-color/stability.svg",
+          "providers": 2,
+          "price": 0.005,
+          "save": null
+        },
+        {
+          "name": "Wan 2.7",
+          "logo": "labs-color/alibaba.svg",
+          "providers": 2,
+          "price": 0.01875,
+          "save": null
+        },
+        {
+          "name": "CogView 3 Flash",
+          "logo": "labs/zai.svg",
+          "providers": 1,
+          "price": null,
+          "save": null
+        },
+        {
+          "name": "GPT Image 2.5 Flare",
+          "logo": "labs/openai.svg",
+          "providers": 5,
+          "price": 0.00402,
+          "save": null
+        },
+        {
+          "name": "Flux 2 Max",
+          "logo": "labs/bfl.svg",
+          "providers": 3,
+          "price": 0.045,
+          "save": null
+        }
+      ],
+      "video": [
+        {
+          "name": "Seedance 2.5",
+          "logo": "labs-color/bytedance.svg",
+          "providers": 6,
+          "price": 0.03971,
+          "save": null
+        },
+        {
+          "name": "Kling Video V3 Pro",
+          "logo": "labs-color/kling.svg",
+          "providers": 5,
+          "price": 0.06776,
+          "save": null
+        },
+        {
+          "name": "Flux 3",
+          "logo": "labs/bfl.svg",
+          "providers": 4,
+          "price": 0.093334120425,
+          "save": null
+        },
+        {
+          "name": "MiniMax H3",
+          "logo": "labs-color/minimax.svg",
+          "providers": 4,
+          "price": 0.011,
+          "save": null
+        },
+        {
+          "name": "Wan 3.0",
+          "logo": "labs-color/alibaba.svg",
+          "providers": 4,
+          "price": 0.033,
+          "save": null
+        },
+        {
+          "name": "Grok Imagine Video V1.5",
+          "logo": "labs/xai.svg",
+          "providers": 3,
+          "price": 0.069,
+          "save": null
+        },
+        {
+          "name": "Veo3.1 Fast",
+          "logo": "labs-color/google.svg",
+          "providers": 3,
+          "price": 0.0605,
+          "save": null
+        },
+        {
+          "name": "HappyHorse 1.1",
+          "logo": "labs/happyhorse.svg",
+          "providers": 2,
+          "price": 0.07,
+          "save": null
+        },
+        {
+          "name": "LTX 2.5 Pro",
+          "logo": "labs/lightricks.svg",
+          "providers": 2,
+          "price": 0.0726,
+          "save": null
+        },
+        {
+          "name": "Runway Gen4.5",
+          "logo": "labs/runway.svg",
+          "providers": 2,
+          "price": 0.081,
+          "save": null
+        },
+        {
+          "name": "Seedance 2.0",
+          "logo": "labs-color/bytedance.svg",
+          "providers": 5,
+          "price": 0.044,
+          "save": null
+        },
+        {
+          "name": "Kling V4",
+          "logo": "labs-color/kling.svg",
+          "providers": 3,
+          "price": 0.078,
+          "save": null
+        }
+      ],
+      "voice": [
+        {
+          "name": "MiniMax Speech 02 HD",
+          "logo": "labs-color/minimax.svg",
+          "providers": 3,
+          "price": 61.875,
+          "save": null
+        },
+        {
+          "name": "ElevenLabs Turbo V2.5 TTS",
+          "logo": "labs/elevenlabs.svg",
+          "providers": 2,
+          "price": 31.25,
+          "save": null
+        },
+        {
+          "name": "Gemini 3.1 Flash TTS",
+          "logo": "labs-color/google.svg",
+          "providers": 2,
+          "price": 93.75,
+          "save": null
+        },
+        {
+          "name": "Qwen3 0.6B TTS",
+          "logo": "labs-color/qwen.svg",
+          "providers": 2,
+          "price": 43.75,
+          "save": null
+        },
+        {
+          "name": "xAI V1 TTS",
+          "logo": "labs/xai.svg",
+          "providers": 2,
+          "price": 9.375,
+          "save": null
+        },
+        {
+          "name": "Speech 2.8 HD",
+          "logo": "labs-color/minimax.svg",
+          "providers": 1,
+          "price": 61.875,
+          "save": null
+        },
+        {
+          "name": "Qwen3 1.7B TTS",
+          "logo": "labs-color/qwen.svg",
+          "providers": 2,
+          "price": 56.25,
+          "save": null
+        }
+      ]
+    }
+  },
+  "ants": {
+    "supply": 145236642.35454,
+    "burned": 12000000,
+    "epoch": 31,
+    "epochEndsAt": 1795082061,
+    "epochSeconds": 604800
+  }
+}

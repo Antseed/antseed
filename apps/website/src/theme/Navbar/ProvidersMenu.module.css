@@ -1,0 +1,37 @@
+.root { position: relative; }
+
+/* the reset in :where() has no specificity, so the minifier can't let it override the rules after it */
+:where(.trigger) { all: unset; }
+.trigger {
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer; color: var(--site-ink); font: 500 14px/20px var(--site-font);
+}
+.trigger:hover { color: var(--site-accent); }
+.trigger:focus-visible { outline: 2px solid #789f00; outline-offset: 3px; border-radius: 4px; }
+
+.chevron {
+  width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round;
+  transition: transform .25s cubic-bezier(.65, 0, .35, 1);
+}
+.chevronOpen { transform: rotate(180deg); }
+
+.menu {
+  position: absolute; top: calc(100% + 16px); left: 50%; translate: -50% 0; display: grid; width: 320px; padding: 6px;
+  border-radius: var(--site-radius-card); white-space: normal;
+  background: rgba(255, 255, 255, .96); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  box-shadow: inset 0 0 0 .5px rgba(10, 26, 18, .08), 0 10px 28px rgba(20, 51, 89, .2);
+}
+.menu[hidden] { display: none; }
+/* keeps the hover alive across the gap between the trigger and the menu */
+.menu::before { content: ''; position: absolute; left: 0; right: 0; top: -18px; height: 18px; }
+
+.row { display: grid; gap: 2px; padding: 10px 12px; border-radius: 6px; text-decoration: none; }
+.row:hover, .row:focus-visible { background: var(--site-tile-hover); outline: none; text-decoration: none; }
+.rowTitle { font: 500 14px/20px var(--site-font); color: var(--site-ink); }
+.rowText { font: 400 12.5px/17px var(--site-font); color: var(--site-ink-muted); }
+
+:global(:root[data-theme='dark']) .menu {
+  background: rgba(16, 38, 26, .94); box-shadow: inset 0 0 0 .5px rgba(150, 200, 145, .34), 0 10px 28px rgba(0, 0, 0, .34);
+}
+:global(:root[data-theme='dark']) .row:is(:hover, :focus-visible) { background: rgba(255, 255, 255, .06); }
+
+@media (prefers-reduced-motion: reduce) { .chevron { transition: none; } }

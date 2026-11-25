@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [security, wallet-architecture, P2P, key-management]
 description: How Antseed separates the signing key from real funds — the hot wallet never touches money, and the funding wallet never touches the node.
 keywords: [wallet security, signing identity, funding wallet, EIP-712, session keys, P2P payments, key management, hot wallet]
-image: /og-image.jpg
 date: 2026-03-27
 ---
 

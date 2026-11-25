@@ -1,0 +1,83 @@
+/* dark in both themes, like a real terminal */
+.window {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--site-surface-dark);
+  color: #e6ebe7;
+  box-shadow: 0 0 0 .5px rgba(10, 26, 18, .3), 0 18px 40px rgba(20, 40, 30, .22);
+}
+:global(:root[data-theme='dark']) .window { box-shadow: 0 0 0 .5px rgba(150, 200, 145, .22), 0 18px 40px rgba(0, 0, 0, .35); }
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: .5px solid rgba(255, 255, 255, .08);
+  font: 400 12px/16px var(--site-font-mono);
+  color: #8e9a93;
+}
+.lights { display: flex; gap: 6px; }
+.lights i { width: 10px; height: 10px; border-radius: 50%; background: #4a524e; }
+.status { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: #c8f53c; box-shadow: 0 0 0 3px rgba(200, 245, 60, .18); }
+.tagline { margin-left: auto; letter-spacing: .04em; white-space: nowrap; }
+
+.body { margin: 0; padding: 20px 20px 24px; overflow-x: auto; border-radius: 0; background: none; color: inherit; }
+.body:focus-visible { outline: 2px solid #c8f53c; outline-offset: -2px; }
+.code { display: block; padding: 0; border: 0; background: none; font: 400 13px/22px var(--site-font-mono); color: inherit; white-space: pre; }
+
+.line { display: block; }
+.gap { margin-top: 14px; }
+.comment { color: #7d8a82; }
+.prompt { color: #c8f53c; }
+.command { color: #f2f5f2; font-weight: 500; }
+.sub { color: #a9d68c; }
+.flag { color: #e6cf86; }
+.value { color: #f1ad84; }
+.string { color: #b9e28f; }
+.plain { color: #e6ebe7; }
+
+/* typed: each line opens one character at a time, after the line before it */
+.typed .line {
+  width: calc(var(--n) * 1ch);
+  max-width: none;
+  overflow: hidden;
+  transition: width calc(var(--n) * 18ms) steps(var(--n)) var(--delay);
+}
+.typed.pending .line { width: 0; transition: none; }
+
+.cursor {
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  margin-top: 6px;
+  vertical-align: -3px;
+  background: #c8f53c;
+  animation: blink 1.1s steps(1) infinite paused;
+}
+.typed .cursor { transition: visibility 0s var(--done); }
+.typed.pending .cursor { visibility: hidden; transition: none; }
+.live .cursor { animation-play-state: running; }
+@keyframes blink { 50% { opacity: 0; } }
+
+@media (max-width: 760px) {
+  .bar { gap: 12px; padding: 10px 14px; }
+  .tagline { display: none; }
+  .body { padding: 16px 16px 20px; }
+  .code { font-size: 12px; line-height: 20px; }
+}
+/* on a phone the lines wrap instead of scrolling, so they are shown whole rather than typed */
+@media (max-width: 560px) {
+  .code { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .typed .line, .typed.pending .line { width: auto; transition: none; }
+  .typed .cursor, .typed.pending .cursor { visibility: visible; transition: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typed .line, .typed .cursor { transition: none; }
+  .cursor { animation: none; }
+}

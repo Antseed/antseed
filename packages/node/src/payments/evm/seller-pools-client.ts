@@ -283,17 +283,24 @@ export function positionState(position: SellerPoolPosition, currentEpoch: number
  * Off-chain mirror of the pool's early-exit slash curve, for previews before
  * a position is withdrawable (the on-chain getter reverts while a change is
  * pending). Whole-epoch integer arithmetic matches the contract.
+ *
+ * The pool divides by the position's normal lock window, which starts at its
+ * private normal start; that differs from the public `stakeStartEpoch` after a
+ * split, merge, move or max-lock disable. Pass `normalStartEpoch` when it is
+ * known (0, as the pool keeps it while max locked, gives 0). The close epoch
+ * still never precedes the public `stakeStartEpoch`.
  */
 export function projectedEarlyExitSlashBps(
-  position: SellerPoolPosition,
+  position: Pick<SellerPoolPosition, 'stakeStartEpoch' | 'stakeEndEpoch'>,
   epoch: number,
   config: Pick<SellerPoolConfig, 'maxSlashBps' | 'minEarlyExitSlashBps'>,
   maxLocked = false,
+  normalStartEpoch?: number,
 ): number {
   if (maxLocked) return config.maxSlashBps;
   const closeEpoch = Math.max(epoch, position.stakeStartEpoch);
-  if (closeEpoch >= position.stakeEndEpoch) return 0;
-  const total = position.stakeEndEpoch - position.stakeStartEpoch;
+  if (closeEpoch >= position.stakeEndEpoch || normalStartEpoch === 0) return 0;
+  const total = position.stakeEndEpoch - (normalStartEpoch ?? position.stakeStartEpoch);
   if (total <= 0) return 0;
   const remaining = position.stakeEndEpoch - closeEpoch;
   const linear = Math.floor(config.maxSlashBps * remaining / total);

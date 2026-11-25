@@ -1,0 +1,8 @@
+/* inline-block so the reveal's transform applies */
+.link { position: relative; display: inline-block; color: inherit; }
+.link:hover { color: inherit; text-decoration: none; }
+.chevron { display: inline-block; transition: transform .2s; }
+.link:is(:hover, :focus-visible) .chevron { transform: translateX(3px); }
+@media (prefers-reduced-motion: reduce) { .chevron { transition: none; } }
+/* a touch screen: a 44 tall touch area */
+@media (max-width: 1079px) { .link::after { content: ''; position: absolute; inset: -10px 0; } }

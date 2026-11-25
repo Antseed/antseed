@@ -101,3 +101,21 @@ test('cached days older than the longest series are dropped', async () => {
   assert.equal(cached.size, 30)
   assert.ok([...cached.values()].every(({ entry }) => entry.day > today), 'only days still inside a 30-day series stay')
 })
+
+test('revenue is the receipts\' unrounded value, not their one-cent floors, and failed requests earn nothing', async () => {
+  const dir = tempDir()
+  const today = 20_000 * DAY
+  // Each request is worth $0.0004 (2,500 tokens at 0.016 cents per 1K), yet each receipt is floored at 1 cent.
+  const cheap = { sessionId: 's1', tokens: 2_500, costCents: 1, unitPriceCentsPerThousandTokens: 0.016 }
+  writeSellerFixture(dir, {
+    state: { updatedAt: today },
+    requests: [
+      ...Array.from({ length: 10 }, (_, index) => ({ ...cheap, at: today + 1_000 + index })),
+      // A request that failed before reaching the model still gets a receipt; no buyer paid for it.
+      ...Array.from({ length: 5 }, (_, index) => ({ ...cheap, at: today + 2_000 + index, statusCode: 400 })),
+    ],
+  })
+  const [day] = (await new SellerUsageReader(60_000).usage(dir, 1, today + 5_000)).days
+  assert.equal(day!.requests, 15)
+  assert.ok(Math.abs(day!.revenueUsd - 0.004) < 1e-12, `revenue ${day!.revenueUsd}: expected $0.004, not the $0.15 the floored receipts add up to`)
+})

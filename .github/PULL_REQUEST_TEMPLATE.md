@@ -1,6 +1,7 @@
 <!--
 Guide: https://github.com/Antseed/antseed/blob/main/CONTRIBUTING.md
 Title style: `fix(buyer-core): ...`, `feat(cli): ...`, `docs: ...`
+From a fork: leave "Allow edits by maintainers" ticked, or the PR guard check fails.
 Security problem or funds at risk? Do not open a PR. Report privately: https://github.com/Antseed/antseed/security/advisories/new
 -->
 

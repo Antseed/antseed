@@ -5,13 +5,15 @@ Relays video generation requests to fal.ai model endpoints through fal's [queue 
 ## Configuration
 
 ```bash
-antseed plugin add @antseed/provider-fal-video
 export FAL_VIDEO_API_KEY=<seller-fal-key>
+antseed config seller add-provider video --plugin fal-video
 ```
+
+`add-provider` installs the plugin.
 
 - `FAL_VIDEO_API_KEY`: fal API key, sent as `Authorization: Key <key>`
 - `FAL_VIDEO_BASE_URL`: optional, defaults to `https://queue.fal.run`
-- `ANTSEED_ALLOWED_SERVICES`: fal endpoint IDs such as `fal-ai/kling-video/v2.1/standard/text-to-video` (64 characters at most)
+- `ANTSEED_ALLOWED_SERVICES`: fal endpoint IDs such as `fal-ai/kling-video/v2.1/standard/text-to-video`, or names that `upstreamModel` maps to one (64 characters at most)
 - `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON`: `fal-video` pricing using `video_generations` or `video_seconds`
 - `ANTSEED_SERVICE_CAPABILITIES_JSON`: optional video options to advertise
 - `FAL_VIDEO_MIN_BALANCE_USD`: optional, default `0`. Models stop being advertised while the fal balance is at or below it (needs the permission below)
@@ -27,7 +29,7 @@ To stop advertising when the fal account runs out of credits, give `FAL_VIDEO_AP
 
 A key fal rejects as invalid (`401`) stops the seller advertising its models.
 
-The service ID is the fal endpoint ID; aliases are not supported.
+The service ID is the fal endpoint ID, unless `upstreamModel` in the seller config (`ANTSEED_SERVICE_ALIAS_MAP_JSON`) maps it to one. Buyers then call the service by its own name, and the seller sends it to that endpoint.
 
 ## Requests
 

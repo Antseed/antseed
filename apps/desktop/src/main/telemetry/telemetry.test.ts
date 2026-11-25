@@ -610,8 +610,8 @@ test('user actions identify the first meaningful action per launch', async (t) =
   const captured: Captured = { payloads: [] };
   const service = await createTelemetryService(baseOptions(dir, captured));
   await service.recordAppStarted(0);
-  await service.recordUserAction({ action: 'view_opened', surface: 'model' }, 10_000);
-  await service.recordUserAction({ action: 'model_picker_open', surface: 'model' }, 40_000);
+  await service.recordUserAction({ action: 'view_opened', surface: 'chat' }, 10_000);
+  await service.recordUserAction({ action: 'model_picker_open', surface: 'chat' }, 40_000);
 
   const actions = captured.payloads.filter((payload) => payload.event === 'user_action');
   assert.equal(actions.length, 2);
@@ -628,7 +628,7 @@ test('app connect actions carry the app name and are not coalesced across apps',
   await service.recordAppStarted(0);
   await service.recordUserAction({ action: 'app_connect', surface: 'apps', app: 'claude-desktop' }, 1_000);
   await service.recordUserAction({ action: 'app_connect', surface: 'apps', app: 'cursor' as never }, 2_000);
-  await service.recordUserAction({ action: 'app_disconnect', surface: 'apps', app: 'telegram' }, 3_000);
+  await service.recordUserAction({ action: 'app_disconnect', surface: 'apps', app: 'claude-code' }, 3_000);
   await service.recordUserAction({ action: 'chat_send', surface: 'chat' }, 4_000);
 
   let drainAttempts = 0;
@@ -642,7 +642,7 @@ test('app connect actions carry the app name and are not coalesced across apps',
   assert.equal(actions.length, 4);
   assert.equal(actions[0]?.properties['app'], 'claude-desktop');
   assert.equal(actions[1]?.properties['app'], 'cursor');
-  assert.equal(actions[2]?.properties['app'], 'telegram');
+  assert.equal(actions[2]?.properties['app'], 'claude-code');
   assert.equal('app' in (actions[3]?.properties ?? {}), false);
 });
 
@@ -1692,7 +1692,7 @@ test('new bucket helpers classify correctly', () => {
 });
 
 // Real error strings seen from the buyer proxy and agent SDKs.
-const OUT_OF_CREDITS = '402 You are out of Antseed credits for this request. Add funds in the Antseed app, or run "antseed buyer deposit <amount>" from the CLI, then retry.';
+const OUT_OF_CREDITS = '402 You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run "antseed buyer deposit <amount>" from the CLI, then retry.';
 const INSUFFICIENT_DEPOSITS = '402 {"error":"payment_required","code":"insufficient_deposits","message":"Deposit more USDC"}';
 const PINNED_UNREACHABLE = '502 Pinned peer 1d90f467689d... is not reachable right now. It may be offline, not announcing, or temporarily unreachable.';
 const P2P_FAILED = '502 P2P request failed: Connection to 1d90f467 failed';

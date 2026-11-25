@@ -74,8 +74,6 @@ export interface ChainConfig {
   statsContractAddress?: string;
   /** Deployment block of AntseedStats for cold-start indexer backfill. */
   statsDeployBlock?: number;
-  /** Public URL of the @antseed/network-stats aggregator that indexes the stats contract for this chain. */
-  networkStatsUrl?: string;
   /** Public REST API of the chain explorer (Antscan). Serves per-seller on-chain stats at /api/sellers. */
   explorerApiUrl?: string;
   /**
@@ -122,7 +120,6 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
       'https://base-public.nodies.app',
       'https://mainnet.base.org',
     ],
-    networkStatsUrl: 'https://network.antseed.com',
     explorerApiUrl: 'https://antscan.co',
     // Uniswap v3: the deep USDC/WETH 0.05% pool.
     usdcEthSwap: {

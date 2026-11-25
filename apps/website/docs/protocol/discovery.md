@@ -49,6 +49,12 @@ reintroducing per-model announcements.
 | `dht1.antseed.com` | 6881 |
 | `dht2.antseed.com` | 6881 |
 
+A node also saves up to 16 of the DHT nodes it knows to `dht-nodes.json` in its data directory, after lookups and announces and when it stops.
+
+A node that knows no DHT node after starting, because no bootstrap node answered, rejoins through those saved nodes, so a node that has run before can still join while the bootstrap nodes are unreachable. If none of them answers either, for example on its first run while the bootstrap nodes are down, it joins through the public BitTorrent DHT routers (`router.bittorrent.com`, `router.utorrent.com` and `dht.transmissionbt.com`). It uses neither while a bootstrap node answers: a routing table filled from them can find fewer Antseed peers.
+
+With `network.noOfficialBootstrap`, a node uses only `network.bootstrapNodes`, with no saved nodes and no public routers.
+
 ## DHT configuration
 
 | Parameter | Value |
@@ -144,11 +150,11 @@ Metadata v11 added `serviceUnitBillingModels`; v12 adds `serviceCapabilities` an
 }
 ```
 
-Capability fields are optional; absence means unknown. `inputs` and `outputs` declare accepted and produced modalities (`text`, `image`, `audio`, `video`, `pdf`); `supportedParameters` lists extra request-body parameter names the service accepts (lowercase snake_case, announced in code-unit sorted order). Unit-billing components may match `model`, `size`, `quality`, `resolution`, (metadata v16+) a video create's `aspect_ratio` and `audio`, and (metadata v17+) `reference_video`, whether the create sends reference videos. Discovery only includes capability and billing entries for services currently advertised by the provider.
+Capability fields are optional; absence means unknown. `inputs` and `outputs` declare accepted and produced modalities (`text`, `image`, `audio`, `video`, `pdf`); `supportedParameters` lists extra request-body parameter names the service accepts (lowercase snake_case, announced in code-unit sorted order). Unit-billing components may match `model`, `size`, `quality`, `resolution`, (metadata v16+) a video create's `aspect_ratio` and `audio`, (metadata v17+) `reference_video`, whether the create sends reference videos, and (metadata v18+) `input_images`, how many image files an image edit sends. Discovery only includes capability and billing entries for services currently advertised by the provider.
 
 Capabilities are hints, not enforced contracts. The buyer proxy performs one advisory check: when a peer announces `supportedParameters` for the routed service and the request body carries parameters outside that list, the proxy logs a warning and forwards the request unchanged. The upstream provider remains the authority on which parameters it accepts.
 
-Buyers accept metadata versions from 10 up to the newest version their release understands, and reject newer ones. Version 13 added `serviceHealth`, the seller's own health check result for each service, version 14 added `servicePerformance`, how each service served the seller's buyers in the last hour, and version 15 adds speech services (the `openai-audio-speech` protocol, the `input_characters` billing unit and a `speech` capability block; see [Speech services](/docs/provide/media#speech-services)), and version 16 adds video prices by aspect ratio and audio (`aspect_ratio` and `audio` match keys, and up to 64 components per billing model instead of 8; see [Prices by aspect ratio and audio](/docs/provide/media#prices-by-aspect-ratio-and-audio)), and version 17 adds the `reference_video` match key (see [Reference videos](/docs/provide/media#reference-videos)). The newest version is `METADATA_VERSION` in [`packages/protocol/src/peer-metadata.ts`](https://github.com/Antseed/antseed/blob/main/packages/protocol/src/peer-metadata.ts); it is 17 in current releases.
+Buyers accept metadata versions from 10 up to the newest version their release understands, and reject newer ones. Version 13 added `serviceHealth`, the seller's own health check result for each service, version 14 added `servicePerformance`, how each service served the seller's buyers in the last hour, and version 15 adds speech services (the `openai-audio-speech` protocol, the `input_characters` billing unit and a `speech` capability block; see [Speech services](/docs/provide/media#speech-services)), and version 16 adds video prices by aspect ratio and audio (`aspect_ratio` and `audio` match keys, and up to 64 components per billing model instead of 8; see [Prices by aspect ratio and audio](/docs/provide/media#prices-by-aspect-ratio-and-audio)), version 17 adds the `reference_video` match key (see [Reference videos](/docs/provide/media#reference-videos)), and version 18 adds the `input_images` match key (see [Edit input images](/docs/provide/media#edit-input-images)). The newest version is `METADATA_VERSION` in [`packages/protocol/src/peer-metadata.ts`](https://github.com/Antseed/antseed/blob/main/packages/protocol/src/peer-metadata.ts); it is 18 in current releases.
 
 ```json
 "serviceHealth": {

@@ -36,6 +36,7 @@ The buyer and the gateway need the passphrase every time they start. Without it 
 - **`ANTSEED_PASSPHRASE`.** The process reads it once at start and removes it from its own environment, so nothing it runs inherits it. `antseed gateway start` hands it to the buyer it starts over stdin, never through the buyer's environment.
 - **`ANTSEED_PASSPHRASE_FILE`.** The path of a file whose first line is the passphrase. You choose where it lives and who can read it, for example a tmpfs or a mount your secrets manager provides.
 - **The server installer.** `curl … | sudo ANTSEED_PASSPHRASE='…' bash -s -- …` writes `/etc/antseed/wallet.env` (owned by root, mode 0600) containing `ANTSEED_PASSPHRASE='…'`. Both services load it, and so does the `antseed` command when run as root (`sudo antseed …`). The installer rejects a passphrase containing a single quote or a line break.
+- **The background gateway service.** `antseed gateway service install` can't ask for the passphrase, so set `ANTSEED_PASSPHRASE_FILE` when you install it. Only the file's path goes into the service file, never the passphrase.
 - **The terminal.** When neither variable is set and an encrypted key is found, `antseed buyer start` and `antseed gateway start` ask for the passphrase without echoing it, up to three times. `antseed buyer identity protect` asks twice when no key is encrypted yet. The answer is never stored. Nothing is asked when there is no terminal (a service, a pipe, cloud-init): the command fails as it would without the passphrase.
 
 A configured passphrase that doesn't open the keys already encrypted in the data dir is refused at start, so all of a data dir's keys stay under one passphrase.
@@ -106,5 +107,5 @@ It does not protect against root on the host, or anyone who can read `wallet.env
 
 ## The desktop app
 
-The desktop app (AI VPN) protects its default wallet differently: it encrypts the key with Electron's safe storage, whose key is held by the operating system's keychain, and stores it as `identity.enc`. `ANTSEED_PASSPHRASE` doesn't apply to it, and the CLI can't read it: a CLI command that finds `identity.enc` in its data dir refuses to create a second wallet there. To use that wallet from the CLI or move it to a gateway server, export its private key from the desktop app and save it as `identity.key`, or give the CLI a different `--data-dir`. See [Desktop app](/docs/desktop).
+Antseed Desktop protects its default wallet differently: it encrypts the key with Electron's safe storage, whose key is held by the operating system's keychain, and stores it as `identity.enc`. `ANTSEED_PASSPHRASE` doesn't apply to it, and the CLI can't read it: a CLI command that finds `identity.enc` in its data dir refuses to create a second wallet there. To use that wallet from the CLI or move it to a gateway server, export its private key from the desktop app and save it as `identity.key`, or give the CLI a different `--data-dir`. See [Desktop app](/docs/desktop).
 

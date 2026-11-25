@@ -1,45 +1,29 @@
 import assert from 'node:assert/strict';
-import { beforeEach, test } from 'vitest';
+import { test } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { createInitialUiState } from '../../../core/state';
-import { initStore } from '../../../core/store';
-import { normalizeDiscoverRow } from '../../../modules/catalog/discover-rows';
-import { RoutedModelIndicator, routedModelLabel } from './RoutedModelIndicator';
+import { RoutedModelIndicator, replyModelLabel } from './RoutedModelIndicator';
 
-const router = 'd'.repeat(40) + '@free-model-router';
-const peerId = '1d90f467689d499dc435e5744b4613c3203eb0aa';
-
-beforeEach(() => initStore(createInitialUiState()));
-
-test('a model the user chose names only the seller that served it', () => {
-  const direct = { role: 'assistant', content: 'Reply', meta: { service: 'glm-5.3-flash', peerId, peerName: 'Open Forge' } };
-  assert.equal(routedModelLabel(direct), 'Open Forge');
-  assert.match(renderToStaticMarkup(<RoutedModelIndicator message={direct} />), /Routed to Open Forge</);
+test('an assistant reply names the model id it came from', () => {
+  const reply = { role: 'assistant', content: 'Reply', meta: { service: 'glm-5.3-flash' } };
+  assert.equal(replyModelLabel(reply), 'glm-5.3-flash');
+  assert.match(renderToStaticMarkup(<RoutedModelIndicator message={reply} />), />glm-5.3-flash</);
 });
 
-test('a model a router chose names the model and the seller', () => {
-  const routed = { role: 'assistant', content: 'Reply', meta: { service: 'glm-5.3-flash', peerId, peerName: 'Open Forge', router } };
-  assert.equal(routedModelLabel(routed), 'GLM 5.3 Flash · Open Forge');
-  assert.equal(routedModelLabel({ ...routed, meta: { service: 'gpt-6-astra', router } }), 'GPT 6 Astra');
+test('nothing is shown for user messages or replies without a model', () => {
+  assert.equal(replyModelLabel({ role: 'user', content: 'Hi', meta: { service: 'glm-5.3-flash' } }), null);
+  assert.equal(replyModelLabel({ role: 'assistant', content: 'Reply' }), null);
+  assert.equal(renderToStaticMarkup(<RoutedModelIndicator message={{ role: 'assistant', content: '', meta: { service: ' ' } }} />), '');
 });
 
-test('replies saved without a seller name use the discovered name, then a short peer id', () => {
-  const saved = { role: 'assistant', content: 'Reply', meta: { service: 'glm-5.3-flash', peerId } };
-  assert.equal(routedModelLabel(saved, () => 'Open Forge'), 'Open Forge');
-  assert.equal(routedModelLabel(saved), '1d90f467...b0aa');
-  const state = createInitialUiState();
-  const row = normalizeDiscoverRow({ peerId, serviceId: 'glm-5.3-flash', provider: 'openai', protocol: 'openai-chat-completions',
-    inputUsdPerMillion: 0, outputUsdPerMillion: 0, peerLabel: 'Open Forge (1d90f467)' });
-  assert.ok(row);
-  state.vprRoutableRows = [row];
-  initStore(state);
-  assert.match(renderToStaticMarkup(<RoutedModelIndicator message={saved} />), /Routed to Open Forge</);
+test('names the seller next to the model, even for a pinned model', () => {
+  const reply = { role: 'assistant', content: [], meta: { service: 'cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34@glm-5.3-flash', peerId: 'cd34ef565fa2', peerName: 'Example Seller' } };
+  assert.equal(replyModelLabel(reply), 'glm-5.3-flash · Example Seller');
+  assert.equal(replyModelLabel({ ...reply, meta: { service: 'glm-5.3-flash', peerId: 'cd34ef565fa2' } }), 'glm-5.3-flash · cd34ef56');
 });
 
-test('nothing is invented for router aliases, unknown sellers or user messages', () => {
-  for (const service of [undefined, '', 'antseed', 'peer@antseed']) {
-    assert.equal(routedModelLabel({ role: 'assistant', content: '', meta: { service, router } }), null);
-  }
-  assert.equal(routedModelLabel({ role: 'assistant', content: '', meta: { service: 'gpt-6-astra' } }), null);
-  assert.equal(routedModelLabel({ role: 'user', content: '', meta: { service: 'gpt-6-astra', peerId, router } }), null);
+test('a routed reply names the model the router picked between the router and the seller', () => {
+  const reply = { role: 'assistant', content: [], meta: { service: 'cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34@example-router', servedModel: 'glm-5.3-flash', peerName: 'Example Seller' } };
+  assert.equal(replyModelLabel(reply), 'example-router → glm-5.3-flash · Example Seller');
+  // A seller that serves the model asked for: nothing to add.
+  assert.equal(replyModelLabel({ ...reply, meta: { service: 'glm-5.3-flash', servedModel: 'glm-5.3-flash', peerName: 'Example Seller' } }), 'glm-5.3-flash · Example Seller');
 });

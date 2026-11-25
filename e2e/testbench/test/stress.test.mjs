@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { sanitizeConfig, DEFAULT_SOURCE_CONFIG } from '../lib/config.mjs';
-import { startMock, summarizeDeliveries, usageCost } from '../lib/mock.mjs';
+import { MOCK_USAGE, NO_USAGE_MARKER, startMock, summarizeDeliveries, usageCost } from '../lib/mock.mjs';
+import { createPrng } from '../lib/prng.mjs';
 import { createTestbenchApi, parseSse } from '../lib/tb.mjs';
 import { classifyScenarioError } from '../lib/report.mjs';
 import { bootstrapCounts, BUYER_PATTERNS, classifyError, clientSummary, costLinesCheck, countPatterns, CRASH_PATTERN, externalHosts, GATES, gateProblems, latencyPercentiles, loadTimings, mergeDeliveries, peerLogs, runAll, runLoad, SELLER_PATTERNS, stressRun, stressTopology } from '../lib/stress.mjs';
@@ -89,6 +90,19 @@ describe('mock delivery ledger', () => {
     }
   });
 
+  it('prices responses after setPricing at the new price, and earlier ones at the old', async () => {
+    const mock = await startMock({ models: ['m'], pricing: { m: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } });
+    try {
+      await post(`${mock.url}/v1/chat/completions`, { model: 'm', messages: [{ role: 'user', content: '[req:free] hi' }] });
+      mock.setPricing({ m: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } });
+      await post(`${mock.url}/v1/chat/completions`, { model: 'm', messages: [{ role: 'user', content: '[req:paid] hi' }] });
+      const ledger = mock.deliveries();
+      assert.deepEqual([ledger.byTag.free.cost, ledger.byTag.paid.cost], ['0', String(10 * 3 + 8 * 15)]);
+    } finally {
+      await mock.stop();
+    }
+  });
+
   it('load usage sizes prompt and completion like real traffic', async () => {
     const mock = await startMock({ models: ['m'], usage: 'load', latencyRangeMs: [0, 0], outTokens: [50, 50], pricing: { m: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } });
     try {
@@ -97,9 +111,26 @@ describe('mock delivery ledger', () => {
       const prompt = Math.ceil(JSON.stringify(messages).length / 4);
       assert.deepEqual(body.usage, { prompt_tokens: prompt, completion_tokens: 50, total_tokens: prompt + 50 });
       assert.equal(mock.deliveries().byTag.big.cost, String(prompt + 100));
-      const streamed = parseSse(await (await post(`${mock.url}/v1/chat/completions`, { model: 'm', stream: true, messages: [{ role: 'user', content: '[req:s] y' }] })).text());
+      const streamed = parseSse(await (await post(`${mock.url}/v1/chat/completions`, { model: 'm', stream: true, stream_options: { include_usage: true }, messages: [{ role: 'user', content: '[req:s] y' }] })).text());
       assert.equal(streamed.done, true);
       assert.equal(streamed.usage.completion_tokens, 50);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it('reports a stream\'s usage only when asked, and never for a prompt marked as coming from a silent upstream', async () => {
+    const mock = await startMock({ models: ['m'] });
+    const stream = async (extra, content = 'hi') => parseSse(await (await post(`${mock.url}/v1/chat/completions`, { model: 'm', stream: true, messages: [{ role: 'user', content }], ...extra })).text());
+    try {
+      assert.equal((await stream({})).usage, null);
+      assert.equal((await stream({ stream_options: { include_usage: false } })).usage, null);
+      assert.deepEqual((await stream({ stream_options: { include_usage: true } })).usage, MOCK_USAGE);
+      assert.equal((await stream({ stream_options: { include_usage: true } }, `${NO_USAGE_MARKER} hi`)).usage, null);
+      assert.deepEqual(mock.state.requests.map((entry) => entry.includeUsage), [null, false, true, true]);
+      const whole = await (await post(`${mock.url}/v1/chat/completions`, { model: 'm', messages: [{ role: 'user', content: `${NO_USAGE_MARKER} hi` }] })).json();
+      assert.match(whole.choices[0].message.content, /Hello from/);
+      assert.equal('usage' in whole, false);
     } finally {
       await mock.stop();
     }
@@ -229,6 +260,21 @@ describe('stress load and gates', () => {
     }
   });
 
+  it('streams a share of its images and checks each stream carries its final images', async () => {
+    const mock = await startMock({ models: ['m', 'img'], usage: 'load', latencyRangeMs: [0, 0], pricing: { m: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, img: { imageUsd: 0.04 } } });
+    try {
+      const run = await runLoad({ proxyUrl: mock.url, model: 'm', imageModel: 'img', random: createPrng(5), load: { concurrency: 2, requests: 12, streamRatio: 0, imageRatio: 1, imageStreamRatio: 0.5, minInTokens: 1, maxInTokens: 2 } });
+      const streamed = run.results.filter((record) => record.stream);
+      assert.ok(streamed.length > 0 && streamed.length < run.results.length, `streamed ${streamed.length} of ${run.results.length}`);
+      for (const record of run.results) assert.equal(record.error, undefined, JSON.stringify(record));
+      for (const record of streamed) assert.ok(record.partials >= 0 && record.partials <= 3);
+      const ledger = mock.deliveries().byTag;
+      for (const record of streamed) assert.equal(ledger[record.tag]?.stream, true, record.tag);
+    } finally {
+      await mock.stop();
+    }
+  });
+
   it('splits failures inside and outside a restart window', () => {
     const results = [
       { start: 1000, ms: 100, error: 'a' }, // ends before the window
@@ -287,6 +333,33 @@ describe('stress load and gates', () => {
       assert.equal(run.results.length, 12);
       assert.deepEqual(run.results.map((record) => record.i).sort((a, b) => a - b), Array.from({ length: 12 }, (_, i) => i), 'each planned index once, none past the end');
       assert.equal(run.client.ok, 12);
+    } finally {
+      await mock.stop();
+    }
+  });
+
+  it('restarts once when `when` resolves during the load, and never after it', async () => {
+    const mock = await startMock({ models: ['m'], pricing: { m: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } });
+    try {
+      let restarts = 0;
+      let trigger;
+      const when = new Promise((resolve) => { trigger = resolve; });
+      const run = await runLoad({
+        proxyUrl: mock.url, model: 'm',
+        load: { concurrency: 2, requests: 6, streamRatio: 0, minInTokens: 1, maxInTokens: 2, restart: { when, run: async () => { restarts += 1; return { trigger: 'when' }; } } },
+        onRequest: (record) => { if (record.i === 1) trigger(); },
+      });
+      assert.equal(run.results.length, 6);
+      assert.equal(restarts, 1);
+      assert.equal(run.restart?.trigger, 'when');
+
+      let late;
+      const lateWhen = new Promise((resolve) => { late = resolve; });
+      const quiet = await runLoad({ proxyUrl: mock.url, model: 'm', load: { concurrency: 1, requests: 2, streamRatio: 0, minInTokens: 1, maxInTokens: 2, restart: { when: lateWhen, run: async () => { restarts += 1; } } } });
+      late();
+      await new Promise((r) => setImmediate(r));
+      assert.equal(quiet.restart, null);
+      assert.equal(restarts, 1, 'a trigger after the load does not restart');
     } finally {
       await mock.stop();
     }

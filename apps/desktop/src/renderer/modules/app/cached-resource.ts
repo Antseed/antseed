@@ -19,6 +19,8 @@ export type CachedResource<T> = {
   subscribe: (listener: Listener) => () => void;
   activate: () => () => void;
   refresh: () => Promise<T | null>;
+  /** Reads afresh even if a read is under way, whose answer is then dropped. */
+  reload: () => Promise<T | null>;
   setData: (data: T) => void;
 };
 
@@ -30,6 +32,7 @@ export function createCachedResource<T>({ load, pollMs }: CachedResourceOptions<
     error: null,
   };
   let inFlight: Promise<T | null> | null = null;
+  let latestRead = 0;
   let activeCount = 0;
   let timer: ReturnType<typeof setInterval> | null = null;
   const listeners = new Set<Listener>();
@@ -40,7 +43,11 @@ export function createCachedResource<T>({ load, pollMs }: CachedResourceOptions<
   }
 
   async function refresh(): Promise<T | null> {
-    if (inFlight) return inFlight;
+    return inFlight ?? read();
+  }
+
+  function read(): Promise<T | null> {
+    const thisRead = ++latestRead;
     publish({
       ...snapshot,
       loading: snapshot.data === null,
@@ -49,20 +56,22 @@ export function createCachedResource<T>({ load, pollMs }: CachedResourceOptions<
     });
     inFlight = load()
       .then((data) => {
-        publish({ data, loading: false, refreshing: false, error: null });
+        if (thisRead === latestRead) publish({ data, loading: false, refreshing: false, error: null });
         return data;
       })
       .catch((error: unknown) => {
-        publish({
-          ...snapshot,
-          loading: false,
-          refreshing: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        if (thisRead === latestRead) {
+          publish({
+            ...snapshot,
+            loading: false,
+            refreshing: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         return null;
       })
       .finally(() => {
-        inFlight = null;
+        if (thisRead === latestRead) inFlight = null;
       });
     return inFlight;
   }
@@ -90,6 +99,7 @@ export function createCachedResource<T>({ load, pollMs }: CachedResourceOptions<
     },
     activate,
     refresh,
+    reload: read,
     setData(data) {
       publish({ data, loading: false, refreshing: false, error: null });
     },

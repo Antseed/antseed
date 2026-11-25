@@ -256,3 +256,102 @@ test('headless buyer checks do not pause for browser connectivity state', async 
     onlineManager.setOnline(wasOnline);
   }
 });
+
+test('a failed TEE attestation is reported until it is due again; a pass or an unrun check is not', async () => {
+  let now = 100;
+  const service = new TeeVerification(strict, () => now);
+  assert.equal(service.teeFailure(peer), null, 'never checked');
+  const unapproved = 'not an approved TEE seller build';
+  await service.verify(peer, strict, async () => ({ ok: false, verified: false, sellerNodeVerified: false, reason: unapproved }));
+  assert.equal(service.teeFailure(peer), unapproved);
+  now += TEE_MAX_AGE_MS;
+  assert.equal(service.teeFailure(peer), null, 'due for another check');
+
+  const transient = new TeeVerification(strict, () => now);
+  await transient.verify(peer, strict, async () => ({ ok: false, verified: false, transient: true, reason: 'timed out' }));
+  assert.equal(transient.teeFailure(peer), null, 'could not be run');
+
+  const passed = new TeeVerification(strict, () => now);
+  await passed.verify(peer, strict, async () => pass);
+  assert.equal(passed.teeFailure(peer), null);
+});
+
+test('an older or expired TEE pass never hides a newer failure from another identity\'s check', async () => {
+  let now = 100;
+  const unapproved = 'not an approved TEE seller build';
+  const fail = async (): Promise<VerifyOutcome> => ({ ok: false, verified: false, sellerNodeVerified: false, reason: unapproved });
+
+  const expired = new TeeVerification(strict, () => now);
+  await expired.verifyForDisplay(peer, async () => pass);
+  now += TEE_MAX_AGE_MS + 1;
+  await expired.verify(peer, strict, fail, false, 'team-a');
+  assert.equal(expired.teeFailure(peer), unapproved, 'the pass is past its date');
+
+  now = 100;
+  const newer = new TeeVerification(strict, () => now);
+  await newer.verifyForDisplay(peer, async () => pass);
+  now += 1_000;
+  await newer.verify(peer, strict, fail, false, 'team-a');
+  assert.equal(newer.teeFailure(peer), unapproved, 'the newest check wins');
+
+  now += 1_000;
+  await newer.verify(peer, strict, async () => pass, false, 'team-b');
+  assert.equal(newer.teeFailure(peer), null, 'a newer pass wins in turn');
+  expired.close();
+  newer.close();
+});
+
+test('a newer failed attestation ends the TEE scope an older, still-dated pass gave', async () => {
+  let now = 100;
+  const fail = async (): Promise<VerifyOutcome> => ({ ok: false, verified: false, sellerNodeVerified: false, reason: 'not an approved TEE seller build' });
+  const service = new TeeVerification(strict, () => now);
+  await service.verifyForDisplay(peer, async () => pass);
+  assert.equal(service.teeProvenScope(peer), 'seller-node');
+  now += 1_000;
+  await service.verify(peer, strict, fail, false, 'team-a');
+  assert.equal(service.teeProvenScope(peer), null, 'the newest check failed');
+  now += 1_000;
+  await service.verify(peer, strict, async () => pass, false, 'team-b');
+  assert.equal(service.teeProvenScope(peer), 'seller-node', 'a newer pass restores it');
+  service.close();
+});
+
+test('an expired newer failure never brings back an older pass; only a fresh check does', async () => {
+  let now = 100;
+  const fail = async (): Promise<VerifyOutcome> => ({ ok: false, verified: false, sellerNodeVerified: false, reason: 'not an approved TEE seller build' });
+  const service = new TeeVerification(strict, () => now);
+  await service.verifyForDisplay(peer, async () => pass);
+  now += 1_000;
+  await service.verify(peer, strict, fail, false, 'team-a');
+  now += TEE_MAX_AGE_MS + 1;
+  assert.ok(TEE_MAX_AGE_MS + 1_001 < TEE_BADGE_MAX_AGE_MS, 'the old pass is still in its display date');
+  assert.equal(service.teeProvenScope(peer), null, 'the failure expired, but it was the newest verdict');
+  assert.equal(service.teeFailure(peer), null, 'an expired failure no longer blocks a request on its own');
+
+  // The display check doesn't reuse the overtaken pass: it runs again.
+  let runs = 0;
+  await service.verifyForDisplay(peer, async () => { runs += 1; return pass; });
+  assert.equal(runs, 1);
+  assert.equal(service.teeProvenScope(peer), 'seller-node', 'a fresh pass brings it back');
+  service.close();
+});
+
+test('a seller counts as proven TEE only once its own attestation passed, while it is in date, with how far it reaches', async () => {
+  let now = 100;
+  const service = new TeeVerification(strict, () => now);
+  assert.equal(service.teeProvenScope(peer), null, 'only advertised');
+  await service.verifyForDisplay(peer, async () => ({ ok: false, verified: false, transient: true, reason: 'verifier not prepared' }));
+  assert.equal(service.teeProvenScope(peer), null, 'the check could not run');
+  await service.verifyForDisplay(peer, async () => pass);
+  assert.equal(service.teeProvenScope(peer), 'seller-node');
+  now += TEE_BADGE_MAX_AGE_MS + 1;
+  assert.equal(service.teeProvenScope(peer), null, 'due for another check');
+
+  const failed = new TeeVerification(strict, () => now);
+  await failed.verifyForDisplay(peer, async () => ({ ok: false, verified: false, sellerNodeVerified: false, reason: 'not an approved TEE seller build' }));
+  assert.equal(failed.teeProvenScope(peer), null);
+
+  const sealed = new TeeVerification(strict, () => now);
+  await sealed.verifyForDisplay(peer, async () => ({ ...pass, claims: [{ claim: 'antseed-verifier:seller-provider-tee-genuine', ok: true }] }));
+  assert.equal(sealed.teeProvenScope(peer), 'end-to-end');
+});

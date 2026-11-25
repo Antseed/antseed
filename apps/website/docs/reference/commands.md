@@ -72,6 +72,7 @@ Serve the buyer API to many users with API keys, spend limits, routing policies 
 | `antseed gateway key topup <id> on\|off` | Allow or stop x402 top-ups of the key's wallet | |
 | `antseed gateway key rotate <id>` | Issue a new secret; the old one stops working | |
 | `antseed gateway key revoke <id>` | Revoke a key immediately | |
+| `antseed gateway key usage <ids...>` | Requests, spend and savings summed over keys, revoked ones included | `--json` |
 | `antseed gateway key policy show <id>` | Show both policy layers and the effective policy | `--preset <slug>` |
 | `antseed gateway key policy set <id>` | Set a key's routing policy | `--layer admin\|owner`, [policy flags](#routing-policy-flags) |
 | `antseed gateway key policy clear <id>` | Remove a key's policy at one layer | `--layer admin\|owner` |
@@ -159,7 +160,7 @@ Serve the buyer API to many users with API keys, spend limits, routing policies 
 | `--allow-list <list>`, `--block-list <list>` | Allow only, or block, the sellers in a peer list (repeatable) |
 | `--allow-model <model>` | Allow only these models (repeatable) |
 | `--min-trust <score>`, `--min-reputation <score>` | Minimum seller trust score or reputation, 0–100 |
-| `--max-input-price`, `--max-output-price`, `--max-cached-input-price` | Price caps in USD per million tokens |
+| `--max-input-price`, `--max-output-price`, `--max-cached-input-price` | Price caps in USD per million tokens. Without `--max-cached-input-price`, the input cap also caps cached input |
 | `--require-tee`, `--require-verified` | Only sellers advertising TEE attestation, or whose responses pass a verifier |
 | `--prefer-free` | Rank free sellers first |
 | `--sort balanced\|price\|latency\|trust` | How eligible sellers are ranked |
@@ -239,7 +240,7 @@ Offer AI services on the network. Guides: [Become a provider](/docs/provide), [P
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `antseed seller setup` | Interactive setup: configure a provider and add services | |
+| `antseed seller setup` | Interactive setup: configure a provider and add services, with input, output and cached-input prices (cached at most input) | |
 | `antseed seller start` | Start providing services | `--provider <names>`, `--input-usd-per-million`, `--output-usd-per-million`, `--reserve`, `--dht-port` (6881), `--signaling-port` (6882), `--min-settle-delta <usdc>`, `--base-rpc-url`, `--verifiers <ids>`, `--no-dashboard`, `--dashboard-port` (3120), `--skip-prereq-check` |
 | `antseed seller status` | Show node status and readiness | `--json` |
 | `antseed seller register` | Register your peer identity on-chain (ERC-8004) | `--agent-id <id>`, `--metadata <uri>` |
@@ -375,11 +376,11 @@ Run KBF audits of sellers' model claims (one of the first of many [verification 
 | Command | Purpose | Key flags |
 |---|---|---|
 | `antseed verifier models` | List the built-in audited models and where each takes its genuine answers from | `--json` |
-| `antseed verifier reference build [model]` | Build or grow the probe bank of one audited model | `--all` (every audited model without a powered bank) |
-| `antseed verifier run [model]` | Audit the sellers your buyer has discovered, for the models assigned to your auditor this epoch (or one `<model>`) | `--all`, `--auditor <address>`, `--peer <peerId>`, `--no-enroll`, `--max-enrollment-requests <n>`, `--allow-probe-reuse`, `--resume-run <runId>`, `--ignore-pre-run-checks`, `--fresh`, `--max-rounds <n>`, `--no-confirm`, `--skip-version-check` |
-| `antseed verifier watch` | Keep auditing: every interval, run your assigned models and the confirmations you're responsible for, then submit | `--interval <minutes>`, `--once`, `--auditor <address>`, `--keystore <path>`, `--rpc-url <url>`, `--no-publish-ipfs`, `--skip-version-check`, and `run`'s `--max-rounds <n>`, `--max-enrollment-requests <n>`, `--no-enroll`, `--ignore-pre-run-checks`, `--allow-probe-reuse`, `--no-confirm` |
+| `antseed verifier run [model]` | Audit the sellers your buyer has discovered, for the models assigned to your auditor this epoch (or one `<model>`) | `--all`, `--auditor <address>`, `--peer <peerId>`, `--no-enroll`, `--max-enrollment-requests <n>`, `--resume-run <runId>`, `--ignore-pre-run-checks`, `--fresh`, `--max-rounds <n>`, `--no-confirm`, `--skip-version-check` |
+| `antseed verifier watch` | Keep auditing: every interval, run your assigned models and the confirmations you're responsible for, then submit (with `--no-submit`, only audit: nothing is signed or submitted) | `--interval <minutes>`, `--once`, `--no-submit`, `--auditor <address>`, `--keystore <path>`, `--rpc-url <url>`, `--no-publish-ipfs`, `--skip-version-check`, and `run`'s `--max-rounds <n>`, `--max-enrollment-requests <n>`, `--no-enroll`, `--ignore-pre-run-checks`, `--no-confirm` |
 | `antseed verifier assignment` | Show which models each approved auditor audits; every model is audited every epoch, split round robin | `--epoch <n>`, `--epochs <count>`, `--json` |
 | `antseed verifier status` | Progress of the latest run | `--json` |
+| `antseed verifier logs` | List this auditor's automatic daily logs (kept 14 days), or pack them, with secrets removed, into one `.log.gz` file to share | `--bundle`, `--days <n>` (7, newest daily logs to bundle), `--out <path>` |
 | `antseed verifier overview` | Write the seller × model overview page of an epoch from all its runs, with the reason for every inconclusive or skipped result | `--epoch <n>`, `--run <ids...>` |
 | `antseed verifier submit` | Publish evidence and submit one audit per model for the whole current epoch (approved auditors); only results not already on-chain are sent, and a model with nothing new is skipped | `--run-id <id>` (one run only), `--dry-run`, `--no-publish-ipfs`, `--publish-only`, `--auditor <address>`, `--keystore <path>`, `--yes`, `--rpc-url`, `--skip-version-check` |
 | `antseed verifier rewards` | Credits and pending ANTS per epoch; claim finished epochs | `--epochs <list>`, `--claim`, `--yes`, `--auditor <address>`, `--rpc-url` |

@@ -2,12 +2,12 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { ANTSEED_BUYER_FAULT_ERROR_CODE, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
+import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_HOLD_CODES, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
 import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
-import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
+import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, narrowPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
 import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
@@ -17,7 +17,8 @@ import { BUDGET_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
 import { OtlpExporter, observabilitySettings } from './observability.js'
 import { isEmptyPolicy, resolvePolicy } from './policy-resolver.js'
-import { END_USER_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug } from './request-shaping.js'
+import { END_USER_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug, requestedPolicy } from './request-shaping.js'
+import { keySavings, savingsJson } from './key-savings.js'
 import { ResponseUsageReader } from './response-usage.js'
 import { SPEND_FEED_UNAUTHORIZED_HINT, type SpendFeedState } from './spend-feed.js'
 import {
@@ -29,6 +30,7 @@ import {
   checkPaymentPayload,
   decodeHeaderJson,
   encodeHeaderJson,
+  type ContractSignatureCheck,
   type PaymentPayload,
   type PaymentRequired,
   type PaymentRequirements,
@@ -37,9 +39,16 @@ import {
 } from './x402.js'
 import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError, RequestRouter } from './store.js'
 import { GATEWAY_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
+import { streamFingerprint, type ResumableStream, type StreamResumeStore } from './stream-resume.js'
+import type { RetailPriceMap } from '@antseed/node/retail-prices'
 
 /** Largest 402 body the gateway holds back to check for the buyer's out-of-credits answer (which is well under 1 KiB). */
 const OUT_OF_CREDITS_REWRITE_MAX_BYTES = 16 * 1024
+/** A seller's video job hold lists at most a few dozen short job IDs. */
+const VIDEO_JOB_HOLD_MAX_BYTES = 64 * 1024
+const VIDEO_JOB_HOLD_CODE_SET: ReadonlySet<string> = new Set(Object.values(VIDEO_JOB_HOLD_CODES))
+/** Told to a key held back by video jobs that other keys of its buyer started. */
+const VIDEO_JOBS_HELD_MESSAGE = 'This seller is not starting new videos for this gateway until earlier videos are downloaded and paid for. Try again later, or use another seller.'
 
 /**
  * The gateway's own components (the console chat agent) call `/v1` as a key
@@ -96,6 +105,8 @@ const SPEECH_PATH = '/v1/audio/speech'
 /** Set by the buyer: `1` when the served service also charges per unit, `0` when it does not. */
 const UNIT_PRICED_HEADER = 'x-antseed-unit-priced'
 const TOPUP_PATH = '/v1/key/topup'
+const KEY_REWARDS_PATH = '/v1/key/rewards'
+const KEY_SAVINGS_PATH = '/v1/key/savings'
 
 /**
  * `paid` routes reach a seller; the others are answered by the buyer for
@@ -104,6 +115,8 @@ const TOPUP_PATH = '/v1/key/topup'
 const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: boolean; local?: boolean }> = [
   { method: 'GET', prefix: KEY_INFO_PATH, paid: false, local: true },
   { method: 'POST', prefix: TOPUP_PATH, paid: false, local: true },
+  { method: 'GET', prefix: KEY_REWARDS_PATH, paid: false, local: true },
+  { method: 'GET', prefix: KEY_SAVINGS_PATH, paid: false, local: true },
   { method: 'GET', prefix: '/v1/models', paid: false },
   { method: 'POST', prefix: '/v1/messages', paid: true },
   { method: 'POST', prefix: '/v1/messages/count_tokens', paid: false },
@@ -111,6 +124,8 @@ const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: bool
   { method: 'POST', prefix: '/v1/responses', paid: true },
   { method: 'POST', prefix: '/v1/images/generations', paid: true },
   { method: 'POST', prefix: '/v1/images/edits', paid: true },
+  // Decision models (SystemOne): JSON with a `model`, answered like any model request.
+  { method: 'POST', prefix: '/v1/systemone', paid: true },
   // Text to speech: JSON in, the audio file streamed back as it is.
   { method: 'POST', prefix: SPEECH_PATH, paid: true },
   // Native video jobs, as the buyer serves them: queue, then poll retrieve until it streams the MP4 (charged on delivery).
@@ -154,6 +169,40 @@ interface ForwardedRequest {
   video: NativeVideoRoute | null
   /** Room left under the key's caps at admission (a video create's reserved allowance); null when nothing is capped. */
   remainingUsdc: number | null
+  /** Identifies a retry of this request (`streamFingerprint`); null when its stream is not kept for one. */
+  resumeKey: string | null
+}
+
+/** A buyer wallet's deposits, as decimal USDC strings. */
+export interface KeyWalletBalance {
+  available: string
+  reserved: string
+  /** Signed to sellers but not settled on-chain yet: still in `reserved`, no longer the buyer's to spend. */
+  pending: string
+  /** USDC in the wallet itself, not yet swept into deposits; null when unread. */
+  wallet: string | null
+  /** The most the wallet may hold in deposits; null when unread. */
+  creditLimit: string | null
+  /** The wallet's AntseedDeposits operator (withdrawals and rewards go there); null when none. */
+  operator: string | null
+  /** The buyer couldn't reach the chain; these are its last known values. */
+  stale: boolean
+}
+
+/** Buyer ANTS rewards for a key's paying wallet, on the gateway's chain. */
+export interface KeyRewards {
+  /** False when the chain has no rewards contracts. */
+  available: boolean
+  pendingAnts: string
+  currentEpoch: number | null
+  transfersEnabled: boolean
+}
+
+/** Retail vs paid for a key's requests with a retail price match, in USD. */
+export interface KeySavings {
+  retailUsd: number
+  paidUsd: number
+  matchedRequests: number
 }
 
 export interface GatewayServerOptions {
@@ -162,6 +211,12 @@ export interface GatewayServerOptions {
   buyerPort: number
   /** Wallet address of a buyer identity, for key holders' usage view. */
   identityAddress: (buyerIdentity: string) => Promise<string | null>
+  /** What the wallet paying for a key holds in deposits; `GET /v1/key` reports it. */
+  identityBalance?: (buyerIdentity: string, options?: { fresh?: boolean }) => Promise<KeyWalletBalance | null>
+  /** Rewards for a wallet address on the gateway's chain; `GET /v1/key/rewards` reports them. */
+  walletRewards?: (address: string) => Promise<KeyRewards | null>
+  /** Retail prices by canonical model key; `GET /v1/key/savings` compares them with what a key paid. Null when unreadable. */
+  retailPrices?: () => Promise<RetailPriceMap | null>
   spendFeedState: () => SpendFeedState
   refreshSpendFeed: () => Promise<void>
   /**
@@ -191,11 +246,19 @@ export interface GatewayServerOptions {
   buyerRestartHoldMs?: number
   /** How long `stop()` lets requests in flight finish before closing them; default SHUTDOWN_DRAIN_MS. */
   shutdownDrainMs?: number
+  /**
+   * Keeps streamed answers whose client dropped, so the client's retry gets
+   * the answer still being generated. Without it a dropped client cancels
+   * its generation.
+   */
+  streamResume?: StreamResumeStore | null
 }
 
 export interface GatewayTopupOptions {
   asset: () => Promise<X402Asset>
   facilitator: X402Facilitator
+  /** Accepts smart-account (ERC-1271) payers; without it only ECDSA signatures are accepted. */
+  checkContractSignature?: ContractSignatureCheck
   minUsdc: number
   maxUsdc: number
 }
@@ -267,7 +330,12 @@ export class GatewayServer {
     this._port = 0
     if (this._retentionTimer) clearInterval(this._retentionTimer)
     this._retentionTimer = null
+    // No retry can reach a stopping gateway: cancel the streams waiting for one. Streams a client is
+    // reading finish through the drain below, like any other request in flight.
+    const streamResume = this._options.streamResume ?? null
+    streamResume?.close()
     if (!server) {
+      streamResume?.disposeAll()
       await this._exporter.stop()
       return
     }
@@ -278,6 +346,7 @@ export class GatewayServer {
     drain.unref?.()
     await closed
     clearTimeout(drain)
+    streamResume?.disposeAll()
     await this._exporter.stop()
   }
 
@@ -294,6 +363,11 @@ export class GatewayServer {
     const method = req.method ?? 'GET'
     const path = req.url ?? '/'
     const pathname = path.split('?')[0]!
+    // Keyless, so a liveness check doesn't read as a failed sign-in in the log.
+    if (method === 'GET' && pathname === '/healthz') {
+      sendJson(res, 200, { status: 'ok' })
+      return
+    }
     if (this._options.console && (pathname === '/console' || pathname.startsWith('/console/'))) {
       if (await this._options.console.handle(req, res)) return
     }
@@ -308,8 +382,11 @@ export class GatewayServer {
     const { key, context } = authenticated
 
     if (route.local) {
+      const fresh = new URLSearchParams(path.split('?')[1] ?? '').get('fresh') === '1'
       if (route.prefix === TOPUP_PATH) await this._topup(req, res, key)
-      else sendJson(res, 200, { data: await this._keyInfo(key) })
+      else if (route.prefix === KEY_REWARDS_PATH) sendJson(res, 200, { data: await this._keyRewards(key) })
+      else if (route.prefix === KEY_SAVINGS_PATH) sendJson(res, 200, { data: await this._keySavings(key) })
+      else sendJson(res, 200, { data: await this._keyInfo(key, fresh) })
       return
     }
 
@@ -349,7 +426,7 @@ export class GatewayServer {
       model = preset.model
     }
 
-    const policy = this._routingPolicy(res, route, key, context, preset, model)
+    const policy = this._routingPolicy(res, route, key, context, preset, model, requestedPolicy(firstHeader(req.headers[ANTSEED_REQUIRE_TEE_HEADER]) || undefined))
     if (!policy.allowed) return
     const video = nativeVideoRoute({ method, path: route.prefix, body })
     const videoJob = video?.action === 'retrieve' && video.resourceId ? videoJobKey(video.protocol, video.resourceId) : undefined
@@ -361,6 +438,18 @@ export class GatewayServer {
     // Read from the buyer now, not from the last poll: a buyer just replaced by an older one must not start the job.
     if (video?.action === 'create' && route.paid && this._options.accounting.hasBudgets(key, context) && !await this._videoBudgetEnforced()) {
       sendError(res, 503, 'api_error', 'buyer_upgrade_required', 'Videos cannot be started on a key with spend limits until the Antseed buyer is updated: this buyer cannot check a video\'s price against the limit before it starts.')
+      return
+    }
+    // A client that lost its connection mid-stream sends the same request again: it gets the answer
+    // already being generated, from the start, instead of a new (and newly paid) generation.
+    const streamResume = this._options.streamResume ?? null
+    const resumeKey = streamResume && route.paid && !video && method === 'POST'
+      ? streamFingerprint(key.id, method, route.path, generationRequirements(req.headers, policy.headers), body)
+      : null
+    const resumed = resumeKey ? streamResume!.claim(resumeKey) : null
+    if (resumed) {
+      this._log(`gateway resumed a dropped stream for its retry: key=${key.id} tag=${resumed.tag}`)
+      resumed.resume(res)
       return
     }
     const admission = this._admit(res, route, key, context, { videoCreate: video?.action === 'create', ...(videoJob ? { videoJob } : {}) })
@@ -382,6 +471,7 @@ export class GatewayServer {
       modelListPolicy: route.prefix === '/v1/models' && policy.policy.allowedModels ? policy.policy : null,
       video,
       remainingUsdc: admission.remainingUsdc,
+      resumeKey,
     }
     try {
       this._options.store.startRequest({
@@ -485,8 +575,11 @@ export class GatewayServer {
     context: KeyContext,
     preset: PresetRecord | null,
     model: string | null,
+    requested: RoutingPolicy | null = null,
   ): { allowed: false } | { allowed: true; headers: Record<string, string>; policy: RoutingPolicy } {
-    const { policy } = resolvePolicy(this._options.store, { key, preset, member: context.member, workspace: context.workspace })
+    const resolved = resolvePolicy(this._options.store, { key, preset, member: context.member, workspace: context.workspace }).policy
+    // The request's own requirements only narrow its key's.
+    const policy = requested ? narrowPolicy(resolved, requested) : resolved
     if ((route.paid || model) && !policyAllowsModel(policy, model)) {
       sendError(res, 403, 'permission_error', 'model_not_allowed', model
         ? `Model "${model}" is not allowed for this API key`
@@ -565,7 +658,10 @@ export class GatewayServer {
         return
       }
       const allowance = request.remainingUsdc
-      const price = /^\d{1,15}$/.test(outcome.priceHeader) ? Number(outcome.priceHeader) : null
+      const price = readVideoPrice(outcome.priceHeader)
+      if (price === null && allowance !== null) {
+        this._log(`gateway could not read the price of video job ${outcome.videoJobId}: it holds the whole ${formatUsdc(allowance)} its create was allowed until it is charged or retired`)
+      }
       // A key without caps has no allowance: it records the buyer's price, so caps added later count the job.
       const amount = allowance === null ? price ?? 0 : Math.min(allowance, price ?? allowance)
       accounting.commitVideo(request.tag, videoJobKey(video.protocol, outcome.videoJobId), amount)
@@ -575,6 +671,38 @@ export class GatewayServer {
     const job = videoJobKey(video.protocol, video.resourceId)
     if (outcome.retired) accounting.dropVideo(job)
     else if (outcome.delivered) accounting.videoDelivered(job)
+  }
+
+  /**
+   * A seller's video job hold as `key` may see it: only the jobs it created.
+   * When none of the listed jobs are the key's, it is told the gateway is held
+   * back, with no job. Any other 409, and one that is not a JSON object (it
+   * cannot carry a list), passes on unchanged; null for an empty body.
+   */
+  private _ownVideoJobHold(key: ApiKeyRecord, body: Buffer): Buffer | null {
+    if (body.length === 0) return null
+    const error = jsonObject(parseJsonBody(body, undefined)?.['error'])
+    const code = error?.['code']
+    if (!error || typeof code !== 'string' || !VIDEO_JOB_HOLD_CODE_SET.has(code)) return body
+    const listed = error['jobs']
+    const jobs = Array.isArray(listed)
+      ? listed.flatMap((entry): Array<{ id: string; protocol: string }> => {
+        const job = jsonObject(entry)
+        const id = job?.['id']
+        const protocol = job?.['protocol']
+        if (typeof id !== 'string' || typeof protocol !== 'string' || id.length === 0 || id.length > 256) return []
+        try {
+          return this._ownsVideoJob(key, videoJobKey(protocol, id), id) ? [{ id, protocol }] : []
+        } catch {
+          return []
+        }
+      })
+      : []
+    const message = error['message']
+    const answer = jobs.length > 0 && typeof message === 'string'
+      ? { error: { code, message, jobs } }
+      : { error: { code: 'video_jobs_held', message: VIDEO_JOBS_HELD_MESSAGE, jobs: [] } }
+    return Buffer.from(JSON.stringify(answer))
   }
 
   /** The buyer's out-of-credits 402 rewritten for the key's workspace, or null to pass it on unchanged. */
@@ -652,6 +780,8 @@ export class GatewayServer {
 
       let clientClosed = false
       let finished = false
+      // The answer, when it is kept for a retry of this request (see stream-resume.ts).
+      let resumable: ResumableStream | null = null
       finish =(status: number, buyerRequestId: string | null): void => {
         if (finished) return
         finished = true
@@ -672,7 +802,9 @@ export class GatewayServer {
         const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
         try {
           // First, and apart from the rest: the job ID is what lets its key retrieve it after a restart.
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered, router, servedModel, routeSelection })
+          // With its price: a restart that finds the create's reservation still stored recovers the job at that price.
+          const videoPriceUsdc = videoJobId ? readVideoPrice(videoPriceHeader) : null
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoPriceUsdc, videoDelivered, router, servedModel, routeSelection })
         } catch (error) {
           this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
         }
@@ -768,12 +900,23 @@ export class GatewayServer {
           responseHeaders.connection = 'close'
           // The request log is keyed by this tag. The buyer's x-antseed-request-id is a different id.
           responseHeaders['x-antseed-gateway-tag'] = tag
+          // A streamed answer is kept while it streams, so a client that drops can take it up again with a retry.
+          if (request.resumeKey !== null && status === 200 && contentType.startsWith('text/event-stream') && !request.modelListPolicy) {
+            resumable = this._options.streamResume?.start(request.resumeKey, tag, status, responseHeaders, upstreamRes, () => {
+              // Nobody came back for it: cancel the generation and log it as a client that left.
+              clientClosed = true
+              closedByClient()
+              upstream.destroy()
+            }) ?? null
+          }
           upstreamRes.once('error', () => {
             finish!(status, buyerRequestId)
             // The buyer's answer broke off: end the client's too, rather than leave it waiting.
-            res.destroy()
+            if (resumable) resumable.fail()
+            else res.destroy()
           })
-          res.once('close', () => finish!(status, buyerRequestId))
+          // A client that dropped while its answer is kept is not finished yet: the answer is still being generated.
+          res.once('close', () => { if (!resumable?.waitingForRetry) finish!(status, buyerRequestId) })
           const modelListPolicy = request.modelListPolicy
           if (modelListPolicy && status === 200) {
             const chunks: Buffer[] = []
@@ -817,7 +960,48 @@ export class GatewayServer {
             })
             return
           }
+          // A seller holding back a video create lists the buyer's jobs that hold it back. The buyer is shared by
+          // every key of its identity, so the key is shown only the jobs it created.
+          if (status === 409 && request.video?.action === 'create' && contentType.startsWith('application/json')) {
+            const chunks: Buffer[] = []
+            let buffered = 0
+            let passThrough = false
+            const collect = (chunk: Buffer): void => {
+              chunks.push(chunk)
+              buffered += chunk.length
+              if (buffered <= VIDEO_JOB_HOLD_MAX_BYTES) return
+              // Too large to be a hold: nothing is forwarded rather than an unfiltered list.
+              passThrough = true
+              upstreamRes.off('data', collect)
+              upstreamRes.resume()
+            }
+            upstreamRes.on('data', collect)
+            upstreamRes.once('end', () => {
+              const answer = passThrough ? null : this._ownVideoJobHold(key, Buffer.concat(chunks))
+              const body = answer ?? Buffer.from(JSON.stringify({ error: { code: 'video_jobs_held', message: VIDEO_JOBS_HELD_MESSAGE, jobs: [] } }))
+              delete responseHeaders['transfer-encoding']
+              res.writeHead(status, { ...responseHeaders, 'content-length': String(body.length) })
+              res.end(body)
+              finish!(status, buyerRequestId)
+            })
+            return
+          }
           res.writeHead(status, responseHeaders)
+          if (resumable) {
+            const kept = resumable
+            kept.attach(res)
+            upstreamRes.on('data', (chunk: Buffer) => kept.append(chunk))
+            upstreamRes.once('end', () => {
+              finish!(status, buyerRequestId)
+              kept.end()
+            })
+            upstreamRes.once('close', () => {
+              if (upstreamRes.complete) return
+              finish!(status, buyerRequestId)
+              kept.fail()
+            })
+            return
+          }
           upstreamRes.pipe(res)
           upstreamRes.once('end', () => {
             // An interrupted download is not charged: the job stays committed until it is downloaded in full.
@@ -871,9 +1055,13 @@ export class GatewayServer {
         gatewayError = { code: 'client_closed_request', message: 'Client closed the request before the buyer answered' }
         finish!(499, null)
       }
-      // A client that disconnects mid-stream should stop the paid request too.
+      // A client that disconnects mid-stream should stop the paid request too, unless its answer is kept for its retry.
       res.once('close', () => {
         if (res.writableFinished) return
+        if (resumable?.detach(res)) {
+          this._log(`gateway client dropped a stream, kept for its retry: key=${key.id} tag=${tag}`)
+          return
+        }
         clientClosed = true
         if (retryTimer) {
           // Waiting for the buyer, which never saw this request.
@@ -969,7 +1157,13 @@ export class GatewayServer {
       sendError(res, 400, 'invalid_request_error', 'invalid_payload', 'PAYMENT-SIGNATURE is not base64-encoded JSON')
       return
     }
-    const localError = checkPaymentPayload(payment, requirements, asset, Math.floor(Date.now() / 1000))
+    let localError: string | null
+    try {
+      localError = await checkPaymentPayload(payment, requirements, asset, Math.floor(Date.now() / 1000), topup.checkContractSignature)
+    } catch (error) {
+      this._log(`gateway top-up: smart-account signature check failed: key=${key.id}: ${errorMessage(error)}`)
+      localError = 'unexpected_verify_error'
+    }
     if (localError) {
       paymentRequired(localError)
       return
@@ -1027,10 +1221,40 @@ export class GatewayServer {
     }
   }
 
-  private async _keyInfo(key: ApiKeyRecord) {
+  /** `GET /v1/key/rewards`: the paying wallet's buyer rewards; null when they can't be read. */
+  private async _keyRewards(key: ApiKeyRecord) {
+    const address = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
+    if (!address || !this._options.walletRewards) return null
+    const rewards = await this._options.walletRewards(address).catch(() => null)
+    if (!rewards) return null
+    return {
+      available: rewards.available,
+      address,
+      pending_ants: rewards.pendingAnts,
+      current_epoch: rewards.currentEpoch,
+      transfers_enabled: rewards.transfersEnabled,
+    }
+  }
+
+  /**
+   * `GET /v1/key/savings`: this key's requests at retail prices vs what it
+   * paid, over the models with a retail price. Null when prices can't be read
+   * or nothing matched.
+   */
+  private async _keySavings(key: ApiKeyRecord) {
+    const prices = this._options.retailPrices ? await this._options.retailPrices().catch(() => null) : null
+    if (!prices) return null
+    return savingsJson(keySavings(this._options.store.usageByModel(key.id), prices))
+  }
+
+  private async _keyInfo(key: ApiKeyRecord, fresh = false) {
     const spent = this._options.store.spendByPeriod({ keyId: key.id })
     const usage = this._options.store.usageStats(key.id)
-    const buyerAddress = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
+    const [buyerAddress, balance] = await Promise.all([
+      this._options.identityAddress(key.buyerIdentity).catch(() => null),
+      this._options.identityBalance?.(key.buyerIdentity, { fresh }).catch(() => null) ?? Promise.resolve(null),
+    ])
+    const held = this._options.accounting.heldBreakdown(key.id)
     // The caps admission enforces: the lower of the admins' and the owner's.
     const caps = effectiveKeyLimits(key)
     const limits = Object.fromEntries(BUDGET_PERIODS.map((period) => {
@@ -1050,6 +1274,19 @@ export class GatewayServer {
       topup_enabled: key.topupEnabled && key.buyerIdentity !== DEFAULT_BUYER_IDENTITY && Boolean(this._options.topup),
       // The wallet that pays sellers for this key's requests.
       buyer_address: buyerAddress,
+      // Its deposits (public on-chain for that address), so an app on this key
+      // can show the balance it spends from. Null when the buyer can't say.
+      balance: balance
+        ? {
+            available_usd: balance.available,
+            reserved_usd: balance.reserved,
+            pending_usd: balance.pending,
+            wallet_usd: balance.wallet,
+            credit_limit_usd: balance.creditLimit,
+            operator: balance.operator,
+            stale: balance.stale,
+          }
+        : null,
       usage: {
         requests: usage.requests,
         spent_usd: usdcToDecimalString(usage.spentUsdc),
@@ -1059,8 +1296,19 @@ export class GatewayServer {
         output_tokens: usage.outputTokens,
       },
       limits,
+      // What counts against the caps on top of spend: requests in flight, and videos not yet charged.
+      held: {
+        held_usd: usdcToDecimalString(held.requestsUsdc + held.videoUsdc),
+        requests_usd: usdcToDecimalString(held.requestsUsdc),
+        video_usd: usdcToDecimalString(held.videoUsdc),
+      },
     }
   }
+}
+
+/** The buyer's price for an accepted video create (`x-antseed-video-price-usdc`), or null when missing or unreadable. */
+function readVideoPrice(header: string): number | null {
+  return /^\d{1,15}$/.test(header) ? Number(header) : null
 }
 
 /**
@@ -1082,6 +1330,9 @@ export function spendLimitError(breach: LimitBreach) {
       spent_usd: usdcToDecimalString(breach.spentUsdc),
       remaining_usd: usdcToDecimalString(remaining),
       held_usd: usdcToDecimalString(breach.heldUsdc),
+      // What the hold is: requests in flight, and video jobs (creates being priced, accepted jobs not yet charged).
+      ...(breach.heldRequestsUsdc !== undefined ? { held_requests_usd: usdcToDecimalString(breach.heldRequestsUsdc) } : {}),
+      ...(breach.heldVideoUsdc !== undefined ? { held_video_usd: usdcToDecimalString(breach.heldVideoUsdc) } : {}),
       resets_at: breach.resetsAt === null ? null : new Date(breach.resetsAt).toISOString(),
     },
   }
@@ -1095,10 +1346,18 @@ function spendLimitMessage(holder: string, label: string, breach: LimitBreach, r
   const limit = formatUsdc(breach.limitUsdc)
   if (remaining === 0) return `${holder} reached its ${label} spend limit of ${limit}.`
   const held = breach.heldUsdc > 0
-    ? `, and requests still running or not yet charged may use up to ${formatUsdc(breach.heldUsdc)} of it`
+    ? `, and requests still running or not yet charged may use up to ${formatUsdc(breach.heldUsdc)} of it${heldParts(breach)}`
     : ''
   return `${holder} has ${formatUsdc(remaining)} left of its ${label} spend limit of ${limit} (${formatUsdc(breach.spentUsdc)} spent)${held}. `
     + 'The next request could cost more than what is left, so it was not sent. Try again once running requests are charged, or raise the limit.'
+}
+
+/** ` (… for requests in flight, … for video jobs not yet charged)`, naming only the parts that hold something. */
+function heldParts(breach: LimitBreach): string {
+  const parts: string[] = []
+  if (breach.heldRequestsUsdc) parts.push(`${formatUsdc(breach.heldRequestsUsdc)} for requests in flight`)
+  if (breach.heldVideoUsdc) parts.push(`${formatUsdc(breach.heldVideoUsdc)} for video jobs not yet charged`)
+  return parts.length > 0 ? ` (${parts.join(', ')})` : ''
 }
 
 function budgetHolder(level: NonNullable<LimitBreach['level']>): string {
@@ -1305,6 +1564,7 @@ const STRIPPED_HEADERS = new Set([
   GATEWAY_CONTROL_HEADER,
   GATEWAY_INTERNAL_KEY_HEADER,
   END_USER_HEADER,
+  ANTSEED_REQUIRE_TEE_HEADER,
   // Proxy-internal hooks for the local verifier; a key holder must not choose them.
   'x-antseed-request-id',
   'x-antseed-capture-response-auth-preimages',
@@ -1325,6 +1585,26 @@ function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttp
     headers[name] = value
   }
   return headers
+}
+
+/**
+ * What decides which seller generates a request and how, besides its body: the
+ * effective routing policy sent to the buyer, and the forwarded headers that
+ * pick a seller or shape the answer (`x-antseed-*`, such as a pinned peer or a
+ * TEE requirement, and `anthropic-*`). A retry only takes over a dropped stream
+ * generated under the same ones. Headers a client changes between attempts
+ * (ids, retry counts) are not among them.
+ */
+function generationRequirements(incoming: http.IncomingHttpHeaders, policyHeaders: Record<string, string>): string[] {
+  const requirements: string[] = []
+  const policy = policyHeaders[ROUTING_POLICY_HEADER]
+  if (policy) requirements.push(`policy:${policy}`)
+  for (const [name, value] of Object.entries(forwardedHeaders(incoming))) {
+    const normalized = name.toLowerCase()
+    if (value === undefined || (!normalized.startsWith('x-antseed-') && !normalized.startsWith('anthropic-'))) continue
+    requirements.push(`${normalized}:${Array.isArray(value) ? value.join(',') : String(value)}`)
+  }
+  return requirements
 }
 
 function truncateContent(body: Buffer): string {

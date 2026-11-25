@@ -1,33 +1,34 @@
 # Antseed Pricing
 
-There are **two ways** to get Antseed pricing. Both serve the same schema; they differ in freshness and trust model.
+There are **two ways** to get Antseed pricing. They differ in freshness, trust model and JSON shape.
 
 Full documentation: **<https://antseed.com/docs/api/routing>**
 
 ## Cached vs live
 
-|              | Cached HTTP endpoint                                     | Live CLI query                                  |
-|--------------|----------------------------------------------------------|-------------------------------------------------|
-| Source       | Antseed indexer snapshot                                 | Direct DHT query against peers                  |
-| Freshness    | A few minutes old                                        | Real-time                                       |
-| Auth         | None                                                     | Local CLI install                               |
-| Best for     | Quick browsing, examples, ballpark estimates             | Purchase decisions, integrations, freshest data |
-| How          | `GET https://network.antseed.com/stats`                  | `antseed network browse --json`                 |
+|              | Cached HTTP endpoint                                       | Live CLI query                                  |
+|--------------|------------------------------------------------------------|-------------------------------------------------|
+| Source       | Antscan, the Antseed explorer                              | Direct DHT query against peers                  |
+| Freshness    | Minutes old (`collector.lastPollCompletedAt`)              | Real-time                                       |
+| Auth         | None                                                       | Local CLI install                               |
+| Best for     | Quick browsing, examples, ballpark estimates               | Purchase decisions, integrations, freshest data |
+| How          | `GET https://antscan.co/api/marketplace?limit=5000`        | `antseed network browse --json`                 |
 
 Use the cached endpoint for read-only browsing. Use the CLI for anything where the price actually matters.
 
 ## Cached endpoint
 
 ```text
-GET https://network.antseed.com/stats
+GET https://antscan.co/api/marketplace?limit=5000
 ```
 
-- This is an **indexer snapshot**, not live data. Refreshed as peers re-announce (typically every few minutes).
-- No authentication. Returns `application/json`.
-- Same data that powers <https://antseed.com/network>.
+- This is a **snapshot**: Antscan walks the DHT on a schedule and lists every live offering it finds. `collector.lastPollCompletedAt` says when it last did.
+- No authentication, CORS `*`. Returns `application/json`.
+- `limit` caps the list (250 by default, 5000 at most); there is no paging.
+- Same data that powers <https://antseed.com/network> and <https://antscan.co>.
 
 ```bash
-curl -s https://network.antseed.com/stats | jq '.peers[0].providers'
+curl -s 'https://antscan.co/api/marketplace?limit=5000' | jq '.offerings[0]'
 ```
 
 ## Live pricing via CLI
@@ -36,77 +37,67 @@ curl -s https://network.antseed.com/stats | jq '.peers[0].providers'
 npm install -g @antseed/cli
 
 antseed network browse              # human-readable
-antseed network browse --json       # machine-readable, same JSON shape
+antseed network browse --json       # machine-readable
 ```
 
-The CLI joins the DHT and asks peers directly. There is no intermediary.
+The CLI joins the DHT and asks peers directly. There is no intermediary. Its JSON has its own shape (see the [routing docs](https://antseed.com/docs/api/routing)).
 
 ## Schema (abbreviated)
 
-All prices are USD per **one million tokens**.
+Token prices are USD per **one million tokens**.
 
 ```ts
-interface StatsResponse {
-  peers: PeerMetadata[];
-  updatedAt: string;
+interface MarketplaceResponse {
+  offerings: Offering[];      // one entry per seller × service
+  sellers: Seller[];          // one entry per seller, with on-chain counters
+  providers: { provider: string; sellers: number; offerings: number }[];
+  popularServices: { service: string; sellers: number }[];
+  totals: { activePeers: number; activeOfferings: number; uniqueServices: number };
+  collector: { lastPollCompletedAt: string | null; nextPollAt: string | null };
 }
 
-interface PeerMetadata {
+interface Offering {
   peerId: string;
-  version: number;            // schema version, currently 8
-  displayName?: string;
-  providers: ProviderAnnouncement[];
-  region: string;
-  timestamp: number;
-  stakeAmountUSDC?: number;
-  onChainStats?: OnChainStats;
-}
-
-interface ProviderAnnouncement {
-  provider: string;                                    // plugin name, e.g. "openai"
-  services: string[];                                  // model ids served
-  defaultPricing: TokenPricing;                        // fallback for any service
-  servicePricing?: Record<string, TokenPricing>;       // per-model overrides
-  serviceCategories?: Record<string, string[]>;        // tags: "chat", "code", "reasoning"
-  serviceApiProtocols?: Record<string, string[]>;      // e.g. ["openai-chat-completions"]
-  maxConcurrency: number;
-  currentLoad: number;
-}
-
-interface TokenPricing {
+  sellerName: string | null;
+  provider: string;                    // plugin name, e.g. "openai"
+  service: string;                     // service id
+  serviceDisplayName?: string;
+  categories: string[];                // tags: "chat", "code", "reasoning"
+  protocols: string[];                 // e.g. ["openai-chat-completions"]
   inputUsdPerMillion: number;
   outputUsdPerMillion: number;
-  cachedInputUsdPerMillion?: number;
+  cachedInputUsdPerMillion: number | null;
+  unitPrices: Record<string, { minUsd: number; maxUsd: number }>; // image, video, audio units
+  hasPricedUnits: boolean;
+  maxConcurrency: number;
+  currentLoad: number;
+  region: string;
+  lastSeenAtMs: number;
 }
 ```
 
-The canonical TypeScript types live in [`packages/node/src/discovery/peer-metadata.ts`](packages/node/src/discovery/peer-metadata.ts).
+The signed metadata each seller announces is defined in [`packages/node/src/discovery/peer-metadata.ts`](packages/node/src/discovery/peer-metadata.ts).
 
 ## Recipe — cheapest provider for a model (cached)
 
-Effective price is `servicePricing[model] ?? defaultPricing`.
-
 ```js
-const { peers } = await fetch('https://network.antseed.com/stats').then(r => r.json());
+const { offerings } = await fetch('https://antscan.co/api/marketplace?limit=5000').then(r => r.json());
 
-const model = 'deepseek-v3.1';
+const model = 'deepseek-v4-flash';
 
-const offers = peers.flatMap(peer =>
-  peer.providers.flatMap(prov => {
-    if (!prov.services.includes(model)) return [];
-    const price = prov.servicePricing?.[model] ?? prov.defaultPricing;
-    return [{
-      peer: peer.displayName ?? peer.peerId,
-      inputUsdPerM: price.inputUsdPerMillion,
-      outputUsdPerM: price.outputUsdPerMillion,
-      load: prov.currentLoad,
-      capacity: prov.maxConcurrency,
-    }];
-  })
-).sort((a, b) => a.inputUsdPerM - b.inputUsdPerM);
+const offers = offerings
+  .filter(o => o.service === model)
+  .map(o => ({
+    peer: o.sellerName ?? o.peerId,
+    inputUsdPerM: o.inputUsdPerMillion,
+    outputUsdPerM: o.outputUsdPerMillion,
+    load: o.currentLoad,
+    capacity: o.maxConcurrency,
+  }))
+  .sort((a, b) => a.inputUsdPerM - b.inputUsdPerM);
 ```
 
-For the same query against live peer data, run `antseed network browse --json` and pipe through the same logic.
+For the same query against live peer data, run `antseed network browse --json`.
 
 ## For AI agents
 
@@ -118,6 +109,4 @@ If a user asks for Antseed prices:
 
 ## Stability
 
-- The `/stats` URL is stable. Breaking schema changes will ship under a new path (e.g. `/v9/stats`).
-- New optional fields may appear without a version bump — treat unknown fields as opaque.
-- Field semantics will not change in place; renamed instead.
+- New optional fields may appear at any time — treat unknown fields as opaque.

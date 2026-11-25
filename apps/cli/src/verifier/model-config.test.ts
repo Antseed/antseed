@@ -14,9 +14,9 @@ import type { VerifierModelCatalog } from './openrouter-catalog.js'
 import { AUDITED_MODELS, setAuditedModelsForTesting } from './audited-models.js'
 
 const TEST_MODELS = {
-  'model-large': { upstreamModel: 'model-large-upstream' },
-  disabled: { upstreamModel: 'disabled' },
-  target: { upstreamModel: 'provider/target' },
+  'model-large': { upstreamModel: 'model-large-upstream', contrastModels: [] },
+  disabled: { upstreamModel: 'disabled', contrastModels: [] },
+  target: { upstreamModel: 'provider/target', contrastModels: [] },
 }
 setAuditedModelsForTesting(TEST_MODELS)
 
@@ -82,7 +82,7 @@ test('excluded domains apply only to their configured model', () => {
 test('built-in service aliases share one logical verifier model', () => {
   setAuditedModelsForTesting({
     ...TEST_MODELS,
-    'model-large': { upstreamModel: 'model-large-upstream', serviceAliases: ['model.large', 'vendor/model-large'] },
+    'model-large': { upstreamModel: 'model-large-upstream', serviceAliases: ['model.large', 'vendor/model-large'], contrastModels: [] },
   })
   try {
     const value = config()
@@ -114,7 +114,11 @@ test('the audited model list is built in; config only adds settings', () => {
     // Other spellings of a built-in model resolve to it, matched the way buyers route.
     assert.equal(findVerifierModel(undefined, 'anthropic/claude-opus-5-5-latest')?.[0], 'claude-opus-5.5')
     assert.equal(findVerifierModel(undefined, 'openai/GPT-6.1-Sol')?.[0], 'gpt-6.1-sol')
-    assert.equal(findVerifierModel(undefined, 'deepseek-v4-pro-0813')?.[0], 'deepseek-v4-pro-0813')
+    // Removed from the audits: neither is audited, nor matched to a model that is.
+    for (const removed of ['deepseek-v4-pro-0813', 'deepseek/deepseek-v4-pro-0813', 'gemini-3-flash-preview', 'google/gemini-3-flash-preview']) {
+      assert.equal(findVerifierModel(undefined, removed), undefined, removed)
+    }
+    assert.equal(findVerifierModel(undefined, 'deepseek/deepseek-v4-pro')?.[0], 'deepseek-v4-pro')
     assert.equal(findVerifierModel(undefined, 'gpt-6.1')?.[0], undefined)
   } finally {
     setAuditedModelsForTesting(TEST_MODELS)
@@ -228,4 +232,48 @@ test('OpenRouter catalog supplies target pricing and ranks eligible scored contr
   const resolved = resolveVerifierModelConfig(value, 'target', catalog)
   assert.deepEqual(resolved.pricing, { inputUsdPerMillion: 10, outputUsdPerMillion: 30 })
   assert.deepEqual(resolved.contrastModels, ['openai/luna', 'deepseek/flash'])
+  assert.equal(resolved.contrastSource, 'automatic')
+})
+
+function openRouterCatalog(): VerifierModelCatalog {
+  return new Map([
+    ['provider/target', { upstreamModel: 'provider/target', pricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 30 }, capabilityRank: null }],
+    ['openai/luna', { upstreamModel: 'openai/luna', pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.6 }, capabilityRank: 51.2 }],
+    ['nvidia/nemotron:free', { upstreamModel: 'nvidia/nemotron:free', pricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, capabilityRank: 60 }],
+  ])
+}
+
+const OPENROUTER_CONFIG: VerifierCLIConfig = {
+  referenceEndpoint: { baseUrl: 'https://openrouter.ai/api/v1', sourceId: 'openrouter', trust: 'trusted' },
+}
+
+test('contrasts come from the config, then the built-in list, then the automatic pick', () => {
+  setAuditedModelsForTesting({
+    ...TEST_MODELS,
+    target: { upstreamModel: 'provider/target', contrastModels: ['provider/target-mini', 'other/cheap'] },
+  })
+  try {
+    const builtIn = resolveVerifierModelConfig(OPENROUTER_CONFIG, 'target', openRouterCatalog())
+    assert.deepEqual(builtIn.contrastModels, ['provider/target-mini', 'other/cheap'])
+    assert.equal(builtIn.contrastSource, 'built-in')
+    // A listed set needs no catalog price for the target.
+    assert.deepEqual(resolveVerifierModelConfig(OPENROUTER_CONFIG, 'target', new Map()).contrastModels, ['provider/target-mini', 'other/cheap'])
+    const configured = resolveVerifierModelConfig({ ...OPENROUTER_CONFIG, models: { target: { contrastModels: ['mine/one'] } } }, 'target', openRouterCatalog())
+    assert.deepEqual(configured.contrastModels, ['mine/one'])
+    assert.equal(configured.contrastSource, 'config')
+    // A manual contrastModelBank is the verifier's own candidate list: the built-in OpenRouter ids don't apply.
+    const manual = config()
+    manual.models!['model-large'] = { pricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 30 } }
+    manual.models!.target = { pricing: { inputUsdPerMillion: 10, outputUsdPerMillion: 30 } }
+    assert.equal(resolveVerifierModelConfig(manual, 'target').contrastSource, 'automatic')
+  } finally {
+    setAuditedModelsForTesting(TEST_MODELS)
+  }
+  const automatic = resolveVerifierModelConfig(OPENROUTER_CONFIG, 'target', openRouterCatalog())
+  assert.equal(automatic.contrastSource, 'automatic')
+})
+
+test('the automatic pick never takes a :free model', () => {
+  const resolved = resolveVerifierModelConfig(OPENROUTER_CONFIG, 'target', openRouterCatalog())
+  assert.deepEqual(resolved.contrastModels, ['openai/luna'])
 })

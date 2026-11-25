@@ -5,12 +5,17 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { Wallet } from 'ethers'
 import {
+  KBF_CALIBRATION_METHOD,
   KBF_PROMPT_VARIANT_IDS,
+  aggregateKbfSelfTestOutcomes,
+  clopperPearsonUpper,
   computeBinomialPower,
+  computeMatchVector,
   computeReferenceId,
   createReferenceQueryProfile,
   getKbfPromptVariant,
   validateKbfReferenceV1,
+  type KbfReferenceCalibrationV1,
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
 import {
@@ -25,6 +30,7 @@ import {
 } from '@antseed/node'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
 import { writeJsonAtomic } from './atomic-files.js'
+import { kbfAuditBatches } from './kbf-batching.js'
 import {
   classifyVerificationTarget,
   classifyVerificationTargetServices,
@@ -358,6 +364,7 @@ async function runTarget(
     })
     if (result.status === 'SKIPPED') throw new Error(`unexpected skipped target: ${result.reason}`)
     const evidence = JSON.parse(await readFile(result.evidencePath, 'utf8')) as ProxyAuditEvidenceV1
+    assert.equal(evidence.buyerProxy.statePath, 'buyer.state.json', 'published evidence must not show the machine\'s file paths')
     const checkpoints = await readModelAuditCheckpoints(directory)
     return { result, evidence, checkpoints, requestCount, requests, finalBatchStartedAfterSlow }
   } catch (error) {
@@ -574,6 +581,7 @@ async function runSkippedTarget(response: Response): Promise<{
     })
     assert.equal(result.status, 'SKIPPED')
     const evidence = JSON.parse(await readFile(result.evidencePath!, 'utf8')) as ProxyAuditSkipEvidenceV1
+    assert.equal(evidence.buyerProxy.statePath, 'buyer.state.json', 'published evidence must not show the machine\'s file paths')
     return { result, evidence, requestCount }
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -1024,7 +1032,7 @@ test('deleted upstream credentials skip after the first batch with a structured 
   assert.equal(run.evidence.result.outcomeReason?.code, 'upstream_credentials_invalid')
 })
 
-test('a seller refusing temperature is re-asked without it and the omission is recorded', async () => {
+test('a seller refusing temperature is detected, asked without it and judged', async () => {
   const run = await runTarget(40, 'sampling-rejected')
   assert.equal(run.result.status, 'SAME')
   const bodies = run.requests.map((request) => JSON.parse(request.body) as Record<string, unknown>)
@@ -1037,6 +1045,28 @@ test('a seller refusing temperature is re-asked without it and the omission is r
     assert.equal('temperature' in sent, false)
     assert.equal('top_p' in sent, false)
   }
+})
+
+test('a seller is judged against the calibration of its set, sent in the same batches, and the evidence carries it', async () => {
+  const base = reference(40)
+  const outcomes = base.probes.map((probe, index) => {
+    const answers = [index < 4 ? probe.consensus + 5 : probe.consensus]
+    return { probeId: probe.id, answers, matches: computeMatchVector(answers, [probe]) }
+  })
+  const calibration: KbfReferenceCalibrationV1 = {
+    version: 1, method: KBF_CALIBRATION_METHOD, passes: 1, ...aggregateKbfSelfTestOutcomes(outcomes), calibratedAt: '2026-08-06T00:00:00.000Z',
+    batches: kbfAuditBatches(base.probes).map((batch, batchIndex) => ({
+      pass: 0, batchIndex, probeIds: batch.probes.map((probe) => probe.id), promptVariantId: 'v1', attempts: 1,
+    })),
+  }
+  const calibrated = { ...base, calibration }
+  calibrated.referenceId = computeReferenceId(calibrated)
+  const run = await runTarget(40, 'valid', 0, 'verified', true, 10_000, undefined, undefined, calibrated)
+  assert.equal(run.evidence.result.stats.selfHamming, 4)
+  assert.equal(run.evidence.result.stats.selfTotal, 40)
+  assert.ok(run.evidence.result.stats.p0Cp99! > clopperPearsonUpper(base.selfTest.hamming, base.selfTest.total, 0.99))
+  assert.deepEqual(run.evidence.reference.calibration, calibration)
+  assert.deepEqual(run.evidence.exchanges.map((exchange) => exchange.probeIds), calibration.batches.map((batch) => batch.probeIds))
 })
 
 test('canonical audits send temperature and record no omission', async () => {
@@ -1269,7 +1299,8 @@ for (const authMode of ['missing', 'unverified', 'wrong-request', 'wrong-seller'
 
 // ── Seller thinking discovery (KBF reference code `discover_thinking_strategy`, per endpoint) ──
 
-type FakeSeller = (body: Record<string, unknown>) => { content: string; reasoningTokens: number; finishReason?: string } | Response
+/** `null`: the seller never answers this request. */
+type FakeSeller = (body: Record<string, unknown>) => { content: string; reasoningTokens: number; finishReason?: string } | Response | null
 
 function verifiedReader(): ResponseAuthReader {
   return {
@@ -1320,6 +1351,8 @@ async function auditWithDiscovery(
     auditTimeoutMs?: number
     auditMaxTimeoutMs?: number
     batchConcurrency?: number
+    /** Each checkpoint write takes this much longer: the auditor's own time between batches. */
+    checkpointDelayMs?: number
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-thinking-'))
@@ -1338,6 +1371,11 @@ async function auditWithDiscovery(
       })
     }
     const reply = seller(body)
+    if (reply === null) {
+      return await new Promise<never>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+      })
+    }
     if (reply instanceof Response) return reply
     return Response.json({
       choices: [{ message: { content: reply.content }, finish_reason: reply.finishReason ?? 'stop' }],
@@ -1366,6 +1404,12 @@ async function auditWithDiscovery(
         fetchFn,
         sleepFn: async () => undefined,
         sellerThinking: options.cache ?? new Map(),
+        ...(options.checkpointDelayMs ? {
+          writeCheckpoint: async (path: string, value: unknown) => {
+            await new Promise((resolve) => setTimeout(resolve, options.checkpointDelayMs))
+            await writeJsonAtomic(path, value)
+          },
+        } : {}),
       },
       target: peer(),
       service: 'GPT-5.6-SOL',
@@ -1461,19 +1505,40 @@ test('discovery stops at an unreachable seller and the audit falls back to the r
 test('a slow seller that keeps answering finishes its audit past the idle limit', async () => {
   // Reasoning models take 30-90 s per batch, so 17 batches outlast a fixed 10-minute total.
   const honest: FakeSeller = (body) => ({ content: correctAnswers(body), reasoningTokens: 0 })
-  const run = await auditWithDiscovery(honest, { batchDelayMs: 60, auditTimeoutMs: 150, batchConcurrency: 1 })
-  // Four batches one after another take ~240 ms, more than the 150 ms idle limit, but each answers in time.
+  const run = await auditWithDiscovery(honest, { batchDelayMs: 40, auditTimeoutMs: 250, batchConcurrency: 1, count: 80 })
+  // Eight batches one after another take ~320 ms, more than the 250 ms idle limit, but each answers in time.
+  assert.equal(run.result.status, 'SAME')
+  assert.equal(run.result.parsedProbeCount, 80)
+})
+
+test('the auditor\'s own time between batches does not count as the seller being idle', async () => {
+  // A slow checkpoint write (a busy disk, a loaded host) is not the seller's silence.
+  const honest: FakeSeller = (body) => ({ content: correctAnswers(body), reasoningTokens: 0 })
+  const run = await auditWithDiscovery(honest, { batchDelayMs: 20, auditTimeoutMs: 100, batchConcurrency: 1, checkpointDelayMs: 150 })
   assert.equal(run.result.status, 'SAME')
   assert.equal(run.result.parsedProbeCount, 40)
 })
 
+test('a seller that stops answering mid-audit is cut off at the idle limit', async () => {
+  let batches = 0
+  const stalls: FakeSeller = (body) => {
+    if (!isDiscovery(body) && (batches += 1) >= 3) return null
+    return { content: correctAnswers(body), reasoningTokens: 0 }
+  }
+  const run = await auditWithDiscovery(stalls, { auditTimeoutMs: 100, batchConcurrency: 1 })
+  assert.deepEqual(run.evidence.exchanges.map((exchange) => exchange.status), ['succeeded', 'succeeded', 'failed', 'failed'])
+  assert.match(run.evidence.exchanges[2]!.failureReason ?? '', /seller sent no answer for 100ms/)
+})
+
 test('an audit stops at its total time limit, and says it was the auditor\'s limit', async () => {
   const honest: FakeSeller = (body) => ({ content: correctAnswers(body), reasoningTokens: 0 })
-  const run = await auditWithDiscovery(honest, { batchDelayMs: 60, auditTimeoutMs: 150, auditMaxTimeoutMs: 170, batchConcurrency: 1 })
-  // Two of four batches answer before the 170 ms limit; the rest stop there.
+  // Two 400 ms batches answer by 800 ms, 300 ms before the 1100 ms limit (the limit counts the auditor's own time
+  // too, which a busy CI runner stretches); the third would end at 1200 ms at the earliest, so it and the fourth
+  // stop at the limit.
+  const run = await auditWithDiscovery(honest, { batchDelayMs: 400, auditTimeoutMs: 600, auditMaxTimeoutMs: 1100, batchConcurrency: 1 })
   assert.deepEqual(run.evidence.exchanges.map((exchange) => exchange.status), ['succeeded', 'succeeded', 'failed', 'failed'])
   for (const exchange of run.evidence.exchanges.slice(2)) {
-    assert.equal(exchange.failureReason, 'seller audit reached its time limit of 170ms')
+    assert.equal(exchange.failureReason, 'seller audit reached its time limit of 1100ms')
   }
   assert.equal(run.result.parsedProbeCount, 20)
 })

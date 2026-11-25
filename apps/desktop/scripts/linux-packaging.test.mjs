@@ -18,12 +18,12 @@ test('Linux config separates install identity from visible branding and other pl
   const base = await getConfig(desktopDir, path.join(desktopDir, 'electron-builder.yml'));
   const linux = await getConfig(desktopDir, path.join(desktopDir, 'electron-builder.linux.cjs'));
   await validateConfiguration(linux, { isEnabled: false });
-  assert.equal(base.productName, 'Antseed AI VPN');
-  assert.equal(base.executableName, 'AntSeed VPR');
-  assert.equal(linux.productName, 'antseed-ai-vpn');
-  assert.equal(linux.linux.executableName, 'antseed-ai-vpn');
-  assert.equal(linux.deb.packageName, 'antseed-ai-vpn');
-  assert.equal(linux.linux.artifactName, 'Antseed-AI-VPN-${version}-${arch}.${ext}');
+  assert.equal(base.productName, 'Antseed Desktop');
+  assert.equal(base.executableName, 'Antseed Desktop');
+  assert.equal(linux.productName, 'antseed-desktop');
+  assert.equal(linux.linux.executableName, 'antseed-desktop');
+  assert.equal(linux.deb.packageName, 'antseed-desktop');
+  assert.equal(linux.linux.artifactName, 'Antseed-Desktop-${version}-${arch}.${ext}');
   assert.deepEqual(linux.mac, base.mac);
   assert.deepEqual(linux.win, base.win);
   assert.deepEqual(linux.linux.target, base.linux.target);
@@ -39,11 +39,17 @@ test('Linux config separates install identity from visible branding and other pl
     appInfo: { productName: linux.productName, sanitizedProductName: linux.productName },
   });
   const desktopEntry = await helper.computeDesktopEntry(linux.linux);
-  assert.match(desktopEntry, /^Name=Antseed AI VPN$/m);
-  assert.match(desktopEntry, /^Exec=\/opt\/antseed-ai-vpn\/antseed-ai-vpn %U$/m);
-  assert.match(desktopEntry, /^Icon=antseed-ai-vpn$/m);
-  assert.match(desktopEntry, /^StartupWMClass=Antseed AI VPN$/m);
-  assert.deepEqual(linux.deb.fpm, ['--before-install', path.join(desktopDir, 'scripts/linux/preinst.sh')]);
+  assert.match(desktopEntry, /^Name=Antseed Desktop$/m);
+  assert.match(desktopEntry, /^Exec=\/opt\/antseed-desktop\/antseed-desktop %U$/m);
+  assert.match(desktopEntry, /^Icon=antseed-desktop$/m);
+  assert.match(desktopEntry, /^StartupWMClass=Antseed Desktop$/m);
+  // The package was antseed-ai-vpn before the rename: installing this one replaces it.
+  assert.deepEqual(linux.deb.fpm, [
+    '--before-install', path.join(desktopDir, 'scripts/linux/preinst.sh'),
+    '--conflicts', 'antseed-ai-vpn',
+    '--replaces', 'antseed-ai-vpn',
+    '--provides', 'antseed-ai-vpn',
+  ]);
   for (const hook of [linux.deb.afterInstall, linux.deb.afterRemove, linux.deb.fpm[1]]) {
     assert.ok((await readFile(hook, 'utf8')).startsWith('#!/bin/sh\n'));
   }

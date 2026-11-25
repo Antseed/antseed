@@ -348,7 +348,7 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
       </main>
 
       <footer className="pay-checkout-footer">
-        Opened by your Antseed app · antseed.com
+        Opened by Antseed Desktop · antseed.com
       </footer>
     </div>
   );

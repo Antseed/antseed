@@ -7,8 +7,8 @@ import { LockSlider } from './components/LockSlider';
 import { BulkActionPanel, mergeEligibility, RowActionPanel } from './components/Positions';
 import { epochStartAt, formatUtc } from './format';
 
-const mocks = vi.hoisted(() => ({ epoch: vi.fn(), action: vi.fn(), withdrawal: vi.fn() }));
-vi.mock('./app-context', () => ({ useEpochInfo: mocks.epoch }));
+const mocks = vi.hoisted(() => ({ canTransfer: vi.fn(() => false), epoch: vi.fn(), action: vi.fn(), withdrawal: vi.fn() }));
+vi.mock('./app-context', () => ({ useEpochInfo: mocks.epoch, useCanTransfer: mocks.canTransfer }));
 vi.mock('./components/Confirm', () => ({
   ActionDialog: ({ children, title }: { children: ReactNode; title: string }) => createElement('section', null, createElement('h2', null, title), children),
   ActionButton: (props: ActionButtonProps) => {
@@ -211,6 +211,16 @@ describe('pending position action forms', () => {
     expect(mergeEligibility([pendingPosition, { ...other, closedAtEpoch: 29 }], 28)).toContain('closed');
     expect(mergeEligibility([pendingPosition, { ...other, stakeEndEpoch: 131 }], 28)).toContain('same unlock epoch');
     expect(mergeEligibility([pendingPosition, { ...other, agentId: 2 }], 28)).toContain('same seller');
+  });
+
+  it('refuses merges whose positions started their locks at different epochs, even with matching public windows (#1390)', () => {
+    const other = { ...pendingPosition, id: 29 };
+    // Same public start and end: without the lock start the dialog offered a merge the pool always refuses.
+    expect(mergeEligibility([pendingPosition, other], 28)).toBeNull();
+    expect(mergeEligibility([{ ...pendingPosition, normalStartEpoch: 10 }, { ...other, normalStartEpoch: 14 }], 28)).toContain('started their locks at different epochs');
+    expect(mergeEligibility([{ ...pendingPosition, normalStartEpoch: 10 }, { ...other, normalStartEpoch: 10 }], 28)).toBeNull();
+    // An unknown start is left to the pre-signing simulation rather than guessed.
+    expect(mergeEligibility([{ ...pendingPosition, normalStartEpoch: 10 }, { ...other, normalStartEpoch: null }], 28)).toBeNull();
   });
 });
 

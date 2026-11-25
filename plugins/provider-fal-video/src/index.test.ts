@@ -89,6 +89,30 @@ it('submits the input to the fal queue with seller auth and hides fal URLs', asy
   expect(parse(init.body)).toEqual(input);
 });
 
+it('sells an aliased service under its own name and sends it to the fal endpoint it aliases', async () => {
+  const alias = 'kling-2.1-standard';
+  const aliased = {
+    ...config,
+    ANTSEED_ALLOWED_SERVICES: alias,
+    ANTSEED_SERVICE_ALIAS_MAP_JSON: JSON.stringify({ [alias]: MODEL }),
+    ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [alias]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } }),
+  };
+  expect(() => plugin.createProvider({ ...aliased, ANTSEED_SERVICE_ALIAS_MAP_JSON: JSON.stringify({ [alias]: 'kling' }) })).toThrow('Invalid fal endpoint ID: kling');
+  const fetchMock = vi.fn(async (url: string) => url.startsWith('https://api.fal.ai/v1/models?')
+    ? Response.json({ models: [{ endpoint_id: MODEL, metadata: { status: 'active' } }] })
+    : url.endsWith('/status') ? Response.json({ status: 'IN_QUEUE' }, { status: 202 }) : Response.json({ request_id: 'req-1' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(aliased) as Provider;
+  expect(provider.services).toEqual([alias]);
+  const response = await provider.handleRequest(request('/fal/v1/video/queue', { model: alias, prompt: 'cat', duration: '5' }));
+  expect(parse(response.body)).toEqual({ model: alias, request_id: 'req-1', status: 'IN_QUEUE' });
+  expect(fetchMock.mock.calls[0]![0]).toBe(`https://queue.fal.run/${MODEL}`);
+  await stream(provider, request('/fal/v1/video/retrieve', { model: alias, request_id: 'req-1' }, { 'x-antseed-service': alias, 'x-antseed-video-download': 'video-stream-v1' }));
+  expect(fetchMock.mock.calls[1]![0]).toBe('https://queue.fal.run/fal-ai/kling-video/requests/req-1/status');
+  expect(await provider.checkServiceHealth!([alias])).toEqual({ [alias]: { status: 'available' } });
+  expect(fetchMock.mock.calls[2]![0]).toBe(`https://api.fal.ai/v1/models?endpoint_id=${encodeURIComponent(MODEL)}`);
+});
+
 it('reads the input field names from the fal schema', () => {
   expect(falInputParameters(schema(V3, { prompt: {}, start_image_url: {}, end_image_url: {} }), V3)).toEqual(['end_image_url', 'prompt', 'start_image_url']);
   expect(falInputParameters(schema('fal-ai/other', { prompt: {} }), V3)).toBeNull();
@@ -186,6 +210,14 @@ it.each([429, 500, 503])('does not report a job as FAILED when its result fetch 
   const response = await stream(plugin.createProvider(config) as Provider);
   expect(response.statusCode).toBe(502);
   expect(parse(response.body).status).toBeUndefined();
+});
+
+it('reports a job as FAILED when its model failed behind fal, which answers 500 on every result fetch', async () => {
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))
+    .mockResolvedValueOnce(Response.json({ detail: [{ loc: ['body'], msg: 'Downstream service error', type: 'downstream_service_error' }] }, { status: 500 })));
+  const response = await stream(plugin.createProvider(config) as Provider);
+  expect(parse(response.body)).toEqual({ status: 'FAILED', error: 'Downstream service error' });
 });
 
 it('reports a job as FAILED when fal refuses its result', async () => {

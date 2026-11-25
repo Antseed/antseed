@@ -55,7 +55,7 @@ export function FundingStatusNotice({
             <button type="button" className={styles.link} onClick={onAddFunds}>Add funds</button>
           ) : null}
           {showManage ? (
-            <button type="button" className={styles.link} onClick={onManageSessions}>Manage sessions</button>
+            <button type="button" className={styles.link} onClick={onManageSessions}>Manage in your gateway</button>
           ) : null}
         </span>
       ) : null}

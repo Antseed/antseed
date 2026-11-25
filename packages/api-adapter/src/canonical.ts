@@ -480,7 +480,9 @@ export function normalizeOpenAIChatRequestBody(body: Record<string, unknown>): C
   }
   placeInstructionMessages(request, instructionMessages);
 
-  if (typeof body.max_tokens === 'number') request.maxOutputTokens = body.max_tokens;
+  // OpenAI replaced `max_tokens` with `max_completion_tokens`; when a client sends both, the newer field wins.
+  if (typeof body.max_completion_tokens === 'number') request.maxOutputTokens = body.max_completion_tokens;
+  else if (typeof body.max_tokens === 'number') request.maxOutputTokens = body.max_tokens;
   if (typeof body.reasoning_effort === 'string' && body.reasoning_effort.length > 0) {
     request.reasoningEffort = body.reasoning_effort;
   }

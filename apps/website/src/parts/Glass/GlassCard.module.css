@@ -1,0 +1,39 @@
+.card {
+  position: absolute;
+  top: 50%;
+  translate: 0 -50%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 15px;
+  border-radius: 10px;
+  font: 400 12px/16px var(--site-font);
+  text-align: left;
+  pointer-events: auto;
+}
+.center { left: 50%; translate: -50% -50%; }
+.title { display: flex; align-items: center; gap: 7px; font-size: 13.5px; line-height: 17px; font-weight: 500; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--glass-green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--glass-green) 22%, transparent); }
+.row { display: flex; flex-direction: column; gap: 1px; padding: 7px 0; border-top: .5px solid color-mix(in srgb, var(--glass-ink) 12%, transparent); }
+.term { font-size: 11px; line-height: 14px; color: var(--glass-muted); }
+.value { font-size: 13px; line-height: 17px; font-weight: 500; color: var(--glass-green); font-variant-numeric: tabular-nums; }
+
+@container (max-width: 520px) {
+  .card { gap: 6px; padding: 9px 10px; border-radius: 8px; }
+  .title { font-size: 12px; line-height: 15px; }
+  .row { padding: 3px 0; }
+  .term { font-size: 10px; line-height: 12px; }
+  .value { font-size: 11.5px; line-height: 14px; }
+}
+@container (max-width: 420px) {
+  .card { gap: 4px; padding: 7px 9px; }
+  .row { padding: 2px 0; }
+}
+/* a phone: nothing written under 12, whatever the card's container (after the container rules, so it wins over them) */
+@media (max-width: 520px) {
+  .card { gap: 6px; padding: 9px 10px; }
+  .title { font-size: 13px; line-height: 16px; }
+  .row { padding: 3px 0; }
+  .term { font-size: 12px; line-height: 15px; }
+  .value { font-size: 12.5px; line-height: 16px; }
+}

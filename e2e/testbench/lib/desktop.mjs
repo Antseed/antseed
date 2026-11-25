@@ -4,6 +4,9 @@ import { mkdir, readdir, rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createServer } from 'node:net';
+import { cliEntry, cliNodeEnv, spawnCliNode, stopWithGrace, waitForCliReady } from './cli-node.mjs';
+import { runCli } from './cli-run.mjs';
 import { isolatedEnv, toolchainEnv } from './env.mjs';
 import { isInside } from './paths.mjs';
 
@@ -38,9 +41,10 @@ export function assertAttachOnlyPlatform(platform = process.platform) {
 }
 
 /** Environment for an attach-only desktop on the testbench buyer; all desktop state stays in the testbench dir. */
-export function desktopEnv({ manifest, instance, ports, baseEnv = process.env, stateDir = 'desktop-automation' }) {
+export function desktopEnv({ manifest, instance, ports, baseEnv = process.env, stateDir = 'desktop-automation', extra = {} }) {
   const instanceDir = join(manifest.dir, stateDir);
   const env = attachOnlyEnv({ manifest, baseEnv, extra: {
+    ...extra,
     ANTSEED_DESKTOP_INSTANCE: instance,
     ANTSEED_DESKTOP_MULTI_INSTANCE: '1',
     ANTSEED_DESKTOP_USER_DATA_DIR: join(instanceDir, 'electron'),
@@ -73,8 +77,71 @@ export async function launchDesktop({ repo, manifest, reportDir, event = async (
   const automationDir = join(manifest.dir, 'desktop-automation');
   if (!isInside(automationDir, manifest.dir)) throw new Error(`Refusing to reset ${automationDir}`);
   await rm(automationDir, { recursive: true, force: true });
-  const env = desktopEnv({ manifest, instance, ports: resolveInstancePorts(instance) });
-  return launchElectron({ desktopDir, env, reportDir, event, trace, instance, title: manifest.name });
+  // The desktop chats through a gateway, and an attach-only one may not start
+  // its own: the testbench runs one on its buyer and hands the desktop its URL and a key.
+  const gateway = await startTestbenchGateway({ repo, manifest, reportDir });
+  try {
+    const env = desktopEnv({ manifest, instance, ports: resolveInstancePorts(instance), extra: {
+      ANTSEED_DESKTOP_GATEWAY_URL: gateway.url,
+      ANTSEED_DESKTOP_GATEWAY_KEY: gateway.key,
+    } });
+    const ui = await launchElectron({ desktopDir, env, reportDir, event, trace, instance, title: manifest.name });
+    const closeUi = ui.close.bind(ui);
+    ui.close = async () => {
+      try { await closeUi(); } finally { await gateway.stop(); }
+    };
+    return ui;
+  } catch (error) {
+    await gateway.stop();
+    throw error;
+  }
+}
+
+async function freePort() {
+  const server = createServer();
+  await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+  const { port } = server.address();
+  await new Promise((resolveClose) => server.close(resolveClose));
+  return port;
+}
+
+/**
+ * `antseed gateway start --no-buyer` on the testbench buyer's data dir (so it
+ * shares the buyer's control secret), on a free port, plus one API key for the
+ * desktop. The key is created first: a gateway without its console refuses to
+ * start with no active keys. Never starts a second buyer. The gateway watches
+ * the launcher (`parentPid`) and stops once it is gone, so a launcher killed
+ * before its cleanup doesn't leave the gateway running.
+ */
+export async function startTestbenchGateway({ repo, manifest, reportDir, parentPid = process.pid }) {
+  const buyerPort = Number(new URL(manifest.proxyUrl).port);
+  const port = await freePort();
+  const env = cliNodeEnv(process.env, manifest.home);
+  const entry = cliEntry(repo);
+  const created = await runCli({ entry, dataDir: manifest.buyerDir, configPath: manifest.buyerConfig, args: ['gateway', 'key', 'create', '--label', 'Testbench desktop', '--json'], env });
+  const key = created.json?.apiKey;
+  if (typeof key !== 'string' || !key) throw new Error(`could not create a gateway key for the desktop: ${created.stderr || created.stdout}`);
+  const node = spawnCliNode({
+    who: 'desktop-gateway',
+    args: gatewayStartArgs({ entry, manifest, buyerPort, port }),
+    env: { ...env, ANTSEED_GATEWAY_PARENT_PID: String(parentPid) },
+    logPath: join(reportDir, 'desktop-gateway.log'),
+  });
+  const url = `http://127.0.0.1:${port}`;
+  const stop = () => stopWithGrace(node.child, {});
+  try {
+    // Any answer means it listens; /v1/key without a key is a 401.
+    await waitForCliReady(node, async () => fetch(`${url}/v1/key`).then(() => true, () => false), { timeoutMs: 60_000 });
+    return { url, key, stop };
+  } catch (error) {
+    await stop();
+    throw error;
+  }
+}
+
+/** `gateway start` options (they belong to the `start` subcommand, not `gateway`). */
+export function gatewayStartArgs({ entry, manifest, buyerPort, port }) {
+  return [entry, '--data-dir', manifest.buyerDir, '--config', manifest.buyerConfig, 'gateway', 'start', '--no-buyer', '--no-console', '--buyer-port', String(buyerPort), '--port', String(port)];
 }
 
 /** Launches the built full desktop (its own buyer) on a prepared profile environment; see lib/mainnet.mjs. */
