@@ -825,6 +825,16 @@ describe('an answer that finished stays finished', () => {
     expectFinished(to, translate(from, to, [...frames, RELAY_ERROR_FRAME]), reason);
   });
 
+  // A Messages stream may send more than one message_delta. One that only adds usage says nothing about the stop reason.
+  it.each([
+    ['and then message_stop', [typed('message_stop', {})]],
+    ['and is then cut', []],
+  ] as const)('a Messages stream that sends a usage-only message_delta after its stop_reason %s keeps the reason', (_label, closing) => {
+    const frames = [...messagesCutAfter('max_tokens'), typed('message_delta', { delta: {}, usage: { output_tokens: 8 } }), ...closing];
+    expectFinished(CHAT, translate(MESSAGES, CHAT, frames), 'length');
+    expect(names(translate(MESSAGES, RESPONSES, frames)).filter((name) => RESPONSES_ENDINGS.includes(name ?? ''))).toEqual(['response.incomplete']);
+  });
+
   it('a final chunk that carries the last frames still counts them', () => {
     const adapter = createStreamingAdapter({ from: MESSAGES, to: CHAT, fallbackModel: 'm' })!;
     const chunks = adapter.adaptChunk({ requestId: 'req', data: encoder.encode(messagesFinished.join('')), done: true });

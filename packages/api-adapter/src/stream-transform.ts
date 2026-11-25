@@ -320,7 +320,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
           const delta = data.delta && typeof data.delta === 'object'
             ? data.delta as Record<string, unknown>
             : {};
-          finishReason = anthropicStopReasonToCanonical(delta.stop_reason);
+          // A stream may send more than one message_delta. One without a stop reason leaves the earlier one standing.
+          finishReason = anthropicStopReasonToCanonical(delta.stop_reason) ?? finishReason;
           // Some Anthropic-compatible upstreams report input and cache reads only here, not in message_start.
           rawUsage = { ...rawUsage, ...usageFields(data.usage) };
           usage = extractUsage({ usage: rawUsage });
