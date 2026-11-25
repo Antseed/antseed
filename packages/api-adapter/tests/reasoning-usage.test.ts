@@ -206,6 +206,17 @@ describe('a reasoning token count and the output total it belongs to', () => {
     expect((JSON.parse(decoder.decode(translated!.body)) as { usage: unknown }).usage).toMatchObject({ completion_tokens_details: { reasoning_tokens: 12 } });
   });
 
+  it.each([CHAT, MESSAGES] as const)('preserves a reported zero from a Responses stream whose output total is zero too, for a %s client', (to) => {
+    const final = sellerJson(RESPONSES, undefined);
+    final.output = [];
+    final.usage = { input_tokens: 10, output_tokens: 0, total_tokens: 10, output_tokens_details: { reasoning_tokens: 0 } };
+    const sse = event('response.created', { response: { id: 'resp_1', model: 'example-model', status: 'in_progress' } })
+      + event('response.completed', { response: final });
+    expect(streamedUsage(RESPONSES, to, sse)).toMatchObject(to === CHAT
+      ? { prompt_tokens: 10, completion_tokens: 0, completion_tokens_details: { reasoning_tokens: 0 } }
+      : { output_tokens: 0, output_tokens_details: { thinking_tokens: 0 } });
+  });
+
   it('drops a Responses breakdown from an earlier event when the final total comes without one', () => {
     const final = sellerJson(RESPONSES, undefined);
     final.usage = { input_tokens: 10, output_tokens: 4, total_tokens: 14 };

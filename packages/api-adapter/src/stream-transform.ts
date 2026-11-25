@@ -1008,8 +1008,9 @@ function mergeUsage(previous: ReportedUsage, next: ReportedUsage): ReportedUsage
   // reported input, so a stale cached or fresh count can't outlive its total.
   const input = reportsInput(next) ? next : previous;
   // The output count and its reasoning breakdown are one report too: a breakdown from an earlier
-  // event does not outlive a newer output total that came without one.
-  const output = next.outputTokens > 0 ? next : previous;
+  // event does not outlive a newer output total that came without one. A report that itemises
+  // reasoning is a report on the output even when both are 0.
+  const output = next.outputTokens > 0 || next.reasoningTokens !== undefined ? next : previous;
   return {
     inputTokens: input.inputTokens,
     outputTokens: output.outputTokens,
