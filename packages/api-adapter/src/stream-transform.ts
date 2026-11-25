@@ -2,10 +2,14 @@ import type { SerializedHttpResponseChunk, ServiceApiProtocol } from './types.js
 import {
   createChatStreamParser,
   encodeSseEvents,
+  extractErrorMessage,
   extractUsage,
+  isSseFailure,
   RESPONSES_FINAL_ANSWER_TOOL,
   makeStreamingStartResponse,
   mapFinishReasonToAnthropicStopReason,
+  openAIResponsesEnding,
+  openAIResponsesItemStatus,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   parseJsonSafe,
@@ -29,6 +33,8 @@ interface CanonicalStreamToolCall {
 
 type CanonicalStreamEvent =
   | { type: 'response_start'; id: string; model: string; usage: TokenUsage }
+  // The source opened a text item, which may stay empty.
+  | { type: 'text_start' }
   | { type: 'text_delta'; delta: string }
   | { type: 'tool_call_start'; index: number; id: string; name: string }
   | { type: 'tool_call_delta'; index: number; argumentsDelta: string }
@@ -40,7 +46,9 @@ type CanonicalStreamEvent =
     endTurn?: boolean;
     usage: TokenUsage;
     toolCalls: CanonicalStreamToolCall[];
-  };
+  }
+  // The stream failed before the answer finished. `code` is the upstream's error code or type, if it names one.
+  | { type: 'response_error'; message: string; code: string | null };
 
 type CanonicalStreamNormalizer = (options: StreamTransformInternals) => ProtocolStreamNormalizer;
 type CanonicalStreamRenderer = (options: StreamTransformInternals) => ProtocolStreamRenderer;
@@ -61,6 +69,12 @@ interface ProtocolStreamRenderer {
 const ZERO_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
 
 const RESPONSES_CONTINUE_TOOL = 'exec_command';
+
+const STREAM_CUT_OFF: CanonicalStreamEvent = {
+  type: 'response_error',
+  message: 'The upstream ended the stream before the response finished',
+  code: null,
+};
 
 const STREAM_NORMALIZERS: Partial<Record<ServiceApiProtocol, CanonicalStreamNormalizer>> = {
   'anthropic-messages': createAnthropicStreamNormalizer,
@@ -90,10 +104,23 @@ export function createStreamingAdapter(
   const normalizer = createNormalizer(internals);
   const renderer = createRenderer(internals);
 
+  // A stream ends exactly once, and says how. Normalizers report what the source said: the first ending
+  // stands, nothing after it reaches the client, and a source that stopped without one was cut off.
+  let ended = false;
+
   return {
     adaptStart: makeStreamingStartResponse,
     adaptChunk(chunk) {
-      const events = normalizer.feed(chunk);
+      // Once ended, the source is no longer read; the renderer still gets the final chunk.
+      if (ended) return renderer.render([], chunk);
+      const reported = normalizer.feed(chunk);
+      if (chunk.done) reported.push(STREAM_CUT_OFF);
+      const events: CanonicalStreamEvent[] = [];
+      for (const event of reported) {
+        if (ended) break;
+        events.push(event);
+        ended = event.type === 'response_done' || event.type === 'response_error';
+      }
       return renderer.render(events, chunk);
     },
   };
@@ -159,6 +186,9 @@ function createChatStreamNormalizer(options: StreamTransformInternals): Protocol
         toolCalls,
       });
     },
+    onError(failure) {
+      emitted.push(responseError(failure));
+    },
   }, {
     id: '',
     model: options.fallbackModel ?? 'unknown',
@@ -184,8 +214,6 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
   let rawUsage: Record<string, unknown> = {};
   let finishReason: string | null = null;
   let responseStarted = false;
-  // A relay ends every stream with an empty final chunk, after message_stop has already finished the response.
-  let responseDone = false;
   const toolBlockIndexes = new Map<number, number>();
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
 
@@ -208,6 +236,15 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
     });
   };
 
+  const responseDone = (): CanonicalStreamEvent => ({
+    type: 'response_done',
+    id: responseId,
+    model: responseModel,
+    finishReason: finishReason ?? 'stop',
+    usage,
+    toolCalls: sortedToolCalls(toolCalls),
+  });
+
   return {
     feed(chunk) {
       const emitted: CanonicalStreamEvent[] = [];
@@ -218,6 +255,11 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
       for (const event of events) {
         if (event.data === '[DONE]') continue;
         const parsed = parseJsonSafe(event.data);
+        if (isSseFailure(event, parsed)) {
+          // The stop reason comes after the last content: a failure past it can't undo a whole answer.
+          if (finishReason === null) emitted.push(responseError(parsed));
+          continue;
+        }
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
         const data = parsed as Record<string, unknown>;
         const type = typeof data.type === 'string' ? data.type : event.event;
@@ -238,6 +280,10 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
           const block = data.content_block && typeof data.content_block === 'object'
             ? data.content_block as Record<string, unknown>
             : {};
+          if (block.type === 'text') {
+            emitStart(emitted);
+            emitted.push({ type: 'text_start' });
+          }
           if (block.type === 'tool_use') {
             emitStart(emitted);
             const blockIndex = typeof data.index === 'number' ? data.index : 0;
@@ -274,7 +320,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
           const delta = data.delta && typeof data.delta === 'object'
             ? data.delta as Record<string, unknown>
             : {};
-          finishReason = anthropicStopReasonToCanonical(delta.stop_reason);
+          // A stream may send more than one message_delta. One without a stop reason leaves the earlier one standing.
+          finishReason = anthropicStopReasonToCanonical(delta.stop_reason) ?? finishReason;
           // Some Anthropic-compatible upstreams report input and cache reads only here, not in message_start.
           rawUsage = { ...rawUsage, ...usageFields(data.usage) };
           usage = extractUsage({ usage: rawUsage });
@@ -282,31 +329,13 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
         }
 
         if (type === 'message_stop') {
-          if (responseDone) continue;
-          responseDone = true;
           emitStart(emitted);
-          emitted.push({
-            type: 'response_done',
-            id: responseId,
-            model: responseModel,
-            finishReason: finishReason ?? 'stop',
-            usage,
-            toolCalls: sortedToolCalls(toolCalls),
-          });
+          emitted.push(responseDone());
         }
       }
 
-      if (chunk.done && !responseDone && emitted.length === 0) {
-        responseDone = true;
-        return [{
-          type: 'response_done',
-          id: responseId,
-          model: responseModel,
-          finishReason: finishReason ?? 'stop',
-          usage,
-          toolCalls: sortedToolCalls(toolCalls),
-        }];
-      }
+      // A stream cut after its stop reason lost only the closing frame.
+      if (chunk.done && finishReason !== null) emitted.push(responseDone());
 
       return emitted;
     },
@@ -352,6 +381,10 @@ function createResponsesStreamNormalizer(options: StreamTransformInternals): Pro
       for (const event of events) {
         if (event.data === '[DONE]') continue;
         const parsed = parseJsonSafe(event.data);
+        if (isSseFailure(event, parsed)) {
+          emitted.push(responseError(parsed));
+          continue;
+        }
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
         const data = parsed as Record<string, unknown>;
         const type = typeof data.type === 'string' ? data.type : event.event;
@@ -373,6 +406,10 @@ function createResponsesStreamNormalizer(options: StreamTransformInternals): Pro
 
         if (type === 'response.output_item.added') {
           const item = objectValue(data.item);
+          if (item.type === 'message') {
+            emitStart(emitted);
+            emitted.push({ type: 'text_start' });
+          }
           if (item.type === 'function_call') {
             emitStart(emitted);
             const outputIndex = typeof data.output_index === 'number' ? data.output_index : 0;
@@ -396,7 +433,12 @@ function createResponsesStreamNormalizer(options: StreamTransformInternals): Pro
           continue;
         }
 
-        if (type === 'response.completed') {
+        if (type === 'response.failed') {
+          emitted.push(responseError(objectValue(data.response)));
+          continue;
+        }
+
+        if (type === 'response.completed' || type === 'response.incomplete') {
           const response = objectValue(data.response);
           if (typeof response.id === 'string') responseId = response.id;
           if (typeof response.model === 'string') responseModel = response.model;
@@ -481,6 +523,13 @@ function createChatStreamRenderer(options: StreamTransformInternals): ProtocolSt
         if (event.type === 'response_done') {
           chunks.push(renderChunk({}, event.finishReason ?? 'stop', openAIChatUsage(event.usage)));
           chunks.push('data: [DONE]\n\n');
+          continue;
+        }
+
+        if (event.type === 'response_error') {
+          // Chat Completions has no error event. The OpenAI SDKs raise on a data line with
+          // an `error`; a stream that only stopped looks finished to them.
+          chunks.push(`data: ${JSON.stringify({ error: { message: event.message, type: event.code ?? 'api_error' } })}\n\n`);
         }
       }
 
@@ -685,6 +734,11 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             },
           });
           emitted.push({ event: 'message_stop', data: { type: 'message_stop' } });
+          continue;
+        }
+
+        if (event.type === 'response_error') {
+          emitted.push({ event: 'error', data: { type: 'error', error: { type: 'api_error', message: event.message } } });
         }
       }
 
@@ -699,16 +753,26 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
   };
 }
 
+// The Responses error codes (a fixed set) that a failure in another standard's stream can mean; anything else is a
+// server_error.
+const RESPONSES_ERROR_CODES = new Map([
+  ['server_error', 'server_error'],
+  ['rate_limit_exceeded', 'rate_limit_exceeded'],
+  ['rate_limit_error', 'rate_limit_exceeded'],
+  ['invalid_prompt', 'invalid_prompt'],
+]);
+
 function createResponsesStreamRenderer(options: StreamTransformInternals): ProtocolStreamRenderer {
   let sequenceNumber = 0;
   let responseCreated = false;
   let outputStarted = false;
-  let outputDone = false;
   let textBuffer = '';
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
   const createdAt = Math.floor(Date.now() / 1000);
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
+  // The item the answer opened or wrote to last, its text or a tool call's index: where a cut at a limit fell.
+  let lastWritten: 'text' | number | null = null;
 
   const pushEvent = (
     emitted: Array<{ event?: string; data: unknown | string }>,
@@ -779,9 +843,15 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           continue;
         }
 
+        if (event.type === 'text_start') {
+          lastWritten = 'text';
+          continue;
+        }
+
         if (event.type === 'text_delta') {
           ensureTextOutputStarted(emitted);
           textBuffer += event.delta;
+          if (event.delta.length > 0) lastWritten = 'text';
           pushEvent(emitted, 'response.output_text.delta', {
             output_index: 0,
             item_id: getMessageId(),
@@ -801,6 +871,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
             arguments: '',
           };
           toolCalls.set(event.index, toolCall);
+          lastWritten = event.index;
           const itemId = openAIResponsesFunctionCallId(toolCall.id);
           pushEvent(emitted, 'response.output_item.added', {
             output_index: getToolOutputIndex(event.index),
@@ -825,6 +896,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           };
           const toolCall = { ...existing, arguments: existing.arguments + event.argumentsDelta };
           toolCalls.set(event.index, toolCall);
+          if (event.argumentsDelta.length > 0) lastWritten = event.index;
           pushEvent(emitted, 'response.function_call_arguments.delta', {
             output_index: getToolOutputIndex(event.index),
             item_id: openAIResponsesFunctionCallId(toolCall.id),
@@ -836,92 +908,90 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'response_done') {
           ensureResponseCreated(emitted, null);
+          const ending = openAIResponsesEnding(event.finishReason);
           const messagePhase = toolCalls.size > 0 ? 'commentary' : undefined;
-          if (!outputDone) {
-            outputDone = true;
-            const msgId = getMessageId();
-            if (outputStarted) {
-              pushEvent(emitted, 'response.output_text.done', {
-                output_index: 0,
-                item_id: msgId,
-                content_index: 0,
-                text: textBuffer,
-                logprobs: [],
-              });
-              pushEvent(emitted, 'response.content_part.done', {
-                output_index: 0,
-                item_id: msgId,
-                content_index: 0,
-                part: { type: 'output_text', text: textBuffer, annotations: [] },
-              });
-              pushEvent(emitted, 'response.output_item.done', {
-                output_index: 0,
-                item: {
-                  type: 'message',
-                  id: msgId,
-                  role: 'assistant',
-                  status: 'completed',
-                  content: [{ type: 'output_text', text: textBuffer, annotations: [] }],
-                  ...(messagePhase ? { phase: messagePhase } : {}),
-                },
-              });
-            }
-
-            for (const toolCall of sortedToolCalls(toolCalls)) {
-              const outputIndex = getToolOutputIndex(toolCall.index);
-              const itemId = openAIResponsesFunctionCallId(toolCall.id);
-              pushEvent(emitted, 'response.function_call_arguments.done', {
-                output_index: outputIndex,
-                item_id: itemId,
-                call_id: toolCall.id,
-                name: toolCall.name,
-                arguments: toolCall.arguments,
-              });
-              pushEvent(emitted, 'response.output_item.done', {
-                output_index: outputIndex,
-                item: {
-                  type: 'function_call',
-                  id: itemId,
-                  call_id: toolCall.id,
-                  name: toolCall.name,
-                  arguments: toolCall.arguments,
-                  status: 'completed',
-                },
-              });
-            }
+          const msgId = getMessageId();
+          // Each finished item, as both its `.done` event and the final response list it.
+          const message = {
+            type: 'message' as const,
+            id: msgId,
+            role: 'assistant' as const,
+            status: openAIResponsesItemStatus(ending, lastWritten === 'text'),
+            content: [{ type: 'output_text' as const, text: textBuffer, annotations: [] }],
+            ...(messagePhase ? { phase: messagePhase } : {}),
+          };
+          const functionCalls = sortedToolCalls(toolCalls).map((toolCall) => ({
+            outputIndex: getToolOutputIndex(toolCall.index),
+            item: {
+              type: 'function_call' as const,
+              id: openAIResponsesFunctionCallId(toolCall.id),
+              call_id: toolCall.id,
+              name: toolCall.name,
+              arguments: toolCall.arguments,
+              status: openAIResponsesItemStatus(ending, toolCall.index === lastWritten, toolCall.arguments),
+            },
+          }));
+          if (outputStarted) {
+            pushEvent(emitted, 'response.output_text.done', {
+              output_index: 0,
+              item_id: msgId,
+              content_index: 0,
+              text: textBuffer,
+              logprobs: [],
+            });
+            pushEvent(emitted, 'response.content_part.done', {
+              output_index: 0,
+              item_id: msgId,
+              content_index: 0,
+              part: { type: 'output_text', text: textBuffer, annotations: [] },
+            });
+            pushEvent(emitted, 'response.output_item.done', { output_index: 0, item: message });
           }
 
-          pushEvent(emitted, 'response.completed', {
+          for (const { outputIndex, item } of functionCalls) {
+            pushEvent(emitted, 'response.function_call_arguments.done', {
+              output_index: outputIndex,
+              item_id: item.id,
+              call_id: item.call_id,
+              name: item.name,
+              arguments: item.arguments,
+            });
+            pushEvent(emitted, 'response.output_item.done', { output_index: outputIndex, item });
+          }
+
+          pushEvent(emitted, `response.${ending.status}`, {
             response: {
               id: getResponseId(),
               object: 'response',
               model: responseModel,
-              status: 'completed',
+              ...ending,
               created_at: createdAt,
-              output: [
-                ...(outputStarted ? [{
-                  type: 'message' as const,
-                  id: getMessageId(),
-                  role: 'assistant' as const,
-                  status: 'completed' as const,
-                  content: [{ type: 'output_text' as const, text: textBuffer, annotations: [] }],
-                  ...(messagePhase ? { phase: messagePhase } : {}),
-                }] : []),
-                ...sortedToolCalls(toolCalls).map((toolCall) => ({
-                  type: 'function_call' as const,
-                  id: openAIResponsesFunctionCallId(toolCall.id),
-                  call_id: toolCall.id,
-                  name: toolCall.name,
-                  arguments: toolCall.arguments,
-                  status: 'completed' as const,
-                })),
-              ],
+              output: [...(outputStarted ? [message] : []), ...functionCalls.map(({ item }) => item)],
               output_text: textBuffer,
               ...(event.endTurn !== undefined ? { end_turn: event.endTurn } : {}),
               usage: openAIResponsesUsage(event.usage),
             },
           });
           emitted.push({ data: '[DONE]' });
+          continue;
+        }
+
+        if (event.type === 'response_error') {
+          ensureResponseCreated(emitted, null);
+          // No `.done` events: the partial items never finished, and the client has their deltas.
+          pushEvent(emitted, 'response.failed', {
+            response: {
+              id: getResponseId(),
+              object: 'response',
+              model: responseModel,
+              status: 'failed',
+              created_at: createdAt,
+              error: { code: RESPONSES_ERROR_CODES.get(event.code ?? '') ?? 'server_error', message: event.message },
+              output: [],
+              output_text: '',
+              usage: null,
+            },
+          });
         }
       }
 
@@ -934,6 +1004,17 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
       return [];
     },
   };
+}
+
+/** A canonical failure from what the stream reported: the relay's plain text, or a vendor's JSON error. */
+function responseError(failure: unknown): CanonicalStreamEvent {
+  if (failure === null || typeof failure !== 'object') {
+    return { type: 'response_error', message: String(failure ?? '') || 'Upstream error', code: null };
+  }
+  const body = failure as Record<string, unknown>;
+  const error = objectValue(body.error);
+  const code = [error.code, error.type, body.code].find((value) => typeof value === 'string');
+  return { type: 'response_error', message: extractErrorMessage(body), code: typeof code === 'string' ? code : null };
 }
 
 function emitCompletedResponseOutput(

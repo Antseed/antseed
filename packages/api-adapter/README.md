@@ -125,6 +125,17 @@ const outChunks = adapter.adaptChunk(incomingChunk);
 The same pattern applies for any supported stream transform between Anthropic
 Messages, OpenAI Chat Completions, and OpenAI Responses.
 
+Every adapted stream ends exactly once, in the target protocol's own way. The
+source's ending (`message_stop` or a stop reason, a `finish_reason` or
+`[DONE]`, `response.completed` or `response.incomplete`) becomes the target's.
+A failure (an `event: error` frame, an error event, `response.failed`) becomes
+the target's failure: an `error` event for Messages, `response.failed` for
+Responses, and a data line with an `error` object and no `[DONE]` for Chat
+Completions. Nothing the source sends after its ending reaches the client.
+Pass the stream's last chunk with `done: true`. That is where a stream that
+stopped without saying how it ended is reported as cut off, and where a Chat
+Completions source's finish is rendered, so without it neither gets an ending.
+
 ## API Reference
 
 ### Protocol detection & routing

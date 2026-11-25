@@ -6184,6 +6184,12 @@ export class BuyerProxy {
       if (res.headersSent) {
         // Headers already sent (streaming), can't retry
         if (!res.writableEnded) {
+          // No final chunk came, so a translated stream has not ended in the client's protocol yet. The adapter
+          // ends it: as cut off, unless the answer had already finished.
+          const ending = streamResponseAdapter?.adaptChunk({ requestId: requestForPeer.requestId, data: new Uint8Array(0), done: true }) ?? []
+          for (const chunk of ending) {
+            if (chunk.data.length > 0) res.write(Buffer.from(chunk.data))
+          }
           res.end()
         }
         return { done: true, interrupted: fault === 'buyer' ? 'buyer' : 'seller' }

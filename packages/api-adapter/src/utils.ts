@@ -478,6 +478,40 @@ export function toStringContent(value: unknown): string {
   return String(value);
 }
 
+/** How a Responses answer reports a canonical finish reason: one cut at a limit is `incomplete`, with the reason. */
+export function openAIResponsesEnding(finishReason: string | null): {
+  status: 'completed' | 'incomplete';
+  incomplete_details?: { reason: string };
+} {
+  if (finishReason === 'length') return { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } };
+  if (finishReason === 'content_filter') return { status: 'incomplete', incomplete_details: { reason: 'content_filter' } };
+  return { status: 'completed' };
+}
+
+/**
+ * The status of one item of a Responses answer, streamed or not. An answer cut at a limit was cut in the item it
+ * was writing (`writtenLast`), and in any tool call whose arguments stop mid-value; the other items are whole.
+ */
+export function openAIResponsesItemStatus(
+  ending: { status: 'completed' | 'incomplete' },
+  writtenLast: boolean,
+  toolArguments?: unknown,
+): 'completed' | 'incomplete' {
+  if (ending.status === 'completed') return 'completed';
+  return writtenLast || !toolArgumentsWhole(toolArguments) ? 'incomplete' : 'completed';
+}
+
+/** Whether a tool call's arguments end where they should: none at all, or one whole JSON value. */
+function toolArgumentsWhole(args: unknown): boolean {
+  if (typeof args !== 'string' || args.trim() === '') return true;
+  try {
+    JSON.parse(args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function mapFinishReasonToAnthropicStopReason(value: unknown): string | null {
   if (typeof value !== 'string' || value.length === 0) return null;
   if (value === 'stop') return 'end_turn';
@@ -521,6 +555,29 @@ export function encodeSseEvents(events: Array<{ event?: string; data: unknown | 
     chunks.push(`data: ${data}\n\n`);
   }
   return encoder.encode(chunks.join(''));
+}
+
+/** The message of an error body in any of the standards, or a generic one. */
+export function extractErrorMessage(parsed: Record<string, unknown>): string {
+  const error = parsed.error;
+  if (error && typeof error === 'object' && !Array.isArray(error)) {
+    const message = (error as Record<string, unknown>).message;
+    if (typeof message === 'string' && message.length > 0) return message;
+  }
+  if (typeof parsed.message === 'string' && parsed.message.length > 0) return parsed.message;
+  if (typeof error === 'string' && error.length > 0) return error;
+  return 'Upstream error';
+}
+
+/**
+ * Whether an SSE event reports a failure, in any of the standards: an `event: error` frame (a seller's
+ * relay sends plain text, a vendor JSON), an event of type `error`, or a chunk with an `error` field.
+ */
+export function isSseFailure(event: ParsedSseEvent, parsed: unknown): boolean {
+  if (event.event === 'error') return true;
+  if (!parsed || typeof parsed !== 'object') return false;
+  const { type, error } = parsed as Record<string, unknown>;
+  return type === 'error' || Boolean(error);
 }
 
 export function makeStreamingStartResponse(response: SerializedHttpResponse): SerializedHttpResponse {
@@ -596,7 +653,10 @@ export interface ChatStreamCallbacks {
   onText(delta: string): void;
   onToolCallStart(index: number, id: string, name: string): void;
   onToolCallDelta(index: number, id: string, argumentsDelta: string): void;
+  /** The stream ended after saying so, with a `finish_reason` or `[DONE]`. */
   onFinish(info: ChatStreamFinishInfo): void;
+  /** The stream reported a failure before saying it finished. `failure` is the event's parsed data. */
+  onError(failure: unknown): void;
 }
 
 export interface ChatStreamParser {
@@ -615,6 +675,7 @@ export function createChatStreamParser(
   let model = fallbacks?.model ?? 'unknown';
   let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
   let finishReason: string | null = null;
+  let sawDoneMarker = false;
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
   // Upstream `index` -> our tool call slot. Some OpenAI-compatible upstreams
   // send parallel calls under one index (or none) and tell them apart only by
@@ -635,8 +696,16 @@ export function createChatStreamParser(
       rawBuffer = remainder;
 
       for (const event of events) {
-        if (event.data === '[DONE]') continue;
+        // [DONE] is the stream's last word: nothing after it is part of the answer.
+        if (sawDoneMarker || event.data === '[DONE]') {
+          sawDoneMarker = true;
+          continue;
+        }
         const parsed = parseJsonSafe(event.data);
+        if (isSseFailure(event, parsed)) {
+          if (finishReason === null) callbacks.onError(parsed);
+          continue;
+        }
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
         const p = parsed as Record<string, unknown>;
 
@@ -704,7 +773,7 @@ export function createChatStreamParser(
         }
       }
 
-      if (done) {
+      if (done && (finishReason !== null || sawDoneMarker)) {
         const sorted = [...toolCalls.entries()]
           .sort((a, b) => a[0] - b[0])
           .map(([index, tc]) => ({ index, ...tc }));

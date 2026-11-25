@@ -4677,6 +4677,46 @@ test('accept-sse transformed responses requests stream adapted client events wit
   assert.doesNotMatch(res.body, /event: response\.completed/)
 })
 
+test('a translated stream whose seller connection drops mid-answer tells the client it failed', async () => {
+  const peer = makePeer('a', ['openai-responses'])
+  peer.providerServiceApiProtocols = { 'openai-responses': { services: { 'gpt-5.6-sol': ['openai-responses'] } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer])
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: SerializedHttpRequest,
+    callbacks: {
+      onResponseStart: (response: SerializedHttpResponse, metadata: { streaming: boolean }) => void
+      onResponseChunk: (chunk: { requestId: string; data: Uint8Array; done: boolean }) => void
+    },
+  ) => {
+    callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: new Uint8Array() }, { streaming: true })
+    callbacks.onResponseChunk({
+      requestId: request.requestId,
+      data: Buffer.from(
+        'event: response.created\n'
+        + 'data: {"type":"response.created","response":{"id":"resp_1","object":"response","model":"gpt-5.6-sol","status":"in_progress","output":[]}}\n\n'
+        + 'event: response.output_text.delta\n'
+        + 'data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_1","content_index":0,"delta":"The answer is"}\n\n',
+      ),
+      done: false,
+    })
+    // What the node does when the connection closes or the stream stalls: it rejects, and no final chunk comes.
+    throw new Error('Connection to seller closed during request')
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/messages',
+    headers: { 'accept': 'text/event-stream', 'x-antseed-pin-peer': peer.peerId },
+    body: { model: 'gpt-5.6-sol', max_tokens: 128, stream: true, messages: [{ role: 'user', content: 'hello' }] },
+  }))
+
+  assert.equal(res.statusCode, 200)
+  assert.match(res.body, /"text":"The answer is"/)
+  assert.doesNotMatch(res.body, /event: message_stop/)
+  const lastEvent = res.body.trimEnd().split('\n\n').at(-1)
+  assert.equal(lastEvent, 'event: error\ndata: {"type":"error","error":{"type":"api_error","message":"The upstream ended the stream before the response finished"}}')
+})
+
 test('transformed pre-stream seller errors preserve peer guidance', async () => {
   const peer = makePeer('a', ['openai-responses'])
   peer.providerServiceApiProtocols = {

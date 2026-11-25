@@ -71,6 +71,18 @@ describe('parseResponseUsage', () => {
     });
   });
 
+  it('meters an answer cut at the token limit like a finished one', () => {
+    const final = (type: string, status: string) => [
+      `event: ${type}`,
+      `data: {"type":"${type}","response":{"id":"r1","status":"${status}","usage":{"input_tokens":42,"input_tokens_details":{"cached_tokens":10},"output_tokens":7}}}`,
+      '',
+    ].join('\n');
+    expect(parseResponseUsage(enc.encode(final('response.incomplete', 'incomplete'))))
+      .toEqual(parseResponseUsage(enc.encode(final('response.completed', 'completed'))));
+    expect(parseResponseUsage(enc.encode(final('response.incomplete', 'incomplete'))))
+      .toEqual({ inputTokens: 42, outputTokens: 7, freshInputTokens: 32, cachedInputTokens: 10 });
+  });
+
   describe('an event written over several data lines', () => {
     const USAGE = { inputTokens: 3, outputTokens: 2, freshInputTokens: 3, cachedInputTokens: 0 };
 

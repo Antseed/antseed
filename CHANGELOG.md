@@ -6,6 +6,11 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Buyer proxy (`@antseed/api-adapter`, CLI, gateway, desktop): an answer translated between API standards now says how it ended. When a seller's upstream cuts the stream off or fails mid-answer, or the connection to the seller drops or stalls, the client gets the failure in its own protocol, not a finished answer: an `error` event and no `message_stop` on `POST /v1/messages`, `response.failed` on `POST /v1/responses`, and a data line with an `error` object and no finish chunk or `[DONE]` on `POST /v1/chat/completions`. A seller's `response.incomplete` now closes the stream for Messages and Chat Completions clients with its stop reason and usage, where the stream used to stop with no closing events. An answer cut at the token limit, or stopped by a Chat Completions seller's content filter, reaches a Responses client as `status: "incomplete"` with `incomplete_details`, and the item it was cut in, like any tool call left with unfinished arguments, is `incomplete` (`response.incomplete` when streamed), where it used to say `completed`. Payment is not affected.
+- Buyer proxy (`@antseed/api-adapter`, CLI, gateway, desktop): a translated stream now ends where the seller's stream ended. Anything a seller sends after its stream's end (`[DONE]`, `message_stop`, `response.completed`, `response.incomplete`, `response.failed` or an error) is dropped, so a client no longer gets text after its own `[DONE]`, `message_stop` or `response.failed`. A stop reason or usage that comes after the last text and before the end still arrives.
+
 ## 2026-11-25 — CLI 0.1.260, Node 0.2.192, Desktop 0.2.95
 
 ### Packages

@@ -1,6 +1,8 @@
 import {
   extractUsage,
   mapFinishReasonToAnthropicStopReason,
+  openAIResponsesEnding,
+  openAIResponsesItemStatus,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   parseJsonSafe,
@@ -720,8 +722,8 @@ export function normalizeAnthropicMessagesResponseBody(
     if (!blockRaw || typeof blockRaw !== 'object') continue;
     const block = blockRaw as Record<string, unknown>;
     if (block.type === 'text') {
-      const text = typeof block.text === 'string' ? block.text : '';
-      if (text.length > 0) output.push({ type: 'text', text });
+      // Kept even when empty: an answer cut at a limit can be cut in an empty block. Renderers leave out empty text.
+      output.push({ type: 'text', text: typeof block.text === 'string' ? block.text : '' });
       continue;
     }
     if (block.type === 'tool_use') {
@@ -778,13 +780,16 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     .filter((item): item is Extract<CanonicalOutputItem, { type: 'text' }> => item.type === 'text');
   const text = textItems.map((item) => item.text).join('');
   const phase = textItems.find((item) => item.phase)?.phase;
+  const ending = openAIResponsesEnding(response.stopReason);
+  // The item the answer was writing when it ended.
+  const last = response.output.at(-1);
 
   if (text.length > 0) {
     output.push({
       type: 'message',
       id: openAIResponsesMessageId(response.id),
       role: 'assistant',
-      status: 'completed',
+      status: openAIResponsesItemStatus(ending, last?.type === 'text'),
       content: [{ type: 'output_text', text, annotations: [] }],
       ...(phase ? { phase } : {}),
     });
@@ -798,7 +803,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       call_id: item.id,
       name: item.name,
       arguments: stringifyToolArguments(item.arguments),
-      status: 'completed',
+      status: openAIResponsesItemStatus(ending, item === last, item.arguments),
     });
   }
 
@@ -806,7 +811,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     id: response.id,
     object: 'response',
     model: response.model,
-    status: 'completed',
+    ...ending,
     created_at: Math.floor(Date.now() / 1000),
     output,
     output_text: text,
