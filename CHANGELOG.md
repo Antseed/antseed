@@ -6,6 +6,17 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+## 2026-11-25 — CLI 0.1.260, Node 0.2.192
+
+### Packages
+
+- `@antseed/cli@0.1.260`
+- `@antseed/node@0.2.192`
+- `@antseed/buyer-core@0.1.55`
+- `@antseed/web-sdk@0.1.49`
+- `@antseed/payments@0.1.119`
+- `@antseed/ants@0.1.77`
+
 ### Added
 
 - Node: buyers and sellers now save up to 16 of the DHT nodes they know to `dht-nodes.json` in their data directory, after lookups and announces (at most once a minute) and when they stop. A node that knows no DHT node after starting, because none of its bootstrap nodes answered, rejoins through those saved nodes, so a node that has run before can find peers while the Antseed bootstrap nodes are unreachable. If none of the saved nodes answers either, as on a first run while the bootstrap nodes are down, it joins through the public BitTorrent DHT routers. It tries again at most every 5 minutes while it stays cut off. It uses neither the saved nodes nor the routers while a bootstrap node answers, because a routing table filled from them can find fewer Antseed peers. With `noOfficialBootstrap` a node does neither. A `DHTNode` used directly sets these with `knownNodesFile` and `fallbackBootstrapNodes`.
