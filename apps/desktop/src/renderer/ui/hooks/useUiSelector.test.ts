@@ -18,7 +18,7 @@ describe('createSelectedSnapshotGetter', () => {
   it('reuses the selected object when unrelated state changes', () => {
     let state = createInitialUiState();
     state.chatActiveConversation = 'conv-1';
-    state.peersMessage = 'idle';
+    state.ovPeers = '1';
 
     const getSnapshot = createSelectedSnapshotGetter(
       (current) => ({
@@ -33,7 +33,7 @@ describe('createSelectedSnapshotGetter', () => {
 
     state = {
       ...state,
-      peersMessage: 'changed outside selector',
+      ovPeers: '2',
     };
     const unrelatedChange = getSnapshot();
 

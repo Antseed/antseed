@@ -183,6 +183,61 @@ describe('PeerLookup', () => {
     expect(results).toHaveLength(2);
   });
 
+  it('findAllExhaustive fetches an endpoint once when the wildcard and its subnet both return it', async () => {
+    const peer: PeerEndpoint = { host: '10.0.3.1', port: 6882 };
+    const wildcardHashHex = topicToInfoHash(ANTSEED_WILDCARD_TOPIC).toString('hex');
+    const subnet3HashHex = topicToInfoHash(subnetTopic(3)).toString('hex');
+    const lookup = vi.fn(async (hash: Buffer) => {
+      const hex = hash.toString('hex');
+      return hex === wildcardHashHex || hex === subnet3HashHex ? [peer] : [] as PeerEndpoint[];
+    });
+    const resolve = vi.fn(async () => buildMetadata());
+    const peerLookup = new PeerLookup({
+      dht: { lookup } as unknown as DHTNode,
+      metadataResolver: { resolve },
+      requireValidSignature: false,
+      allowStaleMetadata: true,
+      maxAnnouncementAgeMs: 60_000,
+      maxResults: 1000,
+    });
+
+    const results = await peerLookup.findAllExhaustive(() => undefined);
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(results).toHaveLength(1);
+  });
+
+  it('findAllExhaustive looks up every subnet without waiting for slow metadata fetches', async () => {
+    const peer: PeerEndpoint = { host: '10.99.99.1', port: 6882 };
+    const wildcardHashHex = topicToInfoHash(ANTSEED_WILDCARD_TOPIC).toString('hex');
+    const lookup = vi.fn(async (hash: Buffer) => (hash.toString('hex') === wildcardHashHex ? [peer] : [] as PeerEndpoint[]));
+    let releaseMetadata!: () => void;
+    const metadataGate = new Promise<void>((resolveGate) => { releaseMetadata = resolveGate; });
+    const resolve = vi.fn(async () => {
+      await metadataGate;
+      return buildMetadata();
+    });
+    const peerLookup = new PeerLookup({
+      dht: { lookup } as unknown as DHTNode,
+      metadataResolver: { resolve },
+      requireValidSignature: false,
+      allowStaleMetadata: true,
+      maxAnnouncementAgeMs: 60_000,
+      maxResults: 1000,
+    });
+    const partials: string[] = [];
+
+    const sweep = peerLookup.findAllExhaustive((batch, context) => {
+      partials.push(`${context.phase}:${batch.length}`);
+    });
+    await vi.waitFor(() => expect(lookup).toHaveBeenCalledTimes(SUBNET_COUNT + 1));
+    expect(partials).toEqual([]);
+    releaseMetadata();
+
+    expect(await sweep).toHaveLength(1);
+    expect(partials).toEqual(['wildcard:1']);
+  });
+
   it('findAllExhaustive queries the exact set of subnet + wildcard topics announcer-side advertises', async () => {
     // Symmetry guard: the announcer chooses `subnetTopic(subnetOf(peerId))`
     // and the wildcard; the buyer must query every subnet topic plus the

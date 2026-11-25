@@ -8,11 +8,13 @@ import type {
   SellerProviderConfig,
   TokenPricingUsdPerMillion,
 } from './types.js';
-import { MAX_FREE_TIER_DELEGATIONS, SellerFreeTierLimiter, validateFreeTierStakeTiers } from '@antseed/node';
+import { FREE_TIER_MOVED_CONVERSATIONS_MODES, MAX_FREE_TIER_DELEGATIONS, SellerFreeTierLimiter, validateFreeTierStakeTiers } from '@antseed/node';
 import { validateServiceMetadata } from './service-metadata.js';
 import { parseHostPort } from './public-address.js';
 import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
 import { sellerAlertsErrors } from './seller-alerts.js';
+
+const BUYER_PEER_ID_PATTERN = /^(0x)?[0-9a-fA-F]{40}$/;
 
 const SERVICE_CATEGORY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_PUBLIC_ADDRESS_LENGTH = 255;
@@ -46,6 +48,45 @@ function validatePricingLeaf(
   if (value.cachedInputUsdPerMillion != null && (!Number.isFinite(value.cachedInputUsdPerMillion) || value.cachedInputUsdPerMillion < 0)) {
     errors.push(`${path}.cachedInputUsdPerMillion must be a non-negative finite number`);
   }
+}
+
+/**
+ * Why buyers would skip this seller price, or null. A cached-input price above
+ * the input price makes the whole offer invalid to a buyer (router-local), so
+ * the model gets no requests.
+ */
+export function cachedPriceProblem(label: string, pricing: Partial<TokenPricingUsdPerMillion> | undefined): string | null {
+  const cached = pricing?.cachedInputUsdPerMillion;
+  const input = pricing?.inputUsdPerMillion;
+  if (typeof cached !== 'number' || typeof input !== 'number' || !(cached > input)) return null;
+  return `${label}: cached-input price $${cached} per 1M tokens is above the input price $${input}. `
+    + 'Buyers skip an offer priced like this, so it gets no requests. '
+    + 'Set the cached-input price at or below the input price, or leave it out to bill cached input at the input price.';
+}
+
+/** Every seller price buyers would skip, one line each (see `cachedPriceProblem`). */
+export function sellerCachedPriceProblems(providers: Record<string, SellerProviderConfig>): string[] {
+  const problems: string[] = [];
+  for (const [providerName, providerCfg] of Object.entries(providers)) {
+    const providerProblem = cachedPriceProblem(`${providerName} default prices`, providerCfg.defaults);
+    if (providerProblem) problems.push(providerProblem);
+    for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services ?? {})) {
+      const serviceProblem = cachedPriceProblem(`${providerName}/${serviceId}`, serviceCfg.pricing);
+      if (serviceProblem) problems.push(serviceProblem);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Refuses a seller config edit that leaves a price buyers would skip. Only
+ * problems the edit adds count, so a bad price saved earlier never blocks
+ * changing something else.
+ */
+export function assertNoNewCachedPriceProblems(before: Record<string, SellerProviderConfig>, after: Record<string, SellerProviderConfig>): void {
+  const existing = new Set(sellerCachedPriceProblems(before));
+  const added = sellerCachedPriceProblems(after).filter((problem) => !existing.has(problem));
+  if (added.length > 0) throw new Error(added.join('\n'));
 }
 
 function validateHierarchicalPricing(
@@ -433,6 +474,21 @@ export function validateConfig(config: AntseedConfig): string[] {
   }
 
   if (
+    config.seller.maxInFlightRequestBytes !== undefined &&
+    (!Number.isInteger(config.seller.maxInFlightRequestBytes) || config.seller.maxInFlightRequestBytes < MIN_SELLER_UPLOAD_BODY_BYTES)
+  ) {
+    errors.push('seller.maxInFlightRequestBytes must be an integer >= 1048576');
+  }
+
+  const blockedBuyers: unknown = config.seller.blockedBuyers;
+  if (
+    blockedBuyers !== undefined &&
+    (!Array.isArray(blockedBuyers) || blockedBuyers.some((id) => typeof id !== 'string' || !BUYER_PEER_ID_PATTERN.test(id.trim())))
+  ) {
+    errors.push('seller.blockedBuyers must be a list of buyer peer IDs (40 hex characters, with or without 0x)');
+  }
+
+  if (
     config.seller.maxInboundConnections !== undefined &&
     (!Number.isInteger(config.seller.maxInboundConnections) || config.seller.maxInboundConnections < 1)
   ) {
@@ -704,6 +760,18 @@ function validateFreeTierProgram(path: string, freeTier: SellerFreeTierCLIConfig
     errors.push(`${path}.stakersOnly must be a boolean`);
   } else if (freeTier.stakersOnly && freeTier.stakeTiers?.length === 0) {
     errors.push(`${path}.stakersOnly requires at least one stake tier`);
+  }
+  for (const key of ['newBuyerMaxInputTokens', 'newBuyerRequests'] as const) {
+    const value = freeTier[key];
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+      errors.push(`${path}.${key} must be a positive safe integer`);
+    }
+  }
+  if (freeTier.newBuyerMaxInputTokens !== undefined && freeTier.maxRequestsPerAddress === undefined) {
+    errors.push(`${path}.newBuyerMaxInputTokens requires maxRequestsPerAddress`);
+  }
+  if (freeTier.movedConversations !== undefined && !FREE_TIER_MOVED_CONVERSATIONS_MODES.includes(freeTier.movedConversations)) {
+    errors.push(`${path}.movedConversations must be one of: ${FREE_TIER_MOVED_CONVERSATIONS_MODES.join(', ')}`);
   }
   if (errors.length > errorsBefore) return;
   // Otherwise valid limits can still be too long to advertise in peer metadata.

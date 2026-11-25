@@ -1,2 +1,10 @@
 /mika/*
   X-Robots-Tag: noindex, nofollow, noarchive
+
+# Webpack's bundles, styles, fonts and images: content-hashed names, so they never change under a URL.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The marketing pages' paintings, films, icons and fonts. A file here never changes in place: a new version gets a new name (AGENTS.md).
+/site/assets/*
+  Cache-Control: public, max-age=31536000, immutable

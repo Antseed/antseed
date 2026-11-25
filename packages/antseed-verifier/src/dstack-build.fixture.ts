@@ -12,8 +12,10 @@ export function testOs(mrtdHex: string): ApprovedDstackOs {
   return { name: 'dstack test', mrtd: mrtdHex, rtmr0: '00'.repeat(48), rtmr1: '00'.repeat(48), rtmr2: '00'.repeat(48) }
 }
 
+export const TEST_OS_IMAGE = { name: 'dstack test', hash: 'aa'.repeat(32) }
+
 export function testBuilds(mrtdHex: string): ApprovedNodeBuilds {
-  return { os: [testOs(mrtdHex)], images: [TEST_IMAGE] }
+  return { os: [testOs(mrtdHex)], osImages: [TEST_OS_IMAGE], images: [TEST_IMAGE] }
 }
 
 type Obj = Record<string, any>

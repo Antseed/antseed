@@ -11,11 +11,10 @@ import { ChatCopyButton } from './ChatCopyButton';
 import { RoutedModelIndicator } from './RoutedModelIndicator';
 import { ImageGenerationPlaceholder } from './ImageGenerationPlaceholder';
 import type { ChatMessage, ContentBlock } from './chat-shared';
+import { splitStudioMessage } from '../../../modules/studio/track-view';
 import {
   buildChatMetaParts,
   formatToolExecutionLabel,
-  getMyrmecochoryLabel,
-  toToolDisplayName,
 } from './chat-shared';
 
 type ToolRenderItem = {
@@ -436,6 +435,19 @@ function ToolModal({ item, onClose }: { item: ToolRenderItem; onClose: () => voi
   );
 }
 
+/** A chat for people, not code (Studio's): it says the agent is working while a tool runs, and never shows the commands. */
+function QuietToolGroup({ blocks }: { blocks: ContentBlock[] }) {
+  if (!blocks.some((block) => block.status === 'running')) return null;
+  return (
+    <div className="tool-group streaming status-running" role="status">
+      <div className="tool-group-summary-bar">
+        <span className="tool-group-summary-text">Working…</span>
+        <span className="thinking-dots" aria-hidden="true"><span /><span /><span /></span>
+      </div>
+    </div>
+  );
+}
+
 function ToolGroupView({ blocks, onOpenPreview }: { blocks: ContentBlock[]; onOpenPreview?: (url: string) => void }) {
   const [manualToggle, setManualToggle] = useState<boolean | null>(null);
   const [modalItem, setModalItem] = useState<ToolRenderItem | null>(null);
@@ -614,22 +626,40 @@ export function toolMediaAttachmentBlock(block: ContentBlock): ContentBlock | nu
   };
 }
 
-function renderAssistantBlocks(
-  blocks: ContentBlock[],
-  streaming = false,
-  messagePrefix = '',
-  onOpenPreview?: (url: string) => void,
-  conversationId?: string,
-  highlightQuery?: string,
-  activeHighlight?: boolean,
-  blockUnsafePaymentInstructions = false,
-): ReactNode[] {
+type AssistantBlockOptions = {
+  streaming?: boolean;
+  messagePrefix?: string;
+  onOpenPreview?: (url: string) => void;
+  conversationId?: string;
+  highlightQuery?: string;
+  activeHighlight?: boolean;
+  blockUnsafePaymentInstructions?: boolean;
+  /** Studio's chat: the agent's commands show as "Working…", and its reasoning stays hidden. */
+  quietWork?: boolean;
+};
+
+function renderAssistantBlocks(blocks: ContentBlock[], options: AssistantBlockOptions = {}): ReactNode[] {
+  const {
+    streaming = false,
+    messagePrefix = '',
+    onOpenPreview,
+    conversationId,
+    highlightQuery,
+    activeHighlight,
+    blockUnsafePaymentInstructions = false,
+    quietWork = false,
+  } = options;
   const nodes: ReactNode[] = [];
   let toolGroup: ContentBlock[] = [];
   let thinkingGroup: ContentBlock[] = [];
 
   const flushThinkingGroup = (): void => {
     if (thinkingGroup.length === 0) return;
+    // A quiet chat keeps the agent's reasoning to itself: it names ids and files the user never needs.
+    if (quietWork) {
+      thinkingGroup = [];
+      return;
+    }
     const first = thinkingGroup[0];
     const index = blocks.indexOf(first);
     nodes.push(renderBlock(
@@ -648,13 +678,13 @@ function renderAssistantBlocks(
   const flushToolGroup = (): void => {
     if (toolGroup.length === 0) return;
     const groupKey = `${messagePrefix}-tool-group-${nodes.length}-${String(toolGroup[0]?.id || toolGroup[0]?.tool_use_id || '')}`;
-    nodes.push(
+    nodes.push(quietWork ? <QuietToolGroup key={groupKey} blocks={toolGroup} /> : (
       <ToolGroupView
         key={groupKey}
         blocks={toolGroup}
         onOpenPreview={onOpenPreview}
-      />,
-    );
+      />
+    ));
     // Skill-driven media: a running video job shows the generation
     // placeholder, and show_media results render inline as generated files.
     if (toolGroup.some(isRunningVideoGenerationTool)) {
@@ -944,6 +974,23 @@ function CopyResponseButton({ content }: { content: unknown }) {
   );
 }
 
+type StudioChip = { label: string; context: string };
+
+/** A user message sent with a Studio selection keeps it as a chip, as in the composer; the agent gets the full line. */
+function withoutStudioContext(content: unknown): { chip: StudioChip | null; content: unknown } {
+  if (typeof content === 'string') {
+    const split = splitStudioMessage(content);
+    return split ? { chip: split, content: split.rest } : { chip: null, content };
+  }
+  if (Array.isArray(content)) {
+    const blocks = content as ContentBlock[];
+    const index = blocks.findIndex((block) => block.type === 'text');
+    const split = index === -1 ? null : splitStudioMessage(String(blocks[index]!.text || ''));
+    if (split) return { chip: split, content: blocks.map((block, at) => (at === index ? { ...block, text: split.rest } : block)) };
+  }
+  return { chip: null, content };
+}
+
 type ChatBubbleProps = {
   message: ChatMessage;
   streaming?: boolean;
@@ -953,10 +1000,11 @@ type ChatBubbleProps = {
   conversationId?: string;
   searchQuery?: string;
   searchActive?: boolean;
+  /** Show that the agent is working, not the commands it runs or its reasoning: for a chat beside something people make, like a Studio project. */
+  quietWork?: boolean;
 };
 
-export function ChatBubble({ message, streaming = false, onOpenPreview, conversationId, searchQuery, searchActive }: ChatBubbleProps) {
-  const [metaExpanded, setMetaExpanded] = useState(false);
+export function ChatBubble({ message, streaming = false, onOpenPreview, conversationId, searchQuery, searchActive, quietWork = false }: ChatBubbleProps) {
   const metaParts = useMemo(() => buildChatMetaParts(message), [message]);
   const hasStreamingBlocks = useMemo(
     () =>
@@ -977,21 +1025,37 @@ export function ChatBubble({ message, streaming = false, onOpenPreview, conversa
   const content = useMemo(() => {
     if (message.role === 'assistant') {
       if (Array.isArray(message.content)) {
-        return renderAssistantBlocks(message.content as ContentBlock[], isStreamingBubble, messagePrefix, onOpenPreview, conversationId, searchQuery, searchActive, true);
+        return renderAssistantBlocks(message.content as ContentBlock[], {
+          streaming: isStreamingBubble,
+          messagePrefix,
+          onOpenPreview,
+          conversationId,
+          highlightQuery: searchQuery,
+          activeHighlight: searchActive,
+          blockUnsafePaymentInstructions: true,
+          quietWork,
+        });
       }
       return <MarkdownContent text={String(message.content)} highlightQuery={searchQuery} activeHighlight={searchActive} blockUnsafePaymentInstructions />;
     }
 
-    if (typeof message.content === 'string') {
-      return <MarkdownContent text={message.content} highlightQuery={searchQuery} activeHighlight={searchActive} />;
+    const { chip, content: userContent } = withoutStudioContext(message.content);
+    const chipNode = chip ? (
+      <span className={styles.contextChip} title={chip.context}>
+        <span className={styles.contextLabel}>{chip.label}</span>
+      </span>
+    ) : null;
+
+    if (typeof userContent === 'string') {
+      return <>{chipNode}{userContent ? <MarkdownContent text={userContent} highlightQuery={searchQuery} activeHighlight={searchActive} /> : null}</>;
     }
 
-    if (Array.isArray(message.content)) {
-      return (message.content as ContentBlock[]).map((block, index) => renderBlock(block, index, isStreamingBubble, messagePrefix, conversationId, searchQuery, searchActive, false));
+    if (Array.isArray(userContent)) {
+      return <>{chipNode}{(userContent as ContentBlock[]).map((block, index) => renderBlock(block, index, isStreamingBubble, messagePrefix, conversationId, searchQuery, searchActive, false))}</>;
     }
 
     return <div className="chat-bubble-content">{JSON.stringify(message.content)}</div>;
-  }, [message, isStreamingBubble, messagePrefix, onOpenPreview, conversationId, searchQuery, searchActive]);
+  }, [message, isStreamingBubble, messagePrefix, onOpenPreview, conversationId, searchQuery, searchActive, quietWork]);
 
   const bubbleMeta =
     metaParts.length > 0 && !isStreamingBubble ? (

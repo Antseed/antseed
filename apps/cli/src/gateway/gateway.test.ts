@@ -4,21 +4,25 @@ import { test } from 'node:test'
 import { SPEND_ATTRIBUTION_HEADER, SpendAttributionFeed } from '../proxy/spend-attribution.js'
 import { GatewayAccounting, videoJobKey } from './accounting.js'
 import { generateApiKey } from './keys.js'
+import { keysUsage } from './key-savings.js'
 import { findLimitBreach, periodResetsAt, periodStart } from './limits.js'
 import { formatUsdc, parseUsdToUsdc, usdcToDecimalString } from './money.js'
-import { GatewayServer, workspaceOutOfCreditsBody, type GatewayTopupOptions } from './server.js'
+import { retailTokenCostUsd } from '@antseed/node/retail-prices'
+import { canonicalModelKey } from '@antseed/node'
+import { GatewayServer, workspaceOutOfCreditsBody, type GatewayServerOptions, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
 import { GatewayStore } from './store.js'
 import { liveBuyerIdentityAddress } from './runtime.js'
-import { Wallet } from 'ethers'
+import { Wallet, recoverAddress } from 'ethers'
 import { randomBytes } from 'node:crypto'
 import { tempDataDir } from './console-api/test-support.js'
 import {
   X402Facilitator,
   decodeHeaderJson,
   encodeHeaderJson,
+  type ContractSignatureCheck,
   type PaymentPayload,
   type PaymentRequired,
   type SettlementResponse,
@@ -63,7 +67,7 @@ async function request(port: number, path: string, options: { method?: string; k
   })
 }
 
-const BUYER_OUT_OF_CREDITS = 'You are out of Antseed credits for this request. Add funds in the Antseed app, or run "antseed buyer deposit" in the CLI to show your funding address, then retry. Free sellers need no funds: pin one as <peerId>@<model>.'
+const BUYER_OUT_OF_CREDITS = 'You are out of Antseed credits for this request. Add funds in Antseed Desktop or your gateway console, or run "antseed buyer deposit" in the CLI to show your funding address, then retry. Free sellers need no funds: pin one as <peerId>@<model>.'
 const OPENAI_OUT_OF_CREDITS = { error: { type: 'api_error', code: 'antseed_buyer_fault', message: BUYER_OUT_OF_CREDITS, param: 'insufficient_deposits' } }
 const ANTHROPIC_OUT_OF_CREDITS = { type: 'error', error: { type: 'antseed_buyer_fault', message: `${BUYER_OUT_OF_CREDITS} (insufficient_deposits)` } }
 
@@ -152,6 +156,7 @@ async function startGateway(
   topup: GatewayTopupOptions | null = null,
   settleGraceMs = 50,
   identityAddress: (name: string) => Promise<string | null> = TEST_IDENTITY_ADDRESS,
+  extra: Partial<GatewayServerOptions> = {},
 ) {
   const accounting = new GatewayAccounting(store, { holdUsdc, settleGraceMs })
   const feed = new SpendFeedPoller({
@@ -170,6 +175,7 @@ async function startGateway(
     refreshSpendFeed: () => feed.pollOnce(),
     videoBudgetEnforced: () => feed.videoBudgetEnforced,
     onLog: (message) => logs.push(message),
+    ...extra,
   })
   const port = await server.start()
   return {
@@ -251,6 +257,24 @@ test('store keeps keys hashed, syncs the tunnel env key, and records ledger entr
   }
 })
 
+test('gateway answers /healthz without a key and without logging a rejected sign-in', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ costUsdc: 0 })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const health = await request(gateway.port, '/healthz')
+    assert.equal(health.status, 200)
+    assert.deepEqual(JSON.parse(health.body), { status: 'ok' })
+    assert.equal(gateway.logs.some((line) => line.includes('rejected')), false)
+    assert.equal((await request(gateway.port, '/v1/models')).status, 401)
+    assert.equal(gateway.logs.some((line) => line.includes('rejected authentication')), true)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
 test('gateway pays with the key\'s buyer identity and ignores the client\'s choice', async () => {
   const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer({ costUsdc: 100_000 })
@@ -269,6 +293,99 @@ test('gateway pays with the key\'s buyer identity and ignores the client\'s choi
 
     const info = JSON.parse((await request(gateway.port, '/v1/key', { key: team.secret })).body).data
     assert.equal(info.buyer_address, '0x00000000000000000000000000000000000000aa')
+    // No balance reader wired: the field is there, and says it doesn't know.
+    assert.equal(info.balance, null)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('GET /v1/key reports the balance of the wallet that pays for the key', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const asked: string[] = []
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 50, TEST_IDENTITY_ADDRESS, {
+    identityBalance: async (name) => {
+      asked.push(name)
+      return { available: '12.500000', reserved: '0.250000', pending: '0.100000', wallet: '2.000000', creditLimit: '100.000000', operator: null, stale: false }
+    },
+  })
+  try {
+    const info = JSON.parse((await request(gateway.port, '/v1/key', { key: team.secret })).body).data
+    assert.deepEqual(info.balance, {
+      available_usd: '12.500000', reserved_usd: '0.250000', pending_usd: '0.100000',
+      wallet_usd: '2.000000', credit_limit_usd: '100.000000', operator: null, stale: false,
+    })
+    assert.deepEqual(asked, ['team-a'])
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('GET /v1/key/rewards reports the paying wallet\'s rewards, and null when they can\'t be read', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const other = store.createKey({ label: 'Other', buyerIdentity: 'team-b', limits: NO_LIMITS, expiresAt: null })
+  const asked: string[] = []
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 50, TEST_IDENTITY_ADDRESS, {
+    walletRewards: async (address) => {
+      asked.push(address)
+      return { available: true, pendingAnts: '3.5', currentEpoch: 12, transfersEnabled: false }
+    },
+  })
+  try {
+    const info = JSON.parse((await request(gateway.port, '/v1/key/rewards', { key: team.secret })).body).data
+    assert.deepEqual(info, { available: true, address: '0x00000000000000000000000000000000000000aa', pending_ants: '3.5', current_epoch: 12, transfers_enabled: false })
+    assert.deepEqual(asked, ['0x00000000000000000000000000000000000000aa'])
+    // A wallet with no known address has no rewards to read.
+    assert.equal(JSON.parse((await request(gateway.port, '/v1/key/rewards', { key: other.secret })).body).data, null)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('GET /v1/key/savings compares the key\'s own requests with retail prices', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ costUsdc: 100_000 })
+  const team = store.createKey({ label: 'Team', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const other = store.createKey({ label: 'Other', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const price = { input: 10, output: 30, cachedInput: null }
+  let prices: Map<string, typeof price> | null = new Map([[canonicalModelKey('example-model'), price]])
+  const gateway = await startGateway(store, buyer.port, 300_000, null, 50, TEST_IDENTITY_ADDRESS, { retailPrices: async () => prices })
+  try {
+    const body = JSON.stringify({ model: 'example-model', messages: [] })
+    for (let i = 0; i < 2; i++) assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: team.secret, body })).status, 200)
+    assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: other.secret, body })).status, 200)
+    await gateway.feed.pollOnce()
+
+    const savings = JSON.parse((await request(gateway.port, '/v1/key/savings', { key: team.secret })).body).data
+    const retail = 2 * retailTokenCostUsd(100, 0, 20, price)
+    assert.equal(savings.matched_requests, 2)
+    assert.equal(savings.paid_usd, 0.2)
+    assert.equal(savings.retail_usd, Math.round(retail * 10_000) / 10_000)
+    assert.equal(savings.saved_usd, Math.round(Math.max(0, retail - 0.2) * 10_000) / 10_000)
+
+    prices = null
+    assert.equal(JSON.parse((await request(gateway.port, '/v1/key/savings', { key: team.secret })).body).data, null)
+
+    // The owner's view keeps a retired key's history: revoked, its own secret can't read it.
+    const current = new Map([[canonicalModelKey('example-model'), price]])
+    store.revokeKey(team.key.id)
+    assert.equal((await request(gateway.port, '/v1/key', { key: team.secret })).status, 401)
+    const both = keysUsage(store, [team.key.id, other.key.id, 'key_unknown'], current)
+    assert.equal(both.requests, 3)
+    assert.equal(both.spent_usd, '0.300000')
+    assert.equal(both.savings?.matched_requests, 3)
+    assert.equal(both.savings?.paid_usd, 0.3)
+    assert.equal(keysUsage(store, [team.key.id], null).savings, null)
   } finally {
     await gateway.stop()
     await buyer.close()
@@ -340,21 +457,41 @@ test('spend signed without a request id goes to the latest tag on that seller', 
   assert.deepEqual(feed.page(0).events.map((event) => [event.tag, event.amountUsdc]), [['gw_a', '10'], ['gw_a', '7']])
 })
 
-test('spend without a request id is not guessed when several tags share the identity and seller', (context) => {
+test('spend without a request id is shared among the tags that used the seller lately, by their spend', (context) => {
   let now = 0
   const feed = new SpendAttributionFeed(() => now)
   context.after(() => feed.close())
   feed.track('req-a', 'gw_a')
   feed.track('req-b', 'gw_b')
   const spend = { sellerPeerId: 's', amountUsdc: '10', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0' }
+  feed.record({ ...spend, requestId: 'req-a', amountUsdc: '300' })
+  now = 1
+  feed.record({ ...spend, requestId: 'req-b', amountUsdc: '100' })
+  // A seller's catch-up prompt while both requests run: nothing may be lost, and each pays its part.
+  feed.record({ ...spend, requestId: null, amountUsdc: '101', outputTokens: '9' })
+  const shared = feed.page(0).events.slice(2)
+  assert.deepEqual(shared.map((event) => [event.tag, event.amountUsdc, event.outputTokens]), [['gw_b', '26', '9'], ['gw_a', '75', '0']])
+  // After the window it goes to the last tag that had spend on the seller.
+  now = 6 * 60 * 1000
+  feed.record({ ...spend, requestId: null, amountUsdc: '3' })
+  feed.record({ ...spend, requestId: null, amountUsdc: '4', sellerPeerId: 'never-used' })
+  assert.deepEqual(feed.page(0).events.slice(4).map((event) => [event.tag, event.amountUsdc]), [['gw_b', '3']])
+})
+
+test('untagged spend is shared evenly when the recent tags had no spend of their own, and per buyer identity', (context) => {
+  const feed = new SpendAttributionFeed()
+  context.after(() => feed.close())
+  feed.track('req-a', 'gw_a')
+  feed.track('req-b', 'gw_b')
+  feed.track('req-c', 'gw_c')
+  const spend = { sellerPeerId: 's', amountUsdc: '0', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0' }
   feed.record({ ...spend, requestId: 'req-a' })
   feed.record({ ...spend, requestId: 'req-b' })
-  feed.record({ ...spend, requestId: null, amountUsdc: '7' })
-  assert.deepEqual(feed.page(0).events.map((event) => event.tag), ['gw_a', 'gw_b'])
-  now = 6 * 60 * 1000
-  feed.record({ ...spend, requestId: 'req-b' })
-  feed.record({ ...spend, requestId: null, amountUsdc: '3' })
-  assert.deepEqual(feed.page(0).events.map((event) => [event.tag, event.amountUsdc]).slice(2), [['gw_b', '10'], ['gw_b', '3']])
+  feed.record({ ...spend, requestId: 'req-c', buyerIdentity: 'other-workspace' })
+  feed.record({ ...spend, requestId: null, amountUsdc: '5' })
+  const shares = feed.page(0).events.filter((event) => event.requestId === null)
+  assert.deepEqual(shares.map((event) => event.tag).sort(), ['gw_a', 'gw_b'])
+  assert.equal(shares.reduce((sum, event) => sum + Number(event.amountUsdc), 0), 5)
 })
 
 test('late spend keeps its tag after more than 2048 newer requests', (context) => {
@@ -674,6 +811,13 @@ async function pricedVideoBuyer(priceUsdc: number, createDelayMs = 0, priceHeade
       if (req.url?.endsWith('/queue')) {
         const cap = (req.headers['x-antseed-max-video-usdc'] as string | undefined) ?? null
         caps.push(cap)
+        // A seller holding the buyer back lists the buyer's jobs that hold it, whichever key started them.
+        if (body.job?.startsWith('hold:')) {
+          const jobs = body.job.slice('hold:'.length).split(',').map((id) => ({ id, protocol: 'venice-video' }))
+          res.writeHead(409, { ...headers, 'content-type': 'application/json', 'retry-after': '60' })
+          res.end(JSON.stringify({ error: { code: 'video_jobs_uncollected', message: 'A video you started on this seller over an hour ago has not been downloaded. Its job ID is in error.jobs.', jobs } }))
+          return
+        }
         if (cap !== null && priceUsdc > Number(cap)) {
           res.writeHead(422, { ...headers, 'content-type': 'application/json' })
           res.end(JSON.stringify({ error: { code: 'buyer-budget-too-low', message: 'Video costs more than the spend limit has left' } }))
@@ -722,7 +866,7 @@ async function videoGateway(priceUsdc: number, dailyCap: number, createDelayMs =
   const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
   return {
     store, key, buyer, gateway,
-    create: (job: string) => request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: JSON.stringify({ model: 'seedance', prompt: 'An ant', duration: '8s', job }) }),
+    create: (job: string, as: string = secret) => request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: as, body: JSON.stringify({ model: 'seedance', prompt: 'An ant', duration: '8s', job }) }),
     poll: (job: string, as: string = secret) => request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: as, body: JSON.stringify({ model: 'seedance', queue_id: job }) }),
     secret,
     otherSecret: other.secret,
@@ -840,6 +984,33 @@ test('only the key that created a video job may retrieve it', async () => {
     assert.equal(JSON.parse(stolen.body).error.code, 'video_route_not_found')
     assert.equal((await video.poll('job-unknown')).status, 404, 'a job this gateway never created is refused too')
     assert.equal((await video.poll('job-done')).status, 200)
+  } finally {
+    await video.close()
+  }
+})
+
+test("a seller's video job hold shows each key only the jobs it created", async () => {
+  const video = await videoGateway(400_000, 1_000_000)
+  try {
+    assert.equal((await video.create('job-mine')).status, 200)
+    assert.equal((await video.create('job-theirs', video.otherSecret)).status, 200)
+
+    const mine = await video.create('hold:job-mine,job-theirs')
+    assert.equal(mine.status, 409)
+    assert.equal(mine.headers['retry-after'], '60')
+    assert.deepEqual(JSON.parse(mine.body).error, {
+      code: 'video_jobs_uncollected',
+      message: 'A video you started on this seller over an hour ago has not been downloaded. Its job ID is in error.jobs.',
+      jobs: [{ id: 'job-mine', protocol: 'venice-video' }],
+    })
+
+    // Held back only by another key's job: told so, with no job of anyone's.
+    const theirs = await video.create('hold:job-mine,job-unknown', video.otherSecret)
+    assert.equal(theirs.status, 409)
+    const error = JSON.parse(theirs.body).error
+    assert.equal(error.code, 'video_jobs_held')
+    assert.deepEqual(error.jobs, [])
+    assert.ok(!theirs.body.includes('job-mine') && !theirs.body.includes('job-unknown'))
   } finally {
     await video.close()
   }
@@ -1011,6 +1182,7 @@ test('gateway settles reported spend per key and answers 402 once a cap is reach
     assert.equal(data.limits.daily.limit_usd, '1.000000')
     assert.equal(data.limits.daily.remaining_usd, '0.000000')
     assert.equal(data.limits.total.limit_usd, null)
+    assert.deepEqual(data.held, { held_usd: '0.000000', requests_usd: '0.000000', video_usd: '0.000000' }, 'nothing in flight, no video')
 
     const stats = store.usageStats(limited.key.id)
     assert.equal(stats.failedRequests, 0)
@@ -1243,10 +1415,98 @@ test('an accepted video whose commitment could not be stored still counts after 
     const restarted = new GatewayAccounting(store, { holdUsdc: 100_000 })
     const job = videoJobKey('venice-video', 'job-1')
     assert.equal(restarted.videoJobOwner(job), key.id, 'its key can still retrieve it')
-    assert.equal(restarted.heldUsdc(key.id), 1_000_000, 'and it still holds the whole room its create was told about')
+    assert.equal(restarted.heldUsdc(key.id), 400_000, 'and it holds the price the buyer reported, not the whole room its create was told about')
     assert.deepEqual(store.listVideoCommitments(Date.now()).map((row) => row.job), [job], 'the reservation became the job')
-    assert.equal(restarted.admit(key).ok, false, 'so other spend cannot take that room')
+    const next = restarted.admit(key)
+    assert.ok(next.ok, 'so the rest of the key\'s room stays usable')
+    restarted.release(next.tag)
+    store.startRequest({ tag: 'late', keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: null, startedAt: 0 })
+    restarted.ingest('boot', [{ seq: 1, tag: 'late', requestId: 'r', buyerIdentity: DEFAULT_BUYER_IDENTITY, sellerPeerId: 's', amountUsdc: '600000', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0', at: Date.now() }])
+    assert.equal(restarted.admit(key).ok, false, 'while other spend still cannot take the job\'s price')
     restarted.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('a recovered video whose price the buyer did not report still holds the whole room its create was told about', async () => {
+  const { store, cleanup } = tempDataDir()
+  // A price the gateway cannot read: the job may cost up to the room, so all of it stays held.
+  const buyer = await pricedVideoBuyer(400_000, 0, 'lots')
+  const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+  const save = store.saveVideoCommitment.bind(store)
+  let failWrites = true
+  store.saveVideoCommitment = (record, replaces) => { if (failWrites && !record.job.startsWith('create\n')) throw new Error('database is locked'); save(record, replaces) }
+  const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
+  try {
+    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: '{"model":"seedance","prompt":"An ant","duration":"8s","job":"job-1"}' })).status, 200)
+    await waitFor(() => gateway.accounting.heldUsdc(key.id) === 1_000_000)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+  }
+  try {
+    failWrites = false
+    const restarted = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    assert.equal(restarted.heldUsdc(key.id), 1_000_000)
+    assert.equal(restarted.admit(key).ok, false)
+    restarted.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('requests a stopped gateway left unfinished never hold spend, and a restart marks them ended', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Chat', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 5_000_000, monthly: null, total: null }, expiresAt: null })
+    const before = new GatewayAccounting(store, { holdUsdc: 300_000 })
+    // Nine requests in flight when the gateway is stopped.
+    for (let i = 0; i < 9; i += 1) {
+      const admission = before.admit(key)
+      assert.ok(admission.ok)
+      store.startRequest({ tag: admission.tag, keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: 'm', startedAt: Date.now() - 1_000 })
+    }
+    assert.equal(before.heldUsdc(key.id), 2_700_000)
+    before.dispose()
+
+    // Their holds lived in the stopped process: the next one starts with none, before or after the cleanup.
+    const after = new GatewayAccounting(store, { holdUsdc: 300_000 })
+    assert.equal(after.heldUsdc(key.id), 0)
+    const unfinished = () => (store.database.prepare('SELECT COUNT(*) AS n FROM gateway_requests WHERE key_id = ? AND finished_at IS NULL').get(key.id) as { n: number }).n
+    assert.equal(unfinished(), 9)
+    const restartedAt = Date.now()
+    store.startRequest({ tag: 'new', keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: 'm', startedAt: restartedAt })
+    assert.equal(store.finishAbandonedRequests(restartedAt), 9, 'only the previous run\'s requests')
+    assert.equal(unfinished(), 1, 'this run\'s request is still in flight')
+    const ended = store.database.prepare("SELECT DISTINCT status, error_code FROM gateway_requests WHERE tag != 'new'").all()
+    assert.deepEqual(ended, [{ status: 499, error_code: 'gateway_restarted' }])
+    assert.equal(after.heldUsdc(key.id), 0)
+    after.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('a 402 says how much of the hold is requests in flight and how much is video jobs', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 900_000, monthly: null, total: null }, expiresAt: null })
+    const accounting = new GatewayAccounting(store, { holdUsdc: 300_000 })
+    const create = accounting.admit(key, undefined, { videoCreate: true })
+    assert.ok(create.ok)
+    accounting.commitVideo(create.tag, videoJobKey('venice-video', 'job-1'), 600_000)
+    accounting.release(create.tag)
+    const running = accounting.admit(key)
+    assert.ok(running.ok)
+    const refused = accounting.admit(key)
+    assert.equal(refused.ok, false)
+    assert.ok(!refused.ok && refused.breach)
+    assert.equal(refused.breach.heldUsdc, 900_000)
+    assert.equal(refused.breach.heldRequestsUsdc, 300_000)
+    assert.equal(refused.breach.heldVideoUsdc, 600_000)
+    assert.deepEqual(accounting.heldBreakdown(key.id), { requestsUsdc: 300_000, videoUsdc: 600_000 })
+    accounting.dispose()
   } finally {
     cleanup()
   }
@@ -1782,6 +2042,81 @@ test('x402 top-up rejects payments that do not match before asking the facilitat
   }
 })
 
+test('x402 top-up accepts a smart-account payer whose contract approves the signature (ERC-1271)', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const facilitator = await fakeFacilitator()
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null, topupEnabled: true })
+  // A smart account approves digests its owner key signed, behind a one-byte
+  // validator prefix: 66 bytes, as EIP-7702 accounts sign. ECDSA recovery of
+  // such a signature never yields the account's address.
+  const owner = Wallet.createRandom()
+  const account = Wallet.createRandom().address
+  const checked: string[] = []
+  let chainDown = false
+  const checkContractSignature: ContractSignatureCheck = async (address, digest, signature) => {
+    checked.push(address)
+    if (chainDown) throw new Error('every RPC endpoint is backing off')
+    return address.toLowerCase() === account.toLowerCase()
+      && signature.startsWith('0x00') && signature.length === 2 + 66 * 2
+      && recoverAddress(digest, `0x${signature.slice(4)}`) === owner.address
+  }
+  const smartAccount = {
+    address: account,
+    signTypedData: async (...args: Parameters<Wallet['signTypedData']>) => `0x00${(await owner.signTypedData(...args)).slice(2)}`,
+  }
+  const gateway = await startGateway(store, buyer.port, 300_000, { ...facilitator.topup(), checkContractSignature })
+  const topup = (headers: http.OutgoingHttpHeaders = {}) =>
+    request(gateway.port, '/v1/key/topup', { method: 'POST', key: team.secret, body: '{"amount_usd":"5"}', headers })
+  const reasonFor = async (signature: string) =>
+    decodeHeaderJson<PaymentRequired>((await topup({ 'payment-signature': signature })).headers['payment-required'] as string)!.error
+  try {
+    const required = decodeHeaderJson<PaymentRequired>((await topup()).headers['payment-required'] as string)!
+
+    const paid = await topup({ 'payment-signature': await signPayment(smartAccount, required) })
+    const refusal = paid.headers['payment-required'] && decodeHeaderJson<PaymentRequired>(paid.headers['payment-required'] as string)!.error
+    assert.equal(paid.status, 200, `refused: ${refusal}`)
+    assert.equal(decodeHeaderJson<SettlementResponse>(paid.headers['payment-response'] as string)!.payer, account)
+    assert.deepEqual(checked, [account])
+    assert.deepEqual(facilitator.calls, ['/verify', '/settle'])
+    assert.equal(store.usageStats(team.key.id).creditedUsdc, 5_000_000)
+
+    // The same signature naming another payer: that address does not approve it.
+    const forged = decodeHeaderJson<PaymentPayload>(await signPayment(smartAccount, required))!
+    forged.payload.authorization.from = Wallet.createRandom().address
+    assert.equal(await reasonFor(encodeHeaderJson(forged)), 'invalid_exact_evm_payload_signature')
+
+    // A signature that is not hex is refused without asking the chain.
+    const garbled = decodeHeaderJson<PaymentPayload>(await signPayment(smartAccount, required))!
+    garbled.payload.signature = 'not-a-signature'
+    checked.length = 0
+    assert.equal(await reasonFor(encodeHeaderJson(garbled)), 'invalid_exact_evm_payload_signature')
+    assert.deepEqual(checked, [])
+
+    // Hex of odd length is not bytes either, so the ERC-1271 call could not encode it.
+    garbled.payload.signature = '0xabc'
+    assert.equal(await reasonFor(encodeHeaderJson(garbled)), 'invalid_exact_evm_payload_signature')
+    assert.deepEqual(checked, [])
+
+    // The chain cannot be read: refused before the facilitator, not called a bad signature.
+    chainDown = true
+    assert.equal(await reasonFor(await signPayment(smartAccount, required)), 'unexpected_verify_error')
+    assert.ok(gateway.logs.some((line) => line.includes('smart-account signature check failed')))
+    assert.deepEqual(facilitator.calls, ['/verify', '/settle'])
+
+    // An ECDSA signature by the payer itself is accepted without asking the chain.
+    checked.length = 0
+    assert.equal((await topup({ 'payment-signature': await signPayment(Wallet.createRandom(), required) })).status, 200)
+    assert.deepEqual(checked, [])
+    assert.equal(store.usageStats(team.key.id).creditedUsdc, 10_000_000)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    await facilitator.close()
+    cleanup()
+  }
+})
+
 test('x402 top-up still answers 200 when the settled payment cannot be booked', async () => {
   const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer()
@@ -1857,7 +2192,7 @@ test('the buyer\'s out-of-credits 402 names the workspace and its funding, and k
   assert.match(anthropic.error.message, /^This API key's workspace \(Default\) is out of Antseed credits/)
   assert.match(anthropic.error.message, /under Wallet & Funding, then retry\./)
   assert.match(anthropic.error.message, /\(insufficient_deposits\)$/)
-  assert.doesNotMatch(anthropic.error.message, /antseed buyer deposit|Antseed app/)
+  assert.doesNotMatch(anthropic.error.message, /antseed buyer deposit|Antseed Desktop/)
 
   // Any other 402 passes through unchanged.
   const other = { error: { type: 'insufficient_quota', code: 'spend_limit_reached', message: 'This API key reached its daily spend limit of $1.00.' } }

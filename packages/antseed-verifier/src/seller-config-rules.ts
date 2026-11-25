@@ -37,10 +37,16 @@ const PLUGINS: Readonly<Record<string, { defaultUrl: string; baseUrl: boolean; f
  * holding an API key belongs in a secret instead, since buyers read open settings).
  */
 export const LITERAL_ENV = /^(?:ANTSEED_TEE_PEER_ID|ANTSEED_BASE_RPC_URL|OPENAI_BODY_INJECT_JSON|ANTSEED_VERIFIER_PROVIDER_[A-Z0-9_]+)$/
+/**
+ * The only variable a TEE seller's alerts may read their Telegram bot token from: the CLI's
+ * default (DEFAULT_TELEGRAM_TOKEN_ENV in apps/cli/src/seller-alerts/settings.ts). The alerts send
+ * the token to Telegram, so letting the config name another variable could send an API key there.
+ */
+export const ALERTS_TOKEN_ENV = 'ANTSEED_ALERTS_TELEGRAM_TOKEN'
 /** Names a hidden secret may have (checkHiddenSecrets narrows API keys to the ones the config names). */
-export const SECRET_ENV = /^(?:ANTSEED_IDENTITY_HEX|ANTSEED_BASE_RPC_URL|[A-Z][A-Z0-9_]*_API_KEY)$/
+export const SECRET_ENV = /^(?:ANTSEED_IDENTITY_HEX|ANTSEED_BASE_RPC_URL|ANTSEED_ALERTS_TELEGRAM_TOKEN|[A-Z][A-Z0-9_]*_API_KEY)$/
 /** Secrets the CLI reads itself; any other hidden variable must be a provider API key the config names. */
-const NODE_SECRETS = new Set(['ANTSEED_IDENTITY_HEX', 'ANTSEED_BASE_RPC_URL'])
+const NODE_SECRETS = new Set(['ANTSEED_IDENTITY_HEX', 'ANTSEED_BASE_RPC_URL', ALERTS_TOKEN_ENV])
 /** Prefixes of variables the CLI reads for its own settings (telemetry, payments, tunnels), never API keys. */
 const RESERVED_ENV = /^(?:ANTSEED_|POSTHOG_|CDP_)/
 
@@ -52,7 +58,7 @@ const RESERVED_ENV = /^(?:ANTSEED_|POSTHOG_|CDP_)/
 const CONFIG_KEYS = {
   config: new Set(['identity', 'seller', 'payments', 'network', 'telemetry']),
   seller: new Set([
-    'reserveFloor', 'maxConcurrentBuyers', 'providers', 'publicAddress', 'verifications', 'maxUploadBodyBytes',
+    'reserveFloor', 'maxConcurrentBuyers', 'providers', 'publicAddress', 'verifications', 'maxUploadBodyBytes', 'maxInFlightRequestBytes',
     'maxInboundConnections', 'maxInboundConnectionsPerIp', 'announceProviderIds', 'inboundIdleTimeoutMs', 'verifiers', 'healthCheck', 'gasCheck', 'gasRefuel', 'freeTier',
     'alerts', 'restrictedCountries', 'freeUsage', 'buyerLimits',
   ]),
@@ -112,6 +118,10 @@ export function checkSellerConfig(config: unknown): { upstreams: SellerUpstream[
   checkKeys(config, 'config', '')
   check(isObj(config['seller']), 'seller config has no seller section')
   checkKeys(config['seller'], 'seller', 'seller.')
+  const alerts = config['seller']['alerts']
+  const telegram = isObj(alerts) ? alerts['telegram'] : undefined
+  const tokenEnv = isObj(telegram) ? telegram['botTokenEnv'] : undefined
+  check(tokenEnv === undefined || tokenEnv === ALERTS_TOKEN_ENV, `seller.alerts.telegram.botTokenEnv must be ${ALERTS_TOKEN_ENV} or unset in a TEE seller config`)
   const providers = config['seller']['providers']
   check(isObj(providers) && Object.keys(providers).length > 0, 'seller config has no providers')
   const upstreams: SellerUpstream[] = []

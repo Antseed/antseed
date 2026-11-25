@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { unlinkSync } from 'node:fs'
 import { generateDstackQuote } from './dstack.js'
-import { nodeTeeCapability, decodeTeeTdxEvidence, tdxConfigKey, NODE_TEE_CAP_ID } from '../caps/tee-tdx.js'
+import { nodeTeeCapability, decodeTeeTdxEvidence, encodeTeeTdxEvidence, tdxConfigKey, NODE_TEE_CAP_ID } from '../caps/tee-tdx.js'
 import { computeReportData } from '../shared.js'
 
 interface Stub {
@@ -90,6 +90,19 @@ describe('generateDstackQuote', () => {
   })
 })
 
+describe('dstack evidence envelope', () => {
+  it('roundtrips optional raw fields and rejects non-string values', () => {
+    const evidence = encodeTeeTdxEvidence(new Uint8Array([1]), undefined, undefined, { vmConfig: '{"vm":1}', rawEventLog: '[]' })
+    expect(decodeTeeTdxEvidence(evidence)).toMatchObject({ vmConfig: '{"vm":1}', rawEventLog: '[]' })
+    expect(decodeTeeTdxEvidence(encodeTeeTdxEvidence(new Uint8Array([1])))).not.toHaveProperty('vmConfig')
+    expect(decodeTeeTdxEvidence(encodeTeeTdxEvidence(new Uint8Array([1])))).not.toHaveProperty('rawEventLog')
+    for (const field of ['vmConfig', 'rawEventLog']) {
+      const invalid = new TextEncoder().encode(JSON.stringify({ quote: 'AQ==', [field]: {} }))
+      expect(() => decodeTeeTdxEvidence(invalid)).toThrow(`"${field}" is not a string`)
+    }
+  })
+})
+
 describe('node-tee capability — dstack source', () => {
   let stub: Stub | undefined
   afterEach(async () => { await stub?.close(); stub = undefined })
@@ -112,7 +125,8 @@ describe('node-tee capability — dstack source', () => {
     const rtmr3Event = { imr: 3, event_type: 0x08000001, digest: '00', event: 'compose-hash', event_payload: 'ab'.repeat(32) }
     const eventLog = JSON.stringify([{ imr: 0, event_type: 1, digest: '00', event: '', event_payload: '' }, rtmr3Event])
     const appCompose = '{"runner":"docker-compose"}'
-    stub = await startDstackStub((rdHex) => ({ quote: rdHex, event_log: eventLog }), { tcb_info: JSON.stringify({ app_compose: appCompose }) })
+    const vmConfig = '{"cpus":4}'
+    stub = await startDstackStub((rdHex) => ({ quote: rdHex, event_log: eventLog, vm_config: vmConfig }), { tcb_info: JSON.stringify({ app_compose: appCompose }) })
     const nonce = new Uint8Array(randomBytes(32))
     const peerId = 'a'.repeat(40)
     const binding = 'c'.repeat(64)
@@ -124,6 +138,8 @@ describe('node-tee capability — dstack source', () => {
     const decoded = decodeTeeTdxEvidence(await nodeTeeCapability.collect!({ nonce, peerId, config }))
     expect(Buffer.from(decoded.quote).equals(computeReportData(nonce, peerId, binding))).toBe(true)
     expect(decoded.eventLog).toEqual([rtmr3Event])
+    expect(decoded.rawEventLog).toBe(eventLog)
+    expect(decoded.vmConfig).toBe(vmConfig)
     expect(decoded.appCompose).toBe(appCompose)
   })
 

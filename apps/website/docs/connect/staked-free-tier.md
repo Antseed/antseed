@@ -36,12 +36,11 @@ A seller can set a different program for each model, with its own limits and its
 
 ## Check a seller's program
 
-Sellers sign their limits and tiers into their peer metadata, and every Antseed app shows them next to the seller's free models:
+Sellers sign their limits and tiers into their peer metadata, and the gateway shows them next to the seller's free models:
 
-- **Desktop:** on a model's page, each seller's row shows that model's program. Examples: "1,000 free requests a day", "Free for stakers", or after a price, "200 free requests a day, then paid". The **Stake for more**, **Free for stakers** or **Free allowance** tag lists the tiers in requests and opens staking on that seller's pool.
 - **Gateway:** model lists mark models that are free, **Free for stakers** or have a **Free allowance**. In a model's provider list and on a provider's page, each model's program has an ⓘ with its tiers and a **Stake in this seller's pool** link.
 
-When you run out, the desktop app and the gateway chat say which seller's limit ran out, when it resets and the next tier, with a link to stake in that seller's pool.
+When you run out, the gateway chat says which seller's limit ran out, when it resets and the next tier, with a link to stake in that seller's pool.
 
 Antscan lists every seller that announces a program, with its free services:
 
@@ -56,7 +55,7 @@ When you hit a limit, your buyer returns HTTP 429 with `code: "free_tier_exhaust
 
 ## Stake on a seller
 
-The easiest way is the ANTS dashboard. Connect your wallet there and stake into the seller's pool. The stake links in the desktop app and the gateway open that seller's pool directly:
+The easiest way is the ANTS dashboard. Connect your wallet there and stake into the seller's pool. The stake links in the gateway open that seller's pool directly:
 
 ```bash
 antseed ants
@@ -75,12 +74,12 @@ The new allowance starts once the position activates in the next epoch. Sellers 
 
 Stake held by your buyer identity's own address counts automatically. Stake in any other wallet, yours or someone else's, counts once that wallet signs a code for your buyer address.
 
-**The staker** opens the ANTS dashboard (`antseed ants`, desktop **Rewards → Manage staking**, or the gateway's **Staking** page), goes to **My positions → Share free tier**, enters the buyer address and signs. The signature costs no gas and moves no funds. It names that one buyer address and lasts 30, 90 or 365 days. The dashboard shows a code starting with `antseed-free-tier-` to send to the buyer.
+**The staker** opens the ANTS dashboard (`antseed ants` or the gateway's **Staking** page), goes to **My positions → Share free tier**, enters the buyer address and signs. The signature costs no gas and moves no funds. It names that one buyer address and lasts 30, 90 or 365 days. The dashboard shows a code starting with `antseed-free-tier-` to send to the buyer.
 
 **The buyer** adds the code:
 
 - **CLI:** `antseed buyer free-tier add <code>`. Add `--identity <name>` for a named buyer identity.
-- **Desktop:** **Rewards → Staked free tier**. Paste the code and select **Add code**.
+- **Desktop:** **Settings → Wallet → Staked free tier**. Paste the code and select **Add code**.
 - **Gateway:** **Staking → Staked free tier → Add code** (workspace admins). The panel shows the workspace's buyer address to send to the staker.
 
 A running buyer picks the code up within a minute and sends it to sellers with its requests. To renew, the staker signs a new code and the buyer adds it. The new code replaces the old one.
@@ -102,7 +101,7 @@ A code names one buyer, so nobody else can use it. Removing it stops your buyer 
 
 Power shrinks every week, so a tier you reach today can drop as the lock runs down, or when a staker's code expires. Every app shows where you stand:
 
-- **Desktop:** **Rewards → Staked free tier** lists the stake each seller counts for you and until when ("Counts as 12,000 ANTS for a year, shrinking weekly until Mar 3, 2027"). On a model's page, the **Stake for more** tooltip says what you get there and when it changes, for example "You get unlimited until Dec 14, 2026, then 1,000 a day."
+- **Desktop:** **Settings → Wallet → Staked free tier** lists the stake each seller counts for you and until when ("Counts as 12,000 ANTS for a year, shrinking weekly until Mar 3, 2027").
 - **Gateway:** **Staking → Staked free tier** has the same list per seller pool, and the ⓘ next to a model's program shows the workspace's standing.
 - **CLI:** `antseed buyer free-tier list` prints the counted stake per seller pool after the stakers (`--no-stake` skips the chain read).
 

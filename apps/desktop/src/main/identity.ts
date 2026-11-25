@@ -16,11 +16,27 @@ import { importIdentityKey } from './runtime/identity-import.js';
 const ENCRYPTED_IDENTITY_PATH = path.join(homedir(), '.antseed', 'identity.enc');
 const PLAINTEXT_IDENTITY_PATH = path.join(homedir(), '.antseed', 'identity.key');
 
+/** The safeStorage-encrypted signer key file. */
+export function encryptedIdentityPath(): string {
+  return ENCRYPTED_IDENTITY_PATH;
+}
+
 export function hasStoredIdentity(): boolean {
   return existsSync(ENCRYPTED_IDENTITY_PATH) || existsSync(PLAINTEXT_IDENTITY_PATH);
 }
 
 let secureIdentity: Identity | null = null;
+/** identity.enc exists but this app's safeStorage key can't read it. */
+let identityUnreadable = false;
+
+/**
+ * True when the signer key is on disk but unreadable (for example a runtime
+ * name change that wasn't migrated). Nothing may then run with another
+ * wallet: the CLI would fall back to, or create, a different identity.
+ */
+export function isStoredIdentityUnreadable(): boolean {
+  return identityUnreadable;
+}
 let secureIdentityPromise: Promise<void> | null = null;
 let _safeStorageReady: boolean | null = null;
 
@@ -44,9 +60,10 @@ function identityFromHex(hex: string): Identity {
 // Returned when identity.enc exists but cannot be decrypted with the current
 // safeStorage key. On macOS, safeStorage's encryption key lives in a keychain
 // entry named after the app's runtime name set via app.setName() ("<name> Safe
-// Storage" — INTERNAL_APP_NAME in main.ts, NOT the electron-builder
+// Storage" — INTERNAL_APP_NAME in app-context.ts, NOT the electron-builder
 // productName). Changing that runtime name rotates the key and makes a
-// previously-written identity.enc undecryptable. This MUST be distinguished
+// previously-written identity.enc undecryptable unless app-rename.ts migrates
+// it first. This MUST be distinguished
 // from "file absent" — treating it as absent and creating a fresh identity
 // would silently destroy the signer key.
 const UNDECRYPTABLE = Symbol('undecryptable-identity');
@@ -139,6 +156,7 @@ export async function ensureSecureIdentity(): Promise<void> {
 
       // 1. Try loading from encrypted store
       const encHex = await loadEncryptedIdentity();
+      identityUnreadable = encHex === UNDECRYPTABLE;
       if (encHex === UNDECRYPTABLE) {
         // identity.enc exists but cannot be decrypted with the current key.
         // Back it up (so the original signer is recoverable) and refuse to
@@ -147,7 +165,7 @@ export async function ensureSecureIdentity(): Promise<void> {
         const backup = await backupUndecryptableIdentity();
         console.error(
           `[desktop] identity at ${ENCRYPTED_IDENTITY_PATH} could not be decrypted with the current safeStorage key. ` +
-          `This usually means the app's runtime name (app.setName / INTERNAL_APP_NAME) changed, which rotates the macOS keychain key. ` +
+          `This usually means the app's runtime name (app.setName / INTERNAL_APP_NAME) changed without a migration, which rotates the macOS keychain key. ` +
           `Refusing to overwrite it to avoid destroying the signer.` +
           (backup ? ` A copy was saved to ${backup}.` : '') +
           ` Restore the original app.setName value (or a matching identity.enc) to recover the original signer.`
@@ -242,6 +260,10 @@ export async function importIdentityPrivateKeyHex(rawKey: string): Promise<{
     backup: backupIdentityBeforeImport,
     save: saveEncryptedIdentity,
   });
-  if (identity) secureIdentity = identity;
+  if (identity) {
+    secureIdentity = identity;
+    // The unreadable file is gone, so nothing blocks the gateway any more.
+    identityUnreadable = false;
+  }
   return result;
 }

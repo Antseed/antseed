@@ -3,12 +3,14 @@ import chalk from 'chalk'
 import Table from 'cli-table3'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { buyerIdentityAddress, buyerIdentityDir, buyerIdentityExists, createBuyerIdentity } from '../../../buyer-identities/store.js'
-import { effectiveKeyLimits } from '../../../gateway/accounting.js'
+import { effectiveKeyLimits, storedVideoHolds, type StoredVideoHolds } from '../../../gateway/accounting.js'
 import { BUDGET_PERIODS, NO_BUDGET_LIMITS, periodStart, type BudgetLimits, type BudgetPeriod } from '../../../gateway/limits.js'
 import { formatUsdc, usdcToDecimalString } from '../../../gateway/money.js'
 import { resolvePolicy } from '../../../gateway/policy-resolver.js'
 import { createKey, revokeKey, rotateKey, updateKey, type UpdateKeyInput } from '../../../gateway/services/keys.js'
 import type { ApiKeyRecord, GatewayStore } from '../../../gateway/store.js'
+import { keysUsage } from '../../../gateway/key-savings.js'
+import { fetchComparableRetailPrices } from '../../../retail-prices.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
 import { addConfirmOptions, addPolicyOptions, confirmFlags, describePolicy, policyFromOptions } from './policy-options.js'
 import {
@@ -71,6 +73,11 @@ function keyJson(store: GatewayStore, key: ApiKeyRecord) {
   }
 }
 
+/** `$X (N not yet charged)`, or `$0.00` when no video job holds anything. */
+export function describeVideoHolds(held: StoredVideoHolds): string {
+  return held.videoJobs === 0 ? formatUsdc(0) : `${formatUsdc(held.videoUsdc)} (${held.videoJobs} not yet charged)`
+}
+
 function printSecret(record: ApiKeyRecord, secret: string, verb: string): void {
   console.log(chalk.green(`${verb} key ${record.id} (${record.label})`))
   console.log(`${chalk.bold('API key:')} ${secret}`)
@@ -79,6 +86,21 @@ function printSecret(record: ApiKeyRecord, secret: string, verb: string): void {
 
 export function registerGatewayKeyCommands(gateway: Command): void {
   const key = gateway.command('key').description('Create and manage gateway API keys')
+
+  key.command('usage')
+    .description('Requests, spend and retail savings summed over keys, revoked ones included (for an app that retires its keys)')
+    .argument('<ids...>', 'key ids; unknown ones are skipped')
+    .option('--json', 'print machine-readable JSON', false)
+    .action((ids: string[], options: { json: boolean }, cmd: Command) => withGateway(cmd, async ({ store }) => {
+      const usage = keysUsage(store, ids, await fetchComparableRetailPrices())
+      if (options.json) {
+        printJson({ data: usage })
+        return
+      }
+      console.log(`Requests: ${usage.requests}`)
+      console.log(`Spent: $${usage.spent_usd}`)
+      console.log(`Saved: ${usage.savings ? `$${usage.savings.saved_usd}` : '-'}`)
+    }))
 
   addLimitOptions(
     key.command('create')
@@ -191,8 +213,13 @@ export function registerGatewayKeyCommands(gateway: Command): void {
     .option('--json', 'print machine-readable JSON', false)
     .action((id: string, options: { json: boolean }, cmd: Command) => withGateway(cmd, async ({ store, dataDir }) => {
       const record = requireKey(store, id)
+      const held = storedVideoHolds(store, record, Date.now())
       if (options.json) {
-        printJson(keyJson(store, record))
+        printJson({
+          ...keyJson(store, record),
+          videoHeldUsd: usdcToDecimalString(held.videoUsdc),
+          videoJobsHeld: held.videoJobs,
+        })
         return
       }
       const spent = store.spendByPeriod({ keyId: record.id })
@@ -211,6 +238,8 @@ export function registerGatewayKeyCommands(gateway: Command): void {
         const limit = effective[period]
         console.log(`${PERIOD_SPEND_LABELS[period]}: ${formatUsdc(spent[period])}${limit === null ? '' : ` of ${formatUsdc(limit)}`}`)
       }
+      console.log(`Held for video: ${describeVideoHolds(held)}`)
+      console.log(chalk.dim('Requests hold spend too, while they run and for a minute after; the running gateway reports them in GET /v1/key.'))
       console.log(`Admin limits: ${describeLimits(record)}`)
       console.log(`Owner limits: ${describeLimits({ limits: record.ownerLimits })}`)
       console.log(`Requests: ${total.requests} (${total.failedRequests} failed), ${today.requests} today`)

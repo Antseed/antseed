@@ -129,6 +129,32 @@ export function listModels(cleaned) {
 }
 
 /**
+ * A seller's providers with new prices: `defaults` replaces the provider's default pricing and `services` replaces
+ * each named service's own pricing, so the seller announces and bills exactly what is given from its next start.
+ * Prices are non-negative numbers (USD per million tokens, or USD per unit).
+ */
+export function repriceProviders(providers, { provider, defaults, services } = {}) {
+  const next = structuredClone(providers);
+  const target = next?.[provider];
+  if (!target) throw new Error(`Unknown provider ${JSON.stringify(provider)}; the seller has ${Object.keys(next ?? {}).join(', ')}`);
+  if (defaults === undefined && services === undefined) throw new Error('Give defaults or services to reprice');
+  const price = (value, path) => {
+    const object = plainObject(value, path);
+    if (!object) throw new Error(`${path} must be an object of prices`);
+    for (const [key, amount] of Object.entries(object)) {
+      if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) throw new Error(`${path}.${key} must be a non-negative number`);
+    }
+    return { ...object };
+  };
+  if (defaults !== undefined) target.defaults = price(defaults, `${provider}.defaults`);
+  for (const [serviceId, pricing] of Object.entries(plainObject(services, `${provider}.services`) ?? {})) {
+    if (!target.services?.[serviceId]) throw new Error(`Provider ${provider} has no service ${serviceId}`);
+    target.services[serviceId].pricing = price(pricing, `${provider}.services.${serviceId}`);
+  }
+  return next;
+}
+
+/**
  * Rewrites providers for the chosen upstream. Mock mode points every provider at the mock and
  * uses a throwaway key; live mode requires every apiKeyEnv to be set and an HTTPS baseUrl.
  * Returns the seller providers plus the env vars the seller process needs.

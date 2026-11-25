@@ -160,6 +160,24 @@ test('the effective policy goes to the buyer with the control secret; client cop
   }
 })
 
+test('a request can require TEE sellers on top of its key\'s policy, never loosen it', async () => {
+  const ctx = await setup()
+  try {
+    const { secret } = ctx.store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null, routingPolicy: { minTrustScore: 40 } })
+    await ctx.send(secret, '/v1/chat/completions', { model: 'm' }, { 'x-antseed-require-tee': '1' })
+    const headers = ctx.buyer.captured[0]!.headers
+    assert.deepEqual(decodePolicyHeader(headers[ROUTING_POLICY_HEADER] as string), { minTrustScore: 40, requireTee: true })
+    assert.equal(headers['x-antseed-require-tee'], undefined)
+
+    // "0" adds nothing, and a key that requires TEE keeps requiring it.
+    const tee = ctx.store.createKey({ label: 'tee', limits: NO_LIMITS, expiresAt: null, routingPolicy: { requireTee: true } })
+    await ctx.send(tee.secret, '/v1/chat/completions', { model: 'm' }, { 'x-antseed-require-tee': '0' })
+    assert.deepEqual(decodePolicyHeader(ctx.buyer.captured[1]!.headers[ROUTING_POLICY_HEADER] as string), { requireTee: true })
+  } finally {
+    await ctx.close()
+  }
+})
+
 test('a seller-restricting policy without a control secret is refused, not routed unrestricted', async () => {
   const ctx = await setup({ controlSecret: null })
   try {
@@ -185,6 +203,24 @@ test('allowedModels is enforced by the gateway, including pinned peer@model', as
     assert.equal((await ctx.send(secret, '/v1/messages', { model: 'other-model' })).status, 403)
     assert.equal((await ctx.send(secret, '/v1/responses', {})).status, 403, 'no model under an allow list')
     assert.equal(ctx.buyer.captured.length, 2)
+  } finally {
+    await ctx.close()
+  }
+})
+
+test('decision models (SystemOne) go through the gateway as paid model requests, under the key\'s policy and accounting', async () => {
+  const ctx = await setup({ costUsdc: 1_000 })
+  try {
+    const { secret, key } = ctx.store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['good-model'] } })
+    const answered = await ctx.send(secret, '/v1/systemone', { model: 'good-model', state: 'a', questions: {} })
+    assert.equal(answered.status, 200)
+    assert.equal(ctx.buyer.captured[0]!.url, '/v1/systemone')
+    const refused = await ctx.send(secret, '/v1/systemone', { model: 'other-model', state: 'a', questions: {} })
+    assert.equal(refused.status, 403)
+    assert.equal(refused.body.error.code, 'model_not_allowed')
+    assert.equal(ctx.buyer.captured.length, 1)
+    const [row] = ctx.store.listRequests({ keyId: key.id })
+    assert.equal(row!.model, 'good-model')
   } finally {
     await ctx.close()
   }

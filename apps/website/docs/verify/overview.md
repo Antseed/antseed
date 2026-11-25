@@ -60,7 +60,7 @@ Results never touch USDC payments. A seller with a DIFF is still paid for what i
 
 ## Where to see results
 
-[Antscan](https://antscan.co/view/verifications) lists every audited seller with its SAME and DIFF services, and links each result to its audit and evidence. In the desktop app, a service with a DIFF shows a warning in Discover.
+[Antscan](https://antscan.co/view/verifications) lists every audited seller with its SAME and DIFF services, and links each result to its audit and evidence.
 
 ## Read next
 

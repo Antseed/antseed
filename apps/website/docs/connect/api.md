@@ -15,7 +15,7 @@ Use the gateway instead. It puts API keys, spend limits, routing policies and lo
 
 ## Start the buyer
 
-The desktop app runs the buyer for you while its router is on. Without the desktop app:
+The desktop app runs a local gateway, which runs the buyer on this port by default while the app is open (on `buyer.proxyPort` instead, if you changed it in your config). Without the desktop app:
 
 ```bash
 npm install -g @antseed/cli
@@ -142,7 +142,7 @@ Image edits are billed per delivered output image (plus any token prices the sel
 
 ### Text to speech
 
-`POST /v1/audio/speech` takes OpenAI's JSON body (`model`, `input`, `voice`, optional `response_format` and `speed`) and returns the audio file. Find speech models and their voices with `GET /v1/models?type=speech`: each offer lists its voices under `capabilities.speech.voices`, and `voices` on the model lists those every seller of it accepts.
+`POST /v1/audio/speech` takes OpenAI's JSON body (`model`, `input`, `voice`, optional `response_format`, `speed` and `stream_format`) and returns the audio file. Find speech models and their voices with `GET /v1/models?type=speech`: each offer lists its voices under `capabilities.speech.voices`, and `voices` on the model lists those every seller of it accepts.
 
 ```bash
 curl -s http://localhost:8377/v1/models?type=speech | jq '.data[] | {id, voices}'
@@ -153,7 +153,9 @@ curl http://localhost:8377/v1/audio/speech \
   -o hello.mp3
 ```
 
-You pay per character of `input`, only when audio comes back. A voice the seller does not offer is refused with `400 unsupported_voice` and the list of its voices; you never get a different voice than the one you asked for. Without `voice`, the seller's upstream picks its default voice; some upstreams (OpenAI) require one, so send a voice the seller lists.
+With `"stream_format": "sse"`, the audio comes back as OpenAI's stream of events instead: base64 `speech.audio.delta` chunks, then `speech.audio.done`. Send `Accept: text/event-stream` too to get the events as they arrive; without it they come all at once at the end. Not every model streams events: an upstream that ignores the field answers with the audio file.
+
+You pay per character of `input`, only when audio comes back, as a file or as a stream of events that ends with `speech.audio.done`. A voice the seller does not offer is refused with `400 unsupported_voice` and the list of its voices; you never get a different voice than the one you asked for. Without `voice`, the seller's upstream picks its default voice; some upstreams (OpenAI) require one, so send a voice the seller lists.
 
 ## Choose the model and seller
 
@@ -164,7 +166,7 @@ The `model` field controls routing:
 | `<peerId>@deepseek-v4-flash` | Pins this request to one seller. No failover. |
 | `deepseek-v4-flash` | Automatic routing: among the sellers of that model that pass your minimum trust score, the buyer weighs price against speed and recent success for this request, and fails over after retryable errors. See [Routing and catalog](/docs/api/routing). |
 | `<routerPeerId>@<routerServiceId>` | A routing service picks the model and seller for each request. See [Use a routing service](/docs/api/routing#use-a-routing-service). |
-| `antseed` | Follows the model, seller or router picked in the desktop app. Returns `no_default_route` when the app has no selection. |
+| `antseed` | Follows the default route saved in the buyer (see [Saved router settings](/docs/api/routing#saved-router-settings)). Returns `no_default_route` when none is saved. |
 
 The peer id is 40 hex characters, with or without `0x`. The prefix is stripped before the request reaches the seller.
 
@@ -186,7 +188,7 @@ curl -s http://localhost:8377/v1/models | jq '.data[].id'
 
 ## Tools
 
-- **Desktop app**: connect Claude Code, Codex, OpenCode and others from **Connected apps**. See [Desktop app](/docs/desktop).
+- **Desktop app**: connect Codex, OpenCode and others from **Agents & apps**. The app points them at its local gateway with an API key, not at this proxy. See [Desktop app](/docs/desktop).
 - **CLI wrappers**: `antseed claude`, `antseed codex` and `antseed opencode` launch the tool against the running buyer and pass your other flags through:
 
   ```bash
@@ -226,7 +228,7 @@ Streaming responses carry only the request id, seller identity, price and route-
 | Status | Code | Meaning |
 |---|---|---|
 | 400 | `missing_routing_target` | The request has no model and no pin. |
-| 400 | `no_default_route` | `model: "antseed"` was sent but the desktop app has no model selected. |
+| 400 | `no_default_route` | `model: "antseed"` was sent but the buyer has no default route saved. |
 | 400 | `invalid_routing` | A routing service serves the request and the body's `routing` object is malformed or has a setting the router's protocol does not accept (for `irp-suggest`: `cost_quality_tradeoff`, an integer from 0 to 10). On other requests a `routing` object is removed and ignored. |
 | 422 | `no_eligible_candidates` | A routing service was named, but no allowed model is left for it to rank. Nothing was charged. |
 | 402 | `antseed_buyer_fault` with `insufficient_deposits` | The wallet has too few credits for a paid seller. Run `antseed buyer deposit` to show your funding address, or add funds in the desktop app. Free sellers need no funds: pin one as `<peerId>@<model>`. |
@@ -244,7 +246,7 @@ In Anthropic format (`/v1/messages`) `error.type` is `antseed_buyer_fault` and t
 
 ## Diagnostics
 
-The proxy serves a local control plane under `/_antseed/` that the desktop app uses:
+The proxy serves a local control plane under `/_antseed/`:
 
 ```bash
 curl -s http://localhost:8377/_antseed/status     # DHT node count, peer count, uptime

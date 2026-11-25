@@ -21,6 +21,17 @@ import {
   verifyFreeTierDelegations,
   type VerifiedFreeTierDelegation,
 } from './free-tier-delegation.js';
+import {
+  FreeTierConversationTracker,
+  MOVED_MIN_TOKENS,
+  fingerprintConversation,
+  type MovedConversation,
+} from './free-tier-conversations.js';
+
+/** What a seller does with a large free request that carries on another buyer's conversation. */
+export const FREE_TIER_MOVED_CONVERSATIONS_MODES = ['refuse', 'log'] as const;
+export type FreeTierMovedConversationsMode = typeof FREE_TIER_MOVED_CONVERSATIONS_MODES[number];
+export const DEFAULT_NEW_BUYER_REQUESTS = 3;
 
 /** One free-tier program: base limits and the staked tiers above them. */
 export interface SellerFreeTierProgramConfig {
@@ -40,6 +51,19 @@ export interface SellerFreeTierProgramConfig {
    * required: they are the allowance the tier multipliers apply to.
    */
   stakersOnly?: boolean;
+  /**
+   * Largest estimated input, in tokens, served free during a buyer address's
+   * first `newBuyerRequests` free requests in the window. Requires
+   * `maxRequestsPerAddress`. Buyers staked into a tier are not limited.
+   */
+  newBuyerMaxInputTokens?: number;
+  /** Free requests a buyer address counts as new for `newBuyerMaxInputTokens`. Default: 3. */
+  newBuyerRequests?: number;
+  /**
+   * Large free requests that carry on a conversation another buyer address
+   * started: `refuse` them, or only `log` them. Default: not checked.
+   */
+  movedConversations?: FreeTierMovedConversationsMode;
 }
 
 export interface SellerFreeTierConfig extends SellerFreeTierProgramConfig {
@@ -78,6 +102,33 @@ export interface FreeTierConsumeInput {
   paid?: boolean;
   nowMs?: number;
 }
+
+export interface FreeTierScreenInput {
+  buyerPeerId: string;
+  service: string;
+  standing?: FreeTierStakeStanding | null;
+  paid?: boolean;
+  /** Estimated input tokens; called only when a check needs it. */
+  inputTokens: () => number;
+  /** The parsed request body; called only when a check needs it. */
+  body: () => unknown;
+  nowMs?: number;
+}
+
+export type FreeTierScreenRefusal =
+  | { reason: 'new_buyer_context'; inputTokens: number; maxInputTokens: number; requests: number }
+  | ({ reason: 'moved_conversation' } & MovedConversation);
+
+export interface FreeTierScreen {
+  /** Why the request must not be served free, or null. */
+  refusal: FreeTierScreenRefusal | null;
+  /** What a `log` policy would have refused, or null. */
+  wouldRefuse: FreeTierScreenRefusal | null;
+  /** Call once the request is served, so later requests can be matched against it. */
+  served: () => void;
+}
+
+const SERVE: FreeTierScreen = Object.freeze({ refusal: null, wouldRefuse: null, served: () => {} });
 
 export const DEFAULT_FREE_TIER_WINDOW_MS = 24 * 60 * 60_000;
 const MAX_IN_MEMORY_KEYS = 20_000;
@@ -121,6 +172,9 @@ class FreeTierPolicy {
   readonly windowMs: number;
   readonly stakeTiers: readonly FreeTierStakeTier[];
   readonly stakersOnly: boolean;
+  readonly newBuyerMaxInputTokens: number | null;
+  readonly newBuyerRequests: number;
+  readonly movedConversations: FreeTierMovedConversationsMode | null;
 
   constructor(readonly scope: string, config: SellerFreeTierProgramConfig, label: string) {
     const perAddress = config.maxRequestsPerAddress;
@@ -148,6 +202,24 @@ class FreeTierPolicy {
     this.windowMs = windowMs;
     this.stakeTiers = Object.freeze([...stakeTiers]);
     this.stakersOnly = config.stakersOnly === true;
+    const newBuyerMax = config.newBuyerMaxInputTokens;
+    if (newBuyerMax !== undefined) {
+      if (!Number.isSafeInteger(newBuyerMax) || newBuyerMax < 1) {
+        throw new Error(`${label}.newBuyerMaxInputTokens must be a positive safe integer`);
+      }
+      if (perAddress === undefined) throw new Error(`${label}.newBuyerMaxInputTokens requires maxRequestsPerAddress`);
+    }
+    const newBuyerRequests = config.newBuyerRequests ?? DEFAULT_NEW_BUYER_REQUESTS;
+    if (!Number.isSafeInteger(newBuyerRequests) || newBuyerRequests < 1) {
+      throw new Error(`${label}.newBuyerRequests must be a positive safe integer`);
+    }
+    const moved = config.movedConversations;
+    if (moved !== undefined && !FREE_TIER_MOVED_CONVERSATIONS_MODES.includes(moved)) {
+      throw new Error(`${label}.movedConversations must be one of: ${FREE_TIER_MOVED_CONVERSATIONS_MODES.join(', ')}`);
+    }
+    this.newBuyerMaxInputTokens = newBuyerMax ?? null;
+    this.newBuyerRequests = newBuyerRequests;
+    this.movedConversations = moved ?? null;
     // Peer metadata caps each capability string; a program that cannot be
     // advertised would fail every metadata publish, so refuse it here.
     const serviceId = scope === '' ? undefined : scope;
@@ -196,7 +268,16 @@ class FreeTierPolicy {
       const limit = this.limitForTier(tier);
       return `${count(tier.minPower)} power → ${limit === null ? 'unlimited' : count(limit)}`;
     });
-    return tiers.length > 0 ? `${head}; staked (${window}): ${tiers.join(', ')}` : head;
+    const guards = [
+      ...(this.newBuyerMaxInputTokens === null ? [] : [
+        `a new buyer's first ${count(this.newBuyerRequests)} up to ${count(this.newBuyerMaxInputTokens)} input tokens`,
+      ]),
+      ...(this.movedConversations === null ? [] : [
+        `conversations moved from another buyer ${this.movedConversations === 'refuse' ? 'refused' : 'logged'}`,
+      ]),
+    ];
+    const tail = guards.map((guard) => `; ${guard}`).join('');
+    return tiers.length > 0 ? `${head}${tail}; staked (${window}): ${tiers.join(', ')}` : `${head}${tail}`;
   }
 }
 
@@ -216,7 +297,10 @@ function hasSellerWideProgram(config: SellerFreeTierConfig): boolean {
     || config.maxRequestsPerIp !== undefined
     || config.windowMs !== undefined
     || config.stakeTiers !== undefined
-    || config.stakersOnly !== undefined;
+    || config.stakersOnly !== undefined
+    || config.newBuyerMaxInputTokens !== undefined
+    || config.newBuyerRequests !== undefined
+    || config.movedConversations !== undefined;
 }
 
 export class SellerFreeTierLimiter {
@@ -226,6 +310,7 @@ export class SellerFreeTierLimiter {
   private readonly _retentionMs: number;
   private readonly _storage: MeteringStorage | null;
   private readonly _inMemoryUsage = new Map<string, number[]>();
+  private readonly _conversations = new FreeTierConversationTracker();
   private _stakeResolver: FreeTierStakeResolver | null = null;
   private _chainId = 0;
   /** Last verified delegations per buyer address, in insertion order for eviction. */
@@ -394,6 +479,49 @@ export class SellerFreeTierLimiter {
     const policy = this._policyFor(input.service, input.paid === true);
     if (!policy) throw new Error(`no free-tier program applies to ${input.service}`);
     return this._evaluate(policy, input, input.service);
+  }
+
+  /**
+   * Screen a free request before `consume` counts it. A buyer staked into a
+   * tier is never screened. Otherwise a request over `newBuyerMaxInputTokens`
+   * during the buyer's first `newBuyerRequests` free requests is refused, and
+   * with `movedConversations` a large request carrying on another buyer's
+   * conversation is refused or logged. Never counts the request.
+   */
+  screen(input: FreeTierScreenInput): FreeTierScreen {
+    const policy = this._policyFor(input.service, input.paid === true);
+    if (!policy || (policy.newBuyerMaxInputTokens === null && policy.movedConversations === null)) return SERVE;
+    if (input.standing && freeTierStakeTierForPower(policy.stakeTiers, input.standing.power)) return SERVE;
+    const inputTokens = input.inputTokens();
+    const nowMs = input.nowMs ?? Date.now();
+    const buyerAddress = peerIdToAddress(input.buyerPeerId).toLowerCase();
+    if (policy.newBuyerMaxInputTokens !== null && inputTokens > policy.newBuyerMaxInputTokens) {
+      const windowStart = nowMs - policy.windowMs;
+      const used = this._storage
+        ? this._storage.countFreeTierAddressRequests({ buyerAddress, scope: policy.scope, sinceMs: windowStart })
+        : (this._inMemoryUsage.get(`${policy.scope}|address:${buyerAddress}`) ?? [])
+          .filter((timestamp) => timestamp >= windowStart).length;
+      if (used < policy.newBuyerRequests) {
+        const refusal: FreeTierScreenRefusal = {
+          reason: 'new_buyer_context',
+          inputTokens,
+          maxInputTokens: policy.newBuyerMaxInputTokens,
+          requests: policy.newBuyerRequests,
+        };
+        return { refusal, wouldRefuse: null, served: () => {} };
+      }
+    }
+    // Too small to carry a moved conversation's worth of history: nothing to parse.
+    if (policy.movedConversations === null || inputTokens < MOVED_MIN_TOKENS) return SERVE;
+    const fingerprint = fingerprintConversation(input.body());
+    if (!fingerprint) return SERVE;
+    const served = () => this._conversations.record(buyerAddress, fingerprint, nowMs);
+    const match = this._conversations.findMovedConversation(buyerAddress, fingerprint, nowMs);
+    if (!match) return { refusal: null, wouldRefuse: null, served };
+    const moved: FreeTierScreenRefusal = { reason: 'moved_conversation', ...match };
+    return policy.movedConversations === 'refuse'
+      ? { refusal: moved, wouldRefuse: null, served: () => {} }
+      : { refusal: null, wouldRefuse: moved, served };
   }
 
   /**

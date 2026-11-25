@@ -4,13 +4,13 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { homedir } from 'node:os';
 
-import { DEFAULT_APP_PROFILES, mergeWithDefaultAppProfiles, platformConfigPath } from './defaults.js';
+import { DEFAULT_APP_PROFILES, mergeWithDefaultAppProfiles, platformConfigPath, RETIRED_APP_PROFILES } from './defaults.js';
 
 function names(profiles: readonly unknown[]): string[] {
   return profiles.map((profile) => (profile as Record<string, unknown>)['name'] as string);
 }
 
-const DEFAULT_NAMES = ['opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'crush', 'goose', 'zed'];
+const DEFAULT_NAMES = ['opencode', 'codex', 'claude-code', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'prime-agent', 'crush', 'goose', 'zed'];
 
 test('default app profiles are config-patch entries with unique names', () => {
   assert.deepEqual(names(DEFAULT_APP_PROFILES), DEFAULT_NAMES);
@@ -18,27 +18,17 @@ test('default app profiles are config-patch entries with unique names', () => {
     assert.equal(profile['kind'], 'config-patch');
     const patch = profile['configPatch'] as Record<string, unknown>;
     assert.equal(typeof patch['configPath'], 'string');
-    // The claude-desktop format writes no provider entry (its gateway
-    // ignores auth), so it alone carries no providerKey; it also talks to
-    // the desktop's Claude gateway while every other tool is pointed
-    // straight at the buyer proxy.
-    if (patch['format'] !== 'claude-desktop') {
-      assert.equal(typeof patch['providerKey'], 'string');
-    }
-    const portPlaceholder = patch['format'] === 'claude-desktop' ? '{claudeGatewayPort}' : '{buyerPort}';
-    assert.ok((patch['baseURL'] as string).includes(portPlaceholder));
+    assert.equal(typeof patch['providerKey'], 'string');
+    assert.ok((patch['baseURL'] as string).includes('{buyerPort}'));
     const slugs = profile['toolSlugs'] as string[];
     assert.ok(Array.isArray(slugs) && slugs.length > 0);
   }
 });
 
-test('Claude Desktop patches the third-party profile and opens Claude on connect', () => {
-  const profile = DEFAULT_APP_PROFILES.find((entry) => entry['name'] === 'claude-desktop');
+test('Claude Desktop is retired: not offered, but its patch is still known so it can be removed', () => {
+  assert.equal(DEFAULT_APP_PROFILES.some((entry) => entry['name'] === 'claude-desktop'), false);
+  const profile = RETIRED_APP_PROFILES.find((entry) => entry['name'] === 'claude-desktop');
   assert.ok(profile);
-  // 'open-tool' launches Claude after connect even when it was not running;
-  // restartAppName doubles as the restart target and the launch fallback.
-  assert.equal(profile['appAction'], 'open-tool');
-  assert.equal(profile['restartAppName'], 'Claude');
   const patch = profile['configPatch'] as Record<string, unknown>;
   assert.equal(patch['format'], 'claude-desktop');
   assert.equal(typeof patch['thirdPartyDir'], 'string');
@@ -70,6 +60,23 @@ test('GooeyPi patches the shared Pi config without requiring pi on PATH', () => 
     baseURL: 'http://localhost:{buyerPort}/v1',
     api: 'openai-responses',
     originator: 'gooeypi',
+  });
+});
+
+test('Prime Agent patches its own pi-format config under ~/.prime/agent', () => {
+  const profile = DEFAULT_APP_PROFILES.find((entry) => entry['name'] === 'prime-agent');
+  assert.ok(profile);
+  assert.equal(profile['displayName'], 'Prime Agent');
+  assert.deepEqual(profile['toolSlugs'], ['prime-agent']);
+  assert.deepEqual(profile['configPatch'], {
+    format: 'pi',
+    configPath: '~/.prime/agent/models.json',
+    settingsPath: '~/.prime/agent/settings.json',
+    providerKey: 'antseed',
+    baseURL: 'http://localhost:{buyerPort}/v1',
+    api: 'openai-responses',
+    originator: 'prime-agent',
+    installProbe: 'prime-agent',
   });
 });
 
@@ -119,6 +126,6 @@ test('mergeWithDefaultAppProfiles lets external profiles override same-name defa
     { name: 'opencode', displayName: 'OpenCode (private override)' },
   ];
   const merged = mergeWithDefaultAppProfiles(external);
-  assert.deepEqual(names(merged), ['acme', 'opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'crush', 'goose', 'zed']);
+  assert.deepEqual(names(merged), ['acme', 'opencode', 'codex', 'claude-code', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'prime-agent', 'crush', 'goose', 'zed']);
   assert.equal((merged[1] as Record<string, unknown>)['displayName'], 'OpenCode (private override)');
 });

@@ -1,12 +1,12 @@
 ---
 slug: /api/routing
 title: Routing and catalog
-description: How automatic routing picks a seller, and how to read the model catalog and prices from /v1/models, network browse and the cached /stats endpoint.
+description: How automatic routing picks a seller, and how to read the model catalog and prices from /v1/models, network browse and Antscan's cached marketplace endpoint.
 ---
 
 # Routing and catalog
 
-When a request names only a model, your buyer chooses the seller. This page explains that choice and the three ways to read what the network offers: the `/v1/models` catalog on your buyer, `antseed network browse`, and the cached `/stats` endpoint.
+When a request names only a model, your buyer chooses the seller. This page explains that choice and the three ways to read what the network offers: the `/v1/models` catalog on your buyer, `antseed network browse`, and Antscan's cached marketplace endpoint.
 
 ## How automatic routing chooses
 
@@ -132,7 +132,7 @@ curl -s 'http://localhost:8377/v1/models?type=router' | jq '.data[].peers[] | {m
 
 ### Saved router settings
 
-The buyer can also keep one router as its default, set from the desktop app or with `POST /_antseed/route`:
+The buyer can also keep one router as its default, set with `POST /_antseed/route`:
 
 ```bash
 curl -X POST http://127.0.0.1:8377/_antseed/route \
@@ -194,56 +194,47 @@ antseed network browse --json
 }
 ```
 
-## Cached prices: the `/stats` endpoint
+## Cached prices: Antscan's marketplace endpoint
 
 ```text
-GET https://network.antseed.com/stats
+GET https://antscan.co/api/marketplace?limit=5000
 ```
 
-A public, unauthenticated snapshot from the Antseed indexer, a few minutes old. It is the data behind [antseed.com/network](https://antseed.com/network). Use it for browsing and estimates, and your buyer's `/v1/models` or `network browse` when price matters at the moment of purchase.
+A public, unauthenticated snapshot from [Antscan](https://antscan.co), the Antseed explorer, which walks the DHT on a schedule. It is the data behind [antseed.com/network](https://antseed.com/network). Use it for browsing and estimates, and your buyer's `/v1/models` or `network browse` when price matters at the moment of purchase. `limit` caps the list (250 by default, 5000 at most); there is no paging.
 
 ```bash
-curl -s https://network.antseed.com/stats | jq '{updatedAt, peers: (.peers | length)}'
+curl -s 'https://antscan.co/api/marketplace?limit=5000' | jq '{updated: .collector.lastPollCompletedAt, offerings: (.offerings | length)}'
 ```
 
-The response has `peers`, `updatedAt`, `totals` and `indexer`. Each peer record carries its signed metadata: `peerId`, `version` (metadata schema version), `displayName`, `providers`, `capabilities`, `region`, `timestamp`, `verifications` and `signature`, plus indexer fields such as `onChainChannelCount` and `onChainStats`.
-
-Each entry in `providers` announces:
+The response has `offerings`, `sellers`, `providers`, `popularServices`, `totals` and `collector`. Each entry in `offerings` is one service from one seller:
 
 ```ts
-interface ProviderAnnouncement {
-  provider: string;                                    // plugin name, e.g. "openai"
-  services: string[];                                  // service ids
-  defaultPricing: TokenPricing;                        // used when a service has no own price
-  servicePricing?: Record<string, TokenPricing>;
-  serviceCategories?: Record<string, string[]>;
-  serviceApiProtocols?: Record<string, string[]>;
-  serviceUnitBillingModels?: Record<string, Record<string, unknown>>; // image and video prices
-  serviceCapabilities?: Record<string, unknown>;
-  maxConcurrency: number;
-  currentLoad: number;
-}
-
-interface TokenPricing {
+interface Offering {
+  peerId: string;
+  sellerName: string | null;
+  provider: string;                    // plugin name, e.g. "openai"
+  service: string;                     // service id
+  categories: string[];
+  protocols: string[];                 // e.g. ["openai-chat-completions"]
   inputUsdPerMillion: number;
   outputUsdPerMillion: number;
-  cachedInputUsdPerMillion?: number;
+  cachedInputUsdPerMillion: number | null;
+  unitPrices: Record<string, { minUsd: number; maxUsd: number }>; // image and video prices
+  maxConcurrency: number;
+  currentLoad: number;
+  lastSeenAtMs: number;
 }
 ```
 
-A service's token price is `servicePricing[serviceId] ?? defaultPricing`, in USD per million tokens. Image and video billing models are described in [Media billing](/docs/provide/media).
+Token prices are in USD per million tokens, already resolved per service. Image and video billing models are described in [Media billing](/docs/provide/media).
 
 ```js
-const { peers } = await (await fetch('https://network.antseed.com/stats')).json();
+const { offerings } = await (await fetch('https://antscan.co/api/marketplace?limit=5000')).json();
 const model = 'deepseek-v4-flash';
 
-const offers = peers.flatMap((peer) =>
-  peer.providers.flatMap((p) => {
-    if (!p.services.includes(model)) return [];
-    const price = p.servicePricing?.[model] ?? p.defaultPricing;
-    return [{ peerId: peer.peerId, input: price.inputUsdPerMillion, output: price.outputUsdPerMillion }];
-  }),
-);
+const offers = offerings
+  .filter((o) => o.service === model)
+  .map((o) => ({ peerId: o.peerId, input: o.inputUsdPerMillion, output: o.outputUsdPerMillion }));
 offers.sort((a, b) => a.input - b.input);
 ```
 

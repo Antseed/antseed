@@ -321,6 +321,7 @@ export function enrichCandidates(candidates: unknown, peers: unknown): RoutePrev
       reasons: Array.isArray(row['reasons']) ? row['reasons'].filter((reason): reason is string => typeof reason === 'string') : [],
       inputUsdPerMillion: num(row['inputUsdPerMillion']),
       outputUsdPerMillion: num(row['outputUsdPerMillion']),
+      cachedInputUsdPerMillion: num(row['cachedInputUsdPerMillion']),
       trustScore: num(row['trustScore']) ?? trust,
       ...(num(row['trustScoreBeforeCut']) !== null ? { trustScoreBeforeCut: num(row['trustScoreBeforeCut'])! } : {}),
       selection: parseRouteSelection(row['selection']),

@@ -252,6 +252,24 @@ export interface VideoCommitmentRecord {
   deliveredAt: number | null
 }
 
+const VIDEO_COMMITMENT_COLUMNS = 'job, key_id, member_id, workspace_id, amount_usdc, expires_at, delivered_at'
+
+type VideoCommitmentRow = {
+  job: string; key_id: string; member_id: string | null; workspace_id: string; amount_usdc: number; expires_at: number; delivered_at: number | null
+}
+
+function videoCommitmentFromRow(row: VideoCommitmentRow): VideoCommitmentRecord {
+  return {
+    job: row.job,
+    keyId: row.key_id,
+    memberId: row.member_id,
+    workspaceId: row.workspace_id,
+    amountUsdc: row.amount_usdc,
+    expiresAt: row.expires_at,
+    deliveredAt: row.delivered_at,
+  }
+}
+
 export interface GatewayRequestStart {
   tag: string
   keyId: string
@@ -292,6 +310,8 @@ export interface RequestOutcome {
   servedFree?: boolean
   /** Video create: the job ID the seller accepted. */
   videoJobId?: string | null
+  /** Video create: the buyer's price for the accepted job, in USDC base units, when it reported one. */
+  videoPriceUsdc?: number | null
   /** Video retrieve: it delivered the finished file (so it carries the job's charge). */
   videoDelivered?: boolean
   /** A routing service ranked the request. */
@@ -308,6 +328,16 @@ export interface RequestRouter {
   service: string | null
   /** The recommendation tried last (1 = the router's first pick): it served the request unless the request failed. Null when none was tried. */
   rank: number | null
+}
+
+/** One model's usage under a key: spend in USDC base units, tokens as the buyer metered them. */
+export interface ModelUsage {
+  model: string
+  amountUsdc: number
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  requests: number
 }
 
 /** What a key listing shows: lifetime requests and spend, and spend since a given time. */
@@ -1112,17 +1142,12 @@ export class GatewayStore {
   /** Accepted video jobs whose price still counts against the caps (see GatewayAccounting). */
   listVideoCommitments(now: number): VideoCommitmentRecord[] {
     this._stmt('DELETE FROM video_commitments WHERE expires_at <= ?').run(now)
-    return (this._stmt('SELECT job, key_id, member_id, workspace_id, amount_usdc, expires_at, delivered_at FROM video_commitments').all() as Array<{
-      job: string; key_id: string; member_id: string | null; workspace_id: string; amount_usdc: number; expires_at: number; delivered_at: number | null
-    }>).map((row) => ({
-      job: row.job,
-      keyId: row.key_id,
-      memberId: row.member_id,
-      workspaceId: row.workspace_id,
-      amountUsdc: row.amount_usdc,
-      expiresAt: row.expires_at,
-      deliveredAt: row.delivered_at,
-    }))
+    return (this._stmt(`SELECT ${VIDEO_COMMITMENT_COLUMNS} FROM video_commitments`).all() as VideoCommitmentRow[]).map(videoCommitmentFromRow)
+  }
+
+  /** One key's stored commitments and create reservations, read only (expired ones included). */
+  keyVideoCommitments(keyId: string): VideoCommitmentRecord[] {
+    return (this._stmt(`SELECT ${VIDEO_COMMITMENT_COLUMNS} FROM video_commitments WHERE key_id = ?`).all(keyId) as VideoCommitmentRow[]).map(videoCommitmentFromRow)
   }
 
   /** Stores a commitment; with `replaces`, removes that one (a create's reservation) in the same transaction. */
@@ -1171,6 +1196,24 @@ export class GatewayStore {
     )
   }
 
+  /**
+   * Requests a previous gateway process started and never finished (it was
+   * stopped or crashed mid-request): marked finished as `499` with
+   * `gateway_restarted`, so the request log stops showing them in flight.
+   * Only rows started before `startedBefore` (this process's start) are
+   * touched. They never held spend: request holds live in the gateway's
+   * memory and end with its process. Returns how many were finished.
+   */
+  finishAbandonedRequests(startedBefore: number): number {
+    // Through the index of unfinished requests: SQLite would otherwise pick the time index and read every row started before.
+    return this._stmt(`
+      UPDATE gateway_requests INDEXED BY gateway_requests_unfinished
+      SET status = 499, finished_at = ?, error_code = 'gateway_restarted',
+        error_message = 'The gateway stopped before this request finished.'
+      WHERE finished_at IS NULL AND started_at < ?
+    `).run(this._now(), startedBefore).changes
+  }
+
   /** `error` is kept for failed requests (code ≤ 100, message ≤ 500 characters). */
   finishRequest(tag: string, result: { status: number; buyerRequestId: string | null; error?: RequestError | null }): void {
     this._stmt(`
@@ -1192,7 +1235,7 @@ export class GatewayStore {
         latency_ms = COALESCE(?, latency_ms),
         first_token_ms = COALESCE(?, first_token_ms), tokens_per_second = COALESCE(?, tokens_per_second),
         end_user = COALESCE(?, end_user), served_free = MAX(served_free, ?),
-        video_job_id = COALESCE(?, video_job_id),
+        video_job_id = COALESCE(?, video_job_id), video_price_usdc = COALESCE(?, video_price_usdc),
         video_action = CASE WHEN ? = 1 AND video_action = 'poll' THEN 'delivery' ELSE video_action END,
         router_peer_id = COALESCE(?, router_peer_id), router_service = COALESCE(?, router_service),
         router_rank = COALESCE(?, router_rank), served_model = COALESCE(?, served_model),
@@ -1201,7 +1244,7 @@ export class GatewayStore {
     `).run(
       outcome.sellerPeerId ?? null, outcome.sellerPeerId ?? null, routerPeerId, routerPeerId,
       outcome.latencyMs ?? null, outcome.firstTokenMs ?? null, outcome.tokensPerSecond ?? null,
-      outcome.endUser ?? null, outcome.servedFree ? 1 : 0, outcome.videoJobId?.slice(0, 256) ?? null, outcome.videoDelivered ? 1 : 0,
+      outcome.endUser ?? null, outcome.servedFree ? 1 : 0, outcome.videoJobId?.slice(0, 256) ?? null, outcome.videoPriceUsdc ?? null, outcome.videoDelivered ? 1 : 0,
       routerPeerId, router?.service?.slice(0, 200) ?? null, router?.rank ?? null, outcome.servedModel?.slice(0, 200) ?? null,
       outcome.routeSelection ? JSON.stringify(outcome.routeSelection) : null, tag,
     )
@@ -1311,6 +1354,13 @@ export class GatewayStore {
     const row = this._stmt("SELECT path, video_job_id FROM gateway_requests WHERE tag = ? AND video_action = 'create'").get(tag) as
       { path: string; video_job_id: string | null } | undefined
     return row ? requestVideoJob(row.path, row.video_job_id) : null
+  }
+
+  /** The buyer's price for the job a video create logged by this gateway was accepted as, if it was recorded. */
+  videoCreatePrice(tag: string): number | null {
+    const row = this._stmt("SELECT video_price_usdc FROM gateway_requests WHERE tag = ? AND video_action = 'create'").get(tag) as
+      { video_price_usdc: number | null } | undefined
+    return row?.video_price_usdc ?? null
   }
 
   /** Spend recorded so far on every request of one key that names a video job (its create, polls and delivery). */
@@ -1633,14 +1683,81 @@ export class GatewayStore {
     return spend
   }
 
+  /**
+   * A key's usage per model (the one that served it, else the one asked
+   * for), for comparing with retail prices: metered spend
+   * and tokens from the ledger, plus the tokens responses reported where no
+   * spend was metered (free requests). Rows without a model are left out.
+   * The reported tokens come from the request log, so requests pruned from it
+   * no longer count theirs. `requests` counts requests, not ledger entries: a
+   * request metered in several spend entries, or in both the ledger and the
+   * log, counts once.
+   */
+  usageByModel(keyId: string): ModelUsage[] {
+    return this.usageByModelForKeys([keyId])
+  }
+
+  /**
+   * `usageByModel` summed over `keyIds` in one batched read per source (the
+   * retired keys an app's history spans). Requests are counted per key before
+   * the sum, so request tags from different keys are never merged.
+   */
+  usageByModelForKeys(keyIds: readonly string[]): ModelUsage[] {
+    if (keyIds.length === 0) return []
+    const ids = JSON.stringify(keyIds)
+    const ledger = this._stmt(`
+      SELECT COALESCE(served_model, model) AS model, COALESCE(-SUM(amount_usdc), 0) AS amount, COALESCE(SUM(input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens
+      FROM ledger_entries WHERE key_id IN (SELECT value FROM json_each(?)) AND kind = 'spend' AND COALESCE(served_model, model) IS NOT NULL
+      GROUP BY key_id, COALESCE(served_model, model)
+    `).all(ids) as Array<{ model: string; amount: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }>
+    const reported = this._stmt(`
+      SELECT COALESCE(r.served_model, r.model) AS model, COALESCE(SUM(r.usage_input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(r.usage_cached_input_tokens), 0) AS cached_input_tokens,
+             COALESCE(SUM(r.usage_output_tokens), 0) AS output_tokens
+      FROM gateway_requests r
+      WHERE r.key_id IN (SELECT value FROM json_each(?)) AND COALESCE(r.served_model, r.model) IS NOT NULL AND ${REPORTED_TOKENS_ONLY_SQL}
+      GROUP BY r.key_id, COALESCE(r.served_model, r.model)
+    `).all(ids) as Array<{ model: string; input_tokens: number; cached_input_tokens: number; output_tokens: number }>
+    // Distinct requests per key and model over both sources; a spend entry
+    // without a request tag stands for its own request.
+    const counted = this._stmt(`
+      SELECT model, COUNT(DISTINCT request) AS requests FROM (
+        SELECT key_id, COALESCE(served_model, model) AS model, COALESCE(request_tag, 'entry:' || external_ref) AS request
+        FROM ledger_entries WHERE key_id IN (SELECT value FROM json_each(?)) AND kind = 'spend' AND COALESCE(served_model, model) IS NOT NULL
+        UNION
+        SELECT r.key_id AS key_id, COALESCE(r.served_model, r.model) AS model, r.tag AS request
+        FROM gateway_requests r
+        WHERE r.key_id IN (SELECT value FROM json_each(?)) AND COALESCE(r.served_model, r.model) IS NOT NULL AND ${REPORTED_TOKENS_ONLY_SQL}
+      ) GROUP BY key_id, model
+    `).all(ids, ids) as Array<{ model: string; requests: number }>
+    const requests = new Map<string, number>()
+    for (const row of counted) requests.set(row.model, (requests.get(row.model) ?? 0) + row.requests)
+    const byModel = new Map<string, ModelUsage>()
+    const add = (model: string, row: Omit<ModelUsage, 'model' | 'requests'>) => {
+      const current = byModel.get(model) ?? { model, amountUsdc: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0 }
+      byModel.set(model, {
+        model,
+        amountUsdc: current.amountUsdc + row.amountUsdc,
+        inputTokens: current.inputTokens + row.inputTokens,
+        cachedInputTokens: current.cachedInputTokens + row.cachedInputTokens,
+        outputTokens: current.outputTokens + row.outputTokens,
+        requests: 0,
+      })
+    }
+    for (const row of ledger) add(row.model, { amountUsdc: Math.max(0, row.amount), inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens })
+    for (const row of reported) add(row.model, { amountUsdc: 0, inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens })
+    return [...byModel.values()].map((usage) => ({ ...usage, requests: requests.get(usage.model) ?? 0 }))
+  }
+
   usageStats(keyId: string, since = 0): KeyUsageStats {
     const requests = this._stmt(`
       SELECT COUNT(*) AS requests, COALESCE(SUM(${FAILED_SQL}), 0) AS failed
-      FROM gateway_requests r WHERE r.key_id = ? AND r.started_at >= ?
+      FROM gateway_requests r WHERE r.key_id = ? AND r.started_at >= ? AND ${MODEL_REQUEST_SQL}
     `).get(keyId, since) as { requests: number; failed: number }
     const rolled = this._stmt(`
       SELECT COALESCE(SUM(requests), 0) AS requests, COALESCE(SUM(failed_requests), 0) AS failed
-      FROM request_rollups WHERE key_id = ? AND hour_start >= ?
+      FROM request_rollups r WHERE key_id = ? AND hour_start >= ? AND ${MODEL_REQUEST_SQL}
     `).get(keyId, since) as { requests: number; failed: number }
     const ledger = this._stmt(`
       SELECT COALESCE(-SUM(CASE WHEN kind = 'spend' THEN amount_usdc ELSE 0 END), 0) AS spent,
@@ -1669,6 +1786,13 @@ export class GatewayStore {
     }
   }
 
+  /** Which of `keyIds` name a key (revoked ones included), in one query. */
+  existingKeyIds(keyIds: readonly string[]): Set<string> {
+    if (keyIds.length === 0) return new Set()
+    const rows = this._stmt('SELECT id FROM api_keys WHERE id IN (SELECT value FROM json_each(?))').all(JSON.stringify(keyIds)) as Array<{ id: string }>
+    return new Set(rows.map((row) => row.id))
+  }
+
   /**
    * Lifetime requests and spend, plus spend since `since`, for many keys in
    * one grouped query per table (rather than `usageStats` per key). Every
@@ -1679,12 +1803,12 @@ export class GatewayStore {
     if (keyIds.length === 0) return summaries
     const ids = JSON.stringify(keyIds)
     const requests = this._stmt(`
-      SELECT key_id, COUNT(*) AS requests FROM gateway_requests
-      WHERE key_id IN (SELECT value FROM json_each(?)) GROUP BY key_id
+      SELECT key_id, COUNT(*) AS requests FROM gateway_requests r
+      WHERE key_id IN (SELECT value FROM json_each(?)) AND ${MODEL_REQUEST_SQL} GROUP BY key_id
     `).all(ids) as Array<{ key_id: string; requests: number }>
     const rolled = this._stmt(`
-      SELECT key_id, SUM(requests) AS requests FROM request_rollups
-      WHERE key_id IN (SELECT value FROM json_each(?)) GROUP BY key_id
+      SELECT key_id, SUM(requests) AS requests FROM request_rollups r
+      WHERE key_id IN (SELECT value FROM json_each(?)) AND ${MODEL_REQUEST_SQL} GROUP BY key_id
     `).all(ids) as Array<{ key_id: string; requests: number }>
     for (const row of [...requests, ...rolled]) {
       const summary = summaries.get(row.key_id)
@@ -2141,6 +2265,12 @@ const MAX_ERROR_CODE = 100
 const MAX_ERROR_MESSAGE = 500
 /** A failed request: finished with an error status. One still in flight is not a failure. */
 const FAILED_SQL = '(r.finished_at IS NOT NULL AND (r.status IS NULL OR r.status >= 400))'
+/**
+ * A call to a model, the kind a key's request count counts. Reads that name
+ * no model (listing `/v1/models`, a video's status) stay in the request log
+ * but aren't usage: an app polling the model list hasn't sent anything.
+ */
+const MODEL_REQUEST_SQL = '(r.model IS NOT NULL)'
 /**
  * A request whose tokens come only from its response: its spend recorded no
  * token counts (free sellers record none), so the response's own count is used.

@@ -15,7 +15,7 @@ const child = spawn('pnpm', ['run', 'dev'], {
     ANTSEED_DESKTOP_RENDERER_PORT: String(ports.renderer),
     ANTSEED_DESKTOP_USER_DATA_DIR: path.join(instanceDir, 'electron'),
     ANTSEED_PAYMENTS_PORT: String(ports.payments),
-    ANTSEED_SYSTEM_PROXY_PORT: String(ports.systemProxy),
+    ANTSEED_DESKTOP_GATEWAY_PORT: String(ports.gateway),
     ANTSEED_SYSTEM_PROXY_DATA_DIR: path.join(instanceDir, 'system-proxy'),
   },
   stdio: 'inherit',

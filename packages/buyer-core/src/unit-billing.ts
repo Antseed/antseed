@@ -4,13 +4,21 @@ import type {
   SpeechRequestFacts,
   TokenUsage,
 } from '@antseed/api-adapter';
+import { readStreamEvents, streamUsage } from './response-usage.js';
 import {
   extractImageRequestFacts,
+  headerValue,
+  isImageEditPath,
+  isMultipartFormData,
+  parseMultipartForm,
   extractSpeechRequestFacts,
   speechAudioDelivered,
   extractProviderResponseFacts,
   extractRequestBodyFields,
   parseJsonObject,
+  isDeliveredImageOutput,
+  isSpeechAudio,
+  base64Bytes,
   nativeVideoFacts,
   nativeVideoAcceptance,
   type NativeVideoFacts,
@@ -27,6 +35,7 @@ import type {
   UnitBillingUsageReportV1,
 } from '@antseed/protocol/billing';
 import {
+  componentMatchesAttributes,
   evaluateUnitBilling,
   unitUsageToBillingReport,
   validateUnitBillingModelV1,
@@ -157,8 +166,13 @@ const speechBillingAdapter: UnitBillingAdapter = {
   },
   measure: (response, requestFacts) => {
     if (requestFacts.kind !== 'speech') return wrongFacts('speech billing', requestFacts);
-    const delivered = speechAudioDelivered(response, requestFacts.speech.responseFormat);
-    return { usage: { units: { input_characters: delivered ? requestFacts.speech.characters : 0 } }, tokenUsage: ZERO_TOKEN_USAGE };
+    const { speech } = requestFacts;
+    // The audio itself (also from an upstream that ignores `stream_format`), or, when the
+    // request asked for events, the audio in OpenAI's stream of them.
+    const delivered = speechAudioDelivered(response, speech.responseFormat)
+      || (speech.eventStream === true && response.statusCode >= 200 && response.statusCode < 300
+        && isSpeechAudio(streamedSpeechAudio(response.body), speech.responseFormat));
+    return { usage: { units: { input_characters: delivered ? speech.characters : 0 } }, tokenUsage: ZERO_TOKEN_USAGE };
   },
 };
 
@@ -208,12 +222,16 @@ export function captureUnitBillingContext(args: CaptureUnitBillingArgs): Capture
 }
 
 function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
-  const parsed = extractRequestBodyFields(args.request.headers, args.request.body);
+  const contentType = headerValue(args.request.headers, 'content-type');
+  // One pass over a form reads both its text fields and its image files.
+  const form = isMultipartFormData(contentType) ? parseMultipartForm(args.request.body, contentType) : null;
+  const parsed = form ? form.fields : extractRequestBodyFields(args.request.headers, args.request.body);
   const image = extractImageRequestFacts({
     path: args.request.path,
     method: args.request.method,
     body: parsed ?? undefined,
   });
+  if (isImageEditPath(args.request.path)) image.inputImages = form?.imageEditFiles ?? 0;
   const requestUsage = imageUnitUsage(image);
   const attributes = imageAttributes(image);
   return {
@@ -282,7 +300,7 @@ function extractImageResponseUsage(
   const parsed = parseJsonObject(response.body);
   const responseFacts: ProviderResponseFacts = parsed
     ? extractProviderResponseFacts(parsed)
-    : { tokenUsage: ZERO_TOKEN_USAGE };
+    : streamedImageFacts(response.body);
   const billableOutputImages = capOutputImagesToRequest(
     responseFacts.outputImages,
     requestFacts.image.requestedImages,
@@ -295,6 +313,63 @@ function extractImageResponseUsage(
     },
     tokenUsage: responseFacts.tokenUsage,
   };
+}
+
+// The events of a streamed image answer that carry a final image; partial images are previews, not billed.
+const COMPLETED_IMAGE_EVENTS = new Set(['image_generation.completed', 'image_edit.completed']);
+
+/**
+ * The images and tokens of an answer streamed as server-sent events, in OpenAI's image events:
+ * each completed event's `data.type` (never the `event:` line alone) names one final image, which
+ * counts only when it carries one. Tokens are read as for any streamed answer (`streamUsage`, the
+ * largest report), so a stream of several final images may report fewer tokens than it used.
+ */
+function streamedImageFacts(body: Uint8Array): ProviderResponseFacts {
+  const events = [...readStreamEvents(new TextDecoder().decode(body))];
+  // An image counts only from an event a standard client reads: closed by a blank line, with all
+  // its data lines joined into one JSON object. The reader's line-by-line fallback is for tokens.
+  const outputImages = events.filter((event) => event.closed && isCompletedImage(parseJson(event.data))).length;
+  // No completed image reads as no image count at all, as a non-JSON answer always has.
+  return { tokenUsage: streamUsage(events), ...(outputImages > 0 ? { outputImages } : {}) };
+}
+
+function isCompletedImage(value: unknown): boolean {
+  return isDeliveredImageOutput(value) && COMPLETED_IMAGE_EVENTS.has((value as { type?: unknown }).type as string);
+}
+
+/**
+ * The audio of a speech answer streamed as OpenAI's events: each `speech.audio.delta`'s base64
+ * `audio`, decoded and joined in order, up to the `speech.audio.done` that ends the audio. As for
+ * images, an event counts only as a standard client reads it, closed by a blank line with its data
+ * one JSON object. Empty, so nothing is billed, when the stream ends before the done event or any
+ * event before it is something else: an error, a delta that is not base64, a cut-off event.
+ */
+function streamedSpeechAudio(body: Uint8Array): Uint8Array {
+  const chunks: Uint8Array[] = [];
+  for (const event of readStreamEvents(new TextDecoder().decode(body))) {
+    const value = (event.closed ? parseJson(event.data) : undefined) as { type?: unknown; audio?: unknown } | null | undefined;
+    if (value?.type === 'speech.audio.done') {
+      const audio = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
+      let offset = 0;
+      for (const chunk of chunks) {
+        audio.set(chunk, offset);
+        offset += chunk.length;
+      }
+      return audio;
+    }
+    const chunk = value?.type === 'speech.audio.delta' && typeof value.audio === 'string' ? base64Bytes(value.audio) : null;
+    if (!chunk) return new Uint8Array(0);
+    chunks.push(chunk);
+  }
+  return new Uint8Array(0);
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 export function computeFinalUnitBilling(
@@ -328,7 +403,23 @@ export function estimateUnitRequestCost(
     && (usage.units.video_seconds === undefined || usage.units.video_seconds <= 0)) {
     throw new Error('Explicit video duration is required for per-second pricing');
   }
+  assertInputImagesPriced(model, context);
   return evaluateUnitBilling(model, context, usage);
+}
+
+/**
+ * Refuses an image edit that a model pricing input images has no input price
+ * for: no `input_images` component matches all of its attributes (its count,
+ * size, quality, ...). Its output would still match a component, so without
+ * this the edit would be billed with no charge for its input images.
+ */
+function assertInputImagesPriced(model: UnitBillingModelV1, context: UnitBillingContext): void {
+  const count = context.attributes?.input_images;
+  if (count === undefined) return;
+  const inputPrices = model.components.filter((component) => component.match?.input_images !== undefined);
+  if (inputPrices.length > 0 && !inputPrices.some((component) => componentMatchesAttributes(component, context.attributes))) {
+    throw new Error(`This service has no price for an edit with ${count} input images and these options`);
+  }
 }
 
 function usageForModel(model: UnitBillingModelV1, usage: UnitBillingUsage): UnitBillingUsage {
@@ -371,6 +462,8 @@ function imageAttributes(
     const value = facts[key];
     if (value !== undefined) attributes[key] = value;
   }
+  // An edit's image files, which upstreams bill as input on top of the output.
+  if (facts.inputImages) attributes.input_images = String(facts.inputImages);
   return Object.keys(attributes).length > 0 ? attributes : undefined;
 }
 

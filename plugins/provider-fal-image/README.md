@@ -11,7 +11,8 @@ export FAL_IMAGE_API_KEY=<seller-fal-key>
 
 - `FAL_IMAGE_API_KEY`: fal API key, sent as `Authorization: Key <key>`
 - `FAL_IMAGE_BASE_URL`: optional, defaults to `https://fal.run`
-- `ANTSEED_ALLOWED_SERVICES`: fal endpoint IDs such as `openai/gpt-image-2` or `fal-ai/nano-banana-pro` (64 characters at most). The service ID is the endpoint ID; aliases are not supported.
+- `ANTSEED_ALLOWED_SERVICES`: the services to sell (64 characters at most), each a fal endpoint ID such as `openai/gpt-image-2` or `fal-ai/nano-banana-pro`, or a name of your own that `ANTSEED_SERVICE_ALIAS_MAP_JSON` maps to one
+- `ANTSEED_SERVICE_ALIAS_MAP_JSON`: optional, service → fal endpoint ID (`upstreamModel` in the seller config), such as `openai/gpt-image-2.5-flare` → `openai/gpt-image-2.5/flare/text-to-image`. Buyers call the service by its own name; the seller sends it to the endpoint.
 - `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON`: `openai-images` pricing with `output_images`, optionally matched on `size`, `quality` or `resolution`
 - `ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON`: optional, service → fal edit endpoint (`imageEditModel` in the seller config), such as `openai/gpt-image-2` → `openai/gpt-image-2/edit`. Edits are billed with the service's own pricing.
 - `ANTSEED_SERVICE_CAPABILITIES_JSON`: optional capabilities to advertise
@@ -61,3 +62,12 @@ OpenAI fields are mapped to fal's:
 ## Pricing
 
 Price each service at fal's price for its dearest output for each billed option. A request that leaves out `size` or `quality` is billed as `auto`: price `auto` at what fal makes by default, or at its dearest choice when the model chooses (`quality: "auto"` on GPT Image). Options passed through unchanged, such as `aspect_ratio`, are not billing attributes, so price a model whose fal price depends on them at its dearest.
+
+Some fal edit endpoints (GPT Image among them) also bill each image an edit sends. Price those with components that match `input_images`, the number of image files the edit sends (`image`, `image[]` and `mask` parts), on top of the output price. Components add up, so give one component per count you accept, each worth that many input images:
+
+```json
+{ "unit": "output_images", "match": { "input_images": "1" }, "priceUsd": 0.012 },
+{ "unit": "output_images", "match": { "input_images": "2" }, "priceUsd": 0.024 }
+```
+
+An edit with a count no component names is refused before payment. A service with no `input_images` component bills edits like generations. These components are per output image, so with `n` above 1 the input is charged once per image. Peer metadata v18 carries the key; buyers on older releases don't see services that use it.

@@ -1,0 +1,14 @@
+.card { display: flex; flex-direction: column; gap: 16px; min-width: 0; color: inherit; }
+.card:hover { color: inherit; text-decoration: none; }
+.card:focus-visible { outline: 2px solid #789f00; outline-offset: 4px; border-radius: 8px; }
+
+.picture { position: relative; aspect-ratio: 4 / 3; border-radius: 8px; overflow: hidden; }
+.shot { background: var(--site-tile); }
+/* the hairline drawn over the screenshot, so the image never covers it */
+.shot::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--site-tile-line); pointer-events: none; }
+.shot img { width: 100%; height: 100%; object-fit: cover; object-position: top center; transition: scale .3s ease-out; }
+.card:hover .shot img { scale: 1.02; }
+
+.caption { font: 400 16px/24px var(--site-font); color: var(--site-text-body); text-wrap: pretty; }
+.caption b { font-weight: 500; color: var(--site-text); }
+.card:hover .caption b { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }

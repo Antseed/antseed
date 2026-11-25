@@ -1,3 +1,5 @@
+import { isStreamError } from '@antseed/buyer-core';
+
 /**
  * Watches a streamed answer as it passes through the seller: when the first
  * generated token arrives, and whether the stream reports a failure of its
@@ -60,10 +62,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function nonEmpty(value: unknown): boolean {
   return typeof value === 'string' ? value.length > 0 : Array.isArray(value) && value.length > 0;
-}
-
-function isStreamError(event: Record<string, unknown>): boolean {
-  return event.type === 'error' || event.type === 'response.failed' || isRecord(event.error);
 }
 
 function carriesGeneratedOutput(event: Record<string, unknown>): boolean {

@@ -224,6 +224,20 @@ describe('seller editors', async () => {
     expect(draftErrors(partial, base)).toEqual({ 'openai/kimi-k3:output': expect.any(String) })
   })
 
+  it('refuses a cached-input price above the input price', async () => {
+    const base = draftOf(settings)
+    const priced = (cached: string, input = '0.0001') => ({ ...base, prices: { 'openai/glm-5.3': { input, output: '0.0002', cached } } })
+    expect(draftErrors(priced('50000'), base)['openai/glm-5.3:cached']).toBe('At most the input price; buyers skip a model whose cached input costs more.')
+    expect(draftErrors(priced('0.0001'), base)).toEqual({})
+    expect(draftErrors(priced(''), base)).toEqual({})
+    // A bad input price is reported on the input field only.
+    expect(draftErrors(priced('5', 'abc'), base)).toEqual({ 'openai/glm-5.3:input': 'Use a number.' })
+    const { newModelErrors } = await import('../components/SellerAddModel')
+    const draft = { provider: 'openai', service: 'kimi-k3', upstreamModel: '', input: '1', output: '2', cached: '1.5', categories: '' }
+    expect(newModelErrors(draft, settings).cached).toBe('At most the input price; buyers skip a model whose cached input costs more.')
+    expect(newModelErrors({ ...draft, cached: '0.5' }, settings)).toEqual({})
+  })
+
   it('never sends a secret it was not given, and clears on request', () => {
     const base = { chatId: '42', token: '', clearToken: false, webhookUrl: '', clearWebhook: false, idleMinutes: '', cooldownMinutes: '', lowBalanceUsd: '', minSeverity: 'warning' as const }
     expect(alertsPatchOf(base, base)).toEqual({})

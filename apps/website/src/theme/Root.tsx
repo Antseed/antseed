@@ -1,7 +1,8 @@
 import type React from 'react';
 import {useEffect} from 'react';
-import '@fontsource-variable/geist';
-import '@fontsource-variable/geist-mono';
+import '../styles/fonts.css';
+import '@fontsource/instrument-sans/latin-400.css';
+import '@fontsource/instrument-sans/latin-500.css';
 import {
   track,
   isDownloadUrl,
@@ -11,12 +12,13 @@ import {
   sectionOf,
   visibleLabel,
   withGaAttribution,
-} from '../lib/analytics';
-import {isMobileGetStartedVisitor} from '../lib/useMobileGetStarted';
+} from '@site/src/lib/analytics';
+import {useDocumentReveal} from '@site/src/lib/useDocumentReveal';
+import {isMobileGetStartedVisitor} from '@site/src/lib/useMobileGetStarted';
 import {
   RELEASES_URL,
   resolveLatestDesktopDownload,
-} from '../lib/useLatestDesktopDownload';
+} from '@site/src/lib/useLatestDesktopDownload';
 
 /**
  * Global scroll state: `data-scrolled` on <html> drives the navbar
@@ -95,7 +97,7 @@ function useClickTracking() {
       };
 
       if (isDownloadUrl(absolute)) {
-        // On phones (including "Desktop site" mode) the AI VPN CTAs keep their
+        // On phones (including "Desktop site" mode) Antseed Desktop CTAs keep their
         // download href but reroute to /get-started on tap
         // (useMobileGetStarted, which runs after this capture listener) —
         // count those as funnel entries, not download conversions.
@@ -161,5 +163,6 @@ function useClickTracking() {
 export default function Root({children}: {children: React.ReactNode}) {
   useScrollState();
   useClickTracking();
+  useDocumentReveal();
   return <>{children}</>;
 }

@@ -100,8 +100,10 @@ export interface PolicyPeerFacts {
   imageUsdPerImage: number | null
   /** Null when the seller passes or can be verified; otherwise why it cannot. */
   unverifiedReason: string | null
-  /** Whether the seller advertises the TEE verifier capability. */
+  /** Whether the seller advertises the TEE verifier capability and has not failed its attestation. */
   teeCapable: boolean
+  /** Why its TEE attestation failed, when it advertises one that did. */
+  teeFailure?: string
 }
 
 /** Up to 4 decimals; a sub-cent price keeps two significant digits so it never reads $0. */
@@ -140,19 +142,24 @@ export function policyExclusionReasons(policy: RoutingPolicy, facts: PolicyPeerF
   } else {
     reasons.push(...priceCapReasons('input', facts.inputUsdPerMillion, policy.maxInputUsdPerMillion, true))
     reasons.push(...priceCapReasons('output', facts.outputUsdPerMillion, policy.maxOutputUsdPerMillion, true))
-    // A seller without a cached-input price never charges a cached rate, so
-    // the cap only bites when one is advertised.
-    reasons.push(...priceCapReasons('cached input', facts.cachedInputUsdPerMillion, policy.maxCachedInputUsdPerMillion, false))
+    // Cached input is input: without its own cap, the input cap bounds it. A
+    // seller without a cached-input price never charges a cached rate, so the
+    // cap only bites when one is advertised.
+    if (policy.maxCachedInputUsdPerMillion !== undefined) {
+      reasons.push(...priceCapReasons('cached input', facts.cachedInputUsdPerMillion, policy.maxCachedInputUsdPerMillion, false))
+    } else {
+      reasons.push(...priceCapReasons('cached input', facts.cachedInputUsdPerMillion, policy.maxInputUsdPerMillion, false, 'input cap'))
+    }
   }
   if (policy.requireVerified && facts.unverifiedReason) reasons.push(facts.unverifiedReason)
-  if (policy.requireTee && !facts.teeCapable) reasons.push('no TEE')
+  if (policy.requireTee && !facts.teeCapable) reasons.push(facts.teeFailure ? `TEE attestation failed: ${facts.teeFailure}` : 'no TEE')
   return reasons
 }
 
-function priceCapReasons(label: string, price: number | null, cap: number | undefined, unknownFails: boolean): string[] {
+function priceCapReasons(label: string, price: number | null, cap: number | undefined, unknownFails: boolean, capLabel = 'cap'): string[] {
   if (cap === undefined) return []
-  if (price === null) return unknownFails ? [`${label} price unknown, cap ${formatUsd(cap)}`] : []
-  return price > cap ? [`${label} price ${formatUsd(price)} over cap ${formatUsd(cap)}`] : []
+  if (price === null) return unknownFails ? [`${label} price unknown, ${capLabel} ${formatUsd(cap)}`] : []
+  return price > cap ? [`${label} price ${formatUsd(price)} over ${capLabel} ${formatUsd(cap)}`] : []
 }
 
 /**

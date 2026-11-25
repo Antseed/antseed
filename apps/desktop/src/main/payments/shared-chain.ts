@@ -15,7 +15,7 @@ import { AntsContext, type AntsChainConfig } from '@antseed/ants/service';
 import { ZeroAddress, type AbstractProvider } from 'ethers';
 import { readConfig } from '../runtime/config-io.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
-import { resolveStakingChain } from '../staking/configuration.js';
+import { resolveStakingChain } from './chain-config.js';
 
 /** Registry pointers and epoch timing change rarely; the rewards tile can lag them by a few minutes. */
 export const SHARED_STACK_TTL_MS = 5 * 60_000;
@@ -69,12 +69,6 @@ export async function sharedChainProvider(endpoints: ChainEndpoints): Promise<Ab
     return null;
   }
 }
-
-/** Forget cached wallet reads (after a claim or stake) while keeping the ranked endpoints and stack. */
-export function invalidateSharedChainReads(): void {
-  void shared?.context.then((context) => context.invalidate({ walletOnly: true }), () => {});
-}
-
 /** Drop the shared context; the next read builds one for the current config. */
 export function resetSharedChain(): void {
   shared = null;

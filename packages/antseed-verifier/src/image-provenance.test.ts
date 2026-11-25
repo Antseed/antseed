@@ -1,4 +1,5 @@
-import { createHash } from 'node:crypto'
+import { createHash, type KeyObject } from 'node:crypto'
+import { createRequire } from 'node:module'
 import { describe, it, expect } from 'vitest'
 import record from './image-build.fixture.json' with { type: 'json' }
 import { IMAGE_BUILD, IMAGES_BUILT_AFTER, composeImageDigest, imageBuildRecord, tokenImageDigest, verifyImageBuild } from './image-provenance.js'
@@ -10,6 +11,22 @@ const policy = { ...IMAGE_BUILD, builtAfter: IMAGES_BUILT_AFTER }
 describe('verifyImageBuild', () => {
   it('approves the image a build record from the workflow on main names, offline', async () => {
     expect(await verifyImageBuild(record)).toEqual({ images: [{ version: 'built 2026-11-07 from 2a3bd77', digest: DIGEST }] })
+  })
+
+  it('verifies where crypto names no default digest for EC keys, as in Electron', async () => {
+    // Sigstore checks the log's signature without naming a digest. OpenSSL then uses SHA-256;
+    // BoringSSL, which Electron's Node uses, throws, so the desktop's buyer approved no image.
+    const crypto = createRequire(import.meta.url)('node:crypto') as typeof import('node:crypto')
+    const verify = crypto.verify
+    crypto.verify = ((algorithm: string | null | undefined, data: Buffer, key: KeyObject, signature: Buffer) => {
+      if (algorithm == null && key.asymmetricKeyType === 'ec') throw new Error('NO_DEFAULT_DIGEST')
+      return verify(algorithm, data, key, signature)
+    }) as typeof crypto.verify
+    try {
+      expect(await verifyImageBuild(record)).toEqual({ images: [{ version: 'built 2026-11-07 from 2a3bd77', digest: DIGEST }] })
+    } finally {
+      crypto.verify = verify
+    }
   })
 
   it('rejects a record from another workflow or branch', async () => {
