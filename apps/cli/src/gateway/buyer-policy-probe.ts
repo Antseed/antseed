@@ -1,3 +1,4 @@
+import { ZERO_DATA_ACCESS_POLICY_CAPABILITY } from '../routing-policy/policy.js'
 import { buyerFetch } from './buyer-control.js'
 
 /** Model name the probe previews; no seller serves it, so the preview is cheap. */
@@ -28,6 +29,11 @@ export interface BuyerPolicyProbeOptions {
 
 /** One authenticated `GET /_antseed/route-preview`; never throws. */
 export async function probeBuyerPolicySupport(options: BuyerPolicyProbeOptions): Promise<BuyerPolicySupport> {
+  return (await probeBuyerPolicy(options)).support
+}
+
+/** The same probe, with the policy capabilities the buyer lists (none from a buyer older than the list). */
+export async function probeBuyerPolicy(options: BuyerPolicyProbeOptions): Promise<{ support: BuyerPolicySupport; capabilities: string[] }> {
   let response: Response
   try {
     response = options.fetchPreview
@@ -35,14 +41,18 @@ export async function probeBuyerPolicySupport(options: BuyerPolicyProbeOptions):
       : await buyerFetch({ buyerPort: options.buyerPort, secret: options.secret },
         `/_antseed/route-preview?model=${BUYER_POLICY_PROBE_MODEL}`, { policy: {} })
   } catch {
-    return 'unknown'
+    return { support: 'unknown', capabilities: [] }
   }
   if (!response.ok) {
     await response.body?.cancel().catch(() => {})
-    return 'unsupported'
+    return { support: 'unsupported', capabilities: [] }
   }
-  const body = await response.json().catch(() => null) as { candidates?: unknown } | null
-  return Array.isArray(body?.candidates) ? 'supported' : 'unsupported'
+  const body = await response.json().catch(() => null) as { candidates?: unknown; capabilities?: unknown } | null
+  if (!Array.isArray(body?.candidates)) return { support: 'unsupported', capabilities: [] }
+  const capabilities = Array.isArray(body.capabilities)
+    ? body.capabilities.filter((capability): capability is string => typeof capability === 'string')
+    : []
+  return { support: 'supported', capabilities }
 }
 
 /**
@@ -56,6 +66,10 @@ export async function probeBuyerPolicySupport(options: BuyerPolicyProbeOptions):
  * take back a confirmation for two minutes: the buyer is re-probed every 5 s
  * and only an answer that refuses the preview, or two minutes of silence,
  * makes it unsupported again. One slow probe must not refuse every key.
+ *
+ * `zeroDataAccessUnsupported()` is the same for the zero data access
+ * requirement, which a buyer applies only when its answer lists the
+ * capability: an older buyer accepts the policy and routes without it.
  */
 export class BuyerPolicyProbe {
   private _state: BuyerPolicySupport = 'unknown'
@@ -64,6 +78,8 @@ export class BuyerPolicyProbe {
   private _warned = false
   private _checked = false
   private _confirmedAt: number | null = null
+  private _capabilities: readonly string[] = []
+  private _rechecking = false
 
   constructor(private readonly _options: BuyerPolicyProbeOptions) {}
 
@@ -75,6 +91,10 @@ export class BuyerPolicyProbe {
     return this._state !== 'supported'
   }
 
+  zeroDataAccessUnsupported(): boolean {
+    return this.policyUnsupported() || !this._capabilities.includes(ZERO_DATA_ACCESS_POLICY_CAPABILITY)
+  }
+
   /** Runs the first probe and schedules the next ones. */
   async start(): Promise<BuyerPolicySupport> {
     await this.check()
@@ -82,11 +102,13 @@ export class BuyerPolicyProbe {
   }
 
   async check(): Promise<void> {
-    const probed = await probeBuyerPolicySupport(this._options)
+    const { support: probed, capabilities } = await probeBuyerPolicy(this._options)
     if (this._stopped) return
     const now = (this._options.now ?? Date.now)()
     if (probed === 'supported') this._confirmedAt = now
     else if (probed === 'unsupported') this._confirmedAt = null
+    // An unanswered probe keeps what the last answer listed, for as long as it keeps the confirmation.
+    if (probed !== 'unknown') this._capabilities = capabilities
     const unanswered = probed === 'unknown'
     const next = unanswered && this._confirmedAt !== null && now - this._confirmedAt < UNANSWERED_GRACE_MS
       ? 'supported'
@@ -113,6 +135,13 @@ export class BuyerPolicyProbe {
       }
     }
     this._schedule(unanswered ? RETRY_MS : RECHECK_MS)
+  }
+
+  /** Probes now, ahead of the schedule and one at a time: the buyer just answered as another one than the last probe saw. */
+  recheck(): void {
+    if (this._stopped || this._rechecking) return
+    this._rechecking = true
+    void this.check().finally(() => { this._rechecking = false })
   }
 
   stop(): void {

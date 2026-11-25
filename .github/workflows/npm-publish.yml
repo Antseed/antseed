@@ -66,6 +66,12 @@ jobs:
       - name: Publish plan
         run: node scripts/npm-publish-plan.mjs
 
+      # A new @antseed/keyed-relay installs its sidecar through the per-platform
+      # packages; this fails until the "Keyed relay binaries" workflow has
+      # published them for that version.
+      - name: Declare the keyed relay platform packages
+        run: node packages/keyed-relay/scripts/declare-platform-packages.mjs
+
       - name: Is the CLI version new on npm
         id: cli-new
         run: |

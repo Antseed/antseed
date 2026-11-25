@@ -93,6 +93,7 @@
   "dependencies": {
     "@antseed/api-adapter": "workspace:*",
     "@antseed/buyer-core": "workspace:*",
+    "@antseed/keyed-relay": "workspace:*",
     "@antseed/protocol": "workspace:*",
     "@silentbot1/nat-api": "^0.4.9",
     "better-sqlite3": "^12.6.2",

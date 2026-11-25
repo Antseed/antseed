@@ -58,6 +58,10 @@ import { HttpMetadataResolver } from "./discovery/http-metadata-resolver.js";
 import { ProxyMux } from "./proxy/proxy-mux.js";
 import { PaymentMux } from "./p2p/payment-mux.js";
 import { SweepMux } from "./p2p/sweep-mux.js";
+import { RelayMux, type RelayStreamOptions } from "./p2p/relay-mux.js";
+import { requireAttestedConnection } from "@antseed/buyer-core/buyer-request-handler";
+import { recordInterruptedRelayedCost, recordRelayedCost, type InterruptedRelayedResponse, type RelayedResponse } from "./blind-relay-billing.js";
+import type { Duplex } from "node:stream";
 import { VerificationMux } from "./verification/verification-mux.js";
 import { DepositRelayer } from "./payments/deposit-relayer.js";
 import {
@@ -582,6 +586,7 @@ export class AntseedNode extends EventEmitter {
   private _paymentMuxes = new Map<PeerId, PaymentMux>();
   private _verificationMuxes = new Map<PeerId, VerificationMux>();
   private _sweepMuxes = new Map<PeerId, SweepMux>();
+  private _relayMuxes = new Map<PeerId, RelayMux>();
   /** Relayers whose accepted sweep then failed on-chain (a stuck wallet, say), until when they are skipped. */
   private _failedSweepRelayers = new Map<PeerId, number>();
   private _peerCapabilities = new Map<PeerId, Set<string>>();
@@ -936,6 +941,10 @@ export class AntseedNode extends EventEmitter {
       verificationMux.close();
     }
     this._verificationMuxes.clear();
+    for (const relayMux of this._relayMuxes.values()) {
+      relayMux.close();
+    }
+    this._relayMuxes.clear();
     this._decoders.clear();
 
     // Close all connections
@@ -1566,6 +1575,60 @@ export class AntseedNode extends EventEmitter {
   }
 
   /**
+   * Buyer side: opens a seller-blind relay stream on a credential the seller
+   * minted for this buyer identity. The stream carries raw bytes; the caller
+   * runs TLS to the credential's upstream through it. With a
+   * `channelBinding` the stream opens only on the connection that binding
+   * names, as a request does (`RequestExecutionOptions.channelBinding`).
+   */
+  async openRelayStream(peer: PeerInfo, streamId: string, credentialId: string, buyerIdentity?: string, options?: RelayStreamOptions): Promise<Duplex> {
+    const context = this._buyerContext(buyerIdentity);
+    if (context) return context.openRelayStream(peer, streamId, credentialId, options);
+    const conn = await this._getOrCreateConnection(peer);
+    requireAttestedConnection(conn, peer, options);
+    let mux = this._relayMuxes.get(peer.peerId);
+    if (!mux) {
+      mux = new RelayMux(conn);
+      this._relayMuxes.set(peer.peerId, mux);
+    }
+    return mux.openStream(streamId, credentialId);
+  }
+
+  /**
+   * Buyer side: a request answered over the blind relay. Prices it at the
+   * seller's advertised prices by the usage the seller will bill it by
+   * (`recordRelayedCost`), so the seller's charge for `requestId` is signed
+   * only up to that cost.
+   */
+  recordRelayedResponse(
+    peer: PeerInfo,
+    relayed: RelayedResponse,
+    buyerIdentity?: string,
+  ): void {
+    const context = this._buyerContext(buyerIdentity);
+    const negotiator = context ? context.negotiator : this._buyerNegotiator;
+    if (!negotiator) return;
+    recordRelayedCost(negotiator, peer, relayed);
+  }
+
+  /**
+   * Buyer side: a relayed request was sent (`receivedLength` 0), or its answer
+   * did not end. Keeps the buyer's record of it (`recordInterruptedRelayedCost`),
+   * so the seller's charge for what it relayed is signed up to the buyer's
+   * own figure for what arrived.
+   */
+  recordInterruptedRelayedResponse(
+    peer: PeerInfo,
+    interrupted: InterruptedRelayedResponse,
+    buyerIdentity?: string,
+  ): void {
+    const context = this._buyerContext(buyerIdentity);
+    const negotiator = context ? context.negotiator : this._buyerNegotiator;
+    if (!negotiator) return;
+    recordInterruptedRelayedCost(negotiator, peer, interrupted);
+  }
+
+  /**
    * Ask a seller to close our payment channel with it right now, releasing the
    * reserved deposit without the on-chain `requestClose()` → 15-minute grace →
    * `withdraw()` round trip.
@@ -2053,6 +2116,7 @@ export class AntseedNode extends EventEmitter {
       const paymentMux = this._paymentMuxes.get(peerId);
       const verificationMux = this._verificationMuxes.get(peerId);
       const sweepMux = this._sweepMuxes.get(peerId);
+      const relayMux = this._relayMuxes.get(peerId);
       for (const frame of frames) {
         // Keepalive: respond to Ping, dispatch Pong to manager
         if (frame.type === MessageType.Ping) {
@@ -2085,6 +2149,10 @@ export class AntseedNode extends EventEmitter {
           verificationMux.handleFrame(frame).catch((err) => {
             const message = err instanceof Error ? err.message : String(err);
             debugWarn(`[Node] Failed to handle verification frame from ${peerId.slice(0, 12)}...: ${message}`);
+          });
+        } else if (RelayMux.isRelayMessage(frame.type)) {
+          relayMux?.handleFrame(frame).catch((err) => {
+            debugWarn(`[Node] Failed to handle relay frame from ${peerId.slice(0, 12)}...: ${err instanceof Error ? err.message : String(err)}`);
           });
         } else if (sweepMux && SweepMux.isSweepMessage(frame.type)) {
           sweepMux.handleFrame(frame).catch((err) => {
@@ -2126,6 +2194,8 @@ export class AntseedNode extends EventEmitter {
         this._verificationMuxes.get(peerId)?.close();
         this._verificationMuxes.delete(peerId);
         this._sweepMuxes.delete(peerId);
+        this._relayMuxes.get(peerId)?.close();
+        this._relayMuxes.delete(peerId);
         this._decoders.delete(peerId);
         // Clean up buyer-side payment state on disconnect
         this._buyerNegotiator?.onPeerDisconnect(peerId);
@@ -2619,9 +2689,11 @@ export class AntseedNode extends EventEmitter {
     }
     this._sweepMuxes.set(buyerPeerId, sweepMux);
 
-    const { mux } = this._sellerHandler!.handleConnection(conn, buyerPeerId, paymentMux, verificationMux);
+    const { mux, relayMux } = this._sellerHandler!.handleConnection(conn, buyerPeerId, paymentMux, verificationMux);
 
     this._muxes.set(buyerPeerId, mux);
+    this._relayMuxes.get(buyerPeerId)?.close();
+    this._relayMuxes.set(buyerPeerId, relayMux);
     this._wireConnection(conn, buyerPeerId);
     this._inboundIdle?.track(buyerPeerId, conn);
     this.emit("connection", conn);

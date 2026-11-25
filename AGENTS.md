@@ -118,6 +118,7 @@ An area's **Ask first** line lists changes to raise before you write them: with 
 | `packages/router-core` (guide) | Peer scoring and the routing-service client |
 | `packages/web-sdk` (guide) | Browser buyer |
 | `packages/telemetry` (guide) | The privacy boundary for product telemetry |
+| `packages/keyed-relay` (guide) | Seller-keyed blind relay: the Rust sidecar that adds a seller's key to a buyer's TLS session it cannot read |
 | `packages/contracts` (guide) | Solidity contracts (Foundry): who holds funds, policy slots, deployments |
 | `packages/fingerprints` (guide), `model-verifier` (guide) | Model verification math; standalone KBF model verifier |
 | `packages/antseed-verifier` (guide), `connected-apps` (guide), `ant-agent` (guide), `ui` (guide) | Seller attestation; local AI tool setup; knowledge agents; shared UI |
@@ -130,7 +131,7 @@ An area's **Ask first** line lists changes to raise before you write them: with 
 | `apps/relay` (guide), `download-proxy` (guide) | Browser-buyer relay; installer downloads Worker |
 | `e2e/` (guide), `docs/protocol/` | End-to-end tests and the testbench; protocol spec and plugin templates |
 
-Dependency direction: `protocol` and `api-adapter` ← `buyer-core` ← `node` ← `provider-core` and `router-core` ← `plugins` ← `cli` ← `desktop`. `web-sdk` uses `buyer-core` and `protocol`. Cross-package references use `workspace:*`.
+Dependency direction: `protocol` and `api-adapter` ← `buyer-core` ← `node` ← `provider-core` and `router-core` ← `plugins` ← `cli` ← `desktop`. `keyed-relay` (no internal dependencies) is used by `node` and `cli`. `web-sdk` uses `buyer-core` and `protocol`. Cross-package references use `workspace:*`.
 
 ## Payment flow
 

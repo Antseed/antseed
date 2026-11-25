@@ -189,6 +189,15 @@ test('requireTee excludes sellers without the TEE capability, independent of ver
     ['TEE attestation failed: not an approved TEE seller build'])
 })
 
+test('requireZeroDataAccess keeps only end-to-end encrypted offers whose attestation has not failed', () => {
+  assert.deepEqual(policyExclusionReasons({ requireZeroDataAccess: true }, facts()), ['no end-to-end encryption'])
+  assert.deepEqual(policyExclusionReasons({ requireZeroDataAccess: true }, facts({ zeroDataAccess: true })), [])
+  assert.deepEqual(pinnedPeerExclusionReasons({ requireZeroDataAccess: true }, facts(), 'qwen'), ['no end-to-end encryption'])
+  assert.deepEqual(policyExclusionReasons({ requireZeroDataAccess: true }, facts({ zeroDataAccess: false, zeroDataAccessFailure: 'the attestation does not echo our nonce' })),
+    ['end-to-end encryption failed: the attestation does not echo our nonce'])
+  assert.deepEqual(policyExclusionReasons({}, facts()), [])
+})
+
 test('model routes and allowedModels match like the gateway: case, variants, peer@model', () => {
   const policy = narrowPolicy({}, { allowedModels: ['GPT-5.6-sol'], modelRoutes: { 'GPT-5.6-SOL': { peerIds: [id('b')], strict: true } } })
   assert.equal(policyAllowsModel(policy, 'gpt-56-sol'), true)

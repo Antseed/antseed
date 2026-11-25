@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_HOLD_CODES, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
+import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, ANTSEED_REQUIRE_ZERO_DATA_ACCESS_HEADER, DEFAULT_BUYER_IDENTITY, VIDEO_JOB_HOLD_CODES, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
@@ -238,6 +238,10 @@ export interface GatewayServerOptions {
   controlSecret?: string | null
   /** True while the buyer has not confirmed it applies routing policies (see buyer-policy-probe.ts). */
   buyerPolicyUnsupported?: () => boolean
+  /** True while the buyer has not confirmed it applies the zero data access requirement (see buyer-policy-probe.ts). */
+  buyerZeroDataAccessUnsupported?: () => boolean
+  /** Called when the buyer refuses a policy this gateway wrote, so it is probed again without waiting for the next check. */
+  recheckBuyerPolicy?: () => void
   /** Console (`/console`, `/console/api/*`), answered before API-key auth. */
   console?: { handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> } | null
   /** Span exporter; defaults to one reading the observability settings from the store. */
@@ -426,7 +430,10 @@ export class GatewayServer {
       model = preset.model
     }
 
-    const policy = this._routingPolicy(res, route, key, context, preset, model, requestedPolicy(firstHeader(req.headers[ANTSEED_REQUIRE_TEE_HEADER]) || undefined))
+    const policy = this._routingPolicy(res, route, key, context, preset, model, requestedPolicy(
+      firstHeader(req.headers[ANTSEED_REQUIRE_TEE_HEADER]) || undefined,
+      firstHeader(req.headers[ANTSEED_REQUIRE_ZERO_DATA_ACCESS_HEADER]) || undefined,
+    ))
     if (!policy.allowed) return
     const video = nativeVideoRoute({ method, path: route.prefix, body })
     const videoJob = video?.action === 'retrieve' && video.resourceId ? videoJobKey(video.protocol, video.resourceId) : undefined
@@ -596,6 +603,11 @@ export class GatewayServer {
     }
     if (route.paid && sellersRestricted && this._options.buyerPolicyUnsupported?.()) {
       sendError(res, 503, 'api_error', 'buyer_policy_unsupported', "The buyer does not apply this API key's routing policy; upgrade it or check the gateway control secret")
+      return { allowed: false }
+    }
+    // A buyer older than the requirement accepts the policy and routes without it.
+    if (route.paid && routed.requireZeroDataAccess && this._options.buyerZeroDataAccessUnsupported?.()) {
+      sendError(res, 503, 'api_error', 'buyer_policy_unsupported', 'The buyer does not apply the zero data access requirement; upgrade it')
       return { allowed: false }
     }
     if (!controlSecret) return { allowed: true, headers: {}, policy }
@@ -810,6 +822,10 @@ export class GatewayServer {
         }
         try {
           const error = status >= 400 ? gatewayError ?? parseErrorBody(Buffer.concat(errorChunks), status) : null
+          // A buyer that cannot read this gateway's own policy is not the one the last probe answered for.
+          if (status === 400 && error?.code === 'invalid_routing_policy' && request.policyHeaders[ROUTING_POLICY_HEADER]) {
+            this._options.recheckBuyerPolicy?.()
+          }
           store.finishRequest(tag, { status, buyerRequestId, error })
           if (usage) store.recordResponseUsage(tag, usage)
           if (observability.logContent) store.recordRequestContent(tag, { requestBody: requestContent, responseBody: responseContent })
@@ -1565,6 +1581,7 @@ const STRIPPED_HEADERS = new Set([
   GATEWAY_INTERNAL_KEY_HEADER,
   END_USER_HEADER,
   ANTSEED_REQUIRE_TEE_HEADER,
+  ANTSEED_REQUIRE_ZERO_DATA_ACCESS_HEADER,
   // Proxy-internal hooks for the local verifier; a key holder must not choose them.
   'x-antseed-request-id',
   'x-antseed-capture-response-auth-preimages',

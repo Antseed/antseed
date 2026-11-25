@@ -5,10 +5,21 @@ export const PRESET_MODEL_PREFIX = '@preset/'
 export const END_USER_HEADER = 'x-antseed-end-user'
 const MAX_END_USER_LENGTH = 256
 
-/** The policy the request itself adds on top of its key's, or null. */
-export function requestedPolicy(header: string | undefined): { requireTee: true } | null {
+function headerSet(header: string | undefined): boolean {
   const value = header?.trim().toLowerCase()
-  return value && value !== '0' && value !== 'false' ? { requireTee: true } : null
+  return Boolean(value && value !== '0' && value !== 'false')
+}
+
+/** The policy the request itself adds on top of its key's (TEE, zero data access), or null. */
+export function requestedPolicy(
+  teeHeader: string | undefined,
+  zeroDataAccessHeader?: string | undefined,
+): { requireTee?: true; requireZeroDataAccess?: true } | null {
+  const policy = {
+    ...(headerSet(teeHeader) ? { requireTee: true as const } : {}),
+    ...(headerSet(zeroDataAccessHeader) ? { requireZeroDataAccess: true as const } : {}),
+  }
+  return Object.keys(policy).length > 0 ? policy : null
 }
 
 export function presetSlug(model: string | null): string | null {

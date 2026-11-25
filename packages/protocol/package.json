@@ -21,6 +21,10 @@
       "import": "./dist/http.js",
       "types": "./dist/http.d.ts"
     },
+    "./blind-relay": {
+      "import": "./dist/blind-relay.js",
+      "types": "./dist/blind-relay.d.ts"
+    },
     "./framing": {
       "import": "./dist/framing.js",
       "types": "./dist/framing.d.ts"

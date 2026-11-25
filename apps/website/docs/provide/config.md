@@ -124,6 +124,53 @@ Set `cachedInputUsdPerMillion` when your upstream charges less for cache hits. W
 
 The cached-input price must be at most the input price. Buyers skip an offer whose cached input costs more than its input, so the model would get no requests. `antseed seller setup`, the `antseed config seller` commands, `antseed seller settings` and the Gateway Console refuse such a price, and `antseed seller start` warns about one already in the config. Leave `cachedInputUsdPerMillion` out to bill cached input at the input price. A service with its own `pricing` doesn't take the provider's default cached-input price: set it on the service too.
 
+### Zero data access services
+
+A service whose upstream model encrypts end to end can be sold with zero data access: buyers encrypt every message to the upstream's attested key, and your seller relays ciphertext with your own upstream key. Today this works with the `openai` provider on Venice, for its `e2ee-*` models. Set the service's `upstreamModel` to the `e2ee-*` model and add the `e2ee` category:
+
+```json
+"qwen-2.5-7b": {
+  "upstreamModel": "e2ee-qwen-2-5-7b-p",
+  "categories": ["e2ee"]
+}
+```
+
+Your seller then answers buyers' attestation requests for the service for free, by relaying Venice's attestation for a nonce the buyer chose. Buyers check it themselves, so the category alone earns nothing: a service whose attestation fails is skipped. Encrypted requests need the `x-venice-tee-*` headers and `messages` to reach Venice unchanged, so don't strip those headers (`OPENAI_STRIP_HEADER_PREFIXES`) or inject body fields (`OPENAI_BODY_INJECT_JSON`) that touch `messages`.
+
+### Seller-blind relay services
+
+A service on an upstream without end-to-end encryption can still be sold with zero data access. You keep your own API key, and the buyer never sees it. It works with the `openai` provider on any HTTPS upstream that accepts TLS 1.2 with AES-128-GCM. Add the `seller-blind` category to the service:
+
+```json
+"llama-3.1-8b": {
+  "upstreamModel": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+  "categories": ["seller-blind"]
+}
+```
+
+A buyer with an open payment channel that has signed for its earlier requests gets a handle for the service from your seller, and at most 4 live handles at a time. The buyer then runs TLS to the upstream through a raw relay stream on your seller, so you forward ciphertext and never see the conversation. Right after the handshake, the buyer proves to your seller in zero knowledge that it derived the session keys from the handshake your seller relayed. The proof also gives your seller the encryption material for one record, and nothing more. Your seller encrypts that record itself: the request line, `Host`, your key and `Connection: close`. It writes the record to the upstream as the first record of the session. The buyer never receives that record, and your seller never holds the session keys. The buyer then sends the rest of the request (its headers and body). Your seller holds it and forwards none of it until it passes a check. The buyer reveals its headers and the last fields of the body, through the same proof, and nothing else of the request:
+
+- Headers: only `Content-Type` (JSON), `Content-Length` (which must match the body) and optionally `Accept` and `User-Agent`.
+- The body's last fields: the service's model, the output-token limit, `"n":1`, `stream`, usage in a stream, and any fields you pin, written in a fixed form.
+
+Your seller then runs the checks a direct request gets: an open payment channel with earlier requests signed for, the reserve headroom for the request's estimated cost (when you set a reserve-estimate overdraft) and your buyer limits. A request that fails is dropped without reaching the upstream, and the buyer is told why. The buyer reads the answer and at the end reveals to your seller only the status line and the usage figure, which your seller checks against the bytes it relayed. Your seller bills that usage at the service's token prices, to the payment channel that admitted the request, and meters the request as it meters a direct one.
+
+The relay needs the keyed-relay sidecar on the seller and on the buyer: the `@antseed/keyed-relay-<platform>-<arch>` package, which an npm install of the CLI brings for its platform, or a binary at `ANTSEED_KEYED_RELAY_BIN`. Without it, your seller serves no `seller-blind` services. Each request is one TLS session, and the setup adds about 1.5 MB between buyer and seller and a little over a second. Only text chat completions are carried. Know the trade-offs:
+
+- The checked fields work because they come last: an upstream that reads JSON with the last copy of a repeated key, as JavaScript, Python and Go do, uses them even if the buyer hid other values earlier in the body. An upstream that keeps the first copy, or stops at the end of the first JSON object and ignores what follows, could be given other values. Your seller then catches the mismatch afterwards where the answer shows it (another model in a stream, or a JSON answer to a streamed request), bills the request and refuses that buyer any further handles.
+- Set `OPENAI_KEYED_RELAY_MAX_TOKENS` to bound what one request can cost you. A buyer that never signs for its answer is then out at most one request of that size, as with any seller. Without a cap, a request may name no output limit.
+- Fields the upstream charges for that you don't pin stay hidden in the body. Pin them with `OPENAI_KEYED_RELAY_PINNED_JSON`; on `api.openai.com` the standard `service_tier` is pinned by default.
+- An answer whose usage the buyer doesn't reveal, or that the buyer leaves before it ends, is billed by an estimate within the request your seller checked: the input from the request's length and the output from the length of what was relayed, at about four bytes a token and never over the request's output limit. A buyer that got the whole answer prices it by the same estimate, from its own request and answer, and signs for it. A request that got no answer at all is not billed.
+- Your seller can't add body fields to a relayed request, so the relay is off when `OPENAI_BODY_INJECT_JSON` (or OpenRouter's `OPENAI_UPSTREAM_PROVIDER`) sets any.
+- The buyer learns which upstream serves the service, and sees your upstream's answers, including errors about your key.
+- A buyer that could also capture your seller's traffic to the upstream could recover your key from it. Set a spend limit and alerts on the key, and rotate it if you suspect misuse.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OPENAI_KEYED_RELAY_MAX_TOKENS` | no cap | The most output tokens one relayed request may ask for. A buyer request asking for more is lowered to it, and one naming no limit gets it. Keep it at or below the model's output limit. |
+| `OPENAI_KEYED_RELAY_MAX_TOKENS_FIELD` | `max_completion_tokens` on `api.openai.com`, `max_tokens` elsewhere | The body field your upstream reads the output limit from |
+| `OPENAI_KEYED_RELAY_PINNED_JSON` | `{"service_tier":"default"}` on `api.openai.com`, none elsewhere | Body fields every relayed request must end with, as a JSON object |
+
 ### Capabilities
 
 Capabilities tell buyers what a service can do. They are hints, not enforced limits, and an omitted field means "unknown".

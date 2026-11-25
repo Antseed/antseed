@@ -2,6 +2,7 @@ import type { SerializedHttpRequest, SerializedHttpResponse, SerializedHttpRespo
 import type { ServiceApiProtocol } from '../types/service-api.js';
 import type { ServiceUnitBillingModelsV1 } from '../types/billing.js';
 import type { ServiceCapabilities, ServiceHealth } from '../discovery/peer-metadata.js';
+import type { KeyedRequestTerms } from '@antseed/protocol/blind-relay';
 
 export interface ProviderTokenPricingUsdPerMillion {
   inputUsdPerMillion: number;
@@ -111,6 +112,51 @@ export interface Provider {
    * service of this provider.
    */
   checkUpstreamAccount?(): Promise<UpstreamAccountStatus>;
+
+  /**
+   * Optional relay of the upstream's end-to-end encryption attestation for one
+   * service whose upstream model encrypts end to end (a service in category
+   * `e2ee`). The provider fetches the attestation for the service's upstream
+   * model with the buyer's `nonce` (64 hex characters) and its own upstream
+   * credential, and returns the upstream's response unchanged: the buyer
+   * verifies it and encrypts every message to the attested key, so the seller
+   * relays only ciphertext. The seller serves this route free of charge.
+   * Returns null when the service has no end-to-end encryption.
+   */
+  getE2eeAttestation?(service: string, nonce: string): Promise<E2eeAttestationResponse | null>;
+
+  /**
+   * Optional target for the seller-blind relay (`seller-blind` services). The
+   * seller keeps its own credential: it writes `headers` (with the credential)
+   * into the buyer's TLS session to `host` as the request head, without being
+   * able to read the session, and the buyer never sees them. The seller bills
+   * each request from the usage the buyer reveals, at the service's token
+   * prices. Returns null when the service is not served this way.
+   */
+  keyedRelayTarget?(service: string): KeyedRelayTarget | null;
+}
+
+/** Where and how the seller-blind relay sends one service's requests. */
+export interface KeyedRelayTarget {
+  /** The upstream's TLS host; its certificate must be valid for it. */
+  host: string;
+  port: number;
+  /** The upstream's OpenAI-compatible base URL, e.g. `https://api.example.com/v1`. */
+  baseUrl: string;
+  /** The one request path the seller writes, e.g. `/v1/chat/completions`. */
+  path: string;
+  /** The upstream model the service maps to; the buyer sends it as `model`. */
+  model: string;
+  /** Credential headers the seller adds, e.g. `[['Authorization', 'Bearer ...']]`. Never sent to the buyer. */
+  headers: Array<[string, string]>;
+  /** What the seller checks in each request before forwarding it: the token-limit field and cap, and the fields it pins. */
+  request: KeyedRequestTerms;
+}
+
+/** An upstream attestation response, relayed to the buyer as the upstream sent it. */
+export interface E2eeAttestationResponse {
+  statusCode: number;
+  body: Uint8Array;
 }
 
 /**

@@ -178,6 +178,19 @@ test('a request can require TEE sellers on top of its key\'s policy, never loose
   }
 })
 
+test('a request can require zero data access on top of its key\'s policy', async () => {
+  const ctx = await setup()
+  try {
+    const { secret } = ctx.store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null, routingPolicy: { minTrustScore: 40 } })
+    await ctx.send(secret, '/v1/chat/completions', { model: 'm' }, { 'x-antseed-require-zero-data-access': '1' })
+    const headers = ctx.buyer.captured[0]!.headers
+    assert.deepEqual(decodePolicyHeader(headers[ROUTING_POLICY_HEADER] as string), { minTrustScore: 40, requireZeroDataAccess: true })
+    assert.equal(headers['x-antseed-require-zero-data-access'], undefined)
+  } finally {
+    await ctx.close()
+  }
+})
+
 test('a seller-restricting policy without a control secret is refused, not routed unrestricted', async () => {
   const ctx = await setup({ controlSecret: null })
   try {

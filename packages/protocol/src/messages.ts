@@ -14,6 +14,14 @@ export enum MessageType {
   HttpResponseAck = 0x27,
   HttpRequestCancel = 0x28,
 
+  // Seller-blind relay (0x30-0x3F): raw bytes between the buyer and the
+  // seller's sidecar, for TLS the buyer runs end to end to an upstream the
+  // seller names.
+  RelayOpen = 0x30,
+  RelayOpened = 0x31,
+  RelayData = 0x32,
+  RelayClose = 0x33,
+
   // --- Payment Protocol (0x50-0x5F) ---
   SpendingAuth = 0x50,
   AuthAck = 0x51,

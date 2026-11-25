@@ -67,6 +67,10 @@
       "import": "./dist/channels-client.js",
       "types": "./dist/channels-client.d.ts"
     },
+    "./e2ee": {
+      "import": "./dist/e2ee.js",
+      "types": "./dist/e2ee.d.ts"
+    },
     "./debug": {
       "import": "./dist/debug.js",
       "types": "./dist/debug.d.ts"

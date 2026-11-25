@@ -16,6 +16,8 @@ import {
 } from '@antseed/provider-core';
 import type { ServiceApiProtocol, ServiceCapabilities } from '@antseed/node';
 import { VeniceImageEditProvider } from './venice-image-edit.js';
+import { veniceE2eeAttestation } from './venice-e2ee.js';
+import { openAiKeyedRelayTarget } from './keyed-relay.js';
 import { announceVeniceSpeechVoices, withSpeechServiceCapabilityDefaults } from './speech.js';
 
 const SPECIAL_OPENAI_COMPAT_PROVIDERS = ['openrouter', 'venice'] as const;
@@ -237,6 +239,9 @@ const plugin: AntseedProviderPlugin = {
     { key: 'ANTSEED_SERVICE_ALIAS_MAP_JSON', label: 'Service Alias Map', type: 'string', required: false, description: 'JSON map of announced service → upstream model name (generic, works across all providers)' },
     { key: 'ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON', label: 'Image Edit Model Map', type: 'string', required: false, description: 'JSON map of announced image service → Venice native edit model' },
     { key: 'OPENAI_PATH_REWRITE_JSON', label: 'Path Rewrite', type: 'string', required: false, description: 'JSON map of exact request paths to rewrite, e.g. {"/v1/chat/completions":"/v4/chat/completions"} for APIs that use a different version prefix' },
+    { key: 'OPENAI_KEYED_RELAY_MAX_TOKENS', label: 'Keyed relay output cap', type: 'number', required: false, description: 'Seller-blind relay: the most output tokens one request may ask for, checked before the request is forwarded (default: no cap)' },
+    { key: 'OPENAI_KEYED_RELAY_MAX_TOKENS_FIELD', label: 'Keyed relay token-limit field', type: 'string', required: false, description: 'Seller-blind relay: the body field your upstream reads the output limit from, "max_tokens" or "max_completion_tokens" (default: max_completion_tokens on api.openai.com, max_tokens elsewhere)' },
+    { key: 'OPENAI_KEYED_RELAY_PINNED_JSON', label: 'Keyed relay pinned fields', type: 'string', required: false, description: 'Seller-blind relay: JSON object of body fields every request must end with, e.g. {"service_tier":"default"} (api.openai.com pins that by default)' },
     { key: 'ANTSEED_FALLBACK_UPSTREAMS_JSON', label: 'Fallback Upstreams', type: 'string', required: false, description: 'JSON array of backup upstreams for the same services ({baseUrl, apiKey?, services?, serviceAliasMap?, pathRewrite?}), tried in order when the main upstream fails' },
   ],
 
@@ -324,6 +329,34 @@ const plugin: AntseedProviderPlugin = {
         ...(fallbackUpstreams ? { fallbackUpstreams } : {}),
       },
     });
+    const resolveUpstreamModel = (service: string): string => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service;
+    if (Object.keys(bodyInject).length > 0) {
+      // The seller never sees a relayed request's body, so it cannot add the fields it injects.
+      console.warn('[openai] the seller-blind relay is off: the seller injects body fields, which a relayed request cannot carry');
+    } else {
+      // Services in category `seller-blind` are served by adding this key to the buyer's own TLS session.
+      const maxTokensRaw = config['OPENAI_KEYED_RELAY_MAX_TOKENS']?.trim();
+      const maxTokens = maxTokensRaw ? Number(maxTokensRaw) : undefined;
+      if (maxTokens !== undefined && !(Number.isSafeInteger(maxTokens) && maxTokens > 0)) {
+        throw new Error('OPENAI_KEYED_RELAY_MAX_TOKENS must be a positive integer');
+      }
+      const maxTokensField = config['OPENAI_KEYED_RELAY_MAX_TOKENS_FIELD']?.trim();
+      if (maxTokensField && maxTokensField !== 'max_tokens' && maxTokensField !== 'max_completion_tokens') {
+        throw new Error('OPENAI_KEYED_RELAY_MAX_TOKENS_FIELD must be "max_tokens" or "max_completion_tokens"');
+      }
+      const pinned = parseJsonObject(config['OPENAI_KEYED_RELAY_PINNED_JSON'], 'OPENAI_KEYED_RELAY_PINNED_JSON');
+      const keyedRelayTarget = openAiKeyedRelayTarget({
+        baseUrl,
+        apiKey,
+        resolveUpstreamModel,
+        ...(extraHeaders ? { extraHeaders } : {}),
+        ...(pathRewrite ? { pathRewrite } : {}),
+        ...(maxTokens !== undefined ? { maxTokens } : {}),
+        ...(maxTokensField ? { maxTokensField: maxTokensField as 'max_tokens' | 'max_completion_tokens' } : {}),
+        ...(pinned ? { pinned } : {}),
+      });
+      if (keyedRelayTarget) Object.assign(baseProvider, { keyedRelayTarget });
+    }
     if (flavor !== 'venice') return baseProvider;
     // Venice lists each speech model's voices; announce them unless the seller listed its own.
     const announceSpeechVoices = serviceCapabilities
@@ -332,10 +365,15 @@ const plugin: AntseedProviderPlugin = {
           allowedServices,
           serviceApiProtocols,
           serviceCapabilities,
-          (service) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service,
+          resolveUpstreamModel,
         )
       : undefined;
-    return new VeniceImageEditProvider(baseProvider, imageEditModelMap ?? {}, announceSpeechVoices);
+    const e2eeAttestation = veniceE2eeAttestation({
+      baseUrl,
+      apiKey,
+      resolveUpstreamModel,
+    });
+    return new VeniceImageEditProvider(baseProvider, imageEditModelMap ?? {}, announceSpeechVoices, e2eeAttestation);
   },
 };
 

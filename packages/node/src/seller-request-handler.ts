@@ -76,7 +76,11 @@ import {
 import { parseResponseUsage, type ResponseUsage } from './utils/response-usage.js';
 import { exposedResponseHeaders } from './utils/response-headers.js';
 import { ExposedSseStream, exposedJsonBody, type SellerCost } from './utils/response-body.js';
-import { usageForBilling } from '@antseed/buyer-core';
+import { E2EE_ATTESTATION_PATH, usageForBilling } from '@antseed/buyer-core';
+import { BLIND_RELAY_CREDENTIAL_PATH, BLIND_RELAY_SERVICE_CATEGORY, type KeyedRefusalCode } from '@antseed/protocol/blind-relay';
+import { RelayMux } from './p2p/relay-mux.js';
+import { KEYED_RELAY_BUSY, SellerBlindRelay, type BlindRelayCharge, type BlindRelayRecord, type KeyedRequestAdmission, type KeyedRequestDecision } from './seller-blind-relay.js';
+import { KeyedRelayProcess, resolveKeyedRelayBinary } from '@antseed/keyed-relay';
 import { isCanonicalRequestPath } from './proxy/request-path.js';
 import { SERVICE_REQUIRED, billedRequestBody, requestedMaxOutputTokens, type BilledRequestBody } from './requested-service.js';
 import { buildSelfHealthErrorResponse, buildUpstreamRateLimitedResponse, buildUpstreamUnavailableResponse, describeUpstreamError, isUpstreamAccountError, isUpstreamFailureStatus, isVideoDownloadBusy } from './health/self-health-error.js';
@@ -273,6 +277,33 @@ const ATTEST_RATE_MAX_TRACKED_PEERS = 1024;
  * Extracted from AntseedNode to isolate seller request handling from core
  * node orchestration.
  */
+/**
+ * Per provider, the relayed requests in flight. Each takes one of the
+ * provider's slots, though none passes through it. Kept with the provider
+ * object: its limit is its own, whichever handler admits the request.
+ */
+const relayedInFlight = new WeakMap<Provider, number>();
+
+/** What every 402 body says of a seller's terms; each 402 adds its channel's fields. */
+function paymentRequiredBody(requirements: PaymentRequiredPayload) {
+  return {
+    error: 'payment_required',
+    minBudgetPerRequest: requirements.minBudgetPerRequest,
+    suggestedAmount: requirements.suggestedAmount,
+    ...(requirements.inputUsdPerMillion != null ? { inputUsdPerMillion: requirements.inputUsdPerMillion } : {}),
+    ...(requirements.outputUsdPerMillion != null ? { outputUsdPerMillion: requirements.outputUsdPerMillion } : {}),
+    ...(requirements.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion } : {}),
+  };
+}
+
+/**
+ * The provider's slots in use: the requests it is serving itself, and the
+ * relayed ones, which it never sees. Both count against its one limit.
+ */
+function providerSlotsTaken(provider: Provider): number {
+  return provider.getCapacity().current + (relayedInFlight.get(provider) ?? 0);
+}
+
 export class SellerRequestHandler {
   private readonly _deps: SellerRequestHandlerDeps;
   private readonly _providerLoadCounts = new Map<string, number>();
@@ -280,14 +311,19 @@ export class SellerRequestHandler {
   private readonly _providerIds = new Map<string, string>();
   /** The service each request in flight is priced and billed as: read once, since a body can be large. */
   private readonly _requestedServices = new WeakMap<SerializedHttpRequest, RequestedService>();
-  /** Per channel: the highest spend a catch-up NeedAuth was already sent for, so parked requests ask once. */
-  private readonly _catchUpPrompted = new Map<string, bigint>();
+  /** Per channel: the highest spend a catch-up NeedAuth was already sent for and the connection it went out on, so waiting requests ask once. */
+  private readonly _catchUpPrompted = new Map<string, { spent: bigint; on: WeakRef<PaymentMux> }>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
   /** The provider and service pairs already reported as sending no usage figure; each is reported once. */
   private readonly _usageMissingReported = new Set<string>();
   private _metadataRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   /** Request bodies in memory on every connection: uploads still arriving and requests being served. */
   private readonly _inFlightRequestBytes: ByteBudget;
+  private readonly _blindRelay: SellerBlindRelay;
+  /** Each buyer's payment mux on its live connection, for blind relay charges that land after a stream closes. */
+  private readonly _paymentMuxes = new Map<string, PaymentMux>();
+  /** Per buyer, the channel the relay asked to close because it can serve no more requests on it. */
+  private readonly _relayRetiredChannels = new Map<string, string>();
 
   constructor(deps: SellerRequestHandlerDeps) {
     this._deps = deps;
@@ -295,6 +331,24 @@ export class SellerRequestHandler {
       deps.maxInFlightRequestBytes ?? DEFAULT_MAX_IN_FLIGHT_REQUEST_BYTES,
       deps.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
     ));
+    const keyedRelayBinary = resolveKeyedRelayBinary();
+    this._blindRelay = new SellerBlindRelay({
+      charge: (charge) => this._chargeBlindRelay(charge),
+      record: (record) => this._recordBlindRelay(record),
+      requestBytes: this._inFlightRequestBytes,
+      ...(deps.isBuyerBlocked ? { isBuyerBlocked: deps.isBuyerBlocked } : {}),
+      ...(keyedRelayBinary ? {
+        spawnKeyedRelay: () => KeyedRelayProcess.spawn('seller', keyedRelayBinary),
+        usageCostUsdc: (provider, service, usage) => computeCostUsdc(
+          usage.freshInputTokens,
+          usage.outputTokens,
+          provider.pricing.services?.[service] ?? provider.pricing.defaults,
+          usage.cachedInputTokens,
+        ),
+        admitKeyedRequest: (request) => this._admitKeyedRequest(request),
+        maxKeyedRequestBytes: deps.maxUploadBodyBytes ?? DEFAULT_MAX_UPLOAD_BODY_BYTES,
+      } : {}),
+    });
   }
 
   private _allowAttest(buyerPeerId: string): boolean {
@@ -326,7 +380,17 @@ export class SellerRequestHandler {
     buyerPeerId: string,
     paymentMux: PaymentMux,
     verificationMux: VerificationMux,
-  ): { mux: ProxyMux } {
+  ): { mux: ProxyMux; relayMux: RelayMux } {
+    this._paymentMuxes.set(buyerPeerId, paymentMux);
+    // Test doubles of a connection may have no events.
+    conn.on?.('stateChange', (state: ConnectionState) => {
+      if ((state === ConnectionState.Closed || state === ConnectionState.Failed) && this._paymentMuxes.get(buyerPeerId) === paymentMux) {
+        this._paymentMuxes.delete(buyerPeerId);
+      }
+    });
+    const relayMux = new RelayMux(conn, {
+      authorize: (streamId, credentialId) => this._blindRelay.authorize(buyerPeerId, streamId, credentialId),
+    });
     const mux = new ProxyMux(conn, {
       maxUploadBodyBytes: this._deps.maxUploadBodyBytes,
       sharedUploadBudget: this._inFlightRequestBytes,
@@ -432,6 +496,16 @@ export class SellerRequestHandler {
             })),
           });
         }
+        return;
+      }
+
+      if (pathOnly === E2EE_ATTESTATION_PATH) {
+        await this._handleE2eeAttestation(mux, request, buyerPeerId);
+        return;
+      }
+
+      if (pathOnly === BLIND_RELAY_CREDENTIAL_PATH) {
+        await this._handleBlindCredential(mux, paymentMux, request, buyerPeerId);
         return;
       }
 
@@ -719,39 +793,7 @@ export class SellerRequestHandler {
         if (isServedFree) {
           debugLog(`[SellerHandler] Free service for ${buyerPeerId.slice(0, 12)}... — skipping 402 / payment channel`);
         } else {
-          const baseRequirements = spm?.getPaymentRequirements(
-            request.requestId, buyerPeerId, requestPricing,
-          );
-          if (baseRequirements) {
-            const requirements: PaymentRequiredPayload = baseRequirements;
-            debugLog(`[SellerHandler] No payment session for ${buyerPeerId.slice(0, 12)}... — sending 402 + PaymentRequired`);
-            const paymentBody = JSON.stringify({
-              error: 'payment_required',
-              minBudgetPerRequest: requirements.minBudgetPerRequest,
-              suggestedAmount: requirements.suggestedAmount,
-              ...(requirements.inputUsdPerMillion != null ? { inputUsdPerMillion: requirements.inputUsdPerMillion } : {}),
-              ...(requirements.outputUsdPerMillion != null ? { outputUsdPerMillion: requirements.outputUsdPerMillion } : {}),
-              ...(requirements.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion } : {}),
-            });
-            mux.sendProxyResponse({
-              requestId: request.requestId,
-              statusCode: 402,
-              headers: { "content-type": "application/json" },
-              body: new TextEncoder().encode(paymentBody),
-            });
-            this._sendPaymentRequiredBestEffort(paymentMux, requirements, buyerPeerId, 'missing-session');
-          } else {
-            debugWarn(`[SellerHandler] No payment session — returning 402`);
-            mux.sendProxyResponse({
-              requestId: request.requestId,
-              statusCode: 402,
-              headers: { "content-type": "application/json" },
-              body: new TextEncoder().encode(JSON.stringify({
-                error: 'payment_required',
-                message: 'Seller not ready, try again later',
-              })),
-            });
-          }
+          this._sendMissingSession(mux, paymentMux, request, buyerPeerId, requestPricing);
           return;
         }
       }
@@ -805,22 +847,8 @@ export class SellerRequestHandler {
             // completed) it hides the round-trip latency from the buyer.
             // Ask for the catch-up now instead of only after the wait: after a
             // restart (or a lost NeedAuth) nothing else would prompt the buyer,
-            // and every parked request would end in a 402. Once per spend level,
-            // and only for spend the reserve can cover (beyond it the channel is closed below).
-            const signable = reserveMax <= 0n || spent <= reserveMax;
-            if (signable && spent > (this._catchUpPrompted.get(session.sessionId) ?? 0n)) {
-              this._catchUpPrompted.delete(session.sessionId);
-              this._catchUpPrompted.set(session.sessionId, spent);
-              if (this._catchUpPrompted.size > 1_024) this._catchUpPrompted.delete(this._catchUpPrompted.keys().next().value!);
-              // A channel-level prompt: no requestId, since it is not about the
-              // request that is waiting (its cost is not known yet).
-              this._sendNeedAuthBestEffort(paymentMux, {
-                channelId: session.sessionId,
-                requiredCumulativeAmount: spent.toString(),
-                currentAcceptedCumulative: accepted.toString(),
-                deposit: session.authMax ?? '0',
-              }, buyerPeerId, 'catch-up-before-wait');
-            }
+            // and every parked request would end in a 402.
+            this._promptCatchUp(paymentMux, buyerPeerId, session, { spent, accepted, reserveMax });
             // Other requests can finish while this one is parked: re-read the
             // spend after each catch-up and keep waiting, within one budget,
             // so an auth for the earlier spend never releases newer unpaid work.
@@ -873,38 +901,26 @@ export class SellerRequestHandler {
           if (atCeiling()) {
             // A top-up mining in the background may lift the ceiling: wait for
             // it (bounded) rather than close a channel that is being extended.
-            // Requests that finish during the wait and the chain read can push
-            // the spend past the ceiling that just landed while the next top-up
-            // is already mining: judge again after each one, within one budget.
-            const topUpDeadline = Date.now() + TOP_UP_WAIT_MS;
-            let topUpLanded = true;
-            while (true) {
-              const ceilingBefore = reserveMax;
-              if (spm.isTopUpRunning(session.sessionId) || spm.isTopUpPendingFor(session.sessionId, spent)) {
-                topUpLanded = await spm.waitForTopUp(session.sessionId, Math.max(0, topUpDeadline - Date.now()), spent);
-              }
-              reserveMax = await spm.refreshReserveMaxFromChain(session.sessionId);
-              // The channel may have closed during the read: never admit work
-              // on a channel that is gone, and judge the others on fresh counters.
-              if (spm.getChannelByPeer(buyerPeerId)?.sessionId !== session.sessionId) {
-                sendSessionExpired('the reserve ceiling check');
-                return;
-              }
-              accepted = spm.getAcceptedCumulative(session.sessionId);
-              spent = spm.getCumulativeSpend(session.sessionId);
-              isBlocked = spm.isChannelBlocked(session.sessionId);
-              if (!topUpLanded || !atCeiling()) break;
-              // Wait again only for a top-up mining now, or for one queued for
-              // the fresh spend right after the ceiling moved; a queued top-up
-              // that did not start is not waited for twice.
-              const nextRunning = spm.isTopUpRunning(session.sessionId);
-              const nextQueued = reserveMax > ceilingBefore && spm.isTopUpPendingFor(session.sessionId, spent);
-              if (!nextRunning && !nextQueued) break;
-              if (Date.now() >= topUpDeadline) {
-                topUpLanded = !nextRunning;
-                break;
-              }
-              debugLog(`[SellerHandler] Still at the ceiling after a top-up for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted} reserveMax=${reserveMax} ceilingBefore=${ceilingBefore} nextRunning=${nextRunning} nextQueued=${nextQueued}) — waiting for the next top-up`);
+            const { topUpLanded, channelChanged } = await this._waitForReserveHeadroom({
+              spm,
+              buyerPeerId,
+              channelId: session.sessionId,
+              counters: () => ({ spent, reserveMax }),
+              atCeiling,
+              refreshCounters: (ceiling) => {
+                reserveMax = ceiling;
+                accepted = spm.getAcceptedCumulative(session.sessionId);
+                spent = spm.getCumulativeSpend(session.sessionId);
+                isBlocked = spm.isChannelBlocked(session.sessionId);
+              },
+              onWaitAgain: ({ ceilingBefore, nextRunning, nextQueued }) => {
+                debugLog(`[SellerHandler] Still at the ceiling after a top-up for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted} reserveMax=${reserveMax} ceilingBefore=${ceilingBefore} nextRunning=${nextRunning} nextQueued=${nextQueued}) — waiting for the next top-up`);
+              },
+            });
+            // The channel may have closed during the wait: never admit work on a channel that is gone.
+            if (channelChanged) {
+              sendSessionExpired('the reserve ceiling check');
+              return;
             }
             if (!topUpLanded && atCeiling()) {
               // Still mining: a short retry, never an exhausted (closing) answer.
@@ -977,9 +993,7 @@ export class SellerRequestHandler {
               statusCode: 402,
               headers: { "content-type": "application/json" },
               body: new TextEncoder().encode(JSON.stringify({
-                error: 'payment_required',
-                minBudgetPerRequest: requirements.minBudgetPerRequest,
-                suggestedAmount: requirements.suggestedAmount,
+                ...paymentRequiredBody(requirements),
                 requiredCumulativeAmount: requirements.requiredCumulativeAmount,
                 currentSpent: requirements.currentSpent,
                 currentAcceptedCumulative: requirements.currentAcceptedCumulative,
@@ -992,9 +1006,6 @@ export class SellerRequestHandler {
                   estimatedInputTokens: String(requestCostEstimate?.inputTokens ?? 0),
                   estimatedMaxOutputTokens: String(requestCostEstimate?.maxOutputTokens ?? 0),
                 } : {}),
-                ...(requirements.inputUsdPerMillion != null ? { inputUsdPerMillion: requirements.inputUsdPerMillion } : {}),
-                ...(requirements.outputUsdPerMillion != null ? { outputUsdPerMillion: requirements.outputUsdPerMillion } : {}),
-                ...(requirements.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion } : {}),
               })),
             });
             this._sendPaymentRequiredBestEffort(paymentMux, requirements, buyerPeerId, 'budget-exhausted');
@@ -1416,7 +1427,7 @@ export class SellerRequestHandler {
       }
     });
 
-    return { mux };
+    return { mux, relayMux };
   }
 
   /** Returns true when it already sent a response. */
@@ -1668,6 +1679,456 @@ export class SellerRequestHandler {
     });
     if (decision.allowed) screen.served();
     return { kind: 'counted', decision };
+  }
+
+  /**
+   * Free route: relays the upstream end-to-end encryption attestation for one
+   * service, for a buyer that will encrypt its messages to the attested key.
+   * Shares the attestation rate limit, since each call reaches the upstream.
+   */
+  private async _handleE2eeAttestation(mux: ProxyMux, request: SerializedHttpRequest, buyerPeerId: string): Promise<void> {
+    const query = new URLSearchParams(request.path.split('?')[1] ?? '');
+    const service = query.get('service') ?? '';
+    const nonce = (query.get('nonce') ?? '').toLowerCase();
+    if (request.method !== 'GET' || !service || !/^[0-9a-f]{64}$/.test(nonce)) {
+      this._sendJsonError(mux, request.requestId, 400, 'invalid_e2ee_attestation_request', 'Send GET with a service and a 32-byte hex nonce.');
+      return;
+    }
+    const provider = this._deps.providers.find((candidate) =>
+      candidate.services.includes(service)
+      && candidate.serviceCategories?.[service]?.includes('e2ee')
+      && typeof candidate.getE2eeAttestation === 'function');
+    if (!provider) {
+      this._sendJsonError(mux, request.requestId, 404, 'e2ee_not_supported', `Service "${service}" has no end-to-end encryption on this peer.`);
+      return;
+    }
+    if (!this._allowAttest(buyerPeerId)) {
+      this._sendJsonError(mux, request.requestId, 429, 'attestation_rate_limited', 'Attestation rate limit exceeded.');
+      return;
+    }
+    try {
+      const attestation = await provider.getE2eeAttestation!(service, nonce);
+      if (!attestation) {
+        this._sendJsonError(mux, request.requestId, 404, 'e2ee_not_supported', `Service "${service}" has no end-to-end encryption on this peer.`);
+        return;
+      }
+      mux.sendProxyResponse({
+        requestId: request.requestId,
+        statusCode: attestation.statusCode,
+        headers: { 'content-type': 'application/json' },
+        body: attestation.body,
+      });
+    } catch (err) {
+      debugWarn(`[SellerHandler] E2EE attestation for ${service} failed: ${err instanceof Error ? err.message : String(err)}`);
+      this._sendJsonError(mux, request.requestId, 502, 'e2ee_attestation_failed', 'The upstream attestation could not be fetched.');
+    }
+  }
+
+  /**
+   * Mints a seller-blind relay credential for a buyer with an open payment
+   * channel. Minting is free; each relayed request is charged afterwards
+   * (`_chargeBlindRelay`) by the usage the buyer reveals. A buyer whose last
+   * relayed charges are not signed for gets no new one, once its signature
+   * had a short time to arrive (`waitedForSignature`: that wait is over).
+   */
+  private async _handleBlindCredential(
+    mux: ProxyMux,
+    paymentMux: PaymentMux,
+    request: SerializedHttpRequest,
+    buyerPeerId: string,
+    waitedForSignature = false,
+  ): Promise<void> {
+    const provider = request.method === 'POST' ? this.matchProvider(request) : null;
+    const service = provider ? this._extractRequestedService(request) : null;
+    if (!provider || !service || !provider.serviceCategories?.[service]?.includes(BLIND_RELAY_SERVICE_CATEGORY) || !this._blindRelay.servesKeyed(provider)) {
+      this._sendJsonError(mux, request.requestId, 404, 'blind_relay_not_supported', 'This service is not served through the blind relay on this peer.');
+      return;
+    }
+    const spm = this._deps.sellerPaymentManager;
+    if (!this._deps.channelsClient || !spm) {
+      this._sendJsonError(mux, request.requestId, 503, 'blind_relay_unavailable', 'This seller takes no payments, so it mints no credentials.');
+      return;
+    }
+    const pricing = this.resolveProviderPricing(provider, request);
+    if (!spm.hasSession(buyerPeerId)) {
+      this._sendMissingSession(mux, paymentMux, request, buyerPeerId, pricing);
+      return;
+    }
+    // As for a direct request: a close in flight ends in a new channel, or in a short retry.
+    if (spm.hasClosingChannel(buyerPeerId)) {
+      if (await spm.waitForClosingChannel(buyerPeerId, CLOSING_CHANNEL_WAIT_MS) && !spm.hasSession(buyerPeerId)) {
+        this._sendMissingSession(mux, paymentMux, request, buyerPeerId, pricing);
+      } else {
+        this._sendJsonError(mux, request.requestId, 503, 'channel_closing', 'Payment channel is closing; retry shortly or open a new channel', { 'retry-after': '2' });
+      }
+      return;
+    }
+    // A signature that is being checked right now counts.
+    await spm.waitForPendingAuths(buyerPeerId);
+    const session = spm.getChannelByPeer(buyerPeerId);
+    if (session) {
+      const channelId = session.sessionId;
+      const spent = spm.getCumulativeSpend(channelId);
+      const reserveMax = spm.getEffectiveReserveMax(channelId);
+      if (this._relayRetiredChannels.get(buyerPeerId) !== channelId) this._relayRetiredChannels.delete(buyerPeerId);
+      // Spend past the reserve cannot be signed for: without a top-up on its way the channel is done.
+      const unsignable = reserveMax > 0n && spent > reserveMax
+        && !spm.isTopUpRunning(channelId) && !spm.isTopUpPendingFor(channelId, spent);
+      if (this._relayRetiredChannels.has(buyerPeerId) || spm.isChannelBlocked(channelId) || unsignable) {
+        this._retireRelayChannel(spm, buyerPeerId, channelId);
+        this._sendRelayChannelExhausted(mux, paymentMux, request, buyerPeerId, channelId, pricing);
+        return;
+      }
+      if (spm.getAcceptedCumulative(channelId) < spent) {
+        if (!waitedForSignature) {
+          // A buyer hands an answer to its client before it signs for it, so
+          // the signature for the last one may be on its way. Wait for it
+          // once, as request admission does, then judge the channel as it is
+          // by then: it may have closed or been replaced meanwhile. Ask for
+          // it first: a charge recorded while the buyer was away asked nobody.
+          this._promptCatchUp(paymentMux, buyerPeerId, session, { spent, accepted: spm.getAcceptedCumulative(channelId), reserveMax });
+          await spm.awaitAcceptedAtLeast(channelId, spent, DEFAULT_CATCH_UP_WAIT_MS);
+          return this._handleBlindCredential(mux, paymentMux, request, buyerPeerId, true);
+        }
+        this._sendJsonError(mux, request.requestId, 409, 'blind_relay_unpaid', 'Sign for the requests already relayed, then ask again.', { 'retry-after': '2' });
+        return;
+      }
+    }
+    try {
+      const credential = this._blindRelay.mint(buyerPeerId, service, provider);
+      mux.sendProxyResponse({
+        requestId: request.requestId,
+        statusCode: 200,
+        headers: { 'content-type': 'application/json' },
+        // Minting costs nothing: the zero usage tells the buyer so.
+        body: new TextEncoder().encode(JSON.stringify({
+          ...credential,
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        })),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      debugWarn(`[SellerHandler] Blind relay credential for ${service} failed: ${message}`);
+      this._sendJsonError(mux, request.requestId, 502, 'blind_relay_mint_failed', `No credential: ${message}`);
+    }
+  }
+
+  /**
+   * Starts the close of a channel the relay can serve no more requests on
+   * (blocked, at its reserve ceiling, or with too little reserve left for the
+   * request), once the requests it is serving are billed. The buyer's next
+   * mint is answered with the exhausted 402, so it opens a new channel.
+   */
+  private _retireRelayChannel(spm: SellerPaymentManager, buyerPeerId: string, channelId: string): void {
+    this._relayRetiredChannels.delete(buyerPeerId);
+    this._relayRetiredChannels.set(buyerPeerId, channelId);
+    if (this._relayRetiredChannels.size > 1_024) this._relayRetiredChannels.delete(this._relayRetiredChannels.keys().next().value!);
+    void spm.closeSessionWhenIdle(buyerPeerId).catch((err) => {
+      debugWarn(`[SellerHandler] Failed to close exhausted session: ${err instanceof Error ? err.message : err}`);
+    });
+  }
+
+  /** Answers a mint on a retired channel as a direct request on an exhausted channel is answered. */
+  private _sendRelayChannelExhausted(
+    mux: ProxyMux,
+    paymentMux: PaymentMux,
+    request: SerializedHttpRequest,
+    buyerPeerId: string,
+    channelId: string,
+    requestPricing: Parameters<SellerPaymentManager['getPaymentRequirements']>[2],
+  ): void {
+    const spm = this._deps.sellerPaymentManager!;
+    const spent = spm.getCumulativeSpend(channelId);
+    const reserveMax = spm.getEffectiveReserveMax(channelId);
+    const requirements = {
+      ...spm.getPaymentRequirements(request.requestId, buyerPeerId, requestPricing),
+      requiredCumulativeAmount: spent.toString(),
+      currentSpent: spent.toString(),
+      currentAcceptedCumulative: spm.getAcceptedCumulative(channelId).toString(),
+      channelId,
+      ...(reserveMax > 0n ? { reserveMaxAmount: reserveMax.toString() } : {}),
+      code: PAYMENT_CODE_CHANNEL_EXHAUSTED,
+    };
+    debugLog(`[SellerHandler] Blind relay credential asked on an exhausted channel by ${buyerPeerId.slice(0, 12)}... (spent=${spent} reserveMax=${reserveMax}) — returning 402`);
+    mux.sendProxyResponse({
+      requestId: request.requestId,
+      statusCode: 402,
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({
+        ...paymentRequiredBody(requirements),
+        requiredCumulativeAmount: requirements.requiredCumulativeAmount,
+        currentSpent: requirements.currentSpent,
+        currentAcceptedCumulative: requirements.currentAcceptedCumulative,
+        channelId,
+        ...(requirements.reserveMaxAmount != null ? { reserveMaxAmount: requirements.reserveMaxAmount } : {}),
+        code: requirements.code,
+      })),
+    });
+    this._sendPaymentRequiredBestEffort(paymentMux, requirements, buyerPeerId, 'budget-exhausted');
+  }
+
+  /**
+   * The bounded wait both admission paths give a channel at its reserve
+   * ceiling: a top-up mining in the background may lift it. Requests that
+   * finish during the wait and the chain read can push the spend past the
+   * ceiling that just landed while the next top-up is already mining, so the
+   * channel is judged again after each one, within one budget.
+   *
+   * `counters` is the caller's view of the channel, and `refreshCounters`
+   * updates it with the ceiling just read from the chain. `topUpLanded` is
+   * false when a top-up was still mining at the end of the budget;
+   * `channelChanged` when the channel closed meanwhile, with the counters left
+   * as they were.
+   */
+  private async _waitForReserveHeadroom(wait: {
+    spm: SellerPaymentManager;
+    buyerPeerId: string;
+    channelId: string;
+    counters: () => { spent: bigint; reserveMax: bigint };
+    atCeiling: () => boolean;
+    refreshCounters: (reserveMax: bigint) => void;
+    onWaitAgain?: (next: { ceilingBefore: bigint; nextRunning: boolean; nextQueued: boolean }) => void;
+  }): Promise<{ topUpLanded: boolean; channelChanged: boolean }> {
+    const { spm, buyerPeerId, channelId } = wait;
+    const topUpDeadline = Date.now() + TOP_UP_WAIT_MS;
+    let topUpLanded = true;
+    while (true) {
+      const { spent, reserveMax: ceilingBefore } = wait.counters();
+      if (spm.isTopUpRunning(channelId) || spm.isTopUpPendingFor(channelId, spent)) {
+        topUpLanded = await spm.waitForTopUp(channelId, Math.max(0, topUpDeadline - Date.now()), spent);
+      }
+      const reserveMax = await spm.refreshReserveMaxFromChain(channelId);
+      // The channel may have closed during the read: the others are judged on fresh counters.
+      if (spm.getChannelByPeer(buyerPeerId)?.sessionId !== channelId) return { topUpLanded, channelChanged: true };
+      wait.refreshCounters(reserveMax);
+      if (!topUpLanded || !wait.atCeiling()) break;
+      // Wait again only for a top-up mining now, or for one queued for
+      // the fresh spend right after the ceiling moved; a queued top-up
+      // that did not start is not waited for twice.
+      const nextRunning = spm.isTopUpRunning(channelId);
+      const nextQueued = reserveMax > ceilingBefore && spm.isTopUpPendingFor(channelId, wait.counters().spent);
+      if (!nextRunning && !nextQueued) break;
+      if (Date.now() >= topUpDeadline) {
+        topUpLanded = !nextRunning;
+        break;
+      }
+      wait.onWaitAgain?.({ ceilingBefore, nextRunning, nextQueued });
+    }
+    return { topUpLanded, channelChanged: false };
+  }
+
+  /**
+   * The checks a keyed relay request gets before the seller forwards it, as a
+   * direct request gets them before routing: an open channel with the earlier
+   * requests signed for, reserve headroom for its estimated cost (when
+   * `reserveEstimateOverdraftUsdc` is set), and the buyer limits. A refusal
+   * the buyer can recover from starts with a code: `top_up_pending` (retry
+   * shortly) or `channel_exhausted` (the channel is closing: mint again, which
+   * opens a new one).
+   */
+  private async _admitKeyedRequest(request: KeyedRequestAdmission): Promise<KeyedRequestDecision> {
+    const refuse = (reason: string): KeyedRequestDecision => ({ admitted: false, reason });
+    const refuseFor = (code: KeyedRefusalCode, why: string): KeyedRequestDecision => refuse(`${code}: ${why}`);
+    const spm = this._deps.sellerPaymentManager;
+    if (!spm) return refuse('this seller takes no payments');
+    const { buyerPeerId } = request;
+    await spm.waitForPendingAuths(buyerPeerId);
+    const session = spm.getChannelByPeer(buyerPeerId);
+    if (!session) return refuse('no payment channel is open');
+    const channelId = session.sessionId;
+    const closed = (): boolean => spm.getChannelByPeer(buyerPeerId)?.sessionId !== channelId;
+    let spent = spm.getCumulativeSpend(channelId);
+    let accepted = spm.getAcceptedCumulative(channelId);
+    let reserveMax = spm.getEffectiveReserveMax(channelId);
+    /** Waits for the signature for the last answer, which may still be on its way; false when it did not come. */
+    const signedUp = async (waitMs: number): Promise<boolean> => {
+      // Spend past the reserve cannot be signed for: the ceiling check below judges it.
+      if (spent <= accepted || (reserveMax > 0n && spent > reserveMax)) return true;
+      // Asked for first, as at a mint: nothing else asks a buyer that was away when the charge was recorded.
+      this._promptCatchUp(this._paymentMuxes.get(buyerPeerId), buyerPeerId, session, { spent, accepted, reserveMax });
+      await spm.awaitAcceptedAtLeast(channelId, spent, waitMs);
+      spent = spm.getCumulativeSpend(channelId);
+      accepted = spm.getAcceptedCumulative(channelId);
+      reserveMax = spm.getEffectiveReserveMax(channelId);
+      return closed() || spent <= accepted || (reserveMax > 0n && spent > reserveMax);
+    };
+    if (!await signedUp(DEFAULT_CATCH_UP_WAIT_MS)) return refuse('sign for the requests already relayed first');
+    if (closed()) return refuse('the payment channel closed');
+
+    const overdraft = this._deps.reserveEstimateOverdraftUsdc;
+    const pricing = request.provider.pricing.services?.[request.service] ?? request.provider.pricing.defaults;
+    const estimate = computeCostUsdc(request.inputTokens, request.maxOutputTokens ?? 0, pricing);
+    const remaining = (): bigint => (reserveMax > spent ? reserveMax - spent : 0n);
+    const estimateExceedsReserve = (): boolean => overdraft != null && reserveMax > 0n && estimate > remaining() + overdraft;
+    const atCeiling = (): boolean => reserveMax > 0n && (accepted >= reserveMax || spent > reserveMax || estimateExceedsReserve());
+    if (atCeiling()) {
+      // As for a direct request: a top-up mining in the background may lift the
+      // ceiling, so wait for it (bounded) rather than close a channel that is
+      // being extended.
+      const { topUpLanded, channelChanged } = await this._waitForReserveHeadroom({
+        spm,
+        buyerPeerId,
+        channelId,
+        counters: () => ({ spent, reserveMax }),
+        atCeiling,
+        refreshCounters: (ceiling) => {
+          reserveMax = ceiling;
+          accepted = spm.getAcceptedCumulative(channelId);
+          spent = spm.getCumulativeSpend(channelId);
+        },
+      });
+      if (channelChanged) return refuse('the payment channel closed');
+      // Still mining: a short retry, never an exhausted (closing) answer.
+      if (!topUpLanded && atCeiling()) return refuseFor('top_up_pending', 'the payment channel is being extended on-chain; retry shortly');
+      // Signatures above the old ceiling were parked until the top-up landed: give them a moment to apply.
+      if (!await signedUp(PARKED_AUTH_GRACE_MS)) return refuse('sign for the requests already relayed first');
+      if (closed()) return refuse('the payment channel closed');
+    }
+    const blocked = spm.isChannelBlocked(channelId);
+    if (blocked || atCeiling()) {
+      let reason = 'the payment channel is exhausted';
+      if (blocked) {
+        reason = 'the payment channel is blocked';
+      } else if (accepted < reserveMax && spent <= reserveMax) {
+        reason = `the request may cost ${estimate} USDC base units; the locked reserve has ${remaining()} left`;
+      }
+      debugLog(`[SellerHandler] Blind relay request refused for ${buyerPeerId.slice(0, 12)}... (${reason}; spent=${spent} accepted=${accepted} reserveMax=${reserveMax}) — closing the channel`);
+      this._retireRelayChannel(spm, buyerPeerId, channelId);
+      return refuseFor('channel_exhausted', reason);
+    }
+    // From here to the hold below nothing awaits: a close cannot start in between, and no other request takes the slot.
+    if (spm.hasClosingChannel(buyerPeerId)) return refuse('the payment channel is closing; retry shortly');
+    const { provider } = request;
+    // No code: the buyer does not ask this seller again for the request, it goes on to another, as from a busy seller.
+    if (providerSlotsTaken(provider) >= provider.getCapacity().max) return refuse(KEYED_RELAY_BUSY);
+    let reservation: BuyerUsageReservation | null = null;
+    const limiter = this._deps.sellerBuyerLimiter;
+    if (limiter) {
+      const tokens = request.inputTokens + (request.maxOutputTokens || DEFAULT_OUTPUT_RESERVATION_TOKENS);
+      const admission = limiter.admit(request.buyerPeerId, request.provider.name, tokens, request.service);
+      if (!admission.admitted) return refuse(`this buyer is over its usage limits; retry in ${admission.retryAfterSeconds} s`);
+      reservation = admission.reservation;
+    }
+    // As for a direct request: the channel stays open until the request's cost is on it, and the request counts as load.
+    spm.beginBillableRequest(request.buyerPeerId);
+    relayedInFlight.set(provider, (relayedInFlight.get(provider) ?? 0) + 1);
+    this.adjustProviderLoad(provider.name, 1);
+    return {
+      admitted: true,
+      channelId,
+      finish: (usedTokens) => {
+        relayedInFlight.set(provider, Math.max(0, (relayedInFlight.get(provider) ?? 0) - 1));
+        this.adjustProviderLoad(provider.name, -1);
+        spm.endBillableRequest(buyerPeerId);
+        reservation?.finish(usedTokens);
+      },
+    };
+  }
+
+  /**
+   * Records a relayed request's cost on the channel that admitted it and asks
+   * the buyer to sign for it. A channel that replaced the admitting one is
+   * never charged, and nothing is once the node closed its connections to stop.
+   */
+  private _chargeBlindRelay(charge: BlindRelayCharge): void {
+    const spm = this._deps.sellerPaymentManager;
+    const current = spm?.getChannelByPeer(charge.buyerPeerId);
+    const session = current && (charge.channelId === undefined || current.sessionId === charge.channelId) ? current : null;
+    const paymentMux = this._paymentMuxes.get(charge.buyerPeerId);
+    if (!spm || !session || charge.costUsdc <= 0n) return;
+    if (spm.connectionsClosed) {
+      debugLog(`[SellerHandler] Blind relay cost not billed (connections closed during stop): buyer=${charge.buyerPeerId.slice(0, 12)}... cost=${charge.costUsdc}`);
+      return;
+    }
+    spm.recordSpend(session.sessionId, charge.costUsdc);
+    const cumulativeSpend = spm.getCumulativeSpend(session.sessionId);
+    debugLog(`[SellerHandler] Blind relay cost recorded: buyer=${charge.buyerPeerId.slice(0, 12)}... cost=${charge.costUsdc} cumulative=${cumulativeSpend}`);
+    if (!paymentMux) return;
+    this._sendNeedAuthBestEffort(paymentMux, {
+      channelId: session.sessionId,
+      requiredCumulativeAmount: cumulativeSpend.toString(),
+      currentAcceptedCumulative: spm.getAcceptedCumulative(session.sessionId).toString(),
+      deposit: session.authMax ?? '0',
+      requestId: charge.requestId,
+      lastRequestCost: charge.costUsdc.toString(),
+      inputTokens: String(charge.usage.inputTokens),
+      outputTokens: String(charge.usage.outputTokens),
+      cachedInputTokens: String(charge.usage.cachedInputTokens),
+      freshInputTokens: String(charge.usage.freshInputTokens),
+      service: charge.service,
+    }, charge.buyerPeerId, 'post-response');
+  }
+
+  /**
+   * Meters a relayed request as a direct one is metered. The seller sees none
+   * of its content: the usage is what it charged, and the sizes are the bytes
+   * of TLS records it relayed.
+   */
+  private _recordBlindRelay(record: BlindRelayRecord): void {
+    const tracker = this._deps.sessionTracker;
+    if (!tracker) return;
+    const error = record.statusCode !== null
+      ? null
+      : record.usage ? 'the buyer revealed no status' : 'the relay ended before an answer';
+    void tracker.recordMetering({
+      buyerPeerId: record.buyerPeerId,
+      providerName: record.provider.name,
+      pricing: record.provider.pricing.services?.[record.service] ?? record.provider.pricing.defaults,
+      request: {
+        requestId: record.requestId,
+        method: 'POST',
+        path: record.path,
+        headers: record.stream ? { accept: 'text/event-stream' } : {},
+        body: new Uint8Array(0),
+      },
+      statusCode: record.statusCode ?? 0,
+      latencyMs: record.latencyMs,
+      inputBytes: record.bytesUp,
+      outputBytes: record.bytesDown,
+      responseBody: new Uint8Array(0),
+      providerUsage: record.usage ?? { inputTokens: 0, outputTokens: 0 },
+      service: record.service,
+      ...(error ? { error } : {}),
+    }).catch((err: unknown) => {
+      debugWarn(`[SellerHandler] Blind relay metering failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
+
+  /** Answers 402 and sends PaymentRequired, so the buyer opens a payment channel and retries. */
+  private _sendMissingSession(
+    mux: ProxyMux,
+    paymentMux: PaymentMux,
+    request: SerializedHttpRequest,
+    buyerPeerId: string,
+    requestPricing: Parameters<SellerPaymentManager['getPaymentRequirements']>[2],
+  ): void {
+    const spm = this._deps.sellerPaymentManager;
+    const baseRequirements = spm?.getPaymentRequirements(
+      request.requestId, buyerPeerId, requestPricing,
+    );
+    if (baseRequirements) {
+      const requirements: PaymentRequiredPayload = baseRequirements;
+      debugLog(`[SellerHandler] No payment session for ${buyerPeerId.slice(0, 12)}... — sending 402 + PaymentRequired`);
+      const paymentBody = JSON.stringify(paymentRequiredBody(requirements));
+      mux.sendProxyResponse({
+        requestId: request.requestId,
+        statusCode: 402,
+        headers: { "content-type": "application/json" },
+        body: new TextEncoder().encode(paymentBody),
+      });
+      this._sendPaymentRequiredBestEffort(paymentMux, requirements, buyerPeerId, 'missing-session');
+    } else {
+      debugWarn(`[SellerHandler] No payment session — returning 402`);
+      mux.sendProxyResponse({
+        requestId: request.requestId,
+        statusCode: 402,
+        headers: { "content-type": "application/json" },
+        body: new TextEncoder().encode(JSON.stringify({
+          error: 'payment_required',
+          message: 'Seller not ready, try again later',
+        })),
+      });
+    }
   }
 
   private _sendJsonError(
@@ -2047,6 +2508,17 @@ export class SellerRequestHandler {
     // upstream's own headers or costs: the body's cost is the seller's price.
     const withHeaders = (response: SerializedHttpResponse): SerializedHttpResponse =>
       ({ ...response, headers: exposedResponseHeaders(response.headers) });
+    // Relayed requests take the provider's slots without passing through it. When they leave
+    // none, the request gets the answer a provider gives at its limit, and is handled as that answer is.
+    if (relayedInFlight.get(provider) && providerSlotsTaken(provider) >= provider.getCapacity().max) {
+      const busy = withHeaders({
+        requestId: request.requestId,
+        statusCode: 429,
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ error: 'Max concurrency reached' })),
+      });
+      return isDownload ? busy : withExposedBody(request, busy, sellerCost);
+    }
     // A video download (a retrieval the router recognized, not just the buyer's header)
     // is the provider's own bytes, hashed as they pass; it carries no usage.
     if (streamCallbacks && provider.handleRequestStream) {
@@ -2105,6 +2577,33 @@ export class SellerRequestHandler {
     }
     const response = withHeaders(await provider.handleRequest(request));
     return isDownload ? response : withExposedBody(request, response, sellerCost);
+  }
+
+  /**
+   * Asks a buyer to sign for spend it has not signed for, before a request
+   * waits for that signature. Once per spend level on a connection (a prompt
+   * sent on an earlier one may be lost with it), and only for spend the
+   * reserve can cover: beyond it the channel closes instead. A channel-level
+   * prompt: no requestId, since it is not about the request that is waiting.
+   */
+  private _promptCatchUp(
+    paymentMux: PaymentMux | undefined,
+    buyerPeerId: string,
+    session: { sessionId: string; authMax?: string | null },
+    { spent, accepted, reserveMax }: { spent: bigint; accepted: bigint; reserveMax: bigint },
+  ): void {
+    if (!paymentMux || spent <= accepted || (reserveMax > 0n && spent > reserveMax)) return;
+    const prompted = this._catchUpPrompted.get(session.sessionId);
+    if (prompted && spent <= prompted.spent && prompted.on.deref() === paymentMux) return;
+    this._catchUpPrompted.delete(session.sessionId);
+    this._catchUpPrompted.set(session.sessionId, { spent, on: new WeakRef(paymentMux) });
+    if (this._catchUpPrompted.size > 1_024) this._catchUpPrompted.delete(this._catchUpPrompted.keys().next().value!);
+    this._sendNeedAuthBestEffort(paymentMux, {
+      channelId: session.sessionId,
+      requiredCumulativeAmount: spent.toString(),
+      currentAcceptedCumulative: accepted.toString(),
+      deposit: session.authMax ?? '0',
+    }, buyerPeerId, 'catch-up-before-wait');
   }
 
   private _sendNeedAuthBestEffort(

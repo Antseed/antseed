@@ -171,6 +171,9 @@ import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { parseServiceFreeTierProgram } from '@antseed/node/free-tier-program'
 import { TeeVerification } from './tee-verification.js'
+import { E2eeError, type E2eeSession } from '@antseed/node'
+import { ZeroDataAccess, createOrderedStreamDecryptor, decryptResponse, encryptRequest, isE2eeOffer, loadVerifierQuoteCheck } from './zero-data-access.js'
+import { BlindRelayClient, isBlindRelayOffer } from './blind-relay.js'
 import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
 import { isClientCredentialHeader } from './credential-headers.js'
@@ -181,6 +184,7 @@ import {
   GATEWAY_CONTROL_HEADER,
   GATEWAY_CONTROL_SECRET_ENV,
   GATEWAY_CONTROL_SECRET_FILE,
+  ROUTING_POLICY_CAPABILITIES,
   ROUTING_POLICY_HEADER,
   decodePolicyHeader,
   findModelRoute,
@@ -263,6 +267,10 @@ export interface BuyerProxyConfig {
   adaptiveRouting?: { random?: () => number; spreadTolerance?: number; explorationRate?: number }
   /** Verifier-SDK policy: which verifier the buyer commits to + whether it is required. */
   verifier?: VerifierPolicy
+  /** Zero data access (end-to-end encryption) attestations; tests inject their own. */
+  zeroDataAccess?: ZeroDataAccess
+  /** The seller-blind relay client; built from the node when absent. */
+  blindRelay?: BlindRelayClient
   /** Loads stored buyer identities on demand; defaults to one reading `dataDir`. */
   buyerIdentities?: BuyerIdentityLoader
   /** `buyer.minPeerReputation`, so gateway policies narrow under it (also enforced by the router plugin). */
@@ -1457,6 +1465,8 @@ export class BuyerProxy {
   private readonly _verifier?: VerifierPolicy
   private readonly _buyerIdentities: BuyerIdentityLoader
   private readonly _teeVerification: TeeVerification
+  private readonly _zeroDataAccess: ZeroDataAccess
+  private readonly _blindRelay: BlindRelayClient
   private readonly _teeControl: TeeControl
   private _stateWatchDebounce: ReturnType<typeof setTimeout> | null = null
   private _configWatchDebounce: ReturnType<typeof setTimeout> | null = null
@@ -1563,6 +1573,31 @@ export class BuyerProxy {
     this._verifier = config.verifier
     this._buyerIdentities = config.buyerIdentities ?? new BuyerIdentityLoader(config.node, config.dataDir)
     this._teeVerification = new TeeVerification(config.verifier)
+    this._zeroDataAccess = config.zeroDataAccess ?? new ZeroDataAccess({
+      fetchFromPeer: async (peer, path, buyerIdentity) => {
+        const resp = await this._node.sendRequest(peer, {
+          requestId: randomUUID(),
+          method: 'GET',
+          path,
+          headers: {},
+          body: new Uint8Array(),
+        }, { signal: AbortSignal.timeout(30_000), controlPlane: true, ...(buyerIdentity ? { buyerIdentity } : {}) })
+        return { statusCode: resp.statusCode, body: resp.body }
+      },
+      loadQuoteVerifier: loadVerifierQuoteCheck,
+    })
+    this._blindRelay = config.blindRelay ?? new BlindRelayClient({
+      sendRequest: (peer, request, buyerIdentity, channelBinding) => this._node.sendRequest(peer, request, {
+        signal: AbortSignal.timeout(60_000),
+        ...(buyerIdentity ? { buyerIdentity } : {}),
+        ...(channelBinding !== undefined ? { channelBinding } : {}),
+      }),
+      openRelayStream: (peer, streamId, credentialId, buyerIdentity, channelBinding) => this._node.openRelayStream(
+        peer, streamId, credentialId, buyerIdentity, channelBinding !== undefined ? { channelBinding } : undefined,
+      ),
+      recordRelayedResponse: (peer, relayed, buyerIdentity) => this._node.recordRelayedResponse(peer, relayed, buyerIdentity),
+      recordInterruptedRelayedResponse: (peer, interrupted, buyerIdentity) => this._node.recordInterruptedRelayedResponse(peer, interrupted, buyerIdentity),
+    })
     this._teeControl = new TeeControl(this._teeVerification.sessionId)
     this._port = config.port
     this._bgRefreshIntervalMs = Math.max(1, config.backgroundRefreshIntervalMs ?? DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS)
@@ -1829,7 +1864,44 @@ export class BuyerProxy {
       imageUsdPerImage: offer?.maxImageUsdPerImage ?? offer?.minImageUsdPerImage ?? null,
       unverifiedReason: this._unverifiedReason(peer),
       ...this._teeFacts(peer),
+      ...this._zeroDataAccessFacts(peer, offer),
     }
+  }
+
+  /**
+   * An offer in category `e2ee` gives zero data access until its attestation
+   * fails; one in category `seller-blind` gives it through the blind relay,
+   * which this buyer needs its sidecar for.
+   */
+  private _zeroDataAccessFacts(peer: PeerInfo, offer: NetworkServiceOffer | null): Pick<PolicyPeerFacts, 'zeroDataAccess' | 'zeroDataAccessFailure'> {
+    if (offer && !isE2eeOffer(offer) && isBlindRelayOffer(offer)) {
+      const unavailable = this._blindRelay.unavailable()
+      return unavailable ? { zeroDataAccess: false, zeroDataAccessFailure: unavailable } : { zeroDataAccess: true }
+    }
+    if (!offer || !isE2eeOffer(offer)) return { zeroDataAccess: false }
+    const failure = this._zeroDataAccess.failure(peer.peerId, offer.serviceId)
+    return failure ? { zeroDataAccess: false, zeroDataAccessFailure: failure } : { zeroDataAccess: true }
+  }
+
+  /** Whether `serviceId` on `peer` is served through the seller-blind relay. */
+  private _isBlindRelayService(peer: PeerInfo, provider: string | undefined, serviceId: string): boolean {
+    // An offer its seller announces as failing counts too: a pinned request still goes to it, and over the relay.
+    return !!provider && isBlindRelayOffer(findAdvertisedServiceOffer(peer, provider, serviceId, true))
+  }
+
+  /**
+   * How a request that requires zero data access reaches `serviceId` on `peer`: over the seller-blind relay
+   * when the seller serves it that way, and otherwise encrypted to the upstream key this attests (cached).
+   * A failed attestation throws.
+   */
+  private async _prepareZeroDataAccess(
+    peer: PeerInfo,
+    provider: string | undefined,
+    serviceId: string,
+    buyerIdentity: string | undefined,
+  ): Promise<{ e2eeSession: E2eeSession | null; blindRelayService: string | null }> {
+    if (this._isBlindRelayService(peer, provider, serviceId)) return { e2eeSession: null, blindRelayService: serviceId }
+    return { e2eeSession: await this._zeroDataAccess.session(peer, serviceId, buyerIdentity), blindRelayService: null }
   }
 
   /**
@@ -2405,7 +2477,8 @@ export class BuyerProxy {
     // `buyer`: the top level of the chain (hard limits plus routing
     // preferences), so the console can show it (max pricing lives in the
     // router plugin's config).
-    sendJson(res, 200, { model, candidates: await this._routePreview(model, policy), buyer: this._buyerPolicy() })
+    // `capabilities`: the policy requirements this buyer applies that an older one accepts and ignores.
+    sendJson(res, 200, { model, candidates: await this._routePreview(model, policy), buyer: this._buyerPolicy(), capabilities: ROUTING_POLICY_CAPABILITIES })
   }
 
   /** `GET /_antseed/balances?identity=<name>`: on-chain balances of a buyer identity. */
@@ -5013,6 +5086,7 @@ export class BuyerProxy {
       const { candidates, verdicts, effectivePolicy, explored, selections, firstPick } = plan
       const requireVerified = effectivePolicy?.requireVerified === true
       const requireTee = effectivePolicy?.requireTee === true
+      const requireZeroDataAccess = effectivePolicy?.requireZeroDataAccess === true
       if (candidates.length === 0) {
         // Every seller of the model was left out only for not offering the voice asked for.
         const voiceVerdicts = verdicts.filter((verdict) => verdict.reasons.includes(UNSUPPORTED_VOICE_REASON))
@@ -5156,6 +5230,20 @@ export class BuyerProxy {
             continue
           }
         }
+        // Zero data access: attest the upstream key (cached) and encrypt to it; a failure moves on.
+        let e2eeSession: E2eeSession | null = null
+        let blindRelayService: string | null = null
+        if (requireZeroDataAccess) {
+          try {
+            ({ e2eeSession, blindRelayService } = await this._prepareZeroDataAccess(
+              selected.peer, modelPlans.get(selected.peer.peerId)?.provider, selected.serviceId, selected.request.headers[BUYER_IDENTITY_HEADER],
+            ))
+          } catch (error) {
+            lastVerificationError = `Peer ${selected.peer.peerId.slice(0, 12)}... failed end-to-end encryption attestation (${error instanceof Error ? error.message : String(error)}).`
+            log(`${lastVerificationError} Trying the next model peer.`)
+            continue
+          }
+        }
 
         // Why this seller serves the request, for the gateway's request log. A
         // seller that fails is replaced by the next one's before any header goes out.
@@ -5204,6 +5292,8 @@ export class BuyerProxy {
                 ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
                 : null,
               teeBinding,
+              e2eeSession,
+              blindRelayService,
             },
           )
           trace?.noteAttemptResult(result, res.statusCode, Date.now())
@@ -5463,6 +5553,23 @@ export class BuyerProxy {
       }
     }
 
+    let e2eeSession: E2eeSession | null = null
+    let blindRelayService: string | null = null
+    if (pinnedPolicy?.requireZeroDataAccess === true) {
+      const short = selectedPeer.peerId.slice(0, 12)
+      if (!pinnedServiceId) {
+        return dispatchFailure(502, { 'content-type': 'text/plain' }, `Pinned peer ${short}... names no service to encrypt end to end for.`)
+      }
+      try {
+        ({ e2eeSession, blindRelayService } = await this._prepareZeroDataAccess(
+          selectedPeer, selectedPlan?.provider, pinnedServiceId, pinnedRequest.headers[BUYER_IDENTITY_HEADER],
+        ))
+      } catch (error) {
+        return dispatchFailure(502, { 'content-type': 'text/plain' },
+          `Pinned peer ${short}... failed end-to-end encryption attestation (${error instanceof Error ? error.message : String(error)}).`)
+      }
+    }
+
     log(`Using pinned peer ${selectedPeer.peerId.slice(0, 12)}...`)
     if (trace) {
       trace.candidates = 1
@@ -5488,7 +5595,7 @@ export class BuyerProxy {
       router,
       true,
       signal,
-      { routingConversationKey, teeBinding },
+      { routingConversationKey, teeBinding, e2eeSession, blindRelayService },
     )
     trace?.noteAttemptResult(result, res.statusCode, Date.now())
     if (trace && result.done && result.interrupted) trace.interrupted = result.interrupted
@@ -5654,6 +5761,8 @@ export class BuyerProxy {
       extraAttempt = false,
       attemptTimeoutMs = null,
       teeBinding = null,
+      e2eeSession = null,
+      blindRelayService = null,
     }: {
       gatewayRouted?: boolean
       routingConversationKey?: string | null
@@ -5662,6 +5771,10 @@ export class BuyerProxy {
       attemptTimeoutMs?: number | null
       /** Send only on the connection with this session hash (a required TEE attestation's). */
       teeBinding?: string | null
+      /** Zero data access: encrypt every message to this attested upstream key and decrypt the answer. */
+      e2eeSession?: E2eeSession | null
+      /** Zero data access through the seller-blind relay: send to the upstream over TLS the buyer runs, as this service. */
+      blindRelayService?: string | null
     } = {},
   ): Promise<PeerDispatchResult> {
     traceFor(res)?.noteAttempt(selectedPeer.peerId, Date.now())
@@ -5767,6 +5880,45 @@ export class BuyerProxy {
       }
     }
 
+    if (e2eeSession) {
+      // Encrypted last, after any protocol translation, so the seller relays only ciphertext.
+      const sentProtocol = selectedRoutePlan.selection?.targetProtocol ?? requestProtocol
+      try {
+        if (sentProtocol !== 'openai-chat-completions') {
+          throw new E2eeError('End-to-end encryption covers chat completions only.')
+        }
+        requestForPeer = await encryptRequest(requestForPeer, e2eeSession)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        sendJson(res, 400, { error: { type: 'invalid_request_error', code: 'zero_data_access_unsupported', message } })
+        return { done: true }
+      }
+      log(`Encrypted request end to end for peer ${selectedPeer.peerId.slice(0, 12)}...`)
+    }
+    if (blindRelayService && (selectedRoutePlan.selection?.targetProtocol ?? requestProtocol) !== 'openai-chat-completions') {
+      sendJson(res, 400, { error: { type: 'invalid_request_error', code: 'zero_data_access_unsupported', message: 'The blind relay carries chat completions only.' } })
+      return { done: true }
+    }
+    // The seller-blind relay stands in for the seller's own request path; payment still goes through the node.
+    const relayBlind = blindRelayService
+    const relayProvider = selectedRoutePlan.provider
+    // A relayed request sent a second time is billed under a new ID: its spend stays with the request's gateway key and chat turn.
+    const trackRelayAttempt = (request: SerializedHttpRequest) => (billingId: string): void => {
+      this._spendAttribution.trackAttempt(billingId, request.requestId)
+      const conversation = this._requestConversations.get(request.requestId)
+      if (conversation) this._trackRequestConversation(billingId, conversation.convId, request.requestId)
+    }
+    const sendRequestStream: AntseedNode['sendRequestStream'] = relayBlind
+      ? (peer, request, callbacks, options) => this._blindRelay.send(peer, relayBlind, request, options?.buyerIdentity, {
+        onAttempt: trackRelayAttempt(request),
+        onResponseStart: (start) => callbacks.onResponseStart?.(start, { streaming: /text\/event-stream/i.test(start.headers['content-type'] ?? '') }),
+        onResponseChunk: (chunk) => callbacks.onResponseChunk?.(chunk),
+      }, { signal: options?.signal, channelBinding: options?.channelBinding, provider: relayProvider })
+      : (peer, request, callbacks, options) => this._node.sendRequestStream(peer, request, callbacks, options)
+    const sendRequest: AntseedNode['sendRequest'] = relayBlind
+      ? (peer, request, options) => this._blindRelay.send(peer, relayBlind, request, options?.buyerIdentity, { onAttempt: trackRelayAttempt(request) }, { signal: options?.signal, channelBinding: options?.channelBinding, provider: relayProvider })
+      : (peer, request, options) => this._node.sendRequest(peer, request, options)
+
     if (DEBUG()) {
       log(`Outbound request shape: ${summarizeRequestShape(requestForPeer)}`)
     }
@@ -5826,7 +5978,28 @@ export class BuyerProxy {
         let streamed = false
         let firstFrameAt = 0
         let streamStartBody: Uint8Array = new Uint8Array()
-        const response = await this._node.sendRequestStream(selectedPeer, requestForPeer, {
+        const writeStreamChunk = (chunk: SerializedHttpResponseChunk): void => {
+          const adaptedChunks = streamResponseAdapter
+            ? streamResponseAdapter.adaptChunk(chunk)
+            : [chunk]
+          for (const adaptedChunk of adaptedChunks) {
+            if (adaptedChunk.data.length > 0) {
+              res.write(Buffer.from(adaptedChunk.data))
+            }
+          }
+        }
+        // A chunk that fails to decrypt ends the stream rather than reach the client unreadable.
+        const decryptedStream = e2eeSession
+          ? createOrderedStreamDecryptor(e2eeSession, {
+              write: writeStreamChunk,
+              stopped: () => res.destroyed,
+              onError: (error) => {
+                log(`End-to-end decryption failed for peer ${selectedPeer.peerId.slice(0, 12)}...: ${error instanceof Error ? error.message : String(error)}`)
+                res.destroy()
+              },
+            })
+          : null
+        const response = await sendRequestStream(selectedPeer, requestForPeer, {
           onResponseStart: (startResponse: SerializedHttpResponse, metadata: RequestStreamResponseMetadata) => {
             if (!metadata.streaming) return
             // The seller is answering: from here a slow answer is still an answer.
@@ -5835,9 +6008,11 @@ export class BuyerProxy {
             firstFrameAt = Date.now()
             traceFor(res)?.noteFirstByte(firstFrameAt)
             streamStartBody = startResponse.body
+            // An encrypted start body goes through the decrypting queue like any chunk.
+            const startForClient = decryptedStream ? { ...startResponse, body: new Uint8Array() } : startResponse
             const adaptedStartResponse = streamResponseAdapter
-              ? streamResponseAdapter.adaptStart(startResponse)
-              : startResponse
+              ? streamResponseAdapter.adaptStart(startForClient)
+              : startForClient
             const streamingHeaders = attachStreamingAntseedHeaders(
               adaptedStartResponse.headers,
               selectedPeer,
@@ -5854,18 +6029,15 @@ export class BuyerProxy {
             if (adaptedStartResponse.body.length > 0) {
               res.write(Buffer.from(adaptedStartResponse.body))
             }
+            if (decryptedStream && startResponse.body.length > 0) {
+              decryptedStream.push({ requestId: startResponse.requestId, data: startResponse.body, done: false })
+            }
           },
           onResponseChunk: (chunk: SerializedHttpResponseChunk) => {
             if (!streamed) return
             this._markModelActivity()
-            const adaptedChunks = streamResponseAdapter
-              ? streamResponseAdapter.adaptChunk(chunk)
-              : [chunk]
-            for (const adaptedChunk of adaptedChunks) {
-              if (adaptedChunk.data.length > 0) {
-                res.write(Buffer.from(adaptedChunk.data))
-              }
-            }
+            if (decryptedStream) decryptedStream.push(chunk)
+            else writeStreamChunk(chunk)
           },
         }, {
           signal: attemptSignal,
@@ -5874,10 +6046,16 @@ export class BuyerProxy {
           ...(buyerIdentity ? { buyerIdentity } : {}),
           ...(teeBinding ? { channelBinding: teeBinding } : {}),
         })
+        // A chunk that did not decrypt: the answer was not served, whatever the seller's stream says. Thrown here,
+        // it ends the dispatch as an interrupted answer: no success for the seller or the router.
+        await decryptedStream?.drain()
 
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
-        let responseForClient = adaptBuyerFaultErrorResponse(response, requestProtocol)
+        let responseForClient = adaptBuyerFaultErrorResponse(
+          e2eeSession && !streamed ? await decryptResponse(response, e2eeSession) : response,
+          requestProtocol,
+        )
         const freeTierRefusal = adaptFreeTierRefusal(responseForClient)
         responseForClient = freeTierRefusal ?? adaptPeerResponse(responseForClient)
         if (
@@ -6020,7 +6198,7 @@ export class BuyerProxy {
         return { done: true, emptyAnswer: answeredEmpty }
       } else {
         const maxVideoCostUsdc = videoRoute?.action === 'create' ? parseUsdcBaseUnits(maxVideoCostHeader) : null
-        const upstreamResponse = await this._node.sendRequest(selectedPeer, requestForPeer, {
+        const upstreamResponse = await sendRequest(selectedPeer, requestForPeer, {
           signal: attemptSignal,
           pinned,
           captureResponseAuthPreimages: captureResponseAuthPreimages === '1',
@@ -6045,7 +6223,10 @@ export class BuyerProxy {
         )) {
           await this._persistResourceRoutes().catch(error => console.error('[proxy] Accepted video route was not persisted:', error))
         }
-        let response = adaptBuyerFaultErrorResponse(upstreamResponse, requestProtocol)
+        let response = adaptBuyerFaultErrorResponse(
+          e2eeSession ? await decryptResponse(upstreamResponse, e2eeSession) : upstreamResponse,
+          requestProtocol,
+        )
         const freeTierRefusal = adaptFreeTierRefusal(response)
         response = freeTierRefusal ?? adaptPeerResponse(response)
         if (

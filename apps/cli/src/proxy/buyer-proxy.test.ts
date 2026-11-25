@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { invokeProxy, makeProxyRequest, makeProxyResponse } from './proxy-test-support.js'
 import test, { type TestContext } from 'node:test'
+import { SigningKey } from 'ethers'
 import localPlugin from '@antseed/router-local'
 import type { ModelRoutingClientApi } from '@antseed/router-core'
 import { ResourceRoutes } from './resource-routes.js'
@@ -24,11 +25,14 @@ import {
   type SerializedHttpRequest,
   type PeerInfo,
   type SerializedHttpResponse,
+  createE2eeSession,
+  encryptE2eeText,
 } from '@antseed/node'
 import { parseRetailPrices } from '@antseed/node/retail-prices'
 
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import { TeeVerification } from './tee-verification.js'
+import { BlindRelayClient } from './blind-relay.js'
 import { ConversationStore } from './conversation-store.js'
 import { findFailingServiceOffers, resolvePeerRoutePlan } from './routing.js'
 import {
@@ -7172,4 +7176,97 @@ test('lip-synced video creates route only to sellers whose model takes audio_url
   assert.equal(refused.statusCode, 422)
   assert.match(JSON.parse(refused.body).error.message, /required parameter\(s\): audio_url/)
   assert.deepEqual(selected, [])
+})
+
+test('a relayed request keeps the attested connection its TEE check bound it to', async () => {
+  const peer = makePeer('b', ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'open-model': ['openai-chat-completions'] } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  const bindings: unknown[] = []
+  ;(proxy as any)._blindRelay = {
+    send: async (_peer: PeerInfo, _service: string, request: { requestId: string }, _identity: unknown, _callbacks: unknown, options?: { channelBinding?: string }) => {
+      bindings.push(options?.channelBinding)
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+    },
+  }
+  const dispatch = (stream: boolean) => (proxy as any)._dispatchToPeer(makeProxyResponse(), {
+    requestId: randomUUID(), method: 'POST', path: '/v1/chat/completions', headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ model: 'open-model', stream, messages: [{ role: 'user', content: 'Hello' }] })),
+  }, peer, new Map(), 'openai-chat-completions', 'open-model', null, null, true, new AbortController().signal,
+  { teeBinding: 'c'.repeat(64), blindRelayService: 'open-model' })
+  await dispatch(false)
+  await dispatch(true)
+  assert.deepEqual(bindings, ['c'.repeat(64), 'c'.repeat(64)])
+})
+
+test('an encrypted stream that stops decrypting is not counted as an answer the seller served', async () => {
+  const clock = makeTestClock()
+  const peer = makePeer('b', ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'open-model': ['openai-chat-completions'] } } }
+  const routerResults: boolean[] = []
+  const router = { allowsPeerForPolicy: () => true, onResult: (_peer: PeerInfo, result: { success: boolean }) => { routerResults.push(result.success) } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], router, clock.now)
+  const session = createE2eeSession(new SigningKey(`0x${'22'.repeat(32)}`).publicKey)
+  const event = (content: string) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
+  const sealed = (text: string) => encryptE2eeText(text, session.clientKey.publicKey)
+  // Sealed to a key this request does not hold, as a changed or replayed event would be.
+  const foreign = await encryptE2eeText(' world', new SigningKey(`0x${'33'.repeat(32)}`).publicKey)
+
+  const dispatch = async (first: string, last: string) => {
+    const rest = Buffer.from(`${event(last)}data: [DONE]\n\n`)
+    ;(proxy as any)._node.sendRequestStream = async (_peer: PeerInfo, request: SerializedHttpRequest, callbacks: {
+      onResponseStart: (response: SerializedHttpResponse, metadata: { streaming: boolean }) => void
+      onResponseChunk: (chunk: { requestId: string; data: Uint8Array; done: boolean }) => void
+    }) => {
+      const headers = { 'content-type': 'text/event-stream' }
+      callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: Buffer.from(event(first)) }, { streaming: true })
+      callbacks.onResponseChunk({ requestId: request.requestId, data: rest, done: true })
+      return { requestId: request.requestId, statusCode: 200, headers, body: rest }
+    }
+    const res = Object.assign(makeProxyResponse(), { destroyed: false, destroy() { this.destroyed = true } })
+    const result = await (proxy as any)._dispatchToPeer(res, {
+      requestId: randomUUID(), method: 'POST', path: '/v1/chat/completions', headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify({ model: 'open-model', stream: true, messages: [{ role: 'user', content: 'Hello' }] })),
+    }, peer, new Map(), 'openai-chat-completions', 'open-model', null, router, true, new AbortController().signal, { e2eeSession: session })
+    return { res, result }
+  }
+  const successes = () => (proxy as any)._sellerHealth.stats(peer.peerId, (proxy as any)._healthServiceKey('open-model'), clock.now())?.successes ?? 0
+
+  const whole = await dispatch(await sealed('Hello'), await sealed(' world'))
+  assert.deepEqual(whole.result, { done: true, emptyAnswer: false })
+  assert.match(whole.res.body, /"content":"Hello"/)
+  assert.match(whole.res.body, /"content":" world"/)
+  assert.equal(successes(), 1)
+  assert.deepEqual(routerResults, [true])
+
+  const broken = await dispatch(await sealed('Hello'), foreign)
+  assert.match(broken.res.body, /"content":"Hello"/)
+  assert.doesNotMatch(broken.res.body, /world/)
+  assert.equal(broken.res.destroyed, true, 'the client connection stays open after an event that did not decrypt')
+  assert.deepEqual(broken.result, { done: true, interrupted: 'seller' }, 'an answer that did not decrypt was reported as served')
+  assert.equal(successes(), 1, 'an answer that did not decrypt was counted as a success of the seller')
+  assert.deepEqual(routerResults, [true], 'an answer that did not decrypt was reported to the router as a result')
+})
+
+test('a seller-blind offer gives zero data access only to a buyer that has the relay sidecar', () => {
+  const peer = makePeer('b', ['openai'])
+  const offer = { serviceId: 'open-model', categories: ['chat', 'seller-blind'] }
+  const facts = (keyedRelayBinary: string | null) => {
+    const proxy = new BuyerProxy({
+      port: 0,
+      dataDir: '/tmp/antseed-test',
+      node: {} as any,
+      blindRelay: new BlindRelayClient({
+        sendRequest: async () => { throw new Error('must not reach a peer') },
+        openRelayStream: async () => { throw new Error('must not reach a peer') },
+        recordRelayedResponse: () => {},
+        recordInterruptedRelayedResponse: () => {},
+        keyedRelayBinary,
+      }),
+    })
+    return (proxy as any)._zeroDataAccessFacts(peer, offer)
+  }
+
+  assert.deepEqual(facts('/a/sidecar'), { zeroDataAccess: true })
+  assert.deepEqual(facts(null), { zeroDataAccess: false, zeroDataAccessFailure: 'this buyer has no keyed-relay sidecar installed' })
 })

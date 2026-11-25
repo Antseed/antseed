@@ -1,4 +1,5 @@
 import type {
+  E2eeAttestationResponse,
   Provider,
   ProviderStreamCallbacks,
   SerializedHttpRequest,
@@ -282,11 +283,14 @@ export class VeniceImageEditProvider implements Provider {
   readonly serviceCapabilities: Provider['serviceCapabilities'];
   readonly maxConcurrency: number;
   serviceCategories?: Provider['serviceCategories'];
+  /** The delegate's keyed relay target: chat requests are relayed as the delegate would serve them. */
+  keyedRelayTarget?: Provider['keyedRelayTarget'];
 
   constructor(
     private readonly delegate: Provider,
     private readonly editModelMap: Readonly<Record<string, string>>,
     private readonly afterInit?: () => Promise<void>,
+    private readonly e2eeAttestation?: (service: string, nonce: string) => Promise<E2eeAttestationResponse | null>,
   ) {
     this.name = delegate.name;
     this.services = delegate.services;
@@ -296,6 +300,7 @@ export class VeniceImageEditProvider implements Provider {
     this.serviceCapabilities = delegate.serviceCapabilities;
     this.maxConcurrency = delegate.maxConcurrency;
     this.serviceCategories = delegate.serviceCategories;
+    if (delegate.keyedRelayTarget) this.keyedRelayTarget = (service) => delegate.keyedRelayTarget!(service);
   }
 
   async init(): Promise<void> {
@@ -326,5 +331,9 @@ export class VeniceImageEditProvider implements Provider {
 
   getCapacity(): { current: number; max: number } {
     return this.delegate.getCapacity();
+  }
+
+  async getE2eeAttestation(service: string, nonce: string): Promise<E2eeAttestationResponse | null> {
+    return this.e2eeAttestation ? this.e2eeAttestation(service, nonce) : null;
   }
 }

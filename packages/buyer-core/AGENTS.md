@@ -25,6 +25,7 @@ Published to npm. Every buyer runs it (the CLI buyer, and so the desktop and gat
 | Transactions never pay ethers' 1 gwei fallback tip; a failed tip read falls back to `DEFAULT_PRIORITY_FEE_WEI`. | `src/base-evm-client.test.ts` |
 | A receipt is filed under the peer the request went to and the service the buyer asked for (`ResponseAuthContext`), never the fields the seller wrote. | `src/buyer-request-handler.test.ts` (the peer) |
 | Debug logging stays off in content-free mode, since debug lines print upstream bodies. | `src/debug.test.ts` |
+| An end-to-end encrypted request sends, beside its encrypted messages, only the generation controls of `PLAIN_CONTROLS` (`e2ee.ts`), each in its checked shape: figures, switches and fixed labels. Any other field that holds a value fails the request before anything is sent. A new control is added there with its shape, never as free text. | `src/e2ee.test.ts` |
 
 ## Connections
 

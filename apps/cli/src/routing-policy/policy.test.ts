@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  ZERO_DATA_ACCESS_POLICY_CAPABILITY,
   decodePolicyHeader,
   encodePolicyHeader,
   expandPeerLists,
@@ -132,6 +133,36 @@ test('requireTee is validated and sticky', () => {
   assert.equal(narrowPolicy({}, { requireTee: true }).requireTee, true)
   assert.equal(narrowPolicy({}, {}).requireTee, undefined)
   assert.deepEqual(decodePolicyHeader(encodePolicyHeader({ requireTee: true })), { requireTee: true })
+})
+
+test('requireZeroDataAccess is validated, sticky and never loosened by a lower level', () => {
+  assert.equal(isRoutingPolicy({ requireZeroDataAccess: true }), true)
+  assert.equal(isRoutingPolicy({ requireZeroDataAccess: 1 }), false)
+  assert.equal(narrowPolicy({ requireZeroDataAccess: true }, { requireZeroDataAccess: false }).requireZeroDataAccess, true)
+  assert.equal(narrowPolicy({}, { requireZeroDataAccess: true }).requireZeroDataAccess, true)
+  assert.equal(narrowPolicy({}, {}).requireZeroDataAccess, undefined)
+  assert.deepEqual(narrowedFields({ requireZeroDataAccess: false }, { requireZeroDataAccess: true }), ['requireZeroDataAccess'])
+  assert.deepEqual(decodePolicyHeader(encodePolicyHeader({ requireZeroDataAccess: true })), { requireZeroDataAccess: true })
+})
+
+test('a policy that needs a capability is sent as a list a buyer without the capability cannot read', () => {
+  const json = (header: string): unknown => JSON.parse(Buffer.from(header, 'base64url').toString('utf8'))
+  const header = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString('base64url')
+  // Every other policy is the object it always was, which every policy-aware buyer reads.
+  assert.deepEqual(json(encodePolicyHeader({ requireTee: true, sort: 'price' })), { requireTee: true, sort: 'price' })
+  assert.deepEqual(json(encodePolicyHeader({ requireZeroDataAccess: false, requireTee: true })), { requireZeroDataAccess: false, requireTee: true })
+  // The requirement an older buyer would drop travels with its capability, as a list.
+  assert.deepEqual(json(encodePolicyHeader({ requireZeroDataAccess: true, requireTee: true })),
+    [{ requireZeroDataAccess: true, requireTee: true }, ZERO_DATA_ACCESS_POLICY_CAPABILITY])
+  assert.deepEqual(decodePolicyHeader(encodePolicyHeader({ requireZeroDataAccess: true, requireTee: true })), { requireZeroDataAccess: true, requireTee: true })
+  // This buyer refuses a policy that needs a capability it does not have, and a list that is not a policy.
+  assert.equal(decodePolicyHeader(header([{ requireTee: true }, 'a-later-requirement'])), null)
+  assert.equal(decodePolicyHeader(header([{ requireTee: true }, 1])), null)
+  assert.equal(decodePolicyHeader(header([])), null)
+  assert.equal(decodePolicyHeader(header(['zero-data-access'])), null)
+  assert.deepEqual(decodePolicyHeader(header([{ requireTee: true }])), { requireTee: true })
+  // The requirement written as the plain object is applied too.
+  assert.deepEqual(decodePolicyHeader(header({ requireZeroDataAccess: true })), { requireZeroDataAccess: true })
 })
 
 // Regression repros (security review): a lower level must not widen the
