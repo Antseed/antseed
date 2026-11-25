@@ -77,7 +77,13 @@ import {
   createCanonicalKbfProbe,
 } from './canonical-kbf-domains.js'
 import { writeJsonAtomic, writeTextAtomic } from './atomic-files.js'
-import { CandidateWritingPolicy, candidateWritingFallback, isRamblingCandidateAnswer } from './candidate-writing.js'
+import {
+  CANDIDATE_WRITING_MAX_TOKENS,
+  CandidateWritingPolicy,
+  candidateWritingFallback,
+  candidateWritingMaxTokens,
+  isRamblingCandidateAnswer,
+} from './candidate-writing.js'
 import { createDomainHomogeneousKbfBatches, kbfAuditBatches } from './kbf-batching.js'
 import { asError, normalized, sleep, untilAborted } from './utils.js'
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
@@ -103,8 +109,8 @@ const DEFAULT_MAX_NO_PROGRESS_ROUNDS = 3
  * `probes/reference_202609/minimax-m3_20260911.json`).
  */
 export const DEFAULT_LAYOUT_FILTER_PASSES = 2
-// Candidate batches ask for a long list (up to 6000 tokens) and nothing is scored from them, so
-// they get more time than the measured requests, whose timeout is part of the bank settings.
+// Candidate batches ask for a long list (up to 6000 tokens, or 16000 for a model that cannot stop thinking) and nothing
+// is scored from them, so they get more time than the measured requests, whose timeout is part of the bank settings.
 const CANDIDATE_GENERATION_TIMEOUT_MS = 300_000
 const DEFAULT_MAX_CONCURRENT_REQUESTS = 16
 const DEFAULT_MAX_CONCURRENT_REQUESTS_PER_MODEL = 6
@@ -620,7 +626,12 @@ export async function buildModelReference(input: {
       ?? resolveReferenceRequestRoute({ endpoint, model, apiKey, catalog: input.catalog ?? null }),
     log: input.log,
   })
-  const candidateWriting = new CandidateWritingPolicy(candidateWritingFallback(targetRoute), input.log)
+  // A model whose discovery found nothing that turns its thinking off writes questions with room to think too.
+  const candidateWritingLimit = candidateWritingMaxTokens((thinkingDiscovery ?? initialDiscovery)?.target)
+  if (candidateWritingLimit !== CANDIDATE_WRITING_MAX_TOKENS) {
+    input.log?.(`nothing turns thinking off for ${modelConfig.upstreamModel}; question writing asks for up to ${candidateWritingLimit} tokens`)
+  }
+  const candidateWriting = new CandidateWritingPolicy(candidateWritingFallback(targetRoute), input.log, candidateWritingLimit)
   let collected: CollectedReferenceProbes | undefined
   const selfOutcomes: ReferenceProbeSelfTestV1[] = []
   let selected: {
@@ -1740,7 +1751,7 @@ async function generateCandidates(
       const body = {
         model,
         temperature: 0.7,
-        max_tokens: 6000,
+        max_tokens: writing?.maxTokens ?? CANDIDATE_WRITING_MAX_TOKENS,
         messages: [
           { role: 'system', content: 'Create stable numeric factual-recall probes. Output only the requested list.' },
           { role: 'user', content: prompt },

@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { CandidateWritingPolicy, candidateWritingFallback, isRamblingCandidateAnswer } from './candidate-writing.js'
+import {
+  CANDIDATE_WRITING_MAX_TOKENS,
+  CANDIDATE_WRITING_THINKING_MAX_TOKENS,
+  CandidateWritingPolicy,
+  candidateWritingFallback,
+  candidateWritingMaxTokens,
+  isRamblingCandidateAnswer,
+} from './candidate-writing.js'
 
 const openRouter = (overrides: Record<string, unknown>) => ({
   type: 'direct', baseUrl: 'https://openrouter.ai/api/v1', requestOverrides: overrides,
@@ -123,4 +130,36 @@ test('without a fallback nothing waits and nothing is retried', async () => {
   for (let index = 0; index < 5; index += 1) assert.deepEqual(await policy.beginBatch(), { trial: false, strategy: null })
   assert.equal(policy.observeRecordedAnswer(true, false), null)
   assert.equal(policy.summary()?.fallbackStrategy, null)
+})
+
+test('question writing gets the larger limit only when the setting discovery chose still thought', () => {
+  const attempt = (strategy: string, reasoningTokens: number) => ({
+    strategy, maxTokens: 800, status: null, validAnswers: 10, reasoningTokens, answersOnly: true, truncated: false,
+  }) as never
+  assert.equal(CANDIDATE_WRITING_MAX_TOKENS, 6000)
+  assert.equal(CANDIDATE_WRITING_THINKING_MAX_TOKENS, 16000)
+  // Gemini 4 Neon (dry run 5): every setting accepted but ignored, the least-thinking one used.
+  assert.equal(candidateWritingMaxTokens({
+    strategy: 'disable-thinking',
+    attempts: [attempt('reasoning-effort-minimal', 536), attempt('disable-thinking', 496), attempt('enable-thinking-false', 605)],
+  }), 16000)
+  // `bare` that still thought, and `bare-expanded` after discovery failed.
+  assert.equal(candidateWritingMaxTokens({ strategy: 'bare', attempts: [attempt('bare', 295)] }), 16000)
+  assert.equal(candidateWritingMaxTokens({ strategy: 'bare-expanded', attempts: [] }), 16000)
+  // A setting that turns thinking off, and a `bare` model that does not think, keep the usual limit.
+  assert.equal(candidateWritingMaxTokens({
+    strategy: 'reasoning-effort-none', attempts: [attempt('reasoning-effort-none', 0)],
+  }), 6000)
+  assert.equal(candidateWritingMaxTokens({ strategy: 'bare', attempts: [attempt('reasoning-effort-none', 40), attempt('bare', 0)] }), 6000)
+  // A bank enrolled before discovery has none stored.
+  assert.equal(candidateWritingMaxTokens(undefined), 6000)
+})
+
+test('the larger writing limit is recorded even when no answer rambled', () => {
+  assert.equal(new CandidateWritingPolicy(null).summary(), null)
+  const policy = new CandidateWritingPolicy(null, undefined, 16000)
+  assert.equal(policy.maxTokens, 16000)
+  assert.deepEqual(policy.summary(), {
+    version: 1, fallbackStrategy: null, ramblingAnswers: 0, retriedBatches: 0, directBatches: 0, recoveredBatches: 0, maxTokens: 16000,
+  })
 })
