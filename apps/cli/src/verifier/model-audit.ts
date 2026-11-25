@@ -596,8 +596,11 @@ export async function prepareModelAudits(input: {
           : 'close call without its extra questions, so it is not submitted', result.extensionPending ? 'close-call-waiting' : 'close-call-unfinished')
         continue
       }
-      if (result.outcomeReason?.code === 'confirmation_undecided') {
-        exclude('a confirmation whose check to repeat did not decide: it is never sent, whatever the chain shows now', 'confirmation-undecided')
+      // A confirmation always sends its result, an undecided one its last attempt's UNDETERMINED (the epoch plan asks it
+      // again within its attempts and holds the model's submit meanwhile, `confirmationsHoldingSubmit`). Only one this
+      // auditor's own failure left undecided is not sent: it says nothing about the seller.
+      if (result.outcomeReason?.code === 'confirmation_undecided' && failureBlame(result.undecidedCause ?? null) === 'auditor') {
+        exclude(`a confirmation left undecided by this auditor's own failure (${result.undecidedCause?.summary ?? 'audit failed'}), so it is not submitted`, 'auditor-caused-undetermined')
         continue
       }
       if (finalVerdict === 'UNDETERMINED' && failureBlame(result.outcomeReason) === 'auditor') {

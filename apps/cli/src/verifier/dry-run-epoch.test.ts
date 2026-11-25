@@ -61,7 +61,8 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
     const closeReference = referenceFixture(MODEL, 20)
     const first: FixtureAudit[] = [
       at(1, 'SAME', { flips: flips('first', 'pass', 0.4) }),
-      at(2, 'DIFF', { outputCap: capFlag }),
+      // A cap flag is stored and does not count (`AUDIT_TEST_COUNTS`): the seller is SAME on its questions.
+      at(2, 'SAME', { outputCap: capFlag }),
       // Its anchor is this audit's own matching pre-check.
       at(3, 'DIFF', { outputEcho: echoFlag, tokenizerMatch: true }),
       at(4, 'DIFF'),
@@ -111,7 +112,7 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
     assert.deepEqual([flipsOf(16, 'confirm').outcome, flipsOf(16, 'confirm').counted, flipsOf(17, 'first').outcome], ['flag', true, 'flag'])
     // FLIPS's own rule counts the model, but the table of which tests count does not count FLIPS today
     // (`AUDIT_TEST_COUNTS`): both flags are recorded only.
-    assert.equal(AUDIT_TEST_COUNTS.flips, false)
+    assert.equal(AUDIT_TEST_COUNTS.flips.counts, false)
     await writeSignedAuditRun({
       evidenceDir, banksDir, runId: 'run-2', epoch: EPOCH, auditor, completedAt: '2026-10-07T02:30:00.000Z', audits: [
         at(11, 'SAME'),
@@ -121,7 +122,7 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
         // Two answers to another auditor's FLIPS-only report, both flagged by a signed FLIPS that is recorded only: a
         // confirmation of FLIPS (the confirm stage), undecided, and an untagged first look (the first stage), whose
         // questions pass, so it is a SAME.
-        at(16, 'UNDETERMINED', { questionsVerdict: 'SAME', confirming: { checks: ['flips'], reportedAt }, flips: flipsOf(16, 'confirm') }),
+        at(16, 'SAME', { questionsVerdict: 'SAME', confirming: { checks: ['flips'], reportedAt }, flips: flipsOf(16, 'confirm') }),
         at(17, 'SAME', { questionsVerdict: 'SAME', flips: flipsOf(17, 'first') }),
       ],
     })
@@ -148,28 +149,32 @@ test('a known epoch: every row is decided as its outcome says, and the dry run\'
 
     const decided = Object.fromEntries(prepared.decisions.map((row) => [row.agentId, `${row.decision}${row.reasonCode ? ` ${row.reasonCode}` : ''}${row.decision === 'send' ? ` ${row.verdict}` : ''}`]))
     assert.deepEqual(decided, {
-      1: 'send SAME', 2: 'send DIFF', 3: 'send DIFF', 4: 'send DIFF', 5: 'send DIFF', 6: 'send SAME', 7: 'send SAME',
+      1: 'send SAME', 2: 'send SAME', 3: 'send DIFF', 4: 'send DIFF', 5: 'send DIFF', 6: 'send SAME', 7: 'send SAME',
       8: 'held close-call-waiting', 9: 'send SAME', 10: 'excluded self-audit', 11: 'send SAME', 12: 'excluded skipped',
       13: 'send DIFF', 14: 'excluded repeated-test-open', 15: 'send DIFF',
-      // While FLIPS is recorded only, a confirmation of a FLIPS flag can decide nothing: never sent. The untagged first
-      // look's SAME cannot clear the FLIPS report, whose test neither flagged nor passed here: not sent either.
-      16: 'excluded confirmation-undecided', 17: 'excluded repeated-test-open',
+      // While FLIPS is recorded only, a confirmation of a FLIPS flag cannot confirm it; its questions say SAME and nothing
+      // that counts flagged, so it is a SAME, sent, clearing the report. The untagged first look's SAME clears nothing: a
+      // first look answers a report only by the same test, and only a confirmation always sends.
+      16: 'send SAME', 17: 'excluded repeated-test-open',
     })
-    // The cap and the echo flag are sent with the test that flagged them.
+    // The echo flag is sent with the test that flagged it; the cap flag does not count.
     const flaggedBy = Object.fromEntries(prepared.audits.flatMap((entry) => entry.evidence.results.map((result) => [result.agentId, result.flaggedBy])))
-    assert.deepEqual([flaggedBy['2'], flaggedBy['3']], [['output-cap'], ['output-echo']])
+    assert.deepEqual([flaggedBy['2'], flaggedBy['3']], [[], ['output-echo']])
     // The report a confirmation answers goes out with its row, from its evidence: the final reread right before sending
     // (`sameCheckChanged`) decides on it again and finds the decision unchanged; a first look carries none.
     const sentRows = prepared.audits.flatMap((entry) => entry.evidence.results)
     assert.deepEqual(sentRows.find((row) => row.agentId === '13')?.confirming, { checks: ['kbf'], reportedAt })
     assert.equal(sentRows.find((row) => row.agentId === '1')?.confirming, undefined)
-    // No FLIPS row is sent, and no row is flagged by FLIPS.
-    assert.equal(sentRows.some((row) => row.agentId === '16' || row.agentId === '17' || (row.flaggedBy ?? []).includes('flips')), false)
+    // No row is flagged by FLIPS; the confirmation of the FLIPS report is sent as a SAME that answers it.
+    assert.equal(sentRows.some((row) => row.agentId === '17' || (row.flaggedBy ?? []).includes('flips')), false)
+    const flipsRow = sentRows.find((row) => row.agentId === '16')!
+    assert.deepEqual([flipsRow.verdict, flipsRow.confirming, flipsRow.confirmation?.firstChecks, flipsRow.confirmation?.sameCheck], ['SAME', { checks: ['flips'], reportedAt }, ['flips'], null])
     // The final reread right before sending: the confirmation of the questions is sent as prepared; had its report
     // changed since, it is held and built again.
     const kbfReport: FirstFlag = { ...flipsReport, checks: ['kbf'] }
     const reread = (report: FirstFlag) => async (_model: string, candidates: readonly SameCheckCandidate[]) => candidates.map((candidate): SameCheckDecision | null => (
-      candidate.agentId !== 13n ? null
+      candidate.agentId === 16n ? decide(candidate, [flipsReport])
+        : candidate.agentId !== 13n ? null
         : report.reportedAt === reportedAt ? { kind: 'send', confirmation: confirmation as never }
           : { kind: 'exclude', code: 'confirms-another-report', reason: 'this audit confirms another report than the DIFF waiting now; it is not sent, and the seller is audited again' }))
     for (const entry of prepared.audits) assert.equal(await sameCheckChanged(entry.modelHash, entry.evidence.results, reread(kbfReport)), null)

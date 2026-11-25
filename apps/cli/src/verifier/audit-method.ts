@@ -286,12 +286,6 @@ export interface RecordCheckBody<Slot extends CheckSlot = CheckSlot> {
    * with `counts` only. A test the rule never counts for the model is not active for it (`inactiveChecks`).
    */
   countsFor?(model: string, rules?: ReadingRules): boolean
-  /**
-   * Whether a SAME needs this test passed when it is active (`verdictOf`). True by default. False for a flag-only test:
-   * its flag makes a DIFF, and its no result, a check that could not run, or one that could not ask the seller the way
-   * the reference was asked never blocks a SAME and never makes an UNDETERMINED. The value is in the rules hash.
-   */
-  sameNeedsPass?: boolean
   /** Whether a stored value has the record's shape: a carried or checkpointed record that does not is dropped. */
   wellFormed?(record: unknown): boolean
   /** Whether a scheduled retry carries this record; by default when a finding flagged or passed (`decidedRecords`). */

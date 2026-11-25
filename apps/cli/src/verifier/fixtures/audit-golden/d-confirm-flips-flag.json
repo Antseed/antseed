@@ -81,17 +81,9 @@
   "displayName": "Example Seller",
   "agentId": "7",
   "service": "deepseek-v4-pro",
-  "status": "UNDETERMINED",
+  "status": "SAME",
   "questionsStatus": "SAME",
-  "outcomeReason": {
-   "code": "confirmation_undecided",
-   "summary": "the check this confirmation must repeat (flips) did not decide; the seller is audited again",
-   "retryable": true,
-   "source": "verifier",
-   "affectedBatchCount": 0,
-   "totalBatchCount": 0,
-   "nextAction": "retry later"
-  },
+  "outcomeReason": null,
   "questionsOutcomeReason": null,
   "confirming": ["flips"],
   "confirmingReportedAt": 1791327600,
@@ -132,7 +124,10 @@
    "score": 47.300484411942186,
    "reason": "scored 47.30 (p 5.93e-8), at most the confirm bar 0.001"
   },
-  "inactive": [{"check":"flips","cause":"rule","reason":"the randomness check is recorded only for now: the audit rules do not count it toward the verdict"}]
+  "inactive": [
+   {"check":"output-cap","cause":"rule","reason":"the cap check is recorded only for now: the audit rules do not count it toward the verdict"},
+   {"check":"flips","cause":"rule","reason":"the randomness check is recorded only for now: the audit rules do not count it toward the verdict"}
+  ]
  },
  "evidence": {
   "buyerProxy": {"baseUrl":"http://127.0.0.1:8390","pid":4242,"statePath":"buyer.state.json"},
@@ -164,7 +159,7 @@
   "tokenizerPrecheck": {"record":"tokenizerPrecheck-e77b64f88aa89447"},
   "version": 1
  },
- "read": {"flaggedBy":[],"passedBy":["tokens","output-cap","output-echo","output-offset","kbf"],"submit":"accepted"},
+ "read": {"flaggedBy":[],"passedBy":["tokens","output-echo","output-offset","kbf"],"submit":"accepted"},
  "files": [
   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/README.md",
   "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/evidence.json",

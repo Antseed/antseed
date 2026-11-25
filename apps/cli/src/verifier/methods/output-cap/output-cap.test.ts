@@ -295,26 +295,29 @@ test('a cap record of every outcome, written to its evidence file, passes the ch
     const banksDir = join(directory, 'banks')
     const auditor = new Wallet(Wallet.createRandom().privateKey)
     // Stored under the seller and the service its replies were signed by and for.
-    // The questions say SAME for each; the cap check with no result keeps its seller from SAME (every active test must pass).
+    // The questions say SAME for each. The cap check does not count (`AUDIT_TEST_COUNTS`): whatever it found, each is SAME,
+    // and its record is stored and published.
     const seller = (agentId: string, verdict: FixtureAudit['verdict'], outputCap: OutputCapV1): FixtureAudit => ({
       agentId, seller: wallets[Number(agentId) - 1]!, model: 'model-a', service: SERVICE, verdict, questionsVerdict: 'SAME', outputCap,
     })
     const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor, audits: [
-      seller('1', 'SAME', records.pass), seller('2', 'DIFF', records.flag), seller('3', 'UNDETERMINED', records.inconclusive), seller('4', 'SAME', measuredWithin),
+      seller('1', 'SAME', records.pass), seller('2', 'SAME', records.flag), seller('3', 'SAME', records.inconclusive), seller('4', 'SAME', measuredWithin),
     ] })
     const prepared = await prepareModelAudits({
       evidenceDir, banksDir, manifest, auditor: auditor.address,
       resolveAgentOwner: async () => new Wallet(Wallet.createRandom().privateKey).address, config: FIXTURE_CONFIG,
     })
     assert.deepEqual(prepared.excluded, [])
-    assert.deepEqual(prepared.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[1n, VERIFIER_VERDICT.SAME], [2n, VERIFIER_VERDICT.DIFF], [3n, VERIFIER_VERDICT.UNDETERMINED], [4n, VERIFIER_VERDICT.SAME]])
-    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.flaggedBy), [[], ['output-cap'], [], []])
+    assert.deepEqual(prepared.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[1n, VERIFIER_VERDICT.SAME], [2n, VERIFIER_VERDICT.SAME], [3n, VERIFIER_VERDICT.SAME], [4n, VERIFIER_VERDICT.SAME]])
+    assert.deepEqual(prepared.audits[0]?.evidence.results.map((result) => result.flaggedBy), [[], [], [], []])
+    // Published as not active by the rule, for every seller.
+    assert.ok(prepared.audits[0]?.evidence.results.every((result) => result.inactive?.find((entry) => entry.check === 'output-cap')?.cause === 'rule'))
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
 })
 
-test('a cap record stored under another seller than the one that signed it is refused at submit', async () => {
+test('while the cap check does not count, its record is a diagnostic: one stored under another seller holds nothing up', async () => {
   const [signer, other] = [0, 1].map(() => new Wallet(Wallet.createRandom().privateKey))
   const record = await runOn(fakeSeller(() => ({ text: words(120), billed: 900 })), wordReference, peerIdOf(signer!))
   assert.equal(record.outcome, 'flag')
@@ -324,14 +327,17 @@ test('a cap record stored under another seller than the one that signed it is re
     const banksDir = join(directory, 'banks')
     const auditor = new Wallet(Wallet.createRandom().privateKey)
     const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor, audits: [
-      { agentId: '1', seller: other!, model: 'model-a', service: SERVICE, verdict: 'DIFF', outputCap: record },
+      { agentId: '1', seller: other!, model: 'model-a', service: SERVICE, verdict: 'SAME', outputCap: record },
     ] })
     const prepared = await prepareModelAudits({
       evidenceDir, banksDir, manifest, auditor: auditor.address,
       resolveAgentOwner: async () => new Wallet(Wallet.createRandom().privateKey).address, config: FIXTURE_CONFIG,
     })
-    assert.equal(prepared.audits.length, 0)
-    assert.match(prepared.excluded[0]!.reason, /invalid audit evidence: the cap check: a reply is not signed by the seller it is stored for/)
+    // As FLIPS's records while it is recorded only: a record that decides nothing is neither validated nor bound to the
+    // seller, so it cannot hold the seller's result back. The binding itself is checked whenever the cap check counts
+    // (`assertBoundToSeller`, `audit-checks.test.ts`).
+    assert.deepEqual(prepared.excluded, [])
+    assert.equal(prepared.audits[0]?.results[0]?.verdict, VERIFIER_VERDICT.SAME)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

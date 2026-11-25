@@ -25,14 +25,12 @@ import { normalized } from './utils.js'
  * auditor's published evidence (the `ModelAudited` event of the report's transaction names its IPFS URI and
  * hash), and runs that check to its end whatever else flags (`model-run.ts`). Before `verifier submit` sends a
  * result that answers a waiting DIFF, and again right before each transaction, it decides here:
- * - the same check flagged in both audits: the result is sent as DIFF, and the contract records it;
- * - another check flagged here: nothing is sent. The older record stands, and the finding is a first flag the
- *   next time the seller is audited. An UNDETERMINED would not be neutral: one report records it, and it would
- *   replace a live SAME (or, in a hold epoch, a recorded DIFF) on a finding nobody confirmed;
- * - nothing flagged here: a SAME is sent only when a check that flagged there passed here; when it was
- *   inconclusive or did not run, nothing is sent;
- * - an UNDETERMINED answering a waiting DIFF is never sent: the run audits the seller again within its
- *   confirmation attempts, and an UNDETERMINED with no waiting DIFF follows the existing rules;
+ * - a confirmation always sends what its audit decided (`verdictOf`): a DIFF only when the same check flagged again
+ *   (the contract records it); a SAME when that check passed, or the questions say SAME and nothing that counts
+ *   flagged (it clears the waiting DIFF); otherwise its last attempt's UNDETERMINED, so the report is answered.
+ *   Another check's flag is never sent as a DIFF that answers the report;
+ * - a first look answering a waiting DIFF is sent only as a DIFF of the same check, or a SAME in which every check
+ *   that flagged there passed here; otherwise it is not sent, and a confirmation answers the report;
  * - the first auditor's evidence cannot be read, or does not hold: nothing is sent now, and the next submit
  *   reads it again.
  *
@@ -88,7 +86,7 @@ export type SameCheckDecision =
  * test only a confirmation answers, from the test's id.
  */
 export type SameCheckExcludeCode =
-  | 'diff-names-no-check' | 'confirms-another-report' | 'confirmation-undecided' | 'confirmation-not-fresh'
+  | 'diff-names-no-check' | 'confirms-another-report' | 'first-look-undetermined' | 'confirmation-not-fresh'
   | 'same-check-not-diff' | 'other-test-only' | 'repeated-test-open' | `${ConfirmationOnlyCheckId}-not-confirmation`
 
 /** A candidate as `prepareModelAudits` hands it over: the checks that flagged and passed in its own audit. */
@@ -238,20 +236,6 @@ export function decide(
     }
   }
   const decisions = firsts.map((first): SameCheckDecision => {
-    // An UNDETERMINED answering a waiting DIFF is never sent: one report records it, and it would replace the
-    // seller's live SAME. The run audits the seller again within its confirmation attempts (`model-run.ts`).
-    if (candidate.verdict === VERIFIER_VERDICT.UNDETERMINED) {
-      return {
-        kind: 'exclude',
-        code: 'confirmation-undecided',
-        reason: ownChecks.length > 0
-          ? `another check (${describeChecks(ownChecks)}) flagged and ${describeChecks(first.checks)}, which flagged the waiting DIFF, did not decide; nothing is sent`
-          // Every test that flagged the waiting DIFF passed, and the audit is still open: a SAME needs every active test passed.
-          : first.checks.every((check) => clearing.includes(check))
-            ? `${describeChecks(first.checks)}, which flagged the waiting DIFF, passed here, but another active test did not decide, and a SAME needs every active test passed; nothing is sent, so the seller keeps its record`
-            : `${describeChecks(first.checks)}, which flagged the waiting DIFF, did not decide in this audit; nothing is sent, so the seller keeps its record`,
-      }
-    }
     const record = (sameCheck: AuditCheckId | null, passedCheck?: AuditCheckId, clearedBetween?: AuditCheckId[]): SameCheckConfirmationV1 => ({
       auditor: first.auditor,
       evidenceUri: first.evidenceUri,
@@ -263,6 +247,15 @@ export function decide(
       ...(passedCheck ? { passedCheck } : {}),
       ...(clearedBetween && clearedBetween.length > 0 ? { clearedBetween } : {}),
     })
+    // A first look's UNDETERMINED answering a waiting DIFF is not sent: one report records it, and it would replace the
+    // seller's live SAME on a finding a confirmation answers (`model-run.ts`).
+    if (!candidate.confirming && candidate.verdict === VERIFIER_VERDICT.UNDETERMINED) {
+      return {
+        kind: 'exclude',
+        code: 'first-look-undetermined',
+        reason: `an UNDETERMINED first look answering a waiting DIFF (${describeChecks(first.checks)}) is not sent; a confirmation of it answers the report`,
+      }
+    }
     if (!isFreshConfirmation(candidate.auditedAt, first.reportedAt, timing)) {
       return {
         kind: 'exclude',
@@ -272,6 +265,22 @@ export function decide(
       }
     }
     const sameCheck = AUDIT_CHECK_IDS.find((check) => first.checks.includes(check) && answeringOwn.includes(check)) ?? null
+    const passedCheck = AUDIT_CHECK_IDS.find((check) => first.checks.includes(check) && clearing.includes(check))
+    const between = first.checks.filter((check) => answeringBetween.includes(check))
+    // A confirmation always sends its result (Alex, 25 November), as its audit decided it (`verdictOf`): DIFF only when
+    // the same test flagged again, SAME when the repeated test passed or the questions say SAME with nothing that counts
+    // flagging, otherwise UNDETERMINED, its last attempt's. The report is answered either way.
+    if (candidate.confirming) {
+      if (candidate.verdict === VERIFIER_VERDICT.DIFF) {
+        return sameCheck
+          ? { kind: 'send', confirmation: record(sameCheck) }
+          // Never from `verdictOf`, which makes a confirmation DIFF only on the same test: another test's DIFF would be
+          // counted with the waiting one by the contract.
+          : { kind: 'exclude', code: 'other-test-only', confirmation: record(null), reason: `the waiting DIFF was flagged by ${describeChecks(first.checks)} and this audit by ${describeChecks(ownChecks)}; a DIFF is confirmed only by the same check, so it is not sent` }
+      }
+      if (candidate.verdict === VERIFIER_VERDICT.SAME) return { kind: 'send', confirmation: record(null, passedCheck, between) }
+      return { kind: 'send', confirmation: record(null) }
+    }
     if (sameCheck) {
       return candidate.verdict === VERIFIER_VERDICT.DIFF
         ? { kind: 'send', confirmation: record(sameCheck) }
@@ -298,17 +307,15 @@ export function decide(
           + 'a DIFF is confirmed only by the same check, so nothing is sent and the seller keeps its record',
       }
     }
-    // A SAME clears the waiting DIFF only when every check that flagged it passed here: one left open clears nothing.
-    const passedCheck = AUDIT_CHECK_IDS.find((check) => first.checks.includes(check) && clearing.includes(check))
+    // A first look's SAME clears the waiting DIFF only when every check that flagged it passed here.
     const open = first.checks.filter((check) => !clearing.includes(check))
-    const between = first.checks.filter((check) => answeringBetween.includes(check))
     if (candidate.verdict === VERIFIER_VERDICT.SAME && passedCheck && open.length === 0) return { kind: 'send', confirmation: record(null, passedCheck, between) }
     return {
       kind: 'exclude',
       code: 'repeated-test-open',
       confirmation: record(null),
-      reason: `the waiting DIFF was flagged by ${describeChecks(first.checks)}, and ${describeChecks(open.length > 0 ? open : first.checks)} neither flagged nor passed in this audit; `
-        + 'nothing is sent, so a check that did not decide clears nothing',
+      reason: `the waiting DIFF was flagged by ${describeChecks(first.checks)}, and ${describeChecks(open.length > 0 ? open : first.checks)} neither flagged nor passed in this first look; `
+        + 'it is not sent, and a confirmation of it answers the report',
     }
   })
   return decisions.find((decision) => decision.kind !== 'send') ?? decisions[0]!
