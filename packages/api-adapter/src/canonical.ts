@@ -26,6 +26,47 @@ export type CanonicalToolChoice =
 // Anthropic requires max_tokens; the OpenAI protocols treat it as optional.
 export const DEFAULT_ANTHROPIC_MAX_TOKENS = 16_384;
 
+/**
+ * The effort words the Messages API documents for `output_config.effort`, all of them words the
+ * OpenAI protocols have too. It has no word for "off" (that is `thinking: { type: "disabled" }`)
+ * and none for OpenAI's `minimal`. Which of these a model takes is the upstream's to answer,
+ * never decided here.
+ */
+const ANTHROPIC_EFFORTS: ReadonlySet<string> = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+/** The effort the OpenAI protocols use for "do not reason". */
+const REASONING_OFF = 'none';
+
+/**
+ * The reasoning effort a Messages request names: one of the Messages API's own words, so nothing
+ * else reaches another protocol as an effort. A thinking budget names no effort, and none is made
+ * up from it.
+ *
+ * With thinking switched off, no effort is carried at all. Off is the Messages default, which a
+ * client may only be restating, so it is not turned into the OpenAI protocols' `none`: that is a
+ * level of its own, which a model without it refuses. And an effort set beside it is not sent
+ * either, since the one field the OpenAI protocols have would switch reasoning on.
+ */
+function reasoningEffortFromAnthropic(body: Record<string, unknown>): string | undefined {
+  const thinking = body.thinking;
+  if (thinking && typeof thinking === 'object' && (thinking as Record<string, unknown>).type === 'disabled') {
+    return undefined;
+  }
+  const config = body.output_config;
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return undefined;
+  const effort = (config as Record<string, unknown>).effort;
+  return typeof effort === 'string' && ANTHROPIC_EFFORTS.has(effort) ? effort : undefined;
+}
+
+/**
+ * Writes a reasoning effort in the Messages API's own fields; a word it does not have is left out.
+ * `none` is always a client's explicit choice in the OpenAI protocols, so it is carried as the
+ * Messages switch for it.
+ */
+function assignAnthropicReasoningEffort(body: Record<string, unknown>, effort: string | undefined): void {
+  if (effort === REASONING_OFF) body.thinking = { type: 'disabled' };
+  else if (effort !== undefined && ANTHROPIC_EFFORTS.has(effort)) body.output_config = { effort };
+}
+
 export type CanonicalContentPart =
   | { type: 'text'; text: string }
   | { type: 'image'; url?: string; mediaType?: string; data?: string };
@@ -351,6 +392,7 @@ export function renderCanonicalRequestToAnthropicMessagesBody(request: Canonical
   body.max_tokens = typeof request.maxOutputTokens === 'number'
     ? request.maxOutputTokens
     : DEFAULT_ANTHROPIC_MAX_TOKENS;
+  assignAnthropicReasoningEffort(body, request.reasoningEffort);
   if (typeof request.temperature === 'number') body.temperature = request.temperature;
   if (typeof request.topP === 'number') body.top_p = request.topP;
   if (request.stop !== undefined) body.stop_sequences = Array.isArray(request.stop) ? request.stop : [request.stop];
@@ -409,6 +451,8 @@ export function normalizeAnthropicMessagesRequestBody(body: Record<string, unkno
     request.cacheBreakpoints = breakpoints;
   }
   if (typeof body.max_tokens === 'number') request.maxOutputTokens = body.max_tokens;
+  const reasoningEffort = reasoningEffortFromAnthropic(body);
+  if (reasoningEffort !== undefined) request.reasoningEffort = reasoningEffort;
   if (typeof body.temperature === 'number') request.temperature = body.temperature;
   if (typeof body.top_p === 'number') request.topP = body.top_p;
   if (Array.isArray(body.stop_sequences)) request.stop = body.stop_sequences as string[];
