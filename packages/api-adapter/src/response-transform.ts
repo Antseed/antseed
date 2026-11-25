@@ -8,7 +8,7 @@ import {
   renderCanonicalResponseToOpenAIResponsesBody,
   type CanonicalLlmResponse,
 } from './canonical.js';
-import { encodeJson, encodeText, parseJsonObject } from './utils.js';
+import { encodeJson, encodeText, parseJsonObject, reasoningUsageFields, type ReportedUsage } from './utils.js';
 
 export interface ServiceApiResponseTransformOptions {
   from: ServiceApiProtocol;
@@ -153,7 +153,7 @@ function renderCanonicalResponseStream(
 
 function buildAnthropicMessagesStream(
   body: Record<string, unknown>,
-  usage: { inputTokens: number; outputTokens: number },
+  usage: ReportedUsage,
 ): Uint8Array {
   const content = Array.isArray(body.content) ? body.content as Record<string, unknown>[] : [];
   const chunks: string[] = [];
@@ -193,7 +193,8 @@ function buildAnthropicMessagesStream(
   pushEvent('message_delta', {
     type: 'message_delta',
     delta: { stop_reason: body.stop_reason ?? null, stop_sequence: null },
-    usage: { output_tokens: usage.outputTokens },
+    // As the Messages API does: the reasoning breakdown comes with the final message_delta.
+    usage: { output_tokens: usage.outputTokens, ...reasoningUsageFields(usage, 'anthropic-messages') },
   });
   pushEvent('message_stop', { type: 'message_stop' });
   return encodeText(chunks.join(''));
@@ -243,6 +244,7 @@ function buildOpenAIChatStream(response: CanonicalLlmResponse): Uint8Array {
     prompt_tokens: response.usage.inputTokens,
     completion_tokens: response.usage.outputTokens,
     total_tokens: response.usage.inputTokens + response.usage.outputTokens,
+    ...reasoningUsageFields(response.usage, 'openai-chat-completions'),
   });
   chunks.push('data: [DONE]\n\n');
   return encodeText(chunks.join(''));
