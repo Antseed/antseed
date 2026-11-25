@@ -34,8 +34,13 @@ export const DEFAULT_ANTHROPIC_MAX_TOKENS = 16_384;
  */
 /** "Do not reason": an effort in the OpenAI protocols, the `thinking` switch in the Messages API. */
 const REASONING_OFF = 'none';
-/** The OpenAI protocols' lowest effort, for which the Messages API has no word. */
-const EFFORT_WITHOUT_MESSAGES_WORD = 'minimal';
+/**
+ * The OpenAI protocols' lowest effort, for which the Messages API has no word, and the Messages
+ * API's own lowest, sent in its place. This is the one word that is replaced: left out, the model
+ * would run at its default, the most reasoning where the client asked for the least.
+ */
+const OPENAI_LOWEST_EFFORT = 'minimal';
+const MESSAGES_LOWEST_EFFORT = 'low';
 
 /**
  * The reasoning effort a Messages request names. A thinking budget names no effort, and none is
@@ -60,11 +65,11 @@ function reasoningEffortFromAnthropic(body: Record<string, unknown>): string | u
 /**
  * Writes a reasoning effort in the Messages API's own fields. `none` is always a client's explicit
  * choice in the OpenAI protocols, so it is carried as the Messages switch for it. `minimal` is
- * left out: no other level is put in its place.
+ * sent as the Messages API's lowest effort.
  */
 function assignAnthropicReasoningEffort(body: Record<string, unknown>, effort: string | undefined): void {
   if (effort === REASONING_OFF) body.thinking = { type: 'disabled' };
-  else if (effort !== undefined && effort !== EFFORT_WITHOUT_MESSAGES_WORD) body.output_config = { effort };
+  else if (effort !== undefined) body.output_config = { effort: effort === OPENAI_LOWEST_EFFORT ? MESSAGES_LOWEST_EFFORT : effort };
 }
 
 export type CanonicalContentPart =

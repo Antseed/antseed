@@ -58,8 +58,10 @@ describe('reasoning effort from an OpenAI client to an Anthropic Messages seller
       }
     });
 
-    it(`drops ${from} effort minimal, for which Messages has no word, and puts no other level in its place`, () => {
-      expect(reasoningFields(translated(from, MESSAGES, effort('minimal')))).toEqual({});
+    it(`sends ${from} effort minimal, for which Messages has no word, as low, the lowest effort Messages has`, () => {
+      for (const stream of [false, true]) {
+        expect(reasoningFields(translated(from, MESSAGES, effort('minimal'), stream))).toEqual({ output_config: { effort: 'low' } });
+      }
     });
 
     it.each(['ultra', 'adaptive'])(`copies ${from} effort %s, a word no list here knows, as it does between the OpenAI protocols`, (level) => {
@@ -142,6 +144,18 @@ describe('reasoning effort in the Chat Completions body a routing service is ask
     expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, { ...prompt, thinking: { type: 'disabled' } })!)).toEqual({});
     expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, { ...prompt, thinking: { type: 'adaptive' } })!)).toEqual({});
     expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, prompt)!)).toEqual({});
+  });
+});
+
+describe('the one effort word that is replaced', () => {
+  it('is minimal towards Messages only: a Messages low stays low for an OpenAI seller', () => {
+    expect(reasoningFields(translated(MESSAGES, CHAT, { max_tokens: 4096, output_config: { effort: 'low' } }))).toEqual({ reasoning_effort: 'low' });
+    expect(reasoningFields(translated(MESSAGES, RESPONSES, { max_tokens: 4096, output_config: { effort: 'low' } }))).toEqual({ reasoning: { effort: 'low' } });
+  });
+
+  it('is not replaced in the Chat Completions body a routing service is asked with', () => {
+    expect(reasoningFields(renderRequestBodyAsOpenAIChat(RESPONSES, { input: 'Why is the sky blue?', reasoning: { effort: 'minimal' } })!))
+      .toEqual({ reasoning_effort: 'minimal' });
   });
 });
 
