@@ -30,7 +30,40 @@ export const THINKING_DISCOVERY_STRATEGIES = [
   'bare',
 ] as const satisfies readonly ReferenceReasoningStrategy[];
 
-export type ThinkingDiscoveryStrategy = typeof THINKING_DISCOVERY_STRATEGIES[number] | 'reasoning-effort-low' | 'bare-expanded';
+/**
+ * The thinking settings in OpenAI Chat Completions' own field, `reasoning_effort`: how an audit asks a seller through the
+ * buyer proxy (`THINKING_TABLE_RULE`). The proxy passes the field to a seller that speaks Chat Completions and translates
+ * it to the seller's own field otherwise (OpenAI Responses `reasoning.effort`).
+ */
+export const CHAT_THINKING_STRATEGIES = [
+  'chat-reasoning-effort-none',
+  'chat-reasoning-effort-minimal',
+  'chat-reasoning-effort-low',
+] as const satisfies readonly ReferenceReasoningStrategy[];
+
+export type ThinkingDiscoveryStrategy = typeof THINKING_DISCOVERY_STRATEGIES[number] | 'reasoning-effort-low' | 'bare-expanded'
+  | typeof CHAT_THINKING_STRATEGIES[number];
+
+/** How little a model is asked to think, whatever field carries it. */
+export type ThinkingLevel = 'none' | 'minimal' | 'low';
+export const THINKING_LEVELS: readonly ThinkingLevel[] = Object.freeze(['none', 'minimal', 'low']);
+
+/** The strategy that asks for a level on the reference route (OpenRouter's `reasoning.effort`). */
+export function referenceStrategyForLevel(level: ThinkingLevel): 'reasoning-effort-none' | 'reasoning-effort-minimal' | 'reasoning-effort-low' {
+  return `reasoning-effort-${level}`;
+}
+
+/** The strategy that asks for a level on a seller (OpenAI Chat Completions' `reasoning_effort`). */
+export function chatStrategyForLevel(level: ThinkingLevel): typeof CHAT_THINKING_STRATEGIES[number] {
+  return `chat-reasoning-effort-${level}`;
+}
+
+/** The level a strategy asks for, in either field; null for a strategy that asks otherwise (or for nothing). */
+export function thinkingLevelOf(strategy: unknown): ThinkingLevel | null {
+  if (typeof strategy !== 'string') return null;
+  const match = /^(?:chat-)?reasoning-effort-(none|minimal|low)$/.exec(strategy);
+  return match ? match[1] as ThinkingLevel : null;
+}
 
 /**
  * The nearest equivalent of a reference's setting, tried on a seller that refuses the setting itself, before the order
@@ -95,6 +128,9 @@ export function thinkingStrategyRequest(strategy: ThinkingDiscoveryStrategy): Th
     case 'prefill': return { overrides: {}, assistantPrefill: KBF_THINKING_PREFILL };
     case 'bare': return { overrides: {} };
     case 'bare-expanded': return { overrides: {}, maxTokens: THINKING_FALLBACK_MAX_TOKENS };
+    case 'chat-reasoning-effort-none': return { overrides: { reasoning_effort: 'none' } };
+    case 'chat-reasoning-effort-minimal': return { overrides: { reasoning_effort: 'minimal' } };
+    case 'chat-reasoning-effort-low': return { overrides: { reasoning_effort: 'low' } };
   }
 }
 
@@ -145,13 +181,26 @@ export interface ThinkingDiscoveryResultV1 extends ThinkingStrategyRequest {
  * discovery has no reference setting, and discovery runs the order alone.
  * Part of the audit rules (the verifier compat fingerprint).
  */
-export const THINKING_DISCOVERY_RULE = 'kbf-discovery-reference-first-v1' as const;
+export const THINKING_REFERENCE_FIRST_RULE = 'kbf-discovery-reference-first-v1' as const;
+
+/**
+ * The rule of this build: a model's thinking setting comes from the audit rules' table (one level, and one fallback for
+ * an endpoint that refuses it), the same for every auditor, and nothing is chosen at run time. The reference is asked
+ * for the level in OpenRouter's field and a seller in OpenAI Chat Completions' own field (`CHAT_THINKING_STRATEGIES`).
+ * The ten test questions only check that the setting is taken and answers (`checkThinkingSetting`); a reply that reports
+ * no reasoning count has an unknown one, never 0. Part of the audit rules (the verifier compat fingerprint).
+ */
+export const THINKING_TABLE_RULE = 'audit-thinking-table-v1' as const;
+
+/** The rule a discovery made by this build is under. */
+export const THINKING_DISCOVERY_RULE = THINKING_TABLE_RULE;
 
 /**
  * Every discovery rule a stored discovery may have been made under, oldest first. `kbf-discovery-least-reasoning-v1` is
- * this rule without the reference's setting tried first: evidence made before has no `rule` and is read under it.
+ * the reference-first rule without the reference's setting tried first: evidence made before has no `rule` and is read
+ * under it.
  */
-export const THINKING_DISCOVERY_RULES = ['kbf-discovery-least-reasoning-v1', THINKING_DISCOVERY_RULE] as const;
+export const THINKING_DISCOVERY_RULES = ['kbf-discovery-least-reasoning-v1', THINKING_REFERENCE_FIRST_RULE, THINKING_TABLE_RULE] as const;
 
 export type ThinkingDiscoveryRuleId = typeof THINKING_DISCOVERY_RULES[number];
 
@@ -171,7 +220,8 @@ export type ThinkingDiscoveryProbe = (input: {
   request: ThinkingStrategyRequest;
   maxTokens: number;
 }) => Promise<
-  | { ok: true; content: string | null; reasoningTokens: number; truncated?: boolean; reasoningShown?: boolean; billedOutputTokens?: number }
+  /** `reasoningTokens` is null when the reply reports no reasoning count: unknown, never 0. */
+  | { ok: true; content: string | null; reasoningTokens: number | null; truncated?: boolean; reasoningShown?: boolean; billedOutputTokens?: number }
   | { ok: false; status: number | null; failure: string }
 >;
 
@@ -219,16 +269,19 @@ export function countDiscoveryAnswers(content: string | null): number {
 }
 
 /**
- * `usage.completion_tokens_details.reasoning_tokens` of an OpenAI-style response body, as the
- * reference code reads it to reject a strategy the endpoint accepts but ignores; 0 when absent.
+ * `usage.completion_tokens_details.reasoning_tokens` of an OpenAI-style response body, as the reference code reads it to
+ * reject a strategy the endpoint accepts but ignores. Null when the reply reports no count (or is not JSON): an unknown
+ * count, never 0, so a reply that says nothing about its reasoning never looks as if thinking was off.
  */
-export function reportedReasoningTokens(responseBody: string): number {
+export function reportedReasoningTokens(responseBody: string): number | null {
   try {
     const parsed = JSON.parse(responseBody) as { usage?: { completion_tokens_details?: { reasoning_tokens?: unknown } } };
-    const tokens = Number(parsed.usage?.completion_tokens_details?.reasoning_tokens ?? 0);
-    return Number.isFinite(tokens) && tokens > 0 ? Math.floor(tokens) : 0;
+    const reported = parsed.usage?.completion_tokens_details?.reasoning_tokens;
+    if (reported === undefined || reported === null) return null;
+    const tokens = Number(reported);
+    return Number.isFinite(tokens) && tokens >= 0 ? Math.floor(tokens) : null;
   } catch {
-    return 0;
+    return null;
   }
 }
 
@@ -284,6 +337,31 @@ function isRefusal(attempt: ThinkingDiscoveryAttemptV1): boolean {
   return attempt.validAnswers === null && attempt.status !== null && attempt.status >= 400 && attempt.status < 500 && attempt.status !== 429;
 }
 
+/** One test-question request with a strategy, as a stored attempt. */
+async function askThinkingAttempt(
+  probe: ThinkingDiscoveryProbe,
+  strategy: ThinkingDiscoveryStrategy,
+  maxTokens: number,
+): Promise<ThinkingDiscoveryAttemptV1> {
+  const request = thinkingStrategyRequest(strategy);
+  const outcome = await probe({ strategy, request, maxTokens });
+  const attempt: ThinkingDiscoveryAttemptV1 = outcome.ok
+    ? {
+      strategy,
+      maxTokens,
+      status: null,
+      validAnswers: countDiscoveryAnswers(outcome.content),
+      reasoningTokens: outcome.reasoningTokens,
+      answersOnly: outcome.content === null || isKbfAnswersOnlyReply(stripKbfThinkBlocks(outcome.content)),
+      truncated: outcome.truncated === true,
+      // Recorded for the replay that decides whether shown reasoning should fail a strategy; not read below.
+      ...(outcome.reasoningShown !== undefined ? { reasoningShown: outcome.reasoningShown } : {}),
+      ...(outcome.billedOutputTokens !== undefined ? { billedOutputTokens: outcome.billedOutputTokens } : {}),
+    }
+    : { strategy, maxTokens, status: outcome.status, validAnswers: null, reasoningTokens: null, failure: outcome.failure };
+  return attempt;
+}
+
 export async function discoverThinkingSuppression(input: {
   model: string;
   label: string;
@@ -300,22 +378,7 @@ export async function discoverThinkingSuppression(input: {
 }): Promise<ThinkingDiscoveryResultV1> {
   const attempts: ThinkingDiscoveryAttemptV1[] = [];
   const tryOnce = async (strategy: ThinkingDiscoveryStrategy, maxTokens: number): Promise<ThinkingDiscoveryAttemptV1> => {
-    const request = thinkingStrategyRequest(strategy);
-    const outcome = await input.probe({ strategy, request, maxTokens });
-    const attempt: ThinkingDiscoveryAttemptV1 = outcome.ok
-      ? {
-        strategy,
-        maxTokens,
-        status: null,
-        validAnswers: countDiscoveryAnswers(outcome.content),
-        reasoningTokens: outcome.reasoningTokens,
-        answersOnly: outcome.content === null || isKbfAnswersOnlyReply(stripKbfThinkBlocks(outcome.content)),
-        truncated: outcome.truncated === true,
-        // Recorded for the replay that decides whether shown reasoning should fail a strategy; not read below.
-        ...(outcome.reasoningShown !== undefined ? { reasoningShown: outcome.reasoningShown } : {}),
-        ...(outcome.billedOutputTokens !== undefined ? { billedOutputTokens: outcome.billedOutputTokens } : {}),
-      }
-      : { strategy, maxTokens, status: outcome.status, validAnswers: null, reasoningTokens: null, failure: outcome.failure };
+    const attempt = await askThinkingAttempt(input.probe, strategy, maxTokens);
     attempts.push(attempt);
     return attempt;
   };
@@ -374,7 +437,7 @@ export async function discoverThinkingSuppression(input: {
     }
     // Any other strategy that still reports reasoning tokens was accepted but ignored. A reply that reasons in the open
     // or stops at the token limit fails any strategy.
-    if (valid >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && cleanReply && strategy !== 'bare' && (attempt.reasoningTokens ?? 0) > 0) {
+    if (valid >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && cleanReply && strategy !== 'bare' && attempt.reasoningTokens !== null && attempt.reasoningTokens > 0) {
       thoughtAnyway.push(attempt);
     }
     if (valid >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && cleanReply && (strategy === 'bare' || attempt.reasoningTokens === 0)) {
@@ -428,4 +491,58 @@ export async function discoverThinkingSuppression(input: {
     + `${THINKING_FALLBACK_MAX_TOKENS} tokens: ${detail}`,
     attempts,
   );
+}
+
+/**
+ * The check of a fixed thinking setting (`THINKING_TABLE_RULE`): nothing is chosen. The ten test questions are asked with
+ * `primary`; only when the endpoint refuses it (an HTTP 4xx other than 429) are they asked with `fallback`. The setting
+ * answered is the result, whatever its answers and reasoning count, which are recorded as they came: a reply with no
+ * reasoning count has an unknown one. `requireClean` (the reference) makes a setting that does not answer cleanly, at
+ * least 5 of the ten with only the answers and not cut off, an error: the table's entry then needs changing, not a
+ * different setting chosen at run time. Throws `ThinkingDiscoveryError` with the attempts when no setting is answered.
+ */
+export async function checkThinkingSetting(input: {
+  model: string;
+  label: string;
+  probe: ThinkingDiscoveryProbe;
+  primary: ThinkingDiscoveryStrategy;
+  fallback: ThinkingDiscoveryStrategy | null;
+  requireClean?: boolean;
+  log?: (message: string) => void;
+}): Promise<ThinkingDiscoveryResultV1> {
+  const attempts: ThinkingDiscoveryAttemptV1[] = [];
+  const ask = async (strategy: ThinkingDiscoveryStrategy) => {
+    const attempt = await askThinkingAttempt(input.probe, strategy, THINKING_DISCOVERY_MAX_TOKENS);
+    attempts.push(attempt);
+    return attempt;
+  };
+  let attempt = await ask(input.primary);
+  let strategy = input.primary;
+  if (isRefusal(attempt) && input.fallback && input.fallback !== input.primary) {
+    input.log?.(`thinking setting for ${input.model}: ${input.label} refuses '${input.primary}' (HTTP ${attempt.status}); asking with the fallback '${input.fallback}'`);
+    attempt = await ask(input.fallback);
+    strategy = input.fallback;
+  }
+  if (attempt.validAnswers === null) {
+    throw new ThinkingDiscoveryError(
+      `${input.label} answered no thinking-setting check for ${input.model} (${attempts.map((entry) => `'${entry.strategy}': `
+        + `${entry.status === null ? '' : `HTTP ${entry.status} `}${entry.failure ?? 'no answer'}`).join('; ')})`,
+      attempts,
+    );
+  }
+  const reasoning = attempt.reasoningTokens === null ? 'unknown' : String(attempt.reasoningTokens);
+  const clean = attempt.validAnswers >= THINKING_DISCOVERY_MINIMUM_VALID_ANSWERS && attempt.answersOnly !== false && attempt.truncated !== true;
+  if (!clean && input.requireClean) {
+    throw new ThinkingDiscoveryError(
+      `the audit rules' thinking setting '${strategy}' for ${input.model} does not answer cleanly on ${input.label} `
+      + `(${attempt.validAnswers}/10 parseable${attempt.truncated ? ', cut off at the token limit' : ''}`
+      + `${attempt.answersOnly === false ? ', reasoned in the reply' : ''}, reasoning_tokens=${reasoning}); its entry needs changing`,
+      attempts,
+    );
+  }
+  input.log?.(
+    `thinking setting for ${input.model}: '${strategy}' on ${input.label} (${attempt.validAnswers}/10 parseable, `
+    + `reasoning_tokens=${reasoning}${clean ? '' : ', not a clean reply'}) (${THINKING_TABLE_RULE})`,
+  );
+  return { strategy, ...thinkingStrategyRequest(strategy), attempts };
 }

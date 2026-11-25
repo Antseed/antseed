@@ -83,6 +83,16 @@ export interface ProxyAuditEvidenceExchangeV1 extends ProxyAuditEvidenceExchange
 export interface SellerThinkingDiscoveryAttemptV1 extends ThinkingDiscoveryAttemptV1 {
   requestIds: string[]
   attemptCosts: ProxyAuditExchangeCostV1[]
+  /**
+   * Under the thinking table (`audit-thinking-table-v1`), the request the seller signed for the answered try: its
+   * ResponseAuth status, whether that request carries the setting it was asked with, and the signed bytes. Absent for a
+   * try with no answer and in evidence made before.
+   */
+  signedRequest?: {
+    status: 'verified' | 'missing' | 'invalid' | 'pending' | string
+    carriesSetting: boolean | null
+    signedPreimages: SignedResponseAuthPreimagesV1 | null
+  }
 }
 
 /**

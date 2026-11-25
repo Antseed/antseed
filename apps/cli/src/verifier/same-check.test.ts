@@ -398,6 +398,19 @@ test('first evidence that is not published, altered, about another seller or not
       auth.record.signature = resigned(auth, sellers[1]!)
       auth.signedPreimages!.responseAuthSigningBase64 = Buffer.from(encodeResponseAuthSigningPayload((({ signature: _signature, receivedAt: _receivedAt, verified: _verified, verificationError: _verificationError, ...unsigned }) => unsigned)(auth.record))).toString('base64')
     }), /the questions: a batch's signed request is not the audit's request for the questions the batch names/)
+    // Under the thinking table every batch must carry the seller's setting: these batches were signed with no thinking
+    // field, so they were not asked the way the seller's record says it was asked.
+    const withoutSetting = await (async () => {
+      const file = JSON.parse(files.get(sellerPath)!) as Record<string, unknown>
+      file['sellerThinking'] = { method: 'kbf-reference-code-2026-09-30', rule: 'audit-thinking-table-v1', strategy: 'chat-reasoning-effort-low', maxTokens: 800, attempts: [] }
+      const forged = structuredClone(evidence)
+      forged.results.find((result) => result.agentId === '2')!.audit.evidenceHash = canonicalHashBytes32(file)
+      const forgedFiles = new Map(files)
+      forgedFiles.set(sellerPath, canonicalJsonStringify(file))
+      forgedFiles.set(index.evidencePath, canonicalJsonStringify(forged))
+      return decideWith(reader(forgedFiles, canonicalHashBytes32(forged)))
+    })()
+    assert.match(withoutSetting, /the questions: a batch's signed request does not carry the seller's thinking setting/)
     // The same answer signed in full by another peer, a key the first auditor holds: a valid signature, of the wrong
     // seller.
     assert.match(await forgedReason((auth) => {

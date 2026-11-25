@@ -1,4 +1,9 @@
 import {
+  CHAT_THINKING_STRATEGIES,
+  THINKING_LEVELS,
+  chatStrategyForLevel,
+  thinkingLevelOf,
+  type ThinkingLevel,
   KBF_THINKING_PREFILL,
   KBF_THINKING_SUPPRESSION_FIELDS,
   thinkingAttemptReachedZero,
@@ -15,6 +20,7 @@ import {
   type ThinkingDiscoveryAttemptV1,
   type ThinkingDiscoveryStrategy,
 } from '@antseed/fingerprints'
+import { auditThinkingForBank } from './audit-thinking-table.js'
 
 /**
  * How every test of an audit asks an endpoint not to think: one vocabulary, one way to choose, one recheck.
@@ -161,17 +167,61 @@ export function sameRequestSetting(left: ThinkingSetting, right: ThinkingSetting
  */
 export function askedAsReference(seller: ThinkingSetting, reference: ThinkingSetting): boolean {
   if (sameRequestSetting(seller, reference)) return true
+  // Under the thinking table the two sides ask for one level in their own fields: the reference in OpenRouter's
+  // `reasoning.effort`, the seller in Chat Completions' `reasoning_effort`.
+  const sellerLevel = settingLevel(seller)
+  const referenceLevel = settingLevel(reference)
+  if (sellerLevel !== null && referenceLevel !== null) {
+    return sellerLevel === referenceLevel || Object.entries(THINKING_REFERENCE_EQUIVALENTS).some(([from, to]) => to !== undefined
+      && thinkingLevelOf(from) === referenceLevel && thinkingLevelOf(to) === sellerLevel)
+  }
   return Object.entries(THINKING_REFERENCE_EQUIVALENTS).some(([from, to]) => to !== undefined
     && sameRequestSetting(reference, strategySetting(from as ThinkingDiscoveryStrategy))
     && sameRequestSetting(seller, strategySetting(to)))
 }
 
-/** A seller's own setting: its discovery's, or the bank's when it has none (discovery not run, or failed). */
+/**
+ * The level a setting asks for: its one thinking member, OpenRouter's `reasoning: {effort}` or Chat Completions'
+ * `reasoning_effort`, set to a level, and no prefill. Null for any other setting.
+ */
+export function settingLevel(setting: ThinkingSetting): ThinkingLevel | null {
+  if (setting.assistantPrefill) return null
+  const members = Object.entries(setting.overrides)
+  if (members.length !== 1) return null
+  const [member, value] = members[0]!
+  const level = member === 'reasoning_effort' ? value
+    : member === 'reasoning' && value && typeof value === 'object' && Object.keys(value).length === 1 ? (value as { effort?: unknown }).effort
+      : undefined
+  return typeof level === 'string' && (THINKING_LEVELS as readonly string[]).includes(level) ? level as ThinkingLevel : null
+}
+
+/** The setting a seller of a model the thinking table names is asked with at a level: Chat Completions' own field. */
+function tableSellerSetting(level: ThinkingLevel): ThinkingSetting {
+  return strategySetting(chatStrategyForLevel(level))
+}
+
+/**
+ * A seller's own setting: its check's or discovery's; when it has none (not run, or failed), the table's level where
+ * the thinking table applies to the bank (`auditThinkingForBank`), else the bank's.
+ */
 export function sellerOwnSetting(
   discovery: { strategy: ThinkingDiscoveryStrategy | null } | null,
   bank: Pick<KbfReferenceV1, 'queryProfile' | 'generator'>,
+  model?: string,
 ): ThinkingSetting {
-  return discovery && discovery.strategy !== null ? strategySetting(discovery.strategy) : bankSetting(bank)
+  if (discovery && discovery.strategy !== null) return strategySetting(discovery.strategy)
+  const table = model === undefined ? undefined : auditThinkingForBank(model, bank)
+  return table ? tableSellerSetting(table.level) : bankSetting(bank)
+}
+
+/**
+ * How the model's other sellers are asked when a test asks them as the reference was: where the thinking table applies
+ * to the bank, the bank's level in Chat Completions' own field (they are sellers); else the bank's own setting.
+ */
+function crowdAsReference(bank: Pick<KbfReferenceV1, 'queryProfile' | 'generator'>, model: string): ThinkingSetting {
+  const setting = bankSetting(bank)
+  const level = auditThinkingForBank(model, bank) ? settingLevel(setting) : null
+  return level !== null ? tableSellerSetting(level) : setting
 }
 
 /** Whether a test's declaration needs the seller's own discovery. */
@@ -192,12 +242,12 @@ export function resolveThinking(test: TestThinking, input: {
   }
   const seller = test.needs.seller === 'bare' ? NO_THINKING_SETTING
     : test.needs.seller === 'fixed' ? fixed()
-      : sellerOwnSetting(input.discovery, input.bank)
+      : sellerOwnSetting(input.discovery, input.bank, input.model)
   const need = test.needs.reference
   const reference = need === 'bank' ? bankSetting(input.bank)
     : need === 'fixed' ? fixed()
       : bankReachedZero(input.bank) ? bankSetting(input.bank) : fixed()
-  const crowd = test.needs.crowd === undefined ? null : test.needs.crowd === 'bare' ? NO_THINKING_SETTING : bankSetting(input.bank)
+  const crowd = test.needs.crowd === undefined ? null : test.needs.crowd === 'bare' ? NO_THINKING_SETTING : crowdAsReference(input.bank, input.model)
   return { seller, reference, crowd }
 }
 
@@ -220,6 +270,9 @@ export const THINKING_MEMBERS: readonly string[] = KBF_THINKING_SUPPRESSION_FIEL
 /** Every strategy a seller's discovery may keep: the order, the reference's nearest equivalents, and `bare-expanded`. */
 const DISCOVERY_STRATEGIES: readonly ThinkingDiscoveryStrategy[] = [
   ...THINKING_DISCOVERY_STRATEGIES,
+  // The thinking table's settings in Chat Completions' own field (`THINKING_TABLE_RULE`).
+  ...CHAT_THINKING_STRATEGIES,
+  'reasoning-effort-low',
   ...Object.values(THINKING_REFERENCE_EQUIVALENTS).filter((strategy): strategy is ThinkingDiscoveryStrategy => strategy !== undefined),
   'bare-expanded',
 ]
@@ -296,11 +349,24 @@ function turnText(turn: unknown): string | null {
 export function requestCarries(body: unknown, setting: ThinkingSetting): boolean {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return false
   const request = body as Record<string, unknown>
-  const members = new Set([...THINKING_MEMBERS, ...Object.keys(setting.overrides)])
-  for (const member of members) {
-    const expected = setting.overrides[member]
-    const actual = request[member]
-    if (expected === undefined ? actual !== undefined : actual === undefined || canonicalJsonStringify(actual) !== canonicalJsonStringify(expected)) return false
+  const level = settingLevel(setting)
+  if (level !== null) {
+    // A level is carried in whichever field the request's API has for it: Chat Completions' `reasoning_effort`, or
+    // `reasoning: {effort}` (OpenRouter, and OpenAI Responses, to which the buyer proxy translates it), and no other
+    // thinking member.
+    const set = THINKING_MEMBERS.filter((member) => request[member] !== undefined)
+    if (set.length !== 1) return false
+    const asked = set[0] === 'reasoning_effort' ? request['reasoning_effort']
+      : set[0] === 'reasoning' && canonicalJsonStringify(request['reasoning']) === canonicalJsonStringify({ effort: level }) ? level
+        : undefined
+    if (asked !== level) return false
+  } else {
+    const members = new Set([...THINKING_MEMBERS, ...Object.keys(setting.overrides)])
+    for (const member of members) {
+      const expected = setting.overrides[member]
+      const actual = request[member]
+      if (expected === undefined ? actual !== undefined : actual === undefined || canonicalJsonStringify(actual) !== canonicalJsonStringify(expected)) return false
+    }
   }
   const last = turnsOf(request).at(-1)
   const prefilled = !!last && typeof last === 'object' && (last as { role?: unknown }).role === 'assistant'

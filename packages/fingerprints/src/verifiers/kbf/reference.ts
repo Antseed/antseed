@@ -91,11 +91,16 @@ export type ReferenceReasoningStrategy =
   | 'enable-thinking-false'
   | 'prefill'
   | 'bare'
-  | 'bare-expanded';
+  | 'bare-expanded'
+  | 'chat-reasoning-effort-none'
+  | 'chat-reasoning-effort-minimal'
+  | 'chat-reasoning-effort-low';
 
 export const KBF_REFERENCE_REASONING_STRATEGIES: readonly ReferenceReasoningStrategy[] = Object.freeze([
   'reasoning-effort-none',
   'reasoning-effort-minimal',
+  // A bank built under the thinking table (`THINKING_TABLE_RULE`) for a model whose level is `low`.
+  'reasoning-effort-low',
   'reasoning-effort-minimum-supported',
   'disable-thinking',
   'enable-thinking-false',

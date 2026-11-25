@@ -1,5 +1,5 @@
 import { createHash, createHmac } from 'node:crypto'
-import { THINKING_DISCOVERY_RULE, THINKING_DISCOVERY_RULES, canonicalJsonStringify, isKbfTokenLimitFinishReason, type ThinkingDiscoveryRuleId } from '@antseed/fingerprints'
+import { THINKING_DISCOVERY_RULES, THINKING_REFERENCE_FIRST_RULE, THINKING_TABLE_RULE, canonicalJsonStringify, isKbfTokenLimitFinishReason, type ThinkingDiscoveryRuleId } from '@antseed/fingerprints'
 import { encodeHttpRequest, encodeHttpResponse } from '@antseed/node'
 import {
   FLIPS_REQUESTS,
@@ -182,6 +182,14 @@ export interface FlipsThinkingV1 {
    * (`FLIPS_NOT_ASKED_AS_REFERENCE`). A record without it was made before, when the sides could differ, and is judged so.
    */
   discoveryRule?: ThinkingDiscoveryRuleId
+}
+
+/**
+ * The discovery rule a seller's setting was found under: the thinking table for a setting in Chat Completions' own
+ * field (only the table sends one), else the reference-first rule. Both ask the seller as the reference was.
+ */
+function sellerDiscoveryRule(seller: ThinkingSetting): ThinkingDiscoveryRuleId {
+  return typeof seller.strategy === 'string' && seller.strategy.startsWith('chat-') ? THINKING_TABLE_RULE : THINKING_REFERENCE_FIRST_RULE
 }
 
 /** Why a FLIPS check has no result when the seller's setting is not the reference's. */
@@ -1059,7 +1067,7 @@ export async function runFlips(input: {
     service: input.seller.service,
     referenceUpstream: input.reference.upstream,
     referenceOneProvider: input.reference.oneProvider,
-    thinking: { seller: input.sellerThinking, reference: input.reference.thinking, discoveryRule: THINKING_DISCOVERY_RULE },
+    thinking: { seller: input.sellerThinking, reference: input.reference.thinking, discoveryRule: sellerDiscoveryRule(input.sellerThinking) },
     pairs,
     reasks,
   }
@@ -1245,7 +1253,7 @@ export function createFlipsScreen<Settings>(input: {
     const problem = flipsReferenceProblem({ draw, service: seller.service, referenceOneProvider: prepared.oneProvider, pairs: prepared.pairs, thinking: prepared.thinking }, rule)
     const stored = {
       rule: rule.id, draw, service: seller.service, referenceUpstream: prepared.upstream, referenceOneProvider: prepared.oneProvider,
-      thinking: { seller: options.sellerThinking, reference: prepared.thinking, discoveryRule: THINKING_DISCOVERY_RULE },
+      thinking: { seller: options.sellerThinking, reference: prepared.thinking, discoveryRule: sellerDiscoveryRule(options.sellerThinking) },
     }
     if (problem) {
       // The reference is checked before the seller is asked: an unusable one costs the seller nothing.

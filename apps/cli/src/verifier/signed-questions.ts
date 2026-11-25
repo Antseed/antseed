@@ -5,7 +5,9 @@ import {
 } from '@antseed/fingerprints'
 import { decodeHttpRequest, decodeHttpResponse } from '@antseed/node'
 import { assertBoundToSeller, sellerBindingOf } from './audit-checks.js'
-import { isDiscoveryMember, isDiscoveryPrefill } from './audit-thinking.js'
+import { NO_THINKING_SETTING, isDiscoveryMember, isDiscoveryPrefill, requestCarries, strategySetting, type ThinkingSetting } from './audit-thinking.js'
+import { THINKING_TABLE_RULE, chatStrategyForLevel } from './thinking-suppression.js'
+import { auditThinkingFor } from './audit-thinking-table.js'
 import { isRecord, parseObject } from './methods/shared/output-usage.js'
 import { scoreQuestionBatch } from './question-scoring.js'
 import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
@@ -28,6 +30,9 @@ export function assertQuestionsFromSignedBytes(evidence: ProxyAuditEvidenceV1): 
   const refuse = (why: string): never => { throw new Error(`the questions: ${why}`) }
   const probes = new Map(evidence.reference.probes.map((probe) => [probe.id, probe as unknown as KbfProbe]))
   const seller = sellerBindingOf(evidence)
+  // Under the thinking table every batch must carry the seller's setting (none when the seller refused it and the batch
+  // was sent without): a batch the seller signed without it was not asked the audit's way.
+  const tableSetting = evidence.sellerThinking?.rule === THINKING_TABLE_RULE ? tableQuestionsSetting(evidence) : null
   for (const exchange of evidence.exchanges) {
     if (exchange.status !== 'succeeded') {
       if (exchange.matches.some((match) => match !== null)) refuse('a batch that failed stores scored answers')
@@ -49,6 +54,10 @@ export function assertQuestionsFromSignedBytes(evidence: ProxyAuditEvidenceV1): 
     const asked = buildKbfChatRequestBody(evidence.target.service, batch, { maxTokens: 1, variantId: exchange.promptVariantId }).messages
     if (!requestIsQuestionBatch(request, { messages: asked, temperature: evidence.reference.queryProfile.auditTemperature })) {
       refuse('a batch\'s signed request is not the audit\'s request for the questions the batch names')
+    }
+    if (tableSetting) {
+      const expected = exchange.omittedThinkingSuppression === true ? NO_THINKING_SETTING : tableSetting
+      if (!requestCarries(parseObject(request), expected)) refuse('a batch\'s signed request does not carry the seller\'s thinking setting')
     }
     // Scored by the run's own function, so stored evidence is read exactly as the audit that made it read its replies.
     const { answers, matches } = scoreQuestionBatch(response, batch)
@@ -81,6 +90,14 @@ function oneText(content: unknown): string | null {
   return isRecord(part) && Object.keys(part).every((key) => QUESTION_PART_MEMBERS.has(key))
     && (part['type'] === 'text' || part['type'] === 'input_text' || part['type'] === 'output_text') && typeof part['text'] === 'string'
     ? part['text'] : null
+}
+
+/** The seller's setting under the thinking table: its check's, else the table's level for the model; null when neither. */
+function tableQuestionsSetting(evidence: ProxyAuditEvidenceV1): ThinkingSetting | null {
+  const strategy = evidence.sellerThinking?.strategy ?? null
+  if (strategy !== null) return strategySetting(strategy)
+  const table = auditThinkingFor(evidence.reference.referenceModel)
+  return table ? strategySetting(chatStrategyForLevel(table.level)) : null
 }
 
 /**

@@ -60,6 +60,7 @@ import { FLIPS_RULE } from './methods/flips/flips-score.js'
 import { FLIPS_AUDITOR_FAILURE } from './methods/flips/flips.js'
 import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
 import { failureBlame } from './failure-blame.js'
+import { AUDIT_THINKING, type AuditThinkingEntry } from './audit-thinking-table.js'
 import {
   DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
   DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT,
@@ -144,6 +145,8 @@ export function verifierRulesFingerprint(input: {
   auditedModels?: Readonly<Record<string, AuditedModel>>
   /** Only for the test that shows a changed entry changes the hash; the rules are `AUDIT_TEST_COUNTS`. */
   testCounts?: Readonly<Record<CountedTestId, Readonly<AuditTestRule>>>
+  /** Only for the test that shows a changed entry changes the hash; the rules are `AUDIT_THINKING`. */
+  thinkingTable?: Readonly<Record<string, Readonly<AuditThinkingEntry>>>
 } = {}): unknown {
   const models = Object.entries(input.auditedModels ?? AUDITED_MODELS)
     .sort(([left], [right]) => left.localeCompare(right))
@@ -228,6 +231,8 @@ export function verifierRulesFingerprint(input: {
       thinkingDiscoveryRule: THINKING_DISCOVERY_RULE,
       // The nearest equivalent a seller is asked with when it refuses the reference's setting, the whole table.
       thinkingReferenceEquivalents: THINKING_REFERENCE_EQUIVALENTS,
+      // How little each audited model is asked to think, with its fallback (`AUDIT_THINKING`), the whole table.
+      thinkingTable: input.thinkingTable ?? AUDIT_THINKING,
     },
     // What each test's requests carry, side by side, from its declaration (`audit-thinking.ts`): the questions first,
     // then the tests with a record. With what the declarations give for fixed banks and discoveries, so a change to how

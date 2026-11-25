@@ -64,8 +64,11 @@ import {
   THINKING_DISCOVERY_PROBES,
   THINKING_DISCOVERY_TIMEOUT_MS,
   THINKING_FALLBACK_MAX_TOKENS,
+  THINKING_TABLE_RULE,
   ThinkingDiscoveryError,
+  checkThinkingSetting,
   discoverThinkingSuppression,
+  referenceStrategyForLevel,
   thinkingStrategyRequest,
   type ThinkingDiscoveryAttemptV1,
   type ThinkingDiscoveryProbe,
@@ -87,6 +90,7 @@ import {
 import { createDomainHomogeneousKbfBatches, kbfAuditBatches } from './kbf-batching.js'
 import { asError, normalized, sleep, untilAborted } from './utils.js'
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
+import { auditThinkingFor } from './audit-thinking-table.js'
 
 export { REFERENCE_BUILDER_VERSION }
 const CANDIDATE_COUNT = 300
@@ -485,13 +489,28 @@ export async function buildModelReference(input: {
       const model = modelNames.get(key) ?? route.model
       if (route.type === 'antseed') return [key, route, null] as const
       try {
-        const result = await discoverThinkingSuppression({
-          model: route.model,
-          label: route.baseUrl,
-          supportsPrefill: route.protocol !== 'anthropic-messages',
-          probe: (attempt) => discoveryQuery.probeThinking!(model, routeWithThinkingStrategy(route, attempt.strategy), attempt.maxTokens),
-          log: input.log,
-        })
+        const probe: ThinkingDiscoveryProbe = (attempt) => discoveryQuery.probeThinking!(model, routeWithThinkingStrategy(route, attempt.strategy), attempt.maxTokens)
+        // The audited model's setting comes from the audit rules' table: checked, never chosen. Contrast models are
+        // only asked to build the bank, and keep discovery.
+        // Only on OpenRouter with a provider pin, where the table's field is OpenRouter's (`auditThinkingForBank`).
+        const table = isTarget && tableRoute(route) ? auditThinkingFor(input.model) : undefined
+        const result = table
+          ? await checkThinkingSetting({
+            model: route.model,
+            label: route.baseUrl,
+            probe,
+            primary: referenceStrategyForLevel(table.level),
+            fallback: table.fallback ? referenceStrategyForLevel(table.fallback) : null,
+            requireClean: true,
+            log: input.log,
+          })
+          : await discoverThinkingSuppression({
+            model: route.model,
+            label: route.baseUrl,
+            supportsPrefill: route.protocol !== 'anthropic-messages',
+            probe,
+            log: input.log,
+          })
         return [key, routeWithThinkingStrategy(route, result.strategy), result] as const
       } catch (error) {
         // Out of requests is not a finding about the route: stop, and the next run continues.
@@ -518,6 +537,7 @@ export async function buildModelReference(input: {
     thinkingDiscovery = {
       version: 1,
       method: 'kbf-reference-code-2026-09-30',
+      ...(target && auditThinkingFor(input.model) && tableRoute(routesByModel.get(targetKey)!) ? { rule: THINKING_TABLE_RULE } : {}),
       ...(target ? { target } : {}),
       contrasts,
     }
@@ -2147,7 +2167,8 @@ function createReferenceQuery(input: {
           outcome: 'success',
           ...cachedCost(model, 'thinking-discovery', response.inputTokens, response.outputTokens),
           content: response.content,
-          reasoningTokens: response.reasoningTokens ?? 0,
+          // Kept only when the reply reported a count: a replay of one that did not has an unknown count, not 0.
+          ...(response.reasoningTokens !== null && response.reasoningTokens !== undefined ? { reasoningTokens: response.reasoningTokens } : {}),
           finishReason: response.finishReason ?? null,
           ...(response.provider ? { provider: response.provider } : {}),
         }
@@ -2159,7 +2180,7 @@ function createReferenceQuery(input: {
         return {
           ok: true,
           content: response.content,
-          reasoningTokens: response.reasoningTokens ?? 0,
+          reasoningTokens: response.reasoningTokens ?? null,
           truncated: isKbfTokenLimitFinishReason(response.finishReason),
         }
       } catch (error) {
@@ -2170,7 +2191,7 @@ function createReferenceQuery(input: {
             finishReason: error.finishReason,
             nativeFinishReason: error.nativeFinishReason,
             detail: error.detail,
-            reasoningTokens: error.reasoningTokens ?? 0,
+            ...(error.reasoningTokens !== null && error.reasoningTokens !== undefined ? { reasoningTokens: error.reasoningTokens } : {}),
           }
           if (error.exchange) {
             await input.checkpoint.appendExchange({
@@ -2179,7 +2200,7 @@ function createReferenceQuery(input: {
           }
           await input.checkpoint.set(cacheKey, empty)
           consumed.set(cacheKey, empty)
-          return { ok: true, content: null, reasoningTokens: error.reasoningTokens ?? 0 }
+          return { ok: true, content: null, reasoningTokens: error.reasoningTokens ?? null }
         }
         if (error instanceof ReferenceEndpointError) {
           failure = { status: error.status, failure: error.detail }
@@ -3177,8 +3198,16 @@ export interface ReferenceThinkingDiscoveryEntryV1 {
 export interface ReferenceThinkingDiscoveryRecordV1 {
   version: 1
   method: 'kbf-reference-code-2026-09-30'
+  /** `audit-thinking-table-v1` when the target's setting came from the audit rules' table; absent for discovery. */
+  rule?: typeof THINKING_TABLE_RULE
   target?: ReferenceThinkingDiscoveryEntryV1
   contrasts: Record<string, ReferenceThinkingDiscoveryEntryV1>
+}
+
+/** Whether the thinking table applies to a reference route: OpenRouter, with a provider pin (`auditThinkingForBank`). */
+function tableRoute(route: ReferenceRequestRoute): boolean {
+  return route.type === 'direct' && route.providerRouting !== undefined && route.providerRouting !== null
+    && (route.upstream ? route.upstream.type === 'openrouter' : isOpenRouterUrl(route.baseUrl))
 }
 
 /** The route with exactly one thinking strategy applied, replacing catalog-based reasoning fields. */
@@ -3235,12 +3264,12 @@ function withRecordedSettings(route: ReferenceRequestRoute, reference: KbfRefere
  */
 export function replayedThinkingDiscovery(
   cached: ReferenceCachedResponseV1,
-): { ok: true; content: string | null; reasoningTokens: number; truncated: boolean } | null {
+): { ok: true; content: string | null; reasoningTokens: number | null; truncated: boolean } | null {
   if (cached.outcome !== 'terminal-empty' && cached.finishReason === undefined) return null
   return {
     ok: true,
     content: cached.outcome === 'terminal-empty' ? null : cached.content,
-    reasoningTokens: cached.reasoningTokens ?? 0,
+    reasoningTokens: cached.reasoningTokens ?? null,
     truncated: isKbfTokenLimitFinishReason(cached.finishReason),
   }
 }
