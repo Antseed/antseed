@@ -55,11 +55,12 @@ afterEach(async () => {
 });
 
 describe('saved DHT nodes', () => {
-  it('saves the nodes it knew on stop and rejoins from them without its bootstrap list', async () => {
+  it('saves the nodes it knew on stop and rejoins through them when its bootstrap list does not answer', async () => {
     const file = join(await tempDir(), 'dht-nodes.json');
     const bootstrap = await startNode('a');
-    const peer = await startNode('b', { bootstrapNodes: [local(bootstrap)] });
-    const first = await startNode('c', { bootstrapNodes: [local(bootstrap)], knownNodesFile: file });
+    const bootstrapEndpoint = local(bootstrap);
+    const peer = await startNode('b', { bootstrapNodes: [bootstrapEndpoint] });
+    const first = await startNode('c', { bootstrapNodes: [bootstrapEndpoint], knownNodesFile: file });
     await vi.waitFor(() => expect(first.getNodeCount()).toBeGreaterThanOrEqual(2), { timeout: 3000 });
     await first.stop();
 
@@ -67,8 +68,20 @@ describe('saved DHT nodes', () => {
     expect(await savedPorts(file)).toEqual([peer.getPort()]);
 
     await bootstrap.stop();
-    const second = await startNode('d', { knownNodesFile: file });
-    await vi.waitFor(() => expect(second.getNodeCount()).toBeGreaterThan(0), { timeout: 3000 });
+    const second = await startNode('d', { bootstrapNodes: [bootstrapEndpoint], knownNodesFile: file });
+    expect(second.getNodeCount()).toBeGreaterThan(0);
+  }, 15_000);
+
+  it('never contacts the saved nodes while the bootstrap list answers', async () => {
+    const file = join(await tempDir(), 'dht-nodes.json');
+    const bootstrap = await startNode('a');
+    const saved = await startNode('b');
+    await writeFile(file, JSON.stringify({ savedAt: '2026-01-01T00:00:00.000Z', nodes: [local(saved)] }));
+    const node = await startNode('c', { bootstrapNodes: [local(bootstrap)], knownNodesFile: file });
+    await vi.waitFor(() => expect(node.getNodeCount()).toBeGreaterThan(0), { timeout: 3000 });
+    await node.lookup(topicToInfoHash('antseed:test:known-nodes'));
+    // Any query from the node would have put it in the saved node's routing table.
+    expect(saved.getNodeCount()).toBe(0);
   }, 15_000);
 
   it('saves after a lookup, without waiting for stop', async () => {
@@ -107,6 +120,21 @@ describe('fallback bootstrap nodes', () => {
     // The fallback node is never saved: it is added again whenever it's needed.
     await node.stop();
     await expect(readFile(file, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  }, 15_000);
+
+  it('are only tried after the saved nodes', async () => {
+    const file = join(await tempDir(), 'dht-nodes.json');
+    const saved = await startNode('a');
+    const fallback = await startNode('b');
+    await writeFile(file, JSON.stringify({ savedAt: '2026-01-01T00:00:00.000Z', nodes: [local(saved)] }));
+    const node = await startNode('c', {
+      bootstrapNodes: [await deadEndpoint()],
+      fallbackBootstrapNodes: [local(fallback)],
+      knownNodesFile: file,
+    });
+    expect(node.getNodeCount()).toBeGreaterThan(0);
+    expect(saved.getNodeCount()).toBeGreaterThan(0);
+    expect(fallback.getNodeCount()).toBe(0);
   }, 15_000);
 
   it('are never contacted while the bootstrap list answers', async () => {
