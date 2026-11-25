@@ -16,7 +16,6 @@ Published to npm. It also reads the facts billing needs from standard API bodies
 | A natively supported request passes untransformed. | `tests/adapter.test.ts` ("selects passthrough protocol") |
 | Images, tool calls and tool results survive every supported pair. | `tests/adapter.test.ts` ("preserves ...") |
 | Fresh and cached input are independent counts. OpenAI's `prompt_tokens` includes the cached subset; Anthropic's `input_tokens` excludes cache reads. | `tests/extract-usage.test.ts` |
-| A reasoning token count the seller itemises survives every supported pair, in JSON and in streams, a reported 0 included; none is made up when the seller itemises none. It is read only where the seller's own protocol itemises it, and it stays with the usage report that gave the output total. It travels as `ReportedUsage`, beside the counts billing reads: `TokenUsage` and `extractUsage` never carry it. | `tests/reasoning-usage.test.ts` |
 | Speech is charged only for a 2xx answer framed like real audio; a JSON error body, a stub or a cut-off file never counts. Keep `isSpeechAudio` strict. | `tests/speech.test.ts` |
 | A streamed video counts as delivered only as a complete MP4 near the requested length (`VIDEO_MIN_DURATION_RATIO`). | `tests/mp4.test.ts` |
 | Environment-free: no `node:*` or Node built-in imports, no `Buffer`, no `process`, no network or file access, no runtime dependency but `@antseed/protocol` and `tokenx`. | review only |
