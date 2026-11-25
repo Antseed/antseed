@@ -69,6 +69,59 @@ export interface TokenUsage {
   cachedInputTokens: number;
 }
 
+/**
+ * A reply's usage as translation carries it: the counts billing reads, plus how many of the output
+ * tokens were reasoning when the reply itemises that. Billing reads `TokenUsage` (`extractUsage`)
+ * and never this.
+ */
+export interface ReportedUsage extends TokenUsage {
+  /** Reasoning tokens, a part of `outputTokens`. A reported 0 is kept; absent when the reply itemises none. */
+  reasoningTokens?: number;
+}
+
+/** Where each API itemises reasoning inside its usage object: `[details, count]`. */
+const REASONING_TOKEN_FIELDS = {
+  'openai-chat-completions': ['completion_tokens_details', 'reasoning_tokens'],
+  'openai-responses': ['output_tokens_details', 'reasoning_tokens'],
+  'anthropic-messages': ['output_tokens_details', 'thinking_tokens'],
+} as const;
+
+/** The usage object of a reply or stream event, wherever its API puts it (see `extractUsage`). */
+function usageObjectOf(parsed: Record<string, unknown>): Record<string, unknown> {
+  for (const holder of [parsed, parsed.response, parsed.message]) {
+    if (!holder || typeof holder !== 'object') continue;
+    const usage = (holder as Record<string, unknown>).usage;
+    if (usage && typeof usage === 'object') return usage as Record<string, unknown>;
+  }
+  return {};
+}
+
+/** A protocol whose usage itemises reasoning. */
+export type ReasoningUsageProtocol = keyof typeof REASONING_TOKEN_FIELDS;
+
+/**
+ * `extractUsage`, with the reasoning token count when the reply itemises one where `protocol`,
+ * the reply's own, puts it. Another protocol's field in the same usage object is not read.
+ */
+export function extractReportedUsage(parsed: Record<string, unknown>, protocol: ReasoningUsageProtocol): ReportedUsage {
+  const [detailsField, countField] = REASONING_TOKEN_FIELDS[protocol];
+  const details = usageObjectOf(parsed)[detailsField];
+  const count = details && typeof details === 'object' ? (details as Record<string, unknown>)[countField] : undefined;
+  return typeof count === 'number' && Number.isFinite(count) && count >= 0
+    ? { ...extractUsage(parsed), reasoningTokens: Math.floor(count) }
+    : extractUsage(parsed);
+}
+
+/** The reasoning token count as `protocol` itemises it in a usage object; nothing when the reply reported none. */
+export function reasoningUsageFields(
+  usage: ReportedUsage,
+  protocol: ReasoningUsageProtocol,
+): Record<string, unknown> {
+  if (usage.reasoningTokens === undefined) return {};
+  const [detailsField, countField] = REASONING_TOKEN_FIELDS[protocol];
+  return { [detailsField]: { [countField]: usage.reasoningTokens } };
+}
+
 export const RESPONSES_FINAL_ANSWER_TOOL = 'final_answer';
 
 /** Plain API-shape facts parsed from image generation requests. */
@@ -587,7 +640,7 @@ export function parseChatCompletionResponse(
 export interface ChatStreamFinishInfo {
   id: string;
   model: string;
-  usage: TokenUsage;
+  usage: ReportedUsage;
   finishReason: string | null;
   toolCalls: Array<{ index: number; id: string; name: string; arguments: string }>;
 }
@@ -613,7 +666,7 @@ export function createChatStreamParser(
   const streamDecoder = new TextDecoder();
   let id = fallbacks?.id ?? '';
   let model = fallbacks?.model ?? 'unknown';
-  let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+  let usage: ReportedUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
   let finishReason: string | null = null;
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
   // Upstream `index` -> our tool call slot. Some OpenAI-compatible upstreams
@@ -644,7 +697,7 @@ export function createChatStreamParser(
         if (typeof p.model === 'string' && p.model.length > 0) model = p.model;
 
         if (p.usage && typeof p.usage === 'object') {
-          usage = extractUsage(p);
+          usage = extractReportedUsage(p, 'openai-chat-completions');
         }
 
         const choices = Array.isArray(p.choices) ? p.choices : [];

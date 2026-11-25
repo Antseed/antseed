@@ -1,12 +1,13 @@
 import {
-  extractUsage,
+  extractReportedUsage,
   mapFinishReasonToAnthropicStopReason,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   parseJsonSafe,
+  reasoningUsageFields,
   RESPONSES_FINAL_ANSWER_TOOL,
   toStringContent,
-  type TokenUsage,
+  type ReportedUsage,
 } from './utils.js';
 
 const RESPONSES_FINAL_ANSWER_TOOL_RE = /(?:^|\n\s*)tool\s+final_answer\s*\{\s*\}\s*(?:\n|$)/g;
@@ -144,7 +145,7 @@ export interface CanonicalLlmResponse {
   output: CanonicalOutputItem[];
   stopReason: string | null;
   endTurn?: boolean;
-  usage: TokenUsage;
+  usage: ReportedUsage;
 }
 
 function responseFunctionCallId(id: string): string {
@@ -685,7 +686,7 @@ export function normalizeOpenAIChatResponseBody(
     });
   }
 
-  const usage = extractUsage(body);
+  const usage = extractReportedUsage(body, 'openai-chat-completions');
   const stopReason = typeof firstChoice.finish_reason === 'string' ? firstChoice.finish_reason : null;
   return {
     id,
@@ -735,7 +736,7 @@ export function normalizeOpenAIResponsesResponseBody(
     }
   }
 
-  const usage = extractUsage(body);
+  const usage = extractReportedUsage(body, 'openai-responses');
   const stopReason = openAIResponsesStopReason(body, output);
   return { id, model, output, stopReason, usage };
 }
@@ -785,7 +786,7 @@ export function normalizeAnthropicMessagesResponseBody(
     }
   }
 
-  const usage = extractUsage(body);
+  const usage = extractReportedUsage(body, 'anthropic-messages');
   const stopReason = anthropicStopReasonToOpenAI(body.stop_reason);
   return { id, model, output, stopReason, usage };
 }
@@ -887,7 +888,7 @@ export function renderCanonicalResponseToAnthropicMessagesBody(response: Canonic
   };
 }
 
-function openAIChatUsage(usage: TokenUsage): Record<string, unknown> {
+function openAIChatUsage(usage: ReportedUsage): Record<string, unknown> {
   return {
     prompt_tokens: usage.inputTokens,
     completion_tokens: usage.outputTokens,
@@ -895,10 +896,11 @@ function openAIChatUsage(usage: TokenUsage): Record<string, unknown> {
     ...(usage.cachedInputTokens > 0
       ? { prompt_tokens_details: { cached_tokens: usage.cachedInputTokens } }
       : {}),
+    ...reasoningUsageFields(usage, 'openai-chat-completions'),
   };
 }
 
-function openAIResponsesUsage(usage: TokenUsage): Record<string, unknown> {
+function openAIResponsesUsage(usage: ReportedUsage): Record<string, unknown> {
   return {
     input_tokens: usage.inputTokens,
     output_tokens: usage.outputTokens,
@@ -906,14 +908,16 @@ function openAIResponsesUsage(usage: TokenUsage): Record<string, unknown> {
     ...(usage.cachedInputTokens > 0
       ? { input_tokens_details: { cached_tokens: usage.cachedInputTokens } }
       : {}),
+    ...reasoningUsageFields(usage, 'openai-responses'),
   };
 }
 
-function anthropicUsage(usage: TokenUsage): Record<string, unknown> {
+function anthropicUsage(usage: ReportedUsage): Record<string, unknown> {
   return {
     input_tokens: usage.freshInputTokens,
     output_tokens: usage.outputTokens,
     ...(usage.cachedInputTokens > 0 ? { cache_read_input_tokens: usage.cachedInputTokens } : {}),
+    ...reasoningUsageFields(usage, 'anthropic-messages'),
   };
 }
 
