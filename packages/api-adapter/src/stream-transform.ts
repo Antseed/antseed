@@ -9,10 +9,10 @@ import {
   makeStreamingStartResponse,
   mapFinishReasonToAnthropicStopReason,
   openAIResponsesEnding,
+  openAIResponsesItemStatus,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   parseJsonSafe,
-  toolArgumentsWhole,
   parseSseBuffer,
   type StreamingResponseAdapter,
   type TokenUsage,
@@ -909,10 +909,6 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         if (event.type === 'response_done') {
           ensureResponseCreated(emitted, null);
           const ending = openAIResponsesEnding(event.finishReason);
-          // An answer cut at a limit was cut in the item it was writing, and in any tool call whose arguments
-          // stop mid-value; the other items are whole.
-          const cutAtLimit = ending.status === 'incomplete';
-          const status = (cut: boolean): 'completed' | 'incomplete' => (cutAtLimit && cut ? 'incomplete' : 'completed');
           const messagePhase = toolCalls.size > 0 ? 'commentary' : undefined;
           const msgId = getMessageId();
           // Each finished item, as both its `.done` event and the final response list it.
@@ -920,7 +916,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
             type: 'message' as const,
             id: msgId,
             role: 'assistant' as const,
-            status: status(lastWritten === 'text'),
+            status: openAIResponsesItemStatus(ending, lastWritten === 'text'),
             content: [{ type: 'output_text' as const, text: textBuffer, annotations: [] }],
             ...(messagePhase ? { phase: messagePhase } : {}),
           };
@@ -932,7 +928,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               call_id: toolCall.id,
               name: toolCall.name,
               arguments: toolCall.arguments,
-              status: status(toolCall.index === lastWritten || (cutAtLimit && !toolArgumentsWhole(toolCall.arguments))),
+              status: openAIResponsesItemStatus(ending, toolCall.index === lastWritten, toolCall.arguments),
             },
           }));
           if (outputStarted) {

@@ -488,8 +488,21 @@ export function openAIResponsesEnding(finishReason: string | null): {
   return { status: 'completed' };
 }
 
+/**
+ * The status of one item of a Responses answer, streamed or not. An answer cut at a limit was cut in the item it
+ * was writing (`writtenLast`), and in any tool call whose arguments stop mid-value; the other items are whole.
+ */
+export function openAIResponsesItemStatus(
+  ending: { status: 'completed' | 'incomplete' },
+  writtenLast: boolean,
+  toolArguments?: unknown,
+): 'completed' | 'incomplete' {
+  if (ending.status === 'completed') return 'completed';
+  return writtenLast || !toolArgumentsWhole(toolArguments) ? 'incomplete' : 'completed';
+}
+
 /** Whether a tool call's arguments end where they should: none at all, or one whole JSON value. */
-export function toolArgumentsWhole(args: unknown): boolean {
+function toolArgumentsWhole(args: unknown): boolean {
   if (typeof args !== 'string' || args.trim() === '') return true;
   try {
     JSON.parse(args);

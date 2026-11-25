@@ -2,10 +2,10 @@ import {
   extractUsage,
   mapFinishReasonToAnthropicStopReason,
   openAIResponsesEnding,
+  openAIResponsesItemStatus,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   parseJsonSafe,
-  toolArgumentsWhole,
   RESPONSES_FINAL_ANSWER_TOOL,
   toStringContent,
   type TokenUsage,
@@ -781,18 +781,15 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
   const text = textItems.map((item) => item.text).join('');
   const phase = textItems.find((item) => item.phase)?.phase;
   const ending = openAIResponsesEnding(response.stopReason);
-  // An answer cut at a limit was cut in the item it was writing, and in any tool call whose arguments stop
-  // mid-value; the other items are whole.
-  const cutAtLimit = ending.status === 'incomplete';
-  const cut = response.output.at(-1);
-  const status = (cutHere: boolean): 'completed' | 'incomplete' => (cutAtLimit && cutHere ? 'incomplete' : 'completed');
+  // The item the answer was writing when it ended.
+  const last = response.output.at(-1);
 
   if (text.length > 0) {
     output.push({
       type: 'message',
       id: openAIResponsesMessageId(response.id),
       role: 'assistant',
-      status: status(cut?.type === 'text'),
+      status: openAIResponsesItemStatus(ending, last?.type === 'text'),
       content: [{ type: 'output_text', text, annotations: [] }],
       ...(phase ? { phase } : {}),
     });
@@ -806,7 +803,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       call_id: item.id,
       name: item.name,
       arguments: stringifyToolArguments(item.arguments),
-      status: status(item === cut || (cutAtLimit && !toolArgumentsWhole(item.arguments))),
+      status: openAIResponsesItemStatus(ending, item === last, item.arguments),
     });
   }
 
