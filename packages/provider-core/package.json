@@ -1,6 +1,6 @@
 {
   "name": "@antseed/provider-core",
-  "version": "0.2.66",
+  "version": "0.2.70",
   "description": "Shared provider infrastructure for Antseed plugins",
   "type": "module",
   "files": [
@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@antseed/node": "workspace:*",
-    "typescript": "^5.5.0",
+    "typescript": "catalog:",
     "vitest": "^2.0.0"
   },
   "dependencies": {

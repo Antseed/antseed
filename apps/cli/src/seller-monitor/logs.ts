@@ -72,7 +72,8 @@ function toEntry(row: MeteringEventPageRow): SellerLogEntry {
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     exactTokens: row.token_method === 'provider-usage',
-    costUsd: row.cost_cents === null ? null : row.cost_cents / 100,
+    // The unrounded value, not the receipt's one-cent floor; a failed request earned nothing.
+    costUsd: row.revenue_cents === null ? null : row.revenue_cents / 100,
     latencyMs: row.latency_ms,
     statusCode: row.status_code,
     streaming: row.was_streaming === 1,
@@ -114,10 +115,10 @@ export function readSellerLogDetail(dataDir: string, id: string): SellerLogDetai
       endedAt: row.session?.ended_at ?? null,
       requests: row.session?.total_requests ?? null,
       tokens: row.session?.total_tokens ?? null,
-      costUsd: row.session ? row.session.total_cost_cents / 100 : null,
+      costUsd: row.session ? row.session.revenue_cents / 100 : null,
       avgLatencyMs: row.session?.avg_latency_ms ?? null,
     },
-    channel: channelFor(dataDir, row.buyer_peer_id, row.timestamp, row.request_id, Boolean(row.receipt_id) && (row.cost_cents ?? 0) > 0),
+    channel: channelFor(dataDir, row.buyer_peer_id, row.timestamp, row.request_id, Boolean(row.receipt_id) && (row.revenue_cents ?? 0) > 0),
   }
 }
 

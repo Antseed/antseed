@@ -4,6 +4,8 @@ import type { RuntimeMode, RuntimeProcessState } from './runtime/process-manager
 import type { ConnectedAppsState } from './connected-apps/patching/connection.js';
 import type { TelegramBridgeStatus } from './telegram/bridge.js';
 import type { ChatModel, ChatRoutePreview, ConversationFlags, OutgoingPrivacy } from '../shared/chat-gateway-types.js';
+import type { StudioProjectDetail, StudioProjectSummary } from '../shared/studio.js';
+import type { StudioEditResult, TrackEdit } from '../shared/studio-track.js';
 import type {
   DepositStepSignal,
   FirstModelShownSignal,
@@ -241,6 +243,30 @@ const api = {
   },
   pickDirectory(): Promise<{ ok: boolean; path: string | null }> {
     return ipcRenderer.invoke('desktop:pick-directory');
+  },
+  studioGetEnabled(): Promise<{ ok: boolean; enabled: boolean }> {
+    return ipcRenderer.invoke('studio:get-enabled');
+  },
+  studioSetEnabled(enabled: boolean): Promise<{ ok: boolean; enabled?: boolean; error?: string }> {
+    return ipcRenderer.invoke('studio:set-enabled', enabled);
+  },
+  studioList(): Promise<{ ok: boolean; data?: StudioProjectSummary[]; error?: string }> {
+    return ipcRenderer.invoke('studio:list');
+  },
+  studioEdit(id: string, edit: TrackEdit): Promise<{ ok: boolean; data?: StudioEditResult; error?: string }> {
+    return ipcRenderer.invoke('studio:edit', { id, edit });
+  },
+  studioCreate(name: string): Promise<{ ok: boolean; data?: StudioProjectSummary; error?: string }> {
+    return ipcRenderer.invoke('studio:create', { name });
+  },
+  studioGet(id: string): Promise<{ ok: boolean; data?: StudioProjectDetail; error?: string }> {
+    return ipcRenderer.invoke('studio:get', { id });
+  },
+  studioProjectChat(id: string, model?: string): Promise<{ ok: boolean; conversationId?: string | null; error?: string }> {
+    return ipcRenderer.invoke('studio:project-chat', { id, model });
+  },
+  studioOpenFolder(id: string): Promise<{ ok: boolean; error?: string }> {
+    return ipcRenderer.invoke('studio:open-folder', { id });
   },
   openExternalUrl(url: string): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('desktop:open-external-url', url) as Promise<{ ok: boolean; error?: string }>;

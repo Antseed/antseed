@@ -3,7 +3,7 @@ import { Contract } from 'ethers'
 import { resolveBaseRpcUrlOverride } from '../cli/payment-utils.js'
 import { sharedChainProvider } from '../proxy/chain-rpc.js'
 import { loadConfig } from '../config/loader.js'
-import { GatewayAccounting } from './accounting.js'
+import { DEFAULT_MAX_PER_REQUEST_USDC, GatewayAccounting } from './accounting.js'
 import { loadOrCreateControlSecret, recordGatewayBuyerPort } from './buyer-control.js'
 import { createKeyWalletReader } from './key-wallet.js'
 import { fetchComparableRetailPrices } from '../retail-prices.js'
@@ -11,12 +11,13 @@ import { BuyerPolicyProbe } from './buyer-policy-probe.js'
 import { parseBaseUnits, parseUsdToUsdc } from './money.js'
 import { GatewayServer, type GatewayServerOptions, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
-import { GatewayStore } from './store.js'
-import { X402Facilitator, type X402Asset } from './x402.js'
+import { GatewayStore, gatewayDir } from './store.js'
+import { StreamResumeStore } from './stream-resume.js'
+import { join } from 'node:path'
+import { X402Facilitator, erc1271SignatureCheck, type X402Asset } from './x402.js'
 import { GatewayTelemetry } from '../telemetry/gateway.js'
 import { cdpAuthorization, type CdpCredentials } from './cdp-auth.js'
 
-const DEFAULT_MAX_PER_REQUEST_USDC = '300000'
 // AntseedDeposits takes at least 1 USDC on a first deposit, after the sweep fee.
 const DEFAULT_TOPUP_MIN_USD = '2'
 const DEFAULT_TOPUP_MAX_USD = '500'
@@ -82,17 +83,20 @@ export interface GatewayRuntime {
   stop: () => Promise<void>
 }
 
-/**
- * The USDC the buyer's chain uses, with the EIP-712 domain its
- * `transferWithAuthorization` signatures are checked against.
- */
-function usdcAsset(config: Awaited<ReturnType<typeof loadConfig>>): () => Promise<X402Asset> {
+function paymentChain(config: Awaited<ReturnType<typeof loadConfig>>): ReturnType<typeof resolveChainConfig> {
   const crypto = config.payments?.crypto
-  const chain = resolveChainConfig({
+  return resolveChainConfig({
     chainId: crypto?.chainId,
     rpcUrl: resolveBaseRpcUrlOverride() ?? crypto?.rpcUrl,
     usdcContractAddress: crypto?.usdcContractAddress,
   })
+}
+
+/**
+ * The USDC the buyer's chain uses, with the EIP-712 domain its
+ * `transferWithAuthorization` signatures are checked against.
+ */
+function usdcAsset(chain: ReturnType<typeof resolveChainConfig>): () => Promise<X402Asset> {
   let asset: Promise<X402Asset> | null = null
   return () => {
     // Read once per process through the shared provider (which fails over between endpoints).
@@ -129,6 +133,8 @@ export async function liveBuyerIdentityAddress(buyerPort: number, name: string):
 
 /** Gateway server + spend feed, shared by `antseed gateway start` and `antseed tunnel start`. */
 export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promise<GatewayRuntime> {
+  // Requests in the log that started before this are a previous process's (see `finishAbandonedRequests`).
+  const startedAt = Date.now()
   const config = await loadConfig(options.configPath)
   const buyerPort = options.buyerPort ?? config.buyer.proxyPort
   const store = new GatewayStore(options.dataDir)
@@ -170,9 +176,11 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     },
     onLog: options.onLog,
   })
+  const chain = paymentChain(config)
   const topup: GatewayTopupOptions | null = options.topup
     ? {
-      asset: usdcAsset(config),
+      asset: usdcAsset(chain),
+      checkContractSignature: erc1271SignatureCheck(sharedChainProvider(chain)),
       facilitator: new X402Facilitator({ url: options.topup.facilitatorUrl, ...facilitatorAuth(options.topup) }),
       minUsdc: parseUsdToUsdc(options.topup.minUsd ?? DEFAULT_TOPUP_MIN_USD),
       maxUsdc: parseUsdToUsdc(options.topup.maxUsd ?? DEFAULT_TOPUP_MAX_USD),
@@ -194,7 +202,11 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     x402Enabled: Boolean(topup),
     listenHost,
   }) ?? null
+  // Streams whose client dropped, kept for the client's retry; copies too large for memory go here.
+  const streamResume = new StreamResumeStore({ dir: join(gatewayDir(options.dataDir), 'stream-resume'), onLog: options.onLog })
+  streamResume.prepare()
   const server = new GatewayServer({
+    streamResume,
     console: consoleHandler,
     controlSecret,
     buyerPolicyUnsupported: () => policyProbe.policyUnsupported(),
@@ -224,6 +236,13 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     store.close()
     await telemetry.stop()
     throw error
+  }
+  // Only once this gateway holds its port: requests a stopped gateway left unfinished can no longer finish.
+  try {
+    const abandoned = store.finishAbandonedRequests(startedAt)
+    if (abandoned > 0) options.onLog?.(`gateway marked ${abandoned} request(s) a previous run left unfinished as ended (499)`)
+  } catch (error) {
+    options.onLog?.(`gateway could not finish requests a previous run left: ${error instanceof Error ? error.message : String(error)}`)
   }
   const clearBuyerPortRecord = recordGatewayBuyerPort(options.dataDir, buyerPort)
   spendFeed.start()

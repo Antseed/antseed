@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [decentralized-ai, P2P AI, AI agents, AI infrastructure, protocol]
 description: P2P networks lost to centralized services because humans needed convenience. Agents don't. That changes everything about which infrastructure model wins.
 keywords: [decentralized AI infrastructure, P2P AI network, AI agents infrastructure, autonomous agents AI, Antseed protocol, agent-to-agent commerce]
-image: /og-image.jpg
 date: 2026-03-03
 ---
 
@@ -64,6 +63,6 @@ The infrastructure that seemed like the obviously right choice for a decade turn
 
 Antseed is building the BitTorrent for AI — a protocol, not a product. Open to any provider. Accessible to any agent. Priced by competition, not by rate cards. Always on, because the network doesn't have a single point to fail.
 
-[Read the lightpaper](/docs/lightpaper)
+[How the protocol works](/docs/overview)
 
 [Get started in one command](/docs/install)

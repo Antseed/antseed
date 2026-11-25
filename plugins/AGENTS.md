@@ -23,7 +23,7 @@ Every plugin is a published npm package (`@antseed/<dir>`), Node only, ES module
 
 | Rule | Enforced by |
 | --- | --- |
-| The relay keeps the upstream's standard. It may swap auth, rewrite the model id, strip Antseed headers and set the standard's own usage field. Anything else is a declared `injectJsonFields`. | `packages/provider-core/src/http-relay.test.ts` |
+| The relay keeps the upstream's standard. It may swap auth, rewrite the model id, strip Antseed headers and set the standard's own usage field. Anything else is declared in the relay config: `injectJsonFields`, or `omitJsonFields` and `defaultHeaders` for what the upstream's standard rejects or requires. | `packages/provider-core/src/http-relay.test.ts` |
 | A protocol id is one of `WELL_KNOWN_SERVICE_API_PROTOCOLS` (`packages/protocol/src/service-api.ts`). The list is append-only: billing metadata encodes a protocol by its position. | `packages/protocol/src/billing.test.ts` |
 | Upstreams sharing a provider name offer a shared service on the same terms. A native video service has one upstream per name. The seller refuses to start otherwise. | `packages/node/tests/seller-self-health-error.test.ts` (`assertSameNameUpstreamsAgree`) |
 | A media request that would cost the upstream more than its billed price is refused in `checkRequest`, before payment and without calling the upstream. | each video plugin's `index.test.ts` ("before payment") |
@@ -62,7 +62,7 @@ Every plugin is a published npm package (`@antseed/<dir>`), Node only, ES module
 - `provider-local-llm`: its default concurrency of 1 applies only outside the CLI; `seller start` always passes `seller.maxConcurrentBuyers`.
 - `provider-typesafe`: default prices are input-only (0.05 per million in, 0 out).
 - `provider-fal-image` / `provider-fal-video`: the balance check needs the key's `billing:usage:read`; without it the seller keeps advertising after credits run out.
-- `provider-fal-video`: fal reports a refused job as `COMPLETED` and answers its result with a 4xx. Only 408, 429 and 5xx are temporary.
+- `provider-fal-video`: fal reports a refused job as `COMPLETED` and answers its result with a 4xx. Only 408, 429 and 5xx are temporary, except a 500 `downstream_service_error`: the model failed behind fal, and every fetch answers the same.
 - `provider-fal-video`: status and result URLs use only `owner/alias` (`falAppId`), not the endpoint's sub-path.
 - `provider-venice-video`: a private model's video exists only behind the create's `download_url`, saved under `ANTSEED_DATA_DIR`. Losing that file loses the video.
 - `provider-venice-video`: refusal reasons can describe the buyer's prompt; log them only when `isContentFreeLogging()` is false.

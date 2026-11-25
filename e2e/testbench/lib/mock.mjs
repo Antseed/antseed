@@ -7,6 +7,18 @@ import { createPrng, derive } from './prng.mjs';
 const FIXTURE_PNG = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'pixel.png');
 export const MOCK_USAGE = { prompt_tokens: 10, completion_tokens: 8, total_tokens: 18 };
 export const NO_USAGE_MARKER = '[no-usage]';
+/**
+ * `[parallel-tools]` in a streamed prompt that offers tools: the user turn is answered with two parallel tool calls
+ * that share `index: 0` and differ only by `id`, as some OpenAI-compatible upstreams stream them. The turn after the
+ * tool results gets the usual text reply.
+ */
+export const PARALLEL_TOOLS_MARKER = '[parallel-tools]';
+/**
+ * `[shell-write]` in a streamed prompt that offers `bash`: the user turn is answered with one file-changing shell
+ * call (`touch testbench-shell-write.txt`), which a desktop chat in Ask first stops to approve. The turn after the
+ * tool result gets the usual text reply.
+ */
+export const SHELL_WRITE_MARKER = '[shell-write]';
 const FIXED_IMAGE_INPUT_TOKENS = 10;
 const WORDS = 'the quick brown fox jumps over lazy dogs while seven agents argue about payment channels'.split(' ');
 const TAG = /\[req:([a-z0-9-]+)\]/i;
@@ -83,12 +95,46 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     const text = load ? makeText(completion) : `Hello from ${label} (${body.model}).`;
     const id = `chatcmpl-${tag}`;
     const created = Math.floor(Date.now() / 1000);
+    // One Chat Completions stream chunk, for every streamed answer below.
+    const chunk = (choices, usageChunk = null) => `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: body.model, choices, usage: usageChunk })}\n\n`;
 
     if (tagged && draw() < state.faults.fault500Rate) {
       await sleep(totalMs / 3);
       entry.status = '500';
       response.writeHead(500, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: { message: 'mock upstream internal error', type: 'server_error' } }));
+      return;
+    }
+    const toolNames = (Array.isArray(body.tools) ? body.tools : []).map((tool) => tool?.function?.name).filter((name) => typeof name === 'string');
+    if (stream && content.includes(PARALLEL_TOOLS_MARKER) && toolNames.length > 0 && body.messages?.at(-1)?.role === 'user') {
+      // A read-only tool when one is offered, so a desktop chat runs both calls without an approval prompt.
+      const name = toolNames.includes('read') ? 'read' : toolNames[0];
+      await sleep(totalMs);
+      if (gone()) { entry.status = 'client-gone'; return; }
+      entry.started = true;
+      entry.toolCalls = 2;
+      response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const call = (callId, path) => ({ index: 0, id: callId, type: 'function', function: { name, arguments: JSON.stringify({ path }) } });
+      response.write(chunk([{ index: 0, delta: { role: 'assistant', content: null, tool_calls: [call(`call_${tag}_a`, 'testbench-missing-a.txt')] }, finish_reason: null }]));
+      response.write(chunk([{ index: 0, delta: { tool_calls: [call(`call_${tag}_b`, 'testbench-missing-b.txt')] }, finish_reason: null }]));
+      response.write(chunk([{ index: 0, delta: {}, finish_reason: 'tool_calls' }]));
+      if (reportsUsage && body.stream_options?.include_usage === true) response.write(chunk([], usageBody));
+      response.end('data: [DONE]\n\n');
+      entry.status = 'ok';
+      return;
+    }
+    if (stream && content.includes(SHELL_WRITE_MARKER) && toolNames.includes('bash') && body.messages?.at(-1)?.role === 'user') {
+      await sleep(totalMs);
+      if (gone()) { entry.status = 'client-gone'; return; }
+      entry.started = true;
+      entry.toolCalls = 1;
+      response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const call = { index: 0, id: `call_${tag}_shell`, type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: 'touch testbench-shell-write.txt' }) } };
+      response.write(chunk([{ index: 0, delta: { role: 'assistant', content: null, tool_calls: [call] }, finish_reason: null }]));
+      response.write(chunk([{ index: 0, delta: {}, finish_reason: 'tool_calls' }]));
+      if (reportsUsage && body.stream_options?.include_usage === true) response.write(chunk([], usageBody));
+      response.end('data: [DONE]\n\n');
+      entry.status = 'ok';
       return;
     }
     const disconnect = tagged && draw() < state.faults.disconnectRate;
@@ -108,7 +154,6 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     if (gone()) { entry.status = 'client-gone'; return; }
     entry.started = true;
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-    const chunk = (choices, usageChunk = null) => `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: body.model, choices, usage: usageChunk })}\n\n`;
     const pieces = load ? Math.max(2, Math.min(40, Math.ceil(text.length / 400))) : 1;
     const step = Math.ceil(text.length / pieces);
     const cutAt = disconnect ? Math.max(1, betweenInt(draw, [1, Math.max(1, pieces - 1)])) : -1;
@@ -127,6 +172,23 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     entry.status = 'ok';
   }
 
+  // Speech as OpenAI answers `/v1/audio/speech`: MP3 audio (silent 417-byte MPEG-1 layer III frames, 128 kbps,
+  // 44.1 kHz), or with `stream_format: "sse"` the same bytes in base64 `speech.audio.delta` events, cut mid-frame,
+  // then `speech.audio.done` with the usage (the `CreateSpeechResponseStreamEvent` schema of OpenAI's API reference).
+  function speech(response, body) {
+    const audio = Buffer.alloc(417 * 8);
+    for (let frame = 0; frame < 8; frame += 1) audio.set([0xff, 0xfb, 0x90, 0x00], frame * 417);
+    if (body.stream_format !== 'sse') {
+      response.writeHead(200, { 'content-type': 'audio/mpeg' });
+      return response.end(audio);
+    }
+    const event = (type, data) => `data: ${JSON.stringify({ type, ...data })}\n\n`;
+    response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' });
+    for (let offset = 0; offset < audio.length; offset += 1000) response.write(event('speech.audio.delta', { audio: audio.subarray(offset, offset + 1000).toString('base64') }));
+    const inputTokens = Math.max(1, Math.ceil(String(body.input ?? '').length / 4));
+    response.end(event('speech.audio.done', { usage: { input_tokens: inputTokens, output_tokens: 100, total_tokens: inputTokens + 100 } }));
+  }
+
   async function image(response, body) {
     const prompt = String(body.prompt ?? '');
     const tagged = prompt.match(TAG);
@@ -136,7 +198,23 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     const inputTokens = load ? Math.max(1, Math.ceil(prompt.length / 4)) : FIXED_IMAGE_INPUT_TOKENS;
     const latency = load ? between(requestRandom(tag), latencyRangeMs) : 0;
     if (load) await sleep(latency);
-    const entry = record(tag, { status: 'ok', started: true, image: true, n, model: body.model, prompt: inputTokens, latencyMs: latency, cost: String(usageCost(pricing[body.model], { prompt: inputTokens, images: n })) });
+    const stream = body.stream === true;
+    const entry = record(tag, { status: 'ok', started: true, image: true, stream, n, model: body.model, prompt: inputTokens, latencyMs: latency, cost: String(usageCost(pricing[body.model], { prompt: inputTokens, images: n })) });
+    if (stream) {
+      // OpenAI's stream for its GPT image models (`stream: true`, API reference and SDK event types):
+      // `partial_images` (0-3) partial events, then one completed event with the final image and the usage.
+      const created_at = Math.floor(Date.now() / 1000);
+      const image = { b64_json: png.toString('base64'), background: body.background ?? 'auto', created_at, output_format: body.output_format ?? 'png', quality: body.quality ?? 'auto', size: body.size ?? 'auto' };
+      const event = (type, data) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+      const partials = Math.max(0, Math.min(3, Number(body.partial_images ?? 0)));
+      response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' });
+      for (let index = 0; index < n; index += 1) {
+        for (let partial = 0; partial < partials; partial += 1) response.write(event('image_generation.partial_image', { ...image, partial_image_index: partial }));
+        response.write(event('image_generation.completed', { ...image, usage: { input_tokens: inputTokens, output_tokens: 0, total_tokens: inputTokens, input_tokens_details: { text_tokens: inputTokens, image_tokens: 0 } } }));
+      }
+      response.end();
+      return entry;
+    }
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({
       created: Math.floor(Date.now() / 1000),
@@ -175,6 +253,7 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
         if (usage !== 'load' && state.latencyMs > 0) await sleep(state.latencyMs);
         return await image(response, body);
       }
+      if (path === '/v1/audio/speech') return speech(response, body);
       return json(404, { error: { message: `No mock route for ${path}`, type: 'invalid_request_error' } });
     } catch (error) {
       if (!response.headersSent) json(500, { error: { message: error.message, type: 'server_error' } });
@@ -192,6 +271,8 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
     port: server.address().port,
     state,
     setLatency(ms) { state.latencyMs = ms; },
+    /** Prices the ledger's later responses at `next` (per model, as `pricing`), after the seller's price changed. */
+    setPricing(next) { pricing = next; },
     /** Changes the fault rates for requests that arrive from now on. */
     setFaults({ fault500Rate: nextFault500 = state.faults.fault500Rate, disconnectRate: nextDisconnect = state.faults.disconnectRate } = {}) {
       state.faults = { fault500Rate: nextFault500, disconnectRate: nextDisconnect };

@@ -11,7 +11,7 @@ last_update:
   date: 2026-10-13
 ---
 
-![Introducing Antseed Gateway Console, with an overview of spending and usage](/img/blog/deploy-your-own-antseed-gateway/console-hero.png)
+![Introducing Antseed Gateway Console, with an overview of spending and usage](/img/blog/deploy-your-own-antseed-gateway/console-hero.webp)
 
 *Updated October 13, 2026.*
 
@@ -27,13 +27,13 @@ Use it to give your team access under one budget, hand a friend a key without ha
 
 The Antseed Gateway Console gives you a browser interface for managing your gateway. Create workspaces, invite teammates, issue API keys, set budgets, and review usage in one place.
 
-![Antseed Gateway Console overview showing gateway status, wallet balance, spending by model, and top API keys](/img/blog/deploy-your-own-antseed-gateway/console-overview.jpg)
+![Antseed Gateway Console overview showing gateway status, wallet balance, spending by model, and top API keys](/img/blog/deploy-your-own-antseed-gateway/console-overview.webp)
 
 *Console overview with demo data. Navigation items marked Preview are design previews.*
 
 Each workspace has its own wallet. Set budgets for a workspace, a member, or an individual key, and choose which models and providers their requests can use. Members can create their own keys within the access and budgets you allow.
 
-![Console API keys list showing separate keys, owners, spending limits, routing policies, and usage](/img/blog/deploy-your-own-antseed-gateway/console-api-keys.jpg)
+![Console API keys list showing separate keys, owners, spending limits, routing policies, and usage](/img/blog/deploy-your-own-antseed-gateway/console-api-keys.webp)
 
 *API keys in a demo workspace, with separate limits and routing settings.*
 

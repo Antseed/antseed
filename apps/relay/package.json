@@ -27,7 +27,7 @@
     "@antseed/node": "workspace:*",
     "@types/node": "^20.11.0",
     "@types/ws": "^8.5.12",
-    "typescript": "^5.5.0",
+    "typescript": "catalog:",
     "vitest": "^2.0.0"
   }
 }

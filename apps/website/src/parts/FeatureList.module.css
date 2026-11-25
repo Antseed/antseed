@@ -1,0 +1,5 @@
+.list { align-self: stretch; margin: 0; padding: 0; list-style: none; }
+.item { display: flex; align-items: center; gap: 12px; padding: 8px 0; font: 400 16px/24px var(--site-font); color: var(--site-text); }
+.icon { color: var(--site-text-muted); }
+/* the authored line breaks are for wide screens; on a phone the text wraps as it may */
+@media (max-width: 760px) { .item br { display: none; } }

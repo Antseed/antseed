@@ -1,0 +1,9 @@
+.mark { width: 22px; height: 22px; object-fit: contain; }
+.mono {
+  display: block;
+  width: 22px;
+  height: 22px;
+  background: currentColor;
+  -webkit-mask: var(--mark) center / contain no-repeat;
+  mask: var(--mark) center / contain no-repeat;
+}

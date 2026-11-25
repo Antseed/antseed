@@ -1,17 +1,17 @@
 <svg width="800" height="450" viewBox="0 0 800 450" fill="none" xmlns="http://www.w3.org/2000/svg">
 <defs>
-<pattern id="dg" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1.5" cy="1.5" r="1.3" fill="rgba(0,30,18,0.06)"/></pattern>
-<radialGradient id="glow" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="rgba(16,185,129,0.10)"/><stop offset="1" stop-color="rgba(16,185,129,0)"/></radialGradient>
+<pattern id="dg" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1.5" cy="1.5" r="1.3" fill="rgba(48,56,44,0.06)"/></pattern>
+<radialGradient id="glow" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="rgba(79,122,36,0.10)"/><stop offset="1" stop-color="rgba(79,122,36,0)"/></radialGradient>
 </defs>
-<rect width="800" height="450" fill="#F4F5F4"/>
+<rect width="800" height="450" fill="#F7F8F5"/>
 <rect width="800" height="450" fill="url(#dg)"/>
 <ellipse cx="400" cy="225" rx="280" ry="170" fill="url(#glow)"/>
 
-<path d="M400 105 L496 160 V270 L400 325 L304 270 V160 Z" fill="rgba(16,185,129,0.12)" stroke="#001E12" stroke-width="3" stroke-linejoin="round"/>
-<rect x="364" y="179" width="72" height="72" rx="10" fill="#FFFFFF" stroke="#001E12" stroke-width="3"/>
-<rect x="382" y="197" width="36" height="36" rx="5" fill="rgba(16,185,129,0.12)" stroke="#10B981" stroke-width="3"/>
-<path d="M364 197 H344 M364 215 H344 M364 233 H344 M436 197 H456 M436 215 H456 M436 233 H456 M382 179 V159 M400 179 V159 M418 179 V159 M382 251 V271 M400 251 V271 M418 251 V271" stroke="#001E12" stroke-width="3" stroke-linecap="round"/>
-<circle cx="490" cy="300" r="30" fill="#10B981"/>
+<path d="M400 105 L496 160 V270 L400 325 L304 270 V160 Z" fill="rgba(79,122,36,0.12)" stroke="#30382C" stroke-width="3" stroke-linejoin="round"/>
+<rect x="364" y="179" width="72" height="72" rx="10" fill="#FFFFFF" stroke="#30382C" stroke-width="3"/>
+<rect x="382" y="197" width="36" height="36" rx="5" fill="rgba(79,122,36,0.12)" stroke="#4F7A24" stroke-width="3"/>
+<path d="M364 197 H344 M364 215 H344 M364 233 H344 M436 197 H456 M436 215 H456 M436 233 H456 M382 179 V159 M400 179 V159 M418 179 V159 M382 251 V271 M400 251 V271 M418 251 V271" stroke="#30382C" stroke-width="3" stroke-linecap="round"/>
+<circle cx="490" cy="300" r="30" fill="#4F7A24"/>
 <path d="M476 300 L486 310 L505 289" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-<circle cx="292" cy="130" r="4" fill="rgba(16,185,129,0.35)"/><circle cx="512" cy="120" r="4" fill="rgba(16,185,129,0.35)"/>
+<circle cx="292" cy="130" r="4" fill="rgba(79,122,36,0.35)"/><circle cx="512" cy="120" r="4" fill="rgba(79,122,36,0.35)"/>
 </svg>

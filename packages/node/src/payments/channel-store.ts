@@ -96,6 +96,7 @@ export class ChannelStore {
   private readonly _stmts: {
     upsert: Database.Statement;
     getById: Database.Statement;
+    getByIdIgnoringCase: Database.Statement;
     getActiveByPeer: Database.Statement;
     getOneOffByRequest: Database.Statement;
     getUnpaidOneOffChannels: Database.Statement;
@@ -207,6 +208,9 @@ export class ChannelStore {
       `),
       getById: this._db.prepare(
         'SELECT * FROM payment_channels WHERE session_id = ?',
+      ),
+      getByIdIgnoringCase: this._db.prepare(
+        'SELECT * FROM payment_channels WHERE session_id = ? COLLATE NOCASE',
       ),
       getOneOffByRequest: this._db.prepare(
         "SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND one_off_request_id = ? AND channel_kind = 'one_off' ORDER BY created_at DESC LIMIT 1",
@@ -377,6 +381,14 @@ export class ChannelStore {
 
   getChannel(sessionId: string): StoredChannel | null {
     const row = this._stmts.getById.get(sessionId) as ChannelRow | undefined;
+    return row ? rowToChannel(row) : null;
+  }
+
+  /** The channel with this id, however its hex digits are cased. The exact spelling wins when it is stored. */
+  getChannelIgnoringCase(sessionId: string): StoredChannel | null {
+    const exact = this.getChannel(sessionId);
+    if (exact) return exact;
+    const row = this._stmts.getByIdIgnoringCase.get(sessionId) as ChannelRow | undefined;
     return row ? rowToChannel(row) : null;
   }
 

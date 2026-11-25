@@ -95,7 +95,6 @@ jobs:
           pnpm run build:tier2
           pnpm run build:tier3
           pnpm --filter=@antseed/cli run build
-          pnpm --filter=@antseed/network-stats run build
 
       # e2e runs after everything else, as in ci.yml: it builds packages/node and
       # apps/cli (e2e/global-setup.ts), and a rebuild while the CLI tests import
@@ -113,7 +112,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: >
           pnpm --filter './packages/*' --filter './plugins/*'
-          --filter @antseed/cli --filter @antseed/network-stats
+          --filter @antseed/cli
           --filter @antseed/payments --filter @antseed/ants --filter @antseed/gateway-console
           --filter @antseed/relay
           publish --access public --no-git-checks

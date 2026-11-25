@@ -1,6 +1,6 @@
 {
   "name": "@antseed/payments",
-  "version": "0.1.109",
+  "version": "0.1.119",
   "description": "Buyer payments portal for Antseed",
   "files": [
     "dist"
@@ -43,7 +43,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "sass": "^1.97.3",
-    "typescript": "^5.6.0",
+    "typescript": "catalog:",
     "viem": "^2.47.6",
     "vite": "^6.0.0",
     "vitest": "^2.1.9",

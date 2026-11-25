@@ -2,6 +2,7 @@ import { FetchRequest, JsonRpcProvider, ZeroAddress, type AbstractProvider, type
 import { RotatingJsonRpcProvider } from './rpc-provider.js';
 import { createIndexer, type Indexer } from './indexer.js';
 import { invalidateNetwork } from './network.js';
+import type { LockHistory } from './lock-start.js';
 import {
   ANTSTokenClient,
   DepositsClient,
@@ -119,6 +120,8 @@ export class AntsContext {
   /** The buyer account whose usage rewards are shown; a browser session re-resolves it per connected wallet. */
   buyerAddress: string;
   readonly localPositionIds = new Map<number, string>();
+  /** Lock history of closed positions (immutable once closed), keyed by `pools:id`. */
+  readonly closedLockHistory = new Map<string, LockHistory>();
   readonly positionReadBarriers = new Map<string, { block: number; at: number }>();
   signer: AbstractSigner | undefined;
   private readonly stackTtlMs: number;

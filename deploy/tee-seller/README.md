@@ -102,7 +102,9 @@ take effect from the verifier release that includes them.
    ```
 
    Add `--rpc-url-secret` to pass `ANTSEED_BASE_RPC_URL` as a secret (or
-   `--env ANTSEED_BASE_RPC_URL=<url>` for one without an API key in it, which buyers can read), and
+   `--env ANTSEED_BASE_RPC_URL=<url>` for one without an API key in it, which buyers can read),
+   `--alerts-token-secret` to pass the seller alerts' Telegram bot token as the secret
+   `ANTSEED_ALERTS_TELEGRAM_TOKEN`, and
    `--env ANTSEED_VERIFIER_PROVIDER_...=<value>` for provider attestation settings. It prints the
    encrypted variables to allow. [`docker-compose.json`](docker-compose.json) is an example.
 3. Deploy it as a dstack app with KMS enabled. Pass the printed secrets as encrypted environment
@@ -116,6 +118,11 @@ take effect from the verifier release that includes them.
 
    The CLI always writes an empty `init_script` into the app compose, which buyers on verifier
    0.1.5 or later accept; earlier ones reject any `init_script`.
+
+   `tdx.small` (1 vCPU, 2 GiB) is the minimum and enough to start with. The seller's memory
+   follows the size and number of requests in flight, and the VM's memory also holds its OS and
+   container runtime, so a seller with steady traffic should run on `tdx.medium` (2 vCPUs, 4 GiB)
+   or larger. Give the app at least 20 GB of disk for its payment channels and metering history.
 
 Existing seller images keep passing on the measurement table. The lite OS path needs an updated
 seller image whose prover sends the GetQuote VM configuration and raw event log alongside the
@@ -161,7 +168,9 @@ its listed env variables and never replace its command. Its logs may go to Cloud
 
 1. Write the seller config as for dstack (same rules), and store each secret in Secret Manager:
    `ANTSEED_IDENTITY_HEX`, the API keys the config names, and optionally `ANTSEED_BASE_RPC_URL`
-   (or set it as an env override, which buyers can read, if it holds no API key).
+   (or set it as an env override, which buyers can read, if it holds no API key) and
+   `ANTSEED_ALERTS_TELEGRAM_TOKEN`, the bot token for seller alerts (set
+   `seller.alerts.telegram.chatId` in the config; `botTokenEnv` must stay unset).
 2. Release the secrets only to the attested image, through a workload identity pool that trusts
    Google's attestation:
 
@@ -211,6 +220,9 @@ its listed env variables and never replace its command. Its logs may go to Cloud
      --metadata='tee-image-reference=ghcr.io/antseed/tee-seller@sha256:<digest>,tee-restart-policy=Always,tee-env-ANTSEED_TEE_PEER_ID=<peer id>,tee-env-ANTSEED_GCP_STATE=gs://<bucket>/<seller name>'
    gcloud compute firewall-rules create antseed-tee-seller --allow=tcp:6882,udp:6881
    ```
+
+   `c3-standard-4` (4 vCPUs, 16 GiB) is the size to use: the seller's payment and metering
+   databases live in the VM's memory here, next to the requests it is serving.
 
 With `ANTSEED_GCP_STATE`, which it requires, the image restores the seller's payment and metering databases
 from objects under that prefix on boot, and saves them while they change: payment channels every

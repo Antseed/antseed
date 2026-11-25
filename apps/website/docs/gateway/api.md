@@ -203,6 +203,12 @@ wire_api = "responses"
 
 Step-by-step setups for more tools (OpenCode, Pi, the Vercel AI SDK, LangChain and others) are in the [Integrations directory](/integrations); for Hermes and OpenClaw, see [Connect agents](/docs/agents). Each uses the same base URL and key. To launch coding tools against Antseed with one click instead, use the [desktop app](/docs/desktop).
 
+## Dropped connections
+
+A streamed answer keeps generating for 30 seconds after the client's connection drops. When the client sends the same request again in that time, with the same key, the gateway replays the answer from the start and streams the rest as it arrives. It is generated and paid for once. Clients that retry a failed request on their own, as most SDKs and coding tools do, need no setup.
+
+If no retry arrives within 30 seconds, the generation is cancelled, as it is for a client that leaves on purpose. The gateway keeps a compressed copy of each streamed answer only while it is in flight, and deletes it once the answer is delivered or the 30 seconds pass. A very long answer that outgrows the copy limit is cancelled on a drop, as before.
+
 ## Check a key's usage and limits
 
 Anyone with a key can read its usage and remaining limits:
@@ -227,10 +233,13 @@ curl https://gateway.example.com/v1/key -H "Authorization: Bearer $ANTSEED_API_K
       "weekly": { "limit_usd": null, "spent_usd": "1.204310", "remaining_usd": null },
       "monthly": { "limit_usd": null, "spent_usd": "1.204310", "remaining_usd": null },
       "total": { "limit_usd": "100.000000", "spent_usd": "1.204310", "remaining_usd": "98.795690" }
-    }
+    },
+    "held": { "held_usd": "0.300000", "requests_usd": "0.300000", "video_usd": "0.000000" }
   }
 }
 ```
+
+`held` is what counts against the limits on top of what is spent: `requests_usd` for requests in flight (each holds up to the most one request may cost until it is charged) and `video_usd` for videos being priced or accepted and not yet charged. A request is refused once spent plus held reaches a limit.
 
 `usage.requests` counts calls to a model. Listing `/v1/models` or checking a video's status shows in the request log but is not counted.
 
@@ -335,6 +344,7 @@ The gateway tells the buyer which identity pays with the `x-antseed-buyer-identi
 ## Where state lives
 
 - `<data-dir>/gateway/gateway.db`: hashed keys, the request log and spend (SQLite).
+- `<data-dir>/gateway/stream-resume/`: compressed copies of large streamed answers in flight (see [Dropped connections](#dropped-connections)), one folder per running gateway process. A gateway removes the folders of processes that are no longer running when it starts; nothing to back up.
 - `<data-dir>/buyer-identities/<name>/`: each extra identity's wallet key, or a reference to it.
 
 Back up the identity directories, or the secrets they point to: each wallet can hold credits.

@@ -156,6 +156,8 @@ const costCents = raw > 0 ? Math.max(1, Math.round(raw)) : 0;
 - Zero tokens result in zero cost
 - Rounding uses `Math.round` (not `Math.ceil`)
 
+**`costCents` is a per-receipt floor, not revenue.** Because every receipt with non-zero usage costs at least 1 cent, and a request that fails (HTTP status >= 400) still gets a receipt, summing `costCents` across receipts counts requests rather than earnings: a seller whose requests are each worth a fraction of a cent would see its revenue overstated many times over. Totals of what a seller earned must not be derived by summing `costCents`. Use each receipt's unrounded value, `totalTokens / 1000 * unitPriceCentsPerThousandTokens`, leave out requests that failed, and treat the payment channel ledger (the amounts buyers signed and what settled on-chain) as the record of what was actually paid. The CLI's seller usage, logs, status and metrics report revenue this way.
+
 ### Receipt Generation
 
 The `ReceiptGenerator` class requires a `Signer` interface:

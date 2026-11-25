@@ -41,6 +41,15 @@ describe('position action eligibility', () => {
     expect(positionActionProblem({ ...position, stakeEndEpoch: 26 }, action, 26)).toContain('remaining lock');
   });
 
+  it('tells users to withdraw and stake again only when the wallet can transfer', () => {
+    // Withdrawn ANTS land in the wallet, and wallet ANTS can be staked only while the wallet can transfer.
+    const restricted = positionActionProblem({ ...position, stakeEndEpoch: 26 }, 'extend', 26);
+    expect(restricted).toContain('can only be withdrawn');
+    expect(restricted).toContain("can't be staked again for now");
+    expect(restricted).not.toContain('stake again to start a new lock');
+    expect(positionActionProblem({ ...position, stakeEndEpoch: 26 }, 'extend', 26, true)).toContain('Withdraw it, then stake again to start a new lock.');
+  });
+
   it('waits for epoch data instead of assuming an action is valid', () => {
     expect(positionActionProblem(position, 'split', null)).toContain('epoch information');
   });

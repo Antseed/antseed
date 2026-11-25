@@ -63,6 +63,21 @@ test('policyExclusionReasons explains every exclusion in plain words', () => {
   )
 })
 
+test('an input cap also caps cached input when the policy sets no cached-input cap', () => {
+  // A seller announcing $0 input and output but billing cached input.
+  const cachedOnly = facts({ inputUsdPerMillion: 0, outputUsdPerMillion: 0, cachedInputUsdPerMillion: 0.75 })
+  const free = { maxInputUsdPerMillion: 0, maxOutputUsdPerMillion: 0 }
+  assert.deepEqual(policyExclusionReasons(free, cachedOnly), ['cached input price $0.75 over input cap $0'])
+  // Without a cached price the seller bills cached input at its input price, already capped.
+  assert.deepEqual(policyExclusionReasons(free, facts({ inputUsdPerMillion: 0, outputUsdPerMillion: 0 })), [])
+  // An explicit cached-input cap wins over the input cap, either way.
+  assert.deepEqual(policyExclusionReasons({ ...free, maxCachedInputUsdPerMillion: 1 }, cachedOnly), [])
+  assert.deepEqual(
+    policyExclusionReasons({ maxInputUsdPerMillion: 5, maxCachedInputUsdPerMillion: 0.5 }, facts({ cachedInputUsdPerMillion: 0.75 })),
+    ['cached input price $0.75 over cap $0.5'],
+  )
+})
+
 test('a halved trust score says why, and sub-cent prices keep their digits', () => {
   const penalty = 'halved from 80: no cached-input price listed'
   assert.deepEqual(

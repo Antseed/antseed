@@ -31,7 +31,7 @@ import {
   SUBNET_COUNT,
   type DHTNodeConfig,
 } from "./discovery/dht-node.js";
-import { toBootstrapConfig, OFFICIAL_BOOTSTRAP_NODES, mergeBootstrapNodes } from "./discovery/bootstrap.js";
+import { toBootstrapConfig, OFFICIAL_BOOTSTRAP_NODES, PUBLIC_FALLBACK_BOOTSTRAP_NODES, mergeBootstrapNodes } from "./discovery/bootstrap.js";
 import {
   ConnectionManager,
   PeerConnection,
@@ -46,6 +46,7 @@ import type { PeerVerifications, ServiceHealth } from "./discovery/peer-metadata
 import { mergeProviderAnnouncements, serviceHealthOf } from "./discovery/peer-metadata.js";
 import { verifyPeerMetadataDomains } from "./discovery/domain-verification.js";
 import { verifyPeerMetadataGithub } from "./discovery/github-verification.js";
+import { normalizePeerId } from "./discovery/verification-utils.js";
 import {
   PeerLookup,
   DEFAULT_LOOKUP_CONFIG,
@@ -73,7 +74,7 @@ import { VerificationSampler } from "./verification/samples.js";
 import type { ResponseAuthSink } from "@antseed/buyer-core";
 import { FrameDecoder, encodeFrame } from "./p2p/message-protocol.js";
 import { KeepaliveManager, buildPongPayload } from "./p2p/keepalive.js";
-import { DEFAULT_INBOUND_IDLE_TIMEOUT_MS, InboundIdleTracker } from "./p2p/inbound-idle-tracker.js";
+import { DEFAULT_INBOUND_IDLE_TIMEOUT_MS, FREE_SESSION_IDLE_TIMEOUT_MS, InboundIdleTracker } from "./p2p/inbound-idle-tracker.js";
 import { MessageType } from "./types/protocol.js";
 import type {
   Provider,
@@ -300,6 +301,8 @@ export interface NodePaymentsConfig {
   defaultAuthDurationSecs?: number;
   /** Minimum USDC per request (base units) for seller. Default: "10000" ($0.01). */
   minBudgetPerRequest?: string;
+  /** First reserve the seller suggests to a new buyer (base units). Default: "1000000" ($1.00). */
+  suggestedReserveAmount?: string;
   /** Minimum unsettled delta (base units) required before idle settle submits a tx. Default: "2000" (~$0.002). */
   minSettleDelta?: string;
   /** Serve channels whose buyer already requested close on-chain, risking uncollectible work. Default: false. */
@@ -365,8 +368,9 @@ export interface NodeConfig {
   announceProviderIds?: boolean;
   /**
    * Seller only: close a buyer's connection after this long with no traffic,
-   * unless the buyer has a paid channel or a free usage session open. 0 keeps
-   * idle connections. Default 30 minutes.
+   * unless the buyer has a paid channel open. A buyer with only a free usage
+   * session open is kept for 2 hours when that is longer. 0 keeps idle
+   * connections. Default 30 minutes.
    */
   inboundIdleTimeoutMs?: number;
   dataDir?: string;           // Default: ~/.antseed
@@ -384,6 +388,17 @@ export interface NodeConfig {
   maxStreamBufferBytes?: number;
   /** Maximum upload body size (bytes) a seller will accept per request. Default: 64 MiB. */
   maxUploadBodyBytes?: number;
+  /**
+   * Seller only: buyer peer IDs (40 hex chars, with or without 0x) whose requests are refused with
+   * 403 `buyer_blocked`. Change it at runtime with `setBlockedBuyers`.
+   */
+  blockedBuyers?: string[];
+  /**
+   * Most request body bytes a seller holds at once across all buyers, uploads still
+   * arriving included; past it a request gets a retryable 503. Never below
+   * `maxUploadBodyBytes`. Default: 256 MiB.
+   */
+  maxInFlightRequestBytes?: number;
   /** Maximum wall time allowed for a streaming response. Default: 30 minutes. */
   maxStreamDurationMs?: number;
   /**
@@ -589,6 +604,7 @@ export class AntseedNode extends EventEmitter {
   private _nat: NatTraversal | null = null;
   private _metering: MeteringStorage | null = null;
   private _resourceOwnership: ResourceOwnershipStore | null = null;
+  private _blockedBuyers = new Set<string>();
   /** How each service served buyers lately, announced in the seller's metadata. */
   private readonly _servicePerformance = new ServicePerformanceTracker();
   private _receiptGenerator: ReceiptGenerator | null = null;
@@ -681,6 +697,15 @@ export class AntseedNode extends EventEmitter {
   constructor(config: NodeConfig) {
     super();
     this._config = config;
+    this.setBlockedBuyers(config.blockedBuyers ?? []);
+  }
+
+  /**
+   * Replace the buyer peer IDs this seller refuses. Requests from them get 403 `buyer_blocked` (the free
+   * `/v1/models` listing stays open) and emit `request:blocked`. Takes effect on the next request.
+   */
+  setBlockedBuyers(peerIds: string[]): void {
+    this._blockedBuyers = new Set(peerIds.map(normalizePeerId).filter(Boolean));
   }
 
   get peerId(): string | null {
@@ -2093,6 +2118,11 @@ export class AntseedNode extends EventEmitter {
       operationTimeoutMs: this._config.dhtOperationTimeoutMs ?? DEFAULT_DHT_CONFIG.operationTimeoutMs,
       allowPrivateIPs: this._config.allowPrivateIPs,
       ...(this._config.bindHost ? { bindHost: this._config.bindHost } : {}),
+      // An isolated network (noOfficialBootstrap) uses only its own bootstrap list.
+      ...(this._config.noOfficialBootstrap ? {} : {
+        knownNodesFile: join(this._config.dataDir ?? join(homedir(), ".antseed"), "dht-nodes.json"),
+        fallbackBootstrapNodes: toBootstrapConfig(PUBLIC_FALLBACK_BOOTSTRAP_NODES),
+      }),
     };
   }
 
@@ -2116,7 +2146,8 @@ export class AntseedNode extends EventEmitter {
         // Keepalive: respond to Ping, dispatch Pong to manager
         if (frame.type === MessageType.Ping) {
           if (conn.state === ConnectionState.Open || conn.state === ConnectionState.Authenticated) {
-            conn.send(encodeFrame({
+            // A socket can stop being writable before the state changes; a throw here would escape its data listener.
+            conn.trySend(encodeFrame({
               type: MessageType.Pong,
               messageId: frame.messageId,
               payload: buildPongPayload(frame.payload),
@@ -2205,7 +2236,7 @@ export class AntseedNode extends EventEmitter {
       const keepalive = new KeepaliveManager({
         sendPing: (payload: Uint8Array) => {
           if (conn.state === ConnectionState.Open || conn.state === ConnectionState.Authenticated) {
-            conn.send(encodeFrame({
+            conn.trySend(encodeFrame({
               type: MessageType.Ping,
               messageId: 0,
               payload,
@@ -2221,6 +2252,16 @@ export class AntseedNode extends EventEmitter {
       this._keepalives.get(peerId)?.stop();
       this._keepalives.set(peerId, keepalive);
       keepalive.start();
+    }
+  }
+
+  private _settleIdleSession(spm: SellerPaymentManager, info: { buyerPeerId: string; reason: string }): void {
+    if (info.reason === "idle-settle") {
+      debugLog(`[Node] Idle settle for buyer ${info.buyerPeerId.slice(0, 12)}... — settling channel (keeping open)`);
+      void spm.settleSession(info.buyerPeerId, { settleOnly: true });
+    } else if (info.reason === "idle-timeout") {
+      debugLog(`[Node] Idle timeout for buyer ${info.buyerPeerId.slice(0, 12)}... — closing channel`);
+      void spm.settleSession(info.buyerPeerId, { cleanupOnFailure: true, onlyIfIdle: true });
     }
   }
 
@@ -2277,15 +2318,7 @@ export class AntseedNode extends EventEmitter {
     // Wire idle session events to on-chain settlement
     if (this._sellerPaymentManager) {
       const spm = this._sellerPaymentManager;
-      this._settleOnIdle = (info: { buyerPeerId: string; reason: string }) => {
-        if (info.reason === "idle-settle") {
-          debugLog(`[Node] Idle settle for buyer ${info.buyerPeerId.slice(0, 12)}... — settling channel (keeping open)`);
-          void spm.settleSession(info.buyerPeerId, { settleOnly: true });
-        } else if (info.reason === "idle-timeout") {
-          debugLog(`[Node] Idle timeout for buyer ${info.buyerPeerId.slice(0, 12)}... — closing channel`);
-          void spm.settleSession(info.buyerPeerId, { cleanupOnFailure: true });
-        }
-      };
+      this._settleOnIdle = (info: { buyerPeerId: string; reason: string }) => this._settleIdleSession(spm, info);
       this.on("session:finalized", this._settleOnIdle);
     }
 
@@ -2304,12 +2337,14 @@ export class AntseedNode extends EventEmitter {
     if (inboundIdleTimeoutMs > 0) {
       this._inboundIdle = new InboundIdleTracker({
         idleTimeoutMs: inboundIdleTimeoutMs,
-        holdsSession: (buyerPeerId) => Boolean(this._channelStore?.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER))
-          || (this._sellerFreeUsageManager?.hasSession(buyerPeerId) ?? false),
+        sessionHoldMs: (buyerPeerId) => {
+          if (this._channelStore?.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER)) return Infinity;
+          return this._sellerFreeUsageManager?.hasSession(buyerPeerId) ? FREE_SESSION_IDLE_TIMEOUT_MS : 0;
+        },
       });
       this._inboundIdleSweep = setInterval(() => {
         const closed = this._inboundIdle?.sweep() ?? [];
-        if (closed.length > 0) debugLog(`[Node] Closed ${closed.length} idle buyer connection(s) with no channel open`);
+        if (closed.length > 0) debugLog(`[Node] Closed ${closed.length} idle buyer connection(s) with no paid channel open`);
       }, Math.min(60_000, inboundIdleTimeoutMs));
       this._inboundIdleSweep.unref?.();
     }
@@ -2379,10 +2414,9 @@ export class AntseedNode extends EventEmitter {
           maxConcurrency: p.maxConcurrency,
           isAvailable: () => this._advertisingPausedReason === null,
           pricing: {
-            defaults: {
-              inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
-              outputUsdPerMillion: p.pricing.defaults.outputUsdPerMillion,
-            },
+            // Announce every default price, the cached-input one included: a default the seller bills by but does not
+            // announce is a cost buyers cannot see. (A cached-input price of 0 reads back as none on the wire.)
+            defaults: { ...p.pricing.defaults },
             ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
           },
           };
@@ -2396,10 +2430,7 @@ export class AntseedNode extends EventEmitter {
           this._providers.map((p) => [
             announcedName(p.name),
             {
-              defaults: {
-                inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
-                outputUsdPerMillion: p.pricing.defaults.outputUsdPerMillion,
-              },
+              defaults: { ...p.pricing.defaults },
               ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
             },
           ]),
@@ -2453,7 +2484,9 @@ export class AntseedNode extends EventEmitter {
       announcer: this._announcer,
       ...(this._config.announceProviderIds ? { announceProviderIds: true } : {}),
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
+      maxInFlightRequestBytes: this._config.maxInFlightRequestBytes,
       resourceOwnershipStore: this._resourceOwnership,
+      isBuyerBlocked: (buyerPeerId) => this._blockedBuyers.has(normalizePeerId(buyerPeerId)),
       servicePerformance: this._servicePerformance,
       ...(this._config.payments?.reserveEstimateOverdraftUsdc != null
         ? { reserveEstimateOverdraftUsdc: BigInt(this._config.payments.reserveEstimateOverdraftUsdc) }
@@ -2861,6 +2894,7 @@ export class AntseedNode extends EventEmitter {
         chainId: payments.chainId ?? 8453,
         dataDir: paymentsDir,
         ...(payments.minBudgetPerRequest ? { minBudgetPerRequest: payments.minBudgetPerRequest } : {}),
+        ...(payments.suggestedReserveAmount ? { suggestedReserveAmount: payments.suggestedReserveAmount } : {}),
         ...(payments.minSettleDelta ? { minSettleDelta: payments.minSettleDelta } : {}),
         ...(payments.serveWhileClosePending !== undefined
           ? { serveWhileClosePending: payments.serveWhileClosePending }

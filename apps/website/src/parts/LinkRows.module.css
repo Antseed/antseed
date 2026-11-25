@@ -1,0 +1,49 @@
+.rows {
+  composes: dots from '../components/dots.module.css';
+  --dots-bottom: 2px;
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.two { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 48px; }
+.item {
+  composes: dots from '../components/dots.module.css';
+  --dots-top: 2px;
+}
+
+.row { display: flex; align-items: center; gap: 16px; height: 100%; padding: 22px 0 23px; color: inherit; }
+.row:hover { text-decoration: none; }
+.row:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 4px; border-radius: 2px; }
+
+.mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--site-tile-line);
+  border-radius: var(--site-radius-control);
+  background: var(--site-tile);
+  color: var(--site-text);
+}
+.mark svg { width: 22px; height: 22px; }
+
+.words { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.name { font: 500 18px/26px var(--site-font); color: var(--site-text); transition: color .15s; }
+.text { font: 400 16px/25px var(--site-font); color: var(--site-text-body); text-wrap: pretty; }
+.action { display: inline-flex; align-items: center; gap: 8px; flex: none; font: 400 15px/22px var(--site-font); color: var(--site-text-muted); white-space: nowrap; transition: color .15s; }
+.arrow { font-size: 18px; transition: translate .15s; }
+.row:hover .name, .row:hover .action { color: var(--site-accent); }
+.row:hover .arrow { translate: 3px 0; }
+
+@media (max-width: 899px) {
+  .two { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .row { gap: 14px; padding: 18px 0 19px; }
+  .name { font-size: 16px; line-height: 24px; }
+  .text { font-size: 15px; line-height: 22px; }
+  .actionText { display: none; }   /* the arrow alone on a phone; the row's name says where it goes */
+}
+@media (prefers-reduced-motion: reduce) { .arrow { transition: none; } }

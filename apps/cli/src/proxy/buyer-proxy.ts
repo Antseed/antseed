@@ -38,6 +38,7 @@ import {
   isRoutingSelection,
   DEFAULT_BUYER_IDENTITY,
   rankModelRoutes,
+  rotateEqualReputationHead,
   SellerHealthBook,
   orderAdaptiveRoutes,
   reportedSuccessPrior,
@@ -2048,7 +2049,7 @@ export class BuyerProxy {
           rotationKey: requestedService,
           advance: advanceRotation,
         })
-        : this._readyFirst(allowed, verdicts, now)
+        : this._readyFirst(allowed, verdicts, now, { advance: advanceRotation, key: requestedService })
     } else if (routingPreferences) {
       candidates = []
       for (const candidate of rankModelRoutes(ranked, routingPreferences, now, {
@@ -2064,7 +2065,7 @@ export class BuyerProxy {
         }
       }
     } else {
-      candidates = this._readyFirst(ranked, verdicts, now)
+      candidates = this._readyFirst(ranked, verdicts, now, { advance: !input.deterministic, key: requestedService })
     }
     const isCooling = (candidate: (typeof ranked)[number]): boolean => isModelRouteCoolingDown(candidate, now)
     const openChannels = input.openChannels ? input.openChannels() : this._openChannelPeers(request.headers[BUYER_IDENTITY_HEADER])
@@ -2248,6 +2249,7 @@ export class BuyerProxy {
     ranked: T[],
     verdicts: Map<string, ModelRouteVerdict>,
     now: number,
+    rotation?: { advance?: boolean; key?: string },
   ): T[] {
     ranked.sort((a, b) =>
       (b.effectiveReputationScore ?? -1) - (a.effectiveReputationScore ?? -1)
@@ -2258,9 +2260,13 @@ export class BuyerProxy {
       if (isCoolingDown(this._peerHealth.get(candidate.peer.peerId), now)) cooling.push(candidate)
       else ready.push(candidate)
     }
-    if (ready.length === 0) return ranked
+    const turn = (rows: T[]): T[] => rotateEqualReputationHead(rows, {
+      advance: rotation?.advance !== false,
+      key: rotation?.key,
+    })
+    if (ready.length === 0) return turn(ranked)
     for (const candidate of cooling) verdicts.get(candidate.peerId)?.reasons.push('cooling down')
-    return ready
+    return turn(ready)
   }
 
   /** `GET /_antseed/route-preview`: what routing would do for a model-only request, ineligible sellers included. */
@@ -5902,25 +5908,20 @@ export class BuyerProxy {
           log(`${prefix}: ${summarizeErrorResponse(responseForClient)}`)
         }
 
-        const telemetry = computeResponseTelemetry(
-          requestForPeer,
-          responseForClient.headers,
-          responseForClient.body,
-          selectedPeer,
-        )
+        const telemetry = computeResponseTelemetry(requestForPeer, response, selectedPeer)
         const usageTrace = responseForClient.statusCode < 400 ? traceFor(res) : undefined
         if (usageTrace) {
           // A stream's first frame (Anthropic's message_start) can carry the
           // input and cache counts, so the trace reads the whole stream.
           const fullBody = streamed && streamStartBody.length > 0
-            ? Buffer.concat([streamStartBody, responseForClient.body])
-            : responseForClient.body
-          const fullTelemetry = fullBody === responseForClient.body
+            ? Buffer.concat([streamStartBody, response.body])
+            : response.body
+          const fullTelemetry = fullBody === response.body
             ? telemetry
-            : computeResponseTelemetry(requestForPeer, responseForClient.headers, fullBody, selectedPeer)
+            : computeResponseTelemetry(requestForPeer, { ...response, body: fullBody }, selectedPeer)
           usageTrace.noteUsage(fullTelemetry.usage)
           usageTrace.noteAnswerDetails({
-            finishReason: finishReasonFromBody(responseForClient.headers['content-type'], fullBody),
+            finishReason: finishReasonFromBody(response.headers['content-type'], fullBody),
             estimatedCostUsd: fullTelemetry.estimatedCostUsd,
           })
         }
@@ -6067,7 +6068,7 @@ export class BuyerProxy {
           log(`${prefix}: ${summarizeErrorResponse(response)}`)
         }
 
-        const telemetry = computeResponseTelemetry(requestForPeer, response.headers, response.body, selectedPeer)
+        const telemetry = computeResponseTelemetry(requestForPeer, upstreamResponse, selectedPeer)
         const answerTrace = response.statusCode < 400 ? traceFor(res) : undefined
         if (answerTrace) {
           answerTrace.noteUsage(telemetry.usage)

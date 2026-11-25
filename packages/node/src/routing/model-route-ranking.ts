@@ -1,3 +1,4 @@
+import { nextRotationOffset, rotateHead, tiedSellerSignature } from './rotation.js';
 import { normalizedModelReputationScore } from '../reputation/model-reputation.js';
 
 export type ModelRoutingPreferences = {
@@ -207,24 +208,7 @@ function compareScoredModelRoutes<T extends ModelRouteCandidate>(
 // One counter per model or seller pool. A single process-wide counter
 // phase-locks when the catalog ranks model A and then model B: each model
 // keeps the same parity and the same seller stays first.
-const MAX_ROTATION_POOLS = 4096;
 const equalHeadRotation = new Map<string, number>();
-
-function rememberRotation(key: string, step: number): void {
-  if (equalHeadRotation.has(key)) equalHeadRotation.delete(key);
-  equalHeadRotation.set(key, step);
-  while (equalHeadRotation.size > MAX_ROTATION_POOLS) {
-    const oldest = equalHeadRotation.keys().next().value;
-    if (oldest === undefined) break;
-    equalHeadRotation.delete(oldest);
-  }
-}
-
-function nextRotationOffset(key: string, group: number, advance: boolean): number {
-  const step = ((equalHeadRotation.get(key) ?? 0) + 1) >>> 0;
-  if (advance) rememberRotation(key, step);
-  return step % group;
-}
 
 function rotationPoolKey<T extends ModelRouteCandidate>(
   ranked: ScoredModelRoute<T>[],
@@ -232,13 +216,7 @@ function rotationPoolKey<T extends ModelRouteCandidate>(
   rotationKey: string | undefined,
 ): string {
   if (rotationKey && rotationKey.length > 0) return `key:${rotationKey}`;
-  const ids: string[] = [];
-  for (let index = 0; index < group; index += 1) {
-    const peerId = ranked[index]?.route.peerId;
-    if (peerId) ids.push(normalizedPeerId(peerId));
-  }
-  ids.sort();
-  return `peers:${ids.join('\n')}`;
+  return `peers:${tiedSellerSignature(ranked, group, (entry) => entry.route.peerId, normalizedPeerId)}`;
 }
 
 function rotateEqualHead<T extends ModelRouteCandidate>(
@@ -258,14 +236,8 @@ function rotateEqualHead<T extends ModelRouteCandidate>(
     group += 1;
   }
   if (group < 2) return ranked;
-  const offset = nextRotationOffset(rotationPoolKey(ranked, group, rotationKey), group, advance);
-  if (offset === 0) return ranked;
-  const head = ranked.slice(0, group);
-  for (let index = 0; index < group; index += 1) {
-    const next = head[(index + offset) % group];
-    if (next) ranked[index] = next;
-  }
-  return ranked;
+  const offset = nextRotationOffset(equalHeadRotation, rotationPoolKey(ranked, group, rotationKey), group, advance);
+  return rotateHead(ranked, group, offset);
 }
 
 export type ModelRouteRankingOptions = {

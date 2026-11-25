@@ -24,6 +24,20 @@ If the prover fails to load at startup, the seller exits rather than advertising
 - The signaling (TCP) and DHT (UDP) ports reachable from the internet. For public TCP `14532` → container `6882`, configure host forwarding and set `seller.publicAddress` to `<public-ip>:14532`; the seller announces both TCP ports in the DHT so metadata stays discoverable when the public address names a different host. Buyers attest over encrypted TCP; the connection binding is not available over WebRTC.
 - Node.js 20+ and a checkout of the [Antseed repository](https://github.com/Antseed/antseed) on your own machine, to generate the compose file.
 
+### Server requirements
+
+| | Minimum | Recommended for production |
+| --- | --- | --- |
+| dstack (Phala Cloud) | `tdx.small`: 1 vCPU, 2 GiB | `tdx.medium`: 2 vCPUs, 4 GiB, or larger |
+| Google Confidential Space | `c3-standard-4`: 4 vCPUs, 16 GiB | The same |
+| Disk (dstack) | 20 GB | 40 GB or more |
+
+A confidential VM's memory also holds its own OS and container runtime, so the seller gets less of it than on a plain server of the same size. The seller's memory follows the size and number of requests in flight: a request stays in memory while it is served, and one request can be as large as 64 MiB. A `tdx.small` seller with steady traffic can run out of memory and restart, so use `tdx.medium` or larger once you serve real traffic.
+
+On Confidential Space the seller's payment channels and metering are held in the VM's memory as well, since the VM has no disk the seller can write to, so its memory has to hold both.
+
+The disk holds the seller's payment channels and metering history, which grows with traffic. See [Become a provider](/docs/provide#server-requirements) for a seller outside a TEE.
+
 ## Approved seller builds
 
 Buyers accept a seller node that runs Antseed's official TEE seller image as a dstack (Phala) confidential VM app. The image runs on a distroless runtime with no shell, package manager, runtime plugin installs or dashboard, so its operator has no way into it. From the quote and the evidence the seller sends with it, the buyer checks that:
@@ -62,7 +76,7 @@ It writes a compose file (JSON, which compose also reads) with the image pinned 
 
 Deploy `docker-compose.json` as a dstack app with KMS enabled, on the dstack 0.6.1 OS image and a CPU instance type (`tdx.small` to `tdx.8xlarge` on Phala Cloud), the OS releases and VM shapes buyers accept:
 
-- set the printed variables as encrypted environment variables: `ANTSEED_IDENTITY_HEX` (your identity key, hex) and your API keys, and allow exactly those;
+- set the printed variables as encrypted environment variables: `ANTSEED_IDENTITY_HEX` (your identity key, hex) and your API keys, and allow exactly those. For seller alerts on Telegram, set `seller.alerts.telegram.chatId` in the config and pass `--alerts-token-secret` to `compose.mjs`, which adds `ANTSEED_ALERTS_TELEGRAM_TOKEN` (the bot token) to the list;
 - add no pre-launch or init script. Public logs may be on: the image runs the seller in content-free mode, so its logs and databases hold no prompts or answers, nor upstream error text about a request, only metadata such as status codes, token counts and buyer peer IDs.
 
 With Phala Cloud's `phala` CLI:
@@ -71,6 +85,8 @@ With Phala Cloud's `phala` CLI:
 phala deploy --compose docker-compose.json --kms phala --image dstack-0.6.1 \
   --instance-type tdx.small --no-pre-launch-script --env <each printed secret>
 ```
+
+`tdx.small` is enough to start with. For a seller with steady traffic, pass `--instance-type tdx.medium` or larger. See [Server requirements](#server-requirements).
 
 The CLI always writes an empty `init_script` into the app compose. Buyers on verifier 0.1.5 or later accept it while it stays empty; earlier ones reject any `init_script` and report `app compose option init_script is not allowed`.
 

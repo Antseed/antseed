@@ -71,6 +71,19 @@ describe('ChannelStore', () => {
     expect(loaded!.settledAmount).toBeNull();
   });
 
+  it('finds a channel by its id in any hex case, and by its exact spelling when both are stored', () => {
+    const lower = '0x' + 'ab'.repeat(32);
+    const upper = '0x' + 'AB'.repeat(32);
+    store.upsertChannel(makeChannel({ sessionId: upper, peerId: 'peer-upper' }));
+
+    expect(store.getChannelIgnoringCase(lower)?.sessionId).toBe(upper);
+    expect(store.getChannelIgnoringCase('0x' + 'cd'.repeat(32))).toBeNull();
+
+    store.upsertChannel(makeChannel({ sessionId: lower, peerId: 'peer-lower', nonce: 2 }));
+    expect(store.getChannelIgnoringCase(lower)?.sessionId).toBe(lower);
+    expect(store.getChannelIgnoringCase(upper)?.sessionId).toBe(upper);
+  });
+
   it('test_updateStatus: update to settled, verify', () => {
     const channel = makeChannel();
     store.upsertChannel(channel);

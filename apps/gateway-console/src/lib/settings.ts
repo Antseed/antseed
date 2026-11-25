@@ -28,6 +28,13 @@ export function numberFieldError(raw: string, opts: { required?: boolean; min?: 
   return undefined
 }
 
+/** Error for a cached-input price, or undefined. Buyers ignore an offer whose cached input costs more than input. */
+export function cachedPriceError(cached: string, input: string): string | undefined {
+  const error = numberFieldError(cached)
+  if (error || cached.trim() === '' || numberFieldError(input, { required: true })) return error
+  return Number(cached) > Number(input) ? 'At most the input price; buyers skip a model whose cached input costs more.' : undefined
+}
+
 /** Non-empty lines (or comma-separated entries) of a textarea. */
 export function splitEntries(text: string): string[] {
   return text.split(/[\n,]/).map((entry) => entry.trim()).filter(Boolean)

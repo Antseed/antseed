@@ -1,6 +1,5 @@
-import { isExposedResponseHeader, type PeerInfo, type SerializedHttpRequest } from '@antseed/node'
+import { computeCostUsdc, isExposedResponseHeader, usageForBilling, type PeerInfo, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
 import { ROUTE_SELECTION_HEADER } from './route-selection.js'
-import { extractUsage, toNonNegativeInt } from '@antseed/api-adapter'
 import { pickProviderForPeer } from './routing.js'
 import { extractRequestedService } from './request-utils.js'
 import { FREE_TIER_SERVED_COVERED, FREE_TIER_SERVED_HEADER } from '@antseed/node/free-tier-program'
@@ -11,8 +10,6 @@ export function coveredByFreeAllowance(headers: Record<string, string | string[]
     name.toLowerCase() === FREE_TIER_SERVED_HEADER
     && (Array.isArray(value) ? value : [value]).some((entry) => entry?.trim().toLowerCase() === FREE_TIER_SERVED_COVERED))
 }
-
-const decoder = new TextDecoder()
 
 export type TokenUsageSummary = {
   /** Total input tokens, cache hits included. */
@@ -38,181 +35,6 @@ export type ResponseTelemetry = {
   usage: TokenUsageSummary
   pricing: RoutingPricing
   estimatedCostUsd: number | null
-}
-
-type UsageCounts = {
-  inputTokens: number
-  freshInputTokens: number
-  cachedInputTokens: number
-  outputTokens: number
-  totalTokens: number
-}
-
-const EMPTY_USAGE: UsageCounts = {
-  inputTokens: 0,
-  freshInputTokens: 0,
-  cachedInputTokens: 0,
-  outputTokens: 0,
-  totalTokens: 0,
-}
-
-function parseUsageObject(value: unknown): UsageCounts {
-  if (!value || typeof value !== 'object') {
-    return EMPTY_USAGE
-  }
-
-  // Cache hits arrive in two shapes — a subset of the input count (OpenAI) or
-  // a sibling of it (Anthropic). The metering layer already discriminates
-  // between them, so reuse it rather than guessing here: without the split,
-  // a cached OpenAI response bills every cache hit at the full input rate and
-  // a cached Anthropic response bills none of them at all.
-  const canonical = extractUsage({ usage: value })
-
-  const usage = value as Record<string, unknown>
-  const total = toNonNegativeInt(usage.totalTokens ?? usage.total_tokens ?? usage.total_token_count)
-  let input = toNonNegativeInt(
-    usage.inputTokens
-    ?? usage.input_tokens
-    ?? usage.promptTokens
-    ?? usage.prompt_tokens
-    ?? usage.input_token_count
-    ?? usage.prompt_token_count
-    ?? usage.cache_creation_input_tokens
-    ?? usage.cache_read_input_tokens,
-  )
-  let output = toNonNegativeInt(
-    usage.outputTokens
-    ?? usage.output_tokens
-    ?? usage.completionTokens
-    ?? usage.completion_tokens
-    ?? usage.output_token_count
-    ?? usage.completion_token_count,
-  )
-
-  // Prefer the canonical counts whenever the provider reported usage in a
-  // shape the metering layer understands; the loose key matching above only
-  // covers the stragglers that report nothing recognizable.
-  if (canonical.inputTokens > 0) input = canonical.inputTokens
-  if (canonical.outputTokens > 0) output = canonical.outputTokens
-
-  if (total > 0) {
-    if (input === 0 && output === 0) {
-      output = total
-    } else if (output === 0 && input > 0 && total >= input) {
-      output = total - input
-    } else if (input === 0 && output > 0 && total >= output) {
-      input = total - output
-    }
-  }
-
-  const cachedInputTokens = Math.min(canonical.cachedInputTokens, input)
-  return {
-    inputTokens: input,
-    freshInputTokens: Math.max(0, input - cachedInputTokens),
-    cachedInputTokens,
-    outputTokens: output,
-    totalTokens: input + output,
-  }
-}
-
-/** Average ~4 bytes per token for English text; used when providers don't return usage counts. */
-const BYTES_PER_TOKEN_ESTIMATE = 4
-
-function estimateTokensFromBytes(inputBytes: number, outputBytes: number): TokenUsageSummary {
-  const inputTokens = Math.max(1, Math.round(Math.max(0, inputBytes) / BYTES_PER_TOKEN_ESTIMATE))
-  const outputTokens = Math.max(1, Math.round(Math.max(0, outputBytes) / BYTES_PER_TOKEN_ESTIMATE))
-  return {
-    inputTokens,
-    freshInputTokens: inputTokens,
-    cachedInputTokens: 0,
-    outputTokens,
-    totalTokens: inputTokens + outputTokens,
-    source: 'estimated',
-  }
-}
-
-function parseSseUsage(body: Uint8Array): UsageCounts {
-  const text = decoder.decode(body)
-  const lines = text.split('\n')
-  let inputTokens = 0
-  let outputTokens = 0
-  let totalTokens = 0
-  let cachedInputTokens = 0
-
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (!trimmed.startsWith('data:')) continue
-
-    const payload = trimmed.slice(5).trim()
-    if (payload.length === 0 || payload === '[DONE]') continue
-
-    let parsed: Record<string, unknown>
-    try {
-      parsed = JSON.parse(payload) as Record<string, unknown>
-    } catch {
-      continue
-    }
-
-    const directUsage = parseUsageObject(parsed.usage)
-    if (directUsage.totalTokens > 0) {
-      inputTokens = Math.max(inputTokens, directUsage.inputTokens)
-      outputTokens = Math.max(outputTokens, directUsage.outputTokens)
-      totalTokens = Math.max(totalTokens, directUsage.totalTokens)
-      cachedInputTokens = Math.max(cachedInputTokens, directUsage.cachedInputTokens)
-    }
-
-    const message = parsed.message
-    const messageUsage = parseUsageObject(message && typeof message === 'object' ? (message as Record<string, unknown>).usage : undefined)
-    if (messageUsage.totalTokens > 0) {
-      inputTokens = Math.max(inputTokens, messageUsage.inputTokens)
-      outputTokens = Math.max(outputTokens, messageUsage.outputTokens)
-      totalTokens = Math.max(totalTokens, messageUsage.totalTokens)
-      cachedInputTokens = Math.max(cachedInputTokens, messageUsage.cachedInputTokens)
-    }
-  }
-
-  if (totalTokens <= 0) {
-    totalTokens = inputTokens + outputTokens
-  }
-
-  const cached = Math.min(cachedInputTokens, inputTokens)
-  return {
-    inputTokens,
-    freshInputTokens: Math.max(0, inputTokens - cached),
-    cachedInputTokens: cached,
-    outputTokens,
-    totalTokens,
-  }
-}
-
-function parseJsonUsage(body: Uint8Array): UsageCounts {
-  try {
-    const parsed = JSON.parse(decoder.decode(body)) as Record<string, unknown>
-    const direct = parseUsageObject(parsed.usage)
-    if (direct.totalTokens > 0) {
-      return direct
-    }
-
-    const message = parsed.message
-    if (message && typeof message === 'object') {
-      const nested = parseUsageObject((message as Record<string, unknown>).usage)
-      if (nested.totalTokens > 0) {
-        return nested
-      }
-    }
-
-    const result = parsed.result
-    if (result && typeof result === 'object') {
-      const nested = parseUsageObject((result as Record<string, unknown>).usage)
-      if (nested.totalTokens > 0) {
-        return nested
-      }
-    }
-
-    return EMPTY_USAGE
-  } catch {
-    return EMPTY_USAGE
-  }
 }
 
 function toFiniteNumberOrNull(value: unknown): number | null {
@@ -289,31 +111,26 @@ function resolvePeerPricing(peer: PeerInfo, provider: string, service: string | 
   }
 }
 
+/**
+ * The usage and cost of a seller's response, as the buyer signs for it: `response` is the seller's
+ * own answer, before it is translated for the client, since that is what the charge is computed on.
+ */
 export function computeResponseTelemetry(
   request: SerializedHttpRequest,
-  responseHeaders: Record<string, string>,
-  responseBody: Uint8Array,
+  response: Pick<SerializedHttpResponse, 'statusCode' | 'headers' | 'body'>,
   selectedPeer: PeerInfo,
 ): ResponseTelemetry {
   const provider = pickProviderForPeer(selectedPeer, request)
   const service = extractRequestedService(request)
   const pricing = resolvePeerPricing(selectedPeer, provider, service)
-  const contentType = (responseHeaders['content-type'] ?? '').toLowerCase()
-
-  const usageFromBody = contentType.includes('text/event-stream')
-    ? parseSseUsage(responseBody)
-    : parseJsonUsage(responseBody)
-
-  let usage: TokenUsageSummary
-  if (usageFromBody.totalTokens > 0) {
-    usage = { ...usageFromBody, source: 'usage' }
-  } else {
-    usage = estimateTokensFromBytes(request.body.length, responseBody.length)
-  }
+  // The seller bills the same figure from the same bytes.
+  const { usage: billed, estimated } = usageForBilling(request.body, response)
+  const totalTokens = billed.inputTokens + billed.outputTokens
+  const usage: TokenUsageSummary = { ...billed, totalTokens, source: estimated || totalTokens === 0 ? 'estimated' : 'usage' }
 
   let estimatedCostUsd: number | null = null
-  if (coveredByFreeAllowance(responseHeaders)) {
-    // The seller's free allowance covered it: nothing is charged at the listed price.
+  if (response.statusCode >= 400 || coveredByFreeAllowance(response.headers)) {
+    // Nothing is signed for an error reply, nor charged for one the seller's free allowance covered.
     estimatedCostUsd = 0
   } else if (
     pricing.inputUsdPerMillion !== null &&
@@ -321,14 +138,14 @@ export function computeResponseTelemetry(
     Number.isFinite(pricing.inputUsdPerMillion) &&
     Number.isFinite(pricing.outputUsdPerMillion)
   ) {
-    // Sellers meter cache hits at their own rate; a seller that advertises no
-    // cached rate charges them as fresh input.
-    const cachedUsdPerMillion = pricing.cachedInputUsdPerMillion ?? pricing.inputUsdPerMillion
-    estimatedCostUsd = (
-      usage.freshInputTokens * pricing.inputUsdPerMillion
-      + usage.cachedInputTokens * cachedUsdPerMillion
-      + usage.outputTokens * pricing.outputUsdPerMillion
-    ) / 1_000_000
+    // Priced and rounded to base units as the buyer signs: a seller that advertises
+    // no cached rate charges cache hits as fresh input.
+    const prices = {
+      inputUsdPerMillion: pricing.inputUsdPerMillion,
+      outputUsdPerMillion: pricing.outputUsdPerMillion,
+      ...(pricing.cachedInputUsdPerMillion !== null ? { cachedInputUsdPerMillion: pricing.cachedInputUsdPerMillion } : {}),
+    }
+    estimatedCostUsd = Number(computeCostUsdc(usage.freshInputTokens, usage.outputTokens, prices, usage.cachedInputTokens)) / 1_000_000
   }
 
   return {

@@ -40,6 +40,15 @@ test('narrowPolicy only accumulates restrictions', () => {
   assert.equal(policyAllowsPeer(narrowed, PEER_B), false)
 })
 
+test('narrowPolicy keeps a level\'s input cap on cached input when another level sets a cached-input cap', () => {
+  // The parent's $0 input cap bounds cached input; a child's looser cached cap cannot lift it.
+  assert.equal(narrowPolicy({ maxInputUsdPerMillion: 0 }, { maxCachedInputUsdPerMillion: 5 }).maxCachedInputUsdPerMillion, 0)
+  assert.equal(narrowPolicy({ maxCachedInputUsdPerMillion: 5 }, { maxInputUsdPerMillion: 1 }).maxCachedInputUsdPerMillion, 1)
+  assert.equal(narrowPolicy({ maxInputUsdPerMillion: 3, maxCachedInputUsdPerMillion: 0.3 }, { maxInputUsdPerMillion: 1 }).maxCachedInputUsdPerMillion, 0.3)
+  // Neither sets one: it stays unset, and the combined input cap applies.
+  assert.equal(narrowPolicy({ maxInputUsdPerMillion: 3 }, { maxInputUsdPerMillion: 1 }).maxCachedInputUsdPerMillion, undefined)
+})
+
 test('peer list references validate, narrow and expand', () => {
   assert.equal(isRoutingPolicy({ allowedPeerLists: ['pl_1'], blockedPeerLists: ['pl_2'] }), true)
   assert.equal(isRoutingPolicy({ allowedPeerLists: 'pl_1' }), false)
