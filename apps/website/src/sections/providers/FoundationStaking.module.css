@@ -1,0 +1,4 @@
+.panel { aspect-ratio: 4 / 3; }
+:global(#foundation-staking) .panel { background-position: right bottom; }
+.panel .card { top: 12%; left: 6%; translate: 0 0; width: min(260px, 58%); }
+@media (min-width: 900px) { .panel { align-self: center; } }

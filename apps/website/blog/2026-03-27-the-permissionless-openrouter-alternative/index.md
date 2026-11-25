@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [decentralized-ai, P2P AI, OpenRouter alternative, AI infrastructure, permissionless, AI agents, AI marketplace]
 description: OpenRouter decides what you're allowed to route to. Antseed doesn't. A permissionless, peer-to-peer AI network with the same OpenAI-compatible interface — no gatekeeper, no platform fee, no single point of failure.
 keywords: [OpenRouter alternative, permissionless AI, decentralized AI inference, P2P LLM routing, AI API gateway alternative, OpenRouter vs Antseed, decentralized AI marketplace, AI agent marketplace, permissionless AI marketplace, Bittensor alternative]
-image: /og-image.jpg
 date: 2026-03-28
 ---
 
@@ -130,4 +129,4 @@ Yes. Providers and buyers can pay and settle in USDC or by card. The protocol ha
 
 ---
 
-[Read the lightpaper](/docs/lightpaper) · [Get started in one command](/docs/install)
+[How the protocol works](/docs/overview) · [Get started in one command](/docs/install)

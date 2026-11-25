@@ -174,103 +174,10 @@ export interface BuyerUsageTotals {
 
 /**
  * Personal buyer usage, sourced from the buyer's local channel store via
- * the payments server. All fields are answerable without hitting the
- * external network-stats aggregator.
+ * the payments server.
  */
 export async function getBuyerUsage(): Promise<BuyerUsageTotals> {
   return fetchJson('/api/buyer-usage');
-}
-
-export interface NetworkStatsTotals {
-  activePeers: number;
-  totalRequests: string;        // bigint as string
-  totalInputTokens: string;
-  totalOutputTokens: string;
-  totalSettlements: number;
-  sellerCount?: number;
-}
-
-export interface NetworkStatsResponse {
-  totals: NetworkStatsTotals;
-  indexer?: {
-    lastBlock: number;
-    lastBlockTimestamp: number | null;
-    latestBlock?: number;
-    synced?: boolean;
-  };
-}
-
-/**
- * Calls the network-stats `/stats` endpoint. Newer network-stats servers expose
- * top-level aggregate totals that include inactive historical sellers; fall back
- * to aggregating active peers for compatibility with older deployments.
- */
-export async function getNetworkStats(networkStatsUrl: string): Promise<NetworkStatsResponse> {
-  const url = `${networkStatsUrl.replace(/\/$/, '')}/stats`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`network-stats returned ${res.status}`);
-  }
-  const body = (await res.json()) as {
-    peers?: Array<{
-      onChainStats?: {
-        totalRequests?: string;
-        totalInputTokens?: string;
-        totalOutputTokens?: string;
-        settlementCount?: number;
-      } | null;
-    }>;
-    totals?: {
-      totalRequests?: string;
-      totalInputTokens?: string;
-      totalOutputTokens?: string;
-      settlementCount?: number;
-      sellerCount?: number;
-    };
-    indexer?: NetworkStatsResponse['indexer'];
-  };
-  const peers = Array.isArray(body.peers) ? body.peers : [];
-  const activePeers = peers.filter((peer) => peer.onChainStats).length;
-
-  if (body.totals) {
-    return {
-      totals: {
-        activePeers,
-        totalRequests: body.totals.totalRequests ?? '0',
-        totalInputTokens: body.totals.totalInputTokens ?? '0',
-        totalOutputTokens: body.totals.totalOutputTokens ?? '0',
-        totalSettlements: Number(body.totals.settlementCount ?? 0),
-        ...(typeof body.totals.sellerCount === 'number' ? { sellerCount: body.totals.sellerCount } : {}),
-      },
-      indexer: body.indexer,
-    };
-  }
-  let totalRequests = 0n;
-  let totalInputTokens = 0n;
-  let totalOutputTokens = 0n;
-  let totalSettlements = 0;
-  for (const peer of peers) {
-    const s = peer.onChainStats;
-    if (!s) continue;
-    try {
-      totalRequests += BigInt(s.totalRequests ?? '0');
-      totalInputTokens += BigInt(s.totalInputTokens ?? '0');
-      totalOutputTokens += BigInt(s.totalOutputTokens ?? '0');
-    } catch {
-      // skip malformed numeric strings
-    }
-    totalSettlements += Number(s.settlementCount ?? 0);
-  }
-  return {
-    totals: {
-      activePeers,
-      totalRequests: totalRequests.toString(),
-      totalInputTokens: totalInputTokens.toString(),
-      totalOutputTokens: totalOutputTokens.toString(),
-      totalSettlements,
-    },
-    indexer: body.indexer,
-  };
 }
 
 /** Old claim links hand off to the shared dashboard through their trusted host. */

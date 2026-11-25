@@ -19,6 +19,5 @@ export interface PaymentConfig {
   usageRewardsAddress: string | null;
   recognizedUsageEffectiveEpoch: number | null;
   antsTokenAddress: string | null;
-  networkStatsUrl: string | null;
   evmAddress: string | null;
 }

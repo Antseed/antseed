@@ -91,6 +91,7 @@ describe('checkAppCompose', () => {
     const env = (e: Obj) => checkCompose(withService((s) => { s['environment'] = { ...s['environment'], ...e } }))
     expect(env({ ANTSEED_BASE_RPC_URL: '${ANTSEED_BASE_RPC_URL}' })).not.toHaveProperty('error')
     expect(env({ ANTSEED_BASE_RPC_URL: 'https://mainnet.base.org' })).not.toHaveProperty('error')
+    expect(env({ ANTSEED_ALERTS_TELEGRAM_TOKEN: '${ANTSEED_ALERTS_TELEGRAM_TOKEN}' })).not.toHaveProperty('error')
     expect(env({ ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL: 'https://provider.example/attest?nonce={nonce}' })).not.toHaveProperty('error')
     expect(env({ OPENAI_BASE_URL: '${OPENAI_BASE_URL}' })).toMatchObject({ error: expect.stringMatching(/OPENAI_BASE_URL may not come from a hidden variable/) })
     expect(env({ HTTPS_PROXY: '${HTTPS_PROXY}' })).toMatchObject({ error: expect.stringMatching(/hidden variable/) })

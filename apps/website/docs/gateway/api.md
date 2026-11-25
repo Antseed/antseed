@@ -233,10 +233,13 @@ curl https://gateway.example.com/v1/key -H "Authorization: Bearer $ANTSEED_API_K
       "weekly": { "limit_usd": null, "spent_usd": "1.204310", "remaining_usd": null },
       "monthly": { "limit_usd": null, "spent_usd": "1.204310", "remaining_usd": null },
       "total": { "limit_usd": "100.000000", "spent_usd": "1.204310", "remaining_usd": "98.795690" }
-    }
+    },
+    "held": { "held_usd": "0.300000", "requests_usd": "0.300000", "video_usd": "0.000000" }
   }
 }
 ```
+
+`held` is what counts against the limits on top of what is spent: `requests_usd` for requests in flight (each holds up to the most one request may cost until it is charged) and `video_usd` for videos being priced or accepted and not yet charged. A request is refused once spent plus held reaches a limit.
 
 `usage.requests` counts calls to a model. Listing `/v1/models` or checking a video's status shows in the request log but is not counted.
 

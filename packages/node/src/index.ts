@@ -139,7 +139,7 @@ export {
 } from './p2p/identity-envelope.js';
 export { DHTNode, DEFAULT_DHT_CONFIG } from './discovery/dht-node.js';
 export { MAX_SERVICES_PER_PROVIDER, MAX_SERVICE_NAME_LENGTH } from './discovery/metadata-validator.js';
-export { OFFICIAL_BOOTSTRAP_NODES, mergeBootstrapNodes, toBootstrapConfig } from './discovery/bootstrap.js';
+export { OFFICIAL_BOOTSTRAP_NODES, PUBLIC_FALLBACK_BOOTSTRAP_NODES, mergeBootstrapNodes, toBootstrapConfig } from './discovery/bootstrap.js';
 export {
   WELL_KNOWN_SERVICE_CATEGORIES,
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
@@ -502,6 +502,7 @@ export {
   MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER,
   VERIFICATION_STATUS_STALE_MAX_MS,
   compareEffectiveModelReputation,
+  rotateEqualReputationHead,
   effectiveModelReputationScore,
   hasLiveDiffVerdict,
   hasLiveSameVerdict,
@@ -560,4 +561,5 @@ export {
   type LoadedProvider,
   type LoadedRouter,
 } from './config/plugin-loader.js'
+export { nextRotationOffset, rotateHead, tiedSellerSignature } from './routing/rotation.js'
 export { PARENT_PID_ENV, STOP_ON_STDIN_CLOSE_ENV, portInUse } from './gateway-process.js'

@@ -7,8 +7,8 @@ import { LockSlider } from './components/LockSlider';
 import { BulkActionPanel, mergeEligibility, RowActionPanel } from './components/Positions';
 import { epochStartAt, formatUtc } from './format';
 
-const mocks = vi.hoisted(() => ({ epoch: vi.fn(), action: vi.fn(), withdrawal: vi.fn() }));
-vi.mock('./app-context', () => ({ useEpochInfo: mocks.epoch }));
+const mocks = vi.hoisted(() => ({ canTransfer: vi.fn(() => false), epoch: vi.fn(), action: vi.fn(), withdrawal: vi.fn() }));
+vi.mock('./app-context', () => ({ useEpochInfo: mocks.epoch, useCanTransfer: mocks.canTransfer }));
 vi.mock('./components/Confirm', () => ({
   ActionDialog: ({ children, title }: { children: ReactNode; title: string }) => createElement('section', null, createElement('h2', null, title), children),
   ActionButton: (props: ActionButtonProps) => {

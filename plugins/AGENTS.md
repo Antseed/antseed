@@ -62,7 +62,7 @@ Every plugin is a published npm package (`@antseed/<dir>`), Node only, ES module
 - `provider-local-llm`: its default concurrency of 1 applies only outside the CLI; `seller start` always passes `seller.maxConcurrentBuyers`.
 - `provider-typesafe`: default prices are input-only (0.05 per million in, 0 out).
 - `provider-fal-image` / `provider-fal-video`: the balance check needs the key's `billing:usage:read`; without it the seller keeps advertising after credits run out.
-- `provider-fal-video`: fal reports a refused job as `COMPLETED` and answers its result with a 4xx. Only 408, 429 and 5xx are temporary.
+- `provider-fal-video`: fal reports a refused job as `COMPLETED` and answers its result with a 4xx. Only 408, 429 and 5xx are temporary, except a 500 `downstream_service_error`: the model failed behind fal, and every fetch answers the same.
 - `provider-fal-video`: status and result URLs use only `owner/alias` (`falAppId`), not the endpoint's sub-path.
 - `provider-venice-video`: a private model's video exists only behind the create's `download_url`, saved under `ANTSEED_DATA_DIR`. Losing that file loses the video.
 - `provider-venice-video`: refusal reasons can describe the buyer's prompt; log them only when `isContentFreeLogging()` is false.

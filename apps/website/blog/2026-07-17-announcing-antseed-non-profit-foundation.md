@@ -6,7 +6,6 @@ date: 2026-07-17
 description: "We've established a non-profit Foundation to steward the Antseed ecosystem. Here's why, what it holds, and what we're committing to."
 tags: ["foundation", "governance", "ecosystem"]
 keywords: [foundation, antseed]
-image: /og-image.jpg
 ---
 
 ## Why we're building a Foundation
@@ -47,7 +46,7 @@ That single alignment changes everything. In an ecosystem where there is no Labs
 
 ## What the Foundation holds and does
 
-- **15% of total supply.** Recognising the contribution to the network and to support its role, the Foundation shall receive 15% of the tokens: the [Ecosystem Reserve](https://antseed.com/ants-token). Importantly, this allocation is not unlocked upfront. It vests in epochs, on the same schedule as the rest of the supply. No special treatment, no head start.
+- **15% of total supply.** Recognising the contribution to the network and to support its role, the Foundation shall receive 15% of the tokens: the [Ecosystem Reserve](/ants/). Importantly, this allocation is not unlocked upfront. It vests in epochs, on the same schedule as the rest of the supply. No special treatment, no head start.
 - The brand, the website, and other assets related to the network.
 - Core development funding and direction.
 - Grants to builders, contributors, and researchers growing the ecosystem.

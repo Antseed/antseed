@@ -151,16 +151,6 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Papers',
-      className: 'sidebar-icon sidebar-icon--papers',
-      collapsible: true,
-      collapsed: true,
-      items: [
-        'lightpaper',
-      ],
-    },
-    {
-      type: 'category',
       label: 'Archive',
       className: 'sidebar-icon sidebar-icon--archive',
       collapsible: true,

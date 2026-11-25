@@ -34,12 +34,13 @@ describe('view registry', () => {
   });
 
   it('derives the nav rail from registry metadata in slide order', () => {
-    expect(navViews('main').map((entry) => entry.view)).toEqual(['home', 'tools', 'rewards'] satisfies ViewName[]);
+    expect(navViews('main').map((entry) => entry.view)).toEqual(['home', 'tools', 'studio', 'rewards'] satisfies ViewName[]);
     expect(navViews('bottom').map((entry) => entry.view)).toEqual(['gateway', 'preferences'] satisfies ViewName[]);
     expect(getViewRegistryEntry('gateway').nav?.label).toBe('Gateway');
     expect(getViewRegistryEntry('home').nav?.label).toBe('Home');
     expect(getViewRegistryEntry('chat').nav).toBeNull();
     expect(getViewRegistryEntry('tools').nav?.label).toBe('Agents & apps');
+    expect(getViewRegistryEntry('studio').nav?.label).toBe('Studio');
     expect(getViewRegistryEntry('preferences').nav?.label).toBe('Settings');
     expect(getViewRegistryEntry('help').nav).toBeNull();
     expect(getViewRegistryEntry('deposit').nav).toBeNull();
@@ -51,7 +52,7 @@ describe('view registry', () => {
 
   it('splits route preloading into startup and idle tiers', () => {
     expect(viewsForPreload('eager')).toEqual(['home', 'tools', 'chat'] satisfies ViewName[]);
-    expect(viewsForPreload('idle')).toEqual(['rewards', 'gateway', 'preferences', 'deposit', 'help'] satisfies ViewName[]);
+    expect(viewsForPreload('idle')).toEqual(['studio', 'rewards', 'gateway', 'preferences', 'deposit', 'help'] satisfies ViewName[]);
   });
 
   it('assigns every view a slide position', () => {

@@ -252,6 +252,24 @@ export interface VideoCommitmentRecord {
   deliveredAt: number | null
 }
 
+const VIDEO_COMMITMENT_COLUMNS = 'job, key_id, member_id, workspace_id, amount_usdc, expires_at, delivered_at'
+
+type VideoCommitmentRow = {
+  job: string; key_id: string; member_id: string | null; workspace_id: string; amount_usdc: number; expires_at: number; delivered_at: number | null
+}
+
+function videoCommitmentFromRow(row: VideoCommitmentRow): VideoCommitmentRecord {
+  return {
+    job: row.job,
+    keyId: row.key_id,
+    memberId: row.member_id,
+    workspaceId: row.workspace_id,
+    amountUsdc: row.amount_usdc,
+    expiresAt: row.expires_at,
+    deliveredAt: row.delivered_at,
+  }
+}
+
 export interface GatewayRequestStart {
   tag: string
   keyId: string
@@ -292,6 +310,8 @@ export interface RequestOutcome {
   servedFree?: boolean
   /** Video create: the job ID the seller accepted. */
   videoJobId?: string | null
+  /** Video create: the buyer's price for the accepted job, in USDC base units, when it reported one. */
+  videoPriceUsdc?: number | null
   /** Video retrieve: it delivered the finished file (so it carries the job's charge). */
   videoDelivered?: boolean
   /** A routing service ranked the request. */
@@ -1122,17 +1142,12 @@ export class GatewayStore {
   /** Accepted video jobs whose price still counts against the caps (see GatewayAccounting). */
   listVideoCommitments(now: number): VideoCommitmentRecord[] {
     this._stmt('DELETE FROM video_commitments WHERE expires_at <= ?').run(now)
-    return (this._stmt('SELECT job, key_id, member_id, workspace_id, amount_usdc, expires_at, delivered_at FROM video_commitments').all() as Array<{
-      job: string; key_id: string; member_id: string | null; workspace_id: string; amount_usdc: number; expires_at: number; delivered_at: number | null
-    }>).map((row) => ({
-      job: row.job,
-      keyId: row.key_id,
-      memberId: row.member_id,
-      workspaceId: row.workspace_id,
-      amountUsdc: row.amount_usdc,
-      expiresAt: row.expires_at,
-      deliveredAt: row.delivered_at,
-    }))
+    return (this._stmt(`SELECT ${VIDEO_COMMITMENT_COLUMNS} FROM video_commitments`).all() as VideoCommitmentRow[]).map(videoCommitmentFromRow)
+  }
+
+  /** One key's stored commitments and create reservations, read only (expired ones included). */
+  keyVideoCommitments(keyId: string): VideoCommitmentRecord[] {
+    return (this._stmt(`SELECT ${VIDEO_COMMITMENT_COLUMNS} FROM video_commitments WHERE key_id = ?`).all(keyId) as VideoCommitmentRow[]).map(videoCommitmentFromRow)
   }
 
   /** Stores a commitment; with `replaces`, removes that one (a create's reservation) in the same transaction. */
@@ -1181,6 +1196,24 @@ export class GatewayStore {
     )
   }
 
+  /**
+   * Requests a previous gateway process started and never finished (it was
+   * stopped or crashed mid-request): marked finished as `499` with
+   * `gateway_restarted`, so the request log stops showing them in flight.
+   * Only rows started before `startedBefore` (this process's start) are
+   * touched. They never held spend: request holds live in the gateway's
+   * memory and end with its process. Returns how many were finished.
+   */
+  finishAbandonedRequests(startedBefore: number): number {
+    // Through the index of unfinished requests: SQLite would otherwise pick the time index and read every row started before.
+    return this._stmt(`
+      UPDATE gateway_requests INDEXED BY gateway_requests_unfinished
+      SET status = 499, finished_at = ?, error_code = 'gateway_restarted',
+        error_message = 'The gateway stopped before this request finished.'
+      WHERE finished_at IS NULL AND started_at < ?
+    `).run(this._now(), startedBefore).changes
+  }
+
   /** `error` is kept for failed requests (code ≤ 100, message ≤ 500 characters). */
   finishRequest(tag: string, result: { status: number; buyerRequestId: string | null; error?: RequestError | null }): void {
     this._stmt(`
@@ -1202,7 +1235,7 @@ export class GatewayStore {
         latency_ms = COALESCE(?, latency_ms),
         first_token_ms = COALESCE(?, first_token_ms), tokens_per_second = COALESCE(?, tokens_per_second),
         end_user = COALESCE(?, end_user), served_free = MAX(served_free, ?),
-        video_job_id = COALESCE(?, video_job_id),
+        video_job_id = COALESCE(?, video_job_id), video_price_usdc = COALESCE(?, video_price_usdc),
         video_action = CASE WHEN ? = 1 AND video_action = 'poll' THEN 'delivery' ELSE video_action END,
         router_peer_id = COALESCE(?, router_peer_id), router_service = COALESCE(?, router_service),
         router_rank = COALESCE(?, router_rank), served_model = COALESCE(?, served_model),
@@ -1211,7 +1244,7 @@ export class GatewayStore {
     `).run(
       outcome.sellerPeerId ?? null, outcome.sellerPeerId ?? null, routerPeerId, routerPeerId,
       outcome.latencyMs ?? null, outcome.firstTokenMs ?? null, outcome.tokensPerSecond ?? null,
-      outcome.endUser ?? null, outcome.servedFree ? 1 : 0, outcome.videoJobId?.slice(0, 256) ?? null, outcome.videoDelivered ? 1 : 0,
+      outcome.endUser ?? null, outcome.servedFree ? 1 : 0, outcome.videoJobId?.slice(0, 256) ?? null, outcome.videoPriceUsdc ?? null, outcome.videoDelivered ? 1 : 0,
       routerPeerId, router?.service?.slice(0, 200) ?? null, router?.rank ?? null, outcome.servedModel?.slice(0, 200) ?? null,
       outcome.routeSelection ? JSON.stringify(outcome.routeSelection) : null, tag,
     )
@@ -1321,6 +1354,13 @@ export class GatewayStore {
     const row = this._stmt("SELECT path, video_job_id FROM gateway_requests WHERE tag = ? AND video_action = 'create'").get(tag) as
       { path: string; video_job_id: string | null } | undefined
     return row ? requestVideoJob(row.path, row.video_job_id) : null
+  }
+
+  /** The buyer's price for the job a video create logged by this gateway was accepted as, if it was recorded. */
+  videoCreatePrice(tag: string): number | null {
+    const row = this._stmt("SELECT video_price_usdc FROM gateway_requests WHERE tag = ? AND video_action = 'create'").get(tag) as
+      { video_price_usdc: number | null } | undefined
+    return row?.video_price_usdc ?? null
   }
 
   /** Spend recorded so far on every request of one key that names a video job (its create, polls and delivery). */

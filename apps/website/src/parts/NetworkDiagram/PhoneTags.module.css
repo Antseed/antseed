@@ -1,0 +1,12 @@
+/* Shown on a phone only, over the drawing (whose own words are hidden there). */
+.tags { display: none; }
+.tag { position: absolute; font: 500 12px/15px var(--site-font); white-space: nowrap; color: var(--site-text); }
+.holders { opacity: 0; transition: opacity .45s ease; }
+.holders.on { opacity: 1; }
+
+@media (max-width: 760px) {
+  .tags { display: block; position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .holders { transition: none; }
+}

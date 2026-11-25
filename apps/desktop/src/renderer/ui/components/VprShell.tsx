@@ -10,6 +10,9 @@ import { shouldNotifyAppsOnboarding } from '../../modules/app/apps-onboarding';
 import { homeProgress } from '../../modules/app/home-progress';
 import { gatewayResource, privacyResource, usePrivacySwitch } from '../../modules/app/vpr-resources';
 import { useCachedResource } from '../../modules/app/cached-resource';
+import { useStudioPreview } from '../../modules/studio/preview';
+import { navigationTurns, openConversationWhereItBelongs, openStudioProject } from '../../modules/studio/open-project';
+import { studioProjectsResource } from '../../modules/studio/resources';
 import { navViews, type NavView } from './viewRegistry';
 import { ChatListPanel } from './ChatListPanel';
 import { DepositProgressBanner } from './DepositProgressBanner';
@@ -30,6 +33,7 @@ import { usePrivateMode } from '../hooks/usePrivateMode';
 const VIEWS_WITH_HEADER_ACTIONS: ReadonlySet<ViewName> = new Set<ViewName>([
   'chat',
   'tools',
+  'studio',
   'rewards',
   'deposit',
   'desktop',
@@ -88,6 +92,13 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
   const gatewayStatus = gateway.data?.status;
   const privateMode = usePrivateMode();
 
+  // Studio is a preview: listed only while it is on in Settings, and left when it is turned off.
+  const studioOn = useStudioPreview();
+  const sectionNavEntries = studioOn ? otherNavEntries : otherNavEntries.filter(({ view }) => view !== 'studio');
+  useEffect(() => {
+    if (studioOn === false && activeView === 'studio') onSelectView('home');
+  }, [studioOn, activeView, onSelectView]);
+
   // The gateway's model list follows the mode, wherever the user has gone by
   // the time a switch lands.
   const { switching: privacySwitching } = usePrivacySwitch();
@@ -119,11 +130,16 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
     [onSelectView, onNavigateBack],
   );
 
+  // Each chat picked, each New Chat and each change of view is a newer choice: a project lookup still pending for an older one is dropped.
+  const [navigation] = useState(navigationTurns);
+  useEffect(() => { navigation.advance(); }, [activeView, navigation]);
+
   // Until the first prompt, new chats start from Home's big chat box.
   const startNewChat = useCallback(() => {
+    navigation.advance();
     actions.startNewChat();
     onSelectView(homeProgress.get().firstPromptAt === null ? 'home' : 'chat');
-  }, [actions, onSelectView]);
+  }, [actions, navigation, onSelectView]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -136,7 +152,23 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [startNewChat]);
 
-  const openConversation = useCallback(() => onSelectView('chat'), [onSelectView]);
+  // A Studio project's chat opens in its project, with the storyboard beside it.
+  const openConversation = useCallback((id: string) => {
+    const current = navigation.turn();
+    if (studioOn !== true) {
+      void actions.openConversation(id);
+      onSelectView('chat');
+      return;
+    }
+    void openConversationWhereItBelongs(id, {
+      known: studioProjectsResource.getSnapshot().data,
+      reload: () => studioProjectsResource.reload(),
+      current,
+      activate: (conversationId) => { void actions.openConversation(conversationId); },
+      openProject: openStudioProject,
+      selectView: onSelectView,
+    });
+  }, [actions, navigation, onSelectView, studioOn]);
   const goHome = useCallback(() => onSelectView('home'), [onSelectView]);
   // A remote gateway pays from its own wallet: Add funds opens its console's
   // Wallet page, never this computer's checkout.
@@ -194,7 +226,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
             aria-current={chatActive ? 'page' : undefined}
             aria-label={collapsed ? 'Chat' : undefined}
             title={collapsed ? 'Chat' : undefined}
-            onClick={openConversation}
+            onClick={() => onSelectView('chat')}
           >
             <HugeiconsIcon icon={BubbleChatIcon} size={18} strokeWidth={1.7} />
             <span className={styles.navLabel}>Chat</span>
@@ -211,7 +243,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
           </button>
         </div>
         <div className={styles.navGroup}>
-          {otherNavEntries.map((entry) => (
+          {sectionNavEntries.map((entry) => (
             <SidebarNavItem
               key={entry.view}
               entry={entry}

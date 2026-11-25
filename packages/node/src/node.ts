@@ -31,7 +31,7 @@ import {
   SUBNET_COUNT,
   type DHTNodeConfig,
 } from "./discovery/dht-node.js";
-import { toBootstrapConfig, OFFICIAL_BOOTSTRAP_NODES, mergeBootstrapNodes } from "./discovery/bootstrap.js";
+import { toBootstrapConfig, OFFICIAL_BOOTSTRAP_NODES, PUBLIC_FALLBACK_BOOTSTRAP_NODES, mergeBootstrapNodes } from "./discovery/bootstrap.js";
 import {
   ConnectionManager,
   PeerConnection,
@@ -298,6 +298,8 @@ export interface NodePaymentsConfig {
   defaultAuthDurationSecs?: number;
   /** Minimum USDC per request (base units) for seller. Default: "10000" ($0.01). */
   minBudgetPerRequest?: string;
+  /** First reserve the seller suggests to a new buyer (base units). Default: "1000000" ($1.00). */
+  suggestedReserveAmount?: string;
   /** Minimum unsettled delta (base units) required before idle settle submits a tx. Default: "2000" (~$0.002). */
   minSettleDelta?: string;
   /** Serve channels whose buyer already requested close on-chain, risking uncollectible work. Default: false. */
@@ -2027,6 +2029,11 @@ export class AntseedNode extends EventEmitter {
       operationTimeoutMs: this._config.dhtOperationTimeoutMs ?? DEFAULT_DHT_CONFIG.operationTimeoutMs,
       allowPrivateIPs: this._config.allowPrivateIPs,
       ...(this._config.bindHost ? { bindHost: this._config.bindHost } : {}),
+      // An isolated network (noOfficialBootstrap) uses only its own bootstrap list.
+      ...(this._config.noOfficialBootstrap ? {} : {
+        knownNodesFile: join(this._config.dataDir ?? join(homedir(), ".antseed"), "dht-nodes.json"),
+        fallbackBootstrapNodes: toBootstrapConfig(PUBLIC_FALLBACK_BOOTSTRAP_NODES),
+      }),
     };
   }
 
@@ -2786,6 +2793,7 @@ export class AntseedNode extends EventEmitter {
         chainId: payments.chainId ?? 8453,
         dataDir: paymentsDir,
         ...(payments.minBudgetPerRequest ? { minBudgetPerRequest: payments.minBudgetPerRequest } : {}),
+        ...(payments.suggestedReserveAmount ? { suggestedReserveAmount: payments.suggestedReserveAmount } : {}),
         ...(payments.minSettleDelta ? { minSettleDelta: payments.minSettleDelta } : {}),
         ...(payments.serveWhileClosePending !== undefined
           ? { serveWhileClosePending: payments.serveWhileClosePending }

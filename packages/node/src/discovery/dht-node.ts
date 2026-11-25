@@ -2,6 +2,8 @@ import DHT from "bittorrent-dht";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { lookup as lookupHost } from "node:dns/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { LookupAddress } from "node:dns";
 import { isIP } from "node:net";
 import { debugWarn } from "../utils/debug.js";
@@ -25,14 +27,59 @@ export interface DHTNodeConfig {
   lookup?: (host: string, options: { family: 4; all: true }) => Promise<LookupAddress[]>;
   /** Local address to bind the DHT UDP socket to. Default: all interfaces. */
   bindHost?: string;
+  /**
+   * How long this node keeps a peer another node announced to it, in ms.
+   * Default: {@link DEFAULT_PEER_RECORD_MAX_AGE_MS}.
+   */
+  peerRecordMaxAgeMs?: number;
+  /**
+   * File where this node saves a few of the DHT nodes it knows, after lookups
+   * and announces and on stop, and from which it adds them to `bootstrapNodes`
+   * on its next start. It can then rejoin while the bootstrap nodes are down.
+   * Unset: nothing is saved or read.
+   */
+  knownNodesFile?: string;
+  /**
+   * Nodes to join through only while this node knows no DHT node at all, after
+   * `bootstrapNodes` and the saved nodes went unanswered, for example the public
+   * BitTorrent DHT routers. Unset: no fallback.
+   */
+  fallbackBootstrapNodes?: Array<{ host: string; port: number }>;
 }
+
+/**
+ * bittorrent-dht keeps announced peers forever unless given a `maxAge`, and
+ * answers each get_peers with at most 100 random stored peers. Every peer that
+ * ever announced a topic (restarted sellers, changed IPs and ports) would stay
+ * listed next to the live ones, so lookups return mostly dead endpoints and can
+ * miss live sellers. A record lives 0.67–1.33 × maxAge after its last announce,
+ * so 30 min keeps peers that reannounce every 15 min (releases before the
+ * 5-min interval) listed while dropping a gone peer within 20–40 min.
+ */
+export const DEFAULT_PEER_RECORD_MAX_AGE_MS = 30 * 60 * 1000;
+
+/**
+ * Most saved nodes added to the bootstrap list on start. During a lookup k-rpc
+ * also queries every bootstrap entry whenever the routing table offers fewer
+ * nodes near the target than the bootstrap list is long, and it offers at most
+ * K = 20. With 16 saved nodes and the two official ones the list stays under K,
+ * so a node with a healthy routing table never queries them.
+ */
+export const MAX_KNOWN_NODES = 16;
+/** Least time between two saves of the known-nodes file after lookups and announces. */
+const KNOWN_NODES_SAVE_INTERVAL_MS = 60_000;
+/** Least time between two tries to join through the fallback nodes. */
+const FALLBACK_RETRY_INTERVAL_MS = 5 * 60_000;
+/** Longest a start, lookup or announce waits for a fallback node to answer. */
+const FALLBACK_JOIN_WAIT_MS = 5_000;
 
 export const DEFAULT_DHT_CONFIG: Omit<DHTNodeConfig, "peerId"> = {
   port: 6881,
   bootstrapNodes: toBootstrapConfig(OFFICIAL_BOOTSTRAP_NODES),
   // 5 min — short enough that a missed reannounce is recovered well before
-  // most BEP-5 storage nodes expire the value (~30 min). Used to be 15 min,
-  // which sat right at the edge and caused intermittent visibility gaps.
+  // storage nodes expire the record (DEFAULT_PEER_RECORD_MAX_AGE_MS here,
+  // ~30 min on most BEP-5 nodes). Used to be 15 min, which sat right at the
+  // edge and caused intermittent visibility gaps.
   reannounceIntervalMs: 5 * 60 * 1000,
   // 25s — long enough for a cold routing table to fan out and for the DHT
   // to drain its 'peer' events. With 10s we frequently observed lookups
@@ -52,6 +99,50 @@ function isPublicIP(host: string): boolean {
   if (a === 169 && b === 254) return false; // link-local
   if (a === 0) return false;
   return true;
+}
+
+function endpointKey({ host, port }: DHTPeerEndpoint): string {
+  return `${host}:${port}`;
+}
+
+function parseEndpoint(value: unknown): DHTPeerEndpoint | null {
+  if (!value || typeof value !== "object") return null;
+  const { host, port } = value as { host?: unknown; port?: unknown };
+  if (typeof host !== "string" || isIP(host) !== 4) return null;
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return { host, port };
+}
+
+/**
+ * Picks up to `max` valid IPv4 nodes, spread evenly over the list. A routing
+ * table lists its nodes bucket by bucket, so the pick spans the ID space
+ * instead of one corner of it.
+ */
+export function pickKnownNodes(
+  nodes: readonly unknown[],
+  options: { exclude?: ReadonlySet<string>; allowPrivateIPs?: boolean; max?: number } = {},
+): DHTPeerEndpoint[] {
+  const max = options.max ?? MAX_KNOWN_NODES;
+  const unique = new Map<string, DHTPeerEndpoint>();
+  for (const value of nodes) {
+    const node = parseEndpoint(value);
+    if (!node) continue;
+    const key = endpointKey(node);
+    if (options.exclude?.has(key)) continue;
+    if (!options.allowPrivateIPs && !isPublicIP(node.host)) continue;
+    unique.set(key, node);
+  }
+  const candidates = [...unique.values()];
+  if (candidates.length <= max) return candidates;
+  const step = candidates.length / max;
+  return Array.from({ length: max }, (_, i) => candidates[Math.floor(i * step)]!);
+}
+
+async function writeFileAtomic(file: string, body: string): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  await writeFile(tmp, body);
+  await rename(tmp, file);
 }
 
 export function topicToInfoHash(topic: string): Buffer {
@@ -151,40 +242,135 @@ export class DHTNode {
   private readonly config: DHTNodeConfig;
   private dht: DHT | null = null;
   public readonly events: EventEmitter = new EventEmitter();
+  /** Resolved `bootstrapNodes` and fallback nodes, never saved as known nodes. */
+  private readonly unsavedEndpoints = new Set<string>();
+  private lastKnownNodesSaveAt = 0;
+  private knownNodesWrite: Promise<void> = Promise.resolve();
+  private lastFallbackJoinAt = 0;
+  private fallbackJoin: Promise<void> | null = null;
 
   constructor(config: DHTNodeConfig) {
     this.config = config;
   }
 
-  private async resolveBootstrap(): Promise<string[]> {
+  private async resolveEndpoints(nodes: ReadonlyArray<{ host: string; port: number }>): Promise<DHTPeerEndpoint[]> {
     const lookup: NonNullable<DHTNodeConfig["lookup"]> = this.config.lookup ?? lookupHost;
-    const resolved = await Promise.all(this.config.bootstrapNodes.map(async ({ host, port }) => {
+    const resolved = await Promise.all(nodes.map(async ({ host, port }): Promise<DHTPeerEndpoint[]> => {
       const family = isIP(host);
-      if (family === 4) return [`${host}:${port}`];
+      if (family === 4) return [{ host, port }];
       if (family === 6) return [];
       try {
         // k-rpc-socket uses UDP4, but its hostname lookup can return DNS64 IPv6.
         const answers = await lookup(host, { family: 4, all: true });
         return answers
           .filter(({ address }) => isIP(address) === 4)
-          .map(({ address }) => `${address}:${port}`);
+          .map(({ address }) => ({ host: address, port }));
       } catch (err) {
         debugWarn(`[DHTNode] Failed to resolve bootstrap ${host}: ${String(err)}`);
         return [];
       }
     }));
-    const bootstrap = [...new Set(resolved.flat())];
-    if (bootstrap.length === 0 && this.config.bootstrapNodes.length > 0) {
-      debugWarn(`[DHTNode] No IPv4 bootstrap addresses resolved from ${this.config.bootstrapNodes.length} configured node(s)`);
+    const unique = new Map<string, DHTPeerEndpoint>();
+    for (const endpoint of resolved.flat()) unique.set(endpointKey(endpoint), endpoint);
+    return [...unique.values()];
+  }
+
+  private async readKnownNodes(): Promise<DHTPeerEndpoint[]> {
+    const file = this.config.knownNodesFile;
+    if (!file) return [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(file, "utf8"));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        debugWarn(`[DHTNode] Ignoring known DHT nodes file ${file}: ${String(err)}`);
+      }
+      return [];
     }
-    return bootstrap;
+    const nodes = (parsed as { nodes?: unknown } | null)?.nodes;
+    if (!Array.isArray(nodes)) return [];
+    return pickKnownNodes(nodes, { exclude: this.unsavedEndpoints, allowPrivateIPs: this.config.allowPrivateIPs });
+  }
+
+  /**
+   * Saves up to MAX_KNOWN_NODES routing-table nodes to `knownNodesFile`, after
+   * any save still running. With an empty routing table it keeps the file, so
+   * a run that never connected doesn't erase what a connected run saved.
+   */
+  private saveKnownNodes(): Promise<void> {
+    const file = this.config.knownNodesFile;
+    if (!file || !this.dht) return this.knownNodesWrite;
+    this.lastKnownNodesSaveAt = Date.now();
+    const nodes = pickKnownNodes(this.dht.toJSON().nodes, {
+      exclude: this.unsavedEndpoints,
+      allowPrivateIPs: this.config.allowPrivateIPs,
+    });
+    if (nodes.length === 0) return this.knownNodesWrite;
+    const body = `${JSON.stringify({ savedAt: new Date().toISOString(), nodes })}\n`;
+    this.knownNodesWrite = this.knownNodesWrite
+      .then(() => writeFileAtomic(file, body))
+      .catch((err) => debugWarn(`[DHTNode] Failed to save known DHT nodes to ${file}: ${String(err)}`));
+    return this.knownNodesWrite;
+  }
+
+  private saveKnownNodesSoon(): void {
+    if (Date.now() - this.lastKnownNodesSaveAt < KNOWN_NODES_SAVE_INTERVAL_MS) return;
+    void this.saveKnownNodes();
+  }
+
+  /**
+   * Joins through `fallbackBootstrapNodes` when the routing table is empty:
+   * nothing on the bootstrap list or among the saved nodes answered. Tried at
+   * most every FALLBACK_RETRY_INTERVAL_MS; callers share a try in progress.
+   */
+  private joinFallbackIfIsolated(): Promise<void> {
+    if (this.fallbackJoin) return this.fallbackJoin;
+    const fallback = this.config.fallbackBootstrapNodes ?? [];
+    if (!this.dht || fallback.length === 0 || this.getNodeCount() > 0) return Promise.resolve();
+    if (Date.now() - this.lastFallbackJoinAt < FALLBACK_RETRY_INTERVAL_MS) return Promise.resolve();
+    this.lastFallbackJoinAt = Date.now();
+    this.fallbackJoin = this.joinFallback(fallback).finally(() => {
+      this.fallbackJoin = null;
+    });
+    return this.fallbackJoin;
+  }
+
+  private async joinFallback(fallback: ReadonlyArray<{ host: string; port: number }>): Promise<void> {
+    const endpoints = await this.resolveEndpoints(fallback);
+    const dht = this.dht;
+    if (!dht || endpoints.length === 0) return;
+    for (const endpoint of endpoints) this.unsavedEndpoints.add(endpointKey(endpoint));
+    debugWarn(`[DHTNode] No DHT node answered; joining through ${endpoints.length} fallback node(s)`);
+    // A node that answers the ping enters the routing table; the next lookup
+    // walks on from it. Wait for the first answer, or give up after a few seconds.
+    await new Promise<void>((resolve) => {
+      const finish = (): void => {
+        clearTimeout(timer);
+        dht.off("node", finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, Math.min(FALLBACK_JOIN_WAIT_MS, this.config.operationTimeoutMs));
+      dht.on("node", finish);
+      for (const endpoint of endpoints) dht.addNode(endpoint);
+    });
   }
 
   async start(): Promise<void> {
-    const bootstrap = await this.resolveBootstrap();
+    const configured = await this.resolveEndpoints(this.config.bootstrapNodes);
+    if (configured.length === 0 && this.config.bootstrapNodes.length > 0) {
+      debugWarn(`[DHTNode] No IPv4 bootstrap addresses resolved from ${this.config.bootstrapNodes.length} configured node(s)`);
+    }
+    for (const endpoint of configured) this.unsavedEndpoints.add(endpointKey(endpoint));
+    const saved = await this.readKnownNodes();
+    await this.listen([...configured, ...saved].map(endpointKey));
+    await this.joinFallbackIfIsolated();
+  }
+
+  private listen(bootstrap: string[]): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       this.dht = new DHT({
         bootstrap,
+        maxAge: this.config.peerRecordMaxAgeMs ?? DEFAULT_PEER_RECORD_MAX_AGE_MS,
       });
 
       const timeout = setTimeout(() => {
@@ -225,6 +411,7 @@ export class DHTNode {
   }
 
   async stop(): Promise<void> {
+    await this.saveKnownNodes();
     return new Promise<void>((resolve) => {
       if (!this.dht) {
         resolve();
@@ -238,6 +425,7 @@ export class DHTNode {
   }
 
   async announce(infoHash: Buffer, port: number): Promise<void> {
+    await this.joinFallbackIfIsolated();
     return new Promise<void>((resolve, reject) => {
       if (!this.dht) {
         reject(new Error("DHT not started"));
@@ -253,6 +441,7 @@ export class DHTNode {
         if (err) {
           reject(err);
         } else {
+          this.saveKnownNodesSoon();
           resolve();
         }
       });
@@ -270,6 +459,7 @@ export class DHTNode {
    * listener warning once subnet fan-out exceeds 10 topics.
    */
   async lookupMany(infoHashes: Buffer[]): Promise<DHTPeerEndpoint[]> {
+    if (infoHashes.length > 0) await this.joinFallbackIfIsolated();
     return new Promise<DHTPeerEndpoint[]>((resolve) => {
       if (!this.dht) {
         resolve([]);
@@ -297,6 +487,7 @@ export class DHTNode {
         done = true;
         clearTimeout(timeout);
         this.dht?.off("peer", onPeer);
+        this.saveKnownNodesSoon();
         resolve(peers);
       };
 

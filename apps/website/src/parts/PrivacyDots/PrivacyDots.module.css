@@ -1,0 +1,11 @@
+.host {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
