@@ -9,6 +9,17 @@ export const OFFICIAL_BOOTSTRAP_NODES: BootstrapNode[] = [
   { host: "dht2.antseed.com", port: 6881, label: "AntSeed-2" },
 ];
 
+/**
+ * Public BitTorrent DHT routers. Antseed nodes join through them only while they
+ * know no DHT node at all (see `DHTNodeConfig.fallbackBootstrapNodes`); in normal
+ * operation a routing table filled from them finds fewer Antseed peers.
+ */
+export const PUBLIC_FALLBACK_BOOTSTRAP_NODES: BootstrapNode[] = [
+  { host: "router.bittorrent.com", port: 6881 },
+  { host: "router.utorrent.com", port: 6881 },
+  { host: "dht.transmissionbt.com", port: 6881 },
+];
+
 export function parseBootstrapList(entries: string[]): BootstrapNode[] {
   return entries.map((entry) => {
     const lastColon = entry.lastIndexOf(":");

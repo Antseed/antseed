@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [decentralized-ai, P2P AI, AI agents, AI infrastructure, protocol]
 description: P2P networks lost to centralized services because humans needed convenience. Agents don't. That changes everything about which infrastructure model wins.
 keywords: [decentralized AI infrastructure, P2P AI network, AI agents infrastructure, autonomous agents AI, Antseed protocol, agent-to-agent commerce]
-image: /og-image.jpg
 date: 2026-03-03
 ---
 

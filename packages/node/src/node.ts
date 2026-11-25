@@ -31,7 +31,7 @@ import {
   SUBNET_COUNT,
   type DHTNodeConfig,
 } from "./discovery/dht-node.js";
-import { toBootstrapConfig, OFFICIAL_BOOTSTRAP_NODES, mergeBootstrapNodes } from "./discovery/bootstrap.js";
+import { toBootstrapConfig, OFFICIAL_BOOTSTRAP_NODES, PUBLIC_FALLBACK_BOOTSTRAP_NODES, mergeBootstrapNodes } from "./discovery/bootstrap.js";
 import {
   ConnectionManager,
   PeerConnection,
@@ -2033,6 +2033,11 @@ export class AntseedNode extends EventEmitter {
       operationTimeoutMs: this._config.dhtOperationTimeoutMs ?? DEFAULT_DHT_CONFIG.operationTimeoutMs,
       allowPrivateIPs: this._config.allowPrivateIPs,
       ...(this._config.bindHost ? { bindHost: this._config.bindHost } : {}),
+      // An isolated network (noOfficialBootstrap) uses only its own bootstrap list.
+      ...(this._config.noOfficialBootstrap ? {} : {
+        knownNodesFile: join(this._config.dataDir ?? join(homedir(), ".antseed"), "dht-nodes.json"),
+        fallbackBootstrapNodes: toBootstrapConfig(PUBLIC_FALLBACK_BOOTSTRAP_NODES),
+      }),
     };
   }
 

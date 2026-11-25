@@ -6,9 +6,99 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Node: buyers and sellers now save up to 16 of the DHT nodes they know to `dht-nodes.json` in their data directory, after lookups and announces (at most once a minute) and when they stop. A node that knows no DHT node after starting, because none of its bootstrap nodes answered, rejoins through those saved nodes, so a node that has run before can find peers while the Antseed bootstrap nodes are unreachable. If none of the saved nodes answers either, as on a first run while the bootstrap nodes are down, it joins through the public BitTorrent DHT routers. It tries again at most every 5 minutes while it stays cut off. It uses neither the saved nodes nor the routers while a bootstrap node answers, because a routing table filled from them can find fewer Antseed peers. With `noOfficialBootstrap` a node does neither. A `DHTNode` used directly sets these with `knownNodesFile` and `fallbackBootstrapNodes`.
+
+- Desktop Studio, a beta feature that is off until it is turned on in **Settings → Preview**, edits a film as a storyboard of titled shots, each an anchor image, with a clip between each pair, kept in a local project. The video sits above the storyboard; there is no settings panel: select a shot or a clip and tell the project agent in chat what it should be, and the selection travels with the message as a chip naming the exact item, file and moment. Every clip ends in a Cut or an Extend that the producer chooses on the marker after it, a clip's length is dragged on the storyboard, and the + at the end continues the scene or starts a new one. Trimming a clip sets its new end frame, which can become the next shot; replacing an image offers to remake the clips made from it; earlier images and clips stay in the project library and can be put back. The agent plans shots, renames them and changes lengths through edits the producer can undo, and quotes every image and clip before anything is paid for. Export joins the clips on the computer. Trimming and export use ffmpeg and ffprobe, which the desktop does not include: without them on the computer, **End clip here** and **Export** are off and say so. Storyboards made before open in the editor with their titles kept and their clips kept as Cuts. Scenes show as named bands on the storyboard. A clip that no longer fits (made from a replaced image, or made for a Cut where the film now extends, including one delivered after its images changed while it was being made) is greyed with the reason and an Update button that asks the agent for a new one, quoted first. The film plays from clip to clip without a gap, a message sent with a selection keeps its chip in the chat, and a project's chat opened from the sidebar opens in Studio. A chip removed from the message stays off until a shot or a clip is selected again, and an edit or a delivery that would grow a project's track past what the app can read back is refused with a note, leaving the track as it was.
+
 ### Fixed
 
-- Sellers (CLI, `@antseed/node`, `@antseed/buyer-core`): the deposit-sweep relayer no longer refuses buyers' gasless deposits as unprofitable whenever Base is moderately busy. It now estimates a sweep's gas at the latest base fee plus 25% and the tip it would send, at the Chainlink ETH/USD price, instead of the 2x-base-fee ceiling at a fixed $10,000 per ETH. The new `relayer.ethPriceUsd` setting overrides the price; without the feed or with a stale reading, the relayer uses a cautious $4,000. A sweep's first transaction never offers more per gas than the relay fee covers, so it cannot mine at a loss if the base fee climbs while it waits. If the base fee stays above that limit, the sweep is cancelled after two minutes, or shortly before the buyer's authorization expires if that is sooner, by a 0-value transaction to the relayer's own wallet on the same nonce, so a stuck sweep no longer holds up the seller's other transactions or the relayer's capacity.
+- Buyers and sellers (`@antseed/buyer-core`, `@antseed/node`): a streamed answer that reports its usage more than once is billed by one consistent report. Before, the input and its cache hits could be taken from different reports (an early estimate and the final figure), so a cached prompt could be billed as more tokens than it had.
+- Buyers and sellers (`@antseed/buyer-core`, `@antseed/node`): the fallback estimate for an answer without a usage figure skips reasoning fields marked as encrypted and respects an explicit output limit (`max_tokens`, `max_completion_tokens`, for each of `n` answers).
+- Buyer proxy (CLI): the `x-antseed-*` token and cost headers now show the buyer's own figure for the answer's tokens, read from the seller's own reply and rounded as the buyer signs, and an error reply shows a cost of 0. Before, an answer without a usage figure was shown at a bytes-based guess over the whole body, and error replies were priced too.
+- Desktop and Gateway Console: replace simplified model logos with the official Claude, DeepSeek, Qwen, Gemini, Mistral, Meta and Grok marks.
+- Desktop: the first message of a new chat now runs with the model's saved permission, so Full access no longer asks for approval on it.
+- Sellers (CLI, `@antseed/node`): the deposit-sweep relayer no longer refuses buyers' gasless deposits as unprofitable whenever Base is moderately busy. It now estimates a sweep's gas at the latest base fee plus 25% and the tip it would send, at the Chainlink ETH/USD price, instead of the 2x-base-fee ceiling at a fixed $10,000 per ETH. Without the feed or with a stale reading, the relayer uses a cautious $4,000.
+
+## 2026-11-23 — CLI 0.1.259, Node 0.2.191, Desktop 0.2.94
+
+### Packages
+
+- `@antseed/cli@0.1.259`
+- `@antseed/node@0.2.191`
+- `@antseed/payments@0.1.118`
+- `@antseed/ants@0.1.76`
+
+### Desktop
+
+- `@antseed/desktop@0.2.94`
+
+### Changed
+
+- Website: `llms.txt` now opens with the current positioning (the open intelligence network), the mission, the vision and the three value props. It gains a list of who can provide, with Colony and Diem Antseed as examples of a pool serving as one provider, a model verification section (results, the effect on routing and `antseed verifier check`), a list of the agent skills, an ANTS section on liquid inference that gathers the staking and rewards pages, and links to the site's pages. It also links the "Test your seller before going live" doc, and no longer calls `/network/` a live view of peers and models.
+
+### Fixed
+
+- Node: DHT nodes now forget a peer 20–40 minutes after its last announcement. Every node used to keep each announcement forever, while a node answers a lookup with at most 100 of the peers it stores for a topic, so peers that had stopped or moved piled up next to the live ones: discovery spent most of its time fetching metadata from dead endpoints, and a lookup could miss live sellers. A peer that keeps announcing, at the current 5-minute interval or the older 15-minute one, stays listed. The DHT bootstrap nodes and other long-running peers apply this once they run the new version. `DHTNodeConfig.peerRecordMaxAgeMs` sets the lifetime (default 30 minutes).
+- Node: the incremental discovery sweep (`findAllExhaustive` with a progress callback, used by buyers' background discovery) fetches each endpoint's metadata once per sweep instead of again for every topic that lists it, and looks up the next DHT topic while metadata is still being fetched instead of waiting for each topic's slowest endpoint. Sweeps finish sooner and make far fewer metadata requests.
+
+## 2026-11-23 — CLI 0.1.258, Node 0.2.190, Desktop 0.2.93
+
+### Packages
+
+- `@antseed/cli@0.1.258`
+- `@antseed/node@0.2.190`
+- `@antseed/api-adapter@0.1.67`
+- `@antseed/buyer-core@0.1.54`
+- `@antseed/web-sdk@0.1.48`
+- `@antseed/provider-alibaba-video@0.1.15`
+- `@antseed/provider-fal-image@0.1.11`
+- `@antseed/provider-fal-video@0.1.27`
+- `@antseed/provider-venice-video@0.1.28`
+- `@antseed/payments@0.1.117`
+- `@antseed/ants@0.1.75`
+
+### Desktop
+
+- `@antseed/desktop@0.2.93`
+
+### Fixed
+
+- Buyers (gateway/CLI): streamed answers from sellers that serve the Anthropic Messages format, requested in OpenAI Chat Completions or Responses format, now carry the seller's cache reads in the final usage chunk. Some Anthropic-compatible upstreams report input and cache-read tokens only in the closing `message_delta` event; those counts were dropped, so `prompt_tokens_details.cached_tokens` was missing and all input looked uncached. Non-streamed answers were not affected.
+
+## 2026-11-22 — CLI 0.1.257, Desktop 0.2.92
+
+### Packages
+
+- `@antseed/cli@0.1.257`
+- `@antseed/antseed-verifier@0.1.10`
+- `@antseed/provider-core@0.2.70`
+- `@antseed/provider-alibaba-video@0.1.14`
+- `@antseed/provider-anthropic@0.1.64`
+- `@antseed/provider-claude-code@0.1.64`
+- `@antseed/provider-claude-oauth@0.1.70`
+- `@antseed/provider-fal-image@0.1.10`
+- `@antseed/provider-fal-video@0.1.26`
+- `@antseed/provider-local-llm@0.1.64`
+- `@antseed/provider-openai@0.2.63`
+- `@antseed/provider-openai-responses@0.1.57`
+- `@antseed/provider-typesafe@0.1.16`
+- `@antseed/provider-venice-video@0.1.27`
+
+### Desktop
+
+- `@antseed/desktop@0.2.92`
+
+### Added
+
+- TEE sellers: seller alerts can now send to Telegram. The bot token may be a hidden secret named `ANTSEED_ALERTS_TELEGRAM_TOKEN` (Secret Manager on Confidential Space, an encrypted variable on dstack; `compose.mjs --alerts-token-secret`). A TEE seller config may no longer point `seller.alerts.telegram.botTokenEnv` at another variable, since alerts send the token to Telegram. Buyers accept such sellers once on this verifier version.
+
+### Fixed
+
+- Verifiers (CLI): the first `antseed verifier submit` on a data dir no longer reads the KBF audits contract's whole history to find the auditor's own earlier submissions, which could take a long time on a public RPC with no output. It reads only the current epoch, since only an audit of the current epoch can be submitted (issue #1799).
+- Sellers (OpenAI-compatible provider): Venice image models `krea-3`, `kling-v4-text-to-image`, `mai-image-2-7`, `mai-image-2-7-flash`, `minimax-h3-image` and `muse-image` are now announced as image services. Before, they were treated as chat models, and pairing one with an image edit model stopped the provider from loading.
+- Website: shared blog links now show the current site preview image. 18 posts still pinned the old share image in their frontmatter; they now use the site-wide image, and posts with their own cover keep it.
 
 ## 2026-11-20 — CLI 0.1.256, Node 0.2.189, Desktop 0.2.91
 

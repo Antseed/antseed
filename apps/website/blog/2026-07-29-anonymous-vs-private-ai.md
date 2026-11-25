@@ -5,7 +5,6 @@ authors: [antseed]
 tags: [privacy, anonymous AI, private AI, P2P, TEE, AI infrastructure]
 description: "Private AI means nobody can read your prompts. Anonymous AI means nobody knows they were yours. Most vendors sell one and quietly imply the other."
 keywords: [anonymous AI vs private AI, difference between anonymous and private AI, what is anonymous AI, private AI meaning, private vs anonymous AI, AI privacy]
-image: /og-image.jpg
 date: 2026-07-29
 ---
 

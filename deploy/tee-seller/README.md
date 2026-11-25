@@ -102,7 +102,9 @@ take effect from the verifier release that includes them.
    ```
 
    Add `--rpc-url-secret` to pass `ANTSEED_BASE_RPC_URL` as a secret (or
-   `--env ANTSEED_BASE_RPC_URL=<url>` for one without an API key in it, which buyers can read), and
+   `--env ANTSEED_BASE_RPC_URL=<url>` for one without an API key in it, which buyers can read),
+   `--alerts-token-secret` to pass the seller alerts' Telegram bot token as the secret
+   `ANTSEED_ALERTS_TELEGRAM_TOKEN`, and
    `--env ANTSEED_VERIFIER_PROVIDER_...=<value>` for provider attestation settings. It prints the
    encrypted variables to allow. [`docker-compose.json`](docker-compose.json) is an example.
 3. Deploy it as a dstack app with KMS enabled. Pass the printed secrets as encrypted environment
@@ -166,7 +168,9 @@ its listed env variables and never replace its command. Its logs may go to Cloud
 
 1. Write the seller config as for dstack (same rules), and store each secret in Secret Manager:
    `ANTSEED_IDENTITY_HEX`, the API keys the config names, and optionally `ANTSEED_BASE_RPC_URL`
-   (or set it as an env override, which buyers can read, if it holds no API key).
+   (or set it as an env override, which buyers can read, if it holds no API key) and
+   `ANTSEED_ALERTS_TELEGRAM_TOKEN`, the bot token for seller alerts (set
+   `seller.alerts.telegram.chatId` in the config; `botTokenEnv` must stay unset).
 2. Release the secrets only to the attested image, through a workload identity pool that trusts
    Google's attestation:
 
