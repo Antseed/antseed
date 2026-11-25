@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Contracts and protocol (`@antseed/protocol`): the staked free-tier promise board, `AntseedFreeTierTerms`. A seller publishes, per agent, the free tier it promises to stakers (programs of tiers and models, free or a free allowance on a priced model) and the notice it gives before changing it, from 2 to 104 epochs; terms up to `promisedThrough` can no longer change. The protocol package adds the matching types, encoding, checks, program lookup and tier helper (`@antseed/protocol/free-tier-terms`). Nothing is deployed on Base yet (migration M004); seller nodes and apps follow in later changes.
+
 ### Fixed
 
 - Buyer proxy (`@antseed/api-adapter`, CLI, gateway, desktop): an answer translated between API standards keeps the count of reasoning tokens the seller reported. A seller's Responses `output_tokens_details.reasoning_tokens`, Chat Completions `completion_tokens_details.reasoning_tokens` or Messages `output_tokens_details.thinking_tokens` reaches the client in its own protocol's field, in JSON answers and at the end of streams. A reported 0 stays 0, and an answer that itemises no count still has none. Before, the count was dropped, so a client could not tell how much of the output was reasoning. The token totals and what is paid are unchanged.

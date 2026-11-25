@@ -26,6 +26,8 @@ via_ir = true
 bytecode_hash = "none"
 cbor_metadata = false
 ffi = false
+# Shared test vectors, written by packages/protocol tests and read by forge tests. Read-only.
+fs_permissions = [{ access = "read", path = "./test/vectors" }]
 # Routine `forge test` must not rewrite gas snapshots: a dirty tree blocks
 # contract deployments, which require a clean working tree. Regenerate
 # deliberately with `pnpm contracts:snapshot`, and let `contracts:check` compare.
