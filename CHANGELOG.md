@@ -14,6 +14,9 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Buyers and sellers (`@antseed/buyer-core`, `@antseed/node`): a streamed answer that reports its usage more than once is billed by one consistent report. Before, the input and its cache hits could be taken from different reports (an early estimate and the final figure), so a cached prompt could be billed as more tokens than it had.
+- Buyers and sellers (`@antseed/buyer-core`, `@antseed/node`): the fallback estimate for an answer without a usage figure skips reasoning fields marked as encrypted and respects an explicit output limit (`max_tokens`, `max_completion_tokens`, for each of `n` answers).
+- Buyer proxy (CLI): the `x-antseed-*` token and cost headers now show the buyer's own figure for the answer's tokens, read from the seller's own reply and rounded as the buyer signs, and an error reply shows a cost of 0. Before, an answer without a usage figure was shown at a bytes-based guess over the whole body, and error replies were priced too.
 - Desktop and Gateway Console: replace simplified model logos with the official Claude, DeepSeek, Qwen, Gemini, Mistral, Meta and Grok marks.
 - Desktop: the first message of a new chat now runs with the model's saved permission, so Full access no longer asks for approval on it.
 

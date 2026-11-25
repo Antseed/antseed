@@ -5908,25 +5908,20 @@ export class BuyerProxy {
           log(`${prefix}: ${summarizeErrorResponse(responseForClient)}`)
         }
 
-        const telemetry = computeResponseTelemetry(
-          requestForPeer,
-          responseForClient.headers,
-          responseForClient.body,
-          selectedPeer,
-        )
+        const telemetry = computeResponseTelemetry(requestForPeer, response, selectedPeer)
         const usageTrace = responseForClient.statusCode < 400 ? traceFor(res) : undefined
         if (usageTrace) {
           // A stream's first frame (Anthropic's message_start) can carry the
           // input and cache counts, so the trace reads the whole stream.
           const fullBody = streamed && streamStartBody.length > 0
-            ? Buffer.concat([streamStartBody, responseForClient.body])
-            : responseForClient.body
-          const fullTelemetry = fullBody === responseForClient.body
+            ? Buffer.concat([streamStartBody, response.body])
+            : response.body
+          const fullTelemetry = fullBody === response.body
             ? telemetry
-            : computeResponseTelemetry(requestForPeer, responseForClient.headers, fullBody, selectedPeer)
+            : computeResponseTelemetry(requestForPeer, { ...response, body: fullBody }, selectedPeer)
           usageTrace.noteUsage(fullTelemetry.usage)
           usageTrace.noteAnswerDetails({
-            finishReason: finishReasonFromBody(responseForClient.headers['content-type'], fullBody),
+            finishReason: finishReasonFromBody(response.headers['content-type'], fullBody),
             estimatedCostUsd: fullTelemetry.estimatedCostUsd,
           })
         }
@@ -6073,7 +6068,7 @@ export class BuyerProxy {
           log(`${prefix}: ${summarizeErrorResponse(response)}`)
         }
 
-        const telemetry = computeResponseTelemetry(requestForPeer, response.headers, response.body, selectedPeer)
+        const telemetry = computeResponseTelemetry(requestForPeer, upstreamResponse, selectedPeer)
         const answerTrace = response.statusCode < 400 ? traceFor(res) : undefined
         if (answerTrace) {
           answerTrace.noteUsage(telemetry.usage)
