@@ -17,7 +17,7 @@ import {
   workerE2EProviderCapability,
 } from '@antseed/node/worker-e2e';
 import type { WorkerLedger } from './ledger.js';
-import { NoWorkerAvailableError, WorkerUnavailableError, type ColonyPool } from './pool.js';
+import { NoWorkerAvailableError, WorkerBusyError, WorkerUnavailableError, type ColonyPool } from './pool.js';
 
 /** Request IDs the seller's model health checker uses for its probes. */
 const HEALTH_PROBE_PREFIX = 'health-';
@@ -34,11 +34,11 @@ export interface ColonyPoolProviderOptions {
   serviceCapabilities?: Record<string, ServiceCapabilities>;
 }
 
-function errorResponse(requestId: string, statusCode: number, message: string, code?: string): SerializedHttpResponse {
+function errorResponse(requestId: string, statusCode: number, message: string, code?: string, headers: Record<string, string> = {}): SerializedHttpResponse {
   return {
     requestId,
     statusCode,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
     body: new TextEncoder().encode(JSON.stringify({ error: { message, type: 'colony_pool_error', ...(code ? { code } : {}) } })),
   };
 }
@@ -241,7 +241,8 @@ export class ColonyPoolProvider implements Provider {
           },
           onError: (error) => {
             // Nothing reached the buyer and every recipient failed: it takes other workers (the pool benches one that never answered).
-            if (!start) resolve(errorResponse(req.requestId, WORKER_UNAVAILABLE_STATUS, error.message, WORKER_UNAVAILABLE_CODE));
+            if (!start && error instanceof WorkerBusyError) resolve(errorResponse(req.requestId, 503, error.message, 'worker_busy', { 'retry-after': '2' }));
+            else if (!start) resolve(errorResponse(req.requestId, WORKER_UNAVAILABLE_STATUS, error.message, WORKER_UNAVAILABLE_CODE));
             else reject(error);
           },
         }, callbacks?.signal);

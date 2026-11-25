@@ -56,6 +56,13 @@ const CHECK_SLOT_POLL_MS = 1_000;
 const MIN_CERTIFICATE_LIFETIME_S = 60;
 /** Reconnect a worker this long before its certificate expires (buyers stop using one 5 minutes before). */
 const CERTIFICATE_RENEW_MARGIN_S = 3600;
+/** How long a request whose workers are all busy waits for a free slot, and how many may wait at once. */
+const DEFAULT_BUSY_WAIT_MS = 15_000;
+const DEFAULT_MAX_WAITING = 64;
+/** Shorter answers say little about decode speed: a few tokens that arrive in one burst read as instant. */
+const MIN_SPEED_TOKENS = 32;
+const MIN_SPEED_STREAM_MS = 100;
+const AT_CAPACITY = 'at capacity';
 /** Assignments count toward a worker's load for this long, so new buyers spread out. */
 const ASSIGNMENT_WEIGHT_MS = 10 * 60_000;
 /** Attested workers re-attest this often, and have this long to answer. */
@@ -90,6 +97,10 @@ export interface ColonyPoolOptions {
   firstByteTimeoutMs?: number;
   /** How long a worker has to pick a request up with an `accepted` frame (default 20 s). */
   acceptTimeoutMs?: number;
+  /** How long a request whose workers are all busy waits for a free slot (default 15 s). */
+  busyWaitMs?: number;
+  /** How many requests may wait for a free slot at once (default 64). */
+  maxWaiting?: number;
   /** Operator weights by worker address (COLONY_POOL_WORKER_PRIORITY); 1 by default, 0 never routes. */
   workerPriority?: Map<string, number>;
   /** How long a started response may go without a chunk before it is cancelled. */
@@ -150,6 +161,14 @@ export class WorkerUnavailableError extends Error {
   constructor(worker: string, reason: string) {
     super(`Worker ${worker} is unavailable: ${reason}`);
     this.name = 'WorkerUnavailableError';
+  }
+}
+
+/** Every worker that could take the request stayed busy; the buyer's assignment is still good. */
+export class WorkerBusyError extends Error {
+  constructor(workers: string) {
+    super(`Worker ${workers} is busy; retry shortly`);
+    this.name = 'WorkerBusyError';
   }
 }
 
@@ -274,6 +293,9 @@ export class ColonyPool {
   private readonly changeListeners: Array<() => void> = [];
   private server: HttpServer | null = null;
   private wss: WebSocketServer | null = null;
+  /** Requests waiting for a worker's slot, in the order they came. */
+  private readonly waiting = new Set<{ retry: () => void; stop: () => void }>();
+  private waking = false;
   private pingTimer: NodeJS.Timeout | null = null;
   private lastServices = '';
   /** Recent counts of workers with a valid attestation, for noteAttested. */
@@ -328,6 +350,7 @@ export class ColonyPool {
   async stop(): Promise<void> {
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.pingTimer = null;
+    for (const waiter of [...this.waiting]) waiter.stop();
     await this.opts.deviceAttestor?.stop?.();
     const wss = this.wss;
     // Every connection, including ones that never finished joining: the
@@ -394,7 +417,7 @@ export class ColonyPool {
    * NoWorkerAvailableError.
    */
   assign(service: string, count = 1): WorkerAssignment[] {
-    const workers = this.rankedWorkers(service, true).slice(0, Math.max(1, Math.min(MAX_WORKER_RECIPIENTS, Math.floor(count))));
+    const workers = this.assignable(service).slice(0, Math.max(1, Math.min(MAX_WORKER_RECIPIENTS, Math.floor(count))));
     if (workers.length === 0) throw new NoWorkerAvailableError(service);
     // Only the first is tried first, so only it takes the new buyer's load.
     workers[0]!.assignedAt.push(Date.now());
@@ -414,15 +437,23 @@ export class ColonyPool {
    * each worker tried and its dispatch ID (unique even when buyers reuse
    * request IDs). Throws WorkerUnavailableError when no recipient can take
    * it, or reports it through `onError` once every one has failed, so the
-   * buyer reassigns.
+   * buyer reassigns. While recipients are only busy, the request waits for a
+   * slot, first come first served, up to `busyWaitMs` (then WorkerBusyError).
    */
   dispatch(recipients: readonly string[], service: string, req: DispatchRequest, handlers: DispatchHandlers, signal?: AbortSignal): void {
     const set = [...new Set(recipients.map((address) => address.toLowerCase()))].slice(0, MAX_WORKER_RECIPIENTS);
     const tried = new Set<string>();
     const failures: string[] = [];
     let first = true;
+    let waitUntil = 0;
     const next = (): void => {
       const worker = this.nextRecipient(set, service, tried, failures);
+      if (!worker && this.anyBusy(set, service, tried)) {
+        first = false;
+        waitUntil ||= Date.now() + (this.opts.busyWaitMs ?? DEFAULT_BUSY_WAIT_MS);
+        this.waitForSlot(waitUntil, next, () => handlers.onError(new WorkerBusyError(set.join(', '))), () => handlers.onError(new Error('Request aborted')), signal);
+        return;
+      }
       if (!worker) {
         const error = new WorkerUnavailableError(set.join(', '), failures.join('; ') || 'no recipient can take it');
         if (first) throw error;
@@ -454,6 +485,39 @@ export class ColonyPool {
     next();
   }
 
+  /** Whether a recipient not tried yet is only busy: it serves `service`, with no free slot now. */
+  private anyBusy(set: readonly string[], service: string, tried: ReadonlySet<string>): boolean {
+    const now = Date.now();
+    return set.some((address) => !tried.has(address) && this.unavailableReason(this.workers.get(address), service, now) === AT_CAPACITY);
+  }
+
+  /** Call `retry` when a slot frees (or a worker changes), `busy` at `until` or when too many wait, `aborted` when the buyer leaves. */
+  private waitForSlot(until: number, retry: () => void, busy: () => void, aborted: () => void, signal?: AbortSignal): void {
+    if (signal?.aborted) return aborted();
+    if (Date.now() >= until || this.waiting.size >= (this.opts.maxWaiting ?? DEFAULT_MAX_WAITING)) return busy();
+    const waiter = { retry: () => end(retry), stop: () => end(busy) };
+    const end = (then: () => void): void => {
+      if (!this.waiting.delete(waiter)) return;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      then();
+    };
+    const onAbort = (): void => end(aborted);
+    const timer = setTimeout(() => end(busy), until - Date.now());
+    signal?.addEventListener('abort', onAbort, { once: true });
+    this.waiting.add(waiter);
+  }
+
+  /** Let the requests waiting for a slot try again, in the order they came; those still without one keep their place. */
+  private wakeWaiting(): void {
+    if (this.waiting.size === 0 || this.waking) return;
+    this.waking = true;
+    queueMicrotask(() => {
+      this.waking = false;
+      for (const waiter of [...this.waiting]) waiter.retry();
+    });
+  }
+
   /** The best-ranked recipient not tried yet that can take a request now; why each other one can't is added to `failures`. */
   private nextRecipient(set: readonly string[], service: string, tried: ReadonlySet<string>, failures: string[]): ConnectedWorker | null {
     const now = Date.now();
@@ -463,7 +527,7 @@ export class ColonyPool {
       const worker = this.workers.get(address);
       const reason = this.unavailableReason(worker, service, now);
       if (reason) {
-        if (!failures.some((f) => f.startsWith(`Worker ${address} `))) failures.push(`Worker ${address} ${reason}`);
+        if (reason !== AT_CAPACITY && !failures.some((f) => f.startsWith(`Worker ${address} `))) failures.push(`Worker ${address} ${reason}`);
         continue;
       }
       candidates.push(worker!);
@@ -479,7 +543,7 @@ export class ColonyPool {
     if (unattested) return unattested;
     if (this.priority(worker.address) === 0) return 'the operator routes nothing to it';
     if (now < worker.rank.benchedUntil) return 'benched after failing to answer';
-    if (worker.inflight.size >= worker.maxConcurrency) return 'at capacity';
+    if (worker.inflight.size >= worker.maxConcurrency) return AT_CAPACITY;
     return null;
   }
 
@@ -526,7 +590,7 @@ export class ColonyPool {
   /** Fold one finished request's decode speed into the worker's average. */
   recordThroughput(address: string, outputTokens: number, streamMs: number): void {
     const worker = this.workers.get(address.toLowerCase());
-    if (!worker || outputTokens <= 0 || streamMs <= 0) return;
+    if (!worker || outputTokens < MIN_SPEED_TOKENS || streamMs < MIN_SPEED_STREAM_MS) return;
     // Kept in the rank (and the ledger), so it survives reconnects and the dashboard ranks by it too.
     recordSpeed(worker.rank, outputTokens / (streamMs / 1000));
     this.opts.ledger.saveRank(worker.address, worker.rank, this.priority(worker.address));
@@ -553,12 +617,19 @@ export class ColonyPool {
     return this.rankedWorkers(service, forAssignment)[0] ?? null;
   }
 
-  /** Every worker that could take a request for `service` now, best-ranked first. */
-  private rankedWorkers(service: string, forAssignment: boolean): ConnectedWorker[] {
+  /** The workers a buyer may be assigned: those with a free slot, or, when all are busy, the busy ones (requests wait for a slot). */
+  private assignable(service: string): ConnectedWorker[] {
+    const free = this.rankedWorkers(service, true);
+    return free.length > 0 ? free : this.rankedWorkers(service, true, true);
+  }
+
+  /** Every worker that could take a request for `service` now (or, with `busyToo`, once it has a slot), best-ranked first. */
+  private rankedWorkers(service: string, forAssignment: boolean, busyToo = false): ConnectedWorker[] {
     const now = Date.now();
     const candidates: ConnectedWorker[] = [];
     for (const worker of this.workers.values()) {
-      if (this.unavailableReason(worker, service, now) !== null) continue;
+      const reason = this.unavailableReason(worker, service, now);
+      if (reason !== null && !(busyToo && reason === AT_CAPACITY)) continue;
       worker.assignedAt = worker.assignedAt.filter((at) => now - at < ASSIGNMENT_WEIGHT_MS);
       candidates.push(worker);
     }
@@ -679,6 +750,7 @@ export class ColonyPool {
     if (entry?.timer) clearTimeout(entry.timer);
     entry?.release();
     table.delete(dispatchId);
+    this.wakeWaiting();
   }
 
   private accept(ws: WebSocket): void {
@@ -1136,6 +1208,7 @@ export class ColonyPool {
     this.log(`worker ${worker.address} left`);
     this.noteAttested();
     this.emitChangeIfNeeded();
+    this.wakeWaiting();
   }
 
   /**

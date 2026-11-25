@@ -20,7 +20,7 @@ import { parseWorkerPriority } from './ranking.js';
 import { readWorkerShareBps, WORKER_SHARE_REFRESH_MS } from './share.js';
 
 export { WorkerLedger } from './ledger.js';
-export { ColonyPool, NoWorkerAvailableError, WorkerUnavailableError, type ColonyPoolOptions, type WorkerSummary } from './pool.js';
+export { ColonyPool, NoWorkerAvailableError, WorkerBusyError, WorkerUnavailableError, type ColonyPoolOptions, type WorkerSummary } from './pool.js';
 export { ColonyPoolProvider } from './provider.js';
 export * from './protocol.js';
 export { NanoMdmAttestor, parseDeviceBindings, parsePlist, deviceInformationCommand, type DeviceAttestor, type NanoMdmAttestorOptions } from './mdm.js';

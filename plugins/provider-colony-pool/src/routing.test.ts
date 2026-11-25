@@ -111,7 +111,7 @@ class ScriptedWorker {
   readonly requests: string[] = [];
   private ws: WebSocket | null = null;
 
-  constructor(private readonly poolUrl: string, public behavior: Behavior) {}
+  constructor(private readonly poolUrl: string, public behavior: Behavior, private readonly slots = 4) {}
 
   get address(): string {
     return this.wallet.address.toLowerCase();
@@ -131,7 +131,7 @@ class ScriptedWorker {
             address: this.wallet.address,
             signature: await this.wallet.signMessage(workerAuthMessage(frame.pool, frame.nonce)),
             services: [SERVICE],
-            maxConcurrency: 4,
+            maxConcurrency: this.slots,
             encryption: { key: keyHex, expires, certificate: await this.wallet.signMessage(workerKeyCertificateMessage(frame.seller, keyHex, expires)) },
           }));
         } else if (frame?.t === 'welcome') {
@@ -195,20 +195,22 @@ describe('routing, failover and ranking in the pool', () => {
   let poolUrl: string;
   const workers: ScriptedWorker[] = [];
 
-  async function setup(opts: { firstByteTimeoutMs?: number; acceptTimeoutMs?: number; workerPriority?: Map<string, number> } = {}): Promise<void> {
+  async function setup(opts: { firstByteTimeoutMs?: number; acceptTimeoutMs?: number; workerPriority?: Map<string, number>; busyWaitMs?: number; maxWaiting?: number } = {}): Promise<void> {
     pool = new ColonyPool({
       poolId: 'test-pool', seller: SELLER, catalog: [SERVICE], prices: { [SERVICE]: { inputUsdPerMillion: 1, outputUsdPerMillion: 4 } }, workerShareBps: 9000, ledger, port: 0, host: '127.0.0.1',
       verifyOnJoin: false,
       firstByteTimeoutMs: opts.firstByteTimeoutMs ?? 300,
       ...(opts.acceptTimeoutMs ? { acceptTimeoutMs: opts.acceptTimeoutMs } : {}),
+      ...(opts.busyWaitMs !== undefined ? { busyWaitMs: opts.busyWaitMs } : {}),
+      ...(opts.maxWaiting !== undefined ? { maxWaiting: opts.maxWaiting } : {}),
       ...(opts.workerPriority ? { workerPriority: opts.workerPriority } : {}),
     });
     provider = new ColonyPoolProvider({ pool, ledger, pricing: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 4 } }, workerShareBps: 9000, maxConcurrency: 64 });
     poolUrl = `ws://127.0.0.1:${await pool.start()}`;
   }
 
-  async function connect(behavior: Behavior, wallet?: Wallet): Promise<ScriptedWorker> {
-    const worker = new ScriptedWorker(poolUrl, behavior);
+  async function connect(behavior: Behavior, wallet?: Wallet, slots?: number): Promise<ScriptedWorker> {
+    const worker = new ScriptedWorker(poolUrl, behavior, slots);
     if (wallet) Object.defineProperty(worker, 'wallet', { value: wallet });
     workers.push(worker);
     await worker.connect();
@@ -333,19 +335,68 @@ describe('routing, failover and ranking in the pool', () => {
     }
   });
 
+  it('queues requests for a busy one-slot worker instead of refusing them, and still assigns it', async () => {
+    await setup({ firstByteTimeoutMs: 2_000 });
+    const mac = await connect({ acceptThenAnswerAfterMs: 100 }, undefined, 1);
+    const requests = await Promise.all([1, 2, 3, 4].map((i) => requestFor(mac, `q${i}`)));
+    const running = Promise.all(requests.map((r) => provider.handleRequest(r)));
+    await waitFor(() => pool.capacity().current === 1);
+    expect((await assign()).worker.toLowerCase()).toBe(mac.address);
+    expect((await running).map((r) => r.statusCode)).toEqual([200, 200, 200, 200]);
+    expect(mac.requests).toHaveLength(4);
+    expect(summary(mac)).toMatchObject({ reliability: 1, benchedUntil: null });
+  });
+
+  it('answers 503 worker_busy, never worker_unavailable, when the wait runs out or too many wait', async () => {
+    await setup({ firstByteTimeoutMs: 2_000, busyWaitMs: 150, maxWaiting: 1 });
+    const mac = await connect({ acceptThenAnswerAfterMs: 600 }, undefined, 1);
+    const requests = await Promise.all([1, 2, 3].map((i) => requestFor(mac, `b${i}`)));
+    const [served, waited, refused] = await Promise.all(requests.map((r) => provider.handleRequest(r)));
+    expect(served!.statusCode).toBe(200);
+    for (const busy of [waited!, refused!]) {
+      expect(busy.statusCode).toBe(503);
+      expect(busy.headers['retry-after']).toBe('2');
+      expect(JSON.parse(dec(busy.body)).error.code).toBe('worker_busy');
+    }
+    expect(mac.requests).toHaveLength(1);
+    expect(summary(mac)).toMatchObject({ reliability: 1, benchedUntil: null });
+  });
+
+  it('tells a waiting request its worker left, and drops one whose buyer left', async () => {
+    await setup({ firstByteTimeoutMs: 2_000 });
+    const mac = await connect({ acceptThenAnswerAfterMs: 300 }, undefined, 1);
+    const first = provider.handleRequest(await requestFor(mac, 'w1'));
+    const gone = new AbortController();
+    const aborted = provider.handleRequestStream(await requestFor(mac, 'w2'), { onResponseStart: () => {}, onResponseChunk: () => {}, signal: gone.signal });
+    gone.abort();
+    await aborted;
+    expect((await first).statusCode).toBe(200);
+    expect(mac.requests).toHaveLength(1);
+    mac.behavior = 'accept-then-hang';
+    const hung = provider.handleRequest(await requestFor(mac, 'w3'));
+    const waiting = provider.handleRequest(await requestFor(mac, 'w4'));
+    await waitFor(() => mac.requests.length === 2);
+    await mac.close();
+    expect((await hung).statusCode).toBe(WORKER_UNAVAILABLE_STATUS);
+    expect((await waiting).statusCode).toBe(WORKER_UNAVAILABLE_STATUS);
+  });
+
   it('keeps the decode speed it routes by in the ledger, across reconnects', async () => {
     await setup();
     const wallet = Wallet.createRandom();
     const fast = await connect('answer', wallet);
     pool.recordThroughput(fast.address, 100, 1_000);
-    pool.recordThroughput(fast.address, 1, 1_000);
-    // The same smoothing the pool routes by: 100 × 0.8 + 1 × 0.2.
-    expect(summary(fast).tokensPerSecond).toBeCloseTo(80.2);
-    expect(ledger.loadRank(fast.address)?.tokensPerSecond).toBeCloseTo(80.2);
+    pool.recordThroughput(fast.address, 50, 1_000);
+    // Too short to say anything: a few tokens, or an answer that arrived in one burst.
+    pool.recordThroughput(fast.address, 3, 1);
+    pool.recordThroughput(fast.address, 400, 5);
+    // The same smoothing the pool routes by: 100 × 0.8 + 50 × 0.2.
+    expect(summary(fast).tokensPerSecond).toBeCloseTo(90);
+    expect(ledger.loadRank(fast.address)?.tokensPerSecond).toBeCloseTo(90);
     await fast.close();
     await waitFor(() => pool.workerSummaries().length === 0);
     const back = await connect('answer', wallet);
-    expect(summary(back).tokensPerSecond).toBeCloseTo(80.2);
+    expect(summary(back).tokensPerSecond).toBeCloseTo(90);
   });
 
   it('measures decode speed only on streamed answers, so a buffered one cannot read as instant', async () => {

@@ -82,7 +82,7 @@ Both are the worker's own report: they catch a wrong revision or drifting files,
 
 ## Ranking and the Workers panel
 
-The pool sends each buyer its best-ranked workers with a free slot: operator weight × reliability × decode speed relative to the fastest worker on that model, divided by 1 + load. A worker that fails a request is benched for 30 seconds, doubling up to 10 minutes, until it answers again. Ranks survive reconnects and restarts, so a flaky Mac can't reset its record by reconnecting.
+The pool sends each buyer its best-ranked workers with a free slot: operator weight × reliability × decode speed relative to the fastest worker on that model, divided by 1 + load. Buyers ask again every 2 minutes, so a Mac that joins later gets work too. When a buyer's workers are all busy, its request waits for a free slot, up to 15 seconds. A worker that fails a request is benched for 30 seconds, doubling up to 10 minutes, until it answers again. Ranks survive reconnects and restarts, so a flaky Mac can't reset its record by reconnecting.
 
 The seller dashboard's **Workers** panel lists workers in that order, with status, speed, requests answered over 24 hours and 7 days, median first byte, online time and earnings.
 

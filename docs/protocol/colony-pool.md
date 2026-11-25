@@ -86,9 +86,14 @@ requirement: the worker signs it with a key it chose. A buyer configured with
 `requireAppleVerifiedWorkers` also requires Apple's attestation of the
 worker's Mac. A worker that fails any check is left out of the set, and the
 buyer refuses the assignment only when no worker is left. It keeps the set
-per (seller, provider, service) until the first of its certificates or
-attestations stops being usable, or the pool answers `421` with
-`{"error":{"code":"worker_unavailable"}}`. Then it drops the set; with 2 or 3
+per (seller, provider, service) while its certificates and attestations are
+usable, and asks again every 2 minutes, so workers that joined since get work
+from buyers that already had one. A refresh that fails, or that names only
+workers its channel can't credit, keeps the set it has. When the pool answers
+`421` with `{"error":{"code":"worker_unavailable"}}` it replaces the set, at
+most 10 assign calls a minute per service (past that it keeps using a set
+that is still valid), so a struggling pool can't use up the seller's rate
+limit and lock it out; with 2 or 3
 recipients it reassigns and retries once, and with 1 it returns the `421`,
 so a request is never shown to a second Mac.
 Paths under `/_antseed/provider/` are free control routes: the seller hands
@@ -327,7 +332,7 @@ seal under its response key.
 ## Routing and failover
 
 The pool assigns each buyer the best-ranked workers for the model that have a
-free slot (as many as it asks for, up to 3). A worker's score is its operator weight × its reliability (the
+free slot, or the busy ones when none has (as many as it asks for, up to 3). A worker's score is its operator weight × its reliability (the
 smoothed share of buyer requests it answered) × its decode speed relative to
 the fastest worker for that model, divided by 1 + its load. A worker with no
 record yet gets the others' average reliability and speed, so it is neither
@@ -346,12 +351,15 @@ with bad requests. A complete answer counts by its HTTP status: a `5xx` or
 buyer, so it is not failed over), any other `4xx` is the buyer's request at
 fault and counts for no one. Ranks, including each worker's smoothed decode speed (learned only
 from streamed answers: a buffered answer arrives in one burst after
-generation, so it adds no speed sample), survive reconnects and pool restarts (the ledger keeps them
+generation, so it adds no speed sample, and neither does one under 32 tokens or 100 ms), survive reconnects and pool restarts (the ledger keeps them
 in `worker_rank`, and each outcome in `dispatches` for 30 days), so a flaky
 Mac can't reset its record by reconnecting.
 
 The pool sends a buyer's request to the best-ranked of its recipients that can
-take it now. When that worker fails before any byte reached the buyer (it
+take it now. While they are only busy, the request waits for a slot, first come
+first served, up to 15 seconds and 64 waiting requests; past either the pool
+answers `503` `{"error":{"code":"worker_busy"}}` with `retry-after`, and the
+buyer keeps its set. When that worker fails before any byte reached the buyer (it
 never picked the request up, did not answer in time, disconnected, refused it,
 or is benched), the pool sends the same envelope to the next recipient, with
 no round trip to the buyer. It never sends it to a worker outside the set the

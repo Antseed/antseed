@@ -72,14 +72,41 @@ function parseAssignment(raw: unknown): WorkerAssignment {
   return value as WorkerAssignment;
 }
 
+/** How long a buyer stays on its workers before it asks the pool again, so work spreads to workers that joined since. */
+export const ASSIGNMENT_REFRESH_S = 120;
+/** Assign calls a buyer makes per minute and service after `worker_unavailable`: well under a seller's limit of 30. */
+const REASSIGN_BUDGET = 10;
+const REASSIGN_WINDOW_S = 60;
+
+interface HeldAssignment {
+  workers: WorkerAssignment[];
+  /** When its first worker stops being usable (certificate, attestation or Apple attestation). */
+  usableUntil: number;
+  assignedAt: number;
+  /** Its workers could not take a request: replaced as soon as the reassign budget allows. */
+  forgotten: boolean;
+  /** The assignment a refresh replaced, kept for a channel that can't credit the new workers. */
+  previous?: HeldAssignment | undefined;
+}
+
+function assignmentKey(peerId: string, provider: string, service: string): string {
+  return `${peerId.toLowerCase()}|${provider}|${service}`;
+}
+
 /**
  * Encrypts requests to a colony pool's workers and keeps one assignment (the
- * pool's top-ranked few workers) per (seller, provider, service), so a
- * buyer's requests stay on the same Macs.
+ * pool's top-ranked few workers) per (seller, provider, service). It asks again
+ * every ASSIGNMENT_REFRESH_S, so a worker that joins later gets work from
+ * buyers that already had one, and after `forget`, within a budget: a busy
+ * pool must not use up the seller's assign rate limit and lock the buyer out.
+ * While an assignment is usable, a refresh that fails keeps it.
  */
 export class NodeWorkerE2EClient implements WorkerE2EClient {
-  /** Each assignment with the time its first worker stops being usable (certificate, attestation or Apple attestation). */
-  private readonly assignments = new Map<string, { workers: WorkerAssignment[]; usableUntil: number }>();
+  private readonly assignments = new Map<string, HeldAssignment>();
+  /** Assign calls in flight, shared by the requests that need them. */
+  private readonly pending = new Map<string, Promise<HeldAssignment>>();
+  /** When each key was recently assigned (seconds), for the reassign budget. */
+  private readonly recentAssigns = new Map<string, number[]>();
   private readonly now: () => number;
   private readonly recipients: number;
 
@@ -101,11 +128,18 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
     options: WorkerSealOptions = {},
   ): Promise<SealedWorkerRequest> {
     const provider = Object.entries(request.headers).find(([name]) => name.toLowerCase() === 'x-antseed-provider')?.[1].trim().toLowerCase() ?? '';
-    const assigned = await this.assignment(peer, provider, service, assign);
-    const chosen = options.chooseRecipients
-      ? new Set(options.chooseRecipients(assigned.map((w) => w.worker)).map((w) => w.toLowerCase()))
-      : null;
-    const workers = chosen ? assigned.filter((w) => chosen.has(w.worker.toLowerCase())) : assigned;
+    const held = await this.assignment(peer, provider, service, assign);
+    const creditable = (assigned: WorkerAssignment[]): WorkerAssignment[] => {
+      if (!options.chooseRecipients) return assigned;
+      const chosen = new Set(options.chooseRecipients(assigned.map((w) => w.worker)).map((w) => w.toLowerCase()));
+      return assigned.filter((w) => chosen.has(w.worker.toLowerCase()));
+    };
+    let workers = creditable(held.workers);
+    if (workers.length === 0 && held.previous && this.now() < held.previous.usableUntil) {
+      // A refresh only spreads work: the channel can't credit the new workers, so it stays with the ones it had.
+      workers = creditable(held.previous.workers);
+      if (workers.length > 0) this.keep(assignmentKey(peer.peerId, provider, service), held, { ...held.previous, assignedAt: this.now() });
+    }
     if (workers.length === 0) {
       // Assigned again next time: the pool may then rank a worker this channel can credit.
       this.forget(peer.peerId, service);
@@ -160,7 +194,7 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
   forget(peerId: string, service: string): void {
     const peer = `${peerId.toLowerCase()}|`;
     for (const key of this.assignments.keys()) {
-      if (key.startsWith(peer) && key.endsWith(`|${service}`)) this.assignments.delete(key);
+      if (key.startsWith(peer) && key.endsWith(`|${service}`)) this.assignments.get(key)!.forgotten = true;
     }
   }
 
@@ -169,13 +203,59 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
     provider: string,
     service: string,
     assign: (body: Uint8Array) => Promise<SerializedHttpResponse>,
-  ): Promise<WorkerAssignment[]> {
+  ): Promise<HeldAssignment> {
     // Per provider too: two pools on one seller have different workers.
-    const key = `${peer.peerId.toLowerCase()}|${provider}|${service}`;
+    const key = assignmentKey(peer.peerId, provider, service);
     const cached = this.assignments.get(key);
     const now = this.now();
-    if (cached && now < cached.usableUntil) return cached.workers;
+    const usable = cached !== undefined && now < cached.usableUntil;
+    if (usable) {
+      const due = cached.forgotten ? this.mayReassign(key, now) : now - cached.assignedAt >= ASSIGNMENT_REFRESH_S;
+      if (!due) return cached;
+    }
+    let request = this.pending.get(key);
+    if (!request) {
+      this.noteAssign(key, now);
+      request = this.requestAssignment(peer, key, service, assign, usable && !cached.forgotten ? cached : undefined, now)
+        .finally(() => this.pending.delete(key));
+      this.pending.set(key, request);
+    }
+    try {
+      return await request;
+    } catch (err) {
+      if (!usable) throw err;
+      // Busy or rate limited: what it has still works, and is asked about again later.
+      cached.assignedAt = now;
+      return cached;
+    }
+  }
 
+  /** Whether a forgotten assignment may be replaced now: at most REASSIGN_BUDGET assign calls a minute. */
+  private mayReassign(key: string, now: number): boolean {
+    return (this.recentAssigns.get(key) ?? []).filter((at) => now - at < REASSIGN_WINDOW_S).length < REASSIGN_BUDGET;
+  }
+
+  private noteAssign(key: string, now: number): void {
+    const recent = (this.recentAssigns.get(key) ?? []).filter((at) => now - at < REASSIGN_WINDOW_S);
+    // Re-inserted, so the key asked about longest ago is the first dropped.
+    this.recentAssigns.delete(key);
+    this.recentAssigns.set(key, [...recent, now]);
+    if (this.recentAssigns.size > MAX_CACHED_ASSIGNMENTS) this.recentAssigns.delete(this.recentAssigns.keys().next().value!);
+  }
+
+  /** Put `next` back unless a newer assignment replaced `held` meanwhile. */
+  private keep(key: string, held: HeldAssignment, next: HeldAssignment): void {
+    if (this.assignments.get(key) === held) this.assignments.set(key, next);
+  }
+
+  private async requestAssignment(
+    peer: BuyerPeerView,
+    key: string,
+    service: string,
+    assign: (body: Uint8Array) => Promise<SerializedHttpResponse>,
+    previous: HeldAssignment | undefined,
+    now: number,
+  ): Promise<HeldAssignment> {
     const offered = parseAssignments(await assign(new TextEncoder().encode(JSON.stringify({ model: service, recipients: this.recipients }))));
     const seen = new Set<string>();
     const workers: WorkerAssignment[] = [];
@@ -197,8 +277,15 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
       const oldest = this.assignments.keys().next().value;
       if (oldest !== undefined) this.assignments.delete(oldest);
     }
-    this.assignments.set(key, { workers, usableUntil });
-    return workers;
+    const held: HeldAssignment = {
+      workers,
+      usableUntil,
+      assignedAt: now,
+      forgotten: false,
+      ...(previous ? { previous: { ...previous, previous: undefined } } : {}),
+    };
+    this.assignments.set(key, held);
+    return held;
   }
 
   /** Checks one assigned worker against this buyer's policy; returns when it stops being usable. Throws when it fails. */

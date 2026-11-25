@@ -7,6 +7,7 @@ import { ANTSEED_STREAMING_RESPONSE_HEADER } from '../src/types/http.js';
 import type { SerializedHttpRequest, SerializedHttpResponse, SerializedHttpResponseChunk } from '../src/types/http.js';
 import type { PeerInfo } from '../src/types/peer.js';
 import { createTestAppleCa } from '../src/colony-pool/apple-attestation-testing.js';
+import { ASSIGNMENT_REFRESH_S } from '../src/colony-pool/client.js';
 import {
   NodeWorkerE2EClient,
   deviceAttestationNonce,
@@ -113,7 +114,7 @@ function deviceAttestation(kind: Device, worker: string, attestationKey: string,
   };
 }
 
-function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; failSigning?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; tamper?: 'ciphertext' | 'usage' | 'seller-cost'; attest?: Attest | Attest[]; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'seller-cost' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean } = {}) {
+function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; failSigning?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; alwaysUnavailable?: boolean; tamper?: 'ciphertext' | 'usage' | 'seller-cost'; attest?: Attest | Attest[]; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'seller-cost' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean } = {}) {
   const workers = Array.from({ length: opts.workers ?? 1 }, () => ({ wallet: Wallet.createRandom(), key: generateWorkerEncryptionKey() }));
   let next = 0;
   let unavailable = opts.unavailableOnce === true;
@@ -159,7 +160,7 @@ function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; fai
         respond(onResponse, req.requestId, 200, { choices: [{ message: { content: 'plain answer' } }] });
         return;
       }
-      if (unavailable) {
+      if (unavailable || opts.alwaysUnavailable) {
         unavailable = false;
         respond(onResponse, req.requestId, 421, { error: { code: 'worker_unavailable', message: 'gone' } });
         return;
@@ -256,6 +257,56 @@ describe('buyer requests to colony pools', () => {
       expect(JSON.parse(dec(req.body)).antseed_e2e.recipients.map((r: { worker: string }) => r.worker)).toEqual([pool.workers[0]!.wallet.address]);
       expect(JSON.parse(dec(req.body)).model).toBe('qwen');
     }
+  });
+
+  it('asks the pool again every two minutes, so a worker that joined later gets work', async () => {
+    let clock = Math.floor(Date.now() / 1000);
+    const pool = fakePool({ workers: 2, now: () => clock });
+    for (let i = 0; i < 5; i++) await pool.handler.sendRequest(peer, chatRequest(`s${i}`));
+    clock += ASSIGNMENT_REFRESH_S - 1;
+    await pool.handler.sendRequest(peer, chatRequest('s5'));
+    expect(pool.assigned).toEqual([pool.workers[0]!.wallet.address]);
+    clock += 1;
+    await Promise.all([pool.handler.sendRequest(peer, chatRequest('s6')), pool.handler.sendRequest(peer, chatRequest('s7'))]);
+    // One call for both: the assign route is rate limited.
+    expect(pool.assigned).toEqual(pool.workers.map((w) => w.wallet.address));
+    expect(pool.encryptedFor.slice(-2)).toEqual([[pool.workers[1]!.wallet.address], [pool.workers[1]!.wallet.address]]);
+  });
+
+  it('keeps a usable assignment when a refresh is refused, or names workers its channel cannot credit', async () => {
+    let clock = Math.floor(Date.now() / 1000);
+    const opts = { workers: 2, now: () => clock, assignFails: false };
+    const pool = fakePool(opts);
+    const firstWorker = pool.workers[0]!.wallet.address;
+    await pool.handler.sendRequest(peer, chatRequest('k1'));
+    opts.assignFails = true;
+    clock += ASSIGNMENT_REFRESH_S;
+    expect((await pool.handler.sendRequest(peer, chatRequest('k2'))).statusCode).toBe(200);
+    expect(pool.encryptedFor.at(-1)).toEqual([firstWorker]);
+    // Not asked again at once.
+    const calls = pool.wire.filter((req) => req.path === WORKER_ASSIGN_PATH).length;
+    await pool.handler.sendRequest(peer, chatRequest('k3'));
+    expect(pool.wire.filter((req) => req.path === WORKER_ASSIGN_PATH)).toHaveLength(calls);
+
+    const channel = `0x${'ab'.repeat(32)}`;
+    const full = fakePool({
+      workers: 2, now: () => clock,
+      bpm: { getActiveSession: () => ({ sessionId: channel }), creditableWorkers: (_seller: string, assigned: string[]) => assigned.filter((w) => w === full.workers[0]!.wallet.address) },
+    });
+    await full.handler.sendRequest(peer, chatRequest('f1'));
+    clock += ASSIGNMENT_REFRESH_S;
+    expect((await full.handler.sendRequest(peer, chatRequest('f2'))).statusCode).toBe(200);
+    expect(full.encryptedFor).toEqual([[full.workers[0]!.wallet.address], [full.workers[0]!.wallet.address]]);
+  });
+
+  it('reassigns after worker_unavailable within a budget, so a busy pool cannot use up the assign rate limit', async () => {
+    let clock = Math.floor(Date.now() / 1000);
+    const pool = fakePool({ workers: 2, now: () => clock, alwaysUnavailable: true });
+    for (let i = 0; i < 40; i++) expect((await pool.handler.sendRequest(peer, chatRequest(`b${i}`))).statusCode).toBe(421);
+    expect(pool.assigned).toHaveLength(10);
+    clock += 60;
+    await pool.handler.sendRequest(peer, chatRequest('later'));
+    expect(pool.assigned).toHaveLength(11);
   });
 
   it('carries the latest payment, encrypts only for the workers the channel can credit, and records them as it chooses', async () => {
@@ -371,11 +422,12 @@ describe('buyer requests to colony pools', () => {
     const pool = fakePool({ attest: 'hardened', device: 'apple', appleCa: ca, now: () => clock });
     expect((await pool.handler.sendRequest(peer, chatRequest('c4'))).statusCode).toBe(200);
     clock += 500;
+    // Asked again by now (the refresh), and still valid.
     expect((await pool.handler.sendRequest(peer, chatRequest('c5'))).statusCode).toBe(200);
-    expect(pool.assigned).toHaveLength(1);
-    clock += 200;
-    await expect(pool.handler.sendRequest(peer, chatRequest('c6'))).rejects.toThrow(/not valid now/);
     expect(pool.assigned).toHaveLength(2);
+    clock += 101;
+    await expect(pool.handler.sendRequest(peer, chatRequest('c6'))).rejects.toThrow(/not valid now/);
+    expect(pool.assigned).toHaveLength(3);
   });
 
   it('fails a response whose ciphertext does not verify', async () => {
