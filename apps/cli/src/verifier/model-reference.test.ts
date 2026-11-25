@@ -582,7 +582,9 @@ function thinkingModelFetch(input: { writingWithMinimal: 'list' | 'empty'; writi
     }
     input.writing.push(body)
     if (effort === 'minimal' && input.writingWithMinimal === 'list') return reply(generatedCandidates(prompt), 'stop', 1500, 800)
-    return reply(null, 'length', 6000, 6000)
+    // Thinking fills whatever limit the batch asked for.
+    const limit = typeof body.max_tokens === 'number' ? body.max_tokens : 6000
+    return reply(null, 'length', limit, limit)
   }
 }
 
@@ -668,6 +670,54 @@ test('a model no setting turns thinking off for is asked with the setting that t
     const target = asked.filter((body) => body.model === 'upstream-test')
     assert.ok(target.length > 0)
     for (const body of target) assert.deepEqual(body.reasoning, { effort: 'minimal' })
+    assert.ok(built.reference.probes.length > 0)
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a model no setting turns thinking off for writes its questions with room to think, and asks with the usual limits', async () => {
+  // Gemini 4 Neon on OpenRouter (dry run 5): every setting accepted but ignored, and a writing batch thinks through all
+  // 6000 tokens and returns no text, every batch of a round; the build stopped. Room to think brings the list back.
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-thinking-writing-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const writing: Array<{ max_tokens?: number }> = []
+  const asked: Array<{ model: string; max_tokens?: number }> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; max_tokens?: number; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    const effort = (body.reasoning as { effort?: string } | undefined)?.effort
+    const reply = (content: string | null, finishReason: string, completion: number, reasoning: number) => new Response(JSON.stringify({
+      choices: [{ message: { content }, finish_reason: finishReason }],
+      usage: { prompt_tokens: 100, completion_tokens: completion, completion_tokens_details: { reasoning_tokens: reasoning } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+    if (body.messages.some((message) => String(message.content).includes(DISCOVERY_MARKER))) {
+      if (effort === 'none') return response('reasoning effort none is not supported', 400)
+      return reply(DISCOVERY_ANSWERS, 'stop', 900, effort === 'minimal' ? 536 : body.thinking ? 496 : 605)
+    }
+    if (prompt.startsWith('Generate ')) {
+      writing.push(body)
+      const limit = body.max_tokens ?? 0
+      if (limit < 9000) return reply(null, 'length', limit, limit)
+      return reply(successfulContent(body.model, prompt), 'stop', 11_000, 9000)
+    }
+    asked.push(body)
+    return reply(successfulContent(body.model, prompt), 'stop', 600, 500)
+  }
+  try {
+    const logs: string[] = []
+    const built = await buildModelReferenceWithoutDiscoveryStub({ model: MODEL, referencesDir: directory, config: value, fetchFn, log: (line) => logs.push(line) })
+    const params = built.reference.generator.params as Record<string, unknown>
+    assert.equal((params.referenceEndpointRequest as { reasoningStrategy: string }).reasoningStrategy, 'disable-thinking', logs.join('\n'))
+    assert.ok(writing.length > 0)
+    for (const body of writing) assert.equal(body.max_tokens, 16000)
+    // Asking keeps its own limit: the bank's query profile and every measured request are unchanged.
+    assert.equal(built.reference.queryProfile.maxTokensPerRequest, 1600)
+    for (const body of asked.filter((entry) => entry.model === 'upstream-test')) assert.ok((body.max_tokens ?? 0) <= 1600)
+    assert.equal((params.candidateWriting as { maxTokens?: number }).maxTokens, 16000)
+    assert.ok(logs.some((line) => line.includes('question writing asks for up to 16000 tokens')))
     assert.ok(built.reference.probes.length > 0)
     await built.finalize()
   } finally {
