@@ -14,6 +14,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Desktop and Gateway Console: replace simplified model logos with the official Claude, DeepSeek, Qwen, Gemini, Mistral, Meta and Grok marks.
 - Desktop: the first message of a new chat now runs with the model's saved permission, so Full access no longer asks for approval on it.
 
 ## 2026-11-23 — CLI 0.1.259, Node 0.2.191, Desktop 0.2.94
