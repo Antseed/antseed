@@ -1,4 +1,5 @@
 import type { AlertDestinationInput, AlertDestinationKind, AlertEventGroup, AlertSettings, AlertSettingsInput } from '../api/types'
+import { usdcForInput } from './format'
 
 export const ALERT_GROUPS: Array<{ id: AlertEventGroup; label: string; description: string }> = [
   { id: 'balance', label: 'Credits', description: 'Credits below the threshold, requests refused for lack of credits, and topped up again.' },
@@ -23,16 +24,10 @@ export interface AlertSettingsDraft {
   repeatMinutes: string
 }
 
-/** "10.000000" → "10", "12.500000" → "12.5". */
-function trimUsd(value: string | null): string {
-  if (value === null) return ''
-  return value.includes('.') ? value.replace(/0+$/, '').replace(/\.$/, '') : value
-}
-
 export function alertSettingsDraft(settings: AlertSettings): AlertSettingsDraft {
   return {
-    lowBalanceUsd: trimUsd(settings.lowBalance),
-    topupTargetUsd: trimUsd(settings.topupTarget),
+    lowBalanceUsd: usdcForInput(settings.lowBalance),
+    topupTargetUsd: usdcForInput(settings.topupTarget),
     limitWarnPercent: settings.limitWarnPercent === null ? '' : String(settings.limitWarnPercent),
     repeatMinutes: settings.repeatMinutes === null ? '' : String(settings.repeatMinutes),
   }

@@ -57,18 +57,46 @@ test('webhooks are signed over the timestamp and the exact body', async () => {
 test('webhooks to link-local and cloud metadata addresses are refused', async () => {
   assert.equal(isForbiddenWebhookAddress('169.254.169.254'), true)
   assert.equal(isForbiddenWebhookAddress('::ffff:169.254.169.254'), true)
+  assert.equal(isForbiddenWebhookAddress('::ffff:a9fe:a9fe'), true, 'IPv4-mapped in hex')
+  assert.equal(isForbiddenWebhookAddress('0:0:0:0:0:ffff:a9fe:a9fe'), true, 'IPv4-mapped, uncompressed')
   assert.equal(isForbiddenWebhookAddress('fe80::1'), true)
-  assert.equal(isForbiddenWebhookAddress('fd00:ec2::254'), true)
+  assert.equal(isForbiddenWebhookAddress('fe80::1%eth0'), true)
+  assert.equal(isForbiddenWebhookAddress('FD00:EC2:0:0:0:0:0:254'), true)
   assert.equal(isForbiddenWebhookAddress('127.0.0.1'), false, 'a top-up script next to the gateway is allowed')
+  assert.equal(isForbiddenWebhookAddress('::ffff:7f00:1'), false)
   assert.equal(isForbiddenWebhookAddress('10.0.0.5'), false)
-  let fetched = false
-  const transport = createAlertTransport({
-    fetch: (async () => { fetched = true; return new Response('') }) as typeof fetch,
-    lookup: async () => ['169.254.169.254'],
-  })
+  const transport = createAlertTransport({ lookup: async () => ['169.254.169.254'] })
   await assert.rejects(transport.send(dest({ target: 'http://metadata.example.test/' }), event), /not allowed/)
   await assert.rejects(transport.send(dest({ target: 'http://169.254.169.254/latest' }), event), /not allowed/)
-  assert.equal(fetched, false)
+  await assert.rejects(transport.send(dest({ target: 'http://[::ffff:a9fe:a9fe]/latest' }), event), /not allowed/)
+})
+
+test('a webhook connects only to the address its one lookup checked', async () => {
+  let hits = 0
+  const server = http.createServer((req, res) => {
+    hits += 1
+    assert.equal(req.headers.host?.startsWith('hooks.example.test:'), true, 'the URL host is kept')
+    req.resume()
+    req.on('end', () => res.writeHead(204).end())
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const port = (server.address() as { port: number }).port
+    const target = `http://hooks.example.test:${port}/hook`
+    const answers = [['127.0.0.1'], ['169.254.169.254']]
+    const lookups: string[] = []
+    const transport = createAlertTransport({ lookup: async (host) => { lookups.push(host); return answers.shift() ?? [] } })
+    await transport.send(dest({ target }), event)
+    assert.deepEqual(lookups, ['hooks.example.test'], 'one lookup, and the connection used its answer')
+    assert.equal(hits, 1)
+    // The next answer changed to a metadata address: the connection is refused, not made.
+    await assert.rejects(transport.send(dest({ target }), event), /not allowed/)
+    const mixed = createAlertTransport({ lookup: async () => ['127.0.0.1', '169.254.169.254'] })
+    await assert.rejects(mixed.send(dest({ target }), event), /not allowed/)
+    assert.equal(hits, 1)
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
 })
 
 test('telegram sends through the workspace bot and never leaks its token in errors', async () => {

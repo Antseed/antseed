@@ -4,7 +4,7 @@
  * strings), so a receiver can act on it: top up the wallet, page someone.
  */
 import { randomUUID } from 'node:crypto'
-import { formatUsdc, usdcToDecimalString } from '../money.js'
+import { formatUsdc, optionalUsdcToDecimalString as usd } from '../money.js'
 import type { BudgetLevel, BudgetPeriod } from '../limits.js'
 import type { AlertEventGroup } from '../store.js'
 
@@ -45,8 +45,6 @@ type Workspace = { id: string; name: string }
 function base(type: AlertEventType, group: AlertEventGroup | null, severity: AlertSeverity, workspace: Workspace, now: number): Omit<AlertEvent, 'title' | 'message' | 'data'> {
   return { id: `evt_${randomUUID()}`, type, group, severity, createdAt: now, workspace: { id: workspace.id, name: workspace.name } }
 }
-
-const usd = (amount: number | null): string | null => (amount === null ? null : usdcToDecimalString(amount))
 
 export interface BalanceFacts {
   walletAddress: string | null

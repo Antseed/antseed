@@ -142,7 +142,9 @@ export class GatewayAlerts {
     void this._safely(async () => {
       const workspace = this._store.getWorkspace(key.workspaceId)
       if (!workspace || key.buyerIdentity !== workspace.buyerIdentity) return
-      if (this._store.getAlertIncident(workspace.id, BALANCE_EMPTY)) return
+      // Open already: only a reminder can be due, and the balance is read only then.
+      const open = this._store.getAlertIncident(workspace.id, BALANCE_EMPTY)
+      if (open && !this._reminderDue(workspace.id, open.lastSentAt)) return
       const settings = this._store.getAlertSettings(workspace.id)
       // Unread, the alert still goes out: requests are failing either way.
       const facts = await this._balanceFacts(workspace, settings) ?? { ...this._settingsFacts(settings), walletAddress: null, availableUsdc: 0, walletUsdc: null }
@@ -240,14 +242,18 @@ export class GatewayAlerts {
     // An unread or stale balance changes nothing: an alert says only what the buyer reports now.
     if (!facts) return
     const threshold = settings.lowBalanceUsdc
+    // Out of credits is over once the credits are above the threshold or, without one, one request's hold.
+    const emptyOver = facts.availableUsdc >= (threshold ?? this._options.emptyRecoveryUsdc)
+    if (emptyOpen && !emptyOver) {
+      // Still out: its reminder is due on schedule even with no request refused since; it says all low would.
+      await this._raise(workspace, BALANCE_EMPTY, () => balanceEmptyEvent(workspace, facts, this._now()))
+      return
+    }
     if (threshold !== null && facts.availableUsdc < threshold) {
       await this._raise(workspace, BALANCE_LOW, () => balanceLowEvent(workspace, { ...facts, thresholdUsdc: threshold }, this._now()))
       return
     }
-    const resolved = [BALANCE_LOW]
-    // Out of credits is over once the credits are above the threshold or, without one, one request's hold.
-    if (facts.availableUsdc >= (threshold ?? this._options.emptyRecoveryUsdc)) resolved.push(BALANCE_EMPTY)
-    await this._resolve(workspace, resolved, () => balanceOkEvent(workspace, facts, this._now()))
+    await this._resolve(workspace, emptyOver ? [BALANCE_LOW, BALANCE_EMPTY] : [BALANCE_LOW], () => balanceOkEvent(workspace, facts, this._now()))
   }
 
   /** The wallet as the buyer reports it now; null when it is unread or stale. */
@@ -287,11 +293,16 @@ export class GatewayAlerts {
     if (destinations.length === 0) return
     if (!this._store.openAlertIncident(workspace.id, incident)) {
       const open = this._store.getAlertIncident(workspace.id, incident)
-      const repeat = this._store.getAlertSettings(workspace.id).repeatMinutes
-      if (!open || repeat === null || open.lastSentAt === null || this._now() - open.lastSentAt < repeat * 60_000) return
+      if (!open || !this._reminderDue(workspace.id, open.lastSentAt)) return
     }
     this._store.touchAlertIncident(workspace.id, incident)
     this._dispatch(destinations, event)
+  }
+
+  /** Whether an open incident last alerted at `lastSentAt` is due its `repeatMinutes` reminder. */
+  private _reminderDue(workspaceId: string, lastSentAt: number | null): boolean {
+    const repeat = this._store.getAlertSettings(workspaceId).repeatMinutes
+    return repeat !== null && lastSentAt !== null && this._now() - lastSentAt >= repeat * 60_000
   }
 
   /** Closes the incidents; one recovery alert when any of them had been alerted. */

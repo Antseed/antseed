@@ -6,7 +6,9 @@
  */
 import { createHmac } from 'node:crypto'
 import { lookup as dnsLookup } from 'node:dns/promises'
-import { isIP } from 'node:net'
+import http from 'node:http'
+import https from 'node:https'
+import { isIP, type LookupFunction } from 'node:net'
 import type { AlertDestinationRecord } from '../store.js'
 import type { AlertEvent } from './events.js'
 
@@ -24,9 +26,10 @@ const TELEGRAM_API = 'https://api.telegram.org'
 const MAX_ERROR_LENGTH = 300
 
 export interface AlertTransportOptions {
+  /** For Telegram; webhooks connect through `lookup` instead. */
   fetch?: typeof fetch
   env?: Record<string, string | undefined>
-  /** Resolves a webhook host to its addresses, to refuse link-local and cloud metadata targets. */
+  /** Resolves a webhook host to its addresses. The connection uses only these, once each is checked against link-local and cloud metadata targets. */
   lookup?: (host: string) => Promise<string[]>
   now?: () => number
   telegramApi?: string
@@ -73,9 +76,24 @@ export function alertText(event: AlertEvent): string {
  * stay allowed: an auto top-up script next to the gateway is a normal target.
  */
 export function isForbiddenWebhookAddress(address: string): boolean {
-  const ip = address.toLowerCase().replace(/^::ffff:/, '')
+  const ip = canonicalIp(address)
   if (isIP(ip) === 4) return ip.startsWith('169.254.') || ip === '0.0.0.0'
   return ip === '::' || /^fe[89ab][0-9a-f]:/.test(ip) || ip === 'fd00:ec2::254'
+}
+
+/**
+ * An address in one spelling: IPv6 compressed and lowercase (via the URL
+ * parser), without a zone, and an IPv4-mapped IPv6 address as its IPv4
+ * (`::ffff:a9fe:a9fe` and `::ffff:169.254.169.254` are 169.254.169.254).
+ */
+function canonicalIp(address: string): string {
+  let ip = address.trim().toLowerCase().replace(/%.*$/, '')
+  if (isIP(ip) === 6) ip = new URL(`http://[${ip}]`).hostname.slice(1, -1)
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(ip)
+  if (!mapped) return ip
+  const high = parseInt(mapped[1]!, 16)
+  const low = parseInt(mapped[2]!, 16)
+  return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`
 }
 
 export function emailConfigured(env: Record<string, string | undefined>): boolean {
@@ -84,6 +102,12 @@ export function emailConfigured(env: Record<string, string | undefined>): boolea
 
 export function emailRecipients(target: string): string[] {
   return target.split(',').map((entry) => entry.trim()).filter(Boolean)
+}
+
+class ForbiddenWebhookError extends Error {
+  constructor(host: string) {
+    super(`Webhooks to ${host} are not allowed.`)
+  }
 }
 
 function clip(message: string): string {
@@ -101,13 +125,45 @@ export function createAlertTransport(options: AlertTransportOptions = {}): Alert
   const now = options.now ?? Date.now
   const telegramApi = options.telegramApi ?? TELEGRAM_API
 
-  async function resolve(host: string): Promise<string[]> {
-    if (isIP(host)) return [host]
-    try {
-      return await lookup(host)
-    } catch {
-      throw new Error(`Could not resolve ${host}.`)
-    }
+  /**
+   * The connection's own DNS lookup: it connects only to answers that pass
+   * the address check, so a name cannot pass one lookup and connect to
+   * another answer. Host and TLS name stay the URL's.
+   */
+  const checkedLookup: LookupFunction = (hostname, lookupOptions, callback) => {
+    void (async () => {
+      let addresses: string[]
+      try {
+        addresses = await lookup(hostname)
+      } catch {
+        addresses = []
+      }
+      if (addresses.length === 0) return callback(new Error(`Could not resolve ${hostname}.`), '', 0)
+      if (addresses.some(isForbiddenWebhookAddress)) return callback(new ForbiddenWebhookError(hostname), '', 0)
+      const entries = addresses.map((address) => ({ address, family: isIP(address) }))
+      if (lookupOptions.all) callback(null, entries)
+      else callback(null, entries[0]!.address, entries[0]!.family)
+    })()
+  }
+
+  /** POSTs and answers the status. Redirects are not followed and the receiver's body is never read. */
+  function post(url: URL, headers: Record<string, string>, body: string): Promise<number> {
+    const request = url.protocol === 'https:' ? https.request : http.request
+    return new Promise((resolve, reject) => {
+      const req = request(url, {
+        method: 'POST',
+        headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) },
+        lookup: checkedLookup,
+        // A new connection each time, so every delivery goes through `checkedLookup`.
+        agent: false,
+        signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS),
+      }, (response) => {
+        response.resume()
+        resolve(response.statusCode ?? 0)
+      })
+      req.on('error', reject)
+      req.end(body)
+    })
   }
 
   async function webhook(destination: AlertDestinationRecord, event: AlertEvent): Promise<void> {
@@ -118,9 +174,9 @@ export function createAlertTransport(options: AlertTransportOptions = {}): Alert
       throw new Error('The webhook URL is not valid.')
     }
     if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('The webhook URL must use http or https.')
+    // An IP host connects without a lookup, so it is checked here; a name is checked by `checkedLookup`.
     const host = url.hostname.replace(/^\[|\]$/g, '')
-    const addresses = await resolve(host)
-    if (addresses.length === 0 || addresses.some(isForbiddenWebhookAddress)) throw new Error(`Webhooks to ${host} are not allowed.`)
+    if (isIP(host) && isForbiddenWebhookAddress(host)) throw new ForbiddenWebhookError(host)
     const body = webhookBody(event)
     const headers: Record<string, string> = {
       'content-type': 'application/json',
@@ -129,16 +185,14 @@ export function createAlertTransport(options: AlertTransportOptions = {}): Alert
       [WEBHOOK_DELIVERY_HEADER]: event.id,
     }
     if (destination.secret) headers[WEBHOOK_SIGNATURE_HEADER] = signWebhook(destination.secret, body, now())
-    let response: Response
+    let status: number
     try {
-      // Redirects are not followed: a receiver that moved gets a failed delivery, not a request to wherever it points.
-      response = await fetchImpl(url, { method: 'POST', headers, body, redirect: 'manual', signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS) })
+      status = await post(url, headers, body)
     } catch (error) {
+      if (error instanceof ForbiddenWebhookError) throw error
       throw new Error(`The webhook could not be reached: ${error instanceof Error ? error.message : String(error)}`)
     }
-    // The receiver's body is never read or kept: only whether it took the alert.
-    await response.body?.cancel().catch(() => undefined)
-    if (response.status < 200 || response.status >= 300) throw new Error(`The webhook answered HTTP ${response.status}.`)
+    if (status < 200 || status >= 300) throw new Error(`The webhook answered HTTP ${status}.`)
   }
 
   async function telegram(destination: AlertDestinationRecord, event: AlertEvent): Promise<void> {

@@ -239,6 +239,30 @@ test('out of credits alerts once and closes with one recovery when credits are b
   assert.deepEqual(types(), ['balance.empty', 'balance.ok'])
 })
 
+test('out of credits repeats every repeatMinutes while it stays open, without another refused request', async () => {
+  destination(['balance'])
+  store.setAlertSettings(workspaceId(), { lowBalanceUsdc: null, topupTargetUsdc: null, limitWarnPercent: null, repeatMinutes: 30 })
+  const { key } = store.createKey({ label: 'App', limits: { daily: null, monthly: null, total: null }, expiresAt: null })
+  balance = { available: '0.010000', wallet: null, stale: false }
+  alerts.outOfCredits(key)
+  await settle()
+  now += 10 * 60_000
+  alerts.outOfCredits(key)
+  await alerts.tick()
+  await settle()
+  assert.deepEqual(types(), ['balance.empty'])
+
+  now += 25 * 60_000
+  await alerts.tick()
+  await settle()
+  assert.deepEqual(types(), ['balance.empty', 'balance.empty'], 'the poll sends the reminder')
+
+  now += 31 * 60_000
+  alerts.outOfCredits(key)
+  await settle()
+  assert.deepEqual(types(), ['balance.empty', 'balance.empty', 'balance.empty'], 'so does a refused request')
+})
+
 test('spend tracking alerts after the grace period, while keys are capped, and recovers', async () => {
   destination(['gateway'])
   alerts = makeAlerts({ anyBudgets: () => true })
