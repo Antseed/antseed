@@ -122,7 +122,13 @@ export function reasoningUsageFields(
   return { [detailsField]: { [countField]: usage.reasoningTokens } };
 }
 
-export const RESPONSES_FINAL_ANSWER_TOOL = 'final_answer';
+/**
+ * `end_turn` for a chat answer translated to Responses: the turn ends exactly when the answer
+ * makes no tool call. Whether text is a finished answer is the model's to say, not the adapter's.
+ */
+export function responsesEndTurn(toolCallCount: number): boolean {
+  return toolCallCount === 0;
+}
 
 /** Plain API-shape facts parsed from image generation requests. */
 export interface ImageRequestFacts {

@@ -5,7 +5,7 @@ import {
   openAIResponsesMessageId,
   parseJsonSafe,
   reasoningUsageFields,
-  RESPONSES_FINAL_ANSWER_TOOL,
+  responsesEndTurn,
   toStringContent,
   type ReportedUsage,
 } from './utils.js';
@@ -167,15 +167,11 @@ export function renderCanonicalRequestToOpenAIChatBody(
   options: {
     toolCallContent?: '' | null;
     groupAssistantToolCallsWithPreviousMessage?: boolean;
-    preserveResponsesAgentSemantics?: boolean;
   } = {},
 ): Record<string, unknown> {
   const messages: unknown[] = [];
-  const instructions = options.preserveResponsesAgentSemantics && request.tools?.length
-    ? appendResponsesChatCompatibilityInstructions(request.instructions)
-    : request.instructions;
-  if (instructions !== undefined && instructions.length > 0) {
-    messages.push({ role: 'system', content: instructions });
+  if (request.instructions !== undefined && request.instructions.length > 0) {
+    messages.push({ role: 'system', content: request.instructions });
   }
 
   for (const item of request.input) {
@@ -192,9 +188,6 @@ export function renderCanonicalRequestToOpenAIChatBody(
       messages.push({
         role: item.role,
         content: renderCanonicalContentToOpenAIChat(item.content),
-        ...(options.preserveResponsesAgentSemantics && item.role === 'assistant' && item.phase
-          ? { name: item.phase }
-          : {}),
       });
       continue;
     }
@@ -234,11 +227,7 @@ export function renderCanonicalRequestToOpenAIChatBody(
   if (typeof request.temperature === 'number') body.temperature = request.temperature;
   if (typeof request.topP === 'number') body.top_p = request.topP;
   if (request.stop !== undefined) body.stop = request.stop;
-  const tools = renderCanonicalToolsToOpenAIChat(
-    options.preserveResponsesAgentSemantics && request.tools?.length
-      ? [...request.tools, { name: RESPONSES_FINAL_ANSWER_TOOL, parameters: { type: 'object', properties: {} } }]
-      : request.tools,
-  );
+  const tools = renderCanonicalToolsToOpenAIChat(request.tools);
   const toolChoice = renderCanonicalToolChoiceToOpenAIChat(request.toolChoice);
   assignToolsAndToolChoice(body, tools, toolChoice);
   if (request.metadata) body.metadata = request.metadata;
@@ -677,7 +666,6 @@ export function normalizeOpenAIChatResponseBody(
     const fn = toolCall.function && typeof toolCall.function === 'object'
       ? toolCall.function as Record<string, unknown>
       : {};
-    if (fn.name === RESPONSES_FINAL_ANSWER_TOOL) continue;
     output.push({
       type: 'function_call',
       id: typeof toolCall.id === 'string' && toolCall.id.length > 0 ? toolCall.id : `call_${index + 1}`,
@@ -693,14 +681,7 @@ export function normalizeOpenAIChatResponseBody(
     model,
     output,
     stopReason,
-    endTurn: toolCalls.some((toolCall) => {
-      const fn = toolCall.function && typeof toolCall.function === 'object'
-        ? toolCall.function as Record<string, unknown>
-        : {};
-      return fn.name === RESPONSES_FINAL_ANSWER_TOOL;
-    })
-      ? true
-      : false,
+    endTurn: responsesEndTurn(output.filter((item) => item.type === 'function_call').length),
     usage,
   };
 }
@@ -940,16 +921,6 @@ function modelFromBody(body: Record<string, unknown>): string | null {
 
 function normalizeResponseMessagePhase(value: unknown): CanonicalResponseMessagePhase | undefined {
   return value === 'commentary' || value === 'final_answer' ? value : undefined;
-}
-
-function appendResponsesChatCompatibilityInstructions(instructions: string | undefined): string {
-  const compatibility = [
-    'Chat Completions compatibility requirement:',
-    '- Assistant messages named "commentary" are interim progress updates, not final answers.',
-    '- If more work remains, do not end with commentary alone; include the next tool call in the same response.',
-    '- Return text without a tool call only when it is the final answer to the user.',
-  ].join('\n');
-  return instructions ? `${instructions}\n\n${compatibility}` : compatibility;
 }
 
 function isAssistantMessage(value: unknown): value is Record<string, unknown> {

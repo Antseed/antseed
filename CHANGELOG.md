@@ -9,6 +9,8 @@ This project uses selective package publishing. Each release entry lists the pub
 ### Fixed
 
 - CLI (`@antseed/cli`): `antseed buyer channels request-close`, `antseed buyer channels withdraw` and `antseed buyer withdraw` now check the buyer's authorized wallet before sending. Closing a channel on chain and withdrawing deposits only accept the authorized wallet, and these commands sign with the buyer wallet. A buyer who had never set one got a bare `NotAuthorized` revert and no way forward. Now the command sends nothing and says what to do: with no authorized wallet set, run `antseed buyer set-authorized-wallet --self`; with a different wallet authorized, send the transaction from that wallet.
+- Buyer proxy (`@antseed/api-adapter`, CLI, gateway, desktop): a `POST /v1/responses` request with tools, sent to a seller that speaks only OpenAI Chat Completions, now reaches the model as the client sent it. An assistant message and the tool calls that follow it become one chat assistant message with `content` and `tool_calls`, and assistant messages no longer carry `name: "commentary"`. Before, each preamble went as a separate assistant reply ahead of its call, which reads as a turn that ended without acting. The adapter no longer adds a `final_answer` tool or its own system instructions, and a tool the client named `final_answer` is no longer dropped from answers, streamed or not, for Responses and Messages clients alike. A translated answer's `end_turn` is now `true` when it makes no tool call and `false` when it makes one, streamed and buffered alike; before, a streamed answer always said `true` and a buffered one said `false` unless the model called the added `final_answer` tool.
+
 ## 2026-11-26 — CLI 0.1.263, Desktop 0.2.97
 
 ### Packages

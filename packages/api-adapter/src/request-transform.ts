@@ -48,8 +48,7 @@ const REQUEST_RENDERERS: Partial<Record<ServiceApiProtocol, RequestRenderer>> = 
     request,
     {
       toolCallContent: options.from === 'openai-responses' ? null : undefined,
-      groupAssistantToolCallsWithPreviousMessage: options.from === 'anthropic-messages',
-      preserveResponsesAgentSemantics: options.from === 'openai-responses',
+      groupAssistantToolCallsWithPreviousMessage: groupsAssistantToolCalls(options.from),
     },
   ),
   'openai-responses': (request, options) => renderCanonicalRequestToOpenAIResponsesBody(
@@ -117,10 +116,8 @@ export function transformRequest(
 
 /**
  * Render a Chat Completions, Anthropic Messages or Responses request body as a plain
- * OpenAI Chat Completions body, using the same normalizers as `transformRequest`.
- * Unlike a transform for dispatch, no downstream-execution additions are made (no
- * Responses agent instructions or synthetic tools), so the result describes exactly
- * what the client asked for. Returns null for unsupported protocols.
+ * OpenAI Chat Completions body, using the same normalizers and message grouping as
+ * `transformRequest`. Returns null for unsupported protocols.
  */
 export function renderRequestBodyAsOpenAIChat(
   from: ServiceApiProtocol,
@@ -130,8 +127,17 @@ export function renderRequestBodyAsOpenAIChat(
   const normalize = REQUEST_NORMALIZERS[from];
   if (!normalize) return null;
   return renderCanonicalRequestToOpenAIChatBody(normalize(body), {
-    groupAssistantToolCallsWithPreviousMessage: from === 'anthropic-messages',
+    groupAssistantToolCallsWithPreviousMessage: groupsAssistantToolCalls(from),
   });
+}
+
+/**
+ * Anthropic and Responses send an assistant's text and the tool calls it introduces as
+ * separate blocks or items. Chat Completions holds them in one assistant message; sent as
+ * two, the text reads as a reply that ended without acting.
+ */
+function groupsAssistantToolCalls(from: ServiceApiProtocol): boolean {
+  return from === 'anthropic-messages' || from === 'openai-responses';
 }
 
 function repairLegacyResponsesItemIds(body: Record<string, unknown>): Record<string, unknown> | null {
