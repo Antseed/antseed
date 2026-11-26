@@ -92,6 +92,8 @@ export interface ChainConfig {
   depositRelayAddress?: string;
   /** Where sellers swap USDC for ETH to refuel gas; absent on chains without a deep pool. */
   usdcEthSwap?: UsdcEthSwapDeployment;
+  /** Chainlink ETH/USD aggregator (8 decimals) the deposit-sweep relayer prices gas with. */
+  ethUsdPriceFeedAddress?: string;
 }
 
 /**
@@ -128,6 +130,8 @@ const CHAIN_CONFIGS: Record<ChainId, ChainConfig> = {
       weth: '0x4200000000000000000000000000000000000006',
       poolFee: 500,
     },
+    // Chainlink ETH / USD on Base.
+    ethUsdPriceFeedAddress: '0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70',
   },
   'base-sepolia': {
     ...DEPLOYED_CONTRACT_ADDRESSES['base-sepolia'],

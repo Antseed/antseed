@@ -8,7 +8,9 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Sellers (CLI, `@antseed/node`): the deposit-sweep relayer no longer refuses buyers' gasless deposits as unprofitable whenever Base is moderately busy. It now estimates a sweep's gas at the latest base fee plus 25% and the tip it would send, at the Chainlink ETH/USD price, instead of the 2x-base-fee ceiling at a fixed $10,000 per ETH. Without the feed or with a stale reading, it keeps the cautious $10,000.
 - CLI (`@antseed/cli`): `antseed buyer channels request-close`, `antseed buyer channels withdraw` and `antseed buyer withdraw` now check the buyer's authorized wallet before sending. Closing a channel on chain and withdrawing deposits only accept the authorized wallet, and these commands sign with the buyer wallet. A buyer who had never set one got a bare `NotAuthorized` revert and no way forward. Now the command sends nothing and says what to do: with no authorized wallet set, run `antseed buyer set-authorized-wallet --self`; with a different wallet authorized, send the transaction from that wallet.
+
 ## 2026-11-26 — CLI 0.1.263, Desktop 0.2.97
 
 ### Packages

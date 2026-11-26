@@ -55,6 +55,8 @@ function makeRelayer(config?: Partial<ConstructorParameters<typeof DepositRelaye
   });
   const estimateSpy = vi.spyOn(relayer.client, 'estimateSweepProfit').mockResolvedValue({
     gasEstimate: 200_000n,
+    gasPriceWei: 6_000_000n,
+    ethPriceUsdE8: 165_266_541_925n,
     estGasCostUsdc: 5_000n,
     fee: FEE,
     profitUsdc: FEE - 5_000n,
@@ -153,6 +155,8 @@ describe('DepositRelayer', () => {
     const { relayer, estimateSpy, sweepSpy } = makeRelayer();
     estimateSpy.mockResolvedValue({
       gasEstimate: 200_000n,
+      gasPriceWei: 6_000_000n,
+      ethPriceUsdE8: 165_266_541_925n,
       estGasCostUsdc: 80_000n,
       fee: FEE,
       profitUsdc: FEE - 80_000n, // negative
@@ -167,6 +171,8 @@ describe('DepositRelayer', () => {
     const { relayer, estimateSpy, sweepSpy } = makeRelayer({ minProfitBaseUnits: -100_000_000n });
     estimateSpy.mockResolvedValue({
       gasEstimate: 200_000n,
+      gasPriceWei: 6_000_000n,
+      ethPriceUsdE8: 165_266_541_925n,
       estGasCostUsdc: 4_100_150n, // anvil-scale gas cost
       fee: FEE,
       profitUsdc: FEE - 4_100_150n,
@@ -206,6 +212,8 @@ describe('DepositRelayer', () => {
 
     estimateSpy.mockResolvedValueOnce({
       gasEstimate: 200_000n,
+      gasPriceWei: 6_000_000n,
+      ethPriceUsdE8: 165_266_541_925n,
       estGasCostUsdc: 80_000n,
       fee: FEE,
       profitUsdc: FEE - 80_000n,

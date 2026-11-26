@@ -24,6 +24,8 @@ export interface DepositRelayerConfig {
   maxInFlight?: number;
   /** Max sweep requests accepted per peer per minute. Default: 6. */
   maxPerPeerPerMinute?: number;
+  /** Chainlink ETH/USD aggregator the profit estimate reads (chain-config `ethUsdPriceFeedAddress`). */
+  ethUsdPriceFeedAddress?: string;
 }
 
 export type SweepHandleResult = 'submitted' | 'rejected' | 'dropped';
@@ -61,6 +63,7 @@ export class DepositRelayer {
       ...(config.fallbackRpcUrls ? { fallbackRpcUrls: config.fallbackRpcUrls } : {}),
       contractAddress: config.relayAddress,
       evmChainId: config.evmChainId,
+      ...(config.ethUsdPriceFeedAddress ? { ethUsdPriceFeedAddress: config.ethUsdPriceFeedAddress } : {}),
     });
   }
 
@@ -144,7 +147,7 @@ export class DepositRelayer {
 
       const minProfit = this._config.minProfitBaseUnits ?? DEFAULT_MIN_PROFIT;
       if (estimate.profitUsdc < minProfit) {
-        debugLog(`[Relayer] Unprofitable sweep for nonce ${payload.nonce.slice(0, 10)}...: fee=${estimate.fee} gasEst=${estimate.estGasCostUsdc} profit=${estimate.profitUsdc} min=${minProfit}`);
+        debugLog(`[Relayer] Unprofitable sweep for nonce ${payload.nonce.slice(0, 10)}...: fee=${estimate.fee} gasEst=${estimate.estGasCostUsdc} profit=${estimate.profitUsdc} min=${minProfit} gasPrice=${estimate.gasPriceWei} ethUsdE8=${estimate.ethPriceUsdE8}`);
         this._seenNonces.delete(nonceKey);
         this._sendReceipt(mux, payload, 'rejected', undefined, 'unprofitable for relayer');
         return 'rejected';
