@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Gateway (`@antseed/cli`): opening one request in the console's request log no longer stalls the whole gateway for seconds on a database that has never been analyzed. The read of a request's details and the request log list looked up the charge of a video job's delivery by scanning every ledger entry, for every request and not only for videos. While it ran the gateway answered nothing, so a busy gateway returned slow or failed responses to unrelated requests. Now it reads only the ledger entries of the delivery in question. Which charge a video create shows, and every figure on every request, are unchanged.
+
 ## 2026-11-26 — CLI 0.1.261, Node 0.2.193
 
 ### Packages
