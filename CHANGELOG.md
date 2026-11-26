@@ -6,11 +6,15 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
-## 2026-11-26 — CLI 0.1.262
+## 2026-11-26 — CLI 0.1.262, Desktop 0.2.96
 
 ### Packages
 
 - `@antseed/cli@0.1.262`
+
+### Desktop
+
+- `@antseed/desktop@0.2.96`
 
 ### Fixed
 
