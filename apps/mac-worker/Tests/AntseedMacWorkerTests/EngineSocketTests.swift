@@ -100,6 +100,28 @@ final class EngineSocketTests: XCTestCase {
         XCTAssertEqual(engine.request, "", "nothing, the key included, is sent to another process")
     }
 
+    func testRefusesAnEngineThatIsNotSignedByThisTeam() async throws {
+        let engine = try FakeEngine(reply: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        defer { engine.finish() }
+        let requirement = try XCTUnwrap(EngineCode.requirement(teamId: "ABCDE12345"))
+        do {
+            _ = try await EngineSocket(path: engine.path, enginePID: getpid(), apiKey: "k", requirement: requirement).send("GET", "/v1/models")
+            XCTFail("expected a refusal")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "The process on the engine's socket is not the engine this app ships")
+        }
+        engine.finish()
+        XCTAssertEqual(engine.request, "", "nothing, the key included, is sent to it")
+    }
+
+    func testSendsToAnEngineThatMeetsTheRequirement() async throws {
+        let engine = try FakeEngine(reply: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        defer { engine.finish() }
+        let reply = try await EngineSocket(path: engine.path, enginePID: getpid(), apiKey: "k", requirement: try EngineCodeTests.ownRequirement())
+            .send("GET", "/v1/models")
+        XCTAssertEqual(reply.status, 200)
+    }
+
     func testSocketPathsAreNewAndFitASocketAddress() throws {
         let a = try LocalModel.newSocketPath(), b = try LocalModel.newSocketPath()
         XCTAssertNotEqual(a, b)

@@ -138,7 +138,8 @@ fi
 
 # Hardened runtime, no get-task-allow: macOS refuses debuggers and code injection while SIP is on.
 codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$ENGINE/lib/libtfgrammar.dylib"
-codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$ENGINE/bin/tensorfold-native"
+# The app runs only an engine signed by its own team with this identifier (EngineCode.swift).
+codesign --force --options runtime --timestamp --identifier com.antseed.colony.tensorfold --sign "$SIGN_IDENTITY" "$ENGINE/bin/tensorfold-native"
 # Sparkle's helpers inside out, as Sparkle documents for apps not built with Xcode.
 SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
 for helper in "$SPARKLE/Versions/B/XPCServices/Installer.xpc" "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE/Versions/B/Updater.app"; do

@@ -12,6 +12,9 @@ struct EngineSocket: Sendable {
     let apiKey: String
     /// Longest wait for the engine to accept or send anything.
     var timeout: Int = 300
+    /// On a signed build, the code requirement the process at the other end must meet
+    /// (`EngineCode`), checked on every connection before anything is sent.
+    var requirement: String? = nil
 
     enum SocketError: Error, LocalizedError {
         case failed(String)
@@ -23,6 +26,13 @@ struct EngineSocket: Sendable {
         do {
             guard connection.peerPID() == enginePID else {
                 throw SocketError.failed("Another process is listening on the engine's socket")
+            }
+            if let requirement {
+                // The audit token names this exact process, which a reused PID can't fake.
+                guard let token = connection.peerAuditToken(), token.val.5 == UInt32(bitPattern: enginePID),
+                      EngineCode.verifyProcess(token, requirement: requirement) else {
+                    throw SocketError.failed("The process on the engine's socket is not the engine this app ships")
+                }
             }
             var head = "\(method) \(target) HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \(apiKey)\r\nConnection: close\r\n"
             if let body { head += "Content-Type: application/json\r\nContent-Length: \(body.count)\r\n" }
@@ -214,6 +224,13 @@ struct EngineSocket: Sendable {
             var pid: pid_t = 0
             var length = socklen_t(MemoryLayout<pid_t>.size)
             return getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &length) == 0 ? pid : nil
+        }
+
+        /// The process on the other end, as an audit token (pid and its version, so never a reused pid).
+        func peerAuditToken() -> audit_token_t? {
+            var token = audit_token_t()
+            var length = socklen_t(MemoryLayout<audit_token_t>.size)
+            return getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &length) == 0 ? token : nil
         }
 
         func write(_ data: Data) throws {

@@ -546,6 +546,25 @@ Mac's owner can read its memory. **Every current build attests `debuggerDenied: 
 so it is not hardened** and never gets the hardened label. The rest of this section describes what the app enforces and what a build
 that keeps inference inside the app would attest.
 
+What the app does about the engine today:
+
+- It starts the engine with a fixed environment (`PATH`, `HOME` from the
+  account database, `TMPDIR`, `HF_HUB_CACHE`, and `HF_HUB_OFFLINE=1` when
+  serving), so nothing the app was started with reaches it. The engine reads
+  many settings from its environment, and some write requests to disk
+  (`TENSORFOLD_REQUEST_LOG` records every prompt's text) or load a library.
+- Core dumps are off (`RLIMIT_CORE` 0, hard limit included) for the app and
+  the engine, so a crash leaves no memory image on disk.
+- On a build signed with a team ID, the engine must be signed by the same team
+  with the identifier `com.antseed.colony.tensorfold`. The app checks the
+  engine's file before running it, and the process at the other end of every
+  connection by its audit token (so a reused PID can't pass), before sending
+  anything. A development (ad hoc) build has no team to name and checks
+  neither.
+
+These close ways around the engine; they don't make the engine part of the
+app, so builds still attest not hardened.
+
 With inference in the app, the decrypted prompt exists only in its memory. The
 app keeps the Mac's owner out of it with the protections macOS gives a signed
 app, and reports them in an attestation:

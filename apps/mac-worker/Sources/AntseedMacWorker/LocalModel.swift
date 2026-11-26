@@ -62,10 +62,25 @@ actor LocalModel {
         }
     }
 
-    init(modelId: String, engine: URL, directory: URL) {
+    /// On a signed build, what the engine's code signature must meet (`EngineCode`); nil on a development build.
+    private let engineRequirement: String?
+
+    init(modelId: String, engine: URL, directory: URL, engineRequirement: String? = EngineCode.requirement(teamId: Protection.codeIdentity().teamId)) {
         self.modelId = modelId
         self.engine = engine
         self.directory = directory
+        self.engineRequirement = engineRequirement
+    }
+
+    /// An engine process with a fixed environment, after checking the engine's file.
+    private func engineProcess(_ arguments: [String], offline: Bool) throws -> Process {
+        try EngineCode.verifyFile(engine, requirement: engineRequirement)
+        EngineCode.disableCoreDumps()
+        let process = Process()
+        process.executableURL = engine
+        process.arguments = arguments
+        process.environment = EngineCode.environment(hubCache: Self.hubCache(), offline: offline)
+        return process
     }
 
     /// The checkpoint a worker attests it serves: `repo@revision`, the digest of its files and the
@@ -256,9 +271,7 @@ actor LocalModel {
     private var logFile: URL { directory.appendingPathComponent("engine.log") }
 
     private func pull(progress: @escaping @Sendable (Double) -> Void) async throws {
-        let process = Process()
-        process.executableURL = engine
-        process.arguments = ["pull", modelId]
+        let process = try engineProcess(["pull", modelId], offline: false)
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -328,10 +341,7 @@ actor LocalModel {
         FileManager.default.createFile(atPath: logFile.path, contents: nil, attributes: [.posixPermissions: 0o600])
         let log = try FileHandle(forWritingTo: logFile)
 
-        let process = Process()
-        process.executableURL = engine
-        process.currentDirectoryURL = directory
-        process.arguments = [
+        let process = try engineProcess([
             "serve", snapshot.path,
             // Owner-only, and no TCP port at all: decrypted prompts never cross a network interface.
             "--unix-socket", socketPath,
@@ -347,13 +357,14 @@ actor LocalModel {
             "--no-update-check",
             // Hashes every weight byte once serving and binds each reply to it (`EngineWitness`).
             "--execution-witness",
-        ]
+        ], offline: true)
+        process.currentDirectoryURL = directory
         process.standardOutput = log
         process.standardError = log
         try process.run()
         server = process
         try String(process.processIdentifier).write(to: directory.appendingPathComponent(Self.pidFile), atomically: true, encoding: .utf8)
-        let candidate = EngineSocket(path: socketPath, enginePID: process.processIdentifier, apiKey: apiKey)
+        let candidate = EngineSocket(path: socketPath, enginePID: process.processIdentifier, apiKey: apiKey, requirement: engineRequirement)
 
         do {
             for _ in 0..<600 {
