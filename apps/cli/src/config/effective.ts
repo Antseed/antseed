@@ -30,6 +30,7 @@ const BUYER_ENV = {
   maxOutputUsdPerMillion: 'ANTSEED_BUYER_MAX_OUTPUT_USD_PER_MILLION',
   metadataFetchTimeoutMs: 'ANTSEED_BUYER_METADATA_FETCH_TIMEOUT_MS',
   maxStreamDurationMs: 'ANTSEED_BUYER_MAX_STREAM_DURATION_MS',
+  maxVideoDownloads: 'ANTSEED_BUYER_MAX_VIDEO_DOWNLOADS',
   disableMetadataV2Services: 'ANTSEED_BUYER_DISABLE_METADATA_V2_SERVICES',
 } as const;
 
@@ -57,6 +58,11 @@ function assertValidMetadataFetchTimeoutMs(value: number, sourceLabel: string): 
 function assertValidMaxStreamDurationMs(value: number, sourceLabel: string): void {
   if (Number.isInteger(value) && value >= MIN_BUYER_MAX_STREAM_DURATION_MS) return;
   throw new Error(`${sourceLabel} must be an integer >= ${MIN_BUYER_MAX_STREAM_DURATION_MS}`);
+}
+
+function assertValidMaxVideoDownloads(value: number, sourceLabel: string): void {
+  if (Number.isSafeInteger(value) && value >= 1) return;
+  throw new Error(`${sourceLabel} must be an integer >= 1`);
 }
 
 /**
@@ -174,6 +180,12 @@ export function resolveEffectiveBuyerConfig(input: ResolveEffectiveConfigInput):
   if (env[envMaxStreamDurationKey] !== undefined && envMaxStreamDurationMs === undefined) {
     throw new Error(`${envMaxStreamDurationKey} must be a finite number`);
   }
+  const envMaxVideoDownloadsKey = BUYER_ENV.maxVideoDownloads;
+  if (env[envMaxVideoDownloadsKey] !== undefined) {
+    const envMaxVideoDownloads = parseEnvNumber(env, envMaxVideoDownloadsKey);
+    assertValidMaxVideoDownloads(envMaxVideoDownloads ?? Number.NaN, envMaxVideoDownloadsKey);
+    buyer.maxVideoDownloads = envMaxVideoDownloads;
+  }
   const envDisableMetadataV2Services = parseEnvBoolean(env, BUYER_ENV.disableMetadataV2Services);
 
   if (envMinReputation !== undefined) {
@@ -217,6 +229,7 @@ export function resolveEffectiveBuyerConfig(input: ResolveEffectiveConfigInput):
 
   assertValidMetadataFetchTimeoutMs(buyer.metadataFetchTimeoutMs, 'buyer.metadataFetchTimeoutMs');
   assertValidMaxStreamDurationMs(buyer.maxStreamDurationMs, 'buyer.maxStreamDurationMs');
+  if (buyer.maxVideoDownloads !== undefined) assertValidMaxVideoDownloads(buyer.maxVideoDownloads, 'buyer.maxVideoDownloads');
 
   return buyer;
 }

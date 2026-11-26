@@ -68,6 +68,7 @@ The CLI also reads `.env.local` and `.env` from the current directory, and the f
 | `ANTSEED_BUYER_MIN_REPUTATION` | buyer | Overrides `buyer.minPeerReputation` (0–100, default 0) |
 | `ANTSEED_BUYER_METADATA_FETCH_TIMEOUT_MS` | buyer | Overrides `buyer.metadataFetchTimeoutMs` (default 1500, minimum 100) |
 | `ANTSEED_BUYER_MAX_STREAM_DURATION_MS` | buyer | Overrides `buyer.maxStreamDurationMs`, the longest streamed response (default 1800000, 30 minutes) |
+| `ANTSEED_BUYER_MAX_VIDEO_DOWNLOADS` | buyer | Overrides `buyer.maxVideoDownloads`, the finished videos downloaded at once (default 6) |
 | `ANTSEED_BUYER_DISABLE_METADATA_V2_SERVICES` | buyer | `true` turns off per-service attribution in signed request metadata |
 | `ANTSEED_SUPERVISED` | buyer | `1` declares that a supervisor (systemd, Docker, launchd, pm2) restarts the process, so the buyer accepts restart requests. The server installer sets it |
 | `ANTSEED_GATEWAY_PUBLIC_URL` | gateway, tunnel | Origin the console is reached at, for example `https://gateway.example.com`. Same as `gateway start --public-url`; needed for passkeys and single sign-on off this machine |

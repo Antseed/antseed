@@ -9,6 +9,32 @@ This project uses selective package publishing. Each release entry lists the pub
 ### Fixed
 
 - CLI (`@antseed/cli`): `antseed buyer channels request-close`, `antseed buyer channels withdraw` and `antseed buyer withdraw` now check the buyer's authorized wallet before sending. Closing a channel on chain and withdrawing deposits only accept the authorized wallet, and these commands sign with the buyer wallet. A buyer who had never set one got a bare `NotAuthorized` revert and no way forward. Now the command sends nothing and says what to do: with no authorized wallet set, run `antseed buyer set-authorized-wallet --self`; with a different wallet authorized, send the transaction from that wallet.
+## 2026-11-26 — CLI 0.1.263, Desktop 0.2.97
+
+### Packages
+
+- `@antseed/cli@0.1.263`
+- `@antseed/provider-core@0.2.71`
+- `@antseed/provider-alibaba-video@0.1.17`
+- `@antseed/provider-anthropic@0.1.65`
+- `@antseed/provider-claude-code@0.1.65`
+- `@antseed/provider-claude-oauth@0.1.71`
+- `@antseed/provider-fal-image@0.1.13`
+- `@antseed/provider-fal-video@0.1.29`
+- `@antseed/provider-local-llm@0.1.65`
+- `@antseed/provider-openai@0.2.64`
+- `@antseed/provider-openai-responses@0.1.58`
+- `@antseed/provider-typesafe@0.1.17`
+- `@antseed/provider-venice-video@0.1.30`
+
+### Desktop
+
+- `@antseed/desktop@0.2.97`
+
+### Changed
+
+- Video sellers (`@antseed/provider-fal-video`, `@antseed/provider-alibaba-video`, `@antseed/provider-venice-video`, `@antseed/provider-core`): a provider now streams up to 6 finished videos to buyers at the same time instead of 2, and `ANTSEED_MAX_VIDEO_DOWNLOADS` sets the limit. With only 2 slots, a seller with several buyers downloading at once turned extra retrieves away with HTTP 429 `video_download_busy`.
+- Buyer and gateway (`@antseed/cli`): the buyer now downloads up to 6 finished videos at once for its clients instead of 2, and `buyer.maxVideoDownloads` in the config (or `ANTSEED_BUYER_MAX_VIDEO_DOWNLOADS`) sets the limit. A gateway sends every key's downloads through its one buyer, so with several clients polling finished jobs most retrieves were turned away. A retrieve past the limit still gets 429 `video_download_busy`, now with `Retry-After` and `retryable: true`, so clients know to try again; the job is kept and nothing is charged.
 
 ## 2026-11-26 — CLI 0.1.262, Desktop 0.2.96
 

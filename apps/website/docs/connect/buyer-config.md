@@ -35,6 +35,7 @@ Settings resolve in this order: command-line flags, then environment variables, 
 | `buyer.metadataFetchTimeoutMs` | `1500` | Timeout for each peer metadata fetch during discovery |
 | `buyer.requestTimeoutMs` | `300000` (5 min) | Wait for a non-streaming response, or for a stream to start |
 | `buyer.maxStreamDurationMs` | `1800000` (30 min) | Longest a streamed response may run |
+| `buyer.maxVideoDownloads` | `6` | Finished videos the buyer downloads for its clients at once, shared by all of them (every key of a gateway). A retrieve past it gets `429 video_download_busy` with `Retry-After` |
 | `buyer.disableMetadataV2Services` | `false` | `true` keeps service ids and per-service totals out of the usage metadata you sign |
 | `buyer.autoSweep` | `true` | Move USDC that arrives in the buyer wallet into your deposits automatically |
 | `buyer.verifier` | verify, not required | Seller TEE verification; see [Verify a seller's TEE](/docs/verify-tee) |

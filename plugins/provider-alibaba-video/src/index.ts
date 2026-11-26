@@ -6,7 +6,9 @@ import {
   parseServiceAliasMap,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
+  MAX_VIDEO_DOWNLOADS_CONFIG_FIELD,
   createVideoResponseStreamer,
+  parseMaxVideoDownloads,
   readVideoJson as readJson,
   videoDownloadError as error,
   videoDownloadSignal,
@@ -25,7 +27,6 @@ const PROTOCOL = 'fal-video';
 const CREATE_PATH = '/api/v1/services/aigc/video-generation/video-synthesis';
 const TASKS_PATH = '/api/v1/tasks';
 const ACCOUNT_CHECK_PATH = '/compatible-mode/v1/models';
-const MAX_ACTIVE_DOWNLOADS = 2;
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
 
 /** Request fields the seller translates, announced to buyers unless the seller configured its own list. */
@@ -111,6 +112,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON', label: 'Unit Pricing', type: 'string', required: true },
     { key: 'ANTSEED_SERVICE_CAPABILITIES_JSON', label: 'Capabilities', type: 'string' },
     { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Concurrency', type: 'number', default: 10 },
+    MAX_VIDEO_DOWNLOADS_CONFIG_FIELD,
   ],
   createProvider(config): Provider {
     const apiKey = config['ALIBABA_VIDEO_API_KEY']?.trim();
@@ -131,6 +133,7 @@ const plugin: AntseedProviderPlugin = {
     if (missingPricing) throw new Error(`Missing ${PROTOCOL} unit pricing for ${missingPricing}`);
     const maxConcurrency = Number(config['ANTSEED_MAX_CONCURRENCY'] ?? 10);
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) throw new Error('ANTSEED_MAX_CONCURRENCY must be a positive integer');
+    const maxDownloads = parseMaxVideoDownloads(config);
     const configuredCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
     const authorization = `Bearer ${apiKey}`;
 
@@ -190,7 +193,7 @@ const plugin: AntseedProviderPlugin = {
       }
     };
 
-    const streamUpstream = createVideoResponseStreamer(MAX_ACTIVE_DOWNLOADS);
+    const streamUpstream = createVideoResponseStreamer(maxDownloads);
 
     return {
       name: 'alibaba-video',

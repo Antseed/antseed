@@ -450,6 +450,10 @@ export function validateConfig(config: AntseedConfig): string[] {
     errors.push('buyer.maxStreamDurationMs must be an integer >= 1');
   }
 
+  if (config.buyer.maxVideoDownloads !== undefined && (!Number.isInteger(config.buyer.maxVideoDownloads) || config.buyer.maxVideoDownloads < 1)) {
+    errors.push('buyer.maxVideoDownloads must be an integer >= 1');
+  }
+
   if (typeof config.buyer.disableMetadataV2Services !== 'boolean') {
     errors.push('buyer.disableMetadataV2Services must be a boolean');
   }
