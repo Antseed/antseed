@@ -19,7 +19,6 @@ Published to npm (bin `antseed`). Node, ES modules. The desktop and Nix ship it 
 | Plugins install with `--ignore-scripts`. A trusted verifier pins an exact version; providers never do. | `src/plugins/registry.test.ts`, `src/plugins/loader.test.ts` |
 | A stale "AntSeed Local CA" (same CN, other fingerprint) is classified `stale` and purged on install. | `src/system-proxy/ca-manager.test.ts` (classification only) |
 | No duplicate command names or aliases in the tree. | `src/cli/program.test.ts` |
-| Every verifier test, the questions included, declares the thinking setting each side of its requests needs (`thinking` on `RecordCheck` and `QUESTIONS_CHECK`, `src/verifier/audit-thinking.ts`) and never carries its own setting table or discovery. The audit resolves it from thinking discovery (the seller's per run, the reference's from its bank), so every test asks without thinking the same way and the settings are in the rules hash. A table of fixed bodies (FLIPS's eval switch) is only a declared fallback. | `src/verifier/audit-thinking.test.ts` (a test without a declaration does not typecheck) |
 
 ## Connections
 
@@ -39,10 +38,6 @@ Published to npm (bin `antseed`). Node, ES modules. The desktop and Nix ship it 
 - Tests run on `dist/` through fixed globs in the `test` script: a test in a new top-level `src/` folder does not run until you add its glob.
 - The CLI child owns `system-proxy.state.json` and deletes it on shutdown; a host keeps its own file. Never rename `CA_COMMON_NAME`, or the stale-CA purge stops finding old ones (`CERT_SIGNATURE_FAILURE`).
 - A priced seller fails closed when the Base RPC does not answer at start. npm 11 global installs need `--allow-scripts=@antseed/node,better-sqlite3,node-datachannel`.
-
-## Verifier dry runs
-
-A dry run on a local fork can set `verifier.testPublication` (evidence published to a local directory instead of IPFS) and `verifier.testTiming` (shorter waits: `sellerRetrySpacingSeconds`, `confirmationMinDelaySeconds`, `confirmationRecheckSpacingSeconds`, `confirmationWindowSeconds`, each optional, in seconds; `src/verifier/test-timing.ts`). Both apply only while the chain RPC is on this machine (127.0.0.1, localhost or [::1]); with any other RPC, `verifier run`, `watch` and `submit` stop. Test timing is read at run time only: the rules and their hash keep the production waits (30 min, 1 h, 10 min, 12 h). `run` and `watch` print a line naming the shortened waits, and the run manifest and the evidence it publishes record them as `testTiming`. Every auditor in a test must use the same values.
 
 **Ask first:** a new or changed `/_antseed/*` route (both hosts call it); a removed or renamed command or flag, or a changed default (users script them); what the proxy forwards, or to which peer; the plugin install path or flags; a new external in the bundles.
 
