@@ -442,4 +442,49 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE gateway_requests ADD COLUMN video_price_usdc INTEGER;
   CREATE INDEX gateway_requests_unfinished ON gateway_requests(key_id) WHERE finished_at IS NULL;
   `,
+  // Alerts: each workspace's thresholds, where its alerts go (webhook, Telegram, email), what is open
+  // (an incident is alerted once until it closes, also across restarts) and a log of what was delivered.
+  `
+  CREATE TABLE alert_settings (
+    workspace_id TEXT PRIMARY KEY,
+    low_balance_usdc INTEGER,
+    topup_target_usdc INTEGER,
+    limit_warn_percent INTEGER,
+    repeat_minutes INTEGER,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE alert_destinations (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    target TEXT NOT NULL,
+    secret TEXT,
+    events TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    last_sent_at INTEGER,
+    last_error TEXT
+  );
+  CREATE INDEX alert_destinations_workspace ON alert_destinations(workspace_id);
+  CREATE TABLE alert_incidents (
+    workspace_id TEXT NOT NULL,
+    incident TEXT NOT NULL,
+    opened_at INTEGER NOT NULL,
+    last_sent_at INTEGER,
+    PRIMARY KEY (workspace_id, incident)
+  );
+  CREATE TABLE alert_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL,
+    destination_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    ok INTEGER NOT NULL,
+    error TEXT,
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX alert_deliveries_workspace ON alert_deliveries(workspace_id, at);
+  `,
 ]

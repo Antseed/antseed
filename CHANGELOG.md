@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Gateway alerts: each workspace can get a signed webhook, a Telegram message (through its own bot) or an email (through the host's SMTP server, `ANTSEED_GATEWAY_SMTP_URL` and `ANTSEED_GATEWAY_SMTP_FROM`) when its credits drop below a threshold or run out, when a key, member or workspace spend limit is near or reached, or when spend tracking stops. Low-credit alerts carry the wallet address and a suggested top-up amount, so a webhook can automate deposits. Set them up under **Alerts** in the Gateway Console; see the Alerts guide.
+
 ## 2026-11-26 — CLI 0.1.261, Node 0.2.193
 
 ### Packages

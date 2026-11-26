@@ -252,6 +252,13 @@ export interface GatewayServerOptions {
    * its generation.
    */
   streamResume?: StreamResumeStore | null
+  /** Told when a cap refuses a request or the buyer runs out of credits, so workspace alerts go out at once. */
+  alerts?: GatewayRequestAlerts | null
+}
+
+export interface GatewayRequestAlerts {
+  limitRefused(key: ApiKeyRecord, breach: LimitBreach): void
+  outOfCredits(key: ApiKeyRecord): void
 }
 
 export interface GatewayTopupOptions {
@@ -618,6 +625,7 @@ export class GatewayServer {
     }
     this._log(`gateway spend limit reached: key=${key.id} level=${admission.breach.level ?? 'key'} period=${admission.breach.period}`)
     sendJson(res, 402, { error: spendLimitError(admission.breach) })
+    this._options.alerts?.limitRefused(key, admission.breach)
     return null
   }
 
@@ -710,6 +718,7 @@ export class GatewayServer {
     // Any other 402 (a seller's own, say) passes through without a store read or an address lookup.
     const parsed = parseBuyerOutOfCredits(body)
     if (!parsed) return null
+    this._options.alerts?.outOfCredits(key)
     try {
       const workspace = this._options.store.getWorkspace(key.workspaceId)
       if (!workspace) return null

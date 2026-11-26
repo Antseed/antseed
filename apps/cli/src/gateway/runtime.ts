@@ -16,6 +16,10 @@ import { StreamResumeStore } from './stream-resume.js'
 import { join } from 'node:path'
 import { X402Facilitator, erc1271SignatureCheck, type X402Asset } from './x402.js'
 import { GatewayTelemetry } from '../telemetry/gateway.js'
+import { createAlertTransport } from './alerts/channels.js'
+import { GatewayAlerts } from './alerts/engine.js'
+import { readConsoleLocation } from './console-location.js'
+import type { ConsoleAlerts } from './console-api/deps.js'
 import { cdpAuthorization, type CdpCredentials } from './cdp-auth.js'
 
 // AntseedDeposits takes at least 1 USDC on a first deposit, after the sweep fee.
@@ -73,6 +77,8 @@ export interface GatewayConsoleContext {
   x402Enabled: boolean
   /** The address the gateway listens on (`--host`, else loopback), for judging who can reach it. */
   listenHost: string
+  /** The running gateway's alerts, for the console's test sends. */
+  alerts?: ConsoleAlerts
 }
 
 export interface GatewayRuntime {
@@ -194,6 +200,19 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     ...(options.onLog ? { onLog: options.onLog } : {}),
   })
   store.setAuditObserver((record) => telemetry.observeAudit(record))
+  // Workspace alerts (low credits, spend limits, spend tracking) to the destinations their admins set up.
+  const alertTransport = createAlertTransport()
+  const alerts = new GatewayAlerts({
+    store,
+    transport: alertTransport,
+    balance: (name) => keyWallet.balance(name),
+    walletAddress: identityAddress,
+    spendFeedState: () => spendFeed.state,
+    anyBudgets: () => store.listKeys().some((key) => key.status === 'active' && accounting.hasBudgets(key)),
+    consoleUrl: () => readConsoleLocation(store)?.publicUrl ?? null,
+    emptyRecoveryUsdc: parseBaseUnits(config.payments?.maxPerRequestUsdc ?? DEFAULT_MAX_PER_REQUEST_USDC),
+    ...(options.onLog ? { log: options.onLog } : {}),
+  })
   const consoleHandler = options.createConsole?.({
     store,
     buyerPort,
@@ -201,6 +220,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     spendFeedState: () => spendFeed.state,
     x402Enabled: Boolean(topup),
     listenHost,
+    alerts: { sendTest: (destination) => alerts.sendTest(destination), emailConfigured: () => alertTransport.emailConfigured() },
   }) ?? null
   // Streams whose client dropped, kept for the client's retry; copies too large for memory go here.
   const streamResume = new StreamResumeStore({ dir: join(gatewayDir(options.dataDir), 'stream-resume'), onLog: options.onLog })
@@ -224,6 +244,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     listenPort: options.listenPort,
     listenHost,
     onLog: options.onLog,
+    alerts,
   })
 
   let port: number
@@ -246,6 +267,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
   }
   const clearBuyerPortRecord = recordGatewayBuyerPort(options.dataDir, buyerPort)
   spendFeed.start()
+  alerts.start()
   await policyProbe.start()
   consoleHandler?.listening?.(port)
   void telemetry.start()
@@ -258,6 +280,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
       policyProbe.stop()
       clearBuyerPortRecord()
       await server.stop()
+      await alerts.stop()
       await spendFeed.stop()
       accounting.dispose()
       store.setAuditObserver(null)

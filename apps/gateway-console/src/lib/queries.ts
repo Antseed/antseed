@@ -31,6 +31,8 @@ export const qk = {
   deposits: (workspaceId: string) => ['deposits', workspaceId] as const,
   billingProfile: (workspaceId: string) => ['billing-profile', workspaceId] as const,
   statements: (workspaceId: string) => ['statements', workspaceId] as const,
+  alerts: (workspaceId: string) => ['alerts', workspaceId] as const,
+  alertDeliveries: (workspaceId: string) => ['alerts', workspaceId, 'deliveries'] as const,
   statement: (workspaceId: string, period: string) => ['statements', workspaceId, period] as const,
   channels: (workspaceId: string, all: boolean) => ['channels', workspaceId, all] as const,
   /** Authorized-wallet status of every workspace the viewer can open (markers). */

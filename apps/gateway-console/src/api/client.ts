@@ -1,5 +1,5 @@
 import type {
-  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BillingProfile, BillingProfileInput, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
+  AdminToken, AlertDelivery, AlertDestination, AlertDestinationCreated, AlertDestinationInput, AlertsConfig, AlertSettings, AlertSettingsInput, AlertTestResult, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BillingProfile, BillingProfileInput, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
   GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, FavoriteModels, NetworkModel, NetworkRouter, Peer, PeerList, Preset,
   FreeTierSharing, FreeTierStake, PurchaseStatement, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, SellerAlertSettings, SellerAlertsPatch, SellerEventView, SellerLogDetail, SellerLogPage, SellerLogQuery, SellerMarket, SellerPromote, SellerReputation, SellerRestartView, SellerSettings, SellerVerificationsInput, SellerSettingsPatch, SellerStatus, SellerUsage, Settings, TelegramChat, SpendLimits, StatementSummary, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
@@ -184,6 +184,18 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       update: (keyId: string, input: ApiKeyPatch, options?: SaveOptions) => patch<ApiKey>(`/keys/${id(keyId)}`, withConfirm(input, options)),
       rotate: (keyId: string) => post<{ key: ApiKey; secret: string }>(`/keys/${id(keyId)}/rotate`),
       revoke: (keyId: string) => post<ApiKey>(`/keys/${id(keyId)}/revoke`),
+    },
+    alerts: {
+      get: (workspaceId: string) => get<AlertsConfig>(`/workspaces/${id(workspaceId)}/alerts`),
+      saveSettings: (workspaceId: string, settings: AlertSettingsInput) => put<AlertSettings>(`/workspaces/${id(workspaceId)}/alerts/settings`, settings),
+      createDestination: (workspaceId: string, input: AlertDestinationInput) => post<AlertDestinationCreated>(`/workspaces/${id(workspaceId)}/alerts/destinations`, input),
+      updateDestination: (workspaceId: string, destinationId: string, changes: Partial<AlertDestinationInput>) =>
+        patch<AlertDestination>(`/workspaces/${id(workspaceId)}/alerts/destinations/${id(destinationId)}`, changes),
+      /** Webhooks: a new signing secret, shown once; the old one stops verifying. */
+      rotateSecret: (workspaceId: string, destinationId: string) => post<AlertDestinationCreated>(`/workspaces/${id(workspaceId)}/alerts/destinations/${id(destinationId)}/rotate-secret`),
+      test: (workspaceId: string, destinationId: string) => post<AlertTestResult>(`/workspaces/${id(workspaceId)}/alerts/destinations/${id(destinationId)}/test`),
+      deleteDestination: (workspaceId: string, destinationId: string) => request<{ ok: true }>('DELETE', `/workspaces/${id(workspaceId)}/alerts/destinations/${id(destinationId)}`),
+      deliveries: (workspaceId: string) => get<AlertDelivery[]>(`/workspaces/${id(workspaceId)}/alerts/deliveries`),
     },
     adminTokens: {
       list: () => get<AdminToken[]>('/admin-tokens'),

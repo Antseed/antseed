@@ -619,6 +619,96 @@ export interface ChainInfo {
   contracts: Record<string, string>
 }
 
+// ── Alerts ──────────────────────────────────────────────────────────────
+
+// Workspace admins: alerts for low credits, spend limits and spend tracking, sent to webhooks, Telegram or email.
+// GET    /workspaces/:id/alerts                               → AlertsConfig
+// PUT    /workspaces/:id/alerts/settings  AlertSettingsInput   → AlertSettings
+// POST   /workspaces/:id/alerts/destinations  AlertDestinationInput → AlertDestinationCreated
+// PATCH  /workspaces/:id/alerts/destinations/:dest  Partial<AlertDestinationInput> → AlertDestination
+// POST   /workspaces/:id/alerts/destinations/:dest/rotate-secret → AlertDestinationCreated (webhooks: a new signing secret, shown once)
+// POST   /workspaces/:id/alerts/destinations/:dest/test       → AlertTestResult
+// DELETE /workspaces/:id/alerts/destinations/:dest            → { ok: true }
+// GET    /workspaces/:id/alerts/deliveries                    → AlertDelivery[] (newest first)
+export type AlertDestinationKind = 'webhook' | 'telegram' | 'email'
+/** balance: low credits, out of credits and topped up; limits: a spend limit near or reached; gateway: spend tracking down. */
+export type AlertEventGroup = 'balance' | 'limits' | 'gateway'
+
+export interface AlertSettings {
+  /** Alert once the credits available drop below this; null turns it off. */
+  lowBalance: Usdc | null
+  /** The balance a top-up should bring the credits back to; alerts suggest the difference. */
+  topupTarget: Usdc | null
+  /** Alert once a key, member or workspace spend limit is this percent spent; null alerts only when one is reached. */
+  limitWarnPercent: number | null
+  /** Repeat an alert that stays open every this many minutes; null sends it once. */
+  repeatMinutes: number | null
+}
+
+export interface AlertSettingsInput {
+  /** USD, e.g. "10" or "12.50"; null turns it off. */
+  lowBalanceUsd: string | null
+  topupTargetUsd: string | null
+  limitWarnPercent: number | null
+  repeatMinutes: number | null
+}
+
+export interface AlertDestination {
+  id: string
+  kind: AlertDestinationKind
+  label: string
+  /** Webhooks: the URL with its path and query masked (they often carry a token); Telegram: the chat id; email: the addresses. */
+  target: string
+  /** The last characters of the webhook signing secret or the Telegram bot token; null when none is set. */
+  secretHint: string | null
+  events: AlertEventGroup[]
+  enabled: boolean
+  createdAt: number
+  lastSentAt: number | null
+  /** Why the latest delivery failed; null after a delivery that went through. */
+  lastError: string | null
+}
+
+export interface AlertDestinationInput {
+  kind: AlertDestinationKind
+  label: string
+  /** The webhook URL, the Telegram chat id, or email addresses separated by commas. */
+  target: string
+  /** Telegram only: the bot token (from @BotFather). Omit on an edit to keep it. */
+  botToken?: string
+  events: AlertEventGroup[]
+  enabled?: boolean
+}
+
+export interface AlertDestinationCreated {
+  destination: AlertDestination
+  /** Webhooks: the secret that signs each delivery (`x-antseed-signature`), shown only now. */
+  signingSecret: string | null
+}
+
+export interface AlertTestResult {
+  ok: boolean
+  error: string | null
+}
+
+export interface AlertDelivery {
+  id: number
+  destinationId: string
+  /** e.g. balance.low, limit.reached, test. */
+  eventType: string
+  summary: string
+  ok: boolean
+  error: string | null
+  at: number
+}
+
+export interface AlertsConfig {
+  settings: AlertSettings
+  destinations: AlertDestination[]
+  /** Whether the gateway host has an SMTP server for alert emails (ANTSEED_GATEWAY_SMTP_URL and ANTSEED_GATEWAY_SMTP_FROM). */
+  emailAvailable: boolean
+}
+
 // ── Chat ────────────────────────────────────────────────────────────────
 
 // Members (their "Web chat" key pays) and API-key sessions (`antseed chat`; that key pays):
