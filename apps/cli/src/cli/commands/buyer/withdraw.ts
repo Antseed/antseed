@@ -4,6 +4,7 @@ import ora from 'ora';
 import { getGlobalOptions } from '../types.js';
 import { loadConfig } from '../../../config/loader.js';
 import { loadCryptoContext, createDepositsClient } from '../../payment-utils.js';
+import { assertBuyerIsAuthorizedWallet } from './authorized-wallet-check.js';
 
 export function registerBuyerWithdrawCommand(buyerCmd: Command): void {
   buyerCmd
@@ -36,6 +37,7 @@ export function registerBuyerWithdrawCommand(buyerCmd: Command): void {
       const spinner = ora('Withdrawing USDC from deposits contract...').start();
 
       try {
+        await assertBuyerIsAuthorizedWallet(depositsClient, address, 'withdraw deposits');
         const txHash = await depositsClient.withdraw(wallet, address, amountBaseUnits);
         spinner.succeed(chalk.green(`Withdrew ${amountFloat} USDC`));
         console.log(chalk.dim(`Transaction: ${txHash}`));
