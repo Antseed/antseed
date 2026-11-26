@@ -189,14 +189,14 @@ describe('retrieve', () => {
     expect(JSON.stringify(fetchMock.mock.calls[1]![1]?.headers)).not.toContain('seller-secret');
   });
 
-  it('limits concurrent downloads', async () => {
+  it('limits concurrent downloads to ANTSEED_MAX_VIDEO_DOWNLOADS', async () => {
     let release = () => {};
     const blocked = new Promise<void>(resolve => { release = resolve; });
     const started: Array<() => void> = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string) => url.includes('/api/v1/tasks/')
       ? task({ task_status: 'SUCCEEDED', video_url: 'https://result.example/video.mp4' })
       : new Response(new ReadableStream({ async pull(controller) { await blocked; controller.close(); } }), { status: 200, headers: { 'content-type': 'video/mp4' } })));
-    const p = provider();
+    const p = provider({ ANTSEED_MAX_VIDEO_DOWNLOADS: '2' });
     const opened = () => new Promise<void>(resolve => { started.push(resolve); });
     const first = opened();
     const second = opened();
