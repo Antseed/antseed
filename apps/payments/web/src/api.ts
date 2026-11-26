@@ -212,3 +212,46 @@ export async function saveFreeTierDelegation(delegation: { staker: string; expir
     body: JSON.stringify(delegation),
   });
 }
+
+/** Antseed Colony (the Mac app): its pool, its worker key, the wallet its earnings go to, and what that wallet can claim. */
+export interface ColonyState {
+  pool: string | null;
+  worker: string;
+  payout: string | null;
+  /** What the payout wallet can claim, as the Mac app read it: USDC (6 decimals) and ANTS (18), base units. */
+  claim: {
+    usdc: string;
+    ants: string;
+    /** Finished epochs with ANTS owed to the payout wallet. */
+    antsEpochs: number[];
+    /** Finished epochs the pool earned ANTS for but hasn't pulled from emissions yet (claimEpochEmissions). */
+    unpulledEpochs: number[];
+    /** Epochs whose ANTS stayed with the Mac's key when it linked (older than the link moves); claimAntsFor sends them to the payout. Counted in `ants`. */
+    workerAntsEpochs?: number[];
+    /** Whether the pool can send ANTS yet; false while ANTS transfers are closed (the ANTS stay owed in the pool). */
+    antsTransferable?: boolean;
+    /** ANTS the pool owes the payout wallet outright rather than by epoch (its operator fee, or an epoch nobody earned in); claimOwedAnts sends them. Counted in `ants`. */
+    outrightAnts?: string;
+  } | null;
+  /** False when the Mac app could not read the pool for this answer: `claim` is then its last read, to show but not to claim from. */
+  claimFresh?: boolean;
+}
+
+/** A worker's signed setPayout authorization (AntseedColonyPool.setPayout). */
+export interface ColonyPayoutAuthorization {
+  chainId: number;
+  pool: string;
+  worker: string;
+  payout: string;
+  deadline: number;
+  signature: string;
+}
+
+export async function getColony(): Promise<ColonyState> {
+  return fetchJson('/api/colony');
+}
+
+/** Asks the Mac app to sign a link of its earnings to `payout` (the connected wallet). */
+export async function signColonyLink(payout: string): Promise<ColonyPayoutAuthorization> {
+  return fetchJson('/api/colony/link', { method: 'POST', body: JSON.stringify({ payout }) });
+}

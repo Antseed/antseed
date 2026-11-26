@@ -1,4 +1,5 @@
 import { type AbstractSigner, type TypedDataDomain, AbiCoder, hexlify, id, keccak256, randomBytes } from 'ethers';
+import { appendWorkerTail, decodeWorkerTail, type WorkerAttribution } from './worker-attribution.js';
 
 // =========================================================================
 // EIP-712 Types — Antseed SpendingAuth (cumulative payment authorization)
@@ -165,6 +166,11 @@ export interface SpendingAuthMetadata {
   cumulativeVideoSeconds?: bigint;
   cumulativeInputCharacters?: bigint;
   services?: SpendingAuthServiceMetadata[];
+  /**
+   * Colony pool attribution, appended after the ABI encoding (see
+   * worker-attribution.ts). Absent for every seller that is not a pool.
+   */
+  workers?: WorkerAttribution[];
 }
 
 export interface SpendingAuthServiceMetadata {
@@ -216,7 +222,7 @@ export function encodeMetadata(metadata: SpendingAuthMetadata): string {
     cumulativeVideoSeconds: service.cumulativeVideoSeconds ?? 0n,
     cumulativeInputCharacters: service.cumulativeInputCharacters ?? 0n,
   }));
-  return coder.encode(
+  return appendWorkerTail(coder.encode(
     ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE],
     [
       METADATA_VERSION,
@@ -229,7 +235,7 @@ export function encodeMetadata(metadata: SpendingAuthMetadata): string {
       metadata.cumulativeInputCharacters ?? 0n,
       services,
     ],
-  );
+  ), metadata.workers);
 }
 
 export interface DecodedSpendingAuthMetadata extends Required<Omit<SpendingAuthMetadata, 'services'>> {
@@ -241,6 +247,7 @@ export interface DecodedSpendingAuthMetadata extends Required<Omit<SpendingAuthM
  * Decode SpendingAuth metadata of version 4 or 5 (encodeMetadata's output and
  * the version before it). Counters a version does not carry decode as 0. Throws
  * on any other version or on bytes that do not match the version's layout.
+ * A pool's worker tail decodes into `workers` (empty when there is none).
  */
 export function decodeSpendingAuthMetadata(encoded: string): DecodedSpendingAuthMetadata {
   const coder = AbiCoder.defaultAbiCoder();
@@ -275,6 +282,7 @@ export function decodeSpendingAuthMetadata(encoded: string): DecodedSpendingAuth
     cumulativeVideoSeconds: word(6),
     cumulativeInputCharacters: v5 ? word(7) : 0n,
     services,
+    workers: decodeWorkerTail(encoded) ?? [],
   };
 }
 

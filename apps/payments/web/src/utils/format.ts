@@ -59,6 +59,14 @@ export function formatTimestampDate(
   return new Date(timestampToMs(timestamp)).toLocaleDateString('en-US', options);
 }
 
+/** A colony pool's ANTS, as the Mac app shows them: two decimals, "<0.01" below that. */
+export function formatColonyAnts(wei: bigint): string {
+  const value = Number(formatUnits(wei, ANTS_DECIMALS));
+  if (value === 0) return '0';
+  if (value < 0.01) return '<0.01';
+  return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
 export function formatAntsAmount(amountWei: string | bigint): string {
   const amount = typeof amountWei === 'bigint' ? amountWei : bigintFromString(amountWei);
   if (amount === 0n) return '0';

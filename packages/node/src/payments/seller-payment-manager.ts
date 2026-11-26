@@ -22,7 +22,7 @@ import {
 } from './evm/signatures.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 import { peerIdToAddress } from '../types/peer.js';
-import { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from './channel-store.js';
+import { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS, type EndedChannelNotice, type StoredChannel } from './channel-store.js';
 import { classifyOnChainChannel, matchesChannelParties } from './channel-session-state.js';
 
 export interface SellerPaymentConfig {
@@ -51,6 +51,15 @@ export interface SellerPaymentConfig {
   minSettleDelta?: string;
   /** Serve channels whose buyer already requested close on-chain, risking uncollectible work. Default: false. */
   serveWhileClosePending?: boolean;
+  /**
+   * Called when this seller stops tracking a channel it did not just close
+   * itself: the buyer withdrew it, or it was found ended or gone on-chain.
+   * `channelsAddress` is the AntseedChannels contract the channel was reserved
+   * on, which the registry may have replaced since. A call that throws or
+   * rejects is made again on later timeout checks, also after a restart, until
+   * one succeeds, so it must be safe to repeat.
+   */
+  onChannelEnded?: (channelId: string, channelsAddress: string) => void | Promise<void>;
   /** Called when a buyer's opening reserve() fails on-chain, so a host can say so outside debug logs. */
   onReserveFailed?: (failure: ReserveFailure) => void;
 }
@@ -139,6 +148,10 @@ const ONE_OFF_UNDECIDED_RETRY_SECONDS = 5;
 export const TIMED_OUT_CLOSE_RETRY_INTERVAL_MS = 10 * 60_000;
 /** Most timed-out channels retried in one pass. */
 const TIMED_OUT_CLOSE_RETRY_BATCH = 20;
+/** Wait before a failed channel-ended call is made again: doubles per failure up to the maximum. */
+export const CHANNEL_ENDED_RETRY_MIN_MS = 60_000;
+export const CHANNEL_ENDED_RETRY_MAX_MS = 60 * 60_000;
+export const CHANNEL_ENDED_RETRY_BATCH = 20;
 /** Slow-cadence attempts with the buyer's latest auth before closing at the settled amount (~1 hour). */
 const TIMED_OUT_AUTH_CLOSE_ATTEMPTS = 6;
 
@@ -327,6 +340,13 @@ export class SellerPaymentManager {
   private _lastTimedOutCloseRetryAt = 0;
   /** Slow-cadence close attempts per timed-out channel, using the buyer's latest auth. */
   private readonly _timedOutCloseAttempts = new Map<string, number>();
+  /** Channel-ended calls in flight, by channel. */
+  private readonly _channelEndedInFlight = new Map<string, Promise<void>>();
+  /**
+   * `draining` starts no more channel-ended calls; `stopped` also keeps the
+   * ones still running from touching the channel store, which may be closed.
+   */
+  private _channelEndedState: 'running' | 'draining' | 'stopped' = 'running';
 
   constructor(
     identity: Identity,
@@ -492,7 +512,7 @@ export class SellerPaymentManager {
     status: typeof CHANNEL_STATUS.SETTLED | typeof CHANNEL_STATUS.TIMEOUT = CHANNEL_STATUS.SETTLED,
     settledAmount?: string,
   ): void {
-    this._channelStore.updateChannelStatus(channelId, status, settledAmount);
+    const notice = this._endChannel(channelId, status, settledAmount);
     this._acceptedCumulative.delete(channelId);
     this._spent.delete(channelId);
     this._latestAuth.delete(channelId);
@@ -506,6 +526,100 @@ export class SellerPaymentManager {
     this._releaseAcceptedWaiters(channelId);
     if (!this._oneOffChannelIds.delete(channelId)) this._deactivateBuyerForChannel(peerId, channelId);
     debugLog(`[SellerPayment] Evicted stale channel ${channelId.slice(0, 18)}... — ${reason}`);
+    if (notice) this._deliverChannelEnded(notice);
+  }
+
+  /**
+   * Store an ended channel's final status and, with a listener, its notice in
+   * the same write. The notice is for `_deliverChannelEnded` once the caller's
+   * own bookkeeping is done.
+   */
+  private _endChannel(
+    channelId: string,
+    status: typeof CHANNEL_STATUS.SETTLED | typeof CHANNEL_STATUS.TIMEOUT,
+    settledAmount?: string,
+  ): EndedChannelNotice | null {
+    if (this._config.onChannelEnded) return this._channelStore.endChannelWithNotice(channelId, status, settledAmount);
+    this._channelStore.updateChannelStatus(channelId, status, settledAmount);
+    return null;
+  }
+
+  /** Call the listener for a stored notice; the notice stays, to be tried again, until a call succeeds. */
+  private _deliverChannelEnded(notice: EndedChannelNotice): void {
+    const onChannelEnded = this._config.onChannelEnded;
+    const channelId = notice.sessionId;
+    if (!onChannelEnded || this._channelEndedState !== 'running' || this._channelEndedInFlight.has(channelId)) return;
+    const delivery = this._callChannelEnded(notice, onChannelEnded)
+      .catch((err: unknown) => {
+        debugWarn(`[SellerPayment] Could not record the onChannelEnded outcome for ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+      })
+      .finally(() => {
+        this._channelEndedInFlight.delete(channelId);
+      });
+    this._channelEndedInFlight.set(channelId, delivery);
+  }
+
+  private async _callChannelEnded(
+    notice: EndedChannelNotice,
+    onChannelEnded: NonNullable<SellerPaymentConfig['onChannelEnded']>,
+  ): Promise<void> {
+    const channelId = notice.sessionId;
+    try {
+      // Never inside the caller's own channel bookkeeping.
+      await Promise.resolve();
+      // A channel stored before its contract was recorded: the one in use now.
+      const channelsAddress = notice.channelsAddress ?? (await this._resolvedAddresses!).channels;
+      await onChannelEnded(channelId, channelsAddress);
+    } catch (err) {
+      // Stopped meanwhile: the notice stays as stored, and the next start tries it again.
+      if (this._channelEndedState === 'stopped') return;
+      const failures = notice.failures + 1;
+      const delayMs = Math.min(CHANNEL_ENDED_RETRY_MIN_MS * 2 ** (failures - 1), CHANNEL_ENDED_RETRY_MAX_MS);
+      this._channelStore.deferEndedChannelNotice(channelId, failures, Date.now() + delayMs);
+      debugWarn(`[SellerPayment] onChannelEnded failed for ${channelId.slice(0, 18)}... (attempt ${failures}, next in ${Math.round(delayMs / 1000)}s): ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (this._channelEndedState !== 'stopped') this._channelStore.removeEndedChannelNotice(channelId);
+  }
+
+  /**
+   * For shutdown, before the channel store closes: start no more
+   * channel-ended calls and wait up to `timeoutMs` for the ones running. A
+   * call still running after that leaves its notice stored for the next start
+   * and no longer touches the store. Resolves to whether every call finished.
+   */
+  async stopChannelEndedCalls(timeoutMs: number): Promise<boolean> {
+    this._channelEndedState = 'draining';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finished = await Promise.race([
+      Promise.all(this._channelEndedInFlight.values()).then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+    clearTimeout(timer);
+    this._channelEndedState = 'stopped';
+    return finished;
+  }
+
+  /**
+   * Make the channel-ended calls that failed, or that a restart interrupted,
+   * again once they are due: a batch per pass, read past the calls still
+   * running so they never keep later notices waiting.
+   */
+  private _retryChannelEnded(): void {
+    if (!this._config.onChannelEnded || this._channelEndedState !== 'running') return;
+    const due = this._channelStore.getDueEndedChannelNotices(
+      Date.now(),
+      CHANNEL_ENDED_RETRY_BATCH + this._channelEndedInFlight.size,
+    );
+    let started = 0;
+    for (const notice of due) {
+      if (started >= CHANNEL_ENDED_RETRY_BATCH) break;
+      if (this._channelEndedInFlight.has(notice.sessionId)) continue;
+      started += 1;
+      this._deliverChannelEnded(notice);
+    }
   }
 
   /** Remove connectivity only if it still belongs to the channel being cleaned up. */
@@ -873,12 +987,13 @@ export class SellerPaymentManager {
 
         // Store new session (sessionId field stores channelId for backward compat)
         const now = Date.now();
-        const { seller: sellerEvmAddr } = await this._resolvedAddresses!;
+        const { seller: sellerEvmAddr, channels: channelsAddress } = await this._resolvedAddresses!;
         const session: StoredChannel = {
           sessionId: channelId,
           peerId: buyerPeerId,
           role: CHANNEL_ROLE.SELLER,
           sellerEvmAddr,
+          channelsAddress,
           buyerEvmAddr,
           nonce: 0,
           authMax: '0',
@@ -990,7 +1105,18 @@ export class SellerPaymentManager {
             && !await this._validateRetainedChannel(buyerPeerId, channelId, cumulativeAmount, disconnectMarker)) {
             return 'rejected';
           }
-          debugLog(`[SellerPayment] Idempotent SpendingAuth (same cumulative=${cumulativeAmount}) — accepted`);
+          // Same amount, new metadata: the buyer re-signed its headroom to
+          // attribute it (e.g. a Colony worker tail). Keep the newer signature
+          // so settlement carries it; the pool pays attribution a settlement
+          // could not cover at the next one, so nothing is lost if this amount
+          // was already settled.
+          const retained = this._latestAuth.get(channelId);
+          if (retained && retained.metadataHash.toLowerCase() !== payload.metadataHash.toLowerCase()) {
+            this._retainAuth(channelId, cumulativeAmount, payload);
+            debugLog(`[SellerPayment] SpendingAuth re-signed at cumulative=${cumulativeAmount} with new metadata — retained`);
+          } else {
+            debugLog(`[SellerPayment] Idempotent SpendingAuth (same cumulative=${cumulativeAmount}) — accepted`);
+          }
           this._acknowledgeRetainedChannel(buyerPeerId, channelId, paymentMux, disconnectMarker);
           return 'accepted';
         }
@@ -1035,24 +1161,8 @@ export class SellerPaymentManager {
 
         // Update tracking
         this._acceptedCumulative.set(channelId, cumulativeAmount);
-        this._latestAuth.set(channelId, {
-          spendingAuthSig: payload.spendingAuthSig,
-          cumulativeAmount,
-          metadataHash: payload.metadataHash,
-          metadata: payload.metadata,
-        });
+        this._retainAuth(channelId, cumulativeAmount, payload);
         this._notifyAcceptedUpdate(channelId, cumulativeAmount);
-
-        // Persist latest auth + sigs to ChannelStore
-        const session = this._channelStore.getChannel(channelId);
-        if (session) {
-          session.authMax = payload.cumulativeAmount;
-          session.latestBuyerSig = payload.spendingAuthSig;
-          session.latestSpendingAuthSig = payload.spendingAuthSig;
-          session.latestMetadata = payload.metadata;
-          session.updatedAt = Date.now();
-          this._channelStore.upsertChannel(session);
-        }
 
         debugLog(`[SellerPayment] Budget updated: channel=${channelId.slice(0, 18)}... cumulative=${cumulativeAmount}`);
 
@@ -1068,6 +1178,25 @@ export class SellerPaymentManager {
     } catch (err) {
       debugWarn(`[SellerPayment] Failed to process SpendingAuth: ${err instanceof Error ? err.message : err}`);
       return 'rejected';
+    }
+  }
+
+  /** Keep `payload` as the channel's latest SpendingAuth, in memory and in the channel store. */
+  private _retainAuth(channelId: string, cumulativeAmount: bigint, payload: SpendingAuthPayload): void {
+    this._latestAuth.set(channelId, {
+      spendingAuthSig: payload.spendingAuthSig,
+      cumulativeAmount,
+      metadataHash: payload.metadataHash,
+      metadata: payload.metadata,
+    });
+    const session = this._channelStore.getChannel(channelId);
+    if (session) {
+      session.authMax = payload.cumulativeAmount;
+      session.latestBuyerSig = payload.spendingAuthSig;
+      session.latestSpendingAuthSig = payload.spendingAuthSig;
+      session.latestMetadata = payload.metadata;
+      session.updatedAt = Date.now();
+      this._channelStore.upsertChannel(session);
     }
   }
 
@@ -1397,7 +1526,7 @@ export class SellerPaymentManager {
       payload.spendingAuthSig,
     ));
     const now = Date.now();
-    const { seller: sellerEvmAddr } = await this._resolvedAddresses!;
+    const { seller: sellerEvmAddr, channels: channelsAddress } = await this._resolvedAddresses!;
     if (batch) {
       // Record the reserve before the top-up: if anything below fails, the
       // channel still holds the buyer's funds and must stay known so the
@@ -1409,6 +1538,7 @@ export class SellerPaymentManager {
         channelKind: CHANNEL_KIND.ONE_OFF,
         oneOffRequestId: requestId,
         sellerEvmAddr,
+        channelsAddress,
         buyerEvmAddr,
         nonce: 0,
         authMax: '0',
@@ -1455,6 +1585,7 @@ export class SellerPaymentManager {
       channelKind: CHANNEL_KIND.ONE_OFF,
       oneOffRequestId: requestId,
       sellerEvmAddr,
+      channelsAddress,
       buyerEvmAddr,
       nonce: 0,
       authMax: latestAuth.cumulativeAmount.toString(),
@@ -2094,7 +2225,7 @@ export class SellerPaymentManager {
   ): Promise<boolean> {
     const channelId = payload.channelId;
     const onChainState = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
-    const { seller: sellerEvmAddr } = await this._resolvedAddresses!;
+    const { seller: sellerEvmAddr, channels: channelsAddress } = await this._resolvedAddresses!;
 
     if (!onChainState.exists || onChainState.status !== 'active') return false;
     if (!matchesChannelParties(onChainState.channel, buyerEvmAddr, sellerEvmAddr)) return false;
@@ -2135,6 +2266,7 @@ export class SellerPaymentManager {
       peerId: buyerPeerId,
       role: CHANNEL_ROLE.SELLER,
       sellerEvmAddr,
+      channelsAddress,
       buyerEvmAddr,
       nonce: 0,
       authMax: payload.cumulativeAmount,
@@ -2491,6 +2623,7 @@ export class SellerPaymentManager {
    * Called periodically and on startup for recovery.
    */
   async checkTimeouts(): Promise<void> {
+    this._retryChannelEnded();
     await this._checkOneOffChannels();
     const nowSecs = Math.floor(Date.now() / 1000);
     const activeChannels = this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER);
@@ -2589,8 +2722,9 @@ export class SellerPaymentManager {
         if (!state.exists || state.status === CHANNEL_STATUS.TIMEOUT) {
           // Withdrawn by the buyer: nothing left for the seller to close.
           const settled = state.exists ? state.channel.settled : 0n;
-          this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.TIMEOUT, settled.toString());
+          const notice = this._endChannel(channelId, CHANNEL_STATUS.TIMEOUT, settled.toString());
           this._timedOutCloseAttempts.delete(channelId);
+          if (notice) this._deliverChannelEnded(notice);
           continue;
         }
         if (state.status !== CHANNEL_STATUS.ACTIVE) {
