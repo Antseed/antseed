@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- CLI (`@antseed/cli`): `antseed buyer channels request-close`, `antseed buyer channels withdraw` and `antseed buyer withdraw` now check the buyer's authorized wallet before sending. Closing a channel on chain and withdrawing deposits only accept the authorized wallet, and these commands sign with the buyer wallet. A buyer who had never set one got a bare `NotAuthorized` revert and no way forward. Now the command sends nothing and says what to do: with no authorized wallet set, run `antseed buyer set-authorized-wallet --self`; with a different wallet authorized, send the transaction from that wallet.
+
 ## 2026-11-26 — CLI 0.1.262, Desktop 0.2.96
 
 ### Packages
