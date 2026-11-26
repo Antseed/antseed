@@ -1,0 +1,68 @@
+{
+ "attempts": [
+  {
+   "attemptCosts": [],
+   "failure": "{\"error\":{\"message\":\"this thinking setting is not supported\"}}",
+   "maxTokens": 800,
+   "reasoningTokens": null,
+   "requestIds": ["<seller: thinking discovery #1>"],
+   "status": 400,
+   "strategy": "chat-reasoning-effort-none",
+   "validAnswers": null
+  },
+  {
+   "answersOnly": true,
+   "attemptCosts": [
+    {
+     "estimatedCostUsd": 0.00037,
+     "inputTokens": 310,
+     "inputUsdPerMillion": 1,
+     "outputTokens": 40,
+     "outputUsdPerMillion": 2,
+     "provider": null,
+     "service": null,
+     "tokenSource": null,
+     "totalTokens": 350
+    }
+   ],
+   "billedOutputTokens": 52,
+   "maxTokens": 800,
+   "reasoningShown": false,
+   "reasoningTokens": 12,
+   "requestIds": ["<seller: thinking discovery #2>"],
+   "signedRequest": {
+    "carriesSetting": true,
+    "signedPreimages": {
+     "encoding": "antseed-http-codec-v1",
+     "hashAlgorithm": "keccak256",
+     "requestBase64": {
+      "requestId": "<seller: thinking discovery #2>",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "headers": {},
+      "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"system\",\"content\":\"Follo… (1159 characters, sha256 113fa4f75f408a55)"
+     },
+     "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+     "responseAuthSigningBase64": "AA==",
+     "responseBase64": {
+      "requestId": "<seller: thinking discovery #2>",
+      "statusCode": 200,
+      "headers": {},
+      "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (317 characters, sha256 4d2aeb1197721bbe)"
+     },
+     "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+     "signatureEncoding": "antseed-response-auth-signing-v1"
+    },
+    "status": "verified"
+   },
+   "status": null,
+   "strategy": "chat-reasoning-effort-minimal",
+   "truncated": false,
+   "validAnswers": 10
+  }
+ ],
+ "maxTokens": 160,
+ "method": "kbf-reference-code-2026-09-30",
+ "rule": "audit-thinking-table-v1",
+ "strategy": "chat-reasoning-effort-minimal"
+}

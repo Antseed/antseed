@@ -207,6 +207,25 @@ export const VerifierConfigSchema = strictObject({
    */
   diffHoldEpochs: z.number().int().min(0).max(4).optional(),
   /**
+   * The tokenizer pre-check before a seller's questions (`tokenizer-precheck.ts`): a seller whose signed input
+   * tokens are not the audited model's is DIFF. The questions and the other tests still run (`all-tests-v1`). On by
+   * default; false audits every seller without it. Every auditor must use the same value.
+   */
+  tokenizerPrecheck: z.boolean().optional(),
+  /**
+   * The output-token checks after a seller's questions, the cap check and the echo check (`output-cap.ts`,
+   * `output-echo.ts`): a seller that bills beyond the reply limit it was given, with an answer that measures more than
+   * twice that limit, or that bills output the model did not write, is DIFF. Every test still runs (`all-tests-v1`).
+   * On by default. Every auditor must use the same value.
+   */
+  outputChecks: z.boolean().optional(),
+  /**
+   * The randomness check (FLIPS, `flips.ts`), last in every audit. On by default. Whether it counts toward the verdict is
+   * not a setting: the table of which tests count (`AUDIT_TEST_COUNTS`) records it only for now. Every auditor must use
+   * the same value.
+   */
+  flips: z.boolean().optional(),
+  /**
    * Retired: a first DIFF is no longer rechecked by the same auditor but confirmed by another one.
    * Accepted and ignored so configs written for earlier releases still load.
    */
@@ -226,6 +245,30 @@ export const VerifierConfigSchema = strictObject({
    * use the same list (the assignment depends on it); never set it on a production verifier.
    */
   testModels: z.array(z.string().min(1)).min(1).optional(),
+  /**
+   * Testing only: a dry run on a local fork publishes its evidence into `directory` instead of IPFS, and `verifier run`
+   * and `submit` read other auditors' evidence from `gatewayUrl` (a local HTTP server over that directory) instead of
+   * the public gateways (`test-publication.ts`). Refused unless the chain RPC is on this machine; never set it on a
+   * production verifier.
+   */
+  testPublication: z.object({
+    directory: z.string().min(1),
+    gatewayUrl: z.string().url(),
+  }).strict().optional(),
+  /**
+   * Testing only: shorter waits for a dry run on a local fork (`test-timing.ts`), each optional: a failed seller's retry
+   * (`sellerRetrySpacingSeconds`, rules 30 minutes), the delay before a confirmation may start
+   * (`confirmationMinDelaySeconds`, 1 hour), an undecided confirmation's next attempt
+   * (`confirmationRecheckSpacingSeconds`, 10 minutes) and a confirmer's turn (`confirmationWindowSeconds`, 12 hours).
+   * Read at run time only: the rules and their hash keep the production values. Refused unless the chain RPC is on this
+   * machine; never set it on a production verifier. Every auditor in a test must use the same values.
+   */
+  testTiming: z.object({
+    sellerRetrySpacingSeconds: positiveIntegerSchema.optional(),
+    confirmationMinDelaySeconds: positiveIntegerSchema.optional(),
+    confirmationRecheckSpacingSeconds: positiveIntegerSchema.optional(),
+    confirmationWindowSeconds: positiveIntegerSchema.optional(),
+  }).strict().optional(),
   referenceMaxRequestsPerBuild: positiveIntegerSchema.optional(),
   referenceBatchRetryCount: z.number().int().min(0, 'must be an integer >= 0').optional(),
   referenceRetryBaseDelayMs: positiveIntegerSchema.optional(),

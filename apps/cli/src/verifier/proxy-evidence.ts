@@ -5,6 +5,7 @@ import {
   canonicalJsonStringify,
   type FingerprintStats,
   type FingerprintVerdict,
+  type KbfCoverageRule,
   type KbfProbe,
   type KbfReferenceCalibrationV1,
   type MatchVector,
@@ -14,7 +15,8 @@ import {
 import type { StoredResponseAuth } from '@antseed/node'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
 import { safeServiceSlug } from './slug.js'
-import type { ThinkingDiscoveryAttemptV1, ThinkingDiscoveryStrategy } from './thinking-suppression.js'
+import type { ThinkingDiscoveryAttemptV1, ThinkingDiscoveryRuleId, ThinkingDiscoveryStrategy } from './thinking-suppression.js'
+import type { AuditCheckId, CheckRecords } from './audit-checks.js'
 
 export type ExportedResponseAuthRecord = Omit<StoredResponseAuth, 'requestPreimage' | 'responsePreimage'>
 
@@ -81,6 +83,16 @@ export interface ProxyAuditEvidenceExchangeV1 extends ProxyAuditEvidenceExchange
 export interface SellerThinkingDiscoveryAttemptV1 extends ThinkingDiscoveryAttemptV1 {
   requestIds: string[]
   attemptCosts: ProxyAuditExchangeCostV1[]
+  /**
+   * Under the thinking table (`audit-thinking-table-v1`), the request the seller signed for the answered try: its
+   * ResponseAuth status, whether that request carries the setting it was asked with, and the signed bytes. Absent for a
+   * try with no answer and in evidence made before.
+   */
+  signedRequest?: {
+    status: 'verified' | 'missing' | 'invalid' | 'pending' | string
+    carriesSetting: boolean | null
+    signedPreimages: SignedResponseAuthPreimagesV1 | null
+  }
 }
 
 /**
@@ -91,6 +103,11 @@ export interface SellerThinkingDiscoveryAttemptV1 extends ThinkingDiscoveryAttem
  */
 export interface SellerThinkingDiscoveryV1 {
   method: 'kbf-reference-code-2026-09-30'
+  /**
+   * The discovery rule it was made under (`THINKING_DISCOVERY_RULE`): this build's tries the reference's setting first.
+   * Absent in evidence made before, which was made under `kbf-discovery-least-reasoning-v1`.
+   */
+  rule?: ThinkingDiscoveryRuleId
   /** Strategy this audit's batches use; null when discovery found none and the reference's suppression was sent. */
   strategy: ThinkingDiscoveryStrategy | null
   /** `max_tokens` of each batch request. */
@@ -132,7 +149,11 @@ export type VerificationSkipCode =
   | 'upstream_credentials_invalid'
   | 'request_profile_incompatible'
 
-export interface ProxyAuditSkipEvidenceV1 {
+/**
+ * The evidence of a seller skipped at a request. Each test that ran before the skipped request is stored under its
+ * slot (`CheckRecords`); a slot is absent when none ran.
+ */
+export interface ProxyAuditSkipEvidenceV1 extends Partial<CheckRecords> {
   version: 1
   kind: 'antseed-buyer-proxy-target-skip'
   evidenceLevel: 'proxy-observation-no-payment-evidence'
@@ -159,10 +180,16 @@ export interface ProxyAuditSkipEvidenceV1 {
     code: VerificationSkipCode
     reason: string
     outcomeReason?: VerificationOutcomeReasonV1
+    /** What the tokenizer pre-check's requests cost, when one ran before the seller was skipped. */
+    cost?: AuditCostSummaryV1
   }
 }
 
-export interface ProxyAuditEvidenceV1 {
+/**
+ * The evidence of one seller's audit. Each test's record is stored under its slot, a member of `CheckRecords`, where
+ * each is described; a slot is absent when its test did not run.
+ */
+export interface ProxyAuditEvidenceV1 extends Partial<CheckRecords> {
   version: 1
   kind: 'antseed-buyer-proxy-kbf-audit'
   evidenceLevel: 'proxy-observation-with-verified-response-auth-no-payment-evidence'
@@ -198,6 +225,23 @@ export interface ProxyAuditEvidenceV1 {
   }
   /** Absent on audits that sent the reference's thinking suppression without asking the seller. */
   sellerThinking?: SellerThinkingDiscoveryV1
+  /**
+   * Set on an audit that answered another auditor's waiting DIFF: the checks that flagged it there, which ran to
+   * their end here.
+   */
+  confirming?: { checks: AuditCheckId[]; /** The chain time of the report it answers. */ reportedAt?: number }
+  /**
+   * The evidence format: `all-tests-v1`, every test runs and none ends the audit; `result` is the questions' own,
+   * and the audit's verdict is derived from it and the test records (`audit-checks.ts` `verdictOf`).
+   */
+  tests?: 'all-tests-v1'
+  /**
+   * The tests that kept no record because the run had none of them for the model (`noRecordEntries`): the test's
+   * reference switched it off for the whole model, or it did not run for the model. By slot, with the reason. These are
+   * not active (`inactiveChecks`), so they never block a SAME. A seller's own failure is never here. Absent when there
+   * is none, and on evidence written before it.
+   */
+  noRecord?: Array<{ slot: string; reason: string }>
   exchanges: ProxyAuditEvidenceExchangeV1[]
   resume?: {
     parentAuditId: string
@@ -214,6 +258,17 @@ export interface ProxyAuditEvidenceV1 {
     verdict: Exclude<FingerprintVerdict, 'UNKNOWN'>
     verdictReason: string | null
     outcomeReason?: VerificationOutcomeReasonV1 | null
+    /**
+     * The questions were not finished: the seller was skipped at this batch (another test may still have flagged).
+     * A reader takes it only when that batch is stored and did not succeed; the questions are then undecided.
+     */
+    unfinished?: { batchIndex: number; reason: string }
+    /**
+     * The coverage rule this set's look was decided by (`kbf-coverage-v1`: under the coverage a DIFF needs, still DIFF
+     * at p ≤ 1e-6 over at least 50 scored answers). Absent on sets from before it: they keep the plain coverage rule.
+     * Every reader judges the set by the rule it names, never by a newer one.
+     */
+    coverageRule?: KbfCoverageRule['id']
     cost: AuditCostSummaryV1
     cumulativeCost?: AuditCostSummaryV1
   }
@@ -261,20 +316,38 @@ export function addAuditCostSummaries(...summaries: AuditCostSummaryV1[]): Audit
   }), emptyAuditCostSummary())
 }
 
-export function summarizeAuditExchangeCosts(
-  exchanges: ProxyAuditEvidenceExchangeV1[],
-): AuditCostSummaryV1 {
-  const costsByExchange = exchanges.map((exchange) => exchange.attemptCosts ?? (exchange.cost ? [exchange.cost] : []))
-  const priced = costsByExchange.flat()
+/** One paid request, for cost and request counts: its tries (`requestCount`) and what each priced try cost. */
+export interface PaidRequest {
+  requestCount: number
+  attemptCosts: readonly ProxyAuditExchangeCostV1[]
+}
+
+/** What these requests cost, in their order (the float sums follow it). A request with no priced try is missing its cost. */
+export function costOfRequests(requests: readonly PaidRequest[]): AuditCostSummaryV1 {
+  const priced = requests.flatMap((request) => request.attemptCosts)
   return {
     inputTokens: priced.reduce((total, cost) => total + cost.inputTokens, 0),
     outputTokens: priced.reduce((total, cost) => total + cost.outputTokens, 0),
     totalTokens: priced.reduce((total, cost) => total + cost.totalTokens, 0),
     estimatedCostUsd: priced.reduce((total, cost) => total + cost.estimatedCostUsd, 0),
-    // One exchange can carry several priced attempts (retries), so count exchanges, not attempts.
-    pricedExchangeCount: costsByExchange.filter((costs) => costs.length > 0).length,
-    missingCostExchangeCount: costsByExchange.filter((costs) => costs.length === 0).length,
+    pricedExchangeCount: requests.filter((request) => request.attemptCosts.length > 0).length,
+    missingCostExchangeCount: requests.filter((request) => request.attemptCosts.length === 0).length,
   }
+}
+
+/** The requests sent, counting tries. */
+export function requestCountOf(requests: readonly PaidRequest[]): number {
+  return requests.reduce((total, request) => total + request.requestCount, 0)
+}
+
+export function summarizeAuditExchangeCosts(
+  exchanges: ProxyAuditEvidenceExchangeV1[],
+): AuditCostSummaryV1 {
+  // One exchange can carry several priced attempts (retries): it is one request, so exchanges are counted, not attempts.
+  return costOfRequests(exchanges.map((exchange) => ({
+    requestCount: 1,
+    attemptCosts: exchange.attemptCosts ?? (exchange.cost ? [exchange.cost] : []),
+  })))
 }
 
 export function parseProxyAuditExchangeCost(

@@ -4,6 +4,28 @@ import { ownLatestReports, reportKey, type OwnReport } from './pending-confirmat
 import { normalized } from './utils.js'
 
 /** One seller result `verifier submit` could send for a model. */
+/**
+ * Per candidate: true when this auditor already reported it (left out as on chain), 'superseded' when it is an older
+ * audit than this auditor's own standing report with another verdict (left out, and said so), false to send.
+ */
+export type AlreadyOnChain = boolean | 'superseded'
+
+/**
+ * When the audit behind this auditor's own report finished (seconds): its time in a ledger of this data dir
+ * (`sentAuditTimes`), else the report's block time. The planner and submit both order a newer audit by this, so a
+ * correction the planner counts as done is one submit sends. The block time gives up one case: an audit that finished
+ * after the reported one but before its block, when no ledger here knows the report (it was sent from another data dir).
+ */
+export async function ownReportFinishedAt(
+  own: OwnReport,
+  fromLedger: (own: OwnReport) => Promise<number | null>,
+  reader: Pick<SubmissionDeltaReader, 'blockTimestamp'>,
+): Promise<number> {
+  // Only a real time: an unknown one (0 or not a number) is no time, and the block time stands in.
+  const time = await fromLedger(own)
+  return typeof time === 'number' && Number.isFinite(time) && time > 0 ? time : reader.blockTimestamp(own.blockNumber)
+}
+
 export interface SubmissionCandidate {
   agentId: bigint
   serviceHash: string
@@ -49,6 +71,8 @@ const READ_CONCURRENCY = 8
  *      change, so it is sent only when the audit behind it is newer than the report (a fresh look,
  *      e.g. confirming a report made in the new round). Re-sending the old audit would carry the old
  *      support over by hand.
+ * 4. Another verdict than this auditor's own standing report: sent only when its audit is newer than that report, so an
+ *    older audit never replaces a newer verdict of the same auditor (also when an older run is submitted by hand).
  */
 export async function resultsAlreadyOnChain(input: {
   candidates: readonly SubmissionCandidate[]
@@ -57,10 +81,20 @@ export async function resultsAlreadyOnChain(input: {
   /** This auditor's latest reports this epoch (`ownLatestReports`). */
   own: ReadonlyMap<string, OwnReport>
   reader: SubmissionDeltaReader
-}): Promise<boolean[]> {
+  /** When the audit behind this auditor's own report finished (seconds), when a ledger knows it (`sentAuditTimes`). */
+  reportedAuditTime?: (own: OwnReport, candidate: SubmissionCandidate) => Promise<number | null>
+}): Promise<AlreadyOnChain[]> {
   return mapConcurrently(input.candidates, READ_CONCURRENCY, async (candidate) => {
     const own = input.own.get(reportKey(candidate.agentId, candidate.serviceHash, input.modelHash))
-    if (!own || own.verdict !== candidate.verdict) return false
+    if (!own) return false
+    // A vote that replaces this auditor's own standing report with another verdict must come from an audit that
+    // finished after the one behind that report: an older audit (an earlier run submitted by hand, say) never
+    // overwrites a newer verdict of the same auditor, and a retry that finished later (it may keep the batches of the
+    // attempt it resumes) always may. The same ordering as the planner's (`ownReportFinishedAt`).
+    if (own.verdict !== candidate.verdict) {
+      const reported = await ownReportFinishedAt(own, (value) => input.reportedAuditTime?.(value, candidate) ?? Promise.resolve(null), input.reader)
+      return candidate.auditedAt > reported ? false : 'superseded'
+    }
     const [round, status] = await Promise.all([
       input.reader.reportRound(candidate.agentId, candidate.serviceHash),
       input.reader.serviceStatusByHash(candidate.agentId, candidate.serviceHash),
@@ -84,7 +118,8 @@ export function alreadyOnChainFilter(input: {
   reader: Pick<SubmissionDeltaReader, 'reportRound' | 'serviceStatusByHash' | 'blockTimestamp'>
   /** Every `AuditorSet` change since the contract's deployment, in block order; read once, when needed. */
   auditorSetEvents(): Promise<readonly AuditorSetEvent[]>
-}): (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<boolean[]> {
+  reportedAuditTime?: (own: OwnReport, candidate: SubmissionCandidate) => Promise<number | null>
+}): (modelHash: string, candidates: readonly SubmissionCandidate[]) => Promise<AlreadyOnChain[]> {
   const own = ownLatestReports(input.events, input.auditor)
   let revocations: Promise<Array<{ blockNumber: number; logIndex: number }>> | null = null
   const timestamps = new Map<number, Promise<number>>()
@@ -106,7 +141,9 @@ export function alreadyOnChainFilter(input: {
       )).length
     },
   }
-  return (modelHash, candidates) => resultsAlreadyOnChain({ candidates, modelHash, epoch: input.epoch, own, reader })
+  return (modelHash, candidates) => resultsAlreadyOnChain({
+    candidates, modelHash, epoch: input.epoch, own, reader, ...(input.reportedAuditTime ? { reportedAuditTime: input.reportedAuditTime } : {}),
+  })
 }
 
 /** Where the contract counted an auditor revocation: an approved auditor set to unapproved. */

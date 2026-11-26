@@ -27,6 +27,7 @@ import {
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
 import { setAuditedModelsForTesting } from './audited-models.js'
+import { CANONICAL_KBF_DOMAINS } from './canonical-kbf-domains.js'
 import { appendModelReferenceToBank, loadBankEnrollmentReference } from './probe-bank.js'
 
 const MODEL = 'gpt-test'
@@ -375,6 +376,51 @@ test('reference build discovers thinking suppression like the KBF reference code
   }
 })
 
+test('an audited model the thinking table names is asked with its level on OpenRouter, checked and never chosen; a refusal uses the fallback', async () => {
+  // Gemini 4 Neon: `low`, or `minimal` where refused. The target refuses `low` here, and `minimal` still thinks.
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-thinking-table-'))
+  const NEON = 'gemini-4-neon'
+  setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] }, [NEON]: { upstreamModel: 'upstream-test', contrastModels: [] } })
+  const value = config({
+    models: { [NEON]: { contrastModels: ['contrast-test'], pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, referenceProvider: { order: ['Provider-A'] } } },
+  })
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const discovery: Array<Record<string, unknown>> = []
+  const asked: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    if (init?.body === undefined) return new Response('{}', { status: 404 })
+    const body = JSON.parse(String(init.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.map((message) => message.content).join('\n')
+    if (prompt.includes(DISCOVERY_MARKER)) {
+      if (body.model !== 'upstream-test') {
+        return new Response(JSON.stringify({ choices: [{ message: { content: DISCOVERY_ANSWERS } }], usage: { prompt_tokens: 100, completion_tokens: 40, completion_tokens_details: { reasoning_tokens: 0 } } }), { status: 200 })
+      }
+      discovery.push(body)
+      if ((body.reasoning as { effort?: string } | undefined)?.effort === 'low') return new Response(JSON.stringify({ error: { message: 'unsupported effort' } }), { status: 400 })
+      return new Response(JSON.stringify({ choices: [{ message: { content: DISCOVERY_ANSWERS } }], usage: { prompt_tokens: 100, completion_tokens: 340, completion_tokens_details: { reasoning_tokens: 300 } } }), { status: 200 })
+    }
+    if (body.model === 'upstream-test') asked.push(body)
+    return providerResponse(successfulContent(body.model, body.messages.at(-1)?.content ?? ''), body.model === 'upstream-test' ? 'Provider-A' : 'Other')
+  }
+  try {
+    const logs: string[] = []
+    const built = await buildModelReferenceWithoutDiscoveryStub({ model: NEON, referencesDir: directory, config: value, fetchFn, log: (line) => logs.push(line) })
+    // Only the table's level and its fallback were sent: no other setting was tried, though `minimal` still thinks.
+    assert.deepEqual(discovery.map((body) => body.reasoning), [{ effort: 'low' }, { effort: 'minimal' }], logs.join('\n'))
+    assert.deepEqual(referenceEndpointRequest(built.reference), {
+      reasoningStrategy: 'reasoning-effort-minimal', requestOverrides: { reasoning: { effort: 'minimal' } }, requestOmissions: [],
+    })
+    const recorded = built.reference.generator.params.thinkingDiscovery as { rule?: string; target: { attempts: Array<{ strategy: string; reasoningTokens: number | null }> } }
+    assert.equal(recorded.rule, 'audit-thinking-table-v1')
+    assert.deepEqual(recorded.target.attempts.map((attempt) => [attempt.strategy, attempt.reasoningTokens]), [['reasoning-effort-low', null], ['reasoning-effort-minimal', 300]])
+    assert.ok(asked.length > 0)
+    for (const body of asked) assert.deepEqual(body.reasoning, { effort: 'minimal' })
+  } finally {
+    setAuditedModelsForTesting({ [MODEL]: { upstreamModel: 'upstream-test', contrastModels: [] } })
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('reference build sends target requests to a native Anthropic upstream and records raw exchanges', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-anthropic-'))
   const banksDir = join(directory, 'banks')
@@ -426,8 +472,9 @@ test('reference build sends target requests to a native Anthropic upstream and r
       baseUrl: 'https://api.anthropic.test/v1',
       model: 'claude-test-native',
       protocol: 'anthropic-messages',
-      // The stub accepts the first discovery strategy; the real API refuses it and moves on.
-      request: { overrides: { reasoning: { effort: 'none' } }, omissions: ['top_p'] },
+      // Anthropic's API reports no reasoning count, so no setting is confirmed to turn thinking off (an unknown count is
+      // never 0) and discovery keeps `bare`. Before, the first setting tried read as 0 reasoning tokens and was kept.
+      request: { overrides: {}, omissions: ['top_p'] },
       providerPin: null,
     })
     assert.equal(built.reference.provenance?.sourceId, 'upstream:anthropic-native:anthropic:claude-test-native')
@@ -443,9 +490,12 @@ test('reference build sends target requests to a native Anthropic upstream and r
     }
     assert.equal(document.kind, 'antseed-reference-exchanges')
     assert.equal(exchanges.exchangeCount, document.exchanges.length)
-    // Thinking discovery (one accepted request each for the target and the contrast) is recorded too.
+    // Thinking discovery is recorded too: for the target every setting in the order up to `bare` (no prefill on
+    // Anthropic Messages), as none reports a reasoning count; for the contrast the one it accepts.
     const discovery = document.exchanges.filter((exchange) => exchange.purpose === 'thinking-discovery')
-    assert.equal(discovery.length, 2)
+    assert.deepEqual(discovery.map((exchange) => exchange.protocol).sort(), [
+      'anthropic-messages', 'anthropic-messages', 'anthropic-messages', 'anthropic-messages', 'anthropic-messages', 'openai-chat-completions',
+    ])
     assert.equal(exchanges.exchangeCount, requests.length + discovery.length)
     assert.equal(raw.toString('utf8').includes('secret'), false)
     const anthropicExchange = document.exchanges.find((exchange) => exchange.protocol === 'anthropic-messages'
@@ -553,6 +603,171 @@ test('question writing that runs out of tokens retries with a little thinking; a
     assert.equal(writing.ramblingAnswers, 3)
     assert.equal(writing.retriedBatches, 3)
     assert.ok((writing.directBatches as number) > 0)
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+/**
+ * A model like GLM 5.3 on its maker's endpoint (November 2026): no setting turns its thinking off (each still reports
+ * reasoning tokens, so the route is recorded 'bare'), and asked for a long list with thinking on it thinks until
+ * max_tokens and returns no text at all. With `reasoning.effort: "minimal"` it thinks a little and writes the list.
+ */
+function thinkingModelFetch(input: { writingWithMinimal: 'list' | 'empty'; writing: Array<Record<string, unknown>>; other: Array<Record<string, unknown>> }): typeof fetch {
+  return async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    const effort = (body.reasoning as { effort?: string } | undefined)?.effort
+    const reply = (content: string | null, finishReason: string, completion: number, reasoning: number) => new Response(JSON.stringify({
+      choices: [{ message: { content }, finish_reason: finishReason }],
+      usage: { prompt_tokens: 100, completion_tokens: completion, completion_tokens_details: { reasoning_tokens: reasoning } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+    // Every way of turning thinking off is accepted and ignored: it always reports some reasoning, so the route is 'bare'.
+    if (body.messages.some((message) => String(message.content).includes(DISCOVERY_MARKER))) return reply(DISCOVERY_ANSWERS, 'stop', 300, 200)
+    if (!prompt.startsWith('Generate ')) {
+      input.other.push(body)
+      return reply(successfulContent(body.model, prompt), 'stop', 300, 200)
+    }
+    input.writing.push(body)
+    if (effort === 'minimal' && input.writingWithMinimal === 'list') return reply(generatedCandidates(prompt), 'stop', 1500, 800)
+    // Thinking fills whatever limit the batch asked for.
+    const limit = typeof body.max_tokens === 'number' ? body.max_tokens : 6000
+    return reply(null, 'length', limit, limit)
+  }
+}
+
+test('a model that thinks until no text is left writes its questions with a little thinking; asking keeps its recorded setting', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-candidate-bare-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const writing: Array<Record<string, unknown>> = []
+  const other: Array<Record<string, unknown>> = []
+  try {
+    const logs: string[] = []
+    // The real thinking discovery, against the model's own answers (not the stub the other tests use).
+    const built = await buildModelReferenceWithoutDiscoveryStub({ model: MODEL, referencesDir: directory, config: value, fetchFn: thinkingModelFetch({ writingWithMinimal: 'list', writing, other }), log: (line) => logs.push(line) })
+    const params = built.reference.generator.params as Record<string, unknown>
+    assert.equal((params.referenceEndpointRequest as { reasoningStrategy: string }).reasoningStrategy, 'bare', logs.filter((line) => line.includes('thinking')).join('\n'))
+    // Asking (stability, contrasts, self-test) keeps the recorded setting: no thinking setting at all.
+    assert.ok(other.length > 0)
+    for (const body of other.filter((entry) => entry.model === 'upstream-test')) assert.equal('reasoning' in body || 'reasoning_effort' in body, false)
+    // Writing: the three trial batches with the recorded setting ran out; every later batch went straight to the fallback.
+    assert.equal(writing.filter((body) => !('reasoning' in body)).length, 3)
+    const fallback = params.candidateWriting as Record<string, unknown>
+    assert.equal(fallback.fallbackStrategy, 'reasoning-effort-minimal')
+    assert.equal(fallback.ramblingAnswers, 3)
+    assert.ok((fallback.recoveredBatches as number) > 0)
+    assert.ok(built.reference.probes.length > 0)
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a generation round in which no question-writing batch gives a list stops the build, without asking another round', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-candidate-empty-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const writing: Array<Record<string, unknown>> = []
+  const other: Array<Record<string, unknown>> = []
+  try {
+    await assert.rejects(
+      buildModelReferenceWithoutDiscoveryStub({ model: MODEL, referencesDir: directory, config: value, fetchFn: thinkingModelFetch({ writingWithMinimal: 'empty', writing, other }) }),
+      /question writing gave no list in any of the \d+ batches of generation round 1; stopping the build after this round \(collected 0\/\d+ probes\)/,
+    )
+    assert.ok(writing.length > 0)
+    assert.equal(writing.some((body) => /generation round 2/.test((body.messages as Array<{ content: string }>).at(-1)!.content)), false, 'round 2 was never asked')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a model no setting turns thinking off for is asked with the setting that thinks least, and the build asks and writes with it', async () => {
+  // GLM 5.3 on its maker's endpoint (November 2026): every setting still thinks, 'minimal' least (70 tokens on the test
+  // questions, 'bare' 295). With nothing it thinks through the whole limit of a real batch and answers none.
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-least-reasoning-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const thinking: Record<string, number> = { minimal: 70 }
+  const asked: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; max_tokens?: number; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    const effort = (body.reasoning as { effort?: string } | undefined)?.effort
+    const reply = (content: string | null, finishReason: string, completion: number, reasoning: number) => new Response(JSON.stringify({
+      choices: [{ message: { content }, finish_reason: finishReason }],
+      usage: { prompt_tokens: 100, completion_tokens: completion, completion_tokens_details: { reasoning_tokens: reasoning } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+    if (body.messages.some((message) => String(message.content).includes(DISCOVERY_MARKER))) {
+      if (effort === 'none') return response('reasoning effort none is not supported', 400)
+      return reply(DISCOVERY_ANSWERS, 'stop', 400, thinking[effort ?? ''] ?? (body.thinking || body.enable_thinking === false ? 200 : 295))
+    }
+    asked.push(body)
+    if (effort !== 'minimal') return reply(null, 'length', body.max_tokens ?? 1600, (body.max_tokens ?? 1600) - 1)
+    return reply(successfulContent(body.model, prompt), 'stop', 300, 70)
+  }
+  try {
+    const logs: string[] = []
+    const built = await buildModelReferenceWithoutDiscoveryStub({ model: MODEL, referencesDir: directory, config: value, fetchFn, log: (line) => logs.push(line) })
+    const params = built.reference.generator.params as Record<string, unknown>
+    assert.deepEqual(params.referenceEndpointRequest, {
+      reasoningStrategy: 'reasoning-effort-minimal', requestOverrides: { reasoning: { effort: 'minimal' } }, requestOmissions: [],
+    }, logs.filter((line) => line.includes('thinking')).join('\n'))
+    assert.ok(logs.some((line) => line.includes("'reasoning-effort-minimal' thought least (reasoning_tokens=70, against 295 with 'bare')")))
+    // Every ask of the target (questions written, stability, self-test) went with 'minimal', so every one was answered.
+    const target = asked.filter((body) => body.model === 'upstream-test')
+    assert.ok(target.length > 0)
+    for (const body of target) assert.deepEqual(body.reasoning, { effort: 'minimal' })
+    assert.ok(built.reference.probes.length > 0)
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a model no setting turns thinking off for writes its questions with room to think, and asks with the usual limits', async () => {
+  // Gemini 4 Neon on OpenRouter (dry run 5): every setting accepted but ignored, and a writing batch thinks through all
+  // 6000 tokens and returns no text, every batch of a round; the build stopped. Room to think brings the list back.
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-thinking-writing-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  const writing: Array<{ max_tokens?: number }> = []
+  const asked: Array<{ model: string; max_tokens?: number }> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & { model: string; max_tokens?: number; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    const effort = (body.reasoning as { effort?: string } | undefined)?.effort
+    const reply = (content: string | null, finishReason: string, completion: number, reasoning: number) => new Response(JSON.stringify({
+      choices: [{ message: { content }, finish_reason: finishReason }],
+      usage: { prompt_tokens: 100, completion_tokens: completion, completion_tokens_details: { reasoning_tokens: reasoning } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+    if (body.messages.some((message) => String(message.content).includes(DISCOVERY_MARKER))) {
+      if (effort === 'none') return response('reasoning effort none is not supported', 400)
+      return reply(DISCOVERY_ANSWERS, 'stop', 900, effort === 'minimal' ? 536 : body.thinking ? 496 : 605)
+    }
+    if (prompt.startsWith('Generate ')) {
+      writing.push(body)
+      const limit = body.max_tokens ?? 0
+      if (limit < 9000) return reply(null, 'length', limit, limit)
+      return reply(successfulContent(body.model, prompt), 'stop', 11_000, 9000)
+    }
+    asked.push(body)
+    return reply(successfulContent(body.model, prompt), 'stop', 600, 500)
+  }
+  try {
+    const logs: string[] = []
+    const built = await buildModelReferenceWithoutDiscoveryStub({ model: MODEL, referencesDir: directory, config: value, fetchFn, log: (line) => logs.push(line) })
+    const params = built.reference.generator.params as Record<string, unknown>
+    assert.equal((params.referenceEndpointRequest as { reasoningStrategy: string }).reasoningStrategy, 'disable-thinking', logs.join('\n'))
+    assert.ok(writing.length > 0)
+    for (const body of writing) assert.equal(body.max_tokens, 16000)
+    // Asking keeps its own limit: the bank's query profile and every measured request are unchanged.
+    assert.equal(built.reference.queryProfile.maxTokensPerRequest, 1600)
+    for (const body of asked.filter((entry) => entry.model === 'upstream-test')) assert.ok((body.max_tokens ?? 0) <= 1600)
+    assert.equal((params.candidateWriting as { maxTokens?: number }).maxTokens, 16000)
+    assert.ok(logs.some((line) => line.includes('question writing asks for up to 16000 tokens')))
+    assert.ok(built.reference.probes.length > 0)
     await built.finalize()
   } finally {
     await rm(directory, { recursive: true, force: true })
@@ -1819,11 +2034,13 @@ test('collector rejects consistently non-integral answers in exact-match domains
 })
 
 test('collector rejects relative-domain stability spread above two percent', async () => {
+  let stabilityAsks = 0
   const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
     const messages = body.messages as Array<{ content: string }>
     const prompt = messages.at(-1)?.content ?? ''
     if (prompt.startsWith('Generate ')) return prompt.includes('domain medical') ? 'test medicine | 100' : ''
     const cacheDomain = String(body.__antseedReferenceCacheDomain ?? '')
+    if (cacheDomain.startsWith('stability-')) stabilityAsks += 1
     if (cacheDomain === 'stability-1') return '(1) 103'
     if (cacheDomain === 'stability-2') return '(1) 97'
     return '(1) 100'
@@ -1833,10 +2050,12 @@ test('collector rejects relative-domain stability spread above two percent', asy
     model: 'reference-model',
     contrastModels: [],
     targetCount: 1,
-    candidateCountPerRound: 5,
+    // One candidate per domain, so the medical domain is asked for its fact (with five, only the first five domains are).
+    candidateCountPerRound: CANONICAL_KBF_DOMAINS.length,
     maxNoProgressRounds: 1,
     query,
   }), /made no progress for 1 rounds/)
+  assert.ok(stabilityAsks > 0, 'the medical candidate was tested for stability and rejected for its spread')
 })
 
 test('collector independently shuffles every stability pass and preserves probe alignment', async () => {

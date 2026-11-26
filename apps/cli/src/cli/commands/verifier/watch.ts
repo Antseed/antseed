@@ -7,7 +7,8 @@ import { acquirePidFileLock } from '../../../verifier/atomic-files.js'
 import { promptHidden } from '../../prompt-hidden.js'
 import { getAddress } from 'ethers'
 import { keystoreAddress, loadKeystoreSigner } from './auditor-identity.js'
-import { RUN_TUNING_OPTIONS, auditEpochReader, chainClock, runTuningArgs, validateRunTuningOptions, type RunOptions } from './run.js'
+import { RUN_TUNING_OPTIONS, auditEpochReader, chainClock, runTuningArgs, validateRunTuningOptions, verifierTestTiming, type RunOptions } from './run.js'
+import { describeTestTiming } from '../../../verifier/test-timing.js'
 import { resolveAuditEpochWindow } from '../../../verifier/audit-epoch.js'
 import { getGlobalOptions, type GlobalOptions } from '../types.js'
 
@@ -202,6 +203,10 @@ export function registerVerifierWatchCommand(verifier: Command): void {
       validateRunTuningOptions(options)
       const globals = getGlobalOptions(command)
       const config = await loadConfig(globals.config)
+      // A dry run on a local fork may wait less than the rules (`verifier.testTiming`): refused here, before the first
+      // tick, unless both the run's chain RPC and the submit's (`--rpc-url`) are on this machine.
+      const testTiming = verifierTestTiming(config)
+      if (options.submit !== false && options.rpcUrl) verifierTestTiming(config, options.rpcUrl)
       const env = { ...process.env }
       const submits = options.submit !== false
       // With --no-submit no tick signs, so no tick's run gets a password to unlock anything with.
@@ -238,6 +243,7 @@ export function registerVerifierWatchCommand(verifier: Command): void {
         console.log(chalk.cyan(
           options.once ? 'verifier watch: one tick' : `verifier watch: a tick every ${Math.round(intervalMs / 60_000)} minute(s); stop with Ctrl-C`,
         ))
+        if (testTiming) console.warn(chalk.yellow(describeTestTiming(testTiming)))
         if (!submits) {
           console.log(chalk.cyan('--no-submit: watch only audits; nothing is signed or submitted, and no keystore is unlocked.'))
           console.log(chalk.cyan(

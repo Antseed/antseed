@@ -107,15 +107,33 @@ test('the audited model list is built in; config only adds settings', () => {
     assert.equal(opus.upstreamModel, 'anthropic/claude-opus-5.5')
     assert.deepEqual(opus.excludedDomains, ['medical'])
     // Older versions replaced by a newer audited model are not audited, and don't match the newer one.
-    for (const older of ['claude-sonnet-5', 'claude-opus-5', 'claude-opus-4-6', 'claude-opus-4.6', 'gpt-5.6-sol', 'grok-4.5']) {
+    for (const older of [
+      'claude-fable-5.1', 'claude-fable-5-1', 'claude-sonnet-5', 'claude-opus-5', 'claude-opus-4-6', 'claude-opus-4.6', 'gpt-5.6-sol', 'grok-4.5',
+      'gpt-6.1-sol', 'openai/gpt-6.1-sol', 'openai-gpt-61-sol', 'gpt-6-astra', 'openai/gpt-6-astra',
+    ]) {
       assert.equal(findVerifierModel(undefined, older), undefined, older)
     }
     assert.equal(findVerifierModel(undefined, 'not-audited'), undefined)
+    // Fable 5.2 is audited under its own spellings; Fable 5.1, its older version, is not.
+    for (const [spelling, key] of [
+      ['claude-fable-5.2', 'claude-fable-5.2'], ['claude-fable-5-2', 'claude-fable-5.2'], ['anthropic/claude-fable-5.2', 'claude-fable-5.2'], ['fable-5.2', 'claude-fable-5.2'],
+    ] as const) assert.equal(findVerifierModel(undefined, spelling)?.[0], key, spelling)
+    assert.equal(findVerifierModel(undefined, 'claude-fable-5.2')?.[1].upstreamModel, 'anthropic/claude-fable-5.2')
     // Other spellings of a built-in model resolve to it, matched the way buyers route.
     assert.equal(findVerifierModel(undefined, 'anthropic/claude-opus-5-5-latest')?.[0], 'claude-opus-5.5')
-    assert.equal(findVerifierModel(undefined, 'openai/GPT-6.1-Sol')?.[0], 'gpt-6.1-sol')
+    assert.equal(findVerifierModel(undefined, 'openai/GPT-6.2-Sol')?.[0], 'gpt-6.2-sol')
+    // GPT-6.2 Sol and Astra and Gemini 4 Neon under the spellings sellers advertise; neither -pro variant matches.
+    for (const [spelling, key] of [
+      ['gpt-6.2-sol', 'gpt-6.2-sol'], ['openai/gpt-6.2-sol', 'gpt-6.2-sol'], ['openai-gpt-62-sol', 'gpt-6.2-sol'],
+      ['gpt-6.2-astra', 'gpt-6.2-astra'], ['openai/gpt-6.2-astra', 'gpt-6.2-astra'], ['openai-gpt-62-astra', 'gpt-6.2-astra'],
+      ['gemini-4-neon', 'gemini-4-neon'], ['google/gemini-4-neon', 'gemini-4-neon'], ['google/gemini-4-argon', 'gemini-4-argon'],
+    ] as const) assert.equal(findVerifierModel(undefined, spelling)?.[0], key, spelling)
+    for (const pro of ['openai/gpt-6.2-sol-pro', 'openai/gpt-6.2-astra-pro']) assert.equal(findVerifierModel(undefined, pro), undefined, pro)
     // Removed from the audits: neither is audited, nor matched to a model that is.
-    for (const removed of ['deepseek-v4-pro-0813', 'deepseek/deepseek-v4-pro-0813', 'gemini-3-flash-preview', 'google/gemini-3-flash-preview']) {
+    for (const removed of [
+      'deepseek-v4-pro-0813', 'deepseek/deepseek-v4-pro-0813', 'gemini-3-flash-preview', 'google/gemini-3-flash-preview',
+      'minimax-m3', 'minimax/minimax-m3', 'MiniMax-M3', 'gemini-3.1-pro-preview', 'google/gemini-3.1-pro-preview', 'gemini-3-1-pro-preview',
+    ]) {
       assert.equal(findVerifierModel(undefined, removed), undefined, removed)
     }
     assert.equal(findVerifierModel(undefined, 'deepseek/deepseek-v4-pro')?.[0], 'deepseek-v4-pro')

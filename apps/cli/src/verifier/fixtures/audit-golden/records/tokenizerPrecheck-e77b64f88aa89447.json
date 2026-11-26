@@ -1,0 +1,157 @@
+{
+ "outcome": "match",
+ "reason": null,
+ "referenceUpstream": {"kind":"test"},
+ "rounds": [
+  {
+   "a": "Could you look over these notes and tell me if anything seems wrong? It … (155 characters, sha256 243a061e2c74661f)",
+   "b": " The Geramobek order ZMS258647 ships from warehouse 638 on 25 October 20… (412 characters, sha256 fed2d7a7bfc8621a)",
+   "reference": {
+    "asks": [
+     {"baseTokens":46,"cachedInput":false,"probedTokens":149,"providers":["maker","maker"]},
+     {"baseTokens":46,"cachedInput":false,"probedTokens":149,"providers":["maker","maker"]}
+    ],
+    "delta": 103,
+    "failure": null
+   },
+   "seller": [
+    {
+     "base": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00012,
+        "inputTokens": 100,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 10,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 110
+       }
+      ],
+      "cachedInput": false,
+      "failureReason": null,
+      "requestIds": ["<seller: pre-check round 1 A #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: pre-check round 1 A #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: pre-check round 1 A #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: pre-check round 1 A #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Could y… (255 characters, sha256 070ef9969df67856)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: pre-check round 1 A #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (172 characters, sha256 a662b56a69fde7da)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "signedInputTokens": 79,
+      "statusCode": 200
+     },
+     "delta": 103,
+     "probed": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00012,
+        "inputTokens": 100,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 10,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 110
+       }
+      ],
+      "cachedInput": false,
+      "failureReason": null,
+      "requestIds": ["<seller: pre-check round 1 A+B #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: pre-check round 1 A+B #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: pre-check round 1 A+B #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: pre-check round 1 A+B #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Could y… (667 characters, sha256 05abed8256a7757f)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: pre-check round 1 A+B #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (173 characters, sha256 7501ee3e48e6442d)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "signedInputTokens": 182,
+      "statusCode": 200
+     }
+    }
+   ]
+  },
+  {
+   "a": "Can you help me keep track of a few things I was told on the phone? It i… (144 characters, sha256 5d746810ddb77c67)",
+   "b": " The meeting moved to room 8194 at 22:40, and Bartholomew Featherstoneha… (422 characters, sha256 4a9096d3b9c71e6f)",
+   "reference": {
+    "asks": [
+     {"baseTokens":43,"cachedInput":false,"probedTokens":149,"providers":["maker","maker"]},
+     {"baseTokens":43,"cachedInput":false,"probedTokens":149,"providers":["maker","maker"]}
+    ],
+    "delta": 106,
+    "failure": null
+   },
+   "seller": []
+  },
+  {
+   "a": "I need to reply to a message today and want to get the facts straight fi… (173 characters, sha256 1754d5240cc2227b)",
+   "b": " The Kagibupim order MAR934556 ships from warehouse 009 on 17 May 2024. … (405 characters, sha256 705b420e042f00f8)",
+   "reference": {
+    "asks": [
+     {"baseTokens":51,"cachedInput":false,"probedTokens":152,"providers":["maker","maker"]},
+     {"baseTokens":51,"cachedInput":false,"probedTokens":152,"providers":["maker","maker"]}
+    ],
+    "delta": 101,
+    "failure": null
+   },
+   "seller": []
+  }
+ ],
+ "rule": {
+  "belowEveryAsk": {"percent":5,"tokens":3},
+  "cacheShownInCount": true,
+  "corroboratingSellers": 1,
+  "id": "tokenizer-precheck-v1",
+  "maxTokens": 64,
+  "outvoteSellers": 2,
+  "referenceAsks": 2,
+  "rounds": 3,
+  "sameCacheCancels": true,
+  "sellerAsks": 2,
+  "toleranceTokens": 0
+ }
+}

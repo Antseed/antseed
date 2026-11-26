@@ -494,10 +494,10 @@ test('loadConfig preserves and validates verifier settings', async () => {
       contrastSelection: { inputWeight: 0.9, maxPriceRatio: 0.3, maxModels: 3 },
       referenceEndpoint: REFERENCE_ENDPOINT,
       models: {
-        'gpt-6.1-sol': {
+        'gpt-6.2-sol': {
           referenceRoute: {
             type: 'antseed',
-            service: 'gpt-6.1-sol-reference',
+            service: 'gpt-6.2-sol-reference',
             peerId: '12'.repeat(20),
             pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
           },
@@ -505,7 +505,7 @@ test('loadConfig preserves and validates verifier settings', async () => {
           excludedDomains: ['medical'],
         },
         'kimi-k3': {
-          contrastModels: ['gpt-6.1-sol'],
+          contrastModels: ['gpt-6.2-sol'],
           referenceProvider: { order: ['Provider-A'] },
         },
       },
@@ -535,8 +535,8 @@ test('loadConfig preserves and validates verifier settings', async () => {
     assert.equal(config.verifier?.auditPeerTimeoutMs, 123_456);
     assert.equal(config.verifier?.contrastSelection?.inputWeight, 0.9);
     assert.equal(config.verifier?.referenceEndpoint?.sourceId, 'trusted-reference-v1');
-    assert.deepEqual(config.verifier?.models?.['gpt-6.1-sol']?.excludedDomains, ['medical']);
-    assert.equal(config.verifier?.models?.['gpt-6.1-sol']?.referenceRoute?.service, 'gpt-6.1-sol-reference');
+    assert.deepEqual(config.verifier?.models?.['gpt-6.2-sol']?.excludedDomains, ['medical']);
+    assert.equal(config.verifier?.models?.['gpt-6.2-sol']?.referenceRoute?.service, 'gpt-6.2-sol-reference');
     assert.deepEqual(config.verifier?.models?.['kimi-k3']?.referenceProvider, { order: ['Provider-A'] });
     assert.equal(config.verifier?.referenceMaxRequestsPerBuild, 500);
     assert.equal(config.verifier?.referenceMinimumProbeCount, 120);

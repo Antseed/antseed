@@ -18,7 +18,7 @@ import {
 } from '../../types.js';
 import { canonicalHash } from '../../canonical-json.js';
 import { computeMatchVector } from './scoring.js';
-import { computeKbfVerdict } from './verdict.js';
+import { computeKbfVerdict, type KbfCoverageRule } from './verdict.js';
 import { kbfAuditBaseline, type KbfReferenceV1 } from './reference.js';
 
 export * from './prompts.js';
@@ -46,6 +46,8 @@ export interface VerifyKbfOptions {
   minDiffCoverage?: number;
   cpConfidence?: number;
   alpha?: number;
+  /** See `KbfVerdictInput.coverageRule`. */
+  coverageRule?: KbfCoverageRule;
 }
 
 export function verifyKbf(
@@ -117,6 +119,7 @@ export function verifyKbf(
       minDiffCoverage: options.minDiffCoverage,
       cpConfidence: options.cpConfidence,
       alpha: options.alpha,
+      coverageRule: options.coverageRule,
     });
 
     const parsedProbeCount = matchVector.filter((entry) => entry !== null).length;

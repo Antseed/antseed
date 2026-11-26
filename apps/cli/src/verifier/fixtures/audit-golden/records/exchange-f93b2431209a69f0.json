@@ -1,0 +1,45 @@
+{
+ "answers": [null,null,null,null,null,null,null,null,null,null],
+ "attemptCosts": [],
+ "attemptCount": 0,
+ "batchIndex": 2,
+ "cost": null,
+ "failureReason": "not attempted after terminal first-batch failure: upstream unavailable",
+ "matches": [null,null,null,null,null,null,null,null,null,null],
+ "outcomeReason": {
+  "affectedBatchCount": 1,
+  "code": "transport_error",
+  "nextAction": "retry later",
+  "requestId": "<seller: question batch 0 #5>",
+  "retryable": true,
+  "source": "transport",
+  "summary": "upstream unavailable",
+  "totalBatchCount": 1,
+  "upstreamStatus": 503
+ },
+ "probeIds": [
+  "deepseek-v4-pro-probe-21",
+  "deepseek-v4-pro-probe-22",
+  "deepseek-v4-pro-probe-23",
+  "deepseek-v4-pro-probe-24",
+  "deepseek-v4-pro-probe-25",
+  "deepseek-v4-pro-probe-26",
+  "deepseek-v4-pro-probe-27",
+  "deepseek-v4-pro-probe-28",
+  "deepseek-v4-pro-probe-29",
+  "deepseek-v4-pro-probe-30"
+ ],
+ "promptVariantId": "v5",
+ "request": {
+  "bodyBase64": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"system\",\"content\":\"You a… (980 characters, sha256 89b77c3032f7cfd6)",
+  "hash": "0xf2461be8b038fe5ad1563f438d992322f47a300e32cdeb040ccaa293e463547a",
+  "headers": {"content-type":"application/json","x-antseed-capture-response-auth-preimages":"1","x-antseed-pin-peer":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+  "method": "POST",
+  "url": "http://127.0.0.1:8390/v1/chat/completions"
+ },
+ "requestIds": [],
+ "response": null,
+ "responseAuth": {"failureReason":"batch was not attempted after terminal first-batch failure","record":null,"requestId":null,"signedPreimages":null,"status":"missing"},
+ "status": "failed",
+ "timing": {"completedAt":1791331200000,"responseLatencyMs":0,"startedAt":1791331200000}
+}
