@@ -124,9 +124,13 @@ contract M004LockLegacyEmissions is Script {
         require(poolRegistry.emissions() == cfg.v2, "rewards pool registry does not authorize EmissionsV2");
         require(poolRegistry.antsToken() == cfg.antsToken, "rewards pool registry does not pay ANTS");
 
+        // The exact registry M004 installs, built locally (never broadcast) so an
+        // already-pinned registry can be compared by runtime code, immutables included.
+        bytes32 lockCodeHash = address(new AntseedLegacyEmissionsRegistry(cfg.escrow, cfg.deposits)).codehash;
+
         address current = v2.registry();
         bool needsPin = current == cfg.escrow;
-        if (!needsPin) _requirePinned(current, cfg);
+        if (!needsPin) _requirePinned(current, cfg, lockCodeHash);
         _requireOwnerOrRenounced(v2, cfg.owner, "EmissionsV2");
         _requireOwnerOrRenounced(pool, cfg.owner, "SellerRewardsPool");
         _requireOwnerOrRenounced(unlockPolicy, cfg.owner, "SellerUnlockPolicy");
@@ -159,7 +163,7 @@ contract M004LockLegacyEmissions is Script {
         vm.stopBroadcast();
 
         // ── Post-checks ──
-        _requirePinned(v2.registry(), cfg);
+        _requirePinned(v2.registry(), cfg, lockCodeHash);
         require(v2.owner() == address(0), "post-check failed: EmissionsV2 still owned");
         require(pool.owner() == address(0), "post-check failed: SellerRewardsPool still owned");
         require(unlockPolicy.owner() == address(0), "post-check failed: SellerUnlockPolicy still owned");
@@ -171,7 +175,12 @@ contract M004LockLegacyEmissions is Script {
         console.log("LegacyEmissionsRegistry:", pinned);
     }
 
-    function _requirePinned(address registry, Config memory cfg) private view {
+    /// @dev Getter answers alone are not enough: a mutable registry could answer the
+    ///      same today and re-point `channels()` after V2 is renounced. Only the
+    ///      ownerless AntseedLegacyEmissionsRegistry with these exact constructor
+    ///      values is accepted.
+    function _requirePinned(address registry, Config memory cfg, bytes32 lockCodeHash) private view {
+        require(registry.codehash == lockCodeHash, "EmissionsV2 registry is not the AntseedLegacyEmissionsRegistry");
         IRegistryAnswers answers = IRegistryAnswers(registry);
         require(answers.channels() == address(0), "EmissionsV2 registry still answers a Channels address");
         require(answers.antsToken() == cfg.escrow, "EmissionsV2 registry does not pay from the escrow");

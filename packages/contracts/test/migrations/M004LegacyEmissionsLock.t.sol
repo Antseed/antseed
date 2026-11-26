@@ -5,6 +5,7 @@ import { Test } from "forge-std/Test.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import { M004LockLegacyEmissions } from "../../script/migrations/M004LegacyEmissionsLock/Lock.s.sol";
+import { AntseedRegistry } from "../../core/AntseedRegistry.sol";
 
 interface IM004V2 {
     function owner() external view returns (address);
@@ -25,6 +26,10 @@ interface IM004Owned {
 
 interface IM004Pool {
     function setSellerClaimPolicy(address policy) external;
+}
+
+interface IM004SetRegistry {
+    function setRegistry(address registry) external;
 }
 
 interface IM004Escrow {
@@ -132,6 +137,21 @@ contract M004LegacyEmissionsLockForkTest is Test {
         vm.expectRevert("rewards pool claim policy is not the recorded M002 policy");
         script.runWith(_config(owner));
         assertEq(IM004Owned(pool).owner(), owner);
+    }
+
+    function testFork_refusesAMutableRegistryWithMatchingAnswers() public {
+        if (!_selectFork()) return;
+        address owner = v2.owner();
+        // Answers zero Channels, the escrow and the live Deposits today, but keeps an owner.
+        AntseedRegistry mutableRegistry = new AntseedRegistry();
+        mutableRegistry.setAntsToken(ESCROW);
+        mutableRegistry.setDeposits(DEPOSITS);
+        vm.prank(owner);
+        IM004SetRegistry(LEGACY_EMISSIONS_V2).setRegistry(address(mutableRegistry));
+
+        vm.expectRevert("EmissionsV2 registry is not the AntseedLegacyEmissionsRegistry");
+        script.runWith(_config(owner));
+        assertEq(v2.owner(), owner);
     }
 
     function _config(address owner) private pure returns (M004LockLegacyEmissions.Config memory) {

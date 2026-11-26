@@ -2555,7 +2555,7 @@ function m004Observation({ pinned = false, owner = M004_ADDRESS.owner, paused = 
     v1: { address: M004_ADDRESS.v1, owner },
     v2: { address: M004_ADDRESS.v2, owner, paused, registry: pinned ? M004_ADDRESS.lockRegistry : M004_ADDRESS.escrow },
     registry: pinned
-      ? { address: M004_ADDRESS.lockRegistry, channels: M004_ZERO, antsToken: M004_ADDRESS.escrow, deposits: M004_ADDRESS.deposits }
+      ? { address: M004_ADDRESS.lockRegistry, isLockRegistry: true, channels: M004_ZERO, antsToken: M004_ADDRESS.escrow, deposits: M004_ADDRESS.deposits }
       : { address: M004_ADDRESS.escrow, channels: M004_ADDRESS.channels, antsToken: M004_ADDRESS.escrow, deposits: M004_ADDRESS.deposits },
     pool: { address: M004_ADDRESS.pool, owner, sellerClaimPolicy: claimPolicy },
     unlockPolicy: { address: M004_ADDRESS.unlockPolicy, owner },
@@ -2577,6 +2577,11 @@ test('M004 classifies the escrow-pinned, locked and unsafe legacy states', () =>
   const foreign = m004Observation({ pinned: true });
   foreign.registry.channels = M004_ADDRESS.channels;
   assert.equal(classifyM004(foreign), 'invalid');
+
+  // Same answers from a registry that is not the ownerless lock registry.
+  const mutable = m004Observation({ pinned: true, owner: M004_ZERO });
+  mutable.registry.isLockRegistry = false;
+  assert.equal(classifyM004(mutable), 'invalid');
 
   const otherEscrow = m004Observation();
   otherEscrow.escrowLegacyEmissions = M004_ADDRESS.owner;

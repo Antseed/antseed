@@ -8,7 +8,8 @@ import { sourceCommit } from './runtime/exec.mjs';
 import { booleanValue, call, cast, chainId, sameAddress, transactionSucceeded } from './runtime/chain.mjs';
 import { requireEnvironment } from './runtime/env.mjs';
 import { broadcastPath, mergeBroadcast, parseBroadcast, runForgeScript, simulationPath } from './runtime/foundry.mjs';
-import { currentRelease, historyRecordExists, writeCurrent, writeHistoryRecord } from './runtime/ledger.mjs';
+import { buildArtifactIndex, compareRuntimeCode, findArtifact } from './runtime/bytecode.mjs';
+import { buildReleaseRecord, currentRelease, historyRecordExists, writeActivationRecords } from './runtime/ledger.mjs';
 import { runMigration } from './runtime/runner.mjs';
 
 /**
@@ -55,8 +56,9 @@ export function legacyOwnerships(observation) {
 /**
  * `ready`   V2 still reads the escrow as its registry, or some of the five
  *           contracts still have an owner.
- * `active`  V2 reads a registry with no Channels that pays from the escrow,
- *           and all five contracts are ownerless.
+ * `active`  V2 reads the ownerless AntseedLegacyEmissionsRegistry (matching
+ *           runtime code) with no Channels that pays from the escrow, and all
+ *           five contracts are ownerless.
  * `invalid` anything else (paused V2, foreign registry, a pool claim policy
  *           that is not the recorded M002 policy).
  */
@@ -66,7 +68,8 @@ export function classifyM004(observation) {
   if (!sameAddress(observation.escrowLegacyEmissions, expected.legacyEmissions)) return 'invalid';
   if (!sameAddress(pool.sellerClaimPolicy, expected.claimPolicy)) return 'invalid';
   const pinnedToEscrow = sameAddress(v2.registry, expected.legacyEmissionsEscrow);
-  const pinnedToLock = isZero(registry.channels)
+  const pinnedToLock = registry.isLockRegistry === true
+    && isZero(registry.channels)
     && sameAddress(registry.antsToken, expected.legacyEmissionsEscrow)
     && sameAddress(registry.deposits, expected.deposits);
   if (!pinnedToEscrow && !pinnedToLock) return 'invalid';
@@ -136,6 +139,18 @@ function readOrNull(rpcUrl, address, signature) {
   }
 }
 
+/**
+ * True only for AntseedLegacyEmissionsRegistry code with the expected
+ * immutables. Getter answers alone could come from a mutable registry.
+ */
+async function isLockRegistry(context, address) {
+  if (sameAddress(address, context.expected.legacyEmissionsEscrow)) return false;
+  const found = await findArtifact(await buildArtifactIndex(), 'legacyEmissionsRegistry');
+  if (!found || compareRuntimeCode(context.rpcUrl, address, found.artifact) !== null) return false;
+  return sameAddress(readOrNull(context.rpcUrl, address, 'escrow()(address)'), context.expected.legacyEmissionsEscrow)
+    && sameAddress(readOrNull(context.rpcUrl, address, 'buyerDeposits()(address)'), context.expected.deposits);
+}
+
 async function observeM004(context) {
   const { rpcUrl, expected } = context;
   const liveChainId = chainId(rpcUrl);
@@ -161,6 +176,7 @@ async function observeM004(context) {
     },
     registry: {
       address: registryAddress,
+      isLockRegistry: await isLockRegistry(context, registryAddress),
       channels: readOrNull(rpcUrl, registryAddress, 'channels()(address)'),
       antsToken: readOrNull(rpcUrl, registryAddress, 'antsToken()(address)'),
       deposits: readOrNull(rpcUrl, registryAddress, 'deposits()(address)'),
@@ -297,21 +313,14 @@ async function recordRelease(context, observation) {
   }
   const verification = verificationConfiguration(context, observation);
   const commit = sourceCommit();
-
-  if (!(await historyRecordExists(context, RELEASE))) {
-    await writeHistoryRecord(context, RELEASE, {
-      $schema: '../../schema.json',
-      network: context.network,
-      chainId: context.canonical.chainId,
-      release: RELEASE,
-      status: 'active',
-      sourceCommit: commit,
-      transactions: parsed.transactions,
-      verificationConfiguration: verification,
-      contracts,
-    });
-  }
-  if (await currentRelease(context) === RELEASE) return;
+  const record = buildReleaseRecord(context, {
+    release: RELEASE,
+    status: 'active',
+    sourceCommit: commit,
+    transactions: parsed.transactions,
+    verificationConfiguration: verification,
+    contracts,
+  });
 
   const current = structuredClone(context.canonical);
   current.release = RELEASE;
@@ -323,7 +332,7 @@ async function recordRelease(context, observation) {
   for (const key of ['legacyEmissions', 'legacyEmissionsV1', 'legacyEmissionsEscrow']) {
     if (current.contracts[key]) current.contracts[key] = { ...current.contracts[key], owner: null };
   }
-  await writeCurrent(context, current);
+  await writeActivationRecords(context, record, current);
 }
 
 // ---------------------------------------------------------------------------
