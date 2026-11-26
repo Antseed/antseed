@@ -71,6 +71,9 @@ interface ISellerRewardsPoolView is IOwnedRenounce {
  *                            registry today).
  *   EXPECTED_ANTS_TOKEN      Deployed ANTSToken.
  *   EXPECTED_DEPOSITS        Live AntseedDeposits.
+ *   EXPECTED_CLAIM_POLICY    The M002 AntseedLegacySellerClaimPolicy recorded in
+ *                            the ledger; the pool must still use it, because
+ *                            renouncing the pool makes its policy permanent.
  *
  * Usage (prefer `pnpm contracts:deploy -- M004 ...`):
  *   cd packages/contracts
@@ -84,6 +87,7 @@ contract M004LockLegacyEmissions is Script {
         address escrow;
         address antsToken;
         address deposits;
+        address claimPolicy;
     }
 
     function run() external returns (address) {
@@ -93,7 +97,8 @@ contract M004LockLegacyEmissions is Script {
                 v2: vm.envAddress("LEGACY_EMISSIONS_V2"),
                 escrow: vm.envAddress("LEGACY_EMISSIONS_ESCROW"),
                 antsToken: vm.envAddress("EXPECTED_ANTS_TOKEN"),
-                deposits: vm.envAddress("EXPECTED_DEPOSITS")
+                deposits: vm.envAddress("EXPECTED_DEPOSITS"),
+                claimPolicy: vm.envAddress("EXPECTED_CLAIM_POLICY")
             })
         );
     }
@@ -113,7 +118,8 @@ contract M004LockLegacyEmissions is Script {
         require(escrow.deposits() == cfg.deposits, "EXPECTED_DEPOSITS is not the live Deposits");
         require(address(pool) != address(0), "EmissionsV2 has no seller rewards pool");
         require(address(unlockPolicy) != address(0), "EmissionsV2 has no seller unlock policy");
-        require(pool.sellerClaimPolicy() != address(0), "rewards pool has no claim policy (run M002 first)");
+        require(cfg.claimPolicy != address(0), "EXPECTED_CLAIM_POLICY not set");
+        require(pool.sellerClaimPolicy() == cfg.claimPolicy, "rewards pool claim policy is not the recorded M002 policy");
         IRegistryAnswers poolRegistry = IRegistryAnswers(pool.registry());
         require(poolRegistry.emissions() == cfg.v2, "rewards pool registry does not authorize EmissionsV2");
         require(poolRegistry.antsToken() == cfg.antsToken, "rewards pool registry does not pay ANTS");

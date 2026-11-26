@@ -1,12 +1,13 @@
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
 import { impersonatedSend } from './runtime/anvil.mjs';
 import { readJson } from './runtime/fsx.mjs';
 import { sourceCommit } from './runtime/exec.mjs';
-import { booleanValue, call, cast, chainId, sameAddress } from './runtime/chain.mjs';
+import { booleanValue, call, cast, chainId, sameAddress, transactionSucceeded } from './runtime/chain.mjs';
 import { requireEnvironment } from './runtime/env.mjs';
-import { broadcastIsLive, broadcastPath, parseBroadcast, runForgeScript, simulationPath } from './runtime/foundry.mjs';
+import { broadcastPath, mergeBroadcast, parseBroadcast, runForgeScript, simulationPath } from './runtime/foundry.mjs';
 import { currentRelease, historyRecordExists, writeCurrent, writeHistoryRecord } from './runtime/ledger.mjs';
 import { runMigration } from './runtime/runner.mjs';
 
@@ -40,24 +41,36 @@ const CONTRACT_NAMES = {
 
 const isZero = (address) => sameAddress(address, ZERO_ADDRESS);
 
+/** The five contracts M004 renounces, with their observed owners, in renounce order. */
+export function legacyOwnerships(observation) {
+  return [
+    ['SellerUnlockPolicy', observation.unlockPolicy?.owner],
+    ['SellerRewardsPool', observation.pool?.owner],
+    ['EmissionsV2', observation.v2?.owner],
+    ['EmissionsV1', observation.v1?.owner],
+    ['LegacyEmissionsEscrow', observation.escrowOwner],
+  ];
+}
+
 /**
  * `ready`   V2 still reads the escrow as its registry, or some of the five
  *           contracts still have an owner.
  * `active`  V2 reads a registry with no Channels that pays from the escrow,
  *           and all five contracts are ownerless.
- * `invalid` anything else (paused V2, foreign registry, M002 not installed).
+ * `invalid` anything else (paused V2, foreign registry, a pool claim policy
+ *           that is not the recorded M002 policy).
  */
 export function classifyM004(observation) {
   const { expected, v2, pool, unlockPolicy, registry } = observation;
   if (!v2 || !pool || !unlockPolicy) return 'invalid';
   if (!sameAddress(observation.escrowLegacyEmissions, expected.legacyEmissions)) return 'invalid';
-  if (isZero(pool.sellerClaimPolicy)) return 'invalid';
+  if (!sameAddress(pool.sellerClaimPolicy, expected.claimPolicy)) return 'invalid';
   const pinnedToEscrow = sameAddress(v2.registry, expected.legacyEmissionsEscrow);
   const pinnedToLock = isZero(registry.channels)
     && sameAddress(registry.antsToken, expected.legacyEmissionsEscrow)
     && sameAddress(registry.deposits, expected.deposits);
   if (!pinnedToEscrow && !pinnedToLock) return 'invalid';
-  const renounced = [v2.owner, pool.owner, unlockPolicy.owner, observation.v1.owner, observation.escrowOwner].every(isZero);
+  const renounced = legacyOwnerships(observation).every(([, owner]) => isZero(owner));
   if (pinnedToLock && renounced) return 'active';
   if (v2.paused) return 'invalid';
   return 'ready';
@@ -111,6 +124,7 @@ function expectedState(canonical) {
     deposits: contracts.deposits.address,
     legacyEmissions: contracts.legacyEmissions.address,
     legacyEmissionsEscrow: contracts.legacyEmissionsEscrow.address,
+    claimPolicy: contracts.legacySellerClaimPolicy.address,
   };
 }
 
@@ -182,7 +196,7 @@ function printStatus(observation) {
 // ---------------------------------------------------------------------------
 
 function liveOwner(observation) {
-  return [observation.v2.owner, observation.pool?.owner, observation.unlockPolicy?.owner, observation.v1.owner, observation.escrowOwner]
+  return legacyOwnerships(observation).map(([, owner]) => owner)
     .find((owner) => owner && !isZero(owner)) ?? ZERO_ADDRESS;
 }
 
@@ -200,6 +214,7 @@ function migrationEnvironment(context, observation, signerAddresses = {}, extra 
     LEGACY_EMISSIONS_ESCROW: context.expected.legacyEmissionsEscrow,
     EXPECTED_ANTS_TOKEN: context.expected.antsToken,
     EXPECTED_DEPOSITS: context.expected.deposits,
+    EXPECTED_CLAIM_POLICY: context.expected.claimPolicy,
     ...extra,
   };
 }
@@ -207,13 +222,7 @@ function migrationEnvironment(context, observation, signerAddresses = {}, extra 
 function verifyRoles(context, observation, env) {
   if (!context.forkTest) requireEnvironment(['BASESCAN_API_KEY'], env);
   requireEnvironment(['LEGACY_OWNER'], env);
-  for (const [label, owner] of [
-    ['EmissionsV2', observation.v2.owner],
-    ['SellerRewardsPool', observation.pool.owner],
-    ['SellerUnlockPolicy', observation.unlockPolicy.owner],
-    ['EmissionsV1', observation.v1.owner],
-    ['LegacyEmissionsEscrow', observation.escrowOwner],
-  ]) {
+  for (const [label, owner] of legacyOwnerships(observation)) {
     if (!isZero(owner) && !sameAddress(owner, env.LEGACY_OWNER)) {
       throw new Error(`legacyOwner (${env.LEGACY_OWNER}) is not the ${label} owner (${owner})`);
     }
@@ -243,12 +252,46 @@ function verificationConfiguration(context, observation) {
   };
 }
 
+/**
+ * Every confirmed transaction from every Lock.s.sol broadcast on this chain.
+ * A broadcast interrupted after the registry deployment is finished by a later
+ * run that skips the deployment, so the CREATE receipt lives in an earlier
+ * file. Transactions that never landed on this chain (failed sends, fork runs)
+ * are dropped.
+ */
+export async function confirmedLockBroadcasts(context, dependencies = {}) {
+  const listFiles = dependencies.readdir ?? readdir;
+  const parse = dependencies.parseBroadcast ?? parseBroadcast;
+  const succeeded = dependencies.transactionSucceeded ?? transactionSucceeded;
+  const directory = path.dirname(broadcastPath('Lock.s.sol', context.canonical.chainId));
+  let names = [];
+  try {
+    names = await listFiles(directory);
+  } catch {
+    return { transactions: [], contracts: {} };
+  }
+  const runs = names.filter((name) => /^run-\d+\.json$/.test(name)).sort();
+  if (runs.length === 0 && names.includes('run-latest.json')) runs.push('run-latest.json');
+  let merged = { transactions: [], contracts: {} };
+  for (const name of runs) {
+    const parsed = await parse(path.join(directory, name), context.rpcUrl, CONTRACT_NAMES);
+    const transactions = parsed.transactions.filter((transaction) => succeeded(context.rpcUrl, transaction.hash));
+    const landed = new Set(transactions.map((transaction) => transaction.hash.toLowerCase()));
+    const contracts = Object.fromEntries(Object.entries(parsed.contracts)
+      .filter(([, contract]) => landed.has(contract.transactionHash?.toLowerCase())));
+    merged = mergeBroadcast(merged, { transactions, contracts });
+  }
+  merged.transactions.sort((left, right) => left.blockNumber - right.blockNumber);
+  return merged;
+}
+
 async function recordRelease(context, observation) {
-  const parsed = await parseBroadcast(broadcastPath('Lock.s.sol', context.canonical.chainId), context.rpcUrl, CONTRACT_NAMES);
+  const parsed = await confirmedLockBroadcasts(context);
   if (parsed.transactions.length === 0) throw new Error('Confirmed Foundry receipts are required to record M004');
-  const contracts = parsed.contracts.legacyEmissionsRegistry
-    ? parsed.contracts
-    : { legacyEmissionsRegistry: { address: observation.registry.address, external: false, deployedInRelease: false } };
+  const contracts = parsed.contracts;
+  if (!contracts.legacyEmissionsRegistry) {
+    throw new Error('No confirmed AntseedLegacyEmissionsRegistry deployment receipt is available to record M004');
+  }
   if (!sameAddress(contracts.legacyEmissionsRegistry.address, observation.registry.address)) {
     throw new Error('The recorded AntseedLegacyEmissionsRegistry is not the registry EmissionsV2 reads');
   }
@@ -302,11 +345,8 @@ const lockPhase = {
           ? 'AntseedLegacyEmissionsRegistry (deployed by this phase)'
           : observation.v2.registry,
       },
-      'AntseedSellerUnlockPolicy.owner': { before: observation.unlockPolicy.owner, after: ZERO_ADDRESS },
-      'AntseedSellerRewardsPool.owner': { before: observation.pool.owner, after: ZERO_ADDRESS },
-      'AntseedEmissionsV2.owner': { before: observation.v2.owner, after: ZERO_ADDRESS },
-      'AntseedEmissions (V1).owner': { before: observation.v1.owner, after: ZERO_ADDRESS },
-      'AntseedLegacyEmissionsEscrow.owner': { before: observation.escrowOwner, after: ZERO_ADDRESS },
+      ...Object.fromEntries(legacyOwnerships(observation)
+        .map(([label, owner]) => [`${label}.owner`, { before: owner, after: ZERO_ADDRESS }])),
     },
   }),
   async run(context, mode, environment, observation, wallet) {
@@ -333,9 +373,6 @@ async function finalize(context, observation, mode) {
   const historyWritten = await historyRecordExists(context, RELEASE);
   const currentWritten = await currentRelease(context) === RELEASE;
   if (historyWritten && currentWritten) return false;
-  if (!(await broadcastIsLive(broadcastPath('Lock.s.sol', context.canonical.chainId), context.rpcUrl))) {
-    throw new Error('M004 is active on chain but no confirmed Lock.s.sol receipts are available to record it');
-  }
   await recordRelease(context, observation);
   console.log(historyWritten
     ? 'Recovered M004 current.json from the confirmed history record.'

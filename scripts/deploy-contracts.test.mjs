@@ -31,6 +31,7 @@ import {
 } from './deployments/m002.mjs';
 import {
   classifyM004,
+  confirmedLockBroadcasts,
   recordErrors as m004RecordErrors,
   validateM004Options,
 } from './deployments/m004.mjs';
@@ -2543,7 +2544,12 @@ const M004_ADDRESS = {
 
 function m004Observation({ pinned = false, owner = M004_ADDRESS.owner, paused = false, claimPolicy = M004_ADDRESS.claimPolicy } = {}) {
   return {
-    expected: { legacyEmissions: M004_ADDRESS.v2, legacyEmissionsEscrow: M004_ADDRESS.escrow, deposits: M004_ADDRESS.deposits },
+    expected: {
+      legacyEmissions: M004_ADDRESS.v2,
+      legacyEmissionsEscrow: M004_ADDRESS.escrow,
+      deposits: M004_ADDRESS.deposits,
+      claimPolicy: M004_ADDRESS.claimPolicy,
+    },
     escrowLegacyEmissions: M004_ADDRESS.v2,
     escrowOwner: owner,
     v1: { address: M004_ADDRESS.v1, owner },
@@ -2562,6 +2568,7 @@ test('M004 classifies the escrow-pinned, locked and unsafe legacy states', () =>
   assert.equal(classifyM004(m004Observation({ pinned: true, owner: M004_ZERO })), 'active');
   assert.equal(classifyM004(m004Observation({ paused: true })), 'invalid');
   assert.equal(classifyM004(m004Observation({ claimPolicy: M004_ZERO })), 'invalid');
+  assert.equal(classifyM004(m004Observation({ claimPolicy: M004_ADDRESS.owner })), 'invalid');
 
   const sweepable = m004Observation({ pinned: true, owner: M004_ZERO });
   sweepable.escrowOwner = M004_ADDRESS.owner;
@@ -2608,4 +2615,27 @@ test('M004 records require a channel-less registry and three renounced owners', 
     'verificationConfiguration.registryChannels must be the zero address',
     'verificationConfiguration.sellerRewardsPoolOwner must be the zero address',
   ]);
+});
+
+test('M004 records keep the registry CREATE receipt from an interrupted earlier broadcast', async () => {
+  const hash = (n) => `0x${String(n).padStart(64, '0')}`;
+  const tx = (n, action) => ({ action, hash: hash(n), blockNumber: n, from: M004_ADDRESS.owner, to: M004_ADDRESS.v2 });
+  const registry = {
+    address: M004_ADDRESS.lockRegistry, deploymentBlock: 1, transactionHash: hash(1), deployedInRelease: true,
+  };
+  const files = {
+    // First attempt: deployed and pinned, then stopped. A later fork run never landed here.
+    'run-100.json': { transactions: [tx(1, 'deploy AntseedLegacyEmissionsRegistry'), tx(2, 'setRegistry(address)')], contracts: { legacyEmissionsRegistry: registry } },
+    'run-150.json': { transactions: [tx(99, 'renounceOwnership()')], contracts: {} },
+    // Resume: only the remaining renounces.
+    'run-200.json': { transactions: [tx(4, 'renounceOwnership()'), tx(3, 'renounceOwnership()')], contracts: {} },
+    'run-latest.json': { transactions: [tx(3, 'renounceOwnership()'), tx(4, 'renounceOwnership()')], contracts: {} },
+  };
+  const merged = await confirmedLockBroadcasts({ canonical: { chainId: 8453 }, rpcUrl: 'http://rpc' }, {
+    readdir: async () => Object.keys(files),
+    parseBroadcast: async (file) => structuredClone(files[path.basename(file)]),
+    transactionSucceeded: (_, txHash) => txHash !== hash(99),
+  });
+  assert.deepEqual(merged.transactions.map((transaction) => transaction.blockNumber), [1, 2, 3, 4]);
+  assert.deepEqual(merged.contracts.legacyEmissionsRegistry, registry);
 });

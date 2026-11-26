@@ -23,6 +23,10 @@ interface IM004Owned {
     function owner() external view returns (address);
 }
 
+interface IM004Pool {
+    function setSellerClaimPolicy(address policy) external;
+}
+
 interface IM004Escrow {
     function sweep(address recipient) external returns (uint256);
 }
@@ -39,6 +43,7 @@ contract M004LegacyEmissionsLockForkTest is Test {
     address internal constant DEPOSITS = 0x0F7a3a8f4Da01637d1202bb5443fcF7F88F99fD2;
     address internal constant LEGACY_EMISSIONS_V2 = 0xF13bE52c4A3afC6AE29536f073588d01A0564088;
     address internal constant ESCROW = 0x4d0fC3C0BBb5233Af6c4Ce33223e5330c34db9ab;
+    address internal constant CLAIM_POLICY = 0xB3ae8460481976Ad996EaFf71715c7bAeFb1D829;
 
     IM004V2 internal v2 = IM004V2(LEGACY_EMISSIONS_V2);
     M004LockLegacyEmissions internal script;
@@ -117,9 +122,26 @@ contract M004LegacyEmissionsLockForkTest is Test {
         script.runWith(cfg);
     }
 
+    function testFork_refusesAReplacedClaimPolicy() public {
+        if (!_selectFork()) return;
+        address owner = v2.owner();
+        address pool = v2.sellerRewardsPool();
+        vm.prank(owner);
+        IM004Pool(pool).setSellerClaimPolicy(makeAddr("zeroPayingPolicy"));
+
+        vm.expectRevert("rewards pool claim policy is not the recorded M002 policy");
+        script.runWith(_config(owner));
+        assertEq(IM004Owned(pool).owner(), owner);
+    }
+
     function _config(address owner) private pure returns (M004LockLegacyEmissions.Config memory) {
         return M004LockLegacyEmissions.Config({
-            owner: owner, v2: LEGACY_EMISSIONS_V2, escrow: ESCROW, antsToken: ANTS_TOKEN, deposits: DEPOSITS
+            owner: owner,
+            v2: LEGACY_EMISSIONS_V2,
+            escrow: ESCROW,
+            antsToken: ANTS_TOKEN,
+            deposits: DEPOSITS,
+            claimPolicy: CLAIM_POLICY
         });
     }
 
