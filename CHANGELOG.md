@@ -6,6 +6,24 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+## 2026-11-26 — CLI 0.1.261, Node 0.2.193
+
+### Packages
+
+- `@antseed/cli@0.1.261`
+- `@antseed/node@0.2.193`
+- `@antseed/api-adapter@0.1.68`
+- `@antseed/buyer-core@0.1.56`
+- `@antseed/fingerprints@0.1.7`
+- `@antseed/model-verifier@0.1.7`
+- `@antseed/web-sdk@0.1.50`
+- `@antseed/payments@0.1.120`
+- `@antseed/ants@0.1.78`
+- `@antseed/provider-alibaba-video@0.1.16`
+- `@antseed/provider-fal-image@0.1.12`
+- `@antseed/provider-fal-video@0.1.28`
+- `@antseed/provider-venice-video@0.1.29`
+
 ### Added
 
 - Verifiers (CLI): a tokenizer pre-check before a seller's questions. `verifier run` first sends each seller a short message, then the same message with a few sentences added, and reads the input tokens the seller signs for both; the difference is the added text's length in the tokenizer the seller ran. The same requests go to the model's reference endpoint, whose count is read the same way. A match costs two requests and never gives a `SAME` on its own. A seller whose count is not exactly the reference's in each of three rounds, with the same count when the round is asked again or with both counts below the reference's by more than 5% and more than 3 tokens and no cached input reported, is then held against the model's other sellers: the first round's two requests go to the model's other sellers the buyer would audit. It is `DIFF` when at least one of them signs the reference's exact count and they do not outvote the reference (two or more sellers on one other count, the audited seller included, and more of them than on the reference's). So a model with a single seller never gets a pre-check `DIFF`. Cached input cancels out of a pair only when both answers report the same cached amount; a seller's pair with different cached amounts, or cached input on one answer only, is never held against it. The reference's round is measured too when its two asks count the text the same while its cached amount moves, since its count then includes the cache: a host that adds a cached prompt of its own to every request and caches more of a text asked again, such as Grok 4.7 on xAI, gets a pre-check. Every test still runs on every first audit, in this order: the tokenizer pre-check, thinking discovery, the questions, the cap check, the echo check and the randomness check. A flag never skips a later test: the audit is `DIFF` when any test flags, and its evidence holds the result of every test that ran. The cap and echo checks don't run when the seller is skipped during its questions, the questions end in a seller failure, or the audit runs out of time. The evidence holds the rounds with the responses the seller signed, the other sellers' counts and the pair each backing seller signed, and `verifier submit` checks these stored values against each other before sending, including that each signed request asked the round's own text. The audited seller's clock runs only while a request to it is out: waiting for the reference (at most ten minutes, before the seller's audit starts timing) or for the other sellers (at most five in all, while the audit's total time limit keeps running) is never counted as the seller's silence. If the other sellers have not all answered within their five minutes, nothing is decided. Anything unclear decides nothing: a failed request, no signed usage, a count that does not grow with the added text, a count that is off while the response reports cached input that does not cancel, a count that changes between two asks of the same text (unless both are below the reference's by that margin, since a genuine model's hidden input cancels out of each pair), or a reference that doesn't agree with itself, reports cached input that does not cancel or answers from two providers. A model whose reference always reports cached input that does not cancel gets no pre-check. This catches a seller serving a model of another family, or signing input tokens that are not the model's (also by adding input of its own that depends on the message); it does not tell apart models that share a tokenizer. The model report and the epoch overview show what the seller signed next to what the model counts. `verifier.tokenizerPrecheck: false` turns it off. This changes the audit rules, so the verifier compat number goes to 5.
