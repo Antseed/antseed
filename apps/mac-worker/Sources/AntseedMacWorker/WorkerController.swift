@@ -104,6 +104,11 @@ final class WorkerController: ObservableObject {
     @Published private(set) var poolModels: [ModelChoice] = []
     /// Download size of each offered checkpoint (`ModelChoice.model`), once read.
     @Published private(set) var modelSizes: [String: UInt64] = [:]
+    /// The offered checkpoints (`ModelChoice.model`) already complete on this Mac.
+    @Published private(set) var cachedModels: Set<String> = []
+    /// Set while a folder the owner picked is checked, and when it can't be used.
+    @Published private(set) var checkingFolder = false
+    @Published private(set) var folderError: String?
     /// When the pool connection last showed signs of life.
     private var liveness = PoolLiveness()
     /// The owner's payout wallet and the link that sets it.
@@ -286,6 +291,7 @@ final class WorkerController: ObservableObject {
                 return .superseded
             }
             checkpoint = loaded
+            noteCachedModels()
             log("model ready on TensorFold (Apple GPU) · files sha256 \(loaded.sha256)")
             return .loaded
         } catch {
@@ -309,9 +315,50 @@ final class WorkerController: ObservableObject {
         }
         log("owner chose \(offer.service) on \(offer.model)")
         choice = offer
+        folderError = nil
         // Stop serving the old model while the new one loads.
         disconnect()
         Task { if await load(offer).rejoins { rejoin() } }
+    }
+
+    /// Run the pool's model that `folder` holds, with the files there instead of a download.
+    func useFolder(_ folder: URL) {
+        guard !checkingFolder else { return }
+        checkingFolder = true
+        folderError = nil
+        let offers = poolModels
+        Task {
+            do {
+                let offer = try await Self.addFolder(folder, offers: offers)
+                log("using \(offer.model) from \(folder.path)")
+                checkingFolder = false
+                noteCachedModels()
+                // The pool may have dropped it while its files were checked.
+                if poolModels.contains(offer) { choose(offer) }
+            } catch {
+                checkingFolder = false
+                folderError = error.localizedDescription
+                log("could not use \(folder.path): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Off the main actor: it hashes gigabytes.
+    private nonisolated static func addFolder(_ folder: URL, offers: [ModelChoice]) async throws -> ModelChoice {
+        var known: [(offer: ModelChoice, files: [ModelFolder.PinnedFile])] = []
+        for offer in offers {
+            if let files = await ModelFolder.files(of: offer.model) { known.append((offer, files)) }
+        }
+        guard !known.isEmpty else { throw ModelFolder.FolderError.unreachable }
+        guard let match = try ModelFolder.match(folder, offers: known) else {
+            throw known.count < offers.count ? ModelFolder.FolderError.unreachable : ModelFolder.FolderError.noMatch
+        }
+        try ModelFolder.add(match.files, from: folder, as: match.offer.model)
+        return match.offer
+    }
+
+    private func noteCachedModels() {
+        cachedModels = Set(poolModels.map(\.model).filter { ModelFolder.isCached($0) })
     }
 
     /// Load the chosen model again after it failed to (a download or engine start that broke off).
@@ -338,6 +385,7 @@ final class WorkerController: ObservableObject {
         let offers = ModelChoice.offers(from: pins)
         guard offers != poolModels else { return }
         poolModels = offers
+        noteCachedModels()
         for offer in offers where modelSizes[offer.model] == nil {
             Task {
                 if let bytes = await ModelSize.bytes(of: offer.model) { modelSizes[offer.model] = bytes }

@@ -44,16 +44,20 @@ struct ModelChoice: Codable, Equatable, Hashable {
 enum ModelSize {
     /// The checkpoint's total file size from the Hugging Face API; nil when it can't be read.
     static func bytes(of model: String) async -> UInt64? {
+        guard let siblings = await revision(of: model)?["siblings"] as? [[String: Any]] else { return nil }
+        return siblings.reduce(UInt64(0)) { $0 + UInt64(($1["size"] as? NSNumber)?.uint64Value ?? 0) }
+    }
+
+    /// `repo@commit` as the Hugging Face API describes it, with its files; nil when it can't be read.
+    static func revision(of model: String) async -> [String: Any]? {
         let parts = model.split(separator: "@", maxSplits: 1).map(String.init)
         guard parts.count == 2,
               let url = URL(string: "https://huggingface.co/api/models/\(parts[0])/revision/\(parts[1])?blobs=true") else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let siblings = json["siblings"] as? [[String: Any]] else { return nil }
-        return siblings.reduce(UInt64(0)) { $0 + UInt64(($1["size"] as? NSNumber)?.uint64Value ?? 0) }
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     /// What the weights leave free on a Mac with memory to spare, for the context cache and everything else.

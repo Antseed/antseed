@@ -680,8 +680,35 @@ struct ModelRow: View {
             if showList {
                 VStack(spacing: 6) {
                     ForEach(worker.poolModels, id: \.self) { offer in option(offer) }
+                    folderOption
                 }
             }
+        }
+    }
+
+    /// Model files the owner already has elsewhere, such as in LM Studio.
+    private var folderOption: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(worker.checkingFolder ? "Checking the folder…" : "Use a folder on this Mac…")
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(worker.checkingFolder ? Theme.textMuted : Theme.accent)
+            if let error = worker.folderError {
+                Text(error).font(.system(size: 10.5)).foregroundStyle(Theme.amber).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10).padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .clickable("Use a model folder on this Mac", enabled: !worker.checkingFolder) {
+            guard !snapshot else { return }
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.showsHiddenFiles = true
+            panel.directoryURL = ModelFolder.suggestedDirectory
+            panel.prompt = "Use"
+            panel.message = "Choose the folder with the model's .safetensors files"
+            guard panel.runModal() == .OK, let folder = panel.url else { return }
+            worker.useFolder(folder)
         }
     }
 
@@ -689,6 +716,7 @@ struct ModelRow: View {
         let size = worker.modelSizes[offer.model]
         let fits = size.map { ModelSize.fits($0) } ?? true
         let current = offer == worker.choice
+        let onThisMac = worker.cachedModels.contains(offer.model)
         return HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(offer.displayName).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.text).lineLimit(1)
@@ -696,8 +724,12 @@ struct ModelRow: View {
                     .font(.system(size: 10.5)).foregroundStyle(fits ? Theme.textMuted : Theme.amber)
             }
             Spacer(minLength: 6)
-            if let size { Text(ModelSize.label(size)).font(.system(size: 11)).monospacedDigit().foregroundStyle(Theme.textMuted) }
-            Image(systemName: current ? "checkmark.circle.fill" : "arrow.down.circle")
+            if onThisMac {
+                Text("On this Mac").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            } else if let size {
+                Text(ModelSize.label(size)).font(.system(size: 11)).monospacedDigit().foregroundStyle(Theme.textMuted)
+            }
+            Image(systemName: current ? "checkmark.circle.fill" : (onThisMac ? "internaldrive" : "arrow.down.circle"))
                 .foregroundStyle(current ? Theme.accent : Theme.textMuted)
         }
         .padding(.horizontal, 10).padding(.vertical, 8)

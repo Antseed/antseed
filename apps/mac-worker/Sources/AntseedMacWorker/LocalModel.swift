@@ -141,7 +141,7 @@ actor LocalModel {
         return Data(SHA256.hash(data: Data(listing.utf8))).hex
     }
 
-    private static func fileSHA256(_ url: URL) throws -> String {
+    static func fileSHA256(_ url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
