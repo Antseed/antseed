@@ -339,6 +339,7 @@ test('loadConfig applies the default buyer peer refresh interval when missing', 
       assert.equal(config.buyer.metadataFetchTimeoutMs, DEFAULT_BUYER_METADATA_FETCH_TIMEOUT_MS);
       assert.equal(config.buyer.requestTimeoutMs, DEFAULT_BUYER_REQUEST_TIMEOUT_MS);
       assert.equal(config.buyer.maxStreamDurationMs, DEFAULT_BUYER_MAX_STREAM_DURATION_MS);
+      assert.equal(config.buyer.maxVideoDownloads, undefined);
     }
   );
 });
@@ -351,6 +352,7 @@ test('loadConfig preserves explicit buyer discovery and request timeouts', async
         metadataFetchTimeoutMs: 2_500,
         requestTimeoutMs: 600_000,
         maxStreamDurationMs: 900_000,
+        maxVideoDownloads: 12,
       },
     }),
     async (configPath) => {
@@ -359,6 +361,7 @@ test('loadConfig preserves explicit buyer discovery and request timeouts', async
       assert.equal(config.buyer.metadataFetchTimeoutMs, 2_500);
       assert.equal(config.buyer.requestTimeoutMs, 600_000);
       assert.equal(config.buyer.maxStreamDurationMs, 900_000);
+      assert.equal(config.buyer.maxVideoDownloads, 12);
     }
   );
 });
@@ -772,6 +775,17 @@ test('loadConfig rejects invalid buyer request duration limits', async () => {
       );
     },
   );
+});
+
+test('loadConfig rejects a buyer video download limit that is not a positive integer', async () => {
+  for (const maxVideoDownloads of [0, 2.5, '6']) {
+    await withTempConfig(
+      JSON.stringify({ buyer: { maxVideoDownloads } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /buyer\.maxVideoDownloads must be an integer >= 1/);
+      },
+    );
+  }
 });
 
 test('loadConfig preserves explicit non-default buyer minPeerReputation', async () => {

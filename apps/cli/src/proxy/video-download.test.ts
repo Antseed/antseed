@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createServer } from 'node:http'
-import { downloadVideo } from './video-download.js'
+import { downloadVideo, VideoDownloadSlots } from './video-download.js'
 import type { RequestStreamCallbacks, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node'
 
 const request: SerializedHttpRequest = { requestId: 'download', method: 'POST', path: '/api/v1/video/retrieve', headers: { 'content-type': 'application/json' }, body: Buffer.from('{"queue_id":"task"}') }
@@ -10,11 +10,11 @@ const start: SerializedHttpResponse = { requestId: request.requestId, statusCode
 /** The final answer once the buyer accepted the file as the finished video. */
 const accepted: SerializedHttpResponse = { ...start, headers: { ...start.headers, 'x-antseed-video-delivered': '1' } }
 
-async function serve(send: (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>, run: (url: string) => Promise<void>, retire?: () => Promise<boolean>, onInterrupted?: (by: 'seller' | 'buyer' | 'cancelled') => void) {
+async function serve(send: (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>, run: (url: string) => Promise<void>, retire?: () => Promise<boolean>, onInterrupted?: (by: 'seller' | 'buyer' | 'cancelled') => void, slots = new VideoDownloadSlots(6)) {
   const server = createServer((_incoming, response) => {
     const abort = new AbortController()
     response.on('close', () => abort.abort())
-    void downloadVideo(request, response, send, abort.signal, retire, onInterrupted)
+    void downloadVideo(request, response, send, abort.signal, slots, retire, onInterrupted)
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   try { await run(`http://127.0.0.1:${(server.address() as { port: number }).port}`) }
@@ -140,7 +140,7 @@ test('forwards a POST download body and passes JSON status answers through', asy
     void downloadVideo(venice, response, async sent => {
       sentBody = sent.body
       return { requestId: sent.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"status":"PROCESSING"}') }
-    }, new AbortController().signal)
+    }, new AbortController().signal, new VideoDownloadSlots(6))
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   try {
@@ -176,6 +176,54 @@ test('passes a busy seller\'s Retry-After on with its 429', async () => {
     assert.equal(response.headers.get('retry-after'), '5')
     assert.deepEqual(await response.json(), busy)
   })
+})
+
+test('answers a retryable 429 with Retry-After while every download slot is taken, and frees the slot when a transfer ends', async () => {
+  const slots = new VideoDownloadSlots(2)
+  const releases: Array<() => void> = []
+  let sellerCalls = 0
+  await serve(async (sent, callbacks) => {
+    sellerCalls += 1
+    callbacks.onResponseStart!(start, { streaming: true })
+    // The transfer holds its slot until the test lets it finish.
+    await new Promise<void>(resolve => releases.push(resolve))
+    await callbacks.onResponseChunk!({ requestId: sent.requestId, data: video, done: false })
+    return accepted
+  }, async url => {
+    const first = fetch(url)
+    const second = fetch(url)
+    while (releases.length < 2) await new Promise(resolve => setImmediate(resolve))
+    const busy = await fetch(url)
+    assert.equal(busy.status, 429)
+    assert.equal(busy.headers.get('retry-after'), '5')
+    assert.deepEqual(await busy.json(), {
+      retryable: true,
+      error: { code: 'video_download_busy', message: 'This buyer is downloading as many videos as it allows at once; retry shortly' },
+    })
+    assert.equal(sellerCalls, 2, 'a busy retrieve never reaches the seller')
+    releases.shift()!()
+    assert.equal((await first).status, 200)
+    await (await first).arrayBuffer()
+    // The finished transfer gave its slot back.
+    const third = fetch(url)
+    while (releases.length < 2) await new Promise(resolve => setImmediate(resolve))
+    for (const release of releases.splice(0)) release()
+    for (const response of [await second, await third]) {
+      assert.equal(response.status, 200)
+      assert.equal((await response.arrayBuffer()).byteLength, video.length)
+    }
+  }, undefined, undefined, slots)
+})
+
+test('frees the download slot when the seller cannot be reached', async () => {
+  const slots = new VideoDownloadSlots(1)
+  await serve(async () => { throw new Error('unreachable') }, async url => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await fetch(url)
+      assert.equal(response.status, 502)
+      assert.equal((await response.json() as { error: { code: string } }).error.code, 'video_download_failed')
+    }
+  }, undefined, undefined, slots)
 })
 
 test('reports a reachable seller that cannot read the job state as unknown, not 502', async () => {

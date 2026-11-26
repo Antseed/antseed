@@ -139,6 +139,20 @@ test('effective config resolution does not mutate loaded config', () => {
   assert.deepEqual(config, original);
 });
 
+test('ANTSEED_BUYER_MAX_VIDEO_DOWNLOADS overrides buyer.maxVideoDownloads and must be a positive integer', () => {
+  const config = createDefaultConfig();
+  assert.equal(resolveEffectiveBuyerConfig({ config, env: {} }).maxVideoDownloads, undefined);
+  config.buyer.maxVideoDownloads = 4;
+  assert.equal(resolveEffectiveBuyerConfig({ config, env: {} }).maxVideoDownloads, 4);
+  assert.equal(resolveEffectiveBuyerConfig({ config, env: { ANTSEED_BUYER_MAX_VIDEO_DOWNLOADS: '10' } }).maxVideoDownloads, 10);
+  for (const value of ['0', '-1', '1.5', 'six', '']) {
+    assert.throws(
+      () => resolveEffectiveBuyerConfig({ config, env: { ANTSEED_BUYER_MAX_VIDEO_DOWNLOADS: value } }),
+      /ANTSEED_BUYER_MAX_VIDEO_DOWNLOADS must be an integer >= 1/,
+    );
+  }
+});
+
 test('buyerSettingOverrides names the settings env and flags take over', () => {
   assert.deepEqual(buyerSettingOverrides({ env: {} }), []);
   assert.deepEqual(

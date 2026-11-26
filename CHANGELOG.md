@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Changed
+
+- Buyer and gateway (`@antseed/cli`): the buyer now downloads up to 6 finished videos at once for its clients instead of 2, and `buyer.maxVideoDownloads` in the config (or `ANTSEED_BUYER_MAX_VIDEO_DOWNLOADS`) sets the limit. A gateway sends every key's downloads through its one buyer, so with several clients polling finished jobs most retrieves were turned away. A retrieve past the limit still gets 429 `video_download_busy`, now with `Retry-After` and `retryable: true`, so clients know to try again; the job is kept and nothing is charged.
+
 ## 2026-11-26 — CLI 0.1.262, Desktop 0.2.96
 
 ### Packages
