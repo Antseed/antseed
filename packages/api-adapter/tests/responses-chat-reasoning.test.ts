@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderRequestBodyAsOpenAIChat, transformRequest } from '../src/request-transform.js';
+import { renderRequestBodyAsOpenAIChat, transformRequest, withoutAdapterReasoningItems } from '../src/request-transform.js';
 import { transformResponse } from '../src/response-transform.js';
 import { createStreamingAdapter } from '../src/stream-transform.js';
 import { parseSseBuffer } from '../src/utils.js';
@@ -87,16 +87,18 @@ describe('chat reasoning in a translated Responses stream', () => {
     expect(response.end_turn).toBe(false);
   });
 
-  it('tags the reasoning with the model that wrote it, or the requested one when the seller names none', () => {
-    const named = completedResponse(streamEvents(toolTurn));
-    const adapter = createStreamingAdapter({ from: 'openai-chat-completions', to: 'openai-responses', fallbackModel: 'requested-model' })!;
-    const unnamedFrame = `data: ${JSON.stringify({ choices: [{ index: 0, delta: { reasoning_content: 'Hm.' }, finish_reason: 'stop' }] })}\n\n`;
-    const sse = adapter.adaptChunk({ requestId: 'r', data: encoder.encode(`${unnamedFrame}data: [DONE]\n\n`), done: true })
-      .map((out) => decoder.decode(out.data)).join('');
-    const unnamed = JSON.parse(parseSseBuffer(sse).events.find((e) => e.event === 'response.completed')!.data).response;
+  it('tags the reasoning with the requested model, or the seller\'s label when the request named none', () => {
+    const streamTag = (fallbackModel: string | null, sellerModel?: string): unknown => {
+      const adapter = createStreamingAdapter({ from: 'openai-chat-completions', to: 'openai-responses', fallbackModel })!;
+      const reasoningFrame = `data: ${JSON.stringify({ ...(sellerModel ? { model: sellerModel } : {}), choices: [{ index: 0, delta: { reasoning_content: 'Hm.' }, finish_reason: 'stop' }] })}\n\n`;
+      const sse = adapter.adaptChunk({ requestId: 'r', data: encoder.encode(`${reasoningFrame}data: [DONE]\n\n`), done: true })
+        .map((out) => decoder.decode(out.data)).join('');
+      return JSON.parse(parseSseBuffer(sse).events.find((e) => e.event === 'response.completed')!.data).response.output[0].encrypted_content;
+    };
 
-    expect((named.output as Array<Record<string, unknown>>)[0]!.encrypted_content).toBe(`${TAG}example-model`);
-    expect(unnamed.output[0].encrypted_content).toBe(`${TAG}requested-model`);
+    expect(streamTag('kimi-k3', 'moonshotai/kimi-k3:free')).toBe(`${TAG}kimi-k3`);
+    expect(streamTag('kimi-k3.1-pro', 'kimi-k3.1-pro-2026')).toBe(`${TAG}kimi-k3.1-pro`);
+    expect(streamTag(null, 'example-model')).toBe(`${TAG}example-model`);
   });
 
   it('reads `reasoning` when a seller names it so, and reads a delta that carries both names once', () => {
@@ -154,10 +156,19 @@ describe('chat reasoning in a translated buffered Responses answer', () => {
     choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'Done.', reasoning_content: 'All checked.' } }],
     usage: { prompt_tokens: 10, completion_tokens: 8, completion_tokens_details: { reasoning_tokens: 4 } },
   };
-  const adapt = (streamRequested: boolean) => transformResponse(
-    { requestId: 'r', statusCode: 200, headers: { 'content-type': 'application/json' }, body: encoder.encode(JSON.stringify(chatBody)) },
-    { from: 'openai-chat-completions', to: 'openai-responses', streamRequested },
+  const adapt = (streamRequested: boolean, body: Record<string, unknown> = chatBody, fallbackModel?: string) => transformResponse(
+    { requestId: 'r', statusCode: 200, headers: { 'content-type': 'application/json' }, body: encoder.encode(JSON.stringify(body)) },
+    { from: 'openai-chat-completions', to: 'openai-responses', streamRequested, ...(fallbackModel ? { fallbackModel } : {}) },
   )!;
+  const output = (response: ReturnType<typeof adapt>) =>
+    (JSON.parse(decoder.decode(response.body)) as { output: Array<Record<string, unknown>> }).output;
+
+  it('tags the reasoning with the requested model, and adds none for blank reasoning', () => {
+    const blank = { ...chatBody, choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'Done.', reasoning_content: ' \n' } }] };
+
+    expect(output(adapt(false, { ...chatBody, model: 'kimi-k3.1-pro-2026' }, 'kimi-k3.1-pro'))[0]!.encrypted_content).toBe(`${TAG}kimi-k3.1-pro`);
+    expect(output(adapt(false, blank)).map((item) => item.type)).toEqual(['message']);
+  });
 
   it('puts the reasoning item before the message', () => {
     const body = JSON.parse(decoder.decode(adapt(false).body)) as Record<string, unknown>;
@@ -240,6 +251,35 @@ describe('Responses reasoning sent back to a chat model', () => {
     expect((other.messages as unknown[])[1]).toMatchObject({ role: 'assistant', content: 'Checking.' });
   });
 
+  it('returns reasoning to the next request for the model that was asked for, whatever the seller called it', () => {
+    const pairs: Array<[requested: string, sellerLabel: string]> = [
+      ['kimi-k3.1-pro', 'kimi-k3.1-pro-2026'],
+      ['kimi-k3', 'moonshotai/kimi-k3:free'],
+      ['kimi-k3', 'kimi-k3:latest'],
+      ['gpt-4o', 'gpt-4o-2024-08-06'],
+    ];
+    for (const [requested, sellerLabel] of pairs) {
+      const adapter = createStreamingAdapter({ from: 'openai-chat-completions', to: 'openai-responses', fallbackModel: requested })!;
+      const frames = [
+        `data: ${JSON.stringify({ id: 'chatcmpl-p', model: sellerLabel, choices: [{ index: 0, delta: { reasoning_content: 'Look first.' }, finish_reason: null }] })}\n\n`,
+        `data: ${JSON.stringify({ id: 'chatcmpl-p', model: sellerLabel, choices: [{ index: 0, delta: { content: 'Done.' }, finish_reason: 'stop' }] })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join('');
+      const sse = adapter.adaptChunk({ requestId: 'r', data: encoder.encode(frames), done: true }).map((out) => decoder.decode(out.data)).join('');
+      const items = JSON.parse(parseSseBuffer(sse).events.find((e) => e.event === 'response.completed')!.data).response.output as unknown[];
+
+      expect(reasoningContents(toChatMessages([user, ...items, user], 'openai-chat-completions', requested)), `${requested} / ${sellerLabel}`)
+        .toEqual(['Look first.']);
+      expect(reasoningContents(toChatMessages([user, ...items, user], 'openai-chat-completions', 'other-model'))).toEqual([]);
+    }
+  });
+
+  it('matches no reasoning tagged with an empty model', () => {
+    const emptyTag = { ...REASONING_ITEM, encrypted_content: TAG };
+
+    expect(reasoningContents(toChatMessages([user, emptyTag, answer], 'openai-chat-completions', 'acme/'))).toEqual([]);
+  });
+
   it('returns no reasoning the adapter did not make, and none in a plain chat rendering', () => {
     const untagged = { type: 'reasoning', summary: [], content: [{ type: 'reasoning_text', text: 'Foreign thought.' }] };
     const plain = renderRequestBodyAsOpenAIChat('openai-responses', responsesBody([user, REASONING_ITEM, preamble, fnCall, fnOutput]))!;
@@ -283,29 +323,29 @@ describe('Responses reasoning sent back to a chat model', () => {
 });
 
 describe('Responses reasoning sent on to a Responses seller', () => {
-  const untagged = { type: 'reasoning', id: 'rs_other', summary: [], content: [{ type: 'reasoning_text', text: 'Think.' }] };
+  const plain = { type: 'reasoning', id: 'rs_other', summary: [], content: [{ type: 'reasoning_text', text: 'Think.' }] };
   const encrypted = { type: 'reasoning', id: 'rs_abc', summary: [], encrypted_content: 'gAAAA-opaque' };
-  const passOn = (body: Record<string, unknown>) => {
-    const request = responsesRequest(body);
-    const result = transformRequest(request, { from: 'openai-responses', to: 'openai-responses' })!;
-    return { request, result, body: JSON.parse(decoder.decode(result.request.body)) as Record<string, unknown> };
-  };
+  const legacyCall = { type: 'function_call', id: 'call_abc', call_id: 'call_abc', name: 'run', arguments: '{}' };
+  const ids = (request: { body: Uint8Array }) =>
+    (JSON.parse(decoder.decode(request.body)).input as Array<{ type: string; id?: string }>).map((item) => item.id ?? item.type);
 
-  const ids = (body: Record<string, unknown>) => (body.input as Array<{ type: string; id?: string }>).map((item) => item.id ?? item.type);
+  it('drops only the reasoning items the adapter made, whatever `store` says', () => {
+    for (const store of [undefined, false, true]) {
+      const request = responsesRequest(responsesBody([user, REASONING_ITEM, plain, encrypted, legacyCall, answer], store === undefined ? {} : { store }));
 
-  it('drops reasoning items the adapter made, and those without encrypted content, which the seller cannot resolve', () => {
-    expect(ids(passOn(responsesBody([user, REASONING_ITEM, untagged, encrypted, answer], { store: false })).body))
-      .toEqual(['message', 'rs_abc', 'message']);
+      expect(ids(withoutAdapterReasoningItems(request))).toEqual(['message', 'rs_other', 'rs_abc', 'call_abc', 'message']);
+    }
   });
 
-  it('keeps reasoning items without encrypted content when the request uses stored state, but not those the adapter made', () => {
-    expect(ids(passOn(responsesBody([user, REASONING_ITEM, untagged, answer], { store: true })).body))
-      .toEqual(['message', 'rs_other', 'message']);
+  it('returns a request with none of them unchanged', () => {
+    const request = responsesRequest(responsesBody([user, plain, encrypted, legacyCall, answer]));
+
+    expect(withoutAdapterReasoningItems(request)).toBe(request);
   });
 
-  it('passes a request with nothing to drop through unchanged', () => {
-    const { request, result } = passOn(responsesBody([user, encrypted, answer]));
+  it('drops them in a same-protocol transform too, and keeps other reasoning items', () => {
+    const request = responsesRequest(responsesBody([user, REASONING_ITEM, plain, encrypted, answer], { store: false }));
 
-    expect(result.request).toBe(request);
+    expect(ids(transformRequest(request, { from: 'openai-responses', to: 'openai-responses' })!.request)).toEqual(['message', 'rs_other', 'rs_abc', 'message']);
   });
 });

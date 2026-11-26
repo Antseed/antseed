@@ -805,7 +805,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
             if (event.delta.trim().length === 0) continue;
             reasoning = 'open';
             reasoningResponseId = getResponseId();
-            reasoningModel = responseModel;
+            reasoningModel = options.fallbackModel || responseModel;
             pushEvent(emitted, 'response.output_item.added', { output_index: 0, item: { ...getReasoningItem(), content: [] } });
             reasoningPart(emitted, 'response.content_part.added', { part: { type: 'reasoning_text', text: '' } });
           }

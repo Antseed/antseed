@@ -143,7 +143,7 @@ selectTargetProtocolForRequest(requestProtocol, supportedProtocols): TargetProto
 transformRequest(request, { from, to, streamRequested }): ServiceApiRequestTransformResult | null
 ```
 
-`from` and `to` currently support `anthropic-messages`, `openai-chat-completions`, and `openai-responses`. Unsupported protocols return `null`. A chat model's reasoning reaches a Responses client as a `reasoning` item tagged with the model that wrote it (`encrypted_content: "antseed.reasoning.v1:<model>"`). When the client sends the item back in a request for that same model, its text goes to the model as `reasoning_content`; for any other model, and to a Responses seller, it is dropped.
+`from` and `to` currently support `anthropic-messages`, `openai-chat-completions`, and `openai-responses`. Unsupported protocols return `null`. A chat model's reasoning reaches a Responses client as a `reasoning` item tagged with the model the request asked for, or the seller's label when it named none (`encrypted_content: "antseed.reasoning.v1:<model>"`). When the client sends the item back in a request for that same model, ignoring case and a provider prefix, its text goes to the model as `reasoning_content`; for any other model it is dropped. `withoutAdapterReasoningItems(request)` removes these items from a Responses request bound for a Responses seller and changes nothing else.
 
 ### Responses
 

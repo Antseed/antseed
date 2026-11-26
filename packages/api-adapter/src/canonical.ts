@@ -150,6 +150,8 @@ export interface CanonicalLlmResponse {
   endTurn?: boolean;
   /** Reasoning a chat model returned beside its answer (`reasoning_content`). */
   reasoning?: string;
+  /** The model the reasoning's tag names: the one the request asked for, else the seller's label. */
+  reasoningModel?: string;
   usage: ReportedUsage;
 }
 
@@ -651,7 +653,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
 
 export function normalizeOpenAIChatResponseBody(
   body: Record<string, unknown>,
-  fallbacks: { id: string; model: string },
+  fallbacks: { id: string; model: string; requestedModel?: string | null },
 ): CanonicalLlmResponse {
   const id = typeof body.id === 'string' && body.id.length > 0 ? body.id : fallbacks.id;
   const model = typeof body.model === 'string' && body.model.length > 0 ? body.model : fallbacks.model;
@@ -692,7 +694,7 @@ export function normalizeOpenAIChatResponseBody(
     output,
     stopReason,
     endTurn: responsesEndTurn(output.filter((item) => item.type === 'function_call').length),
-    ...(reasoning.length > 0 ? { reasoning } : {}),
+    ...(reasoning.trim().length > 0 ? { reasoning, reasoningModel: fallbacks.requestedModel || model } : {}),
     usage,
   };
 }
@@ -821,7 +823,9 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
   const text = textItems.map((item) => item.text).join('');
   const phase = textItems.find((item) => item.phase)?.phase;
 
-  if (response.reasoning) output.push(openAIResponsesReasoningItem(response.id, response.reasoning, response.model));
+  if (response.reasoning) {
+    output.push(openAIResponsesReasoningItem(response.id, response.reasoning, response.reasoningModel ?? response.model));
+  }
 
   if (text.length > 0) {
     output.push({

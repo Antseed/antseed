@@ -12,6 +12,7 @@ import {
   encodeJson,
   isAdapterReasoningItem,
   openAIResponsesFunctionCallId,
+  RESPONSES_REASONING_TAG,
   openAIResponsesMessageId,
   parseJsonObject,
 } from './utils.js';
@@ -148,9 +149,8 @@ function repairLegacyResponsesItemIds(body: Record<string, unknown>): Record<str
   if (!Array.isArray(body.input)) return null;
 
   let changed = false;
-  // A Responses seller cannot resolve a reasoning item this adapter made from a chat model's reasoning,
-  // nor, without stored state (`store: true`), one that has no `encrypted_content`. Both are dropped.
-  const kept = body.input.filter((item) => !isUnresolvableReasoningItem(item, body.store === true));
+  // See withoutAdapterReasoningItems.
+  const kept = body.input.filter((item) => !isAdapterReasoningInput(item));
   if (kept.length !== body.input.length) changed = true;
   const input = kept.map((item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
@@ -182,12 +182,22 @@ function repairLegacyResponsesItemIds(body: Record<string, unknown>): Record<str
   return changed ? { ...body, input } : null;
 }
 
-function isUnresolvableReasoningItem(item: unknown, stored: boolean): boolean {
-  if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
-  const record = item as Record<string, unknown>;
-  if (record.type !== 'reasoning') return false;
-  if (isAdapterReasoningItem(record)) return true;
-  return !stored && !(typeof record.encrypted_content === 'string' && record.encrypted_content.length > 0);
+/**
+ * A Responses request for a Responses seller, without the reasoning items this adapter made from a
+ * chat model's reasoning in earlier turns: no provider can resolve their `encrypted_content`. Every
+ * other item stays as it is, and a request with none of them is returned unchanged.
+ */
+export function withoutAdapterReasoningItems(request: SerializedHttpRequest): SerializedHttpRequest {
+  if (!new TextDecoder().decode(request.body).includes(RESPONSES_REASONING_TAG)) return request;
+  const body = parseJsonObject(request.body);
+  if (!body || !Array.isArray(body.input)) return request;
+  const input = body.input.filter((item) => !isAdapterReasoningInput(item));
+  if (input.length === body.input.length) return request;
+  return { ...request, body: encodeJson({ ...body, input }) };
+}
+
+function isAdapterReasoningInput(item: unknown): boolean {
+  return Boolean(item) && typeof item === 'object' && !Array.isArray(item) && isAdapterReasoningItem(item as Record<string, unknown>);
 }
 
 function headersForTargetProtocol(

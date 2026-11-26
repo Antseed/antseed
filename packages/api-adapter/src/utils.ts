@@ -42,13 +42,14 @@ export function openAIResponsesMessageId(responseId: string): string {
 /**
  * Marks a `reasoning` item this adapter made from a chat model's reasoning. The item's
  * `encrypted_content`, which a Responses client keeps and sends back unchanged, holds the marker and
- * the model that wrote the reasoning: the reasoning goes back only to that model.
+ * the model the request asked for (the seller's label only when the request named none): the
+ * reasoning goes back only to a request for that model.
  */
 export const RESPONSES_REASONING_TAG = 'antseed.reasoning.v1:';
 
 /**
  * A chat model's reasoning as a Responses `reasoning` item: the text as `reasoning_text` content,
- * which a Responses client keeps in its history and sends back, tagged with the model that wrote it.
+ * which a Responses client keeps in its history and sends back, tagged with `model` (see the tag).
  */
 export function openAIResponsesReasoningItem(responseId: string, text: string, model: string): Record<string, unknown> {
   return {
@@ -68,14 +69,14 @@ export function isAdapterReasoningItem(item: Record<string, unknown>): boolean {
 }
 
 /**
- * The reasoning text of a Responses input `reasoning` item, when this adapter made the item from
- * `model`'s reasoning. Reasoning another model wrote, and any item the adapter did not make (a
+ * The reasoning text of a Responses input `reasoning` item, when this adapter made the item for a
+ * request for `model`. Reasoning for another model, and any item the adapter did not make (a
  * summary, another provider's encrypted state), gives nothing: a model gets back only its own.
  */
 export function responsesReasoningTextFor(item: Record<string, unknown>, model: string | null): string {
   if (!isAdapterReasoningItem(item) || !Array.isArray(item.content) || model === null) return '';
-  const author = (item.encrypted_content as string).slice(RESPONSES_REASONING_TAG.length);
-  if (comparableModelId(author) !== comparableModelId(model)) return '';
+  const author = comparableModelId((item.encrypted_content as string).slice(RESPONSES_REASONING_TAG.length));
+  if (author === null || author !== comparableModelId(model)) return '';
   return item.content
     .filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === 'object')
     .filter((part) => part.type === 'reasoning_text' && typeof part.text === 'string')
@@ -83,9 +84,10 @@ export function responsesReasoningTextFor(item: Record<string, unknown>, model: 
     .join('');
 }
 
-/** A model id without case or a provider prefix: `moonshotai/Kimi-K3` and `kimi-k3` are one model. */
-function comparableModelId(model: string): string {
-  return model.slice(model.lastIndexOf('/') + 1).trim().toLowerCase();
+/** A model id without case or a provider prefix: `moonshotai/Kimi-K3` and `kimi-k3` are one model. None if empty. */
+function comparableModelId(model: string): string | null {
+  const id = model.slice(model.lastIndexOf('/') + 1).trim().toLowerCase();
+  return id.length > 0 ? id : null;
 }
 
 export function openAIResponsesFunctionCallId(callId: string): string {

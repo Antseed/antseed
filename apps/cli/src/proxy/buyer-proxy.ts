@@ -81,6 +81,7 @@ import {
   type StreamingResponseAdapter,
   transformRequest,
   transformResponse,
+  withoutAdapterReasoningItems,
 } from './service-api-adapter.js'
 import {
   DEBUG,
@@ -5772,8 +5773,8 @@ export class BuyerProxy {
       }
     } else if (requestProtocol === 'openai-responses') {
       // Earlier turns of the thread may have been translated from a chat seller. A Responses seller cannot
-      // resolve the reasoning items made there; this drops them.
-      requestForPeer = transformRequest(requestForPeer, { from: requestProtocol, to: requestProtocol })?.request ?? requestForPeer
+      // resolve the reasoning items the adapter made there, so they are dropped; nothing else changes.
+      requestForPeer = withoutAdapterReasoningItems(requestForPeer)
     }
 
     if (DEBUG()) {

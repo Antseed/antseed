@@ -19,7 +19,7 @@ export interface ServiceApiResponseTransformOptions {
 
 type ResponseNormalizer = (
   body: Record<string, unknown>,
-  fallbacks: { id: string; model: string },
+  fallbacks: { id: string; model: string; requestedModel?: string | null },
 ) => CanonicalLlmResponse;
 type ResponseRenderer = (response: CanonicalLlmResponse) => Record<string, unknown>;
 
@@ -55,6 +55,7 @@ export function transformResponse(
   const canonical = normalize(parsed, {
     id: fallbackResponseId(response.requestId, options.to),
     model: options.fallbackModel ?? 'unknown',
+    requestedModel: options.fallbackModel ?? null,
   });
   const body = render(canonical);
 
