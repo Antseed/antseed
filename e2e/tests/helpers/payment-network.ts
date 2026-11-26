@@ -315,6 +315,7 @@ export function usePaymentNetwork(label: string) {
     const sellerProvider = provider ?? new MockOpenAIImageProvider() as unknown as ProviderType;
     const sellerNode = new AntseedNode({
       role: 'seller',
+      natTraversal: false,
       dataDir: sellerDataDir,
       dhtPort: 0,
       signalingPort: 0,

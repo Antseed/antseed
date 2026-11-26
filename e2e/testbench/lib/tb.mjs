@@ -9,7 +9,7 @@ import { launchDesktop } from './desktop.mjs';
 import { assertLocalUrl } from './env.mjs';
 import { MOCK_USAGE } from './mock.mjs';
 import { createPrng, derive } from './prng.mjs';
-import { analyzePayments, analyzeRecordedCosts, bootstrapCounts, BUYER_PATTERNS, channelRows, costLinesCheck, countPatterns, CRASH_PATTERN, externalHosts, GATES, gateProblems, logOffsets, mergeDeliveries, peerLogs, readLog, runAll, runLoad, scanLogs, SELLER_PATTERNS } from './stress.mjs';
+import { analyzePayments, analyzeRecordedCosts, bootstrapCounts, BUYER_PATTERNS, channelRows, costLinesCheck, countPatterns, CRASH_PATTERN, externalHosts, GATES, gateProblems, logOffsets, mergeDeliveries, peerLogs, quiesceChannels, readLog, runAll, runLoad, scanLogs, SELLER_PATTERNS, settledRows } from './stress.mjs';
 
 const { keccak256, toUtf8Bytes, Wallet } = createRequire(import.meta.url)('ethers');
 
@@ -426,9 +426,9 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
     },
 
     /**
-     * The payment stress oracle (e2e/stress/analysis.mjs) on this testbench: waits `quiesceMs` for in-flight
-     * auths, closes every channel cooperatively, then compares the sellers' and buyer's channel stores, the
-     * chain and the mock ledgers. The mock is the judge: every response the client received in full was
+     * The payment stress oracle (e2e/stress/analysis.mjs) on this testbench: waits up to `quiesceMs` for in-flight
+     * auths (less once nothing is in flight, see quiesceChannels), closes every channel cooperatively, then
+     * compares the sellers' and buyer's channel stores, the chain and the mock ledgers. The mock is the judge: every response the client received in full was
      * delivered and paid, nothing settled beyond what reached the wire, each channel settled exactly what the
      * buyer signed and the seller accepted, the deposit decrease equals the sum settled and seller plus fee
      * income equals it, no reserve or open channel is left. With no faults, aborts or restarts the seller's
@@ -440,8 +440,13 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
       assert(before?.chain, 'assertDeliveredWorkPaid needs the paymentSnapshot taken before the load');
       assert(before.channels.open.length === 0, `The oracle needs every earlier channel closed before the snapshot; ${before.channels.open.length} were open (close them with tb.closeAll() first)`);
       const earlier = new Set(before.channels.closed);
-      await sleep(quiesceMs);
       const sellerRows = () => manifest.sellers.flatMap((seller) => channelRows(sellerDir(seller.id), 'seller'));
+      const inFlight = async () => {
+        let open = 0;
+        for (const seller of manifest.sellers) if (seller.mockUrl) open += (await control.deliveries(seller.id)).active ?? 0;
+        return open;
+      };
+      await quiesceChannels({ sellerRows, buyerRows: () => channelRows(manifest.buyerDir, 'buyer'), inFlight, maxMs: quiesceMs });
       const sellerRowsPre = sellerRows();
       const buyerRowsPre = channelRows(manifest.buyerDir, 'buyer');
       const closed = await tb.closeAll();
@@ -457,8 +462,8 @@ export function createTestbenchApi({ manifest, control, eventsPath, chain, stric
       const notes = [];
       await tb.waitFor(readAll, 'every channel closed on-chain', { timeoutMs: 60_000, intervalMs: 1000 }).catch((error) => notes.push(error.message));
       await readAll();
-      await sleep(1500);
       const fresh = (rows) => rows.filter((row) => !earlier.has(row.session_id));
+      await settledRows({ sellerRows: () => fresh(sellerRows()), buyerRows: () => fresh(channelRows(manifest.buyerDir, 'buyer')), allIds, onchain });
       const sellerRowsPost = fresh(sellerRows());
       const buyerRowsPost = fresh(channelRows(manifest.buyerDir, 'buyer'));
       const after = await tb.paymentSnapshot();

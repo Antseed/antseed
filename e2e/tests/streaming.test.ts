@@ -110,6 +110,7 @@ describe('Streaming: SSE streaming request flow across P2P boundary', () => {
 
     sellerNode = new AntseedNode({
       role: 'seller',
+      natTraversal: false,
       dataDir: sellerDataDir,
       dhtPort: 0,
       signalingPort: 0,

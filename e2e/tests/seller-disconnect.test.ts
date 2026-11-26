@@ -71,6 +71,7 @@ describe('Negative: seller disconnects mid-request', () => {
 
     sellerNode = new AntseedNode({
       role: 'seller',
+      natTraversal: false,
       dataDir: sellerDataDir,
       dhtPort: 0,
       signalingPort: 0,

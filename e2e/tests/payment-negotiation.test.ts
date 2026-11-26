@@ -64,6 +64,7 @@ describe('Payment negotiation: seller sends PaymentRequired on 402', () => {
 
     sellerNode = new AntseedNode({
       role: 'seller',
+      natTraversal: false,
       dataDir: sellerDataDir,
       dhtPort: 0,
       signalingPort: 0,
@@ -129,6 +130,7 @@ describe('Payment negotiation: seller sends PaymentRequired on 402', () => {
 
     sellerNode = new AntseedNode({
       role: 'seller',
+      natTraversal: false,
       dataDir: sellerDataDir,
       dhtPort: 0,
       signalingPort: 0,
@@ -171,6 +173,7 @@ describe('Payment negotiation: seller sends PaymentRequired on 402', () => {
 
     sellerNode = new AntseedNode({
       role: 'seller',
+      natTraversal: false,
       dataDir: sellerDataDir,
       dhtPort: 0,
       signalingPort: 0,

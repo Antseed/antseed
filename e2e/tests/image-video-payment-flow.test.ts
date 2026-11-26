@@ -109,7 +109,10 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
         const download = await post('/api/v1/video/retrieve', { model: 'wan-2.5', queue_id: 'queue-1' });
         expect(download.status).toBe(200);
         expect(download.headers.get('content-type')).toBe('video/mp4');
-        expect(Buffer.from(await download.arrayBuffer())).toEqual(video);
+        // Byte for byte. toEqual walks a Buffer one element at a time: seconds for a few MB.
+        const downloaded = Buffer.from(await download.arrayBuffer());
+        expect(downloaded.length).toBe(video.length);
+        expect(downloaded.equals(video)).toBe(true);
       }
       expect((await post('/api/v1/video/complete', { model: 'wan-2.5', queue_id: 'queue-1' })).status).toBe(404);
       expect((await post('/api/v1/video/retrieve', { model: 'wan-2.5', queue_id: 'unknown' })).status).toBe(404);
@@ -184,7 +187,10 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
         const download = await post('/fal/v1/video/retrieve', { model, request_id: 'fal-req-1' });
         expect(download.status).toBe(200);
         expect(download.headers.get('content-type')).toBe('video/mp4');
-        expect(Buffer.from(await download.arrayBuffer())).toEqual(video);
+        // Byte for byte. toEqual walks a Buffer one element at a time: seconds for a few MB.
+        const downloaded = Buffer.from(await download.arrayBuffer());
+        expect(downloaded.length).toBe(video.length);
+        expect(downloaded.equals(video)).toBe(true);
       }
       expect((await post('/fal/v1/video/retrieve', { model, request_id: 'unknown' })).status).toBe(404);
       expect(falCalls.filter(call => call === `POST /${model}`)).toHaveLength(1);

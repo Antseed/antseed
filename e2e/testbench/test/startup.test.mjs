@@ -95,7 +95,8 @@ async function assertFreed(run) {
   return manifest;
 }
 
-describe('a start that cannot finish fails by itself', () => {
+// Each case starts its own supervisor on its own home and stand-ins, so they run side by side.
+describe('a start that cannot finish fails by itself', { concurrency: true }, () => {
   it('a deploy whose transactions Anvil never mines ends the start with the reason, and the slot is free again', async () => {
     const run = await startSupervisor({ forge: 'park' });
     assert.equal(await run.exit(60_000), 1, run.log());

@@ -103,3 +103,53 @@ export function analyzeRecordedCosts({ recordedCost, recordedCount, settled }) {
   if (recordedCost > settled) violations.push({ kind: 'delivered-but-unpaid(cost-recorded>settled)', recorded: recordedCost.toString(), settled: settled.toString(), gap: (recordedCost - settled).toString() });
   return { money, violations };
 }
+
+/**
+ * Waits for post-response NeedAuth / SpendingAuth round trips to finish, for at most `maxMs` (the fixed wait it
+ * replaces), and returns how long it waited. It ends early only once nothing is in flight: no upstream request is
+ * open, every channel the seller has (closed ones too) accepted exactly what the buyer signed and at least what it
+ * spent, and neither store has changed for `stableMs`. A run with any unpaid or unsigned work waits the full `maxMs`,
+ * so the oracle judges it on the same rows as before.
+ */
+export async function quiesceChannels({ sellerRows, buyerRows, inFlight, maxMs = 10_000, stableMs = 2_000, intervalMs = 250, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+  const started = now();
+  let last = null;
+  let since = started;
+  while (now() - started < maxMs) {
+    const seller = sellerRows();
+    const buyer = buyerRows();
+    const key = JSON.stringify([seller, buyer]);
+    if (key !== last) { last = key; since = now(); }
+    const signed = new Map(buyer.map((row) => [row.session_id, BigInt(row.auth_max ?? '0')]));
+    const caughtUp = seller.length > 0 && seller.every((row) => {
+      const accepted = BigInt(row.auth_max ?? '0');
+      return signed.get(row.session_id) === accepted && BigInt(row.tokens_delivered ?? '0') <= accepted;
+    });
+    if (caughtUp && now() - since >= stableMs && (await inFlight()) === 0) return now() - started;
+    await sleep(intervalMs);
+  }
+  return now() - started;
+}
+
+/**
+ * Waits for both stores to record the cooperative closes, for at most `maxMs` (the fixed wait it replaces), and
+ * returns how long it waited. It ends early only once every row is a channel in `allIds`, settled at exactly its
+ * on-chain amount, and neither store has changed for `stableMs`. Any other state waits the full `maxMs`, so the
+ * oracle judges it on the same rows as before.
+ */
+export async function settledRows({ sellerRows, buyerRows, allIds, onchain, maxMs = 1_500, stableMs = 500, intervalMs = 100, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+  const started = now();
+  const ids = new Set(allIds);
+  let last = null;
+  let since = started;
+  while (now() - started < maxMs) {
+    const rows = [...sellerRows(), ...buyerRows()];
+    const key = JSON.stringify(rows);
+    if (key !== last) { last = key; since = now(); }
+    const recorded = rows.every((row) => ids.has(row.session_id) && row.status === 'settled'
+      && onchain[row.session_id] !== undefined && BigInt(row.auth_max ?? '0') === onchain[row.session_id].settled);
+    if (recorded && now() - since >= stableMs) return now() - started;
+    await sleep(intervalMs);
+  }
+  return now() - started;
+}

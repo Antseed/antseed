@@ -165,31 +165,15 @@
               pkgs.autoPatchelfHook
             ];
 
-            # pnpm's hoisted linker sometimes fails in the sandbox with
-            # ERR_PNPM_EEXIST (two copies of one package racing for the same
-            # file); the same install passes when run again. pnpmConfigHook
-            # exits on the first failure, so take it out of the configure hooks
-            # and run it here, up to three times, from a clean tree each time.
-            preConfigure = ''
-              keptHooks=()
-              for hook in "''${postConfigureHooks[@]}"; do
-                [ "$hook" = pnpmConfigHook ] || keptHooks+=("$hook")
-              done
-              postConfigureHooks=("''${keptHooks[@]}")
-            '';
-            postConfigure = ''
-              for attempt in 1 2 3; do
-                if (pnpmConfigHook); then
-                  break
-                fi
-                if [ "$attempt" = 3 ]; then
-                  echo "error: pnpm install failed three times" >&2
-                  exit 1
-                fi
-                echo "pnpm install failed (attempt $attempt of 3); retrying from a clean tree" >&2
-                find . -name node_modules -type d -prune -exec rm -rf {} +
-              done
-            '';
+            # One build at a time in pnpm's build step. Applying a patch
+            # (patchedDependencies; pnpm runs that step even with
+            # --ignore-scripts) changes the process's working directory
+            # while a worker thread hard-links esbuild's other hoisted copies
+            # by relative paths; when the two overlap, the link resolves in
+            # the wrong directory and the install fails with ERR_PNPM_EEXIST.
+            # With one build at a time they cannot overlap. The builds are
+            # no-ops here (no scripts run), so this costs nothing.
+            pnpmInstallFlags = [ "--child-concurrency=1" ];
 
             # Shared libraries for the prebuilt native binaries (Linux).
             buildInputs = lib.optionals stdenv.isLinux [

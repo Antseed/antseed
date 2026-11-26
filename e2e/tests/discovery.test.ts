@@ -46,6 +46,7 @@ describe('Discovery: seller announces, buyer discovers via DHT', () => {
 
     sellerNode = new AntseedNode({
       role: 'seller',
+      natTraversal: false,
       dataDir: sellerDataDir,
       dhtPort: 0,          // OS-assigned
       signalingPort: 0,    // OS-assigned
