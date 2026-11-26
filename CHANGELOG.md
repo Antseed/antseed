@@ -19,7 +19,7 @@ This project uses selective package publishing. Each release entry lists the pub
 - Buyer proxy (CLI): the `x-antseed-*` token and cost headers now show the buyer's own figure for the answer's tokens, read from the seller's own reply and rounded as the buyer signs, and an error reply shows a cost of 0. Before, an answer without a usage figure was shown at a bytes-based guess over the whole body, and error replies were priced too.
 - Desktop and Gateway Console: replace simplified model logos with the official Claude, DeepSeek, Qwen, Gemini, Mistral, Meta and Grok marks.
 - Desktop: the first message of a new chat now runs with the model's saved permission, so Full access no longer asks for approval on it.
-- Sellers (CLI, `@antseed/node`): the deposit-sweep relayer no longer refuses buyers' gasless deposits as unprofitable whenever Base is moderately busy. It now estimates a sweep's gas at the latest base fee plus 25% and the tip it would send, at the Chainlink ETH/USD price, instead of the 2x-base-fee ceiling at a fixed $10,000 per ETH. Without the feed or with a stale reading, the relayer uses a cautious $4,000.
+- Sellers (CLI, `@antseed/node`): the deposit-sweep relayer no longer refuses buyers' gasless deposits as unprofitable whenever Base is moderately busy. It now estimates a sweep's gas at the latest base fee plus 25% and the tip it would send, at the Chainlink ETH/USD price, instead of the 2x-base-fee ceiling at a fixed $10,000 per ETH. Without the feed or with a stale reading, it keeps the cautious $10,000.
 
 ## 2026-11-23 — CLI 0.1.259, Node 0.2.191, Desktop 0.2.94
 

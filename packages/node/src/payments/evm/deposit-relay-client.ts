@@ -49,11 +49,11 @@ export interface SweepEventConfirmation {
 
 const USD_E8 = 10n ** 8n;
 /**
- * ETH/USD when neither the caller nor a fresh Chainlink reading gives one. It is cautious on
- * purpose: while ETH trades below it, a too-high price makes the check stricter (a sweep refused
- * that would have paid), not a sweep accepted at a loss.
+ * ETH/USD when neither the caller nor a fresh Chainlink reading gives one: the fixed price the
+ * estimate used before it read the feed. It sits well above where ETH trades, so without a price
+ * the check is stricter (a sweep refused that would have paid), never a sweep accepted at a loss.
  */
-const FALLBACK_ETH_PRICE_USD_E8 = 4_000n * USD_E8;
+const FALLBACK_ETH_PRICE_USD_E8 = 10_000n * USD_E8;
 /** A Chainlink answer older than this, against the latest block's timestamp, is not used. */
 const ETH_PRICE_FEED_MAX_AGE_SECS = 2n * 60n * 60n;
 /** Headroom over the latest base fee for it rising while the sweep waits. */

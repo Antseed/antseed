@@ -91,7 +91,7 @@ describe('DepositRelayClient', () => {
 const MWEI = 1_000_000n;
 const NOW = 1_795_000_000;
 const ETH_USD_E8 = 165_266_541_925n; // Chainlink ETH/USD on 20 Nov 2026: $1,652.67
-const FALLBACK_USD_E8 = 400_000_000_000n;
+const FALLBACK_USD_E8 = 1_000_000_000_000n;
 
 /**
  * A relay client on a mocked Base: the latest block, the tip RPCs suggest (no fee history), the
@@ -149,14 +149,14 @@ describe('DepositRelayClient.estimateSweepProfit', () => {
     ['reverting', 'reverts'],
     ['zero', { answer: 0n, updatedAt: NOW }],
     ['missing', null],
-  ] as const)('falls back to a cautious $4,000 when the feed is %s', async (_name, feed) => {
+  ] as const)('falls back to a cautious $10,000 when the feed is %s', async (_name, feed) => {
     const { client } = makeEstimatingClient({ feed });
 
     const estimate = await client.estimateSweepProfit(RELAYER_WALLET, SWEEP_PARAMS);
 
     expect(estimate.ethPriceUsdE8).toBe(FALLBACK_USD_E8);
-    // 33 Mwei x 165,000 gas x $4,000
-    expect(estimate.estGasCostUsdc).toBe(21_780n);
+    // 33 Mwei x 165,000 gas x $10,000
+    expect(estimate.estGasCostUsdc).toBe(54_450n);
   });
 
   it('uses an ETH price the caller passes over the feed', async () => {
