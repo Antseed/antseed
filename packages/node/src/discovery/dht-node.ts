@@ -34,9 +34,9 @@ export interface DHTNodeConfig {
   peerRecordMaxAgeMs?: number;
   /**
    * File where this node saves a few of the DHT nodes it knows, after lookups
-   * and announces and on stop, and from which it adds them to `bootstrapNodes`
-   * on its next start. It can then rejoin while the bootstrap nodes are down.
-   * Unset: nothing is saved or read.
+   * and announces and on stop. It rejoins through them only while it knows no
+   * DHT node at all because nothing on `bootstrapNodes` answered, so it can
+   * still join while the bootstrap nodes are down. Unset: nothing is saved or read.
    */
   knownNodesFile?: string;
   /**
@@ -59,19 +59,17 @@ export interface DHTNodeConfig {
 export const DEFAULT_PEER_RECORD_MAX_AGE_MS = 30 * 60 * 1000;
 
 /**
- * Most saved nodes added to the bootstrap list on start. During a lookup k-rpc
- * also queries every bootstrap entry whenever the routing table offers fewer
- * nodes near the target than the bootstrap list is long, and it offers at most
- * K = 20. With 16 saved nodes and the two official ones the list stays under K,
- * so a node with a healthy routing table never queries them.
+ * Most nodes saved to `knownNodesFile`. They are not added to the bootstrap
+ * list: a node that also starts from them while the bootstrap nodes answer
+ * gains nothing, and its first lookups sometimes find fewer peers.
  */
 export const MAX_KNOWN_NODES = 16;
 /** Least time between two saves of the known-nodes file after lookups and announces. */
 const KNOWN_NODES_SAVE_INTERVAL_MS = 60_000;
-/** Least time between two tries to join through the fallback nodes. */
-const FALLBACK_RETRY_INTERVAL_MS = 5 * 60_000;
-/** Longest a start, lookup or announce waits for a fallback node to answer. */
-const FALLBACK_JOIN_WAIT_MS = 5_000;
+/** Least time between two tries to rejoin through the saved and fallback nodes. */
+const REJOIN_RETRY_INTERVAL_MS = 5 * 60_000;
+/** Longest a start, lookup or announce waits for a saved or fallback node to answer. */
+const REJOIN_WAIT_MS = 5_000;
 
 export const DEFAULT_DHT_CONFIG: Omit<DHTNodeConfig, "peerId"> = {
   port: 6881,
@@ -246,8 +244,8 @@ export class DHTNode {
   private readonly unsavedEndpoints = new Set<string>();
   private lastKnownNodesSaveAt = 0;
   private knownNodesWrite: Promise<void> = Promise.resolve();
-  private lastFallbackJoinAt = 0;
-  private fallbackJoin: Promise<void> | null = null;
+  private lastRejoinAt = 0;
+  private rejoin: Promise<void> | null = null;
 
   constructor(config: DHTNodeConfig) {
     this.config = config;
@@ -319,37 +317,47 @@ export class DHTNode {
   }
 
   /**
-   * Joins through `fallbackBootstrapNodes` when the routing table is empty:
-   * nothing on the bootstrap list or among the saved nodes answered. Tried at
-   * most every FALLBACK_RETRY_INTERVAL_MS; callers share a try in progress.
+   * Rejoins when the routing table is empty because nothing on the bootstrap
+   * list answered: first through the saved nodes, then, if none of them
+   * answers, through `fallbackBootstrapNodes`. Tried at most every
+   * REJOIN_RETRY_INTERVAL_MS; callers share a try in progress.
    */
-  private joinFallbackIfIsolated(): Promise<void> {
-    if (this.fallbackJoin) return this.fallbackJoin;
-    const fallback = this.config.fallbackBootstrapNodes ?? [];
-    if (!this.dht || fallback.length === 0 || this.getNodeCount() > 0) return Promise.resolve();
-    if (Date.now() - this.lastFallbackJoinAt < FALLBACK_RETRY_INTERVAL_MS) return Promise.resolve();
-    this.lastFallbackJoinAt = Date.now();
-    this.fallbackJoin = this.joinFallback(fallback).finally(() => {
-      this.fallbackJoin = null;
+  private rejoinIfIsolated(): Promise<void> {
+    if (this.rejoin) return this.rejoin;
+    const { knownNodesFile, fallbackBootstrapNodes } = this.config;
+    if (!this.dht || (!knownNodesFile && !fallbackBootstrapNodes?.length)) return Promise.resolve();
+    if (this.getNodeCount() > 0) return Promise.resolve();
+    if (Date.now() - this.lastRejoinAt < REJOIN_RETRY_INTERVAL_MS) return Promise.resolve();
+    this.lastRejoinAt = Date.now();
+    this.rejoin = this.rejoinThroughSavedThenFallback().finally(() => {
+      this.rejoin = null;
     });
-    return this.fallbackJoin;
+    return this.rejoin;
   }
 
-  private async joinFallback(fallback: ReadonlyArray<{ host: string; port: number }>): Promise<void> {
-    const endpoints = await this.resolveEndpoints(fallback);
+  private async rejoinThroughSavedThenFallback(): Promise<void> {
+    await this.joinThrough(await this.readKnownNodes(), "saved");
+    if (!this.dht || this.getNodeCount() > 0) return;
+    const fallback = await this.resolveEndpoints(this.config.fallbackBootstrapNodes ?? []);
+    for (const endpoint of fallback) this.unsavedEndpoints.add(endpointKey(endpoint));
+    await this.joinThrough(fallback, "fallback");
+  }
+
+  /**
+   * Pings `endpoints`. One that answers enters the routing table, and the next
+   * lookup walks on from it. Waits for the first answer, or a few seconds.
+   */
+  private async joinThrough(endpoints: readonly DHTPeerEndpoint[], kind: "saved" | "fallback"): Promise<void> {
     const dht = this.dht;
     if (!dht || endpoints.length === 0) return;
-    for (const endpoint of endpoints) this.unsavedEndpoints.add(endpointKey(endpoint));
-    debugWarn(`[DHTNode] No DHT node answered; joining through ${endpoints.length} fallback node(s)`);
-    // A node that answers the ping enters the routing table; the next lookup
-    // walks on from it. Wait for the first answer, or give up after a few seconds.
+    debugWarn(`[DHTNode] No DHT node answered; joining through ${endpoints.length} ${kind} node(s)`);
     await new Promise<void>((resolve) => {
       const finish = (): void => {
         clearTimeout(timer);
         dht.off("node", finish);
         resolve();
       };
-      const timer = setTimeout(finish, Math.min(FALLBACK_JOIN_WAIT_MS, this.config.operationTimeoutMs));
+      const timer = setTimeout(finish, Math.min(REJOIN_WAIT_MS, this.config.operationTimeoutMs));
       dht.on("node", finish);
       for (const endpoint of endpoints) dht.addNode(endpoint);
     });
@@ -361,9 +369,8 @@ export class DHTNode {
       debugWarn(`[DHTNode] No IPv4 bootstrap addresses resolved from ${this.config.bootstrapNodes.length} configured node(s)`);
     }
     for (const endpoint of configured) this.unsavedEndpoints.add(endpointKey(endpoint));
-    const saved = await this.readKnownNodes();
-    await this.listen([...configured, ...saved].map(endpointKey));
-    await this.joinFallbackIfIsolated();
+    await this.listen(configured.map(endpointKey));
+    await this.rejoinIfIsolated();
   }
 
   private listen(bootstrap: string[]): Promise<void> {
@@ -425,7 +432,7 @@ export class DHTNode {
   }
 
   async announce(infoHash: Buffer, port: number): Promise<void> {
-    await this.joinFallbackIfIsolated();
+    await this.rejoinIfIsolated();
     return new Promise<void>((resolve, reject) => {
       if (!this.dht) {
         reject(new Error("DHT not started"));
@@ -459,7 +466,7 @@ export class DHTNode {
    * listener warning once subnet fan-out exceeds 10 topics.
    */
   async lookupMany(infoHashes: Buffer[]): Promise<DHTPeerEndpoint[]> {
-    if (infoHashes.length > 0) await this.joinFallbackIfIsolated();
+    if (infoHashes.length > 0) await this.rejoinIfIsolated();
     return new Promise<DHTPeerEndpoint[]>((resolve) => {
       if (!this.dht) {
         resolve([]);

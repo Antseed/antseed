@@ -155,7 +155,7 @@ interface NodeConfig {
 | `signalingPort` | `6882` | TCP port for P2P signaling and incoming connections (seller only) |
 | `maxUploadBodyBytes` | `64 MiB` | Maximum request body a seller accepts per proxied upload. Raise this for large Codex-style `/v1/responses` payloads while keeping the aggregate pending-upload budget bounded. |
 | `maxInFlightRequestBytes` | `256 MiB` | Most request body bytes a seller holds at once across all buyers, uploads still arriving included. Past it a request gets a retryable `503`. Never below `maxUploadBodyBytes`. |
-| `bootstrapNodes` | Antseed nodes | Additional DHT bootstrap nodes merged with the official Antseed infrastructure. The node also bootstraps from up to 16 DHT nodes it saved on earlier runs, and joins through the public BitTorrent DHT routers when none of them answers |
+| `bootstrapNodes` | Antseed nodes | Additional DHT bootstrap nodes merged with the official Antseed infrastructure. When none of them answers, the node rejoins through up to 16 DHT nodes it saved on earlier runs, then through the public BitTorrent DHT routers |
 | `noOfficialBootstrap` | `false` | Use only `bootstrapNodes`: no official nodes, saved nodes or public fallback, for an isolated test network |
 | `payments` | disabled | Optional seller-side payment channel + settlement lifecycle wiring |
 

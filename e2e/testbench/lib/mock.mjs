@@ -13,6 +13,12 @@ export const NO_USAGE_MARKER = '[no-usage]';
  * tool results gets the usual text reply.
  */
 export const PARALLEL_TOOLS_MARKER = '[parallel-tools]';
+/**
+ * `[shell-write]` in a streamed prompt that offers `bash`: the user turn is answered with one file-changing shell
+ * call (`touch testbench-shell-write.txt`), which a desktop chat in Ask first stops to approve. The turn after the
+ * tool result gets the usual text reply.
+ */
+export const SHELL_WRITE_MARKER = '[shell-write]';
 const FIXED_IMAGE_INPUT_TOKENS = 10;
 const WORDS = 'the quick brown fox jumps over lazy dogs while seven agents argue about payment channels'.split(' ');
 const TAG = /\[req:([a-z0-9-]+)\]/i;
@@ -111,6 +117,20 @@ export async function startMock({ models, label = 'mock', latencyMs = 0, usage =
       const call = (callId, path) => ({ index: 0, id: callId, type: 'function', function: { name, arguments: JSON.stringify({ path }) } });
       response.write(chunk([{ index: 0, delta: { role: 'assistant', content: null, tool_calls: [call(`call_${tag}_a`, 'testbench-missing-a.txt')] }, finish_reason: null }]));
       response.write(chunk([{ index: 0, delta: { tool_calls: [call(`call_${tag}_b`, 'testbench-missing-b.txt')] }, finish_reason: null }]));
+      response.write(chunk([{ index: 0, delta: {}, finish_reason: 'tool_calls' }]));
+      if (reportsUsage && body.stream_options?.include_usage === true) response.write(chunk([], usageBody));
+      response.end('data: [DONE]\n\n');
+      entry.status = 'ok';
+      return;
+    }
+    if (stream && content.includes(SHELL_WRITE_MARKER) && toolNames.includes('bash') && body.messages?.at(-1)?.role === 'user') {
+      await sleep(totalMs);
+      if (gone()) { entry.status = 'client-gone'; return; }
+      entry.started = true;
+      entry.toolCalls = 1;
+      response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const call = { index: 0, id: `call_${tag}_shell`, type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: 'touch testbench-shell-write.txt' }) } };
+      response.write(chunk([{ index: 0, delta: { role: 'assistant', content: null, tool_calls: [call] }, finish_reason: null }]));
       response.write(chunk([{ index: 0, delta: {}, finish_reason: 'tool_calls' }]));
       if (reportsUsage && body.stream_options?.include_usage === true) response.write(chunk([], usageBody));
       response.end('data: [DONE]\n\n');

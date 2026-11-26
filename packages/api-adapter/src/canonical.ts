@@ -1,12 +1,13 @@
 import {
-  extractUsage,
+  extractReportedUsage,
   mapFinishReasonToAnthropicStopReason,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   parseJsonSafe,
+  reasoningUsageFields,
   RESPONSES_FINAL_ANSWER_TOOL,
   toStringContent,
-  type TokenUsage,
+  type ReportedUsage,
 } from './utils.js';
 
 const RESPONSES_FINAL_ANSWER_TOOL_RE = /(?:^|\n\s*)tool\s+final_answer\s*\{\s*\}\s*(?:\n|$)/g;
@@ -25,6 +26,52 @@ export type CanonicalToolChoice =
 
 // Anthropic requires max_tokens; the OpenAI protocols treat it as optional.
 export const DEFAULT_ANTHROPIC_MAX_TOKENS = 16_384;
+
+/**
+ * An effort is a word copied between protocols as the client wrote it, as it is between Chat
+ * Completions and Responses: no list of words is kept here, so a new one works the day a vendor
+ * adds it, and which words a model takes is the upstream's to answer. Two words of the OpenAI
+ * protocols need care, because the Messages API says them differently or not at all.
+ */
+/** "Do not reason": an effort in the OpenAI protocols, the `thinking` switch in the Messages API. */
+const REASONING_OFF = 'none';
+/**
+ * The OpenAI protocols' lowest effort, for which the Messages API has no word, and the Messages
+ * API's own lowest, sent in its place. This is the one word that is replaced: left out, the model
+ * would run at its default, the most reasoning where the client asked for the least.
+ */
+const OPENAI_LOWEST_EFFORT = 'minimal';
+const MESSAGES_LOWEST_EFFORT = 'low';
+
+/**
+ * The reasoning effort a Messages request names. A thinking budget names no effort, and none is
+ * made up from it.
+ *
+ * With thinking switched off, no effort is carried at all. Off is the Messages default, which a
+ * client may only be restating, so it is not turned into the OpenAI protocols' `none`: that is a
+ * level of its own, which a model without it refuses. And an effort set beside it is not sent
+ * either, since the one field the OpenAI protocols have would switch reasoning on.
+ */
+function reasoningEffortFromAnthropic(body: Record<string, unknown>): string | undefined {
+  const thinking = body.thinking;
+  if (thinking && typeof thinking === 'object' && (thinking as Record<string, unknown>).type === 'disabled') {
+    return undefined;
+  }
+  const config = body.output_config;
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return undefined;
+  const effort = (config as Record<string, unknown>).effort;
+  return typeof effort === 'string' && effort.length > 0 ? effort : undefined;
+}
+
+/**
+ * Writes a reasoning effort in the Messages API's own fields. `none` is always a client's explicit
+ * choice in the OpenAI protocols, so it is carried as the Messages switch for it. `minimal` is
+ * sent as the Messages API's lowest effort.
+ */
+function assignAnthropicReasoningEffort(body: Record<string, unknown>, effort: string | undefined): void {
+  if (effort === REASONING_OFF) body.thinking = { type: 'disabled' };
+  else if (effort !== undefined) body.output_config = { effort: effort === OPENAI_LOWEST_EFFORT ? MESSAGES_LOWEST_EFFORT : effort };
+}
 
 export type CanonicalContentPart =
   | { type: 'text'; text: string }
@@ -98,7 +145,7 @@ export interface CanonicalLlmResponse {
   output: CanonicalOutputItem[];
   stopReason: string | null;
   endTurn?: boolean;
-  usage: TokenUsage;
+  usage: ReportedUsage;
 }
 
 function responseFunctionCallId(id: string): string {
@@ -351,6 +398,7 @@ export function renderCanonicalRequestToAnthropicMessagesBody(request: Canonical
   body.max_tokens = typeof request.maxOutputTokens === 'number'
     ? request.maxOutputTokens
     : DEFAULT_ANTHROPIC_MAX_TOKENS;
+  assignAnthropicReasoningEffort(body, request.reasoningEffort);
   if (typeof request.temperature === 'number') body.temperature = request.temperature;
   if (typeof request.topP === 'number') body.top_p = request.topP;
   if (request.stop !== undefined) body.stop_sequences = Array.isArray(request.stop) ? request.stop : [request.stop];
@@ -409,6 +457,8 @@ export function normalizeAnthropicMessagesRequestBody(body: Record<string, unkno
     request.cacheBreakpoints = breakpoints;
   }
   if (typeof body.max_tokens === 'number') request.maxOutputTokens = body.max_tokens;
+  const reasoningEffort = reasoningEffortFromAnthropic(body);
+  if (reasoningEffort !== undefined) request.reasoningEffort = reasoningEffort;
   if (typeof body.temperature === 'number') request.temperature = body.temperature;
   if (typeof body.top_p === 'number') request.topP = body.top_p;
   if (Array.isArray(body.stop_sequences)) request.stop = body.stop_sequences as string[];
@@ -636,7 +686,7 @@ export function normalizeOpenAIChatResponseBody(
     });
   }
 
-  const usage = extractUsage(body);
+  const usage = extractReportedUsage(body, 'openai-chat-completions');
   const stopReason = typeof firstChoice.finish_reason === 'string' ? firstChoice.finish_reason : null;
   return {
     id,
@@ -686,7 +736,7 @@ export function normalizeOpenAIResponsesResponseBody(
     }
   }
 
-  const usage = extractUsage(body);
+  const usage = extractReportedUsage(body, 'openai-responses');
   const stopReason = openAIResponsesStopReason(body, output);
   return { id, model, output, stopReason, usage };
 }
@@ -736,7 +786,7 @@ export function normalizeAnthropicMessagesResponseBody(
     }
   }
 
-  const usage = extractUsage(body);
+  const usage = extractReportedUsage(body, 'anthropic-messages');
   const stopReason = anthropicStopReasonToOpenAI(body.stop_reason);
   return { id, model, output, stopReason, usage };
 }
@@ -838,7 +888,7 @@ export function renderCanonicalResponseToAnthropicMessagesBody(response: Canonic
   };
 }
 
-function openAIChatUsage(usage: TokenUsage): Record<string, unknown> {
+function openAIChatUsage(usage: ReportedUsage): Record<string, unknown> {
   return {
     prompt_tokens: usage.inputTokens,
     completion_tokens: usage.outputTokens,
@@ -846,10 +896,11 @@ function openAIChatUsage(usage: TokenUsage): Record<string, unknown> {
     ...(usage.cachedInputTokens > 0
       ? { prompt_tokens_details: { cached_tokens: usage.cachedInputTokens } }
       : {}),
+    ...reasoningUsageFields(usage, 'openai-chat-completions'),
   };
 }
 
-function openAIResponsesUsage(usage: TokenUsage): Record<string, unknown> {
+function openAIResponsesUsage(usage: ReportedUsage): Record<string, unknown> {
   return {
     input_tokens: usage.inputTokens,
     output_tokens: usage.outputTokens,
@@ -857,14 +908,16 @@ function openAIResponsesUsage(usage: TokenUsage): Record<string, unknown> {
     ...(usage.cachedInputTokens > 0
       ? { input_tokens_details: { cached_tokens: usage.cachedInputTokens } }
       : {}),
+    ...reasoningUsageFields(usage, 'openai-responses'),
   };
 }
 
-function anthropicUsage(usage: TokenUsage): Record<string, unknown> {
+function anthropicUsage(usage: ReportedUsage): Record<string, unknown> {
   return {
     input_tokens: usage.freshInputTokens,
     output_tokens: usage.outputTokens,
     ...(usage.cachedInputTokens > 0 ? { cache_read_input_tokens: usage.cachedInputTokens } : {}),
+    ...reasoningUsageFields(usage, 'anthropic-messages'),
   };
 }
 

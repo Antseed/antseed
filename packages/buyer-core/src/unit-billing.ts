@@ -321,8 +321,8 @@ const COMPLETED_IMAGE_EVENTS = new Set(['image_generation.completed', 'image_edi
 /**
  * The images and tokens of an answer streamed as server-sent events, in OpenAI's image events:
  * each completed event's `data.type` (never the `event:` line alone) names one final image, which
- * counts only when it carries one. Tokens are read as for any streamed answer, the largest figure
- * of any event, so a stream of several final images may report fewer tokens than it used.
+ * counts only when it carries one. Tokens are read as for any streamed answer (`streamUsage`, the
+ * largest report), so a stream of several final images may report fewer tokens than it used.
  */
 function streamedImageFacts(body: Uint8Array): ProviderResponseFacts {
   const events = [...readStreamEvents(new TextDecoder().decode(body))];
