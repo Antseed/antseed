@@ -36,6 +36,7 @@ import {
   validateM004Options,
 } from './deployments/m004.mjs';
 import { writeJsonAtomic, writeJsonOnce } from './deployments/runtime/artifacts.mjs';
+import { forgeSupportsEtherscanApiVersion } from './deployments/runtime/foundry.mjs';
 import { applyContractAliases, buildReleaseRecord, currentRelease, historyRecordExists, loadContext, readCheckpoint, validateArtifacts, writeActivationRecords } from './deployments/runtime/ledger.mjs';
 import { executePhases, runMigration } from './deployments/runtime/runner.mjs';
 import { withAnvilFork } from './deployments/runtime/anvil.mjs';
@@ -587,6 +588,8 @@ for (const broadcast of [true, false]) {
   test(`Foundry ${broadcast ? 'broadcasts are sequential' : 'simulations do not enable broadcasting'}`, (t) => {
     const calls = [];
     t.mock.method(childProcess, 'spawnSync', (command, args) => {
+      // The version-flag probe: answer as a Foundry that still has the flag.
+      if (args.includes('--help')) return { status: 0, stdout: '--etherscan-api-version <VERSION>', stderr: '' };
       calls.push({ command, args });
       return { status: 0, stdout: '', stderr: '' };
     });
@@ -2643,4 +2646,9 @@ test('M004 records keep the registry CREATE receipt from an interrupted earlier 
   });
   assert.deepEqual(merged.transactions.map((transaction) => transaction.blockNumber), [1, 2, 3, 4]);
   assert.deepEqual(merged.contracts.legacyEmissionsRegistry, registry);
+});
+
+test('forge verification passes --etherscan-api-version only to Foundry versions that have it', () => {
+  assert.equal(forgeSupportsEtherscanApiVersion('      --etherscan-api-key <KEY>\n      --etherscan-api-version <VERSION>'), true);
+  assert.equal(forgeSupportsEtherscanApiVersion('      --etherscan-api-key <KEY>\n'), false);
 });
