@@ -7,6 +7,7 @@ import {
   type ModelAuditSummaryV1,
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
+import { confirmationCannotDecideOnRetry, type CheckSlot } from './audit-checks.js'
 import { epochRunManifests } from './epoch-overview.js'
 import { latestExtension } from './close-call.js'
 import { finalAuditVerdict, retiredRecheckResult } from './model-audit.js'
@@ -22,6 +23,7 @@ import { normalized } from './utils.js'
 export { failureBlame, type FailureBlame } from './failure-blame.js'
 import { failureBlame, type FailureBlame, type ReasonLike } from './failure-blame.js'
 import { EXTRA_QUESTIONS_PUBLISHED } from './outcome-reason.js'
+import type { TestTimingConfig } from './test-timing.js'
 
 /** Auditor failures that the same configuration repeats on every attempt, so they are not retried. */
 const PERMANENT_AUDITOR_TEXT = [
@@ -37,6 +39,20 @@ export function permanentAuditorFailure(reason: ReasonLike | null | undefined, t
 export type EpochCellState =
   | 'same' | 'diff' | 'undetermined' | 'pending_extension' | 'failed' | 'skipped'
 export type EpochCellAction = 'done' | 'retry' | 'extend' | 'audit'
+
+/**
+ * The report a confirmation answers, as one key: the service, the report's chain time and the tests it repeats. Null for
+ * a result that confirms nothing.
+ */
+export function confirmationReportKey(result: { service: string; confirmsDiff?: boolean; confirming?: readonly string[]; confirmingReportedAt?: number }): string | null {
+  if (!result.confirming) return null
+  return reportKey(result.service, result.confirmingReportedAt, result.confirming)
+}
+
+/** The same key for a live report waiting for this auditor. */
+export function reportKey(service: string, reportedAt: number | undefined, checks: readonly string[]): string {
+  return [service.trim().toLowerCase(), reportedAt ?? '-', [...new Set(checks)].sort().join(',')].join('|')
+}
 
 export interface EpochCell {
   model: string
@@ -56,14 +72,24 @@ export interface EpochCell {
   lastAttemptAt: number | null
   blame: FailureBlame | null
   reason: string | null
+  /** Set on a failed cell whose audit a test did not start (`ModelVerificationFailure.notStartedBy`): nothing was asked. */
+  notStartedBy?: CheckSlot
   skipCode: string | null
   /** The result submitted for this cell, when there is one. */
   result: ModelVerificationTargetResult | null
+  /** The seller agent and service of the cell's latest entry (result, failure or skip), when it names them. */
+  agentId?: string
+  service?: string
   action: EpochCellAction
   /** Set when the cell's retry or extra questions were given up (`RetryGiveUpV1`); its action is then `done`. */
   givenUp?: RetryGiveUpV1
   /** A `pending_extension` cell's close call, waiting for its extra questions. */
   pending?: ModelVerificationTargetResult
+  /**
+   * The report the cell's confirmation attempts are for (`confirmationReportKey`): its attempts, its cooldown and its
+   * result answer that report only, never a newer one.
+   */
+  confirmationReport?: string
   /**
    * Set on a confirmation's close call whose extra questions were published (`RetryGiveUpV1` with
    * `confirmsDiff`): the cell is then an undecided confirmation attempt, audited again like a failed one.
@@ -74,7 +100,78 @@ export interface EpochCell {
 export interface EpochState {
   epoch: string
   manifests: VerifierRunManifestV1[]
+  /** Each seller's latest state over everything this epoch: for the overview and the printed plan. */
   cells: Map<string, EpochCell>
+  /** First looks only (no report named): what plans a seller with no report waiting for this auditor. */
+  ordinaryCells?: Map<string, EpochCell>
+  /**
+   * One cell per seller and report it was confirmed for (`reportCellKey`): its result, attempts and spacing together,
+   * a report starting at zero. What plans a confirmation of that report; another report's never answers or holds it.
+   */
+  reportCells?: Map<string, EpochCell>
+}
+
+/** The key of one seller's cell for one report (`confirmationReportKey`). */
+export function reportCellKey(model: string, peerId: string, report: string): string {
+  return `${epochCellKey(model, peerId)}\u0000${report}`
+}
+
+/**
+ * The epoch's runs split by the report each entry was made for: first looks apart, and each report's results,
+ * failures and skips merged on their own (`mergeEpochRuns`), so each has its own result, attempts and spacing.
+ */
+export function splitEpochRuns(epoch: string, runs: readonly RunSummaries[], timing?: TestTimingConfig | null): { ordinary: Map<string, EpochCell>; reports: Map<string, EpochCell> } {
+  const partitions = partitionRunsByReport(runs)
+  const reports = new Map<string, EpochCell>()
+  for (const [report, history] of partitions) {
+    if (report === null) continue
+    for (const [key, cell] of mergeEpochRuns(epoch, history, timing)) {
+      reports.set(`${key}\u0000${report}`, { ...cell, confirmationReport: report })
+    }
+  }
+  return { ordinary: mergeEpochRuns(epoch, partitions.get(null) ?? [], timing), reports }
+}
+
+/**
+ * The runs' entries by the report each was made for (null: a first look), in one pass: each partition holds the runs
+ * and summaries that have an entry of it, in their order, with those entries in their order. A run or summary without
+ * an entry of a report is not in that report's partition: `mergeEpochRuns` reads entries only.
+ */
+function partitionRunsByReport(runs: readonly RunSummaries[]): Map<string | null, RunSummaries[]> {
+  const keyOf = (entry: { service?: string; confirming?: readonly string[]; confirmingReportedAt?: number }): string | null => (
+    typeof entry.service === 'string' ? confirmationReportKey(entry as { service: string }) : null
+  )
+  const partitions = new Map<string | null, RunSummaries[]>()
+  for (const { manifest, summaries } of runs) {
+    const ofRun = new Map<string | null, RunSummaries>()
+    for (const summary of summaries) {
+      const ofSummary = new Map<string | null, ModelAuditSummaryV1>()
+      const copyFor = (key: string | null): ModelAuditSummaryV1 => {
+        let copy = ofSummary.get(key)
+        if (!copy) {
+          copy = { ...summary, results: [], failures: [], skipped: [] }
+          ofSummary.set(key, copy)
+          let run = ofRun.get(key)
+          if (!run) {
+            run = { manifest, summaries: [] }
+            ofRun.set(key, run)
+            let history = partitions.get(key)
+            if (!history) {
+              history = []
+              partitions.set(key, history)
+            }
+            history.push(run)
+          }
+          run.summaries.push(copy)
+        }
+        return copy
+      }
+      for (const entry of summary.results ?? []) copyFor(keyOf(entry)).results!.push(entry)
+      for (const entry of summary.failures ?? []) copyFor(keyOf(entry)).failures!.push(entry)
+      for (const entry of summary.skipped ?? []) copyFor(keyOf(entry)).skipped!.push(entry)
+    }
+  }
+  return partitions
 }
 
 export function epochCellKey(model: string, peerId: string): string {
@@ -112,12 +209,21 @@ export const CONFIRMATION_RECHECK_SPACING_SECONDS = 10 * 60
 /**
  * When a seller or unclear failure may be audited again (seconds), or null when the cell is not
  * such a retry. Confirmation re-checks are spaced by `CONFIRMATION_RECHECK_SPACING_SECONDS` instead.
+ * `timing` is a dry run's `verifier.testTiming` (`test-timing.ts`); without it, the rules' spacing.
  */
-export function sellerRetryDueAt(cell: Pick<EpochCell, 'state' | 'action' | 'blame' | 'result' | 'attempts' | 'lastAttemptAt'>): number | null {
-  if (cell.action !== 'retry' || cell.blame === 'auditor' || cell.lastAttemptAt === null) return null
+export function sellerRetryDueAt(
+  cell: Pick<EpochCell, 'state' | 'action' | 'blame' | 'result' | 'attempts' | 'lastAttemptAt'> & Partial<Pick<EpochCell, 'confirmationReport'>>,
+  timing?: TestTimingConfig | null,
+): number | null {
+  if (cell.action !== 'retry' || cell.lastAttemptAt === null) return null
+  // A report's attempt that failed on the auditor's side waits a confirmation's spacing before it is tried again, so
+  // it is not tried on every tick; any other failure on the auditor's side is retried at once, as before.
+  if (cell.blame === 'auditor') {
+    return cell.confirmationReport !== undefined ? cell.lastAttemptAt + (timing?.confirmationRecheckSpacingSeconds ?? CONFIRMATION_RECHECK_SPACING_SECONDS) : null
+  }
   if (cell.state !== 'failed' && cell.state !== 'undetermined') return null
   if (cell.result?.confirmsDiff) return null
-  return cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS
+  return cell.lastAttemptAt + (timing?.sellerRetrySpacingSeconds ?? SELLER_RETRY_SPACING_SECONDS)
 }
 
 /**
@@ -129,9 +235,10 @@ export function sellerRetryWaitUntil(
   cell: Pick<EpochCell, 'state' | 'action' | 'blame' | 'result' | 'attempts' | 'lastAttemptAt'> | undefined,
   nowSeconds: number,
   explicitResume: boolean,
+  timing?: TestTimingConfig | null,
 ): number | null {
   if (!cell || explicitResume) return null
-  const dueAt = sellerRetryDueAt(cell)
+  const dueAt = sellerRetryDueAt(cell, timing)
   return dueAt !== null && dueAt > nowSeconds ? dueAt : null
 }
 
@@ -158,6 +265,8 @@ export interface RetryGiveUpV1 {
    * submitted as UNDETERMINED; with it, it counts as an undecided confirmation attempt (`applyRetryGiveUps`).
    */
   extraQuestionsPublished?: true
+  /** A first look's recovery given up (`recoveringFirstLooks`): its seller no longer offers the model. */
+  recovery?: true
   /** The close call answered a DIFF waiting for this auditor's confirmation. */
   confirmsDiff?: true
 }
@@ -188,24 +297,47 @@ export async function writeRetryGiveUps(evidenceDir: string, epoch: string, entr
  * questions were published is not done: it becomes an undecided confirmation attempt, so it is held and
  * the seller audited again from the start, up to `CONFIRMATION_ATTEMPTS` (`heldForConfirmationRecheck`).
  */
-export function applyRetryGiveUps(cells: Map<string, EpochCell>, entries: readonly RetryGiveUpV1[]): void {
-  for (const entry of entries) {
-    const key = epochCellKey(entry.model, entry.peerId)
-    const cell = cells.get(key)
-    if (!cell || cell.action === 'done' || cell.action === 'audit') continue
-    if (cell.runId !== entry.runId || cell.lastAttemptAt !== entry.lastAttemptAt) continue
-    if (entry.extraQuestionsPublished && entry.confirmsDiff && cell.state === 'pending_extension' && cell.pending) {
-      // Its first look's own status stays (submit checks it against the evidence); the reason marks it undecided.
-      const result: ModelVerificationTargetResult = { ...cell.pending, outcomeReason: EXTRA_QUESTIONS_PUBLISHED }
-      const attempt: Omit<EpochCell, 'action'> = {
-        ...cell, state: 'undetermined', result, blame: failureBlame(result.outcomeReason), permanent: false,
-        reason: EXTRA_QUESTIONS_PUBLISHED.summary, extraQuestionsPublished: entry,
-      }
-      cells.set(key, { ...attempt, action: epochCellAction(attempt) })
-      continue
-    }
-    cells.set(key, { ...cell, action: 'done', givenUp: entry })
+export function applyRetryGiveUps(
+  cells: Map<string, EpochCell>,
+  entries: readonly RetryGiveUpV1[],
+  /** The seller key of a cell key (report cells hold the report after it). */
+  sellerOf: (key: string) => string = (key) => key,
+): void {
+  // The cells' keys by seller, once: `applyRetryGiveUp` replaces values and adds or removes no key.
+  const keysBySeller = new Map<string, string[]>()
+  for (const key of cells.keys()) {
+    const seller = sellerOf(key)
+    const keys = keysBySeller.get(seller)
+    if (keys) keys.push(key)
+    else keysBySeller.set(seller, [key])
   }
+  for (const entry of entries) {
+    for (const key of keysBySeller.get(epochCellKey(entry.model, entry.peerId)) ?? []) {
+      applyRetryGiveUp(cells, key, entry)
+    }
+  }
+}
+
+function applyRetryGiveUp(cells: Map<string, EpochCell>, key: string, entry: RetryGiveUpV1): void {
+  const cell = cells.get(key)
+  // A first look's recovery given up: the cell keeps its result and is done; it is no longer waited for.
+  if (cell && entry.recovery && cell.action === 'done' && cell.runId === entry.runId && cell.lastAttemptAt === entry.lastAttemptAt) {
+    cells.set(key, { ...cell, givenUp: entry })
+    return
+  }
+  if (!cell || cell.action === 'done' || cell.action === 'audit') return
+  if (cell.runId !== entry.runId || cell.lastAttemptAt !== entry.lastAttemptAt) return
+  if (entry.extraQuestionsPublished && entry.confirmsDiff && cell.state === 'pending_extension' && cell.pending) {
+    // Its first look's own status stays (submit checks it against the evidence); the reason marks it undecided.
+    const result: ModelVerificationTargetResult = { ...cell.pending, outcomeReason: EXTRA_QUESTIONS_PUBLISHED }
+    const attempt: Omit<EpochCell, 'action'> = {
+      ...cell, state: 'undetermined', result, blame: failureBlame(result.outcomeReason), permanent: false,
+      reason: EXTRA_QUESTIONS_PUBLISHED.summary, extraQuestionsPublished: entry,
+    }
+    cells.set(key, { ...attempt, action: epochCellAction(attempt) })
+    return
+  }
+  cells.set(key, { ...cell, action: 'done', givenUp: entry })
 }
 
 /**
@@ -223,6 +355,10 @@ export function decideRetryGiveUps(input: {
   offersModel: ((cell: EpochCell) => boolean) | null
   windowClosed: (cell: EpochCell) => boolean
   extraQuestionsPublished?: (cell: EpochCell) => boolean
+  /** A first look still to be recovered (`recoveringFirstLooks`): given up like a retry when its seller is gone. */
+  recovering?: (cell: EpochCell) => boolean
+  /** A dry run's `verifier.testTiming`; without it, the rules' retry spacing. */
+  timing?: TestTimingConfig | null
 }): { entries: RetryGiveUpV1[]; added: RetryGiveUpV1[]; restored: RetryGiveUpV1[] } {
   const entries: RetryGiveUpV1[] = []
   const added: RetryGiveUpV1[] = []
@@ -231,7 +367,10 @@ export function decideRetryGiveUps(input: {
     // A confirmation attempt made from a published close call keeps its record (it is never restored).
     if (cell.extraQuestionsPublished) entries.push(cell.extraQuestionsPublished)
     if (cell.givenUp) {
-      if (!cell.givenUp.extraQuestionsPublished && input.offersModel?.(cell) && !input.windowClosed(cell)) restored.push(cell.givenUp)
+      // A first look gets its retry back only while its window is open; a confirmation is no part of any window, so a
+      // returning seller gets its report's retry back whether the model's window has closed or not.
+      const windowAllows = cell.confirmationReport !== undefined || !input.windowClosed(cell)
+      if (!cell.givenUp.extraQuestionsPublished && input.offersModel?.(cell) && windowAllows) restored.push(cell.givenUp)
       else entries.push(cell.givenUp)
       continue
     }
@@ -253,9 +392,10 @@ export function decideRetryGiveUps(input: {
       continue
     }
     if (!input.offersModel) continue
-    if (cell.action !== 'retry' && cell.action !== 'extend') continue
+    const recovery = cell.action === 'done' && input.recovering?.(cell) === true
+    if (cell.action !== 'retry' && cell.action !== 'extend' && !recovery) continue
     if (cell.lastAttemptAt === null) continue
-    if (input.nowSeconds < cell.lastAttemptAt + SELLER_RETRY_SPACING_SECONDS) continue
+    if (input.nowSeconds < cell.lastAttemptAt + (input.timing?.sellerRetrySpacingSeconds ?? SELLER_RETRY_SPACING_SECONDS)) continue
     if (input.offersModel(cell)) continue
     const entry: RetryGiveUpV1 = {
       model: cell.model,
@@ -265,7 +405,8 @@ export function decideRetryGiveUps(input: {
       lastAttemptAt: cell.lastAttemptAt,
       attempts: cell.attempts,
       givenUpAt: new Date(input.nowSeconds * 1_000).toISOString(),
-      reason: `its ${cell.action === 'extend' ? 'extra questions were' : 'retry was'} due and the buyer's peers show it no longer offers ${cell.model}`,
+      reason: `its ${cell.action === 'extend' ? 'extra questions were' : recovery ? 'new audit (its result cannot be sent) was' : 'retry was'} due and the buyer's peers show it no longer offers ${cell.model}`,
+      ...(recovery ? { recovery: true as const } : {}),
     }
     entries.push(entry)
     added.push(entry)
@@ -273,10 +414,27 @@ export function decideRetryGiveUps(input: {
   return { entries, added, restored }
 }
 
+/**
+ * The cells a run considers giving up (`decideRetryGiveUps`): each seller's latest cell, and a report's cell still to be
+ * audited again when the seller's latest cell reads done. The latest cell merges every entry of the seller, so with a
+ * first look of it finished it is done, and a confirmation of a seller that no longer offers the model would never be
+ * given up: it would wait, and hold its model's submit (`confirmationsHoldingSubmit`), to the end of the epoch.
+ */
+export function retryGiveUpCells(state: Pick<EpochState, 'cells' | 'reportCells'>): EpochCell[] {
+  const reports = [...state.reportCells?.values() ?? []].filter((cell) => (cell.action === 'retry' || cell.action === 'extend' || cell.givenUp)
+    && state.cells.get(epochCellKey(cell.model, cell.peerId))?.action === 'done')
+  return [...state.cells.values(), ...reports]
+}
+
 /** Whether a cell is a confirmation's UNDETERMINED that is audited again before it is submitted. */
 export function heldForConfirmationRecheck(cell: Pick<EpochCell, 'state' | 'action' | 'result' | 'attempts'>): boolean {
   return cell.state === 'undetermined' && cell.action === 'retry' && cell.result?.confirmsDiff === true
     && cell.attempts < CONFIRMATION_ATTEMPTS
+}
+
+/** The reason a result's attempt is blamed by: an undecided confirmation's own cause when it kept one, else its outcome. */
+function blameReasonOf(result: ModelVerificationTargetResult): ModelVerificationTargetResult['outcomeReason'] {
+  return result.undecidedCause ?? result.outcomeReason ?? null
 }
 
 export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellAction {
@@ -288,7 +446,9 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
       return 'extend'
     case 'skipped':
       // A skip is decided before any request, so it is re-evaluated each run (a seller may have
-      // lowered its price, or the model is advertised again).
+      // lowered its price, or the model is advertised again). A report's runtime skips count as its attempts: they stop
+      // at the confirmation limit like any other.
+      if (cell.confirmationReport !== undefined && cell.attempts >= CONFIRMATION_ATTEMPTS) return 'done'
       return 'audit'
     case 'undetermined':
       // The retired DIFF self-recheck's UNDETERMINED cannot be submitted (`retiredRecheckResult`).
@@ -299,12 +459,20 @@ export function epochCellAction(cell: Omit<EpochCell, 'action'>): EpochCellActio
       // A close call whose extra questions failed is final too, unless a waiting DIFF depends on it:
       // a confirmation's failure is retried like one in its first set.
       if (cell.result.extension && !cell.result.confirmsDiff) return 'done'
+      // A confirmation that a retry cannot decide (its open tests are carried as they are) is finished now.
+      if ((cell.result.confirmsDiff || cell.confirmationReport !== undefined) && cell.result.outcomeReason?.code === 'confirmation_undecided'
+        && confirmationCannotDecideOnRetry(cell.result)) return 'done'
       // falls through
     case 'failed':
       if (cell.blame === 'auditor') {
+        // A report's attempts end only on the seller's side: the auditor's own failures (a reference route down, a
+        // buyer routing policy) neither finish it nor count, so the report stays open while the seller has attempts.
+        if (cell.confirmationReport !== undefined) return cell.attempts < CONFIRMATION_ATTEMPTS ? 'retry' : 'done'
         return !cell.permanent && cell.auditorAttempts < AUDITOR_FAILURE_ATTEMPTS ? 'retry' : 'done'
       }
-      return cell.attempts < (cell.result?.confirmsDiff ? CONFIRMATION_ATTEMPTS : SELLER_FAILURE_ATTEMPTS) ? 'retry' : 'done'
+      // A confirmation, or any attempt on a report (a failure names its report, not `confirmsDiff`), gets the
+      // confirmation limit.
+      return cell.attempts < (cell.result?.confirmsDiff || cell.confirmationReport !== undefined ? CONFIRMATION_ATTEMPTS : SELLER_FAILURE_ATTEMPTS) ? 'retry' : 'done'
   }
 }
 
@@ -326,7 +494,8 @@ interface RunSummaries {
  * waiting for its extra questions replaces it only when nothing submittable came after. Failures
  * and skips fill cells without a result.
  */
-export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Map<string, EpochCell> {
+export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[], timing?: TestTimingConfig | null): Map<string, EpochCell> {
+  const retrySpacing = timing?.sellerRetrySpacingSeconds ?? SELLER_RETRY_SPACING_SECONDS
   interface Acc {
     model: string
     peerId: string
@@ -344,6 +513,10 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     last: 'result' | 'pending' | 'failure' | 'skip'
     /** Audit IDs of the results already counted, so a confirmation's close call carried on counts once. */
     countedAuditIds: Set<string>
+    confirmationReport: string | null
+    /** The latest entry's seller agent and service. */
+    agentId: string | null
+    service: string | null
   }
   const acc = new Map<string, Acc>()
   const get = (model: string, peerId: string, runId: string): Acc => {
@@ -353,11 +526,17 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       entry = {
         model, peerId, runId, attempts: 0, auditorAttempts: 0, countedAt: null, lastAttemptAt: null,
         result: null, resultRunId: null,
-        pending: null, failure: null, skip: null, last: 'skip', countedAuditIds: new Set(),
+        pending: null, failure: null, skip: null, last: 'skip', countedAuditIds: new Set(), confirmationReport: null, agentId: null, service: null,
       }
       acc.set(key, entry)
     }
     return entry
+  }
+  // The report the cell's latest keyed entry was for (a merge of one report's entries has only that one).
+  const switchReport = (entry: Acc, report: string | null, row: { agentId?: string | null; service?: string }): void => {
+    if (report !== null) entry.confirmationReport = report
+    if (typeof row.agentId === 'string') entry.agentId = row.agentId
+    if (typeof row.service === 'string') entry.service = row.service
   }
   for (const { manifest, summaries } of runs) {
     const finishedAt = Number.isFinite(Date.parse(manifest.completedAt)) ? Date.parse(manifest.completedAt) / 1_000 : null
@@ -366,7 +545,7 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     const countSellerAttempt = (entry: Acc, spaced: boolean): void => {
       entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
       if (spaced && finishedAt !== null && entry.countedAt !== null
-        && finishedAt - entry.countedAt < SELLER_RETRY_SPACING_SECONDS) return
+        && finishedAt - entry.countedAt < retrySpacing) return
       entry.attempts += 1
       entry.countedAt = finishedAt ?? entry.countedAt
     }
@@ -374,11 +553,13 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       if (summary.epoch !== epoch || summary.runId !== manifest.runId) continue
       for (const result of summary.results ?? []) {
         const entry = get(summary.model, result.peerId, manifest.runId)
+        switchReport(entry, confirmationReportKey(result), result)
         // A confirmation's close call carried on to a later run is written into that run's summary again,
         // with the same audit ID: it is the same audit still waiting for its extra questions, not another
         // attempt (confirmation attempts are unspaced, so counting it again would use up their limit).
         const carriedOn = result.confirmsDiff === true && finalAuditVerdict(result) === null && entry.countedAuditIds.has(result.auditId)
-        if (result.outcomeReason && failureBlame(result.outcomeReason) === 'auditor') {
+        // Blamed by its cause: an undecided confirmation of the auditor's own making counts on the auditor's side.
+        if (blameReasonOf(result) && failureBlame(blameReasonOf(result)) === 'auditor') {
           entry.auditorAttempts += 1
           entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
         } else if (carriedOn) {
@@ -398,20 +579,23 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       for (const failure of summary.failures ?? []) {
         if (failure.peerId.startsWith('model:')) continue
         const entry = get(summary.model, failure.peerId, manifest.runId)
-        if (failureBlame(failure.outcomeReason, failure.reason) === 'auditor') {
+        switchReport(entry, confirmationReportKey(failure), failure)
+        if (failureBlame(failure.outcomeReason, failure.reason, failure.notStartedBy) === 'auditor') {
           entry.auditorAttempts += 1
           entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
-        } else countSellerAttempt(entry, true)
+          // A confirmation's attempts have their own spacing and limit (as its results do): each one counts.
+        } else countSellerAttempt(entry, confirmationReportKey(failure) === null)
         entry.failure = { entry: failure, runId: manifest.runId }
         entry.last = 'failure'
       }
       for (const skip of summary.skipped ?? []) {
         const entry = get(summary.model, skip.peerId, manifest.runId)
+        switchReport(entry, confirmationReportKey(skip), skip)
         if (skip.source === 'runtime') {
           if (failureBlame(skip.outcomeReason, skip.reason) === 'auditor') {
             entry.auditorAttempts += 1
             entry.lastAttemptAt = finishedAt ?? entry.lastAttemptAt
-          } else countSellerAttempt(entry, true)
+          } else countSellerAttempt(entry, confirmationReportKey(skip) === null)
         }
         entry.skip = { entry: skip, runId: manifest.runId }
         entry.last = 'skip'
@@ -425,6 +609,9 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
     const base = {
       model: entry.model, peerId: entry.peerId, attempts: entry.attempts, auditorAttempts: entry.auditorAttempts,
       permanent: false, lastAttemptAt: entry.lastAttemptAt, skipCode: null,
+      ...(entry.confirmationReport !== null ? { confirmationReport: entry.confirmationReport } : {}),
+      ...(entry.agentId !== null ? { agentId: entry.agentId } : {}),
+      ...(entry.service !== null ? { service: entry.service } : {}),
     }
     if (entry.pending) {
       // A close call newer than any submittable result: its extra questions decide the cell.
@@ -437,18 +624,20 @@ export function mergeEpochRuns(epoch: string, runs: readonly RunSummaries[]): Ma
       const verdict = finalAuditVerdict(entry.result)!
       const state = verdict === 'SAME' ? 'same' : verdict === 'DIFF' ? 'diff' : 'undetermined'
       const reason = entry.result.outcomeReason ?? null
+      const cause = blameReasonOf(entry.result)
       cell = {
         ...base, runId: entry.resultRunId!, state, result: entry.result,
-        blame: state === 'undetermined' ? failureBlame(reason) : null,
-        permanent: state === 'undetermined' && permanentAuditorFailure(reason),
+        blame: state === 'undetermined' ? failureBlame(cause) : null,
+        permanent: state === 'undetermined' && permanentAuditorFailure(cause),
         reason: reason?.summary ?? null,
       }
     } else if (entry.failure && (entry.last === 'failure' || !entry.skip)) {
       cell = {
         ...base, runId: entry.failure.runId, state: 'failed', result: null,
-        blame: failureBlame(entry.failure.entry.outcomeReason, entry.failure.entry.reason),
+        blame: failureBlame(entry.failure.entry.outcomeReason, entry.failure.entry.reason, entry.failure.entry.notStartedBy),
         permanent: permanentAuditorFailure(entry.failure.entry.outcomeReason, entry.failure.entry.reason),
         reason: entry.failure.entry.reason,
+        ...(entry.failure.entry.notStartedBy !== undefined ? { notStartedBy: entry.failure.entry.notStartedBy } : {}),
       }
     } else {
       const skip = entry.skip!
@@ -471,8 +660,11 @@ async function readSummary(path: string): Promise<ModelAuditSummaryV1 | null> {
   }
 }
 
-/** Every completed run of the epoch, merged into one state per (model, seller). */
-export async function loadEpochState(evidenceDir: string, epoch: string): Promise<EpochState> {
+/**
+ * Every completed run of the epoch, merged into one state per (model, seller). `timing` is a dry run's
+ * `verifier.testTiming`; without it, attempts are spaced as the rules say.
+ */
+export async function loadEpochState(evidenceDir: string, epoch: string, timing?: TestTimingConfig | null): Promise<EpochState> {
   const manifests = await epochRunManifests(evidenceDir, epoch)
   const runs: RunSummaries[] = []
   for (const manifest of manifests) {
@@ -483,9 +675,14 @@ export async function loadEpochState(evidenceDir: string, epoch: string): Promis
     }
     runs.push({ manifest, summaries })
   }
-  const cells = mergeEpochRuns(epoch, runs)
-  applyRetryGiveUps(cells, await readRetryGiveUps(evidenceDir, epoch))
-  return { epoch, manifests, cells }
+  const cells = mergeEpochRuns(epoch, runs, timing)
+  const { ordinary, reports } = splitEpochRuns(epoch, runs, timing)
+  const giveUps = await readRetryGiveUps(evidenceDir, epoch)
+  // A give-up names the seller and its last attempt: it applies to whichever cell holds that attempt.
+  applyRetryGiveUps(cells, giveUps)
+  applyRetryGiveUps(ordinary, giveUps)
+  applyRetryGiveUps(reports, giveUps, (key) => key.split('\u0000').slice(0, 2).join('\u0000'))
+  return { epoch, manifests, cells, ordinaryCells: ordinary, reportCells: reports }
 }
 
 export interface EpochPlanCounts {
@@ -607,6 +804,10 @@ export async function writeEpochSubmissionManifest(
           reason: `held: UNDETERMINED (${cell.reason ?? 'audit failed'}) on a DIFF waiting for this auditor's confirmation; `
             + `audited again before it is submitted (attempt ${cell.attempts} of ${CONFIRMATION_ATTEMPTS})`,
           ...(result.outcomeReason ? { outcomeReason: result.outcomeReason } : {}),
+          // Still the report's: the hold keeps the report it answers.
+          ...(result.confirming ? { confirming: result.confirming } : {}),
+          ...(result.confirmingReportedAt !== undefined ? { confirmingReportedAt: result.confirmingReportedAt } : {}),
+          confirmationHeld: true,
         })
       } else if (cell.result && cell.state === 'undetermined' && cell.blame === 'auditor') {
         // The auditor's own failure says nothing about the seller's model: never submitted.
@@ -632,6 +833,14 @@ export async function writeEpochSubmissionManifest(
         const skip = latestBy(runSummaries, (summary) => summary.skipped, peer)
         if (skip) skipped.push(skip)
       }
+    }
+    // Each report's own decided result is offered too, after the seller's latest one: when the report waiting now is
+    // not the one the latest result was made for, submit sends the one made for it (`model-audit.ts`), not nothing.
+    for (const cell of state.reportCells?.values() ?? []) {
+      if (normalized(cell.model) !== normalized(model) || !cell.result || finalAuditVerdict(cell.result) === null) continue
+      if (cell.state !== 'same' && cell.state !== 'diff') continue
+      if (results.some((result) => result.auditId === cell.result!.auditId)) continue
+      results.push({ ...cell.result, offeredAsAlternate: true })
     }
     for (const failure of runSummaries.flatMap((summary) => summary.failures)) {
       if (failure.peerId.startsWith('model:') && results.length === 0) failures.push(failure)
@@ -678,7 +887,14 @@ export async function writeEpochSubmissionManifest(
     modelOrder: models,
     models: modelEntries,
     failureCount: modelEntries.reduce((total, entry) => total + entry.failureCount, 0),
+    // A dry run's shortened waits, the latest run's that had them, so its published evidence says so too.
+    ...(testTimingOfRuns(manifests) ? { testTiming: testTimingOfRuns(manifests)! } : {}),
   }
+}
+
+/** The shortened waits (`verifier.testTiming`) of the latest of these runs that had them, or undefined. */
+function testTimingOfRuns(manifests: readonly VerifierRunManifestV1[]): TestTimingConfig | undefined {
+  return [...manifests].reverse().find((manifest) => manifest.testTiming !== undefined)?.testTiming
 }
 
 function latestBy<T extends { peerId: string }>(

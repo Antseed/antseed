@@ -1,5 +1,8 @@
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
+  THINKING_DISCOVERY_RULE,
+  THINKING_REFERENCE_EQUIVALENTS,
+  KBF_COVERAGE_RULE,
   KBF_CALIBRATION_METHOD,
   KBF_CALIBRATION_PASSES,
   KBF_DEFAULT_PROMPT_VARIANT_ID,
@@ -26,21 +29,38 @@ import type { VerifierCLIConfig } from '../config/types.js'
 import { assignAuditModelsRoundRobin, confirmationAssignments } from './audit-assignment.js'
 import { MINIMUM_REAL_RESULTS_PERCENT, auditHandovers } from './audit-handover.js'
 import { MIN_SECONDS_FOR_ANOTHER_ROUND } from './audit-window.js'
+import { confirmationsHoldingSubmit } from './confirmation-hold.js'
 import {
   AUDITOR_FAILURE_ATTEMPTS,
   CONFIRMATION_ATTEMPTS,
   CONFIRMATION_RECHECK_SPACING_SECONDS,
   SELLER_FAILURE_ATTEMPTS,
   SELLER_RETRY_SPACING_SECONDS,
+  type EpochCell,
 } from './epoch-plan.js'
+import type { ModelVerificationTargetResult } from './model-run.js'
 import { CALIBRATION_MINIMUM_COVERAGE, EPOCH_QUESTION_SET_METHOD } from './probe-bank.js'
 import { AUDITED_MODELS, type AuditedModel } from './audited-models.js'
-import { CLOSE_CALL_RULE_ID, closeCallRuleForExtensions, needsExtension, pooledCloseCallVerdict } from './close-call.js'
+import { CLOSE_CALL_RULE_ID, auditDecision, closeCallRuleForExtensions, needsExtension, pooledCloseCallVerdict } from './close-call.js'
 import { CANONICAL_KBF_DOMAINS } from './canonical-kbf-domains.js'
 import { DIFF_HOLD_EPOCHS, diffHoldReason, diffHoldResultReason } from './diff-hold.js'
 import { DEFAULT_LAYOUT_FILTER_PASSES, REFERENCE_SIZING_ALGORITHM_VERSION } from './model-reference.js'
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
 import { CONFIRMATION_WINDOW_SECONDS, pendingConfirmations, type EpochReport } from './pending-confirmations.js'
+import {
+  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, THINKING_DECLARATIONS, confirmationCannotDecideOnRetry, decidedRecords, inactiveChecks, sameConfirmation, verdictOf,
+  type ActiveTestsInput, type AuditCheckId, type CheckOutcome, type CheckSlot, type ConfirmationIdentity,
+} from './audit-checks.js'
+import { OUTPUT_ECHO_RULE } from './methods/output-echo/output-echo.js'
+import { TOKENIZER_PRECHECK_RULE } from './methods/tokens/tokenizer-precheck.js'
+import { AUDIT_TEST_COUNTS, testBlocksSame, type AuditTestRule, type CountedTestId } from './audit-test-counts.js'
+import { METHODS } from './methods/index.js'
+import { resolveThinking } from './audit-thinking.js'
+import { FLIPS_RULE } from './methods/flips/flips-score.js'
+import { FLIPS_AUDITOR_FAILURE } from './methods/flips/flips.js'
+import { CONFIRMATION_MIN_DELAY_SECONDS, decide } from './same-check.js'
+import { failureBlame } from './failure-blame.js'
+import { AUDIT_THINKING, type AuditThinkingEntry } from './audit-thinking-table.js'
 import {
   DEFAULT_REFERENCE_MAXIMUM_PROBE_COUNT,
   DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT,
@@ -85,9 +105,12 @@ const CLOSE_CALL_EXTENSIONS = 2
  * run` stops unless `--skip-version-check` is given.
  */
 export function verifierRuleOverrides(config: VerifierCLIConfig | undefined): string[] {
+  // The tests' switches from the list, in its order. Tests behind one switch are one setting, named once.
+  const switches = new Map(METHODS.map((check) => [check.toggle.key, check.toggle.pinned] as const))
   const pinned = [
     ['closeCallExtensions', config?.closeCallExtensions, CLOSE_CALL_EXTENSIONS],
     ['diffHoldEpochs', config?.diffHoldEpochs, DIFF_HOLD_EPOCHS],
+    ...[...switches].map(([key, expected]) => [key, config?.[key], expected] as const),
     ['referenceSelfTestRuns', config?.referenceSelfTestRuns, KBF_DEFAULT_SELF_TEST_RUNS],
     ['referenceLayoutFilterPasses', config?.referenceLayoutFilterPasses, DEFAULT_LAYOUT_FILTER_PASSES],
     ['referenceMinimumProbeCount', config?.referenceMinimumProbeCount, DEFAULT_REFERENCE_MINIMUM_PROBE_COUNT],
@@ -118,7 +141,13 @@ const EPOCH_SECONDS = 86_400
  * scoring rules give for fixed sample inputs (so a change to their code shows up, not only a change
  * to a constant). A test pins its hash for the current compat number.
  */
-export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Record<string, AuditedModel>> } = {}): unknown {
+export function verifierRulesFingerprint(input: {
+  auditedModels?: Readonly<Record<string, AuditedModel>>
+  /** Only for the test that shows a changed entry changes the hash; the rules are `AUDIT_TEST_COUNTS`. */
+  testCounts?: Readonly<Record<CountedTestId, Readonly<AuditTestRule>>>
+  /** Only for the test that shows a changed entry changes the hash; the rules are `AUDIT_THINKING`. */
+  thinkingTable?: Readonly<Record<string, Readonly<AuditThinkingEntry>>>
+} = {}): unknown {
   const models = Object.entries(input.auditedModels ?? AUDITED_MODELS)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, model]) => ({
@@ -198,11 +227,82 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       lowCoverageRetries: KBF_LOW_COVERAGE_RETRIES,
       auditVerifyOptions: KBF_AUDIT_VERIFY_OPTIONS,
       closeCallExtensions: CLOSE_CALL_EXTENSIONS,
+      // How thinking discovery chooses a setting, for the reference and for every seller audited.
+      thinkingDiscoveryRule: THINKING_DISCOVERY_RULE,
+      // The nearest equivalent a seller is asked with when it refuses the reference's setting, the whole table.
+      thinkingReferenceEquivalents: THINKING_REFERENCE_EQUIVALENTS,
+      // How little each audited model is asked to think, with its fallback (`AUDIT_THINKING`), the whole table.
+      thinkingTable: input.thinkingTable ?? AUDIT_THINKING,
     },
+    // What each test's requests carry, side by side, from its declaration (`audit-thinking.ts`): the questions first,
+    // then the tests with a record. With what the declarations give for fixed banks and discoveries, so a change to how
+    // a setting is chosen shows here, not only a change to a declaration.
+    thinking: thinkingFingerprint(),
+    // Which tests count toward the verdict (`AUDIT_TEST_COUNTS`): the same on every auditor, so no config changes it.
+    testCounts: input.testCounts ?? AUDIT_TEST_COUNTS,
     parsed: SAMPLE_REPLIES.map(([reply, count]) => parseKbfAnswers(stripKbfThinkBlocks(reply), count)),
     scored: SAMPLE_SCORES.map(([answer, domain, consensus]) => scoreKbfAnswer(answer, sampleProbe(domain, consensus))),
     verdicts: sampleVerdicts(),
     questions: { selection: EPOCH_QUESTION_SET_METHOD },
+    // Each test's own block under its slot's name (`RecordCheck.fingerprint`): its rule, its limits and what its judge
+    // gives for fixed inputs, kept with the test. Under the same key, the samples of a rule that crosses tests.
+    ...Object.fromEntries(METHODS.map((check) => [check.slot, { ...check.fingerprint(), ...CROSS_TEST_SAMPLES[check.slot]?.() }])),
+    // A result that answers another auditor's waiting DIFF: sent as DIFF only when one of these checks flagged in
+    // both, as SAME only when a check that flagged there passed here, otherwise not at all; made at least
+    // `minDelaySeconds` after that report. What the rule gives for fixed checks (flagged, passed, verdict).
+    confirmation: {
+      checks: AUDIT_CHECK_IDS,
+      minDelaySeconds: CONFIRMATION_MIN_DELAY_SECONDS,
+      decisions: SAMPLE_CONFIRMATIONS.map(([firstChecks, flaggedBy, passedBy, verdict]) => decide(
+        { agentId: 1n, serviceHash: '0x00', verdict: verifierVerdict(verdict), auditedAt: 10_000 + CONFIRMATION_MIN_DELAY_SECONDS, flaggedBy, passedBy },
+        [{ auditor: '0x00', peerId: '00'.repeat(20), evidenceUri: 'ipfs://sample', evidenceHash: '0x00', reportedAt: 10_000, checks: firstChecks }],
+      ).kind),
+      // A confirmation is credited only to the report it names: its tests and the report's time.
+      identity: SAMPLE_CONFIRMATION_IDENTITIES.map(([named]) => decide(
+        { agentId: 1n, serviceHash: '0x00', verdict: verifierVerdict('DIFF'), auditedAt: 10_000 + CONFIRMATION_MIN_DELAY_SECONDS, flaggedBy: ['output-cap'], passedBy: [], confirming: named },
+        [{ auditor: '0x00', peerId: '00'.repeat(20), evidenceUri: 'ipfs://sample', evidenceHash: '0x00', reportedAt: 100, checks: ['output-cap', 'kbf'] }],
+      ).kind),
+    },
+    // The audit's verdict over every test (rule `all-tests-v1`): every test runs and none ends the audit; any flag is a
+    // DIFF; otherwise the questions' own verdict; a test with no result never blocks SAME; a confirmation in which no
+    // test it repeats decided is undecided. What the rule gives for fixed readings and questions verdicts.
+    // What a scheduled retry carries (`decidedRecords`): only tests that decided, and a test judged against an earlier
+    // one only with it.
+    carry: SAMPLE_CARRIES.map((records) => Object.keys(decidedRecords(records as never)).sort()),
+    // Into a confirmation only records of a confirmation of the same report and tests are carried (`sameConfirmation`).
+    confirmationCarry: SAMPLE_CONFIRMATION_IDENTITIES.map(([left, right]) => sameConfirmation(left, right)),
+    // A close call beside a cap flag, waiting and then closed: while it waits the questions give neither pass nor flag;
+    // closed, its questions are undecided and the cap flag makes the audit a DIFF.
+    closedCloseCall: [false, true].map((closed) => {
+      const look = computeKbfVerdict({
+        selfHamming: 30, selfTotal: 300, minCoverage: 0.5, minDiffCoverage: 0.8,
+        targetMatchVector: Array.from({ length: 100 }, (_, index) => (index < 22 ? 0 : 1)),
+      })
+      const decision = auditDecision({
+        status: look.verdict, questionsStatus: look.verdict, parsedProbeCount: 100, probeCount: 100, decisionRule: 'kbf-extension-v2',
+        stats: { ...look.stats, selfCoverage: 1 }, responseAuthVerified: true, outcomeReason: null,
+        outputCap: { outcome: 'flag' }, ...(closed ? { closeCallClosed: { reason: 'sample' } } : {}),
+      } as never)
+      return [decision.pending, decision.questionsStatus, decision.audit.verdict]
+    }),
+    verdict: {
+      format: ALL_TESTS_FORMAT,
+      // A SAME needs every active test passed (`same-needs-all-active`): an active test with no result, or not run for
+      // the seller, leaves it UNDETERMINED; a test that is not active never blocks it.
+      sameNeedsEveryActiveTest: true,
+      decisions: SAMPLE_VERDICTS.map(([outcomes, questions, confirming, pending, inactive]) => {
+        const readings = outcomes.map(([check, outcome]) => ({
+          check, subject: 'model' as const, outcome,
+          ...((inactive ?? []).includes(check) ? { inactive: { cause: 'run' as const, reason: 'sample' } } : {}),
+          ...(!testBlocksSame(check) ? { flagOnly: true as const } : {}),
+        }))
+        const verdict = verdictOf(readings, questions, confirming, { questionsPending: pending })
+        return [verdict.verdict, verdict.flaggedBy, verdict.undecidedConfirmation, verdict.openTests ?? null]
+      }),
+      // Which tests are active (`inactiveChecks`) for fixed evidence: what each test's own gate gives, the rule's
+      // counting and the run's `noRecord` entries.
+      active: SAMPLE_ACTIVE_EVIDENCE.map((evidence) => inactiveChecks(evidence).map((entry) => [entry.check, entry.cause])),
+    },
     window: {
       minimumSecondsLeftToOpen: MIN_SECONDS_FOR_ANOTHER_ROUND,
       sellerFailureAttempts: SELLER_FAILURE_ATTEMPTS,
@@ -212,6 +312,10 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
       confirmationWindowSeconds: CONFIRMATION_WINDOW_SECONDS,
       minimumRealResultsPercent: MINIMUM_REAL_RESULTS_PERCENT,
       confirmationRecheckSpacingSeconds: CONFIRMATION_RECHECK_SPACING_SECONDS,
+      // Which started confirmations hold their model's submit, with a day left and just before the end-of-epoch cut-off.
+      confirmationHoldsSubmit: [86_400, MIN_SECONDS_FOR_ANOTHER_ROUND - 1].map((secondsLeft) => SAMPLE_WAITING_CONFIRMATIONS.map((cell) => (
+        confirmationsHoldingSubmit({ state: { cells: new Map([['cell', cell]]), manifests: [] }, secondsLeftInEpoch: secondsLeft, stillMine: null }).size > 0
+      ))),
       // Which epochs after a DIFF recorded in epoch 10 hold the seller (and that a SAME holds nobody).
       diffHoldEpochs: DIFF_HOLD_EPOCHS,
       diffHold: [10n, 11n, 12n, 13n].map((epoch) => [
@@ -230,6 +334,137 @@ export function verifierRulesFingerprint(input: { auditedModels?: Readonly<Recor
 export function verifierRulesHash(input: Parameters<typeof verifierRulesFingerprint>[0] = {}): string {
   return canonicalHashBytes32(verifierRulesFingerprint(input))
 }
+
+/**
+ * Samples of a rule that crosses tests, held in the fingerprint under one test's key beside the test's own block
+ * (`RecordCheck.fingerprint`). They stay with the fingerprint because the rule sampled is not the test's own: the
+ * same-check decision, a confirmation's retry over the list of tests, a failure's blame. A test's description that
+ * called the same-check decision would also import itself back.
+ */
+const CROSS_TEST_SAMPLES: { readonly [Slot in CheckSlot]?: () => Record<string, unknown> } = {
+  flips: () => ({
+    // A waiting FLIPS flag is answered only by a confirmation of FLIPS: a first look's FLIPS flag or pass answers nothing.
+    // A score between the bars clears like a pass, only on a confirmation of FLIPS (`confirmBetweenClears`).
+    stageBound: [true, false].flatMap((confirms) => (['flag', 'pass', 'between'] as const).map((outcome) => {
+      const decision = decide({
+        agentId: 1n, serviceHash: '0x00', verdict: verifierVerdict(outcome === 'flag' ? 'DIFF' : 'SAME'), auditedAt: 10_000,
+        flaggedBy: outcome === 'flag' ? ['flips'] : [], passedBy: outcome === 'pass' ? ['flips', 'kbf'] : ['kbf'],
+        ...(outcome === 'between' ? { betweenBy: ['flips'] } : {}),
+        ...(confirms ? { confirming: { checks: ['flips'], reportedAt: 1 } } : {}),
+      }, [{ auditor: '0x00', peerId: '00'.repeat(20), evidenceUri: 'ipfs://x', evidenceHash: '0x00', reportedAt: 1, checks: ['flips'] }])
+      return [confirms, outcome, decision.kind, decision.kind === 'exclude' ? decision.code : null]
+    })),
+    // A confirmation finished at once: only for a counting FLIPS of this rule scored between its bars.
+    oneAttemptStop: [{ rule: FLIPS_RULE.id }, { rule: FLIPS_RULE.id, probe: true }, { rule: 'flips-unknown' }, { rule: FLIPS_RULE.id, p: null }].map((summary) => (
+      confirmationCannotDecideOnRetry({
+        status: 'UNDETERMINED', questionsStatus: 'SAME', parsedProbeCount: 1, confirming: ['flips'],
+        flips: { model: 'claude-opus-5.5', stage: 'confirm', outcome: 'inconclusive', counted: true, p: 0.02, score: 4, reason: 'x', ...summary } as never,
+      }))),
+    // A FLIPS that cannot run is the auditor's failure; on the auditor's last attempt it is no result instead.
+    auditorFailure: [FLIPS_AUDITOR_FAILURE, failureBlame(null, `${FLIPS_AUDITOR_FAILURE}: x`)],
+  }),
+}
+
+/** Confirmation cells by attempt and plan action, each started (an attempt finished): which wait to be audited again. */
+const SAMPLE_WAITING_CONFIRMATIONS: readonly EpochCell[] = ([
+  [1, 'retry', 0], [2, 'retry', 0], [CONFIRMATION_ATTEMPTS, 'retry', 0], [1, 'done', 0], [1, 'extend', 0],
+  // The auditor's own failures hold only up to its attempts.
+  [0, 'retry', AUDITOR_FAILURE_ATTEMPTS - 1], [0, 'retry', AUDITOR_FAILURE_ATTEMPTS],
+] as const).map(([attempts, action, auditorAttempts]) => ({
+  model: 'm', peerId: 'aa', runId: 'r', state: action === 'extend' ? 'pending_extension' : 'undetermined', attempts, auditorAttempts,
+  permanent: false, lastAttemptAt: 1, blame: 'seller', reason: null, skipCode: null, action,
+  result: action === 'extend' ? null : { confirmsDiff: true } as ModelVerificationTargetResult,
+  ...(action === 'extend' ? { pending: { confirmsDiff: true } as ModelVerificationTargetResult } : {}),
+}))
+
+/** First auditor's checks, the checks that flagged and passed here, and the verdict here. */
+/** Fixed test records for what a retry carries. */
+const SAMPLE_CONFIRMATION_IDENTITIES: ReadonlyArray<readonly [ConfirmationIdentity, ConfirmationIdentity]> = [
+  [{ checks: ['output-cap', 'kbf'], reportedAt: 100 }, { checks: ['kbf', 'output-cap'], reportedAt: 100 }],
+  [{ checks: ['output-cap'], reportedAt: 100 }, { checks: ['output-cap'], reportedAt: 101 }],
+  [{ checks: ['output-cap'], reportedAt: 100 }, { checks: ['output-cap', 'flips'], reportedAt: 100 }],
+  [{ checks: ['output-cap'] }, { checks: ['output-cap'] }],
+]
+
+const SAMPLE_CARRIES = [
+  { tokenizerPrecheck: { outcome: 'match' }, outputCap: { outcome: 'inconclusive' } },
+  { tokenizerPrecheck: { outcome: 'inconclusive' }, outputEcho: { outcome: 'pass', growth: { outcome: 'pass' }, fixedAmount: { outcome: 'pass' } } },
+  { tokenizerPrecheck: { outcome: 'match' }, outputEcho: { outcome: 'pass', growth: { outcome: 'pass' }, fixedAmount: { outcome: 'pass' } } },
+]
+
+/** Fixed readings for the verdict rule: test outcomes, the questions' verdict, the tests confirmed, questions pending. */
+/**
+ * Seller evidence for the active-tests samples: only what `inactiveChecks` reads (the records' gates, `noRecord`, the
+ * model), so each sample shows one gate. A pre-check without a reference difference for a round; an echo check measured
+ * on the visible answer and one measured plainly; no FLIPS record on a model its rule never counts; a cap check the
+ * run's reference switched off.
+ */
+const SAMPLE_ACTIVE_EVIDENCE: readonly ActiveTestsInput[] = [
+  {
+    reference: { referenceModel: 'unmeasured-model' },
+    noRecord: [{ slot: 'outputCap', reason: 'the reference\'s own answer could not be measured, so the cap check does not apply to the model this run' }],
+  },
+  {
+    reference: { referenceModel: 'sample-model' },
+    tokenizerPrecheck: {
+      rule: TOKENIZER_PRECHECK_RULE, outcome: 'inconclusive', reason: 'no reference to compare with: sample',
+      rounds: [{ reference: { delta: 12 } }, { reference: { delta: null } }],
+    },
+    outputEcho: { rule: OUTPUT_ECHO_RULE, mode: 'visible' },
+  } as unknown as ActiveTestsInput,
+  {
+    reference: { referenceModel: 'sample-model' },
+    tokenizerPrecheck: { rule: TOKENIZER_PRECHECK_RULE, outcome: 'match', reason: null, rounds: [{ reference: { delta: 12 } }, { reference: { delta: 14 } }] },
+    outputEcho: { rule: OUTPUT_ECHO_RULE, mode: 'plain' },
+  } as unknown as ActiveTestsInput,
+]
+
+/** Readings and the questions' verdict, the tests a confirmation repeats, a waiting close call, and the tests that are not active. */
+const SAMPLE_VERDICTS: ReadonlyArray<readonly [
+  ReadonlyArray<readonly [AuditCheckId, CheckOutcome]>, 'SAME' | 'DIFF' | 'UNDETERMINED', AuditCheckId[] | null, boolean, AuditCheckId[]?,
+]> = [
+  [[['tokens', 'pass'], ['output-cap', 'pass'], ['output-echo', 'pass'], ['kbf', 'pass']], 'SAME', null, false],
+  [[['tokens', 'inconclusive'], ['output-cap', 'not-run'], ['output-echo', 'inconclusive'], ['kbf', 'pass']], 'SAME', null, false],
+  [[['tokens', 'pass'], ['output-cap', 'flag'], ['output-echo', 'pass'], ['kbf', 'pass']], 'SAME', null, false],
+  [[['tokens', 'flag'], ['output-cap', 'flag'], ['kbf', 'flag']], 'DIFF', null, false],
+  [[['tokens', 'pass'], ['kbf', 'inconclusive']], 'UNDETERMINED', null, false],
+  [[['tokens', 'pass'], ['output-cap', 'inconclusive'], ['output-echo', 'flag'], ['kbf', 'pass']], 'SAME', ['output-cap'], false],
+  [[['tokens', 'pass'], ['output-cap', 'pass'], ['kbf', 'pass']], 'SAME', ['output-cap'], false],
+  [[['output-cap', 'flag'], ['kbf', 'inconclusive']], 'UNDETERMINED', ['kbf'], true],
+  [[['output-cap', 'inconclusive'], ['kbf', 'pass']], 'SAME', ['output-cap', 'kbf'], false],
+  [[['output-cap', 'inconclusive'], ['kbf', 'flag']], 'DIFF', ['output-cap', 'kbf'], false],
+  [[['output-cap', 'flag'], ['kbf', 'inconclusive']], 'UNDETERMINED', ['kbf'], false],
+  // Every active test passed: SAME; a test that is not active and has no result never blocks it.
+  [[['tokens', 'pass'], ['output-cap', 'not-run'], ['output-echo', 'pass'], ['output-offset', 'inconclusive'], ['flips', 'inconclusive'], ['kbf', 'pass']],
+    'SAME', null, false, ['output-cap', 'output-offset', 'flips']],
+  // An active test with no result, or not run for the seller: UNDETERMINED, naming it.
+  [[['tokens', 'pass'], ['output-cap', 'inconclusive'], ['output-echo', 'pass'], ['kbf', 'pass']], 'SAME', null, false, []],
+  [[['tokens', 'pass'], ['output-cap', 'pass'], ['output-echo', 'not-run'], ['kbf', 'pass']], 'SAME', null, false, []],
+  // A flag is DIFF whatever is active; the questions' own UNDETERMINED stays theirs.
+  [[['tokens', 'pass'], ['output-cap', 'flag'], ['output-echo', 'inconclusive'], ['kbf', 'pass']], 'SAME', null, false, []],
+  [[['tokens', 'inconclusive'], ['kbf', 'inconclusive']], 'UNDETERMINED', null, false, []],
+  // A flag-only test (FLIPS) active and with no result, or not run, beside every other test passed: SAME; its flag: DIFF.
+  [[['tokens', 'pass'], ['output-cap', 'pass'], ['output-echo', 'pass'], ['output-offset', 'pass'], ['flips', 'inconclusive'], ['kbf', 'pass']], 'SAME', null, false, []],
+  [[['tokens', 'pass'], ['output-cap', 'pass'], ['flips', 'not-run'], ['kbf', 'pass']], 'SAME', null, false, []],
+  [[['tokens', 'pass'], ['output-cap', 'pass'], ['flips', 'flag'], ['kbf', 'pass']], 'SAME', null, false, []],
+  // A confirmation whose repeated test passed and whose other active test did not decide: UNDETERMINED.
+  [[['output-cap', 'pass'], ['output-echo', 'inconclusive'], ['kbf', 'pass']], 'SAME', ['output-cap'], false, []],
+]
+
+const SAMPLE_CONFIRMATIONS: ReadonlyArray<readonly [AuditCheckId[], AuditCheckId[], AuditCheckId[], 'SAME' | 'DIFF' | 'UNDETERMINED']> = [
+  // Two first flags: one passed here and one left open clears nothing; both passed clears; one flagged again confirms.
+  [['output-cap', 'kbf'], [], ['kbf'], 'SAME'],
+  [['output-cap', 'kbf'], [], ['output-cap', 'kbf'], 'SAME'],
+  [['output-cap', 'kbf'], ['output-cap'], ['kbf'], 'DIFF'],
+  [['tokens'], ['tokens'], [], 'DIFF'],
+  [['kbf'], ['tokens'], [], 'DIFF'],
+  [['kbf'], ['tokens', 'kbf'], [], 'DIFF'],
+  [['tokens'], [], ['tokens', 'kbf'], 'SAME'],
+  [['tokens'], [], ['kbf'], 'SAME'],
+  [['output-cap'], ['output-cap'], [], 'DIFF'],
+  [['kbf'], ['tokens'], [], 'UNDETERMINED'],
+  [['tokens'], [], [], 'UNDETERMINED'],
+]
 
 /** Replies that take the parser's different paths, with the probes asked: a change to how it reads them shows up. */
 const SAMPLE_REPLIES: ReadonlyArray<readonly [string, number]> = [
@@ -297,5 +532,41 @@ function sampleVerdicts(): unknown {
       )
       return { firstMismatches, extraMismatches, verdict: pooled.verdict, extend: pooled.extend }
     })),
+    // Under the coverage a DIFF needs (60 of 100 scored, or 45), with and without the coverage rule new looks name, and a
+    // pooled look of two such sets.
+    coverageRule: KBF_COVERAGE_RULE,
+    coverageLooks: [[60, 10], [60, 25], [60, 40], [45, 40]].map(([scored, mismatches]) => {
+      const vector = Array.from({ length: 100 }, (_, index) => (index < mismatches! ? 0 : index < scored! ? 1 : null))
+      const look = (coverageRule?: typeof KBF_COVERAGE_RULE) => computeKbfVerdict({
+        selfHamming: SAMPLE_SELF_HAMMING, selfTotal: SAMPLE_PROBES, targetMatchVector: vector, ...KBF_AUDIT_VERIFY_OPTIONS, ...(coverageRule ? { coverageRule } : {}),
+      }).verdict
+      return { scored, mismatches, plain: look(), byRule: look(KBF_COVERAGE_RULE) }
+    }),
+    coveragePooled: [undefined, KBF_COVERAGE_RULE.id].map((coverageRule) => pooledCloseCallVerdict(
+      { stats: { ...sampleLook(SAMPLE_PROBES, 12).stats, targetHamming: 12, targetTotal: 75 }, probeCount: SAMPLE_PROBES },
+      [{ stats: { ...sampleLook(SAMPLE_PROBES, 30).stats, targetHamming: 30, targetTotal: 75 }, probeCount: SAMPLE_PROBES }],
+      closeCallRuleForExtensions(2) ?? undefined, coverageRule,
+    ).verdict),
   }
+}
+
+/** The tests' thinking declarations in the rules fingerprint, and what they resolve to for fixed sample inputs. */
+function thinkingFingerprint(): unknown {
+  const bank = (strategy: string, overrides: Record<string, unknown>, reasoningTokens: number) => ({
+    queryProfile: {} as never,
+    generator: {
+      name: 'sample', version: '1', verifierKind: 'kbf' as const,
+      params: {
+        referenceEndpointRequest: { reasoningStrategy: strategy, requestOverrides: overrides, requestOmissions: [] },
+        thinkingDiscovery: { version: 1, method: 'kbf-reference-code-2026-09-30', contrasts: {}, target: { model: 'sample', strategy, attempts: [{ strategy, maxTokens: 800, status: null, validAnswers: 10, reasoningTokens, answersOnly: true, truncated: false }] } },
+      },
+    },
+  }) as unknown as Parameters<typeof resolveThinking>[1]['bank']
+  const banks = [bank('reasoning-effort-minimal', { reasoning: { effort: 'minimal' } }, 0), bank('bare', {}, 574)]
+  const discoveries = [{ strategy: 'reasoning-effort-none' as const }, { strategy: 'bare-expanded' as const }, { strategy: null }, null]
+  return THINKING_DECLARATIONS.map(({ test, thinking }) => ({
+    test,
+    needs: thinking.needs,
+    resolved: banks.flatMap((sampleBank) => discoveries.map((discovery) => resolveThinking(thinking, { model: 'kimi-k3', bank: sampleBank, discovery }))),
+  }))
 }

@@ -1,0 +1,79 @@
+{
+ "attempts": [
+  {
+   "attemptCosts": [],
+   "failure": "{\"error\":{\"message\":\"this thinking setting is not supported\"}}",
+   "maxTokens": 800,
+   "reasoningTokens": null,
+   "requestIds": ["<seller: thinking discovery #1>"],
+   "status": 400,
+   "strategy": "reasoning-effort-none",
+   "validAnswers": null
+  },
+  {
+   "attemptCosts": [],
+   "failure": "{\"error\":{\"message\":\"this thinking setting is not supported\"}}",
+   "maxTokens": 800,
+   "reasoningTokens": null,
+   "requestIds": ["<seller: thinking discovery #2>"],
+   "status": 400,
+   "strategy": "reasoning-effort-minimal",
+   "validAnswers": null
+  },
+  {
+   "attemptCosts": [],
+   "failure": "{\"error\":{\"message\":\"this thinking setting is not supported\"}}",
+   "maxTokens": 800,
+   "reasoningTokens": null,
+   "requestIds": ["<seller: thinking discovery #3>"],
+   "status": 400,
+   "strategy": "disable-thinking",
+   "validAnswers": null
+  },
+  {
+   "attemptCosts": [],
+   "failure": "{\"error\":{\"message\":\"this thinking setting is not supported\"}}",
+   "maxTokens": 800,
+   "reasoningTokens": null,
+   "requestIds": ["<seller: thinking discovery #4>"],
+   "status": 400,
+   "strategy": "enable-thinking-false",
+   "validAnswers": null
+  },
+  {
+   "attemptCosts": [],
+   "failure": "{\"error\":{\"message\":\"this thinking setting is not supported\"}}",
+   "maxTokens": 800,
+   "reasoningTokens": null,
+   "requestIds": ["<seller: thinking discovery #5>"],
+   "status": 400,
+   "strategy": "prefill",
+   "validAnswers": null
+  },
+  {
+   "attemptCosts": [],
+   "failure": "{\"error\":{\"message\":\"this thinking setting is not supported\"}}",
+   "maxTokens": 800,
+   "reasoningTokens": null,
+   "requestIds": ["<seller: thinking discovery #6>"],
+   "status": 400,
+   "strategy": "bare",
+   "validAnswers": null
+  },
+  {
+   "attemptCosts": [],
+   "failure": "{\"error\":{\"message\":\"this thinking setting is not supported\"}}",
+   "maxTokens": 40000,
+   "reasoningTokens": null,
+   "requestIds": ["<seller: thinking discovery #7>"],
+   "status": 400,
+   "strategy": "bare-expanded",
+   "validAnswers": null
+  }
+ ],
+ "failure": "seller a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1 refused every request fo… (259 characters, sha256 97153d9011b11d28)",
+ "maxTokens": 160,
+ "method": "kbf-reference-code-2026-09-30",
+ "rule": "kbf-discovery-reference-first-v1",
+ "strategy": null
+}

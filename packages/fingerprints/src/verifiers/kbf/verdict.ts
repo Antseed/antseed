@@ -25,6 +25,46 @@ export interface KbfVerdictInput {
   cpConfidence?: number;
   /** One-sided binomial threshold for DIFF. Default 0.05. */
   alpha?: number;
+  /**
+   * Under `minDiffCoverage`, a would-be DIFF is still DIFF when its scored answers alone are decisive at this rule's
+   * much stricter bar (`kbfCoverageDiff`). Absent: under `minDiffCoverage` it is UNDETERMINED, as before.
+   */
+  coverageRule?: KbfCoverageRule;
+}
+
+/**
+ * When a look that leaves too many answers unscored for an ordinary DIFF is still DIFF: its scored answers alone have a
+ * binomial p-value at or below `strictDiffAlpha`, over at least `minScored` of them. A seller whose batches fail leaves
+ * questions unscored; the answers it does give can still be far off. A stored look is judged by the rule it names, so a
+ * used rule is never edited.
+ *
+ * - `kbf-coverage-v1`: p at most 1e-6 over at least 50 scored answers, at or above `minCoverage`. On the eval's saved
+ *   data, honest looks with whole batches removed (at random, and the best-answered batches first) never came below
+ *   1e-3 under 0.8 coverage.
+ */
+export interface KbfCoverageRule {
+  readonly id: 'kbf-coverage-v1';
+  readonly strictDiffAlpha: number;
+  readonly minScored: number;
+}
+
+export const KBF_COVERAGE_RULE_V1: KbfCoverageRule = Object.freeze({
+  id: 'kbf-coverage-v1',
+  strictDiffAlpha: 1e-6,
+  minScored: 50,
+} as const);
+
+/** The coverage rule new audits use. */
+export const KBF_COVERAGE_RULE: KbfCoverageRule = KBF_COVERAGE_RULE_V1;
+
+export function kbfCoverageRuleById(id: string | null | undefined): KbfCoverageRule | null {
+  if (id === KBF_COVERAGE_RULE_V1.id) return KBF_COVERAGE_RULE_V1;
+  return null;
+}
+
+/** A look under `minDiffCoverage` that the coverage rule still makes DIFF. */
+export function kbfCoverageDiff(rule: KbfCoverageRule | undefined, pValue: number, scored: number): boolean {
+  return rule !== undefined && pValue <= rule.strictDiffAlpha && scored >= rule.minScored;
 }
 
 export interface KbfVerdictStats {
@@ -124,14 +164,17 @@ export function computeKbfVerdict(input: KbfVerdictInput): KbfVerdictResult {
   const p0 = clopperPearsonUpper(selfHamming, selfTotal, cpConfidence);
   const pValue = binomialOneSidedPValue(mismatches, parsed, p0);
   const significant = pValue < alpha;
+  const byCoverageRule = significant && coverage < minDiffCoverage && kbfCoverageDiff(input.coverageRule, pValue, parsed);
   const verdict: FingerprintVerdict = !significant
     ? 'SAME'
-    : coverage < minDiffCoverage ? 'UNDETERMINED' : 'DIFF';
+    : coverage < minDiffCoverage && !byCoverageRule ? 'UNDETERMINED' : 'DIFF';
 
   return {
     verdict,
     verdictReason:
-      verdict === 'DIFF'
+      byCoverageRule
+        ? `binomial p-value ${pValue.toExponential(4)} at or below ${input.coverageRule!.strictDiffAlpha} over ${parsed} scored answers (${input.coverageRule!.id}), though coverage ${coverage.toFixed(4)} is below ${minDiffCoverage}`
+        : verdict === 'DIFF'
         ? `binomial p-value ${pValue.toExponential(4)} below alpha ${alpha}`
         : verdict === 'UNDETERMINED'
           ? `binomial p-value ${pValue.toExponential(4)} below alpha ${alpha}, but coverage ${coverage.toFixed(4)} is below the ${minDiffCoverage} a DIFF needs`
@@ -253,6 +296,8 @@ export function computeKbfPooledVerdict(input: {
   minDiffCoverage?: number;
   cpConfidence?: number;
   rule?: KbfExtensionRule;
+  /** As in `computeKbfVerdict`: the pooled look under `minDiffCoverage` is DIFF when this rule's strict bar holds. */
+  coverageRule?: KbfCoverageRule;
 }): KbfPooledVerdictResult {
   const rule = input.rule ?? KBF_EXTENSION_RULE;
   const minCoverage = input.minCoverage ?? 0.5;
@@ -308,10 +353,13 @@ export function computeKbfPooledVerdict(input: {
   }
   const alpha = lastLook ? rule.pooledAlpha : rule.clearDiffAlpha;
   const significant = pValue < alpha;
-  const verdict: FingerprintVerdict = !significant ? 'SAME' : coverage < minDiffCoverage ? 'UNDETERMINED' : 'DIFF';
+  const byCoverageRule = significant && coverage < minDiffCoverage && kbfCoverageDiff(input.coverageRule, pValue, parsed);
+  const verdict: FingerprintVerdict = !significant ? 'SAME' : coverage < minDiffCoverage && !byCoverageRule ? 'UNDETERMINED' : 'DIFF';
   return {
     verdict,
-    verdictReason: verdict === 'DIFF'
+    verdictReason: byCoverageRule
+      ? `pooled binomial p-value ${pValue.toExponential(4)} at or below ${input.coverageRule!.strictDiffAlpha} over ${parsed} scored answers (${input.coverageRule!.id}), though pooled coverage ${coverage.toFixed(4)} is below ${minDiffCoverage} (${rule.id})`
+      : verdict === 'DIFF'
       ? `pooled binomial p-value ${pValue.toExponential(4)} below alpha ${alpha} (${rule.id})`
       : verdict === 'UNDETERMINED'
         ? `pooled binomial p-value ${pValue.toExponential(4)} below alpha ${alpha}, but pooled coverage ${coverage.toFixed(4)} is below the ${minDiffCoverage} a DIFF needs`

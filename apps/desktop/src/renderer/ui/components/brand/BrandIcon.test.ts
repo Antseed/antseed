@@ -58,6 +58,30 @@ test('GPT renders the official OpenAI blossom', () => {
   assert.match(markup, /fill="currentColor"/);
 });
 
+test('model marks render bundled brand artwork at the requested size', () => {
+  const marks = {
+    anthropic: 'claude.svg',
+    deepseek: 'deepseek.svg',
+    gemini: 'gemini.png',
+    llama: 'meta.png',
+    mistral: 'mistral.png',
+    qwen: 'qwen.png',
+  } as const;
+
+  for (const [brand, filename] of Object.entries(marks)) {
+    const markup = renderToStaticMarkup(BrandIcon({ name: brand, size: 22 }));
+    assert.ok(markup.includes(`/assets/${filename}`), `Missing bundled artwork for ${brand}`);
+    assert.match(markup, /width="22" height="22"/);
+  }
+});
+
+test('Grok renders its logomark in the surrounding text color', () => {
+  const markup = renderToStaticMarkup(BrandIcon({ name: 'Grok 4' }));
+  assert.match(markup, /M13\.2371 21\.0407/);
+  assert.match(markup, /M10\.9503 23\.0313/);
+  assert.match(markup, /fill="currentColor"/);
+});
+
 test('Hermes renders its portrait mark as a theme-aware SVG', () => {
   const markup = renderToStaticMarkup(BrandIcon({ name: 'hermes', hints: ['Hermes Agent'] }));
   assert.match(markup, /viewBox="0 0 200 200"/);

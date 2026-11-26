@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeKbfVerdict } from '../src/verifiers/kbf/verdict.js';
+import { KBF_COVERAGE_RULE, KBF_COVERAGE_RULE_V1, computeKbfVerdict, kbfCoverageRuleById } from '../src/verifiers/kbf/verdict.js';
 import type { MatchVector } from '../src/types.js';
 
 function vector(matches: number, mismatches: number, unparseable = 0): MatchVector {
@@ -84,6 +84,42 @@ describe('computeKbfVerdict', () => {
     expect(computeKbfVerdict({ ...sameInput, minDiffCoverage: 0.8 }).verdict).toBe('SAME');
     // At or above 0.8 the DIFF stands.
     expect(computeKbfVerdict({ selfHamming: 3, selfTotal: 224, targetMatchVector: vector(40, 40, 20), minDiffCoverage: 0.8 }).verdict).toBe('DIFF');
+  });
+
+  it('kbf-coverage-v1: under minDiffCoverage, a look whose scored answers alone are decisive at p <= 1e-6 over at least 50 is DIFF', () => {
+    expect(KBF_COVERAGE_RULE).toBe(KBF_COVERAGE_RULE_V1);
+    expect([KBF_COVERAGE_RULE_V1.id, KBF_COVERAGE_RULE_V1.strictDiffAlpha, KBF_COVERAGE_RULE_V1.minScored]).toEqual(['kbf-coverage-v1', 1e-6, 50]);
+    expect(Object.isFrozen(KBF_COVERAGE_RULE_V1)).toBe(true);
+    expect(kbfCoverageRuleById('kbf-coverage-v1')).toBe(KBF_COVERAGE_RULE_V1);
+    expect(kbfCoverageRuleById('kbf-coverage-v9')).toBeNull();
+    expect(kbfCoverageRuleById(undefined)).toBeNull();
+    const audit = { selfHamming: 15, selfTotal: 150, minCoverage: 0.5, minDiffCoverage: 0.8 };
+    // 85 of 150 scored (coverage 0.57), 38 of them off: far beyond the bar.
+    const farOff = { ...audit, targetMatchVector: vector(47, 38, 65) };
+    const without = computeKbfVerdict(farOff);
+    expect(without.verdict).toBe('UNDETERMINED');
+    const withRule = computeKbfVerdict({ ...farOff, coverageRule: KBF_COVERAGE_RULE_V1 });
+    expect(withRule.verdict).toBe('DIFF');
+    expect(withRule.stats).toEqual(without.stats);
+    expect(withRule.stats.pValueBinomial!).toBeLessThanOrEqual(1e-6);
+    expect(withRule.verdictReason).toMatch(/at or below 0\.000001 over 85 scored answers \(kbf-coverage-v1\), though coverage 0\.5667 is below 0\.8/);
+    // Fewer than 50 scored: UNDETERMINED, however far off.
+    const few = computeKbfVerdict({ ...audit, targetMatchVector: vector(19, 30, 31), coverageRule: KBF_COVERAGE_RULE_V1 });
+    expect([few.stats.targetTotal, few.stats.pValueBinomial! <= 1e-6, few.verdict]).toEqual([49, true, 'UNDETERMINED']);
+    // Significant, but not at the strict bar: UNDETERMINED.
+    const close = computeKbfVerdict({ ...audit, targetMatchVector: vector(67, 25, 58), coverageRule: KBF_COVERAGE_RULE_V1 });
+    expect(close.stats.pValueBinomial!).toBeGreaterThan(1e-6);
+    expect(close.stats.pValueBinomial!).toBeLessThan(0.05);
+    expect(close.verdict).toBe('UNDETERMINED');
+    // Under minCoverage: UNDETERMINED as before.
+    expect(computeKbfVerdict({ ...audit, targetMatchVector: vector(20, 50, 80), coverageRule: KBF_COVERAGE_RULE_V1 }).verdict).toBe('UNDETERMINED');
+    // At or above minDiffCoverage, and for a SAME, the rule changes nothing.
+    for (const targetMatchVector of [vector(80, 40, 30), vector(80, 4, 66), vector(130, 10, 10)]) {
+      const plain = computeKbfVerdict({ ...audit, targetMatchVector });
+      if (plain.verdict === 'UNDETERMINED') continue;
+      expect(computeKbfVerdict({ ...audit, targetMatchVector, coverageRule: KBF_COVERAGE_RULE_V1 })).toEqual(plain);
+    }
+    expect(computeKbfVerdict({ ...audit, targetMatchVector: vector(80, 4, 66), coverageRule: KBF_COVERAGE_RULE_V1 }).verdict).toBe('SAME');
   });
 
   it('UNDETERMINED when nothing parsed', () => {

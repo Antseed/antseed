@@ -1,0 +1,58 @@
+{
+ "attempts": [
+  {
+   "answersOnly": true,
+   "attemptCosts": [
+    {
+     "estimatedCostUsd": 0.00037,
+     "inputTokens": 310,
+     "inputUsdPerMillion": 1,
+     "outputTokens": 40,
+     "outputUsdPerMillion": 2,
+     "provider": null,
+     "service": null,
+     "tokenSource": null,
+     "totalTokens": 350
+    }
+   ],
+   "billedOutputTokens": 40,
+   "maxTokens": 800,
+   "reasoningShown": false,
+   "reasoningTokens": 0,
+   "requestIds": ["<seller: thinking discovery #1>"],
+   "signedRequest": {
+    "carriesSetting": true,
+    "signedPreimages": {
+     "encoding": "antseed-http-codec-v1",
+     "hashAlgorithm": "keccak256",
+     "requestBase64": {
+      "requestId": "<seller: thinking discovery #1>",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "headers": {},
+      "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"system\",\"content\":\"Follo… (1156 characters, sha256 8edb7c7c6412a08b)"
+     },
+     "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+     "responseAuthSigningBase64": "AA==",
+     "responseBase64": {
+      "requestId": "<seller: thinking discovery #1>",
+      "statusCode": 200,
+      "headers": {},
+      "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (316 characters, sha256 b72d8fbf1c62c905)"
+     },
+     "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+     "signatureEncoding": "antseed-response-auth-signing-v1"
+    },
+    "status": "verified"
+   },
+   "status": null,
+   "strategy": "chat-reasoning-effort-none",
+   "truncated": false,
+   "validAnswers": 10
+  }
+ ],
+ "maxTokens": 160,
+ "method": "kbf-reference-code-2026-09-30",
+ "rule": "audit-thinking-table-v1",
+ "strategy": "chat-reasoning-effort-none"
+}

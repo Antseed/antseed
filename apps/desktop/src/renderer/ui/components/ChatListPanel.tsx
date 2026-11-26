@@ -437,7 +437,8 @@ function ChatSearchModal({
 
 /** The sidebar's Recent section: pinned chats, project folders, other chats and archived ones, with search, pin, archive, rename and delete. */
 export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, highlightActive }: {
-  onOpenConversation: () => void;
+  /** A chat was picked; the shell opens it once it knows where (a Studio project's chat opens in Studio). */
+  onOpenConversation: (id: string) => void;
   /** The chat on screen was deleted, so there is nothing left to show. */
   onOpenConversationDeleted: () => void;
   /** Only the chat screen is "in" a conversation; Home starts a new one. */
@@ -509,11 +510,6 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
   // With nothing pinned, no projects and nothing archived, the list stays flat.
   const flat = sections.length === 1 && sections[0]!.kind === 'chats';
 
-  const handleSelectConv = useCallback((id: string) => {
-    void actions.openConversation(id);
-    onOpenConversation();
-  }, [actions, onOpenConversation]);
-
   // A pin, archive or delete that fails is undone; say why here, since the
   // chat screen (which shows chat errors) may not be open.
   const [actionError, setActionError] = useState<string | null>(null);
@@ -531,7 +527,7 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
       approvalConvIds={approvalConvIds}
       modelLabelById={modelLabelById}
       defaultWorkspace={chatWorkspaceDefaultPath}
-      onSelectConv={handleSelectConv}
+      onSelectConv={onOpenConversation}
       onDeleteConv={handleDeleteConv}
       onSetFlags={handleSetFlags}
       menuOpenId={menuOpenId}
@@ -624,7 +620,7 @@ export function ChatListPanel({ onOpenConversation, onOpenConversationDeleted, h
           activeConvId={chatActiveConversation}
           sendingConvIds={sendingConvIds}
           modelLabelById={modelLabelById}
-          onSelectConv={handleSelectConv}
+          onSelectConv={onOpenConversation}
           onClose={() => setChatSearchOpen(false)}
         />
       )}

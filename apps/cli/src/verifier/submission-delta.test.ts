@@ -67,15 +67,17 @@ test('a result this auditor already reported in the current round is left out', 
   assert.deepEqual(await filter([candidate(VERIFIER_VERDICT.DIFF)]), [true], 'a waiting DIFF 1/2 is not re-sent')
 })
 
-test('a changed verdict is sent', async () => {
+test('a changed verdict is sent when its audit is newer than this auditor\'s own report, and never in place of a newer one', async () => {
   const { filter, reads } = filterFor([report(A, VERIFIER_VERDICT.DIFF, 10)])
-  assert.deepEqual(await filter([candidate(VERIFIER_VERDICT.SAME)]), [false])
-  assert.deepEqual(reads, [], 'nothing is read for a result that is new anyway')
+  assert.deepEqual(await filter([candidate(VERIFIER_VERDICT.SAME, timeOf(10) + 1)]), [false])
+  assert.deepEqual(reads, [], 'nothing but the report\'s time is read for a result that is new anyway')
+  // An older audit (an earlier run submitted by hand) never replaces this auditor's newer DIFF with a SAME.
+  assert.deepEqual(await filter([candidate(VERIFIER_VERDICT.SAME, timeOf(10) - 1)]), ['superseded'], 'held as older, never counted as on chain')
 })
 
 test('the latest report decides: a verdict changed back is sent again', async () => {
   const { filter } = filterFor([report(A, VERIFIER_VERDICT.DIFF, 10), report(A, VERIFIER_VERDICT.SAME, 11)])
-  assert.deepEqual(await filter([candidate(VERIFIER_VERDICT.DIFF)]), [false])
+  assert.deepEqual(await filter([candidate(VERIFIER_VERDICT.DIFF, timeOf(11) + 1)]), [false])
 })
 
 test('a confirmation of another auditor\'s DIFF is sent', async () => {
@@ -137,7 +139,8 @@ test('flags follow the candidates and other sellers are independent', async () =
   const { filter } = filterFor([report(A, VERIFIER_VERDICT.SAME, 10, 0, 1n), report(A, VERIFIER_VERDICT.SAME, 10, 0, 2n)])
   assert.deepEqual(await filter([
     candidate(VERIFIER_VERDICT.SAME, 0, 1n),
-    candidate(VERIFIER_VERDICT.DIFF, 0, 2n),
+    // A changed verdict from an audit newer than this auditor's own report.
+    candidate(VERIFIER_VERDICT.DIFF, timeOf(10) + 1, 2n),
     candidate(VERIFIER_VERDICT.SAME, 0, 3n),
   ]), [true, false, false])
 })

@@ -65,6 +65,13 @@
   padding: 8px 16px 32px;
 }
 
+.pageBodyFill {
+  display: flex;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+  padding: 0;
+}
+
 .backTitle {
   flex: 1 1 auto;
   min-width: 0;

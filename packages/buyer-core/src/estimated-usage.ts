@@ -15,6 +15,10 @@ const GENERATED_FIELDS = new Set(['content', 'text', 'reasoning_content', 'reaso
 const ATTACHMENT_PARTS = new Set(['image_url', 'input_audio', 'file', 'input_image', 'input_file', 'image', 'document']);
 /** What one attachment counts as: roughly what chat upstreams bill for an image. */
 const ATTACHMENT_TOKENS = 1_290;
+/** The reasoning fields of a chat message or delta, which some upstreams fill with an encrypted item instead of text. */
+const REASONING_FIELDS = new Set(['reasoning_content', 'reasoning']);
+/** How a relay marks an encrypted reasoning item it passes in a reasoning field. */
+const ENCRYPTED_REASONING_PREFIX = '__ENCRYPTED_REASONING__';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -31,9 +35,14 @@ function generatedText(value: unknown): string {
   if (Array.isArray(value)) return value.map(generatedText).join('');
   if (!isRecord(value)) return '';
   return Object.entries(value)
-    .filter(([key]) => GENERATED_FIELDS.has(key))
+    .filter(([key, field]) => GENERATED_FIELDS.has(key) && !(REASONING_FIELDS.has(key) && isEncryptedReasoning(value, field)))
     .map(([, field]) => generatedText(field))
     .join('');
+}
+
+/** An encrypted reasoning item: its size says nothing about the tokens the model reasoned. */
+function isEncryptedReasoning(message: Record<string, unknown>, field: unknown): boolean {
+  return message.reasoning_encrypted === true || (typeof field === 'string' && field.startsWith(ENCRYPTED_REASONING_PREFIX));
 }
 
 /** The text of the choices in a chat response or stream event; null when it has no choices. */
@@ -61,7 +70,10 @@ function chatAnswerText(body: Uint8Array): string | null {
 
 /** The tokens of a chat request: its text, with a flat allowance in place of each attachment. */
 export function estimatePromptTokens(requestBody: Uint8Array): number {
-  const request = parseJsonObject(requestBody);
+  return promptTokens(parseJsonObject(requestBody), requestBody);
+}
+
+function promptTokens(request: Record<string, unknown> | null, requestBody: Uint8Array): number {
   if (!request) return estimateTokensFromBytes(requestBody);
   let attachments = 0;
   const text = JSON.stringify(request, function (key: string, value: unknown) {
@@ -133,22 +145,36 @@ export function estimatePromptTokensForChecks(request: Record<string, unknown>, 
   return estimateTokensFromBytesSampled(encoder.encode(text)) + images.size * ATTACHMENT_TOKENS;
 }
 
+const positive = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0);
+
+/**
+ * The most output a chat request allows over all its answers, or 0 for no limit: the larger of its
+ * two limit fields (an upstream may read only one) for each of its `n` answers.
+ */
+function chatOutputLimit(request: Record<string, unknown> | null): number {
+  return Math.max(positive(request?.max_completion_tokens), positive(request?.max_tokens)) * Math.max(1, positive(request?.n));
+}
+
 /**
  * What a chat answer that arrived with no usage figure is billed as: the
  * prompt's estimated tokens plus the tokens of the text the model wrote,
- * without the JSON or SSE framing around it. Counted in full, not sampled:
+ * without the JSON or SSE framing around it, and never more output than the
+ * request allowed (the upstream stops there). Counted in full, not sampled:
  * the buyer writes the prompt, and a sample reads only windows it can see. Null for a body that is not a
  * chat answer, and for a stream that reports it failed: neither is billed.
  */
 export function estimateChatAnswerUsage(requestBody: Uint8Array, responseBody: Uint8Array): ResponseUsage | null {
   const text = chatAnswerText(responseBody);
   if (text === null) return null;
-  const inputTokens = estimatePromptTokens(requestBody);
+  const request = parseJsonObject(requestBody);
+  const inputTokens = promptTokens(request, requestBody);
+  const outputTokens = estimateTokensFromBytes(encoder.encode(text));
+  const maxOutputTokens = chatOutputLimit(request);
   return {
     inputTokens,
     freshInputTokens: inputTokens,
     cachedInputTokens: 0,
-    outputTokens: estimateTokensFromBytes(encoder.encode(text)),
+    outputTokens: maxOutputTokens > 0 ? Math.min(outputTokens, maxOutputTokens) : outputTokens,
   };
 }
 

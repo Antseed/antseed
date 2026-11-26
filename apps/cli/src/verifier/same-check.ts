@@ -1,0 +1,621 @@
+import { posix } from 'node:path'
+import { getAddress } from 'ethers'
+import { canonicalHashBytes32 } from '@antseed/fingerprints'
+import { VERIFIER_VERDICT, modelHash, serviceHash as hashService, type ModelAuditedEvent, type ServiceAuditedEvent } from '@antseed/node/payments'
+import type { ConfirmationTarget } from './pending-confirmations.js'
+import { sanitizeOutcomeSummary } from './outcome-reason.js'
+import {
+  ALL_TESTS_FORMAT, AUDIT_CHECK_IDS, CONFIRMATION_ONLY_FINDINGS, assertSellerSignatures, describeAuditCheck, flaggingChecks, sameConfirmation,
+  validateStoredChecks,
+  type AuditCheckId, type ConfirmationOnlyCheckId, type ConfirmationOnlyFinding,
+} from './audit-checks.js'
+import { adjudicateQuestions } from './model-audit.js'
+import { assertQuestionsFromSignedBytes } from './signed-questions.js'
+import { proxyAuditEvidenceHash, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
+import type { SubmissionCandidate } from './submission-delta.js'
+import type { TestTimingConfig } from './test-timing.js'
+import { latestOtherReports, opinionKey } from './third-opinion.js'
+import { normalized } from './utils.js'
+
+/**
+ * A DIFF is a verdict only when two auditors flag the seller with the same check, each on its own fresh
+ * material. The contract counts any two DIFF reports, so the CLI holds a confirming report to this.
+ *
+ * Before `verifier run` audits a seller whose DIFF waits for it, it reads which check flagged in the first
+ * auditor's published evidence (the `ModelAudited` event of the report's transaction names its IPFS URI and
+ * hash), and runs that check to its end whatever else flags (`model-run.ts`). Before `verifier submit` sends a
+ * result that answers a waiting DIFF, and again right before each transaction, it decides here:
+ * - a confirmation always sends what its audit decided (`verdictOf`): a DIFF only when the same check flagged again
+ *   (the contract records it); a SAME when that check passed, or the questions say SAME and nothing that counts
+ *   flagged (it clears the waiting DIFF); otherwise its last attempt's UNDETERMINED, so the report is answered.
+ *   Another check's flag is never sent as a DIFF that answers the report;
+ * - a first look answering a waiting DIFF is sent only as a DIFF of the same check, or a SAME in which every check
+ *   that flagged there passed here; otherwise it is not sent, and a confirmation answers the report;
+ * - the first auditor's evidence cannot be read, or does not hold: nothing is sent now, and the next submit
+ *   reads it again.
+ *
+ * Stored with the result in the published evidence, so anyone can follow it.
+ */
+export interface SameCheckConfirmationV1 {
+  /** The auditor whose waiting DIFF this result answers. */
+  auditor: string
+  /** That auditor's model audit evidence, as its `ModelAudited` event names it. */
+  evidenceUri: string
+  evidenceHash: string
+  /** Unix seconds of the block of that auditor's report. */
+  reportedAt: number
+  /** The checks that flagged the seller in that auditor's audit. */
+  firstChecks: AuditCheckId[]
+  /** The checks that flagged the seller in this audit. */
+  ownChecks: AuditCheckId[]
+  /** A check both flagged; null for a SAME, which a check that flagged there passed here (`passedCheck`). */
+  sameCheck: AuditCheckId | null
+  /** For a SAME: a check that flagged there and passed here. */
+  passedCheck?: AuditCheckId
+  /** For a SAME: checks that flagged there and here scored between their bars, which clears like a pass. */
+  clearedBetween?: AuditCheckId[]
+}
+
+/** A confirmation needs material made at least this long after the first report (design note, "an hour later"). */
+export const CONFIRMATION_MIN_DELAY_SECONDS = 60 * 60
+
+/**
+ * The one test of "fresh", for the planner and for submit: the audit's earliest request on the auditor's own clock
+ * (`earliestAuditorTime`) is at least `CONFIRMATION_MIN_DELAY_SECONDS` after the report it answers. No time is not fresh.
+ * `timing` is a dry run's `verifier.testTiming` (`test-timing.ts`); without it, the rules' delay.
+ */
+export function isFreshConfirmation(earliestRequestAt: number | null | undefined, firstReportedAt: number, timing?: TestTimingConfig | null): boolean {
+  return typeof earliestRequestAt === 'number'
+    && earliestRequestAt >= firstReportedAt + (timing?.confirmationMinDelaySeconds ?? CONFIRMATION_MIN_DELAY_SECONDS)
+}
+
+/**
+ * What to do with one result before it is sent:
+ * - `send`: it answers a waiting DIFF and may go out as it is, with this record;
+ * - `exclude`: it is never sent (another check flagged, the confirmed check did not decide, it is not fresh,
+ *   it names no check);
+ * - `hold`: not sent now; the next submit decides again (the first auditor's evidence could not be read).
+ */
+export type SameCheckDecision =
+  | { kind: 'send'; confirmation: SameCheckConfirmationV1 }
+  | { kind: 'exclude'; reason: string; code: SameCheckExcludeCode; confirmation?: SameCheckConfirmationV1 }
+  | { kind: 'hold'; reason: string }
+
+/**
+ * Why a confirmation is not sent, as a fixed code (the dry run's prepared file carries it). The last is one code per
+ * test only a confirmation answers, from the test's id.
+ */
+export type SameCheckExcludeCode =
+  | 'diff-names-no-check' | 'confirms-another-report' | 'first-look-undetermined' | 'confirmation-not-fresh'
+  | 'same-check-not-diff' | 'other-test-only' | 'repeated-test-open' | `${ConfirmationOnlyCheckId}-not-confirmation`
+
+/** A candidate as `prepareModelAudits` hands it over: the checks that flagged and passed in its own audit. */
+export type SameCheckCandidate = SubmissionCandidate & {
+  /**
+   * The seller address this audit was made of (`target.peerId`): the one this auditor's own buyer bound to the agent
+   * on-chain. Published evidence about the agent counts only when it is about this address (`sameCheckFilter`).
+   */
+  peerId?: string
+  flaggedBy: readonly AuditCheckId[]
+  passedBy: readonly AuditCheckId[]
+  /** Checks scored between their bars where such a score clears like a pass (`betweenChecks`); none when absent. */
+  betweenBy?: readonly AuditCheckId[]
+  /** The report the audit's evidence says it confirms (`ProxyAuditEvidenceV1.confirming`); absent on a first look. */
+  confirming?: { checks: readonly AuditCheckId[]; reportedAt?: number }
+}
+
+export interface PublishedFlagReader {
+  /**
+   * The `ModelAudited` events of `auditor` on `modelHash` from `fromBlock` on. The one looked for is in the
+   * transaction of its report, so the read starts at the report's block, never at the contract's deployment.
+   */
+  modelAudits(filter: { model: string; auditor: string }, fromBlock: number): Promise<ModelAuditedEvent[]>
+  /** The text at `<cid>/<path>` on IPFS. */
+  fetchText(cidPath: string): Promise<string>
+  /** The service's report round on the contract now: a report from an earlier round no longer counts. */
+  reportRound(agentId: bigint, serviceHash: string): Promise<number>
+  /** Unix seconds of a block. */
+  blockTimestamp(blockNumber: number): Promise<number>
+}
+
+/** What `createPublishedFlagReader` reads of the chain: the verifier client gives it. */
+export interface PublishedFlagChain {
+  queryModelAudits(filter: { model: string; auditor: string }, fromBlock: number): Promise<ModelAuditedEvent[]>
+  reportRound(agentId: bigint, serviceHash: string): Promise<number>
+  provider: { getBlock(blockNumber: number): Promise<{ timestamp: number } | null> }
+}
+
+/**
+ * The reader of another auditor's published evidence, for `verifier run` and `verifier submit` alike: the chain through
+ * the verifier client, and the publication through `fetchText` (IPFS, or a dry run's local publication).
+ */
+export function createPublishedFlagReader(chain: PublishedFlagChain, fetchText: PublishedFlagReader['fetchText']): PublishedFlagReader {
+  return {
+    modelAudits: (filter, fromBlock) => chain.queryModelAudits(filter, fromBlock),
+    fetchText,
+    reportRound: (agentId, service) => chain.reportRound(agentId, service),
+    blockTimestamp: async (blockNumber) => {
+      const block = await chain.provider.getBlock(blockNumber)
+      if (!block) throw new Error(`block ${blockNumber} is unavailable`)
+      return block.timestamp
+    },
+  }
+}
+
+/** The first auditor's flag on one seller, read from its published evidence and checked. */
+export interface FirstFlag {
+  auditor: string
+  /** The seller address the first auditor's evidence is about (`target.peerId`), as published. */
+  peerId: string
+  evidenceUri: string
+  evidenceHash: string
+  reportedAt: number
+  checks: AuditCheckId[]
+}
+
+/**
+ * The filter `prepareModelAudits` takes (`sameCheck`): one decision or null per candidate. Null for a result
+ * that answers no waiting DIFF (a first look), and for an UNDETERMINED; third opinions are left out before
+ * this runs (`third-opinion.ts`).
+ */
+export function sameCheckFilter(input: {
+  events: readonly ServiceAuditedEvent[]
+  auditor: string
+  reader: PublishedFlagReader
+  /** Auditors revoked this epoch: their reports no longer count. */
+  revoked?: ReadonlySet<string>
+  /** A dry run's `verifier.testTiming`; without it, the rules' confirmation delay. */
+  timing?: TestTimingConfig | null
+}): (modelHash: string, candidates: readonly SameCheckCandidate[]) => Promise<Array<SameCheckDecision | null>> {
+  const waiting = waitingDiffs(input.events, input.auditor, input.revoked)
+  const readFirst = firstFlagReader(input.reader)
+  return async (modelHash, candidates) => Promise.all(candidates.map(async (candidate): Promise<SameCheckDecision | null> => {
+    if (candidate.verdict === VERIFIER_VERDICT.DIFF && candidate.flaggedBy.length === 0) {
+      return { kind: 'exclude', code: 'diff-names-no-check', reason: 'a DIFF that names no check that flagged it is not valid evidence, so it is not sent' }
+    }
+    const reports = waiting.get(opinionKey(candidate.agentId, candidate.serviceHash, modelHash)) ?? []
+    if (reports.length === 0) return null
+    let firsts: FirstFlag[]
+    try {
+      // The contract's round now: a revocation moves it on without an event for the service.
+      const round = await input.reader.reportRound(candidate.agentId, candidate.serviceHash)
+      const live = reports.filter((report) => report.round === round)
+      if (live.length === 0) return null
+      firsts = await Promise.all(live.map((report) => readFirst(report, candidate.agentId, candidate.serviceHash)))
+      // The publication says which agent its evidence is about, and its signatures are bound to the seller address it
+      // names. Which address is the agent's is not the publication's to say: it is the one this auditor's own buyer
+      // bound to the agent on-chain and audited. Evidence about any other address is not evidence about this seller.
+      const own = candidate.peerId === undefined ? null : peerAddress(candidate.peerId)
+      if (own === null || firsts.some((first) => peerAddress(first.peerId) !== own)) {
+        throw new Error(`its evidence for agent ${candidate.agentId} is about another seller address than the one this auditor audited as that agent`)
+      }
+    } catch (error) {
+      return { kind: 'hold', reason: holdReason(error) }
+    }
+    return decide(candidate, firsts, CONFIRMATION_ONLY_FINDINGS, input.timing)
+  }))
+}
+
+/** A seller address as hex without a prefix, in lower case; null when it is not one. */
+function peerAddress(peerId: string): string | null {
+  const hex = peerId.toLowerCase().replace(/^0x/, '')
+  return /^[0-9a-f]{40}$/.test(hex) ? hex : null
+}
+
+/**
+ * The decision for one candidate against every first flag it answers (more than one fails closed: each must agree).
+ * `confirmationOnly` is the list's (`CONFIRMATION_ONLY_FINDINGS`); only a test passes its own.
+ */
+export function decide(
+  candidate: SameCheckCandidate,
+  firsts: readonly FirstFlag[],
+  confirmationOnly: readonly ConfirmationOnlyFinding[] = CONFIRMATION_ONLY_FINDINGS,
+  timing?: TestTimingConfig | null,
+): SameCheckDecision {
+  const ownChecks = [...candidate.flaggedBy]
+  // A test only a confirmation answers (`ConfirmationOnly`) answers its waiting flag only from an audit made as a
+  // confirmation of it. A first look's result of it neither confirms nor clears the flag; the seller is audited again
+  // as a confirmation. Each such test is taken on its own: these are the ones this audit is not a confirmation of.
+  const unconfirmed = confirmationOnly.filter((finding) => candidate.confirming?.checks.includes(finding.id) !== true)
+  const answering = (checks: readonly AuditCheckId[]) => checks.filter((check) => !unconfirmed.some((finding) => finding.id === check))
+  const answeringOwn = answering(ownChecks)
+  const answeringPassed = answering(candidate.passedBy)
+  // A score between the bars clears like a pass (`betweenChecks`): only a confirmation has one.
+  const answeringBetween = answering(candidate.betweenBy ?? [])
+  const clearing = [...answeringPassed, ...answeringBetween]
+  // A confirmation answers the report it was made for: the tests it repeats and the report's time are the live ones,
+  // as the run read them (every first flag's tests, the latest report's time). Material made for another report is
+  // never credited to this one.
+  if (candidate.confirming && firsts.length > 0) {
+    const live = {
+      checks: AUDIT_CHECK_IDS.filter((check) => firsts.some((first) => first.checks.includes(check))),
+      reportedAt: Math.max(...firsts.map((first) => first.reportedAt)),
+    }
+    if (!sameConfirmation(candidate.confirming, live)) {
+      return { kind: 'exclude', code: 'confirms-another-report', reason: 'this audit confirms another report than the DIFF waiting now; it is not sent, and the seller is audited again' }
+    }
+  }
+  const decisions = firsts.map((first): SameCheckDecision => {
+    const record = (sameCheck: AuditCheckId | null, passedCheck?: AuditCheckId, clearedBetween?: AuditCheckId[]): SameCheckConfirmationV1 => ({
+      auditor: first.auditor,
+      evidenceUri: first.evidenceUri,
+      evidenceHash: first.evidenceHash,
+      reportedAt: first.reportedAt,
+      firstChecks: [...first.checks],
+      ownChecks,
+      sameCheck,
+      ...(passedCheck ? { passedCheck } : {}),
+      ...(clearedBetween && clearedBetween.length > 0 ? { clearedBetween } : {}),
+    })
+    // A first look's UNDETERMINED answering a waiting DIFF is not sent: one report records it, and it would replace the
+    // seller's live SAME on a finding a confirmation answers (`model-run.ts`).
+    if (!candidate.confirming && candidate.verdict === VERIFIER_VERDICT.UNDETERMINED) {
+      return {
+        kind: 'exclude',
+        code: 'first-look-undetermined',
+        reason: `an UNDETERMINED first look answering a waiting DIFF (${describeChecks(first.checks)}) is not sent; a confirmation of it answers the report`,
+      }
+    }
+    if (!isFreshConfirmation(candidate.auditedAt, first.reportedAt, timing)) {
+      return {
+        kind: 'exclude',
+        code: 'confirmation-not-fresh',
+        reason: `this audit was made ${candidate.auditedAt < first.reportedAt ? 'before' : 'less than an hour after'} the waiting DIFF it would answer; `
+          + 'a confirmation needs fresh material, so it is not sent',
+      }
+    }
+    const sameCheck = AUDIT_CHECK_IDS.find((check) => first.checks.includes(check) && answeringOwn.includes(check)) ?? null
+    const passedCheck = AUDIT_CHECK_IDS.find((check) => first.checks.includes(check) && clearing.includes(check))
+    const between = first.checks.filter((check) => answeringBetween.includes(check))
+    // A confirmation always sends its result (Alex, 25 November), as its audit decided it (`verdictOf`): DIFF only when
+    // the same test flagged again, SAME when the repeated test passed or the questions say SAME with nothing that counts
+    // flagging, otherwise UNDETERMINED, its last attempt's. The report is answered either way.
+    if (candidate.confirming) {
+      if (candidate.verdict === VERIFIER_VERDICT.DIFF) {
+        return sameCheck
+          ? { kind: 'send', confirmation: record(sameCheck) }
+          // Never from `verdictOf`, which makes a confirmation DIFF only on the same test: another test's DIFF would be
+          // counted with the waiting one by the contract.
+          : { kind: 'exclude', code: 'other-test-only', confirmation: record(null), reason: `the waiting DIFF was flagged by ${describeChecks(first.checks)} and this audit by ${describeChecks(ownChecks)}; a DIFF is confirmed only by the same check, so it is not sent` }
+      }
+      if (candidate.verdict === VERIFIER_VERDICT.SAME) return { kind: 'send', confirmation: record(null, passedCheck, between) }
+      return { kind: 'send', confirmation: record(null) }
+    }
+    if (sameCheck) {
+      return candidate.verdict === VERIFIER_VERDICT.DIFF
+        ? { kind: 'send', confirmation: record(sameCheck) }
+        : { kind: 'exclude', code: 'same-check-not-diff', reason: `${describeAuditCheck(sameCheck)} flagged in both audits but this result is not a DIFF`, confirmation: record(sameCheck) }
+    }
+    // A first look of such a test that flagged or passed where the waiting DIFF's flagged: it answers nothing. With
+    // more than one, the first in attribution order names the code.
+    const unanswered = unconfirmed.find((finding) => first.checks.includes(finding.id) && (ownChecks.includes(finding.id) || candidate.passedBy.includes(finding.id)))
+    if (unanswered) {
+      return {
+        kind: 'exclude',
+        code: `${unanswered.id}-not-confirmation`,
+        confirmation: record(null),
+        reason: `the waiting DIFF was flagged by ${unanswered.label}, which only a confirmation of it (${unanswered.confirmationOnly.material}) `
+          + 'answers; this first look is not sent, and the seller is audited again as a confirmation',
+      }
+    }
+    if (ownChecks.length > 0) {
+      return {
+        kind: 'exclude',
+        code: 'other-test-only',
+        confirmation: record(null),
+        reason: `the waiting DIFF was flagged by ${describeChecks(first.checks)} and this audit by ${describeChecks(ownChecks)}; `
+          + 'a DIFF is confirmed only by the same check, so nothing is sent and the seller keeps its record',
+      }
+    }
+    // A first look's SAME clears the waiting DIFF only when every check that flagged it passed here.
+    const open = first.checks.filter((check) => !clearing.includes(check))
+    if (candidate.verdict === VERIFIER_VERDICT.SAME && passedCheck && open.length === 0) return { kind: 'send', confirmation: record(null, passedCheck, between) }
+    return {
+      kind: 'exclude',
+      code: 'repeated-test-open',
+      confirmation: record(null),
+      reason: `the waiting DIFF was flagged by ${describeChecks(first.checks)}, and ${describeChecks(open.length > 0 ? open : first.checks)} neither flagged nor passed in this first look; `
+        + 'it is not sent, and a confirmation of it answers the report',
+    }
+  })
+  return decisions.find((decision) => decision.kind !== 'send') ?? decisions[0]!
+}
+
+function describeChecks(checks: readonly AuditCheckId[]): string {
+  return checks.length === 0 ? 'no check' : checks.map(describeAuditCheck).join(' and ')
+}
+
+/** A bounded, cleaned reason: the error text can come from a file another auditor published. */
+function holdReason(error: unknown): string {
+  const detail = sanitizeOutcomeSummary(error instanceof Error ? error.message : String(error)).slice(0, 200)
+  return `which check flagged in the waiting DIFF could not be read from its published evidence (${detail}); `
+    + 'a DIFF is confirmed only by the same check, so nothing is sent now and the next submit reads it again'
+}
+
+/**
+ * Other auditors' latest reports per `opinionKey` that are DIFFs still waiting (fewer reports than they need).
+ * Their round is compared with the contract's round by the caller.
+ */
+export function waitingDiffs(
+  events: readonly ServiceAuditedEvent[],
+  auditor: string,
+  revoked?: ReadonlySet<string>,
+): Map<string, ServiceAuditedEvent[]> {
+  const latest = latestOtherReports(events, auditor, revoked)
+  const waiting = new Map<string, ServiceAuditedEvent[]>()
+  for (const [key, byAuditor] of latest) {
+    const diffs = [...byAuditor.values()].filter((event) => event.verdict === VERIFIER_VERDICT.DIFF && event.reports < event.required)
+    if (diffs.length > 0) waiting.set(key, diffs)
+  }
+  return waiting
+}
+
+/**
+ * Reads the first auditor's flag on one seller from a waiting report, once per transaction for the model
+ * audit and once per seller for its evidence. Evidence published by another auditor is read as untrusted data:
+ * every file is checked against its hash, the files must be about this seller, service, model and epoch, and
+ * each flag is recomputed from what the evidence stores, never read from a label. Throws when anything does not
+ * hold; the caller treats that as unreadable.
+ */
+export function firstFlagReader(reader: PublishedFlagReader): (report: ServiceAuditedEvent, agentId: bigint, serviceHash: string) => Promise<FirstFlag> {
+  const audits = new Map<string, Promise<PublishedModelAudit>>()
+  const flags = new Map<string, Promise<FirstFlag>>()
+  return (report, agentId, serviceHash) => {
+    const flagKey = `${getAddress(report.auditor)}:${report.transactionHash.toLowerCase()}:${agentId}:${normalized(serviceHash)}`
+    let flag = flags.get(flagKey)
+    if (!flag) {
+      const auditKey = `${getAddress(report.auditor)}:${report.transactionHash.toLowerCase()}`
+      let audit = audits.get(auditKey)
+      if (!audit) {
+        audit = readPublishedModelAudit(reader, report)
+        audits.set(auditKey, audit)
+      }
+      flag = (async () => {
+        const published = await audit
+        const { checks, peerId } = await published.checksOf(agentId, serviceHash)
+        return {
+          auditor: getAddress(report.auditor),
+          peerId,
+          evidenceUri: published.evidenceUri,
+          evidenceHash: published.evidenceHash,
+          reportedAt: await reader.blockTimestamp(report.blockNumber),
+          checks,
+        }
+      })()
+      flags.set(flagKey, flag)
+    }
+    return flag
+  }
+}
+
+/**
+ * For each confirmation target with a waiting DIFF (`confirmationTargetsByModel`): reads which checks flagged it in
+ * the first auditor's published evidence, before the seller is audited, and stores them with the report's time on
+ * the target. A target whose first evidence cannot be read, or whose report is younger than
+ * `CONFIRMATION_MIN_DELAY_SECONDS`, is removed with a line saying why: its result could not be sent now, and the next
+ * run tries again.
+ */
+export async function attachFirstFlags(
+  targets: Map<string, Map<string, ConfirmationTarget>>,
+  input: {
+    events: readonly ServiceAuditedEvent[]
+    auditor: string
+    revoked?: ReadonlySet<string>
+    reader: PublishedFlagReader
+    /** Unix seconds. */
+    now: number
+    log: (line: string) => void
+    /** A dry run's `verifier.testTiming`; without it, the rules' confirmation delay. */
+    timing?: TestTimingConfig | null
+  },
+): Promise<void> {
+  const readFirst = firstFlagReader(input.reader)
+  const waiting = waitingDiffs(input.events, input.auditor, input.revoked)
+  for (const [model, agents] of targets) {
+    for (const [key, target] of agents) {
+      if (!target.waiting.some((tally) => tally.verdict === 'DIFF')) continue
+      const service = hashService(target.service)
+      const reports = waiting.get(opinionKey(target.agentId, service, modelHash(model))) ?? []
+      try {
+        if (reports.length === 0) throw new Error('no waiting DIFF was found for it')
+        const firsts = await Promise.all(reports.map((report) => readFirst(report, target.agentId, service)))
+        target.firstChecks = AUDIT_CHECK_IDS.filter((check) => firsts.some((first) => first.checks.includes(check)))
+        target.firstReportedAt = Math.max(...firsts.map((first) => first.reportedAt))
+      } catch (error) {
+        agents.delete(key)
+        input.log(`  ${model}: agent ${target.agentId} is not audited now: which check flagged its waiting DIFF could not be read `
+          + `(${sanitizeOutcomeSummary(error instanceof Error ? error.message : String(error)).slice(0, 200)}); the next run tries again`)
+        continue
+      }
+      if (input.now < target.firstReportedAt + (input.timing?.confirmationMinDelaySeconds ?? CONFIRMATION_MIN_DELAY_SECONDS)) {
+        agents.delete(key)
+        input.log(`  ${model}: agent ${target.agentId} is confirmed from an hour after the first report, on fresh material; a later run audits it`)
+      }
+    }
+  }
+}
+
+/** The oldest a first auditor's seller evidence may be at its report: one epoch (7 days), and a day for submitting. */
+const EVIDENCE_MAX_AGE_SECONDS = 8 * 24 * 60 * 60
+const CLOCK_SLACK_SECONDS = 60 * 60
+
+interface PublishedModelAudit {
+  evidenceUri: string
+  evidenceHash: string
+  /** The checks that flagged the seller, and the seller address the evidence is about (`target.peerId`). */
+  checksOf(agentId: bigint, serviceHash: string): Promise<{ checks: AuditCheckId[]; peerId: string }>
+}
+
+async function readPublishedModelAudit(reader: PublishedFlagReader, report: ServiceAuditedEvent): Promise<PublishedModelAudit> {
+  const events = await reader.modelAudits({ model: report.modelHash, auditor: report.auditor }, report.blockNumber)
+  const event = events.find((entry) => (
+    entry.transactionHash.toLowerCase() === report.transactionHash.toLowerCase()
+    && normalized(entry.modelHash) === normalized(report.modelHash)
+    && getAddress(entry.auditor) === getAddress(report.auditor)
+  ))
+  if (!event) throw new Error('no model audit was found in the transaction of its report')
+  if (!event.evidenceUri.startsWith('ipfs://')) throw new Error('its evidence was not published to IPFS')
+  const cid = event.evidenceUri.slice('ipfs://'.length).replace(/\/+$/, '')
+  if (!/^[A-Za-z0-9]+$/.test(cid)) throw new Error('its evidence URI is not an ipfs://<cid>')
+  const fetchJson = async (path: string): Promise<unknown> => {
+    const text = await reader.fetchText(`${cid}/${path}`)
+    try {
+      return JSON.parse(text) as unknown
+    } catch {
+      throw new Error(`a published file is not JSON (${path})`)
+    }
+  }
+
+  const publication = await fetchJson('publication.json')
+  if (!isRecord(publication) || publication['kind'] !== 'antseed-verifier-ipfs-publication' || typeof publication['evidencePath'] !== 'string') {
+    throw new Error('its publication index is not an Antseed verifier publication')
+  }
+  const indexPath = publication['evidencePath']
+  const evidence = await fetchJson(safeRelativePath(indexPath))
+  if (!isRecord(evidence) || evidence['kind'] !== 'antseed-verifier-model-audit-evidence' || !Array.isArray(evidence['results'])) {
+    throw new Error('its evidence is not a model audit')
+  }
+  const evidenceHash = canonicalHashBytes32(evidence)
+  if (evidenceHash.toLowerCase() !== event.evidenceHash.toLowerCase()) {
+    throw new Error('its evidence does not hash to what it submitted')
+  }
+  if (evidence['epoch'] !== event.epoch.toString()) throw new Error('its evidence is for another epoch than its report')
+  if (typeof evidence['modelHash'] !== 'string' || normalized(evidence['modelHash']) !== normalized(report.modelHash)) {
+    throw new Error('its evidence is for another model than its report')
+  }
+  const reportedAt = await reader.blockTimestamp(report.blockNumber)
+  const directory = posix.dirname(indexPath)
+  const resolve = (path: unknown): string => {
+    if (typeof path !== 'string') throw new Error('a published path is missing')
+    return safeRelativePath(directory === '.' ? path : `${directory}/${path}`)
+  }
+  const referenceIds = new Set((Array.isArray(evidence['references']) ? evidence['references'] as unknown[] : [])
+    .flatMap((entry) => (isRecord(entry) && typeof entry['referenceId'] === 'string' ? [entry['referenceId']] : [])))
+  const sellerEvidence = async (audit: unknown, agentId: bigint, serviceHash: string, expectedReferenceId: unknown): Promise<ProxyAuditEvidenceV1> => {
+    if (!isRecord(audit) || typeof audit['evidenceHash'] !== 'string') throw new Error(`its result for agent ${agentId} names no audit evidence`)
+    const seller = await fetchJson(resolve(audit['evidencePath']))
+    if (!isRecord(seller) || seller['kind'] !== 'antseed-buyer-proxy-kbf-audit' || !Array.isArray(seller['exchanges'])
+      || !isRecord(seller['target']) || !isRecord(seller['result'])) {
+      throw new Error(`its audit evidence for agent ${agentId} is not a seller audit`)
+    }
+    const parsed = seller as unknown as ProxyAuditEvidenceV1
+    if (proxyAuditEvidenceHash(parsed).toLowerCase() !== audit['evidenceHash'].toLowerCase()) {
+      throw new Error(`its audit evidence for agent ${agentId} does not match the hash its model audit names`)
+    }
+    // The file must be about this seller, service and model, and made in the epoch of the report: a hash only
+    // proves which file was published.
+    if (parsed.target.agentId !== agentId.toString() || normalized(hashService(parsed.target.service)) !== normalized(serviceHash)) {
+      throw new Error(`its audit evidence linked for agent ${agentId} is about another seller or service`)
+    }
+    if (normalized(modelHash(parsed.reference.referenceModel)) !== normalized(report.modelHash)) {
+      throw new Error(`its audit evidence linked for agent ${agentId} is about another model`)
+    }
+    // The epoch: the file's question set is the one its result names, and one of this model audit's own references.
+    if (parsed.reference.referenceId !== expectedReferenceId || !referenceIds.has(parsed.reference.referenceId)) {
+      throw new Error(`its audit evidence linked for agent ${agentId} is on another question set than its model audit`)
+    }
+    const madeAt = Date.parse(parsed.createdAt) / 1_000
+    // The evidence's time is the first auditor's clock, the report's the chain's: an hour of slack between them.
+    if (!Number.isFinite(madeAt) || madeAt > reportedAt + CLOCK_SLACK_SECONDS || madeAt < reportedAt - EVIDENCE_MAX_AGE_SECONDS) {
+      throw new Error(`its audit evidence linked for agent ${agentId} was not made in the epoch of its report`)
+    }
+    // The hash proves which file was published. That a seller signed the answers in it is checked here, for the
+    // first set's file and for each extra set's: none of them passed through this auditor's buyer proxy.
+    assertSellerSignatures(parsed)
+    // And the questions are judged on what those signed answers give, asked of this seller: the stored scores are the
+    // first auditor's own writing.
+    assertQuestionsFromSignedBytes(parsed)
+    return parsed
+  }
+  const results = evidence['results'] as unknown[]
+  return {
+    evidenceUri: event.evidenceUri,
+    evidenceHash: event.evidenceHash,
+    async checksOf(agentId, serviceHash) {
+      const result = results.find((entry): entry is Record<string, unknown> => (
+        isRecord(entry) && entry['agentId'] === agentId.toString()
+        && typeof entry['serviceHash'] === 'string' && normalized(entry['serviceHash']) === normalized(serviceHash)
+      ))
+      if (!result) throw new Error(`its evidence has no result for agent ${agentId} on this service`)
+      if (result['verdict'] !== 'DIFF') throw new Error(`its evidence gives agent ${agentId} ${String(result['verdict'])}, not DIFF`)
+      const first = await sellerEvidence(result['audit'], agentId, serviceHash, result['referenceId'])
+      if (typeof result['peerId'] !== 'string' || normalized(result['peerId']) !== normalized(first.target.peerId)) {
+        throw new Error(`its result for agent ${agentId} names another seller address than its audit evidence is about`)
+      }
+      // Every flag is recomputed from the stored records, as `verifier submit` checks its own.
+      if (first.tests !== ALL_TESTS_FORMAT) throw new Error('its evidence does not name the all-tests format')
+      validateStoredChecks(first, 'confirmer', { epoch: event.epoch.toString(), auditor: getAddress(event.auditor) })
+      const checks = flaggingChecks(first, await questionsVerdict(result, first, async (audit, referenceId) => {
+        // An extra set is about the seller address the first set is about, or it is another seller's answers.
+        const extra = await sellerEvidence(audit, agentId, serviceHash, referenceId)
+        if (normalized(extra.target.peerId) !== normalized(first.target.peerId)) {
+          throw new Error(`its extra question set for agent ${agentId} is about another seller address than its first set`)
+        }
+        return extra
+      }))
+      if (checks.length === 0) throw new Error(`its evidence for agent ${agentId} shows no check that flagged`)
+      return { checks, peerId: first.target.peerId }
+    },
+  }
+}
+
+/**
+ * The questions' verdict of a published result: the first set's own, or after a close call the pooled verdict
+ * of the first set and its extra sets, recomputed from their evidence files (each hash-checked).
+ */
+async function questionsVerdict(
+  result: Record<string, unknown>,
+  first: ProxyAuditEvidenceV1,
+  load: (audit: unknown, referenceId: unknown) => Promise<ProxyAuditEvidenceV1>,
+): Promise<'SAME' | 'DIFF' | 'UNDETERMINED' | null> {
+  // The questions' own verdict, decided from the seller files by the adjudicator submit uses; the published label must
+  // be exactly that, and the published closure is accepted only for a real close call.
+  type ExtraSet = Parameters<typeof adjudicateQuestions>[0]['extraSets'][number]
+  const extraSets: ExtraSet[] = []
+  for (const name of ['extension', 'extension2']) {
+    const extension = result[name]
+    if (!isRecord(extension)) break
+    if (typeof extension['rule'] !== 'string' || !isRecord(extension['pooled'])) throw new Error('its close call names no extension rule or pooled look')
+    extraSets.push({
+      // The published pooled look, as the adjudicator reads it: it checks every figure of it against the evidence.
+      record: { rule: extension['rule'], pooled: extension['pooled'] as ExtraSet['record']['pooled'] },
+      evidence: await load(extension['audit'], extension['referenceId']),
+    })
+  }
+  const rule = typeof result['decisionRule'] === 'string' ? result['decisionRule'] : extraSets[0]?.record.rule
+  const adjudicated = adjudicateQuestions({ evidence: first, extraSets, decisionRule: rule, closed: result['questionsClosed'] === true })
+  if (adjudicated.pending) throw new Error('its questions are a close call still waiting for an extra set')
+  const published = verdictOf(result['questionsVerdict'])
+  if (published === null) throw new Error('its result does not give the questions\' own verdict')
+  if (published !== adjudicated.verdict) throw new Error('its questions\' verdict does not follow from its evidence')
+  return adjudicated.verdict
+}
+
+function verdictOf(value: unknown): 'SAME' | 'DIFF' | 'UNDETERMINED' | null {
+  return value === 'SAME' || value === 'DIFF' || value === 'UNDETERMINED' ? value : null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * A path inside the publication, as `publication.ts` in the model verifier resolves it: `..` steps back
+ * inside the package (a seller's evidence sits beside the model audit's directory, not in it), never above
+ * its root; each segment is URL-encoded for the gateway.
+ */
+function safeRelativePath(path: string): string {
+  if (path.startsWith('/') || path.includes('\\')) throw new Error('an unsafe path in the publication')
+  const segments: string[] = []
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') {
+      if (segments.length === 0) throw new Error('a path in the publication escapes its root')
+      segments.pop()
+      continue
+    }
+    segments.push(encodeURIComponent(segment))
+  }
+  if (segments.length === 0) throw new Error('an empty path in the publication')
+  return segments.join('/')
+}

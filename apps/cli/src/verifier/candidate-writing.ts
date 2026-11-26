@@ -9,12 +9,42 @@
  * stability-checked, contrasted, self-tested and audited with the recorded setting, exactly like
  * every other question, so nothing measured or scored changes.
  */
-import type { ThinkingDiscoveryStrategy } from './thinking-suppression.js'
+import { thinkingAttemptReachedZero } from '@antseed/fingerprints'
+import type { ThinkingDiscoveryAttemptV1, ThinkingDiscoveryStrategy } from './thinking-suppression.js'
+
+/** Output limit of a question-writing request, as the KBF reference code asks for a list. */
+export const CANDIDATE_WRITING_MAX_TOKENS = 6000
+/**
+ * Output limit of a question-writing request when the model's discovery found nothing that turns its thinking off: room
+ * to think and still write the list. Gemini 4 Neon thinks through all 6000 tokens before writing anything on most
+ * batches with the setting that thought least; 16000 fits its thinking and the list.
+ */
+export const CANDIDATE_WRITING_THINKING_MAX_TOKENS = 16000
+
+/**
+ * The output limit for question writing, from the model's own thinking discovery (`generator.params.thinkingDiscovery
+ * .target`): the larger limit when the last attempt of the setting it chose still thought (a least-thinking pick, or
+ * `bare` that thought), else the usual one. A bank without a stored discovery keeps the usual limit. Only writing
+ * changes: the questions sellers are asked, the answer limits and scoring do not.
+ */
+export function candidateWritingMaxTokens(
+  target: { strategy: ThinkingDiscoveryStrategy; attempts: readonly ThinkingDiscoveryAttemptV1[] } | undefined,
+): number {
+  if (!target) return CANDIDATE_WRITING_MAX_TOKENS
+  const attempts = target.attempts.filter((attempt) => attempt?.strategy === target.strategy)
+  return thinkingAttemptReachedZero(attempts.at(-1)) ? CANDIDATE_WRITING_MAX_TOKENS : CANDIDATE_WRITING_THINKING_MAX_TOKENS
+}
 
 /** The first answers of a build that decide whether new batches go straight to the fallback. */
 export const CANDIDATE_WRITING_TRIAL_ANSWERS = 3
 /** Rambling answers among the trial answers that switch the rest of the build to the fallback. */
 export const CANDIDATE_WRITING_SWITCH_THRESHOLD = 2
+/**
+ * Fallback answers that, all unusable, end the fallback for the rest of the build: when a little thinking also runs out of
+ * tokens (DeepSeek V4 Pro on its pinned host thought through all 6000 with it, 45 times in one build), every later batch
+ * would pay for it twice.
+ */
+export const CANDIDATE_WRITING_FALLBACK_TRIAL_ANSWERS = 3
 /** Share of `max_tokens` an answer must use to count as having run out of room. */
 const OUT_OF_ROOM_SHARE = 0.95
 
@@ -46,6 +76,10 @@ export interface CandidateWritingRecordV1 {
   recoveredBatches: number
   /** Set when the endpoint refused the fallback; writing then stays on the recorded setting. */
   fallbackRefused?: string
+  /** Set when the fallback's first answers gave no usable list either; writing then stays on the recorded setting. */
+  fallbackAbandoned?: string
+  /** The writing output limit, when it is not `CANDIDATE_WRITING_MAX_TOKENS` (`candidateWritingMaxTokens`). */
+  maxTokens?: number
 }
 
 export class CandidateWritingPolicy {
@@ -53,14 +87,23 @@ export class CandidateWritingPolicy {
   private trialStarted = 0
   private trialFinished = 0
   private trialRambling = 0
+  private fallbackAnswers = 0
   private switched = false
   private readonly trialDone: Promise<void>
   private resolveTrial!: () => void
   private readonly record: CandidateWritingRecordV1
 
-  constructor(fallback: ThinkingDiscoveryStrategy | null, private readonly log?: (message: string) => void) {
+  constructor(
+    fallback: ThinkingDiscoveryStrategy | null,
+    private readonly log?: (message: string) => void,
+    /** Output limit of every writing request of the build (`candidateWritingMaxTokens`). */
+    readonly maxTokens: number = CANDIDATE_WRITING_MAX_TOKENS,
+  ) {
     this.fallback = fallback
-    this.record = { version: 1, fallbackStrategy: fallback, ramblingAnswers: 0, retriedBatches: 0, directBatches: 0, recoveredBatches: 0 }
+    this.record = {
+      version: 1, fallbackStrategy: fallback, ramblingAnswers: 0, retriedBatches: 0, directBatches: 0, recoveredBatches: 0,
+      ...(maxTokens !== CANDIDATE_WRITING_MAX_TOKENS ? { maxTokens } : {}),
+    }
     this.trialDone = new Promise((resolve) => { this.resolveTrial = resolve })
   }
 
@@ -109,9 +152,17 @@ export class CandidateWritingPolicy {
     return this.fallback
   }
 
-  /** Records whether a fallback answer gave a usable list. */
+  /** Records whether a fallback answer gave a usable list; ends the fallback when its first answers all gave none. */
   observeFallbackAnswer(usable: boolean): void {
+    this.fallbackAnswers += 1
     if (usable) this.record.recoveredBatches += 1
+    if (this.fallback && this.record.recoveredBatches === 0 && this.fallbackAnswers >= CANDIDATE_WRITING_FALLBACK_TRIAL_ANSWERS) {
+      const reason = `its first ${this.fallbackAnswers} answers gave no usable list`
+      this.log?.(`question writing: '${this.fallback}' did not help (${reason}); keeping the recorded setting`)
+      this.record.fallbackAbandoned = reason
+      this.fallback = null
+      this.switched = false
+    }
   }
 
   /** The endpoint refused the fallback: stop using it for the rest of the build. */
@@ -123,16 +174,21 @@ export class CandidateWritingPolicy {
     this.switched = false
   }
 
-  /** What happened, for the reference; null when no answer rambled. */
+  /** What happened, for the reference; null when no answer rambled and writing used the usual limit. */
   summary(): CandidateWritingRecordV1 | null {
-    return this.record.ramblingAnswers > 0 || this.record.fallbackRefused ? { ...this.record } : null
+    return this.record.ramblingAnswers > 0 || this.record.fallbackRefused || this.record.fallbackAbandoned
+      || this.record.maxTokens !== undefined ? { ...this.record } : null
   }
 }
 
 /**
  * The fallback for a route: a little thinking (`reasoning.effort: "minimal"`), only on OpenRouter
- * routes whose recorded setting turns thinking off. Routes that already think, Anthropic Messages
- * routes and other APIs get none and write questions exactly as before.
+ * routes whose recorded setting turns thinking off, or sets no thinking at all (`bare`: the model
+ * ignored every way of turning it off). A `bare` model thinks as long as it likes, and on a long list
+ * it can spend every token thinking and return no text: GLM 5.3 on its maker's endpoint did this for
+ * every batch, while `minimal` cut its thinking about fourfold on audit questions. Routes with
+ * another thinking setting, Anthropic Messages routes and other APIs get none and write questions
+ * exactly as before.
  */
 export function candidateWritingFallback(route: {
   type: string
@@ -152,5 +208,9 @@ export function candidateWritingFallback(route: {
   const overrides = route.requestOverrides
   const reasoning = overrides.reasoning as { effort?: unknown } | undefined
   const thinkingOff = overrides.reasoning_effort === 'none' || reasoning?.effort === 'none'
-  return thinkingOff ? 'reasoning-effort-minimal' : null
+  const noThinkingSetting = !THINKING_SETTINGS.some((key) => key in overrides)
+  return thinkingOff || noThinkingSetting ? 'reasoning-effort-minimal' : null
 }
+
+/** Request fields that set thinking on some route: a route with none of them leaves thinking to the model. */
+const THINKING_SETTINGS = ['reasoning', 'reasoning_effort', 'thinking', 'enable_thinking', 'chat_template_kwargs'] as const
