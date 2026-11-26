@@ -99,6 +99,44 @@ final class InteropTests: XCTestCase {
         XCTAssertEqual(key.withUnsafeBytes { Data($0) }.hex, "b7da4356e6d473751b91b59ac1f256a2f1bf9fb943d3c429463a5ac538d7c386")
     }
 
+    func testAttestedWitnessSignsAsInNode() {
+        let statement: [String: Any] = [
+            "v": 1, "teamId": "H3M5BXXQR2", "signingId": "com.antseed.macworker", "cdhash": String(repeating: "ab", count: 20),
+            "sip": true, "hardenedRuntime": true, "debuggerDenied": false, "keyAppBound": true, "os": "macOS 26.2",
+            "serial": "C02TEST0MD6T", "udid": "00000000-0000-1000-8000-0123456789AB", "issued": 1767225600, "nonce": "n0",
+            "models": [
+                "qwen3.5-2b": [
+                    "model": "mlx-community/Qwen3.5-2B-MLX-4bit@93760be4f1f69842a46bc13dbdc0f19e291392a3", "sha256": String(repeating: "12", count: 32),
+                    "witness": ["path": "qwen3_5-2b/metal/tp1/mlx-q4g64/text", "engine": String(repeating: "56", count: 32),
+                                "binary": String(repeating: "78", count: 32), "text": String(repeating: "9a", count: 32)],
+                ],
+                "a-svc": ["model": "org/a@" + String(repeating: "0", count: 40), "sha256": String(repeating: "34", count: 32)],
+            ],
+        ]
+        // workerAttestationMessage in @antseed/node/worker-e2e for the same statement.
+        XCTAssertEqual(
+            Protection.attestationMessage(worker: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", keyHex: "04ab", statement: statement),
+            "antseed-worker-attestation/v1\nworker:0x70997970c51812dc3a010c7d01b50e0d17dc79c8\nkey:04ab\nteam:H3M5BXXQR2\nsigning-id:com.antseed.macworker\ncdhash:abababababababababababababababababababab\nsip:1\nhardened-runtime:1\ndebugger-denied:0\nkey-app-bound:1\nos:macOS 26.2\nserial:C02TEST0MD6T\nudid:00000000-0000-1000-8000-0123456789AB\nmodels:a-svc=org/a@0000000000000000000000000000000000000000#3434343434343434343434343434343434343434343434343434343434343434,qwen3.5-2b=mlx-community/Qwen3.5-2B-MLX-4bit@93760be4f1f69842a46bc13dbdc0f19e291392a3#1212121212121212121212121212121212121212121212121212121212121212\nwitness:qwen3.5-2b=qwen3_5-2b/metal/tp1/mlx-q4g64/text#5656565656565656565656565656565656565656565656565656565656565656#7878787878787878787878787878787878787878787878787878787878787878#9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a\nissued:1767225600\nnonce:n0"
+        )
+    }
+
+    func testAttestationCarriesOnlyAKnownWitness() throws {
+        let report = Protection.Report(identity: .init(teamId: nil, signingId: nil, cdhash: nil, hardenedRuntime: false), sip: true, debuggerDenied: false, keyAppBound: false)
+        let known = EngineWitness.Known(witness: String(repeating: "01", count: 32), path: "qwen3_5-2b/metal/tp1/mlx-q4g64/text",
+                                        engine: String(repeating: "02", count: 32), binary: String(repeating: "03", count: 32), text: String(repeating: "04", count: 32))
+        let models = [
+            "a": LocalModel.Checkpoint(model: "org/a@1", sha256: String(repeating: "aa", count: 32), witness: .known(known)),
+            "b": LocalModel.Checkpoint(model: "org/b@1", sha256: String(repeating: "bb", count: 32), witness: .unknown(reason: "unsupported_path", feature: nil)),
+        ]
+        let attestation = try Protection.attest(report, nonce: "n1", worker: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", keyHex: "04ab",
+                                                signer: AttestationKey(P256.Signing.PrivateKey()), models: models)
+        let attested = try XCTUnwrap(attestation["models"] as? [String: [String: Any]])
+        XCTAssertEqual(attested["a"]?["witness"] as? [String: String], ["path": known.path, "engine": known.engine, "binary": known.binary, "text": known.text])
+        XCTAssertNil(attested["b"]?["witness"])
+        let message = Protection.attestationMessage(worker: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", keyHex: "04ab", statement: attestation)
+        XCTAssertTrue(message.contains("\nwitness:a=\(known.path)#\(known.engine)#\(known.binary)#\(known.text)\nissued:"))
+    }
+
     func testAttestedModelsSignAsInNode() {
         let statement: [String: Any] = [
             "v": 1, "teamId": "H3M5BXXQR2", "signingId": "com.antseed.macworker", "cdhash": String(repeating: "ab", count: 20),

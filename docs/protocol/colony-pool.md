@@ -276,6 +276,22 @@ seal under its response key.
   engine on that revision's snapshot directory, not the cache's current
   revision, hashes the snapshot's files at every launch, and attests the
   digest.
+- The Mac app starts its engine with `--execution-witness` (TensorFold's
+  execution witness) and waits for the engine to read every weight byte it
+  loaded. When the engine attests its path (native Qwen3.5-2B on Metal so
+  far), each service's `models` entry adds `witness`: the engine's `path`,
+  `engine` (the weights as loaded, the checkpoint's structure, the Metal
+  kernels and the OS build and chip that compile them), `binary` (the
+  engine executable's SHA-256) and `text` (the tokenizer and template files
+  it loaded). The signed message adds a line after `models`,
+  `witness:<service>=<path>#<engine>#<binary>#<text>`, comma-separated and
+  sorted by service, for the services that have one; none signs no line. A
+  model the engine reports changed under it (`files_changed`) doesn't load,
+  each request asks the engine to bind its reply to the witness, and a
+  reply bound to another witness (the engine restarted) makes the app read
+  and attest the new one. The pool logs each witness a worker attests; it
+  doesn't route on it yet. The witness is the engine's report, signed by
+  the app, so it is only as trustworthy as the attestation.
 - The Mac app serves OpenAI chat completions with tools: `tools`,
   `tool_choice`, `parallel_tool_calls`, assistant `tool_calls` and `tool`
   messages reach the engine, and tool-call deltas and the engine's

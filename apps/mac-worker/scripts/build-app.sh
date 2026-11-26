@@ -10,6 +10,9 @@
 #   REQUIRE_PAY_PAGE=1                                     fail without the payments page build (CI, releases)
 #   DMG=1                                                  also package build/Antseed-Colony-<version>.dmg,
 #                                                          signed and notarized like the app
+#   TENSORFOLD_DIR=path/to/tensorfold-tree                 bundle this unpacked engine (bin/, lib/ and the
+#                                                          notices, as a release archive holds them) in place
+#                                                          of the pinned release: development builds only
 #
 # The version comes from ../VERSION; BUILD_NUMBER (default: the commit count) is CFBundleVersion.
 #
@@ -27,21 +30,32 @@ SPARKLE_FEED=https://github.com/Antseed/antseed/releases/download/colony-latest/
 SPARKLE_PUBLIC_KEY=TKOtrTgOdmDTXXUn4sRqsdAdfg6kIbNCql7NJ8xahzo=
 APP="${OUT:-build/Antseed Colony.app}"
 # The inference engine (https://github.com/ashhart/TensorFold), pinned by hash.
-TENSORFOLD_VERSION=1.2.6
-TENSORFOLD_SHA256=4b50317bfdc00cd34a2c43d02f06eefbdd537b847747bcfa0f6cef6d19386751
+TENSORFOLD_VERSION=1.3.5
+TENSORFOLD_SHA256=5959b770fef12bf95aa5b725a54d5f4f9f62aabb173599e3c6a8febef83fe14a
 
 swift build -c release --arch arm64 --product AntseedMacWorker
 PRODUCTS=$(swift build -c release --arch arm64 --show-bin-path)
 
 TENSORFOLD=tensorfold-$TENSORFOLD_VERSION-macos-arm64
 mkdir -p build
-if [ ! -f "build/$TENSORFOLD.tar.gz" ]; then
-  curl -fL --retry 3 -o "build/$TENSORFOLD.tar.gz.part" "https://github.com/ashhart/TensorFold/releases/download/v$TENSORFOLD_VERSION/$TENSORFOLD.tar.gz"
-  mv "build/$TENSORFOLD.tar.gz.part" "build/$TENSORFOLD.tar.gz"
+if [ -n "${TENSORFOLD_DIR:-}" ]; then
+  if [ -n "${SIGN_IDENTITY:-}" ]; then
+    echo "error: TENSORFOLD_DIR is for development builds; a signed build bundles the pinned release" >&2
+    exit 1
+  fi
+  echo "warning: bundling the engine in $TENSORFOLD_DIR, not TensorFold $TENSORFOLD_VERSION" >&2
+  TENSORFOLD=tensorfold-local
+  rm -rf "build/$TENSORFOLD"
+  cp -R "$TENSORFOLD_DIR" "build/$TENSORFOLD"
+else
+  if [ ! -f "build/$TENSORFOLD.tar.gz" ]; then
+    curl -fL --retry 3 -o "build/$TENSORFOLD.tar.gz.part" "https://github.com/ashhart/TensorFold/releases/download/v$TENSORFOLD_VERSION/$TENSORFOLD.tar.gz"
+    mv "build/$TENSORFOLD.tar.gz.part" "build/$TENSORFOLD.tar.gz"
+  fi
+  shasum -a 256 -c <<<"$TENSORFOLD_SHA256  build/$TENSORFOLD.tar.gz"
+  rm -rf "build/$TENSORFOLD"
+  tar -xzf "build/$TENSORFOLD.tar.gz" -C build
 fi
-shasum -a 256 -c <<<"$TENSORFOLD_SHA256  build/$TENSORFOLD.tar.gz"
-rm -rf "build/$TENSORFOLD"
-tar -xzf "build/$TENSORFOLD.tar.gz" -C build
 
 rm -rf "$APP"
 ENGINE="$APP/Contents/Helpers/tensorfold"

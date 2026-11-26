@@ -14,6 +14,7 @@ import {
   verifyWorkerAttestation,
   type DeviceAttestation,
   verifyWorkerKeyCertificate,
+  type AttestedModel,
   type WorkerAssignment,
   type WorkerAttestation,
   type WorkerKeyCertificate,
@@ -148,6 +149,11 @@ export interface DispatchHandlers {
 }
 
 export type DispatchRequest = SerializedHttpRequest;
+
+/** What a worker attests for a service, as one string: its log line changes only when this does. */
+function attestedModelKey({ model, sha256, witness }: AttestedModel): string {
+  return [model, sha256, witness?.path, witness?.engine, witness?.binary, witness?.text].join('#');
+}
 
 export class NoWorkerAvailableError extends Error {
   constructor(service: string) {
@@ -918,8 +924,10 @@ export class ColonyPool {
   private noteAttestedModels(worker: ConnectedWorker, previous: WorkerAttestation | null): void {
     for (const [service, attested] of Object.entries(worker.attestation?.models ?? {})) {
       const before = previous?.models?.[service];
-      if (before?.model === attested.model && before.sha256 === attested.sha256) continue;
-      this.log(`worker ${worker.address} attests ${attested.model} for ${service}, files sha256 ${attested.sha256}`);
+      if (before && attestedModelKey(before) === attestedModelKey(attested)) continue;
+      const { witness } = attested;
+      const engine = witness ? `${witness.path}, engine ${witness.engine}, binary ${witness.binary}, text ${witness.text}` : 'none';
+      this.log(`worker ${worker.address} attests ${attested.model} for ${service}, files sha256 ${attested.sha256}, engine witness ${engine}`);
     }
     this.emitChangeIfNeeded();
   }

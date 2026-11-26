@@ -204,6 +204,8 @@ enum EngineChat {
         var finishReason: String?
         var tokensPerSecond: Double?
         var usage: (prompt: Int, completion: Int)?
+        /// The reply's binding to the engine's execution witness, on the finish chunk when asked for.
+        var witness: EngineWitness.Binding?
     }
 
     static func parseEvent(_ line: String) -> Event? {
@@ -221,6 +223,7 @@ enum EngineChat {
            let prompt = reported["prompt_tokens"] as? Int, let completion = reported["completion_tokens"] as? Int {
             event.usage = (prompt, completion)
         }
+        if let witness = object["execution_witness"] as? [String: Any] { event.witness = EngineWitness.binding(witness) }
         return event
     }
 

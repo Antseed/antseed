@@ -51,10 +51,28 @@ export interface WorkerAttestation {
 export interface AttestedModel {
   model: string;
   sha256: string;
+  /** What the engine reports it loaded (its execution witness), when it knows: absent on paths the engine can't attest. */
+  witness?: AttestedWitness;
+}
+
+/**
+ * A TensorFold engine's execution witness of what serves a service (`serve --execution-witness`):
+ * reported by the engine and signed by the worker app, so it is as trustworthy as the app's attestation.
+ */
+export interface AttestedWitness {
+  /** The engine's supported path, e.g. `qwen3_5-2b/metal/tp1/mlx-q4g64/text`. */
+  path: string;
+  /** `components.engine`: every weight byte as loaded, the checkpoint's structure, and the kernels and machine facts that path binds. */
+  engine: string;
+  /** `components.binary`: the engine executable's SHA-256. */
+  binary: string;
+  /** `components.text`: the tokenizer, template and special-token files the engine loaded. */
+  text: string;
 }
 
 const ATTESTED_SERVICE = /^[!-~]{1,128}$/;
 const ATTESTED_MODEL = /^[^\s@,=#]+@[^\s@,=#]+$/;
+const DIGEST = /^[0-9a-f]{64}$/;
 const MAX_ATTESTED_MODELS = 32;
 
 /**
@@ -76,7 +94,19 @@ function attestedModelsLine(models: Record<string, AttestedModel> | undefined): 
   const entries = Object.entries(models ?? {}).sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
   // Absent and empty sign the same: no line, so attestations without models keep their message.
   if (entries.length === 0) return [];
-  return [`models:${entries.map(([service, { model, sha256 }]) => `${service}=${model}#${sha256}`).join(',')}`];
+  const witnesses = entries.flatMap(([service, { witness: w }]) => (w ? [`${service}=${w.path}#${w.engine}#${w.binary}#${w.text}`] : []));
+  return [
+    `models:${entries.map(([service, { model, sha256 }]) => `${service}=${model}#${sha256}`).join(',')}`,
+    // Only services the engine attests; none signs no line.
+    ...(witnesses.length > 0 ? [`witness:${witnesses.join(',')}`] : []),
+  ];
+}
+
+function isAttestedWitness(value: unknown): value is AttestedWitness {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const { path, engine, binary, text, ...rest } = value as Record<string, unknown>;
+  return Object.keys(rest).length === 0 && typeof path === 'string' && ATTESTED_SERVICE.test(path) && !/[,=#]/.test(path)
+    && [engine, binary, text].every((digest) => typeof digest === 'string' && DIGEST.test(digest));
 }
 
 function isAttestedModels(value: unknown): value is Record<string, AttestedModel> {
@@ -84,8 +114,9 @@ function isAttestedModels(value: unknown): value is Record<string, AttestedModel
   const entries = Object.entries(value);
   return entries.length <= MAX_ATTESTED_MODELS && entries.every(([service, entry]) => {
     if (!ATTESTED_SERVICE.test(service) || /[,=#]/.test(service) || typeof entry !== 'object' || entry === null) return false;
-    const { model, sha256 } = entry as Record<string, unknown>;
-    return typeof model === 'string' && ATTESTED_MODEL.test(model) && typeof sha256 === 'string' && /^[0-9a-f]{64}$/.test(sha256);
+    const { model, sha256, witness } = entry as Record<string, unknown>;
+    return typeof model === 'string' && ATTESTED_MODEL.test(model) && typeof sha256 === 'string' && DIGEST.test(sha256)
+      && (witness === undefined || isAttestedWitness(witness));
   });
 }
 

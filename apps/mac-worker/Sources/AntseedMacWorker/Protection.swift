@@ -113,14 +113,29 @@ enum Protection {
         }
     }
 
+    private static func attestedModel(_ checkpoint: LocalModel.Checkpoint) -> [String: Any] {
+        var model: [String: Any] = ["model": checkpoint.model, "sha256": checkpoint.sha256]
+        if let known = checkpoint.witness?.known {
+            model["witness"] = ["path": known.path, "engine": known.engine, "binary": known.binary, "text": known.text]
+        }
+        return model
+    }
+
     static func attestationMessage(worker: String, keyHex: String, statement: [String: Any]) -> String {
         func flag(_ key: String) -> String { (statement[key] as? Bool ?? false) ? "1" : "0" }
         func text(_ key: String) -> String { statement[key] as? String ?? "" }
         // Service → checkpoint, sorted bytewise; absent and empty sign the same (no line).
-        let models = statement["models"] as? [String: [String: String]] ?? [:]
-        let modelsLine = models.keys.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
-            .map { "\($0)=\(models[$0]?["model"] ?? "")#\(models[$0]?["sha256"] ?? "")" }
+        let models = statement["models"] as? [String: [String: Any]] ?? [:]
+        let services = models.keys.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+        let modelsLine = services
+            .map { "\($0)=\(models[$0]?["model"] as? String ?? "")#\(models[$0]?["sha256"] as? String ?? "")" }
             .joined(separator: ",")
+        // Service → the engine's execution witness, for the services that have one.
+        let witnessLine = services.compactMap { service -> String? in
+            guard let witness = models[service]?["witness"] as? [String: String] else { return nil }
+            let fields = ["path", "engine", "binary", "text"].map { witness[$0] ?? "" }
+            return "\(service)=\(fields.joined(separator: "#"))"
+        }.joined(separator: ",")
         var lines = [
             "antseed-worker-attestation/v1",
             "worker:\(worker.lowercased())",
@@ -137,6 +152,7 @@ enum Protection {
             "udid:\(text("udid"))",
         ]
         if !models.isEmpty { lines.append("models:\(modelsLine)") }
+        if !witnessLine.isEmpty { lines.append("witness:\(witnessLine)") }
         lines += [
             "issued:\(statement["issued"] as? Int ?? 0)",
             "nonce:\(text("nonce"))",
@@ -145,7 +161,8 @@ enum Protection {
     }
 
     /// A signed attestation answering the pool's `nonce` (WorkerAttestation in @antseed/node/worker-e2e).
-    /// `models` names the checkpoint behind each service and the digest of its files (`LocalModel.filesDigest`).
+    /// `models` names the checkpoint behind each service and the digest of its files (`LocalModel.filesDigest`),
+    /// with the engine's execution witness of what it loaded when the engine knows one.
     static func attest(_ report: Report, nonce: String, worker: String, keyHex: String, signer: AttestationKey, models: [String: LocalModel.Checkpoint] = [:], issued: Int = Int(Date().timeIntervalSince1970)) throws -> [String: Any] {
         var statement: [String: Any] = [
             "v": 1,
@@ -161,7 +178,7 @@ enum Protection {
             "os": osVersion,
             "serial": device.serial ?? NSNull(),
             "udid": device.udid ?? NSNull(),
-            "models": models.mapValues { ["model": $0.model, "sha256": $0.sha256] },
+            "models": models.mapValues(attestedModel),
             "issued": issued,
             "nonce": nonce,
         ]

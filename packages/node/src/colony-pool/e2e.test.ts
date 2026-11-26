@@ -285,6 +285,25 @@ describe('worker attestations', () => {
     }
   });
 
+  it('signs the engine witness of the services that have one, after the models', () => {
+    const witness = { path: 'qwen3_5-2b/metal/tp1/mlx-q4g64/text', engine: '01'.repeat(32), binary: '02'.repeat(32), text: '03'.repeat(32) };
+    const models = { zeta: { model: 'org/z@1', sha256: 'cd'.repeat(32), witness }, alpha: { model: 'org/a@2', sha256: 'ab'.repeat(32) } };
+    const { cert, attestation } = attestedWorker({ models });
+    expect(isWorkerAttestation(attestation)).toBe(true);
+    expect(verifyWorkerAttestation(attestation, cert, { maxAgeS: 60 }).valid).toBe(true);
+    expect(workerAttestationMessage(cert.worker, cert.key, attestation)).toContain(
+      `\nmodels:alpha=org/a@2#${'ab'.repeat(32)},zeta=org/z@1#${'cd'.repeat(32)}\nwitness:zeta=${witness.path}#${'01'.repeat(32)}#${'02'.repeat(32)}#${'03'.repeat(32)}\nissued:`,
+    );
+    // Another engine digest, or dropping the witness, breaks the signature.
+    const swapped = { ...models, zeta: { ...models.zeta, witness: { ...witness, engine: '04'.repeat(32) } } };
+    expect(verifyWorkerAttestation({ ...attestation, models: swapped }, cert, { maxAgeS: 60 }).valid).toBe(false);
+    const dropped = { ...models, zeta: { model: 'org/z@1', sha256: 'cd'.repeat(32) } };
+    expect(verifyWorkerAttestation({ ...attestation, models: dropped }, cert, { maxAgeS: 60 }).valid).toBe(false);
+    for (const bad of [{ ...witness, path: 'a,b' }, { ...witness, path: 'a#b' }, { ...witness, binary: 'AB'.repeat(32) }, { ...witness, extra: 'x' }, 'qwen']) {
+      expect(isWorkerAttestation({ ...attestation, models: { zeta: { ...models.zeta, witness: bad } } })).toBe(false);
+    }
+  });
+
   it('digests a checkpoint\'s files as shasum lists them, sorted bytewise by path', () => {
     const files = [{ path: './model.safetensors', sha256: '11'.repeat(32) }, { path: './Config.json', sha256: '22'.repeat(32) }, { path: './config.json', sha256: '33'.repeat(32) }];
     // printf '%s  ./Config.json\n%s  ./config.json\n%s  ./model.safetensors\n' 22… 33… 11… | shasum -a 256

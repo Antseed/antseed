@@ -20,6 +20,8 @@ actor LocalModel {
     let directory: URL
     private var server: Process?
     private var socket: EngineSocket?
+    /// The running engine's execution witness, as last read.
+    private var witness: EngineWitness.Snapshot?
 
     struct Result {
         let text: String
@@ -30,6 +32,10 @@ actor LocalModel {
         let promptTokens: Int
         let completionTokens: Int
         let tokensPerSecond: Double
+        /// The reply's binding to the engine's witness, when the engine had a known one to bind it to.
+        var binding: EngineWitness.Binding? = nil
+        /// The engine's witness once the reply ended: read again when the reply wasn't bound to the one before.
+        var witness: EngineWitness.Snapshot? = nil
     }
 
     /// What the engine generated next.
@@ -62,10 +68,12 @@ actor LocalModel {
         self.directory = directory
     }
 
-    /// The checkpoint a worker attests it serves: `repo@revision` and the digest of its files.
+    /// The checkpoint a worker attests it serves: `repo@revision`, the digest of its files and the
+    /// engine's execution witness of what it loaded.
     struct Checkpoint: Sendable {
         let model: String
         let sha256: String
+        var witness: EngineWitness.Snapshot?
     }
 
     /// Download (first run), hash the pinned snapshot's files and start the engine on that snapshot.
@@ -87,8 +95,12 @@ actor LocalModel {
         let digest = try Self.filesDigest(of: snapshot)
         self.snapshot = snapshot
         try Task.checkCancellation()
-        try await startServer()
-        return Checkpoint(model: modelId, sha256: digest)
+        let witness = try await startEngine()
+        if witness?.filesChanged == true {
+            stop()
+            throw EngineError.failed("The model's files changed while the engine loaded them")
+        }
+        return Checkpoint(model: modelId, sha256: digest, witness: witness)
     }
 
     /// Stop the engine this instance started, if it still runs; one another instance started is left alone.
@@ -158,7 +170,7 @@ actor LocalModel {
         temperature: Float,
         onOutput: @escaping @Sendable (Output) async -> Void
     ) async throws -> Result {
-        if server?.isRunning != true { try await startServer() }
+        if server?.isRunning != true { try await startEngine() }
 
         // Checked after tokenizing and before prefill, the costly part.
         let promptTokens = try await countTokens(chat)
@@ -175,6 +187,9 @@ actor LocalModel {
         body["temperature"] = temperature
         body["stream"] = true
         body["stream_options"] = ["include_usage": true]
+        // Bind the reply to the engine's witness, which the engine answers only once it has the flag.
+        let bound = witness?.known
+        if bound != nil { body["execution_witness"] = true }
         let reply = try await request("/v1/chat/completions", body: body)
         defer { reply.close() }
         try Self.requireOK(reply.status)
@@ -184,6 +199,7 @@ actor LocalModel {
         var finishReason: String?
         var usage: (prompt: Int, completion: Int)?
         var tokensPerSecond = 0.0
+        var binding: EngineWitness.Binding?
         // Disconnecting (a cancelled task ends this loop) cancels the request in the engine.
         while let line = try await reply.nextLine() {
             try Task.checkCancellation()
@@ -199,12 +215,16 @@ actor LocalModel {
             if let reason = event.finishReason { finishReason = reason }
             if let rate = event.tokensPerSecond { tokensPerSecond = rate }
             if let reported = event.usage { usage = reported }
+            if let bound = event.witness { binding = bound }
         }
         // The buyer pays on these numbers: a stream that ends without them failed.
         guard let usage else { throw EngineError.failed("The engine ended the reply early") }
+        // Not bound to the witness it was asked against: the engine restarted, reloaded or saw its files change.
+        if let bound, binding?.known != true || binding?.witness != bound.witness { witness = await readWitness() }
         let calls = toolCalls.message
         return Result(text: text, toolCalls: calls, finishReason: finishReason ?? (calls.isEmpty ? "stop" : "tool_calls"),
-                      promptTokens: usage.prompt, completionTokens: usage.completion, tokensPerSecond: tokensPerSecond)
+                      promptTokens: usage.prompt, completionTokens: usage.completion, tokensPerSecond: tokensPerSecond,
+                      binding: binding, witness: witness)
     }
 
     /// Stop the engine process (server or model download) this data directory
@@ -265,8 +285,35 @@ actor LocalModel {
         guard process.terminationStatus == 0 else { throw EngineError.failed("Model download failed: \(last)") }
     }
 
+    /// How long a start waits for the engine to finish hashing the weights it loaded.
+    static let witnessWait: TimeInterval = 600
+
+    /// Start the engine and wait until its witness settles, so the next attestation names what it loaded.
+    @discardableResult
+    private func startEngine() async throws -> EngineWitness.Snapshot? {
+        try await startServer()
+        let deadline = Date().addingTimeInterval(Self.witnessWait)
+        while true {
+            witness = await readWitness()
+            if witness?.settling != true || Date() > deadline { return witness }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+    }
+
+    /// The engine's witness now; nil when it didn't answer one.
+    private func readWitness() async -> EngineWitness.Snapshot? {
+        guard server?.isRunning == true, var socket else { return nil }
+        socket.timeout = 5
+        guard let reply = try? await socket.send("GET", "/v1/execution/witness") else { return nil }
+        defer { reply.close() }
+        guard reply.status == 200, let data = try? await reply.data(limit: 1 << 16),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return EngineWitness.snapshot(object)
+    }
+
     private func startServer() async throws {
         guard let snapshot else { throw EngineError.failed("Model not loaded") }
+        witness = nil
         server?.terminate()
         Self.stopEngine(in: directory, engine: engine)
         if let old = socket?.path { unlink(old) }
@@ -298,6 +345,8 @@ actor LocalModel {
             // Its live page of rates and memory (no prompts), which the app opens through its local server.
             "--dashboard",
             "--no-update-check",
+            // Hashes every weight byte once serving and binds each reply to it (`EngineWitness`).
+            "--execution-witness",
         ]
         process.standardOutput = log
         process.standardError = log
@@ -331,7 +380,7 @@ actor LocalModel {
     /// The running engine's socket, starting the engine again if it stopped: for the owner's own
     /// requests (LocalAPI) and the dashboard, which go to the engine as they are.
     func engineSocket() async throws -> EngineSocket {
-        if server?.isRunning != true { try await startServer() }
+        if server?.isRunning != true { try await startEngine() }
         guard let socket else { throw EngineError.failed("Model not loaded") }
         return socket
     }

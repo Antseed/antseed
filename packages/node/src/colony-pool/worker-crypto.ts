@@ -36,6 +36,7 @@ export {
 export type {
   WorkerAttestation,
   AttestedModel,
+  AttestedWitness,
   AttestationPolicy,
 } from './worker-attestation.js';
 export const WORKER_E2E_VERSION = 3;

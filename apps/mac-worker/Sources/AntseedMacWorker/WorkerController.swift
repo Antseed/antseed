@@ -293,6 +293,7 @@ final class WorkerController: ObservableObject {
             checkpoint = loaded
             noteCachedModels()
             log("model ready on TensorFold (Apple GPU) · files sha256 \(loaded.sha256)")
+            log(loaded.witness?.summary ?? "no execution witness (the engine didn't answer one)")
             return .loaded
         } catch {
             guard model === local, !Task.isCancelled else { return .superseded }
@@ -378,6 +379,14 @@ final class WorkerController: ObservableObject {
     private var attestedModels: [String: LocalModel.Checkpoint] {
         guard let checkpoint, let choice else { return [:] }
         return [choice.service: checkpoint]
+    }
+
+    /// The engine's witness changed while serving (it restarted, or its files changed): attest the new one from now on.
+    private func noteWitness(_ witness: EngineWitness.Snapshot?, from local: LocalModel) {
+        guard model === local, var current = checkpoint, current.witness != witness else { return }
+        current.witness = witness
+        checkpoint = current
+        log(witness?.summary ?? "no execution witness (the engine didn't answer one)")
     }
 
     /// The pins the pool's welcome lists, kept for the owner to pick from, with each one's download size.
@@ -1011,6 +1020,7 @@ final class WorkerController: ObservableObject {
             guard let event = try? "data: " + jsonString(response.chunk(output)), let sealed = try? sealer.sealEvent(event) else { return }
             await self?.sendOutput(id, sealed, connection: connection)
         }
+        noteWitness(result.witness, from: model)
         let usage = EngineChat.Response.usage(result)
         let sent: Bool
         if stream {
