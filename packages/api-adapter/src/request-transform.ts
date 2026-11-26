@@ -21,6 +21,12 @@ export interface ServiceApiRequestTransformResult {
   request: SerializedHttpRequest;
   streamRequested: boolean;
   requestedModel: string | null;
+  /**
+   * The client keeps reasoning state: a Responses request whose `include` lists
+   * `reasoning.encrypted_content`. Pass it to `createStreamingAdapter` and `transformResponse`, which
+   * then return a chat model's reasoning to it as a `reasoning` item.
+   */
+  includeReasoning: boolean;
 }
 
 export interface ServiceApiRequestTransformOptions {
@@ -92,6 +98,7 @@ export function transformRequest(
       request: repairedBody ? { ...request, body: encodeJson(repairedBody) } : request,
       streamRequested,
       requestedModel: normalized.model,
+      includeReasoning: requestsReasoningState(options.from, body),
     };
   }
 
@@ -116,7 +123,12 @@ export function transformRequest(
     },
     streamRequested,
     requestedModel: normalized.model,
+    includeReasoning: requestsReasoningState(options.from, body),
   };
+}
+
+function requestsReasoningState(from: ServiceApiProtocol, body: Record<string, unknown>): boolean {
+  return from === 'openai-responses' && Array.isArray(body.include) && body.include.includes('reasoning.encrypted_content');
 }
 
 /**
@@ -185,7 +197,8 @@ function repairLegacyResponsesItemIds(body: Record<string, unknown>): Record<str
 /**
  * A Responses request for a Responses seller, without the reasoning items this adapter made from a
  * chat model's reasoning in earlier turns: no provider can resolve their `encrypted_content`. Every
- * other item stays as it is, and a request with none of them is returned unchanged.
+ * other item stays as it is (a `content-length` follows the new body), and a request with none of
+ * them is returned unchanged.
  */
 export function withoutAdapterReasoningItems(request: SerializedHttpRequest): SerializedHttpRequest {
   if (!new TextDecoder().decode(request.body).includes(RESPONSES_REASONING_TAG)) return request;
@@ -193,7 +206,12 @@ export function withoutAdapterReasoningItems(request: SerializedHttpRequest): Se
   if (!body || !Array.isArray(body.input)) return request;
   const input = body.input.filter((item) => !isAdapterReasoningInput(item));
   if (input.length === body.input.length) return request;
-  return { ...request, body: encodeJson({ ...body, input }) };
+  const rewritten = encodeJson({ ...body, input });
+  const headers = { ...request.headers };
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase() === 'content-length') headers[name] = String(rewritten.length);
+  }
+  return { ...request, headers, body: rewritten };
 }
 
 function isAdapterReasoningInput(item: unknown): boolean {

@@ -20,6 +20,8 @@ export interface ServiceApiStreamTransformOptions {
   from: ServiceApiProtocol;
   to: ServiceApiProtocol;
   fallbackModel?: string | null;
+  /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
+  includeReasoning?: boolean;
 }
 
 interface CanonicalStreamToolCall {
@@ -50,6 +52,7 @@ type CanonicalStreamRenderer = (options: StreamTransformInternals) => ProtocolSt
 
 interface StreamTransformInternals {
   fallbackModel: string | null;
+  includeReasoning: boolean;
 }
 
 interface ProtocolStreamNormalizer {
@@ -85,6 +88,7 @@ export function createStreamingAdapter(
 
   const internals = {
     fallbackModel: options.fallbackModel ?? null,
+    includeReasoning: options.includeReasoning === true,
   };
   const normalizer = createNormalizer(internals);
   const renderer = createRenderer(internals);
@@ -797,6 +801,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         }
 
         if (event.type === 'reasoning_delta') {
+          if (!options.includeReasoning) continue;
           ensureResponseCreated(emitted, null);
           // Only reasoning before the answer has a place before it in the client's history: once text or
           // a tool call has started, more reasoning is dropped.

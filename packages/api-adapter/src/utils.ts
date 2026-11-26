@@ -578,8 +578,24 @@ function toStringContentBlock(block: Record<string, unknown>): string {
  * that sends both sends the same text twice, so only one is read.
  */
 export function chatReasoningText(message: Record<string, unknown>): string {
+  const field = chatReasoningField(message);
+  return isEncryptedReasoning(message, field) ? '' : field;
+}
+
+function chatReasoningField(message: Record<string, unknown>): string {
   if (typeof message.reasoning_content === 'string' && message.reasoning_content.length > 0) return message.reasoning_content;
   return typeof message.reasoning === 'string' ? message.reasoning : '';
+}
+
+/** How a relay marks an encrypted reasoning item it passes in a chat reasoning field. */
+const ENCRYPTED_REASONING_PREFIX = '__ENCRYPTED_REASONING__';
+
+/**
+ * Whether a chat message or delta's reasoning `field` holds an encrypted reasoning item instead of
+ * text: the relay marks it `reasoning_encrypted: true` or prefixes it `__ENCRYPTED_REASONING__`.
+ */
+export function isEncryptedReasoning(message: Record<string, unknown>, field: unknown): boolean {
+  return message.reasoning_encrypted === true || (typeof field === 'string' && field.startsWith(ENCRYPTED_REASONING_PREFIX));
 }
 
 export function toStringContent(value: unknown): string {
@@ -744,6 +760,8 @@ export function createChatStreamParser(
   const slotByIndex = new Map<number, number>();
   const slotById = new Map<string, number>();
   let lastSlot: number | null = null;
+  // Decided on the first reasoning delta: an encrypted item continues in later deltas without its marker.
+  let reasoningEncrypted: boolean | null = null;
 
   return {
     getId: () => id,
@@ -778,9 +796,10 @@ export function createChatStreamParser(
           finishReason = firstChoice.finish_reason;
         }
 
-        const reasoningDelta = delta ? chatReasoningText(delta) : '';
+        const reasoningDelta = delta ? chatReasoningField(delta) : '';
         if (reasoningDelta.length > 0) {
-          callbacks.onReasoning?.(reasoningDelta);
+          reasoningEncrypted ??= isEncryptedReasoning(delta!, reasoningDelta);
+          if (!reasoningEncrypted && !isEncryptedReasoning(delta!, reasoningDelta)) callbacks.onReasoning?.(reasoningDelta);
         }
 
         const textDelta = typeof delta?.content === 'string' ? delta.content : '';

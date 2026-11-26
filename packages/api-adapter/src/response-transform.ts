@@ -15,6 +15,8 @@ export interface ServiceApiResponseTransformOptions {
   to: ServiceApiProtocol;
   streamRequested?: boolean;
   fallbackModel?: string | null;
+  /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
+  includeReasoning?: boolean;
 }
 
 type ResponseNormalizer = (
@@ -52,11 +54,13 @@ export function transformResponse(
     return transformErrorResponse(response, parsed, options);
   }
 
-  const canonical = normalize(parsed, {
+  const normalized = normalize(parsed, {
     id: fallbackResponseId(response.requestId, options.to),
     model: options.fallbackModel ?? 'unknown',
     requestedModel: options.fallbackModel ?? null,
   });
+  const { reasoning: _reasoning, reasoningModel: _reasoningModel, ...withoutReasoning } = normalized;
+  const canonical: CanonicalLlmResponse = options.includeReasoning === true ? normalized : withoutReasoning;
   const body = render(canonical);
 
   if (options.streamRequested) {

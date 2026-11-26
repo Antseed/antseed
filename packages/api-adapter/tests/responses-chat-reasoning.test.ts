@@ -10,15 +10,23 @@ const decoder = new TextDecoder();
 const frame = (delta: Record<string, unknown>, finish: string | null = null, extra: Record<string, unknown> = {}): string =>
   `data: ${JSON.stringify({ id: 'chatcmpl-r', model: 'example-model', choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}\n\n`;
 
-function streamEvents(frames: string[]): Array<{ event: string | null; data: Record<string, unknown> }> {
-  const adapter = createStreamingAdapter({ from: 'openai-chat-completions', to: 'openai-responses' })!;
+/** A chat stream rendered for a Responses client, which by default keeps reasoning state, as Codex does. */
+function streamSse(frames: string[], includeReasoning = true): string {
+  const adapter = createStreamingAdapter({ from: 'openai-chat-completions', to: 'openai-responses', includeReasoning })!;
   let sse = '';
   for (const f of frames) for (const out of adapter.adaptChunk({ requestId: 'r', data: encoder.encode(f), done: false })) sse += decoder.decode(out.data);
   for (const out of adapter.adaptChunk({ requestId: 'r', data: encoder.encode('data: [DONE]\n\n'), done: true })) sse += decoder.decode(out.data);
-  return parseSseBuffer(sse).events
+  return sse;
+}
+
+function streamEvents(frames: string[], includeReasoning = true): Array<{ event: string | null; data: Record<string, unknown> }> {
+  return parseSseBuffer(streamSse(frames, includeReasoning)).events
     .filter((e) => e.data && e.data !== '[DONE]')
     .map((e) => ({ event: e.event ?? null, data: JSON.parse(e.data) as Record<string, unknown> }));
 }
+
+/** The same rendering apart from the clock. */
+const withoutClock = (sse: string): string => sse.replace(/"created_at":\d+/g, '"created_at":0');
 
 const completedResponse = (events: ReturnType<typeof streamEvents>): Record<string, unknown> =>
   events.find((e) => e.event === 'response.completed')!.data.response as Record<string, unknown>;
@@ -89,7 +97,7 @@ describe('chat reasoning in a translated Responses stream', () => {
 
   it('tags the reasoning with the requested model, or the seller\'s label when the request named none', () => {
     const streamTag = (fallbackModel: string | null, sellerModel?: string): unknown => {
-      const adapter = createStreamingAdapter({ from: 'openai-chat-completions', to: 'openai-responses', fallbackModel })!;
+      const adapter = createStreamingAdapter({ from: 'openai-chat-completions', to: 'openai-responses', fallbackModel, includeReasoning: true })!;
       const reasoningFrame = `data: ${JSON.stringify({ ...(sellerModel ? { model: sellerModel } : {}), choices: [{ index: 0, delta: { reasoning_content: 'Hm.' }, finish_reason: 'stop' }] })}\n\n`;
       const sse = adapter.adaptChunk({ requestId: 'r', data: encoder.encode(`${reasoningFrame}data: [DONE]\n\n`), done: true })
         .map((out) => decoder.decode(out.data)).join('');
@@ -156,9 +164,9 @@ describe('chat reasoning in a translated buffered Responses answer', () => {
     choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'Done.', reasoning_content: 'All checked.' } }],
     usage: { prompt_tokens: 10, completion_tokens: 8, completion_tokens_details: { reasoning_tokens: 4 } },
   };
-  const adapt = (streamRequested: boolean, body: Record<string, unknown> = chatBody, fallbackModel?: string) => transformResponse(
+  const adapt = (streamRequested: boolean, body: Record<string, unknown> = chatBody, fallbackModel?: string, includeReasoning = true) => transformResponse(
     { requestId: 'r', statusCode: 200, headers: { 'content-type': 'application/json' }, body: encoder.encode(JSON.stringify(body)) },
-    { from: 'openai-chat-completions', to: 'openai-responses', streamRequested, ...(fallbackModel ? { fallbackModel } : {}) },
+    { from: 'openai-chat-completions', to: 'openai-responses', streamRequested, includeReasoning, ...(fallbackModel ? { fallbackModel } : {}) },
   )!;
   const output = (response: ReturnType<typeof adapt>) =>
     (JSON.parse(decoder.decode(response.body)) as { output: Array<Record<string, unknown>> }).output;
@@ -259,7 +267,7 @@ describe('Responses reasoning sent back to a chat model', () => {
       ['gpt-4o', 'gpt-4o-2024-08-06'],
     ];
     for (const [requested, sellerLabel] of pairs) {
-      const adapter = createStreamingAdapter({ from: 'openai-chat-completions', to: 'openai-responses', fallbackModel: requested })!;
+      const adapter = createStreamingAdapter({ from: 'openai-chat-completions', to: 'openai-responses', fallbackModel: requested, includeReasoning: true })!;
       const frames = [
         `data: ${JSON.stringify({ id: 'chatcmpl-p', model: sellerLabel, choices: [{ index: 0, delta: { reasoning_content: 'Look first.' }, finish_reason: null }] })}\n\n`,
         `data: ${JSON.stringify({ id: 'chatcmpl-p', model: sellerLabel, choices: [{ index: 0, delta: { content: 'Done.' }, finish_reason: 'stop' }] })}\n\n`,
@@ -347,5 +355,102 @@ describe('Responses reasoning sent on to a Responses seller', () => {
     const request = responsesRequest(responsesBody([user, REASONING_ITEM, plain, encrypted, answer], { store: false }));
 
     expect(ids(transformRequest(request, { from: 'openai-responses', to: 'openai-responses' })!.request)).toEqual(['message', 'rs_other', 'rs_abc', 'message']);
+  });
+});
+
+describe('chat reasoning for a Responses client that keeps no reasoning state', () => {
+  const withReasoning = [
+    frame({ role: 'assistant', reasoning_content: 'Think first.' }),
+    frame({ content: 'Hello.' }),
+    frame({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'run', arguments: '{}' } }] }),
+    frame({}, 'tool_calls'),
+  ];
+  const withoutReasoningField = (frames: string[]) => frames.map((f) => f.replace(/"reasoning_content":"[^"]*",?/g, '').replace(/,}/g, '}'));
+  const bufferedBody = (message: Record<string, unknown>) => encoder.encode(JSON.stringify({
+    id: 'chatcmpl-b', model: 'example-model', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'Hello.', ...message } }],
+  }));
+  const buffered = (message: Record<string, unknown>, streamRequested: boolean, includeReasoning?: boolean) => decoder.decode(transformResponse(
+    { requestId: 'r', statusCode: 200, headers: { 'content-type': 'application/json' }, body: bufferedBody(message) },
+    { from: 'openai-chat-completions', to: 'openai-responses', streamRequested, ...(includeReasoning === undefined ? {} : { includeReasoning }) },
+  )!.body);
+
+  it('gets a stream with no reasoning item, the same as for an answer without reasoning', () => {
+    const sse = streamSse(withReasoning, false);
+
+    expect(withoutClock(sse)).toBe(withoutClock(streamSse(withoutReasoningField(withReasoning), false)));
+    expect((completedResponse(streamEvents(withReasoning, false)).output as Array<{ type: string }>)[0]!.type).toBe('message');
+    expect(sse).not.toContain('Think first.');
+  });
+
+  it('gets a buffered answer with no reasoning item, streamed or not', () => {
+    for (const streamRequested of [false, true]) {
+      expect(withoutClock(buffered({ reasoning_content: 'Think first.' }, streamRequested)))
+        .toBe(withoutClock(buffered({}, streamRequested)));
+    }
+    expect(buffered({ reasoning_content: 'Think first.' }, false, true)).toContain('Think first.');
+  });
+});
+
+describe('a Responses request asks for reasoning state', () => {
+  const asks = (body: Record<string, unknown>, to: 'openai-chat-completions' | 'openai-responses' = 'openai-chat-completions') =>
+    transformRequest(responsesRequest(responsesBody([user], body)), { from: 'openai-responses', to })!.includeReasoning;
+
+  it('when its include lists reasoning.encrypted_content', () => {
+    expect(asks({ include: ['reasoning.encrypted_content'] })).toBe(true);
+    expect(asks({ include: ['message.output_text.logprobs'] })).toBe(false);
+    expect(asks({})).toBe(false);
+    expect(asks({ include: ['reasoning.encrypted_content'] }, 'openai-responses')).toBe(true);
+  });
+
+  it('never for a Chat Completions client', () => {
+    const chat = transformRequest(
+      { requestId: 'r', method: 'POST', path: '/v1/chat/completions', headers: {}, body: encoder.encode(JSON.stringify({ model: 'm', messages: [], include: ['reasoning.encrypted_content'] })) },
+      { from: 'openai-chat-completions', to: 'openai-responses' },
+    )!;
+
+    expect(chat.includeReasoning).toBe(false);
+  });
+});
+
+describe('encrypted reasoning from a chat seller', () => {
+  const sealed = `__ENCRYPTED_REASONING__${'QUJD'.repeat(20)}`;
+
+  it('is neither streamed to the client nor kept for replay, marked or prefixed', () => {
+    const marked = [
+      frame({ role: 'assistant', reasoning_content: 'QUJD', reasoning_encrypted: true }),
+      frame({ reasoning_content: 'REVG', reasoning_encrypted: true }),
+      frame({ content: 'Done.' }),
+      frame({}, 'stop'),
+    ];
+    const prefixed = [frame({ reasoning_content: sealed.slice(0, 30) }), frame({ reasoning_content: sealed.slice(30) }), frame({ content: 'Done.' }), frame({}, 'stop')];
+
+    for (const frames of [marked, prefixed]) {
+      const events = streamEvents(frames);
+      expect((completedResponse(events).output as Array<{ type: string }>).map((item) => item.type)).toEqual(['message']);
+      expect(events.some((e) => e.event === 'response.reasoning_text.delta')).toBe(false);
+    }
+  });
+
+  it('gives a buffered answer no reasoning item', () => {
+    for (const message of [{ reasoning_content: sealed }, { reasoning: 'QUJD', reasoning_encrypted: true }]) {
+      const body = JSON.parse(decoder.decode(transformResponse(
+        { requestId: 'r', statusCode: 200, headers: {}, body: encoder.encode(JSON.stringify({ id: 'c', model: 'm', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'Done.', ...message } }] })) },
+        { from: 'openai-chat-completions', to: 'openai-responses', includeReasoning: true },
+      )!.body));
+      expect(body.output.map((item: { type: string }) => item.type)).toEqual(['message']);
+    }
+  });
+});
+
+describe('withoutAdapterReasoningItems and content-length', () => {
+  it('sets content-length to the new body when it drops an item, and leaves it alone otherwise', () => {
+    const tagged = responsesRequest(responsesBody([user, REASONING_ITEM, answer]));
+    const sized = { ...tagged, headers: { ...tagged.headers, 'Content-Length': String(tagged.body.length) } };
+    const rewritten = withoutAdapterReasoningItems(sized);
+
+    expect(rewritten.headers['Content-Length']).toBe(String(rewritten.body.length));
+    expect(rewritten.body.length).toBeLessThan(sized.body.length);
+    const untouched = { ...responsesRequest(responsesBody([user, answer])), headers: { 'content-length': '123' } };
+    expect(withoutAdapterReasoningItems(untouched).headers['content-length']).toBe('123');
   });
 });

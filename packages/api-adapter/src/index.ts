@@ -57,6 +57,7 @@ export {
   speechAudioDelivered,
   type SpeechRequestFacts,
   toNonNegativeInt,
+  isEncryptedReasoning,
   type StreamingResponseAdapter,
 } from './utils.js';
 
