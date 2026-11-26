@@ -139,9 +139,9 @@ export class DepositRelayClient extends BaseEvmClient {
     ]);
 
     const baseFee = block?.baseFeePerGas;
-    if (baseFee == null) throw new Error('cannot read the base fee to price the sweep');
+    if (!block || baseFee == null) throw new Error('cannot read the base fee to price the sweep');
     const gasPriceWei = (baseFee * BASE_FEE_MARGIN_NUM) / BASE_FEE_MARGIN_DEN + getBigInt(feeFields.maxPriorityFeePerGas ?? 0);
-    const ethPriceUsdE8 = await this._ethPriceUsdE8(opts?.ethPriceUsd, block?.timestamp);
+    const ethPriceUsdE8 = await this._ethPriceUsdE8(opts?.ethPriceUsd, block.timestamp);
     const estGasCostUsdc = (gasEstimate * gasPriceWei * ethPriceUsdE8) / WEI_USD_E8_TO_USDC;
 
     const budgetUsdc = fee - (opts?.minProfitUsdc ?? 0n);
@@ -161,14 +161,14 @@ export class DepositRelayClient extends BaseEvmClient {
   }
 
   /** ETH/USD with 8 decimals: the override, else a fresh positive Chainlink answer, else the fallback. */
-  private async _ethPriceUsdE8(overrideUsd: bigint | undefined, blockTimestamp: number | undefined): Promise<bigint> {
+  private async _ethPriceUsdE8(overrideUsd: bigint | undefined, blockTimestamp: number): Promise<bigint> {
     if (overrideUsd !== undefined && overrideUsd > 0n) return overrideUsd * USD_E8;
-    if (this._ethUsdPriceFeedAddress && blockTimestamp !== undefined) {
+    if (this._ethUsdPriceFeedAddress) {
       try {
         const feed = new Contract(this._ethUsdPriceFeedAddress, CHAINLINK_AGGREGATOR_ABI, this._provider);
-        const round = await feed.getFunction('latestRoundData')() as { answer: bigint; updatedAt: bigint };
-        const answer = BigInt(round.answer);
-        const age = BigInt(blockTimestamp) - BigInt(round.updatedAt);
+        const round = await feed.getFunction('latestRoundData')();
+        const answer = getBigInt(round.answer);
+        const age = BigInt(blockTimestamp) - getBigInt(round.updatedAt);
         if (answer > 0n && age <= ETH_PRICE_FEED_MAX_AGE_SECS) return answer;
         debugLog(`[Relayer] ETH/USD feed unusable (answer=${answer}, age=${age}s); using the fallback price`);
       } catch (err) {
