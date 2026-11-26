@@ -325,6 +325,12 @@ function buildOpenAIResponsesStream(body: Record<string, unknown>): Uint8Array {
         arguments: argumentsText,
       });
       pushEvent('response.output_item.done', { output_index: outputIndex, item: outputItem });
+      continue;
+    }
+
+    if (outputItem.type === 'reasoning') {
+      pushEvent('response.output_item.added', { output_index: outputIndex, item: { ...outputItem, content: [] } });
+      pushEvent('response.output_item.done', { output_index: outputIndex, item: outputItem });
     }
   }
 

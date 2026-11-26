@@ -3,6 +3,7 @@ import {
   createChatStreamParser,
   encodeSseEvents,
   extractReportedUsage,
+  openAIResponsesReasoningItem,
   makeStreamingStartResponse,
   mapFinishReasonToAnthropicStopReason,
   openAIResponsesFunctionCallId,
@@ -31,6 +32,7 @@ interface CanonicalStreamToolCall {
 type CanonicalStreamEvent =
   | { type: 'response_start'; id: string; model: string; usage: ReportedUsage }
   | { type: 'text_delta'; delta: string }
+  | { type: 'reasoning_delta'; delta: string }
   | { type: 'tool_call_start'; index: number; id: string; name: string }
   | { type: 'tool_call_delta'; index: number; argumentsDelta: string }
   | {
@@ -115,6 +117,10 @@ function createChatStreamNormalizer(options: StreamTransformInternals): Protocol
     onText(delta) {
       emitStart(parser.getId(), parser.getModel());
       emitted.push({ type: 'text_delta', delta });
+    },
+    onReasoning(delta) {
+      emitStart(parser.getId(), parser.getModel());
+      emitted.push({ type: 'reasoning_delta', delta });
     },
     onToolCallStart(index, id, name) {
       emitStart(parser.getId(), parser.getModel());
@@ -684,6 +690,9 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   let outputStarted = false;
   let outputDone = false;
   let textBuffer = '';
+  // Reasoning the model wrote before its answer, as the first output item.
+  let reasoningStarted = false;
+  let reasoningBuffer = '';
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
   const createdAt = Math.floor(Date.now() / 1000);
@@ -699,7 +708,9 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
 
   const getResponseId = (): string => responseId || fallbackResponsesId(options.fallbackModel);
   const getMessageId = (): string => openAIResponsesMessageId(getResponseId());
-  const getToolOutputIndex = (index: number): number => index + (outputStarted ? 1 : 0);
+  const getMessageOutputIndex = (): number => (reasoningStarted ? 1 : 0);
+  const getToolOutputIndex = (index: number): number => index + getMessageOutputIndex() + (outputStarted ? 1 : 0);
+  const getReasoningItem = (): Record<string, unknown> => openAIResponsesReasoningItem(getResponseId(), reasoningBuffer);
 
   const ensureResponseCreated = (
     emitted: Array<{ event?: string; data: unknown | string }>,
@@ -731,7 +742,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
     outputStarted = true;
     const msgId = getMessageId();
     pushEvent(emitted, 'response.output_item.added', {
-      output_index: 0,
+      output_index: getMessageOutputIndex(),
       item: {
         type: 'message',
         id: msgId,
@@ -741,7 +752,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
       },
     });
     pushEvent(emitted, 'response.content_part.added', {
-      output_index: 0,
+      output_index: getMessageOutputIndex(),
       item_id: msgId,
       content_index: 0,
       part: { type: 'output_text', text: '', annotations: [] },
@@ -762,12 +773,24 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           ensureTextOutputStarted(emitted);
           textBuffer += event.delta;
           pushEvent(emitted, 'response.output_text.delta', {
-            output_index: 0,
+            output_index: getMessageOutputIndex(),
             item_id: getMessageId(),
             content_index: 0,
             delta: event.delta,
             logprobs: [],
           });
+          continue;
+        }
+
+        if (event.type === 'reasoning_delta') {
+          ensureResponseCreated(emitted, null);
+          // Only reasoning that comes before the answer has a place before it in the client's history.
+          if (!reasoningStarted && (outputStarted || toolCalls.size > 0)) continue;
+          if (!reasoningStarted) {
+            reasoningStarted = true;
+            pushEvent(emitted, 'response.output_item.added', { output_index: 0, item: { ...getReasoningItem(), content: [] } });
+          }
+          reasoningBuffer += event.delta;
           continue;
         }
 
@@ -819,22 +842,23 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           if (!outputDone) {
             outputDone = true;
             const msgId = getMessageId();
+            if (reasoningStarted) pushEvent(emitted, 'response.output_item.done', { output_index: 0, item: getReasoningItem() });
             if (outputStarted) {
               pushEvent(emitted, 'response.output_text.done', {
-                output_index: 0,
+                output_index: getMessageOutputIndex(),
                 item_id: msgId,
                 content_index: 0,
                 text: textBuffer,
                 logprobs: [],
               });
               pushEvent(emitted, 'response.content_part.done', {
-                output_index: 0,
+                output_index: getMessageOutputIndex(),
                 item_id: msgId,
                 content_index: 0,
                 part: { type: 'output_text', text: textBuffer, annotations: [] },
               });
               pushEvent(emitted, 'response.output_item.done', {
-                output_index: 0,
+                output_index: getMessageOutputIndex(),
                 item: {
                   type: 'message',
                   id: msgId,
@@ -878,6 +902,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               status: 'completed',
               created_at: createdAt,
               output: [
+                ...(reasoningStarted ? [getReasoningItem()] : []),
                 ...(outputStarted ? [{
                   type: 'message' as const,
                   id: getMessageId(),

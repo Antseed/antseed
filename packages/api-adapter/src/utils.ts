@@ -39,6 +39,33 @@ export function openAIResponsesMessageId(responseId: string): string {
   return `msg_${responseId}_1`;
 }
 
+/**
+ * A chat model's reasoning as a Responses `reasoning` item. The text goes in `content` as
+ * `reasoning_text`, which a Responses client keeps in its history and sends back, so the next
+ * request can return it to the model (see `responsesReasoningText`).
+ */
+export function openAIResponsesReasoningItem(responseId: string, text: string): Record<string, unknown> {
+  return {
+    type: 'reasoning',
+    id: `rs_${responseId}_0`,
+    summary: [],
+    content: [{ type: 'reasoning_text', text }],
+  };
+}
+
+/**
+ * The reasoning text of a Responses input `reasoning` item: its `reasoning_text` parts. An item that
+ * holds only a summary or `encrypted_content` (another provider's opaque state) gives nothing.
+ */
+export function responsesReasoningText(item: Record<string, unknown>): string {
+  if (!Array.isArray(item.content)) return '';
+  return item.content
+    .filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === 'object')
+    .filter((part) => part.type === 'reasoning_text' && typeof part.text === 'string')
+    .map((part) => part.text as string)
+    .join('');
+}
+
 export function openAIResponsesFunctionCallId(callId: string): string {
   return callId.startsWith('fc_') ? callId : `fc_${callId}`;
 }
@@ -521,6 +548,16 @@ function toStringContentBlock(block: Record<string, unknown>): string {
   return '';
 }
 
+/**
+ * The reasoning a Chat Completions message or stream delta carries. Kimi, DeepSeek and most
+ * OpenAI-compatible servers name it `reasoning_content`; some relays name it `reasoning`. A server
+ * that sends both sends the same text twice, so only one is read.
+ */
+export function chatReasoningText(message: Record<string, unknown>): string {
+  if (typeof message.reasoning_content === 'string' && message.reasoning_content.length > 0) return message.reasoning_content;
+  return typeof message.reasoning === 'string' ? message.reasoning : '';
+}
+
 export function toStringContent(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value === null || value === undefined) return '';
@@ -653,6 +690,7 @@ export interface ChatStreamFinishInfo {
 
 export interface ChatStreamCallbacks {
   onText(delta: string): void;
+  onReasoning?(delta: string): void;
   onToolCallStart(index: number, id: string, name: string): void;
   onToolCallDelta(index: number, id: string, argumentsDelta: string): void;
   onFinish(info: ChatStreamFinishInfo): void;
@@ -714,6 +752,11 @@ export function createChatStreamParser(
 
         if (typeof firstChoice?.finish_reason === 'string' && firstChoice.finish_reason.length > 0) {
           finishReason = firstChoice.finish_reason;
+        }
+
+        const reasoningDelta = delta ? chatReasoningText(delta) : '';
+        if (reasoningDelta.length > 0) {
+          callbacks.onReasoning?.(reasoningDelta);
         }
 
         const textDelta = typeof delta?.content === 'string' ? delta.content : '';
