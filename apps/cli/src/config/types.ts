@@ -382,6 +382,12 @@ export interface BuyerCLIConfig {
   requestTimeoutMs: number;
   /** Maximum total duration in ms for a streaming response. Default: 30 minutes. */
   maxStreamDurationMs: number;
+  /**
+   * Finished videos streamed to clients at once, across every client of this
+   * buyer (all of a gateway's keys). A retrieve past it gets 429
+   * `video_download_busy` with Retry-After. Default: 6.
+   */
+  maxVideoDownloads?: number;
   /** Disable per-service attribution in buyer-signed metadata v2. */
   disableMetadataV2Services: boolean;
   /**

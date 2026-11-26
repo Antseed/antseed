@@ -5,6 +5,8 @@ export const DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS = 5 * 60_000;
 export const DEFAULT_BUYER_METADATA_FETCH_TIMEOUT_MS = 1500;
 export const DEFAULT_BUYER_REQUEST_TIMEOUT_MS = 5 * 60_000;
 export const DEFAULT_BUYER_MAX_STREAM_DURATION_MS = 30 * 60_000;
+/** Finished videos the buyer streams to clients at once, matching the seller plugins' default. */
+export const DEFAULT_BUYER_MAX_VIDEO_DOWNLOADS = 6;
 /** Restricted jurisdictions named in the Terms of Use; sellers refuse their IPs unless they opt out. */
 export const DEFAULT_RESTRICTED_COUNTRIES = ['CU', 'IR', 'KP', 'SY', 'RU'];
 
