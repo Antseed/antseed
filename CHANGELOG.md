@@ -6,6 +6,24 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+## 2026-11-26 — CLI 0.1.263
+
+### Packages
+
+- `@antseed/cli@0.1.263`
+- `@antseed/provider-core@0.2.71`
+- `@antseed/provider-alibaba-video@0.1.17`
+- `@antseed/provider-anthropic@0.1.65`
+- `@antseed/provider-claude-code@0.1.65`
+- `@antseed/provider-claude-oauth@0.1.71`
+- `@antseed/provider-fal-image@0.1.13`
+- `@antseed/provider-fal-video@0.1.29`
+- `@antseed/provider-local-llm@0.1.65`
+- `@antseed/provider-openai@0.2.64`
+- `@antseed/provider-openai-responses@0.1.58`
+- `@antseed/provider-typesafe@0.1.17`
+- `@antseed/provider-venice-video@0.1.30`
+
 ### Changed
 
 - Video sellers (`@antseed/provider-fal-video`, `@antseed/provider-alibaba-video`, `@antseed/provider-venice-video`, `@antseed/provider-core`): a provider now streams up to 6 finished videos to buyers at the same time instead of 2, and `ANTSEED_MAX_VIDEO_DOWNLOADS` sets the limit. With only 2 slots, a seller with several buyers downloading at once turned extra retrieves away with HTTP 429 `video_download_busy`.
