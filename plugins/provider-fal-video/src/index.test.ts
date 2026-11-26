@@ -274,6 +274,29 @@ it('streams the finished video from the fal media URL without the seller key', a
   expect(init.headers).not.toHaveProperty('authorization');
 });
 
+it('limits concurrent video downloads to ANTSEED_MAX_VIDEO_DOWNLOADS', async () => {
+  expect(() => plugin.createProvider({ ...config, ANTSEED_MAX_VIDEO_DOWNLOADS: '0' })).toThrow('ANTSEED_MAX_VIDEO_DOWNLOADS');
+  const bodies: ReadableStreamDefaultController<Uint8Array>[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.endsWith('/status')) return Response.json({ status: 'COMPLETED' });
+    if (url.startsWith('https://queue.fal.run/')) return Response.json({ video: { url: 'https://v3.fal.media/files/out.mp4' } });
+    return new Response(new ReadableStream<Uint8Array>({ start(controller) { bodies.push(controller); } }), { headers: { 'content-type': 'video/mp4' } });
+  }));
+  const provider = plugin.createProvider({ ...config, ANTSEED_MAX_VIDEO_DOWNLOADS: '2' }) as Provider;
+  const started: string[] = [];
+  const open = (id: string) => stream(provider, { ...retrieve(), requestId: id }, { onResponseStart() { started.push(id); } });
+  const first = open('a');
+  const second = open('b');
+  await vi.waitFor(() => expect(started).toEqual(['a', 'b']));
+  const busy = await open('c');
+  expect(busy.statusCode).toBe(429);
+  expect(parse(busy.body).error.code).toBe('video_download_busy');
+  // The refused download cancels its body; finish the two that hold the slots.
+  for (const body of bodies.slice(0, 2)) { body.enqueue(new Uint8Array([1])); body.close(); }
+  expect((await first).statusCode).toBe(200);
+  expect((await second).statusCode).toBe(200);
+});
+
 it('refuses non-HTTPS result URLs', async () => {
   const fetchMock = vi.fn()
     .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))

@@ -26,6 +26,7 @@ import {
   verdictTallies,
   waitingReportBlocks,
 } from './pending-confirmations.js'
+import { localConfirmationDecision } from './audit-checks.js'
 
 const A = getAddress('0x00000000000000000000000000000000000000a1')
 const B = getAddress('0x00000000000000000000000000000000000000b2')
@@ -291,6 +292,22 @@ test('a finished local result answers a confirmation only for the reported servi
   assert.equal(localResultAnswersConfirmation({ ...target, ownReportedAt: 600 }, { service: 'Served-A', completedAt: 700 }), true)
 })
 
+test('a local result answers a waiting DIFF only when it was made at least an hour after the first report', () => {
+  const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['kbf' as const], firstReportedAt: 10_000 }
+  // Its earliest request before the other auditor reported, or within the hour after: not fresh material, audited again.
+  const at = (firstRequestAt: number | null | undefined, completedAt = 20_000) => ({ service: 'served-a', completedAt, firstRequestAt })
+  assert.equal(localResultAnswersConfirmation(target, at(9_000)), false)
+  assert.equal(localResultAnswersConfirmation(target, at(10_000 + 3_599)), false)
+  assert.equal(localResultAnswersConfirmation(target, at(10_000 + 3_600)), true)
+  // Finished well after the cutoff, but its first request (or a reused batch) was before it: the time is the earliest request's.
+  assert.equal(localResultAnswersConfirmation(target, at(10_000 + 600, 10_000 + 9_000)), false)
+  // A summary with no request time (written before the field, or with no timed request) is never fresh.
+  assert.equal(localResultAnswersConfirmation(target, at(null)), false)
+  assert.equal(localResultAnswersConfirmation(target, at(undefined)), false)
+  // A confirmation that used up its attempts undecided is never sent: it answers whatever its time, so it is not re-planned.
+  assert.equal(localResultAnswersConfirmation(target, { ...at(null), decided: 'undecided-confirmation' }), true)
+})
+
 // Liveness edge cases: what happens to a DIFF when the auditor who should confirm it does not.
 
 test('an auditor never confirms its own DIFF, however late in the epoch', () => {
@@ -489,4 +506,58 @@ test('every auditor works out the same confirmer, whatever order or case the aud
       assert.equal(pendingFor(auditor, events, { auditors: listed })[0]!.confirmer, expected)
     }
   }
+})
+
+test('a local result answers a waiting DIFF only when it decided a check that flagged it', () => {
+  const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['output-cap' as const], firstReportedAt: 10_000 }
+  const later = 10_000 + 7_200
+  // A first look whose questions said SAME and whose cap check did not decide: the cap must still be asked.
+  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, firstRequestAt: later, decided: ['kbf'] }), false)
+  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, firstRequestAt: later, decided: ['kbf', 'output-cap'] }), true)
+  // A confirmation that ran and did not decide is retried by the epoch plan within its attempts, not here.
+  assert.equal(localResultAnswersConfirmation(target, { service: 'served-a', completedAt: later, firstRequestAt: later, decided: 'undecided-confirmation' }), true)
+})
+
+test('a questions confirmation that ended UNDETERMINED after its attempts answers the target and is not planned again', () => {
+  const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['kbf' as const], firstReportedAt: 10_000 }
+  const undetermined = { status: 'UNDETERMINED', parsedProbeCount: 40, tokenizerPrecheck: { outcome: 'match' }, outcomeReason: { code: 'deadline_exceeded' }, confirmsDiff: true }
+  const later = { service: 'served-a', completedAt: 10_000 + 7_200, firstRequestAt: 10_000 + 7_200 }
+  // Still within its attempts: the epoch plan audits it again, so it does not answer yet.
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: localConfirmationDecision(undetermined, false) }), false)
+  // Its attempts are used up (the cell is done): it answers, and the seller is not audited in every run.
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: localConfirmationDecision(undetermined, true) }), true)
+  // A first look that ended UNDETERMINED (a run that overlapped the other auditor's flag) answers nothing.
+  const { confirmsDiff: _confirmsDiff, ...firstLook } = undetermined
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: localConfirmationDecision(firstLook, true) }), false)
+})
+
+test('a local confirmation of two flags answers when one flags again or both decided, not when one is left open', () => {
+  const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['output-cap' as const, 'kbf' as const], firstReportedAt: 10_000 }
+  const later = { service: 'served-a', completedAt: 20_000, firstRequestAt: 20_000 }
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: ['kbf'], flagged: [] }), false, 'the cap check is left open: retried')
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: ['output-cap', 'kbf'], flagged: ['output-cap'] }), true)
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: ['kbf'], flagged: ['kbf'] }), true, 'the questions flagged again')
+  assert.equal(localResultAnswersConfirmation(target, { ...later, decided: ['output-cap', 'kbf'], flagged: [] }), true, 'both passed')
+})
+
+test('a dry run\'s verifier.testTiming shortens a confirmer\'s turn and the fresh-material delay; without it the rules\' stand', () => {
+  const auditors = [A, B, C, D]
+  const rotation = auditorRotationForModel('model-a', { auditors, epoch: 7, availableModels: MODELS })
+  const [reporter, confirmer, third] = rotation as [string, string, string, string]
+  const events = [audited({ auditor: reporter, verdict: VERIFIER_VERDICT.DIFF })]
+  const onTurn = (now: number, timing?: { confirmationWindowSeconds: number }) => rotation.filter((auditor) => pendingConfirmations({
+    reports: epochReports(events), epoch: 7, blockTimestamps: new Map([[REPORT_BLOCK, REPORTED_AT]]),
+    now, auditor, auditors, auditedModels: MODELS, timing,
+  })[0]!.mine)
+  // Five minutes after the report: still the first confirmer's turn by the rules, the next one's with a 5-minute turn.
+  assert.deepEqual(onTurn(REPORTED_AT + 300), [confirmer])
+  assert.deepEqual(onTurn(REPORTED_AT + 299, { confirmationWindowSeconds: 300 }), [confirmer])
+  assert.deepEqual(onTurn(REPORTED_AT + 300, { confirmationWindowSeconds: 300 }), [third])
+  assert.deepEqual(onTurn(REPORTED_AT + 300, undefined), [confirmer])
+
+  const target = { agentId: 1n, service: 'served-a', waiting: [], ownReportedAt: null, firstChecks: ['kbf' as const], firstReportedAt: 10_000 }
+  const local = { service: 'served-a', completedAt: 20_000, firstRequestAt: 10_000 + 120 }
+  assert.equal(localResultAnswersConfirmation(target, local), false, 'two minutes after the report is not fresh by the rules')
+  assert.equal(localResultAnswersConfirmation(target, local, { confirmationMinDelaySeconds: 120 }), true)
+  assert.equal(localResultAnswersConfirmation(target, local, { confirmationWindowSeconds: 120 }), false, 'only the delay it sets is shortened')
 })

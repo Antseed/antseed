@@ -31,15 +31,16 @@ export function opinionKey(agentId: bigint | number | string, service: string, m
 }
 
 /**
- * Other auditors' latest SAME or DIFF per (agent, service, model) this epoch, keyed by `opinionKey`
- * with service and model hashes. Reports by `auditor` itself and UNDETERMINED reports are left out.
+ * Each other auditor's latest report per (agent, service, model) this epoch, keyed by `opinionKey` with service and
+ * model hashes, then by auditor. Reports by `auditor` itself and by an auditor in `revoked` are left out. Of two
+ * reports at one position the later in `events` is kept.
  */
-export function otherOpinions(
+export function latestOtherReports(
   events: readonly ServiceAuditedEvent[],
   auditor: string,
-  /** Auditors revoked this epoch (`revokedSinceEpochStart`): their reports no longer count, so they are no opinion. */
+  /** Auditors revoked this epoch (`revokedSinceEpochStart`): their reports no longer count. */
   revoked?: ReadonlySet<string>,
-): Map<string, Map<string, OtherOpinion>> {
+): Map<string, Map<string, ServiceAuditedEvent>> {
   const me = getAddress(auditor)
   const latest = new Map<string, Map<string, ServiceAuditedEvent>>()
   for (const event of events) {
@@ -56,6 +57,20 @@ export function otherOpinions(
       || (current.blockNumber === event.blockNumber && current.logIndex > event.logIndex))) continue
     byAuditor.set(who, event)
   }
+  return latest
+}
+
+/**
+ * Other auditors' latest SAME or DIFF per (agent, service, model) this epoch, keyed by `opinionKey`
+ * with service and model hashes. Reports by `auditor` itself and UNDETERMINED reports are left out.
+ */
+export function otherOpinions(
+  events: readonly ServiceAuditedEvent[],
+  auditor: string,
+  /** Auditors revoked this epoch (`revokedSinceEpochStart`): their reports no longer count, so they are no opinion. */
+  revoked?: ReadonlySet<string>,
+): Map<string, Map<string, OtherOpinion>> {
+  const latest = latestOtherReports(events, auditor, revoked)
   const opinions = new Map<string, Map<string, OtherOpinion>>()
   for (const [key, byAuditor] of latest) {
     const entries = new Map<string, OtherOpinion>()

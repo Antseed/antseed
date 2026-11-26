@@ -1,5 +1,6 @@
 import {
   ANTSEED_STREAMING_RESPONSE_HEADER,
+  type ConfigField,
   VIDEO_DOWNLOAD_CHUNK_BYTES,
   VIDEO_DOWNLOAD_MAX_BYTES,
   VIDEO_DOWNLOAD_STREAM_HEADER,
@@ -122,6 +123,25 @@ export async function streamVideoResponse(
 export const VIDEO_DOWNLOAD_BUSY_CODE = 'video_download_busy';
 /** Seconds a buyer waits before trying a busy download again. */
 export const VIDEO_DOWNLOAD_BUSY_RETRY_AFTER_SECONDS = 5;
+
+/** Finished videos a provider streams to buyers at the same time unless the seller sets otherwise. */
+export const DEFAULT_MAX_VIDEO_DOWNLOADS = 6;
+
+/** Seller setting for {@link createVideoResponseStreamer}'s limit, shared by the video providers. */
+export const MAX_VIDEO_DOWNLOADS_CONFIG_FIELD: ConfigField = {
+  key: 'ANTSEED_MAX_VIDEO_DOWNLOADS',
+  label: 'Concurrent Downloads',
+  type: 'number',
+  default: DEFAULT_MAX_VIDEO_DOWNLOADS,
+  description: 'Finished videos streamed to buyers at the same time; more get HTTP 429 video_download_busy and retry shortly',
+};
+
+/** Reads and validates `ANTSEED_MAX_VIDEO_DOWNLOADS`. */
+export function parseMaxVideoDownloads(config: Record<string, string | undefined>): number {
+  const value = Number(config[MAX_VIDEO_DOWNLOADS_CONFIG_FIELD.key] ?? DEFAULT_MAX_VIDEO_DOWNLOADS);
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${MAX_VIDEO_DOWNLOADS_CONFIG_FIELD.key} must be a positive integer`);
+  return value;
+}
 
 /** {@link streamVideoResponse} limited to `maxDownloads` at a time; call once per provider instance. */
 export function createVideoResponseStreamer(maxDownloads: number): typeof streamVideoResponse {

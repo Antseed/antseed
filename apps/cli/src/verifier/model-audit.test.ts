@@ -5,13 +5,16 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { Wallet } from 'ethers'
-import { KBF_EXTENSION_RULE_V1, KBF_EXTENSION_RULE_V2, canonicalHashBytes32 } from '@antseed/fingerprints'
+import { KBF_AUDIT_VERIFY_OPTIONS, KBF_EXTENSION_RULE_V1, KBF_EXTENSION_RULE_V2, canonicalHashBytes32, canonicalJsonStringify, computeKbfVerdict, type FingerprintStats } from '@antseed/fingerprints'
 import { VERIFIER_VERDICT, modelHash, serviceHash, sortServiceResults } from '@antseed/node/payments'
 import { DIFF_HOLD_EPOCHS, diffHolds } from './diff-hold.js'
 import {
   modelAuditLedgerPath,
   modelAuditUpstreams,
+  adjudicateQuestions,
   prepareModelAudits,
+  sentAuditTimes,
+  auditFinishedAt,
   preparedFromEvidence,
   readModelAuditEvidence,
   readModelAuditLedger,
@@ -31,9 +34,11 @@ import {
   type FixtureAudit,
 } from './model-audit-fixtures.test-support.js'
 import { readVerifierRunManifest } from './audit-artifacts.js'
+import type { ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { pooledCloseCallVerdict } from './close-call.js'
 import { EPOCH_QUESTION_SET_METHOD, retireEpochQuestionSet } from './probe-bank.js'
 import { EXTRA_QUESTIONS_PUBLISHED } from './outcome-reason.js'
+import { alreadyOnChainFilter, ownReportFinishedAt, type SubmissionCandidate } from './submission-delta.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const auditor = randomWallet()
@@ -55,6 +60,7 @@ async function withRun(
     alreadyOnChain?: Parameters<typeof prepareModelAudits>[0]['alreadyOnChain']
     diffHold?: Parameters<typeof prepareModelAudits>[0]['diffHold']
     auditWindow?: Parameters<typeof prepareModelAudits>[0]['auditWindow']
+    sameCheck?: Parameters<typeof prepareModelAudits>[0]['sameCheck']
   } = {},
 ): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-model-audit-'))
@@ -75,6 +81,7 @@ async function withRun(
       ...(options.alreadyOnChain ? { alreadyOnChain: options.alreadyOnChain } : {}),
       ...(options.diffHold ? { diffHold: options.diffHold } : {}),
       ...(options.auditWindow ? { auditWindow: options.auditWindow } : {}),
+      ...(options.sameCheck ? { sameCheck: options.sameCheck } : {}),
     })
     await body({ evidenceDir, prepared })
   } finally {
@@ -288,6 +295,86 @@ test('parts are cut from the results left to send', async () => {
   })
 })
 
+test('two rows of one seller: the latest stands, another report\'s row only when the decision sends it, and a sibling is never promoted', async () => {
+  // Seller 1 has two rows on model-a: the latest (SAME) and another report's own (DIFF), as the epoch submission offers.
+  const rows = [audit('1', sellers[0]!, 'model-a', 'SAME'), { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), auditSalt: 'report-a', offeredAsAlternate: true as const }, audit('2', sellers[1]!, 'model-a')]
+  const sent = (prepared: Fixture['prepared']) => prepared.audits.flatMap((entry) => entry.results.map((result) => `${result.agentId}:${result.verdict}`))
+  // No report waiting: the latest row stands, the other is left out.
+  await withRun(rows, async ({ prepared }) => {
+    assert.deepEqual(sent(prepared), [`1:${VERIFIER_VERDICT.SAME}`, `2:${VERIFIER_VERDICT.SAME}`])
+    assert.ok(prepared.excluded.some((entry) => /another report's result of this seller/.test(entry.reason)))
+  }, { sameCheck: async (_model, candidates) => candidates.map(() => null) })
+  // The latest row is already on chain: nothing of seller 1 is sent, its sibling is not promoted.
+  await withRun(rows, async ({ prepared }) => {
+    assert.deepEqual(sent(prepared), [`2:${VERIFIER_VERDICT.SAME}`])
+  }, {
+    alreadyOnChain: async (_model, candidates) => candidates.map((candidate) => candidate.agentId === 1n && candidate.verdict === VERIFIER_VERDICT.SAME),
+    sameCheck: async (_model, candidates) => candidates.map(() => null),
+  })
+  // The other row answers the report waiting now (the decision sends it): it is sent in place of the latest.
+  const confirmation = { auditor: '0x00', evidenceUri: 'ipfs://x', evidenceHash: '0x00', reportedAt: 1, firstChecks: ['kbf'], ownChecks: ['kbf'], sameCheck: 'kbf' } as never
+  await withRun(rows, async ({ prepared }) => {
+    assert.deepEqual(sent(prepared), [`1:${VERIFIER_VERDICT.DIFF}`, `2:${VERIFIER_VERDICT.SAME}`])
+    assert.ok(prepared.excluded.some((entry) => /sent in its place/.test(entry.reason)))
+  }, {
+    sameCheck: async (_model, candidates) => candidates.map((candidate) => (
+      candidate.agentId === 1n && candidate.verdict === VERIFIER_VERDICT.DIFF ? { kind: 'send' as const, confirmation } : null
+    )),
+  })
+  // The winning confirmation is already on chain: nothing of seller 1 is sent, the latest row is not promoted.
+  await withRun(rows, async ({ prepared }) => {
+    assert.deepEqual(sent(prepared), [`2:${VERIFIER_VERDICT.SAME}`])
+  }, {
+    alreadyOnChain: async (_model, candidates) => candidates.map((candidate) => candidate.agentId === 1n && candidate.verdict === VERIFIER_VERDICT.DIFF),
+    sameCheck: async (_model, candidates) => candidates.map((candidate) => (
+      candidate.agentId === 1n && candidate.verdict === VERIFIER_VERDICT.DIFF ? { kind: 'send' as const, confirmation } : null
+    )),
+  })
+  // The latest row is refused (its evidence file is damaged): the alternate is still the alternate, so with no report
+  // waiting the seller gets nothing, never the older row in its place.
+  await withRun(rows, async ({ prepared }) => {
+    assert.deepEqual(sent(prepared), [`2:${VERIFIER_VERDICT.SAME}`])
+    assert.ok(prepared.excluded.some((entry) => /another report's result of this seller/.test(entry.reason)))
+  }, {
+    sameCheck: async (_model, candidates) => candidates.map(() => null),
+    tamper: async (evidenceDir) => {
+      const { readdir } = await import('node:fs/promises')
+      const files = (await readdir(evidenceDir, { recursive: true })).filter((name) => name.endsWith('evidence.json') && name.includes('/run-1/'))
+      for (const name of files) {
+        const path = join(evidenceDir, name)
+        const text = await readFile(path, 'utf8')
+        if (text.includes(peerIdOf(sellers[0]!).replace(/^0x/, '')) || text.includes(peerIdOf(sellers[0]!))) await writeFile(path, `${text} `)
+      }
+    },
+  })
+})
+
+test('submit recomputes each first look from its stored answers: a relabelled look and a DIFF with nothing scored are refused', async () => {
+  // Rewrites seller 1's file and its hash in the summary, as a hand-edited evidence file would be.
+  const relabel = (change: (evidence: { result: { verdict: string; parsedProbeCount: number }; exchanges: unknown[] }) => void) => async (evidenceDir: string) => {
+    const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+    const summaryPath = manifest.models[0]!.summaryPath
+    const summary = JSON.parse(await readFile(summaryPath, 'utf8')) as { results: Array<{ agentId: string; evidencePath: string; evidenceHash: string; status: string; questionsStatus?: string }> }
+    const target = summary.results.find((result) => result.agentId === '1')!
+    const evidence = JSON.parse(await readFile(target.evidencePath, 'utf8')) as Parameters<typeof change>[0]
+    change(evidence)
+    await writeFile(target.evidencePath, canonicalJsonStringify(evidence))
+    target.evidenceHash = canonicalHashBytes32(evidence)
+    target.status = evidence.result.verdict
+    target.questionsStatus = evidence.result.verdict
+    await writeFile(summaryPath, JSON.stringify(summary))
+  }
+  const rows = [audit('1', sellers[0]!, 'model-a'), audit('2', sellers[1]!, 'model-a')]
+  // A decisive SAME relabelled UNDETERMINED (withheld): refused.
+  await withRun(rows, async ({ prepared }) => {
+    assert.match(prepared.excluded.find((entry) => entry.agentId === '1')!.reason, /the questions' first look says UNDETERMINED, but its stored answers give SAME/)
+  }, { tamper: relabel((evidence) => { evidence.result.verdict = 'UNDETERMINED' }) })
+  // A questions DIFF with nothing scored: refused.
+  await withRun(rows, async ({ prepared }) => {
+    assert.match(prepared.excluded.find((entry) => entry.agentId === '1')!.reason, /the questions' first look says DIFF, but its stored answers give UNDETERMINED/)
+  }, { tamper: relabel((evidence) => { evidence.result.verdict = 'DIFF'; evidence.exchanges = []; evidence.result.parsedProbeCount = 0 }) })
+})
+
 test('rejects runs without a numeric on-chain epoch', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-model-audit-'))
   try {
@@ -384,6 +471,126 @@ test('a DIFF is submitted as found, for another auditor to confirm', async () =>
   })
 })
 
+test('a tokenizer pre-check DIFF is submitted with its reason and its evidence, beside its own questions\' verdict', async () => {
+  await withRun([
+    { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), tokenizerMismatch: true },
+    audit('2', sellers[1]!, 'model-a'),
+  ], async ({ prepared }) => {
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(entry.results.map((result) => [result.agentId, result.verdict]), [
+      [1n, VERIFIER_VERDICT.DIFF],
+      [2n, VERIFIER_VERDICT.SAME],
+    ])
+    assert.deepEqual(prepared.excluded, [])
+    const [diff, same] = entry.evidence.results as [ModelAuditSellerResultV1, ModelAuditSellerResultV1]
+    assert.match(diff.verdictReason!, /^tokenizer pre-check \(tokenizer-precheck-v1\): the seller signed \d+\/\d+\/\d+ input tokens/)
+    // Its questions were asked beside the mismatch and passed: the questions' own verdict is published apart.
+    assert.ok((diff.stats.targetTotal ?? 0) > 0)
+    assert.equal(diff.questionsVerdict, 'SAME')
+    assert.deepEqual([diff.flaggedBy, diff.passedBy], [['tokens'], ['kbf']])
+    assert.equal(same.verdictReason, null)
+    // The seller's evidence file, with the signed responses the DIFF rests on, is published with the audit.
+    assert.equal(entry.auditEvidencePaths.length, 2)
+    const published = JSON.parse(await readFile(entry.auditEvidencePaths[0]!, 'utf8')) as {
+      exchanges: unknown[]
+      tokenizerPrecheck: { outcome: string; rounds: Array<{ seller: Array<{ base: { responseAuth: { status: string } } }> }> }
+    }
+    assert.ok(published.exchanges.length > 0)
+    assert.equal(published.tokenizerPrecheck.outcome, 'mismatch')
+    assert.deepEqual(
+      published.tokenizerPrecheck.rounds.map((round) => round.seller.map((ask) => ask.base.responseAuth.status)),
+      [['verified', 'verified'], ['verified', 'verified'], ['verified', 'verified']],
+    )
+  })
+})
+
+test('a pre-check DIFF whose counts are not the ones the seller signed is left out, and the model\'s other sellers still go', async () => {
+  await withRun([
+    { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), tokenizerMismatch: true },
+    audit('2', sellers[1]!, 'model-a'),
+  ], async ({ prepared }) => {
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(entry.results.map((result) => result.agentId), [2n])
+    assert.equal(prepared.excluded.length, 1)
+    assert.match(prepared.excluded[0]!.reason, /invalid audit evidence: tokenizer pre-check round 2: the seller's input tokens are not the ones in its signed responses/)
+  }, {
+    // The evidence is rewritten as a valid file with a matching hash: only the pre-check's own check can tell.
+    tamper: async (evidenceDir) => {
+      const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+      const summaryPath = manifest.models[0]!.summaryPath
+      const summary = JSON.parse(await readFile(summaryPath, 'utf8')) as {
+        results: Array<{ agentId: string; evidencePath: string; evidenceHash: string }>
+      }
+      const target = summary.results.find((result) => result.agentId === '1')!
+      const evidence = JSON.parse(await readFile(target.evidencePath, 'utf8')) as {
+        tokenizerPrecheck: { rounds: Array<{ seller: Array<{ probed: { signedInputTokens: number }; delta: number }> }> }
+      }
+      evidence.tokenizerPrecheck.rounds[1]!.seller[0]!.probed.signedInputTokens += 25
+      evidence.tokenizerPrecheck.rounds[1]!.seller[0]!.delta += 25
+      await writeFile(target.evidencePath, canonicalJsonStringify(evidence))
+      target.evidenceHash = canonicalHashBytes32(evidence)
+      await writeFile(summaryPath, JSON.stringify(summary))
+    },
+  })
+})
+
+test('a pre-check DIFF that no other seller of the model backs, or whose summary names other counts, is left out', async () => {
+  type Stored = {
+    tokenizerPrecheck: {
+      rounds: Array<{ seller: Array<{ delta: number }> }>
+      crowd: { deltas: Array<number | null>; measured: number; agree: number; largestGroup: number; groupDelta: number | null; corroborated: boolean; outvoted: boolean; backers: unknown[] }
+    }
+  }
+  const rewritten = (change: (evidence: Stored, result: { tokenizerPrecheck: { sellerTokens: number[] } }) => void) => async (evidenceDir: string) => {
+    const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+    const summaryPath = manifest.models[0]!.summaryPath
+    const summary = JSON.parse(await readFile(summaryPath, 'utf8')) as {
+      results: Array<{ agentId: string; evidencePath: string; evidenceHash: string; tokenizerPrecheck: { sellerTokens: number[] } }>
+    }
+    const target = summary.results.find((result) => result.agentId === '1')!
+    const evidence = JSON.parse(await readFile(target.evidencePath, 'utf8')) as Stored
+    change(evidence, target)
+    await writeFile(target.evidencePath, canonicalJsonStringify(evidence))
+    target.evidenceHash = canonicalHashBytes32(evidence)
+    await writeFile(summaryPath, JSON.stringify(summary))
+  }
+  const audits = [
+    { ...audit('1', sellers[0]!, 'model-a', 'DIFF'), tokenizerMismatch: true },
+    audit('2', sellers[1]!, 'model-a'),
+  ]
+  // The crowd is this seller alone, with tallies that follow from it: nothing in the run backs the reference.
+  await withRun(audits, async ({ prepared }) => {
+    assert.deepEqual((prepared.audits as [PreparedModelAudit])[0].results.map((result) => result.agentId), [2n])
+    assert.match(prepared.excluded[0]!.reason, /invalid audit evidence: tokenizer pre-check outcome mismatch does not follow from its rounds \(inconclusive\)/)
+  }, {
+    tamper: rewritten((evidence) => {
+      const own = evidence.tokenizerPrecheck.rounds[0]!.seller[0]!.delta
+      evidence.tokenizerPrecheck.crowd = {
+        ...evidence.tokenizerPrecheck.crowd, deltas: [own], measured: 1, agree: 0, largestGroup: 1, groupDelta: own, corroborated: false, backers: [],
+      }
+    }),
+  })
+  // Tallies that say two sellers back the reference, without their signed pairs.
+  await withRun(audits, async ({ prepared }) => {
+    assert.match(prepared.excluded[0]!.reason, /invalid audit evidence: tokenizer pre-check crowd counts 2 seller\(s\) on the reference's count but holds the signed answers of 0/)
+  }, {
+    tamper: rewritten((evidence) => { evidence.tokenizerPrecheck.crowd.backers = [] }),
+  })
+  // A crowd that claims a backing seller its differences do not hold.
+  await withRun(audits, async ({ prepared }) => {
+    assert.match(prepared.excluded[0]!.reason, /invalid audit evidence: tokenizer pre-check crowd does not follow from its differences/)
+  }, {
+    tamper: rewritten((evidence) => {
+      const own = evidence.tokenizerPrecheck.rounds[0]!.seller[0]!.delta
+      evidence.tokenizerPrecheck.crowd.deltas = [own, own, own]
+    }),
+  })
+  // The summary's counts, which the report and the overview print, are the evidence's.
+  await withRun(audits, async ({ prepared }) => {
+    assert.match(prepared.excluded[0]!.reason, /invalid audit evidence: the summary's tokenizer pre-check is not the one in its evidence/)
+  }, { tamper: rewritten((_evidence, result) => { result.tokenizerPrecheck.sellerTokens[0]! += 40 }) })
+})
+
 test('submits one SAME per seller and model, but every DIFF', async () => {
   const names = ['model-a', 'model-a-fast', 'model-a-alias']
   const sameHashes = names.map((name) => serviceHash(name)).sort()
@@ -440,18 +647,12 @@ test('kbf-extension-v2 close calls get a second extra set and are re-verified fr
 })
 
 test('a second extra set is rejected when the first pooled look was already decided, or reuses probes', () => {
-  const evidence = (verdict: 'SAME' | 'DIFF' | 'UNDETERMINED', referenceId: string, probeIds: string[], wrong: number, total = 20) => ({
-    target: { peerId: 'aa', service: 'm', agentId: '1' },
-    reference: { referenceId, probes: probeIds.map((id) => ({ id })) },
-    result: {
-      verdict,
-      stats: { selfHamming: 0, selfTotal: total, selfCoverage: 1, targetHamming: wrong, targetTotal: total, targetCoverage: 1, p0Cp99: null, pValueBinomial: null },
-    },
-    exchanges: [],
-  }) as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
+  // Each set stores its answers; its label and numbers are the look those give (7 of 20 wrong is a close call, p ~0.098).
+  const evidence = (_label: string, referenceId: string, probeIds: string[], wrong: number) => answeredEvidence(referenceId, probeIds, wrong) as unknown as {
+    result: { verdict: 'SAME' | 'DIFF' | 'UNDETERMINED'; stats: FingerprintStats }
+  } & Parameters<typeof validateAuditMatchesSummary>[0]
   const ids = (prefix: string) => Array.from({ length: 20 }, (_, index) => `${prefix}${index}`)
-  const first = evidence('SAME', 'sha256:first', ids('a'), 7)
-  first.result.stats.pValueBinomial = 0.098
+  const first = evidence('close call', 'sha256:first', ids('a'), 7)
   const pooledOf = (sets: Array<ReturnType<typeof evidence>>, rule = KBF_EXTENSION_RULE_V2) => pooledCloseCallVerdict(
     { stats: first.result.stats, probeCount: 20 },
     sets.map((set) => ({ stats: set.result.stats, probeCount: 20 })),
@@ -557,6 +758,14 @@ test('an open audit window submits nothing; a closed one submits its sellers, op
     assert.deepEqual(prepared.excluded.map((exclusion) => [exclusion.agentId, exclusion.reason.split(' (')[0]]), [
       ['3', 'not in this epoch\'s audit window'],
     ])
+    // The open close call is published as closed: a confirmer reads its questions as undecided, not as still waiting.
+    const closed = entry.evidence.results.find((result) => result.agentId === '2')!
+    assert.deepEqual([closed.questionsVerdict, closed.questionsClosed], ['UNDETERMINED', true])
+    const files = await Promise.all(entry.auditEvidencePaths.map(async (path) => JSON.parse(await readFile(path, 'utf8')) as ProxyAuditEvidenceV1))
+    const sellerFile = files.find((file) => file.target?.agentId === '2')!
+    assert.deepEqual(adjudicateQuestions({ evidence: sellerFile, extraSets: [], decisionRule: closed.decisionRule, closed: true }), { verdict: 'UNDETERMINED', pending: false })
+    assert.equal(adjudicateQuestions({ evidence: sellerFile, extraSets: [], decisionRule: closed.decisionRule, closed: false }).pending, true,
+      'without its published closure the same file still waits for an extra set')
   }, { auditWindow: window('closed') })
   // A confirmation's close call is not the window's: it still gets its extra questions after the window
   // closed, so it waits for them instead of going out as UNDETERMINED.
@@ -594,23 +803,102 @@ test('tampered pooled statistics or a reused extension probe are rejected', asyn
   })
 })
 
-test('a close call is checked against the close-call rule', () => {
-  const first = {
+
+/**
+ * A seller file whose questions are stored as answers: `wrong` of its probes answered wrong, a clean self-test, and its
+ * label and statistics the look those answers give, as a run writes them (readers recompute both).
+ */
+function answeredEvidence(referenceId: string, probeIds: readonly string[], wrong: number, extra: Record<string, unknown> = {}) {
+  const matches = probeIds.map((_, index) => (index < wrong ? 0 : 1) as 0 | 1)
+  const computed = computeKbfVerdict({
+    selfHamming: 0, selfTotal: probeIds.length, targetMatchVector: matches,
+    minCoverage: KBF_AUDIT_VERIFY_OPTIONS.minCoverage, minDiffCoverage: KBF_AUDIT_VERIFY_OPTIONS.minDiffCoverage,
+  })
+  return {
     target: { peerId: 'aa', service: 'm', agentId: '1' },
-    reference: { referenceId: 'sha256:a', probes: [{ id: 'p1' }] },
-    exchanges: [],
-    result: { verdict: 'SAME', stats: { pValueBinomial: 0.5, targetCoverage: 1, selfHamming: 0, selfTotal: 10, targetHamming: 0, targetTotal: 10, selfCoverage: 1, p0Cp99: 0.3 } },
+    tests: 'all-tests-v1',
+    reference: {
+      referenceId, probes: probeIds.map((id) => ({ id })),
+      selfTest: { outcomes: probeIds.map((id) => ({ probeId: id, answers: [1], matches: [1] })) },
+    },
+    exchanges: [{
+      batchIndex: 0, status: 'succeeded', probeIds: [...probeIds], answers: probeIds.map(() => 1), matches,
+      responseAuth: { status: 'verified' },
+    }],
+    result: { verdict: computed.verdict, stats: { ...computed.stats, selfCoverage: 1 } },
+    ...extra,
   } as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
-  const extensionEvidence = {
-    ...first,
-    reference: { referenceId: 'sha256:b', probes: [{ id: 'p2' }] },
-  } as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
+}
+
+/**
+ * A set of 100 questions: one batch of 60 answered, 30 of them wrong; one batch of 40 that failed whole. No self-test
+ * error. Coverage 0.6: under the 0.8 a plain DIFF needs, decisive at kbf-coverage-v1's bar.
+ */
+function partlyAnsweredEvidence(referenceId: string, label: string, coverageRule?: string) {
+  const ids = Array.from({ length: 100 }, (_, index) => `${referenceId}-p${index}`)
+  const answered = ids.slice(0, 60), lost = ids.slice(60)
+  const matches = answered.map((_, index) => (index < 30 ? 0 : 1) as 0 | 1)
+  const stats = computeKbfVerdict({
+    selfHamming: 0, selfTotal: 100, targetMatchVector: [...matches, ...lost.map(() => null)],
+    minCoverage: KBF_AUDIT_VERIFY_OPTIONS.minCoverage, minDiffCoverage: KBF_AUDIT_VERIFY_OPTIONS.minDiffCoverage,
+  }).stats
+  return {
+    target: { peerId: 'aa', service: 'm', agentId: '1' },
+    tests: 'all-tests-v1',
+    reference: {
+      referenceId, probes: ids.map((id) => ({ id })),
+      selfTest: { outcomes: ids.map((id) => ({ probeId: id, answers: [1], matches: [1] })) },
+    },
+    exchanges: [
+      { batchIndex: 0, status: 'succeeded', probeIds: answered, answers: answered.map(() => 1), matches, responseAuth: { status: 'verified' } },
+      { batchIndex: 1, status: 'failed', probeIds: lost, answers: lost.map(() => null), matches: lost.map(() => null), responseAuth: { status: 'missing' } },
+    ],
+    result: { verdict: label, parsedProbeCount: 60, stats: { ...stats, selfCoverage: 1 }, ...(coverageRule !== undefined ? { coverageRule } : {}) },
+  } as unknown as Parameters<typeof adjudicateQuestions>[0]['evidence']
+}
+
+test('a stored look is judged again by the coverage rule it names: submit and the confirmer keep an old look\'s judgment', () => {
+  // `adjudicateQuestions` is what submit's evidence check and the confirmer's read of published evidence both call.
+  const judge = (evidence: ReturnType<typeof partlyAnsweredEvidence>) => adjudicateQuestions({ evidence, extraSets: [], decisionRule: 'kbf-extension-v2', closed: false })
+  // A look made before the coverage rule names none: UNDETERMINED as it was stored, and never re-read as DIFF.
+  assert.deepEqual(judge(partlyAnsweredEvidence('sha256:a', 'UNDETERMINED')), { verdict: 'UNDETERMINED', pending: false })
+  assert.throws(() => judge(partlyAnsweredEvidence('sha256:a', 'DIFF')), /the questions' first look says DIFF, but its stored answers give UNDETERMINED/)
+  // The same answers under kbf-coverage-v1: DIFF, and an UNDETERMINED label for them is refused as a withheld look.
+  assert.deepEqual(judge(partlyAnsweredEvidence('sha256:a', 'DIFF', 'kbf-coverage-v1')), { verdict: 'DIFF', pending: false })
+  assert.throws(() => judge(partlyAnsweredEvidence('sha256:a', 'UNDETERMINED', 'kbf-coverage-v1')), /the questions' first look says UNDETERMINED, but its stored answers give DIFF/)
+  // A rule this verifier does not know is never replaced by one it does.
+  assert.throws(() => judge(partlyAnsweredEvidence('sha256:a', 'DIFF', 'kbf-coverage-v9')), /unknown coverage rule "kbf-coverage-v9"/)
+  // Every set of a close call is decided by its first set's coverage rule.
+  const extra = [{ record: { rule: 'kbf-extension-v2', pooled: { verdict: 'DIFF' } } as never, evidence: partlyAnsweredEvidence('sha256:b', 'UNDETERMINED') }]
+  assert.throws(() => adjudicateQuestions({ evidence: partlyAnsweredEvidence('sha256:a', 'DIFF', 'kbf-coverage-v1'), extraSets: extra, decisionRule: 'kbf-extension-v2', closed: false }),
+    /an extra set decided by another coverage rule than its first set/)
+})
+
+test('a close call is checked against the close-call rule', () => {
+  const ids = Array.from({ length: 10 }, (_, index) => `p${index}`)
+  // Every answer right: a clear SAME, so it must not have been extended.
+  const first = answeredEvidence('sha256:a', ids, 0)
+  const extensionEvidence = answeredEvidence('sha256:b', ids.map((id) => `x${id}`), 0)
   const result = {
     peerId: 'aa', service: 'm', agentId: '1', status: 'SAME', decisionRule: 'kbf-extension-v1',
     extension: { rule: 'kbf-extension-v1', status: 'SAME', pooled: { verdict: 'SAME' } },
   } as unknown as Parameters<typeof validateAuditMatchesSummary>[1]
-  // p = 0.5 is a clear SAME: it must not have been extended.
   assert.throws(() => validateAuditMatchesSummary(first, result, extensionEvidence), /not a close call/)
+})
+
+test('both readers refuse an extra set that stores a test record or names no format', () => {
+  const first = {
+    target: { peerId: 'aa', service: 'm', agentId: '1' },
+    tests: 'all-tests-v1',
+    reference: { referenceId: 'sha256:a', probes: [{ id: 'p1' }] },
+    exchanges: [],
+    result: { verdict: 'UNDETERMINED', stats: { pValueBinomial: 0.5, targetCoverage: 1, selfHamming: 0, selfTotal: 10, targetHamming: 0, targetTotal: 10, selfCoverage: 1, p0Cp99: 0.3 } },
+  } as unknown as Parameters<typeof adjudicateQuestions>[0]['evidence']
+  const set = (extra: Record<string, unknown>) => [{ record: { rule: 'kbf-extension-v2', pooled: { verdict: 'SAME' } } as never, evidence: { ...first, reference: { referenceId: 'sha256:b', probes: [{ id: 'p2' }] }, ...extra } as never }]
+  // `adjudicateQuestions` is what submit and the confirmer's read both call on extra sets.
+  assert.throws(() => adjudicateQuestions({ evidence: first, extraSets: set({ outputCap: { outcome: 'flag' } }), decisionRule: 'kbf-extension-v2', closed: false }), /stores a test record/)
+  assert.throws(() => adjudicateQuestions({ evidence: first, extraSets: set({ tests: undefined }), decisionRule: 'kbf-extension-v2', closed: false }), /does not name the all-tests format/)
+  assert.throws(() => adjudicateQuestions({ evidence: first, extraSets: set({}), decisionRule: 'kbf-extension-v2', closed: false }), /not a close call|extension/, 'past the form, the close-call rule still applies')
 })
 
 test('evidence prepared again after its question set is retired is byte-identical, questionSelection included', async () => {
@@ -694,6 +982,173 @@ test('a close call asked on a set a submit has since published is submitted UNDE
     await writeFile(summaryPath, JSON.stringify(summary))
     const lastAttempt = await prepare(confirmation)
     assert.deepEqual(lastAttempt.audits[0]?.results.map((result) => [result.agentId, result.verdict]), [[3n, VERIFIER_VERDICT.UNDETERMINED]])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('an UNDETERMINED first look already sent does not hold back the resumed retry that finished later: its DIFF goes out', async () => {
+  // This auditor sent seller 1's first look as UNDETERMINED (its retry was planned); the retry resumed that attempt,
+  // keeping its batches (so the same earliest request), and ended DIFF. It finished after the reported audit, even
+  // before that report's block: it is sent. An audit that finished before the reported one is held, and said so.
+  const ownReport = {
+    agentId: 1n, serviceHash: serviceHash('model-a'), auditor: auditor.address, modelHash: modelHash('model-a'),
+    verdict: VERIFIER_VERDICT.UNDETERMINED, round: 0, reports: 1, required: 1, blockNumber: 10, logIndex: 1, transactionHash: '0xsent',
+  }
+  const filterWith = (reportedFinish: (retryFinished: number) => number) => async (model: string, candidates: readonly SubmissionCandidate[]) => {
+    const retryFinished = candidates[0]!.auditedAt
+    const filter = alreadyOnChainFilter({
+      events: [ownReport], auditor: auditor.address, epoch: 7n,
+      reader: {
+        reportRound: async () => 0,
+        serviceStatusByHash: async () => ({ modelHash: modelHash('model-a'), verdict: VERIFIER_VERDICT.UNDETERMINED, epoch: 7n }),
+        // The report was mined an hour after the retry finished.
+        blockTimestamp: async () => retryFinished + 3_600,
+      },
+      auditorSetEvents: async () => [],
+      reportedAuditTime: async (own) => (own.transactionHash === '0xsent' ? reportedFinish(retryFinished) : null),
+    })
+    return filter(model, candidates)
+  }
+  await withRun([audit('1', sellers[0]!, 'model-a', 'DIFF')], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits.flatMap((entry) => entry.results.map((result) => result.verdict)), [VERIFIER_VERDICT.DIFF])
+    assert.deepEqual(prepared.alreadyOnChain, [])
+    assert.deepEqual(prepared.heldBack, [])
+  }, { alreadyOnChain: filterWith((retryFinished) => retryFinished - 600) })
+  // The reported audit finished after this one: held, outstanding, and never counted as on chain.
+  await withRun([audit('1', sellers[0]!, 'model-a', 'DIFF')], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits, [])
+    assert.deepEqual(prepared.alreadyOnChain, [])
+    assert.ok(prepared.excluded.some((entry) => /held: older than your own report/.test(entry.reason)))
+    assert.ok(prepared.heldBack.some((line) => /a newer audit of this seller is needed/.test(line)))
+  }, { alreadyOnChain: filterWith((retryFinished) => retryFinished + 600) })
+  // No ledger knows the report: its block time stands in, and the retry that finished before it is held.
+  await withRun([audit('1', sellers[0]!, 'model-a', 'DIFF')], async ({ prepared }) => {
+    assert.deepEqual(prepared.audits, [])
+  }, { alreadyOnChain: async (model, candidates) => {
+    const filter = alreadyOnChainFilter({
+      events: [{ ...ownReport, transactionHash: '0xelsewhere' }], auditor: auditor.address, epoch: 7n,
+      reader: {
+        reportRound: async () => 0,
+        serviceStatusByHash: async () => ({ modelHash: modelHash('model-a'), verdict: VERIFIER_VERDICT.UNDETERMINED, epoch: 7n }),
+        blockTimestamp: async () => candidates[0]!.auditedAt + 3_600,
+      },
+      auditorSetEvents: async () => [],
+      reportedAuditTime: async () => null,
+    })
+    return filter(model, candidates)
+  } })
+})
+
+test('the planner and submit read the same finish time for the audit behind an own report: any run\'s ledger, else the block', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-sent-times-'))
+  try {
+    const contract = '0x' + 'Ab'.repeat(20)
+    const ledgerOf = (models: Record<string, unknown>) => JSON.stringify({ models })
+    await mkdir(join(directory, 'submissions', 'run-1'), { recursive: true })
+    await mkdir(join(directory, 'submissions', 'run-2'), { recursive: true })
+    await mkdir(join(directory, 'submissions', 'run-3'), { recursive: true })
+    // One ledger's unknown time (0) never masks another ledger's valid time for the same transaction and row.
+    await writeFile(join(directory, 'submissions', 'run-1', `ledger-8453-${contract.toLowerCase()}.json`), ledgerOf({ a: { transactionHash: '0xAA', auditedAt: { '1:0x01': 0 } } }))
+    await writeFile(join(directory, 'submissions', 'run-2', `ledger-8453-${contract.toLowerCase()}.json`), '{ damaged')
+    await writeFile(join(directory, 'submissions', 'run-3', `ledger-8453-${contract.toLowerCase()}.json`), ledgerOf({ a: { transactionHash: '0xaa', auditedAt: { '1:0x01': 500, '2:0x02': 700 } } }))
+    const sent = await sentAuditTimes(directory, 8453n, contract)
+    assert.deepEqual(sent.get('0xaa'), { '1:0x01': 500, '2:0x02': 700 })
+    const own = { verdict: VERIFIER_VERDICT.UNDETERMINED, round: 0, blockNumber: 9, logIndex: 0, transactionHash: '0xAA' }
+    const reader = { blockTimestamp: async () => 900 }
+    const fromLedger = async (value: { transactionHash?: string }) => sent.get(value.transactionHash?.toLowerCase() ?? '')?.['1:0x01'] ?? null
+    assert.equal(await ownReportFinishedAt(own, fromLedger, reader), 500)
+    assert.equal(await ownReportFinishedAt({ ...own, transactionHash: '0xBB' }, fromLedger, reader), 900, 'unknown to every ledger: the block time')
+    assert.equal(await ownReportFinishedAt(own, async () => 0, reader), 900, 'an unknown time in a ledger is no time: the block time')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a result\'s finish time is read from its verified evidence; a missing extra set or a changed file gives none, so the planner reopens its report', async () => {
+  await withRun([audit('1', sellers[0]!, 'model-a')], async ({ evidenceDir }) => {
+    const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+    const summary = JSON.parse(await readFile(manifest.models[0]!.summaryPath, 'utf8')) as { results: Array<{ evidencePath: string; evidenceHash: string }> }
+    const row = summary.results[0]!
+    const evidence = JSON.parse(await readFile(row.evidencePath, 'utf8')) as { createdAt: string }
+    assert.equal(await auditFinishedAt(row), Date.parse(evidence.createdAt) / 1_000)
+    // An extra set the summary names but whose file is gone.
+    assert.equal(await auditFinishedAt({ ...row, extension: { evidencePath: join(evidenceDir, 'gone.json'), evidenceHash: row.evidenceHash } }), null)
+    // The file is there but is not the one its summary names.
+    assert.equal(await auditFinishedAt({ ...row, evidenceHash: '0x' + '00'.repeat(32) }), null)
+  })
+})
+
+test('the preparation records every row\'s decision with its identity: what it sends, what is on chain, and what it leaves out and why', async () => {
+  await withRun([
+    audit('1', sellers[0]!, 'model-a'),
+    audit('2', sellers[1]!, 'model-a', 'DIFF'),
+    audit('3', sellers[2]!, 'model-a'),
+  ], async ({ prepared }) => {
+    const rows = prepared.decisions.map((row) => `${row.agentId} ${row.decision}${row.reasonCode ? ` ${row.reasonCode}` : ''}`).sort()
+    assert.deepEqual(rows, ['1 already-on-chain already-on-chain', '2 send', '3 excluded self-audit'])
+    // The sends are exactly the audits' results, and every exclusion has its row.
+    const sent = prepared.decisions.filter((row) => row.decision === 'send')
+    assert.deepEqual(sent.map((row) => `${row.agentId}:${row.serviceHash}`), prepared.audits.flatMap((entry) => entry.results.map((result) => `${result.agentId}:${result.serviceHash}`)))
+    for (const exclusion of prepared.excluded) {
+      assert.ok(prepared.decisions.some((row) => row.auditId === exclusion.auditId && row.decision !== 'send'), exclusion.reason)
+    }
+    assert.ok(prepared.decisions.every((row) => row.serviceHash === serviceHash('model-a') && row.auditId && row.evidenceHash && row.reportKey === null))
+  }, {
+    owners: { 3: auditor.address },
+    alreadyOnChain: async (_model, candidates) => candidates.map((candidate) => candidate.agentId === 1n),
+  })
+})
+
+test('a malformed row, a held confirmation and a row with a date that is not valid: the preparation goes on, and each is recorded for what it is', async () => {
+  let datelessRow: { evidencePath: string; evidenceHash: string } | null = null
+  await withRun([audit('1', sellers[0]!, 'model-a'), audit('2', sellers[1]!, 'model-a')], async ({ prepared }) => {
+    // The valid row is still prepared: one malformed row never strands the others.
+    assert.deepEqual(prepared.audits.flatMap((entry) => entry.results.map((result) => result.agentId)), [1n])
+    const byPeer = new Map(prepared.decisions.map((row) => [row.peerId, row]))
+    const malformed = byPeer.get('ab'.repeat(20))!
+    assert.deepEqual([malformed.decision, malformed.reasonCode, malformed.serviceHash], ['excluded', 'failed', null])
+    // A confirmation held to be audited again is a hold for its report, with the report's key.
+    const held = byPeer.get('cd'.repeat(20))!
+    assert.deepEqual([held.decision, held.reasonCode, held.reportKey], ['held', 'confirmation-reaudit', 'model-a|100|kbf'])
+    // A date that is not valid is damaged evidence: left out at prepare, and the planner has no time for it either.
+    const dateless = prepared.decisions.find((row) => row.agentId === '2')!
+    assert.deepEqual([dateless.decision, dateless.reasonCode], ['excluded', 'invalid-evidence-date'])
+    assert.equal(await auditFinishedAt(datelessRow!), null)
+  }, {
+    tamper: async (evidenceDir) => {
+      const manifest = await readVerifierRunManifest(evidenceDir, 'run-1')
+      const path = manifest.models[0]!.summaryPath
+      const summary = JSON.parse(await readFile(path, 'utf8')) as { results: Array<{ agentId: string; evidencePath: string; evidenceHash: string }>; failures: unknown[] }
+      summary.failures.push({ peerId: 'ab'.repeat(20), agentId: null, status: 'FAILED', reason: 'a row with no service' })
+      summary.failures.push({
+        peerId: 'cd'.repeat(20), agentId: '9', service: 'model-a', status: 'FAILED', reason: 'held: audited again',
+        confirming: ['kbf'], confirmingReportedAt: 100, confirmationHeld: true,
+      })
+      // Seller 2's evidence written again with a date that is not valid, under its new hash.
+      const row = summary.results.find((entry) => entry.agentId === '2')!
+      const evidence = JSON.parse(await readFile(row.evidencePath, 'utf8')) as Record<string, unknown>
+      evidence.createdAt = 12_345
+      await writeFile(row.evidencePath, canonicalJsonStringify(evidence))
+      row.evidenceHash = canonicalHashBytes32(evidence)
+      datelessRow = { evidencePath: row.evidencePath, evidenceHash: row.evidenceHash }
+      await writeFile(path, JSON.stringify(summary))
+    },
+  })
+})
+
+test('a dry run marks its prepared file as incomplete first, and writes codes only when it completes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-dry-run-prepared-'))
+  try {
+    const { dryRunPreparedPath, markDryRunPreparing, writeDryRunPrepared } = await import('./epoch-submission-record.js')
+    await writeDryRunPrepared(directory, '7', { runIds: ['old-run'], decisions: [], alreadyOnChain: [] }, new Date('2026-11-01T00:00:00Z'))
+    await markDryRunPreparing(directory, '7', ['run-1'], new Date('2026-11-19T00:00:00Z'))
+    const marked = JSON.parse(await readFile(dryRunPreparedPath(directory, '7'), 'utf8')) as Record<string, unknown>
+    assert.deepEqual([marked.state, marked.runIds, marked.writtenAt, marked.rows], ['incomplete', ['run-1'], '2026-11-19T00:00:00.000Z', []])
+    await writeDryRunPrepared(directory, '7', { runIds: ['run-1'], decisions: [], alreadyOnChain: [{ model: 'model-a', count: 1 }] })
+    const written = JSON.parse(await readFile(dryRunPreparedPath(directory, '7'), 'utf8')) as Record<string, unknown>
+    assert.equal(written.state, 'complete')
+    assert.deepEqual(Object.keys(written).sort(), ['alreadyOnChain', 'epoch', 'format', 'rows', 'runIds', 'state', 'version', 'writtenAt'], 'no free text in the file')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

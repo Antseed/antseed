@@ -8,7 +8,9 @@ import {
   parseCsv,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
+  MAX_VIDEO_DOWNLOADS_CONFIG_FIELD,
   createVideoResponseStreamer,
+  parseMaxVideoDownloads,
   videoDownloadError,
   videoDownloadSignal,
 } from '@antseed/provider-core';
@@ -18,7 +20,6 @@ export const VENICE_DEFAULT_BASE_URL = 'https://api.venice.ai';
 const PROTOCOL = 'venice-video';
 const MAX_STATUS_BYTES = 1024 * 1024;
 const MAX_MODELS_BYTES = 4 * 1024 * 1024;
-const MAX_ACTIVE_DOWNLOADS = 2;
 /** Venice pre-signed download URLs are valid for 24 hours. */
 const DOWNLOAD_URL_TTL_MS = 24 * 60 * 60_000;
 const MAX_DOWNLOAD_URLS = 1000;
@@ -339,6 +340,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON', label: 'Unit Pricing', type: 'string', required: true },
     { key: 'ANTSEED_SERVICE_CAPABILITIES_JSON', label: 'Capabilities', type: 'string' },
     { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Concurrency', type: 'number', default: 10 },
+    MAX_VIDEO_DOWNLOADS_CONFIG_FIELD,
     {
       key: 'VENICE_VIDEO_MIN_BALANCE_USD',
       label: 'Minimum Balance (USD)',
@@ -364,6 +366,7 @@ const plugin: AntseedProviderPlugin = {
     if (missingPricing) throw new Error(`Missing ${PROTOCOL} unit pricing for ${missingPricing}`);
     const maxConcurrency = Number(config['ANTSEED_MAX_CONCURRENCY'] ?? 10);
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) throw new Error('ANTSEED_MAX_CONCURRENCY must be a positive integer');
+    const maxDownloads = parseMaxVideoDownloads(config);
     const minBalanceUsd = Number(config['VENICE_VIDEO_MIN_BALANCE_USD'] ?? 0);
     if (!Number.isFinite(minBalanceUsd) || minBalanceUsd < 0) throw new Error('VENICE_VIDEO_MIN_BALANCE_USD must be a non-negative number');
     const configuredCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
@@ -519,7 +522,7 @@ const plugin: AntseedProviderPlugin = {
       return { ...response, headers, body: Buffer.from(JSON.stringify(rest)) };
     };
 
-    const streamUpstream = createVideoResponseStreamer(MAX_ACTIVE_DOWNLOADS);
+    const streamUpstream = createVideoResponseStreamer(maxDownloads);
 
     return {
       name: relay.name,

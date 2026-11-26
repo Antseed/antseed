@@ -12,7 +12,7 @@ export const DEFAULT_AUDIT_PRICE_RATIO = 1
  * (`price_above_reference`) before any request is sent.
  */
 export interface AuditPriceCap {
-  /** Built-in audited model key, e.g. `claude-fable-5.1`. */
+  /** Built-in audited model key, e.g. `claude-fable-5.2`. */
   model: string
   /** The genuine model's price, USD per 1M tokens. */
   reference: VerifierModelPricingConfig
@@ -89,7 +89,7 @@ export function requiredBuyerCap(caps: readonly AuditPriceCap[]): { input: strin
   return { input: formatUsd(input), output: formatUsd(output) }
 }
 
-/** `claude-fable-5.1 ≤ $10/$50 (OpenRouter)` for the run log. */
+/** `claude-fable-5.2 ≤ $10/$50 (OpenRouter)` for the run log. */
 export function describeAuditPriceCap(cap: AuditPriceCap): string {
   const source = cap.source === 'catalog' ? 'reference catalog'
     : cap.source === 'configured' ? 'verifier.models pricing'

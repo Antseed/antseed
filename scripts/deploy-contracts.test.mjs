@@ -29,7 +29,14 @@ import {
   validateM002Baseline,
   validateM002Options,
 } from './deployments/m002.mjs';
+import {
+  classifyM004,
+  confirmedLockBroadcasts,
+  recordErrors as m004RecordErrors,
+  validateM004Options,
+} from './deployments/m004.mjs';
 import { writeJsonAtomic, writeJsonOnce } from './deployments/runtime/artifacts.mjs';
+import { forgeSupportsEtherscanApiVersion } from './deployments/runtime/foundry.mjs';
 import { applyContractAliases, buildReleaseRecord, currentRelease, historyRecordExists, loadContext, readCheckpoint, validateArtifacts, writeActivationRecords } from './deployments/runtime/ledger.mjs';
 import { executePhases, runMigration } from './deployments/runtime/runner.mjs';
 import { withAnvilFork } from './deployments/runtime/anvil.mjs';
@@ -483,7 +490,7 @@ test('reports incomplete network baselines before deployment', () => {
 
 test('registers migrations explicitly', () => {
   assert.equal(getDeploymentMigration('M001').id, 'M001');
-  assert.deepEqual([...deploymentMigrations.keys()], ['M001', 'M002', 'M003']);
+  assert.deepEqual([...deploymentMigrations.keys()], ['M001', 'M002', 'M003', 'M004']);
   assert.equal(getDeploymentMigration('M002').id, 'M002');
 });
 
@@ -581,6 +588,8 @@ for (const broadcast of [true, false]) {
   test(`Foundry ${broadcast ? 'broadcasts are sequential' : 'simulations do not enable broadcasting'}`, (t) => {
     const calls = [];
     t.mock.method(childProcess, 'spawnSync', (command, args) => {
+      // The version-flag probe: answer as a Foundry that still has the flag.
+      if (args.includes('--help')) return { status: 0, stdout: '--etherscan-api-version <VERSION>', stderr: '' };
       calls.push({ command, args });
       return { status: 0, stdout: '', stderr: '' };
     });
@@ -2520,4 +2529,126 @@ test('published M001 address inventories match the immutable deployment record',
       assert.ok(document.includes(contract.address.toLowerCase()), `${file} is missing ${name}`);
     }
   }
+});
+
+const M004_ZERO = '0x0000000000000000000000000000000000000000';
+const M004_ADDRESS = {
+  owner: '0x1000000000000000000000000000000000000001',
+  v2: '0x1000000000000000000000000000000000000002',
+  escrow: '0x1000000000000000000000000000000000000003',
+  deposits: '0x1000000000000000000000000000000000000004',
+  channels: '0x1000000000000000000000000000000000000005',
+  lockRegistry: '0x1000000000000000000000000000000000000006',
+  pool: '0x1000000000000000000000000000000000000007',
+  unlockPolicy: '0x1000000000000000000000000000000000000008',
+  claimPolicy: '0x1000000000000000000000000000000000000009',
+  v1: '0x100000000000000000000000000000000000000a',
+};
+
+function m004Observation({ pinned = false, owner = M004_ADDRESS.owner, paused = false, claimPolicy = M004_ADDRESS.claimPolicy } = {}) {
+  return {
+    expected: {
+      legacyEmissions: M004_ADDRESS.v2,
+      legacyEmissionsEscrow: M004_ADDRESS.escrow,
+      deposits: M004_ADDRESS.deposits,
+      claimPolicy: M004_ADDRESS.claimPolicy,
+    },
+    escrowLegacyEmissions: M004_ADDRESS.v2,
+    escrowOwner: owner,
+    v1: { address: M004_ADDRESS.v1, owner },
+    v2: { address: M004_ADDRESS.v2, owner, paused, registry: pinned ? M004_ADDRESS.lockRegistry : M004_ADDRESS.escrow },
+    registry: pinned
+      ? { address: M004_ADDRESS.lockRegistry, isLockRegistry: true, channels: M004_ZERO, antsToken: M004_ADDRESS.escrow, deposits: M004_ADDRESS.deposits }
+      : { address: M004_ADDRESS.escrow, channels: M004_ADDRESS.channels, antsToken: M004_ADDRESS.escrow, deposits: M004_ADDRESS.deposits },
+    pool: { address: M004_ADDRESS.pool, owner, sellerClaimPolicy: claimPolicy },
+    unlockPolicy: { address: M004_ADDRESS.unlockPolicy, owner },
+  };
+}
+
+test('M004 classifies the escrow-pinned, locked and unsafe legacy states', () => {
+  assert.equal(classifyM004(m004Observation()), 'ready');
+  assert.equal(classifyM004(m004Observation({ pinned: true })), 'ready');
+  assert.equal(classifyM004(m004Observation({ pinned: true, owner: M004_ZERO })), 'active');
+  assert.equal(classifyM004(m004Observation({ paused: true })), 'invalid');
+  assert.equal(classifyM004(m004Observation({ claimPolicy: M004_ZERO })), 'invalid');
+  assert.equal(classifyM004(m004Observation({ claimPolicy: M004_ADDRESS.owner })), 'invalid');
+
+  const sweepable = m004Observation({ pinned: true, owner: M004_ZERO });
+  sweepable.escrowOwner = M004_ADDRESS.owner;
+  assert.equal(classifyM004(sweepable), 'ready');
+
+  const foreign = m004Observation({ pinned: true });
+  foreign.registry.channels = M004_ADDRESS.channels;
+  assert.equal(classifyM004(foreign), 'invalid');
+
+  // Same answers from a registry that is not the ownerless lock registry.
+  const mutable = m004Observation({ pinned: true, owner: M004_ZERO });
+  mutable.registry.isLockRegistry = false;
+  assert.equal(classifyM004(mutable), 'invalid');
+
+  const otherEscrow = m004Observation();
+  otherEscrow.escrowLegacyEmissions = M004_ADDRESS.owner;
+  assert.equal(classifyM004(otherEscrow), 'invalid');
+});
+
+test('M004 runs on Base mainnet only', () => {
+  assert.doesNotThrow(() => validateM004Options({ network: 'base-mainnet', mode: 'dry-run' }));
+  assert.throws(() => validateM004Options({ network: 'base-sepolia', mode: 'dry-run' }), /Base mainnet/);
+});
+
+test('M004 records require a channel-less registry and three renounced owners', () => {
+  const record = {
+    contracts: { legacyEmissionsRegistry: { address: M004_ADDRESS.lockRegistry } },
+    verificationConfiguration: {
+      legacyEmissionsV2: M004_ADDRESS.v2,
+      legacyEmissionsRegistry: M004_ADDRESS.lockRegistry,
+      registryChannels: M004_ZERO,
+      escrow: M004_ADDRESS.escrow,
+      deposits: M004_ADDRESS.deposits,
+      sellerRewardsPool: M004_ADDRESS.pool,
+      sellerUnlockPolicy: M004_ADDRESS.unlockPolicy,
+      legacyEmissionsV2Owner: M004_ZERO,
+      sellerRewardsPoolOwner: M004_ZERO,
+      sellerUnlockPolicyOwner: M004_ZERO,
+      legacyEmissionsV1: M004_ADDRESS.v1,
+      legacyEmissionsV1Owner: M004_ZERO,
+      escrowOwner: M004_ZERO,
+    },
+  };
+  assert.deepEqual(m004RecordErrors(record), []);
+  const owned = structuredClone(record);
+  owned.verificationConfiguration.sellerRewardsPoolOwner = M004_ADDRESS.owner;
+  owned.verificationConfiguration.registryChannels = M004_ADDRESS.channels;
+  assert.deepEqual(m004RecordErrors(owned), [
+    'verificationConfiguration.registryChannels must be the zero address',
+    'verificationConfiguration.sellerRewardsPoolOwner must be the zero address',
+  ]);
+});
+
+test('M004 records keep the registry CREATE receipt from an interrupted earlier broadcast', async () => {
+  const hash = (n) => `0x${String(n).padStart(64, '0')}`;
+  const tx = (n, action) => ({ action, hash: hash(n), blockNumber: n, from: M004_ADDRESS.owner, to: M004_ADDRESS.v2 });
+  const registry = {
+    address: M004_ADDRESS.lockRegistry, deploymentBlock: 1, transactionHash: hash(1), deployedInRelease: true,
+  };
+  const files = {
+    // First attempt: deployed and pinned, then stopped. A later fork run never landed here.
+    'run-100.json': { transactions: [tx(1, 'deploy AntseedLegacyEmissionsRegistry'), tx(2, 'setRegistry(address)')], contracts: { legacyEmissionsRegistry: registry } },
+    'run-150.json': { transactions: [tx(99, 'renounceOwnership()')], contracts: {} },
+    // Resume: only the remaining renounces.
+    'run-200.json': { transactions: [tx(4, 'renounceOwnership()'), tx(3, 'renounceOwnership()')], contracts: {} },
+    'run-latest.json': { transactions: [tx(3, 'renounceOwnership()'), tx(4, 'renounceOwnership()')], contracts: {} },
+  };
+  const merged = await confirmedLockBroadcasts({ canonical: { chainId: 8453 }, rpcUrl: 'http://rpc' }, {
+    readdir: async () => Object.keys(files),
+    parseBroadcast: async (file) => structuredClone(files[path.basename(file)]),
+    transactionSucceeded: (_, txHash) => txHash !== hash(99),
+  });
+  assert.deepEqual(merged.transactions.map((transaction) => transaction.blockNumber), [1, 2, 3, 4]);
+  assert.deepEqual(merged.contracts.legacyEmissionsRegistry, registry);
+});
+
+test('forge verification passes --etherscan-api-version only to Foundry versions that have it', () => {
+  assert.equal(forgeSupportsEtherscanApiVersion('      --etherscan-api-key <KEY>\n      --etherscan-api-version <VERSION>'), true);
+  assert.equal(forgeSupportsEtherscanApiVersion('      --etherscan-api-key <KEY>\n'), false);
 });

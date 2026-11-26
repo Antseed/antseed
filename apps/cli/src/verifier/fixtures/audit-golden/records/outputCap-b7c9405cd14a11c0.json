@@ -1,0 +1,70 @@
+{
+ "asks": [
+  {
+   "cap": 24,
+   "class": "within",
+   "measurement": null,
+   "prompt": "List every whole number from 320 onward written out in words, comma sepa… (163 characters, sha256 f626eea5018cb97e)",
+   "reading": {
+    "billedOutputTokens": 24,
+    "cap": 24,
+    "estimated": false,
+    "finished": false,
+    "oneAnswer": true,
+    "reasoningMarker": false,
+    "reasoningTokens": null,
+    "shape": "chat",
+    "stops": false,
+    "text": "one one one one one one one one one one one one one one one one one one one one one one one one"
+   },
+   "request": {
+    "attemptCosts": [
+     {
+      "estimatedCostUsd": 0.00009,
+      "inputTokens": 30,
+      "inputUsdPerMillion": 1,
+      "outputTokens": 48,
+      "outputUsdPerMillion": 2,
+      "provider": null,
+      "service": null,
+      "tokenSource": null,
+      "totalTokens": 78
+     }
+    ],
+    "failureReason": null,
+    "requestIds": ["<seller: cap ask #1>"],
+    "responseAuth": {
+     "failureReason": null,
+     "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: cap ask #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+     "requestId": "<seller: cap ask #1>",
+     "signedPreimages": {
+      "encoding": "antseed-http-codec-v1",
+      "hashAlgorithm": "keccak256",
+      "requestBase64": {
+       "requestId": "<seller: cap ask #1>",
+       "method": "POST",
+       "path": "/v1/chat/completions",
+       "headers": {},
+       "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"List ev… (294 characters, sha256 baade2a997b32491)"
+      },
+      "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "responseAuthSigningBase64": "AA==",
+      "responseBase64": {
+       "requestId": "<seller: cap ask #1>",
+       "statusCode": 200,
+       "headers": {},
+       "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (268 characters, sha256 bc7f7efd7a6d28ed)"
+      },
+      "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+      "signatureEncoding": "antseed-response-auth-signing-v1"
+     },
+     "status": "verified"
+    },
+    "statusCode": 200
+   }
+  }
+ ],
+ "outcome": "pass",
+ "reason": "the answer was within",
+ "rule": {"flagFactor":2,"framingTokens":6,"id":"output-cap-v1","maxCap":48,"minCap":16,"referenceAsks":2,"scaleCap":512,"sellerAsks":2,"tolerance":2}
+}

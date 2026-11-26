@@ -1,0 +1,97 @@
+{
+ "answers": [21,22,23,24,25,26,27,28,29,30],
+ "attemptCosts": [
+  {
+   "estimatedCostUsd": 0.00053,
+   "inputTokens": 420,
+   "inputUsdPerMillion": 1,
+   "outputTokens": 55,
+   "outputUsdPerMillion": 2,
+   "provider": null,
+   "service": null,
+   "tokenSource": null,
+   "totalTokens": 475
+  }
+ ],
+ "attemptCount": 1,
+ "batchIndex": 2,
+ "cost": {
+  "estimatedCostUsd": 0.00053,
+  "inputTokens": 420,
+  "inputUsdPerMillion": 1,
+  "outputTokens": 55,
+  "outputUsdPerMillion": 2,
+  "provider": null,
+  "service": null,
+  "tokenSource": null,
+  "totalTokens": 475
+ },
+ "failureReason": null,
+ "matches": [1,1,1,1,1,1,1,1,1,1],
+ "outcomeReason": null,
+ "probeIds": [
+  "deepseek-v4-pro-probe-21",
+  "deepseek-v4-pro-probe-22",
+  "deepseek-v4-pro-probe-23",
+  "deepseek-v4-pro-probe-24",
+  "deepseek-v4-pro-probe-25",
+  "deepseek-v4-pro-probe-26",
+  "deepseek-v4-pro-probe-27",
+  "deepseek-v4-pro-probe-28",
+  "deepseek-v4-pro-probe-29",
+  "deepseek-v4-pro-probe-30"
+ ],
+ "promptVariantId": "v5",
+ "request": {
+  "bodyBase64": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"system\",\"content\":\"You a… (978 characters, sha256 9b2f467c4dd671c0)",
+  "hash": "0x895e0ac0b373dbd3427d687c732adffc5a2d3deb3c4fc5458f10b6d6b610b41a",
+  "headers": {"content-type":"application/json","x-antseed-capture-response-auth-preimages":"1","x-antseed-pin-peer":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+  "method": "POST",
+  "url": "http://127.0.0.1:8390/v1/chat/completions"
+ },
+ "requestIds": ["<seller: question batch 2 #1>"],
+ "response": {
+  "bodyBase64": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (251 characters, sha256 9961ad0dc4b9ad64)",
+  "hash": "<the hash of this response>",
+  "headers": {
+   "content-type": "application/json",
+   "x-antseed-estimated-cost-usd": "0.00053",
+   "x-antseed-input-tokens": "420",
+   "x-antseed-input-usd-per-million": "1",
+   "x-antseed-output-tokens": "55",
+   "x-antseed-output-usd-per-million": "2",
+   "x-antseed-request-id": "<seller: question batch 2 #1>",
+   "x-antseed-total-tokens": "475"
+  },
+  "statusCode": 200
+ },
+ "responseAuth": {
+  "failureReason": null,
+  "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: question batch 2 #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+  "requestId": "<seller: question batch 2 #1>",
+  "signedPreimages": {
+   "encoding": "antseed-http-codec-v1",
+   "hashAlgorithm": "keccak256",
+   "requestBase64": {
+    "requestId": "<seller: question batch 2 #1>",
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "headers": {},
+    "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"system\",\"content\":\"You a… (978 characters, sha256 9b2f467c4dd671c0)"
+   },
+   "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+   "responseAuthSigningBase64": "AA==",
+   "responseBase64": {
+    "requestId": "<seller: question batch 2 #1>",
+    "statusCode": 200,
+    "headers": {},
+    "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (251 characters, sha256 9961ad0dc4b9ad64)"
+   },
+   "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+   "signatureEncoding": "antseed-response-auth-signing-v1"
+  },
+  "status": "verified"
+ },
+ "status": "succeeded",
+ "timing": {"completedAt":1791331200000,"responseLatencyMs":0,"startedAt":1791331200000}
+}

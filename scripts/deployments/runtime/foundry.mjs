@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { CONTRACTS_ROOT } from './paths.mjs';
 import { run } from './exec.mjs';
@@ -21,6 +22,12 @@ export function parseHexNumber(value) {
   return Number(BigInt(value));
 }
 
+/** Whether the installed `forge script` still accepts `--etherscan-api-version`. */
+export function forgeSupportsEtherscanApiVersion(help = null) {
+  const text = help ?? (spawnSync('forge', ['script', '--help'], { encoding: 'utf8' }).stdout ?? '');
+  return text.includes('--etherscan-api-version');
+}
+
 /**
  * Runs a Foundry script. `contractNames` maps Solidity contract names to
  * ledger keys so a migration never has to parse broadcast files itself.
@@ -31,7 +38,11 @@ export function runForgeScript({ target, rpcUrl, broadcast, verify, etherscanApi
     args.push('--broadcast', '--slow');
     // Basescan only accepts Etherscan V2 API keys; pin the version so a stale
     // Foundry default cannot fail verification after transactions were sent.
-    if (verify) args.push('--verify', '--etherscan-api-key', etherscanApiKey, '--etherscan-api-version', 'v2');
+    // Foundry 1.x dropped the flag (V2 is its only API), so pass it only where it exists.
+    if (verify) {
+      args.push('--verify', '--etherscan-api-key', etherscanApiKey);
+      if (forgeSupportsEtherscanApiVersion()) args.push('--etherscan-api-version', 'v2');
+    }
   }
   run('forge', args, { cwd: CONTRACTS_ROOT, env });
 }
