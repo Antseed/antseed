@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Website: antscience is listed in the ecosystem directory, with a link and a screenshot of its problems list.
+
 ## 2026-11-25 — CLI 0.1.260, Node 0.2.192, Desktop 0.2.95
 
 ### Packages
