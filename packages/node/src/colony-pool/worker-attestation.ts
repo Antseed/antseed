@@ -51,6 +51,11 @@ export interface WorkerAttestation {
 export interface AttestedModel {
   model: string;
   sha256: string;
+  /**
+   * SHA-256 of the engine executable the worker app runs for this service, hashed by the app for every
+   * model, witnessed or not. When `witness` is present, its `binary` names the same executable.
+   */
+  engine?: string;
   /** What the engine reports it loaded (its execution witness), when it knows: absent on paths the engine can't attest. */
   witness?: AttestedWitness;
 }
@@ -96,7 +101,8 @@ function attestedModelsLine(models: Record<string, AttestedModel> | undefined): 
   if (entries.length === 0) return [];
   const witnesses = entries.flatMap(([service, { witness: w }]) => (w ? [`${service}=${w.path}#${w.engine}#${w.binary}#${w.text}`] : []));
   return [
-    `models:${entries.map(([service, { model, sha256 }]) => `${service}=${model}#${sha256}`).join(',')}`,
+    // The engine's digest only when attested, so attestations without it keep their message.
+    `models:${entries.map(([service, { model, sha256, engine }]) => `${service}=${model}#${sha256}${engine ? `#${engine}` : ''}`).join(',')}`,
     // Only services the engine attests; none signs no line.
     ...(witnesses.length > 0 ? [`witness:${witnesses.join(',')}`] : []),
   ];
@@ -114,9 +120,12 @@ function isAttestedModels(value: unknown): value is Record<string, AttestedModel
   const entries = Object.entries(value);
   return entries.length <= MAX_ATTESTED_MODELS && entries.every(([service, entry]) => {
     if (!ATTESTED_SERVICE.test(service) || /[,=#]/.test(service) || typeof entry !== 'object' || entry === null) return false;
-    const { model, sha256, witness } = entry as Record<string, unknown>;
+    const { model, sha256, engine, witness } = entry as Record<string, unknown>;
     return typeof model === 'string' && ATTESTED_MODEL.test(model) && typeof sha256 === 'string' && DIGEST.test(sha256)
-      && (witness === undefined || isAttestedWitness(witness));
+      && (engine === undefined || (typeof engine === 'string' && DIGEST.test(engine)))
+      && (witness === undefined || isAttestedWitness(witness))
+      // The witness and the app's own hash must name the same engine executable.
+      && (engine === undefined || witness === undefined || (witness as AttestedWitness).binary === engine);
   });
 }
 

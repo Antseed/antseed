@@ -590,7 +590,8 @@ Attestations travel in `hello` and answer the pool's challenge nonce:
   "v": 1, "teamId": "H3M5BXXQR2", "signingId": "com.antseed.macworker", "cdhash": "<hex>",
   "sip": true, "hardenedRuntime": true, "debuggerDenied": true, "keyAppBound": true,
   "os": "macOS 26.2", "serial": "<serial number>", "udid": "<hardware UUID>",
-  "models": { "<service>": { "model": "<repo@revision>", "sha256": "<files digest>" } },
+  "models": { "<service>": { "model": "<repo@revision>", "sha256": "<files digest>", "engine": "<engine binary sha256>",
+                             "witness": { "path": "…", "engine": "…", "binary": "…", "text": "…" } } },
   "issued": <unix>, "nonce": "<challenge nonce>",
   "signature": "<base64 DER ECDSA-P256-SHA256 by the attestation key>"
 }
@@ -612,10 +613,24 @@ key-app-bound:<1|0>
 os:<os>
 serial:<serial or empty>
 udid:<udid or empty>
-models:<service>=<repo@revision>#<sha256>,…   (only when it attests models; sorted bytewise by service)
+models:<service>=<repo@revision>#<sha256>[#<engine>],…   (only when it attests models; sorted bytewise by service)
+witness:<service>=<path>#<engine>#<binary>#<text>,…   (only for services with a witness)
 issued:<unix>
 nonce:<nonce>
 ```
+
+`engine` is the SHA-256 of the engine executable the Mac app runs for that
+service, which the app hashes once per launch after checking the engine's code
+signature. The app attests it for every model, with or without a witness, and
+an attestation without it signs exactly as before (no `#<engine>`). When both
+are present, `witness.binary` must equal `engine`: an attestation where they
+differ is malformed, and the app attests no witness that names another
+executable. The app also stamps every file of the snapshot (size, modification
+and change times, inode and device) as it hashes it, and takes the stamps again
+once the engine is ready: if any file changed, appeared or disappeared, the
+load fails, so `sha256` is the digest of the files the engine read, for every
+model. The pool logs the engine digest beside the witness and doesn't route on
+it yet.
 
 An attestation is **valid** when it verifies under the certificate's
 `attestationKey` and is fresh. It is **hardened** when it is also signed by a

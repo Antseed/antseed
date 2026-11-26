@@ -304,6 +304,28 @@ describe('worker attestations', () => {
     }
   });
 
+  it('signs the engine binary digest of every model after its files digest, and only when attested', () => {
+    const witness = { path: 'qwen3_5-2b/metal/tp1/mlx-q4g64/text', engine: '01'.repeat(32), binary: 'ee'.repeat(32), text: '03'.repeat(32) };
+    const models = {
+      zeta: { model: 'org/z@1', sha256: 'cd'.repeat(32), engine: 'ee'.repeat(32), witness },
+      alpha: { model: 'org/a@2', sha256: 'ab'.repeat(32), engine: 'ee'.repeat(32) },
+      old: { model: 'org/o@3', sha256: 'ef'.repeat(32) },
+    };
+    const { cert, attestation } = attestedWorker({ models });
+    expect(isWorkerAttestation(attestation)).toBe(true);
+    expect(verifyWorkerAttestation(attestation, cert, { maxAgeS: 60 }).valid).toBe(true);
+    expect(workerAttestationMessage(cert.worker, cert.key, attestation)).toContain(
+      `\nmodels:alpha=org/a@2#${'ab'.repeat(32)}#${'ee'.repeat(32)},old=org/o@3#${'ef'.repeat(32)},zeta=org/z@1#${'cd'.repeat(32)}#${'ee'.repeat(32)}\nwitness:zeta=`,
+    );
+    // Another engine digest, or dropping it, breaks the signature.
+    expect(verifyWorkerAttestation({ ...attestation, models: { ...models, alpha: { ...models.alpha, engine: 'dd'.repeat(32) } } }, cert, { maxAgeS: 60 }).valid).toBe(false);
+    expect(verifyWorkerAttestation({ ...attestation, models: { ...models, alpha: { model: 'org/a@2', sha256: 'ab'.repeat(32) } } }, cert, { maxAgeS: 60 }).valid).toBe(false);
+    // A malformed digest, or a witness naming another executable, is not an attestation.
+    for (const bad of [{ ...models.alpha, engine: 'EE'.repeat(32) }, { ...models.alpha, engine: 'ee' }, { ...models.zeta, engine: 'dd'.repeat(32) }]) {
+      expect(isWorkerAttestation({ ...attestation, models: { ...models, alpha: bad } })).toBe(false);
+    }
+  });
+
   it('digests a checkpoint\'s files as shasum lists them, sorted bytewise by path', () => {
     const files = [{ path: './model.safetensors', sha256: '11'.repeat(32) }, { path: './Config.json', sha256: '22'.repeat(32) }, { path: './config.json', sha256: '33'.repeat(32) }];
     // printf '%s  ./Config.json\n%s  ./config.json\n%s  ./model.safetensors\n' 22… 33… 11… | shasum -a 256

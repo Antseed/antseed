@@ -151,8 +151,8 @@ export interface DispatchHandlers {
 export type DispatchRequest = SerializedHttpRequest;
 
 /** What a worker attests for a service, as one string: its log line changes only when this does. */
-function attestedModelKey({ model, sha256, witness }: AttestedModel): string {
-  return [model, sha256, witness?.path, witness?.engine, witness?.binary, witness?.text].join('#');
+function attestedModelKey({ model, sha256, engine, witness }: AttestedModel): string {
+  return [model, sha256, engine, witness?.path, witness?.engine, witness?.binary, witness?.text].join('#');
 }
 
 export class NoWorkerAvailableError extends Error {
@@ -927,7 +927,7 @@ export class ColonyPool {
       if (before && attestedModelKey(before) === attestedModelKey(attested)) continue;
       const { witness } = attested;
       const engine = witness ? `${witness.path}, engine ${witness.engine}, binary ${witness.binary}, text ${witness.text}` : 'none';
-      this.log(`worker ${worker.address} attests ${attested.model} for ${service}, files sha256 ${attested.sha256}, engine witness ${engine}`);
+      this.log(`worker ${worker.address} attests ${attested.model} for ${service}, files sha256 ${attested.sha256}, engine binary ${attested.engine ?? 'none'}, engine witness ${engine}`);
     }
     this.emitChangeIfNeeded();
   }

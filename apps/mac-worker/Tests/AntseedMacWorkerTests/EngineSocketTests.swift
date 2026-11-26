@@ -14,6 +14,10 @@ final class EngineSocketTests: XCTestCase {
         init(reply: String) throws {
             path = try LocalModel.newSocketPath()
             listener = socket(AF_UNIX, SOCK_STREAM, 0)
+            // Accepted sockets inherit it: a client that hangs up at once (a refusal) can close its end before
+            // the accept thread could set it, and macOS may then refuse the option, so the reply would raise SIGPIPE.
+            var noSigpipe: Int32 = 1
+            setsockopt(listener, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe, socklen_t(MemoryLayout<Int32>.size))
             var address = sockaddr_un()
             address.sun_family = sa_family_t(AF_UNIX)
             address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)

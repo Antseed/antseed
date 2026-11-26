@@ -89,7 +89,19 @@ actor LocalModel {
         let model: String
         let sha256: String
         var witness: EngineWitness.Snapshot?
+        /// SHA-256 of the engine executable that serves it, attested for every model (witness or not).
+        var engine: String? = nil
+
+        /// The witness to attest: only one naming the engine binary this app hashed, since the witness
+        /// and `engine` must describe the same executable.
+        var attestableWitness: EngineWitness.Known? {
+            guard let known = witness?.known else { return nil }
+            return engine == nil || known.binary == engine ? known : nil
+        }
     }
+
+    /// The engine executable's SHA-256, hashed once per launch after its code signature check.
+    private var engineDigest: String?
 
     /// Download (first run), hash the pinned snapshot's files and start the engine on that snapshot.
     /// Cancelling it stops its download or engine and never starts one afterwards, so a superseded
@@ -107,15 +119,31 @@ actor LocalModel {
         guard FileManager.default.fileExists(atPath: snapshot.appendingPathComponent("config.json").path) else {
             throw EngineError.failed("The pinned revision is not in the model cache (\(snapshot.path))")
         }
-        let digest = try Self.filesDigest(of: snapshot)
+        let engineSHA = try hashEngine()
+        let (digest, stamps) = try Self.filesDigestAndStamps(of: snapshot)
         self.snapshot = snapshot
         try Task.checkCancellation()
         let witness = try await startEngine()
-        if witness?.filesChanged == true {
+        // The attested digest must be of the files the engine read: any change between the hash and
+        // the engine being ready fails the load, for every model, witnessed or not.
+        if witness?.filesChanged == true || !Self.unchanged(stamps, in: snapshot) {
             stop()
             throw EngineError.failed("The model's files changed while the engine loaded them")
         }
-        return Checkpoint(model: modelId, sha256: digest, witness: witness)
+        if let known = witness?.known, known.binary != engineSHA {
+            stop()
+            throw EngineError.failed("The engine's witness names another executable than the one this app runs")
+        }
+        return Checkpoint(model: modelId, sha256: digest, witness: witness, engine: engineSHA)
+    }
+
+    /// The engine's SHA-256, after checking its code signature: once per launch, since the file is in the signed app.
+    private func hashEngine() throws -> String {
+        if let engineDigest { return engineDigest }
+        try EngineCode.verifyFile(engine, requirement: engineRequirement)
+        let digest = try Self.fileSHA256(engine)
+        engineDigest = digest
+        return digest
     }
 
     /// Stop the engine this instance started, if it still runs; one another instance started is left alone.
@@ -153,7 +181,60 @@ actor LocalModel {
     /// (symlinks followed), as `./path`, sorted bytewise: `modelFilesDigest` in
     /// @antseed/node/worker-e2e, so an operator can compute the value to pin.
     static func filesDigest(of directory: URL) throws -> String {
+        try filesDigestAndStamps(of: directory).digest
+    }
+
+    /// What identifies a file's content without reading it: taken (symlinks followed) before each
+    /// file is hashed, so a change during or after the hash shows as a different stamp.
+    struct FileStamp: Equatable, Sendable {
+        let size: Int64
+        let modified: timespec
+        let changed: timespec
+        let inode: UInt64
+        let device: Int32
+
+        init?(_ url: URL) {
+            var info = stat()
+            guard stat(url.path, &info) == 0 else { return nil }
+            size = info.st_size
+            modified = info.st_mtimespec
+            changed = info.st_ctimespec
+            inode = info.st_ino
+            device = info.st_dev
+        }
+
+        static func == (a: FileStamp, b: FileStamp) -> Bool {
+            a.size == b.size && a.inode == b.inode && a.device == b.device
+                && a.modified.tv_sec == b.modified.tv_sec && a.modified.tv_nsec == b.modified.tv_nsec
+                && a.changed.tv_sec == b.changed.tv_sec && a.changed.tv_nsec == b.changed.tv_nsec
+        }
+    }
+
+    /// `filesDigest`, with the stamp of every file it hashed, keyed by its path in the snapshot.
+    static func filesDigestAndStamps(of directory: URL) throws -> (digest: String, stamps: [String: FileStamp]) {
         let root = directory.resolvingSymlinksInPath()
+        var stamps: [String: FileStamp] = [:]
+        let listing = try files(in: root)
+            .sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+            .map { relative -> String in
+                let url = root.appendingPathComponent(relative)
+                guard let stamp = FileStamp(url) else { throw EngineError.failed("Could not read \(url.path)") }
+                stamps[relative] = stamp
+                return "\(try fileSHA256(url))  ./\(relative)\n"
+            }
+            .joined()
+        return (Data(SHA256.hash(data: Data(listing.utf8))).hex, stamps)
+    }
+
+    /// Whether `directory` still holds exactly the files `stamps` recorded, each with the same stamp.
+    static func unchanged(_ stamps: [String: FileStamp], in directory: URL) -> Bool {
+        let root = directory.resolvingSymlinksInPath()
+        guard let current = try? files(in: root), Set(current) == Set(stamps.keys) else { return false }
+        return stamps.allSatisfy { FileStamp(root.appendingPathComponent($0.key)) == $0.value }
+    }
+
+    /// Every file under `root`, symlinks followed, as paths relative to it.
+    private static func files(in root: URL) throws -> [String] {
         guard let walker = FileManager.default.enumerator(atPath: root.path) else { throw EngineError.failed("Could not read \(root.path)") }
         var paths: [String] = []
         while let relative = walker.nextObject() as? String {
@@ -161,11 +242,7 @@ actor LocalModel {
             guard FileManager.default.fileExists(atPath: root.appendingPathComponent(relative).path, isDirectory: &isDirectory), !isDirectory.boolValue else { continue }
             paths.append(relative)
         }
-        let listing = try paths
-            .sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
-            .map { "\(try fileSHA256(root.appendingPathComponent($0)))  ./\($0)\n" }
-            .joined()
-        return Data(SHA256.hash(data: Data(listing.utf8))).hex
+        return paths
     }
 
     static func fileSHA256(_ url: URL) throws -> String {

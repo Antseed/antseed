@@ -115,7 +115,8 @@ enum Protection {
 
     private static func attestedModel(_ checkpoint: LocalModel.Checkpoint) -> [String: Any] {
         var model: [String: Any] = ["model": checkpoint.model, "sha256": checkpoint.sha256]
-        if let known = checkpoint.witness?.known {
+        if let engine = checkpoint.engine { model["engine"] = engine }
+        if let known = checkpoint.attestableWitness {
             model["witness"] = ["path": known.path, "engine": known.engine, "binary": known.binary, "text": known.text]
         }
         return model
@@ -128,7 +129,12 @@ enum Protection {
         let models = statement["models"] as? [String: [String: Any]] ?? [:]
         let services = models.keys.sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
         let modelsLine = services
-            .map { "\($0)=\(models[$0]?["model"] as? String ?? "")#\(models[$0]?["sha256"] as? String ?? "")" }
+            .map { service -> String in
+                let model = models[service] ?? [:]
+                // The engine's digest only when attested, so attestations without it sign as before.
+                let engine = (model["engine"] as? String).map { "#\($0)" } ?? ""
+                return "\(service)=\(model["model"] as? String ?? "")#\(model["sha256"] as? String ?? "")\(engine)"
+            }
             .joined(separator: ",")
         // Service → the engine's execution witness, for the services that have one.
         let witnessLine = services.compactMap { service -> String? in

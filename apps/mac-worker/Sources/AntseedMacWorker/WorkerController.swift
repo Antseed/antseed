@@ -300,6 +300,7 @@ final class WorkerController: ObservableObject {
             let message = "Model failed to load: \(error.localizedDescription)"
             modelLoadError = message
             status = .failed(message)
+            log(message)
             return .failed
         }
     }

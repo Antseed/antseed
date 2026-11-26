@@ -96,3 +96,42 @@ final class LocalModelLoadTests: XCTestCase {
         XCTAssertEqual(error.localizedDescription, "This model's maximum context length is 32767 tokens. However, your messages resulted in 40000 tokens.")
     }
 }
+
+final class FileStampTests: XCTestCase {
+    private func snapshot() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: directory.appendingPathComponent("config.json"))
+        try Data(repeating: 7, count: 4096).write(to: directory.appendingPathComponent("sub/model.safetensors"))
+        return directory
+    }
+
+    func testUnchangedFilesPassTheRecheck() throws {
+        let directory = try snapshot()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (digest, stamps) = try LocalModel.filesDigestAndStamps(of: directory)
+        XCTAssertEqual(digest, try LocalModel.filesDigest(of: directory))
+        XCTAssertEqual(Set(stamps.keys), ["config.json", "sub/model.safetensors"])
+        XCTAssertTrue(LocalModel.unchanged(stamps, in: directory))
+    }
+
+    func testAFileRewrittenAfterTheHashFailsTheRecheck() throws {
+        let directory = try snapshot()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, stamps) = try LocalModel.filesDigestAndStamps(of: directory)
+        // Same size and content, written again: only the stamp tells.
+        try Data(repeating: 7, count: 4096).write(to: directory.appendingPathComponent("sub/model.safetensors"))
+        XCTAssertFalse(LocalModel.unchanged(stamps, in: directory))
+    }
+
+    func testAFileAddedOrRemovedAfterTheHashFailsTheRecheck() throws {
+        let directory = try snapshot()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (_, stamps) = try LocalModel.filesDigestAndStamps(of: directory)
+        try Data("x".utf8).write(to: directory.appendingPathComponent("extra.safetensors"))
+        XCTAssertFalse(LocalModel.unchanged(stamps, in: directory))
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("extra.safetensors"))
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("config.json"))
+        XCTAssertFalse(LocalModel.unchanged(stamps, in: directory))
+    }
+}
