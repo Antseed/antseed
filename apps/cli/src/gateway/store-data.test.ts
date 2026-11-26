@@ -375,3 +375,73 @@ test('last-used writes are throttled to once a minute and settings are cached un
     cleanup()
   }
 })
+
+/** A video job: a create, a poll that delivered the file, and spend on the delivery; plus unrelated traffic and ledger rows. */
+function seedVideoJob(store: GatewayStore, keyId: string, jobId: string, prefix: string, startedAt: number, spend: number[]): { create: string; delivery: string } {
+  const create = `${prefix}_create`
+  const delivery = `${prefix}_delivery`
+  store.startRequest({ tag: create, keyId, buyerIdentity: 'default', method: 'POST', path: '/api/v1/video/queue', model: 'm1', startedAt, endUser: null, video: { action: 'create', jobId } })
+  store.startRequest({ tag: delivery, keyId, buyerIdentity: 'default', method: 'POST', path: '/api/v1/video/retrieve', model: 'm1', startedAt: startedAt + 1, endUser: null, video: { action: 'poll', jobId } })
+  store.recordRequestOutcome(delivery, { videoDelivered: true })
+  spend.forEach((amount, index) => store.recordLedgerEntry({ kind: 'spend', keyId, buyerIdentity: 'default', amountUsdc: amount, externalRef: `${prefix}:${index}`, requestTag: delivery, createdAt: startedAt + 2 }))
+  return { create, delivery }
+}
+
+test('a video create shows the spend of its own delivery only, summed over every entry', () => {
+  const { dir, cleanup } = tempDir()
+  const store = new GatewayStore(dir)
+  try {
+    const { key } = store.createKey({ label: 'a', limits: NO_LIMITS, expiresAt: null })
+    const { key: other } = store.createKey({ label: 'b', limits: NO_LIMITS, expiresAt: null })
+    const job = seedVideoJob(store, key.id, 'job-1', 'gw_a', 1_000, [300_000, 30_000])
+    // Same job ID under another key, and a second job of the same key: neither is this create's charge.
+    seedVideoJob(store, other.id, 'job-1', 'gw_b', 2_000, [999_000])
+    seedVideoJob(store, key.id, 'job-2', 'gw_c', 3_000, [111_000])
+    // A create whose job never delivered has no charge.
+    store.startRequest({ tag: 'gw_pending', keyId: key.id, buyerIdentity: 'default', method: 'POST', path: '/api/v1/video/queue', model: 'm1', startedAt: 4_000, endUser: null, video: { action: 'create', jobId: 'job-3' } })
+
+    const charged = (tag: string) => store.listRequests({ keyId: key.id }).find((row) => row.tag === tag)!.video?.chargedUsdc ?? null
+    assert.equal(charged(job.create), 330_000)
+    assert.equal(charged('gw_c_create'), 111_000)
+    assert.equal(charged('gw_pending'), null)
+    assert.equal(store.getRequest(job.create)!.video?.chargedUsdc, 330_000, 'the detail read agrees with the list')
+    assert.equal(store.getRequest(job.create, [key.id])!.video?.chargedUsdc, 330_000, 'also when limited to a key')
+    assert.equal(store.getRequest(job.delivery)!.spentUsdc, 330_000)
+    assert.equal(store.getRequest(job.delivery)!.video?.action, 'delivery')
+  } finally {
+    store.close()
+    cleanup()
+  }
+})
+
+test('reading one request never scans the whole ledger, with or without statistics', () => {
+  const { dir, cleanup } = tempDir()
+  const store = new GatewayStore(dir)
+  try {
+    const { key } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+    for (let index = 0; index < 400; index += 1) {
+      start(store, `gw_${index}`, key.id, 10_000 + index)
+      store.recordLedgerEntry({ kind: 'spend', keyId: key.id, buyerIdentity: 'default', amountUsdc: 1_000, externalRef: `r${index}`, requestTag: `gw_${index}`, createdAt: 10_000 + index })
+    }
+    seedVideoJob(store, key.id, 'job-1', 'gw_v', 20_000, [330_000])
+
+    // The statement a detail read prepares, taken from the store itself so the test follows the real SQL.
+    const prepared: string[] = []
+    const database = store.database
+    const prepare = database.prepare.bind(database)
+    database.prepare = ((sql: string) => { prepared.push(sql); return prepare(sql) }) as typeof database.prepare
+    store.getRequest('gw_v_create', [key.id])
+    database.prepare = prepare as typeof database.prepare
+    const sql = prepared.find((statement) => statement.includes('WITH page AS'))
+    assert.ok(sql, 'a detail read prepares the request page statement')
+
+    const plan = (): string[] => (database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(JSON.stringify([key.id]), 'gw_v_create', 1) as Array<{ detail: string }>).map((step) => step.detail)
+    const scansLedger = (steps: string[]): string[] => steps.filter((step) => /^SCAN l\b/.test(step) || /^SCAN ledger_entries\b/.test(step))
+    assert.deepEqual(scansLedger(plan()), [], `no step walks every ledger entry: ${plan().join(' | ')}`)
+    database.exec('ANALYZE')
+    assert.deepEqual(scansLedger(plan()), [], `nor does it after ANALYZE: ${plan().join(' | ')}`)
+  } finally {
+    store.close()
+    cleanup()
+  }
+})

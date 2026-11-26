@@ -1,0 +1,1182 @@
+{
+ "crowd": {
+  "incomplete": false,
+  "votes": [
+   {
+    "growth": 0,
+    "long": {
+     "reading": {
+      "billedOutputTokens": 400,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "Invoice BL-94185-KE for 9,413.40 dollars is still open, budget code 85-3… (1199 characters, sha256 4d8d47cadb5a5d10)"
+     },
+     "reply": {"count":400,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<crowd seller 1: echo round 1 long #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<crowd seller 1: echo round 1 long #1>","sellerPeerId":"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"},
+       "requestId": "<crowd seller 1: echo round 1 long #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<crowd seller 1: echo round 1 long #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (1385 characters, sha256 96797d8f4f82d132)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<crowd seller 1: echo round 1 long #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (1372 characters, sha256 dbb6a48c245fb8f4)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    },
+    "offset": 0,
+    "peerId": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "reasoning": 0,
+    "sentHere": true,
+    "short": {
+     "reading": {
+      "billedOutputTokens": 137,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "The reference is HB-15510-WZ and I paid 6,277.27 dollars on 27 November … (411 characters, sha256 43dc311ba7a0d356)"
+     },
+     "reply": {"count":137,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<crowd seller 1: echo round 1 short #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<crowd seller 1: echo round 1 short #1>","sellerPeerId":"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"},
+       "requestId": "<crowd seller 1: echo round 1 short #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<crowd seller 1: echo round 1 short #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (597 characters, sha256 c330a601cbced6b7)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<crowd seller 1: echo round 1 short #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (584 characters, sha256 51fd98667a057ceb)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    }
+   },
+   {
+    "growth": 0,
+    "long": {
+     "reading": {
+      "billedOutputTokens": 400,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "Invoice BL-94185-KE for 9,413.40 dollars is still open, budget code 85-3… (1199 characters, sha256 4d8d47cadb5a5d10)"
+     },
+     "reply": {"count":400,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<crowd seller 2: echo round 1 long #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<crowd seller 2: echo round 1 long #1>","sellerPeerId":"c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"},
+       "requestId": "<crowd seller 2: echo round 1 long #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<crowd seller 2: echo round 1 long #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (1385 characters, sha256 96797d8f4f82d132)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<crowd seller 2: echo round 1 long #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (1372 characters, sha256 dbb6a48c245fb8f4)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    },
+    "offset": 0,
+    "peerId": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "reasoning": 0,
+    "sentHere": true,
+    "short": {
+     "reading": {
+      "billedOutputTokens": 137,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "The reference is HB-15510-WZ and I paid 6,277.27 dollars on 27 November … (411 characters, sha256 43dc311ba7a0d356)"
+     },
+     "reply": {"count":137,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<crowd seller 2: echo round 1 short #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<crowd seller 2: echo round 1 short #1>","sellerPeerId":"c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"},
+       "requestId": "<crowd seller 2: echo round 1 short #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<crowd seller 2: echo round 1 short #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (597 characters, sha256 c330a601cbced6b7)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<crowd seller 2: echo round 1 short #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (584 characters, sha256 51fd98667a057ceb)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    }
+   },
+   {
+    "growth": 0,
+    "long": {
+     "reading": {
+      "billedOutputTokens": 400,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "Invoice BL-94185-KE for 9,413.40 dollars is still open, budget code 85-3… (1199 characters, sha256 4d8d47cadb5a5d10)"
+     },
+     "reply": {"count":400,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<crowd seller 3: echo round 1 long #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<crowd seller 3: echo round 1 long #1>","sellerPeerId":"d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"},
+       "requestId": "<crowd seller 3: echo round 1 long #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<crowd seller 3: echo round 1 long #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (1385 characters, sha256 96797d8f4f82d132)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<crowd seller 3: echo round 1 long #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (1372 characters, sha256 dbb6a48c245fb8f4)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    },
+    "offset": 0,
+    "peerId": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "reasoning": 0,
+    "sentHere": true,
+    "short": {
+     "reading": {
+      "billedOutputTokens": 137,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "The reference is HB-15510-WZ and I paid 6,277.27 dollars on 27 November … (411 characters, sha256 43dc311ba7a0d356)"
+     },
+     "reply": {"count":137,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<crowd seller 3: echo round 1 short #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<crowd seller 3: echo round 1 short #1>","sellerPeerId":"d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"},
+       "requestId": "<crowd seller 3: echo round 1 short #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<crowd seller 3: echo round 1 short #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (597 characters, sha256 c330a601cbced6b7)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<crowd seller 3: echo round 1 short #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (584 characters, sha256 51fd98667a057ceb)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    }
+   }
+  ]
+ },
+ "fixedAmount": {"outcome":"inconclusive","reason":"the amount above the floor is not the same on every reply"},
+ "flag": "growth",
+ "growth": {"outcome":"flag","reason":"the seller's output grows 66 or more tokens faster than the model's from a short to a long reply, in every round, twice"},
+ "mode": "plain",
+ "offset": {"fixed":false,"median":68.5},
+ "outcome": "flag",
+ "precheckMatch": true,
+ "reason": "the seller's output grows 66 or more tokens faster than the model's from a short to a long reply, in every round, twice",
+ "reference": [
+  {
+   "long": {"count":400,"text":"Invoice BL-94185-KE for 9,413.40 dollars is still open, budget code 85-3… (1199 characters, sha256 4d8d47cadb5a5d10)"},
+   "short": {"count":137,"text":"The reference is HB-15510-WZ and I paid 6,277.27 dollars on 27 November … (411 characters, sha256 43dc311ba7a0d356)"}
+  },
+  {
+   "long": {"count":518,"text":"The Nisutor order KGC145306 ships from warehouse 787 on 9 January 2025. … (1554 characters, sha256 8ab7f2891330352c)"},
+   "short": {"count":133,"text":"The meeting moved to room 1780 at 12:21, and Oluwaseun Adebayo will brin… (399 characters, sha256 3df77d68a7d61784)"}
+  },
+  {
+   "long": {"count":790,"text":"Invoice UU-96132-VP for 4,819.39 € is still open, budget code 98-2312-FR… (2370 characters, sha256 417263ba13314656)"},
+   "short": {"count":146,"text":"The Nimakosunat order PQC225734 ships from warehouse 629 on 8 June 2025.… (436 characters, sha256 b06078e203eaf2a5)"}
+  }
+ ],
+ "referenceProvider": "maker",
+ "referenceReasoning": [0,0,0],
+ "rounds": [
+  {
+   "growths": [66,66],
+   "long": [
+    {
+     "reading": {
+      "billedOutputTokens": 500,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "Invoice BL-94185-KE for 9,413.40 dollars is still open, budget code 85-3… (1199 characters, sha256 4d8d47cadb5a5d10)"
+     },
+     "reply": {"count":500,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<seller: echo round 1 long #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 1 long #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 1 long #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: echo round 1 long #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (1418 characters, sha256 c1398d186cf9e3a8)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: echo round 1 long #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (1372 characters, sha256 7b2173c0fb834a37)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    },
+    {
+     "reading": {
+      "billedOutputTokens": 500,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "Invoice BL-94185-KE for 9,413.40 dollars is still open, budget code 85-3… (1199 characters, sha256 4d8d47cadb5a5d10)"
+     },
+     "reply": {"count":500,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<seller: echo round 1 long #2>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 1 long #2>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 1 long #2>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: echo round 1 long #2>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (1418 characters, sha256 c1398d186cf9e3a8)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: echo round 1 long #2>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (1372 characters, sha256 7b2173c0fb834a37)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    }
+   ],
+   "short": [
+    {
+     "reading": {
+      "billedOutputTokens": 171,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "The reference is HB-15510-WZ and I paid 6,277.27 dollars on 27 November … (411 characters, sha256 43dc311ba7a0d356)"
+     },
+     "reply": {"count":171,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<seller: echo round 1 short #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 1 short #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 1 short #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: echo round 1 short #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (630 characters, sha256 e67d240a1a15e470)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: echo round 1 short #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (584 characters, sha256 eec3bff839d0cb93)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    },
+    {
+     "reading": {
+      "billedOutputTokens": 171,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "The reference is HB-15510-WZ and I paid 6,277.27 dollars on 27 November … (411 characters, sha256 43dc311ba7a0d356)"
+     },
+     "reply": {"count":171,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<seller: echo round 1 short #2>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 1 short #2>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 1 short #2>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: echo round 1 short #2>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (630 characters, sha256 e67d240a1a15e470)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: echo round 1 short #2>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (584 characters, sha256 eec3bff839d0cb93)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    }
+   ],
+   "tolerance": 2,
+   "verdict": "over"
+  },
+  {
+   "growths": [97,97],
+   "long": [
+    {
+     "reading": {
+      "billedOutputTokens": 648,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "The Nisutor order KGC145306 ships from warehouse 787 on 9 January 2025. … (1554 characters, sha256 8ab7f2891330352c)"
+     },
+     "reply": {"count":648,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<seller: echo round 2 long #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 2 long #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 2 long #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: echo round 2 long #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (1773 characters, sha256 1ec380baaee5b558)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: echo round 2 long #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (1727 characters, sha256 a9e7586acacb266c)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    },
+    {
+     "reading": {
+      "billedOutputTokens": 648,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "The Nisutor order KGC145306 ships from warehouse 787 on 9 January 2025. … (1554 characters, sha256 8ab7f2891330352c)"
+     },
+     "reply": {"count":648,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<seller: echo round 2 long #2>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 2 long #2>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 2 long #2>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: echo round 2 long #2>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (1773 characters, sha256 1ec380baaee5b558)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: echo round 2 long #2>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (1727 characters, sha256 a9e7586acacb266c)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    }
+   ],
+   "short": [
+    {
+     "reading": {
+      "billedOutputTokens": 166,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "The meeting moved to room 1780 at 12:21, and Oluwaseun Adebayo will brin… (399 characters, sha256 3df77d68a7d61784)"
+     },
+     "reply": {"count":166,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<seller: echo round 2 short #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 2 short #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 2 short #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: echo round 2 short #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (618 characters, sha256 b2df2e946709b6af)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: echo round 2 short #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (572 characters, sha256 60e88d3a2b926055)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    },
+    {
+     "reading": {
+      "billedOutputTokens": 166,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "The meeting moved to room 1780 at 12:21, and Oluwaseun Adebayo will brin… (399 characters, sha256 3df77d68a7d61784)"
+     },
+     "reply": {"count":166,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<seller: echo round 2 short #2>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 2 short #2>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 2 short #2>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: echo round 2 short #2>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (618 characters, sha256 b2df2e946709b6af)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: echo round 2 short #2>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (572 characters, sha256 60e88d3a2b926055)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    }
+   ],
+   "tolerance": 2,
+   "verdict": "over"
+  },
+  {
+   "growths": [161,161],
+   "long": [
+    {
+     "reading": {
+      "billedOutputTokens": 988,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "Invoice UU-96132-VP for 4,819.39 € is still open, budget code 98-2312-FR… (2370 characters, sha256 417263ba13314656)"
+     },
+     "reply": {"count":988,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<seller: echo round 3 long #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 3 long #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 3 long #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: echo round 3 long #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (2589 characters, sha256 4fa2d696803d8887)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: echo round 3 long #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (2543 characters, sha256 17f851187b5385d8)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    },
+    {
+     "reading": {
+      "billedOutputTokens": 988,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "Invoice UU-96132-VP for 4,819.39 € is still open, budget code 98-2312-FR… (2370 characters, sha256 417263ba13314656)"
+     },
+     "reply": {"count":988,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<seller: echo round 3 long #2>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 3 long #2>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 3 long #2>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: echo round 3 long #2>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (2589 characters, sha256 4fa2d696803d8887)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: echo round 3 long #2>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (2543 characters, sha256 17f851187b5385d8)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    }
+   ],
+   "short": [
+    {
+     "reading": {
+      "billedOutputTokens": 183,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "The Nimakosunat order PQC225734 ships from warehouse 629 on 8 June 2025.… (436 characters, sha256 b06078e203eaf2a5)"
+     },
+     "reply": {"count":183,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<seller: echo round 3 short #1>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 3 short #1>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 3 short #1>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: echo round 3 short #1>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (655 characters, sha256 4561a4925d4cab18)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: echo round 3 short #1>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (609 characters, sha256 f42baf010f0d713c)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    },
+    {
+     "reading": {
+      "billedOutputTokens": 183,
+      "cap": 2048,
+      "estimated": false,
+      "finished": true,
+      "oneAnswer": true,
+      "reasoningMarker": false,
+      "reasoningTokens": null,
+      "shape": "chat",
+      "stops": false,
+      "text": "The Nimakosunat order PQC225734 ships from warehouse 629 on 8 June 2025.… (436 characters, sha256 b06078e203eaf2a5)"
+     },
+     "reply": {"count":183,"reasoning":0,"unusable":null},
+     "request": {
+      "attemptCosts": [
+       {
+        "estimatedCostUsd": 0.00071,
+        "inputTokens": 260,
+        "inputUsdPerMillion": 1,
+        "outputTokens": 240,
+        "outputUsdPerMillion": 2,
+        "provider": null,
+        "service": null,
+        "tokenSource": null,
+        "totalTokens": 500
+       }
+      ],
+      "failureReason": null,
+      "requestIds": ["<seller: echo round 3 short #2>"],
+      "responseAuth": {
+       "failureReason": null,
+       "record": {"advertisedService":"deepseek-v4-pro","requestId":"<seller: echo round 3 short #2>","sellerPeerId":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+       "requestId": "<seller: echo round 3 short #2>",
+       "signedPreimages": {
+        "encoding": "antseed-http-codec-v1",
+        "hashAlgorithm": "keccak256",
+        "requestBase64": {
+         "requestId": "<seller: echo round 3 short #2>",
+         "method": "POST",
+         "path": "/v1/chat/completions",
+         "headers": {},
+         "body": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Repeat … (655 characters, sha256 4561a4925d4cab18)"
+        },
+        "requestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+        "responseAuthSigningBase64": "AA==",
+        "responseBase64": {
+         "requestId": "<seller: echo round 3 short #2>",
+         "statusCode": 200,
+         "headers": {},
+         "body": "{\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"ass… (609 characters, sha256 f42baf010f0d713c)"
+        },
+        "responseHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+        "signatureEncoding": "antseed-response-auth-signing-v1"
+       },
+       "status": "verified"
+      },
+      "statusCode": 200
+     }
+    }
+   ],
+   "tolerance": 2,
+   "verdict": "over"
+  }
+ ],
+ "rule": {
+  "askAgain": {"waitMs":5000},
+  "growthFloor": 20,
+  "growthShare": 0.1,
+  "id": "output-echo-v1",
+  "longPassages": [3,4,6],
+  "maxTokens": 2048,
+  "minBackers": 2,
+  "minGap": 150,
+  "minGapRatio": 1.3333333333333333,
+  "minOthers": 3,
+  "minSpread": 2,
+  "offsetCounts": true,
+  "offsetFloor": 20,
+  "referenceAsks": 2,
+  "rounds": 3,
+  "spreadFactor": 3,
+  "textTries": 3,
+  "tolerance": 2,
+  "visibleCounts": true
+ }
+}

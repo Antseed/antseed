@@ -1461,18 +1461,15 @@ export class GatewayStore {
           SUM(l.cached_input_tokens) AS cached_tokens, SUM(l.output_tokens) AS out_tokens,
           -SUM(CASE WHEN l.routing_fee = 1 THEN l.amount_usdc END) AS routing_spent, SUM(l.routing_fee = 0) AS inference_entries
         FROM ledger_entries l WHERE l.kind = 'spend' AND l.request_tag IN (SELECT tag FROM page) GROUP BY l.request_tag
-      ),
-      video_charge AS (
-        SELECT page.tag, -SUM(l.amount_usdc) AS charged
-        FROM page
-        JOIN gateway_requests d ON d.video_job_id = page.video_job_id AND d.key_id = page.key_id AND d.video_action = 'delivery'
-        JOIN ledger_entries l ON l.kind = 'spend' AND l.request_tag = d.tag
-        WHERE page.video_action = 'create' AND page.video_job_id IS NOT NULL
-        GROUP BY page.tag
       )
       SELECT page.*, spend.spent, spend.routing_spent, COALESCE(spend.inference_entries, 0) AS inference_entries, COALESCE(spend.in_tokens, 0) AS in_tokens, COALESCE(spend.cached_tokens, 0) AS cached_tokens,
-        COALESCE(spend.out_tokens, 0) AS out_tokens, video_charge.charged AS video_charged
-      FROM page LEFT JOIN spend ON spend.tag = page.tag LEFT JOIN video_charge ON video_charge.tag = page.tag
+        COALESCE(spend.out_tokens, 0) AS out_tokens,
+        (SELECT -SUM(l.amount_usdc)
+          FROM gateway_requests d
+          JOIN ledger_entries l ON l.kind = 'spend' AND l.request_tag = d.tag
+          WHERE page.video_action = 'create' AND page.video_job_id IS NOT NULL
+            AND d.video_job_id = page.video_job_id AND d.key_id = page.key_id AND d.video_action = 'delivery') AS video_charged
+      FROM page LEFT JOIN spend ON spend.tag = page.tag
       ORDER BY page.started_at DESC, page.tag DESC
     `).all(...params, limit) as Array<Record<string, unknown>>
     return rows.map((row) => {

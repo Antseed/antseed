@@ -1,0 +1,90 @@
+{
+  "release": "004-legacy-emissions-lock",
+  "status": "active",
+  "sourceCommit": "311583a62574c575764144988d36832bd8c27f6b",
+  "transactions": [
+    {
+      "action": "deploy AntseedLegacyEmissionsRegistry",
+      "hash": "0xa2224378ba88cd36d61f8974a3e30f85b35a1eecee6b8df90c8f28f7aebea24e",
+      "blockNumber": 62464035,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "setRegistry(address)",
+      "hash": "0xd421610f82561e299ebaaf65e8335810f77fd9d5bdebf440b66a06f10fc9f60f",
+      "blockNumber": 62464044,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xf13be52c4a3afc6ae29536f073588d01a0564088"
+    },
+    {
+      "action": "renounceOwnership()",
+      "hash": "0xcae877e53ff71d8fc93eecfed50e7eb2ffe78179b63c43c75bcac8c9e3faae42",
+      "blockNumber": 62464056,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x0bc8c5751d640d619cdb64ddd3d93db24a5da484"
+    },
+    {
+      "action": "renounceOwnership()",
+      "hash": "0x3b79fdd4f1a86230ea291344656ad6e5d52dc442830c6deb2c1bb0a698a4bc16",
+      "blockNumber": 62464062,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xa065c0de80dbd3d824f7b584e231b76b9fefb261"
+    },
+    {
+      "action": "renounceOwnership()",
+      "hash": "0x8dbefe497259053f0d8d25a594bf3931a7ba174ef65f6d0db529625fa0c2513b",
+      "blockNumber": 62464068,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xf13be52c4a3afc6ae29536f073588d01a0564088"
+    },
+    {
+      "action": "renounceOwnership()",
+      "hash": "0x9e5af7ed1881d1f1bf1235934e19a3db38729e5010737aec6dcf0b2495e28044",
+      "blockNumber": 62464073,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x36877fba8fa333aa46a1c57b66d132e4995c86b5"
+    },
+    {
+      "action": "renounceOwnership()",
+      "hash": "0xcfa131c120fef859e107c31ab4b79a2a3c47109b53e15275b71b455ce694ca6e",
+      "blockNumber": 62464079,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x4d0fc3c0bbb5233af6c4ce33223e5330c34db9ab"
+    }
+  ],
+  "verificationConfiguration": {
+    "legacyEmissionsV2": "0xF13bE52c4A3afC6AE29536f073588d01A0564088",
+    "legacyEmissionsRegistry": "0x1fdb8Ac64A882FF87Ae5d69D4D6699828304f7f7",
+    "registryChannels": "0x0000000000000000000000000000000000000000",
+    "escrow": "0x4d0fC3C0BBb5233Af6c4Ce33223e5330c34db9ab",
+    "deposits": "0x0F7a3a8f4Da01637d1202bb5443fcF7F88F99fD2",
+    "sellerRewardsPool": "0xA065C0dE80dbd3d824F7b584E231b76b9fefB261",
+    "sellerUnlockPolicy": "0x0BC8c5751D640d619cDB64DdD3D93Db24A5dA484",
+    "legacyEmissionsV2Owner": "0x0000000000000000000000000000000000000000",
+    "sellerRewardsPoolOwner": "0x0000000000000000000000000000000000000000",
+    "sellerUnlockPolicyOwner": "0x0000000000000000000000000000000000000000",
+    "legacyEmissionsV1": "0x36877fBa8Fa333aa46a1c57b66D132E4995C86b5",
+    "legacyEmissionsV1Owner": "0x0000000000000000000000000000000000000000",
+    "escrowOwner": "0x0000000000000000000000000000000000000000"
+  },
+  "contracts": {
+    "legacyEmissionsRegistry": {
+      "address": "0x1fdb8ac64a882ff87ae5d69d4d6699828304f7f7",
+      "deploymentBlock": 62464035,
+      "transactionHash": "0xa2224378ba88cd36d61f8974a3e30f85b35a1eecee6b8df90c8f28f7aebea24e",
+      "runtimeCodeHash": "0xe801b80cd385666665624dcdcdc0eb8ec9d834f83b21e6229b180d141aeea3c7",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0x4d0fC3C0BBb5233Af6c4Ce33223e5330c34db9ab",
+        "0x0F7a3a8f4Da01637d1202bb5443fcF7F88F99fD2"
+      ],
+      "owner": null
+    }
+  },
+  "$schema": "../../schema.json",
+  "network": "base-mainnet",
+  "chainId": 8453
+}

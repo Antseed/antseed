@@ -153,7 +153,9 @@ Request:
   Messages and OpenAI Responses requests are converted with the `@antseed/api-adapter`
   request adapters; the buyer still sends the original request to the chosen seller.
   `model`, `stream` and `stream_options` are omitted. Content with no Chat Completions
-  equivalent (Anthropic thinking and document blocks, cache markers) is dropped.
+  equivalent (Anthropic thinking and document blocks, cache markers) is dropped. A
+  reasoning effort the request names is carried as `reasoning_effort`, whichever
+  protocol the request came in.
 - `cost_quality_tradeoff` is the `irp-suggest` router option: an integer from `0`
   (best quality regardless of price) to `10` (cheapest acceptable candidate). It is
   omitted when the buyer has not chosen one, and the router uses IRP's default, `5`.

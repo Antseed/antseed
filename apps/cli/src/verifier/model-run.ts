@@ -3,23 +3,23 @@ import { readFile, readdir } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
+  KBF_COVERAGE_RULE,
   KBF_LOW_COVERAGE_RETRIES,
   KBF_PROMPT_VARIANT_IDS,
   KBF_OPTIONAL_SAMPLING_FIELDS,
   buildKbfChatRequestBody,
   isKbfThinkingSuppressionRejection,
-  kbfTargetThinkingSuppression,
   type KbfThinkingSuppression,
   canonicalHashBytes32,
   isKbfSamplingFieldRejection,
   computeMatchVector,
   hasMissingKbfAnswers,
-  parseKbfAnswers,
   queryProfileHash,
   isKbfTokenLimitFinishReason,
   kbfResponseFinishReason,
   reportedReasoningTokens,
-  stripKbfThinkBlocks,
+  billedOutputTokensOf,
+  reasoningShownInReply,
   verifyKbf,
   type FingerprintStats,
   type KbfProbe,
@@ -28,20 +28,32 @@ import {
 } from '@antseed/fingerprints'
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
+  decodeHttpRequest,
+  decodeHttpResponse,
   trustScore,
   type PeerInfo,
   type StoredResponseAuth,
   type TokenPricingUsdPerMillion,
 } from '@antseed/node'
 import { parseRunningBuyerSettings, type RunningBuyerSettings } from './buyer-settings.js'
-import { auditedModels, findAuditedModelKey } from './audited-models.js'
+import { auditedServiceNames } from './audited-models.js'
+import {
+  ALL_TESTS_FORMAT, QUESTIONS_CHECK, earliestAuditorTime, inactiveChecks, noRecordEntries, readingsOfEvidence, recordsOf, withoutOrphans,
+  type AuditCheckId, type InactiveTest, type CheckRecords, type CheckScreens, type CheckSlot, type CheckSummaries, type ConfirmationIdentity, type ListedCheck, type RecordCheck,
+  type StoredCheckRecords,
+} from './audit-checks.js'
+import { AuditNotStarted, type MethodScreen, type SellerAudit, type SellerAuditStart } from './audit-method.js'
+import { asSuppression, needsSellerDiscovery, referenceDiscoveryStrategy, requestCarries, resolveThinking, type ThinkingSetting } from './audit-thinking.js'
+import { settleAuditVerdict } from './close-call.js'
 import { parsePersistedPeers } from '../proxy/buyer-proxy.js'
 import { auditPriceRejection, type AuditPriceCap } from './audit-price.js'
 import { kbfAuditBatches } from './kbf-batching.js'
 import {
   addAuditCostSummaries,
+  costOfRequests,
   deriveProxyAuditId,
   parseProxyAuditExchangeCost,
+  requestCountOf,
   summarizeAuditExchangeCosts,
   writeProxyAuditEvidence,
   writeProxyAuditSkipEvidence,
@@ -56,21 +68,33 @@ import {
 import {
   THINKING_DISCOVERY_PROBES,
   THINKING_DISCOVERY_TIMEOUT_MS,
+  THINKING_REFERENCE_FIRST_RULE,
+  THINKING_TABLE_RULE,
   ThinkingDiscoveryError,
+  chatStrategyForLevel,
+  checkThinkingSetting,
   discoverThinkingSuppression,
-  thinkingStrategyRequest,
   type ThinkingDiscoveryProbe,
+  type ThinkingStrategyRequest,
 } from './thinking-suppression.js'
+import { auditThinkingForBank } from './audit-thinking-table.js'
+import { readOutput } from './methods/shared/output-usage.js'
 import type { ResponseAuthReader } from './response-auth-reader.js'
+import type { TokenizerPrecheckSeller } from './methods/tokens/tokenizer-precheck.js'
+import { METHODS } from './methods/index.js'
 import { advertisedServices, findAdvertisedService } from './service-discovery.js'
 import { mapWithAdaptiveConcurrency, type AuditTaskLimiter } from './audit-concurrency.js'
-import { writeJsonAtomic } from './atomic-files.js'
+import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import {
   sanitizeOutcomeSummary,
   withBatchCounts,
   type VerificationOutcomeReasonV1,
 } from './outcome-reason.js'
-import { asError, sleep } from './utils.js'
+import { asError, peerComparisonKey, sleep } from './utils.js'
+import { extractCompletionText, scoreQuestionBatch } from './question-scoring.js'
+
+// Kept at their old path for the readers that import them from here.
+export { extractCompletionText, scoreQuestionBatch }
 
 const PROBE_REQUEST_ATTEMPTS = 5
 const PROBE_RETRY_BASE_DELAY_MS = 1_000
@@ -115,6 +139,7 @@ class LazyAuditDeadline {
   private inFlight = 0
   private idleLeftMs: number
   private idleRunningSince = 0
+  private maxStartedAt = 0
 
   constructor(readonly idleMs: number, readonly maxMs: number) {
     this.idleLeftMs = idleMs
@@ -123,7 +148,10 @@ class LazyAuditDeadline {
   /** A batch request goes out to the seller: the idle clock runs while any request is out. */
   start(): AbortSignal {
     if (this.controller.signal.aborted) return this.controller.signal
-    if (!this.maxTimer) this.maxTimer = setTimeout(() => this.abort('max'), this.maxMs)
+    if (!this.maxTimer) {
+      this.maxStartedAt = Date.now()
+      this.maxTimer = setTimeout(() => this.abort('max'), this.maxMs)
+    }
     this.inFlight += 1
     if (this.inFlight === 1) this.runIdle(this.idleLeftMs)
     return this.controller.signal
@@ -143,6 +171,15 @@ class LazyAuditDeadline {
       clearTimeout(this.idleTimer)
       this.idleTimer = null
     }
+  }
+
+  /**
+   * A signal for optional work (the echo check's fixed amount alone): it fires with the audit's, or once only
+   * `reserveMs` of the audit's total time is left, so that the questions keep it.
+   */
+  spare(reserveMs: number): AbortSignal {
+    const left = this.maxTimer ? this.maxMs - (Date.now() - this.maxStartedAt) : this.maxMs
+    return AbortSignal.any([this.controller.signal, AbortSignal.timeout(Math.max(0, left - reserveMs))])
   }
 
   /** Why the audit stopped, for its outcome reason. */
@@ -187,10 +224,19 @@ export interface BuyerProxySnapshot {
   settings?: RunningBuyerSettings | null
 }
 
-export interface ProxyVerificationContext {
+/**
+ * What a seller's audit runs in. Each test's own screen for the model and run is under its slot, a member of
+ * `CheckScreens`, where each is described; a slot is absent when its test does not run.
+ */
+export interface ProxyVerificationContext extends Partial<CheckScreens> {
   proxy: BuyerProxySnapshot
   evidenceDir: string
   checkpointRootDir?: string
+  /**
+   * A side file a test's screen wrote beside the model's audits this run (`MethodEnv.report`), as written; null when
+   * there is none. Without it the file is read from `checkpointRootDir`.
+   */
+  runFile?: (name: string) => Promise<unknown>
   requestTimeoutMs: number
   /** How long a seller audit waits for its next answered batch before it gives up. */
   auditTimeoutMs: number
@@ -235,16 +281,25 @@ export interface ModelVerificationResumeInput {
   reservationAuditId: string
   parentEvidenceHash: string
   exchanges: ProxyAuditEvidenceExchangeV1[]
+  /** The test records an earlier attempt of this audit finished: they are carried, never asked again. */
+  records?: StoredCheckRecords
 }
 
+/**
+ * A running audit's state on disk, so an interrupted audit resumes without asking anything twice. Version 2 also
+ * holds the finished test records; a version 1 checkpoint (written before every test ran in one audit) is not
+ * resumed: its audit restarts clean.
+ */
 export interface ModelAuditCheckpointV1 {
-  version: 1
+  version: 2
   kind: 'antseed-verifier-audit-checkpoint'
   auditId: string
   parentAuditId: string | null
   reservationAuditId?: string
   /** Set on checkpoints of a close-call extension set, which a resume never repairs as a first check. */
   extension?: true
+  /** The report a confirmation answers: a resume keeps to it. */
+  confirming?: ConfirmationIdentity
   runId: string
   epoch: string
   model: string
@@ -254,16 +309,56 @@ export interface ModelAuditCheckpointV1 {
   queryProfileHash: string
   probeIds: string[]
   exchanges: ProxyAuditEvidenceExchangeV1[]
+  /** The tests this audit finished so far. */
+  records: StoredCheckRecords
   updatedAt: string
 }
 
-export interface ModelVerificationTargetResult {
+/**
+ * One seller's result in an audit's summary. Each test's summary is under its slot, a member of `CheckSummaries`,
+ * where each is described; a slot is absent when its test did not run.
+ */
+export interface ModelVerificationTargetResult extends Partial<CheckSummaries> {
   peerId: string
   displayName: string | null
   agentId: string | null
   service: string
   status: 'SAME' | 'DIFF' | 'UNDETERMINED'
   outcomeReason?: VerificationOutcomeReasonV1 | null
+  /**
+   * Unix seconds of the earliest request of this set on the auditor's own clock (`earliestAuditorTime`); null when none
+   * has a time. The planner reads it for "fresh"; absent on summaries written before it, which are never fresh.
+   */
+  firstRequestAt?: number | null
+  /**
+   * The questions' own verdict, after any close call (`extension-round.ts`). `status` is the audit's verdict over
+   * every test (`settleAuditVerdict`): DIFF when any test flagged, whatever the questions said.
+   */
+  questionsStatus?: 'SAME' | 'DIFF' | 'UNDETERMINED'
+  /** The questions' own outcome reason; `outcomeReason` is the audit's (an undecided confirmation's, for one). */
+  questionsOutcomeReason?: VerificationOutcomeReasonV1 | null
+  /** The tests this audit repeats for another auditor's waiting DIFF (`confirming`); absent on a first look. */
+  confirming?: AuditCheckId[]
+  /** The chain time of the report it confirms: with `confirming`, which report this is. */
+  confirmingReportedAt?: number
+  /**
+   * The tests that are not active for the model in this audit's run, with why (`inactiveChecks` of its evidence): every
+   * other test must pass for a SAME. Absent on a summary written before it, whose verdict only the questions decide.
+   */
+  inactive?: InactiveTest[]
+  /**
+   * Set by the epoch submission on another report's own result it offers beside the seller's latest: submit sends it
+   * only when the confirmation decision sends it for the report waiting now.
+   */
+  offeredAsAlternate?: true
+  /** An undecided confirmation's cause when it was the auditor's own (`outcomeReason` says `confirmation_undecided`). */
+  undecidedCause?: VerificationOutcomeReasonV1 | null
+  /**
+   * A close call whose extra set will not be asked: in the run, beside a flag of another test (a flagged result never
+   * waits across runs); at submit, when its window closed or its extra questions were published. Its questions are
+   * undecided, and the closure is published (`questionsClosed`).
+   */
+  closeCallClosed?: { reason: string }
   /**
    * This audit answered another auditor's DIFF on this service waiting for this auditor's
    * confirmation. An UNDETERMINED from a seller failure is then audited again before it is
@@ -287,6 +382,8 @@ export interface ModelVerificationTargetResult {
    * `verifier.closeCallExtensions = 0`): those keep the single-look rule.
    */
   decisionRule?: 'kbf-extension-v1' | 'kbf-extension-v2'
+  /** The coverage rule this set's look was decided by, as its evidence names it; absent on older sets. */
+  coverageRule?: 'kbf-coverage-v1'
   /** This set's own KBF statistics, as in its evidence file. */
   stats?: FingerprintStats
   /** False when a successful batch lacked verified ResponseAuth (the set's verdict is then UNDETERMINED). */
@@ -311,6 +408,8 @@ export interface ModelVerificationTargetResult {
 export interface ModelVerificationExtensionV1 {
   rule: 'kbf-extension-v1' | 'kbf-extension-v2'
   auditId: string
+  /** The extra set's own earliest request (`earliestAuditorTime`, seconds); absent on sets pooled before it was kept. */
+  firstRequestAt?: number | null
   /** The extension set's own single-set verdict (never used on its own). */
   status: 'SAME' | 'DIFF' | 'UNDETERMINED'
   referenceId: string
@@ -339,6 +438,16 @@ export interface ModelVerificationFailure {
   status: 'FAILED'
   reason: string
   outcomeReason?: VerificationOutcomeReasonV1
+  /**
+   * Set when a test did not start the audit (`AuditNotStarted`), to that test's slot: the auditor's attempt, with nothing
+   * asked of the seller. Absent on a failure written before this mark, which is read by its text.
+   */
+  notStartedBy?: CheckSlot
+  /** A failed confirmation: the report it was for (`confirmationReportKey`), so the attempt counts for that report. */
+  confirming?: AuditCheckId[]
+  confirmingReportedAt?: number
+  /** Set by the epoch submission on a confirmation held to be audited again: a hold for its report, not a failure. */
+  confirmationHeld?: true
 }
 
 export interface ModelVerificationSkip {
@@ -354,6 +463,12 @@ export interface ModelVerificationSkip {
   auditId: string | null
   evidencePath: string | null
   evidenceHash: string | null
+  /** Set when a tokenizer pre-check ran before the seller was skipped: the requests it sent and what they cost. */
+  requestCount?: number
+  cost?: AuditCostSummaryV1
+  /** A skipped confirmation: the report it was for, so the attempt counts for that report. */
+  confirming?: AuditCheckId[]
+  confirmingReportedAt?: number
 }
 
 export interface VerificationTargetPolicy {
@@ -476,6 +591,30 @@ export function classifyVerificationTargetServices(
 }
 
 /**
+ * The model's sellers this run would audit, the crowd of the tests that ask a model's other sellers (the tokenizer
+ * pre-check and the echo check, `MethodEnv.sellers`): every peer the buyer sees that it
+ * would audit for the model under the model's own service names, whether or not this run audits it. So a retry,
+ * a confirmation, a `--peer` run, and a run in which most sellers are finished, held or judged by another auditor
+ * still have the model's other sellers to hold a wrong reference against. A peer the buyer would refuse (priced
+ * above the reference, under the reputation floor, without ResponseAuth) is left out: a request to it could
+ * only fail. One entry per peer.
+ */
+export function auditableSellers(
+  peers: readonly PeerInfo[],
+  services: readonly string[],
+  policy: VerificationTargetPolicy,
+): TokenizerPrecheckSeller[] {
+  const sellers = new Map<string, TokenizerPrecheckSeller>()
+  for (const peer of peers) {
+    const key = peerComparisonKey(peer.peerId)
+    if (sellers.has(key)) continue
+    const eligibility = classifyVerificationTargetServices(peer, services, policy)
+    if (eligibility.eligible) sellers.set(key, { peerId: peer.peerId, service: eligibility.service })
+  }
+  return [...sellers.values()]
+}
+
+/**
  * The seller's price for the model, as the buyer's router reads it: a provider's offer for the
  * service (or that provider's defaults) is final, so an invalid one is refused rather than replaced
  * by a cheaper or valid fallback, which would let the audit pick a seller the buyer never routes to.
@@ -552,8 +691,7 @@ function isValidOffer(offer: TokenPricingUsdPerMillion | undefined): offer is To
 
 /** Every name the audited model currently goes by (empty for a model that is not audited). */
 function currentServiceNames(model: string): string[] {
-  const key = findAuditedModelKey(model)
-  return key ? [key, ...(auditedModels()[key]!.serviceAliases ?? [])] : []
+  return auditedServiceNames(model)
 }
 
 function isFiniteNonNegative(value: number | undefined): value is number {
@@ -573,7 +711,26 @@ export async function verifyModelTarget(input: {
     model: string
   }
   extension?: boolean
+  /**
+   * Settled test records of an earlier attempt that this fresh audit carries without resuming its questions (a retry
+   * after a close call's extra set, or after its question set was retired): they are not asked again.
+   */
+  carried?: StoredCheckRecords
+  /**
+   * The audit answers another auditor's waiting DIFF, flagged by these checks (`same-check.ts`): a flag by any
+   * other check does not end it, so the checks that must confirm always run to their end.
+   */
+  confirming?: ConfirmationIdentity
+  /**
+   * This is the auditor's last attempt at the seller: a FLIPS reference that is not whole does not stop the audit, which
+   * runs with FLIPS at no result (`flipsReferenceDecision`), so the tests that decided stand.
+   */
+  lastAuditorAttempt?: boolean
 }): Promise<ModelVerificationTargetResult | ModelVerificationSkip> {
+  const confirmingIdentity = input.confirming
+    ? { checks: [...input.confirming.checks], ...(input.confirming.reportedAt !== undefined ? { reportedAt: input.confirming.reportedAt } : {}) }
+    : null
+  const confirmingEvidence = confirmingIdentity ? { confirming: confirmingIdentity } : {}
   const batches = kbfAuditBatches(input.reference.probes)
   const deadline = new LazyAuditDeadline(
     input.context.auditTimeoutMs,
@@ -605,110 +762,268 @@ export async function verifyModelTarget(input: {
     omit: input.resume?.exchanges.some((exchange) => exchange.omittedSamplingFields?.length) ?? false,
     omitThinking: input.resume?.exchanges.some((exchange) => exchange.omittedThinkingSuppression === true) ?? false,
   }
-  const discovery = pending.length > 0 && input.context.sellerThinking
-    ? await sellerThinkingFor(input.context, input.target, input.service, input.reference, sampling)
-    : null
-  const settings = sellerRequestSettings(input.context, input.reference, discovery?.record ?? null)
-  const sellerThinkingEvidence = discovery
-    ? { sellerThinking: discovery.fresh ? discovery.record : { ...discovery.record, reused: true as const } }
-    : {}
-  const discoveryCost = discovery?.fresh ? summarizeDiscoveryCosts(discovery.record.attempts) : null
-  let checkpointTail = Promise.resolve()
-  let checkpointFailure: Error | null = null
-  const persistCheckpoint = async (): Promise<void> => {
-    const snapshot = [...exchangeByBatch.values()].sort((left, right) => left.batchIndex - right.batchIndex)
-    const checkpoint: ModelAuditCheckpointV1 = {
-      version: 1,
-      kind: 'antseed-verifier-audit-checkpoint',
-      auditId,
-      parentAuditId: input.resume?.parentAuditId ?? null,
-      reservationAuditId: input.resume?.reservationAuditId ?? auditId,
-      ...(input.extension ? { extension: true as const } : {}),
-      runId: input.checkpointIdentity?.runId ?? '',
-      epoch: input.checkpointIdentity?.epoch ?? '',
-      model: input.checkpointIdentity?.model ?? input.reference.referenceModel,
-      targetPeerId: input.target.peerId,
-      service: input.service,
+  const target = {
+    peerId: input.target.peerId,
+    displayName: input.target.displayName ?? null,
+    agentId: input.target.onChainAgentId ? String(input.target.onChainAgentId) : null,
+    service: input.service,
+  }
+  const evidenceHead = (createdAt: number) => ({
+    version: 1 as const,
+    kind: 'antseed-buyer-proxy-kbf-audit' as const,
+    evidenceLevel: 'proxy-observation-with-verified-response-auth-no-payment-evidence' as const,
+    createdAt: new Date(createdAt).toISOString(),
+    buyerProxy: {
+      baseUrl: input.context.proxy.baseUrl,
+      statePath: basename(input.context.proxy.statePath),
+      pid: input.context.proxy.pid,
+    },
+    target,
+    reference: {
       referenceId: input.reference.referenceId,
+      referenceModel: input.reference.referenceModel,
       queryProfileHash: queryProfileHash(input.reference.queryProfile),
-      probeIds: input.reference.probes.map((probe) => probe.id),
-      exchanges: snapshot,
-      updatedAt: new Date().toISOString(),
+      queryProfile: input.reference.queryProfile,
+      statisticalPower: input.reference.statisticalPower,
+      statisticalPowerEvidence: input.reference.statisticalPowerEvidence as unknown as Record<string, unknown>,
+      selfTest: input.reference.selfTest,
+      ...(input.reference.calibration ? { calibration: input.reference.calibration } : {}),
+      probes: input.reference.probes,
+    },
+  })
+  const resumeEvidence = input.resume ? {
+    resume: {
+      parentAuditId: input.resume.parentAuditId,
+      reservationAuditId: input.resume.reservationAuditId,
+      parentEvidenceHash: input.resume.parentEvidenceHash,
+      reusedBatchIndexes,
+    },
+  } : {}
+  // Every test of the audit runs, and none ends it (rule `all-tests-v1`, `audit-checks.ts` `verdictOf`): the
+  // pre-check, thinking discovery, the questions, then the cap check and the echo check. The questions come before
+  // the other output tests, so they keep their time and are not announced by requests a seller could recognise; a
+  // test that runs out of time has no result, which blocks nothing. An extra set of a close call asks questions only.
+  // Each test runs once in an audit's chain of attempts: a resume or a retry carries what an earlier attempt found
+  // (`resume.records`) and does not ask it again.
+  const runsTests = !input.extension
+  // A carried test judged against an earlier test that is asked now is asked again with it (`withoutOrphans`).
+  const carried: StoredCheckRecords = withoutOrphans(input.resume?.records ?? input.carried ?? {})
+  const sellerTarget = {
+    peerId: input.target.peerId,
+    service: input.service,
+    serviceAliases: [...input.reference.serviceAliases, ...currentServiceNames(input.reference.referenceModel)],
+  }
+  const auditStart: SellerAuditStart = {
+    seller: sellerTarget,
+    bank: input.reference,
+    confirming: input.confirming?.checks ?? [],
+    lastAuditorAttempt: input.lastAuditorAttempt === true,
+  }
+  /** The audit's test records by slot: those it carries and keeps, then those it finds. */
+  const found: { [Slot in CheckSlot]?: CheckRecords[Slot] } = {}
+  /** Keeps a record a test gave, when it has the test's shape. */
+  const keep = (check: RecordCheck<CheckSlot>, record: CheckRecords[CheckSlot] | null): boolean => {
+    // Only a record every required write can hold: an unwritable diagnostic is dropped, never a failed audit.
+    if (!record || (check.wellFormed && !check.wellFormed(record))) return false
+    ;(found as Record<string, unknown>)[check.slot] = record
+    return true
+  }
+  /** Each test in run order (`METHODS`), with its screen when the seller is still to be asked it in this attempt. */
+  const tests = recordsOf(carried).map(({ check, record }): { check: RecordCheck<CheckSlot>; asking: MethodScreen<CheckSlot> | null } => {
+    const own = runsTests ? input.context[check.slot] : undefined
+    const screen = own == null ? null : check.screen(own)
+    // A carried record stands unless the test's screen says it is asked again (`keeps`); one that is not this audit's
+    // is not kept either way (`carriedIsOfAudit`).
+    if (screen && (record == null || !(screen.keeps?.(record, auditStart) ?? true))) return { check, asking: screen }
+    if (record != null && (check.carriedIsOfAudit?.(record, auditStart) ?? true)) (found as Record<string, unknown>)[check.slot] = record
+    return { check, asking: null }
+  })
+  // Each test still to be asked has its say before the seller is asked anything paid (`MethodScreen.admit`): an audit a
+  // test does not start is the auditor's attempt.
+  for (const { check, asking } of tests) {
+    if (!asking?.admit) continue
+    const answer = asking.admit.decide(auditStart)
+    if ((typeof answer === 'string' ? answer : await answer) === 'not-started') throw new AuditNotStarted(check.slot, asking.admit.notStarted)
+  }
+  // The seller's clock runs only while one of its requests is out: references and crowds are the auditor's time.
+  const clock = () => ({
+    signal: deadline.controller.signal,
+    start: () => deadline.start(),
+    finish: (answered: boolean) => deadline.finish(answered),
+  })
+  /** The tests finished so far, as the checkpoint and the evidence store them. */
+  const records = (): StoredCheckRecords => inRunOrder(found)
+  /** The tests this attempt ran itself: a carried record was paid for by the attempt that ran it. */
+  const freshRecords = (): StoredCheckRecords => inRunOrder(found, (slot) => found[slot] !== carried[slot])
+  /**
+   * What a test is told when it asks the seller: the settings its declaration gives (`resolveThinking`), with the
+   * seller's own discovery once it has run.
+   */
+  const sellerAudit = (check: RecordCheck<CheckSlot>, discovered: SellerThinkingDiscoveryV1 | null): SellerAudit => ({
+    ...auditStart,
+    thinking: resolveThinking(check.thinking, { model: input.reference.referenceModel, bank: input.reference, discovery: discovered }),
+    earlier: records(),
+    clock: clock(),
+    spare: () => deadline.spare(input.context.auditTimeoutMs),
+  })
+  // The live audit, from the tests' references to the last test: the deadline's timers end with it, on every way out.
+  const live = await (async () => {
+    // The references of the tests after the questions are asked together, before the seller is asked anything.
+    if (runsTests) {
+      await Promise.all(tests.map(({ check, asking }) => (check.phase === 'after-questions' ? asking?.ready?.(auditStart) : undefined)))
     }
-    const path = join(input.context.checkpointRootDir ?? input.context.evidenceDir, '.checkpoints', `${auditId}.json`)
-    checkpointTail = checkpointTail.then(async () => {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        try {
-          await (input.context.writeCheckpoint ?? writeJsonAtomic)(path, checkpoint)
-          return
-        } catch (error) {
-          if (attempt === 1) {
-            checkpointFailure = new Error(`audit stopped: checkpoint could not be persisted at ${path}; resume from the last durable checkpoint`, { cause: error })
-            deadline.controller.abort()
-            throw checkpointFailure
+    // A test before the questions waits for its own reference first: the wait is the auditor's, not the seller's.
+    for (const { check, asking } of tests) {
+      if (check.phase !== 'before-questions' || !asking) continue
+      await asking.ready?.(auditStart)
+      keep(check, await asking.check(sellerAudit(check, null)))
+    }
+    // Discovery runs whenever the seller is still to be asked something whose declaration needs its own setting: a
+    // question batch (the questions' declaration, `QUESTIONS_CHECK`), or a test a retry asks again after every batch was
+    // answered. One list says it for every test (`THINKING_DECLARATIONS`).
+    const stillToAsk = [...(pending.length > 0 ? [QUESTIONS_CHECK.thinking] : []), ...tests.flatMap(({ check, asking }) => (asking !== null ? [check.thinking] : []))]
+    const discovery = stillToAsk.some(needsSellerDiscovery) && input.context.sellerThinking
+      ? await sellerThinkingFor(input.context, input.target, input.service, input.reference, sampling)
+      : null
+    const settings = sellerRequestSettings(input.context, input.reference, discovery?.record ?? null)
+    const sellerThinkingEvidence = discovery
+      ? { sellerThinking: discovery.fresh ? discovery.record : { ...discovery.record, reused: true as const } }
+      : {}
+    const discoveryCost = discovery?.fresh ? summarizeDiscoveryCosts(discovery.record.attempts) : null
+    let checkpointTail = Promise.resolve()
+    let checkpointFailure: Error | null = null
+    /** `bestEffort`: a write made only for a diagnostic (FLIPS) never stops the audit when it fails. */
+    const persistCheckpoint = async (options: { bestEffort?: boolean } = {}): Promise<void> => {
+      const snapshot = [...exchangeByBatch.values()].sort((left, right) => left.batchIndex - right.batchIndex)
+      const checkpoint: ModelAuditCheckpointV1 = {
+        version: 2,
+        kind: 'antseed-verifier-audit-checkpoint',
+        auditId,
+        parentAuditId: input.resume?.parentAuditId ?? null,
+        reservationAuditId: input.resume?.reservationAuditId ?? auditId,
+        ...(input.extension ? { extension: true as const } : {}),
+        ...(confirmingIdentity ? { confirming: confirmingIdentity } : {}),
+        runId: input.checkpointIdentity?.runId ?? '',
+        epoch: input.checkpointIdentity?.epoch ?? '',
+        model: input.checkpointIdentity?.model ?? input.reference.referenceModel,
+        targetPeerId: input.target.peerId,
+        service: input.service,
+        referenceId: input.reference.referenceId,
+        queryProfileHash: queryProfileHash(input.reference.queryProfile),
+        probeIds: input.reference.probes.map((probe) => probe.id),
+        exchanges: snapshot,
+        records: records(),
+        updatedAt: new Date().toISOString(),
+      }
+      const path = join(input.context.checkpointRootDir ?? input.context.evidenceDir, '.checkpoints', `${auditId}.json`)
+      checkpointTail = checkpointTail.then(async () => {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            await (input.context.writeCheckpoint ?? writeJsonAtomic)(path, checkpoint)
+            return
+          } catch (error) {
+            if (attempt === 1 && options.bestEffort) return
+            if (attempt === 1) {
+              checkpointFailure = new Error(`audit stopped: checkpoint could not be persisted at ${path}; resume from the last durable checkpoint`, { cause: error })
+              deadline.controller.abort()
+              throw checkpointFailure
+            }
           }
         }
-      }
-    })
-    await checkpointTail
-  }
-  try {
-    const executed = await mapWithAdaptiveConcurrency(
-      pending,
-      input.context.batchConcurrency,
-      async ({ probes, batchIndex }, _pendingIndex, control) => input.context.batchLimiter.run(async () => {
-        if (checkpointFailure) throw checkpointFailure
-        let answered = false
-        let exchange: ProxyAuditEvidenceExchangeV1
-        try {
-          exchange = await executeProxyProbeBatch(
-          { ...input.context, signal: deadline.start(), describeDeadline: () => deadline.describe() },
-          input.target,
-          input.service,
-          input.reference,
-          probes,
-          batchIndex,
-          settings,
-          control.reduceToOne,
-          sampling,
-          )
-          answered = exchange.status === 'succeeded'
-        } finally {
-          deadline.finish(answered)
-        }
-        exchangeByBatch.set(batchIndex, exchange)
-        await persistCheckpoint()
-        if (batchIndex === 0 && exchange.status === 'failed' && exchange.outcomeReason?.retryable) {
-          throw new VerificationTerminalTransientSignal(exchange)
-        }
-        return exchange
-      }),
-      (exchange) => exchange.status === 'succeeded'
-        && exchange.responseAuth.status === 'verified'
-        && exchange.timing.responseLatencyMs <= input.context.batchConcurrencyPromotionLatencyMs,
-    )
-    for (const exchange of executed) exchangeByBatch.set(exchange.batchIndex, exchange)
-  } catch (error) {
-    if (error instanceof VerificationTerminalTransientSignal) {
-      exchangeByBatch.set(error.exchange.batchIndex, error.exchange)
-      for (const { probes, batchIndex } of pending) {
-        if (!exchangeByBatch.has(batchIndex)) {
-          exchangeByBatch.set(batchIndex, notAttemptedExchange(
-            input.context,
+      })
+      await checkpointTail
+    }
+    /** The seller was skipped while its questions were asked (it refused them, its key is gone, ...). */
+    let skip: VerificationSkipSignal | null = null
+    /** The questions ended in a seller failure (its first batch failed): no other test is started in this attempt. */
+    let sellerFailed = false
+    try {
+      // A test finished before the questions is kept, so an interrupted audit does not ask it again.
+      if (tests.some(({ check, asking }) => check.phase === 'before-questions' && asking !== null && found[check.slot] != null)) await persistCheckpoint()
+      const executed = await mapWithAdaptiveConcurrency(
+        pending,
+        input.context.batchConcurrency,
+        async ({ probes, batchIndex }, _pendingIndex, control) => input.context.batchLimiter.run(async () => {
+          if (checkpointFailure) throw checkpointFailure
+          let answered = false
+          let exchange: ProxyAuditEvidenceExchangeV1
+          try {
+            exchange = await executeProxyProbeBatch(
+            { ...input.context, signal: deadline.start(), describeDeadline: () => deadline.describe() },
             input.target,
             input.service,
+            input.reference,
             probes,
             batchIndex,
             settings,
-            error.exchange.outcomeReason!,
-          ))
+            control.reduceToOne,
+            sampling,
+            )
+            answered = exchange.status === 'succeeded'
+          } finally {
+            deadline.finish(answered)
+          }
+          exchangeByBatch.set(batchIndex, exchange)
+          await persistCheckpoint()
+          if (batchIndex === 0 && exchange.status === 'failed' && exchange.outcomeReason?.retryable) {
+            throw new VerificationTerminalTransientSignal(exchange)
+          }
+          return exchange
+        }),
+        (exchange) => exchange.status === 'succeeded'
+          && exchange.responseAuth.status === 'verified'
+          && exchange.timing.responseLatencyMs <= input.context.batchConcurrencyPromotionLatencyMs,
+      )
+      for (const exchange of executed) exchangeByBatch.set(exchange.batchIndex, exchange)
+    } catch (error) {
+      if (error instanceof VerificationTerminalTransientSignal) {
+        sellerFailed = true
+        exchangeByBatch.set(error.exchange.batchIndex, error.exchange)
+        for (const { probes, batchIndex } of pending) {
+          if (!exchangeByBatch.has(batchIndex)) {
+            exchangeByBatch.set(batchIndex, notAttemptedExchange(
+              input.context,
+              input.target,
+              input.service,
+              probes,
+              batchIndex,
+              settings,
+              error.exchange.outcomeReason!,
+            ))
+          }
         }
+        await persistCheckpoint()
+      } else if (error instanceof VerificationSkipSignal) {
+        skip = error
+      } else {
+        throw error
       }
-      await persistCheckpoint()
-    } else if (!(error instanceof VerificationSkipSignal)) {
-      throw error
-    } else {
+    }
+    // The other output tests, after the questions, unless the seller was skipped (a flag stands through a skip: the
+    // audit is a DIFF with its questions unfinished, and nothing more is asked of the seller), or the questions ended in
+    // a seller failure or on the time limit: a test started then could only find nothing, and a retry asks it again.
+    const timeIsUp = deadline.controller.signal.aborted
+    if (runsTests && !skip && !sellerFailed && !timeIsUp) {
+      // The time is checked before each test: one that starts after it ran out could only find nothing.
+      const timeLeft = (): boolean => !deadline.controller.signal.aborted
+      for (const { check, asking } of tests) {
+        if (check.phase !== 'after-questions' || !asking || !timeLeft()) continue
+        if (keep(check, await asking.check(sellerAudit(check, discovery?.record ?? null)))) await persistCheckpoint(asking.bestEffortCheckpoint ? { bestEffort: true } : {})
+      }
+    }
+    return { sellerThinkingEvidence, discoveryCost, skip }
+  })().finally(() => deadline.close())
+  const { sellerThinkingEvidence, discoveryCost, skip } = live
+  const flaggedSoFar = (): boolean => readingsOfEvidence({ ...records(), exchanges: [] }, null).some((reading) => reading.outcome === 'flag')
+  // A skip with no flag is today's skip: the seller is not audited this run, and what ran before is paid for.
+  if (skip && !flaggedSoFar()) return writeSkip(skip)
+
+  /** The skip evidence, with what ran before the seller was skipped (hoisted: used above). */
+  async function writeSkip(error: VerificationSkipSignal): Promise<ModelVerificationSkip> {
     const completedAt = Date.now()
+    const ran = records()
+    // Only what this attempt asked is its cost: a carried test was paid for by the attempt that ran it.
+    const ranCosts = testCosts(freshRecords())
     const evidence: ProxyAuditSkipEvidenceV1 = {
       version: 1,
       kind: 'antseed-buyer-proxy-target-skip',
@@ -730,12 +1045,15 @@ export async function verifyModelTarget(input: {
         referenceModel: input.reference.referenceModel,
       },
       ...sellerThinkingEvidence,
+      ...ran,
       exchange: error.exchange,
       result: {
         status: 'SKIPPED',
         code: error.code,
         reason: error.reason,
         outcomeReason: withBatchCounts(error.outcomeReason, 1, batches.length),
+        // The tests that ran before the seller was skipped were paid for.
+        ...(ranCosts.length > 0 ? { cost: addAuditCostSummaries(...ranCosts) } : {}),
       },
     }
     const evidenceHash = canonicalHashBytes32(evidence)
@@ -759,11 +1077,12 @@ export async function verifyModelTarget(input: {
       auditId: resolvedAuditId,
       evidencePath: written.path,
       evidenceHash: written.evidenceHash,
+      ...(ranCosts.length > 0 ? { requestCount: testRequestCount(freshRecords()), cost: addAuditCostSummaries(...ranCosts) } : {}),
+      ...(confirmingIdentity ? { confirming: [...confirmingIdentity.checks], ...(confirmingIdentity.reportedAt !== undefined ? { confirmingReportedAt: confirmingIdentity.reportedAt } : {}) } : {}),
     }
-    }
-  } finally {
-    deadline.close()
   }
+
+  if (skip) exchangeByBatch.set(skip.exchange.batchIndex, skip.exchange)
   const exchanges = [...exchangeByBatch.values()].sort((left, right) => left.batchIndex - right.batchIndex)
   const answersByProbeId = new Map<string, number | null>()
   const matchesByProbeId = new Map<string, 0 | 1 | null>()
@@ -775,71 +1094,63 @@ export async function verifyModelTarget(input: {
   }
   const answers = input.reference.probes.map((probe) => answersByProbeId.get(probe.id) ?? null)
   const matchVector = input.reference.probes.map((probe) => matchesByProbeId.get(probe.id) ?? null)
-  const fragment = verifyKbf(input.reference, { answers, matchVector }, KBF_AUDIT_VERIFY_OPTIONS)
+  // New looks are decided by the current coverage rule, named in the evidence so every reader judges them by it.
+  const fragment = verifyKbf(input.reference, { answers, matchVector }, { ...KBF_AUDIT_VERIFY_OPTIONS, coverageRule: KBF_COVERAGE_RULE })
   if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'verification returned UNKNOWN')
 
   const completedAt = Date.now()
   const authenticated = exchanges.every((exchange) => exchange.status !== 'succeeded'
     || exchange.responseAuth.status === 'verified')
-  const verdict = authenticated ? fragment.verdict : 'UNDETERMINED'
-  const verdictReason = authenticated
-    ? fragment.verdictReason
-    : 'one or more successful proxy batches lacked valid verified ResponseAuth'
-  const outcomeReason = verdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
-  // Discovery requests are paid for like batches, so the audit that sent them counts them.
-  const withDiscovery = (summary: AuditCostSummaryV1) => discoveryCost ? addAuditCostSummaries(summary, discoveryCost) : summary
-  const cumulativeCost = withDiscovery(summarizeAuditExchangeCosts(exchanges))
+  // The questions' own verdict, exactly as the questions decide alone; a skip leaves them unfinished.
+  const questionsVerdict = skip ? 'UNDETERMINED' as const : authenticated ? fragment.verdict : 'UNDETERMINED' as const
+  const questionsReason = skip
+    ? `the questions were not finished: the seller was skipped (${skip.reason})`
+    : authenticated ? fragment.verdictReason : 'one or more successful proxy batches lacked valid verified ResponseAuth'
+  const questionsOutcome = skip
+    ? withBatchCounts(skip.outcomeReason, 1, batches.length)
+    : questionsVerdict === 'UNDETERMINED' ? summarizeUndeterminedReason(exchanges, batches.length) : null
+  const ran = records()
+  // The tests the run had none of for the model (`noRecord`): they are not active, so they never block a SAME.
+  const noRecord = runsTests ? await noRecordEntries({
+    records: ran,
+    screened: (slot) => input.context[slot] != null,
+    read: input.context.runFile ?? ((name) => readJsonIfExists<unknown>(join(input.context.checkpointRootDir ?? input.context.evidenceDir, name)).catch(() => null)),
+    confirming: auditStart.confirming,
+  }) : []
+  // Tests and discovery are paid for like batches. This attempt's cost counts what it sent itself: a carried test was
+  // paid for by the attempt that ran it. The cumulative cost is that of everything the evidence holds, as for the
+  // question batches a resume reuses: carried tests included.
+  const fresh = freshRecords()
+  const costs = (records: StoredCheckRecords) => [...testCosts(records), discoveryCost].filter((cost): cost is AuditCostSummaryV1 => cost !== null)
+  const cumulativeCost = addAuditCostSummaries(summarizeAuditExchangeCosts(exchanges), ...costs(ran))
   const newBatchIndexes = new Set(pending.map((entry) => entry.batchIndex))
-  const cost = withDiscovery(summarizeAuditExchangeCosts(exchanges.filter((exchange) => newBatchIndexes.has(exchange.batchIndex))))
+  const cost = addAuditCostSummaries(summarizeAuditExchangeCosts(exchanges.filter((exchange) => newBatchIndexes.has(exchange.batchIndex))), ...costs(fresh))
   const correctProbeCount = matchVector.filter((entry) => entry === 1).length
   const incorrectProbeCount = matchVector.filter((entry) => entry === 0).length
   const parsedProbeCount = correctProbeCount + incorrectProbeCount
   const evidence: ProxyAuditEvidenceV1 = {
-    version: 1,
-    kind: 'antseed-buyer-proxy-kbf-audit',
-    evidenceLevel: 'proxy-observation-with-verified-response-auth-no-payment-evidence',
-    createdAt: new Date(completedAt).toISOString(),
-    buyerProxy: {
-      baseUrl: input.context.proxy.baseUrl,
-      statePath: basename(input.context.proxy.statePath),
-      pid: input.context.proxy.pid,
-    },
-    target: {
-      peerId: input.target.peerId,
-      displayName: input.target.displayName ?? null,
-      agentId: input.target.onChainAgentId ? String(input.target.onChainAgentId) : null,
-      service: input.service,
-    },
-    reference: {
-      referenceId: input.reference.referenceId,
-      referenceModel: input.reference.referenceModel,
-      queryProfileHash: queryProfileHash(input.reference.queryProfile),
-      queryProfile: input.reference.queryProfile,
-      statisticalPower: input.reference.statisticalPower,
-      statisticalPowerEvidence: input.reference.statisticalPowerEvidence as unknown as Record<string, unknown>,
-      selfTest: input.reference.selfTest,
-      ...(input.reference.calibration ? { calibration: input.reference.calibration } : {}),
-      probes: input.reference.probes,
-    },
+    ...evidenceHead(completedAt),
+    tests: ALL_TESTS_FORMAT,
+    ...confirmingEvidence,
     ...sellerThinkingEvidence,
+    ...ran,
+    ...(noRecord.length > 0 ? { noRecord } : {}),
     exchanges,
-    ...(input.resume ? {
-      resume: {
-        parentAuditId: input.resume.parentAuditId,
-        reservationAuditId: input.resume.reservationAuditId,
-        parentEvidenceHash: input.resume.parentEvidenceHash,
-        reusedBatchIndexes,
-      },
-    } : {}),
+    ...resumeEvidence,
+    // The questions' own result: the audit's verdict over every test is derived from it and the test records
+    // (`verdictOf`), never stored in its place.
     result: {
       selectedProbeCount: input.reference.probes.length,
       parsedProbeCount,
       matchVector,
       matchVectorHash: fragment.matchVectorHash,
       stats: fragment.stats,
-      verdict,
-      verdictReason,
-      outcomeReason,
+      verdict: questionsVerdict,
+      verdictReason: questionsReason,
+      outcomeReason: questionsOutcome,
+      // The questions were not finished: the seller was skipped at this batch (stored above, not succeeded).
+      ...(skip ? { unfinished: { batchIndex: skip.exchange.batchIndex, reason: skip.reason } } : {}),
+      coverageRule: KBF_COVERAGE_RULE.id,
       cost,
       cumulativeCost,
     },
@@ -852,27 +1163,67 @@ export async function verifyModelTarget(input: {
     evidenceHash,
   })
   const written = await writeProxyAuditEvidence(input.context.evidenceDir, resolvedAuditId, evidence)
-  return {
+  return settleAuditVerdict({
     peerId: input.target.peerId,
     displayName: input.target.displayName ?? null,
     agentId: input.target.onChainAgentId ? String(input.target.onChainAgentId) : null,
     service: input.service,
-    status: verdict,
-    outcomeReason,
+    status: questionsVerdict,
+    questionsStatus: questionsVerdict,
+    outcomeReason: questionsOutcome,
+    questionsOutcomeReason: questionsOutcome,
+    ...(input.confirming ? { confirming: [...input.confirming.checks] } : {}),
+    ...(input.confirming?.reportedAt !== undefined ? { confirmingReportedAt: input.confirming.reportedAt } : {}),
     auditId: resolvedAuditId,
     parsedProbeCount,
     probeCount: input.reference.probes.length,
     correctProbeCount,
     incorrectProbeCount,
     correctRate: parsedProbeCount === 0 ? null : correctProbeCount / parsedProbeCount,
-    requestCount: exchanges.length,
+    // The question batches, and the requests of the tests this attempt ran.
+    requestCount: exchanges.length + testRequestCount(fresh),
     cost,
     cumulativeCost,
     evidencePath: written.path,
     evidenceHash: written.evidenceHash,
+    firstRequestAt: earliestAuditorTime([evidence]),
     stats: fragment.stats,
+    coverageRule: KBF_COVERAGE_RULE.id,
     responseAuthVerified: authenticated,
+    ...testSummaries(ran),
+    // An extra set asks the questions only: its first set's tests are the ones that count (`extension-round.ts`).
+    ...(runsTests ? { inactive: inactiveChecks(evidence) } : {}),
+  })
+}
+
+/** These test records, each under its slot, in run order (`METHODS`); `keep` leaves some out. */
+function inRunOrder(records: StoredCheckRecords, keep: (slot: CheckSlot) => boolean = () => true): StoredCheckRecords {
+  const kept: Record<string, unknown> = {}
+  for (const { check, record } of recordsOf(records)) {
+    if (record != null && keep(check.slot)) kept[check.slot] = record
   }
+  return kept
+}
+
+/** These test records as an audit's summary carries them, each under its slot, in run order. */
+function testSummaries(records: StoredCheckRecords): Partial<CheckSummaries> {
+  const summaries: Partial<CheckSummaries> = {}
+  const add = <Slot extends CheckSlot>(check: ListedCheck<Slot>): void => {
+    const record = records[check.slot]
+    if (record != null) summaries[check.slot] = check.summarize(record)
+  }
+  for (const check of METHODS) add(check)
+  return summaries
+}
+
+/** What these test records' requests cost, in run order. */
+function testCosts(records: StoredCheckRecords): AuditCostSummaryV1[] {
+  return recordsOf(records).flatMap(({ check, record }) => (record == null ? [] : [costOfRequests(check.paid(record))]))
+}
+
+/** The requests these test records sent, counting tries. */
+function testRequestCount(records: StoredCheckRecords): number {
+  return recordsOf(records).reduce((total, { check, record }) => total + (record == null ? 0 : requestCountOf(check.paid(record))), 0)
 }
 
 export async function readModelAuditCheckpoints(
@@ -890,11 +1241,15 @@ export async function readModelAuditCheckpoints(
     .filter((filename) => filename.endsWith('.json'))
     .map(async (filename) => {
       const path = join(directory, filename)
-      const checkpoint = JSON.parse(await readFile(path, 'utf8')) as ModelAuditCheckpointV1
-      if (checkpoint.version !== 1
+      const checkpoint = JSON.parse(await readFile(path, 'utf8')) as ModelAuditCheckpointV1 | { version: 1; kind: string }
+      // A version 1 checkpoint was written before every test ran in one audit, and holds no test records: its
+      // audit is not resumed, it restarts clean.
+      if (checkpoint.version === 1 && checkpoint.kind === 'antseed-verifier-audit-checkpoint') return null
+      if (checkpoint.version !== 2
         || checkpoint.kind !== 'antseed-verifier-audit-checkpoint'
         || typeof checkpoint.auditId !== 'string'
-        || !Array.isArray(checkpoint.exchanges)) {
+        || !Array.isArray(checkpoint.exchanges)
+        || typeof checkpoint.records !== 'object' || checkpoint.records === null) {
         throw new Error(`invalid verifier audit checkpoint: ${path}`)
       }
       if (!checkpoint.runId || !checkpoint.epoch || !checkpoint.model) return null
@@ -1042,19 +1397,8 @@ async function executeProxyProbeBatch(
         }
         break
       }
-      const extracted = extractCompletionText(responseBody)
-      // As the reference code does before parsing, `<think>…</think>` blocks are not answers.
-      const completion = extracted === null ? null : stripKbfThinkBlocks(extracted)
-      // A reply cut off at the token limit is not scored: the model was still writing (often
-      // reasoning in the reply), so its numbers are not its answers. It is asked again below.
-      const truncated = isKbfTokenLimitFinishReason(kbfResponseFinishReason(responseText(responseBody)))
-      const answers = completion === null || truncated
-        ? new Array<number | null>(probes.length).fill(null)
-        : parseKbfAnswers(completion, probes.length)
-      const malformedOutput = answers.every((answer) => answer === null)
-      const matches = malformedOutput
-        ? new Array<null>(probes.length).fill(null)
-        : computeMatchVector(answers, probes)
+      // A reply cut off at the token limit scores nothing (`scoreQuestionBatch`); it is asked again below.
+      const { truncated, answers, matches, malformedOutput } = scoreQuestionBatch(responseBody, probes)
       const completedAt = Date.now()
       const returnedRequestId = response.headers.get('x-antseed-request-id')
       const responseAuth = returnedRequestId === requestId
@@ -1194,7 +1538,7 @@ async function sellerThinkingFor(
   sampling: AuditSamplingState,
 ): Promise<{ record: SellerThinkingDiscoveryV1; fresh: boolean }> {
   const cache = context.sellerThinking!
-  const key = `${target.peerId.replace(/^0x/i, '').toLowerCase()}\u0000${service}`
+  const key = `${peerComparisonKey(target.peerId)}\u0000${service}`
   const cached = cache.get(key)
   if (cached) return { record: await cached, fresh: false }
   const discovered = discoverSellerThinking(context, target, service, reference, sampling)
@@ -1236,14 +1580,18 @@ async function discoverSellerThinking(
   const url = `${context.proxy.baseUrl}/v1/chat/completions`
   const overall = new AbortController()
   const overallTimer = setTimeout(() => overall.abort(), context.auditTimeoutMs)
-  const sent: Array<Pick<SellerThinkingDiscoveryAttemptV1, 'requestIds' | 'attemptCosts'>> = []
+  const sent: Array<Pick<SellerThinkingDiscoveryAttemptV1, 'requestIds' | 'attemptCosts' | 'signedRequest'>> = []
+  // The audit rules' setting for the model (`THINKING_TABLE_RULE`): the seller is asked with it, never with a chosen one.
+  const table = auditThinkingForBank(reference.referenceModel, reference)
   // A seller that failed every try of DISCOVERY_OUTAGE_STRATEGIES strategies in a row with no answer
   // (transport error or 5xx) is down, not refusing a field: the remaining strategies are not sent,
   // and the batches record the outage.
   let unreachable: { status: number | null; failure: string } | null = null
   let outages = 0
   const probe: ThinkingDiscoveryProbe = async ({ request, maxTokens }) => {
-    const record = { requestIds: [] as string[], attemptCosts: [] as SellerThinkingDiscoveryAttemptV1['attemptCosts'] }
+    const record: Pick<SellerThinkingDiscoveryAttemptV1, 'requestIds' | 'attemptCosts' | 'signedRequest'> = {
+      requestIds: [] as string[], attemptCosts: [] as SellerThinkingDiscoveryAttemptV1['attemptCosts'],
+    }
     sent.push(record)
     if (unreachable) return { ok: false, ...unreachable, failure: `not sent, seller unreachable: ${unreachable.failure}` }
     let failure: { status: number | null; failure: string } = { status: null, failure: 'not attempted' }
@@ -1279,6 +1627,8 @@ async function discoverSellerThinking(
               'content-type': 'application/json',
               'x-antseed-pin-peer': target.peerId,
               'x-antseed-request-id': requestId,
+              // Under the table the seller's signed request is kept, so what it was asked can be checked later.
+              ...(table ? { 'x-antseed-capture-response-auth-preimages': '1' } : {}),
             },
             body: new TextEncoder().encode(JSON.stringify(payload)),
             signal: controller.signal,
@@ -1289,11 +1639,19 @@ async function discoverSellerThinking(
         if (cost) record.attemptCosts.push(cost)
         if (response.ok) {
           outages = 0
+          const billed = billedOutputTokensOf(responseText(responseBody))
+          // The reasoning count from the reply the seller signed (its own API's usage, before the proxy translates it
+          // back), else from the proxy's reply; a reply that reports none has an unknown count, never 0.
+          const signed = table ? await signedDiscoveryRequest(context, target, service, reference, requestId, response, request, overall.signal) : null
+          if (signed) record.signedRequest = signed.record
           return {
             ok: true,
             content: extractCompletionText(responseBody),
-            reasoningTokens: reportedReasoningTokens(responseText(responseBody)),
+            reasoningTokens: signed?.reasoningTokens !== undefined ? signed.reasoningTokens : reportedReasoningTokens(responseText(responseBody)),
             truncated: isKbfTokenLimitFinishReason(kbfResponseFinishReason(responseText(responseBody))),
+            // Recorded only: reasoning a host shows while itemising none, and what the reply bills.
+            reasoningShown: reasoningShownInReply(responseText(responseBody)),
+            ...(billed !== undefined ? { billedOutputTokens: billed } : {}),
           }
         }
         const text = responseText(responseBody)
@@ -1332,18 +1690,30 @@ async function discoverSellerThinking(
     ...attempt,
     requestIds: sent[index]?.requestIds ?? [],
     attemptCosts: sent[index]?.attemptCosts ?? [],
+    ...(sent[index]?.signedRequest ? { signedRequest: sent[index]!.signedRequest } : {}),
   }))
   const budget = reference.queryProfile.maxTokensPerRequest
   try {
-    const result = await discoverThinkingSuppression({
-      model: service,
-      label: `seller ${target.peerId}`,
-      // Audits always send OpenAI Chat Completions to the buyer proxy.
-      supportsPrefill: true,
-      probe,
-    })
+    const result = table
+      ? await checkThinkingSetting({
+        model: service,
+        label: `seller ${target.peerId}`,
+        probe,
+        primary: chatStrategyForLevel(table.level),
+        fallback: table.fallback ? chatStrategyForLevel(table.fallback) : null,
+      })
+      : await discoverThinkingSuppression({
+        model: service,
+        label: `seller ${target.peerId}`,
+        // Audits always send OpenAI Chat Completions to the buyer proxy.
+        supportsPrefill: true,
+        // The reference's own setting first, so the seller is asked as the reference was wherever it accepts that.
+        referenceStrategy: referenceDiscoveryStrategy(reference),
+        probe,
+      })
     return {
       method: 'kbf-reference-code-2026-09-30',
+      rule: table ? THINKING_TABLE_RULE : THINKING_REFERENCE_FIRST_RULE,
       strategy: result.strategy,
       maxTokens: Math.max(budget, result.maxTokens ?? 0),
       attempts: withRequests(result.attempts),
@@ -1351,6 +1721,7 @@ async function discoverSellerThinking(
   } catch (error) {
     return {
       method: 'kbf-reference-code-2026-09-30',
+      rule: table ? THINKING_TABLE_RULE : THINKING_REFERENCE_FIRST_RULE,
       strategy: null,
       maxTokens: budget,
       attempts: withRequests(error instanceof ThinkingDiscoveryError ? error.attempts : []),
@@ -1358,6 +1729,46 @@ async function discoverSellerThinking(
     }
   } finally {
     clearTimeout(overallTimer)
+  }
+}
+
+/**
+ * The signed request of one thinking-setting check: the seller's ResponseAuth for it, whether the request it signed
+ * carries the setting it was asked with (`requestCarries`), and the reasoning count of the reply it signed (null when
+ * that reply itemises none: unknown). Undefined `reasoningTokens` when nothing was signed.
+ */
+async function signedDiscoveryRequest(
+  context: ProxyVerificationContext,
+  target: PeerInfo,
+  service: string,
+  reference: KbfReferenceV1,
+  requestId: string,
+  response: Response,
+  request: ThinkingStrategyRequest,
+  signal: AbortSignal,
+): Promise<{ record: NonNullable<SellerThinkingDiscoveryAttemptV1['signedRequest']>; reasoningTokens?: number | null }> {
+  const returned = response.headers.get('x-antseed-request-id')
+  if (returned !== requestId) {
+    return { record: { status: returned ? 'invalid' : 'missing', carriesSetting: null, signedPreimages: null } }
+  }
+  const auth = await context.responseAuthReader.waitForVerified({
+    requestId,
+    sellerPeerId: target.peerId,
+    advertisedService: service,
+    serviceAliases: [...reference.serviceAliases, ...currentServiceNames(reference.referenceModel)],
+    signal,
+  })
+  const preimages = auth.status === 'verified' && auth.signedPreimages ? { ...auth.signedPreimages, hashAlgorithm: 'keccak256' as const } : null
+  if (!preimages) return { record: { status: auth.status, carriesSetting: null, signedPreimages: null } }
+  try {
+    const sent = decodeHttpRequest(Buffer.from(preimages.requestBase64, 'base64'))
+    const answered = decodeHttpResponse(Buffer.from(preimages.responseBase64, 'base64'))
+    const setting: ThinkingSetting = { source: 'discovery', strategy: null, overrides: request.overrides }
+    const carriesSetting = requestCarries(JSON.parse(new TextDecoder().decode(sent.body)), setting)
+    const reading = readOutput(sent.body, { statusCode: answered.statusCode, body: answered.body })
+    return { record: { status: 'verified', carriesSetting, signedPreimages: preimages }, reasoningTokens: reading.reasoningTokens }
+  } catch {
+    return { record: { status: 'verified', carriesSetting: false, signedPreimages: preimages } }
   }
 }
 
@@ -1372,15 +1783,9 @@ function sellerRequestSettings(
     maxTokens: reference.queryProfile.maxTokensPerRequest,
     requestTimeoutMs: context.requestTimeoutMs,
   }
-  if (!discovery || discovery.strategy === null) return { ...base, thinking: kbfTargetThinkingSuppression(reference) }
-  const request = thinkingStrategyRequest(discovery.strategy)
-  const thinking = Object.keys(request.overrides).length === 0 && !request.assistantPrefill
-    ? null
-    : {
-      strategy: discovery.strategy,
-      overrides: request.overrides,
-      ...(request.assistantPrefill ? { assistantPrefill: request.assistantPrefill } : {}),
-    }
+  // The questions' setting, from their declaration: the seller's discovered one, or the bank's when it has none.
+  const thinking = asSuppression(resolveThinking(QUESTIONS_CHECK.thinking, { model: reference.referenceModel, bank: reference, discovery }).seller)
+  if (!discovery || discovery.strategy === null) return { ...base, thinking }
   return {
     ...base,
     thinking,
@@ -1837,68 +2242,12 @@ function safeRequestId(body: Uint8Array): string | null {
   return null
 }
 
-export function extractCompletionText(body: Uint8Array): string | null {
-  const text = responseText(body)
-  try {
-    return extractCompletionFromJson(JSON.parse(text) as Record<string, unknown>)
-  } catch {
-    return extractCompletionFromSse(text)
-  }
-}
-
 /** Verified responses beat unverified ones; then the attempt with more scoreable answers wins. */
 function isBetterBatchAttempt(candidate: ProxyAuditEvidenceExchangeV1, current: ProxyAuditEvidenceExchangeV1): boolean {
   const verified = (exchange: ProxyAuditEvidenceExchangeV1) => exchange.responseAuth.status === 'verified'
   if (verified(candidate) !== verified(current)) return verified(candidate)
   const scored = (exchange: ProxyAuditEvidenceExchangeV1) => exchange.matches.filter((match) => match !== null).length
   return scored(candidate) > scored(current)
-}
-
-function extractCompletionFromJson(parsed: Record<string, unknown>): string | null {
-  const response = parsed as {
-    choices?: Array<{ message?: { content?: unknown }; text?: unknown }>
-    content?: Array<{ type?: string; text?: unknown }>
-    output?: Array<{ content?: Array<{ type?: string; text?: unknown }> }>
-    output_text?: unknown
-  }
-  const chatContent = response.choices?.[0]?.message?.content
-  if (typeof chatContent === 'string') return chatContent
-  const completionText = response.choices?.[0]?.text
-  if (typeof completionText === 'string') return completionText
-  const anthropicText = response.content?.find((block) => block?.type === 'text')?.text
-  if (typeof anthropicText === 'string') return anthropicText
-  if (typeof response.output_text === 'string') return response.output_text
-  const outputText = response.output
-    ?.flatMap((item) => item.content ?? [])
-    .filter((part) => part.type === 'output_text' && typeof part.text === 'string')
-    .map((part) => part.text as string)
-    .join('')
-  return outputText || null
-}
-
-function extractCompletionFromSse(text: string): string | null {
-  const deltas: string[] = []
-  let completed: string | null = null
-  let done: string | null = null
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.startsWith('data:')) continue
-    const data = line.slice('data:'.length).trim()
-    if (!data || data === '[DONE]') continue
-    try {
-      const event = JSON.parse(data) as Record<string, unknown>
-      if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
-        deltas.push(event.delta)
-      } else if (event.type === 'response.output_text.done' && typeof event.text === 'string') {
-        done = event.text
-      } else if (event.type === 'response.completed' && event.response && typeof event.response === 'object') {
-        completed = extractCompletionFromJson(event.response as Record<string, unknown>)
-      }
-    } catch {
-      continue
-    }
-  }
-  if (deltas.length > 0) return deltas.join('')
-  return completed ?? done
 }
 
 function isProcessAlive(pid: number): boolean {

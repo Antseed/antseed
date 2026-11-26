@@ -1,9 +1,13 @@
+import { readingsOfSummary, verdictOf, type AuditVerdict } from './audit-checks.js'
+import { confirmationUndecidedReason } from './outcome-reason.js'
+import { failureBlame } from './failure-blame.js'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
   KBF_EXTENSION_RULE,
   KBF_EXTENSION_RULE_V1,
   classifyKbfFirstLook,
   computeKbfPooledVerdict,
+  kbfCoverageRuleById,
   kbfExtensionRuleById,
   type FingerprintStats,
   type KbfExtensionRule,
@@ -54,12 +58,16 @@ export function latestExtension(
  * has none yet, or its latest pooled look is still a close call and the rule allows one more.
  */
 export function needsExtension(result: Pick<ModelVerificationTargetResult,
-  'decisionRule' | 'stats' | 'responseAuthVerified' | 'extension' | 'extension2' | 'outcomeReason'>): boolean {
+  'decisionRule' | 'stats' | 'responseAuthVerified' | 'extension' | 'extension2' | 'outcomeReason' | 'closeCallClosed'> & { parsedProbeCount?: number }): boolean {
   const rule = closeCallRule(result)
   if (!rule || !result.stats) return false
+  // A flagged audit whose extra set could not be asked in its run: its questions read as undecided.
+  if (result.closeCallClosed) return false
   // A set whose ResponseAuth failed, or a seller that refuses the request profile (temperature), is
   // UNDETERMINED whatever its p-value; extra questions do not fix that.
   if (result.responseAuthVerified === false || result.outcomeReason?.code === 'request_profile_incompatible') return false
+  // A confirmation whose check to repeat did not decide is audited again whole; its questions are not extended.
+  if (result.outcomeReason?.code === 'confirmation_undecided') return false
   const sets = extensionSets(result)
   if (sets.length === 0) {
     return classifyKbfFirstLook(result.stats, { minCoverage: KBF_AUDIT_VERIFY_OPTIONS.minCoverage, rule }) === 'extend'
@@ -72,17 +80,78 @@ export function needsExtension(result: Pick<ModelVerificationTargetResult,
  * The audit's verdict: the pooled verdict after a close call, else the first audit's own verdict.
  * Null while a close call waits for extra questions.
  */
+/** The questions' own verdict, after any close call; null while the audit waits for a close call's extra set. */
 export function stageOneVerdict(result: ModelVerificationTargetResult): 'SAME' | 'DIFF' | 'UNDETERMINED' | null {
-  if (needsExtension(result)) return null
+  const decision = auditDecision(result)
+  return decision.pending ? null : decision.questionsStatus
+}
+
+/**
+ * The one decision the run, the extension round, the planner and submit share: the questions' verdict, the audit's
+ * verdict over every test (`verdictOf`), and whether the audit still waits for a close call's extra set. While it
+ * waits, the questions' first look gives neither pass nor flag. A confirmation in which a repeated test other than
+ * the questions is undecided is final for its attempt, whatever its questions are: it is never pending.
+ */
+export function auditDecision(result: ModelVerificationTargetResult): {
+  questionsStatus: 'SAME' | 'DIFF' | 'UNDETERMINED'
+  questionsOutcome: ModelVerificationTargetResult['outcomeReason']
+  audit: AuditVerdict
+  pending: boolean
+} {
+  const questions = questionsView(result)
+  const pendingQuestions = needsExtension(questions)
   const latest = latestExtension(result)
-  if (latest) return latest.pooled.verdict
-  return result.status
+  const questionsStatus = result.closeCallClosed ? 'UNDETERMINED' as const
+    : !pendingQuestions && latest ? latest.pooled.verdict : questions.status
+  const looked = pendingQuestions ? 'UNDETERMINED' as const : questionsStatus
+  const audit = verdictOf(readingsOfSummary({ ...result, questionsStatus: looked }), looked, result.confirming, { questionsPending: pendingQuestions })
+  return {
+    questionsStatus,
+    questionsOutcome: questions.outcomeReason ?? null,
+    audit,
+    pending: pendingQuestions && audit.undecidedConfirmation === null,
+  }
+}
+
+/** A result as the questions alone see it: their own verdict and outcome reason. */
+function questionsView(result: ModelVerificationTargetResult): ModelVerificationTargetResult {
+  return {
+    ...result,
+    status: result.questionsStatus ?? result.status,
+    outcomeReason: result.questionsOutcomeReason !== undefined ? result.questionsOutcomeReason : (result.outcomeReason ?? null),
+  }
+}
+
+/**
+ * Sets an audit's verdict over every test from the questions' own verdict and the test records (`verdictOf`, rule
+ * `all-tests-v1`). Only the questions' fields and the records are read, so it gives the same answer whenever it is
+ * called again: after the close-call rule is attached (`run.ts`), and after an extra set is pooled. While a close call
+ * waits, `status` holds the verdict so far and a confirmation of the questions waits with it.
+ */
+export function settleAuditVerdict<T extends ModelVerificationTargetResult>(result: T): T {
+  const { questionsStatus, questionsOutcome, audit } = auditDecision(result)
+  const { undecidedCause: _previous, ...rest } = result
+  // Two fields: the decision (an undecided confirmation always says so, as submit checks) and its cause when the cause
+  // was this auditor's own, so that attempt counts on the auditor's side, never toward the seller's three.
+  const auditorCause = audit.undecidedConfirmation && failureBlame(questionsOutcome) === 'auditor' ? questionsOutcome : null
+  return {
+    ...rest,
+    status: audit.verdict,
+    questionsStatus,
+    questionsOutcomeReason: questionsOutcome,
+    outcomeReason: audit.undecidedConfirmation
+      ? confirmationUndecidedReason(audit.undecidedConfirmation, questionsOutcome?.totalBatchCount ?? 0)
+      : questionsOutcome,
+    ...(auditorCause ? { undecidedCause: auditorCause } : {}),
+  } as T
 }
 
 export function pooledCloseCallVerdict(
   first: { stats: FingerprintStats; probeCount: number },
   extensions: ReadonlyArray<{ stats: FingerprintStats; probeCount: number }>,
   rule: KbfExtensionRule = KBF_EXTENSION_RULE,
+  /** The coverage rule the first set names (`coverageRule`); absent on older sets, which keep the plain coverage rule. */
+  coverageRule?: string,
 ): KbfPooledVerdictResult {
   return computeKbfPooledVerdict({
     first,
@@ -90,5 +159,23 @@ export function pooledCloseCallVerdict(
     minCoverage: KBF_AUDIT_VERIFY_OPTIONS.minCoverage,
     minDiffCoverage: KBF_AUDIT_VERIFY_OPTIONS.minDiffCoverage,
     rule,
+    ...(coverageRule !== undefined ? { coverageRule: coverageRuleOf(coverageRule) } : {}),
   })
+}
+
+/** The coverage rule a set names; throws on one this verifier does not know, which it must never judge by another. */
+export function coverageRuleOf(id: string): NonNullable<ReturnType<typeof kbfCoverageRuleById>> {
+  const rule = kbfCoverageRuleById(id)
+  if (!rule) throw new Error(`unknown coverage rule ${JSON.stringify(id)}`)
+  return rule
+}
+
+/**
+ * The earliest request, on the auditor's clock in seconds, over every set an audit's evidence holds: its first set and
+ * each extra set pooled with it. Null when any of them has no time: then it is no fresh material.
+ */
+export function earliestSetTime(result: { firstRequestAt?: number | null; extension?: { firstRequestAt?: number | null } | null; extension2?: { firstRequestAt?: number | null } | null }): number | null {
+  const times = [result.firstRequestAt, ...[result.extension, result.extension2].filter((set) => set != null).map((set) => set!.firstRequestAt)]
+  if (times.some((time) => typeof time !== 'number')) return null
+  return Math.min(...(times as number[]))
 }

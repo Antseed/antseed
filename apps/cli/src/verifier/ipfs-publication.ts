@@ -30,7 +30,7 @@ export interface PreparedVerificationPublication {
 }
 
 export interface PublishedVerificationEvidence {
-  provider: 'pinata'
+  provider: 'pinata' | 'local-test'
   evidenceHash: string
   cid: string
   uri: string
