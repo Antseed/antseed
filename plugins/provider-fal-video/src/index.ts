@@ -12,7 +12,9 @@ import {
   parseServiceAliasMap,
   parseServiceCapabilitiesJson,
   parseServiceUnitBillingModelsJson,
+  MAX_VIDEO_DOWNLOADS_CONFIG_FIELD,
   createVideoResponseStreamer,
+  parseMaxVideoDownloads,
   readFalAccount,
   readFalModelStatuses,
   readVideoJson as readJson,
@@ -36,7 +38,6 @@ function isFalJobFailure(body: Record<string, unknown> | null): boolean {
 export const FAL_STORAGE_URL = 'https://rest.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3';
 
 const PROTOCOL = 'fal-video';
-const MAX_ACTIVE_DOWNLOADS = 2;
 
 /** What an endpoint's fal input schema says about its fields. */
 export interface FalInputSchema {
@@ -310,6 +311,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON', label: 'Unit Pricing', type: 'string', required: true },
     { key: 'ANTSEED_SERVICE_CAPABILITIES_JSON', label: 'Capabilities', type: 'string' },
     { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Concurrency', type: 'number', default: 10 },
+    MAX_VIDEO_DOWNLOADS_CONFIG_FIELD,
     {
       key: 'FAL_VIDEO_MIN_BALANCE_USD',
       label: 'Minimum Balance (USD)',
@@ -341,6 +343,7 @@ const plugin: AntseedProviderPlugin = {
     if (missingPricing) throw new Error(`Missing ${PROTOCOL} unit pricing for ${missingPricing}`);
     const maxConcurrency = Number(config['ANTSEED_MAX_CONCURRENCY'] ?? 10);
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) throw new Error('ANTSEED_MAX_CONCURRENCY must be a positive integer');
+    const maxDownloads = parseMaxVideoDownloads(config);
     const configuredCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
     const authorization = `Key ${apiKey}`;
     const minBalanceUsd = Number(config['FAL_VIDEO_MIN_BALANCE_USD'] ?? 0);
@@ -500,7 +503,7 @@ const plugin: AntseedProviderPlugin = {
       }
     };
 
-    const streamUpstream = createVideoResponseStreamer(MAX_ACTIVE_DOWNLOADS);
+    const streamUpstream = createVideoResponseStreamer(maxDownloads);
 
     return {
       name: 'fal-video',

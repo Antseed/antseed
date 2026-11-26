@@ -16,6 +16,7 @@ antseed config seller add-provider video --plugin fal-video
 - `ANTSEED_ALLOWED_SERVICES`: fal endpoint IDs such as `fal-ai/kling-video/v2.1/standard/text-to-video`, or names that `upstreamModel` maps to one (64 characters at most)
 - `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON`: `fal-video` pricing using `video_generations` or `video_seconds`
 - `ANTSEED_SERVICE_CAPABILITIES_JSON`: optional video options to advertise
+- `ANTSEED_MAX_VIDEO_DOWNLOADS`: optional, default `6`. Finished videos streamed to buyers at the same time; a download past the limit gets HTTP 429 `video_download_busy` with `Retry-After`, and the buyer tries again
 - `FAL_VIDEO_MIN_BALANCE_USD`: optional, default `0`. Models stop being advertised while the fal balance is at or below it (needs the permission below)
 
 Each seller health sweep reads fal's model list (`GET https://api.fal.ai/v1/models`, with the seller's key, since fal rate-limits anonymous lookups): an endpoint fal no longer lists, or no longer reports as `active`, stops being advertised. A `deprecated` endpoint stays advertised with a warning.

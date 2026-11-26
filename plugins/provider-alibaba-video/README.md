@@ -17,6 +17,7 @@ antseed config seller add-provider video --plugin alibaba-video
 - `ANTSEED_SERVICE_ALIAS_MAP_JSON`: optional, service ID to Model Studio model when they differ (`upstreamModel` in the seller config)
 - `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON`: `fal-video` pricing using `video_seconds`
 - `ANTSEED_SERVICE_CAPABILITIES_JSON`: optional video options to advertise
+- `ANTSEED_MAX_VIDEO_DOWNLOADS`: optional, default `6`. Finished videos streamed to buyers at the same time; a download past the limit gets HTTP 429 `video_download_busy` with `Retry-After`, and the buyer tries again
 
 Each seller health sweep checks that Model Studio accepts the key. Model Studio has no free per-model check for video or a balance API, so an account out of credit or a retired model shows up as a rejected create rather than a stopped service.
 
