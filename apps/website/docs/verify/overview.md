@@ -15,7 +15,7 @@ The first method running on the network is the **KBF audit**. More methods will 
 
 Every model remembers obscure facts in its own way, including the ones it gets slightly wrong. Ask two different models for the melting point of tantalum carbide and you will often get two different numbers. Taken over many such questions, that pattern is a fingerprint of the model. KBF stands for Knowledge Boundary Fingerprinting.
 
-For each model, the auditor first asks the genuine model a large bank of these questions, through the model maker's API or OpenRouter. It keeps the questions that tell the real model apart from its look-alikes, and measures how often the real model itself gets them wrong. Then it asks each seller about 100 of them, picked at random and reworded each time, and compares how often the seller misses with how often the genuine model does.
+For each model, the auditor first asks the genuine model a large bank of these questions, through the model maker's API or OpenRouter. It keeps the questions that tell the real model apart from its look-alikes, and measures how often the real model itself gets them wrong. Then it asks every seller of the model the same set of them, one set per model and epoch, of between 100 and 500 questions: as many as it needs for a reliable result. The questions go ten to a request, and only the wording of the prompt around them changes, picked at random for each request. The auditor compares how often the seller misses with how often the genuine model does.
 
 Audit requests are ordinary paid requests with no special label, and the seller is paid for them like any other traffic.
 
@@ -24,12 +24,12 @@ Audit requests are ordinary paid requests with no special label, and the seller 
 | Result | Meaning |
 |---|---|
 | **SAME** | The seller answered the way the genuine model does. This is strong evidence, not proof. |
-| **DIFF** | The seller missed far more often than the genuine model. It is very likely serving a different model. |
+| **DIFF** | The seller missed far more often than the genuine model, so it is very likely serving a different model. Or it billed more output than the model wrote, or beyond the reply limit it was given. |
 | **UNDETERMINED** | There weren't enough usable answers to decide, usually because the seller returned errors, timed out or sent empty answers. |
 
 A few rules keep this fair:
 
-- One auditor can't mark a seller DIFF on its own. A DIFF is recorded only after a second auditor tests the same seller with its own questions and gets the same result.
+- One auditor can't mark a seller DIFF on its own. A DIFF is recorded only after a second auditor tests the same seller on its own material and the same check flags it again.
 - Results expire. A result counts for the epoch it was given in and the next one, so one to two weeks. Sellers are audited again every epoch, and a seller that fixes its setup recovers at its next audit.
 - Each result covers one service: one seller's offer of one model.
 - The evidence is public. The questions, the seller's answers and the statistics go to IPFS, and anyone can run the same check again.

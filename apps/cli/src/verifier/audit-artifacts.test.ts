@@ -117,6 +117,22 @@ test('verifier artifacts use model-first epoch directories', async () => {
         agentId: '1', service: 'Model A', auditId: `0x${'12'.repeat(32)}`, requestCount: 1,
         cost: emptyAuditCostSummary(), evidencePath: join(auditPackDirectory, 'evidence.json'),
         evidenceHash: `0x${'34'.repeat(32)}`,
+      }, {
+        // A DIFF from the tokenizer pre-check.
+        peerId: '22'.repeat(20), displayName: 'Seller B', status: 'DIFF', parsedProbeCount: 0,
+        probeCount: 10, correctProbeCount: 0, incorrectProbeCount: 0, correctRate: null,
+        agentId: '2', service: 'Model A', auditId: `0x${'56'.repeat(32)}`, requestCount: 14,
+        cost: emptyAuditCostSummary(), evidencePath: join(auditPackDirectory, 'evidence.json'),
+        evidenceHash: `0x${'78'.repeat(32)}`,
+        tokenizerPrecheck: { rule: 'tokenizer-precheck-v1', outcome: 'mismatch', sellerTokens: [193, 176, 176], modelTokens: [141, 130, 145] },
+      }, {
+        // Every test runs: a pre-check DIFF beside questions that were answered and say SAME.
+        peerId: '33'.repeat(20), displayName: 'Seller C', status: 'DIFF', questionsStatus: 'SAME', parsedProbeCount: 10,
+        probeCount: 10, correctProbeCount: 10, incorrectProbeCount: 0, correctRate: 1,
+        agentId: '3', service: 'Model A', auditId: `0x${'9a'.repeat(32)}`, requestCount: 24,
+        cost: emptyAuditCostSummary(), evidencePath: join(auditPackDirectory, 'evidence.json'),
+        evidenceHash: `0x${'bc'.repeat(32)}`,
+        tokenizerPrecheck: { rule: 'tokenizer-precheck-v1', outcome: 'mismatch', sellerTokens: [190, 170, 170], modelTokens: [141, 130, 145] },
       }], failures: [], skipped: [], cost: emptyAuditCostSummary(),
       consensusEvidencePath: consensusPath,
       referenceIntegrityPaths: [referencePath],
@@ -153,6 +169,10 @@ test('verifier artifacts use model-first epoch directories', async () => {
     assert.match(reportPath, /epochs\/7\/Model_A\/report\.html$/)
     assert.match(report, /^<!doctype html>/)
     assert.match(report, /Seller A \(111111111111…\)/)
+    // A pre-check DIFF names what the seller signed next to what the model counts.
+    assert.match(report, /tokenizer pre-check \(tokenizer-precheck-v1\): signed 193\/176\/176 input tokens where the model counts 141\/130\/145/)
+    // The test that flagged is named also when the questions ran and say otherwise, next to the questions' own result.
+    assert.match(report, /flagged by tokenizer pre-check \(tokenizer-precheck-v1\): signed 190\/170\/170 input tokens where the model counts 141\/130\/145; questions SAME/)
     assert.match(report, /Open audit folder/)
     assert.match(report, /Probe consensus JSON/)
     assert.match(report, /href="#audit-integrity">Audit Integrity<\/a>/)

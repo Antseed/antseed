@@ -1,6 +1,7 @@
 import type { KbfReferenceV1 } from '@antseed/fingerprints'
 import { addAuditCostSummaries, emptyAuditCostSummary, type AuditCostSummaryV1 } from './proxy-evidence.js'
-import { closeCallRule, extensionSets, latestExtension, needsExtension, pooledCloseCallVerdict } from './close-call.js'
+import { auditDecision, closeCallRule, extensionSets, latestExtension, pooledCloseCallVerdict, settleAuditVerdict } from './close-call.js'
+import { readingsOfSummary } from './audit-checks.js'
 import type {
   ModelVerificationExtensionV1,
   ModelVerificationSkip,
@@ -56,7 +57,7 @@ export async function runExtensionRounds(input: {
   // is still a close call. A close call whose set could not run in this run waits for the next run.
   const pendingThisRun = new Set<string>()
   for (let pass = 1; pass <= MAX_EXTENSION_PASSES; pass += 1) {
-    const closeCalls = results.filter((result) => !pendingThisRun.has(result.auditId) && needsExtension(result))
+    const closeCalls = results.filter((result) => !pendingThisRun.has(result.auditId) && auditDecision(result).pending)
     if (closeCalls.length === 0) break
     const finals = await runExtensionPass(input, closeCalls, stats)
     for (const final of finals.values()) if (final.extensionPending) pendingThisRun.add(final.auditId)
@@ -87,6 +88,13 @@ async function runExtensionPass(
 
   const finals = new Map<ModelVerificationTargetResult, ModelVerificationTargetResult>()
   const keepPending = (first: ModelVerificationTargetResult, label: string, reason: string): void => {
+    // A flagged result never waits across runs: its questions read as undecided and its DIFF goes out with the
+    // other flags now. Only a close call with no flag beside it waits for a later run.
+    if (hasTestFlag(first)) {
+      input.log(`extra questions could not run ${label}: ${reason} → another test flagged, so the questions stay undecided and the DIFF goes out now`)
+      finals.set(first, settleAuditVerdict({ ...first, extensionPending: undefined, closeCallClosed: { reason } }))
+      return
+    }
     stats.pending += 1
     input.log(`extra questions could not run ${label}: ${reason} → close call kept; the next run of its audit window extends it, or it is submitted UNDETERMINED when the window closes`)
     finals.set(first, {
@@ -158,10 +166,13 @@ export function combineExtension(
     { stats: extension.stats, probeCount: extension.probeCount },
   ]
   if (extraSets.some((set) => !set.stats)) throw new Error('an earlier extra set has no statistics')
+  // Every set of a close call is decided by one coverage rule: the first set's.
+  if (extension.coverageRule !== first.coverageRule) throw new Error('an extra set decided by another coverage rule than its first set')
   const pooled = pooledCloseCallVerdict(
     { stats: first.stats, probeCount: first.probeCount },
     extraSets as Array<{ stats: NonNullable<ModelVerificationTargetResult['stats']>; probeCount: number }>,
     rule,
+    first.coverageRule,
   )
   if (pooled.verdict === 'UNKNOWN') throw new Error(pooled.verdictReason ?? 'pooled verdict is UNKNOWN')
   // A set whose successful batches lacked verified ResponseAuth cannot count towards a verdict, and
@@ -182,14 +193,26 @@ export function combineExtension(
     cost: extension.cost,
     evidencePath: extension.evidencePath,
     evidenceHash: extension.evidenceHash,
-    firstLook: earlier[0]?.firstLook ?? { status: first.status, pValue: first.stats.pValueBinomial },
+    // Its own earliest request: a confirmation is fresh only by the earliest over every set it pools.
+    ...(extension.firstRequestAt !== undefined ? { firstRequestAt: extension.firstRequestAt } : {}),
+    firstLook: earlier[0]?.firstLook ?? { status: first.questionsStatus ?? first.status, pValue: first.stats.pValueBinomial },
     pooled: { ...pooled.stats, verdict, verdictReason: pooled.verdictReason, ...(extendNext ? { extendNext: true } : {}) },
   }
-  return {
+  // The pooled look is the questions' verdict; the audit's is settled from it and the first set's test records.
+  const questionsOutcome = verdict === 'UNDETERMINED' && !extendNext
+    ? (extension.questionsOutcomeReason ?? extension.outcomeReason ?? first.questionsOutcomeReason ?? first.outcomeReason ?? null) : null
+  return settleAuditVerdict({
     ...firstAudit,
     status: verdict,
-    outcomeReason: verdict === 'UNDETERMINED' && !extendNext ? (extension.outcomeReason ?? first.outcomeReason ?? null) : null,
+    questionsStatus: verdict,
+    outcomeReason: questionsOutcome,
+    questionsOutcomeReason: questionsOutcome,
     cumulativeCost: addAuditCostSummaries(first.cumulativeCost ?? first.cost, extension.cumulativeCost ?? extension.cost),
     ...(earlier.length === 0 ? { extension: record } : { extension2: record }),
-  }
+  })
+}
+
+/** Whether a test other than the questions flagged this audit (its summary's test records). */
+function hasTestFlag(result: ModelVerificationTargetResult): boolean {
+  return readingsOfSummary(result).some((reading) => reading.check !== 'kbf' && reading.outcome === 'flag')
 }

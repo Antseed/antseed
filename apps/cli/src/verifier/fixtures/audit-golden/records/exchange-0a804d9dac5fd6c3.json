@@ -1,0 +1,56 @@
+{
+ "answers": [null,null,null,null,null,null,null,null,null,null],
+ "attemptCosts": [],
+ "attemptCount": 1,
+ "batchIndex": 0,
+ "cost": null,
+ "failureReason": "buyer proxy HTTP 401: {\"error\":{\"message\":\"The API key was deleted\"}}",
+ "matches": [null,null,null,null,null,null,null,null,null,null],
+ "outcomeReason": {
+  "affectedBatchCount": 1,
+  "code": "upstream_credentials_invalid",
+  "nextAction": "seller must repair credentials",
+  "requestId": "<seller: question batch 0 #1>",
+  "retryable": false,
+  "source": "provider",
+  "summary": "The API key was deleted",
+  "totalBatchCount": 1,
+  "upstreamStatus": 401
+ },
+ "probeIds": [
+  "deepseek-v4-pro-probe-1",
+  "deepseek-v4-pro-probe-2",
+  "deepseek-v4-pro-probe-3",
+  "deepseek-v4-pro-probe-4",
+  "deepseek-v4-pro-probe-5",
+  "deepseek-v4-pro-probe-6",
+  "deepseek-v4-pro-probe-7",
+  "deepseek-v4-pro-probe-8",
+  "deepseek-v4-pro-probe-9",
+  "deepseek-v4-pro-probe-10"
+ ],
+ "promptVariantId": "v8",
+ "request": {
+  "bodyBase64": "{\"model\":\"deepseek-v4-pro\",\"messages\":[{\"role\":\"system\",\"content\":\"Provi… (982 characters, sha256 decd8c0d00185eec)",
+  "hash": "0x5dcf79918b893decd32ea2aa719c5a0e28f971bf6038b564d1c34775adf8271b",
+  "headers": {"content-type":"application/json","x-antseed-capture-response-auth-preimages":"1","x-antseed-pin-peer":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"},
+  "method": "POST",
+  "url": "http://127.0.0.1:8390/v1/chat/completions"
+ },
+ "requestIds": ["<seller: question batch 0 #1>"],
+ "response": {
+  "bodyBase64": "{\"error\":{\"message\":\"The API key was deleted\"}}",
+  "hash": "<the hash of this response>",
+  "headers": {"content-type":"application/json"},
+  "statusCode": 401
+ },
+ "responseAuth": {
+  "failureReason": "proxy batch was rejected before a successful authenticated response",
+  "record": null,
+  "requestId": "<seller: question batch 0 #1>",
+  "signedPreimages": null,
+  "status": "missing"
+ },
+ "status": "failed",
+ "timing": {"completedAt":1791331200000,"responseLatencyMs":0,"startedAt":1791331200000}
+}

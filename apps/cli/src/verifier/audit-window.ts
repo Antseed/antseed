@@ -2,7 +2,8 @@ import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import { epochDirectory } from './audit-artifacts.js'
-import type { EpochState } from './epoch-plan.js'
+import type { EpochCell, EpochState } from './epoch-plan.js'
+import { FLIPS_WAITING_FOR_REFERENCE } from './methods/flips/flips.js'
 import { epochCellKey } from './epoch-plan.js'
 import { safeServiceSlug } from './slug.js'
 import { normalized } from './utils.js'
@@ -103,16 +104,29 @@ export function windowIncludesSeller(window: Pick<AuditWindowV1, 'sellers'>, pee
  * or no result yet while no run of the window has completed (its first run was interrupted). A
  * seller still without a result after a completed run was not reachable again, and is done.
  */
-export function auditWindowSellersLeft(window: AuditWindowV1, state: Pick<EpochState, 'cells' | 'manifests'>): string[] {
+export function auditWindowSellersLeft(
+  window: AuditWindowV1,
+  state: Pick<EpochState, 'cells' | 'manifests'> & Partial<Pick<EpochState, 'ordinaryCells'>>,
+  /** Cells (`epochCellKey`) that read done but are still to be audited again: a first look submit would refuse. */
+  recovering?: ReadonlySet<string>,
+): string[] {
+  // Each seller's latest cell, as the planner reads it: a finished confirmation answers a first look still due a retry,
+  // and a close call waiting for its extra questions holds the window. One exception: a confirmation that was not
+  // started because its FLIPS reference was not whole (nothing was asked) holds nothing; the seller's first look counts.
+  const cellOf = (peerId: string) => {
+    const key = epochCellKey(window.model, peerId)
+    const latest = state.cells.get(key)
+    return latest && notStartedForReference(latest) ? state.ordinaryCells?.get(key) : latest
+  }
   const completedRun = state.manifests.some((manifest) => (
     // The opening run started before its window: a model's build comes first.
     (manifest.runId === window.openedByRunId || Date.parse(manifest.startedAt) >= Date.parse(window.openedAt) - 1_000)
     && manifest.modelOrder.some((model) => normalized(model) === normalized(window.model))
   ))
   return window.sellers.filter((peerId) => {
-    const cell = state.cells.get(epochCellKey(window.model, peerId))
+    const cell = cellOf(peerId)
     if (!cell) return !completedRun
-    return cell.action === 'retry' || cell.action === 'extend'
+    return cell.action === 'retry' || cell.action === 'extend' || (recovering?.has(epochCellKey(window.model, peerId)) ?? false)
   })
 }
 
@@ -123,14 +137,16 @@ export function auditWindowSellersLeft(window: AuditWindowV1, state: Pick<EpochS
 export async function closeFinishedAuditWindows(input: {
   evidenceDir: string
   epoch: string
-  state: Pick<EpochState, 'cells' | 'manifests'>
+  state: Pick<EpochState, 'cells' | 'manifests'> & Partial<Pick<EpochState, 'ordinaryCells'>>
   secondsLeftInEpoch: number
   now?: () => number
+  /** First looks still to be recovered (`auditWindowSellersLeft`): their window stays open. */
+  recovering?: ReadonlySet<string>
 }): Promise<AuditWindowV1[]> {
   const closed: AuditWindowV1[] = []
   for (const window of await listAuditWindows(input.evidenceDir, input.epoch)) {
     if (window.state !== 'open') continue
-    const left = auditWindowSellersLeft(window, input.state)
+    const left = auditWindowSellersLeft(window, input.state, input.recovering)
     const givenUp = window.sellers.filter((peerId) => input.state.cells.get(epochCellKey(window.model, peerId))?.givenUp)
     const reason = left.length === 0
       ? 'every seller of the window is finished'
@@ -154,4 +170,14 @@ export async function closeFinishedAuditWindows(input: {
 
 function normalizePeer(peerId: string): string {
   return peerId.trim().replace(/^0x/i, '').toLowerCase()
+}
+
+/**
+ * A confirmation not started because its FLIPS reference was not whole this run: the auditor's attempt, nothing asked.
+ * Read from the mark a test leaves when it does not start an audit (`AuditNotStarted`), or, for a failure written
+ * before that mark, from its text.
+ */
+export function notStartedForReference(cell: Pick<EpochCell, 'state' | 'blame' | 'reason' | 'notStartedBy'>): boolean {
+  return cell.state === 'failed' && cell.blame === 'auditor'
+    && (cell.notStartedBy !== undefined || (cell.reason ?? '').includes(FLIPS_WAITING_FOR_REFERENCE))
 }

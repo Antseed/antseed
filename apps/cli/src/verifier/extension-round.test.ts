@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { computeKbfVerdict, type FingerprintStats, type KbfReferenceV1 } from '@antseed/fingerprints'
-import { needsExtension, stageOneVerdict } from './close-call.js'
+import { auditDecision, needsExtension, settleAuditVerdict, stageOneVerdict } from './close-call.js'
 import { combineExtension, runExtensionRounds } from './extension-round.js'
 import { finalAuditVerdict } from './model-audit.js'
 import type { ModelVerificationSkip, ModelVerificationTargetResult } from './model-run.js'
@@ -168,6 +168,41 @@ test('a close call stays pending when its extra questions cannot run, and is ext
   assert.equal(later.outcome.results[0]!.auditId, failed.auditId)
   assert.ok(later.outcome.results[0]!.extension)
   assert.ok(since)
+})
+
+test('a flagged close call never waits across runs: without its extra set its questions are undecided and its DIFF goes out', async () => {
+  // A close call beside a pre-check flag whose extra questions cannot run in this run.
+  const flagged = { ...audit('d', 22), tokenizerPrecheck: { rule: 'tokenizer-precheck-v1', outcome: 'mismatch' as const, sellerTokens: [165, 169, 162], modelTokens: [103, 106, 101] } }
+  const { outcome, logs } = await run({ results: [flagged], exhausted: new Set([flagged.peerId]) })
+  const [result] = outcome.results as [ModelVerificationTargetResult]
+  assert.equal(outcome.stats.pending, 0)
+  assert.equal(result.extensionPending, undefined)
+  assert.match(result.closeCallClosed!.reason, /NO_EPOCH_QUESTION_SET/)
+  assert.equal(result.questionsStatus, 'UNDETERMINED')
+  assert.equal(result.status, 'DIFF')
+  assert.equal(finalAuditVerdict(result), 'DIFF', 'submitted now, with the pre-check\'s flag')
+  assert.ok(logs.some((line) => line.includes('the DIFF goes out now')))
+  // Extended in its run, it is pooled like any close call, and the pre-check's flag still makes it a DIFF.
+  const extended = await run({ results: [flagged], extensionWrong: { [flagged.peerId]: 10 } })
+  const [pooled] = extended.outcome.results as [ModelVerificationTargetResult]
+  assert.ok(pooled.extension)
+  assert.equal(pooled.status, 'DIFF')
+  assert.equal(pooled.questionsStatus, pooled.extension.pooled.verdict)
+})
+
+test('an undecided confirmation is final for its attempt, also when its questions are a close call', async () => {
+  // A confirmation of a cap DIFF whose cap check had no result, beside a close call of its questions.
+  const undecided = settleAuditVerdict({
+    ...audit('f', 22), confirming: ['output-cap'],
+    outputCap: { rule: 'output-cap-v1', outcome: 'inconclusive' as const, reason: 'no reading', asks: [] },
+  } as ModelVerificationTargetResult)
+  assert.equal(undecided.status, 'UNDETERMINED')
+  assert.equal(undecided.outcomeReason?.code, 'confirmation_undecided')
+  assert.equal(auditDecision(undecided).pending, false, 'not filed as a waiting close call')
+  assert.notEqual(finalAuditVerdict(undecided), null)
+  const { outcome } = await run({ results: [undecided] })
+  assert.equal(outcome.stats.extended, 0, 'its questions are not extended')
+  assert.equal(outcome.stats.pending, 0)
 })
 
 test('a close call whose epoch set has no extra set stays waiting; nothing builds new questions for it', async () => {

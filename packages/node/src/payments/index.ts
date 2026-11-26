@@ -54,6 +54,11 @@ export {
   VERIFICATION_REWARDS_OFF,
   validateAuditorProfile,
 } from './evm/verifier-client.js';
+// The verifier's tokenizer pre-check: which probe text counts are compared on, and the input tokens a seller signed
+export { isSafeProbe, PROBE_GUARD_RANGES } from './evm/tokenizer-probe-guard.js';
+export { promptTokensOfBody } from './evm/tokenizer-usage.js';
+export { responseBodyInputUsage, signedResponseInputUsage } from './evm/tokenizer-signed-usage.js';
+export type { SignedInputUsage } from './evm/tokenizer-signed-usage.js';
 export {
   DEFAULT_LOG_QUERY_CHUNK_BLOCKS,
   queryInBlockChunks,

@@ -79,3 +79,24 @@ test('discovery reports an upstream error when every strategy gets the same HTTP
     probe: async () => ({ ok: false, status: 404, failure: 'model not found' }),
   }), /refused every request for m with HTTP 404/)
 })
+
+test('discovery records reasoning a reply shows and what it bills, and still decides on the reasoning tokens alone', async () => {
+  const { billedOutputTokensOf, reasoningShownInReply } = await import('@antseed/fingerprints')
+  // A host that sends its reasoning in a field of its own while itemising none.
+  const body = JSON.stringify({
+    choices: [{ message: { role: 'assistant', content: TEN, reasoning_content: 'Let me think about each question first.' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 120, completion_tokens: 445, completion_tokens_details: { reasoning_tokens: 0 } },
+  })
+  assert.equal(reasoningShownInReply(body), true)
+  assert.equal(billedOutputTokensOf(body), 445)
+  assert.equal(reasoningShownInReply(JSON.stringify({ choices: [{ message: { content: TEN, reasoning_content: '  ' } }] })), false, 'blank is no reasoning')
+  assert.equal(reasoningShownInReply('not json'), false)
+  assert.equal(billedOutputTokensOf(JSON.stringify({ usage: { completion_tokens: -1 } })), undefined)
+  const result = await discoverThinkingSuppression({
+    model: 'glm-5.3', label: 'seller', supportsPrefill: true,
+    probe: scripted({ 'reasoning-effort-none': { ok: true, content: TEN, reasoningTokens: 0, reasoningShown: true, billedOutputTokens: 445 } }),
+  })
+  // Recorded only: the strategy is the one the reasoning tokens give, as before, with the signal kept on its attempt.
+  assert.equal(result.strategy, 'reasoning-effort-none')
+  assert.deepEqual([result.attempts[0]!.reasoningShown, result.attempts[0]!.billedOutputTokens], [true, 445])
+})

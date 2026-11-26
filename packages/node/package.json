@@ -1,6 +1,6 @@
 {
   "name": "@antseed/node",
-  "version": "0.2.192",
+  "version": "0.2.193",
   "description": "Antseed Network protocol SDK — P2P inference marketplace",
   "type": "module",
   "files": [
