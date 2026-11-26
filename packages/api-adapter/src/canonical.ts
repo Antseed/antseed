@@ -8,12 +8,10 @@ import {
   parseJsonSafe,
   reasoningUsageFields,
   responsesEndTurn,
-  responsesReasoningText,
+  responsesReasoningTextFor,
   toStringContent,
   type ReportedUsage,
 } from './utils.js';
-
-const RESPONSES_FINAL_ANSWER_TOOL_RE = /(?:^|\n\s*)tool\s+final_answer\s*\{\s*\}\s*(?:\n|$)/g;
 
 export interface CanonicalFunctionTool {
   name: string;
@@ -174,9 +172,12 @@ export function renderCanonicalRequestToOpenAIChatBody(
   options: {
     toolCallContent?: '' | null;
     groupAssistantToolCallsWithPreviousMessage?: boolean;
+    /** Send an assistant turn's reasoning back as `reasoning_content`, as chat models that write it read it. */
+    reasoningContent?: boolean;
   } = {},
 ): Record<string, unknown> {
   const messages: unknown[] = [];
+  const reasoningOf = (item: { reasoning?: string }): string | undefined => (options.reasoningContent ? item.reasoning : undefined);
   if (request.instructions !== undefined && request.instructions.length > 0) {
     messages.push({ role: 'system', content: request.instructions });
   }
@@ -189,14 +190,14 @@ export function renderCanonicalRequestToOpenAIChatBody(
         if (isAssistantMessageWithToolCalls(previous)) {
           const existingContent = typeof previous.content === 'string' ? previous.content : '';
           previous.content = existingContent.length > 0 && text.length > 0 ? `${existingContent}\n${text}` : existingContent || text;
-          addReasoningContent(previous, item.reasoning);
+          addReasoningContent(previous, reasoningOf(item));
           continue;
         }
       }
       messages.push({
         role: item.role,
         content: renderCanonicalContentToOpenAIChat(item.content),
-        ...(item.role === 'assistant' && item.reasoning ? { reasoning_content: item.reasoning } : {}),
+        ...(item.role === 'assistant' && reasoningOf(item) ? { reasoning_content: item.reasoning } : {}),
       });
       continue;
     }
@@ -213,13 +214,13 @@ export function renderCanonicalRequestToOpenAIChatBody(
         && (options.groupAssistantToolCallsWithPreviousMessage || Array.isArray(previous.tool_calls))) {
         const toolCalls = Array.isArray(previous.tool_calls) ? previous.tool_calls : [];
         previous.tool_calls = [...toolCalls, toolCall];
-        addReasoningContent(previous, item.reasoning);
+        addReasoningContent(previous, reasoningOf(item));
         continue;
       }
       messages.push({
         role: 'assistant',
         content: options.toolCallContent !== undefined ? options.toolCallContent : '',
-        ...(item.reasoning ? { reasoning_content: item.reasoning } : {}),
+        ...(reasoningOf(item) ? { reasoning_content: item.reasoning } : {}),
         tool_calls: [toolCall],
       });
       continue;
@@ -564,51 +565,31 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   }
 
   const input = body.input;
-  const normalizedInput = Array.isArray(input)
-    ? input.map((item) => {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
-      const msg = item as Record<string, unknown>;
-      if (msg.type !== 'message' || msg.role !== 'assistant' || !Array.isArray(msg.content)) return item;
-      const text = msg.content.map((part) => {
-        if (!part || typeof part !== 'object') return '';
-        const value = (part as Record<string, unknown>).text;
-        return typeof value === 'string' ? value : '';
-      }).join('');
-      if (!RESPONSES_FINAL_ANSWER_TOOL_RE.test(text)) return item;
-      return {
-        ...msg,
-        content: [{
-          type: 'output_text',
-          text: text.replace(RESPONSES_FINAL_ANSWER_TOOL_RE, '').trim(),
-          ...(Array.isArray(msg.annotations) ? { annotations: msg.annotations } : {}),
-        }],
-      };
-    })
-    : input;
   if (typeof input === 'string') {
     request.input.push({ type: 'message', role: 'user', content: [{ type: 'text', text: input }] });
-  } else if (Array.isArray(normalizedInput)) {
-    // A Responses client sends a reasoning item back before the message and calls it led to.
-    // Its text rides on that assistant output; reasoning nothing follows is dropped.
+  } else if (Array.isArray(input)) {
+    // A Responses client sends a reasoning item back before the message and calls it led to. When the
+    // requested model wrote it, its text rides on that assistant output; reasoning nothing follows is dropped.
     let reasoning = '';
     const takeReasoning = (): { reasoning?: string } => {
       const taken = reasoning;
       reasoning = '';
       return taken.length > 0 ? { reasoning: taken } : {};
     };
-    for (const item of normalizedInput) {
+    for (const item of input) {
       if (!item || typeof item !== 'object') continue;
       const msg = item as Record<string, unknown>;
       const type = typeof msg.type === 'string' ? msg.type : '';
 
       if (type === 'reasoning') {
-        const text = responsesReasoningText(msg);
+        const text = responsesReasoningTextFor(msg, request.model);
         if (text.length > 0) reasoning = reasoning.length > 0 ? `${reasoning}\n${text}` : text;
         continue;
       }
+      // Any other item without a role (a tool output, a built-in tool call) ends the reasoning's turn.
+      if (type !== 'function_call' && typeof msg.role !== 'string') reasoning = '';
 
       if (type === 'function_call_output') {
-        reasoning = '';
         request.input.push({
           type: 'function_call_output',
           callId: typeof msg.call_id === 'string' ? msg.call_id : '',
@@ -840,7 +821,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
   const text = textItems.map((item) => item.text).join('');
   const phase = textItems.find((item) => item.phase)?.phase;
 
-  if (response.reasoning) output.push(openAIResponsesReasoningItem(response.id, response.reasoning));
+  if (response.reasoning) output.push(openAIResponsesReasoningItem(response.id, response.reasoning, response.model));
 
   if (text.length > 0) {
     output.push({

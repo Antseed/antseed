@@ -126,6 +126,13 @@ describe('Responses request sent to a chat model', () => {
     expect((body.messages as Array<{ role: string }>).map((m) => m.role)).toEqual(['user']);
   });
 
+  it('passes assistant text that mentions final_answer through unchanged', () => {
+    const text = 'Done.\ntool final_answer {}';
+    const messages = toChat({ input: [user('Hi.'), assistant(text), user('Next.')] }).messages as Array<Record<string, unknown>>;
+
+    expect(messages[1]).toEqual({ role: 'assistant', content: text });
+  });
+
   it('passes a client tool named final_answer through', () => {
     const finalAnswer = { type: 'function', name: 'final_answer', description: 'Report the result', parameters: { type: 'object' } };
     const body = toChat({ input: [user('Hi.')], tools: [EXEC_TOOL, finalAnswer] });

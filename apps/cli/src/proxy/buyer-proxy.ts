@@ -5770,6 +5770,10 @@ export class BuyerProxy {
           return { done: true }
         }
       }
+    } else if (requestProtocol === 'openai-responses') {
+      // Earlier turns of the thread may have been translated from a chat seller. A Responses seller cannot
+      // resolve the reasoning items made there; this drops them.
+      requestForPeer = transformRequest(requestForPeer, { from: requestProtocol, to: requestProtocol })?.request ?? requestForPeer
     }
 
     if (DEBUG()) {

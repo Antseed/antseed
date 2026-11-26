@@ -690,9 +690,12 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   let outputStarted = false;
   let outputDone = false;
   let textBuffer = '';
-  // Reasoning the model wrote before its answer, as the first output item.
-  let reasoningStarted = false;
+  // Reasoning the model writes before its answer: the first output item, streamed as it comes
+  // (a long think would otherwise leave the client's stream silent) and closed when the answer starts.
+  let reasoning: 'none' | 'open' | 'closed' = 'none';
   let reasoningBuffer = '';
+  let reasoningResponseId = '';
+  let reasoningModel = '';
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
   const createdAt = Math.floor(Date.now() / 1000);
@@ -708,9 +711,19 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
 
   const getResponseId = (): string => responseId || fallbackResponsesId(options.fallbackModel);
   const getMessageId = (): string => openAIResponsesMessageId(getResponseId());
-  const getMessageOutputIndex = (): number => (reasoningStarted ? 1 : 0);
+  const getMessageOutputIndex = (): number => (reasoning === 'none' ? 0 : 1);
   const getToolOutputIndex = (index: number): number => index + getMessageOutputIndex() + (outputStarted ? 1 : 0);
-  const getReasoningItem = (): Record<string, unknown> => openAIResponsesReasoningItem(getResponseId(), reasoningBuffer);
+  const getReasoningItem = (): Record<string, unknown> => openAIResponsesReasoningItem(reasoningResponseId, reasoningBuffer, reasoningModel);
+  const reasoningPart = (emitted: Array<{ event?: string; data: unknown | string }>, event: string, data: Record<string, unknown>): void => {
+    pushEvent(emitted, event, { output_index: 0, item_id: getReasoningItem().id, content_index: 0, ...data });
+  };
+  const closeReasoning = (emitted: Array<{ event?: string; data: unknown | string }>): void => {
+    if (reasoning !== 'open') return;
+    reasoning = 'closed';
+    reasoningPart(emitted, 'response.reasoning_text.done', { text: reasoningBuffer });
+    reasoningPart(emitted, 'response.content_part.done', { part: { type: 'reasoning_text', text: reasoningBuffer } });
+    pushEvent(emitted, 'response.output_item.done', { output_index: 0, item: getReasoningItem() });
+  };
 
   const ensureResponseCreated = (
     emitted: Array<{ event?: string; data: unknown | string }>,
@@ -770,6 +783,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         }
 
         if (event.type === 'text_delta') {
+          closeReasoning(emitted);
           ensureTextOutputStarted(emitted);
           textBuffer += event.delta;
           pushEvent(emitted, 'response.output_text.delta', {
@@ -784,17 +798,24 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'reasoning_delta') {
           ensureResponseCreated(emitted, null);
-          // Only reasoning that comes before the answer has a place before it in the client's history.
-          if (!reasoningStarted && (outputStarted || toolCalls.size > 0)) continue;
-          if (!reasoningStarted) {
-            reasoningStarted = true;
+          // Only reasoning before the answer has a place before it in the client's history: once text or
+          // a tool call has started, more reasoning is dropped.
+          if (reasoning === 'closed' || outputStarted || toolCalls.size > 0) continue;
+          if (reasoning === 'none') {
+            if (event.delta.trim().length === 0) continue;
+            reasoning = 'open';
+            reasoningResponseId = getResponseId();
+            reasoningModel = responseModel;
             pushEvent(emitted, 'response.output_item.added', { output_index: 0, item: { ...getReasoningItem(), content: [] } });
+            reasoningPart(emitted, 'response.content_part.added', { part: { type: 'reasoning_text', text: '' } });
           }
           reasoningBuffer += event.delta;
+          reasoningPart(emitted, 'response.reasoning_text.delta', { delta: event.delta });
           continue;
         }
 
         if (event.type === 'tool_call_start') {
+          closeReasoning(emitted);
           ensureResponseCreated(emitted, null);
           const toolCall = {
             index: event.index,
@@ -842,7 +863,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           if (!outputDone) {
             outputDone = true;
             const msgId = getMessageId();
-            if (reasoningStarted) pushEvent(emitted, 'response.output_item.done', { output_index: 0, item: getReasoningItem() });
+            closeReasoning(emitted);
             if (outputStarted) {
               pushEvent(emitted, 'response.output_text.done', {
                 output_index: getMessageOutputIndex(),
@@ -902,7 +923,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               status: 'completed',
               created_at: createdAt,
               output: [
-                ...(reasoningStarted ? [getReasoningItem()] : []),
+                ...(reasoning === 'none' ? [] : [getReasoningItem()]),
                 ...(outputStarted ? [{
                   type: 'message' as const,
                   id: getMessageId(),

@@ -10,6 +10,7 @@ import {
 } from './canonical.js';
 import {
   encodeJson,
+  isAdapterReasoningItem,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   parseJsonObject,
@@ -49,6 +50,9 @@ const REQUEST_RENDERERS: Partial<Record<ServiceApiProtocol, RequestRenderer>> = 
     {
       toolCallContent: options.from === 'openai-responses' ? null : undefined,
       groupAssistantToolCallsWithPreviousMessage: groupsAssistantToolCalls(options.from),
+      // A model's own earlier reasoning, which a Responses client returns, goes back to it (see
+      // normalizeOpenAIResponsesRequestBody); a plain rendering of the request leaves it out.
+      reasoningContent: options.from === 'openai-responses',
     },
   ),
   'openai-responses': (request, options) => renderCanonicalRequestToOpenAIResponsesBody(
@@ -144,7 +148,11 @@ function repairLegacyResponsesItemIds(body: Record<string, unknown>): Record<str
   if (!Array.isArray(body.input)) return null;
 
   let changed = false;
-  const input = body.input.map((item) => {
+  // A Responses seller cannot resolve a reasoning item this adapter made from a chat model's reasoning,
+  // nor, without stored state (`store: true`), one that has no `encrypted_content`. Both are dropped.
+  const kept = body.input.filter((item) => !isUnresolvableReasoningItem(item, body.store === true));
+  if (kept.length !== body.input.length) changed = true;
+  const input = kept.map((item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
     const record = item as Record<string, unknown>;
     if (typeof record.id !== 'string') return item;
@@ -172,6 +180,14 @@ function repairLegacyResponsesItemIds(body: Record<string, unknown>): Record<str
   });
 
   return changed ? { ...body, input } : null;
+}
+
+function isUnresolvableReasoningItem(item: unknown, stored: boolean): boolean {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+  const record = item as Record<string, unknown>;
+  if (record.type !== 'reasoning') return false;
+  if (isAdapterReasoningItem(record)) return true;
+  return !stored && !(typeof record.encrypted_content === 'string' && record.encrypted_content.length > 0);
 }
 
 function headersForTargetProtocol(

@@ -40,30 +40,52 @@ export function openAIResponsesMessageId(responseId: string): string {
 }
 
 /**
- * A chat model's reasoning as a Responses `reasoning` item. The text goes in `content` as
- * `reasoning_text`, which a Responses client keeps in its history and sends back, so the next
- * request can return it to the model (see `responsesReasoningText`).
+ * Marks a `reasoning` item this adapter made from a chat model's reasoning. The item's
+ * `encrypted_content`, which a Responses client keeps and sends back unchanged, holds the marker and
+ * the model that wrote the reasoning: the reasoning goes back only to that model.
  */
-export function openAIResponsesReasoningItem(responseId: string, text: string): Record<string, unknown> {
+export const RESPONSES_REASONING_TAG = 'antseed.reasoning.v1:';
+
+/**
+ * A chat model's reasoning as a Responses `reasoning` item: the text as `reasoning_text` content,
+ * which a Responses client keeps in its history and sends back, tagged with the model that wrote it.
+ */
+export function openAIResponsesReasoningItem(responseId: string, text: string, model: string): Record<string, unknown> {
   return {
     type: 'reasoning',
     id: `rs_${responseId}_0`,
     summary: [],
     content: [{ type: 'reasoning_text', text }],
+    encrypted_content: `${RESPONSES_REASONING_TAG}${model}`,
   };
 }
 
+/** Whether a Responses input item is a reasoning item this adapter made (see `openAIResponsesReasoningItem`). */
+export function isAdapterReasoningItem(item: Record<string, unknown>): boolean {
+  return item.type === 'reasoning'
+    && typeof item.encrypted_content === 'string'
+    && item.encrypted_content.startsWith(RESPONSES_REASONING_TAG);
+}
+
 /**
- * The reasoning text of a Responses input `reasoning` item: its `reasoning_text` parts. An item that
- * holds only a summary or `encrypted_content` (another provider's opaque state) gives nothing.
+ * The reasoning text of a Responses input `reasoning` item, when this adapter made the item from
+ * `model`'s reasoning. Reasoning another model wrote, and any item the adapter did not make (a
+ * summary, another provider's encrypted state), gives nothing: a model gets back only its own.
  */
-export function responsesReasoningText(item: Record<string, unknown>): string {
-  if (!Array.isArray(item.content)) return '';
+export function responsesReasoningTextFor(item: Record<string, unknown>, model: string | null): string {
+  if (!isAdapterReasoningItem(item) || !Array.isArray(item.content) || model === null) return '';
+  const author = (item.encrypted_content as string).slice(RESPONSES_REASONING_TAG.length);
+  if (comparableModelId(author) !== comparableModelId(model)) return '';
   return item.content
     .filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === 'object')
     .filter((part) => part.type === 'reasoning_text' && typeof part.text === 'string')
     .map((part) => part.text as string)
     .join('');
+}
+
+/** A model id without case or a provider prefix: `moonshotai/Kimi-K3` and `kimi-k3` are one model. */
+function comparableModelId(model: string): string {
+  return model.slice(model.lastIndexOf('/') + 1).trim().toLowerCase();
 }
 
 export function openAIResponsesFunctionCallId(callId: string): string {

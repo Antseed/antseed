@@ -4527,6 +4527,60 @@ test('POST /_antseed/peer-health/clear rejects a malformed peer id', async () =>
   assert.equal(res.statusCode, 400)
 })
 
+// A reasoning item as the adapter makes it from a chat answer of `model-a`.
+const REASONING_ITEM = {
+  type: 'reasoning',
+  id: 'rs_chatcmpl-1_0',
+  summary: [],
+  content: [{ type: 'reasoning_text', text: 'Check the disk first.' }],
+  encrypted_content: 'antseed.reasoning.v1:model-a',
+}
+const REASONING_TURN = [
+  { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'How full is the disk?' }] },
+  REASONING_ITEM,
+  { type: 'function_call', call_id: 'call_1', name: 'run', arguments: '{}' },
+  { type: 'function_call_output', call_id: 'call_1', output: '40%' },
+]
+
+/** The body a pinned peer receives for a non-streamed Responses request for `model`. */
+async function bodySentToPeer(peer: PeerInfo, model: string, input: unknown[]): Promise<Record<string, unknown>> {
+  let captured: Record<string, unknown> | null = null
+  const proxy = makeBuyerProxyWithPeers([peer], [peer])
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
+    captured = parseJsonBody(request.body)
+    return { requestId: request.requestId, statusCode: 500, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"error":{"message":"stop"}}') }
+  }
+  ;(proxy as any)._node.sendRequestStream = async () => { throw new Error('not streamed') }
+  await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/responses',
+    headers: { 'x-antseed-pin-peer': peer.peerId },
+    body: { model, input, tools: [{ type: 'function', name: 'run', parameters: { type: 'object' } }] },
+  }))
+  assert.ok(captured, 'the peer got the request')
+  return captured
+}
+
+test('a Responses request to a chat seller returns reasoning only to the model that wrote it', async () => {
+  const peer = makePeer('a', ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'model-a': ['openai-chat-completions'], 'model-b': ['openai-chat-completions'] } } }
+  const reasoningOf = (body: Record<string, unknown>) =>
+    (body.messages as Array<Record<string, unknown>>).map((m) => m.reasoning_content).filter((r) => r !== undefined)
+
+  assert.deepEqual(reasoningOf(await bodySentToPeer(peer, 'model-a', REASONING_TURN)), ['Check the disk first.'])
+  assert.deepEqual(reasoningOf(await bodySentToPeer(peer, 'model-b', REASONING_TURN)), [])
+})
+
+test('a Responses request to a Responses seller drops reasoning items it cannot resolve', async () => {
+  const peer = makePeer('a', ['openai-responses'])
+  peer.providerServiceApiProtocols = { 'openai-responses': { services: { 'example-model': ['openai-responses'] } } }
+  const encrypted = { type: 'reasoning', id: 'rs_abc', summary: [], encrypted_content: 'opaque' }
+
+  const body = await bodySentToPeer(peer, 'example-model', [...REASONING_TURN, encrypted])
+  assert.deepEqual((body.input as Array<{ type: string; id?: string }>).map((item) => item.id ?? item.type), [
+    'message', 'function_call', 'function_call_output', 'rs_abc',
+  ])
+})
+
 test('non-stream transformed responses requests force upstream stream without streaming to client', async () => {
   const peer = makePeer('a', ['openai-responses'])
   peer.providerServiceApiProtocols = {

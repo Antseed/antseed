@@ -140,10 +140,10 @@ selectTargetProtocolForRequest(requestProtocol, supportedProtocols): TargetProto
 ### Requests
 
 ```ts
-transformRequest(request, { from, to }): ServiceApiRequestTransformResult | null
+transformRequest(request, { from, to, streamRequested }): ServiceApiRequestTransformResult | null
 ```
 
-`from` and `to` currently support `anthropic-messages`, `openai-chat-completions`, and `openai-responses`. Unsupported protocols return `null`.
+`from` and `to` currently support `anthropic-messages`, `openai-chat-completions`, and `openai-responses`. Unsupported protocols return `null`. A chat model's reasoning reaches a Responses client as a `reasoning` item tagged with the model that wrote it (`encrypted_content: "antseed.reasoning.v1:<model>"`). When the client sends the item back in a request for that same model, its text goes to the model as `reasoning_content`; for any other model, and to a Responses seller, it is dropped.
 
 ### Responses
 
