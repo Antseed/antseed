@@ -249,14 +249,14 @@ function verifyRoles(context, observation, env) {
 // Records
 // ---------------------------------------------------------------------------
 
-/** Recorded from chain state only. */
-function verificationConfiguration(context, observation) {
+/** Recorded from the observed chain state only. */
+function verificationConfiguration(observation) {
   return {
     legacyEmissionsV2: observation.v2.address,
     legacyEmissionsRegistry: observation.registry.address,
-    registryChannels: call(context.rpcUrl, observation.registry.address, 'channels()(address)'),
-    escrow: call(context.rpcUrl, observation.registry.address, 'antsToken()(address)'),
-    deposits: call(context.rpcUrl, observation.registry.address, 'deposits()(address)'),
+    registryChannels: observation.registry.channels,
+    escrow: observation.registry.antsToken,
+    deposits: observation.registry.deposits,
     sellerRewardsPool: observation.pool.address,
     sellerUnlockPolicy: observation.unlockPolicy.address,
     legacyEmissionsV2Owner: observation.v2.owner,
@@ -311,7 +311,7 @@ async function recordRelease(context, observation) {
   if (!sameAddress(contracts.legacyEmissionsRegistry.address, observation.registry.address)) {
     throw new Error('The recorded AntseedLegacyEmissionsRegistry is not the registry EmissionsV2 reads');
   }
-  const verification = verificationConfiguration(context, observation);
+  const verification = verificationConfiguration(observation);
   const commit = sourceCommit();
   const record = buildReleaseRecord(context, {
     release: RELEASE,
