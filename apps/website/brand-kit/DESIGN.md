@@ -185,7 +185,7 @@ components:
 
 **Your job is to reproduce this system exactly, not to reinterpret it.** The dot-matrix titles, the green eyebrows, the mono details, the acid light, the arrows on links and the dotted margins are deliberate. Do not invent a colour, size, radius, spacing, shadow or component. If a page needs something this file does not have, build it from the pieces below; if that is impossible, stop and ask (see Open items).
 
-The kit, all paths relative to this file: `@antseed.css` (every value below, as classes; link it, never retype it), `@antseed.js` (theme, menus, 8px rounding), `@starter.html` (every component, marked `<!-- COMPONENT: name -->`; copy from it), `effects/` (the paintings' LED arrival and mosaic), `fonts/`, `logo/`, `@voice.md` (words), `@mascot.md` (the ant), `@watercolour.md` (paintings). Paintings are not in the kit: reference them as `assets/paintings/<name>-day.webp` and `assets/paintings/<name>-night.webp`, or make new ones with `@watercolour.md` and the images in `refs/`.
+The kit, all paths relative to this file: `@antseed.css` (every value below, as classes; link it, never retype it), `@antseed.js` (theme, menus, 8px rounding), `@starter.html` (every component, marked `<!-- COMPONENT: name -->`; copy from it), `effects/` (the paintings' LED arrival and mosaic, the closing band's dot field), `fonts/`, `logo/`, `@voice.md` (words), `@mascot.md` (the ant), `@watercolour.md` (paintings). The kit carries the footer's meadow (`assets/paintings/meadow-loop-day-poster.webp`, `-night-poster.webp`) and the closing band's dot mosaic (`assets/dots/`). Other paintings are not in the kit: reference them as `assets/paintings/<name>-day.webp` and `assets/paintings/<name>-night.webp`, or make new ones with `@watercolour.md` and the images in `refs/`.
 
 ## Overview
 
@@ -304,7 +304,7 @@ A side is on when its variable is `2px`, off at `0px`: 2px round dots on an 8px 
 | `(max-width: 1199px)` | Page hero stacks in the rail: text (padding 96 `--pad` 56), then the painting 16:9, square corners. Intro label column 220. FAQ columns 280 + 1fr. Footer columns 4 × 1fr, logo on its own row. |
 | `(max-width: 1079px)` | Nav links and Docs/Blog hidden; the 44 × 44 burger shows and opens the phone sheet. FAQ questions and footer links get 44px touch rows (no visual change). |
 | `(max-width: 1023px)` | Steps: two columns. |
-| `(max-width: 999px)` | Footer painting height `max(min(123cqw, 520px), 64cqw)`; credit on its own line. |
+| `(max-width: 999px)` | Footer painting height `max(min(123cqw, 520px), 64cqw)`. |
 | `(max-width: 899px)` | Duo stacks: text first, painting 4:3 under it. FAQ one column, 40 gap. |
 | `(max-width: 760px)` | Phone: `--gut: 8px`, `--pad: 20px`; rails 72/72; phone type sizes (table above); buttons 44 tall, padding 0 20, Geist 500 15/20, each row stretched; nav keeps logo, switch, burger (padding-inline `calc((100% - round(down, 100% - 16px, 16px)) / 2 + 20px)`); page hero text padding 72 20 40, painting 4:3; two-option and card rows one column; closing band smaller, no buttons; footer 2 columns. |
 
@@ -363,7 +363,7 @@ They take every `.wash` in the page that carries `--wash` (page hero, two-option
 
 With `prefers-reduced-motion: reduce` neither runs: the paintings are there from the start and nothing follows the pointer. `?still` in the URL stops the arrival only, for captures and the self-check. On touch (no `(hover: hover)`, or a touch or pen pointer) there is no mosaic; the arrival still plays. A theme change mid-arrival recolours the cover; the mosaic reads the other painting on the next hover. Serve the page over http(s): Chrome refuses module scripts from file://, so there neither effect runs. The mosaic reads the painting's pixels, which a canvas allows only for images on the page's own origin; a painting from another origin shows no trail (and no error).
 
-The closing band's dot field and the footer's films still come from the site's scripts in the client repo, `apps/website/static/site/hero/`, loaded as the site's pages load them (`colony/index.html`, last `<script type="module">`), with `.s-page` wrapped in `<div id="sections">` as in starter.html: `dither.js` (`privacyDots(card, { fit: true, step: 16 })` draws the closing band's dot field into `.cta-card .tw`; also the sky dither), `night-loop.js` (footer films), `fireflies.js` (footer fireflies at night), `micro.js`. Do: load them and `effects/`. Don't: draw dots, dither or LED effects with CSS, canvas code of your own, or an image model.
+The closing band's dot field ships in the kit: `effects/closing-dots.js`, ported from the site's own `CtaDots` (same mosaic files, 16px grid, dot radius 2.4, opacity .22 by day and 1 at night, faded behind the words on phones), drawn into `.cta-card .tw`. Load it with the other effects, as starter.html does. The site's moving layer over it (twinkles, warm dots, ants) and the footer's films and fireflies are not in the kit; the footer shows its painted meadow, day and night, from `assets/paintings/`. Do: load `effects/`. Don't: draw dots, dither or LED effects with CSS, canvas code of your own, or an image model.
 
 ## Voice & Content Strategy
 
@@ -544,15 +544,15 @@ Before the footer on every page, with these words unless Antseed gives others.
 .cta-card .s-actions { margin-top: 32px; gap: 24px; justify-content: center; }   /* a primary button and an .s-link */
 ```
 
-Card 1200 × 448 at 1440 (height kept a multiple of 16 by antseed.js). Title on one line: `Ask anything, <span>on any model.</span>` (no `<br>`). Phones: rail 56 0 16, card margin 0 16, padding 72 24, radius 20, title 34/36 −1.4, sub 16 under, 16/24, no buttons. The dot field inside is drawn by the site's `dither.js`; leave `<div class="tw" aria-hidden="true"></div>` empty for it.
+Card 1200 × 448 at 1440 (height kept a multiple of 16 by antseed.js). Title on one line: `Ask anything, <span>on any model.</span>` (no `<br>`). Phones: rail 56 0 16, card margin 0 16, padding 72 24, radius 20, title 34/36 −1.4, sub 16 under, 16/24, no buttons. The dot field inside is drawn by the kit's `effects/closing-dots.js`; leave `<div class="tw" aria-hidden="true"></div>` empty for it.
 
 ### Footer (shared) — `<!-- COMPONENT: footer -->`
 
-Copy the starter's footer as it is: logo, four columns (Product: Antseed Desktop, Gateway, Models & prices, Docs · Network: How it works, Providers, Colony, $ANTS, AntSeedStats ↗ · Resources: Blog, Media kit, Token details, GitHub ↗ · Legal: Terms), the legal row (© 2026 Antseed Foundation · Made with love by AstraOS · X, GitHub, Telegram · System/Light/Dark), the meadow painting.
+Copy the starter's footer as it is: logo, four columns (Product: Antseed Desktop, Gateway, Models & prices, Docs · Network: How it works, Providers, Colony, $ANTS, AntSeedStats ↗ · Resources: Blog, Media kit, Token details, GitHub ↗ · Legal: Terms), the legal row (© 2026 Antseed Foundation · X, GitHub, Telegram · System/Light/Dark; no maker's credit), the meadow painting.
 
 - `.s-foot`: ground `--color-page` (no dots), `container-type: inline-size`, `--scene: 51cqw`; rail padding `72px 0 calc(var(--scene) * .76)` (558.14 at 1440), dotted top only.
 - Columns `352fr 240fr 240fr 240fr 240fr`; logo cell padding 0 48 (logo x 144); columns: Geist 400 14/20 text, 14 apart, head 500 title-grey; link hover green.
-- Legal row: 40 under the columns, dotted top, padding-top 24, gap 24, Geist 400 14/20; © line flex 1 in small; credit in small; social links 32 × 32, radius 8, 18px glyph, 4 apart; theme buttons 28 × 28, radius 7, 2 apart, 16px icons (stroke 1.25), pressed one on `--color-tile` with ring `--color-tile-line`.
+- Legal row: 40 under the columns, dotted top, padding-top 24, gap 24, Geist 400 14/20; © line flex 1 in small; social links 32 × 32, radius 8, 18px glyph, 4 apart; theme buttons 28 × 28, radius 7, 2 apart, 16px icons (stroke 1.25), pressed one on `--color-tile` with ring `--color-tile-line`.
 - Painting: `.scene` absolute at the bottom, left −2cqw, width 110cqw, height `var(--scene)`, mask `linear-gradient(#0000 22%, #0000002e 26%, #00000070 30%, #000000c0 34%, #000000ef 38%, #000 42%)`; two `<img>` (`assets/paintings/meadow-loop-day-poster.webp`, `meadow-loop-night-poster.webp`, 1920 × 1080, object-fit cover, object-position 46% 100%), the night one shown at night. Under 1000: `--scene: max(min(123cqw, 520px), 64cqw)`, left 0, width 100cqw. Phones: rail padding-inline 20, two columns.
 
 ### Glass over a painting
@@ -590,7 +590,7 @@ Field: 40 tall (44 on phones, as the buttons), padding 0 14, radius 10, no borde
 | A sticky or fixed nav | `position: relative`; it scrolls away |
 | Cards with borders, shadows or a fill | A rounded painting with its 1px inset ring and text under it |
 | Pills, tags, badges, icons as decoration | A meta line; a grey title half for a status |
-| Hand-made dots, LED arrival, dither, mosaic | The kit's `effects/arrival.js` and `effects/mosaic.js`; the site's `dither.js` |
+| Hand-made dots, LED arrival, dither, mosaic | The kit's `effects/arrival.js`, `effects/mosaic.js` and `effects/closing-dots.js` |
 | A filter or darkening for night | Each painting's own `-night.webp` in `--wash-d` |
 | Cream page, serif display, italic accents, terracotta | #fcfcfc dotted margin, #ffffff rails, Geist and Geist Pixel Var |
 | A margin between sections, or a section height off the 8px grid | Sections touch; heights rounded by antseed.js |
