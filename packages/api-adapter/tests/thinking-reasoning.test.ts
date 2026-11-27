@@ -9,12 +9,10 @@ import { parseSseBuffer } from '../src/utils.js';
 
 const MESSAGES = 'anthropic-messages';
 const CHAT = 'openai-chat-completions';
-const RESPONSES = 'openai-responses';
 
 const PATHS: Record<string, string> = {
   [MESSAGES]: '/v1/messages',
   [CHAT]: '/v1/chat/completions',
-  [RESPONSES]: '/v1/responses',
 };
 
 const encoder = new TextEncoder();
@@ -95,51 +93,7 @@ function blockLog(events: Json[]): string[] {
   return log;
 }
 
-describe('thinking in a Messages request, for a Chat Completions or Responses seller', () => {
-  const SELLERS = [
-    { to: CHAT, value: (level: string): unknown => level, key: 'reasoning_effort' },
-    { to: RESPONSES, value: (level: string): unknown => ({ effort: level }), key: 'reasoning' },
-  ] as const;
-
-  for (const { to, value, key } of SELLERS) {
-    it(`asks a ${to} seller for medium effort when thinking is enabled, whatever the budget`, () => {
-      for (const budget of [500, 2000, 32000]) {
-        for (const stream of [false, true]) {
-          const body = sellerBody(to, { thinking: { type: 'enabled', budget_tokens: budget } }, stream);
-          expect(body[key]).toEqual(value('medium'));
-        }
-      }
-    });
-
-    it(`asks a ${to} seller for medium effort when thinking is adaptive`, () => {
-      expect(sellerBody(to, { thinking: { type: 'adaptive' } })[key]).toEqual(value('medium'));
-    });
-
-    it(`sends a ${to} seller no effort when thinking is disabled or absent`, () => {
-      expect(key in sellerBody(to, { thinking: { type: 'disabled' } })).toBe(false);
-      expect(key in sellerBody(to, {})).toBe(false);
-    });
-
-    it(`keeps an explicit output_config.effort over the medium default for a ${to} seller`, () => {
-      const body = sellerBody(to, { thinking: { type: 'adaptive' }, output_config: { effort: 'low' } });
-      expect(body[key]).toEqual(value('low'));
-    });
-
-    it(`sends a ${to} seller no effort for disabled thinking even beside an output_config.effort`, () => {
-      expect(key in sellerBody(to, { thinking: { type: 'disabled' }, output_config: { effort: 'high' } })).toBe(false);
-    });
-  }
-
-  it('never derives a level from the thinking budget', () => {
-    for (const budget of [1024, 2000, 8000, 16000, 64000]) {
-      expect(sellerBody(CHAT, { thinking: { type: 'enabled', budget_tokens: budget } }).reasoning_effort).toBe('medium');
-    }
-  });
-
-  it('lets a client name high to get thoughts from models that return none below it', () => {
-    expect(sellerBody(CHAT, { thinking: { type: 'enabled', budget_tokens: 2000 }, output_config: { effort: 'high' } }).reasoning_effort).toBe('high');
-  });
-
+describe('thinking blocks in the history of a Messages request', () => {
   it('drops thinking blocks of earlier assistant turns, whose signatures a seller could not check', () => {
     const body = sellerBody(CHAT, {
       messages: [

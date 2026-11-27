@@ -172,26 +172,20 @@ function buildAnthropicMessagesStream(
   });
 
   for (const [index, block] of content.entries()) {
-    const isText = block.type === 'text';
-    const isThinking = block.type === 'thinking';
-    pushEvent('content_block_start', {
-      type: 'content_block_start',
-      index,
-      content_block: isThinking
-        ? { type: 'thinking', thinking: '' }
-        : isText
-          ? { type: 'text', text: '' }
-          : { type: 'tool_use', id: block.id, name: block.name, input: {} },
-    });
-    pushEvent('content_block_delta', {
-      type: 'content_block_delta',
-      index,
-      delta: isThinking
-        ? { type: 'thinking_delta', thinking: block.thinking }
-        : isText
-          ? { type: 'text_delta', text: block.text }
-          : { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) },
-    });
+    let contentBlock: Record<string, unknown>;
+    let delta: Record<string, unknown>;
+    if (block.type === 'thinking') {
+      contentBlock = { type: 'thinking', thinking: '' };
+      delta = { type: 'thinking_delta', thinking: block.thinking };
+    } else if (block.type === 'text') {
+      contentBlock = { type: 'text', text: '' };
+      delta = { type: 'text_delta', text: block.text };
+    } else {
+      contentBlock = { type: 'tool_use', id: block.id, name: block.name, input: {} };
+      delta = { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) };
+    }
+    pushEvent('content_block_start', { type: 'content_block_start', index, content_block: contentBlock });
+    pushEvent('content_block_delta', { type: 'content_block_delta', index, delta });
     pushEvent('content_block_stop', { type: 'content_block_stop', index });
   }
 
