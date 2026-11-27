@@ -9,6 +9,7 @@ This project uses selective package publishing. Each release entry lists the pub
 ### Fixed
 
 - CLI (`@antseed/cli`): `antseed buyer channels request-close`, `antseed buyer channels withdraw` and `antseed buyer withdraw` now check the buyer's authorized wallet before sending. Closing a channel on chain and withdrawing deposits only accept the authorized wallet, and these commands sign with the buyer wallet. A buyer who had never set one got a bare `NotAuthorized` revert and no way forward. Now the command sends nothing and says what to do: with no authorized wallet set, run `antseed buyer set-authorized-wallet --self`; with a different wallet authorized, send the transaction from that wallet.
+- Buyer (`@antseed/buyer-core`, and the CLI, desktop, gateway and web SDK through it): a buyer no longer gets stuck on a seller after a replacement payment channel failed to open. When the seller's reserve for the new channel timed out, the seller kept serving the old channel and the buyer kept retrying it, so every request to that seller failed with `payment_negotiation_failed` ("The seller is still waiting for payment of earlier requests on this channel") until the buyer restarted. The buyer now sends the new channel's reserve again, so the seller closes the old channel and opens the new one. A new channel that can't be re-sent is replaced with a fresh one.
 ## 2026-11-26 — CLI 0.1.263, Desktop 0.2.97
 
 ### Packages
