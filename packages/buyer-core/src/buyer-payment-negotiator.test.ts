@@ -245,6 +245,27 @@ describe('BuyerPaymentNegotiator', () => {
       expect(now - 1_000_000).toBeGreaterThanOrEqual(15_000);
     });
 
+    it('falls back to the opening reserve when the AuthAck is lost and the seller tops up only after the create', async () => {
+      const { negotiator, bpm, getSession } = makeNegotiator({ acked: false });
+      getSession.mockImplementation(async () => ({ deposit: 1_000_000n, status: 1 }));
+      let now = 1_000_000;
+      const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+      bpm.waitForOneOffAck.mockImplementation(async () => {
+        now += 1_000;
+        return false;
+      });
+
+      try {
+        await negotiator.openOneOffChannelForRequest(peer, connection, requestId, plan());
+      } finally {
+        clock.mockRestore();
+      }
+
+      expect(bpm.confirmOneOffChannelOnChain).toHaveBeenCalledWith(channelId, 1_000_000n, 1_000_000n);
+      // Longer than the full-reserve grace: an older seller acknowledges only after its topUp.
+      expect(now - 1_000_000).toBeGreaterThanOrEqual(30_000);
+    });
+
     it('waits for the AuthAck when the reserve is on-chain before the seller registers it', async () => {
       const { negotiator, bpm, getSession } = makeNegotiator({ acked: false });
       let polls = 0;
