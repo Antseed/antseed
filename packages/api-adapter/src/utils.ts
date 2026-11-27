@@ -605,8 +605,13 @@ export function isEncryptedReasoning(message: Record<string, unknown>, field: un
 
 /** How many characters at the end of `text` could be the start of the encrypted-reasoning marker. */
 function possibleMarkerStartLength(text: string): number {
-  for (let length = Math.min(text.length, ENCRYPTED_REASONING_PREFIX.length - 1); length > 0; length--) {
-    if (ENCRYPTED_REASONING_PREFIX.startsWith(text.slice(text.length - length))) return length;
+  return partialSuffixLength(text, ENCRYPTED_REASONING_PREFIX);
+}
+
+/** How many characters at the end of `text` could be the start of `marker`: what a stream holds back. */
+export function partialSuffixLength(text: string, marker: string): number {
+  for (let length = Math.min(text.length, marker.length - 1); length > 0; length--) {
+    if (marker.startsWith(text.slice(text.length - length))) return length;
   }
   return 0;
 }
@@ -779,7 +784,6 @@ export interface ChatStreamCallbacks {
   /** A piece of the model's thoughts (`delta.reasoning_content`, or `delta.reasoning` where a seller names it so). Never called with an empty piece. */
   onReasoning?(delta: string): void;
   onText(delta: string): void;
-  onReasoning?(delta: string): void;
   onToolCallStart(index: number, id: string, name: string): void;
   onToolCallDelta(index: number, id: string, argumentsDelta: string): void;
   onFinish(info: ChatStreamFinishInfo): void;

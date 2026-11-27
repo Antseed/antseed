@@ -49,7 +49,6 @@ type CanonicalStreamEvent =
   | { type: 'response_start'; id: string; model: string; usage: ReportedUsage }
   | { type: 'reasoning_delta'; delta: string }
   | { type: 'text_delta'; delta: string }
-  | { type: 'reasoning_delta'; delta: string }
   | { type: 'tool_call_start'; index: number; id: string; name: string; namespace?: string }
   | { type: 'tool_call_delta'; index: number; argumentsDelta: string }
   | {

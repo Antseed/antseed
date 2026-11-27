@@ -5,6 +5,8 @@
  * the middle of an answer, in code, or in an explanation of the tags is never touched.
  */
 
+import { partialSuffixLength } from './utils.js';
+
 const THINK_TAGS = ['think', 'mm:think'] as const;
 
 export interface ThinkMarkupPiece {
@@ -128,12 +130,4 @@ export function createLeadingThinkMarkupFilter(): LeadingThinkMarkupFilter {
       return [{ kind: open && !asText ? 'reasoning' : 'text', text: rest }];
     },
   };
-}
-
-/** How many characters at the end of `text` could be the start of `tag`. */
-function partialSuffixLength(text: string, tag: string): number {
-  for (let length = Math.min(text.length, tag.length - 1); length > 0; length--) {
-    if (tag.startsWith(text.slice(text.length - length))) return length;
-  }
-  return 0;
 }
