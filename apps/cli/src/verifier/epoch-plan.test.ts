@@ -568,6 +568,26 @@ test('giving up a retry: only once it is due, and only when the seller does not 
   assert.deepEqual(decided.entries, decided.added)
 })
 
+test('giving up a retry: a seller that offers the model but would be skipped is given up once due, and gets it back only when auditable', () => {
+  const { cell } = retryCell()
+  const decide = (nowSeconds: number, refusal: string | null) => decideRetryGiveUps({
+    cells: [cell], nowSeconds, offersModel: () => true, refusal: () => refusal, windowClosed: () => false,
+  })
+  const priced = 'priced $3/$15 per 1M, above the m reference $2/$10 · not audited'
+  assert.equal(decide(dueAt - 1, priced).added.length, 0)
+  assert.equal(decide(dueAt, null).added.length, 0)
+  const decided = decide(dueAt, priced)
+  assert.equal(decided.added[0]?.peerId, GONE)
+  assert.equal(decided.added[0]!.reason, `its retry was due and a run would skip it: ${priced}`)
+
+  const givenUp = { ...cell, action: 'done' as const, givenUp: decided.added[0]! }
+  const again = (refusal: string | null) => decideRetryGiveUps({
+    cells: [givenUp], nowSeconds: dueAt, offersModel: () => true, refusal: () => refusal, windowClosed: () => false,
+  })
+  assert.deepEqual(again(priced), { entries: [decided.added[0]!], added: [], restored: [] })
+  assert.deepEqual(again(null), { entries: [], added: [], restored: [decided.added[0]!] })
+})
+
 test('giving up a retry: a cell with no known last attempt is left alone', () => {
   const { cell } = retryCell()
   const decided = decideRetryGiveUps({
