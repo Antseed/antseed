@@ -10,7 +10,7 @@ import {
   type NamespacedToolNames,
 } from './canonical.js';
 import { stripLeadingThinkMarkup } from './think-markup.js';
-import { encodeJson, encodeText, parseJsonObject, reasoningUsageFields, type ReportedUsage } from './utils.js';
+import { encodeJson, encodeText, parseJsonObject, reasoningUsageFields, responsesEndTurn, type ReportedUsage } from './utils.js';
 
 export interface ServiceApiResponseTransformOptions {
   from: ServiceApiProtocol;
@@ -87,13 +87,15 @@ export function transformResponse(
 
 /**
  * The answer without think markup a seller leaked at the start of its text (see `think-markup.ts`). A leading
- * block's text is added to the reasoning; text left empty is dropped.
+ * block's text is added to the reasoning; text left empty is dropped. A block that never closed is thinking
+ * only when the answer was cut off or went on to call a tool: when the turn ended there, it is the answer.
  */
 function withoutLeadingThinkMarkup(response: CanonicalLlmResponse, requestedModel: string | null): CanonicalLlmResponse {
   const first = response.output.findIndex((item) => item.type === 'text');
   if (first < 0) return response;
   const item = response.output[first] as Extract<CanonicalLlmResponse['output'][number], { type: 'text' }>;
-  const stripped = stripLeadingThinkMarkup(item.text);
+  const toolCalls = response.output.filter((other) => other.type === 'function_call').length;
+  const stripped = stripLeadingThinkMarkup(item.text, responsesEndTurn(toolCalls, response.stopReason));
   if (stripped.text === item.text) return response;
   const output = [...response.output];
   if (stripped.text.length > 0) output[first] = { ...item, text: stripped.text };

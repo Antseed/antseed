@@ -126,7 +126,8 @@ function withNamespacedCalls(events: CanonicalStreamEvent[], namespacedTools: Na
 
 /**
  * The answer's text events with any think markup a seller leaked at its start taken out: a leading block's
- * text becomes reasoning, and text held back while its start could still be a tag is released before the end.
+ * text becomes reasoning. Text held back while its start could still be a tag is released before a tool call
+ * or the end, whichever comes first, so it keeps its place in the answer.
  */
 function withoutLeadingThinkMarkup(events: CanonicalStreamEvent[], filter: LeadingThinkMarkupFilter): CanonicalStreamEvent[] {
   const out: CanonicalStreamEvent[] = [];
@@ -140,7 +141,10 @@ function withoutLeadingThinkMarkup(events: CanonicalStreamEvent[], filter: Leadi
       pushPieces(filter.push(event.delta));
       continue;
     }
-    if (event.type === 'response_done') pushPieces(filter.end());
+    // Held text goes out before a tool call, where the seller sent it: after the call, a Messages client would
+    // get a second block at index 0 and a Responses client the items out of order.
+    if (event.type === 'tool_call_start') pushPieces(filter.release());
+    if (event.type === 'response_done') pushPieces(filter.end(responsesEndTurn(event.toolCalls.length, event.finishReason)));
     out.push(event);
   }
   return out;

@@ -18,11 +18,19 @@ const frame = (delta: Record<string, unknown>, finish: string | null = null): st
 const TOOL_CALL = frame({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'exec_command', arguments: '{"cmd":"ls"}' } }] });
 
 /** The chat frames of an answer whose content arrives as these deltas. */
-const contentFrames = (deltas: string[], toolCallFirst = false): string[] => [
+const contentFrames = (deltas: string[], toolCallFirst = false, finish = toolCallFirst ? 'tool_calls' : 'stop'): string[] => [
   frame({ role: 'assistant' }),
   ...(toolCallFirst ? [TOOL_CALL] : []),
   ...deltas.map((content) => frame({ content })),
-  frame({}, toolCallFirst ? 'tool_calls' : 'stop'),
+  frame({}, finish),
+];
+
+/** The chat frames of an answer whose content starts with these deltas, then calls a tool with `args`. */
+const contentThenToolFrames = (deltas: string[], args = '{"cmd":"ls"}', finish = 'tool_calls'): string[] => [
+  frame({ role: 'assistant' }),
+  ...deltas.map((content) => frame({ content })),
+  frame({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'exec_command', arguments: args } }] }),
+  frame({}, finish),
 ];
 
 function translateStream(to: ServiceApiProtocol, frames: string[]): Array<{ event: string | null; data: Json }> {
@@ -38,7 +46,7 @@ function translateStream(to: ServiceApiProtocol, frames: string[]): Array<{ even
 /** What a Responses client sees: the streamed text, the streamed reasoning, and the final output's item types. */
 function responsesStream(frames: string[]): { text: string; reasoning: string; items: string[]; final: Json } {
   const events = translateStream('openai-responses', frames);
-  const final = events.find((e) => e.event === 'response.completed')!.data.response as Json;
+  const final = events.find((e) => e.event === 'response.completed' || e.event === 'response.incomplete')!.data.response as Json;
   return {
     text: events.filter((e) => e.event === 'response.output_text.delta').map((e) => e.data.delta).join(''),
     reasoning: events.filter((e) => e.event === 'response.reasoning_text.delta').map((e) => e.data.delta).join(''),
@@ -133,7 +141,7 @@ describe('think markup leaked at the start of a chat answer', () => {
     });
   });
 
-  it('is stripped when the text starts after a tool call, as the captured answers had it', () => {
+  it('is stripped when the text starts after a tool call, as it did in the captured streams', () => {
     const seen = responsesStream(contentFrames(['</mm:think>'], true));
     expect(seen.text).toBe('');
     expect(seen.items).toEqual(['function_call']);
@@ -150,10 +158,60 @@ describe('think markup leaked at the start of a chat answer', () => {
     expect(answer.output_text).toBe('Answer.');
   });
 
-  it('streams a think block that never closes as reasoning', () => {
-    const seen = responsesStream(contentFrames(['<think>Still ', 'thinking</th']));
-    expect(seen.text).toBe('');
-    expect(seen.reasoning).toBe('Still thinking</th');
+  it('is reasoning when it never closes because the answer was cut inside it, streamed and buffered', () => {
+    for (const deltas of [['<think>Still ', 'thinking</th'], ...everySplit('<think>Still thinking</th')]) {
+      const seen = responsesStream(contentFrames(deltas, false, 'length'));
+      expect({ deltas, text: seen.text, reasoning: seen.reasoning }).toEqual({ deltas, text: '', reasoning: 'Still thinking</th' });
+      expect(seen.final.status).toBe('incomplete');
+    }
+    const answer = buffered('openai-responses', { ...chatBody('<think>Still thinking</th'), choices: [{ ...chatBody('').choices[0], message: { role: 'assistant', content: '<think>Still thinking</th' }, finish_reason: 'length' }] });
+    expect(answer.output_text).toBe('');
+    expect(answer.output[0].content).toEqual([{ type: 'reasoning_text', text: 'Still thinking</th' }]);
+  });
+
+  it('is reasoning when a tool call follows a block that never closed, streamed and buffered', () => {
+    const seen = responsesStream(contentThenToolFrames(['<think>Plan ', 'it.']));
+    expect(seen).toMatchObject({ text: '', reasoning: 'Plan it.', items: ['reasoning', 'function_call'] });
+    const answer = buffered('openai-responses', chatBody('<think>Plan it.', undefined, true));
+    expect(answer.output.map((item: Json) => item.type)).toEqual(['reasoning', 'function_call']);
+    expect(answer.output[0].content).toEqual([{ type: 'reasoning_text', text: 'Plan it.' }]);
+  });
+});
+
+describe('text held at the start of an answer when a tool call begins', () => {
+  // Whitespace or the start of a tag could still become think markup; a tool call settles it as text.
+  const HELD = ['\n\n', ' ', '<', '</mm:', '\n</thi'];
+
+  it.each(HELD)('streams %j to a Messages client before the tool call, each block at its own index', (held) => {
+    const events = translateStream('anthropic-messages', contentThenToolFrames([held]));
+    const starts = events.filter((e) => e.event === 'content_block_start').map((e) => [e.data.index, e.data.content_block.type]);
+    expect(starts).toEqual([[0, 'text'], [1, 'tool_use']]);
+    const deltas = events.filter((e) => e.event === 'content_block_delta').map((e) => [e.data.index, e.data.delta.type]);
+    expect(deltas).toEqual([[0, 'text_delta'], [1, 'input_json_delta']]);
+    expect(messagesStream(contentThenToolFrames([held])).text).toBe(held);
+  });
+
+  it.each(HELD)('streams %j to a Responses client before the tool call, in the order the buffered answer has', (held) => {
+    const events = translateStream('openai-responses', contentThenToolFrames([held]));
+    const added = events.filter((e) => e.event === 'response.output_item.added').map((e) => [e.data.output_index, e.data.item.type]);
+    expect(added).toEqual([[0, 'message'], [1, 'function_call']]);
+    const final = events.find((e) => e.event === 'response.completed')!.data.response;
+    const bufferedAnswer = buffered('openai-responses', chatBody(held, undefined, true));
+    expect(final.output.map((item: Json) => item.type)).toEqual(bufferedAnswer.output.map((item: Json) => item.type));
+    expect(final.output_text).toBe(held);
+  });
+
+  it('marks only the cut tool call incomplete when the cap falls inside its arguments', () => {
+    const events = translateStream('openai-responses', contentThenToolFrames(['\n\n'], '{"cmd":', 'length'));
+    const final = events.find((e) => e.event === 'response.incomplete')!.data.response;
+    expect(final.output.map((item: Json) => [item.type, item.status])).toEqual([['message', 'completed'], ['function_call', 'incomplete']]);
+  });
+
+  it('still strips a lone closing tag that comes after the tool call', () => {
+    const seen = responsesStream([
+      frame({ role: 'assistant' }), frame({ content: '\n' }), TOOL_CALL, frame({ content: '</mm:think>' }), frame({}, 'tool_calls'),
+    ]);
+    expect(seen.text).toBe('\n');
   });
 });
 
@@ -168,19 +226,24 @@ describe('think markup that is part of the answer', () => {
     '<think',
     '</mm:thin',
     '<thinkpad> is a laptop.',
+    '<think> is the tag DeepSeek models wrap reasoning in.',
+    '<mm:think>',
     '  \n',
     'Plain answer.',
   ];
 
-  it.each(KEPT)('is kept unchanged, streamed however the deltas cut it: %j', (content) => {
+  it.each(KEPT)('is kept unchanged, streamed however the deltas cut it, and sent once: %j', (content) => {
     for (const deltas of [[content], ...everySplit(content)]) {
-      expect({ deltas, text: responsesStream(contentFrames(deltas)).text }).toEqual({ deltas, text: content });
+      const seen = responsesStream(contentFrames(deltas));
+      expect({ deltas, text: seen.text, reasoning: seen.reasoning, items: seen.items }).toEqual({ deltas, text: content, reasoning: '', items: ['message'] });
       expect({ deltas, text: messagesStream(contentFrames(deltas)).text }).toEqual({ deltas, text: content });
     }
   });
 
-  it.each(KEPT)('is kept unchanged in a buffered answer: %j', (content) => {
-    expect(buffered('openai-responses', chatBody(content)).output_text).toBe(content);
+  it.each(KEPT)('is kept unchanged in a buffered answer, and sent once: %j', (content) => {
+    const answer = buffered('openai-responses', chatBody(content));
+    expect(answer.output_text).toBe(content);
+    expect(answer.output.map((item: Json) => item.type)).toEqual(['message']);
     expect(buffered('anthropic-messages', chatBody(content)).content).toEqual([{ type: 'text', text: content }]);
   });
 
