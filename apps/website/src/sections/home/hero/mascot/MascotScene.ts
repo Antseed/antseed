@@ -5,13 +5,14 @@ import {drawAnt, drawRim} from './draw';
 import {Eyes} from './eyes';
 import {Feeding} from './feeding';
 import {fit} from './fit';
+import {dropsGroundSeed} from './groundSeed';
 import {Leaves} from './leaves';
 import {RIG, TUNING} from './rig';
 
 /* The mascot at the card's bottom right, its legs cut off by the bottom edge. Its eyes follow the pointer within its corner; when the
    seed is held near it, its mouth opens and its arms reach for it; at its mouth it takes the seed and eats it (see Feeding). On a
-   touch screen the seed lies on the ground by it from the start, a tap on the seed or on the mascot feeds it, and its eyes follow a
-   finger held or moving on the card. Drawn at 24 frames a second and only when something changed. */
+   touch screen, or from the first finger on a screen that also hovers, the seed lies on the ground by it, a tap on the seed or on the
+   mascot feeds it, and its eyes follow a finger held or moving on the card. Drawn at 24 frames a second and only when something changed. */
 
 const SHOW_SPEED = 10;          // fade in
 const WATCH_SPEED = 8;
@@ -49,6 +50,7 @@ export class MascotScene {
   private look = {x: 0, y: 0, on: false, panel: false, touch: false};
   private box = {x0: 0, y0: 0, x1: 0, y1: 0};   // the ant's drawn box, card px
   private readonly touchFirst = matchMedia(TOUCH_FIRST).matches;
+  private fingerSeen = false;   // a finger pressed on the card, also on a screen whose main pointer hovers
   private seeded = false;
   private seedScale = 1;
   private lifts = RIG.arms.map(() => 0);
@@ -91,6 +93,7 @@ export class MascotScene {
     const touch = e.pointerType !== 'mouse';
     // a finger only counts on the card, and only while it is down
     if (touch && (!this.els.card.contains(e.target as Node) || (e.type === 'pointermove' && !this.look.on))) return;
+    if (e.pointerType === 'touch' && e.type === 'pointerdown') this.fingerSeen = true;
     const r = this.els.card.getBoundingClientRect();
     this.look = {x: e.clientX - r.left, y: e.clientY - r.top, on: true, panel: this.els.install.contains(e.target as Node), touch};
     this.feeding.tryCatch(performance.now(), this.look, this.canHold());
@@ -152,7 +155,9 @@ export class MascotScene {
     this.box = {x0: fx - bx1 * k, y0: fy + by0 * k, x1: fx - bx0 * k, y1: H};
     groundSeed.style.visibility = this.shown < 0.5 ? 'hidden' : '';
     // a finger has no seed in hand: it drops in by the mascot once the painting's cover is gone, as the mascot fades in
-    if (this.touchFirst && !this.seeded && !this.still && this.shown > 0.9 && !card.querySelector('[data-veil], [data-arrival-cover]')) {
+    // the painting's cover is looked up only while the seed may still drop
+    const covered = (this.touchFirst || this.fingerSeen) && !this.seeded && !!card.querySelector('[data-veil], [data-arrival-cover]');
+    if (dropsGroundSeed({touchFirst: this.touchFirst, fingerSeen: this.fingerSeen, seeded: this.seeded, still: this.still, shown: this.shown, covered})) {
       this.seeded = true; groundSeed.classList.add(this.cls.groundOn);
     }
     this.leaves.update({fx, fy, k, shown: this.shown});
@@ -189,7 +194,7 @@ export class MascotScene {
     const open = meal ? meal.open : this.gape;
 
     // on a touch screen the seed is sized with the mascot (on a phone 0.6 of its desktop size); with a mouse it matches the held one
-    const s = this.touchFirst ? Math.min(1, Math.max(TUNING.minShare, w / TUNING.width)) : 1;
+    const s = this.touchFirst || this.fingerSeen ? Math.min(1, Math.max(TUNING.minShare, w / TUNING.width)) : 1;
     if (s !== this.seedScale) { this.seedScale = s; groundSeed.style.setProperty('--seed-k', String(s)); }
     this.feeding.placeGround(Math.round(fx - bx1 * k - (GROUND.left + SEED_W / 2) * s), Math.round(H - (GROUND.bottom + SEED_H) * s));
     const tips = this.sway ? AntennaSway.tips(now) : [];
