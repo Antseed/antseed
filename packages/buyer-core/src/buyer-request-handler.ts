@@ -336,8 +336,8 @@ export class BuyerRequestHandler {
         cleanupConnectionListener();
         debugWarn(`[BuyerRequest] Request ${req.requestId.slice(0, 8)} aborted by caller`);
         mux.cancelProxyRequest(req.requestId);
-        // The seller is not told, so it may finish the generation and bill it: bound that by what the request
-        // allows. Only when the caller gave the request up (see RequestExecutionOptions.signal): a timeout or a
+        // The seller is told and stops, billing what reached the buyer; one that predates cancelling may
+        // finish the generation and bill it: bound that by what the request allows. Only when the caller gave the request up (see RequestExecutionOptions.signal): a timeout or a
         // closed connection is the seller's to cause, and counting it would pay a seller for answering nothing.
         const callerGaveUp = (abortSignal?.reason as { name?: unknown } | undefined)?.name === 'AbortError';
         if (requestSent && callerGaveUp && negotiator && !isFreeService) {

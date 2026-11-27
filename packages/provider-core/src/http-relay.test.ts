@@ -1267,3 +1267,54 @@ describe('HttpRelay', () => {
     });
   });
 });
+
+describe('HttpRelay cancel', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it('stops the upstream stream when the request is cancelled, without retrying', async () => {
+    let upstreamSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      upstreamSignal = init.signal ?? undefined;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'));
+          // The rest never comes unless the request is cancelled.
+          init.signal?.addEventListener('abort', () => controller.error(init.signal!.reason), { once: true });
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const chunks: SerializedHttpResponseChunk[] = [];
+    const cancel = new AbortController();
+    const relay = new HttpRelay(makeConfig({ maxRetries: 3 }), {
+      onResponse: () => undefined,
+      onResponseChunk: (chunk) => {
+        chunks.push(chunk);
+        if (chunks.length === 1) cancel.abort(new Error('Cancelled by the buyer'));
+      },
+    });
+
+    await relay.handleRequest(makeRequest(), cancel.signal);
+
+    expect(upstreamSignal?.aborted).toBe(true);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(chunks.at(-1)?.done).toBe(true);
+    expect(new TextDecoder().decode(chunks[1]!.data)).toContain('Cancelled by the buyer');
+  });
+
+  it('does not call the upstream for a request cancelled before it is sent', async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const cancel = new AbortController();
+    cancel.abort(new Error('Cancelled by the buyer'));
+    const responses: SerializedHttpResponse[] = [];
+    const relay = new HttpRelay(makeConfig(), { onResponse: (response) => responses.push(response) });
+
+    await relay.handleRequest(makeRequest(), cancel.signal);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(responses.map((response) => response.statusCode)).toEqual([499]);
+  });
+});

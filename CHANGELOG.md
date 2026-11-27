@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- **Cancelling a request now stops the seller's work.** When a buyer gives up a streaming answer (the client disconnects from the buyer proxy, or the caller aborts), the buyer tells the seller, which stops its provider and bills only what reached the buyer before the cancel. Before, only video downloads were cancelled: the seller generated the whole answer and billed it in full. A seller on an older version ignores the cancel and behaves as before.
+
 ## 2026-11-27 — CLI 0.1.264, Node 0.2.194, Desktop 0.2.98
 
 ### Packages
