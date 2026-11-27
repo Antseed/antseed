@@ -1,0 +1,33 @@
+/* A night band in both themes */
+.band {
+  --site-text: #f2f4ef;
+  --site-text-muted: #7b827e;
+  --site-dot: #363b3a;
+  --cta-mosaic-opacity: 1;   /* the shared dots are faint for a pale card by day; this ground is dark in both themes */
+  isolation: isolate;
+  align-items: center;
+  justify-content: center;
+  min-height: 640px;
+  overflow: hidden;
+  background: var(--site-surface-dark);
+}
+.band::before {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  pointer-events: none;
+  background: radial-gradient(circle at 4px 1px, var(--site-dot) .85px, #0000 1.25px) 50% 0 / 8px 2px repeat-x;
+}
+.text { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; padding: 0 16px; text-align: center; }
+.band .eyebrow { color: var(--site-lime); }
+.band .title { margin: 20px 0 32px; }
+.actions { display: flex; align-items: center; gap: 16px; }
+.size { font: 400 14px/20px var(--site-font); color: #a4aca7; }
+.guide { margin-top: 24px; font: 500 14px/20px var(--site-font); color: #98c463; }
+.guide:hover { color: #98c463; text-decoration: underline; text-underline-offset: 3px; }
+
+@media (max-width: 760px) {
+  .band { min-height: 520px; }
+}

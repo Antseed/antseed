@@ -1,33 +1,28 @@
-.group { margin-top: 56px; }
-.group + .group { margin-top: 40px; }
-.groupTitle { margin-bottom: 16px; font: 500 16px/24px var(--site-font); color: var(--site-text); }
+.palette { grid-template-columns: repeat(3, minmax(0, 1fr)); height: 560px; }
+.dayOnly { display: grid; }
+.nightOnly { display: none; }
+:global(:root[data-theme='dark']) .dayOnly { display: none; }
+:global(:root[data-theme='dark']) .nightOnly { display: grid; }
 
-.swatches {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 24px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.swatch { display: flex; flex-direction: column; gap: 4px; }
+.column { display: flex; flex-direction: column; min-height: 0; }
 .chip {
-  height: 88px;
-  margin-bottom: 12px;
-  border-radius: var(--site-radius-card);
-  background: var(--chip);
-  box-shadow: inset 0 0 0 1px var(--site-tile-line);
+  appearance: none;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 0;
+  padding: 16px;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  font: 500 14px/20px var(--site-font);
+  cursor: pointer;
 }
-.name { font: 500 15px/20px var(--site-font); color: var(--site-text); }
-.token { font: 400 12.5px/16px var(--site-font-mono); color: var(--site-text-small); }
-.values { display: flex; flex-wrap: wrap; gap: 0 12px; margin-top: 4px; font: 400 13px/20px var(--site-font); color: var(--site-text-small); }
-.values code { font: 400 12.5px/20px var(--site-font-mono); color: var(--site-text); }
-.role { margin-top: 4px; font: 400 14px/20px var(--site-font); color: var(--site-text-body); text-wrap: pretty; }
+.chip code { padding: 0; border: 0; background: none; color: inherit; font: 400 14px/20px var(--site-font-mono); }
+.chip:focus-visible { outline: 2px solid var(--site-accent); outline-offset: -2px; }
 
-@media (max-width: 1199px) {
-  .swatches { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 560px) {
-  .swatches { gap: 20px 16px; }
-  .chip { height: 64px; }
+@media (max-width: 760px) {
+  .palette { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .chip { min-height: 96px; }
 }

@@ -1,0 +1,25 @@
+.mosaic { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.tile { display: block; height: 296px; min-width: 0; }
+@media (min-width: 900px) {
+  .tile:not(:nth-child(5n + 1)) { --dots-left: 2px; }
+}
+@media (min-width: 561px) and (max-width: 899px) {
+  .tile:not(:nth-child(3n + 1)) { --dots-left: 2px; }
+}
+.tile img { position: absolute; top: 24px; left: 16px; display: block; width: calc(100% - 32px); height: calc(100% - 48px); object-fit: contain; transition: transform .2s ease; }
+.tile:hover img { transform: translateY(-4px); }
+:global(:root[data-theme='dark']) .tile img { filter: brightness(.84) saturate(.83) contrast(1.12); }
+
+@media (max-width: 899px) {
+  .mosaic { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .tile { height: 232px; }
+}
+@media (max-width: 560px) {
+  .mosaic { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tile:nth-child(2n) { --dots-left: 2px; }
+  .tile { height: 200px; }
+  .tile img { top: 12px; left: 8px; width: calc(100% - 16px); height: calc(100% - 24px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tile img { transition: none; }
+}
