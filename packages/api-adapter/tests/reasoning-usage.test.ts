@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createStreamingAdapter, extractUsage, transformResponse, type ServiceApiProtocol } from '../src/index.js';
+import { createStreamingAdapter, extractUsage, isReasoningUsageProtocol, reportedReasoningTokens, transformResponse, type ServiceApiProtocol } from '../src/index.js';
 
 const MESSAGES = 'anthropic-messages';
 const CHAT = 'openai-chat-completions';
@@ -250,5 +250,25 @@ describe('the usage billing reads', () => {
     const expected = { inputTokens: 10, outputTokens: 300, freshInputTokens: 10, cachedInputTokens: 0 };
     expect(extractUsage(sellerJson(protocol, 250))).toEqual(expected);
     expect(extractUsage(sellerJson(protocol, undefined))).toEqual(expected);
+  });
+});
+
+describe('reportedReasoningTokens', () => {
+  it('reads each protocol its own usage field, keeps a reported 0 and floors', () => {
+    expect(reportedReasoningTokens({ completion_tokens_details: { reasoning_tokens: 12.7 } }, CHAT)).toBe(12);
+    expect(reportedReasoningTokens({ output_tokens_details: { reasoning_tokens: 0 } }, RESPONSES)).toBe(0);
+    expect(reportedReasoningTokens({ output_tokens_details: { thinking_tokens: 40 } }, MESSAGES)).toBe(40);
+  });
+
+  it('ignores another protocol\'s field, a bad count and a missing usage', () => {
+    expect(reportedReasoningTokens({ output_tokens_details: { reasoning_tokens: 40 } }, MESSAGES)).toBeUndefined();
+    expect(reportedReasoningTokens({ completion_tokens_details: { reasoning_tokens: -1 } }, CHAT)).toBeUndefined();
+    expect(reportedReasoningTokens({ completion_tokens_details: { reasoning_tokens: '5' } }, CHAT)).toBeUndefined();
+    expect(reportedReasoningTokens(undefined, CHAT)).toBeUndefined();
+  });
+
+  it('names the protocols that itemise reasoning', () => {
+    expect(PROTOCOLS.every((protocol) => isReasoningUsageProtocol(protocol))).toBe(true);
+    for (const other of ['openai-images', 'toString', '', null, undefined]) expect(isReasoningUsageProtocol(other)).toBe(false);
   });
 });

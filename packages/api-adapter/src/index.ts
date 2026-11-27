@@ -59,6 +59,9 @@ export {
   type SpeechRequestFacts,
   toNonNegativeInt,
   isEncryptedReasoning,
+  isReasoningUsageProtocol,
+  reportedReasoningTokens,
+  type ReasoningUsageProtocol,
   type StreamingResponseAdapter,
 } from './utils.js';
 

@@ -6,6 +6,7 @@
  * counts leave this module; the text is never kept.
  */
 
+import { isReasoningUsageProtocol, reportedReasoningTokens, type ReasoningUsageProtocol } from '../proxy/service-api-adapter.js'
 import { MAX_BODY_BYTES, visitBodyEvents } from './body-events.js'
 
 type Json = Record<string, unknown>
@@ -15,13 +16,6 @@ export type ReplyFacts = {
   hasText: boolean
   /** Null when the answer's usage itemises no reasoning; a reported 0 is kept. */
   reasoningTokens: number | null
-}
-
-/** Where each API itemises reasoning in its usage object (the same fields the adapter reads). */
-const REASONING_TOKEN_FIELDS: Record<string, readonly [string, string]> = {
-  'openai-chat-completions': ['completion_tokens_details', 'reasoning_tokens'],
-  'openai-responses': ['output_tokens_details', 'reasoning_tokens'],
-  'anthropic-messages': ['output_tokens_details', 'thinking_tokens'],
 }
 
 function asObject(value: unknown): Json | null {
@@ -38,17 +32,15 @@ class ReplyReader {
   text = false
   reasoningTokens: number | null = null
 
-  constructor(private readonly reasoningField: readonly [string, string] | null) {}
+  constructor(private readonly protocol: ReasoningUsageProtocol) {}
 
   get toolCalls(): number {
     return this.calls.size
   }
 
   private usage(usage: unknown): void {
-    if (!this.reasoningField) return
-    const details = asObject(asObject(usage)?.[this.reasoningField[0]])
-    const count = details?.[this.reasoningField[1]]
-    if (typeof count === 'number' && Number.isFinite(count) && count >= 0) this.reasoningTokens = Math.floor(count)
+    const count = reportedReasoningTokens(usage, this.protocol)
+    if (count !== undefined) this.reasoningTokens = count
   }
 
   private chatChoice(choice: Json, choiceIndex: number): void {
@@ -141,9 +133,8 @@ class ReplyReader {
  */
 export function replyFacts(contentType: string | undefined, body: Uint8Array, protocol: string | null): ReplyFacts | null {
   // Only a chat answer is a reply: an image, speech or decision answer has no text or tool calls to count.
-  const reasoningField = protocol ? REASONING_TOKEN_FIELDS[protocol] : undefined
-  if (!reasoningField) return null
-  const reader = new ReplyReader(reasoningField)
+  if (!isReasoningUsageProtocol(protocol)) return null
+  const reader = new ReplyReader(protocol)
   let recognised = false
   visitBodyEvents(contentType, body, (event) => {
     recognised = true
