@@ -4,23 +4,25 @@ import {AntennaSway, loadArt, type Art} from './art';
 import {drawAnt, drawRim} from './draw';
 import {Eyes} from './eyes';
 import {Feeding} from './feeding';
+import {fit} from './fit';
 import {Leaves} from './leaves';
 import {RIG, TUNING} from './rig';
 
 /* The mascot at the card's bottom right, its legs cut off by the bottom edge. Its eyes follow the pointer within its corner; when the
-   seed is held near it, its mouth opens and its arms reach for it; at its mouth it takes the seed and eats it (see Feeding). Drawn at
-   24 frames a second and only when something changed. */
+   seed is held near it, its mouth opens and its arms reach for it; at its mouth it takes the seed and eats it (see Feeding). On a
+   touch screen the seed lies on the ground by it from the start, a tap on the seed or on the mascot feeds it, and its eyes follow a
+   finger held or moving on the card. Drawn at 24 frames a second and only when something changed. */
 
 const SHOW_SPEED = 10;          // fade in
 const WATCH_SPEED = 8;
-const MIN_SHARE = 0.6;          // narrower than this share of its width it hides rather than crowd the install block
-const CLEAR = 16;               // px kept between it and the install block
+const TOUCH_FIRST = '(hover: none)';
+const TIP = 10;                 // px round a tap that still counts as on the mascot
 const SNAP = 0.004;
 const GROUND = {left: 38, bottom: 20};   // the seed on the ground: px left of the mascot, px above the card's bottom
 
 export type SceneEls = {
   card: HTMLElement; puppet: HTMLCanvasElement; fore: HTMLCanvasElement; groundSeed: HTMLElement; cursor: HTMLElement; install: HTMLElement;
-  paint: HTMLElement; night: HTMLElement; film: HTMLVideoElement | null; seedImage: () => HTMLImageElement | null;
+  title: HTMLElement; paint: HTMLElement; night: HTMLElement; film: HTMLVideoElement | null; seedImage: () => HTMLImageElement | null;
 };
 export type SceneClasses = {seeding: string; overUi: string; empty: string; groundOn: string; groundTaken: string; lifting: string};
 
@@ -44,7 +46,11 @@ export class MascotScene {
   private readonly feeding: Feeding;
   private art: Art | null = null;
   private sway: AntennaSway | null = null;
-  private look = {x: 0, y: 0, on: false, panel: false};
+  private look = {x: 0, y: 0, on: false, panel: false, touch: false};
+  private box = {x0: 0, y0: 0, x1: 0, y1: 0};   // the ant's drawn box, card px
+  private readonly touchFirst = matchMedia(TOUCH_FIRST).matches;
+  private seeded = false;
+  private seedScale = 1;
   private lifts = RIG.arms.map(() => 0);
   private shown = 0; private awake = 0; private gape = 0; private watching = 0;
   private last = performance.now(); private raf = 0; private active = false;
@@ -58,6 +64,12 @@ export class MascotScene {
     const signal = this.abort.signal;
     this.feeding = new Feeding(els, hand, cls, signal);
     window.addEventListener('pointermove', this.onPointer, {passive: true, signal});
+    els.card.addEventListener('pointerdown', this.onPointer, {passive: true, signal});
+    // a finger lifted, or taken by a scroll: it stops looking
+    const letGo = (e: PointerEvent) => { if (e.pointerType !== 'mouse') this.look.on = false; };
+    window.addEventListener('pointerup', letGo, {passive: true, signal});
+    window.addEventListener('pointercancel', letGo, {passive: true, signal});
+    els.card.addEventListener('click', this.onTap, {signal});
     document.documentElement.addEventListener('pointerleave', () => { this.look.on = false; }, {signal});
     this.stopThemeWatch = onThemeChange(() => this.leaves.queue());
     loadArt().then((art) => {
@@ -76,9 +88,28 @@ export class MascotScene {
   }
 
   private onPointer = (e: PointerEvent) => {
+    const touch = e.pointerType !== 'mouse';
+    // a finger only counts on the card, and only while it is down
+    if (touch && (!this.els.card.contains(e.target as Node) || (e.type === 'pointermove' && !this.look.on))) return;
     const r = this.els.card.getBoundingClientRect();
-    this.look = {x: e.clientX - r.left, y: e.clientY - r.top, on: true, panel: this.els.install.contains(e.target as Node)};
+    this.look = {x: e.clientX - r.left, y: e.clientY - r.top, on: true, panel: this.els.install.contains(e.target as Node), touch};
     this.feeding.tryCatch(performance.now(), this.look, this.canHold());
+  };
+
+  // a tap on the mascot (its painted pixels, within a fingertip) feeds it the seed on the ground
+  private onTap = (e: MouseEvent) => {
+    if (!this.feeding.byTouch || (e.target as Element).closest?.('a, button, input')) return;
+    const r = this.els.card.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+    const b = this.box;
+    if (x < b.x0 - TIP || x > b.x1 + TIP || y < b.y0 - TIP || y > b.y1) return;
+    const {puppet} = this.els;
+    const s = puppet.width / (puppet.clientWidth || 1);
+    const x0 = Math.max(0, Math.round((x - TIP) * s));
+    const y0 = Math.max(0, Math.round((y - TIP) * s));
+    const px = this.pc.getImageData(x0, y0, Math.max(1, Math.min(puppet.width - x0, Math.round(TIP * 2 * s))), Math.max(1, Math.min(puppet.height - y0, Math.round(TIP * 2 * s)))).data;
+    for (let i = 3; i < px.length; i += 4) if (px[i] > 64) { this.feeding.feed(performance.now()); this.wake(); return; }
   };
 
   private wake() { if (!this.raf && this.active && this.art) this.raf = requestAnimationFrame(this.frame); }
@@ -86,7 +117,7 @@ export class MascotScene {
   private canHold(): boolean {
     const {card} = this.els;
     return !this.still && !!this.els.puppet.offsetParent && this.shown > 0.9 && !this.hand.empty && !this.feeding.eating && this.look.on
-      && !this.look.panel && card.classList.contains(this.cls.seeding) && !card.classList.contains(this.cls.overUi);
+      && !this.look.touch && !this.look.panel && card.classList.contains(this.cls.seeding) && !card.classList.contains(this.cls.overUi);
   }
 
   private frame = (now: number) => {
@@ -101,23 +132,29 @@ export class MascotScene {
 
   private tick(now: number, dt: number) {
     const art = this.art!;
-    const {card, puppet, install} = this.els;
+    const {card, puppet, install, title, groundSeed} = this.els;
     const W = card.clientWidth;
     const H = card.clientHeight;
     const dpr = Math.min(2, devicePixelRatio || 1);
     if (puppet.width !== Math.round(W * dpr) || puppet.height !== Math.round(H * dpr)) { puppet.width = Math.round(W * dpr); puppet.height = Math.round(H * dpr); this.drawn = ''; }
 
-    // its width and spot: slid right past the edge (a quarter at most), then made smaller to clear the install block
     const [bx0, by0, bx1, by1] = RIG.bounds;
-    const space = W - (install.getBoundingClientRect().right - card.getBoundingClientRect().left) - CLEAR;
-    let w = TUNING.width;
-    let right = Math.min(TUNING.inset, space - w);
-    if (right < -w / 4) { w = space / 0.75; right = -w / 4; }
+    const cr = card.getBoundingClientRect();
+    const ir = install.getBoundingClientRect();   // none on a phone
+    const tr = title.getBoundingClientRect();
+    const inCard = (b: DOMRect) => ({left: b.left - cr.left, top: b.top - cr.top, right: b.right - cr.left, bottom: b.bottom - cr.top});
+    const {w, right, shows} = fit({W, H, title: inCard(tr), install: ir.width ? inCard(ir) : null});
     const k = w / (bx1 - bx0);
     // the frame's origin, mirrored
     const fx = W - right + bx0 * k;
     const fy = H + TUNING.crop * (by1 - by0) * k - by1 * k;
-    this.shown += ((w >= TUNING.width * MIN_SHARE ? 1 : 0) - this.shown) * ease(dt, SHOW_SPEED);
+    this.shown += ((shows ? 1 : 0) - this.shown) * ease(dt, SHOW_SPEED);
+    this.box = {x0: fx - bx1 * k, y0: fy + by0 * k, x1: fx - bx0 * k, y1: H};
+    groundSeed.style.visibility = this.shown < 0.5 ? 'hidden' : '';
+    // a finger has no seed in hand: it drops in by the mascot once the painting's cover is gone, as the mascot fades in
+    if (this.touchFirst && !this.seeded && !this.still && this.shown > 0.9 && !card.querySelector('[data-veil], [data-arrival-cover]')) {
+      this.seeded = true; groundSeed.classList.add(this.cls.groundOn);
+    }
     this.leaves.update({fx, fy, k, shown: this.shown});
     if (this.shown <= 0.01) {
       if (this.drawn !== 'gone') { this.drawn = 'gone'; this.pc.setTransform(1, 0, 0, 1, 0, 0); this.pc.clearRect(0, 0, puppet.width, puppet.height); }
@@ -135,7 +172,7 @@ export class MascotScene {
 
     // its corner, a little more than the first screen's lower right quarter: it watches there; holding the seed, it reaches
     const nav = parseFloat(getComputedStyle(card).getPropertyValue('--site-nav-height')) || 0;
-    const zone = this.look.on && !this.still && this.look.x >= W * TUNING.zone[0] && this.look.y + nav >= (H + nav) * TUNING.zone[1];
+    const zone = this.look.on && !this.still && (this.look.touch || (this.look.x >= W * TUNING.zone[0] && this.look.y + nav >= (H + nav) * TUNING.zone[1]));
     const near = holding && zone;
     const speed = near ? TUNING.armSpeed : TUNING.armSpeed * 2;   // the mouth shuts twice as fast as it opens
     this.watching += ((zone ? 1 : 0) - this.watching) * ease(dt, WATCH_SPEED);
@@ -151,7 +188,10 @@ export class MascotScene {
     const irises = this.eyes.step(now, dt, {target, looking: this.look.on || !!meal, cross, attention: meal || cross > 0 ? 1 : Math.max(this.awake, this.watching), awake: this.awake});
     const open = meal ? meal.open : this.gape;
 
-    this.feeding.placeGround(Math.round(fx - bx1 * k - GROUND.left - SEED_W / 2), Math.round(H - GROUND.bottom - SEED_H));
+    // on a touch screen the seed is sized with the mascot (on a phone 0.6 of its desktop size); with a mouse it matches the held one
+    const s = this.touchFirst ? Math.min(1, Math.max(TUNING.minShare, w / TUNING.width)) : 1;
+    if (s !== this.seedScale) { this.seedScale = s; groundSeed.style.setProperty('--seed-k', String(s)); }
+    this.feeding.placeGround(Math.round(fx - bx1 * k - (GROUND.left + SEED_W / 2) * s), Math.round(H - (GROUND.bottom + SEED_H) * s));
     const tips = this.sway ? AntennaSway.tips(now) : [];
     const sig = [W, H, fx, fy, k, this.shown, open, meal?.fly ?? -1, ...irises.flat(), ...this.lifts, ...tips].map((v) => Math.round(v * 20)).join();
     if (sig === this.drawn && !this.feeding.busy) return;

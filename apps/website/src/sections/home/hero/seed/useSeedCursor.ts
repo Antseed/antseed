@@ -59,6 +59,7 @@ export function useSeedCursor({hero, cursor, hand, classes, active, still}: Opti
     const wake = () => { if (!raf && active && !still) { last = performance.now(); raf = requestAnimationFrame(frame); } };
 
     const onMove = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse') return;   // a finger has no cursor: on a touch screen the seed lies on the ground (MascotScene)
       const r = card.getBoundingClientRect();
       hand.x = e.clientX - r.left; hand.y = e.clientY - r.top; lastInput = performance.now();
       if (!hand.on || still) { hand.sx = hand.x; hand.sy = hand.y; }

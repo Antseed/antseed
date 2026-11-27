@@ -1,11 +1,18 @@
 /* The card fills the first screen under the nav, with the page's 16px margin all round; on a phone a portrait */
 .card { position: relative; display: flex; flex-direction: column; align-items: center; overflow: hidden; background: var(--site-bg-hero);
   height: calc(max(600px, 100svh - 32px) - var(--site-nav-height)); }
+/* with the announcement bar (42px, one line here) above the nav, it fills what is left */
+@media (min-width: 761px) {
+  :global(:root:has(.theme-announcement-bar):not([data-announcement-bar-initially-dismissed='true'])) .card {
+    height: calc(max(600px, 100svh - 32px - 42px) - var(--site-nav-height)); }
+}
 .card.seeding { cursor: none; }
 .card.seeding.overUi, .card.seeding.empty { cursor: auto; }
 
 /* the mascot, and the painting's nearest plants in front of its lower body */
-.puppet { position: absolute; inset: 0; width: 100%; height: 100%; transition: filter 1.2s ease; }
+.puppet { position: absolute; inset: 0; width: 100%; height: 100%; transition: filter 1.2s ease, opacity .5s ease; }
+/* the mascot waits for its painting: hidden while the veil or the arrival's cover is up, then it fades in */
+.card:has([data-veil], [data-arrival-cover]) .puppet { opacity: 0; transition: none; }
 :global(:root[data-theme='dark']) .puppet { filter: brightness(.84) saturate(.83) contrast(1.12); }   /* in the night's light */
 .fore { position: absolute; inset: 4px 2px 0; width: calc(100% - 4px); height: calc(100% - 4px); pointer-events: none; }
 
@@ -22,13 +29,16 @@
 /* the reset in :where() has no specificity, so the minifier can't let it override the rules after it */
 :where(.groundSeed) { all: unset; }
 .groundSeed {
-  position: absolute; z-index: 3; left: 0; top: 0; display: none; width: 64px; height: 89px; cursor: pointer;
+  position: absolute; z-index: 3; left: 0; top: 0; display: none; width: calc(64px * var(--seed-k, 1)); height: calc(89px * var(--seed-k, 1)); cursor: pointer;
   transform-origin: 50% 97%; transition: scale .2s ease-out; }
+/* a fingertip's reach round the smaller seed of a touch screen */
+.groundSeed::after { content: ''; position: absolute; left: 50%; top: 50%; width: max(100%, 48px); height: max(100%, 48px); translate: -50% -50%; }
 .groundSeed.groundOn { display: block; animation: drop .7s cubic-bezier(.3, 0, .4, 1) both; }
 .groundSeed img { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(180deg); filter: drop-shadow(0 3px 3px rgba(60, 30, 10, .25)); }
 .groundSeed::before { content: ''; position: absolute; left: 12%; right: 12%; bottom: -2px; height: 9px; border-radius: 50%; background: rgba(50, 30, 10, .28);
   filter: blur(2px); transition: opacity .25s; }
-.groundSeed:hover, .groundSeed:focus-visible { scale: 1.08; }
+.groundSeed:focus-visible { scale: 1.08; }
+@media (hover: hover) { .groundSeed:hover { scale: 1.08; } }
 .groundSeed:focus-visible { outline: 2px solid #789f00; outline-offset: 4px; border-radius: 8px; }
 .groundSeed.groundTaken { pointer-events: none; }
 .groundSeed.groundTaken img { visibility: hidden; }
@@ -38,19 +48,23 @@
 /* at night the seed glows amber, and on the ground lights a pool round it instead of a shadow */
 :global(:root[data-theme='dark']) .cursor img,
 :global(:root[data-theme='dark']) .groundSeed img {
-  filter: drop-shadow(0 0 6px rgba(255, 200, 100, .85)) drop-shadow(0 0 22px rgba(255, 150, 50, .62)) drop-shadow(0 0 56px rgba(255, 128, 32, .4)); }
+  filter: drop-shadow(0 0 calc(6px * var(--seed-k, 1)) rgba(255, 200, 100, .85)) drop-shadow(0 0 calc(22px * var(--seed-k, 1)) rgba(255, 150, 50, .62))
+    drop-shadow(0 0 calc(56px * var(--seed-k, 1)) rgba(255, 128, 32, .4)); }
 :global(:root[data-theme='dark']) .groundSeed::before { left: -14px; right: -14px; bottom: -4px; height: 20px; filter: none; mix-blend-mode: screen;
   background: radial-gradient(closest-side, rgba(255, 170, 70, .5), rgba(255, 140, 40, 0)); }
 :global(:root[data-theme='dark']) .groundSeed:focus-visible { outline-color: #98c463; }
 
 @media (prefers-reduced-motion: reduce) {
   .groundSeed.groundOn { animation: none; }
-  .groundSeed, .groundSeed::before { transition: none; }
+  .groundSeed, .groundSeed::before, .puppet { transition: none; }
   .fed img { animation: none; }
 }
 
-/* a phone: the card (nav included) a portrait, the title in the sky, the meadow under it */
+/* a touch screen has no cursor: the seed lies on the ground (MascotScene) */
+@media (hover: none) { .card .cursor { display: none; } }
+
+/* a phone: the card (nav included) a portrait, the title in the sky, the meadow under it, and under the title room for the mascot
+   at 60% of the card's width (73% of it tall above the bottom edge, MascotScene) */
 @media (max-width: 760px) {
-  .card { height: auto; min-height: calc(clamp(520px, 150vw, 640px) - var(--site-nav-height)); }
-  .puppet, .fore, .groundSeed.groundOn { display: none; }
+  .card { height: auto; min-height: max(calc(clamp(520px, 150vw, 640px) - var(--site-nav-height)), calc(280px + min(73vw - 23px, 512px))); }
 }
