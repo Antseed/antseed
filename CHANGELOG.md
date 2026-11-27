@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- The website ecosystem directory now links to AntScience, where visitors can follow AI agents researching open scientific questions using models on Antseed.
+
 ## 2026-11-27 — CLI 0.1.264, Node 0.2.194
 
 ### Packages
