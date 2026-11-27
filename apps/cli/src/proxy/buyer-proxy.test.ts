@@ -4542,7 +4542,6 @@ const REASONING_TURN = [
   { type: 'function_call_output', call_id: 'call_1', output: '40%' },
 ]
 
-/** The body a pinned peer receives for a non-streamed Responses request for `model`. */
 /** The raw body a pinned peer receives for a non-streamed `POST` to `path` (default `/v1/responses`) with `rawBody`. */
 async function bytesSentToPeer(peer: PeerInfo, rawBody: string, path = '/v1/responses'): Promise<string> {
   let captured: string | null = null

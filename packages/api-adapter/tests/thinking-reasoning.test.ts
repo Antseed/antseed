@@ -25,10 +25,27 @@ interface ClientOptions {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-type Json = Record<string, any>;
+/** A request, a seller's answer or a stream frame, as JSON. */
+type Json = Record<string, unknown>;
+
+/** A content block of a Messages answer, or the delta of a Messages stream event. */
+type Block = { type: string; text?: string; thinking?: string; signature?: string; partial_json?: string };
+type MessagesReply = { content: Block[]; usage?: unknown };
+type ChatReply = { choices: Array<{ message: Json & { content?: string | null; reasoning_content?: string } }> };
+type ResponsesReply = { output: Array<Json & { type: string; content?: unknown }>; output_text?: string; end_turn?: unknown };
+type ChatDelta = { content?: string; reasoning_content?: string };
+/** The parts of a translated stream's events the assertions read. */
+type StreamEvent = {
+  type?: string;
+  index?: number;
+  content_block?: Block;
+  delta?: Block;
+  response?: ResponsesReply;
+  choices?: Array<{ delta?: ChatDelta }>;
+};
 
 /** The body a seller speaking `to` receives for a Messages client request carrying `fields`. */
-function sellerBody(to: ServiceApiProtocol, fields: Json, stream = false): Json {
+function sellerBody(to: ServiceApiProtocol, fields: Json, stream = false): Json & { messages: Json[] } {
   const result = transformRequest({
     requestId: 'req-thinking',
     method: 'POST',
@@ -43,7 +60,7 @@ function sellerBody(to: ServiceApiProtocol, fields: Json, stream = false): Json 
     })),
   }, { from: MESSAGES, to });
   expect(result).not.toBeNull();
-  return JSON.parse(decoder.decode(result!.request.body)) as Json;
+  return JSON.parse(decoder.decode(result!.request.body)) as Json & { messages: Json[] };
 }
 
 /** A non-streamed seller reply in `from`, as the client of `to` receives it. */
@@ -71,7 +88,7 @@ function translateStream(
   to: ServiceApiProtocol,
   frames: string[],
   { includeReasoning = true }: ClientOptions = {},
-): Json[] {
+): StreamEvent[] {
   const adapter = createStreamingAdapter({ from, to, fallbackModel: 'example-model', includeReasoning })!;
   expect(adapter).not.toBeNull();
   let sse = '';
@@ -82,10 +99,10 @@ function translateStream(
   return sseEvents(sse);
 }
 
-function sseEvents(sse: string): Json[] {
+function sseEvents(sse: string): StreamEvent[] {
   return parseSseBuffer(sse.endsWith('\n\n') ? sse : `${sse}\n\n`).events
     .filter((event) => event.data && event.data !== '[DONE]')
-    .map((event) => JSON.parse(event.data) as Json);
+    .map((event) => JSON.parse(event.data) as StreamEvent);
 }
 
 const chatFrame = (delta: Json, finishReason: string | null = null, extra: Json = {}): string =>
@@ -96,12 +113,12 @@ const CHAT_DONE = 'data: [DONE]\n\n';
 const anthropicFrame = (data: Json): string => `event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`;
 
 /** Compact view of a Messages stream: the block structure a client builds its message from. */
-function blockLog(events: Json[]): string[] {
+function blockLog(events: StreamEvent[]): string[] {
   const log: string[] = [];
   for (const event of events) {
-    if (event.type === 'content_block_start') log.push(`start ${event.index} ${event.content_block.type}`);
+    if (event.type === 'content_block_start') log.push(`start ${event.index} ${event.content_block!.type}`);
     else if (event.type === 'content_block_delta') {
-      const delta = event.delta;
+      const delta = event.delta!;
       const body = delta.type === 'thinking_delta' ? delta.thinking
         : delta.type === 'signature_delta' ? delta.signature
           : delta.type === 'text_delta' ? delta.text
@@ -146,7 +163,7 @@ describe('Chat Completions reasoning, translated to a Messages response', () => 
   });
 
   it.each(['reasoning_content', 'reasoning'])('puts %s in a thinking block before the text', (field) => {
-    const body = translateBody(CHAT, MESSAGES, reply({ [field]: 'Light scatters.' })) as Json;
+    const body = translateBody(CHAT, MESSAGES, reply({ [field]: 'Light scatters.' })) as MessagesReply;
     expect(body.content).toEqual([
       { type: 'thinking', thinking: 'Light scatters.', signature: 'antseed.reasoning.v1:example-model#chatcmpl-1' },
       { type: 'text', text: 'Because of Rayleigh scattering.' },
@@ -156,7 +173,7 @@ describe('Chat Completions reasoning, translated to a Messages response', () => 
   it.each([{ reasoning_content: '' }, { reasoning_content: null }, { reasoning_content: '  \n' }, {}])(
     'makes no thinking block of empty reasoning %j',
     (message) => {
-      const body = translateBody(CHAT, MESSAGES, reply(message)) as Json;
+      const body = translateBody(CHAT, MESSAGES, reply(message)) as MessagesReply;
       expect(body.content).toEqual([{ type: 'text', text: 'Because of Rayleigh scattering.' }]);
     },
   );
@@ -164,13 +181,13 @@ describe('Chat Completions reasoning, translated to a Messages response', () => 
   it('keeps the thinking block ahead of tool calls', () => {
     const body = translateBody(CHAT, MESSAGES, {
       ...reply({ reasoning_content: 'Need the tool.', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'lookup', arguments: '{"q":1}' } }] }),
-    }) as Json;
+    }) as MessagesReply;
     expect(body.content.map((block: Json) => block.type)).toEqual(['thinking', 'tool_use']);
   });
 
   it('leaves usage untouched', () => {
-    const plain = translateBody(CHAT, MESSAGES, reply({})) as Json;
-    const withReasoning = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Light scatters.' })) as Json;
+    const plain = translateBody(CHAT, MESSAGES, reply({})) as MessagesReply;
+    const withReasoning = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Light scatters.' })) as MessagesReply;
     expect(withReasoning.usage).toEqual(plain.usage);
   });
 
@@ -313,9 +330,9 @@ describe('a Messages response with thinking, translated to Chat Completions', ()
     const body = translateBody(MESSAGES, CHAT, message([
       { type: 'thinking', thinking: 'Light scatters.', signature: 'sig' },
       { type: 'text', text: 'Because of Rayleigh scattering.' },
-    ])) as Json;
-    expect(body.choices[0].message.reasoning_content).toBe('Light scatters.');
-    expect(body.choices[0].message.content).toBe('Because of Rayleigh scattering.');
+    ])) as ChatReply;
+    expect(body.choices[0]!.message.reasoning_content).toBe('Light scatters.');
+    expect(body.choices[0]!.message.content).toBe('Because of Rayleigh scattering.');
   });
 
   it('adds no reasoning_content for redacted, empty or absent thinking', () => {
@@ -324,8 +341,8 @@ describe('a Messages response with thinking, translated to Chat Completions', ()
       [{ type: 'thinking', thinking: '' }, { type: 'text', text: 'Hi' }],
       [{ type: 'text', text: 'Hi' }],
     ]) {
-      const body = translateBody(MESSAGES, CHAT, message(blocks)) as Json;
-      expect(body.choices[0].message).not.toHaveProperty('reasoning_content');
+      const body = translateBody(MESSAGES, CHAT, message(blocks)) as ChatReply;
+      expect(body.choices[0]!.message).not.toHaveProperty('reasoning_content');
     }
   });
 
@@ -343,7 +360,7 @@ describe('a Messages response with thinking, translated to Chat Completions', ()
       anthropicFrame({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 30 } }),
       anthropicFrame({ type: 'message_stop' }),
     ]);
-    const deltas = events.map((event) => event.choices?.[0]?.delta).filter(Boolean) as Json[];
+    const deltas = events.map((event) => event.choices?.[0]?.delta).filter(Boolean) as ChatDelta[];
     expect(deltas.filter((delta) => 'reasoning_content' in delta).map((delta) => delta.reasoning_content)).toEqual(['Light ', 'scatters.']);
     expect(deltas.filter((delta) => delta.content).map((delta) => delta.content)).toEqual(['Hi']);
     const firstReasoning = deltas.findIndex((delta) => 'reasoning_content' in delta);
@@ -356,7 +373,7 @@ describe('a Messages response with thinking, translated to Chat Completions', ()
       { type: 'thinking', thinking: 'First.', signature: 'sig' },
       { type: 'thinking', thinking: 'Second.', signature: 'sig' },
       { type: 'text', text: 'Hi' },
-    ])) as Json;
+    ])) as ChatReply;
     const events = translateStream(MESSAGES, CHAT, [
       anthropicFrame({ type: 'message_start', message: { id: 'msg_1', model: 'example-model', usage: { input_tokens: 10 } } }),
       anthropicFrame({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } }),
@@ -368,7 +385,7 @@ describe('a Messages response with thinking, translated to Chat Completions', ()
       anthropicFrame({ type: 'message_stop' }),
     ]);
     const streamed = events.map((event) => event.choices?.[0]?.delta?.reasoning_content).filter(Boolean).join('');
-    expect(buffered.choices[0].message.reasoning_content).toBe('First.\nSecond.');
+    expect(buffered.choices[0]!.message.reasoning_content).toBe('First.\nSecond.');
     expect(streamed).toBe('First.\nSecond.');
   });
 
@@ -466,7 +483,7 @@ describe('thoughts a seller writes that the Messages client did not ask for', ()
   });
 
   it('leaves them out of a non-streamed Messages response, as before', () => {
-    const body = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Own thoughts.' }), false, { includeReasoning: false }) as Json;
+    const body = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Own thoughts.' }), false, { includeReasoning: false }) as MessagesReply;
     expect(body.content).toEqual([{ type: 'text', text: 'Hi' }]);
   });
 
@@ -542,7 +559,7 @@ describe('sealed reasoning a chat seller passes through, for a Messages client',
       ]);
       const thoughts = events
         .filter((event) => event.delta?.type === 'thinking_delta')
-        .map((event) => event.delta.thinking as string)
+        .map((event) => event.delta!.thinking!)
         .join('');
       expect(thoughts, `marker split after ${split} characters`).toBe('Plain. ');
     }
@@ -584,24 +601,24 @@ describe('a Messages seller\'s thinking, for a Responses client that keeps reaso
   };
 
   it('gets the thoughts as a tagged reasoning item ahead of the message, buffered', () => {
-    const body = translateBody(MESSAGES, RESPONSES, message) as Json;
+    const body = translateBody(MESSAGES, RESPONSES, message) as ResponsesReply;
     expect(body.output.map((item: Json) => item.type)).toEqual(['reasoning', 'message']);
     expect(body.output[0]).toEqual(reasoningItem);
   });
 
   it('gets the same output streamed as buffered', () => {
-    const buffered = translateBody(MESSAGES, RESPONSES, message) as Json;
+    const buffered = translateBody(MESSAGES, RESPONSES, message) as ResponsesReply;
     const completed = translateStream(MESSAGES, RESPONSES, frames).find((event) => event.type === 'response.completed')!;
-    expect(completed.response.output).toEqual(buffered.output);
-    expect(completed.response.output_text).toBe(buffered.output_text);
+    expect(completed.response!.output).toEqual(buffered.output);
+    expect(completed.response!.output_text).toBe(buffered.output_text);
   });
 
   it('gets no reasoning item when it keeps no reasoning state, streamed or buffered', () => {
-    const buffered = translateBody(MESSAGES, RESPONSES, message, false, { includeReasoning: false }) as Json;
+    const buffered = translateBody(MESSAGES, RESPONSES, message, false, { includeReasoning: false }) as ResponsesReply;
     const completed = translateStream(MESSAGES, RESPONSES, frames, { includeReasoning: false })
       .find((event) => event.type === 'response.completed')!;
     expect(buffered.output.map((item: Json) => item.type)).toEqual(['message']);
-    expect(completed.response.output).toEqual(buffered.output);
+    expect(completed.response!.output).toEqual(buffered.output);
   });
 });
 
@@ -640,7 +657,7 @@ describe('thinking blocks only for a Messages request that switched thinking on'
   ])('makes the thinking block when thinking is %s', (_name, fields) => {
     const includeReasoning = includeReasoningFor(fields);
     expect(includeReasoning).toBe(true);
-    expect((translateBody(CHAT, MESSAGES, reply, false, { includeReasoning }) as Json).content[0].type).toBe('thinking');
+    expect((translateBody(CHAT, MESSAGES, reply, false, { includeReasoning }) as MessagesReply).content[0]!.type).toBe('thinking');
     expect(blockLog(translateStream(CHAT, MESSAGES, frames, { includeReasoning }))[0]).toBe('start 0 thinking');
   });
 });
@@ -669,7 +686,7 @@ describe('the signature of a thinking block the adapter made', () => {
     for (const frame of frames(id)) {
       for (const out of adapter.adaptChunk({ requestId: 'r', data: encoder.encode(frame), done: false })) sse += decoder.decode(out.data);
     }
-    return { buffered: JSON.parse(decoder.decode(result.body)) as Json, streamed: sseEvents(sse) };
+    return { buffered: JSON.parse(decoder.decode(result.body)) as MessagesReply, streamed: sseEvents(sse) };
   };
 
   it('starts empty, gets one signature_delta before the block stops, and matches the buffered answer', () => {
@@ -680,25 +697,25 @@ describe('the signature of a thinking block the adapter made', () => {
     expect(signatures).toHaveLength(1);
     expect(thinking.at(-2)).toBe(signatures[0]);
     expect(thinking.at(-1)!.type).toBe('content_block_stop');
-    expect(signatures[0]!.delta.signature).toBe(buffered.content[0].signature);
+    expect(signatures[0]!.delta!.signature).toBe(buffered.content[0]!.signature);
   });
 
   it('names the model the request asked for, after the tag, with the response id after a #', () => {
     const model = 'moonshotai/Kimi-K3.1-Pro:free';
     const { buffered } = translate(model, 'chatcmpl-1');
-    expect(buffered.content[0].signature).toBe(`${TAG}${model}#chatcmpl-1`);
+    expect(buffered.content[0]!.signature).toBe(`${TAG}${model}#chatcmpl-1`);
   });
 
   it('differs for every answer', () => {
     const first = translate('example-model', 'chatcmpl-1');
     const second = translate('example-model', 'chatcmpl-2');
-    expect(first.buffered.content[0].signature).not.toBe(second.buffered.content[0].signature);
+    expect(first.buffered.content[0]!.signature).not.toBe(second.buffered.content[0]!.signature);
   });
 
   it('is short and cannot be read as base64', () => {
     const { buffered } = translate('example-model', 'chatcmpl-1');
-    expect(buffered.content[0].signature.length).toBeLessThan(80);
-    expect(() => atob(buffered.content[0].signature)).toThrow();
+    expect(buffered.content[0]!.signature!.length).toBeLessThan(80);
+    expect(() => atob(buffered.content[0]!.signature!)).toThrow();
   });
 
   it('differs for every answer from a seller whose stream has no id, and still goes back to the model', () => {
@@ -712,7 +729,7 @@ describe('the signature of a thinking block the adapter made', () => {
       ]) {
         for (const out of adapter.adaptChunk({ requestId: 'r', data: encoder.encode(frame), done: false })) sse += decoder.decode(out.data);
       }
-      return sseEvents(sse).find((event) => event.delta?.type === 'signature_delta')!.delta.signature as string;
+      return sseEvents(sse).find((event) => event.delta?.type === 'signature_delta')!.delta!.signature!;
     };
     const first = streamedSignature();
     const second = streamedSignature();
@@ -727,7 +744,7 @@ describe('the signature of a thinking block the adapter made', () => {
         { role: 'user', content: 'Q2' },
       ],
       thinking: { type: 'adaptive' },
-    }).messages[1];
+    }).messages[1]!;
     expect(assistant.reasoning_content).toBe('Light scatters.');
   });
 });
@@ -750,7 +767,7 @@ describe('a thinking block the adapter made, sent back in a Messages request for
     model,
     messages: toolTurn(thinking),
     thinking: { type: 'adaptive' },
-  }).messages[1];
+  }).messages[1]!;
   const tagged = (model: string, text = 'Need the tool.'): Json => ({ type: 'thinking', thinking: text, signature: `${TAG}${model}#chatcmpl-1` });
 
   it('goes back as reasoning_content on the assistant message it led to, for the same model', () => {
@@ -811,7 +828,7 @@ describe('a thinking block the adapter made, sent back in a Messages request for
       id: 'chatcmpl-9',
       model: 'seller-label',
       choices: [{ index: 0, message: { role: 'assistant', content: 'Checking.', reasoning_content: 'Need the tool.' }, finish_reason: 'stop' }],
-    }) as Json;
+    }) as MessagesReply;
     const body = sellerBody(CHAT, {
       messages: [{ role: 'user', content: 'Q1' }, { role: 'assistant', content: answer.content }, { role: 'user', content: 'Q2' }],
     });
@@ -831,7 +848,7 @@ describe('withoutAdapterThinkingBlocks: a Messages request for a native Messages
     headers: { 'content-type': 'application/json', ...headers },
     body: encoder.encode(JSON.stringify(body)),
   });
-  const messagesOf = (req: { body: Uint8Array }): Json[] => (JSON.parse(decoder.decode(req.body)) as Json).messages;
+  const messagesOf = (req: { body: Uint8Array }): Json[] => (JSON.parse(decoder.decode(req.body)) as { messages: Json[] }).messages;
 
   it('removes the thinking blocks the adapter made, and keeps every other block', () => {
     const stripped = withoutAdapterThinkingBlocks(request({
@@ -919,7 +936,7 @@ describe('block indexes of a translated Messages stream', () => {
       chatFrame({}, 'tool_calls'),
       CHAT_DONE,
     ]);
-    const starts = events.filter((event) => event.type === 'content_block_start').map((event) => `${event.index} ${event.content_block.type}`);
+    const starts = events.filter((event) => event.type === 'content_block_start').map((event) => `${event.index} ${event.content_block!.type}`);
     expect(starts).toEqual(['0 text', '1 tool_use', '2 text', '3 tool_use']);
   });
 });
@@ -950,11 +967,11 @@ describe('the same answer streamed and buffered', () => {
       anthropicFrame({ type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 30 } }),
       anthropicFrame({ type: 'message_stop' }),
     ];
-    const buffered = translateBody(MESSAGES, RESPONSES, message) as Json;
+    const buffered = translateBody(MESSAGES, RESPONSES, message) as ResponsesReply;
     const completed = translateStream(MESSAGES, RESPONSES, frames).find((event) => event.type === 'response.completed')!;
     expect(buffered.output.map((item: Json) => item.type)).toEqual(['reasoning', 'function_call']);
-    expect(completed.response.output).toEqual(buffered.output);
-    expect(completed.response.end_turn).toBe(buffered.end_turn);
+    expect(completed.response!.output).toEqual(buffered.output);
+    expect(completed.response!.end_turn).toBe(buffered.end_turn);
   });
 
   it('for a Responses client of a Messages seller that thinks again after its text', () => {
@@ -985,10 +1002,10 @@ describe('the same answer streamed and buffered', () => {
       anthropicFrame({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 30 } }),
       anthropicFrame({ type: 'message_stop' }),
     ];
-    const buffered = translateBody(MESSAGES, RESPONSES, message) as Json;
+    const buffered = translateBody(MESSAGES, RESPONSES, message) as ResponsesReply;
     const completed = translateStream(MESSAGES, RESPONSES, frames).find((event) => event.type === 'response.completed')!;
-    expect(buffered.output[0].content).toEqual([{ type: 'reasoning_text', text: 'First thought.' }]);
-    expect(completed.response.output).toEqual(buffered.output);
+    expect(buffered.output[0]!.content).toEqual([{ type: 'reasoning_text', text: 'First thought.' }]);
+    expect(completed.response!.output).toEqual(buffered.output);
   });
 
   it('for a Messages client of a chat seller that thinks, writes and calls a tool', () => {
