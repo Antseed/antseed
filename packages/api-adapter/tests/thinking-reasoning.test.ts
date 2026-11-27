@@ -19,7 +19,6 @@ const PATHS: Record<string, string> = {
 /** Whether the client asked for the model's reasoning: what `transformRequest` returns as `includeReasoning`. */
 interface ClientOptions {
   includeReasoning?: boolean;
-  includeThinking?: boolean;
 }
 
 const encoder = new TextEncoder();
@@ -52,14 +51,14 @@ function translateBody(
   to: ServiceApiProtocol,
   body: Json,
   streamRequested = false,
-  { includeReasoning = true, includeThinking = true }: ClientOptions = {},
+  { includeReasoning = true }: ClientOptions = {},
 ): Json | string {
   const result = transformResponse({
     requestId: 'req-thinking',
     statusCode: 200,
     headers: { 'content-type': 'application/json' },
     body: encoder.encode(JSON.stringify(body)),
-  }, { from, to, streamRequested, fallbackModel: 'example-model', includeReasoning, includeThinking });
+  }, { from, to, streamRequested, fallbackModel: 'example-model', includeReasoning });
   expect(result).not.toBeNull();
   const text = decoder.decode(result!.body);
   return streamRequested ? text : JSON.parse(text) as Json;
@@ -70,9 +69,9 @@ function translateStream(
   from: ServiceApiProtocol,
   to: ServiceApiProtocol,
   frames: string[],
-  { includeReasoning = true, includeThinking = true }: ClientOptions = {},
+  { includeReasoning = true }: ClientOptions = {},
 ): Json[] {
-  const adapter = createStreamingAdapter({ from, to, fallbackModel: 'example-model', includeReasoning, includeThinking })!;
+  const adapter = createStreamingAdapter({ from, to, fallbackModel: 'example-model', includeReasoning })!;
   expect(adapter).not.toBeNull();
   let sse = '';
   for (const frame of frames) {
@@ -386,7 +385,7 @@ describe('thoughts a seller writes that the Messages client did not ask for', ()
     usage: { prompt_tokens: 10, completion_tokens: 30, total_tokens: 40 },
   });
 
-  it('reports includeThinking for enabled and adaptive thinking only', () => {
+  it('reports includeReasoning for enabled and adaptive thinking only', () => {
     const flag = (thinking?: Json): boolean => {
       const result = transformRequest({
         requestId: 'r',
@@ -395,7 +394,7 @@ describe('thoughts a seller writes that the Messages client did not ask for', ()
         headers: {},
         body: encoder.encode(JSON.stringify({ model: 'm', max_tokens: 10, messages: [{ role: 'user', content: 'Hi' }], ...(thinking ? { thinking } : {}) })),
       }, { from: MESSAGES, to: CHAT });
-      return result!.includeThinking;
+      return result!.includeReasoning;
     };
     expect(flag({ type: 'enabled', budget_tokens: 2000 })).toBe(true);
     expect(flag({ type: 'adaptive' })).toBe(true);
@@ -404,12 +403,12 @@ describe('thoughts a seller writes that the Messages client did not ask for', ()
   });
 
   it('leaves them out of a non-streamed Messages response, as before', () => {
-    const body = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Own thoughts.' }), false, { includeThinking: false }) as Json;
+    const body = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Own thoughts.' }), false, { includeReasoning: false }) as Json;
     expect(body.content).toEqual([{ type: 'text', text: 'Hi' }]);
   });
 
   it('leaves them out of a Messages stream built from a whole response, as before', () => {
-    const sse = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Own thoughts.' }), true, { includeThinking: false }) as string;
+    const sse = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Own thoughts.' }), true, { includeReasoning: false }) as string;
     expect(blockLog(sseEvents(sse))).toEqual(['start 0 text', 'text_delta 0 Hi', 'stop 0']);
   });
 
@@ -419,7 +418,7 @@ describe('thoughts a seller writes that the Messages client did not ask for', ()
       chatFrame({ content: 'Hi' }),
       chatFrame({}, 'stop'),
       CHAT_DONE,
-    ], { includeThinking: false });
+    ], { includeReasoning: false });
     expect(blockLog(events)).toEqual(['start 0 text', 'text_delta 0 Hi', 'stop 0']);
     expect(JSON.stringify(events)).not.toContain('thinking');
   });
@@ -430,7 +429,7 @@ describe('thoughts a seller writes that the Messages client did not ask for', ()
       anthropicFrame({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } }),
       anthropicFrame({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Own thoughts.' } }),
       anthropicFrame({ type: 'message_stop' }),
-    ], { includeThinking: false });
+    ]);
     expect(JSON.stringify(events)).toContain('reasoning_content');
   });
 });
@@ -540,5 +539,45 @@ describe('a Messages seller\'s thinking, for a Responses client that keeps reaso
       .find((event) => event.type === 'response.completed')!;
     expect(buffered.output.map((item: Json) => item.type)).toEqual(['message']);
     expect(completed.response.output).toEqual(buffered.output);
+  });
+});
+
+describe('thinking blocks only for a Messages request that switched thinking on', () => {
+  /** What `transformRequest` tells the response side for a Messages request with these fields. */
+  const includeReasoningFor = (fields: Json): boolean => transformRequest({
+    requestId: 'req-thinking',
+    method: 'POST',
+    path: PATHS[MESSAGES]!,
+    headers: { 'content-type': 'application/json' },
+    body: encoder.encode(JSON.stringify({ model: 'example-model', max_tokens: 4096, messages: [{ role: 'user', content: 'Hi' }], ...fields })),
+  }, { from: MESSAGES, to: CHAT })!.includeReasoning;
+
+  const reply: Json = {
+    id: 'chatcmpl-1',
+    model: 'example-model',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'Hi', reasoning_content: 'Light scatters.' }, finish_reason: 'stop' }],
+  };
+  const frames = [chatFrame({ reasoning_content: 'Light scatters.' }), chatFrame({ content: 'Hi' }), chatFrame({}, 'stop'), CHAT_DONE];
+
+  it.each([
+    ['absent', {}],
+    ['disabled', { thinking: { type: 'disabled' } }],
+  ])('makes no thinking block when thinking is %s, streamed or buffered', (_name, fields) => {
+    const includeReasoning = includeReasoningFor(fields);
+    expect(includeReasoning).toBe(false);
+    for (const stream of [false, true]) {
+      expect(JSON.stringify(translateBody(CHAT, MESSAGES, reply, stream, { includeReasoning }))).not.toContain('thinking');
+    }
+    expect(blockLog(translateStream(CHAT, MESSAGES, frames, { includeReasoning }))).toEqual(['start 0 text', 'text_delta 0 Hi', 'stop 0']);
+  });
+
+  it.each([
+    ['enabled', { thinking: { type: 'enabled', budget_tokens: 2000 } }],
+    ['adaptive', { thinking: { type: 'adaptive', display: 'updates' }, output_config: { effort: 'high' } }],
+  ])('makes the thinking block when thinking is %s', (_name, fields) => {
+    const includeReasoning = includeReasoningFor(fields);
+    expect(includeReasoning).toBe(true);
+    expect((translateBody(CHAT, MESSAGES, reply, false, { includeReasoning }) as Json).content[0].type).toBe('thinking');
+    expect(blockLog(translateStream(CHAT, MESSAGES, frames, { includeReasoning }))[0]).toBe('start 0 thinking');
   });
 });

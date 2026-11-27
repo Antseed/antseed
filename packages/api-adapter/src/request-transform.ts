@@ -24,17 +24,12 @@ export interface ServiceApiRequestTransformResult {
   /**
    * The client asked for the model's reasoning: a Responses request whose `include` lists
    * `reasoning.encrypted_content` (it keeps reasoning state), a Chat Completions request that names a
-   * `reasoning_effort` other than `none`, or any Messages request. Pass it to `createStreamingAdapter`
-   * and `transformResponse`, which then return the reasoning as a `reasoning` item, `reasoning_content`
-   * or a `thinking` block.
+   * `reasoning_effort` other than `none`, or a Messages request that switches `thinking` on (`enabled` or
+   * `adaptive`). Pass it to `createStreamingAdapter` and `transformResponse`, which then return the
+   * reasoning as a `reasoning` item, `reasoning_content` or a `thinking` block, and leave out reasoning a
+   * seller wrote on its own for a client that did not ask.
    */
   includeReasoning: boolean;
-  /**
-   * Whether the client asked for thoughts: a Messages request with `thinking` `enabled` or `adaptive`.
-   * Pass it as `includeThinking` to `transformResponse` and `createStreamingAdapter`, so a Messages
-   * client that did not ask is not sent a `thinking` block a seller wrote on its own.
-   */
-  includeThinking: boolean;
 }
 
 export interface ServiceApiRequestTransformOptions {
@@ -98,7 +93,6 @@ export function transformRequest(
 
   const normalized = normalize(body);
   const streamRequested = options.streamRequested ?? normalized.stream;
-  const includeThinking = options.from === 'anthropic-messages' && requestsThinking(body);
   if (options.from === options.to) {
     const repairedBody = options.from === 'openai-responses'
       ? repairLegacyResponsesItemIds(body)
@@ -108,7 +102,6 @@ export function transformRequest(
       streamRequested,
       requestedModel: normalized.model,
       includeReasoning: requestsReasoningState(options.from, body),
-      includeThinking,
     };
   }
 
@@ -134,14 +127,13 @@ export function transformRequest(
     streamRequested,
     requestedModel: normalized.model,
     includeReasoning: requestsReasoningState(options.from, body),
-    includeThinking,
   };
 }
 
 function requestsReasoningState(from: ServiceApiProtocol, body: Record<string, unknown>): boolean {
   if (from === 'openai-responses') return Array.isArray(body.include) && body.include.includes('reasoning.encrypted_content');
   if (from === 'openai-chat-completions') return typeof body.reasoning_effort === 'string' && body.reasoning_effort !== 'none';
-  return true;
+  return requestsThinking(body);
 }
 
 /** Whether a Messages request switches thinking on, with a budget (`enabled`) or without one (`adaptive`). */

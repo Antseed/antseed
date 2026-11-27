@@ -17,12 +17,6 @@ export interface ServiceApiResponseTransformOptions {
   fallbackModel?: string | null;
   /** The client takes the model's reasoning (see `includeReasoning` on transformRequest). */
   includeReasoning?: boolean;
-  /**
-   * A Messages client gets a `thinking` block only when it asked for thoughts (`includeThinking` of
-   * `transformRequest`'s result). Without it, thoughts a seller wrote on its own are left out, as they
-   * were before. Other client protocols are not affected.
-   */
-  includeThinking?: boolean;
 }
 
 type ResponseNormalizer = (
@@ -66,8 +60,7 @@ export function transformResponse(
     requestedModel: options.fallbackModel ?? null,
   });
   const { reasoning: _reasoning, reasoningModel: _reasoningModel, ...withoutReasoning } = normalized;
-  const dropsThoughts = options.to === 'anthropic-messages' && options.includeThinking !== true;
-  const canonical: CanonicalLlmResponse = options.includeReasoning === true && !dropsThoughts ? normalized : withoutReasoning;
+  const canonical: CanonicalLlmResponse = options.includeReasoning === true ? normalized : withoutReasoning;
   const body = render(canonical);
 
   if (options.streamRequested) {
