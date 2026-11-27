@@ -282,6 +282,22 @@ describe('Responses reasoning sent back to a chat model', () => {
     }
   });
 
+  it('returns reasoning to the same model however a seller spells it, and never to a variant', () => {
+    const tagged = (model: string) => ({ ...REASONING_ITEM, encrypted_content: `${TAG}${model}` });
+    const replayed = (tagModel: string, requestModel: string) =>
+      reasoningContents(toChatMessages([user, tagged(tagModel), preamble, fnCall, fnOutput], 'openai-chat-completions', requestModel)).length === 1;
+
+    expect(replayed('kimi-k3.1-pro', 'kimi-k3-1-pro')).toBe(true);
+    expect(replayed('kimi-k3-1-pro', 'kimi-k3.1-pro')).toBe(true);
+    expect(replayed('moonshotai/Kimi-K3.1-Pro', 'kimi-k3-1-pro')).toBe(true);
+    expect(replayed('glm-5.3', 'z-ai/glm-5.3')).toBe(true);
+
+    expect(replayed('kimi-k3', 'kimi-k3-1-pro')).toBe(false);
+    expect(replayed('kimi-k3', 'kimi-k3-fast')).toBe(false);
+    expect(replayed('kimi-k3-1-pro', 'kimi-k3-1-pro-highspeed')).toBe(false);
+    expect(replayed('glm-5.3', 'glm-5.3-flash')).toBe(false);
+  });
+
   it('matches no reasoning tagged with an empty model', () => {
     const emptyTag = { ...REASONING_ITEM, encrypted_content: TAG };
 

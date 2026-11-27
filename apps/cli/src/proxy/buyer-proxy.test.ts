@@ -4603,6 +4603,51 @@ test('a chat model\'s reasoning reaches a Responses client only when it asks for
   assert.deepEqual(await outputTypes(), ['message'])
 })
 
+test('a chat model\'s reasoning reaches a streaming Responses client only when it asks for reasoning state', async () => {
+  const peer = makePeer('a', ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'model-a': ['openai-chat-completions'] } } }
+  const streamed = async (include?: string[]) => {
+    const proxy = makeBuyerProxyWithPeers([peer], [peer])
+    let sentBody: Record<string, unknown> | null = null
+    ;(proxy as any)._node.sendRequest = async () => { throw new Error('not buffered') }
+    ;(proxy as any)._node.sendRequestStream = async (
+      _peer: PeerInfo,
+      request: { requestId: string; body: Uint8Array },
+      callbacks: { onResponseStart: (...args: unknown[]) => void; onResponseChunk: (chunk: unknown) => void },
+    ) => {
+      sentBody = JSON.parse(new TextDecoder().decode(request.body)) as Record<string, unknown>
+      const frame = (delta: Record<string, unknown>, finish: string | null = null) => Buffer.from(`data: ${JSON.stringify({
+        id: 'chatcmpl-1', object: 'chat.completion.chunk', model: 'seller/label', choices: [{ index: 0, delta, finish_reason: finish }],
+      })}\n\n`)
+      const headers = { 'content-type': 'text/event-stream' }
+      callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }, { streaming: true })
+      for (const data of [frame({ role: 'assistant', content: '', reasoning: 'Think ' }), frame({ reasoning: 'first.' }), frame({ content: 'Hello.' }), frame({}, 'stop')]) {
+        callbacks.onResponseChunk({ requestId: request.requestId, data, done: false })
+      }
+      callbacks.onResponseChunk({ requestId: request.requestId, data: Buffer.from('data: [DONE]\n\n'), done: true })
+      return { requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }
+    }
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/responses',
+      headers: { 'x-antseed-pin-peer': peer.peerId },
+      body: { model: 'model-a', stream: true, input: 'hi', ...(include ? { include } : {}) },
+    }))
+    assert.equal(res.statusCode, 200)
+    assert.equal((sentBody as Record<string, unknown> | null)?.stream, true)
+    return res.body
+  }
+
+  const withInclude = await streamed(['reasoning.encrypted_content'])
+  assert.match(withInclude, /response\.reasoning_text\.delta/)
+  assert.match(withInclude, /antseed\.reasoning\.v1:model-a/)
+  const completedLine = withInclude.split('\n').find((line) => line.startsWith('data: {"type":"response.completed"'))
+  const completed = JSON.parse(completedLine!.slice('data: '.length)) as { response: { output: Array<{ type: string }>; end_turn: boolean } }
+  assert.deepEqual(completed.response.output.map((item) => item.type), ['reasoning', 'message'])
+  assert.equal(completed.response.end_turn, true)
+
+  assert.doesNotMatch(await streamed(), /reasoning_text|antseed\.reasoning/)
+})
+
 test('a Responses request to a Responses seller loses only the reasoning items the adapter made', async () => {
   const peer = makePeer('a', ['openai-responses'])
   peer.providerServiceApiProtocols = { 'openai-responses': { services: { 'example-model': ['openai-responses'] } } }

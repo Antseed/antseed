@@ -1,4 +1,5 @@
 import { estimateTokenCount } from 'tokenx';
+import { sameCanonicalModel } from '@antseed/protocol';
 import type { SerializedHttpResponse, SerializedHttpResponseChunk } from './types.js';
 import { isSpeechAudio } from './speech-audio.js';
 
@@ -72,22 +73,19 @@ export function isAdapterReasoningItem(item: Record<string, unknown>): boolean {
  * The reasoning text of a Responses input `reasoning` item, when this adapter made the item for a
  * request for `model`. Reasoning for another model, and any item the adapter did not make (a
  * summary, another provider's encrypted state), gives nothing: a model gets back only its own.
+ *
+ * "The same model" is the rule routing uses (`sameCanonicalModel`): sellers spell one model
+ * `kimi-k3.1-pro`, `kimi-k3-1-pro` or `moonshotai/Kimi-K3.1-Pro`, and a thread can move between them.
  */
 export function responsesReasoningTextFor(item: Record<string, unknown>, model: string | null): string {
   if (!isAdapterReasoningItem(item) || !Array.isArray(item.content) || model === null) return '';
-  const author = comparableModelId((item.encrypted_content as string).slice(RESPONSES_REASONING_TAG.length));
-  if (author === null || author !== comparableModelId(model)) return '';
+  const author = (item.encrypted_content as string).slice(RESPONSES_REASONING_TAG.length);
+  if (!sameCanonicalModel(author, model)) return '';
   return item.content
     .filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === 'object')
     .filter((part) => part.type === 'reasoning_text' && typeof part.text === 'string')
     .map((part) => part.text as string)
     .join('');
-}
-
-/** A model id without case or a provider prefix: `moonshotai/Kimi-K3` and `kimi-k3` are one model. None if empty. */
-function comparableModelId(model: string): string | null {
-  const id = model.slice(model.lastIndexOf('/') + 1).trim().toLowerCase();
-  return id.length > 0 ? id : null;
 }
 
 export function openAIResponsesFunctionCallId(callId: string): string {
