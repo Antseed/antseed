@@ -61,7 +61,9 @@ export function adapterThinkingSignature(model: string, responseId: string): str
  * The thoughts of a Messages history `thinking` block, when this adapter made the block for a
  * request for `model` (see `adapterThinkingSignature`). Any other block gives nothing: one with no
  * signature or another provider's, thoughts for another model (by `sameCanonicalModel`, as for
- * Responses items), sealed reasoning, and `redacted_thinking`.
+ * Responses items), sealed reasoning, and `redacted_thinking`. The model is what stands before the
+ * last `#`, so a response id that itself holds a `#` reads as another model: that block never goes back,
+ * and `withoutAdapterThinkingBlocks` still removes it.
  */
 export function adapterThinkingTextFor(block: Record<string, unknown>, model: string | null): string {
   if (block.type !== 'thinking' || typeof block.thinking !== 'string' || model === null) return '';

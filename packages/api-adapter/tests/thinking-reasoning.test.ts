@@ -700,6 +700,36 @@ describe('the signature of a thinking block the adapter made', () => {
     expect(buffered.content[0].signature.length).toBeLessThan(80);
     expect(() => atob(buffered.content[0].signature)).toThrow();
   });
+
+  it('differs for every answer from a seller whose stream has no id, and still goes back to the model', () => {
+    const streamedSignature = (): string => {
+      const adapter = createStreamingAdapter({ from: CHAT, to: MESSAGES, fallbackModel: 'example-model', includeReasoning: true })!;
+      let sse = '';
+      for (const frame of [
+        `data: ${JSON.stringify({ model: 'seller-label', choices: [{ index: 0, delta: { reasoning_content: 'Light scatters.' }, finish_reason: null }] })}\n\n`,
+        `data: ${JSON.stringify({ model: 'seller-label', choices: [{ index: 0, delta: { content: 'Hi' }, finish_reason: 'stop' }] })}\n\n`,
+        CHAT_DONE,
+      ]) {
+        for (const out of adapter.adaptChunk({ requestId: 'r', data: encoder.encode(frame), done: false })) sse += decoder.decode(out.data);
+      }
+      return sseEvents(sse).find((event) => event.delta?.type === 'signature_delta')!.delta.signature as string;
+    };
+    const first = streamedSignature();
+    const second = streamedSignature();
+    expect(first).toMatch(/^antseed\.reasoning\.v1:example-model#msg_example-model_[a-z0-9]+$/);
+    expect(second).toMatch(/^antseed\.reasoning\.v1:example-model#msg_example-model_[a-z0-9]+$/);
+    expect(first).not.toBe(second);
+
+    const assistant = sellerBody(CHAT, {
+      messages: [
+        { role: 'user', content: 'Q1' },
+        { role: 'assistant', content: [{ type: 'thinking', thinking: 'Light scatters.', signature: first }, { type: 'text', text: 'Hi' }] },
+        { role: 'user', content: 'Q2' },
+      ],
+      thinking: { type: 'adaptive' },
+    }).messages[1];
+    expect(assistant.reasoning_content).toBe('Light scatters.');
+  });
 });
 
 describe('a thinking block the adapter made, sent back in a Messages request for a chat seller', () => {
@@ -730,6 +760,19 @@ describe('a thinking block the adapter made, sent back in a Messages request for
       reasoning_content: 'Need the tool.',
       tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'lookup', arguments: '{"q":1}' } }],
     });
+  });
+
+  it('never goes back when the response id itself holds a #, and the strip still removes it', () => {
+    const block = { type: 'thinking', thinking: 'Need the tool.', signature: `${TAG}kimi-k3-1-pro#chatcmpl#1` };
+    expect(assistantOf('kimi-k3-1-pro', block)).not.toHaveProperty('reasoning_content');
+    const stripped = withoutAdapterThinkingBlocks({
+      requestId: 'r',
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {},
+      body: encoder.encode(JSON.stringify({ model: 'kimi-k3-1-pro', messages: toolTurn(block) })),
+    });
+    expect(decoder.decode(stripped.body)).not.toContain('Need the tool.');
   });
 
   it('counts another spelling of the same model as the same model', () => {
