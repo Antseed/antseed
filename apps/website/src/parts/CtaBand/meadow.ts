@@ -84,7 +84,12 @@ function lit([r, g, b]: Rgb): Rgb {
   const mn = Math.min(r, g, b);
   const d = (mx - mn) / 255;
   const l = (mx + mn) / 510;
-  let h = !d ? 0 : mx === r ? ((g - b) / 255 / d + 6) % 6 : mx === g ? (b - r) / 255 / d + 2 : (r - g) / 255 / d + 4;
+  let h = 0;
+  if (d) {
+    if (mx === r) h = ((g - b) / 255 / d + 6) % 6;
+    else if (mx === g) h = (b - r) / 255 / d + 2;
+    else h = (r - g) / 255 / d + 4;
+  }
   h *= 60;
   if (h > 38 && h < 170) h = 84 + (h - 84) * 0.5;
   const s = Math.min(0.75, (d ? d / (1 - Math.abs(2 * l - 1)) : 0) * LIT_SAT + 0.15);
@@ -92,7 +97,14 @@ function lit([r, g, b]: Rgb): Rgb {
   const c = (1 - Math.abs(2 * L - 1)) * s;
   const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
   const o = L - c / 2;
-  const [r1, g1, b1] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  let sector: Rgb;
+  if (h < 60) sector = [c, x, 0];
+  else if (h < 120) sector = [x, c, 0];
+  else if (h < 180) sector = [0, c, x];
+  else if (h < 240) sector = [0, x, c];
+  else if (h < 300) sector = [x, 0, c];
+  else sector = [c, 0, x];
+  const [r1, g1, b1] = sector;
   return [(r1 + o) * 255, (g1 + o) * 255, (b1 + o) * 255];
 }
 
