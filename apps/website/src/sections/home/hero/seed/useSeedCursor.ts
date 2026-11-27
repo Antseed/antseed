@@ -2,6 +2,7 @@ import {useEffect, type RefObject} from 'react';
 import {replayAnimation} from '../../../../lib/replayAnimation';
 import {AntLine} from './antLine';
 import {SEED_W, UI_ATTR, type Hand, type HandClasses} from './hand';
+import {isFinger} from './pointer';
 
 const FOLLOW = 0.3;              // share of the way to the pointer the seed covers each frame
 const TILT = 0.5;                // degrees of lean per px the seed trails behind
@@ -59,7 +60,7 @@ export function useSeedCursor({hero, cursor, hand, classes, active, still}: Opti
     const wake = () => { if (!raf && active && !still) { last = performance.now(); raf = requestAnimationFrame(frame); } };
 
     const onMove = (e: PointerEvent) => {
-      if (e.pointerType !== 'mouse') return;   // a finger has no cursor: on a touch screen the seed lies on the ground (MascotScene)
+      if (isFinger(e.pointerType)) return;   // a finger has no cursor: the seed lies on the ground for it (MascotScene); a pen carries it
       const r = card.getBoundingClientRect();
       hand.x = e.clientX - r.left; hand.y = e.clientY - r.top; lastInput = performance.now();
       if (!hand.on || still) { hand.sx = hand.x; hand.sy = hand.y; }

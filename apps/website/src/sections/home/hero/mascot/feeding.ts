@@ -1,4 +1,5 @@
 import {SEED_H, SEED_W, type Hand} from '../seed/hand';
+import {isFinger} from '../seed/pointer';
 import {loadImage} from './art';
 import {TUNING} from './rig';
 
@@ -43,7 +44,7 @@ export class Feeding {
 
   constructor(private readonly els: Els, private readonly hand: Hand, private readonly cls: Classes, signal: AbortSignal) {
     loadImage('/site/assets/hero/seed-day.webp').then((img) => { this.inks = inksOf(img); });
-    els.card.addEventListener('pointerdown', (e) => { this.touch = e.pointerType === 'touch'; }, {passive: true, signal});
+    els.card.addEventListener('pointerdown', (e) => { this.touch = isFinger(e.pointerType); }, {passive: true, signal});
     els.groundSeed.addEventListener('click', this.lift, {signal});
   }
 

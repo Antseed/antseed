@@ -1,5 +1,6 @@
 import {isDarkTheme, onThemeChange} from '../../../../lib/theme';
 import {SEED_H, SEED_W, type Hand} from '../seed/hand';
+import {isFinger} from '../seed/pointer';
 import {AntennaSway, loadArt, type Art} from './art';
 import {drawAnt, drawRim} from './draw';
 import {Eyes} from './eyes';
@@ -68,7 +69,7 @@ export class MascotScene {
     window.addEventListener('pointermove', this.onPointer, {passive: true, signal});
     els.card.addEventListener('pointerdown', this.onPointer, {passive: true, signal});
     // a finger lifted, or taken by a scroll: it stops looking
-    const letGo = (e: PointerEvent) => { if (e.pointerType !== 'mouse') this.look.on = false; };
+    const letGo = (e: PointerEvent) => { if (isFinger(e.pointerType)) this.look.on = false; };
     window.addEventListener('pointerup', letGo, {passive: true, signal});
     window.addEventListener('pointercancel', letGo, {passive: true, signal});
     els.card.addEventListener('click', this.onTap, {signal});
@@ -90,10 +91,10 @@ export class MascotScene {
   }
 
   private onPointer = (e: PointerEvent) => {
-    const touch = e.pointerType !== 'mouse';
+    const touch = isFinger(e.pointerType);
     // a finger only counts on the card, and only while it is down
     if (touch && (!this.els.card.contains(e.target as Node) || (e.type === 'pointermove' && !this.look.on))) return;
-    if (e.pointerType === 'touch' && e.type === 'pointerdown') this.fingerSeen = true;
+    if (touch && e.type === 'pointerdown') this.fingerSeen = true;
     const r = this.els.card.getBoundingClientRect();
     this.look = {x: e.clientX - r.left, y: e.clientY - r.top, on: true, panel: this.els.install.contains(e.target as Node), touch};
     this.feeding.tryCatch(performance.now(), this.look, this.canHold());
