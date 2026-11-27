@@ -8,7 +8,7 @@ import {
   renderCanonicalResponseToOpenAIResponsesBody,
   type CanonicalLlmResponse,
 } from './canonical.js';
-import { encodeJson, encodeText, parseJsonObject, reasoningUsageFields, type ReportedUsage } from './utils.js';
+import { encodeJson, encodeText, parseJsonObject, parseJsonSafe, reasoningUsageFields, type ReportedUsage } from './utils.js';
 
 export interface ServiceApiResponseTransformOptions {
   from: ServiceApiProtocol;
@@ -153,12 +153,8 @@ function findEventStreamError(text: string): Record<string, unknown> | null {
 }
 
 function parseJsonRecord(text: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+  const parsed = parseJsonSafe(text);
+  return isRecord(parsed) ? parsed : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
