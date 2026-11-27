@@ -1205,6 +1205,106 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(failedSpends).toEqual([]);
   });
 
+  it('reports nothing as spent for a create the provider refuses', async () => {
+    const h = setup({ createResponse: 'rejected' });
+    const spends: string[] = [];
+    h.buyer.setSpendListener((event) => { spends.push(event.amountUsdc); });
+
+    expect((await h.send(h.videoRequest('video-1'))).statusCode).toBe(400);
+    await h.settle();
+
+    expect(h.chain.get(onlyOneOff(h).channelId)).toMatchObject({ settled: 0n, status: 2 });
+    expect(spends).toEqual([]);
+  });
+
+  it('reports the serious fee for a refused create an older seller had already taken it for', async () => {
+    const h = setup({ createResponse: 'rejected', holdCreates: true });
+    const spends: string[] = [];
+    h.buyer.setSpendListener((event) => { spends.push(event.amountUsdc); });
+
+    const pending = h.send(h.videoRequest('video-1'));
+    await vi.waitFor(() => expect(h.providerCreates).toHaveLength(1));
+    // An older seller tops up, taking the serious fee, before it sends the create on.
+    Object.assign(h.chain.get(onlyOneOff(h).channelId)!, { deposit: VIDEO_PRICE, settled: SERIOUS_FEE });
+    h.releaseCreate();
+    expect((await pending).statusCode).toBe(400);
+    await h.settle();
+
+    expect(spends).toEqual([SERIOUS_FEE.toString()]);
+  });
+
+  it('reports the serious fee when the create is accepted, and the rest of the price on delivery', async () => {
+    const h = setup();
+    const spends: string[] = [];
+    h.buyer.setSpendListener((event) => { spends.push(event.amountUsdc); });
+
+    expect((await h.send(h.videoRequest('video-1'))).statusCode).toBe(200);
+    expect(spends).toEqual([SERIOUS_FEE.toString()]);
+
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
+    await h.settle();
+    expect(spends).toEqual([SERIOUS_FEE.toString(), (VIDEO_PRICE - SERIOUS_FEE).toString()]);
+  });
+
+  it('reports a create that got no answer as spent only as far as its channel settled', async () => {
+    for (const outcome of ['refused', 'accepted'] as const) {
+      const h = setup({ holdCreates: true, requestTimeoutMs: 300, ...(outcome === 'refused' ? { createResponse: 'rejected' as const } : {}) });
+      const spends: string[] = [];
+      h.buyer.setSpendListener((event) => { spends.push(event.amountUsdc); });
+
+      await expect(h.send(h.videoRequest('video-1'))).rejects.toBeDefined();
+      h.releaseCreate();
+      const { channelId } = onlyOneOff(h);
+      if (outcome === 'refused') {
+        await vi.waitFor(() => expect(h.chain.get(channelId)).toMatchObject({ settled: 0n, status: 2 }));
+      } else {
+        await vi.waitFor(() => expect(h.chain.get(channelId)).toMatchObject({ settled: SERIOUS_FEE }));
+        // The seller closes an uncollected job at the serious fee.
+        h.chain.get(channelId)!.status = 2;
+      }
+
+      await h.negotiator.reconcileChannelsWithChain();
+
+      expect(h.buyerChannel(channelId)?.status).not.toBe('active');
+      expect(spends).toEqual(outcome === 'refused' ? [] : [SERIOUS_FEE.toString()]);
+    }
+  });
+
+  it('does not report an accepted job again when its channel closes after a buyer restart', async () => {
+    const h = setup();
+    expect((await h.send(h.videoRequest('video-1'))).statusCode).toBe(200);
+    const { channelId } = onlyOneOff(h);
+    const restarted = h.restartBuyer();
+    const spends: string[] = [];
+    restarted.setSpendListener((event) => { spends.push(event.amountUsdc); });
+
+    restarted.forgetOneOffChannel(channelId, SERIOUS_FEE);
+
+    expect(spends).toEqual([]);
+  });
+
+  it('confirms a video channel from the chain at its opening reserve when the AuthAck is lost', async () => {
+    const h = setup();
+    const handleAuthAck = h.buyer.handleAuthAck.bind(h.buyer);
+    vi.spyOn(h.buyer, 'handleAuthAck').mockImplementation(async (peerId, payload) => {
+      if (h.oneOffChannelIds().includes(payload.channelId)) return;
+      return handleAuthAck(peerId, payload);
+    });
+    vi.useFakeTimers({ toFake: ['Date'] });
+
+    const pending = h.send(h.videoRequest('video-1'));
+    pending.catch(() => {});
+    await vi.waitFor(() => expect(h.oneOffChannelIds()).toHaveLength(1));
+    await vi.waitFor(() => expect(h.chain.get(h.oneOffChannelIds()[0]!)).toMatchObject({ deposit: FIRST_RESERVE, status: 1 }));
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    // The opening reserve has been on-chain, with no AuthAck, for longer than the grace.
+    vi.setSystemTime(Date.now() + 31_000);
+
+    const response = await Promise.race([pending, new Promise((resolve) => setTimeout(() => resolve('still waiting'), 5_000))]);
+    expect(response).toMatchObject({ statusCode: 200 });
+    expect(h.topUp).toHaveBeenCalledOnce();
+  }, 15_000);
+
   it('reports the serious fee once when an AuthAck and an on-chain confirmation overlap', async () => {
     const h = setup({ topUpBehavior: 'slow' });
     await openChannelWithChat(h);
