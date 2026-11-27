@@ -7,7 +7,7 @@ import { selectVerifier, verifierSupportFingerprint, type VerifierPolicy, type V
 type Peer = { peerId: string; capabilities?: string[] }
 type Entry = { outcome?: Omit<VerifyOutcome, 'ok'>; checkedAt: number; failures?: number; expiresAt?: number }
 
-const TEE_FAILURE_MAX_RETRY_DELAY_MS = 6 * 60 * 60 * 1_000
+const TEE_FAILURE_MAX_RETRY_DELAY_MS = 60 * 60 * 1_000
 
 export class TeeVerification {
   readonly sessionId = randomUUID()
@@ -141,23 +141,19 @@ export class TeeVerification {
    */
   teeProvenScope(peer: Peer): TeeScope | null {
     // A check being re-run keeps its last verdict, so the badge doesn't flicker.
-    const newest = this.newestSettledCheck(peer, { skipRefetching: false })
+    const newest = this.newestSettledCheck(peer)
     if (newest?.outcome?.sellerNodeVerified !== true || this.cacheExpiry(newest, TEE_BADGE_MAX_AGE_MS) <= this.now()) return null
     return teeScope({ claims: newest.outcome.claims ?? [] }) === 'end-to-end' ? 'end-to-end' : 'seller-node'
   }
 
   /**
-   * The newest check with a verdict (not a transient error), across the
-   * per-identity checks for the seller's current capabilities, whether or not
-   * it is still in date. Both the failure and the scope follow it, so they
-   * agree, and an expired newer verdict never lets an older one back: the
-   * caller treats it as no verdict until the seller is checked again.
+   * The newest settled verdict across buyer identities for the seller's current
+   * capabilities. A newer failure supersedes an earlier pass even after expiry.
    */
-  private newestSettledCheck(peer: Peer, options: { skipRefetching: boolean }): Entry | null {
+  private newestSettledCheck(peer: Peer): Entry | null {
     let newest: Entry | null = null
     for (const query of this.teeQueries(peer)) {
       const entry = query.state.data as Entry | undefined
-      if (options.skipRefetching && query.state.fetchStatus === 'fetching') continue
       if (!entry?.outcome || entry.outcome.transient) continue
       if (!newest || entry.checkedAt > newest.checkedAt) newest = entry
     }

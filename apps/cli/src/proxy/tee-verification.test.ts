@@ -83,8 +83,8 @@ test('display failures keep the short TTL and capability changes discard day-lon
   assert.equal((await service.verifyForDisplay(changed, run)).ok, false);
 });
 
-test('routing and display share failure backoff up to six hours', async () => {
-  const schedules = [[0.5, [5, 10, 20, 40, 80, 160, 320, 360]], [0, [5, 8]], [1, [5, 12]]] as const;
+test('routing and display share failure backoff up to one hour', async () => {
+  const schedules = [[0.5, [5, 10, 20, 40, 60]], [0, [5, 8]], [1, [5, 12]]] as const;
   for (const [random, delays] of schedules) {
     let now = 100;
     const service = new TeeVerification(strict, () => now, () => random);
@@ -103,7 +103,9 @@ test('a display failure stays in date after a newer identity failure expires', a
   const service = new TeeVerification(strict, () => now, () => 0.5);
   await service.verifyForDisplay(peer, failAttestation);
   now += TEE_MAX_AGE_MS;
+  await service.verifyForDisplay(peer, async () => ({ ok: false, verified: false, transient: true }));
   await service.verifyForDisplay(peer, failAttestation);
+  assert.equal(service.snapshot([peer]).evidence[0]?.expiresAt, now + 2 * TEE_MAX_AGE_MS);
   now += 1;
   await service.verify(peer, strict, async () => ({ ok: false, verified: false, reason: 'Identity failure' }), false, 'identity-1');
   assert.equal(service.teeFailure(peer), 'Identity failure');
