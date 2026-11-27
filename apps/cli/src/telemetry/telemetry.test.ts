@@ -91,6 +91,14 @@ test('the CLI registers antseed telemetry enable|disable|status', () => {
   assert.deepEqual(telemetry.commands.map((command) => command.name()).sort(), ['disable', 'enable', 'status'])
 })
 
+test('public models live on the network are reported by their registry id, not custom_or_unknown', () => {
+  for (const [spelling, id] of [
+    ['kimi-k3-1-pro', 'kimi-k3.1-pro'], ['moonshotai/Kimi-K3.1-Pro', 'kimi-k3.1-pro'],
+    ['glm-5.3', 'glm-5.3'], ['z-ai-glm-5-3', 'glm-5.3'],
+    ['gpt-6-luna', 'gpt-6-luna'], ['gpt-6.1-terra', 'gpt-6.1-terra'], ['minimax-m3.1-flash', 'minimax-m3.1-flash'],
+  ] as const) assert.equal(publicModelId(spelling), id, spelling)
+})
+
 test('request trace: failure taxonomy, fallbacks and buckets', () => {
   const trace = new RequestTrace(1_000, true)
   trace.protocol = 'openai-chat-completions'
