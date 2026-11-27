@@ -6,9 +6,46 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Changed
+
+- Website: the `/brand/` page is rebuilt in the site's design, with sections for the logo, colour, type, the ant (its full spec and the $ANTS coin), example pieces, backgrounds and the watercolour prompt, and new downloads (ant examples, a profile picture, the pixel font and a one-file brand summary). The repo gains a brand kit for agents making Antseed pages and pictures outside the site: `apps/website/brand-kit/`, starting at `DESIGN.md`, with a starter page that renders whole on its own.
+
 ### Fixed
 
 - **Cancelling a request now stops the seller's work.** When a buyer gives up a streaming answer (the client disconnects from the buyer proxy, or the caller aborts), the buyer tells the seller, which stops its provider and bills only what reached the buyer before the cancel. Before, only video downloads were cancelled: the seller generated the whole answer and billed it in full. A seller on an older version ignores the cancel and behaves as before.
+
+## 2026-11-27 — CLI 0.1.266, Desktop 0.2.100
+
+### Packages
+
+- `@antseed/cli@0.1.266`
+
+### Desktop
+
+- `@antseed/desktop@0.2.100`
+
+### Fixed
+
+- Gateway (`@antseed/cli`): usage pages no longer slow down, or stall the whole gateway, as its history grows. The console's Overview, Activity, Keys and Network pages, `GET /v1/key` and `GET /v1/key/savings` summed the entire request log and ledger on every load. On a gateway with millions of requests a page took tens of seconds, and meanwhile the gateway answered nothing else: API requests failed, and capped keys were refused while the spend feed read as unreachable. Usage now comes from hourly totals that the gateway keeps as it records each request and spend, so these reads stay fast however long the history grows. After the upgrade the gateway rolls up the usage it recorded before in the background; usage pages read the log as before until that finishes, and request-log retention waits for it. The Network page's latency, first-token and speed medians now come from the day's newest 20,000 requests. In `/v1/key/savings`, `matched_requests` counts each billed request once, and requests pruned from the log keep the tokens their responses reported.
+
+## 2026-11-27 — CLI 0.1.265, Node 0.2.195, Desktop 0.2.99
+
+### Packages
+
+- `@antseed/cli@0.1.265`
+- `@antseed/node@0.2.195`
+- `@antseed/antseed-verifier@0.1.12`
+- `@antseed/payments@0.1.122`
+- `@antseed/ants@0.1.80`
+
+### Desktop
+
+- `@antseed/desktop@0.2.99`
+
+### Fixed
+
+- Buyer (`@antseed/node`, and the CLI, desktop and gateway through it): the buyer's verification data no longer grows without limit. Every seller-signed response receipt in `verification.db` and every evidence sample in `verification_samples` was kept forever, so a busy buyer slowly filled its disk. The buyer now prunes both in the background, shortly after it starts and then every hour: receipts after 24 hours, and evidence samples after 7 days or, oldest first, once they pass 1 GiB or 10,000 samples in total. Samples whose write never finished are removed after an hour. An `AntseedNode` embedder can change the limits with `responseAuthRetentionMs`, `sampleRetentionMs`, `maxTotalSampleBytes` and `maxSampleCount` in its `verification` config, where `0` turns a limit off. An existing `verification.db` stops growing but keeps its file size, because SQLite reuses the freed space instead of returning it to the disk.
+- TEE attestation (`@antseed/antseed-verifier`): buyers accept TEE sellers on the dstack 0.6.5 production OS. Its OS image hash joins the approved list (`dstack 0.6.1`–`0.6.5`); before, a seller on 0.6.5 failed `seller-node-tee-genuine` with "the CVM OS image hash is not an approved dstack release". Buyers get it with the CLI release that pins the new verifier.
 
 ## 2026-11-27 — CLI 0.1.264, Node 0.2.194, Desktop 0.2.98
 

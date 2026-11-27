@@ -81,13 +81,16 @@ Implemented in the `@antseed/node` package:
   - stores the auth and verification result in `verification.db`.
 - Verification storage:
   - SQLite table `response_auths`;
-  - indexed by seller, advertised service, and received timestamp.
+  - indexed by seller, advertised service, and received timestamp;
+  - rows older than 24 hours are pruned in the background (default).
 - Buyer-side full evidence sampling:
   - random sample rate default `0.005`;
   - max encoded request + response bytes default `16 MiB`;
   - default directory `<dataDir>/verification_samples`;
   - stores `manifest.json`, `request.bin`, and `response.bin`;
-  - stores only verified `ResponseAuth` samples.
+  - stores only verified `ResponseAuth` samples;
+  - samples older than 7 days, and the oldest samples beyond 1 GiB or 10,000
+    in total, are pruned in the background (defaults).
 
 The implemented evidence chain is:
 
