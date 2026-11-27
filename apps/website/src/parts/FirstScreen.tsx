@@ -31,8 +31,6 @@ export type RailStack = {
   inset?: boolean;
   /** The title on tablets: `large` 56px, `tight` 45px. */
   tabletTitle?: 'large' | 'tight';
-  /** On phones the title as large as lets its longest line hold (at most 40px). */
-  fluidPhoneTitle?: boolean;
   /** The sub line's widest, px (default 540 on tablets, none on phones). */
   subWidth?: number;
 };
@@ -73,7 +71,7 @@ type Props = {
   below?: ReactNode;
   /** Below 1200px, stack inside a rail instead of across the whole width. */
   railStack?: RailStack;
-  /** On phones the title as large as lets its longest line hold (at most 40px), as `railStack.fluidPhoneTitle`. */
+  /** On phones the title as large as lets its longest line hold (at most 40px). */
   fluidPhoneTitle?: boolean;
   /** The offer's spacing side by side under 1200px (default 16, 12, 36), stacked on a tablet (default: as side by side) and on
    *  phones (default 16, 16, 28). */
@@ -175,7 +173,7 @@ export function FirstScreen({
         railStack && styles.railStack,
         railStack?.inset && styles.inset,
         railStack?.tabletTitle && styles[`${railStack.tabletTitle}Tablet`],
-        (fluidPhoneTitle || railStack?.fluidPhoneTitle) && styles.fluidPhone,
+        fluidPhoneTitle && styles.fluidPhone,
         className,
       )}
       style={screenVars({minHeight, textWidth, gaps, tabletRatio, railStack, focus: painting.focus})}>
