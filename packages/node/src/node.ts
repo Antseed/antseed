@@ -71,6 +71,7 @@ import {
 } from "./types/protocol.js";
 import { VerificationStorage } from "./verification/storage.js";
 import { VerificationSampler } from "./verification/samples.js";
+import { VerificationRetention } from "./verification/retention.js";
 import type { ResponseAuthSink } from "@antseed/buyer-core";
 import { FrameDecoder, encodeFrame } from "./p2p/message-protocol.js";
 import { KeepaliveManager, buildPongPayload } from "./p2p/keepalive.js";
@@ -337,6 +338,18 @@ export interface NodeVerificationConfig {
   maxSampleBytes?: number;
   /** Optional directory for verification samples. Default: <dataDir>/verification_samples. */
   samplesDir?: string;
+  /**
+   * ResponseAuth records in verification.db older than this are deleted, in
+   * the background shortly after start and then hourly. 0 keeps every record.
+   * Default: 24 hours.
+   */
+  responseAuthRetentionMs?: number;
+  /** Evidence samples older than this are deleted. 0 keeps samples of any age. Default: 7 days. */
+  sampleRetentionMs?: number;
+  /** Above this many bytes of samples in total, the oldest are deleted. 0 = no limit. Default: 1 GiB. */
+  maxTotalSampleBytes?: number;
+  /** Above this many samples, the oldest are deleted. 0 = no limit. Default: 10,000. */
+  maxSampleCount?: number;
 }
 
 export interface NodeConfig {
@@ -609,6 +622,8 @@ export class AntseedNode extends EventEmitter {
   private _verificationStorage: VerificationStorage | null = null;
   /** Buyer-side plaintext evidence sampler for verified response auths. */
   private _verificationSampler: VerificationSampler | null = null;
+  /** Background pruning that keeps verification.db and the evidence samples bounded. */
+  private _verificationRetention: VerificationRetention | null = null;
   /** Periodic timeout checker interval. */
   private _timeoutCheckerInterval: ReturnType<typeof setInterval> | null = null;
   private _buyerReconcileTimer: ReturnType<typeof setInterval> | null = null;
@@ -984,6 +999,11 @@ export class AntseedNode extends EventEmitter {
       this._resourceOwnership = null;
     }
 
+    // A prune pass in progress is aborted and awaited before its store closes.
+    if (this._verificationRetention) {
+      await this._verificationRetention.stop();
+      this._verificationRetention = null;
+    }
     if (this._verificationStorage) {
       try {
         this._verificationStorage.close();
@@ -2899,8 +2919,17 @@ export class AntseedNode extends EventEmitter {
         {
           sampleRate: this._config.verification?.sampleRate,
           maxSampleBytes: this._config.verification?.maxSampleBytes,
+          sampleRetentionMs: this._config.verification?.sampleRetentionMs,
+          maxTotalSampleBytes: this._config.verification?.maxTotalSampleBytes,
+          maxSampleCount: this._config.verification?.maxSampleCount,
         },
       );
+      this._verificationRetention = new VerificationRetention({
+        storage: this._verificationStorage,
+        sampler: this._verificationSampler,
+        responseAuthRetentionMs: this._config.verification?.responseAuthRetentionMs,
+      });
+      this._verificationRetention.start();
       debugLog("[Node] Verification storage initialized");
     } catch (err) {
       debugWarn(`[Node] Verification storage unavailable: ${err instanceof Error ? err.message : err}`);
