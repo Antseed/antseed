@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Website: the Get started page (`/get-started/`) no longer goes blank when you press **Continue**, or open `/get-started/#instructions` directly, in current Chrome.
+
 ## 2026-11-27 — CLI 0.1.266, Desktop 0.2.100
 
 ### Packages
