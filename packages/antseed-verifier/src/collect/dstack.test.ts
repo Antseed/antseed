@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { unlinkSync } from 'node:fs'
-import { generateDstackQuote } from './dstack.js'
+import { generateDstackAttestation, generateDstackQuote } from './dstack.js'
 import { nodeTeeCapability, decodeTeeTdxEvidence, encodeTeeTdxEvidence, tdxConfigKey, NODE_TEE_CAP_ID } from '../caps/tee-tdx.js'
 import { computeReportData } from '../shared.js'
 
@@ -16,24 +16,23 @@ interface Stub {
 }
 
 /**
- * A dstack guest-agent stub over a unix socket, with no mocks. It answers POST /GetQuote by
- * a call to `respond(reportDataHex)` (null emits HTTP 500) and POST /Info with `info` (404 when
- * absent). This is the exact wire contract generateDstackQuote must speak.
+ * A dstack guest-agent stub over a unix socket. It answers POST /GetQuote with
+ * `respond(reportDataHex)` (null emits HTTP 500) and POST /Info with `respondInfo()`
+ * (undefined emits HTTP 404).
  */
-async function startDstackStub(respond: (reportDataHex: string) => unknown, info?: unknown): Promise<Stub> {
+async function startDstackStub(respond: (reportDataHex: string) => unknown, respondInfo?: () => unknown): Promise<Stub> {
   const socketPath = join(tmpdir(), `ds-${randomBytes(6).toString('hex')}.sock`)
   let lastHex: string | undefined
   const server = createServer((req, res) => {
     const chunks: Buffer[] = []
     req.on('data', (c) => chunks.push(c as Buffer))
-    req.on('end', () => {
+    req.on('end', async () => {
       const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { report_data?: string }
-      if (req.method === 'POST' && req.url === '/Info' && info !== undefined) {
-        res.writeHead(200, { 'content-type': 'application/json' })
+      if (req.method === 'POST' && req.url === '/Info') {
+        const info = await respondInfo?.()
+        res.writeHead(info === undefined ? 404 : 200, { 'content-type': 'application/json' })
         res.end(JSON.stringify(info))
-        return
-      }
-      if (req.method === 'POST' && req.url === '/GetQuote') {
+      } else if (req.method === 'POST' && req.url === '/GetQuote') {
         lastHex = parsed.report_data
         const out = respond(parsed.report_data ?? '')
         if (out === null) { res.writeHead(500); res.end('boom'); return }
@@ -90,6 +89,62 @@ describe('generateDstackQuote', () => {
   })
 })
 
+describe('generateDstackAttestation', () => {
+  const appCompose = '{"runner":"docker-compose"}'
+  const info = { tcb_info: JSON.stringify({ app_compose: appCompose }) }
+  const echoQuote = (reportDataHex: string) => ({ quote: reportDataHex })
+  let stub: Stub | undefined
+  afterEach(async () => { await stub?.close(); stub = undefined })
+
+  it('reads Info once across rounds and quotes each round with its own report_data', async () => {
+    const readInfo = vi.fn(() => info)
+    stub = await startDstackStub(echoQuote, readInfo)
+    const firstReport = new Uint8Array(64).fill(1)
+    const secondReport = new Uint8Array(64).fill(2)
+
+    expect(await generateDstackAttestation(firstReport, stub.socketPath)).toEqual({ quote: firstReport, appCompose })
+    expect(await generateDstackAttestation(secondReport, stub.socketPath)).toEqual({ quote: secondReport, appCompose })
+    expect(readInfo).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries Info after an HTTP error', async () => {
+    const readInfo = vi.fn<() => typeof info | undefined>(() => info).mockReturnValueOnce(undefined)
+    stub = await startDstackStub(echoQuote, readInfo)
+
+    const reportData = new Uint8Array(64)
+    expect(await generateDstackAttestation(reportData, stub.socketPath)).toEqual({ quote: reportData })
+    expect(await generateDstackAttestation(reportData, stub.socketPath)).toEqual({ quote: reportData, appCompose })
+    expect(readInfo).toHaveBeenCalledTimes(2)
+  })
+
+  it('shares one in-flight Info request across concurrent first rounds', async () => {
+    let resolveQuotes: (() => void) | undefined
+    const quotesServed = new Promise<void>((resolve) => {
+      resolveQuotes = resolve
+    })
+    let quoteCalls = 0
+    const readInfo = vi.fn(async () => {
+      await quotesServed
+      return info
+    })
+    stub = await startDstackStub((reportDataHex) => {
+      if (++quoteCalls === 2) resolveQuotes?.()
+      return echoQuote(reportDataHex)
+    }, readInfo)
+
+    const firstReport = new Uint8Array(64).fill(1)
+    const secondReport = new Uint8Array(64).fill(2)
+    expect(await Promise.all([
+      generateDstackAttestation(firstReport, stub.socketPath),
+      generateDstackAttestation(secondReport, stub.socketPath),
+    ])).toEqual([
+      { quote: firstReport, appCompose },
+      { quote: secondReport, appCompose },
+    ])
+    expect(readInfo).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('dstack evidence envelope', () => {
   it('roundtrips optional raw fields and rejects non-string values', () => {
     const evidence = encodeTeeTdxEvidence(new Uint8Array([1]), undefined, undefined, { vmConfig: '{"vm":1}', rawEventLog: '[]' })
@@ -126,7 +181,7 @@ describe('node-tee capability — dstack source', () => {
     const eventLog = JSON.stringify([{ imr: 0, event_type: 1, digest: '00', event: '', event_payload: '' }, rtmr3Event])
     const appCompose = '{"runner":"docker-compose"}'
     const vmConfig = '{"cpus":4}'
-    stub = await startDstackStub((rdHex) => ({ quote: rdHex, event_log: eventLog, vm_config: vmConfig }), { tcb_info: JSON.stringify({ app_compose: appCompose }) })
+    stub = await startDstackStub((rdHex) => ({ quote: rdHex, event_log: eventLog, vm_config: vmConfig }), () => ({ tcb_info: JSON.stringify({ app_compose: appCompose }) }))
     const nonce = new Uint8Array(randomBytes(32))
     const peerId = 'a'.repeat(40)
     const binding = 'c'.repeat(64)
@@ -146,7 +201,7 @@ describe('node-tee capability — dstack source', () => {
   it("ships the image's build record for the digest its compose runs", async () => {
     const digest = `sha256:${'3'.repeat(64)}`
     const appCompose = JSON.stringify({ docker_compose_file: JSON.stringify({ services: { seller: { image: `ghcr.io/antseed/tee-seller@${digest}` } } }) })
-    stub = await startDstackStub((rdHex) => ({ quote: rdHex }), { tcb_info: JSON.stringify({ app_compose: appCompose }) })
+    stub = await startDstackStub((rdHex) => ({ quote: rdHex }), () => ({ tcb_info: JSON.stringify({ app_compose: appCompose }) }))
     const record = { mediaType: 'application/vnd.dev.sigstore.bundle.v0.3+json' }
     const urls: string[] = []
     // The registry has no record for it, so it comes from GitHub's attestations API.

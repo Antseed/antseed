@@ -6,9 +6,25 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+## 2026-11-27 — CLI 0.1.264, Node 0.2.194
+
+### Packages
+
+- `@antseed/cli@0.1.264`
+- `@antseed/node@0.2.194`
+- `@antseed/buyer-core@0.1.57`
+- `@antseed/antseed-verifier@0.1.11`
+- `@antseed/web-sdk@0.1.51`
+- `@antseed/payments@0.1.121`
+- `@antseed/ants@0.1.79`
+
 ### Fixed
 
 - CLI (`@antseed/cli`): `antseed buyer channels request-close`, `antseed buyer channels withdraw` and `antseed buyer withdraw` now check the buyer's authorized wallet before sending. Closing a channel on chain and withdrawing deposits only accept the authorized wallet, and these commands sign with the buyer wallet. A buyer who had never set one got a bare `NotAuthorized` revert and no way forward. Now the command sends nothing and says what to do: with no authorized wallet set, run `antseed buyer set-authorized-wallet --self`; with a different wallet authorized, send the transaction from that wallet.
+- TEE sellers (`@antseed/antseed-verifier`): dstack attestation reuses the app compose from the first successful lookup on each guest-agent socket for the life of the seller process, avoiding a second TDX quote on later rounds.
+- CLI (`@antseed/cli`): the buyer waits longer to retry repeated TEE attestation failures during discovery and routing, with a retry delay capped at one hour.
+- Buyer (`@antseed/buyer-core`, and the CLI, desktop, gateway and web SDK through it): a buyer no longer gets stuck on a seller after a replacement payment channel failed to open. When the seller's reserve for the new channel timed out, the seller kept serving the old channel and the buyer kept retrying it, so every request to that seller failed with `payment_negotiation_failed` ("The seller is still waiting for payment of earlier requests on this channel") until the buyer restarted. The buyer now sends the new channel's reserve again, so the seller closes the old channel and opens the new one. A new channel that can't be re-sent is replaced with a fresh one.
+
 ## 2026-11-26 — CLI 0.1.263, Desktop 0.2.97
 
 ### Packages
