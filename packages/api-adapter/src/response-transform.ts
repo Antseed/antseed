@@ -8,6 +8,7 @@ import {
   renderCanonicalResponseToOpenAIResponsesBody,
   type CanonicalLlmResponse,
 } from './canonical.js';
+import { stripLeadingThinkMarkup } from './think-markup.js';
 import { encodeJson, encodeText, parseJsonObject, reasoningUsageFields, type ReportedUsage } from './utils.js';
 
 export interface ServiceApiResponseTransformOptions {
@@ -54,11 +55,11 @@ export function transformResponse(
     return transformErrorResponse(response, parsed, options);
   }
 
-  const normalized = normalize(parsed, {
+  const normalized = withoutLeadingThinkMarkup(normalize(parsed, {
     id: fallbackResponseId(response.requestId, options.to),
     model: options.fallbackModel ?? 'unknown',
     requestedModel: options.fallbackModel ?? null,
-  });
+  }), options.fallbackModel ?? null);
   const { reasoning: _reasoning, reasoningModel: _reasoningModel, ...withoutReasoning } = normalized;
   const canonical: CanonicalLlmResponse = options.includeReasoning === true ? normalized : withoutReasoning;
   const body = render(canonical);
@@ -75,6 +76,29 @@ export function transformResponse(
     ...response,
     headers: jsonHeaders(response.headers),
     body: encodeJson(body),
+  };
+}
+
+/**
+ * The answer without think markup a seller leaked at the start of its text (see `think-markup.ts`). A leading
+ * block's text is added to the reasoning; text left empty is dropped.
+ */
+function withoutLeadingThinkMarkup(response: CanonicalLlmResponse, requestedModel: string | null): CanonicalLlmResponse {
+  const first = response.output.findIndex((item) => item.type === 'text');
+  if (first < 0) return response;
+  const item = response.output[first] as Extract<CanonicalLlmResponse['output'][number], { type: 'text' }>;
+  const stripped = stripLeadingThinkMarkup(item.text);
+  if (stripped.text === item.text) return response;
+  const output = [...response.output];
+  if (stripped.text.length > 0) output[first] = { ...item, text: stripped.text };
+  else output.splice(first, 1);
+  const reasoning = (response.reasoning ?? '') + stripped.reasoning;
+  return {
+    ...response,
+    output,
+    ...(reasoning.trim().length > 0
+      ? { reasoning, reasoningModel: response.reasoningModel ?? (requestedModel || response.model) }
+      : {}),
   };
 }
 

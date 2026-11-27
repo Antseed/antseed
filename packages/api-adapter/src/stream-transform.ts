@@ -1,3 +1,4 @@
+import { createLeadingThinkMarkupFilter, type LeadingThinkMarkupFilter, type ThinkMarkupPiece } from './think-markup.js';
 import type { SerializedHttpResponseChunk, ServiceApiProtocol } from './types.js';
 import {
   createChatStreamParser,
@@ -92,14 +93,37 @@ export function createStreamingAdapter(
   };
   const normalizer = createNormalizer(internals);
   const renderer = createRenderer(internals);
+  const thinkMarkup = createLeadingThinkMarkupFilter();
 
   return {
     adaptStart: makeStreamingStartResponse,
     adaptChunk(chunk) {
-      const events = normalizer.feed(chunk);
+      const events = withoutLeadingThinkMarkup(normalizer.feed(chunk), thinkMarkup);
       return renderer.render(events, chunk);
     },
   };
+}
+
+/**
+ * The answer's text events with any think markup a seller leaked at its start taken out: a leading block's
+ * text becomes reasoning, and text held back while its start could still be a tag is released before the end.
+ */
+function withoutLeadingThinkMarkup(events: CanonicalStreamEvent[], filter: LeadingThinkMarkupFilter): CanonicalStreamEvent[] {
+  const out: CanonicalStreamEvent[] = [];
+  const pushPieces = (pieces: ThinkMarkupPiece[]): void => {
+    for (const piece of pieces) {
+      out.push(piece.kind === 'text' ? { type: 'text_delta', delta: piece.text } : { type: 'reasoning_delta', delta: piece.text });
+    }
+  };
+  for (const event of events) {
+    if (event.type === 'text_delta') {
+      pushPieces(filter.push(event.delta));
+      continue;
+    }
+    if (event.type === 'response_done') pushPieces(filter.end());
+    out.push(event);
+  }
+  return out;
 }
 
 function createChatStreamNormalizer(options: StreamTransformInternals): ProtocolStreamNormalizer {
