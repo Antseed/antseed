@@ -14,7 +14,7 @@
   color: var(--site-text);
 }
 .text mark { background: none; color: var(--site-accent); }
-.copy { composes: button ghost page from '../../components/Button.module.css'; flex: none; cursor: pointer; }
+.copy { flex: none; cursor: pointer; }
 
 @media (max-width: 899px) {
   .rail .cap { padding-left: 16px; }

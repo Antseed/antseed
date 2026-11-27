@@ -1,6 +1,6 @@
 import {useState, type JSX} from 'react';
 import clsx from 'clsx';
-import {Section} from '../../components';
+import {Button, Section} from '../../components';
 import {Files, Head, kit} from './Kit';
 import {STYLE_REFERENCE} from './assets';
 import {PROMPT_PARTS, WATERCOLOUR_PROMPT} from './watercolourPrompt';
@@ -31,7 +31,7 @@ export default function Prompt(): JSX.Element {
         <pre className={styles.text}>{PROMPT_PARTS.before}<mark>{PROMPT_PARTS.subject}</mark>{PROMPT_PARTS.after}</pre>
         <div className={clsx(kit.cap, styles.cap)}>
           <div><p className={kit.capTitle}>Example prompt</p><p className={kit.meta}>Replace the green part with your subject</p></div>
-          <button type="button" className={styles.copy} onClick={copy}>{copied ? 'Copied' : 'Copy prompt'}</button>
+          <Button type="button" variant="ghost" size="page" className={styles.copy} onClick={copy}>{copied ? 'Copied' : 'Copy prompt'}</Button>
         </div>
       </div>
     </Section>
