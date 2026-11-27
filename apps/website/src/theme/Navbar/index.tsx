@@ -54,7 +54,7 @@ export default function Navbar(): JSX.Element {
           <div className={clsx(styles.search, !docs && styles.searchHidden)}>
             <SearchBar />
           </div>
-          {SOCIAL_LINKS.filter(({href}) => /^https:\/\/(github\.com|x\.com)\//.test(href)).map(({label, href, viewBox, path}) => (
+          {SOCIAL_LINKS.filter(({href}) => /^https:\/\/(github\.com|x\.com|t\.me)\//.test(href)).map(({label, href, viewBox, path}) => (
             <a key={href} href={href} aria-label={label} title={label} className={clsx(styles.link, styles.social)} target="_blank" rel="noopener noreferrer">
               <svg width="18" height="18" viewBox={viewBox} fill="currentColor" aria-hidden="true"><path d={path} /></svg>
             </a>
