@@ -3,6 +3,7 @@ import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { isRoutingPolicy, normalizePolicy, type RoutingPolicy } from '../routing-policy/policy.js'
 import { ADMIN_TOKEN_PREFIX, apiKeyHint, generateApiKey, hashApiKey, newKeyId } from './keys.js'
 import {
@@ -19,6 +20,7 @@ import {
 } from './limits.js'
 import { splitPinnedModel } from './pinned-model.js'
 import { MIGRATIONS } from './store-migrations.js'
+import { HOUR_MS as ROLLUP_HOUR_MS, USAGE_TOTALS, usageRollupLedgerBackfillSql, usageRollupRequestBackfillSql } from './usage-rollup-sql.js'
 import { parseServedSelection, type ServedSelection } from '../proxy/route-selection.js'
 import { requestVideoJob } from './video-jobs.js'
 
@@ -608,6 +610,12 @@ export class GatewayStore {
   private readonly _settings = new Map<string, { raw: string | null; at: number }>()
   private readonly _touched = new Map<string, number>()
   private _auditObserver: ((record: AuditRecord) => void) | null = null
+  /** Once true, stays true: every row recorded before the rollup existed has been rolled up. */
+  private _rollupReady = false
+  /** Tests compare the rollup with the log: true reads usage from the log and the ledger, as before the rollup. */
+  private _usageFromLog = false
+  /** Hours before this hold no rollup row that is all zeros (swept by `runMaintenance`). */
+  private _zeroRowsSweptBefore = 0
 
   constructor(dataDir: string, private readonly _now: () => number = () => Date.now()) {
     const dir = gatewayDir(dataDir)
@@ -1286,28 +1294,24 @@ export class GatewayStore {
   /**
    * Drops request-log rows started before `before`, `chunkSize` rows per
    * transaction so a large backlog never holds the write lock for long. Their
-   * request counts move into `request_rollups` (per hour, key, workspace,
-   * member, model, seller and end user) so usage reports keep counting them;
-   * spend and tokens live in the ledger, which is never pruned. Pruned
-   * periods are therefore counted at hour granularity. Yields to the event
-   * loop between chunks, so requests keep flowing while a backlog drains.
+   * usage stays in the hourly rollup (`usage_hourly`), which the triggers fed
+   * as they were written, so reports keep counting them by the hour (a
+   * partial hour at a report's edge counts what the log kept). Spend and tokens also live in the
+   * ledger, which is never pruned. Does nothing until the rollup has every
+   * older row (`backfillUsageRollup`): those counts would go with the rows.
+   * Yields to the event loop between chunks, so requests keep flowing while a
+   * backlog drains.
    */
   async pruneRequests(before: number, chunkSize = 5_000): Promise<number> {
+    if (!this.usageRollupReady()) return 0
     const select = this._stmt('SELECT rowid FROM gateway_requests WHERE started_at < ? ORDER BY started_at LIMIT ?').pluck()
-    const rollup = this._stmt(`
-      INSERT INTO request_rollups (hour_start, key_id, workspace_id, member_id, model, seller_peer_id, end_user, router_peer_id, requests, failed_requests)
-      SELECT (r.started_at / ${HOUR_MS}) * ${HOUR_MS}, r.key_id, r.workspace_id, r.member_id, r.model, r.seller_peer_id, r.end_user, r.router_peer_id,
-        COUNT(*), SUM(${FAILED_SQL})
-      FROM gateway_requests r WHERE r.rowid IN (SELECT value FROM json_each(?))
-      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
-    `)
     const remove = this._stmt('DELETE FROM gateway_requests WHERE rowid IN (SELECT value FROM json_each(?))')
+    const markPruned = this._stmt('UPDATE usage_rollup_state SET requests_pruned_before = MAX(requests_pruned_before, ?) WHERE id = 1')
     const pruneChunk = this._db.transaction(() => {
+      markPruned.run(before)
       const ids = select.all(before, chunkSize) as number[]
       if (ids.length === 0) return 0
-      const json = JSON.stringify(ids)
-      rollup.run(json)
-      remove.run(json)
+      remove.run(JSON.stringify(ids))
       return ids.length
     })
     let removed = 0
@@ -1317,6 +1321,157 @@ export class GatewayStore {
       if (count < chunkSize) return removed
       await new Promise<void>((resolve) => setImmediate(resolve))
     }
+  }
+
+  // ── Usage rollup ────────────────────────────────────────────────────────
+
+  /** Whether usage reads come from the hourly rollup: once every row recorded before it existed is in it. */
+  usageRollupReady(): boolean {
+    if (this._rollupReady) return true
+    const state = this._rollupState()
+    this._rollupReady = state.requests_cursor >= state.requests_from && state.ledger_cursor >= state.ledger_from
+    return this._rollupReady
+  }
+
+  private _rollupState(): { requests_from: number; requests_cursor: number; ledger_from: number; ledger_cursor: number; requests_pruned_before: number } {
+    return this._stmt('SELECT * FROM usage_rollup_state WHERE id = 1').get() as ReturnType<GatewayStore['_rollupState']>
+  }
+
+  private _readsRollup(): boolean {
+    return !this._usageFromLog && this.usageRollupReady()
+  }
+
+  /** @internal Runs `read` with usage read from the request log and the ledger (tests compare it with the rollup). */
+  usageFromLog<T>(read: () => T): T {
+    this._usageFromLog = true
+    try {
+      return read()
+    } finally {
+      this._usageFromLog = false
+    }
+  }
+
+  /**
+   * Rolls up the rows recorded before the rollup existed (its triggers keep
+   * every later one), one chunk per transaction, yielding to the event loop
+   * between chunks like `pruneRequests`. Chunks are sized to take about
+   * `BACKFILL_CHUNK_MS` each unless `chunkSize` fixes them. Each chunk moves
+   * the backfill's cursor in the same transaction, so a row is never counted
+   * twice, also across restarts and several processes. Resolves true once
+   * done; false when `shouldStop` ended it early (the next run resumes there).
+   */
+  async backfillUsageRollup(options: { chunkSize?: number; shouldStop?: () => boolean } = {}): Promise<boolean> {
+    const fixed = options.chunkSize === undefined ? null : Math.max(1, options.chunkSize)
+    let chunkSize = fixed ?? BACKFILL_FIRST_CHUNK
+    const rollRequests = this._stmt(usageRollupRequestBackfillSql())
+    const rollLedger = this._stmt(usageRollupLedgerBackfillSql())
+    const chunkEnd = this._stmt('SELECT started_at FROM gateway_requests WHERE started_at >= ? AND started_at < ? ORDER BY started_at LIMIT 1 OFFSET ?').pluck()
+    const step = this._db.transaction((): boolean => {
+      const state = this._rollupState()
+      if (state.ledger_cursor < state.ledger_from) {
+        const end = Math.min(state.ledger_cursor + chunkSize, state.ledger_from)
+        rollLedger.run(state.ledger_cursor, end)
+        this._stmt('UPDATE usage_rollup_state SET ledger_cursor = ? WHERE id = 1').run(end)
+        return false
+      }
+      if (state.requests_cursor < state.requests_from) {
+        // Whole milliseconds per chunk: the triggers tell rolled-up rows by their start time.
+        const next = chunkEnd.get(state.requests_cursor, state.requests_from, chunkSize) as number | undefined
+        const end = next === undefined ? state.requests_from : Math.max(next, state.requests_cursor + 1)
+        rollRequests.run(state.requests_cursor, end)
+        this._stmt('UPDATE usage_rollup_state SET requests_cursor = ? WHERE id = 1').run(end)
+        return false
+      }
+      return true
+    })
+    for (;;) {
+      const startedAt = performance.now()
+      if (step.immediate()) {
+        this._rollupReady = true
+        return true
+      }
+      if (fixed === null) {
+        const took = Math.max(1, performance.now() - startedAt)
+        chunkSize = Math.min(BACKFILL_MAX_CHUNK, Math.max(BACKFILL_MIN_CHUNK, Math.round(chunkSize * Math.min(1.5, BACKFILL_CHUNK_MS / took))))
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      if (options.shouldStop?.()) return false
+    }
+  }
+
+  /**
+   * Housekeeping the gateway runs at start and hourly: the query planner's
+   * statistics of the rollup (on a sample; they steer a report between its
+   * time order and its key or workspace index), and rollup rows that went all
+   * zeros when a request's attribution moved (a pinned seller replaced by the
+   * one that served it). Only the rollup is analyzed: statistics of the log
+   * and the ledger would take seconds and could change their queries' plans.
+   */
+  runMaintenance(): void {
+    this._db.pragma(`analysis_limit = ${ANALYSIS_LIMIT}`)
+    this._db.exec('ANALYZE usage_hourly')
+    const before = Math.floor(this._now() / HOUR_MS) * HOUR_MS
+    if (before <= this._zeroRowsSweptBefore) return
+    this._stmt(`DELETE FROM usage_hourly WHERE hour_start >= ? AND hour_start < ? AND ${HOURLY_TOTALS.map((column) => `${column} = 0`).join(' AND ')}`)
+      .run(this._zeroRowsSweptBefore, before)
+    this._zeroRowsSweptBefore = before
+  }
+
+  /** Runs `write` in one transaction (several writes, one commit). */
+  transaction<T>(write: () => T): T {
+    return this._db.transaction(write)()
+  }
+
+  /**
+   * How a usage read over `[from, to)` splits: whole hours from the rollup,
+   * and the partial hours at either end from the log and the ledger. A
+   * partial hour still reads from the rollup when that is exact: nothing was
+   * recorded in the rest of the hour, and none of it was pruned.
+   */
+  private _usageWindow(from: number | null | undefined, to: number | null | undefined): { hours: { from: number | null; to: number | null } | null; raw: Array<{ from: number; to: number }> } {
+    const lo = from ?? null
+    const hi = to ?? null
+    if (lo !== null && hi !== null && hi <= lo) return { hours: null, raw: [] }
+    const floor = (time: number) => Math.floor(time / HOUR_MS) * HOUR_MS
+    let hoursFrom = lo
+    let hoursTo = hi
+    const raw: Array<{ from: number; to: number }> = []
+    if (lo !== null && lo !== floor(lo)) {
+      const hour = floor(lo)
+      if (hi !== null && hi <= hour + HOUR_MS) {
+        return this._hourReadsWhole(hour, [[hour, lo], [hi, hour + HOUR_MS]])
+          ? { hours: { from: hour, to: hour + HOUR_MS }, raw: [] }
+          : { hours: null, raw: [{ from: lo, to: hi }] }
+      }
+      if (this._hourReadsWhole(hour, [[hour, lo]])) hoursFrom = hour
+      else {
+        raw.push({ from: lo, to: hour + HOUR_MS })
+        hoursFrom = hour + HOUR_MS
+      }
+    }
+    if (hi !== null && hi !== floor(hi)) {
+      const hour = floor(hi)
+      if (this._hourReadsWhole(hour, [[hi, hour + HOUR_MS]])) hoursTo = hour + HOUR_MS
+      else {
+        raw.push({ from: hour, to: hi })
+        hoursTo = hour
+      }
+    }
+    const hours = hoursFrom !== null && hoursTo !== null && hoursTo <= hoursFrom ? null : { from: hoursFrom, to: hoursTo }
+    return { hours, raw }
+  }
+
+  /**
+   * Whether the rollup's rows for `hour` stand for it without the parts in
+   * `outside`. Never for a pruned hour: what the log no longer has might lie
+   * outside (its part inside is read from what the log kept, as before).
+   */
+  private _hourReadsWhole(hour: number, outside: Array<[number, number]>): boolean {
+    if (hour < this._rollupState().requests_pruned_before) return false
+    return outside.every(([from, to]) => from >= to || !(this._stmt(`
+      SELECT EXISTS (SELECT 1 FROM gateway_requests WHERE started_at >= ? AND started_at < ?)
+        OR EXISTS (SELECT 1 FROM ledger_entries WHERE created_at >= ? AND created_at < ?) AS found
+    `).pluck().get(from, to, from, to) as number))
   }
 
   /** Who a request was attributed to when it started. */
@@ -1390,27 +1545,56 @@ export class GatewayStore {
     return row?.key_id ?? null
   }
 
-  /** Requests per seller since a time, with the medians of what this gateway measured. */
+  /**
+   * Requests per seller since a time, with the medians of what this gateway
+   * measured. The medians read the newest `PEER_STATS_SAMPLE` requests of the
+   * period, so a busy gateway never loads a day of its log at once.
+   */
   peerStats(sinceMs: number): Array<{ peerId: string; requests: number; latencyMsP50: number | null; firstTokenMsP50: number | null; tokensPerSecondP50: number | null }> {
-    const rows = this._stmt(`
+    const fromLog = !this._readsRollup()
+    const samples = this._stmt(`
       SELECT seller_peer_id AS peer, latency_ms AS latency, first_token_ms AS first_token, tokens_per_second AS speed FROM gateway_requests
-      WHERE started_at >= ? AND seller_peer_id IS NOT NULL
-    `).all(sinceMs) as Array<{ peer: string; latency: number | null; first_token: number | null; speed: number | null }>
+      WHERE started_at >= ? AND seller_peer_id IS NOT NULL ${fromLog ? '' : 'ORDER BY started_at DESC LIMIT ?'}
+    `).all(...(fromLog ? [sinceMs] : [sinceMs, PEER_STATS_SAMPLE])) as Array<{ peer: string; latency: number | null; first_token: number | null; speed: number | null }>
     const byPeer = new Map<string, { requests: number; latencies: number[]; firstTokens: number[]; speeds: number[] }>()
-    for (const row of rows) {
-      const entry = byPeer.get(row.peer) ?? { requests: 0, latencies: [], firstTokens: [], speeds: [] }
-      entry.requests += 1
-      if (row.latency !== null) entry.latencies.push(row.latency)
-      if (row.first_token !== null) entry.firstTokens.push(row.first_token)
-      if (row.speed !== null) entry.speeds.push(row.speed)
-      byPeer.set(row.peer, entry)
+    const entry = (peer: string) => {
+      let found = byPeer.get(peer)
+      if (!found) {
+        found = { requests: 0, latencies: [], firstTokens: [], speeds: [] }
+        byPeer.set(peer, found)
+      }
+      return found
     }
-    return [...byPeer].map(([peerId, entry]) => ({
+    for (const row of samples) {
+      const found = entry(row.peer)
+      if (fromLog) found.requests += 1
+      if (row.latency !== null) found.latencies.push(row.latency)
+      if (row.first_token !== null) found.firstTokens.push(row.first_token)
+      if (row.speed !== null) found.speeds.push(row.speed)
+    }
+    if (!fromLog) {
+      const window = this._usageWindow(sinceMs, null)
+      const counts: Array<{ peer: string; requests: number }> = []
+      if (window.hours) {
+        counts.push(...this._stmt(`
+          SELECT h.seller_peer_id AS peer, SUM(h.requests) AS requests FROM usage_hourly h
+          WHERE h.hour_start >= ? AND h.seller_peer_id <> '' GROUP BY h.seller_peer_id
+        `).all(window.hours.from ?? 0) as Array<{ peer: string; requests: number }>)
+      }
+      for (const range of window.raw) {
+        counts.push(...this._stmt(`
+          SELECT seller_peer_id AS peer, COUNT(*) AS requests FROM gateway_requests
+          WHERE started_at >= ? AND started_at < ? AND seller_peer_id IS NOT NULL GROUP BY seller_peer_id
+        `).all(range.from, range.to) as Array<{ peer: string; requests: number }>)
+      }
+      for (const row of counts) entry(row.peer).requests += row.requests
+    }
+    return [...byPeer].filter(([, found]) => found.requests > 0).map(([peerId, found]) => ({
       peerId,
-      requests: entry.requests,
-      latencyMsP50: median(entry.latencies),
-      firstTokenMsP50: median(entry.firstTokens),
-      tokensPerSecondP50: median(entry.speeds),
+      requests: found.requests,
+      latencyMsP50: median(found.latencies),
+      firstTokenMsP50: median(found.firstTokens),
+      tokensPerSecondP50: median(found.speeds),
     }))
   }
 
@@ -1538,31 +1722,70 @@ export class GatewayStore {
   usageReport(filter: UsageFilter, groupBy: UsageGroupBy | null, splitBy: UsageGroupBy | null = null): { totals: UsageTotalsRow; groups: UsageGroupRow[] } {
     const select = (columns: ScopeColumns): string =>
       `${groupExpression(groupBy, columns)} AS g, ${splitBy ? groupExpression(splitBy, columns) : 'NULL'} AS s`
+    const requestRows: UsageRequestRow[] = []
+    const tokenRows: UsageTokenRow[] = []
+    if (!this._readsRollup()) {
+      this._usageRowsFromLog(filter, select, true, requestRows, tokenRows)
+    } else {
+      const window = this._usageWindow(filter.from, filter.to)
+      if (window.hours) {
+        const hourly = scopeSql({ ...filter, from: window.hours.from, to: window.hours.to }, HOURLY_FILTER_COLUMNS)
+        const rows = this._stmt(`
+          SELECT ${select(HOURLY_GROUP_COLUMNS)}, SUM(h.requests) AS requests, SUM(h.failed_requests) AS failed, SUM(h.spent_usdc) AS spent,
+            SUM(h.input_tokens) AS input_tokens, SUM(h.cached_input_tokens) AS cached_input_tokens, SUM(h.output_tokens) AS output_tokens
+          FROM usage_hourly h ${whereClause(hourly.where)} GROUP BY g, s HAVING ${HOURLY_TOTALS.map((column) => `SUM(h.${column}) <> 0`).join(' OR ')}
+        `).all(...hourly.params) as Array<UsageRequestRow & UsageTokenRow>
+        requestRows.push(...rows)
+        tokenRows.push(...rows)
+      }
+      for (const range of window.raw) this._usageRowsFromLog({ ...filter, from: range.from, to: range.to }, select, false, requestRows, tokenRows)
+    }
+    return this._mergeUsage(groupBy, splitBy, requestRows, tokenRows)
+  }
+
+  /**
+   * Usage rows of a report read from the request log and the ledger:
+   * request counts (and, with `withPruned`, those of rows pruned before the
+   * rollup existed), spend and tokens, and the tokens of requests whose spend
+   * carries none (not reported yet, or never) from what their responses said.
+   */
+  private _usageRowsFromLog(
+    filter: UsageFilter,
+    select: (columns: ScopeColumns) => string,
+    withPruned: boolean,
+    requestRows: UsageRequestRow[],
+    tokenRows: UsageTokenRow[],
+  ): void {
     const req = scopeSql(filter, REQUEST_COLUMNS)
-    const requestRows = this._stmt(`
+    requestRows.push(...this._stmt(`
       SELECT ${select(REQUEST_COLUMNS)}, COUNT(*) AS requests, COALESCE(SUM(${FAILED_SQL}), 0) AS failed
       FROM gateway_requests r ${whereClause(req.where)} GROUP BY g, s
-    `).all(...req.params) as Array<{ g: string | null; s: string | null; requests: number; failed: number }>
-    const roll = scopeSql(filter, ROLLUP_COLUMNS)
-    const rollupRows = this._stmt(`
-      SELECT ${select(ROLLUP_COLUMNS)}, SUM(u.requests) AS requests, SUM(u.failed_requests) AS failed
-      FROM request_rollups u ${whereClause(roll.where)} GROUP BY g, s
-    `).all(...roll.params) as Array<{ g: string | null; s: string | null; requests: number; failed: number }>
+    `).all(...req.params) as UsageRequestRow[])
+    if (withPruned) {
+      const roll = scopeSql(filter, ROLLUP_COLUMNS)
+      requestRows.push(...this._stmt(`
+        SELECT ${select(ROLLUP_COLUMNS)}, SUM(u.requests) AS requests, SUM(u.failed_requests) AS failed
+        FROM request_rollups u ${whereClause(roll.where)} GROUP BY g, s
+      `).all(...roll.params) as UsageRequestRow[])
+    }
     const led = scopeSql(filter, LEDGER_COLUMNS)
     led.where.push("l.kind = 'spend'")
-    const ledgerRows = this._stmt(`
+    tokenRows.push(...this._stmt(`
       SELECT ${select(LEDGER_COLUMNS)}, COALESCE(-SUM(l.amount_usdc), 0) AS spent, COALESCE(SUM(l.input_tokens), 0) AS input_tokens,
         COALESCE(SUM(l.cached_input_tokens), 0) AS cached_input_tokens, COALESCE(SUM(l.output_tokens), 0) AS output_tokens
       FROM ledger_entries l ${whereClause(led.where)} GROUP BY g, s
-    `).all(...led.params) as Array<{ g: string | null; s: string | null; spent: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }>
+    `).all(...led.params) as UsageTokenRow[])
     const fallback = scopeSql(filter, REQUEST_COLUMNS)
     fallback.where.push(REPORTED_TOKENS_ONLY_SQL)
-    const responseRows = this._stmt(`
+    tokenRows.push(...this._stmt(`
       SELECT ${select(REQUEST_COLUMNS)}, SUM(r.usage_input_tokens) AS input_tokens, COALESCE(SUM(r.usage_cached_input_tokens), 0) AS cached_input_tokens,
         COALESCE(SUM(r.usage_output_tokens), 0) AS output_tokens
       FROM gateway_requests r ${whereClause(fallback.where)} GROUP BY g, s
-    `).all(...fallback.params) as Array<{ g: string | null; s: string | null; input_tokens: number; cached_input_tokens: number; output_tokens: number }>
+    `).all(...fallback.params) as UsageTokenRow[])
+  }
 
+  /** Totals plus one row per group (and split) from the rows of `usageReport`'s sources. */
+  private _mergeUsage(groupBy: UsageGroupBy | null, splitBy: UsageGroupBy | null, requestRows: readonly UsageRequestRow[], tokenRows: readonly UsageTokenRow[]): { totals: UsageTotalsRow; groups: UsageGroupRow[] } {
     const groups = new Map<string | null, { totals: UsageTotalsRow; splits: Map<string | null, UsageTotalsRow> }>()
     const entries = (group: string | null, split: string | null): UsageTotalsRow[] => {
       let found = groups.get(group)
@@ -1578,17 +1801,16 @@ export class GatewayStore {
       }
       return [found.totals, part]
     }
-    for (const row of [...requestRows, ...rollupRows]) {
+    for (const row of requestRows) {
       for (const target of entries(row.g, row.s)) {
         target.requests += row.requests
         target.failedRequests += row.failed
       }
     }
-    const tokenRows: Array<(typeof responseRows)[number] & { spent?: number }> = [...ledgerRows, ...responseRows]
     for (const row of tokenRows) {
       for (const target of entries(row.g, row.s)) {
         target.spentUsdc += row.spent ?? 0
-        target.inputTokens += row.input_tokens
+        target.inputTokens += row.input_tokens ?? 0
         target.cachedInputTokens += row.cached_input_tokens
         target.outputTokens += row.output_tokens
       }
@@ -1702,6 +1924,28 @@ export class GatewayStore {
   usageByModelForKeys(keyIds: readonly string[]): ModelUsage[] {
     if (keyIds.length === 0) return []
     const ids = JSON.stringify(keyIds)
+    if (this._readsRollup()) {
+      // Per key first, as below: a key's negative net spend on a model never cancels another key's.
+      const rows = this._stmt(`
+        SELECT COALESCE(NULLIF(h.served_model, ''), h.model) AS model, SUM(h.spent_usdc) AS amount, SUM(h.input_tokens) AS input_tokens,
+          SUM(h.cached_input_tokens) AS cached_input_tokens, SUM(h.output_tokens) AS output_tokens, SUM(h.billed_requests) AS requests
+        FROM usage_hourly h WHERE h.key_id IN (SELECT value FROM json_each(?)) AND (h.served_model <> '' OR h.model <> '')
+        GROUP BY h.key_id, 1
+      `).all(ids) as Array<{ model: string; amount: number; input_tokens: number; cached_input_tokens: number; output_tokens: number; requests: number }>
+      const byModel = new Map<string, ModelUsage>()
+      for (const row of rows) {
+        const current = byModel.get(row.model) ?? { model: row.model, amountUsdc: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0 }
+        byModel.set(row.model, {
+          model: row.model,
+          amountUsdc: current.amountUsdc + Math.max(0, row.amount),
+          inputTokens: current.inputTokens + row.input_tokens,
+          cachedInputTokens: current.cachedInputTokens + row.cached_input_tokens,
+          outputTokens: current.outputTokens + row.output_tokens,
+          requests: current.requests + row.requests,
+        })
+      }
+      return [...byModel.values()].filter((usage) => usage.requests > 0 || usage.amountUsdc > 0 || usage.inputTokens + usage.cachedInputTokens + usage.outputTokens > 0)
+    }
     const ledger = this._stmt(`
       SELECT COALESCE(served_model, model) AS model, COALESCE(-SUM(amount_usdc), 0) AS amount, COALESCE(SUM(input_tokens), 0) AS input_tokens,
              COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens
@@ -1748,30 +1992,55 @@ export class GatewayStore {
   }
 
   usageStats(keyId: string, since = 0): KeyUsageStats {
+    if (!this._readsRollup()) return this._keyUsageFromLog(keyId, since, null, true)
+    const window = this._usageWindow(since, null)
+    const usage: KeyUsageStats = { requests: 0, failedRequests: 0, spentUsdc: 0, creditedUsdc: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }
+    if (window.hours) {
+      const row = this._stmt(`
+        SELECT COALESCE(SUM(CASE WHEN h.model <> '' THEN h.requests ELSE 0 END), 0) AS requests,
+          COALESCE(SUM(CASE WHEN h.model <> '' THEN h.failed_requests ELSE 0 END), 0) AS failed,
+          COALESCE(SUM(h.spent_usdc), 0) AS spent, COALESCE(SUM(h.credited_usdc), 0) AS credited, COALESCE(SUM(h.input_tokens), 0) AS input_tokens,
+          COALESCE(SUM(h.cached_input_tokens), 0) AS cached_input_tokens, COALESCE(SUM(h.output_tokens), 0) AS output_tokens
+        FROM usage_hourly h WHERE h.key_id = ? AND h.hour_start >= ?
+      `).get(keyId, window.hours.from ?? 0) as { requests: number; failed: number; spent: number; credited: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }
+      addKeyUsage(usage, {
+        requests: row.requests, failedRequests: row.failed, spentUsdc: row.spent, creditedUsdc: row.credited,
+        inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens,
+      })
+    }
+    for (const range of window.raw) addKeyUsage(usage, this._keyUsageFromLog(keyId, range.from, range.to, false))
+    return usage
+  }
+
+  /** `usageStats` over `[from, to)` read from the request log and the ledger (with `withPruned`, also pruned request counts). */
+  private _keyUsageFromLog(keyId: string, from: number, to: number | null, withPruned: boolean): KeyUsageStats {
+    const until = to ?? Number.MAX_SAFE_INTEGER
     const requests = this._stmt(`
       SELECT COUNT(*) AS requests, COALESCE(SUM(${FAILED_SQL}), 0) AS failed
-      FROM gateway_requests r WHERE r.key_id = ? AND r.started_at >= ? AND ${MODEL_REQUEST_SQL}
-    `).get(keyId, since) as { requests: number; failed: number }
-    const rolled = this._stmt(`
-      SELECT COALESCE(SUM(requests), 0) AS requests, COALESCE(SUM(failed_requests), 0) AS failed
-      FROM request_rollups r WHERE key_id = ? AND hour_start >= ? AND ${MODEL_REQUEST_SQL}
-    `).get(keyId, since) as { requests: number; failed: number }
+      FROM gateway_requests r WHERE r.key_id = ? AND r.started_at >= ? AND r.started_at < ? AND ${MODEL_REQUEST_SQL}
+    `).get(keyId, from, until) as { requests: number; failed: number }
+    const rolled = withPruned
+      ? this._stmt(`
+        SELECT COALESCE(SUM(requests), 0) AS requests, COALESCE(SUM(failed_requests), 0) AS failed
+        FROM request_rollups r WHERE key_id = ? AND hour_start >= ? AND hour_start < ? AND ${MODEL_REQUEST_SQL}
+      `).get(keyId, from, until) as { requests: number; failed: number }
+      : { requests: 0, failed: 0 }
     const ledger = this._stmt(`
       SELECT COALESCE(-SUM(CASE WHEN kind = 'spend' THEN amount_usdc ELSE 0 END), 0) AS spent,
              COALESCE(SUM(CASE WHEN kind = 'credit' THEN amount_usdc ELSE 0 END), 0) AS credited,
              COALESCE(SUM(input_tokens), 0) AS input_tokens,
              COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
              COALESCE(SUM(output_tokens), 0) AS output_tokens
-      FROM ledger_entries WHERE key_id = ? AND created_at >= ?
-    `).get(keyId, since) as { spent: number; credited: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }
+      FROM ledger_entries WHERE key_id = ? AND created_at >= ? AND created_at < ?
+    `).get(keyId, from, until) as { spent: number; credited: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }
     // As in the usage report, requests without metered tokens count the response's own.
     const reported = this._stmt(`
       SELECT COALESCE(SUM(r.usage_input_tokens), 0) AS input_tokens,
              COALESCE(SUM(r.usage_cached_input_tokens), 0) AS cached_input_tokens,
              COALESCE(SUM(r.usage_output_tokens), 0) AS output_tokens
       FROM gateway_requests r
-      WHERE r.key_id = ? AND r.started_at >= ? AND ${REPORTED_TOKENS_ONLY_SQL}
-    `).get(keyId, since) as { input_tokens: number; cached_input_tokens: number; output_tokens: number }
+      WHERE r.key_id = ? AND r.started_at >= ? AND r.started_at < ? AND ${REPORTED_TOKENS_ONLY_SQL}
+    `).get(keyId, from, until) as { input_tokens: number; cached_input_tokens: number; output_tokens: number }
     return {
       requests: requests.requests + rolled.requests,
       failedRequests: requests.failed + rolled.failed,
@@ -1799,6 +2068,32 @@ export class GatewayStore {
     const summaries = new Map<string, KeyUsageSummary>(keyIds.map((id) => [id, { requests: 0, spentUsdc: 0, spentSinceUsdc: 0 }]))
     if (keyIds.length === 0) return summaries
     const ids = JSON.stringify(keyIds)
+    if (this._readsRollup()) {
+      const window = this._usageWindow(since, null)
+      const rows = this._stmt(`
+        SELECT h.key_id, SUM(CASE WHEN h.model <> '' THEN h.requests ELSE 0 END) AS requests, SUM(h.spent_usdc) AS spent,
+          SUM(CASE WHEN h.hour_start >= ? THEN h.spent_usdc ELSE 0 END) AS spent_since
+        FROM usage_hourly h WHERE h.key_id IN (SELECT value FROM json_each(?)) GROUP BY h.key_id
+      `).all(window.hours?.from ?? 0, ids) as Array<{ key_id: string; requests: number; spent: number; spent_since: number }>
+      for (const row of rows) {
+        const summary = summaries.get(row.key_id)
+        if (!summary) continue
+        summary.requests = row.requests
+        summary.spentUsdc = row.spent
+        summary.spentSinceUsdc = window.hours ? row.spent_since : 0
+      }
+      for (const range of window.raw) {
+        const spent = this._stmt(`
+          SELECT key_id, -SUM(amount_usdc) AS spent FROM ledger_entries
+          WHERE key_id IN (SELECT value FROM json_each(?)) AND kind = 'spend' AND created_at >= ? AND created_at < ? GROUP BY key_id
+        `).all(ids, range.from, range.to) as Array<{ key_id: string; spent: number }>
+        for (const row of spent) {
+          const summary = summaries.get(row.key_id)
+          if (summary) summary.spentSinceUsdc += row.spent
+        }
+      }
+      return summaries
+    }
     const requests = this._stmt(`
       SELECT key_id, COUNT(*) AS requests FROM gateway_requests r
       WHERE key_id IN (SELECT value FROM json_each(?)) AND ${MODEL_REQUEST_SQL} GROUP BY key_id
@@ -2253,7 +2548,37 @@ const ROLLUP_COLUMNS: ScopeColumns = {
   key: 'u.key_id', workspace: 'u.workspace_id', member: 'u.member_id', model: 'u.model', peer: 'u.seller_peer_id', router: 'u.router_peer_id', user: 'u.end_user', time: 'u.hour_start',
 }
 
-const HOUR_MS = 60 * 60 * 1000
+const HOUR_MS = ROLLUP_HOUR_MS
+/** The backfill aims at chunks of this long, so it never holds the event loop for long. */
+const BACKFILL_CHUNK_MS = 50
+const BACKFILL_FIRST_CHUNK = 1_000
+const BACKFILL_MIN_CHUNK = 100
+const BACKFILL_MAX_CHUNK = 5_000
+/** Rows `ANALYZE` samples per index of the rollup. */
+const ANALYSIS_LIMIT = 1_000
+/** Requests `peerStats` reads its medians from, newest first. */
+const PEER_STATS_SAMPLE = 20_000
+/** `usage_hourly` columns for filters (plain, so its indexes apply; a filter never asks for none)… */
+const HOURLY_FILTER_COLUMNS: ScopeColumns = {
+  key: 'h.key_id', workspace: 'h.workspace_id', member: 'h.member_id', model: 'h.model', peer: 'h.seller_peer_id', router: 'h.router_peer_id', user: 'h.end_user', time: 'h.hour_start',
+}
+/**
+ * …and for groups, where `''` (none) reads as NULL like the log's own
+ * columns. `+h.key_id` keeps SQLite reading a period in time order: grouping
+ * through the key index instead looks up every row, at twice the cost.
+ */
+const HOURLY_GROUP_COLUMNS: ScopeColumns = {
+  key: '+h.key_id', workspace: "NULLIF(h.workspace_id, '')", member: "NULLIF(h.member_id, '')", model: "NULLIF(h.model, '')",
+  peer: "NULLIF(h.seller_peer_id, '')", router: "NULLIF(h.router_peer_id, '')", user: "NULLIF(h.end_user, '')", time: 'h.hour_start',
+}
+const HOURLY_TOTALS = USAGE_TOTALS
+
+type UsageRequestRow = { g: string | null; s: string | null; requests: number; failed: number }
+type UsageTokenRow = { g: string | null; s: string | null; spent?: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }
+
+function addKeyUsage(target: KeyUsageStats, add: KeyUsageStats): void {
+  for (const field of Object.keys(target) as Array<keyof KeyUsageStats>) target[field] += add[field]
+}
 const TOUCH_INTERVAL_MS = 60 * 1000
 const MAX_TRACKED_TOUCHES = 10_000
 const SETTINGS_TTL_MS = 5_000
