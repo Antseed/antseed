@@ -1377,8 +1377,10 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(spends).toEqual([SERIOUS_FEE.toString()]);
   });
 
-  it('reports the fee of a create whose outcome a buyer restart lost, at the first sweep', async () => {
+  it('reports the fee of a create whose outcome a buyer restart lost, once its channel has been open past the grace', async () => {
     const h = setup({ holdCreates: true });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const openedAt = Date.now();
     const pending = h.send(h.videoRequest('video-1'));
     pending.catch(() => {});
     await vi.waitFor(() => expect(h.providerCreates).toHaveLength(1));
@@ -1388,12 +1390,15 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     const spends: string[] = [];
     restarted.setSpendListener((event) => { spends.push(event.amountUsdc); });
     const negotiator = h.negotiatorFor(restarted);
-    await negotiator.reconcileChannelsWithChain();
-    expect(spends).toEqual([SERIOUS_FEE.toString()]);
-
     h.releaseCreate();
     const { channelId } = onlyOneOff(h);
     await vi.waitFor(() => expect(h.chain.get(channelId)).toMatchObject({ settled: SERIOUS_FEE }));
+    await negotiator.reconcileChannelsWithChain();
+    expect(spends).toEqual([]);
+
+    vi.setSystemTime(openedAt + 31 * 60_000);
+    await negotiator.reconcileChannelsWithChain();
+    expect(spends).toEqual([SERIOUS_FEE.toString()]);
     h.chain.get(channelId)!.status = 2;
     await negotiator.reconcileChannelsWithChain();
     expect(spends).toEqual([SERIOUS_FEE.toString()]);
@@ -1443,6 +1448,110 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     await h.negotiator.reconcileChannelsWithChain();
     expect(spends).toEqual([SERIOUS_FEE.toString()]);
     await h.negotiator.reconcileChannelsWithChain();
+    expect(spends).toEqual([SERIOUS_FEE.toString()]);
+  });
+
+  it('reports the fee of a channel whose create ended without a job and stays open past the grace, however it ended', async () => {
+    for (const ending of ['second 402', 'covered', 'given up'] as const) {
+      const h = setup();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const openedAt = Date.now();
+      const spends: string[] = [];
+      h.buyer.setSpendListener((event) => { spends.push(event.amountUsdc); });
+      const original = ProxyMux.prototype.sendProxyRequest;
+      let attempt = 0;
+      let first: { response: any; metadata: any } | null = null;
+      const send = vi.spyOn(ProxyMux.prototype, 'sendProxyRequest').mockImplementation(function (this: ProxyMux, req: any, onResponse: any, onChunk: any) {
+        if (req.requestId !== 'video-1') return original.call(this, req, onResponse, onChunk);
+        attempt += 1;
+        if (attempt === 1) return original.call(this, req, (response: any, metadata: any) => { first = { response, metadata }; onResponse(response, metadata); }, onChunk);
+        // The seller answers the create on the confirmed channel with its payment 402 again.
+        if (ending === 'second 402') return void setImmediate(() => onResponse(first!.response, first!.metadata));
+        // The seller marks its answer as served from a free allowance.
+        return original.call(this, req, (response: any, metadata: any) => onResponse({ ...response, headers: { ...response.headers, 'x-antseed-free-tier': 'covered' } }, metadata), onChunk);
+      } as any);
+      if (ending === 'given up') {
+        const handleAuthAck = h.buyer.handleAuthAck.bind(h.buyer);
+        const held: Array<() => Promise<void>> = [];
+        vi.spyOn(h.buyer, 'handleAuthAck').mockImplementation(async (peerId, payload) => {
+          if (!h.oneOffChannelIds().includes(payload.channelId)) return handleAuthAck(peerId, payload);
+          held.push(() => handleAuthAck(peerId, payload));
+        });
+        const controller = new AbortController();
+        const pending = h.buyerHandler.sendRequest(h.peer, h.videoRequest('video-1'), undefined, { signal: controller.signal });
+        pending.catch(() => {});
+        await vi.waitFor(() => expect(held).toHaveLength(1));
+        controller.abort(new DOMException('caller gave up', 'AbortError'));
+        await held[0]!();
+        await expect(pending).rejects.toBeDefined();
+      } else {
+        await h.send(h.videoRequest('video-1'));
+      }
+      await h.settle();
+      send.mockRestore();
+      await h.negotiator.reconcileChannelsWithChain();
+      expect(spends, ending).toEqual([]);
+
+      // Still open half an hour on, holding the fee signature: reported while a gateway still counts it.
+      vi.setSystemTime(openedAt + 31 * 60_000);
+      await h.negotiator.reconcileChannelsWithChain();
+      expect(spends, ending).toEqual([SERIOUS_FEE.toString()]);
+      await h.negotiator.reconcileChannelsWithChain();
+      expect(spends, ending).toEqual([SERIOUS_FEE.toString()]);
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('reports nothing for a create whose send threw on a closed connection', async () => {
+    const h = setup();
+    const spends: string[] = [];
+    h.buyer.setSpendListener((event) => { spends.push(event.amountUsdc); });
+    const handleAuthAck = h.buyer.handleAuthAck.bind(h.buyer);
+    const held: Array<() => Promise<void>> = [];
+    vi.spyOn(h.buyer, 'handleAuthAck').mockImplementation(async (peerId, payload) => {
+      if (!h.oneOffChannelIds().includes(payload.channelId)) return handleAuthAck(peerId, payload);
+      held.push(() => handleAuthAck(peerId, payload));
+    });
+    const pending = h.send(h.videoRequest('video-1'));
+    pending.catch(() => {});
+    await vi.waitFor(() => expect(held).toHaveLength(1));
+    (h.buyerConn as any).send = () => { throw new Error('Cannot send in state closed'); };
+    await held[0]!();
+    await expect(pending).rejects.toThrow('Cannot send');
+
+    expect(h.providerCreates).toHaveLength(0);
+    expect(spends).toEqual([]);
+  });
+
+  it('reports a channel read open past the grace even when another row could not be read in that pass', async () => {
+    const h = setup({ createResponse: 'rejected' });
+    const spends: string[] = [];
+    h.buyer.setSpendListener((event) => { spends.push(event.amountUsdc); });
+    h.close.mockImplementation(async () => { throw new Error('execution reverted: not yet'); });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const openedAt = Date.now();
+    expect((await h.send(h.videoRequest('video-1'))).statusCode).toBe(400);
+    await h.settle();
+    const { channelId } = onlyOneOff(h);
+    // A new channel row lands during each pass, after the reads were listed: that pass leaves it unchecked.
+    const getSession = h.seller.channelsClient.getSession.bind(h.seller.channelsClient);
+    let counter = 0;
+    let inserted = false;
+    vi.spyOn(h.seller.channelsClient, 'getSession').mockImplementation(async (id: string) => {
+      const session = await getSession(id);
+      if (!inserted) {
+        inserted = true;
+        counter += 1;
+        const row = h.buyerStore.getChannel(channelId)!;
+        h.buyerStore.upsertChannel({ ...row, sessionId: '0x' + counter.toString(16).padStart(64, '0'), oneOffRequestId: `other-${counter}`, oneOffVideoJob: null, createdAt: Date.now(), updatedAt: Date.now() });
+      }
+      return session;
+    });
+
+    vi.setSystemTime(openedAt + 31 * 60_000);
+    inserted = false;
+    expect((await h.negotiator.reconcileChannelsWithChain()).unchecked).toBe(1);
     expect(spends).toEqual([SERIOUS_FEE.toString()]);
   });
 
