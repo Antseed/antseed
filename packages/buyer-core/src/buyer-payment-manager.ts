@@ -241,7 +241,7 @@ interface PersistedOneOffRecord extends PersistedVideoJob {
 const NO_PERSISTED_JOB = { protocol: '', jobId: '', createdAtMs: 0, entry: null } as unknown as PersistedVideoJob;
 
 /**
- * A confirmed one-off channel still open this long after it was opened, with
+ * A one-off channel still open on-chain this long after it was opened, with
  * its fee not yet reported, is reported at its fee: whatever ended its create
  * (a refusal, an answer without a job, a create never sent), an honest seller
  * has closed it by then (a refused one at once, an unclaimed one within 10
@@ -2710,8 +2710,8 @@ export class BuyerPaymentManager {
    * After a reconcile: report and drop every one-off channel whose row another
    * process (`antseed buyer status`, say) retired meanwhile, with what the row
    * says it settled. Of the channels the pass read as still open
-   * (`openOnChain`), report in full each confirmed one whose fee is not
-   * reported yet and that was opened over ONE_OFF_OPEN_GRACE_MS ago: no answer
+   * (`openOnChain`), report in full each one whose fee is not reported yet
+   * and that was opened over ONE_OFF_OPEN_GRACE_MS ago: no answer
    * is coming that would, and a gateway drops a report over an hour late.
    */
   sweepOneOffChannels(openOnChain: ReadonlyArray<string> = []): void {
@@ -2724,7 +2724,8 @@ export class BuyerPaymentManager {
           this.forgetOneOffChannel(channelId, row.settledAmount != null ? BigInt(row.settledAmount) : undefined);
           continue;
         }
-        if (!row || !open.has(channelId) || !state.confirmed || state.reported >= state.cumulative) continue;
+        // Confirmed or not: a channel read open on-chain is one the seller reserved, holding the fee signature.
+        if (!row || !open.has(channelId) || state.reported >= state.cumulative) continue;
         if (now - row.createdAt < ONE_OFF_OPEN_GRACE_MS) continue;
         this._reportOneOffSpendUpTo(channelId, state, state.cumulative);
       }
