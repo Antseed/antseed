@@ -66,6 +66,7 @@ function makeHandler(responses: SerializedHttpResponse[], freeTierDelegationsHea
     trackFreeUsageRequestService: vi.fn(),
     prepareFreeUsageOpen: vi.fn(async () => {}),
     estimateCostFromResponse: vi.fn(),
+    oneOffRefusalReported: vi.fn(async () => {}),
     bpm: { clearRequestBilling: vi.fn(), markRequestCovered: vi.fn(), releaseRequestCoverage: vi.fn(), beginPaidRequest: vi.fn(), endPaidRequest: vi.fn(), trackVideoRetrieve: vi.fn(() => true), videoJobDuration: vi.fn(() => undefined), videoDeliveryUnsaved: vi.fn(() => false), recordVideoDelivered: vi.fn(), recordVideoFailed: vi.fn(), getActiveSession: vi.fn(() => null), getResponseAuthChannelId: vi.fn(() => null) },
     handle402,
     applyExternalSpendingAuth: vi.fn(async () => {}),
@@ -432,7 +433,7 @@ describe('BuyerRequestHandler response receipts', () => {
     const connection = { state: ConnectionState.Connected, send: vi.fn(), on: vi.fn(), off: vi.fn() };
     const handler = new BuyerRequestHandler({}, {
       localPeerId: toPeerId('4'.repeat(40)),
-      negotiator: { getOrCreatePaymentMux: vi.fn(() => ({})), trackRequestBillingContext: vi.fn(), estimateCostFromResponse: vi.fn() } as never,
+      negotiator: { getOrCreatePaymentMux: vi.fn(() => ({})), trackRequestBillingContext: vi.fn(), estimateCostFromResponse: vi.fn(), oneOffRefusalReported: vi.fn(async () => {}) } as never,
       verificationStorage: { insertResponseAuth: (record, context) => { inserted.push({ record, context }); } },
       verificationSampler: null,
       getConnection: async () => connection as never,
