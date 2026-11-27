@@ -1,6 +1,7 @@
 export {
   createStreamingAdapter,
   detectRequestServiceApiProtocol,
+  errorEventStreamAsJson,
   extractRequestBodyFields,
   inferProviderDefaultServiceApiProtocols,
   isNativeVideoProtocol,

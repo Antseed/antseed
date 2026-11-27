@@ -12,6 +12,7 @@ export {
 } from './request-transform.js';
 
 export {
+  errorEventStreamAsJson,
   transformResponse,
   type ServiceApiResponseTransformOptions,
 } from './response-transform.js';

@@ -4758,6 +4758,108 @@ test('a chat model\'s reasoning reaches a streaming Responses client only when i
   assert.doesNotMatch(await streamed(), /reasoning_text|antseed\.reasoning/)
 })
 
+const CONTEXT_ERROR = { message: 'This model\'s maximum context length is 1000 tokens.', type: 'invalid_request_error', param: null, code: null }
+
+/**
+ * A streamed request whose seller fails before any output. The seller speaks `sellerProtocol` for
+ * `model-a`; buyer-core hands a 4xx to the proxy as one buffered response, never as a stream.
+ */
+async function streamedRequestFailingBeforeOutput(
+  client: { path: string; body: Record<string, unknown> },
+  sellerProtocol: string,
+  seller: { headers: Record<string, string>; body: string; statusCode?: number },
+): Promise<ReturnType<typeof makeProxyResponse>> {
+  const peer = makePeer('a', ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'model-a': [sellerProtocol] as any } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('a streamed request goes through sendRequestStream') }
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: SerializedHttpRequest,
+    callbacks: { onResponseStart: (response: SerializedHttpResponse, metadata: { streaming: boolean }) => void },
+  ) => {
+    const response = { requestId: request.requestId, statusCode: seller.statusCode ?? 400, headers: seller.headers, body: Buffer.from(seller.body) }
+    callbacks.onResponseStart(response, { streaming: false })
+    return response
+  }
+  return invokeProxy(proxy, makeProxyRequest({ path: client.path, body: { model: 'model-a', stream: true, ...client.body } }))
+}
+
+const JSON_ERROR_SELLER = { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: CONTEXT_ERROR }) }
+
+test('a streamed Responses request translated to chat that fails before output gets a JSON error', async () => {
+  const res = await streamedRequestFailingBeforeOutput({ path: '/v1/responses', body: { input: 'hi' } }, 'openai-chat-completions', JSON_ERROR_SELLER)
+  assert.equal(res.statusCode, 400)
+  assert.equal(res.headers['content-type'], 'application/json')
+  assert.equal(JSON.parse(res.body).error.message, CONTEXT_ERROR.message)
+})
+
+test('a streamed Messages request translated to chat that fails before output gets an Anthropic JSON error', async () => {
+  const res = await streamedRequestFailingBeforeOutput(
+    { path: '/v1/messages', body: { max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] } }, 'openai-chat-completions', JSON_ERROR_SELLER)
+  assert.equal(res.statusCode, 400)
+  assert.equal(res.headers['content-type'], 'application/json')
+  const body = JSON.parse(res.body)
+  assert.equal(body.type, 'error')
+  assert.equal(body.error.message, CONTEXT_ERROR.message)
+})
+
+test('a streamed Chat request translated to Messages that fails before output gets a Chat JSON error', async () => {
+  const res = await streamedRequestFailingBeforeOutput(
+    { path: '/v1/chat/completions', body: { messages: [{ role: 'user', content: 'hi' }] } }, 'anthropic-messages',
+    { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'prompt is too long' } }) })
+  assert.equal(res.statusCode, 400)
+  assert.equal(res.headers['content-type'], 'application/json')
+  assert.equal(JSON.parse(res.body).error.message, 'prompt is too long')
+})
+
+test('a seller that answers an error as an event stream before any output reaches the client as JSON, in every protocol', async () => {
+  const sse = { 'content-type': 'text/event-stream' }
+  const cases = [
+    { client: { path: '/v1/chat/completions', body: { messages: [{ role: 'user', content: 'hi' }] } }, seller: 'openai-chat-completions',
+      body: `data: ${JSON.stringify({ error: CONTEXT_ERROR })}\n\ndata: [DONE]\n\n`, envelope: 'openai' },
+    { client: { path: '/v1/responses', body: { input: 'hi' } }, seller: 'openai-responses',
+      body: `event: error\ndata: ${JSON.stringify({ type: 'error', code: 'context_length_exceeded', message: CONTEXT_ERROR.message, param: null })}\n\n`, envelope: 'openai' },
+    { client: { path: '/v1/responses', body: { input: 'hi' } }, seller: 'openai-responses',
+      body: `event: response.failed\ndata: ${JSON.stringify({ type: 'response.failed', response: { status: 'failed', error: { code: 'context_length_exceeded', message: CONTEXT_ERROR.message } } })}\n\n`, envelope: 'openai' },
+    { client: { path: '/v1/messages', body: { max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] } }, seller: 'anthropic-messages',
+      body: `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: CONTEXT_ERROR.message } })}\n\n`, envelope: 'anthropic' },
+    // Translated: a Responses client of a chat seller that streams its error.
+    { client: { path: '/v1/responses', body: { input: 'hi' } }, seller: 'openai-chat-completions',
+      body: `data: ${JSON.stringify({ error: CONTEXT_ERROR })}\n\n`, envelope: 'openai' },
+  ]
+  for (const { client, seller, body, envelope } of cases) {
+    const label = `${client.path} → ${seller}: ${body.slice(0, 40)}`
+    const res = await streamedRequestFailingBeforeOutput(client, seller, { headers: sse, body })
+    assert.equal(res.statusCode, 400, label)
+    assert.equal(res.headers['content-type'], 'application/json', label)
+    const parsed = JSON.parse(res.body)
+    if (envelope === 'anthropic') assert.equal(parsed.type, 'error', label)
+    assert.match(parsed.error.message, /maximum context length/, label)
+  }
+})
+
+test('a failure after the first byte stays an in-stream error with the stream\'s status', async () => {
+  const peer = makePeer('a', ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'model-a': ['openai-chat-completions'] } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: SerializedHttpRequest,
+    callbacks: { onResponseStart: (response: SerializedHttpResponse, metadata: { streaming: boolean }) => void; onResponseChunk: (chunk: unknown) => void },
+  ) => {
+    const headers = { 'content-type': 'text/event-stream' }
+    callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: Buffer.from('data: {"choices":[{"index":0,"delta":{"content":"Hel"}}]}\n\n') }, { streaming: true })
+    const tail = Buffer.from(`data: ${JSON.stringify({ error: { message: 'upstream failed', type: 'api_error' } })}\n\n`)
+    callbacks.onResponseChunk({ requestId: request.requestId, data: tail, done: true })
+    return { requestId: request.requestId, statusCode: 200, headers, body: tail }
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'model-a', stream: true, messages: [{ role: 'user', content: 'hi' }] } }))
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.headers['content-type'], 'text/event-stream')
+  assert.match(res.body, /Hel/)
+  assert.match(res.body, /upstream failed/)
+})
 
 test('a Responses request to a Responses seller loses only the reasoning items the adapter made', async () => {
   const peer = makePeer('a', ['openai-responses'])
@@ -4967,9 +5069,12 @@ test('transformed pre-stream seller errors preserve peer guidance', async () => 
 
   assert.equal(res.statusCode, 503)
   assert.equal(res.headers[ANTSEED_FAULT_ATTRIBUTION_HEADER], 'peer')
-  assert.match(res.headers['content-type'] ?? '', /text\/event-stream/)
-  assert.match(res.body, /Oops, pinned peer could not complete the request/)
-  assert.match(res.body, /Original Response:.*The seller upstream is unavailable\./)
+  // Nothing was streamed yet, so the client gets a plain JSON error in its own protocol.
+  assert.equal(res.headers['content-type'], 'application/json')
+  const body = JSON.parse(res.body)
+  assert.equal(body.type, 'error')
+  assert.match(body.error.message, /Oops, pinned peer could not complete the request/)
+  assert.match(body.error.message, /Original Response:.*The seller upstream is unavailable\./)
 })
 
 test('a free-tier refusal from a seller on another protocol reaches the client as JSON with its limit', async () => {

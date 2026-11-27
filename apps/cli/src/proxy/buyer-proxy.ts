@@ -75,6 +75,7 @@ import { encodeServedSelection, ROUTE_SELECTION_HEADER, type RouteSelection, typ
 import { canonicalModelKey } from '@antseed/node/model-identity'
 import {
   createStreamingAdapter,
+  errorEventStreamAsJson,
   detectRequestServiceApiProtocol,
   extractRequestBodyFields,
   type ServiceApiProtocol,
@@ -888,6 +889,14 @@ function adaptOpenAICompatibleErrorResponse(
     },
     body: Buffer.from(JSON.stringify(wrappedError)),
   }
+}
+
+/** A seller error sent as an event stream, as `protocol`'s JSON error body (see `errorEventStreamAsJson`). */
+function errorEventStreamAsJsonFor(
+  response: SerializedHttpResponse,
+  protocol: ServiceApiProtocol | null,
+): SerializedHttpResponse {
+  return protocol ? errorEventStreamAsJson(response, protocol) : response
 }
 
 function adaptBuyerFaultErrorResponse(
@@ -5910,7 +5919,12 @@ export class BuyerProxy {
 
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
-        let responseForClient = adaptBuyerFaultErrorResponse(response, requestProtocol)
+        // A stream that starts with an error status is never forwarded (buyer-core
+        // buffers it), so it is still a failure before the first byte: answer JSON.
+        let responseForClient = adaptBuyerFaultErrorResponse(
+          streamed ? response : errorEventStreamAsJsonFor(response, peerResponseProtocol),
+          requestProtocol,
+        )
         const freeTierRefusal = adaptFreeTierRefusal(responseForClient)
         responseForClient = freeTierRefusal ?? adaptPeerResponse(responseForClient)
         if (
@@ -6073,7 +6087,7 @@ export class BuyerProxy {
         )) {
           await this._persistResourceRoutes().catch(error => console.error('[proxy] Accepted video route was not persisted:', error))
         }
-        let response = adaptBuyerFaultErrorResponse(upstreamResponse, requestProtocol)
+        let response = adaptBuyerFaultErrorResponse(errorEventStreamAsJsonFor(upstreamResponse, peerResponseProtocol), requestProtocol)
         const freeTierRefusal = adaptFreeTierRefusal(response)
         response = freeTierRefusal ?? adaptPeerResponse(response)
         if (

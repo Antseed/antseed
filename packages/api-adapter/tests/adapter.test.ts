@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { SerializedHttpRequest, SerializedHttpResponse, ServiceApiProtocol } from '../src/types.js';
 import { transformRequest } from '../src/request-transform.js';
-import { transformResponse } from '../src/response-transform.js';
+import { errorEventStreamAsJson, transformResponse } from '../src/response-transform.js';
 import { createStreamingAdapter } from '../src/stream-transform.js';
 import {
   DEFAULT_ANTHROPIC_MAX_TOKENS,
@@ -2056,24 +2056,71 @@ describe('transformResponse chat to responses', () => {
     });
   });
 
-  it('returns SSE error frames when streamRequested is true', () => {
+  // The error came before any output, so it is a plain HTTP error: SDKs read JSON on a non-2xx.
+  it.each([
+    ['openai-chat-completions', 'openai-responses', { error: { message: 'Rate limit exceeded', type: 'rate_limit_error' } }],
+    ['anthropic-messages', 'openai-chat-completions', { type: 'error', error: { type: 'rate_limit_error', message: 'Rate limit exceeded' } }],
+    ['openai-chat-completions', 'anthropic-messages', { error: { message: 'Rate limit exceeded', type: 'rate_limit_error' } }],
+  ] as const)('returns a JSON error even when the client asked for a stream (%s seller, %s client)', (from, to, sellerBody) => {
     const errorResponse = makeOpenAIResponse({
       statusCode: 429,
       headers: { 'content-type': 'application/json' },
-      body: new TextEncoder().encode(JSON.stringify({
-        error: { message: 'Rate limit exceeded', type: 'rate_limit_error' },
-      })),
+      body: new TextEncoder().encode(JSON.stringify(sellerBody)),
     });
-    const result = adaptResponseForTest('openai-chat-completions', 'openai-responses', errorResponse, {
+    const result = adaptResponseForTest(from, to, errorResponse, {
       streamRequested: true,
     });
     expect(result.statusCode).toBe(429);
-    expect(result.headers['content-type']).toBe('text/event-stream');
-    expect(result.headers['cache-control']).toBe('no-cache');
-    const text = new TextDecoder().decode(result.body);
-    expect(text).toContain('event: error');
-    expect(text).toContain('"message":"Rate limit exceeded"');
-    expect(text).toContain('"type":"rate_limit_error"');
+    expect(result.headers['content-type']).toBe('application/json');
+    const body = JSON.parse(new TextDecoder().decode(result.body)) as { type?: string; error: { message: string } };
+    expect(body.error.message).toBe('Rate limit exceeded');
+    if (to === 'anthropic-messages') expect(body.type).toBe('error');
+  });
+});
+
+describe('errorEventStreamAsJson', () => {
+  const sse = (statusCode: number, text: string): SerializedHttpResponse => makeOpenAIResponse({
+    statusCode,
+    headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+    body: new TextEncoder().encode(text),
+  });
+  const decode = (response: SerializedHttpResponse) => JSON.parse(new TextDecoder().decode(response.body)) as Record<string, any>;
+  const error = { message: 'Too long', type: 'invalid_request_error', param: null, code: 'context_length_exceeded' };
+
+  it('reads a chat-style error frame', () => {
+    const result = errorEventStreamAsJson(sse(400, `data: ${JSON.stringify({ error })}\n\ndata: [DONE]\n\n`), 'openai-chat-completions');
+    expect(result.headers['content-type']).toBe('application/json');
+    expect(result.headers['cache-control']).toBeUndefined();
+    expect(decode(result)).toEqual({ error });
+  });
+
+  it('reads a Responses error event and a failed response', () => {
+    const errorEvent = `event: error\ndata: ${JSON.stringify({ type: 'error', code: 'context_length_exceeded', message: 'Too long', param: null, sequence_number: 1 })}\n\n`;
+    expect(decode(errorEventStreamAsJson(sse(400, errorEvent), 'openai-responses'))).toEqual({
+      error: { message: 'Too long', code: 'context_length_exceeded', param: null },
+    });
+    const failed = `event: response.failed\ndata: ${JSON.stringify({ type: 'response.failed', response: { status: 'failed', error: { code: 'server_error', message: 'Broke' } } })}\n\n`;
+    expect(decode(errorEventStreamAsJson(sse(500, failed), 'openai-responses')).error).toMatchObject({ message: 'Broke', code: 'server_error' });
+  });
+
+  it('reads an Anthropic error event into the Anthropic envelope', () => {
+    const event = `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } })}\n\n`;
+    expect(decode(errorEventStreamAsJson(sse(529, event), 'anthropic-messages'))).toEqual({
+      type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' },
+    });
+  });
+
+  it('still answers JSON when the stream holds no readable error', () => {
+    const result = errorEventStreamAsJson(sse(502, 'data: not json\n\n'), 'anthropic-messages');
+    expect(result.headers['content-type']).toBe('application/json');
+    expect(decode(result)).toEqual({ type: 'error', error: { type: 'api_error', message: 'data: not json' } });
+  });
+
+  it('leaves successful streams and JSON errors alone', () => {
+    const ok = sse(200, 'data: {"choices":[]}\n\n');
+    expect(errorEventStreamAsJson(ok, 'openai-chat-completions')).toBe(ok);
+    const json = makeOpenAIResponse({ statusCode: 400, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode('{"error":{"message":"x"}}') });
+    expect(errorEventStreamAsJson(json, 'openai-chat-completions')).toBe(json);
   });
 });
 

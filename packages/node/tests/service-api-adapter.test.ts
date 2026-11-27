@@ -824,7 +824,7 @@ describe('transformResponse chat to responses', () => {
     });
   });
 
-  it('returns SSE error frames when streamRequested is true', () => {
+  it('returns a JSON error even when streamRequested is true (the error came before any output)', () => {
     const errorResponse = makeOpenAIResponse({
       statusCode: 429,
       headers: { 'content-type': 'application/json' },
@@ -836,12 +836,10 @@ describe('transformResponse chat to responses', () => {
       streamRequested: true,
     });
     expect(result.statusCode).toBe(429);
-    expect(result.headers['content-type']).toBe('text/event-stream');
-    expect(result.headers['cache-control']).toBe('no-cache');
-    const text = new TextDecoder().decode(result.body);
-    expect(text).toContain('event: error');
-    expect(text).toContain('"message":"Rate limit exceeded"');
-    expect(text).toContain('"type":"rate_limit_error"');
+    expect(result.headers['content-type']).toBe('application/json');
+    expect(JSON.parse(new TextDecoder().decode(result.body))).toEqual({
+      error: { message: 'Rate limit exceeded', type: 'rate_limit_error' },
+    });
   });
 });
 
