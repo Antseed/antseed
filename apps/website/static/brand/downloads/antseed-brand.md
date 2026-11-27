@@ -1,6 +1,6 @@
 # Antseed brand assets
 
-For anyone making something with Antseed: partners, press and their agents. Paths are relative to this file.
+For anyone making something with Antseed: partners, press and their agents. Paths are relative to this file, both on antseed.com and inside `antseed-brand-assets.zip`, which holds every file below.
 
 ## Name
 
@@ -10,13 +10,13 @@ Antseed: one word, capital A only. Tagline: The Open Intelligence Network.
 
 | File | Use |
 |---|---|
-| `logo/svg/antseed-logo-black.svg` | On light |
-| `logo/svg/antseed-logo-white.svg` | On dark |
-| `logo/svg/antseed-mark-black.svg` | Mark, on light |
-| `logo/svg/antseed-mark-white.svg` | Mark, on dark |
-| `logo/svg/antseed-profile-picture.svg` | Profile picture |
+| `antseed-logo-black.svg` | On light |
+| `antseed-logo-white.svg` | On dark |
+| `antseed-mark-black.svg` | Mark, on light |
+| `antseed-mark-white.svg` | Mark, on dark |
+| `antseed-profile-picture.svg` | Profile picture |
 
-PNG versions are in `logo/png/`.
+Each has a PNG version with the same name, ending `.png`.
 
 - Clear space: at least the height of the capitals.
 - Smallest size: logo 96 px wide, mark 16 px.
@@ -59,14 +59,16 @@ An ant in action: eyes on what it is doing, or the expression that fits the mome
 
 Costume: whatever fits its role. A lime bandana by default, otherwise a hoodie, a beanie, glasses.
 
+The $ANTS coin: `antseed-ants-coin.webp`. Green like the buttons, the Antseed mark raised in white. Never gold.
+
 ## Backgrounds
 
-- `backgrounds/textures/`: three square textures, 2160 × 2160, a painting breaking into dots on transparency, each with a day and a night.
-- `backgrounds/watercolours/`: nine paintings for illustration backgrounds, each with a day and a night.
+- `textures/`: three square textures, 2160 × 2160, a painting breaking into dots on transparency, each with a day and a night.
+- `watercolours/day/` and `watercolours/night/`: nine paintings for illustration backgrounds, each with a day and a night. They are in the ZIP only; on antseed.com each one downloads from the brand page.
 
 ## Watercolour style
 
-`backgrounds/antseed-watercolour-style-reference.webp` is a style reference, not a picture to reuse. Attach it when the model accepts a reference.
+`antseed-watercolour-style-reference.webp` is a style reference, not a picture to reuse. Attach it when the model accepts a reference.
 
 This example prompt painted it (Nano Banana 2.1, 16:9). For your own image, keep the first two sentences and the last three, and replace what is in between with your subject.
 
