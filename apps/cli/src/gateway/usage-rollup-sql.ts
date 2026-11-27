@@ -37,17 +37,18 @@ function dimensions(alias: string, time: string): string[] {
 }
 
 /**
- * `INSERT … SELECT` of one row into the rollup, adding `totals` (missing ones
- * are 0) to the row of `keys`. `from` and `where` complete the SELECT; the
- * WHERE clause also keeps SQLite from reading the upsert as a join constraint.
+ * `INSERT … SELECT` into the rollup, adding `totals` (missing ones are 0) to
+ * the row of `keys`. `tail` (FROM and WHERE) completes the SELECT; its WHERE
+ * clause also keeps SQLite from reading the upsert as a join constraint.
+ * `grouped` sums many source rows per key (GROUP BY the keys' positions).
  */
-function upsert(keys: string[], totals: Partial<Record<UsageTotal, string>>, tail: string, groupBy: string | null = null): string {
+function upsert(keys: string[], totals: Partial<Record<UsageTotal, string>>, tail: string, grouped = false): string {
   const values = USAGE_TOTALS.map((column) => totals[column] ?? '0')
   return `
     INSERT INTO usage_hourly (${KEY_COLUMNS}, ${USAGE_TOTALS.join(', ')})
     SELECT ${[...keys, ...values].join(', ')}
     ${tail}
-    ${groupBy ? `GROUP BY ${groupBy}` : ''}
+    ${grouped ? `GROUP BY ${keys.map((_, index) => index + 1).join(', ')}` : ''}
     ON CONFLICT (${KEY_COLUMNS}) DO UPDATE SET
       ${USAGE_TOTALS.map((column) => `${column} = ${column} + excluded.${column}`).join(',\n      ')};`
 }
@@ -152,7 +153,7 @@ export function usageRollupMigrationSql(): string {
     ['u.hour_start', 'u.key_id', ...['workspace_id', 'member_id', 'model'].map((c) => `COALESCE(u.${c}, '')`), "''", ...['seller_peer_id', 'router_peer_id', 'end_user'].map((c) => `COALESCE(u.${c}, '')`)],
     { requests: 'SUM(u.requests)', failed_requests: 'SUM(u.failed_requests)' },
     'FROM request_rollups u WHERE true',
-    '1, 2, 3, 4, 5, 6, 7, 8, 9',
+    true,
   )}
   CREATE TRIGGER usage_hourly_request_insert AFTER INSERT ON gateway_requests WHEN ${requestKept('NEW')} BEGIN
     ${upsert(dimensions('NEW', 'started_at'), requestTotals('NEW', 'q', 1), `FROM ${requestFlags('NEW')} WHERE true`)}
@@ -209,11 +210,11 @@ export function usageRollupRequestBackfillSql(): string {
       SELECT ${columns.map((column) => `r.${column}`).join(', ')}, ${requestFlagColumns('r')}
       FROM gateway_requests r WHERE r.started_at >= ? AND r.started_at < ?
     )
-    ${upsert(dimensions('b', 'started_at'), summed, 'FROM b WHERE true', '1, 2, 3, 4, 5, 6, 7, 8, 9')}`
+    ${upsert(dimensions('b', 'started_at'), summed, 'FROM b WHERE true', true)}`
 }
 
 /** The backfill of ledger rows with ids in `(?, ?]`, grouped into the rollup. */
 export function usageRollupLedgerBackfillSql(): string {
   const summed = Object.fromEntries(Object.entries(ledgerTotals('b', 1)).map(([column, value]) => [column, `SUM(${value})`]))
-  return upsert(dimensions('b', 'created_at'), summed, 'FROM ledger_entries b WHERE b.id > ? AND b.id <= ?', '1, 2, 3, 4, 5, 6, 7, 8, 9')
+  return upsert(dimensions('b', 'created_at'), summed, 'FROM ledger_entries b WHERE b.id > ? AND b.id <= ?', true)
 }
