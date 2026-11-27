@@ -6,6 +6,7 @@ import {useSiteTheme} from '../../lib/useSiteTheme';
 import {useStill} from '../../lib/useStill';
 import {DotField, type Box} from './field';
 import {layOut, loadMosaic, type DotGroup} from './mosaic';
+import {usePointerAndCalls} from './usePointerAndCalls';
 import styles from './PrivacyDots.module.css';
 
 const MAX_DPR = 2;
@@ -106,28 +107,4 @@ function boxIn(host: HTMLElement, el: HTMLElement | null, dx: number, dy: number
   x -= host.offsetLeft;
   y -= host.offsetTop;
   return {l: x - dx, r: x + el.offsetWidth + dx, t: y - dy, b: y + el.offsetHeight + dy};
-}
-
-/** The cursor over the band warms the dots; a click on its background (not on a card, link or the title) calls the ants. */
-function usePointerAndCalls(hostRef: RefObject<HTMLDivElement | null>, fieldRef: RefObject<DotField | null>): void {
-  useEffect(() => {
-    const band = hostRef.current?.parentElement;
-    const host = hostRef.current;
-    if (!band || !host) return;
-    const at = (e: MouseEvent) => { const b = host.getBoundingClientRect(); return {x: e.clientX - b.left, y: e.clientY - b.top}; };
-    const move = (e: PointerEvent) => fieldRef.current?.setPointer(at(e));
-    const leave = () => fieldRef.current?.setPointer(null);
-    const click = (e: MouseEvent) => {
-      if ((e.target as Element).closest('a, button, article, h2, p')) return;
-      fieldRef.current?.callAnts(at(e));
-    };
-    band.addEventListener('pointermove', move, {passive: true});
-    band.addEventListener('pointerleave', leave);
-    band.addEventListener('click', click);
-    return () => {
-      band.removeEventListener('pointermove', move);
-      band.removeEventListener('pointerleave', leave);
-      band.removeEventListener('click', click);
-    };
-  }, [hostRef, fieldRef]);
 }

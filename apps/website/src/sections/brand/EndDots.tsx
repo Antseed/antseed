@@ -8,6 +8,7 @@ import {useStill} from '../../lib/useStill';
 import {DotField} from '../../parts/PrivacyDots/field';
 import {layOutGrid} from '../../parts/PrivacyDots/gridLayout';
 import {loadMosaic, type Box, type DotGroup} from '../../parts/PrivacyDots/mosaic';
+import {usePointerAndCalls} from '../../parts/PrivacyDots/usePointerAndCalls';
 import styles from './EndDots.module.css';
 
 const QUIET_X = 40;   // room the ants leave round the title, px
@@ -76,24 +77,8 @@ export default function EndDots({step, quietRef}: Props): JSX.Element {
     return () => { ro.disconnect(); bg.clearRect(0, 0, bgCanvas.width, bgCanvas.height); fg.clearRect(0, 0, fgCanvas.width, fgCanvas.height); };
   }, [groups, step, quietRef]);
 
-  // the cursor over the card warms the dots; a click on its background (not a link or the text) calls the ants
-  useEffect(() => {
-    const el = host.current;
-    const card = el?.parentElement;
-    if (!el || !card) return;
-    const at = (e: MouseEvent) => { const b = el.getBoundingClientRect(); return {x: e.clientX - b.left, y: e.clientY - b.top}; };
-    const move = (e: PointerEvent) => field.current?.setPointer(at(e));
-    const leave = () => field.current?.setPointer(null);
-    const click = (e: MouseEvent) => { if (!(e.target as Element).closest('a, button, h2, p')) field.current?.callAnts(at(e)); };
-    card.addEventListener('pointermove', move, {passive: true});
-    card.addEventListener('pointerleave', leave);
-    card.addEventListener('click', click);
-    return () => {
-      card.removeEventListener('pointermove', move);
-      card.removeEventListener('pointerleave', leave);
-      card.removeEventListener('click', click);
-    };
-  }, []);
+  // the cursor over the band warms the dots; a click on its background (not a link or the words) calls the ants
+  usePointerAndCalls(host, field, 'a, button, h2, p');
 
   useFrameLoop(ready && onScreen && visible && !still, (now) => field.current?.frame(now));
 
