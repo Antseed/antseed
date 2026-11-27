@@ -3690,6 +3690,116 @@ for (const hasOtherSeller of [true, false]) {
   })
 }
 
+/** A seller whose catalogue lists only `gpt-5`, on Chat Completions. */
+function makeCataloguePeer(seed: string): PeerInfo {
+  const peer = makePeer(seed, ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } }
+  return peer
+}
+
+/** Counts foreground (forced) and background peer refreshes; the stubbed refresh never finds anything new. */
+function countPeerRefreshes(proxy: BuyerProxy, peers: PeerInfo[]): { foreground: number; background: number } {
+  const counts = { foreground: 0, background: 0 }
+  ;(proxy as any)._getPeers = async (options?: { forceRefresh?: boolean }) => {
+    if (options?.forceRefresh) counts.foreground += 1
+    return peers
+  }
+  ;(proxy as any)._refreshPeersNow = async () => {
+    counts.background += 1
+    return peers
+  }
+  return counts
+}
+
+test('a model no discovered seller lists fails fast with 404 model_not_found and refreshes peers in the background', async () => {
+  const peers = [makeCataloguePeer('a'), makeCataloguePeer('b')]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  const refreshes = countPeerRefreshes(proxy, peers)
+  ;(proxy as any)._node.sendRequest = () => { throw new Error('No purchase should be dispatched') }
+  for (const [path, body] of [
+    ['/v1/chat/completions', { model: 'no-such-model', messages: [{ role: 'user', content: 'Hi' }] }],
+    ['/v1/messages', { model: 'no-such-model', max_tokens: 16, messages: [{ role: 'user', content: 'Hi' }] }],
+    ['/v1/responses', { model: 'no-such-model', input: 'Hi' }],
+  ] as const) {
+    const res = await invokeProxy(proxy, makeProxyRequest({ path, body }))
+    assert.equal(res.statusCode, 404, `${path}: ${res.body}`)
+    assert.equal(res.headers['content-type'], 'application/json')
+    assert.deepEqual(JSON.parse(res.body).error, {
+      type: 'model_not_found',
+      code: 'model_not_found',
+      message: 'No policy-allowed peer currently serves model "no-such-model".',
+      param: 'model',
+    })
+  }
+  assert.equal(refreshes.foreground, 0, 'no request waits for a network sweep')
+  assert.equal(refreshes.background, 1, 'one throttled background refresh picks up a seller that just announced it')
+})
+
+test('an unknown model against a stale peer cache is looked up once before the 404', async () => {
+  const peers = [makeCataloguePeer('a')]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  const refreshes = countPeerRefreshes(proxy, peers)
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now() - (proxy as any)._peerCacheTtlMs - 1_000
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'no-such-model', messages: [] } }))
+  assert.equal(res.statusCode, 404, res.body)
+  assert.equal(refreshes.foreground, 1)
+})
+
+test('a listed model that no seller can take still answers 502 model_not_found', async () => {
+  const peer = makeCataloguePeer('a')
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], { allowsPeerForPolicy: () => false, onResult: () => {} })
+  const refreshes = countPeerRefreshes(proxy, [peer])
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'gpt-5', messages: [] } }))
+  assert.equal(res.statusCode, 502, res.body)
+  assert.equal(JSON.parse(res.body).error.code, 'model_not_found')
+  assert.equal(refreshes.foreground, 0, 'the seller is a candidate, so no refresh is forced')
+})
+
+test('a request with no model keeps its fast 400', async () => {
+  const peers = [makeCataloguePeer('a')]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  const refreshes = countPeerRefreshes(proxy, peers)
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { messages: [{ role: 'user', content: 'Hi' }] } }))
+  assert.equal(res.statusCode, 400, res.body)
+  assert.equal(refreshes.foreground + refreshes.background, 0)
+})
+
+test('a pinned peer missing from the cache is looked up on its own topic during the one network refresh', async () => {
+  const pinnedPeerId = 'c'.repeat(40)
+  const other = makeCataloguePeer('b')
+  const proxy = makeBuyerProxyWithPeers([other], [other], permissiveRouter())
+  const events: string[] = []
+  let releaseRefresh!: () => void
+  const refreshDone = new Promise<void>((resolve) => { releaseRefresh = resolve })
+  // A lookup that waits for the refresh would never release it: let the refresh end on its own then.
+  const fallback = setTimeout(() => releaseRefresh(), 200)
+  ;(proxy as any)._getPeers = async (options?: { forceRefresh?: boolean }) => {
+    if (options?.forceRefresh) {
+      events.push('refresh-start')
+      await refreshDone
+      events.push('refresh-end')
+    }
+    return [other]
+  }
+  const lookups: unknown[] = []
+  ;(proxy as any)._node.findPeer = async (peerId: string, options?: unknown) => {
+    events.push('lookup-start')
+    lookups.push({ peerId, options })
+    releaseRefresh()
+    return null
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-antseed-pin-peer': pinnedPeerId },
+    body: { model: 'gpt-5', messages: [] },
+  }))
+  clearTimeout(fallback)
+  assert.equal(res.statusCode, 502, res.body)
+  assert.match(res.body, /is not reachable right now/)
+  assert.ok(events.indexOf('lookup-start') < events.indexOf('refresh-end'), `the topic lookup runs while the refresh does, not after it: ${events.join(', ')}`)
+  // The refresh already is the wildcard scan, so the lookup must not run a second one.
+  assert.deepEqual(lookups, [{ peerId: pinnedPeerId, options: { wildcardFallback: false } }])
+})
+
 test('verifier preimage capture header stays local and enables exact capture', async () => {
   const peer = makePeer('a', ['openai'])
   const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
@@ -4647,6 +4757,7 @@ test('a chat model\'s reasoning reaches a streaming Responses client only when i
 
   assert.doesNotMatch(await streamed(), /reasoning_text|antseed\.reasoning/)
 })
+
 
 test('a Responses request to a Responses seller loses only the reasoning items the adapter made', async () => {
   const peer = makePeer('a', ['openai-responses'])

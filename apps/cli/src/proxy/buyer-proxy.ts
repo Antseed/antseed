@@ -117,6 +117,7 @@ import {
   findUnannouncedRequestParameters,
   findAdvertisedServiceOffer,
   findAdvertisedServiceProtocols,
+  isServiceListedByAnyPeer,
   findFailingServiceOffers,
   getExplicitProviderOverride,
   getExplicitPeerIdOverride,
@@ -727,7 +728,7 @@ const MAX_TRACKED_REQUEST_CONVERSATIONS = 512
 /** Why a speech seller is not a route: it does not list the voice the request asks for. */
 const UNSUPPORTED_VOICE_REASON = 'does not offer the requested voice'
 
-/** Min gap between background peer refreshes triggered by model_not_found responses. */
+/** Min gap between background peer refreshes triggered by a model nobody serves (a seller's model_not_found, or no seller listing it). */
 const MODEL_NOT_FOUND_REFRESH_THROTTLE_MS = 30_000
 
 /**
@@ -3154,15 +3155,17 @@ export class BuyerProxy {
    * so scoring reflects the miss.
    */
   private _onModelNotFound(peerId: string, requestedService: string | null): void {
+    this._refreshPeersInBackground(`peer ${peerId.slice(0, 12)}... does not serve ${requestedService ?? 'the requested model'}`)
+  }
+
+  /** Refresh peer metadata without making a request wait for it, at most once per throttle window. */
+  private _refreshPeersInBackground(reason: string): void {
     const now = this._now()
     if (now - this._lastModelNotFoundRefreshAtMs < MODEL_NOT_FOUND_REFRESH_THROTTLE_MS) {
       return
     }
     this._lastModelNotFoundRefreshAtMs = now
-    log(
-      `Peer ${peerId.slice(0, 12)}... does not serve ${requestedService ?? 'the requested model'}; `
-      + 'refreshing peer metadata in background.',
-    )
+    log(`${reason[0]!.toUpperCase()}${reason.slice(1)}; refreshing peer metadata in background.`)
     void this._refreshPeersNow().catch(() => {})
   }
 
@@ -4983,9 +4986,18 @@ export class BuyerProxy {
       let discoveredPeers = peers
       let selection = selectModelPeers(discoveredPeers)
       const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
-      if ((selection.candidatePeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) && !this._initialDiscoveryRunning()) {
-        discoveredPeers = await this._getPeers({ forceRefresh: true })
-        selection = selectModelPeers(discoveredPeers)
+      const cacheStale = cacheAgeMs > this._peerCacheTtlMs
+      if ((selection.candidatePeers.length === 0 || cacheStale) && !this._initialDiscoveryRunning()) {
+        if (!cacheStale && !isServiceListedByAnyPeer(discoveredPeers, requestedService)) {
+          // No seller in a fresh cache lists the model at all, so a network
+          // sweep (tens of seconds) would almost always end in the same miss.
+          // Answer now; a background refresh catches a seller that just
+          // announced it, for the next request.
+          this._refreshPeersInBackground(`no discovered seller lists ${requestedService}`)
+        } else {
+          discoveredPeers = await this._getPeers({ forceRefresh: true })
+          selection = selectModelPeers(discoveredPeers)
+        }
       }
       const router = this._node.router
       // Conversations the client identifies (session id, prompt-cache key)
@@ -5091,7 +5103,10 @@ export class BuyerProxy {
           log(`Request rejected: no seller of ${requestedService} usable yet; discovery still running`)
           return this._discoveryInProgressFailure(requestedService)
         }
-        return dispatchFailure(capabilityRequired ? 422 : 502, { 'content-type': 'application/json' }, JSON.stringify({
+        // 404 when no seller lists the model at all; 502 when one does but
+        // none can take this request (routing policy, pricing, cooldowns).
+        const notFoundStatus = isServiceListedByAnyPeer(discoveredPeers, requestedService) ? 502 : 404
+        return dispatchFailure(capabilityRequired ? 422 : notFoundStatus, { 'content-type': 'application/json' }, JSON.stringify({
           error: capabilityRequired
             ? {
                 type: 'required_capability_unavailable',
@@ -5335,14 +5350,20 @@ export class BuyerProxy {
     // missing, candidate filter empty, or cache past TTL.
     const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
     let pinnedDiscovered = isPinnedDiscovered()
+    // The network refresh only walks a few DHT shards; ask the pinned peer's
+    // own topic too, which also picks up a seller that moved to a new address.
+    // Both run at once, and the topic lookup skips its own wildcard scan: the
+    // refresh is that scan, and running them one after the other made an
+    // unknown pin take about three sweeps to fail.
+    const topicLookup = !pinnedDiscovered && typeof this._node.findPeer === 'function'
+      ? this._node.findPeer(pinnedPeerId, { wildcardFallback: false }).catch(() => null)
+      : null
     if (!pinnedDiscovered || routingPeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) {
       await refreshPeerSelection('pinned-peer routing preflight')
       pinnedDiscovered = isPinnedDiscovered()
     }
-    if (!pinnedDiscovered && typeof this._node.findPeer === 'function') {
-      // The network refresh only walks a few DHT shards; ask the pinned peer's
-      // own topic, which also picks up a seller that moved to a new address.
-      const found = await this._node.findPeer(pinnedPeerId).catch(() => null)
+    if (!pinnedDiscovered && topicLookup) {
+      const found = await topicLookup
       if (found) {
         this._replacePeers([found, ...this._cachedPeers.filter((peer) => peer.peerId !== found.peerId)])
         discoveredPeers = [found, ...discoveredPeers.filter((peer) => peer.peerId !== found.peerId)]

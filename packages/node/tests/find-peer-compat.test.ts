@@ -56,6 +56,24 @@ describe('AntseedNode.findPeer compatibility', () => {
     expect((node as any)._peerLookup.findAll).toHaveBeenCalledTimes(1);
   });
 
+  it('skips the wildcard scan when the caller runs that scan itself', async () => {
+    const targetId = 'a'.repeat(40);
+    const node = new AntseedNode({ role: 'buyer' });
+
+    (node as any)._peerLookup = {
+      findByPeerId: vi.fn().mockResolvedValue([]),
+      findAll: vi.fn().mockResolvedValue([
+        { metadata: buildMetadata(targetId), host: '34.10.10.10', port: 6882 },
+      ]),
+    };
+
+    const peer = await node.findPeer(targetId, { wildcardFallback: false });
+
+    expect(peer).toBeNull();
+    expect((node as any)._peerLookup.findByPeerId).toHaveBeenCalledWith(targetId);
+    expect((node as any)._peerLookup.findAll).not.toHaveBeenCalled();
+  });
+
   it('does not scan wildcard when the per-peer topic returns a match', async () => {
     const targetId = 'a'.repeat(40);
     const node = new AntseedNode({ role: 'buyer' });

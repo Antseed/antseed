@@ -9,6 +9,7 @@ This project uses selective package publishing. Each release entry lists the pub
 ### Changed
 
 - Website: the `/brand/` page is rebuilt in the site's design, with sections for the logo, colour, type, the ant (its full spec and the $ANTS coin), example pieces, backgrounds and the watercolour prompt, and new downloads (ant examples, a profile picture, the pixel font and a one-file brand summary). The repo gains a brand kit for agents making Antseed pages and pictures outside the site: `apps/website/brand-kit/`, starting at `DESIGN.md`, with a starter page that renders whole on its own.
+- Buyer proxy (CLI, gateway, desktop): a request for a model that no discovered seller lists now fails at once with HTTP **404** `model_not_found` (same error body as before), instead of waiting tens of seconds for a network sweep and answering 502. A background refresh still looks for a seller that just announced the model, so the next request finds it. A model that sellers do list but none can take (routing policy, prices, cooldowns) still answers 502, a request with no model still answers 400, and right after start the buyer still waits briefly for the first discovery and answers 503 `discovery_in_progress`. A request pinned to a peer the buyer has not discovered now looks the peer up on its own DHT topic while the network refresh runs, instead of after it, so an unreachable pin fails in about one sweep instead of three; it still answers 502.
 
 ### Fixed
 

@@ -631,7 +631,8 @@ test('no policy, or one that changes nothing, routes like main; unknown models g
   const expected = { type: 'model_not_found', code: 'model_not_found', message: 'No policy-allowed peer currently serves model "qwen3-coder".', param: 'model' }
   for (const headers of [{}, { [GATEWAY_CONTROL_HEADER]: SECRET }, withPolicy({}), withPolicy({ sort: 'balanced', preferFreePeers: false, requireVerified: false, requireTee: false })]) {
     const res = await chat(h, headers, 'qwen3-coder')
-    assert.equal(res.status, 502)
+    // No seller lists the model at all.
+    assert.equal(res.status, 404)
     assert.deepEqual(((await res.json()) as any).error, expected)
   }
   for (const headers of [{}, withPolicy({ sort: 'balanced', preferFreePeers: false })]) {
@@ -707,10 +708,11 @@ test('once the first discovery ends, or after two minutes, unknown models get mo
   const h = await startHarness(t, [cheap])
   startDiscovery(h)
   ;(h.proxy as any)._initialDiscoveryPending = false
-  assert.equal((await chat(h, {}, 'qwen3-coder')).status, 502)
+  // No seller lists the model: 404.
+  assert.equal((await chat(h, {}, 'qwen3-coder')).status, 404)
   startDiscovery(h, { startedAgoMs: 121_000 })
   const res = await chat(h, {}, 'qwen3-coder')
-  assert.equal(res.status, 502)
+  assert.equal(res.status, 404)
   assert.equal(((await res.json()) as any).error.code, 'model_not_found')
 })
 

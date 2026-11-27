@@ -1320,7 +1320,11 @@ export class AntseedNode extends EventEmitter {
    * enriches its results, so volume / last-settled / ghost counts are
    * available when chain RPC is configured.
    */
-  async findPeer(peerId: string, options?: { awaitExternalVerification?: boolean }): Promise<PeerInfo | null> {
+  async findPeer(peerId: string, options?: {
+    awaitExternalVerification?: boolean;
+    /** False skips the wildcard scan fallback, for a caller that runs that scan itself at the same time. */
+    wildcardFallback?: boolean;
+  }): Promise<PeerInfo | null> {
     if (!this._peerLookup) {
       throw buyerFault("Node not started or not in buyer mode", "node-not-started");
     }
@@ -1331,6 +1335,10 @@ export class AntseedNode extends EventEmitter {
 
     debugLog(`[Node] findPeer(${normalized.slice(0, 12)}...) via per-peer DHT topic`);
     let results = await this._peerLookup.findByPeerId(normalized);
+    if (results.length === 0 && options?.wildcardFallback === false) {
+      debugLog(`[Node]   per-peer topic empty; wildcard fallback skipped by caller`);
+      return null;
+    }
     if (results.length === 0) {
       debugLog(`[Node]   per-peer topic empty; falling back to wildcard scan`);
       results = (await this._peerLookup.findAll()).filter(
