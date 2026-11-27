@@ -25,6 +25,8 @@ export {
   WORKER_ASSIGN_PATH,
   WORKER_UNAVAILABLE_STATUS,
   WORKER_UNAVAILABLE_CODE,
+  WORKER_REASSIGN_HEADER,
+  WORKER_REASSIGN_CODE,
 } from '@antseed/buyer-core/worker-e2e';
 import { isWorkerPayment, type WorkerPayment } from './worker-payment.js';
 export {

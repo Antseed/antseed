@@ -169,8 +169,18 @@ it pays for their earlier answers there ([Paid before served](#paid-before-serve
 decrypt the request if the pool forwards it to them. The pool forwards to one
 at a time, in rank order, and only within the set the buyer signed (see
 [Routing and failover](#routing-and-failover)). With the default of 1, only
-one Mac can ever read a request, and the buyer never re-encrypts it for
-another; 2 or 3 trade that for availability.
+one Mac can ever read a request, and the buyer never re-encrypts a request a
+worker received for another; 2 or 3 trade that for availability.
+
+The buyer asks the assign route for up to 3 workers whatever `recipients` is,
+holds them, and encrypts each request for the next `recipients` of them in
+turn, so one buyer's concurrent requests (a gateway's) spread over several
+workers. With 1 it sends `x-antseed-colony-reassign: 1` on each request: when
+that request's worker is busy and another worker has a free slot, the pool
+answers `421` with code `worker_reassign` at once instead of waiting, without
+sending the request to any worker, and the buyer encrypts it for another of
+its held workers (at most twice). A buyer without the header waits for the
+slot as before.
 
 ## Response envelope
 
@@ -372,7 +382,11 @@ in `worker_rank`, and each outcome in `dispatches` for 30 days), so a flaky
 Mac can't reset its record by reconnecting.
 
 The pool sends a buyer's request to the best-ranked of its recipients that can
-take it now. While they are only busy, the request waits for a slot, first come
+take it now, whatever its place in the set: the rank counts each worker's
+current load, so a buyer's concurrent requests spread over its recipients.
+The assign route counts a new assignment toward the load of every worker in
+it for 10 minutes, so the next buyer's set starts with other workers. While
+the recipients are only busy, the request waits for a slot, first come
 first served, up to 15 seconds and 64 waiting requests; past either the pool
 answers `503` `{"error":{"code":"worker_busy"}}` with `retry-after`, and the
 buyer keeps its set. When that worker fails before any byte reached the buyer (it
@@ -383,7 +397,17 @@ buyer signed, and never to two workers at once; each attempt counts toward its
 own worker's rank. Once every recipient has failed, the pool answers
 `421 worker_unavailable`. With 2 or 3 recipients the buyer then takes new
 workers once, re-encrypting the request for them; with the default of 1 it
-drops the assignment and returns the `421` without retrying that request. A
+drops the assignment and returns the `421` without retrying that request.
+
+A worker's key certificate is renewed an hour before it expires without
+cutting its requests: the pool stops sending it new ones (they go to another
+recipient, or wait for it as for a busy worker), lets the ones it has finish
+(at most 10 minutes, and never past a minute before the certificate
+expires), then closes the connection with code `4006`. The worker reconnects
+at once with a fresh certificate for the same encryption key, and requests
+sealed for it go to the new connection (they wait up to 30 seconds for it).
+That close is the pool's doing: it never counts against the worker, and a
+request the worker had not started answering moves to the next recipient. A
 failed attempt is never paid for.
 
 Every worker sends `{"t":"accepted","id":…}` once it has admitted a request

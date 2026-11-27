@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Wallet } from 'ethers';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import type { SerializedHttpRequest } from '@antseed/node';
 import {
@@ -102,16 +102,23 @@ type Behavior =
   /** Takes the request and answers it in full with this HTTP status. */
   | { answerStatus: number }
   /** Streams `chunks` SSE events `gapMs` apart. */
-  | { streamChunks: number; gapMs: number };
+  | { streamChunks: number; gapMs: number }
+  /** Starts an SSE answer at once, and finishes it when `release` resolves. */
+  | { streamUntil: Promise<void> };
 
 /** A worker on the wire, scripted per request. */
 class ScriptedWorker {
   readonly wallet = Wallet.createRandom();
   readonly key = generateWorkerEncryptionKey();
   readonly requests: string[] = [];
+  /** Connections that reached `welcome`. */
+  connections = 0;
+  /** Close codes the pool closed this worker's connections with. */
+  readonly closeCodes: number[] = [];
   private ws: WebSocket | null = null;
 
-  constructor(private readonly poolUrl: string, public behavior: Behavior, private readonly slots = 4) {}
+  /** `lifetimeS` is how long its key certificate lasts; like the real workers, it reconnects at once after a 4006 (renew). */
+  constructor(private readonly poolUrl: string, public behavior: Behavior, private readonly slots = 4, public lifetimeS = 24 * 3600) {}
 
   get address(): string {
     return this.wallet.address.toLowerCase();
@@ -125,7 +132,7 @@ class ScriptedWorker {
       ws.on('message', async (data) => {
         const frame = parsePoolFrame(data.toString());
         if (frame?.t === 'challenge') {
-          const expires = Math.floor(Date.now() / 1000) + 24 * 3600;
+          const expires = Math.floor(Date.now() / 1000) + this.lifetimeS;
           ws.send(JSON.stringify({
             t: 'hello',
             address: this.wallet.address,
@@ -135,11 +142,16 @@ class ScriptedWorker {
             encryption: { key: keyHex, expires, certificate: await this.wallet.signMessage(workerKeyCertificateMessage(frame.seller, keyHex, expires)) },
           }));
         } else if (frame?.t === 'welcome') {
+          this.connections++;
           resolve();
         } else if (frame?.t === 'request') {
           this.requests.push(frame.id);
           void this.serve(frame.id);
         }
+      });
+      ws.on('close', (code) => {
+        this.closeCodes.push(code);
+        if (code === 4006 && this.ws === ws) void this.connect();
       });
     });
   }
@@ -166,6 +178,14 @@ class ScriptedWorker {
       send({ t: 'response-end', id });
       return;
     }
+    if (typeof behavior === 'object' && 'streamUntil' in behavior) {
+      send({ t: 'response-start', id, status: 200, headers: { 'content-type': 'text/event-stream' } });
+      send({ t: 'response-chunk', id, data: encodeBody(new TextEncoder().encode('data: {"seq":0}\n\n')) });
+      await behavior.streamUntil;
+      send({ t: 'response-chunk', id, data: encodeBody(new TextEncoder().encode('data: {"seq":1}\n\n')) });
+      send({ t: 'response-end', id });
+      return;
+    }
     if (behavior === 'accept-then-hang') return;
     if (behavior === 'accept-then-fail') return send({ t: 'response-error', id, message: 'Local model timed out' });
     if ('answerStatus' in behavior) {
@@ -180,9 +200,11 @@ class ScriptedWorker {
 
   close(): Promise<void> {
     return new Promise((resolve) => {
-      if (!this.ws || this.ws.readyState === WebSocket.CLOSED) return resolve();
-      this.ws.once('close', () => resolve());
-      this.ws.close();
+      const ws = this.ws;
+      this.ws = null;
+      if (!ws || ws.readyState === WebSocket.CLOSED) return resolve();
+      ws.once('close', () => resolve());
+      ws.close();
     });
   }
 }
@@ -209,8 +231,8 @@ describe('routing, failover and ranking in the pool', () => {
     poolUrl = `ws://127.0.0.1:${await pool.start()}`;
   }
 
-  async function connect(behavior: Behavior, wallet?: Wallet, slots?: number): Promise<ScriptedWorker> {
-    const worker = new ScriptedWorker(poolUrl, behavior, slots);
+  async function connect(behavior: Behavior, wallet?: Wallet, slots?: number, lifetimeS?: number): Promise<ScriptedWorker> {
+    const worker = new ScriptedWorker(poolUrl, behavior, slots, lifetimeS);
     if (wallet) Object.defineProperty(worker, 'wallet', { value: wallet });
     workers.push(worker);
     await worker.connect();
@@ -544,5 +566,147 @@ describe('routing, failover and ranking in the pool', () => {
     expect(summary(second).reliability).toBeLessThan(1);
     expect(summary(outsider).reliability ?? 1).toBe(1);
     expect(summary(outsider).benchedUntil).toBeNull();
+  });
+
+  it('serves one buyer\'s concurrent requests on every free recipient, not only the first', async () => {
+    // A wait would turn into 503 worker_busy almost at once.
+    await setup({ firstByteTimeoutMs: 2_000, busyWaitMs: 50 });
+    const a = await connect({ acceptThenAnswerAfterMs: 300 }, undefined, 1);
+    const b = await connect({ acceptThenAnswerAfterMs: 300 }, undefined, 1);
+    const requests = await Promise.all(['c1', 'c2'].map((id) => requestForAll([a, b], id)));
+    const responses = await Promise.all(requests.map((request) => provider.handleRequest(request)));
+    expect(responses.map((r) => r.statusCode)).toEqual([200, 200]);
+    expect(a.requests).toHaveLength(1);
+    expect(b.requests).toHaveLength(1);
+  });
+
+  it('hands a one-worker request back unsent when its worker is busy and another is free, if the buyer can take it back', async () => {
+    await setup({ firstByteTimeoutMs: 5_000, busyWaitMs: 2_000 });
+    const busy = await connect({ acceptThenAnswerAfterMs: 400 }, undefined, 1);
+    const free = await connect('answer', undefined, 1);
+    // Fill the busy worker's only slot.
+    const running = provider.handleRequest(await requestFor(busy, 'running'));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const canReassign = { ...(await requestFor(busy, 'handed-back')), headers: { 'x-antseed-colony-reassign': '1' } };
+    const started = Date.now();
+    const handedBack = await provider.handleRequest(canReassign);
+    expect(handedBack.statusCode).toBe(421);
+    expect(JSON.parse(dec(handedBack.body)).error.code).toBe('worker_reassign');
+    expect(Date.now() - started, 'answered at once, not after the busy wait').toBeLessThan(500);
+    // Neither worker received it.
+    expect(busy.requests).toHaveLength(1);
+    expect(free.requests).toHaveLength(0);
+
+    // A buyer that can't take it back still waits for the slot, as before.
+    const waits = await provider.handleRequest(await requestFor(busy, 'waits'));
+    expect(waits.statusCode).toBe(200);
+    expect(busy.requests).toHaveLength(2);
+    expect((await running).statusCode).toBe(200);
+  });
+
+  it('assigns the next buyer other workers first, so buyers holding several workers still spread out', async () => {
+    await setup();
+    const all = [await connect('answer'), await connect('answer'), await connect('answer'), await connect('answer')];
+    const assignTop = async (): Promise<string[]> => {
+      const response = await provider.handleControlRequest({
+        requestId: 'assign', method: 'POST', path: WORKER_ASSIGN_PATH, headers: {}, body: enc({ model: SERVICE, recipients: 3 }),
+      });
+      return (JSON.parse(dec(response.body)) as { workers: Array<{ worker: string }> }).workers.map((w) => w.worker.toLowerCase());
+    };
+    const first = await assignTop();
+    const second = await assignTop();
+    expect(first).toHaveLength(3);
+    // The one worker the first buyer did not get is the second buyer's first.
+    const left = all.map((w) => w.address).find((address) => !first.includes(address));
+    expect(second[0]).toBe(left);
+  });
+
+  describe('key certificate renewal', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const renewIn = (worker: ScriptedWorker, seconds: number) => {
+      // The pool starts renewing an hour before expiry.
+      worker.lifetimeS = 3600 + seconds;
+    };
+
+    it('finishes a running stream before reconnecting the worker, sends new requests elsewhere, and counts nothing against it', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], shouldAdvanceTime: true });
+      await setup({ firstByteTimeoutMs: 5_000 });
+      let release!: () => void;
+      const streamUntil = new Promise<void>((resolve) => { release = resolve; });
+      const renewing = new ScriptedWorker(poolUrl, { streamUntil }, 4, 3600 + 40);
+      workers.push(renewing);
+      await renewing.connect();
+      // Its next connections get a long-lived certificate.
+      renewIn(renewing, 24 * 3600);
+      const other = await connect('answer');
+
+      const chunks: string[] = [];
+      const streaming = provider.handleRequestStream(await requestFor(renewing, 'long'), {
+        onResponseStart: () => {},
+        onResponseChunk: (chunk) => { chunks.push(dec(chunk.data)); },
+      });
+      await waitFor(() => chunks.length === 1);
+
+      // The renewal comes due mid-stream: the worker keeps its connection and its stream.
+      await vi.advanceTimersByTimeAsync(41_000);
+      expect(renewing.connections).toBe(1);
+      expect(renewing.closeCodes).toEqual([]);
+
+      // A new request it shares with another worker goes to that one.
+      renewing.behavior = 'answer';
+      const shared = await provider.handleRequest(await requestForAll([renewing, other], 'shared'));
+      expect(JSON.parse(dec(shared.body))).toEqual({ answer: other.address });
+      // One only it can read waits for it to come back.
+      const waiting = provider.handleRequest(await requestFor(renewing, 'waiting'));
+      await sleep(50);
+      expect(renewing.requests).toEqual([expect.any(String)]);
+
+      release();
+      const response = await streaming;
+      expect(response.statusCode).toBe(200);
+      expect(dec(response.body)).toContain('"seq":1');
+      // Then the pool reconnects it, and the waiting request goes to the new connection under the same key.
+      const answered = await waiting;
+      expect(answered.statusCode).toBe(200);
+      expect(JSON.parse(dec(answered.body))).toEqual({ answer: renewing.address });
+      expect(renewing.closeCodes).toEqual([4006]);
+      expect(renewing.connections).toBe(2);
+      expect(summary(renewing)).toMatchObject({ reliability: 1, benchedUntil: null });
+      const history = new (await import('better-sqlite3')).default(join(dir, 'ledger.db'), { readonly: true });
+      try {
+        expect(history.prepare('SELECT ok, reason FROM dispatches WHERE worker = ?').all(renewing.address)).toEqual([{ ok: 1, reason: null }, { ok: 1, reason: null }]);
+      } finally {
+        history.close();
+      }
+    });
+
+    it('reconnects the worker anyway once it has drained for too long, sending a request it had not started to the next recipient without counting it', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], shouldAdvanceTime: true });
+      await setup({ firstByteTimeoutMs: 60 * 60_000 });
+      const stuck = new ScriptedWorker(poolUrl, 'accept-then-hang', 4, 3600 + 40);
+      workers.push(stuck);
+      await stuck.connect();
+      renewIn(stuck, 24 * 3600);
+      const healthy = await connect('answer');
+
+      // Ranked first (equal scores keep the buyer's order), it takes the request and never starts answering.
+      const pending = provider.handleRequest(await requestForAll([stuck, healthy], 'stuck'));
+      await waitFor(() => stuck.requests.length === 1);
+      await vi.advanceTimersByTimeAsync(41_000);
+      expect(stuck.closeCodes).toEqual([]);
+      // At most 10 minutes of draining, then the pool reconnects it.
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      const response = await pending;
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(dec(response.body))).toEqual({ answer: healthy.address });
+      await waitFor(() => stuck.connections === 2);
+      expect(stuck.closeCodes).toEqual([4006]);
+      expect(summary(stuck)).toMatchObject({ reliability: null, benchedUntil: null });
+      expect(ledger.loadRank(stuck.address)?.reliability ?? null).toBeNull();
+    });
   });
 });

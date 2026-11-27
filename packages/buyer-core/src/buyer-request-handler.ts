@@ -38,6 +38,7 @@ import { buyerFault, peerFault } from './errors.js';
 import { adaptPeerFaultErrorResponse } from './peer-error-response.js';
 import {
   WORKER_ASSIGN_PATH,
+  isWorkerReassign,
   isWorkerUnavailable,
   peerAnnouncesWorkerE2E,
   peerServiceUsesWorkerE2E,
@@ -322,6 +323,8 @@ export class BuyerRequestHandler {
     const workerE2E = needsWorkerE2E ? this._deps.workerE2E! : null;
     const plainReq = req;
     let sealed: SealedWorkerRequest | null = null;
+    // Workers the pool handed this request back for, unsent, because they were busy while another was free.
+    const handedBack = new Set<string>();
     // Workers were chosen (and reserved) for this request, though sealing it may still fail.
     let reserved = false;
     let wireResponse: SerializedHttpResponse | null = null;
@@ -336,8 +339,8 @@ export class BuyerRequestHandler {
         : null;
       // Only a worker the channel can credit may answer, and choosing reserves it: the request is
       // recorded in the same step, so concurrent requests can't credit more workers than a channel holds.
-      const chooseRecipients = (assigned: string[]): string[] => {
-        const recipients = isFreeService ? assigned : bpm?.creditableWorkers(peer.peerId, assigned) ?? assigned;
+      const chooseRecipients = (assigned: string[], limit: number): string[] => {
+        const recipients = (isFreeService ? assigned : bpm?.creditableWorkers(peer.peerId, assigned) ?? assigned).slice(0, limit);
         // Only a worker it is encrypted for can answer it; the one that does is credited.
         if (recipients.length > 0) {
           bpm?.recordWorkerAttribution(peer.peerId, plainReq.requestId, recipients, isFreeService);
@@ -355,7 +358,7 @@ export class BuyerRequestHandler {
         // Assigned by the pool the request goes to.
         headers: { 'content-type': 'application/json', ...(provider ? { 'x-antseed-provider': provider } : {}) },
         body,
-      }, undefined, { controlPlane: true, ...(options?.signal ? { signal: options.signal } : {}) }), channelId, { payment, chooseRecipients });
+      }, undefined, { controlPlane: true, ...(options?.signal ? { signal: options.signal } : {}) }), channelId, { payment, chooseRecipients, avoid: handedBack });
       req = sealed.request;
     };
 
@@ -693,6 +696,13 @@ export class BuyerRequestHandler {
           first = await attempt();
         }
         let { answer, session } = first;
+        // Handed back unsent (its worker busy, another free): no worker read it, so it is
+        // encrypted for another of the held workers and sent again (a pool assigns up to 3).
+        for (let reassigned = 0; session && isWorkerReassign(answer) && reassigned < 2; reassigned++) {
+          for (const worker of session.recipients) handedBack.add(worker.toLowerCase());
+          delivered(session);
+          ({ answer, session } = await attempt());
+        }
         if (session && isWorkerUnavailable(answer)) {
           // None of the assigned workers could take it (the pool already tried each).
           workerE2E!.forget(peer.peerId, workerService!);

@@ -57,6 +57,15 @@ const CHECK_SLOT_POLL_MS = 1_000;
 const MIN_CERTIFICATE_LIFETIME_S = 60;
 /** Reconnect a worker this long before its certificate expires (buyers stop using one 5 minutes before). */
 const CERTIFICATE_RENEW_MARGIN_S = 3600;
+/**
+ * Before a renewal reconnect the worker gets no new requests and finishes the
+ * ones it has, for at most this long (a long streamed answer takes minutes)
+ * and never past its certificate's expiry less RENEW_DRAIN_SAFETY_MS.
+ */
+const RENEW_DRAIN_MAX_MS = 10 * 60_000;
+const RENEW_DRAIN_SAFETY_MS = 60_000;
+/** After a renewal close, requests sealed for the worker wait this long for it to reconnect (it does so at once). */
+const RENEW_RECONNECT_GRACE_MS = 30_000;
 /** How long a request whose workers are all busy waits for a free slot, and how many may wait at once. */
 const DEFAULT_BUSY_WAIT_MS = 15_000;
 const DEFAULT_MAX_WAITING = 64;
@@ -64,6 +73,8 @@ const DEFAULT_MAX_WAITING = 64;
 const MIN_SPEED_TOKENS = 32;
 const MIN_SPEED_STREAM_MS = 100;
 const AT_CAPACITY = 'at capacity';
+/** A worker finishing its requests before it reconnects to renew its certificate: back in seconds, with the same key. */
+const RENEWING = 'reconnecting to renew its key certificate';
 /** Assignments count toward a worker's load for this long, so new buyers spread out. */
 const ASSIGNMENT_WEIGHT_MS = 10 * 60_000;
 /** Attested workers re-attest this often, and have this long to answer. */
@@ -171,6 +182,14 @@ export class WorkerUnavailableError extends Error {
 }
 
 /** Every worker that could take the request stayed busy; the buyer's assignment is still good. */
+/** The request's workers are busy and another is free: handed back unsent, for the buyer to encrypt for another. */
+export class WorkerReassignError extends Error {
+  constructor(workers: string) {
+    super(`Worker ${workers} is busy and another worker is free; encrypt the request for another`);
+    this.name = 'WorkerReassignError';
+  }
+}
+
 export class WorkerBusyError extends Error {
   constructor(workers: string) {
     super(`Worker ${workers} is busy; retry shortly`);
@@ -241,8 +260,15 @@ interface ConnectedWorker {
   deviceTimer: NodeJS.Timeout | null;
   /** Bumped by each MDM lookup, so an older lookup still in flight can't overwrite a newer one. */
   deviceGeneration: number;
-  /** Closes the connection before the key certificate expires, so the worker reconnects and certifies again. */
+  /**
+   * Starts the renewal before the key certificate expires (the worker drains,
+   * then reconnects and certifies again), then bounds how long it drains.
+   */
   renewTimer: NodeJS.Timeout | null;
+  /** Renewing: no new requests; the pool closes the connection once its requests finish. */
+  renewing: boolean;
+  /** The pool closed the connection to renew (not the worker leaving): what it still had is not its failure. */
+  closedToRenew: boolean;
   connectionId: number;
   maxConcurrency: number;
   /** Services the worker offers that the pool sells. */
@@ -301,6 +327,8 @@ export class ColonyPool {
   private wss: WebSocketServer | null = null;
   /** Requests waiting for a worker's slot, in the order they came. */
   private readonly waiting = new Set<{ retry: () => void; stop: () => void }>();
+  /** Workers the pool closed to renew their certificate → until when (ms) requests wait for them to reconnect. */
+  private readonly reconnecting = new Map<string, number>();
   private waking = false;
   private pingTimer: NodeJS.Timeout | null = null;
   private lastServices = '';
@@ -425,8 +453,10 @@ export class ColonyPool {
   assign(service: string, count = 1): WorkerAssignment[] {
     const workers = this.assignable(service).slice(0, Math.max(1, Math.min(MAX_WORKER_RECIPIENTS, Math.floor(count))));
     if (workers.length === 0) throw new NoWorkerAvailableError(service);
-    // Only the first is tried first, so only it takes the new buyer's load.
-    workers[0]!.assignedAt.push(Date.now());
+    // The pool sends each of the buyer's requests to whichever of them has a free slot,
+    // so each may take the buyer's load: the next buyer is assigned other workers first.
+    const now = Date.now();
+    for (const worker of workers) worker.assignedAt.push(now);
     return workers.map((worker) => ({
       ...worker.certificate,
       ...(worker.attestation ? { attestation: worker.attestation } : {}),
@@ -435,18 +465,24 @@ export class ColonyPool {
   }
 
   /**
-   * Send a buyer's sealed request to one of the workers it is encrypted for,
-   * best-ranked first. A worker that fails before the response starts (it
+   * Send a buyer's sealed request to one of the workers it is encrypted for:
+   * the best-ranked that has a free slot now, whichever its place in the set
+   * (rank counts load). A worker that fails before the response starts (it
    * never picks the request up, refuses it, disconnects, or is benched) is
    * replaced by the next recipient: never a worker outside the set, and never
    * two at once. The response arrives through `handlers`; `onAttempt` names
    * each worker tried and its dispatch ID (unique even when buyers reuse
    * request IDs). Throws WorkerUnavailableError when no recipient can take
    * it, or reports it through `onError` once every one has failed, so the
-   * buyer reassigns. While recipients are only busy, the request waits for a
-   * slot, first come first served, up to `busyWaitMs` (then WorkerBusyError).
+   * buyer reassigns. While recipients are only busy (or reconnecting to renew
+   * their certificate), the request waits for a slot, first come first served,
+   * up to `busyWaitMs` (then WorkerBusyError). With `reassign` (the buyer can
+   * encrypt it for another worker), a request no worker has received yet is
+   * handed back instead of waiting whenever another worker has a free slot
+   * (WorkerReassignError): it is never sent to a second worker, so a request
+   * readable by one Mac stays read by one.
    */
-  dispatch(recipients: readonly string[], service: string, req: DispatchRequest, handlers: DispatchHandlers, signal?: AbortSignal): void {
+  dispatch(recipients: readonly string[], service: string, req: DispatchRequest, handlers: DispatchHandlers, signal?: AbortSignal, options: { reassign?: boolean } = {}): void {
     const set = [...new Set(recipients.map((address) => address.toLowerCase()))].slice(0, MAX_WORKER_RECIPIENTS);
     const tried = new Set<string>();
     const failures: string[] = [];
@@ -455,6 +491,12 @@ export class ColonyPool {
     const next = (): void => {
       const worker = this.nextRecipient(set, service, tried, failures);
       if (!worker && this.anyBusy(set, service, tried)) {
+        if (options.reassign && tried.size === 0 && this.freeElsewhere(set, service)) {
+          const error = new WorkerReassignError(set.join(', '));
+          if (first) throw error;
+          handlers.onError(error);
+          return;
+        }
         first = false;
         waitUntil ||= Date.now() + (this.opts.busyWaitMs ?? DEFAULT_BUSY_WAIT_MS);
         this.waitForSlot(waitUntil, next, () => handlers.onError(new WorkerBusyError(set.join(', '))), () => handlers.onError(new Error('Request aborted')), signal);
@@ -491,10 +533,19 @@ export class ColonyPool {
     next();
   }
 
-  /** Whether a recipient not tried yet is only busy: it serves `service`, with no free slot now. */
+  /** Whether a worker outside `set` could take a request for `service` now. */
+  private freeElsewhere(set: readonly string[], service: string): boolean {
+    const now = Date.now();
+    for (const [address, worker] of this.workers) {
+      if (!set.includes(address) && this.unavailableReason(worker, service, now) === null) return true;
+    }
+    return false;
+  }
+
+  /** Whether a recipient not tried yet is only busy: it serves `service`, with no free slot now (or is renewing). */
   private anyBusy(set: readonly string[], service: string, tried: ReadonlySet<string>): boolean {
     const now = Date.now();
-    return set.some((address) => !tried.has(address) && this.unavailableReason(this.workers.get(address), service, now) === AT_CAPACITY);
+    return set.some((address) => !tried.has(address) && onlyBusy(this.unavailableReason(this.workers.get(address), service, now, address)));
   }
 
   /** Call `retry` when a slot frees (or a worker changes), `busy` at `until` or when too many wait, `aborted` when the buyer leaves. */
@@ -531,9 +582,9 @@ export class ColonyPool {
     for (const address of set) {
       if (tried.has(address)) continue;
       const worker = this.workers.get(address);
-      const reason = this.unavailableReason(worker, service, now);
+      const reason = this.unavailableReason(worker, service, now, address);
       if (reason) {
-        if (reason !== AT_CAPACITY && !failures.some((f) => f.startsWith(`Worker ${address} `))) failures.push(`Worker ${address} ${reason}`);
+        if (!onlyBusy(reason) && !failures.some((f) => f.startsWith(`Worker ${address} `))) failures.push(`Worker ${address} ${reason}`);
         continue;
       }
       candidates.push(worker!);
@@ -542,13 +593,18 @@ export class ColonyPool {
   }
 
   /** Why `worker` can't take a request for `service` now, in order of precedence; null when it can. */
-  private unavailableReason(worker: ConnectedWorker | undefined, service: string, now: number): string | null {
-    if (!worker) return 'not connected';
+  private unavailableReason(worker: ConnectedWorker | undefined, service: string, now: number, address = worker?.address): string | null {
+    if (!worker) {
+      const until = address ? this.reconnecting.get(address) : undefined;
+      if (until !== undefined && now < until) return RENEWING;
+      return 'not connected';
+    }
     if (!worker.verified.has(service) || !this.routable(worker)) return `not serving ${service}`;
     const unattested = this.unattestedModel(worker, service);
     if (unattested) return unattested;
     if (this.priority(worker.address) === 0) return 'the operator routes nothing to it';
     if (now < worker.rank.benchedUntil) return 'benched after failing to answer';
+    if (worker.renewing) return RENEWING;
     if (worker.inflight.size >= worker.maxConcurrency) return AT_CAPACITY;
     return null;
   }
@@ -746,16 +802,18 @@ export class ColonyPool {
 
   /** End a failed dispatch: clear it, count it against the worker when `failure` says so, and tell the caller. */
   private failDispatch(worker: ConnectedWorker, dispatchId: string, entry: InFlight, error: Error, failure?: { reason: string; bench: boolean }): void {
-    this.finish(worker.inflight, dispatchId);
+    this.finish(worker, dispatchId);
     if (failure) this.recordDispatch(worker, entry, false, failure);
     entry.handlers.onError(error);
   }
 
-  private finish(table: Map<string, InFlight>, dispatchId: string): void {
-    const entry = table.get(dispatchId);
+  private finish(worker: ConnectedWorker, dispatchId: string): void {
+    const entry = worker.inflight.get(dispatchId);
     if (entry?.timer) clearTimeout(entry.timer);
     entry?.release();
-    table.delete(dispatchId);
+    worker.inflight.delete(dispatchId);
+    // Still connected (drop() fails what a gone worker had, and must not take that for a renewal).
+    if (worker.renewing && worker.inflight.size === 0 && this.workers.get(worker.address) === worker) this.closeToRenew(worker);
     this.wakeWaiting();
   }
 
@@ -847,6 +905,7 @@ export class ColonyPool {
         this.log(`worker ${address}'s attestation did not verify (${check.reason}); admitting it unattested`);
       }
     }
+    this.reconnecting.delete(address);
     // One connection per worker: a reconnect replaces the stale socket.
     this.workers.get(address)?.ws.close(4002, 'replaced by a new connection');
     // Its rank survives reconnects (and, through the ledger, pool restarts), so a flaky Mac can't reset it.
@@ -872,6 +931,8 @@ export class ColonyPool {
       deviceTimer: null,
       deviceGeneration: 0,
       renewTimer: null,
+      renewing: false,
+      closedToRenew: false,
       connectionId: this.opts.ledger.recordConnect(address, hello.agent),
       maxConcurrency: Math.max(1, Math.min(MAX_WORKER_CONCURRENCY, Math.floor(hello.maxConcurrency))),
       offered: new Set(),
@@ -886,6 +947,8 @@ export class ColonyPool {
     ws.on('pong', () => { worker.missedPings = 0; });
     this.workers.set(address, worker);
     const { accepted, rejected } = this.setOffered(worker, hello.services);
+    // Requests waiting for this worker (its previous connection was renewing) can go to it now.
+    this.wakeWaiting();
     // Every catalog price, not only the services offered now: a worker that joined paused offers none, and resumes on this welcome.
     // And the model each pinned service runs, so a worker without one can let its owner pick.
     const models = this.opts.models?.size ? { models: Object.fromEntries(this.opts.models) } : {};
@@ -896,12 +959,42 @@ export class ColonyPool {
     if (hello.attestation) this.scheduleAttestation(worker);
     if (this.opts.deviceAttestor) void this.attestDevice(worker);
     const renewInMs = (certificate.expires - CERTIFICATE_RENEW_MARGIN_S) * 1000 - Date.now();
-    worker.renewTimer = setTimeout(() => {
-      this.log(`worker ${address}'s key certificate expires soon; reconnecting it to renew`);
-      ws.close(4006, 'renew key certificate');
-    }, Math.max(MIN_CERTIFICATE_LIFETIME_S * 500, renewInMs));
+    worker.renewTimer = setTimeout(() => this.renew(worker), Math.max(MIN_CERTIFICATE_LIFETIME_S * 500, renewInMs));
     worker.renewTimer.unref();
     return worker;
+  }
+
+  /**
+   * Renew a worker's key certificate without cutting its requests: it takes
+   * no new ones (they go to the buyer's other recipients, or wait for it to
+   * come back), and once those it has finish, or after RENEW_DRAIN_MAX_MS,
+   * the pool closes the connection with 4006 and the worker reconnects at
+   * once with a fresh certificate for the same key. The close is the pool's
+   * doing, so it never counts against the worker (see drop()).
+   */
+  private renew(worker: ConnectedWorker): void {
+    if (this.workers.get(worker.address) !== worker || worker.renewing) return;
+    worker.renewing = true;
+    worker.renewTimer = null;
+    if (worker.inflight.size === 0) {
+      this.log(`worker ${worker.address}'s key certificate expires soon; reconnecting it to renew`);
+      this.closeToRenew(worker);
+      return;
+    }
+    const drainMs = Math.max(0, Math.min(RENEW_DRAIN_MAX_MS, worker.certificate.expires * 1000 - Date.now() - RENEW_DRAIN_SAFETY_MS));
+    this.log(`worker ${worker.address}'s key certificate expires soon; reconnecting it to renew once its ${worker.inflight.size} request(s) finish (at most ${Math.round(drainMs / 1000)}s)`);
+    worker.renewTimer = setTimeout(() => {
+      this.log(`worker ${worker.address} still has ${worker.inflight.size} request(s) after ${Math.round(drainMs / 1000)}s; reconnecting it to renew anyway`);
+      this.closeToRenew(worker);
+    }, drainMs);
+    worker.renewTimer.unref();
+  }
+
+  private closeToRenew(worker: ConnectedWorker): void {
+    if (worker.renewTimer) clearTimeout(worker.renewTimer);
+    worker.renewTimer = null;
+    worker.closedToRenew = true;
+    worker.ws.close(4006, 'renew key certificate');
   }
 
   /** With `requireDeviceAttestation`, only Macs Apple attests get buyers. */
@@ -1112,7 +1205,8 @@ export class ColonyPool {
       }
       await new Promise((resolve) => setTimeout(resolve, CHECK_SLOT_POLL_MS));
     }
-    if (this.workers.get(worker.address) !== worker || !worker.offered.has(service) || worker.verified.has(service)) return;
+    // A renewing worker is checked again when it reconnects.
+    if (this.workers.get(worker.address) !== worker || !worker.offered.has(service) || worker.verified.has(service) || worker.renewing) return;
     const body = new TextEncoder().encode(JSON.stringify({
       model: service,
       messages: [{ role: 'user', content: 'Reply with the single word: ready' }],
@@ -1126,6 +1220,7 @@ export class ColonyPool {
     if (passed) {
       worker.verified.add(service);
       this.emitChangeIfNeeded();
+      this.wakeWaiting();
     } else {
       this.log(`worker ${worker.address} failed the check for ${service}; not routing it`);
     }
@@ -1175,7 +1270,7 @@ export class ColonyPool {
       case 'response-end': {
         const entry = worker.inflight.get(frame.id);
         if (!entry?.started) return;
-        this.finish(worker.inflight, frame.id);
+        this.finish(worker, frame.id);
         this.recordAnswer(worker, entry);
         // Paid requests are charged right after they end; free ones never read this.
         const timing = { startedAt: entry.startedAt, firstByteAt: entry.firstByteAt, endedAt: Date.now(), streamed: entry.streamed };
@@ -1207,9 +1302,23 @@ export class ColonyPool {
     if (worker.attestTimer) clearTimeout(worker.attestTimer);
     if (worker.deviceTimer) clearTimeout(worker.deviceTimer);
     if (worker.renewTimer) clearTimeout(worker.renewTimer);
-    if (this.workers.get(worker.address) === worker) this.workers.delete(worker.address);
+    if (this.workers.get(worker.address) === worker) {
+      this.workers.delete(worker.address);
+      if (worker.closedToRenew) {
+        this.reconnecting.set(worker.address, Date.now() + RENEW_RECONNECT_GRACE_MS);
+        // Requests waiting for it give up at their own deadline; this only bounds the map.
+        setTimeout(() => {
+          if ((this.reconnecting.get(worker.address) ?? Infinity) <= Date.now()) this.reconnecting.delete(worker.address);
+        }, RENEW_RECONNECT_GRACE_MS).unref();
+      }
+    }
     this.opts.ledger.recordDisconnect(worker.connectionId);
     for (const [dispatchId, entry] of [...worker.inflight]) {
+      if (worker.closedToRenew) {
+        // The pool closed it to renew its certificate: not the worker's failure. One not started yet goes to the next recipient.
+        this.failDispatch(worker, dispatchId, entry, new Error(`Worker ${worker.address} reconnected to renew its key certificate`));
+        continue;
+      }
       // Dropping a request before answering it benches the worker; mid-response it only counts against it.
       this.failDispatch(worker, dispatchId, entry, new Error(`Worker ${worker.address} disconnected`), { reason: 'disconnect', bench: !entry.started });
     }
@@ -1252,6 +1361,11 @@ export class ColonyPool {
   private log(line: string): void {
     this.opts.log?.(`[colony-pool] ${line}`);
   }
+}
+
+/** A recipient that can't take a request now only for a while (no free slot, or renewing): requests wait for it. */
+function onlyBusy(reason: string | null): boolean {
+  return reason === AT_CAPACITY || reason === RENEWING;
 }
 
 /** Whether a join check's completion answers "ready", give or take case, quotes, punctuation and a reasoning block. */

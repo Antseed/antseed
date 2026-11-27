@@ -114,10 +114,12 @@ function deviceAttestation(kind: Device, worker: string, attestationKey: string,
   };
 }
 
-function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; failSigning?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; alwaysUnavailable?: boolean; tamper?: 'ciphertext' | 'usage' | 'seller-cost'; attest?: Attest | Attest[]; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'seller-cost' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean } = {}) {
+function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; failSigning?: boolean; now?: () => number; appleCa?: ReturnType<typeof createTestAppleCa>; deviceNotBefore?: Date; workers?: number; recipients?: number; certSeller?: string; unavailableOnce?: boolean; alwaysUnavailable?: boolean; tamper?: 'ciphertext' | 'usage' | 'seller-cost'; attest?: Attest | Attest[]; device?: Device; requireApple?: boolean; streamTamper?: 'no-end' | 'usage' | 'seller-cost' | 'not-sse' | 'padding'; maxStreamBufferBytes?: number; failover?: boolean; forgeAnswer?: boolean; noHook?: boolean; assignFails?: boolean; reassignOnce?: boolean } = {}) {
   const workers = Array.from({ length: opts.workers ?? 1 }, () => ({ wallet: Wallet.createRandom(), key: generateWorkerEncryptionKey() }));
   let next = 0;
   let unavailable = opts.unavailableOnce === true;
+  let reassign = opts.reassignOnce === true;
+  const handedBack: string[][] = [];
   const wire: SerializedHttpRequest[] = [];
   const assigned: string[] = [];
   const encryptedFor: string[][] = [];
@@ -158,6 +160,13 @@ function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; fai
       // An ordinary provider's plaintext answer.
       if (!envelope) {
         respond(onResponse, req.requestId, 200, { choices: [{ message: { content: 'plain answer' } }] });
+        return;
+      }
+      if (reassign) {
+        // Handed back unsent: its worker is busy and another is free.
+        reassign = false;
+        handedBack.push(envelope.recipients.map((r) => r.worker));
+        respond(onResponse, req.requestId, 421, { error: { code: 'worker_reassign', message: 'busy' } });
         return;
       }
       if (unavailable || opts.alwaysUnavailable) {
@@ -238,7 +247,7 @@ function fakePool(opts: { payments?: boolean; bpm?: Record<string, unknown>; fai
   const deliveries = () => (payments?.calls ?? [])
     .filter((call) => call.method === 'recordWorkerAttribution' || call.method === 'recordWorkerDelivery')
     .map((call) => call.method === 'recordWorkerAttribution' ? 'assigned' : call.args[1] === null ? 'failed' : call.args[1]);
-  return { handler, wire, assigned, workers, deliveries, encryptedFor, calls: payments?.calls ?? [] };
+  return { handler, wire, assigned, workers, deliveries, encryptedFor, handedBack, calls: payments?.calls ?? [] };
 }
 
 describe('buyer requests to colony pools', () => {
@@ -270,7 +279,11 @@ describe('buyer requests to colony pools', () => {
     await Promise.all([pool.handler.sendRequest(peer, chatRequest('s6')), pool.handler.sendRequest(peer, chatRequest('s7'))]);
     // One call for both: the assign route is rate limited.
     expect(pool.assigned).toEqual(pool.workers.map((w) => w.wallet.address));
-    expect(pool.encryptedFor.slice(-2)).toEqual([[pool.workers[1]!.wallet.address], [pool.workers[1]!.wallet.address]]);
+    // Each still encrypted for one worker, and the two go to different ones.
+    const [a, b] = pool.encryptedFor.slice(-2);
+    expect(a).toHaveLength(1);
+    expect(b).toHaveLength(1);
+    expect(a).not.toEqual(b);
   });
 
   it('keeps a usable assignment when a refresh is refused, or names workers its channel cannot credit', async () => {
@@ -282,7 +295,10 @@ describe('buyer requests to colony pools', () => {
     opts.assignFails = true;
     clock += ASSIGNMENT_REFRESH_S;
     expect((await pool.handler.sendRequest(peer, chatRequest('k2'))).statusCode).toBe(200);
-    expect(pool.encryptedFor.at(-1)).toEqual([firstWorker]);
+    // Served by the workers it already held.
+    expect(pool.encryptedFor.at(-1)).toHaveLength(1);
+    expect(pool.workers.map((w) => w.wallet.address)).toContain(pool.encryptedFor.at(-1)![0]);
+    expect(pool.assigned).toEqual([firstWorker]);
     // Not asked again at once.
     const calls = pool.wire.filter((req) => req.path === WORKER_ASSIGN_PATH).length;
     await pool.handler.sendRequest(peer, chatRequest('k3'));
@@ -367,6 +383,30 @@ describe('buyer requests to colony pools', () => {
     const pool = fakePool({ workers: 2, unavailableOnce: true });
     const response = await pool.handler.sendRequest(peer, chatRequest('u2'));
     expect(response.statusCode).toBe(421);
+    expect(pool.assigned).toHaveLength(1);
+  });
+
+  it('holds several assigned workers and encrypts each request for one of them, in turn', async () => {
+    const pool = fakePool({ workers: 3 });
+    for (let i = 0; i < 3; i++) await pool.handler.sendRequest(peer, chatRequest(`r${i}`));
+    // One assign call for all three, and each request readable by one worker only.
+    expect(pool.assigned).toHaveLength(1);
+    expect(pool.encryptedFor).toEqual(pool.workers.map((w) => [w.wallet.address]));
+    const sealedWire = pool.wire.filter((req) => req.path !== WORKER_ASSIGN_PATH);
+    expect(sealedWire.every((req) => req.headers['x-antseed-colony-reassign'] === '1')).toBe(true);
+    expect(JSON.parse(dec(pool.wire[0]!.body))).toMatchObject({ recipients: 3 });
+  });
+
+  it('encrypts a request the pool hands back busy for another held worker, without asking the pool again', async () => {
+    const pool = fakePool({ workers: 2, reassignOnce: true });
+    const response = await pool.handler.sendRequest(peer, chatRequest('h1'));
+    expect(response.statusCode).toBe(200);
+    expect(pool.handedBack).toHaveLength(1);
+    expect(pool.handedBack[0]).toHaveLength(1);
+    // Sent again, for the other worker only.
+    expect(pool.encryptedFor).toHaveLength(1);
+    expect(pool.encryptedFor[0]).toHaveLength(1);
+    expect(pool.encryptedFor[0]).not.toEqual(pool.handedBack[0]);
     expect(pool.assigned).toHaveLength(1);
   });
 

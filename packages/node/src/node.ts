@@ -410,7 +410,9 @@ export interface NodeConfig {
   /**
    * How many of a colony pool's top-ranked workers each request is encrypted
    * for (1 to 3, default 1). With 1, each request is readable by a single
-   * worker and is never sent to another. With 2 or 3, the pool can fail over
+   * worker and is never sent to another: the buyer holds up to 3 assigned
+   * workers and rotates between them, and a request whose worker is busy
+   * while another is free is handed back unsent and encrypted for the next. With 2 or 3, the pool can fail over
    * between them without a round trip, and a request none of them could take
    * is encrypted again for new workers once: any of them could read it.
    */

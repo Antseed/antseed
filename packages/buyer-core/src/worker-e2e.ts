@@ -14,6 +14,17 @@ export const WORKER_ASSIGN_PATH = '/_antseed/provider/colony-pool/assign';
 /** Status and error code a pool answers when the worker a request names cannot take it. */
 export const WORKER_UNAVAILABLE_STATUS = 421;
 export const WORKER_UNAVAILABLE_CODE = 'worker_unavailable';
+/**
+ * Sent by a buyer that encrypts each request for one worker and can take a
+ * busy one back: the pool then answers WORKER_REASSIGN_CODE at once, instead
+ * of waiting, when that worker is busy and another has a free slot.
+ */
+export const WORKER_REASSIGN_HEADER = 'x-antseed-colony-reassign';
+/**
+ * Code (with WORKER_UNAVAILABLE_STATUS) for a request the pool handed back
+ * without sending it to any worker: encrypt it for another and send it again.
+ */
+export const WORKER_REASSIGN_CODE = 'worker_reassign';
 
 export interface SealedWorkerRequest {
   /** Workers the request is encrypted for, in the order the pool tries them. */
@@ -60,7 +71,9 @@ export interface WorkerSealOptions {
    * reserve them before another request chooses: a channel can credit only so
    * many workers. None left fails the request before anything is sent.
    */
-  chooseRecipients?: (assigned: string[]) => string[];
+  chooseRecipients?: (assigned: string[], limit: number) => string[];
+  /** Workers not to encrypt for: they handed this request back busy (WORKER_REASSIGN_CODE). */
+  avoid?: ReadonlySet<string>;
 }
 
 export interface WorkerE2EClient {
@@ -137,12 +150,20 @@ export function peerServiceUsesWorkerE2E(peer: BuyerPeerView, route: WorkerE2ERo
   return isWorkerE2EProvider(peer, routed);
 }
 
-export function isWorkerUnavailable(response: SerializedHttpResponse): boolean {
-  if (response.statusCode !== WORKER_UNAVAILABLE_STATUS) return false;
+function workerErrorCode(response: SerializedHttpResponse): unknown {
+  if (response.statusCode !== WORKER_UNAVAILABLE_STATUS) return undefined;
   try {
-    const parsed = JSON.parse(new TextDecoder().decode(response.body)) as { error?: { code?: unknown } };
-    return parsed.error?.code === WORKER_UNAVAILABLE_CODE;
+    return (JSON.parse(new TextDecoder().decode(response.body)) as { error?: { code?: unknown } }).error?.code;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+export function isWorkerUnavailable(response: SerializedHttpResponse): boolean {
+  return workerErrorCode(response) === WORKER_UNAVAILABLE_CODE;
+}
+
+/** The pool handed the request back unsent: its worker is busy and another is free. */
+export function isWorkerReassign(response: SerializedHttpResponse): boolean {
+  return workerErrorCode(response) === WORKER_REASSIGN_CODE;
 }

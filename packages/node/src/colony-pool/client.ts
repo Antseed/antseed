@@ -11,6 +11,7 @@ import {
   verifyWorkerKeyCertificate,
   type WorkerAssignment,
   WORKER_CERTIFICATE_USABILITY_MARGIN_S,
+  WORKER_REASSIGN_HEADER,
 } from './worker-crypto.js';
 import { usageCounts } from './worker-payment.js';
 
@@ -21,15 +22,24 @@ const MAX_CACHED_ASSIGNMENTS = 1024;
 /** Pools re-attest workers every 5 minutes; an older attestation means the pool stopped checking. */
 const ATTESTATION_MAX_AGE_S = 900;
 
-/** Workers a request is encrypted for unless the buyer says otherwise. */
+/** Workers a request is encrypted for unless the buyer says otherwise: one, so a single Mac can read it. */
 export const DEFAULT_WORKER_RECIPIENTS = 1;
+/**
+ * Workers the buyer asks the pool for and holds: each request is still
+ * encrypted for only `recipients` of them, rotating, so one buyer's concurrent
+ * requests (a gateway's) spread over several workers instead of queueing on one.
+ */
+const ASSIGNED_WORKERS = MAX_WORKER_RECIPIENTS;
 
 export interface NodeWorkerE2EClientOptions {
   /**
    * How many of the pool's top-ranked workers each request is encrypted for
    * (1 to 3, default 1). With 1, every request is readable by a single Mac and
-   * is never sent to another (see `failover`). With more, the pool fails over
-   * between them without a round trip, and any of them could read the request.
+   * is never sent to another (see `failover`); a request handed back unsent
+   * because its worker was busy is encrypted for another of the held workers.
+   * With more, the pool sends each request to whichever of them has a free
+   * slot and fails over between them without a round trip, and any of them
+   * could read the request.
    */
   recipients?: number;
   /**
@@ -109,6 +119,8 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
   private readonly recentAssigns = new Map<string, number[]>();
   private readonly now: () => number;
   private readonly recipients: number;
+  /** Per assignment key: where the next request starts in its held workers. */
+  private readonly rotation = new Map<string, number>();
 
   constructor(private readonly signer: BuyerSigner, private readonly options: NodeWorkerE2EClientOptions = {}) {
     this.now = options.now ?? (() => Math.floor(Date.now() / 1000));
@@ -128,17 +140,24 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
     options: WorkerSealOptions = {},
   ): Promise<SealedWorkerRequest> {
     const provider = Object.entries(request.headers).find(([name]) => name.toLowerCase() === 'x-antseed-provider')?.[1].trim().toLowerCase() ?? '';
+    const key = assignmentKey(peer.peerId, provider, service);
     const held = await this.assignment(peer, provider, service, assign);
+    // This request's workers: the held ones it was not handed back by, rotated so a buyer's
+    // concurrent requests start on different workers, then the first `recipients` the channel can credit.
     const creditable = (assigned: WorkerAssignment[]): WorkerAssignment[] => {
-      if (!options.chooseRecipients) return assigned;
-      const chosen = new Set(options.chooseRecipients(assigned.map((w) => w.worker)).map((w) => w.toLowerCase()));
-      return assigned.filter((w) => chosen.has(w.worker.toLowerCase()));
+      const open = assigned.filter((w) => !options.avoid?.has(w.worker.toLowerCase()));
+      const candidates = open.length > 0 ? open : assigned;
+      const start = (this.rotation.get(key) ?? 0) % candidates.length;
+      const ordered = [...candidates.slice(start), ...candidates.slice(0, start)];
+      if (!options.chooseRecipients) return ordered.slice(0, this.recipients);
+      const chosen = new Set(options.chooseRecipients(ordered.map((w) => w.worker), this.recipients).map((w) => w.toLowerCase()));
+      return ordered.filter((w) => chosen.has(w.worker.toLowerCase())).slice(0, this.recipients);
     };
     let workers = creditable(held.workers);
     if (workers.length === 0 && held.previous && this.now() < held.previous.usableUntil) {
       // A refresh only spreads work: the channel can't credit the new workers, so it stays with the ones it had.
       workers = creditable(held.previous.workers);
-      if (workers.length > 0) this.keep(assignmentKey(peer.peerId, provider, service), held, { ...held.previous, assignedAt: this.now() });
+      if (workers.length > 0) this.keep(key, held, { ...held.previous, assignedAt: this.now() });
     }
     if (workers.length === 0) {
       // Assigned again next time: the pool may then rank a worker this channel can credit.
@@ -148,6 +167,8 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
         { code: WORKER_SLOTS_FULL },
       );
     }
+    this.rotation.set(key, (this.rotation.get(key) ?? 0) + 1);
+    if (this.rotation.size > MAX_CACHED_ASSIGNMENTS) this.rotation.delete(this.rotation.keys().next().value!);
     const payment = options.payment;
     const sealed = await sealRequest({
       body: request.body,
@@ -159,7 +180,9 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
         signMessage: (message) => this.signer.signMessage(message),
       },
     });
-    const headers = Object.fromEntries(Object.entries(request.headers).filter(([name]) => name.toLowerCase() !== 'content-length'));
+    const headers: Record<string, string> = Object.fromEntries(Object.entries(request.headers).filter(([name]) => name.toLowerCase() !== 'content-length'));
+    // Readable by one worker: the pool may hand it back unsent when that one is busy and another is free.
+    if (this.recipients === 1 && held.workers.length > 1) headers[WORKER_REASSIGN_HEADER] = '1';
     return {
       recipients: workers.map((w) => w.worker),
       get worker() {
@@ -256,12 +279,13 @@ export class NodeWorkerE2EClient implements WorkerE2EClient {
     previous: HeldAssignment | undefined,
     now: number,
   ): Promise<HeldAssignment> {
-    const offered = parseAssignments(await assign(new TextEncoder().encode(JSON.stringify({ model: service, recipients: this.recipients }))));
+    const wanted = Math.max(this.recipients, ASSIGNED_WORKERS);
+    const offered = parseAssignments(await assign(new TextEncoder().encode(JSON.stringify({ model: service, recipients: wanted }))));
     const seen = new Set<string>();
     const workers: WorkerAssignment[] = [];
     let usableUntil = Infinity;
     let refusal = '';
-    for (const certificate of offered.slice(0, this.recipients)) {
+    for (const certificate of offered.slice(0, wanted)) {
       if (seen.has(certificate.worker.toLowerCase())) throw new Error('Colony pool assigned the same worker twice');
       seen.add(certificate.worker.toLowerCase());
       try {

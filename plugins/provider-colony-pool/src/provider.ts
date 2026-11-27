@@ -12,12 +12,14 @@ import {
   parsedEnvelopeRecipients,
   WORKER_ASSIGN_PATH,
   WORKER_E2E_CAPABILITY,
+  WORKER_REASSIGN_CODE,
+  WORKER_REASSIGN_HEADER,
   WORKER_UNAVAILABLE_CODE,
   WORKER_UNAVAILABLE_STATUS,
   workerE2EProviderCapability,
 } from '@antseed/node/worker-e2e';
 import type { WorkerLedger } from './ledger.js';
-import { NoWorkerAvailableError, WorkerBusyError, WorkerUnavailableError, type ColonyPool } from './pool.js';
+import { NoWorkerAvailableError, WorkerBusyError, WorkerReassignError, WorkerUnavailableError, type ColonyPool } from './pool.js';
 
 /** Request IDs the seller's model health checker uses for its probes. */
 const HEALTH_PROBE_PREFIX = 'health-';
@@ -204,6 +206,8 @@ export class ColonyPoolProvider implements Provider {
       ));
     }
 
+    // The buyer encrypts for one worker and can take the request back when that one is busy.
+    const canReassign = Object.entries(req.headers).some(([name, value]) => name.toLowerCase() === WORKER_REASSIGN_HEADER && value === '1');
     return new Promise<SerializedHttpResponse>((resolve, reject) => {
       let start: { statusCode: number; headers: Record<string, string> } | null = null;
       // The buyer's callbacks while the response streams to it (an SSE response to a streaming request).
@@ -241,12 +245,17 @@ export class ColonyPoolProvider implements Provider {
           },
           onError: (error) => {
             // Nothing reached the buyer and every recipient failed: it takes other workers (the pool benches one that never answered).
-            if (!start && error instanceof WorkerBusyError) resolve(errorResponse(req.requestId, 503, error.message, 'worker_busy', { 'retry-after': '2' }));
+            if (!start && error instanceof WorkerReassignError) resolve(errorResponse(req.requestId, WORKER_UNAVAILABLE_STATUS, error.message, WORKER_REASSIGN_CODE));
+            else if (!start && error instanceof WorkerBusyError) resolve(errorResponse(req.requestId, 503, error.message, 'worker_busy', { 'retry-after': '2' }));
             else if (!start) resolve(errorResponse(req.requestId, WORKER_UNAVAILABLE_STATUS, error.message, WORKER_UNAVAILABLE_CODE));
             else reject(error);
           },
-        }, callbacks?.signal);
+        }, callbacks?.signal, { reassign: canReassign });
       } catch (err) {
+        if (err instanceof WorkerReassignError) {
+          resolve(errorResponse(req.requestId, WORKER_UNAVAILABLE_STATUS, err.message, WORKER_REASSIGN_CODE));
+          return;
+        }
         if (err instanceof WorkerUnavailableError) {
           resolve(errorResponse(req.requestId, WORKER_UNAVAILABLE_STATUS, err.message, WORKER_UNAVAILABLE_CODE));
           return;
