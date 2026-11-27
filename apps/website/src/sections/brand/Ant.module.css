@@ -1,4 +1,5 @@
-.picture { display: grid; place-items: center; height: 720px; }
+.picture { position: relative; display: grid; place-items: center; min-height: 720px; }
+.picture .coin { position: absolute; top: 48px; right: 48px; width: 112px; height: auto; }
 .picture img { display: block; width: auto; height: 600px; }
 :global(:root[data-theme='dark']) .picture img { filter: brightness(.84) saturate(.83) contrast(1.12); }
 .rules { display: flex; flex-direction: column; justify-content: center; padding: 0 64px; }
@@ -8,7 +9,8 @@
 .rule p { margin: 8px 0 0; font: 400 16px/24px var(--site-font); color: var(--site-text-body); }
 
 @media (max-width: 899px) {
-  .picture { height: 480px; }
+  .picture { min-height: 480px; }
   .picture img { height: 400px; }
+  .picture .coin { top: 32px; right: 24px; width: 72px; }
   .rules { padding: 16px 24px; }
 }

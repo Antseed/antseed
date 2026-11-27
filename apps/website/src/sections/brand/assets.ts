@@ -3,6 +3,7 @@ import {PAINTINGS, type Painting} from '../../lib/paintings';
 const DIR = '/brand/downloads';
 
 export const REFERENCE_ANT = `${DIR}/ant/antseed-ant.png`;
+export const ANTS_COIN = `${DIR}/antseed-ants-coin.webp`;
 export const ANT_EXAMPLES_ZIP = `${DIR}/antseed-ant-examples.zip`;
 
 const ANT_SLUGS = [
