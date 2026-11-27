@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
-import { ChannelsClient, loadOrCreateIdentity, type StoredChannel } from '@antseed/node';
+import { ChannelsClient, DepositsClient, loadOrCreateIdentity, type StoredChannel } from '@antseed/node';
 import { openChannelStore } from '../../payment-utils.js';
 import { registerBuyerChannelsCommand } from './channels.js';
+import { registerBuyerWithdrawCommand } from './withdraw.js';
 import { buyerChannel, buyerCommandHarness, onChain } from './test-helpers.js';
 import {
   CHANNEL_CLOSE_GRACE_PERIOD_SECONDS,
@@ -103,6 +104,7 @@ for (const operation of ['list', 'request-close', 'withdraw', 'close'] as const)
       settled: 850_000n,
       closeRequestedAt: operation === 'withdraw' ? BigInt(Math.floor(Date.now() / 1000) - 901) : 0n,
     }));
+    context.mock.method(DepositsClient.prototype, 'getOperator', async () => identity.wallet.address);
     const requestClose = context.mock.method(ChannelsClient.prototype, 'requestClose', async () => 'close-tx');
     const withdraw = context.mock.method(ChannelsClient.prototype, 'withdraw', async () => 'withdraw-tx');
     const output = context.mock.method(console, 'log', () => {});
@@ -223,4 +225,64 @@ test('channels --status active leaves out a channel the seller settled on-chain'
   });
 
   assert.deepEqual(JSON.parse(stdout), []);
+});
+
+const NO_AUTHORIZED_WALLET = '0x' + '00'.repeat(20);
+const OTHER_WALLET = '0x' + '55'.repeat(20);
+
+/** The command exits 1: return what the failing spinner printed (ora writes to stderr directly). */
+async function runFailing(context: TestContext, run: () => Promise<unknown>): Promise<string> {
+  const written: string[] = [];
+  context.mock.method(process.stderr, 'write', (chunk: string | Uint8Array) => { written.push(String(chunk)); return true; });
+  context.mock.method(process, 'exit', (code?: string | number | null) => { throw new Error(`process.exit(${code})`); });
+  await assert.rejects(run(), /process\.exit\(1\)/);
+  return written.join('');
+}
+
+for (const step of ['request-close', 'withdraw'] as const) {
+  test(`channels ${step} with no authorized wallet says how to set one and sends nothing`, async (context) => {
+    const harness = await buyerCommandHarness(context);
+    const id = '0x' + 'c1'.repeat(32);
+    harness.seed(buyerChannel(id, harness.buyer));
+    const requestClose = context.mock.method(ChannelsClient.prototype, 'requestClose', async () => 'close-tx');
+    const withdraw = context.mock.method(ChannelsClient.prototype, 'withdraw', async () => 'withdraw-tx');
+    const state = step === 'withdraw'
+      ? { ...onChain(harness.buyer, 1), closeRequestedAt: BigInt(Math.floor(Date.now() / 1000) - CHANNEL_CLOSE_GRACE_PERIOD_SECONDS - 1) }
+      : onChain(harness.buyer, 1);
+
+    const printed = await runFailing(context, () => harness.run(
+      registerBuyerChannelsCommand, ['channels', step, id], { [id]: state }, { authorizedWallet: NO_AUTHORIZED_WALLET },
+    ));
+
+    assert.match(printed, /No authorized wallet is set/);
+    assert.match(printed, /antseed buyer set-authorized-wallet --self/);
+    assert.equal(requestClose.mock.callCount(), 0);
+    assert.equal(withdraw.mock.callCount(), 0);
+  });
+}
+
+test('channels request-close when another wallet is authorized names it and sends nothing', async (context) => {
+  const harness = await buyerCommandHarness(context);
+  const id = '0x' + 'c2'.repeat(32);
+  harness.seed(buyerChannel(id, harness.buyer));
+  const requestClose = context.mock.method(ChannelsClient.prototype, 'requestClose', async () => 'close-tx');
+
+  const printed = await runFailing(context, () => harness.run(
+    registerBuyerChannelsCommand, ['channels', 'request-close', id], { [id]: onChain(harness.buyer, 1) }, { authorizedWallet: OTHER_WALLET },
+  ));
+
+  assert.match(printed, new RegExp(`Only the authorized wallet ${OTHER_WALLET}`));
+  assert.equal(requestClose.mock.callCount(), 0);
+});
+
+test('buyer withdraw with no authorized wallet says how to set one and sends nothing', async (context) => {
+  const harness = await buyerCommandHarness(context);
+  const withdraw = context.mock.method(DepositsClient.prototype, 'withdraw', async () => 'withdraw-tx');
+
+  const printed = await runFailing(context, () => harness.run(
+    registerBuyerWithdrawCommand, ['withdraw', '1'], {}, { authorizedWallet: NO_AUTHORIZED_WALLET },
+  ));
+
+  assert.match(printed, /antseed buyer set-authorized-wallet --self/);
+  assert.equal(withdraw.mock.callCount(), 0);
 });

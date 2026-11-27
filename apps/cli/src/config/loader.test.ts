@@ -339,6 +339,7 @@ test('loadConfig applies the default buyer peer refresh interval when missing', 
       assert.equal(config.buyer.metadataFetchTimeoutMs, DEFAULT_BUYER_METADATA_FETCH_TIMEOUT_MS);
       assert.equal(config.buyer.requestTimeoutMs, DEFAULT_BUYER_REQUEST_TIMEOUT_MS);
       assert.equal(config.buyer.maxStreamDurationMs, DEFAULT_BUYER_MAX_STREAM_DURATION_MS);
+      assert.equal(config.buyer.maxVideoDownloads, undefined);
     }
   );
 });
@@ -351,6 +352,7 @@ test('loadConfig preserves explicit buyer discovery and request timeouts', async
         metadataFetchTimeoutMs: 2_500,
         requestTimeoutMs: 600_000,
         maxStreamDurationMs: 900_000,
+        maxVideoDownloads: 12,
       },
     }),
     async (configPath) => {
@@ -359,6 +361,7 @@ test('loadConfig preserves explicit buyer discovery and request timeouts', async
       assert.equal(config.buyer.metadataFetchTimeoutMs, 2_500);
       assert.equal(config.buyer.requestTimeoutMs, 600_000);
       assert.equal(config.buyer.maxStreamDurationMs, 900_000);
+      assert.equal(config.buyer.maxVideoDownloads, 12);
     }
   );
 });
@@ -494,10 +497,10 @@ test('loadConfig preserves and validates verifier settings', async () => {
       contrastSelection: { inputWeight: 0.9, maxPriceRatio: 0.3, maxModels: 3 },
       referenceEndpoint: REFERENCE_ENDPOINT,
       models: {
-        'gpt-6.1-sol': {
+        'gpt-6.2-sol': {
           referenceRoute: {
             type: 'antseed',
-            service: 'gpt-6.1-sol-reference',
+            service: 'gpt-6.2-sol-reference',
             peerId: '12'.repeat(20),
             pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
           },
@@ -505,7 +508,7 @@ test('loadConfig preserves and validates verifier settings', async () => {
           excludedDomains: ['medical'],
         },
         'kimi-k3': {
-          contrastModels: ['gpt-6.1-sol'],
+          contrastModels: ['gpt-6.2-sol'],
           referenceProvider: { order: ['Provider-A'] },
         },
       },
@@ -535,8 +538,8 @@ test('loadConfig preserves and validates verifier settings', async () => {
     assert.equal(config.verifier?.auditPeerTimeoutMs, 123_456);
     assert.equal(config.verifier?.contrastSelection?.inputWeight, 0.9);
     assert.equal(config.verifier?.referenceEndpoint?.sourceId, 'trusted-reference-v1');
-    assert.deepEqual(config.verifier?.models?.['gpt-6.1-sol']?.excludedDomains, ['medical']);
-    assert.equal(config.verifier?.models?.['gpt-6.1-sol']?.referenceRoute?.service, 'gpt-6.1-sol-reference');
+    assert.deepEqual(config.verifier?.models?.['gpt-6.2-sol']?.excludedDomains, ['medical']);
+    assert.equal(config.verifier?.models?.['gpt-6.2-sol']?.referenceRoute?.service, 'gpt-6.2-sol-reference');
     assert.deepEqual(config.verifier?.models?.['kimi-k3']?.referenceProvider, { order: ['Provider-A'] });
     assert.equal(config.verifier?.referenceMaxRequestsPerBuild, 500);
     assert.equal(config.verifier?.referenceMinimumProbeCount, 120);
@@ -772,6 +775,17 @@ test('loadConfig rejects invalid buyer request duration limits', async () => {
       );
     },
   );
+});
+
+test('loadConfig rejects a buyer video download limit that is not a positive integer', async () => {
+  for (const maxVideoDownloads of [0, 2.5, '6']) {
+    await withTempConfig(
+      JSON.stringify({ buyer: { maxVideoDownloads } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /buyer\.maxVideoDownloads must be an integer >= 1/);
+      },
+    );
+  }
 });
 
 test('loadConfig preserves explicit non-default buyer minPeerReputation', async () => {

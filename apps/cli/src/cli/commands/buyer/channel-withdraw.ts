@@ -5,8 +5,10 @@ import type { CloseChannelResultPayload, StoredChannel } from '@antseed/node';
 import { CHANNEL_KIND, CHANNEL_STATUS } from '@antseed/node/payments';
 import { getGlobalOptions } from '../types.js';
 import { loadConfig } from '../../../config/loader.js';
+import { assertBuyerIsAuthorizedWallet } from './authorized-wallet-check.js';
 import {
   createChannelsClient,
+  createDepositsClient,
   formatUsdc,
   loadCryptoContext,
   openChannelStore,
@@ -255,6 +257,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
           return;
         }
 
+        await assertBuyerIsAuthorizedWallet(createDepositsClient(config), address, 'request a channel close');
         const txHash = await channelsClient.requestClose(wallet, localChannel.sessionId);
         spinner.succeed(chalk.green(`Requested timeout close for ${shortId(localChannel.sessionId, 18)}`));
         if (json) {
@@ -317,6 +320,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
         }
 
         const refund = onChain.deposit > onChain.settled ? onChain.deposit - onChain.settled : 0n;
+        await assertBuyerIsAuthorizedWallet(createDepositsClient(config), address, 'withdraw a channel reserve');
         const txHash = await channelsClient.withdraw(wallet, localChannel.sessionId);
         spinner.succeed(chalk.green(`Withdrew reserved funds for ${shortId(localChannel.sessionId, 18)}`));
         if (json) {

@@ -1,0 +1,15 @@
+{
+ "asks": [
+  {
+   "cap": 24,
+   "class": "unread",
+   "measurement": null,
+   "prompt": "List every whole number from 320 onward written out in words, comma sepa… (163 characters, sha256 f626eea5018cb97e)",
+   "reading": null,
+   "request": {"attemptCosts":[],"failureReason":"the audit was stopped","requestIds":["<seller: cap ask #1>"],"responseAuth":null,"statusCode":null}
+  }
+ ],
+ "outcome": "inconclusive",
+ "reason": "the answer could not be read",
+ "rule": {"flagFactor":2,"framingTokens":6,"id":"output-cap-v1","maxCap":48,"minCap":16,"referenceAsks":2,"scaleCap":512,"sellerAsks":2,"tolerance":2}
+}

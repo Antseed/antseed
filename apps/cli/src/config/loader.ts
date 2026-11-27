@@ -701,6 +701,7 @@ function mergeBuyerConfig(
     maxStreamDurationMs: typeof value['maxStreamDurationMs'] === 'number'
       ? value['maxStreamDurationMs']
       : defaults.maxStreamDurationMs,
+    ...(value['maxVideoDownloads'] !== undefined ? { maxVideoDownloads: value['maxVideoDownloads'] as number } : {}),
     disableMetadataV2Services: normalizeBooleanConfigValue(
       value['disableMetadataV2Services'],
       defaults.disableMetadataV2Services,

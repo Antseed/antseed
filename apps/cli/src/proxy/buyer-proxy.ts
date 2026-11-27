@@ -1,7 +1,7 @@
 import { nativeVideoRoute, type NativeVideoProtocol } from '@antseed/api-adapter'
 import { ResourceRoutes } from './resource-routes.js'
 import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
-import { downloadVideo } from './video-download.js'
+import { downloadVideo, VideoDownloadSlots } from './video-download.js'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { BUYER_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
 import { randomUUID } from 'node:crypto'
@@ -176,6 +176,7 @@ import { ChainReadCache } from './chain-read-cache.js'
 import { isClientCredentialHeader } from './credential-headers.js'
 import { nonLocalRequestReason } from './local-request-guard.js'
 import { loadConfig } from '../config/loader.js'
+import { DEFAULT_BUYER_MAX_VIDEO_DOWNLOADS } from '../config/defaults.js'
 import { InvalidRouterOptionsError, ModelRoutingClient, routingClientAdapter, routingProtocolOfTarget, validateRouterOptions, type ModelRoutingClientApi } from '@antseed/router-core'
 import {
   GATEWAY_CONTROL_HEADER,
@@ -294,6 +295,8 @@ export interface BuyerProxyConfig {
   settingOverrides?: string[]
   /** Anonymous request telemetry (docs/telemetry.md); absent sends nothing. */
   telemetry?: BuyerTelemetry
+  /** `buyer.maxVideoDownloads`: finished videos streamed to clients at once. Default 6. */
+  maxVideoDownloads?: number
 }
 
 /** The DepositsClient reads `GET /_antseed/balances` needs. */
@@ -1464,6 +1467,7 @@ export class BuyerProxy {
 
   private _stateWriteChain: Promise<void> = Promise.resolve()
   private readonly _resourceRoutes = new ResourceRoutes()
+  private readonly _videoDownloadSlots: VideoDownloadSlots
   /** Retrieves of one video job run one at a time, so a job retired as failed cannot be delivered by a retrieve already under way. */
   private readonly _videoJobQueues = new Map<string, Promise<void>>()
   /** Jobs whose retirement is being saved: left out of the saved routes, still routable in memory until the save succeeds. */
@@ -1550,6 +1554,7 @@ export class BuyerProxy {
   private readonly _restartAllowedAt: number
 
   constructor(config: BuyerProxyConfig) {
+    this._videoDownloadSlots = new VideoDownloadSlots(config.maxVideoDownloads ?? DEFAULT_BUYER_MAX_VIDEO_DOWNLOADS)
     this._minPeerReputation = config.minPeerReputation ?? null
     this._maxPricing = config.maxPricing ? { ...config.maxPricing } : null
     this._maxReserveAmountUsdc = config.maxReserveAmountUsdc ?? null
@@ -5795,7 +5800,7 @@ export class BuyerProxy {
           },
         }, {
           signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}), ...(teeBinding ? { channelBinding: teeBinding } : {}),
-        }), requestSignal, () => this._retireVideoJob(protocol, resourceId), (by) => {
+        }), requestSignal, this._videoDownloadSlots, () => this._retireVideoJob(protocol, resourceId), (by) => {
           // On the trace, not in the result: telemetry only. The result feeds routing, which a video does not change.
           const trace = traceFor(res)
           if (trace) trace.interrupted = by
@@ -5908,25 +5913,20 @@ export class BuyerProxy {
           log(`${prefix}: ${summarizeErrorResponse(responseForClient)}`)
         }
 
-        const telemetry = computeResponseTelemetry(
-          requestForPeer,
-          responseForClient.headers,
-          responseForClient.body,
-          selectedPeer,
-        )
+        const telemetry = computeResponseTelemetry(requestForPeer, response, selectedPeer)
         const usageTrace = responseForClient.statusCode < 400 ? traceFor(res) : undefined
         if (usageTrace) {
           // A stream's first frame (Anthropic's message_start) can carry the
           // input and cache counts, so the trace reads the whole stream.
           const fullBody = streamed && streamStartBody.length > 0
-            ? Buffer.concat([streamStartBody, responseForClient.body])
-            : responseForClient.body
-          const fullTelemetry = fullBody === responseForClient.body
+            ? Buffer.concat([streamStartBody, response.body])
+            : response.body
+          const fullTelemetry = fullBody === response.body
             ? telemetry
-            : computeResponseTelemetry(requestForPeer, responseForClient.headers, fullBody, selectedPeer)
+            : computeResponseTelemetry(requestForPeer, { ...response, body: fullBody }, selectedPeer)
           usageTrace.noteUsage(fullTelemetry.usage)
           usageTrace.noteAnswerDetails({
-            finishReason: finishReasonFromBody(responseForClient.headers['content-type'], fullBody),
+            finishReason: finishReasonFromBody(response.headers['content-type'], fullBody),
             estimatedCostUsd: fullTelemetry.estimatedCostUsd,
           })
         }
@@ -6073,7 +6073,7 @@ export class BuyerProxy {
           log(`${prefix}: ${summarizeErrorResponse(response)}`)
         }
 
-        const telemetry = computeResponseTelemetry(requestForPeer, response.headers, response.body, selectedPeer)
+        const telemetry = computeResponseTelemetry(requestForPeer, upstreamResponse, selectedPeer)
         const answerTrace = response.statusCode < 400 ? traceFor(res) : undefined
         if (answerTrace) {
           answerTrace.noteUsage(telemetry.usage)

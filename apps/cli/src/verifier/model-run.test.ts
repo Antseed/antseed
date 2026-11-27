@@ -36,6 +36,7 @@ import {
   classifyVerificationTargetServices,
   loadBuyerProxySnapshot,
   readModelAuditCheckpoints,
+  auditableSellers,
   verifyModelTarget,
   type ModelVerificationResumeInput,
   type ModelVerificationSkip,
@@ -144,7 +145,7 @@ async function runTarget(
     | 'malformed-first-batch' | 'empty-responses' | 'content-filter' | 'sse' | 'transport-failure' | 'hanging'
     | 'rate-limited' | 'semantic-unavailable' | 'blank-length'
     | 'persistent-blank-length' | 'checkpoint-abort' | 'sampling-rejected' | 'thinking-rejected'
-    | 'sparse-then-better' | 'sparse-best-first' = 'valid',
+    | 'sparse-then-better' | 'sparse-best-first' | 'wrong-then-down' = 'valid',
   transientFailures = 0,
   authMode: 'verified' | 'missing' | 'unverified' | 'wrong-request' | 'wrong-seller' | 'wrong-service' = 'verified',
   includeCost = true,
@@ -225,6 +226,8 @@ async function runTarget(
       return new Response('temporarily unavailable', { status: 502 })
     }
     if (answerMode === 'transport-failure') return new Response('unavailable', { status: 502 })
+    // Wrong answers, then every batch past 60% of the questions fails whole, as a seller whose larger batches never answer.
+    if (answerMode === 'wrong-then-down' && firstProbe > count * 0.6) return new Response('unavailable', { status: 502 })
     const values = [...prompt.matchAll(/test probe (\d+) value is ___/g)].map((match) => Number(match[1]))
     // Answers kept per attempt of the batch holding probe 1 (the rest are dropped).
     const sparseKeep = firstProbe === 1 && (answerMode === 'sparse-then-better' || answerMode === 'sparse-best-first')
@@ -236,7 +239,7 @@ async function runTarget(
         return `(${index + 1}) ${count + 100}`
       }
       // In range but wrong: an out-of-range answer would be unscored instead.
-      if (answerMode === 'all-wrong') return `(${index + 1}) ${(value % count) + 1}`
+      if (answerMode === 'all-wrong' || answerMode === 'wrong-then-down') return `(${index + 1}) ${(value % count) + 1}`
       if (answerMode === 'partial-malformed' && index > 0) return `(${index + 1}) unknown`
       return `(${index + 1}) ${value}`
     }).join('\n')
@@ -797,6 +800,38 @@ test('an exact alias wins over a canonical spelling, whatever the alias order', 
   })
 })
 
+test('the tokenizer pre-check\'s crowd is every peer the buyer would audit for the model, one entry per peer', () => {
+  const id = (byte: string) => byte.repeat(20) as PeerId
+  const sells = (peerId: PeerId, service: string, overrides: Partial<PeerInfo> = {}) => peer({
+    peerId,
+    providerPricing: { test: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { [service]: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } } } },
+    reputationScore: 90,
+    ...overrides,
+  })
+  const peers: PeerInfo[] = [
+    // Sellers the run may not audit (finished, held, judged by another auditor, or outside `--peer`) are in it:
+    // the list does not depend on the run's targets.
+    sells(id('a1'), 'gpt-5.6-sol'),
+    sells(id('a2'), 'openai/gpt-5.6-sol'),
+    // The same peer listed twice is one entry.
+    sells(id('a1'), 'gpt-5.6-sol'),
+    // Left out: a peer the buyer would refuse, or one that does not sell the model.
+    sells(id('b1'), 'gpt-5.6-sol', { providerPricing: { test: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, services: { 'gpt-5.6-sol': { inputUsdPerMillion: 90, outputUsdPerMillion: 90 } } } } }),
+    sells(id('b2'), 'gpt-5.6-sol', { reputationScore: 20 }),
+    sells(id('b3'), 'gpt-5.6-sol', { capabilities: [] }),
+    sells(id('b4'), 'other-model'),
+  ]
+  const policy = { ...targetPolicy, minReputation: 50 }
+  const crowd = auditableSellers(peers, ['gpt-5.6-sol', 'openai/gpt-5.6-sol'], policy)
+  assert.deepEqual(crowd, [
+    { peerId: id('a1'), service: 'gpt-5.6-sol' },
+    { peerId: id('a2'), service: 'openai/gpt-5.6-sol' },
+  ])
+  for (const left of ['b1', 'b2', 'b3', 'b4']) {
+    assert.equal(classifyVerificationTargetServices(peers.find((entry) => entry.peerId === id(left))!, ['gpt-5.6-sol'], policy).eligible, false, left)
+  }
+})
+
 test('buyer proxy snapshot requires a connected live daemon and parses peers', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-proxy-state-'))
   try {
@@ -1137,6 +1172,19 @@ test('fully parsed wrong answers are DIFF', async () => {
   assert.equal(run.evidence.result.stats.targetHamming, 100)
   assert.equal(run.evidence.result.stats.targetTotal, 100)
   assert.equal(run.result.outcomeReason, null)
+})
+
+test('kbf-coverage-v1: a seller whose answers are far off and whose other batches fail is DIFF under 0.8 coverage, and its evidence names the rule', async () => {
+  const run = await runTarget(100, 'wrong-then-down')
+  assert.equal(run.result.parsedProbeCount, 60)
+  assert.equal(run.evidence.result.stats.targetTotal, 60)
+  assert.equal(run.evidence.result.stats.targetHamming, 60)
+  assert.equal(run.result.status, 'DIFF')
+  assert.equal(run.evidence.result.verdict, 'DIFF')
+  assert.equal(run.evidence.result.coverageRule, 'kbf-coverage-v1')
+  assert.equal(run.result.coverageRule, 'kbf-coverage-v1')
+  assert.match(run.evidence.result.verdictReason ?? '', /over 60 scored answers \(kbf-coverage-v1\), though coverage 0\.6000 is below 0\.8/)
+  assert.deepEqual(run.evidence.exchanges.map((exchange) => exchange.status), [...Array(6).fill('succeeded'), ...Array(4).fill('failed')])
 })
 
 test('selective omissions are unscored, and a batch missing most answers is re-asked', async () => {
@@ -1578,4 +1626,28 @@ test('answers inside a <think> block are ignored, as the reference code strips t
     : { content: `<think>${correctAnswers(body).replace(/\) \d+/g, ') 999')}</think>\n${correctAnswers(body)}`, reasoningTokens: 0 })
   assert.equal(run.result.status, 'SAME')
   assert.equal(run.result.parsedProbeCount, 40)
+})
+
+test('a version 1 checkpoint restarts its audit clean; a version 2 checkpoint carries its finished test records', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-checkpoint-version-'))
+  try {
+    await mkdir(join(directory, '.checkpoints'), { recursive: true })
+    const base = {
+      kind: 'antseed-verifier-audit-checkpoint', parentAuditId: null, runId: 'run-1', epoch: '7', model: 'model-a',
+      targetPeerId: 'aa'.repeat(20), service: 'model-a', referenceId: 'sha256:a', queryProfileHash: '0x00', probeIds: ['p1'],
+      exchanges: [], updatedAt: '2026-11-19T00:00:00.000Z',
+    }
+    // Written before every test ran in one audit: it holds no test records, so its audit is not resumed.
+    await writeFile(join(directory, '.checkpoints', 'old.json'), JSON.stringify({ ...base, version: 1, auditId: 'old' }))
+    const records = { outputCap: { rule: { id: 'output-cap-v1' }, outcome: 'pass', reason: 'within', asks: [] } }
+    await writeFile(join(directory, '.checkpoints', 'new.json'), JSON.stringify({ ...base, version: 2, auditId: 'new', records }))
+    const checkpoints = await readModelAuditCheckpoints(directory)
+    assert.deepEqual(checkpoints.map((entry) => entry.checkpoint.auditId), ['new'])
+    assert.deepEqual(checkpoints[0]!.checkpoint.records, records)
+    // A version 2 checkpoint without its records is not one this CLI wrote.
+    await writeFile(join(directory, '.checkpoints', 'bad.json'), JSON.stringify({ ...base, version: 2, auditId: 'bad' }))
+    await assert.rejects(readModelAuditCheckpoints(directory), /invalid verifier audit checkpoint/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })

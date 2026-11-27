@@ -40,7 +40,7 @@ export function VprBackTitle({ title, onBack, fallback = 'home' }: {
  * section must add the global `view-pinned-header` class, which turns it
  * into a non-scrolling flex column.
  */
-export function VprPage({ title, subtitle, large = false, action, root = false, titleInBody = false, onBack, backFallback, center, header, children }: {
+export function VprPage({ title, subtitle, large = false, action, root = false, titleInBody = false, onBack, backFallback, center, header, fill = false, children }: {
   title: string;
   /** With a subtitle the page opens with the design's large heading, and the bar keeps only Back. */
   subtitle?: string;
@@ -60,6 +60,7 @@ export function VprPage({ title, subtitle, large = false, action, root = false, 
   backFallback?: ViewName;
   /** Extra rows pinned with the header (e.g. search, tabs). */
   header?: ReactNode;
+  fill?: boolean;
   children: ReactNode;
 }): JSX.Element {
   const nav = useContext(VprNavContext);
@@ -76,7 +77,7 @@ export function VprPage({ title, subtitle, large = false, action, root = false, 
         </div>
         {header ? <div className={styles.pageTopInner}>{header}</div> : null}
       </div>
-      <div className={styles.pageBody} data-view-scroll>
+      <div className={fill ? `${styles.pageBody} ${styles.pageBodyFill}` : styles.pageBody} {...(fill ? {} : { 'data-view-scroll': true })}>
         {hero ? (
           <div className={styles.pageHero}>
             <div className={styles.pageHeroRow}>

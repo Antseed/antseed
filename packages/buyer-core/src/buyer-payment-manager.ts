@@ -639,6 +639,11 @@ export class BuyerPaymentManager {
     return this._pendingReserveAuth.has(sellerPeerId);
   }
 
+  /** Whether the live channel's opening reserve is still unconfirmed: no AuthAck and no on-chain read has shown it. */
+  isOpeningReservePending(sellerPeerId: string): boolean {
+    return this._pendingReserveAuth.get(sellerPeerId)?.confirmedAmount === 0n;
+  }
+
   clearLockConfirmation(sellerPeerId: string): void {
     this._confirmedPeers.delete(sellerPeerId);
     this._rejectedPeers.delete(sellerPeerId);

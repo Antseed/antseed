@@ -8,9 +8,11 @@ import {
   type VerifierRunManifestV1,
 } from './audit-artifacts.js'
 import { finalAuditVerdict } from './model-audit.js'
-import { extensionSets, latestExtension } from './close-call.js'
+import { auditDecision, extensionSets, latestExtension } from './close-call.js'
 import { explainInconclusive, explainSkipReason, type PlainReason } from './plain-reason.js'
+import { describeAuditCheck, flaggedSummaryChecks } from './audit-checks.js'
 import { disputeKey } from './pending-confirmations.js'
+import { describeTokenizerCounts } from './methods/tokens/tokenizer-precheck.js'
 import { normalized } from './utils.js'
 
 /**
@@ -29,6 +31,10 @@ export interface OverviewCell {
   correctRate: number | null
   answered: number | null
   asked: number | null
+  /** The tokenizer pre-check found a mismatch: in plain words, with the counts. The questions still ran beside it. */
+  tokenizerMismatch?: string
+  /** The questions' own verdict, apart from the audit's (a DIFF of another test can stand beside questions that say SAME). */
+  questionsStatus?: string
   /** Extra questions after a close-call first check; absent on cells from before close calls were extended. */
   extension?: { probeCount: number; extraSets: number; firstPValue: number | null; pooledPValue: number | null; verdict: string } | null
   /** Plain-language reason for grey and yellow cells. */
@@ -127,13 +133,16 @@ export async function buildEpochOverview(
           correctRate: result.correctRate,
           answered: result.parsedProbeCount,
           asked: result.probeCount,
+          ...(result.tokenizerPrecheck?.outcome === 'mismatch' ? { tokenizerMismatch: describeTokenizerCounts(result.tokenizerPrecheck) } : {}),
+          ...(result.questionsStatus ? { questionsStatus: result.questionsStatus } : {}),
           extension: result.extension
             ? {
               probeCount: extensionSets(result).reduce((sum, set) => sum + set.probeCount, 0),
               extraSets: extensionSets(result).length,
               firstPValue: result.extension.firstLook.pValue,
               pooledPValue: latestExtension(result)!.pooled.pValueBinomial,
-              verdict: latestExtension(result)!.pooled.extendNext ? 'still close' : latestExtension(result)!.pooled.verdict,
+              // Pending by the one shared decision, not by the stored continuation flag.
+              verdict: auditDecision(result).pending ? 'still close' : latestExtension(result)!.pooled.verdict,
             }
             : null,
         }
@@ -159,7 +168,10 @@ export async function buildEpochOverview(
               answered: result.parsedProbeCount,
               asked: result.probeCount,
             })
-            : null,
+            : state === 'diff'
+              // Every test that flagged it, not only the questions.
+              ? { headline: 'Flagged', detail: `Flagged by ${flaggedSummaryChecks(result).map(describeAuditCheck).join(', ') || 'no test the summary shows'}.` }
+              : null,
           audits: (previous?.audits ?? 0) + 1,
         })
       }
@@ -233,8 +245,11 @@ function percent(rate: number | null): string {
 
 function cellDetail(cell: OverviewCell): string[] {
   const lines: string[] = []
-  if (cell.state !== 'skipped' || cell.answered !== null) {
-    lines.push(`1st check: ${percent(cell.correctRate)} match (${cell.answered ?? 0} of ${cell.asked ?? 0} answered)`)
+  if (cell.tokenizerMismatch) lines.push(`Tokenizer pre-check: ${cell.tokenizerMismatch}`)
+  // Every test runs: the questions' score is shown beside a pre-check mismatch too, with their own verdict.
+  if (cell.answered || (!cell.tokenizerMismatch && (cell.state !== 'skipped' || cell.answered !== null))) {
+    lines.push(`1st check: ${percent(cell.correctRate)} match (${cell.answered ?? 0} of ${cell.asked ?? 0} answered)`
+      + (cell.questionsStatus && cell.questionsStatus !== cell.state.toUpperCase() ? `; questions ${cell.questionsStatus}` : ''))
   }
   if (cell.extension) {
     const p = (value: number | null): string => value === null ? '?' : value.toFixed(3)
@@ -319,7 +334,7 @@ td{text-align:center;padding:6px 4px}td.num{white-space:nowrap;font-size:12px}
 <div class="card"><h3>NOT SUBMITTED</h3><div class="v">${count('skipped')}</div><small>tried, not audited or not confirmed</small></div>
 </div>
 <div class="box">
-<div class="legend">${(Object.keys(STATE_LABEL) as OverviewCellState[]).map((state) => `<span><span class="dot ${state}"></span> ${STATE_LABEL[state]}</span>`).join('')}<span style="color:#888;font-weight:400">blank = not offered · hover a grey or yellow dot for the reason</span></div>
+<div class="legend">${(Object.keys(STATE_LABEL) as OverviewCellState[]).map((state) => `<span><span class="dot ${state}"></span> ${STATE_LABEL[state]}</span>`).join('')}<span style="color:#888;font-weight:400">blank = not offered · each dot is the seller's latest result this epoch, whatever report it was for · hover a dot for the reason</span></div>
 <div class="filters"><button class="on" data-f="all">All ${overview.sellers.length}</button><button data-f="ver">Verified ${verifiedSellers}</button><button data-f="diff">Has DIFF ${sellersWith('diff')}</button><input id="q" placeholder="Seller or agent ID"></div>
 <table><thead><tr><th style="text-align:left;padding-left:14px">Seller</th><th>S · D · U</th>${header}</tr></thead>
 <tbody>

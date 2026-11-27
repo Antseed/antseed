@@ -1,8 +1,11 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DHTNode, DEFAULT_DHT_CONFIG, type DHTNodeConfig } from '../src/discovery/dht-node.js';
+import { DHTNode, DEFAULT_DHT_CONFIG, DEFAULT_PEER_RECORD_MAX_AGE_MS, MAX_KNOWN_NODES, type DHTNodeConfig } from '../src/discovery/dht-node.js';
 import { toPeerId } from '../src/types/peer.js';
 
-const mock = vi.hoisted(() => ({ construct: vi.fn(), warn: vi.fn() }));
+const mock = vi.hoisted(() => ({ construct: vi.fn(), warn: vi.fn(), addNode: vi.fn(), table: [] as unknown[] }));
 vi.mock('../src/utils/debug.js', () => ({ debugWarn: mock.warn }));
 vi.mock('bittorrent-dht', async () => {
   const { EventEmitter } = await import('node:events');
@@ -14,6 +17,9 @@ vi.mock('bittorrent-dht', async () => {
         void Promise.resolve().then(() => this.emit('ready'));
       }
       destroy(callback?: () => void): void { callback?.(); }
+      toJSON(): { nodes: unknown[] } { return { nodes: [] }; }
+      get nodes(): { toArray(): unknown[] } { return { toArray: () => mock.table }; }
+      addNode(node: unknown): void { mock.addNode(node); }
     },
   };
 });
@@ -29,7 +35,7 @@ function makeNode(overrides: Partial<DHTNodeConfig>): DHTNode {
   nodes.push(node);
   return node;
 }
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); mock.table = []; });
 afterEach(async () => { await Promise.all(nodes.splice(0).map(node => node.stop())); });
 
 const ipv4 = (address: string) => ({ address, family: 4 });
@@ -45,6 +51,7 @@ describe('DHT IPv4 bootstrap resolution', () => {
     expect(lookup).toHaveBeenCalledWith('alias.example', { family: 4, all: true });
     expect(mock.construct).toHaveBeenCalledWith({
       bootstrap: ['192.0.2.1:6881', '192.0.2.2:6881', '192.0.2.1:7000'],
+      maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS,
     });
   });
 
@@ -55,13 +62,13 @@ describe('DHT IPv4 bootstrap resolution', () => {
       { host: '64:ff9b::227b:88f0', port: 6881 },
     ] }).start();
     expect(lookup).not.toHaveBeenCalled();
-    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:6881'] });
+    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:6881'], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
   });
 
   it('drops IPv6-only DNS answers', async () => {
     const lookup = vi.fn().mockResolvedValue([{ address: '64:ff9b::227b:88f0', family: 6 }]);
     await makeNode({ lookup }).start();
-    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: [] });
+    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: [], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
   });
 
   it('keeps IPv4 answers when the resolver also returns IPv6', async () => {
@@ -69,7 +76,7 @@ describe('DHT IPv4 bootstrap resolution', () => {
       { address: '64:ff9b::227b:88f0', family: 6 }, ipv4('192.0.2.1'),
     ]);
     await makeNode({ lookup }).start();
-    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['192.0.2.1:6881'] });
+    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['192.0.2.1:6881'], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
   });
 
   it('warns and skips a failed host without rejecting start or losing other bootstraps', async () => {
@@ -78,7 +85,7 @@ describe('DHT IPv4 bootstrap resolution', () => {
       { host: 'missing.example', port: 6881 }, { host: '127.0.0.1', port: 6881 },
     ] }).start()).resolves.toBeUndefined();
     expect(mock.warn).toHaveBeenCalledWith(expect.stringContaining('missing.example'));
-    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:6881'] });
+    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:6881'], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
   });
 
   it('resolves localhost with family 4 for local-test bootstraps', async () => {
@@ -87,6 +94,46 @@ describe('DHT IPv4 bootstrap resolution', () => {
       { host: 'localhost', port: 12345 },
     ] }).start();
     expect(lookup).toHaveBeenCalledWith('localhost', { family: 4, all: true });
-    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:12345'] });
+    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['127.0.0.1:12345'], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
+  });
+});
+
+describe('saved DHT nodes', () => {
+  let dir: string;
+  let file: string;
+  const bootstrapNodes = [{ host: '192.0.2.1', port: 6881 }];
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dht-bootstrap-known-'));
+    file = join(dir, 'dht-nodes.json');
+    const saved = Array.from({ length: MAX_KNOWN_NODES + 4 }, (_, i) => ({ host: `198.51.100.${i + 1}`, port: 6881 }));
+    await writeFile(file, JSON.stringify({ nodes: [{ host: '192.0.2.1', port: 6881 }, ...saved] }));
+  });
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  it('starts from the bootstrap list alone and leaves the saved nodes unused while it answers', async () => {
+    mock.table = [{ host: '192.0.2.1', port: 6881 }];
+    await makeNode({ knownNodesFile: file, bootstrapNodes }).start();
+    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['192.0.2.1:6881'], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
+    expect(mock.addNode).not.toHaveBeenCalled();
+  });
+
+  it(`rejoins through up to ${MAX_KNOWN_NODES} saved nodes, skipping bootstrap ones, when nothing answered`, async () => {
+    await makeNode({ knownNodesFile: file, bootstrapNodes }).start();
+    expect(mock.construct).toHaveBeenCalledWith({ bootstrap: ['192.0.2.1:6881'], maxAge: DEFAULT_PEER_RECORD_MAX_AGE_MS });
+    const added = mock.addNode.mock.calls.map(([node]) => `${(node as { host: string }).host}:${(node as { port: number }).port}`);
+    expect(added).toHaveLength(MAX_KNOWN_NODES);
+    expect(new Set(added).size).toBe(added.length);
+    expect(added).not.toContain('192.0.2.1:6881');
+  });
+
+  it('ignores a missing or unreadable file', async () => {
+    const malformed = join(dir, 'malformed.json');
+    await writeFile(malformed, '{ not json');
+    for (const knownNodesFile of [join(dir, 'missing.json'), malformed]) {
+      await makeNode({ knownNodesFile, bootstrapNodes }).start();
+    }
+    expect(mock.addNode).not.toHaveBeenCalled();
+    expect(mock.warn).toHaveBeenCalledTimes(1);
+    expect(String(mock.warn.mock.calls[0]![0])).toContain('Ignoring known DHT nodes file');
   });
 });

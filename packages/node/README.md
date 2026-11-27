@@ -149,13 +149,14 @@ interface NodeConfig {
 | `role` | (required) | `'seller'` to serve requests, `'buyer'` to consume them |
 | `displayName` | unset | Optional node label included in discovery metadata |
 | `publicAddress` | unset | Optional public `host:port` advertised in signed metadata and preferred by buyers over the raw DHT source address |
-| `dataDir` | `~/.antseed` | Directory for identity keys, metering DB, and config |
+| `dataDir` | `~/.antseed` | Directory for identity keys, metering DB, config, and the saved DHT nodes (`dht-nodes.json`) |
 | `identityStore` | `FileIdentityStore` | Pluggable identity storage backend (see [Identity Storage](#identity-storage)) |
 | `dhtPort` | `6881` / `0` | UDP port for DHT. Seller defaults to 6881, buyer uses OS-assigned |
 | `signalingPort` | `6882` | TCP port for P2P signaling and incoming connections (seller only) |
 | `maxUploadBodyBytes` | `64 MiB` | Maximum request body a seller accepts per proxied upload. Raise this for large Codex-style `/v1/responses` payloads while keeping the aggregate pending-upload budget bounded. |
 | `maxInFlightRequestBytes` | `256 MiB` | Most request body bytes a seller holds at once across all buyers, uploads still arriving included. Past it a request gets a retryable `503`. Never below `maxUploadBodyBytes`. |
-| `bootstrapNodes` | Antseed nodes | Additional DHT bootstrap nodes merged with the official Antseed infrastructure |
+| `bootstrapNodes` | Antseed nodes | Additional DHT bootstrap nodes merged with the official Antseed infrastructure. When none of them answers, the node rejoins through up to 16 DHT nodes it saved on earlier runs, then through the public BitTorrent DHT routers |
+| `noOfficialBootstrap` | `false` | Use only `bootstrapNodes`: no official nodes, saved nodes or public fallback, for an isolated test network |
 | `payments` | disabled | Optional seller-side payment channel + settlement lifecycle wiring |
 
 Use `publicAddress` when the DHT announce source IP is not the address buyers should dial, such as Kubernetes or other load-balanced deployments:
@@ -328,7 +329,7 @@ import { NatTraversal, type NatMapping, type NatTraversalResult } from '@antseed
 
 // Discovery
 import { DHTNode, DEFAULT_DHT_CONFIG } from '@antseed/node';
-import { OFFICIAL_BOOTSTRAP_NODES, mergeBootstrapNodes, toBootstrapConfig } from '@antseed/node';
+import { OFFICIAL_BOOTSTRAP_NODES, PUBLIC_FALLBACK_BOOTSTRAP_NODES, mergeBootstrapNodes, toBootstrapConfig } from '@antseed/node';
 import { MetadataServer, type MetadataServerConfig } from '@antseed/node';
 import type { PeerMetadata, ProviderAnnouncement } from '@antseed/node';
 

@@ -2,7 +2,7 @@ import type { SerializedHttpResponseChunk, ServiceApiProtocol } from './types.js
 import {
   createChatStreamParser,
   encodeSseEvents,
-  extractUsage,
+  extractReportedUsage,
   RESPONSES_FINAL_ANSWER_TOOL,
   makeStreamingStartResponse,
   mapFinishReasonToAnthropicStopReason,
@@ -11,7 +11,8 @@ import {
   parseJsonSafe,
   parseSseBuffer,
   type StreamingResponseAdapter,
-  type TokenUsage,
+  reasoningUsageFields,
+  type ReportedUsage,
 } from './utils.js';
 
 export interface ServiceApiStreamTransformOptions {
@@ -28,7 +29,7 @@ interface CanonicalStreamToolCall {
 }
 
 type CanonicalStreamEvent =
-  | { type: 'response_start'; id: string; model: string; usage: TokenUsage }
+  | { type: 'response_start'; id: string; model: string; usage: ReportedUsage }
   | { type: 'text_delta'; delta: string }
   | { type: 'tool_call_start'; index: number; id: string; name: string }
   | { type: 'tool_call_delta'; index: number; argumentsDelta: string }
@@ -38,7 +39,7 @@ type CanonicalStreamEvent =
     model: string;
     finishReason: string | null;
     endTurn?: boolean;
-    usage: TokenUsage;
+    usage: ReportedUsage;
     toolCalls: CanonicalStreamToolCall[];
   };
 
@@ -58,7 +59,7 @@ interface ProtocolStreamRenderer {
   render(events: CanonicalStreamEvent[], chunk: SerializedHttpResponseChunk): SerializedHttpResponseChunk[];
 }
 
-const ZERO_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+const ZERO_USAGE: ReportedUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
 
 const RESPONSES_CONTINUE_TOOL = 'exec_command';
 
@@ -106,7 +107,7 @@ function createChatStreamNormalizer(options: StreamTransformInternals): Protocol
   let sawFinalMarker = false;
   let textBuffer = '';
 
-  const emitStart = (id: string, model: string, usage: TokenUsage = ZERO_USAGE): void => {
+  const emitStart = (id: string, model: string, usage: ReportedUsage = ZERO_USAGE): void => {
     if (responseStarted) return;
     responseStarted = true;
     emitted.push({
@@ -178,7 +179,10 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
   let sseBuffer = '';
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
-  let usage: TokenUsage = ZERO_USAGE;
+  let usage: ReportedUsage = ZERO_USAGE;
+  // Raw Messages usage fields seen so far. message_delta may repeat some fields and omit others,
+  // so fields it leaves out keep their message_start values instead of reading as zero.
+  let rawUsage: Record<string, unknown> = {};
   let finishReason: string | null = null;
   let responseStarted = false;
   // A relay ends every stream with an empty final chunk, after message_stop has already finished the response.
@@ -225,7 +229,8 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
             : {};
           if (typeof message.id === 'string') responseId = message.id;
           if (typeof message.model === 'string') responseModel = message.model;
-          usage = extractUsage({ usage: message.usage });
+          rawUsage = usageFields(message.usage);
+          usage = extractReportedUsage({ usage: rawUsage }, 'anthropic-messages');
           emitStart(emitted);
           continue;
         }
@@ -271,7 +276,12 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
             ? data.delta as Record<string, unknown>
             : {};
           finishReason = anthropicStopReasonToCanonical(delta.stop_reason);
-          usage = mergeOutputUsage(usage, extractUsage({ usage: data.usage }));
+          // Some Anthropic-compatible upstreams report input and cache reads only here, not in message_start.
+          const reported = usageFields(data.usage);
+          rawUsage = { ...rawUsage, ...reported };
+          // The reasoning breakdown belongs to the report that gives the output total: one from an earlier report does not outlive a newer total.
+          if ('output_tokens' in reported && !('output_tokens_details' in reported)) delete rawUsage.output_tokens_details;
+          usage = extractReportedUsage({ usage: rawUsage }, 'anthropic-messages');
           continue;
         }
 
@@ -312,7 +322,7 @@ function createResponsesStreamNormalizer(options: StreamTransformInternals): Pro
   let sseBuffer = '';
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
-  let usage: TokenUsage = ZERO_USAGE;
+  let usage: ReportedUsage = ZERO_USAGE;
   let responseStarted = false;
   const toolOutputIndexes = new Map<number, number>();
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
@@ -354,7 +364,7 @@ function createResponsesStreamNormalizer(options: StreamTransformInternals): Pro
           const response = objectValue(data.response);
           if (typeof response.id === 'string') responseId = response.id;
           if (typeof response.model === 'string') responseModel = response.model;
-          usage = extractUsage({ usage: response.usage });
+          usage = extractReportedUsage({ usage: response.usage }, 'openai-responses');
           emitStart(emitted);
           continue;
         }
@@ -394,7 +404,7 @@ function createResponsesStreamNormalizer(options: StreamTransformInternals): Pro
           const response = objectValue(data.response);
           if (typeof response.id === 'string') responseId = response.id;
           if (typeof response.model === 'string') responseModel = response.model;
-          usage = mergeUsage(usage, extractUsage({ usage: response.usage }));
+          usage = mergeUsage(usage, extractReportedUsage({ usage: response.usage }, 'openai-responses'));
           emitCompletedResponseOutput(response.output, toolCalls, toolOutputIndexes);
           emitStart(emitted);
           emitted.push({
@@ -675,7 +685,7 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
               // a cache count message_start showed can't outlive the final split.
               usage: reportsInput(event.usage)
                 ? { ...anthropicUsage(event.usage), cache_read_input_tokens: event.usage.cachedInputTokens }
-                : { output_tokens: event.usage.outputTokens },
+                : { output_tokens: event.usage.outputTokens, ...reasoningUsageFields(event.usage, 'anthropic-messages') },
             },
           });
           emitted.push({ event: 'message_stop', data: { type: 'message_stop' } });
@@ -984,27 +994,33 @@ function objectValue(value: unknown): Record<string, unknown> {
 }
 
 /** Whether a usage reported any input, fresh or cached (a cache hit can come with a zero prompt count). */
-function reportsInput(usage: TokenUsage): boolean {
+function reportsInput(usage: ReportedUsage): boolean {
   return usage.inputTokens > 0 || usage.cachedInputTokens > 0;
 }
 
-function mergeUsage(previous: TokenUsage, next: TokenUsage): TokenUsage {
+/** The usage fields an event actually reported; absent or null fields are left out so they don't overwrite earlier ones. */
+function usageFields(value: unknown): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(objectValue(value)).filter(([, field]) => field !== undefined && field !== null));
+}
+
+function mergeUsage(previous: ReportedUsage, next: ReportedUsage): ReportedUsage {
   // The input counts are one split: take them together from whichever event
   // reported input, so a stale cached or fresh count can't outlive its total.
   const input = reportsInput(next) ? next : previous;
+  // The output count and its reasoning breakdown are one report too: a breakdown from an earlier
+  // event does not outlive a newer output total that came without one. A report that itemises
+  // reasoning is a report on the output even when both are 0.
+  const output = next.outputTokens > 0 || next.reasoningTokens !== undefined ? next : previous;
   return {
     inputTokens: input.inputTokens,
-    outputTokens: next.outputTokens > 0 ? next.outputTokens : previous.outputTokens,
+    outputTokens: output.outputTokens,
     freshInputTokens: input.freshInputTokens,
     cachedInputTokens: input.cachedInputTokens,
+    ...(output.reasoningTokens !== undefined ? { reasoningTokens: output.reasoningTokens } : {}),
   };
 }
 
-function mergeOutputUsage(previous: TokenUsage, next: TokenUsage): TokenUsage {
-  return { ...previous, outputTokens: next.outputTokens > 0 ? next.outputTokens : previous.outputTokens };
-}
-
-function openAIChatUsage(usage: TokenUsage): Record<string, unknown> {
+function openAIChatUsage(usage: ReportedUsage): Record<string, unknown> {
   return {
     prompt_tokens: usage.inputTokens,
     completion_tokens: usage.outputTokens,
@@ -1012,10 +1028,11 @@ function openAIChatUsage(usage: TokenUsage): Record<string, unknown> {
     ...(usage.cachedInputTokens > 0
       ? { prompt_tokens_details: { cached_tokens: usage.cachedInputTokens } }
       : {}),
+    ...reasoningUsageFields(usage, 'openai-chat-completions'),
   };
 }
 
-function openAIResponsesUsage(usage: TokenUsage): Record<string, unknown> {
+function openAIResponsesUsage(usage: ReportedUsage): Record<string, unknown> {
   return {
     input_tokens: usage.inputTokens,
     output_tokens: usage.outputTokens,
@@ -1023,14 +1040,16 @@ function openAIResponsesUsage(usage: TokenUsage): Record<string, unknown> {
     ...(usage.cachedInputTokens > 0
       ? { input_tokens_details: { cached_tokens: usage.cachedInputTokens } }
       : {}),
+    ...reasoningUsageFields(usage, 'openai-responses'),
   };
 }
 
-function anthropicUsage(usage: TokenUsage): Record<string, unknown> {
+function anthropicUsage(usage: ReportedUsage): Record<string, unknown> {
   return {
     input_tokens: usage.freshInputTokens,
     output_tokens: usage.outputTokens,
     ...(usage.cachedInputTokens > 0 ? { cache_read_input_tokens: usage.cachedInputTokens } : {}),
+    ...reasoningUsageFields(usage, 'anthropic-messages'),
   };
 }
 

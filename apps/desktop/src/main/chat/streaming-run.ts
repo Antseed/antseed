@@ -25,6 +25,7 @@ import type { AssistantMessage, AssistantMessageEvent, Message } from '@mariozec
 import { createBrowserPreviewTool, createStartDevServerTool } from './dev-tools.js';
 import { webFetchTool } from './web-fetch.js';
 import {
+  chatSkillNames,
   createChatImagePathTool,
   createChatVideoPathTool,
   createShowMediaTool,
@@ -34,6 +35,7 @@ import {
   SHOW_MEDIA_TOOL_NAME,
 } from './media-tools.js';
 import { buildVprSystemPrompt } from './system-prompt.js';
+import { studioPreviewEnabled } from '../studio/preview.js';
 import {
   classifyChatStreamFailure,
   cancelFreeTierRetry,
@@ -393,7 +395,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       cwd: chatWorkspaceDir,
       agentDir: CHAT_AGENT_DIR,
       settingsManager,
-      additionalSkillPaths: resolveBundledChatSkillPaths(),
+      additionalSkillPaths: resolveBundledChatSkillPaths(undefined, chatSkillNames(studioPreviewEnabled())),
       extensionFactories: [toolApprovalExtension],
       systemPrompt: buildVprSystemPrompt(userSystemPrompt, chatWorkspaceDir, permissionMode),
     });

@@ -1,10 +1,10 @@
-import { readdir } from 'node:fs/promises'
+import { readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import { epochDirectory } from './audit-artifacts.js'
 import { epochRunManifests } from './epoch-overview.js'
 import { epochSubmissionRunId } from './epoch-plan.js'
-import { modelAuditsDirectory } from './model-audit.js'
+import { modelAuditsDirectory, type PreparedRowDecisionV1 } from './model-audit.js'
 
 /**
  * What `verifier submit` last left unsent in an epoch, so the next epoch can say when results of this
@@ -129,4 +129,52 @@ async function mergedSubmissionComplete(evidenceDir: string, epoch: string, runI
     if (entries.length > 0 && entries.every((entry) => entry.status === 'submitted')) return true
   }
   return false
+}
+
+/** The format of what a submit dry run prepared (`writeDryRunPrepared`). */
+export const DRY_RUN_PREPARED_FORMAT = 'antseed-verifier-dry-run-prepared' as const
+
+/** Where a submit dry run leaves what it prepared, beside the epoch's submission record. */
+export function dryRunPreparedPath(evidenceDir: string, epoch: string): string {
+  return join(epochDirectory(evidenceDir, epoch), 'submission', 'dry-run-prepared.json')
+}
+
+/**
+ * What `verifier submit --dry-run` prepared, row by row, with the identity the real preparation uses and its decision
+ * (prepared to send, held, superseded, excluded with a reason code, already on chain), for a dry-run report to read
+ * instead of the printed lines. Codes only: no reason text, no URL. Written by the dry run only, never by a real
+ * submit, and never published. `state` is `incomplete` while the dry run prepares (`markDryRunPreparing`), so a file
+ * left by a dry run that failed never reads as current; `runIds` and `writtenAt` say which runs and when.
+ */
+export async function writeDryRunPrepared(evidenceDir: string, epoch: string, input: {
+  runIds: readonly string[]
+  decisions: readonly PreparedRowDecisionV1[]
+  alreadyOnChain: ReadonlyArray<{ model: string; count: number }>
+}, now = new Date()): Promise<string> {
+  const path = dryRunPreparedPath(evidenceDir, epoch)
+  await writeJsonAtomic(path, {
+    format: DRY_RUN_PREPARED_FORMAT, version: 1, state: 'complete', epoch, writtenAt: now.toISOString(),
+    runIds: [...input.runIds], rows: [...input.decisions], alreadyOnChain: [...input.alreadyOnChain],
+  })
+  return path
+}
+
+/**
+ * Before a dry run prepares: the file is replaced by a marker that says it is not complete, so an older file never
+ * passes for this dry run's. When the marker cannot be written, the older file is removed.
+ */
+export async function markDryRunPreparing(evidenceDir: string, epoch: string, runIds: readonly string[], now = new Date()): Promise<boolean> {
+  const path = dryRunPreparedPath(evidenceDir, epoch)
+  try {
+    await writeJsonAtomic(path, { format: DRY_RUN_PREPARED_FORMAT, version: 1, state: 'incomplete', epoch, writtenAt: now.toISOString(), runIds: [...runIds], rows: [] })
+    return true
+  } catch {
+    try {
+      await rm(path, { force: true })
+      return true
+    } catch {
+      // Neither marked nor removed: an older file is still there; the caller says so.
+      return false
+    }
+  }
 }

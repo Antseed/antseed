@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { responseBodyInputUsage } from '@antseed/node/payments'
 import {
   KBF_DEFAULT_SELF_TEST_RUNS,
   KBF_CALIBRATION_METHOD,
@@ -63,8 +64,11 @@ import {
   THINKING_DISCOVERY_PROBES,
   THINKING_DISCOVERY_TIMEOUT_MS,
   THINKING_FALLBACK_MAX_TOKENS,
+  THINKING_TABLE_RULE,
   ThinkingDiscoveryError,
+  checkThinkingSetting,
   discoverThinkingSuppression,
+  referenceStrategyForLevel,
   thinkingStrategyRequest,
   type ThinkingDiscoveryAttemptV1,
   type ThinkingDiscoveryProbe,
@@ -76,10 +80,17 @@ import {
   createCanonicalKbfProbe,
 } from './canonical-kbf-domains.js'
 import { writeJsonAtomic, writeTextAtomic } from './atomic-files.js'
-import { CandidateWritingPolicy, candidateWritingFallback, isRamblingCandidateAnswer } from './candidate-writing.js'
+import {
+  CANDIDATE_WRITING_MAX_TOKENS,
+  CandidateWritingPolicy,
+  candidateWritingFallback,
+  candidateWritingMaxTokens,
+  isRamblingCandidateAnswer,
+} from './candidate-writing.js'
 import { createDomainHomogeneousKbfBatches, kbfAuditBatches } from './kbf-batching.js'
-import { asError, normalized, sleep } from './utils.js'
+import { asError, normalized, sleep, untilAborted } from './utils.js'
 import { REFERENCE_BUILDER_VERSION } from './reference-version.js'
+import { auditThinkingFor } from './audit-thinking-table.js'
 
 export { REFERENCE_BUILDER_VERSION }
 const CANDIDATE_COUNT = 300
@@ -102,8 +113,8 @@ const DEFAULT_MAX_NO_PROGRESS_ROUNDS = 3
  * `probes/reference_202609/minimax-m3_20260911.json`).
  */
 export const DEFAULT_LAYOUT_FILTER_PASSES = 2
-// Candidate batches ask for a long list (up to 6000 tokens) and nothing is scored from them, so
-// they get more time than the measured requests, whose timeout is part of the bank settings.
+// Candidate batches ask for a long list (up to 6000 tokens, or 16000 for a model that cannot stop thinking) and nothing
+// is scored from them, so they get more time than the measured requests, whose timeout is part of the bank settings.
 const CANDIDATE_GENERATION_TIMEOUT_MS = 300_000
 const DEFAULT_MAX_CONCURRENT_REQUESTS = 16
 const DEFAULT_MAX_CONCURRENT_REQUESTS_PER_MODEL = 6
@@ -200,7 +211,8 @@ export interface ReferenceBuildCostV1 {
 }
 
 export interface ReferenceRequestLimiter {
-  run: <T>(model: string, execute: () => Promise<T>) => Promise<T>
+  /** `signal`: a job still waiting for its slot when it aborts leaves the queue and rejects; it never takes a slot. */
+  run: <T>(model: string, execute: () => Promise<T>, signal?: AbortSignal) => Promise<T>
   recordSuccess: (model: string) => void
 }
 
@@ -477,13 +489,28 @@ export async function buildModelReference(input: {
       const model = modelNames.get(key) ?? route.model
       if (route.type === 'antseed') return [key, route, null] as const
       try {
-        const result = await discoverThinkingSuppression({
-          model: route.model,
-          label: route.baseUrl,
-          supportsPrefill: route.protocol !== 'anthropic-messages',
-          probe: (attempt) => discoveryQuery.probeThinking!(model, routeWithThinkingStrategy(route, attempt.strategy), attempt.maxTokens),
-          log: input.log,
-        })
+        const probe: ThinkingDiscoveryProbe = (attempt) => discoveryQuery.probeThinking!(model, routeWithThinkingStrategy(route, attempt.strategy), attempt.maxTokens)
+        // The audited model's setting comes from the audit rules' table: checked, never chosen. Contrast models are
+        // only asked to build the bank, and keep discovery.
+        // Only on OpenRouter with a provider pin, where the table's field is OpenRouter's (`auditThinkingForBank`).
+        const table = isTarget && tableRoute(route) ? auditThinkingFor(input.model) : undefined
+        const result = table
+          ? await checkThinkingSetting({
+            model: route.model,
+            label: route.baseUrl,
+            probe,
+            primary: referenceStrategyForLevel(table.level),
+            fallback: table.fallback ? referenceStrategyForLevel(table.fallback) : null,
+            requireClean: true,
+            log: input.log,
+          })
+          : await discoverThinkingSuppression({
+            model: route.model,
+            label: route.baseUrl,
+            supportsPrefill: route.protocol !== 'anthropic-messages',
+            probe,
+            log: input.log,
+          })
         return [key, routeWithThinkingStrategy(route, result.strategy), result] as const
       } catch (error) {
         // Out of requests is not a finding about the route: stop, and the next run continues.
@@ -510,6 +537,7 @@ export async function buildModelReference(input: {
     thinkingDiscovery = {
       version: 1,
       method: 'kbf-reference-code-2026-09-30',
+      ...(target && auditThinkingFor(input.model) && tableRoute(routesByModel.get(targetKey)!) ? { rule: THINKING_TABLE_RULE } : {}),
       ...(target ? { target } : {}),
       contrasts,
     }
@@ -618,7 +646,12 @@ export async function buildModelReference(input: {
       ?? resolveReferenceRequestRoute({ endpoint, model, apiKey, catalog: input.catalog ?? null }),
     log: input.log,
   })
-  const candidateWriting = new CandidateWritingPolicy(candidateWritingFallback(targetRoute), input.log)
+  // A model whose discovery found nothing that turns its thinking off writes questions with room to think too.
+  const candidateWritingLimit = candidateWritingMaxTokens((thinkingDiscovery ?? initialDiscovery)?.target)
+  if (candidateWritingLimit !== CANDIDATE_WRITING_MAX_TOKENS) {
+    input.log?.(`nothing turns thinking off for ${modelConfig.upstreamModel}; question writing asks for up to ${candidateWritingLimit} tokens`)
+  }
+  const candidateWriting = new CandidateWritingPolicy(candidateWritingFallback(targetRoute), input.log, candidateWritingLimit)
   let collected: CollectedReferenceProbes | undefined
   const selfOutcomes: ReferenceProbeSelfTestV1[] = []
   let selected: {
@@ -872,6 +905,317 @@ export async function buildModelReference(input: {
 }
 
 /**
+ * The route a bank's reference model is asked on after its enrollment: the endpoint, upstream and request
+ * settings the bank recorded, pinned to the provider that answered its enrollment.
+ */
+function bankReferenceRoute(input: {
+  endpoint: VerifierReferenceEndpointConfig
+  modelConfig: ResolvedVerifierModelConfig
+  settings: KbfReferenceV1
+  config: VerifierCLIConfig | undefined
+  catalog: VerifierModelCatalog | null
+  buyerProxyPort?: number
+}): { route: ReferenceRequestRoute; recordedPin: { order?: string[] } | null | undefined } {
+  const { endpoint, modelConfig, settings } = input
+  const recordedPin = (settings.generator.params.referenceProvider as { pinned?: { order?: string[] } | null } | undefined)?.pinned
+  const route = withRecordedSettings(resolveReferenceRequestRoute({
+    endpoint,
+    model: modelConfig.upstreamModel,
+    apiKey: (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey,
+    catalog: input.catalog,
+    referenceRoute: modelConfig.referenceRoute,
+    // The pin the bank recorded, so the set is asked of the provider that answered its enrollment.
+    referenceProvider: recordedPin === undefined
+      ? modelConfig.referenceProvider
+      : recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined,
+    upstream: modelConfig.upstream ? {
+      name: modelConfig.upstream.name,
+      model: modelConfig.upstream.model,
+      config: input.config?.upstreams?.[modelConfig.upstream.name],
+    } : undefined,
+    buyerProxyPort: input.buyerProxyPort,
+  }), settings)
+  return { route, recordedPin }
+}
+
+/** One reference request of the tokenizer pre-check: the input tokens the reference model counted for `content`. */
+export interface ReferenceInputTokensV1 {
+  /**
+   * The whole input the reference reports, read from its answer exactly as a seller's signed response is read
+   * (`responseBodyInputUsage`). Null when the request failed or reported no usage (a count of zero is no count).
+   */
+  inputTokens: number | null
+  /** The answer reports cached input: its count says nothing reliable about the text. */
+  cachedInput: boolean
+  /** The cache members the answer reports above zero, by path (`responseBodyInputUsage`). */
+  cache?: Readonly<Record<string, number>>
+  /** The provider that answered, when the endpoint names it. */
+  provider: string | null
+  failure: string | null
+}
+
+const REFERENCE_INPUT_TOKENS_TRIES = 3
+
+/**
+ * Asks a bank's reference model for the input tokens of each `contents` entry, sent as the only user message on
+ * the bank's own route (`bankReferenceRoute`), for the tokenizer pre-check (`tokenizer-precheck.ts`). The answer's
+ * text is not used. A failed or unreadable request is asked up to twice more; it never throws for one request.
+ */
+export async function askReferenceInputTokens(input: {
+  model: string
+  /** A reference of the bank whose route is asked (the epoch's audit set). */
+  settings: KbfReferenceV1
+  contents: readonly string[]
+  /** Reply limit of each request; a route that needs a larger budget to answer at all keeps its own. */
+  maxTokens: number
+  config: VerifierCLIConfig | undefined
+  catalog?: VerifierModelCatalog | null
+  buyerProxyPort?: number
+  fetchFn?: typeof fetch
+  requestLimiter?: ReferenceRequestLimiter
+  timeoutMs?: number
+  /** Once aborted, no request is tried again: the measurement's time is up. */
+  signal?: AbortSignal
+}): Promise<{ upstream: ReferenceUpstreamProvenanceV1; oneProvider: boolean; results: ReferenceInputTokensV1[] }> {
+  const { endpoint, route, limiter, fetchFn, timeoutMs, retryBaseDelayMs } = referenceAskEnvironment(input, 'the pre-check')
+  const ask = async (content: string): Promise<ReferenceInputTokensV1> => {
+    const body = {
+      messages: [{ role: 'user', content }],
+      max_tokens: Math.max(input.maxTokens, route.minMaxTokens ?? 0),
+      stream: false,
+    }
+    // The count is read from the answer's own bytes, not from the completion's parsed usage: the native
+    // Anthropic shape reports fresh input apart from its cache counts, and a seller's count is the whole input.
+    const read = (exchange: ReferenceRawExchange): ReferenceInputTokensV1 => {
+      const usage = responseBodyInputUsage(new TextEncoder().encode(exchange.responseBody))
+      return {
+        ...usage,
+        provider: answeringProvider(exchange.responseBody),
+        failure: usage.inputTokens === null ? 'the reference endpoint reported no input tokens' : null,
+      }
+    }
+    const timeUp = 'the pre-check\'s time for the reference is up'
+    try {
+      // The wait for a slot ends at the abort too: a request whose measurement has run out leaves the queue, takes no
+      // paced slot later, and does not hold its caller.
+      return read((await postReferenceAttempt(limiter, route, body, timeoutMs, fetchFn, input.signal, timeUp)).exchange)
+    } catch (error) {
+      // An answer without text still counted its input.
+      if (error instanceof EmptyReferenceResponseError && error.exchange) return read(error.exchange)
+      return { inputTokens: null, cachedInput: false, provider: null, failure: asError(error).message.slice(0, 300) }
+    }
+  }
+  const results = await Promise.all(input.contents.map(async (content) => {
+    let result = await ask(content)
+    for (let retry = 1; retry < REFERENCE_INPUT_TOKENS_TRIES && result.inputTokens === null && !input.signal?.aborted; retry += 1) {
+      await sleep(retryBaseDelayMs * 3 * retry)
+      if (input.signal?.aborted) break
+      result = await ask(content)
+    }
+    return result
+  }))
+  return { upstream: referenceUpstreamProvenance(endpoint, route), oneProvider: routeServesOneProvider(route), results }
+}
+
+/**
+ * Whether a reference route serves one provider: a pinned peer, a provider pin of one, or an endpoint that is not a
+ * router. A router that may serve several and names none in its answers leaves a measurement's host unknown.
+ */
+function routeServesOneProvider(route: ReferenceRequestRoute): boolean {
+  const router = route.upstream?.type === 'openrouter' || /openrouter\.ai/i.test(route.baseUrl)
+  return route.type === 'antseed' || (route.providerRouting?.order.length ?? 0) === 1 || !router
+}
+
+/**
+ * What both reference asks share: the endpoint, the bank's own route, and the request settings. The route must be the
+ * one the bank was enrolled on: the reference's answers are its own only there (`asker` names the test in the error).
+ */
+function referenceAskEnvironment(input: {
+  model: string
+  settings: KbfReferenceV1
+  config: VerifierCLIConfig | undefined
+  catalog?: VerifierModelCatalog | null
+  buyerProxyPort?: number
+  fetchFn?: typeof fetch
+  requestLimiter?: ReferenceRequestLimiter
+  timeoutMs?: number
+}, asker: string): {
+  endpoint: NonNullable<VerifierCLIConfig['referenceEndpoint']>
+  route: ReferenceRequestRoute
+  limiter: ReferenceRequestLimiter
+  fetchFn: typeof fetch
+  timeoutMs: number
+  retryBaseDelayMs: number
+} {
+  const endpoint = input.config?.referenceEndpoint
+  if (!endpoint) throw new Error('verifier.referenceEndpoint is required')
+  const catalog = input.catalog ?? null
+  const modelConfig = resolveVerifierModelConfig(input.config, input.model, catalog)
+  const { route } = bankReferenceRoute({
+    endpoint, modelConfig, settings: input.settings, config: input.config, catalog, buyerProxyPort: input.buyerProxyPort,
+  })
+  // As for calibration: the answers are the bank's reference's only when asked where the bank was enrolled.
+  if (input.settings.provenance && input.settings.provenance.sourceId !== referenceSourceId(endpoint, route)) {
+    throw new Error(`${asker} would ask ${referenceSourceId(endpoint, route)}, but this bank was enrolled on ${input.settings.provenance.sourceId}`)
+  }
+  return {
+    endpoint,
+    route,
+    limiter: input.requestLimiter ?? createReferenceRequestLimiter(input.config),
+    fetchFn: input.fetchFn ?? fetch,
+    timeoutMs: input.timeoutMs ?? input.settings.queryProfile.requestTimeoutMs,
+    retryBaseDelayMs: input.config?.referenceRetryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS,
+  }
+}
+
+/**
+ * One try of a reference request: it waits for the model's slot, is not sent when `signal` has aborted by then, and
+ * its wait for the slot ends at the abort too (a request whose time has run out leaves the queue, takes no paced slot
+ * later and does not hold its caller). Rejects with `timeUp` then. The callers keep their own reading and retries.
+ */
+function postReferenceAttempt(
+  limiter: ReferenceRequestLimiter,
+  route: ReferenceRequestRoute,
+  body: Parameters<typeof postChatCompletion>[1],
+  timeoutMs: number,
+  fetchFn: typeof fetch,
+  signal: AbortSignal | undefined,
+  timeUp: string,
+): ReturnType<typeof postChatCompletion> {
+  return untilAborted(limiter.run(route.model, async () => {
+    if (signal?.aborted) throw new Error(timeUp)
+    return postChatCompletion(route, body, timeoutMs, fetchFn, signal)
+  }, signal), signal, timeUp)
+}
+
+/** One reply of the reference. */
+export interface ReferenceReply {
+  /** What was sent on the wire. */
+  requestBody: Uint8Array
+  /** What was asked: the body as the route made it, before a protocol's own rewrite. */
+  askedBody: Uint8Array
+  /** The answer's status and bytes; null when the request failed. */
+  response: { statusCode: number; body: Uint8Array } | null
+  /** The provider the answer names; null when it names none. */
+  provider: string | null
+  failure: string | null
+  /** Requests sent for this reply, and how many were answered with a rate limit. */
+  tries: number
+  rateLimited: number
+}
+
+/**
+ * Asks a bank's reference model to repeat each of `texts`, on the bank's own route (`bankReferenceRoute`), for the
+ * echo check (`output-echo.ts`), and returns each answer's raw bytes with the request sent: the check reads them
+ * exactly as it reads a seller's. A failed request is asked up to twice more; it never throws for one request.
+ */
+export async function askReferenceReplies(input: {
+  model: string
+  settings: KbfReferenceV1
+  /** The full user message of each request. */
+  contents: readonly string[]
+  /**
+   * The whole body of each request instead (FLIPS: the same body its sellers get); the route still sets the model,
+   * its pin and its own overrides, and each result's `requestBody` is what was sent.
+   */
+  bodies?: readonly Record<string, unknown>[]
+  /**
+   * Send `bodies` as they are: the route keeps only its model, transport and provider pin, none of the bank's
+   * overrides, omissions, prefill or token floor (FLIPS: the eval's request, exactly).
+   */
+  plainRoute?: boolean
+  maxTokens: number
+  config: VerifierCLIConfig | undefined
+  catalog?: VerifierModelCatalog | null
+  buyerProxyPort?: number
+  fetchFn?: typeof fetch
+  requestLimiter?: ReferenceRequestLimiter
+  timeoutMs?: number
+  signal?: AbortSignal
+}): Promise<{
+  upstream: ReferenceUpstreamProvenanceV1
+  /** The route serves one provider: a pinned peer, a provider pin of one, or an endpoint that is not a router. */
+  oneProvider: boolean
+  /**
+   * The route is proven to serve one provider: a pinned Antseed peer, or OpenRouter pinned to one provider. Any other
+   * endpoint may be a router, so its unnamed answers are no one provider's (FLIPS).
+   */
+  provenOneProvider: boolean
+  results: ReferenceReply[]
+}> {
+  const { endpoint, route: bankRoute, limiter, fetchFn, timeoutMs, retryBaseDelayMs } = referenceAskEnvironment(input, 'the echo check')
+  const route: ReferenceRequestRoute = input.plainRoute
+    ? { ...bankRoute, requestOverrides: {}, requestOmissions: [], assistantPrefill: undefined, minMaxTokens: undefined }
+    : bankRoute
+  const encoder = new TextEncoder()
+  const ask = async (content: string, given?: Record<string, unknown>) => {
+    const body = given ?? { messages: [{ role: 'user', content }], max_tokens: Math.max(input.maxTokens, route.minMaxTokens ?? 0), stream: false }
+    const read = (exchange: ReferenceRawExchange) => ({
+      rateLimited: false,
+      requestBody: encoder.encode(exchange.requestBody),
+      askedBody: encoder.encode(exchange.routedBody ?? exchange.requestBody),
+      response: { statusCode: exchange.status, body: encoder.encode(exchange.responseBody) },
+      provider: answeringProvider(exchange.responseBody),
+      failure: null,
+    })
+    const timeUp = 'the reference\'s time is up'
+    try {
+      // The wait for a slot (a cooldown can be long) ends at the abort too, not only the request.
+      return read((await postReferenceAttempt(limiter, route, body, timeoutMs, fetchFn, input.signal, timeUp)).exchange)
+    } catch (error) {
+      if (error instanceof EmptyReferenceResponseError && error.exchange) return read(error.exchange)
+      // On the plain route (FLIPS) an answer without usage is still an answer: its bytes are read, never its billing.
+      // The cap and echo checks need the count, so for them it is a failed request, asked again.
+      if (input.plainRoute && error instanceof ReferenceUsageMissingError) return read(error.exchange)
+      const asked = encoder.encode(JSON.stringify(applyReferenceRouteToBody(route, body)))
+      return {
+        rateLimited: error instanceof ReferenceEndpointError && error.status === 429,
+        requestBody: asked, askedBody: asked, response: null, provider: null, failure: asError(error).message.slice(0, 300),
+      }
+    }
+  }
+  const asks: Array<{ content: string; body?: Record<string, unknown> }> = input.bodies
+    ? input.bodies.map((body) => ({ content: '', body }))
+    : input.contents.map((content) => ({ content }))
+  const results = await Promise.all(asks.map(async ({ content, body }) => {
+    let result = await ask(content, body)
+    let tries = 1
+    let rateLimited = result.rateLimited ? 1 : 0
+    for (let retry = 1; retry < REFERENCE_INPUT_TOKENS_TRIES && result.response === null && !input.signal?.aborted; retry += 1) {
+      await untilAborted(sleep(retryBaseDelayMs * 3 * retry), input.signal, 'aborted').catch(() => undefined)
+      if (input.signal?.aborted) break
+      result = await ask(content, body)
+      tries += 1
+      if (result.rateLimited) rateLimited += 1
+    }
+    const { rateLimited: _last, ...kept } = result
+    return { ...kept, tries, rateLimited }
+  }))
+  return {
+    upstream: referenceUpstreamProvenance(endpoint, route),
+    oneProvider: routeServesOneProvider(route),
+    provenOneProvider: routeProvenOneProvider(route),
+    results,
+  }
+}
+
+/** A pinned Antseed peer, or OpenRouter pinned to one provider: any other endpoint may itself be a router. */
+function routeProvenOneProvider(route: ReferenceRequestRoute): boolean {
+  if (route.type === 'antseed') return true
+  const openRouter = route.upstream?.type === 'openrouter' || /openrouter\.ai/i.test(route.baseUrl)
+  return openRouter && (route.providerRouting?.order.length ?? 0) === 1
+}
+
+/** The provider an OpenRouter-style answer names; null when it names none. */
+function answeringProvider(responseBody: string): string | null {
+  try {
+    return optionalString((JSON.parse(responseBody) as { provider?: unknown } | null)?.provider)
+  } catch {
+    return null
+  }
+}
+
+/**
  * Calibrates a question set: asks the pinned reference endpoint each batch of each reference exactly
  * as a seller is asked it (`kbfAuditBatches`), at temperature 0 with the bank's recorded thinking
  * suppression and token budget, and treats the replies as a seller audit does: `<think>` blocks
@@ -912,24 +1256,9 @@ export async function calibrateReferenceSets(input: {
   const catalog = input.catalog ?? null
   const modelConfig = resolveVerifierModelConfig(input.config, input.model, catalog)
   const pricing = referenceTargetPricing(modelConfig, catalog)
-  const recordedPin = (settings.generator.params.referenceProvider as { pinned?: { order?: string[] } | null } | undefined)?.pinned
-  const route = withRecordedSettings(resolveReferenceRequestRoute({
-    endpoint,
-    model: modelConfig.upstreamModel,
-    apiKey: (endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined) ?? endpoint.apiKey,
-    catalog,
-    referenceRoute: modelConfig.referenceRoute,
-    // The pin the bank recorded, so the set is asked of the provider that answered its enrollment.
-    referenceProvider: recordedPin === undefined
-      ? modelConfig.referenceProvider
-      : recordedPin?.order?.length ? { order: [...recordedPin.order] } : undefined,
-    upstream: modelConfig.upstream ? {
-      name: modelConfig.upstream.name,
-      model: modelConfig.upstream.model,
-      config: input.config?.upstreams?.[modelConfig.upstream.name],
-    } : undefined,
-    buyerProxyPort: input.buyerProxyPort,
-  }), settings)
+  const { route, recordedPin } = bankReferenceRoute({
+    endpoint, modelConfig, settings, config: input.config, catalog, buyerProxyPort: input.buyerProxyPort,
+  })
   if (settings.provenance && settings.provenance.sourceId !== referenceSourceId(endpoint, route)) {
     throw new Error(
       `calibration would ask ${referenceSourceId(endpoint, route)}, but this bank was enrolled on ${settings.provenance.sourceId}`,
@@ -1121,6 +1450,7 @@ export async function collectReferenceProbes(input: {
   while (state.probes.length < input.targetCount) {
     state.generationRound += 1
     input.log?.(`generation round ${state.generationRound}: collecting ${state.probes.length}/${input.targetCount} probes`)
+    const writingTally: CandidateWritingTally = { batches: 0, empty: 0 }
     const generated = await generateCandidates(
       input.model,
       candidateCountPerRound,
@@ -1129,7 +1459,17 @@ export async function collectReferenceProbes(input: {
       input.excludedDomains,
       input.log,
       input.candidateWriting,
+      writingTally,
     )
+    // Every question-writing batch of the round gave no list, after its retries and any writing fallback: the next round
+    // asks the same way and would only pay for the same empty answers, so the build stops here, not at the no-progress
+    // limit (a model whose thinking fills every token, for example).
+    if (writingTally.batches > 0 && writingTally.empty === writingTally.batches) {
+      throw new Error(
+        `question writing gave no list in any of the ${writingTally.batches} batches of generation round ${state.generationRound}; `
+        + `stopping the build after this round (collected ${state.probes.length}/${input.targetCount} probes)`,
+      )
+    }
     const candidates = generated.filter((probe) => {
       if (state.generatedProbeIds.has(probe.id) || input.excludedProbeIds?.has(probe.id)) return false
       state.generatedProbeIds.add(probe.id)
@@ -1397,6 +1737,12 @@ async function queryContrastOutcomes(
   return { outcomes, answered }
 }
 
+/** The question-writing batches of one generation round, and how many gave no list. */
+interface CandidateWritingTally {
+  batches: number
+  empty: number
+}
+
 async function generateCandidates(
   model: string,
   count: number,
@@ -1405,6 +1751,7 @@ async function generateCandidates(
   excludedDomains: readonly string[] = [],
   log?: (message: string) => void,
   writing?: CandidateWritingPolicy,
+  tally: CandidateWritingTally = { batches: 0, empty: 0 },
 ): Promise<KbfProbe[]> {
   const excluded = new Set(excludedDomains)
   const activeDomains = CANONICAL_KBF_DOMAINS.filter((definition) => !excluded.has(definition.key))
@@ -1424,16 +1771,18 @@ async function generateCandidates(
       const body = {
         model,
         temperature: 0.7,
-        max_tokens: 6000,
+        max_tokens: writing?.maxTokens ?? CANDIDATE_WRITING_MAX_TOKENS,
         messages: [
           { role: 'system', content: 'Create stable numeric factual-recall probes. Output only the requested list.' },
           { role: 'user', content: prompt },
         ],
       }
       let content: string
+      tally.batches += 1
       try {
         content = await writeCandidateBatch(model, body, batchSize, definition, query, writing, log)
       } catch (error) {
+        tally.empty += 1
         // A candidate batch only proposes questions; nothing is measured from it. A batch that
         // stays empty, or keeps timing out or failing upstream after its retries, is skipped and
         // the next generation round makes up the shortfall (bounded by the no-progress limit).
@@ -1445,7 +1794,9 @@ async function generateCandidates(
         log?.(`skipping failed candidate batch for ${definition.key} after retries: ${asError(error).message}`)
         continue
       }
-      for (const fact of parseCanonicalFacts(content, definition.range)) {
+      const facts = parseCanonicalFacts(content, definition.range)
+      if (facts.length === 0) tally.empty += 1
+      for (const fact of facts) {
         const probe = createCanonicalKbfProbe({
           domainKey: definition.key,
           name: fact.name,
@@ -1816,7 +2167,8 @@ function createReferenceQuery(input: {
           outcome: 'success',
           ...cachedCost(model, 'thinking-discovery', response.inputTokens, response.outputTokens),
           content: response.content,
-          reasoningTokens: response.reasoningTokens ?? 0,
+          // Kept only when the reply reported a count: a replay of one that did not has an unknown count, not 0.
+          ...(response.reasoningTokens !== null && response.reasoningTokens !== undefined ? { reasoningTokens: response.reasoningTokens } : {}),
           finishReason: response.finishReason ?? null,
           ...(response.provider ? { provider: response.provider } : {}),
         }
@@ -1828,7 +2180,7 @@ function createReferenceQuery(input: {
         return {
           ok: true,
           content: response.content,
-          reasoningTokens: response.reasoningTokens ?? 0,
+          reasoningTokens: response.reasoningTokens ?? null,
           truncated: isKbfTokenLimitFinishReason(response.finishReason),
         }
       } catch (error) {
@@ -1839,7 +2191,7 @@ function createReferenceQuery(input: {
             finishReason: error.finishReason,
             nativeFinishReason: error.nativeFinishReason,
             detail: error.detail,
-            reasoningTokens: error.reasoningTokens ?? 0,
+            ...(error.reasoningTokens !== null && error.reasoningTokens !== undefined ? { reasoningTokens: error.reasoningTokens } : {}),
           }
           if (error.exchange) {
             await input.checkpoint.appendExchange({
@@ -1848,7 +2200,7 @@ function createReferenceQuery(input: {
           }
           await input.checkpoint.set(cacheKey, empty)
           consumed.set(cacheKey, empty)
-          return { ok: true, content: null, reasoningTokens: error.reasoningTokens ?? 0 }
+          return { ok: true, content: null, reasoningTokens: error.reasoningTokens ?? null }
         }
         if (error instanceof ReferenceEndpointError) {
           failure = { status: error.status, failure: error.detail }
@@ -2024,6 +2376,7 @@ class AdaptiveRequestLimiter implements ReferenceRequestLimiter {
   private readonly minimumIntervalMsByModel = new Map<string, number>()
   private readonly nextAllowedAtByModel = new Map<string, number>()
   private readonly waiters: Array<{ model: string; resolve: () => void }> = []
+  private static readonly cancelled = 'the request was cancelled while it waited for a slot'
   private wakeTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(
@@ -2039,8 +2392,8 @@ class AdaptiveRequestLimiter implements ReferenceRequestLimiter {
     this.limit = maximum
   }
 
-  async run<T>(model: string, execute: () => Promise<T>): Promise<T> {
-    await this.acquire(model)
+  async run<T>(model: string, execute: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    await this.acquire(model, signal)
     try {
       return await execute()
     } catch (error) {
@@ -2078,13 +2431,32 @@ class AdaptiveRequestLimiter implements ReferenceRequestLimiter {
     }
   }
 
-  private async acquire(model: string): Promise<void> {
+  private async acquire(model: string, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw new Error(AdaptiveRequestLimiter.cancelled)
     if (this.canRun(model)) {
       this.reserve(model)
       return
     }
-    await new Promise<void>((resolve) => {
-      this.waiters.push({ model, resolve })
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        // A cancelled job leaves the queue: it takes no paced slot later, and an empty queue keeps no timer.
+        const index = this.waiters.indexOf(waiter)
+        if (index >= 0) this.waiters.splice(index, 1)
+        if (this.waiters.length === 0 && this.wakeTimer !== null) {
+          clearTimeout(this.wakeTimer)
+          this.wakeTimer = null
+        }
+        reject(new Error(AdaptiveRequestLimiter.cancelled))
+      }
+      const waiter = {
+        model,
+        resolve: () => {
+          signal?.removeEventListener('abort', onAbort)
+          resolve()
+        },
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      this.waiters.push(waiter)
       this.scheduleDrain()
     })
   }
@@ -2291,6 +2663,8 @@ interface ReferenceRawExchange {
   url: string
   protocol: ReferenceUpstreamProtocol
   requestBody: string
+  /** The body as the route made it, before a protocol's own rewrite (Anthropic Messages): what was asked. */
+  routedBody?: string
   status: number
   responseBody: string
 }
@@ -2312,6 +2686,8 @@ async function postChatCompletion(
   body: Record<string, unknown>,
   timeoutMs: number,
   fetchFn: typeof fetch,
+  /** Stops the request early, besides its own timeout. */
+  signal?: AbortSignal,
 ): Promise<ReferenceCompletion> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -2335,7 +2711,7 @@ async function postChatCompletion(
           ...(route.peerId ? { 'x-antseed-pin-peer': route.peerId } : {}),
         },
         body: requestBody,
-        signal: controller.signal,
+        signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
       })
     } catch (error) {
       if (controller.signal.aborted) throw new ReferenceTimeoutError(timeoutMs)
@@ -2367,6 +2743,7 @@ async function postChatCompletion(
       url,
       protocol: anthropic ? 'anthropic-messages' : 'openai-chat-completions',
       requestBody,
+      routedBody: JSON.stringify(routedBody),
       status: response.status,
       responseBody,
     }
@@ -2400,7 +2777,7 @@ async function postChatCompletion(
       )
     }
     if (parsed.inputTokens === null || parsed.outputTokens === null) {
-      throw new Error(`reference endpoint omitted token usage for ${route.model}`)
+      throw new ReferenceUsageMissingError(route.model, exchange)
     }
     return {
       content: parsed.content,
@@ -2565,6 +2942,13 @@ function isContentFilterRefusal(error: unknown): boolean {
  * Asked again it often answers, so it's retried; once the retries are spent the batch goes
  * unanswered, as in the KBF reference code (`query_api` returns None), instead of ending the build.
  */
+/** An answer without token usage: no count for billing, but its bytes stay readable (`askReferenceReplies`). */
+class ReferenceUsageMissingError extends Error {
+  constructor(model: string, readonly exchange: ReferenceRawExchange) {
+    super(`reference endpoint omitted token usage for ${model}`)
+  }
+}
+
 export class ReferenceTimeoutError extends Error {
   constructor(readonly timeoutMs: number) {
     super(`reference request timed out after ${timeoutMs}ms`)
@@ -2814,8 +3198,16 @@ export interface ReferenceThinkingDiscoveryEntryV1 {
 export interface ReferenceThinkingDiscoveryRecordV1 {
   version: 1
   method: 'kbf-reference-code-2026-09-30'
+  /** `audit-thinking-table-v1` when the target's setting came from the audit rules' table; absent for discovery. */
+  rule?: typeof THINKING_TABLE_RULE
   target?: ReferenceThinkingDiscoveryEntryV1
   contrasts: Record<string, ReferenceThinkingDiscoveryEntryV1>
+}
+
+/** Whether the thinking table applies to a reference route: OpenRouter, with a provider pin (`auditThinkingForBank`). */
+function tableRoute(route: ReferenceRequestRoute): boolean {
+  return route.type === 'direct' && route.providerRouting !== undefined && route.providerRouting !== null
+    && (route.upstream ? route.upstream.type === 'openrouter' : isOpenRouterUrl(route.baseUrl))
 }
 
 /** The route with exactly one thinking strategy applied, replacing catalog-based reasoning fields. */
@@ -2872,12 +3264,12 @@ function withRecordedSettings(route: ReferenceRequestRoute, reference: KbfRefere
  */
 export function replayedThinkingDiscovery(
   cached: ReferenceCachedResponseV1,
-): { ok: true; content: string | null; reasoningTokens: number; truncated: boolean } | null {
+): { ok: true; content: string | null; reasoningTokens: number | null; truncated: boolean } | null {
   if (cached.outcome !== 'terminal-empty' && cached.finishReason === undefined) return null
   return {
     ok: true,
     content: cached.outcome === 'terminal-empty' ? null : cached.content,
-    reasoningTokens: cached.reasoningTokens ?? 0,
+    reasoningTokens: cached.reasoningTokens ?? null,
     truncated: isKbfTokenLimitFinishReason(cached.finishReason),
   }
 }

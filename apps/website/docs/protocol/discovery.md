@@ -49,6 +49,12 @@ reintroducing per-model announcements.
 | `dht1.antseed.com` | 6881 |
 | `dht2.antseed.com` | 6881 |
 
+A node also saves up to 16 of the DHT nodes it knows to `dht-nodes.json` in its data directory, after lookups and announces and when it stops.
+
+A node that knows no DHT node after starting, because no bootstrap node answered, rejoins through those saved nodes, so a node that has run before can still join while the bootstrap nodes are unreachable. If none of them answers either, for example on its first run while the bootstrap nodes are down, it joins through the public BitTorrent DHT routers (`router.bittorrent.com`, `router.utorrent.com` and `dht.transmissionbt.com`). It uses neither while a bootstrap node answers: a routing table filled from them can find fewer Antseed peers.
+
+With `network.noOfficialBootstrap`, a node uses only `network.bootstrapNodes`, with no saved nodes and no public routers.
+
 ## DHT configuration
 
 | Parameter | Value |
