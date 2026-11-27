@@ -4543,8 +4543,8 @@ const REASONING_TURN = [
 ]
 
 /** The body a pinned peer receives for a non-streamed Responses request for `model`. */
-/** The raw body a pinned peer receives for a non-streamed `POST /v1/responses` with `rawBody`. */
-async function bytesSentToPeer(peer: PeerInfo, rawBody: string): Promise<string> {
+/** The raw body a pinned peer receives for a non-streamed `POST` to `path` (default `/v1/responses`) with `rawBody`. */
+async function bytesSentToPeer(peer: PeerInfo, rawBody: string, path = '/v1/responses'): Promise<string> {
   let captured: string | null = null
   const proxy = makeBuyerProxyWithPeers([peer], [peer])
   ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
@@ -4552,7 +4552,7 @@ async function bytesSentToPeer(peer: PeerInfo, rawBody: string): Promise<string>
     return { requestId: request.requestId, statusCode: 500, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"error":{"message":"stop"}}') }
   }
   ;(proxy as any)._node.sendRequestStream = async () => { throw new Error('not streamed') }
-  await invokeProxy(proxy, makeProxyRequest({ path: '/v1/responses', headers: { 'x-antseed-pin-peer': peer.peerId }, rawBody }))
+  await invokeProxy(proxy, makeProxyRequest({ path, headers: { 'x-antseed-pin-peer': peer.peerId }, rawBody }))
   assert.ok(captured !== null, 'the peer got the request')
   return captured
 }
@@ -4664,6 +4664,28 @@ test('a Responses request to a Responses seller loses only the reasoning items t
   // With nothing to drop, the seller gets the client's bytes as sent.
   const raw = `{"model": "example-model",  "input": ${JSON.stringify([user, native, plain, call])}, "store": false}`
   assert.equal(await bytesSentToPeer(peer, raw), raw)
+})
+
+test('a Messages request to a Messages seller loses only the thinking blocks the adapter made', async () => {
+  const peer = makePeer('a', ['anthropic'])
+  peer.providerServiceApiProtocols = { anthropic: { services: { 'example-model': ['anthropic-messages'] } } }
+  const ours = { type: 'thinking', thinking: 'Translated thoughts.', signature: 'antseed.reasoning.v1:example-model#chatcmpl-1' }
+  const unsigned = { type: 'thinking', thinking: 'Unsigned thoughts.' }
+  const signed = { type: 'thinking', thinking: 'Real thoughts.', signature: 'EqQBCkYIBxgCKkA2b3Vy' }
+  const messages = (thinking: unknown[]) => [
+    { role: 'user', content: 'How full is the disk?' },
+    { role: 'assistant', content: [...thinking, { type: 'text', text: '40%.' }] },
+    { role: 'user', content: 'And now?' },
+  ]
+
+  const sent = JSON.parse(await bytesSentToPeer(peer, JSON.stringify({
+    model: 'example-model', max_tokens: 1024, messages: messages([ours, unsigned, signed]),
+  }), '/v1/messages')) as { messages: Array<{ content: unknown }> }
+  assert.deepEqual(sent.messages[1]!.content, [unsigned, signed, { type: 'text', text: '40%.' }])
+
+  // With nothing to drop, the seller gets the client's bytes as sent.
+  const raw = `{"model": "example-model",  "max_tokens": 1024, "messages": ${JSON.stringify(messages([unsigned, signed]))}}`
+  assert.equal(await bytesSentToPeer(peer, raw, '/v1/messages'), raw)
 })
 
 test('non-stream transformed responses requests force upstream stream without streaming to client', async () => {

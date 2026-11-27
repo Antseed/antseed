@@ -82,6 +82,7 @@ import {
   transformRequest,
   transformResponse,
   withoutAdapterReasoningItems,
+  withoutAdapterThinkingBlocks,
 } from './service-api-adapter.js'
 import {
   DEBUG,
@@ -5777,6 +5778,10 @@ export class BuyerProxy {
       // Earlier turns of the thread may have been translated from a chat seller. A Responses seller cannot
       // resolve the reasoning items the adapter made there, so they are dropped; nothing else changes.
       requestForPeer = withoutAdapterReasoningItems(requestForPeer)
+    } else if (requestProtocol === 'anthropic-messages') {
+      // The same for a Messages seller: it would reject the signature of a thinking block the adapter
+      // made from a chat model's reasoning. Unsigned and provider-signed blocks pass untouched.
+      requestForPeer = withoutAdapterThinkingBlocks(requestForPeer)
     }
 
     if (DEBUG()) {

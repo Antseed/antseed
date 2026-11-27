@@ -7,6 +7,7 @@ export {
   renderRequestBodyAsOpenAIChat,
   transformRequest,
   withoutAdapterReasoningItems,
+  withoutAdapterThinkingBlocks,
   type ServiceApiRequestTransformOptions,
   type ServiceApiRequestTransformResult,
 } from './request-transform.js';

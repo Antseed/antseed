@@ -3,6 +3,7 @@ import {
   createStreamingAdapter,
   transformRequest,
   transformResponse,
+  withoutAdapterThinkingBlocks,
   type ServiceApiProtocol,
 } from '../src/index.js';
 import { parseSseBuffer } from '../src/utils.js';
@@ -715,5 +716,57 @@ describe('a thinking block the adapter made, sent back in a Messages request for
       messages: [{ role: 'user', content: 'Q1' }, { role: 'assistant', content: answer.content }, { role: 'user', content: 'Q2' }],
     });
     expect(body.messages[1]).toEqual({ role: 'assistant', content: 'Checking.', reasoning_content: 'Need the tool.' });
+  });
+});
+
+describe('withoutAdapterThinkingBlocks: a Messages request for a native Messages seller', () => {
+  const ours = { type: 'thinking', thinking: 'Our thoughts.', signature: 'antseed.reasoning.v1:example-model#chatcmpl-1' };
+  const unsigned = { type: 'thinking', thinking: 'Unsigned thoughts.' };
+  const anthropicSigned = { type: 'thinking', thinking: 'Real thoughts.', signature: 'EqQBCkYIBxgCKkA2b3Vy' };
+  const redacted = { type: 'redacted_thinking', data: 'opaque' };
+  const request = (body: Json, headers: Record<string, string> = {}) => ({
+    requestId: 'req-strip',
+    method: 'POST',
+    path: '/v1/messages',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: encoder.encode(JSON.stringify(body)),
+  });
+  const messagesOf = (req: { body: Uint8Array }): Json[] => (JSON.parse(decoder.decode(req.body)) as Json).messages;
+
+  it('removes the thinking blocks the adapter made, and keeps every other block', () => {
+    const stripped = withoutAdapterThinkingBlocks(request({
+      model: 'example-model',
+      messages: [
+        { role: 'user', content: 'Q1' },
+        { role: 'assistant', content: [ours, { type: 'text', text: 'A1' }] },
+        { role: 'user', content: 'Q2' },
+        { role: 'assistant', content: [unsigned, anthropicSigned, redacted, { type: 'text', text: 'A2' }] },
+        { role: 'user', content: 'Q3' },
+      ],
+    }));
+    expect(messagesOf(stripped)).toEqual([
+      { role: 'user', content: 'Q1' },
+      { role: 'assistant', content: [{ type: 'text', text: 'A1' }] },
+      { role: 'user', content: 'Q2' },
+      { role: 'assistant', content: [unsigned, anthropicSigned, redacted, { type: 'text', text: 'A2' }] },
+      { role: 'user', content: 'Q3' },
+    ]);
+  });
+
+  it('drops an assistant message that held only the adapter\'s thinking', () => {
+    const stripped = withoutAdapterThinkingBlocks(request({
+      model: 'example-model',
+      messages: [{ role: 'user', content: 'Q1' }, { role: 'assistant', content: [ours] }, { role: 'user', content: 'Q2' }],
+    }));
+    expect(messagesOf(stripped)).toEqual([{ role: 'user', content: 'Q1' }, { role: 'user', content: 'Q2' }]);
+  });
+
+  it('returns a request without the adapter\'s thinking unchanged, and fixes content-length when it rewrites one', () => {
+    const untouched = request({ model: 'example-model', messages: [{ role: 'assistant', content: [unsigned, anthropicSigned] }] }, { 'content-length': '123' });
+    expect(withoutAdapterThinkingBlocks(untouched)).toBe(untouched);
+
+    const sized = request({ model: 'example-model', messages: [{ role: 'assistant', content: [ours, { type: 'text', text: 'A1' }] }] }, { 'Content-Length': '999' });
+    const rewritten = withoutAdapterThinkingBlocks(sized);
+    expect(rewritten.headers['Content-Length']).toBe(String(rewritten.body.length));
   });
 });

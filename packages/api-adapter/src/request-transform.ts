@@ -219,16 +219,48 @@ export function withoutAdapterReasoningItems(request: SerializedHttpRequest): Se
   if (!body || !Array.isArray(body.input)) return request;
   const input = body.input.filter((item) => !isAdapterReasoningInput(item));
   if (input.length === body.input.length) return request;
-  const rewritten = encodeJson({ ...body, input });
+  return withBody(request, { ...body, input });
+}
+
+function isAdapterReasoningInput(item: unknown): boolean {
+  return Boolean(item) && typeof item === 'object' && !Array.isArray(item) && isAdapterReasoningItem(item as Record<string, unknown>);
+}
+
+/**
+ * A Messages request for a Messages seller, without the `thinking` blocks this adapter made from a
+ * chat model's reasoning in earlier turns: their `signature` is the adapter's tag, which the seller
+ * would reject. Unsigned and provider-signed blocks stay, an assistant message left with no blocks is
+ * dropped, and a request with none of them is returned unchanged.
+ */
+export function withoutAdapterThinkingBlocks(request: SerializedHttpRequest): SerializedHttpRequest {
+  if (!new TextDecoder().decode(request.body).includes(ADAPTER_REASONING_TAG)) return request;
+  const body = parseJsonObject(request.body);
+  if (!body || !Array.isArray(body.messages)) return request;
+  let removed = false;
+  const messages = body.messages.flatMap((message: unknown) => {
+    if (!message || typeof message !== 'object' || !Array.isArray((message as Record<string, unknown>).content)) return [message];
+    const content = ((message as Record<string, unknown>).content as unknown[]).filter((block) => !isAdapterThinkingBlock(block));
+    if (content.length === ((message as Record<string, unknown>).content as unknown[]).length) return [message];
+    removed = true;
+    return content.length > 0 ? [{ ...message, content }] : [];
+  });
+  return removed ? withBody(request, { ...body, messages }) : request;
+}
+
+function isAdapterThinkingBlock(block: unknown): boolean {
+  if (!block || typeof block !== 'object') return false;
+  const { type, signature } = block as Record<string, unknown>;
+  return type === 'thinking' && typeof signature === 'string' && signature.startsWith(ADAPTER_REASONING_TAG);
+}
+
+/** The request with a new JSON body; a `content-length` follows it. */
+function withBody(request: SerializedHttpRequest, body: Record<string, unknown>): SerializedHttpRequest {
+  const rewritten = encodeJson(body);
   const headers = { ...request.headers };
   for (const name of Object.keys(headers)) {
     if (name.toLowerCase() === 'content-length') headers[name] = String(rewritten.length);
   }
   return { ...request, headers, body: rewritten };
-}
-
-function isAdapterReasoningInput(item: unknown): boolean {
-  return Boolean(item) && typeof item === 'object' && !Array.isArray(item) && isAdapterReasoningItem(item as Record<string, unknown>);
 }
 
 function headersForTargetProtocol(
