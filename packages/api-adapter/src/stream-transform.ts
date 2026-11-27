@@ -509,8 +509,9 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
   // Each block takes the next index when it first appears, whatever the order: thinking, text, each
   // tool call, and text again after a call.
   let nextBlockIndex = 0;
-  // Thoughts open a block only before any other block, so the thinking block is always index 0.
+  // Thoughts open a block only before any other block, so the thinking block takes the first index.
   let thinking: 'none' | 'open' | 'closed' = 'none';
+  let thinkingIndex = 0;
   let openTextIndex: number | null = null;
   const toolBlockIndexes = new Map<number, number>();
   let openToolIndex: number | null = null;
@@ -533,9 +534,9 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
     const signature = adapterThinkingSignature(options.fallbackModel || responseModel, answerId);
     emitted.push({
       event: 'content_block_delta',
-      data: { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature } },
+      data: { type: 'content_block_delta', index: thinkingIndex, delta: { type: 'signature_delta', signature } },
     });
-    emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
+    emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: thinkingIndex } });
   };
 
   const closeText = (emitted: Array<{ event?: string; data: unknown | string }>): void => {
@@ -654,15 +655,15 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
           if (thinking === 'none') {
             if (!hasReasoningText(event.delta)) continue;
             thinking = 'open';
-            nextBlockIndex = 1;
+            thinkingIndex = nextBlockIndex++;
             emitted.push({
               event: 'content_block_start',
-              data: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
+              data: { type: 'content_block_start', index: thinkingIndex, content_block: { type: 'thinking', thinking: '', signature: '' } },
             });
           }
           emitted.push({
             event: 'content_block_delta',
-            data: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: event.delta } },
+            data: { type: 'content_block_delta', index: thinkingIndex, delta: { type: 'thinking_delta', thinking: event.delta } },
           });
           continue;
         }

@@ -575,24 +575,18 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   } else if (Array.isArray(input)) {
     // A Responses client sends a reasoning item back before the message and calls it led to. When the
     // requested model wrote it, its text rides on that assistant output; reasoning nothing follows is dropped.
-    let reasoning = '';
-    const takeReasoning = (): { reasoning?: string } => {
-      const taken = reasoning;
-      reasoning = '';
-      return taken.length > 0 ? { reasoning: taken } : {};
-    };
+    const reasoning = pendingReasoning();
     for (const item of input) {
       if (!item || typeof item !== 'object') continue;
       const msg = item as Record<string, unknown>;
       const type = typeof msg.type === 'string' ? msg.type : '';
 
       if (type === 'reasoning') {
-        const text = responsesReasoningTextFor(msg, request.model);
-        if (text.length > 0) reasoning = reasoning.length > 0 ? `${reasoning}\n${text}` : text;
+        reasoning.add(responsesReasoningTextFor(msg, request.model));
         continue;
       }
       // Any other item without a role (a tool output, a built-in tool call) ends the reasoning's turn.
-      if (type !== 'function_call' && typeof msg.role !== 'string') reasoning = '';
+      if (type !== 'function_call' && typeof msg.role !== 'string') reasoning.take();
 
       if (type === 'function_call_output') {
         request.input.push({
@@ -610,7 +604,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
             ? msg.call_id : (typeof msg.id === 'string' ? msg.id : ''),
           name: typeof msg.name === 'string' ? msg.name : '',
           arguments: typeof msg.arguments === 'string' ? msg.arguments : JSON.stringify(msg.arguments ?? {}),
-          ...takeReasoning(),
+          ...reasoning.take(),
         });
         continue;
       }
@@ -626,7 +620,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
       // text — dropping them avoids injecting empty user messages mid-history.
       if (type !== 'message' && textFromCanonicalContent(content).length === 0) continue;
       const phase = role === 'assistant' ? normalizeResponseMessagePhase(msg.phase) : undefined;
-      const turnReasoning = takeReasoning();
+      const turnReasoning = reasoning.take();
       request.input.push({ type: 'message', role, content, ...(phase ? { phase } : {}), ...(role === 'assistant' ? turnReasoning : {}) });
     }
   }
@@ -1128,6 +1122,24 @@ function hasAnthropicCacheControl(value: unknown): boolean {
   ));
 }
 
+/**
+ * Replayed thoughts waiting for the text or call they led to: `add` joins them on a new line, and
+ * `take` hands them to one item (or drops them) and starts over.
+ */
+function pendingReasoning(): { add(text: string): void; take(): { reasoning?: string } } {
+  let reasoning = '';
+  return {
+    add(text) {
+      if (text.length > 0) reasoning = reasoning.length > 0 ? `${reasoning}\n${text}` : text;
+    },
+    take() {
+      const taken = reasoning;
+      reasoning = '';
+      return taken.length > 0 ? { reasoning: taken } : {};
+    },
+  };
+}
+
 /** Returns whether the message declared a cache breakpoint on any of its blocks. */
 function appendAnthropicContentBlocks(
   input: CanonicalInputItem[],
@@ -1139,15 +1151,10 @@ function appendAnthropicContentBlocks(
   let contentParts: CanonicalContentPart[] = [];
   // Thoughts the adapter made for this model ride on the text or call they led to; thoughts nothing
   // follows in the message are dropped (see normalizeOpenAIResponsesRequestBody).
-  let reasoning = '';
-  const takeReasoning = (): { reasoning?: string } => {
-    const taken = reasoning;
-    reasoning = '';
-    return taken.length > 0 ? { reasoning: taken } : {};
-  };
+  const reasoning = pendingReasoning();
   const flushMessage = (): void => {
     if (contentParts.length === 0) return;
-    input.push({ type: 'message', role, content: contentParts, ...takeReasoning() });
+    input.push({ type: 'message', role, content: contentParts, ...reasoning.take() });
     contentParts = [];
   };
 
@@ -1156,8 +1163,7 @@ function appendAnthropicContentBlocks(
     const block = blockRaw as Record<string, unknown>;
 
     if (block.type === 'thinking' || block.type === 'redacted_thinking') {
-      const text = role === 'assistant' ? adapterThinkingTextFor(block, model) : '';
-      if (text.length > 0) reasoning = reasoning.length > 0 ? `${reasoning}\n${text}` : text;
+      if (role === 'assistant') reasoning.add(adapterThinkingTextFor(block, model));
       continue;
     }
 
@@ -1165,7 +1171,7 @@ function appendAnthropicContentBlocks(
       flushMessage();
       input.push({
         type: 'function_call',
-        ...takeReasoning(),
+        ...reasoning.take(),
         id: typeof block.id === 'string' && block.id.length > 0 ? block.id : `call_${input.length + 1}`,
         name: typeof block.name === 'string' && block.name.length > 0 ? block.name : 'tool',
         arguments: block.input && typeof block.input === 'object' && !Array.isArray(block.input)
