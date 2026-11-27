@@ -3,7 +3,7 @@ import { transformResponse } from '../src/response-transform.js';
 import { createStreamingAdapter } from '../src/stream-transform.js';
 import type { ServiceApiProtocol } from '../src/types.js';
 import { parseSseBuffer } from '../src/utils.js';
-import { translateChatStream } from './chat-stream-support.js';
+import { translateChatBody, translateChatStream } from './chat-stream-support.js';
 
 // Some chat sellers leak the model's think markup into `content`: a lone closing tag (`</mm:think>`, as one
 // MiniMax-M3 seller sends it, alone or before the answer's text) or a whole `<think>…</think>` block.
@@ -81,14 +81,8 @@ const chatBody = (content: string, reasoning?: string, withToolCall = false): Js
   usage: { prompt_tokens: 5, completion_tokens: 5 },
 });
 
-function translateBuffered(to: ServiceApiProtocol, body: Json, streamRequested = false): Uint8Array {
-  return transformResponse(
-    { requestId: 'r', statusCode: 200, headers: { 'content-type': 'application/json' }, body: encoder.encode(JSON.stringify(body)) },
-    { from: 'openai-chat-completions', to, streamRequested, fallbackModel: 'example-model', includeReasoning: true },
-  )!.body;
-}
 
-const buffered = (to: ServiceApiProtocol, body: Json): Json => JSON.parse(decoder.decode(translateBuffered(to, body))) as Json;
+const buffered = (to: ServiceApiProtocol, body: Json): Json => JSON.parse(decoder.decode(translateChatBody(to, body))) as Json;
 
 // Each shape the leak takes, and what the client should get from it.
 const SHAPES: Array<{ name: string; content: string; text: string; reasoning: string }> = [
@@ -128,7 +122,7 @@ describe('think markup leaked at the start of a chat answer', () => {
       const messages = buffered('anthropic-messages', chatBody(content));
       expect(messages.content).toEqual(text ? [{ type: 'text', text }] : []);
 
-      const sse = decoder.decode(translateBuffered('openai-responses', chatBody(content), true));
+      const sse = decoder.decode(translateChatBody('openai-responses', chatBody(content), true));
       expect(sse).not.toContain('think>');
     });
   });

@@ -1011,11 +1011,13 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         if (event.type === 'response_done') {
           ensureResponseCreated(emitted, null);
           const ending = openAIResponsesEnding(event.finishReason);
+          // The finished message and tool calls, built once for their `.done` events and the final response.
+          const finished = answerItems(ending);
           if (!outputDone) {
             outputDone = true;
             const msgId = getMessageId();
             closeReasoning(emitted);
-            for (const { item } of answerItems(ending)) {
+            for (const { item } of finished) {
               if (item.type === 'message') {
                 pushEvent(emitted, 'response.output_text.done', {
                   output_index: getMessageOutputIndex(),
@@ -1054,7 +1056,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               created_at: createdAt,
               output: [
                 ...(reasoning === 'none' ? [] : [getReasoningItem()]),
-                ...answerItems(ending).map(({ item }) => {
+                ...finished.map(({ item }) => {
                   if (item.type === 'message') return item;
                   const { outputIndex: _outputIndex, ...functionCall } = item;
                   return functionCall;

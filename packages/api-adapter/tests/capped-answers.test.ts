@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { transformResponse } from '../src/response-transform.js';
 import type { ServiceApiProtocol } from '../src/types.js';
 import { parseSseBuffer } from '../src/utils.js';
-import { translateChatStream } from './chat-stream-support.js';
+import { translateChatBody, translateChatStream } from './chat-stream-support.js';
 
 // A chat seller's answer that its output cap (`finish_reason: "length"`) or a content filter
 // (`finish_reason: "content_filter"`) cut off, translated for a Responses or a Messages client.
@@ -46,18 +45,12 @@ const chatBody = (finish: string, cut: 'text' | 'reasoning' | 'tool'): Json => (
   usage: USAGE,
 });
 
-function translateBuffered(to: ServiceApiProtocol, body: Json, streamRequested = false, includeReasoning = true): Uint8Array {
-  return transformResponse(
-    { requestId: 'r', statusCode: 200, headers: { 'content-type': 'application/json' }, body: encoder.encode(JSON.stringify(body)) },
-    { from: 'openai-chat-completions', to, streamRequested, fallbackModel: 'example-model', includeReasoning },
-  )!.body;
-}
 
 const buffered = (to: ServiceApiProtocol, body: Json, includeReasoning = true): Json =>
-  JSON.parse(decoder.decode(translateBuffered(to, body, false, includeReasoning))) as Json;
+  JSON.parse(decoder.decode(translateChatBody(to, body, false, includeReasoning))) as Json;
 
 const bufferedAsStream = (to: ServiceApiProtocol, body: Json): Array<{ event: string | null; data: Json }> =>
-  parseSseBuffer(decoder.decode(translateBuffered(to, body, true))).events
+  parseSseBuffer(decoder.decode(translateChatBody(to, body, true))).events
     .filter((e) => e.data !== '[DONE]')
     .map((e) => ({ event: e.event, data: JSON.parse(e.data) as Json }));
 

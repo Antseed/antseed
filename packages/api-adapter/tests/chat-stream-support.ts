@@ -1,3 +1,4 @@
+import { transformResponse } from '../src/response-transform.js';
 import { createStreamingAdapter } from '../src/stream-transform.js';
 import type { ServiceApiProtocol } from '../src/types.js';
 import { parseSseBuffer } from '../src/utils.js';
@@ -23,4 +24,15 @@ export function translateChatStream(to: ServiceApiProtocol, frames: string[], in
   return parseSseBuffer(sse).events
     .filter((e) => e.data !== '[DONE]')
     .map((e) => ({ event: e.event, data: JSON.parse(e.data) as Record<string, any> }));
+}
+
+/**
+ * A chat seller's whole answer `body` translated for a `to` client, as JSON or, `streamRequested`, as the stream
+ * a streaming client gets from it (the requested model is `example-model`).
+ */
+export function translateChatBody(to: ServiceApiProtocol, body: unknown, streamRequested = false, includeReasoning = true): Uint8Array {
+  return transformResponse(
+    { requestId: 'r', statusCode: 200, headers: { 'content-type': 'application/json' }, body: encoder.encode(JSON.stringify(body)) },
+    { from: 'openai-chat-completions', to, streamRequested, fallbackModel: 'example-model', includeReasoning },
+  )!.body;
 }
