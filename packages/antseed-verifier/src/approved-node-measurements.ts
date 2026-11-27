@@ -70,6 +70,7 @@ export const APPROVED_OS_IMAGES: readonly ApprovedOsImage[] = [
   { name: 'dstack 0.6.2', hash: '290b1ed309255651175a52a704fbf41f400e30690dc62d4839a6101930f3f959' },
   { name: 'dstack 0.6.3', hash: '38a6f97b60e47eb9d68c13246bbd872e83fb9b39d178b4e0d3091285cd07b572' },
   { name: 'dstack 0.6.4', hash: 'feff3645893ad910d4f0e06d8f553cf80a7c9fede2ce0698fa63116283260366' },
+  { name: 'dstack 0.6.5', hash: '4771a29e03e93f0e2d5e37174cd8bb1112942c9689deb36b16c5df9e183d8623' },
 ]
 
 const MEASUREMENT_FIELDS = ['mrtd', 'rtmr0', 'rtmr1', 'rtmr2'] as const

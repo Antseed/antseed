@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- TEE attestation (`@antseed/antseed-verifier`): buyers accept TEE sellers on the dstack 0.6.5 production OS. Its OS image hash joins the approved list (`dstack 0.6.1`–`0.6.5`); before, a seller on 0.6.5 failed `seller-node-tee-genuine` with "the CVM OS image hash is not an approved dstack release". Buyers get it with the CLI release that pins the new verifier.
+
 ## 2026-11-27 — CLI 0.1.264, Node 0.2.194, Desktop 0.2.98
 
 ### Packages
