@@ -1,37 +1,31 @@
 import type {JSX} from 'react';
-import {Intro, SitePage} from '../../components';
+import {SitePage} from '../../components';
 import Top from './Top';
 import Logo from './Logo';
 import Colour from './Colour';
 import Type from './Type';
-import {ArtSection} from './ArtSection';
-import Interface from './Interface';
-import Voice from './Voice';
-import {ART} from './art';
+import Ant from './Ant';
+import Examples from './Examples';
+import Backgrounds from './Backgrounds';
+import Prompt from './Prompt';
+import End from './End';
 
 const TITLE = 'Brand';
-const DESCRIPTION = 'The Antseed brand: the logo and its files, the colours by day and night, the type, the watercolour paintings and the ant.';
+const DESCRIPTION = 'Antseed brand assets: the logo, the colours, the type, the ant, backgrounds and a watercolour prompt, ready to download.';
 
-/** /brand/: the media kit and the brand at a glance. */
+/** /brand/: the assets partners and press can use, one big asset per section. */
 export default function Page(): JSX.Element {
   return (
-    <SitePage
-      title={TITLE}
-      description={DESCRIPTION}>
+    <SitePage title={TITLE} description={DESCRIPTION} cta={false}>
       <Top />
-      <Intro
-        cmp="brand/intro"
-        label="The brand"
-        eyebrow="Two halves"
-        lede="Picture the spec sheet of a peer-to-peer network printed on watercolour paper."
-        more={['One white rail, titles in a face made of dots, numbers in monospace and one green button. The pictures are small, sparse watercolour landscapes, and a single round ant lives in them, a little lost, carrying things.']}
-      />
       <Logo />
       <Colour />
       <Type />
-      {ART.map((point) => <ArtSection key={point.id} point={point} />)}
-      <Interface />
-      <Voice />
+      <Ant />
+      <Examples />
+      <Backgrounds />
+      <Prompt />
+      <End />
     </SitePage>
   );
 }

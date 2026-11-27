@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Changed
+
+- Website: the `/brand/` page is rebuilt in the site's design, with sections for the logo, colour, type, the ant (its full spec and the $ANTS coin), example pieces, backgrounds and the watercolour prompt, and new downloads (ant examples, a profile picture, the pixel font and a one-file brand summary). The repo gains a brand kit for agents making Antseed pages and pictures outside the site: `apps/website/brand-kit/`, starting at `DESIGN.md`, with a starter page that renders whole on its own.
+
 ### Fixed
 
 - Buyer proxy (`@antseed/api-adapter`, CLI, gateway, desktop): a `POST /v1/responses` request with tools, sent to a seller that speaks only OpenAI Chat Completions, now reaches the model as the client sent it. An assistant message and the tool calls that follow it become one chat assistant message with `content` and `tool_calls`, and assistant messages no longer carry `name: "commentary"`. Before, each preamble went as a separate assistant reply ahead of its call, which reads as a turn that ended without acting. The adapter no longer adds a `final_answer` tool or its own system instructions, and a tool the client named `final_answer` is no longer dropped from answers, streamed or not, for Responses and Messages clients alike. A translated answer's `end_turn` is now `true` when it makes no tool call and `false` when it makes one, streamed and buffered alike; before, a streamed answer always said `true` and a buffered one said `false` unless the model called the added `final_answer` tool.

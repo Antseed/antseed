@@ -14,6 +14,7 @@ antseed.com: marketing pages, the docs (`/docs`), the blog, the integration guid
 - `src/styles/` — `tokens.css` (colours, type, layout, the reveal rules) and `custom.css` (Infima mapped onto the tokens, docs and blog styles). `src/data/` — `antscan-fallback.json`, the figures the build uses when Antscan can't be read (refresh with `scripts/antscan-snapshot.mts`).
 - `src/theme/` — swizzled Docusaurus components (nav, footer, root, blog list, code blocks, search).
 - `src/integrations/integrations.ts` — the integration catalog. `plugins/integrations-pages.ts` turns it into routes and `llms-connect.txt`, and copies `skills/join-buyer/SKILL.md` to `static/skill.md`.
+- `brand-kit/` — the brand kit for agents making anything outside this site. Start at `DESIGN.md`.
 - `static/` — served as is, including `install.sh`, `install-gateway.sh`, `llms.txt`, `_headers` and `_redirects`.
 - Where to add: a doc page is a file in its section with `id`, `slug`, `title`, `description` frontmatter, plus a `sidebars.ts` entry. An integration guide is an entry in `integrations.ts`. A moved doc URL is a `redirects` entry in `docusaurus.config.ts`, and a `_redirects` line when agents or curl fetch it.
 
