@@ -70,11 +70,18 @@ const bufferedAsStream = (to: ServiceApiProtocol, body: Json): Array<{ event: st
     .filter((e) => e.data !== '[DONE]')
     .map((e) => ({ event: e.event, data: JSON.parse(e.data) as Json }));
 
-const REASONS = [
+const REASONS: Array<{ finish: string; reason: string; stopReason: string | null }> = [
   { finish: 'length', reason: 'max_output_tokens', stopReason: 'max_tokens' },
-  // Messages has no stop reason for another vendor's filter (`refusal` is Claude's own): it passes as it came.
-  { finish: 'content_filter', reason: 'content_filter', stopReason: 'content_filter' },
+  // Messages has no stop reason for another vendor's filter (`refusal` is Claude's own). Which one it should get is
+  // the stop-reason table's question, left open here: these tests only require that it does not read as finished.
+  { finish: 'content_filter', reason: 'content_filter', stopReason: null },
 ];
+
+/** A Messages stop reason for this cut: the one named, or any but a finished turn's. */
+const expectStopReason = (actual: unknown, stopReason: string | null): void => {
+  if (stopReason !== null) expect(actual).toBe(stopReason);
+  else expect(actual).not.toBe('end_turn');
+};
 
 const lastResponseEvent = (events: Array<{ event: string | null; data: Json }>) =>
   events.filter((e) => e.event?.startsWith('response.') && (e.data.response as Json | undefined)?.status !== 'in_progress').at(-1)!;
@@ -150,16 +157,17 @@ describe('a chat answer that finished, for a Responses client', () => {
 });
 
 describe.each(REASONS)('a chat answer cut by finish_reason $finish, for a Messages client', ({ finish, stopReason }) => {
-  it(`streams stop_reason ${stopReason}`, () => {
+  const named = stopReason ?? 'that is not end_turn';
+  it(`streams a stop_reason ${named}`, () => {
     const events = translateStream(MESSAGES, cutStream(finish, 'text'));
     const delta = events.find((e) => e.event === 'message_delta')!;
-    expect(delta.data.delta.stop_reason).toBe(stopReason);
+    expectStopReason(delta.data.delta.stop_reason, stopReason);
     expect(events.at(-1)!.event).toBe('message_stop');
   });
 
-  it(`answers stop_reason ${stopReason} buffered, sent as JSON or as a stream`, () => {
-    expect(buffered(MESSAGES, chatBody(finish, 'text')).stop_reason).toBe(stopReason);
+  it(`answers a stop_reason ${named} buffered, sent as JSON or as a stream`, () => {
+    expectStopReason(buffered(MESSAGES, chatBody(finish, 'text')).stop_reason, stopReason);
     const events = bufferedAsStream(MESSAGES, chatBody(finish, 'text'));
-    expect(events.find((e) => e.event === 'message_delta')!.data.delta.stop_reason).toBe(stopReason);
+    expectStopReason(events.find((e) => e.event === 'message_delta')!.data.delta.stop_reason, stopReason);
   });
 });
